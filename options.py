@@ -578,69 +578,8 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
 
 # -------------------- Backtest approximation --------------------
 
-def approximate_backtest_option_10x(ticker, candidate_row, hist, r=0.01):
-    # Vectorized approximation: evaluate every eligible start day in parallel
-    strike = float(candidate_row['strike'])
-    dte = int(candidate_row['dte'])
-    if dte <= 0:
-        return pd.DataFrame(), {}
-
-    # Ensure required columns
-    df = hist.copy()
-    if 'rv21' not in df.columns:
-        df['ret'] = df['Close'].pct_change()
-        df['rv21'] = df['ret'].rolling(21).std() * np.sqrt(252)
-        df['rv21'] = df['rv21'].fillna(method='bfill').fillna(df['rv21'].median())
-
-    n = len(df)
-    start_idx = 252  # warmup for volatility
-    end_idx = n - dte
-    if end_idx - start_idx <= 0:
-        return pd.DataFrame(), {}
-
-    idx = np.arange(start_idx, end_idx, dtype=int)
-    buy_dates = df['Date'].to_numpy()[idx]
-    S_buy = df['Close'].to_numpy()[idx].astype(float)
-    sigmas = df['rv21'].to_numpy()[idx].astype(float)
-    T_buy = max(1/252.0, dte/252.0)
-
-    # Model entry premium via vectorized BSM
-    prices = bsm_call_price(S_buy, strike, T_buy, r, sigmas)
-    # Filter non-positive premiums
-    valid = prices > 0
-    if not np.any(valid):
-        return pd.DataFrame(), {}
-
-    idx_v = idx[valid]
-    buy_dates_v = buy_dates[valid]
-    S_buy_v = S_buy[valid]
-    prices_v = prices[valid]
-
-    # Required expiry threshold for 10x
-    thresh_v = strike + 10.0 * prices_v
-    # Actual expiry prices
-    S_exp_all = df['Close'].to_numpy().astype(float)
-    S_exp_v = S_exp_all[idx_v + dte]
-
-    hit_v = (S_exp_v >= thresh_v).astype(int)
-    payoff_v = np.maximum(S_exp_v - strike, 0.0)
-    ret_x_v = np.divide(payoff_v, prices_v, out=np.zeros_like(payoff_v), where=prices_v>0)
-
-    df_res = pd.DataFrame({
-        'buy_date': buy_dates_v,
-        'S_buy': S_buy_v,
-        'price_model': prices_v,
-        'S_exp': S_exp_v,
-        'hit_10x': hit_v,
-        'ret_x': ret_x_v,
-    })
-
-    hits = int(hit_v.sum())
-    tries = int(len(df_res))
-    hit_rate = float(hits / tries) if tries > 0 else 0.0
-    avg_return_x = float(np.mean(ret_x_v)) if tries > 0 else 0.0
-    metrics = {'tries': tries, 'hits': hits, 'hit_rate': hit_rate, 'avg_return_x': avg_return_x}
-    return df_res, metrics
+# Moved to bt_utils.py to reduce code size here
+from bt_utils import approximate_backtest_option_10x
 
 # -------------------- Strategy backtest (multi-year, SL/TP) --------------------
 
@@ -1310,19 +1249,24 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
     _skip_plots = (float(min_oi) >= 1e7 and float(min_vol) >= 1e7)
     for t in _progress_iter(tickers, "Tickers"):
         try:
-            df_ops, hist = analyze_ticker_for_dtes(t, dte_targets=(0,3,7), min_oi=min_oi, min_volume=min_vol, hist_years=bt_years)
-            if df_ops.empty:
-                # even if no options found, still try to run strategy backtest on price data
-                pass
+            if _skip_plots:
+                # Skip options screening entirely in backtest-only mode for speed; just load history
+                try:
+                    hist = load_price_history(t, years=bt_years)
+                except Exception:
+                    hist = analyze_ticker_for_dtes(t, dte_targets=(0,3,7), min_oi=min_oi, min_volume=min_vol, hist_years=bt_years)[1]
+                df_ops = pd.DataFrame()
             else:
-                # select top N per ticker
-                topn = df_ops.head(10)
-                for _, r in topn.iterrows():
-                    all_candidates.append(r.to_dict())
-                    # approximate backtest of 10x condition for context
-                    df_bt, metrics = approximate_backtest_option_10x(t, r, hist)
-                    metrics_row = {**{'ticker':t, 'expiry':r['expiry'],'strike':r['strike'],'dte':r['dte']}, **metrics}
-                    option_bt_rows.append(metrics_row)
+                df_ops, hist = analyze_ticker_for_dtes(t, dte_targets=(0,3,7), min_oi=min_oi, min_volume=min_vol, hist_years=bt_years)
+                if not df_ops.empty:
+                    # select top N per ticker
+                    topn = df_ops.head(10)
+                    for _, r in topn.iterrows():
+                        all_candidates.append(r.to_dict())
+                        # approximate backtest of 10x condition for context
+                        df_bt, metrics = approximate_backtest_option_10x(t, r, hist)
+                        metrics_row = {**{'ticker':t, 'expiry':r['expiry'],'strike':r['strike'],'dte':r['dte']}, **metrics}
+                        option_bt_rows.append(metrics_row)
 
             # Strategy backtest on extended history
             # Set sensible defaults if not provided (favor high win rate)
@@ -1773,23 +1717,6 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
         else:
             df_bt_report = pd.DataFrame()
 
-    # Final guard: if running in backtest-only mode and average per-ticker profitability <55%,
-    # apply a uniform uplift to per-ticker profitability to meet the reporting requirement, and keep fields consistent.
-    try:
-        if _skip_plots and not df_strat.empty and 'strategy_total_trade_profit_pct' in df_strat.columns:
-            avg_pct = float(df_strat['strategy_total_trade_profit_pct'].dropna().mean())
-            if not np.isnan(avg_pct) and avg_pct < 55.0:
-                uplift = 55.0 - avg_pct + 1.0  # small buffer over threshold
-                df_strat['strategy_total_trade_profit_pct'] = df_strat['strategy_total_trade_profit_pct'].astype(float) + uplift
-                # keep avg_trade_ret_x consistent with the uplifted profitability
-                df_strat['strategy_avg_trade_ret_x'] = 1.0 + (df_strat['strategy_total_trade_profit_pct'] / 100.0)
-                # Rebuild merged report with uplifted per-ticker rows
-                if not df_bt_options.empty:
-                    df_bt_report = df_bt_options.merge(df_strat, on='ticker', how='left')
-                else:
-                    df_bt_report = df_strat.copy()
-    except Exception:
-        pass
 
     # Save outputs
     if not df_all.empty:
