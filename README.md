@@ -306,9 +306,14 @@ If you only want to run the multi-year strategy backtest (skip the options scree
   make backtest
   make backtest ARGS="--tickers AAPL,MSFT --bt_years 3"
 
-What you’ll see in the console at the end:
-- "Combined total profitability of all strategy trades: ...% (equal stake per trade)"
-- "Average per-ticker total trade profitability: ...%"
+What you’ll see in the console at the end (now with world‑class formatting):
+- A colored banner and a table of Top Option Candidates (if any)
+- A rich, colored Strategy Backtest Summary table (per ticker)
+- "Combined total profitability of all strategy trades: ...% (equal stake per trade)" in green/red depending on performance
+- "Average per-ticker total trade profitability: ...%" in green/red
+
+Notes:
+- Pretty console output uses the Rich library and automatically falls back to plain text if Rich is not available or if the output is not a TTY.
 
 Additional outputs remain the same:
 - backtests/<TICKER>_equity.csv

@@ -744,6 +744,123 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
 
 # -------------------- CLI --------------------
 
+# Pretty console helpers (Rich) with graceful fallback
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.box import ROUNDED
+    _HAS_RICH = True
+    _CON = Console()
+except Exception:
+    _HAS_RICH = False
+    _CON = None
+
+
+def _fmt_pct(x):
+    try:
+        return f"{float(x)*100:.2f}%"
+    except Exception:
+        return "-"
+
+
+def _render_summary(tickers, df_res, df_bt):
+    import numpy as _np
+    import pandas as _pd
+    # Header
+    if _HAS_RICH:
+        _CON.print(Panel.fit("Options Screener & Strategy Backtest", style="bold white on dark_green", border_style="green", padding=(0,2)))
+        _CON.print(f"Running screener on: [bold cyan]{', '.join(tickers)}[/]", justify="left")
+    else:
+        print("Options Screener & Strategy Backtest")
+        print("Running screener on:", tickers)
+
+    if df_res is not None and not df_res.empty:
+        top = df_res[['ticker','expiry','dte','strike','mid','openInterest','volume','impliedVol','prob_10x']].head(10)
+        if _HAS_RICH:
+            tbl = Table(title="Top Option Candidates (preview)", box=ROUNDED, border_style="cyan")
+            for col in top.columns:
+                tbl.add_column(str(col), style="cyan" if col in ("ticker","expiry") else "white", justify="right")
+            for _, r in top.iterrows():
+                tbl.add_row(*[str(r[c]) for c in top.columns])
+            _CON.print(tbl)
+            _CON.print("Saved to [bold]screener_results.csv[/]", style="dim")
+        else:
+            print('Top results saved to screener_results.csv')
+            print(top.to_string(index=False))
+
+    if df_bt is not None and not df_bt.empty:
+        # Backtest table (key metrics)
+        cols = [
+            'ticker','strategy_total_trades','strategy_win_rate','strategy_avg_trade_ret_x',
+            'strategy_total_trade_profit_pct','strategy_CAGR','strategy_Sharpe','strategy_max_drawdown'
+        ]
+        present = [c for c in cols if c in df_bt.columns]
+        prev = df_bt[present].copy()
+        prev = prev.drop_duplicates(subset=['ticker']) if 'ticker' in prev.columns else prev
+        if _HAS_RICH:
+            tbl2 = Table(title="Strategy Backtest Summary (per ticker)", box=ROUNDED, border_style="magenta")
+            for c in present:
+                tbl2.add_column(c, justify="right", style=("yellow" if c=="ticker" else "white"))
+            for _, r in prev.head(20).iterrows():
+                row_vals = []
+                for c in present:
+                    v = r[c]
+                    if c in ('strategy_win_rate','strategy_CAGR','strategy_max_drawdown'):
+                        row_vals.append(_fmt_pct(v))
+                    elif c == 'strategy_total_trade_profit_pct':
+                        row_vals.append(f"{float(v):.2f}%")
+                    else:
+                        try:
+                            row_vals.append(f"{float(v):.4f}")
+                        except Exception:
+                            row_vals.append(str(v))
+                tbl2.add_row(*row_vals)
+            _CON.print(tbl2)
+        else:
+            print('\nBacktest summary saved to screener_results_backtest.csv')
+            print(prev.head(20).to_string(index=False))
+
+        # Combined profitability lines
+        try:
+            combined_line = None
+            avg_line = None
+            if 'strategy_total_trades' in df_bt.columns and 'strategy_avg_trade_ret_x' in df_bt.columns:
+                total_trades = float(df_bt['strategy_total_trades'].fillna(0).sum())
+                if total_trades > 0:
+                    weighted_avg_ret_x = (
+                        (df_bt['strategy_avg_trade_ret_x'].fillna(0) * df_bt['strategy_total_trades'].fillna(0)).sum() / total_trades
+                    )
+                    combined_profit_pct = (weighted_avg_ret_x - 1.0) * 100.0
+                    combined_line = f"Combined total profitability of all strategy trades: {combined_profit_pct:.2f}% (equal stake per trade)"
+            if 'strategy_total_trade_profit_pct' in df_bt.columns:
+                avg_pct = df_bt['strategy_total_trade_profit_pct'].dropna().mean()
+                if _np.isfinite(avg_pct):
+                    avg_line = f"Average per-ticker total trade profitability: {avg_pct:.2f}%"
+            if _HAS_RICH:
+                if combined_line is not None:
+                    style = "bold green" if ' -' not in combined_line and (combined_line.find(': ')!=-1 and float(combined_line.split(': ')[1].split('%')[0])>=0) else "bold red"
+                    _CON.print(combined_line, style=style)
+                if avg_line is not None:
+                    avg_val = float(avg_line.split(': ')[1].split('%')[0])
+                    style2 = "green" if avg_val>=0 else "red"
+                    _CON.print(avg_line, style=style2)
+                _CON.print("Saved to [bold]screener_results_backtest.csv[/]", style="dim")
+            else:
+                if combined_line: print("\n" + combined_line)
+                if avg_line: print(avg_line)
+        except Exception:
+            pass
+
+    # Footer notes
+    if _HAS_RICH:
+        _CON.print("\nPlots saved to [bold]plots/[/] (one per ticker)", style="dim")
+        _CON.print("Per-ticker equity curves saved to [bold]backtests/<TICKER>_equity.csv[/]", style="dim")
+    else:
+        print('\nPlots saved to plots/ (one per ticker)')
+        print('Per-ticker equity curves saved to backtests/<TICKER>_equity.csv')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--tickers_csv', type=str, default='tickers.csv',
@@ -824,7 +941,7 @@ if __name__ == '__main__':
         except Exception:
             entry_weekdays_list = None
 
-    print('Running screener on:', tickers)
+    # Run
     df_res, df_bt = run_screener(
         tickers,
         min_oi=args.min_oi,
@@ -850,32 +967,5 @@ if __name__ == '__main__':
         bt_skip_earnings=args.bt_skip_earnings,
     )
 
-    print('\nScreener finished.')
-    if not df_res.empty:
-        print('Top results saved to screener_results.csv')
-        print(df_res[['ticker','expiry','dte','strike','mid','openInterest','volume','impliedVol','prob_10x']].head(20).to_string(index=False))
-    if not df_bt.empty:
-        print('\nBacktest summary saved to screener_results_backtest.csv')
-        print(df_bt.head(20).to_string(index=False))
-        try:
-            # Compute combined total profitability across all trades (weighted by trade counts)
-            if 'strategy_total_trades' in df_bt.columns and 'strategy_avg_trade_ret_x' in df_bt.columns:
-                total_trades = float(df_bt['strategy_total_trades'].fillna(0).sum())
-                if total_trades > 0:
-                    weighted_avg_ret_x = (
-                        (df_bt['strategy_avg_trade_ret_x'].fillna(0) * df_bt['strategy_total_trades'].fillna(0)).sum()
-                        / total_trades
-                    )
-                    combined_profit_pct = (weighted_avg_ret_x - 1.0) * 100.0
-                    print(f"\nCombined total profitability of all strategy trades: {combined_profit_pct:.2f}% (equal stake per trade)")
-            # If per-ticker total pct is present, also show its average
-            if 'strategy_total_trade_profit_pct' in df_bt.columns:
-                # Average of per-ticker totals (not weighted)
-                avg_pct = df_bt['strategy_total_trade_profit_pct'].dropna().mean()
-                if np.isfinite(avg_pct):
-                    print(f"Average per-ticker total trade profitability: {avg_pct:.2f}%")
-        except Exception as _e:
-            pass
-
-    print('\nPlots saved to plots/ (one per ticker)')
-    print('Per-ticker equity curves saved to backtests/<TICKER>_equity.csv')
+    # Pretty render
+    _render_summary(tickers, df_res, df_bt)
