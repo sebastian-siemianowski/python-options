@@ -101,43 +101,19 @@ def _price_csv_path(ticker: str, cache_dir: Optional[str] = None) -> str:
 
 
 def _fill_data_gaps(df: pd.DataFrame) -> pd.DataFrame:
-    """Fill gaps in price data by interpolating missing business days."""
+    """
+    Preserve real market data without fabricating missing days.
+    Only return actual trading data, never interpolate or create fake data points.
+    """
     if df.empty or 'Date' not in df.columns:
         return df
     
-    # Sort by date to ensure proper ordering
-    df = df.sort_values('Date').reset_index(drop=True)
+    # Sort by date to ensure proper ordering and remove any duplicates
+    df = df.sort_values('Date').drop_duplicates(subset=['Date']).reset_index(drop=True)
     
-    # Create complete business day range from start to end
-    start_date = df['Date'].iloc[0]
-    end_date = df['Date'].iloc[-1]
-    
-    # Generate all business days in the range
-    full_bdate_range = pd.bdate_range(start=start_date, end=end_date, freq='B')
-    
-    # Create new dataframe with complete date range
-    full_df = pd.DataFrame({'Date': full_bdate_range})
-    
-    # Merge with existing data
-    filled_df = full_df.merge(df, on='Date', how='left')
-    
-    # Fill missing OHLCV data using linear interpolation for smooth continuity
-    price_cols = [col for col in REQUIRED_PRICE_COLS if col in filled_df.columns]
-    
-    for col in price_cols:
-        if col == 'Volume':
-            # For volume, use forward fill then fill remaining with median volume
-            filled_df[col] = filled_df[col].fillna(method='ffill')
-            if filled_df[col].isna().any():
-                median_vol = filled_df[col].median()
-                filled_df[col] = filled_df[col].fillna(median_vol if pd.notna(median_vol) else 0)
-        else:
-            # For OHLC prices, use linear interpolation for smooth transitions
-            filled_df[col] = filled_df[col].interpolate(method='linear', limit_direction='both')
-            # Fill any remaining NaN values at the edges with forward/backward fill
-            filled_df[col] = filled_df[col].fillna(method='ffill').fillna(method='bfill')
-    
-    return filled_df
+    # Don't fill gaps - return only real market data
+    # Markets are closed on weekends and holidays, gaps are normal and expected
+    return df
 
 
 def _sanitize_hist(df: pd.DataFrame) -> pd.DataFrame:
@@ -145,10 +121,10 @@ def _sanitize_hist(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["Date", *REQUIRED_PRICE_COLS])
     out = df.copy()
     if 'Date' in out.columns:
-        out['Date'] = pd.to_datetime(out['Date'])
+        out['Date'] = pd.to_datetime(out['Date'], utc=True)
     else:
         out = out.reset_index().rename(columns={'index': 'Date'})
-        out['Date'] = pd.to_datetime(out['Date'])
+        out['Date'] = pd.to_datetime(out['Date'], utc=True)
     # Keep only required cols
     cols = ['Date'] + [c for c in REQUIRED_PRICE_COLS if c in out.columns]
     out = out[cols].dropna().sort_values('Date').reset_index(drop=True)
@@ -162,7 +138,7 @@ def _sanitize_hist(df: pd.DataFrame) -> pd.DataFrame:
 def load_price_history(ticker: str, years: int = 3, cache_dir: Optional[str] = None, force_refresh: Optional[bool] = None) -> pd.DataFrame:
     """Load daily price history for ticker from local CSV cache or yfinance.
     Will compute realized volatility columns expected by downstream logic.
-    Ensures truly continuous data with no gaps by forcing fresh downloads and proper date ranges.
+    Preserves real market data without fabricating missing dates.
     """
     import yfinance as yf
 
@@ -170,11 +146,27 @@ def load_price_history(ticker: str, years: int = 3, cache_dir: Optional[str] = N
     frefresh = DEFAULT_FORCE_REFRESH if force_refresh is None else bool(force_refresh)
     csv_path = _price_csv_path(ticker, cdir)
 
-    # Always force refresh to ensure we get complete data without gaps
-    # The cached data may have missing periods that create visual discontinuities
+    # Try to use cached data first unless force refresh is requested
     df = pd.DataFrame()
     
-    # Fetch from network with specific date range to ensure completeness
+    if not frefresh and os.path.isfile(csv_path):
+        try:
+            df = pd.read_csv(csv_path)
+            df = _sanitize_hist(df)
+            
+            # Check if cached data is recent and substantial enough
+            if not df.empty and len(df) > 100:
+                df['Date'] = pd.to_datetime(df['Date'])
+                latest_date = df['Date'].max()
+                days_old = (pd.Timestamp.now() - latest_date).days
+                
+                # Use cache if less than 1 day old
+                if days_old <= 1:
+                    return df
+        except Exception:
+            pass
+    
+    # Fetch fresh data from yfinance
     try:
         # Calculate exact start and end dates for the requested period
         end_date = pd.Timestamp.now().strftime('%Y-%m-%d')
