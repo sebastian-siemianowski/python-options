@@ -10,7 +10,7 @@ import pandas as pd
 from bs_utils import bsm_call_price
 
 
-def approximate_backtest_option_10x(ticker, candidate_row, hist, r=0.01):
+def approximate_backtest_option_4x(ticker, candidate_row, hist, r=0.01):
     """Vectorized approximation: evaluate every eligible start day in parallel.
     Moved out of options.py for maintainability.
     """
@@ -54,8 +54,8 @@ def approximate_backtest_option_10x(ticker, candidate_row, hist, r=0.01):
     S_buy_v = S_buy[valid]
     prices_v = prices[valid]
 
-    # Required expiry threshold for 10x
-    thresh_v = strike + 10.0 * prices_v
+    # Required expiry threshold for 4x
+    thresh_v = strike + 4.0 * prices_v
     # Actual expiry prices
     S_exp_all = df['Close'].to_numpy().astype(float)
     S_exp_v = S_exp_all[idx_v + dte]
@@ -69,7 +69,7 @@ def approximate_backtest_option_10x(ticker, candidate_row, hist, r=0.01):
         'S_buy': S_buy_v,
         'price_model': prices_v,
         'S_exp': S_exp_v,
-        'hit_10x': hit_v,
+        'hit_4x': hit_v,
         'ret_x': ret_x_v,
     })
 

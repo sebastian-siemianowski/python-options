@@ -2,10 +2,10 @@
 options_screener_0_3_7dte.py
 
 Scans a universe of liquid tickers for CALL options with 0, 3 and 7 DTE that have the *highest probability*
-of producing >=1000% (10x) return by expiry, filters by liquidity (volume & open interest),
+of producing >=300% (4x) return by expiry, filters by liquidity (volume & open interest),
 plots price charts with simple support/resistance (pivot-based) and buy/sell markers,
 and runs a conservative backtest using historical underlying data and option-pricing (BSM) to approximate
-how often the 10x return would have occurred historically.
+how often the 4x return would have occurred historically.
 
 NOTES / DISCLAIMER:
 - This is research & educational code only. Options are risky. This script DOES download real data
@@ -19,7 +19,7 @@ Usage example:
     python options_screener_0_3_7dte.py --tickers AAPL,MSFT,NVDA,SPY --min_oi 200 --min_vol 50
 
 Outputs:
- - screener_results.csv  (ranked by probability of 1000%+ return)
+ - screener_results.csv  (ranked by probability of 300%+ return)
  - backtest_report.csv
  - plots/<TICKER>_support_resistance.png (chart files)
 
@@ -534,9 +534,9 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
                 # extremely cheap option; skip absurd pennies due to noise
                 continue
 
-            # Required underlying at expiry to yield 10x option price (1000% return)
-            payoff_needed = mid * 10.0
-            S_thresh = strike + payoff_needed  # must be >= this for payoff >= 10x
+            # Required underlying at expiry to yield 4x option price (300% return)
+            payoff_needed = mid * 4.0
+            S_thresh = strike + payoff_needed  # must be >= this for payoff >= 4x
 
             # Derive implied vol for this option if available or approximate with historical rv21
             implied = np.nan
@@ -554,10 +554,10 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
             mu_ln = np.log(max(spot,1e-8)) + (r - 0.5*implied*implied) * T_years
             sigma_ln = np.sqrt(max(1e-12, implied*implied * T_years))
 
-            prob_10x = float(lognormal_prob_geq(spot, mu_ln, sigma_ln, S_thresh))
+            prob_4x = float(lognormal_prob_geq(spot, mu_ln, sigma_ln, S_thresh))
 
-            # approximate expected return conditional on achieving 10x (simplistic)
-            expected_return_if_hit = 10.0
+            # approximate expected return conditional on achieving 4x (simplistic)
+            expected_return_if_hit = 4.0
 
             opportunities.append({
                 'ticker': ticker,
@@ -569,8 +569,8 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
                 'volume': volm,
                 'impliedVol': implied,
                 'S0': spot,
-                'S_thresh_for_10x': S_thresh,
-                'prob_10x': prob_10x,
+                'S_thresh_for_4x': S_thresh,
+                'prob_4x': prob_4x,
                 'estimated_return_if_hit_x': expected_return_if_hit
             })
 
@@ -579,13 +579,13 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
         # Deduplicate in case multiple target DTEs map to same expiry
         df_ops = df_ops.drop_duplicates(subset=['ticker','expiry','strike','dte'], keep='first')
         # sort and return top candidates
-        df_ops = df_ops.sort_values(['prob_10x','openInterest','volume'], ascending=[False,False,False])
+        df_ops = df_ops.sort_values(['prob_4x','openInterest','volume'], ascending=[False,False,False])
     return df_ops, hist
 
 # -------------------- Backtest approximation --------------------
 
 # Moved to bt_utils.py to reduce code size here
-from bt_utils import approximate_backtest_option_10x
+from bt_utils import approximate_backtest_option_4x
 
 # -------------------- Strategy backtest (multi-year, SL/TP) --------------------
 
@@ -1871,6 +1871,228 @@ def generate_breakout_signals(hist, window=20, lookback=5):
     signals = pd.concat([signals_call, signals_put], axis=0).sort_values('Date')
     return signals
 
+# -------------------- Options Screening Display --------------------
+
+def display_options_screening_table(all_candidates, min_profit_chance=80.0):
+    """
+    Display enhanced options screening table with call options buy entries for 0, 3, 7 DTE
+    showing profit chances, risk amounts, and filtering for 80%+ profit chances.
+    Features improved filter presentation with detailed statistics and elegant Rich table formatting.
+    """
+    # Import Rich components for elegant formatting
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich.panel import Panel
+        from rich.box import ROUNDED
+        import os
+        _force_color = str(os.environ.get("NO_COLOR", "")).strip() == ""
+        console = Console(force_terminal=_force_color, color_system="auto")
+        _HAS_RICH = True
+    except Exception:
+        console = None
+        _HAS_RICH = False
+    
+    if not all_candidates:
+        if _HAS_RICH:
+            console.print()
+            header_panel = Panel("CALL OPTIONS SCREENING - BUY ENTRIES", 
+                                style="bold cyan", box=ROUNDED)
+            console.print(header_panel)
+            console.print("NO CALL OPTIONS FOUND meeting current screening criteria", style="yellow")
+            console.print("\nGenerating sample data to demonstrate the options screening table format:", style="dim")
+        else:
+            print("\n" + "="*90)
+            print("CALL OPTIONS SCREENING - BUY ENTRIES")
+            print("="*90)
+            print("NO CALL OPTIONS FOUND meeting current screening criteria")
+            print("\nGenerating sample data to demonstrate the options screening table format:")
+            print("="*90)
+        
+        # Generate sample option data to show table functionality
+        sample_candidates = [
+            {'ticker': 'AAPL', 'expiry': '2025-01-17', 'dte': 0, 'strike': 250.0, 'mid': 0.15, 'prob_4x': 0.85, 'openInterest': 500, 'volume': 150},
+            {'ticker': 'AAPL', 'expiry': '2025-01-20', 'dte': 3, 'strike': 255.0, 'mid': 0.25, 'prob_4x': 0.82, 'openInterest': 300, 'volume': 80},
+            {'ticker': 'MSFT', 'expiry': '2025-01-17', 'dte': 0, 'strike': 440.0, 'mid': 0.18, 'prob_4x': 0.88, 'openInterest': 400, 'volume': 120},
+            {'ticker': 'NVDA', 'expiry': '2025-01-24', 'dte': 7, 'strike': 150.0, 'mid': 0.35, 'prob_4x': 0.81, 'openInterest': 600, 'volume': 200},
+            {'ticker': 'SPY', 'expiry': '2025-01-20', 'dte': 3, 'strike': 600.0, 'mid': 0.12, 'prob_4x': 0.83, 'openInterest': 800, 'volume': 300},
+            {'ticker': 'MSTR', 'expiry': '2025-01-24', 'dte': 7, 'strike': 400.0, 'mid': 0.45, 'prob_4x': 0.86, 'openInterest': 250, 'volume': 90}
+        ]
+        all_candidates = sample_candidates
+    
+    # Convert to DataFrame for easier manipulation
+    df = pd.DataFrame(all_candidates)
+    original_count = len(df)
+    
+    # Calculate additional filter statistics before filtering
+    profit_distribution = df['prob_4x'].describe() if not df.empty else None
+    
+    # Filter for profit chances (prob_4x >= threshold)
+    df_filtered = df[df['prob_4x'] >= (min_profit_chance / 100.0)].copy()
+    filtered_count = len(df_filtered)
+    rejected_count = original_count - filtered_count
+    
+    # Header
+    if _HAS_RICH:
+        console.print()
+        header_panel = Panel("CALL OPTIONS SCREENING - BUY ENTRIES", 
+                            style="bold cyan", box=ROUNDED)
+        console.print(header_panel)
+    else:
+        print("\n" + "="*90)
+        print("CALL OPTIONS SCREENING - BUY ENTRIES")
+        print("="*90)
+    
+    # FILTER INFORMATION SECTION
+    if _HAS_RICH:
+        # Create filter criteria table
+        filter_table = Table(title="Filter Criteria & Statistics", box=ROUNDED, border_style="blue", show_header=False)
+        filter_table.add_column("Criteria", style="cyan", justify="left")
+        filter_table.add_column("Value", style="white", justify="left")
+        
+        filter_table.add_row("Minimum Profit Chance:", f"{min_profit_chance}% (4x return probability)")
+        filter_table.add_row("Target Return:", "300% (4x multiplier)")
+        filter_table.add_row("Days to Expiry:", "0, 3, and 7 days")
+        filter_table.add_row("Option Type:", "CALL options only")
+        
+        console.print(filter_table)
+        
+        # Create filtering results table
+        results_table = Table(title="Filtering Results", box=ROUNDED, border_style="green", show_header=False)
+        results_table.add_column("Metric", style="cyan", justify="left")
+        results_table.add_column("Value", style="white", justify="left")
+        
+        results_table.add_row("Total Options Screened:", f"{original_count}")
+        results_table.add_row("Passed Filter:", f"{filtered_count} ({(filtered_count/max(original_count,1)*100):.1f}%)")
+        results_table.add_row("Rejected by Filter:", f"{rejected_count} ({(rejected_count/max(original_count,1)*100):.1f}%)")
+        
+        console.print(results_table)
+        
+        # Profit chance distribution stats
+        if profit_distribution is not None and not df.empty:
+            dist_table = Table(title="Profit Chance Distribution", box=ROUNDED, border_style="magenta", show_header=False)
+            dist_table.add_column("Statistic", style="cyan", justify="left")
+            dist_table.add_column("Value", style="white", justify="left")
+            
+            dist_table.add_row("Highest Profit Chance:", f"{profit_distribution['max']*100:.1f}%")
+            dist_table.add_row("Average Profit Chance:", f"{profit_distribution['mean']*100:.1f}%")
+            dist_table.add_row("Lowest Profit Chance:", f"{profit_distribution['min']*100:.1f}%")
+            dist_table.add_row(f"Options Above {min_profit_chance}%:", f"{len(df[df['prob_4x'] >= min_profit_chance/100])}")
+            
+            console.print(dist_table)
+    else:
+        print("\nFILTER CRITERIA & STATISTICS")
+        print("─" * 50)
+        print(f"Minimum Profit Chance:     {min_profit_chance}% (4x return probability)")
+        print(f"Target Return:             300% (4x multiplier)")
+        print(f"Days to Expiry:            0, 3, and 7 days")
+        print(f"Option Type:              CALL options only")
+        
+        print("\nFILTERING RESULTS")
+        print("─" * 50)
+        print(f"Total Options Screened:    {original_count}")
+        print(f"Passed Filter:             {filtered_count} ({(filtered_count/max(original_count,1)*100):.1f}%)")
+        print(f"Rejected by Filter:        {rejected_count} ({(rejected_count/max(original_count,1)*100):.1f}%)")
+        
+        # Profit chance distribution stats
+        if profit_distribution is not None and not df.empty:
+            print(f"\nPROFIT CHANCE DISTRIBUTION")
+            print("─" * 50)
+            print(f"Highest Profit Chance:     {profit_distribution['max']*100:.1f}%")
+            print(f"Average Profit Chance:     {profit_distribution['mean']*100:.1f}%")
+            print(f"Lowest Profit Chance:      {profit_distribution['min']*100:.1f}%")
+            print(f"Options Above {min_profit_chance}%:        {len(df[df['prob_4x'] >= min_profit_chance/100])}")
+    
+    # Handle empty results with enhanced messaging
+    if df_filtered.empty:
+        if _HAS_RICH:
+            empty_panel = Panel(f"No call options found with {min_profit_chance}%+ profit chance\nSuggestion: Consider lowering minimum profit chance threshold\nShowing all available options for reference:", 
+                               style="yellow", box=ROUNDED, title="Filter Results")
+            console.print(empty_panel)
+        else:
+            print(f"\nFILTER RESULTS")
+            print("─" * 50)
+            print(f"No call options found with {min_profit_chance}%+ profit chance")
+            print(f"Suggestion: Consider lowering minimum profit chance threshold")
+            print(f"Showing all available options for reference:")
+        df_filtered = df.copy()
+        
+    # Add calculated columns
+    if not df_filtered.empty:
+        df_filtered['option_symbol'] = df_filtered.apply(
+            lambda row: f"{row['ticker']}{pd.to_datetime(row['expiry']).strftime('%y%m%d')}C{int(row['strike']):05d}000", 
+            axis=1
+        )
+        df_filtered['profit_chance_pct'] = (df_filtered['prob_4x'] * 100).round(2)
+        df_filtered['amount_to_risk'] = df_filtered['mid'].round(2)
+        df_filtered['potential_profit_4x'] = (df_filtered['mid'] * 4.0).round(2)
+        
+        # Sort by profit chance descending, then by DTE
+        df_filtered = df_filtered.sort_values(['profit_chance_pct', 'dte'], ascending=[False, True])
+    
+    # Results Display
+    if _HAS_RICH:
+        results_panel = Panel("OPTIONS SCREENING RESULTS", style="bold green", box=ROUNDED)
+        console.print(results_panel)
+    else:
+        print(f"\n" + "="*90)
+        print("OPTIONS SCREENING RESULTS")
+        print("="*90)
+    
+    if not df_filtered.empty:
+        # Group by DTE for organized display
+        for dte in sorted(df_filtered['dte'].unique()):
+            dte_data = df_filtered[df_filtered['dte'] == dte]
+            if dte_data.empty:
+                continue
+            
+            if _HAS_RICH:
+                # Create Rich table for each DTE group
+                dte_table = Table(title=f"Options with {dte} Days to Expiry ({len(dte_data)} candidates)", 
+                                box=ROUNDED, border_style="cyan")
+                
+                # Add columns with styling
+                dte_table.add_column("Ticker", style="yellow", justify="center")
+                dte_table.add_column("Option Symbol", style="white", justify="left")
+                dte_table.add_column("Strike", style="white", justify="right")
+                dte_table.add_column("Mid Price", style="white", justify="right")
+                dte_table.add_column("Profit %", style="green", justify="center")
+                dte_table.add_column("Risk $", style="white", justify="right")
+                dte_table.add_column("Pot. Profit", style="green", justify="right")
+                dte_table.add_column("OI", style="white", justify="right")
+                dte_table.add_column("Volume", style="white", justify="right")
+                
+                # Add rows to the table
+                for idx, (_, row) in enumerate(dte_data.head(10).iterrows()):  # Limit to top 10 per DTE
+                    profit_indicator = "[E]" if row['profit_chance_pct'] >= 85 else "[G]" if row['profit_chance_pct'] >= min_profit_chance else "[L]"
+                    profit_style = "bright_green" if row['profit_chance_pct'] >= 85 else "green" if row['profit_chance_pct'] >= min_profit_chance else "yellow"
+                    
+                    dte_table.add_row(
+                        row['ticker'],
+                        row['option_symbol'],
+                        f"${row['strike']:.0f}",
+                        f"${row['mid']:.2f}",
+                        f"{profit_indicator}{row['profit_chance_pct']:.1f}%",
+                        f"${row['amount_to_risk']:.2f}",
+                        f"${row['potential_profit_4x']:.2f}",
+                        f"{int(row['openInterest'])}",
+                        f"{int(row['volume'])}"
+                    )
+                
+                console.print(dte_table)
+            else:
+                print(f"\nOPTIONS WITH {dte} DAYS TO EXPIRY ({len(dte_data)} candidates)")
+                print("─" * 75)
+                
+                # Table headers with better spacing
+                print(f"{'Ticker':<8} {'Option Symbol':<20} {'Strike':<8} {'Mid Price':<10} {'Profit %':<10} {'Risk $':<10} {'Pot. Profit':<12} {'OI':<8} {'Volume':<8}")
+                print("─" * 8 + " " + "─" * 20 + " " + "─" * 8 + " " + "─" * 10 + " " + "─" * 10 + " " + "─" * 10 + " " + "─" * 12 + " " + "─" * 8 + " " + "─" * 8)
+                
+                # Display each option with clean formatting
+                for idx, (_, row) in enumerate(dte_data.head(10).iterrows()):  # Limit to top 10 per DTE
+                    profit_indicator = "[E]" if row['profit_chance_pct'] >= 85 else "[G]" if row['profit_chance_pct'] >= min_profit_chance else "[L]"
+                    print(f"{row['ticker']:<8} {row['option_symbol']:<20} ${row['strike']:<7.0f} ${row['mid']:<9.2f} {profit_indicator}{row['profit_chance_pct']:<8.1f}% ${row['amount_to_risk']:<9.2f} ${row['potential_profit_4x']:<11.2f} {int(row['openInterest']):<8} {int(row['volume']):<8}")
+
 # -------------------- Main runner --------------------
 
 def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.0, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.15, bt_trend_filter=False, bt_vol_filter=False, bt_time_stop_frac=0.3, bt_time_stop_mult=1.02, bt_use_target_delta=True, bt_target_delta=0.10, bt_trail_start_mult=1.15, bt_trail_back=0.25, bt_protect_mult=0.70, bt_cooldown_days=0, bt_entry_weekdays=None, bt_skip_earnings=False, bt_use_underlying_atr_exits=True, bt_tp_atr_mult=5.0, bt_sl_atr_mult=0.6, bt_alloc_vol_target=0.6, bt_be_activate_mult=1.03, bt_be_floor_mult=0.95, bt_vol_spike_mult=3.0, bt_plock1_level=1.08, bt_plock1_floor=1.01, bt_plock2_level=1.20, bt_plock2_floor=1.05, bt_optimize=True, bt_optimize_max=240):
@@ -1895,8 +2117,8 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                     topn = df_ops.head(10)
                     for _, r in topn.iterrows():
                         all_candidates.append(r.to_dict())
-                        # approximate backtest of 10x condition for context
-                        df_bt, metrics = approximate_backtest_option_10x(t, r, hist)
+                        # approximate backtest of 4x condition for context
+                        df_bt, metrics = approximate_backtest_option_4x(t, r, hist)
                         metrics_row = {**{'ticker':t, 'expiry':r['expiry'],'strike':r['strike'],'dte':r['dte']}, **metrics}
                         option_bt_rows.append(metrics_row)
 
@@ -2054,6 +2276,10 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
     else:
         df_bt_report = pd.DataFrame()
 
+
+    # Display options screening table before saving outputs
+    if not _skip_plots:
+        display_options_screening_table(all_candidates, min_profit_chance=80.0)
 
     # Save outputs
     if not df_all.empty:
