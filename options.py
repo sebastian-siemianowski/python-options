@@ -316,6 +316,9 @@ def backtest_breakout_option_strategy(
     atr_len=14,
     tp_atr_mult=2.0,
     sl_atr_mult=1.0,
+    alloc_vol_target=0.25,
+    be_activate_mult=1.1,
+    be_floor_mult=1.0,
 ):
     """Simulate a strategy: on breakout BUY signal, buy a short-dated call (via BSM),
     manage with TP/SL, optional trailing stop, and optional regime/vol filters.
@@ -380,11 +383,11 @@ def backtest_breakout_option_strategy(
     sma200 = df['sma200'].reset_index(drop=True)
     sma200_prev = df['sma200_prev'].reset_index(drop=True)
 
-    # sanitize allocation
+    # sanitize base allocation
     try:
-        f = max(0.0, min(1.0, float(alloc_frac)))
+        f_base = max(0.0, min(1.0, float(alloc_frac)))
     except Exception:
-        f = 0.1
+        f_base = 0.1
 
     equity = 1.0
     equity_curve = []
@@ -466,6 +469,16 @@ def backtest_breakout_option_strategy(
                 equity_curve.append({'Date': dates.iloc[i], 'equity': equity})
                 i += 1
                 continue
+            # Volatility-aware allocation scaling
+            if alloc_vol_target is not None and np.isfinite(float(alloc_vol_target)) and np.isfinite(sigma0) and sigma0 > 0:
+                try:
+                    vol_scale = float(alloc_vol_target) / float(sigma0)
+                    vol_scale = float(max(0.5, min(1.5, vol_scale)))
+                except Exception:
+                    vol_scale = 1.0
+            else:
+                vol_scale = 1.0
+            f_eff = f_base * vol_scale
             exit_idx = i + dte
             exit_price = None
             reason = 'expiry'
@@ -483,12 +496,16 @@ def backtest_breakout_option_strategy(
             tstop_index = i + int(max(1, round(dte * float(time_stop_frac))))
             peak_price = price0
             trailing_active = False
+            be_active = False
             for j in range(i+1, i + dte + 1):
                 t_remaining = max(1/252.0, (i + dte - j)/252.0)
                 S_t = float(closes.iloc[j])
                 sigma_t = float(vols.iloc[j]) if np.isfinite(vols.iloc[j]) else sigma0
                 model_price_t = bsm_call_price(S_t, K, t_remaining, r, max(1e-6, sigma_t)) if t_remaining>0 else max(S_t - K, 0.0)
                 peak_price = max(peak_price, model_price_t)
+                # Activate break-even once move in our favor exceeds threshold
+                if (not be_active) and (model_price_t >= price0 * float(be_activate_mult)):
+                    be_active = True
                 # Underlying ATR-based exits
                 if use_underlying_atr_exits and np.isfinite(tp_underlying) and np.isfinite(sl_underlying):
                     if S_t >= tp_underlying:
@@ -503,6 +520,12 @@ def backtest_breakout_option_strategy(
                         exit_price = max(model_price_t, price0 * floor_mult)
                         reason = 'sl_underlying_atr'
                         break
+                # Break-even stop (after activation) — check before protective stop
+                if be_active and model_price_t <= price0 * float(be_floor_mult):
+                    exit_idx = j
+                    exit_price = max(model_price_t, price0 * float(be_floor_mult))
+                    reason = 'break_even'
+                    break
                 # Protective stop from entry
                 if protect_mult is not None and model_price_t <= price0 * float(protect_mult):
                     exit_idx = j
@@ -543,8 +566,8 @@ def backtest_breakout_option_strategy(
 
             ret_x = (exit_price / price0) if price0 > 0 else 0.0
 
-            # Update equity using allocation fraction (unallocated part stays in cash)
-            equity = equity * ((1.0 - f) + f * max(0.0, ret_x))
+            # Update equity using effective allocation fraction (unallocated part stays in cash)
+            equity = equity * ((1.0 - f_eff) + f_eff * max(0.0, ret_x))
 
             trades.append({
                 'entry_date': dates.iloc[i],
@@ -713,7 +736,7 @@ def generate_breakout_signals(hist, window=20, lookback=5):
 
 # -------------------- Main runner --------------------
 
-def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.03, bt_trend_filter=True, bt_vol_filter=True, bt_time_stop_frac=0.5, bt_time_stop_mult=1.2, bt_use_target_delta=False, bt_target_delta=0.25, bt_trail_start_mult=1.5, bt_trail_back=0.5, bt_protect_mult=0.7, bt_cooldown_days=0, bt_entry_weekdays=None, bt_skip_earnings=False, bt_use_underlying_atr_exits=True, bt_tp_atr_mult=2.0, bt_sl_atr_mult=1.0, bt_optimize=False, bt_optimize_max=120):
+def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.03, bt_trend_filter=True, bt_vol_filter=True, bt_time_stop_frac=0.5, bt_time_stop_mult=1.2, bt_use_target_delta=False, bt_target_delta=0.25, bt_trail_start_mult=1.5, bt_trail_back=0.5, bt_protect_mult=0.7, bt_cooldown_days=0, bt_entry_weekdays=None, bt_skip_earnings=False, bt_use_underlying_atr_exits=True, bt_tp_atr_mult=2.0, bt_sl_atr_mult=1.0, bt_alloc_vol_target=0.25, bt_be_activate_mult=1.1, bt_be_floor_mult=1.0, bt_optimize=False, bt_optimize_max=120):
     all_candidates = []
     option_bt_rows = []
     strat_rows = []
@@ -852,7 +875,8 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                         use_target_delta=uf, target_delta=td, trail_start_mult=ts, trail_back=tb,
                         protect_mult=bt_protect_mult, cooldown_days=cd, entry_weekdays=bt_entry_weekdays,
                         skip_earnings=bt_skip_earnings, earnings_dates=earnings_dates,
-                        use_underlying_atr_exits=use_atr, tp_atr_mult=atp, sl_atr_mult=asl
+                        use_underlying_atr_exits=use_atr, tp_atr_mult=atp, sl_atr_mult=asl,
+                        alloc_vol_target=bt_alloc_vol_target, be_activate_mult=bt_be_activate_mult, be_floor_mult=bt_be_floor_mult
                     )
                     dd = float(_met.get('max_drawdown', 0.0))
                     ret = float(_met.get('total_return', 0.0))
@@ -885,7 +909,10 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                 earnings_dates=earnings_dates,
                 use_underlying_atr_exits=bt_use_underlying_atr_exits,
                 tp_atr_mult=bt_tp_atr_mult,
-                sl_atr_mult=bt_sl_atr_mult
+                sl_atr_mult=bt_sl_atr_mult,
+                alloc_vol_target=bt_alloc_vol_target,
+                be_activate_mult=bt_be_activate_mult,
+                be_floor_mult=bt_be_floor_mult
             )
             # save equity curve per ticker
             try:
@@ -1111,6 +1138,9 @@ if __name__ == '__main__':
     parser.add_argument('--bt_use_underlying_atr_exits', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=False, help='Use underlying ATR-based exits (TP/SL on price) instead of option-price multiples only. Default false.')
     parser.add_argument('--bt_tp_atr_mult', type=float, default=2.0, help='Underlying ATR take-profit multiple (e.g., 2.0 = exit when price rises by 2*ATR). Default 2.0.')
     parser.add_argument('--bt_sl_atr_mult', type=float, default=1.0, help='Underlying ATR stop-loss multiple (e.g., 1.0 = exit when price falls by 1*ATR). Default 1.0.')
+    parser.add_argument('--bt_alloc_vol_target', type=float, default=0.25, help='Target annualized vol for allocation scaling. Effective allocation is scaled by alloc_vol_target/rv21, clipped to [0.5,1.5]. Default 0.25.')
+    parser.add_argument('--bt_be_activate_mult', type=float, default=1.1, help='Activate break-even stop once option >= be_activate_mult * entry. Default 1.1x.')
+    parser.add_argument('--bt_be_floor_mult', type=float, default=1.0, help='Break-even floor multiple of entry once activated. Default 1.0x.')
     parser.add_argument('--bt_optimize', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable small parameter search to target <=3% max drawdown and positive profit (per ticker). Default true.')
     parser.add_argument('--bt_optimize_max', type=int, default=120, help='Max number of parameter sets to evaluate per ticker when bt_optimize is true. Smaller = faster. Default 120.')
     args = parser.parse_args()
@@ -1193,6 +1223,9 @@ if __name__ == '__main__':
         bt_use_underlying_atr_exits=args.bt_use_underlying_atr_exits,
         bt_tp_atr_mult=args.bt_tp_atr_mult,
         bt_sl_atr_mult=args.bt_sl_atr_mult,
+        bt_alloc_vol_target=args.bt_alloc_vol_target,
+        bt_be_activate_mult=args.bt_be_activate_mult,
+        bt_be_floor_mult=args.bt_be_floor_mult,
         bt_optimize=args.bt_optimize,
         bt_optimize_max=args.bt_optimize_max, 
     )
