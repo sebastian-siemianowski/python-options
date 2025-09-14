@@ -1058,8 +1058,19 @@ def compute_pivots_levels(price_series, window=20):
 
 def plot_support_resistance_with_signals(ticker, hist, signals=None, out_dir='plots'):
     os.makedirs(out_dir, exist_ok=True)
-    dates = hist['Date']
-    prices = hist['Close']
+    
+    # Prepare data and handle discontinuities
+    df = hist.copy()
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.sort_values('Date').reset_index(drop=True)
+    
+    # Identify data gaps and mark discontinuities
+    date_diffs = df['Date'].diff()
+    large_gaps = date_diffs > pd.Timedelta(days=7)
+    gap_indices = df.index[large_gaps].tolist()
+    
+    dates = df['Date']
+    prices = df['Close']
     
     # Compute dynamic support/resistance levels over time
     support_series = prices.rolling(window=20, min_periods=1).min()
@@ -1069,52 +1080,105 @@ def plot_support_resistance_with_signals(ticker, hist, signals=None, out_dir='pl
     support_long = prices.rolling(window=50, min_periods=1).min()
     resistance_long = prices.rolling(window=50, min_periods=1).max()
 
-    plt.figure(figsize=(14,8))  # Larger figure for better visibility
+    plt.figure(figsize=(16,10))  # Even larger figure for better visibility
     
-    # Plot price with enhanced styling
-    plt.plot(dates, prices, linewidth=1.5, alpha=0.8, label='Close Price')
-    
-    # Plot dynamic support/resistance bands
-    plt.fill_between(dates, support_series, resistance_series, alpha=0.1, label='S/R Band (20d)')
-    plt.plot(dates, support_series, linestyle='--', alpha=0.7, linewidth=1, label='Support (20d)')
-    plt.plot(dates, resistance_series, linestyle='--', alpha=0.7, linewidth=1, label='Resistance (20d)')
-    
-    # Plot longer-term levels
-    plt.plot(dates, support_long, linestyle=':', alpha=0.5, linewidth=1, label='Support (50d)')
-    plt.plot(dates, resistance_long, linestyle=':', alpha=0.5, linewidth=1, label='Resistance (50d)')
+    # Plot price with gap handling - break lines at discontinuities
+    if gap_indices:
+        prev_idx = 0
+        for gap_idx in gap_indices + [len(df)]:  # Include end of data
+            if gap_idx > prev_idx:
+                segment_dates = dates.iloc[prev_idx:gap_idx]
+                segment_prices = prices.iloc[prev_idx:gap_idx]
+                
+                if len(segment_dates) > 1:
+                    plt.plot(segment_dates, segment_prices, linewidth=1.5, alpha=0.8, 
+                            color='blue', label='Close Price' if prev_idx == 0 else "")
+                    
+                    # Plot support/resistance for this segment
+                    segment_support = support_series.iloc[prev_idx:gap_idx]
+                    segment_resistance = resistance_series.iloc[prev_idx:gap_idx]
+                    segment_support_long = support_long.iloc[prev_idx:gap_idx]
+                    segment_resistance_long = resistance_long.iloc[prev_idx:gap_idx]
+                    
+                    plt.fill_between(segment_dates, segment_support, segment_resistance, 
+                                   alpha=0.08, color='gray', 
+                                   label='S/R Band (20d)' if prev_idx == 0 else "")
+                    plt.plot(segment_dates, segment_support, linestyle='--', alpha=0.6, 
+                            linewidth=1, color='red', 
+                            label='Support (20d)' if prev_idx == 0 else "")
+                    plt.plot(segment_dates, segment_resistance, linestyle='--', alpha=0.6, 
+                            linewidth=1, color='green', 
+                            label='Resistance (20d)' if prev_idx == 0 else "")
+                    plt.plot(segment_dates, segment_support_long, linestyle=':', alpha=0.4, 
+                            linewidth=1, color='darkred', 
+                            label='Support (50d)' if prev_idx == 0 else "")
+                    plt.plot(segment_dates, segment_resistance_long, linestyle=':', alpha=0.4, 
+                            linewidth=1, color='darkgreen', 
+                            label='Resistance (50d)' if prev_idx == 0 else "")
+            
+            prev_idx = gap_idx
+            
+        # Add gap markers
+        for gap_idx in gap_indices:
+            if gap_idx < len(df) and gap_idx > 0:
+                gap_start_date = dates.iloc[gap_idx-1]
+                gap_end_date = dates.iloc[gap_idx]
+                gap_days = (gap_end_date - gap_start_date).days
+                plt.axvline(x=gap_start_date, color='orange', linestyle=':', alpha=0.7, linewidth=2)
+                plt.text(gap_start_date, plt.ylim()[1]*0.95, f'Gap: {gap_days}d', 
+                        rotation=90, verticalalignment='top', fontsize=8, color='orange')
+    else:
+        # No gaps - plot normally
+        plt.plot(dates, prices, linewidth=1.5, alpha=0.8, label='Close Price')
+        
+        plt.fill_between(dates, support_series, resistance_series, alpha=0.1, label='S/R Band (20d)')
+        plt.plot(dates, support_series, linestyle='--', alpha=0.7, linewidth=1, label='Support (20d)')
+        plt.plot(dates, resistance_series, linestyle='--', alpha=0.7, linewidth=1, label='Resistance (20d)')
+        plt.plot(dates, support_long, linestyle=':', alpha=0.5, linewidth=1, label='Support (50d)')
+        plt.plot(dates, resistance_long, linestyle=':', alpha=0.5, linewidth=1, label='Resistance (50d)')
 
     # Plot signals with enhanced markers
     if signals is not None and not signals.empty:
-        buys = signals[signals['signal']=='BUY']
-        sells = signals[signals['signal']=='SELL']
+        # Ensure signal dates are datetime
+        signals_copy = signals.copy()
+        signals_copy['Date'] = pd.to_datetime(signals_copy['Date'])
+        
+        buys = signals_copy[signals_copy['signal']=='BUY']
+        sells = signals_copy[signals_copy['signal']=='SELL']
         
         if not buys.empty:
-            plt.scatter(buys['Date'], buys['Price'], marker='^', s=100, 
-                       edgecolors='darkgreen', linewidth=1, alpha=0.8, 
-                       label=f'BUY Signals ({len(buys)})', zorder=5)
+            plt.scatter(buys['Date'], buys['Price'], marker='^', s=120, 
+                       color='lime', edgecolors='darkgreen', linewidth=2, alpha=0.9, 
+                       label=f'BUY Signals ({len(buys)})', zorder=6)
         if not sells.empty:
-            plt.scatter(sells['Date'], sells['Price'], marker='v', s=100, 
-                       edgecolors='darkred', linewidth=1, alpha=0.8,
-                       label=f'SELL Signals ({len(sells)})', zorder=5)
+            plt.scatter(sells['Date'], sells['Price'], marker='v', s=120, 
+                       color='red', edgecolors='darkred', linewidth=2, alpha=0.9,
+                       label=f'SELL Signals ({len(sells)})', zorder=6)
 
     # Enhanced formatting
-    plt.title(f"{ticker} - Complete Price Analysis with Trading Signals", fontsize=14, fontweight='bold')
-    plt.xlabel('Date', fontsize=12)
-    plt.ylabel('Price ($)', fontsize=12)
-    plt.legend(loc='upper left', framealpha=0.9)
-    plt.grid(True, alpha=0.3)
+    plt.title(f"{ticker} - Complete Price Analysis with Trading Signals\n(Gaps in data are marked with orange lines)", 
+             fontsize=16, fontweight='bold', pad=20)
+    plt.xlabel('Date', fontsize=14)
+    plt.ylabel('Price ($)', fontsize=14)
+    plt.legend(loc='upper left', framealpha=0.9, fontsize=11)
+    plt.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
     plt.tight_layout()
     
-    # Add summary text
+    # Add comprehensive summary text
     total_signals = len(signals) if signals is not None and not signals.empty else 0
     buy_count = len(signals[signals['signal']=='BUY']) if signals is not None and not signals.empty else 0
     sell_count = len(signals[signals['signal']=='SELL']) if signals is not None and not signals.empty else 0
+    gap_count = len(gap_indices) if gap_indices else 0
     
-    plt.figtext(0.02, 0.02, f"Data: {len(hist)} days | Signals: {total_signals} total ({buy_count} BUY, {sell_count} SELL)", 
-                fontsize=10, alpha=0.7)
+    summary_text = f"Data: {len(hist)} days | Signals: {total_signals} total ({buy_count} BUY, {sell_count} SELL)"
+    if gap_count > 0:
+        summary_text += f" | Data gaps: {gap_count}"
+    
+    plt.figtext(0.02, 0.02, summary_text, fontsize=11, alpha=0.8, 
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
     
     out_path = os.path.join(out_dir, f"{ticker}_support_resistance.png")
-    plt.savefig(out_path, dpi=150, bbox_inches='tight')  # Higher quality output
+    plt.savefig(out_path, dpi=200, bbox_inches='tight', facecolor='white')  # Higher quality output
     plt.close()
     return out_path
 
@@ -1239,26 +1303,51 @@ def generate_breakout_signals(hist, window=20, lookback=5):
         else:
             call_mask = relaxed
 
-    # More aggressive downtrend PUT context (mirrored)
-    downtrend = (px < df['sma200']) & (df['sma50'] < df['sma200'])
+    # More aggressive downtrend PUT context (mirrored) - SIGNIFICANTLY RELAXED for better signal generation
+    downtrend = (px < df['sma200']) | (df['sma50'] < df['sma200'])  # Either condition triggers
     break_ctx_dn = (px < df['support']) | ((df['ema13'] < df['ema21']) & (df['ema21'] < df['sma50']))
-    # Relax downtrend conditions to generate more PUT signals
-    base_dn = downtrend & (break_ctx_dn | squeeze_expanding) & (D < 1.85) & (H < 0.75) & (snr_proj < -0.10)
+    
+    # Much more relaxed conditions for PUT signals to ensure they appear
+    base_dn_relaxed = (
+        (downtrend | (px < px.rolling(10).mean())) &  # Downtrend OR below short-term average
+        (break_ctx_dn | squeeze_expanding | (px < px.shift(5))) &  # Multiple trigger conditions
+        (D < 1.95) &  # Very relaxed fractal dimension
+        (H < 0.85) &  # Very relaxed entropy threshold
+        (snr_proj < 0.15)  # Much more permissive SNR threshold
+    )
+    
+    # Alternative simple momentum-based PUT signals for better coverage
+    momentum_down = (
+        (px < px.rolling(5).mean()) &  # Below 5-day average
+        (px.pct_change(5) < -0.02) &   # 5-day return < -2%
+        (df['rv5'] > df['rv21'])       # Short-term vol > long-term vol
+    )
+    
+    # Combine both approaches
+    base_dn = base_dn_relaxed | momentum_down
+    
     # Mirror SNR in the edge for downtrend
     lin_dn = 1.4*(-z_snr) + 1.0*z_iH + 1.2*z_pers
     edge_dn = 1.0 / (1.0 + np.exp(-lin_dn))
     fin_dn = edge_dn.replace([np.inf, -np.inf], np.nan)
+    
+    # Much lower quantile thresholds to generate more PUT signals
     try:
-        edge_q_dn = float(np.nanquantile(fin_dn.values, 0.60)) if fin_dn.notna().any() else 0.50
+        edge_q_dn = float(np.nanquantile(fin_dn.values, 0.35)) if fin_dn.notna().any() else 0.30
     except Exception:
-        edge_q_dn = 0.50
+        edge_q_dn = 0.30
     
     put_strict = base_dn & (edge_dn >= edge_q_dn)
-    if int(put_strict.sum()) >= 10:  # Lower acceptance threshold
+    if int(put_strict.sum()) >= 5:  # Much lower acceptance threshold
         put_mask = put_strict
     else:
-        # Fallback for more PUT signals
-        put_fallback = downtrend & (break_ctx_dn | squeeze_expanding) & (edge_dn >= max(0.40, edge_q_dn)) & (D < 1.90) & (H < 0.80)
+        # Even more aggressive fallback for PUT signals
+        put_fallback = (
+            (momentum_down | (px < px.rolling(20).mean())) &  # Simple momentum or trend
+            (edge_dn >= max(0.25, edge_q_dn * 0.8)) &  # Very low edge threshold
+            (D < 2.0) &  # Maximum relaxed fractal dimension
+            (H < 0.90)   # Maximum relaxed entropy
+        )
         put_mask = put_fallback
 
     # Spacing to avoid clustering (apply per side)
