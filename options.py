@@ -40,6 +40,150 @@ from scipy.optimize import brentq
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+# -------------------- Local data cache (price history) --------------------
+DEFAULT_DATA_DIR = os.environ.get("PRICE_DATA_DIR", "data")
+DEFAULT_FORCE_REFRESH = False
+REQUIRED_PRICE_COLS = ["Open", "High", "Low", "Close", "Volume"]
+
+
+def _ensure_dir(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        pass
+
+
+def _cache_path(ticker, interval="1d", cache_dir=None):
+    cdir = cache_dir or DEFAULT_DATA_DIR
+    safe_t = ticker.replace("/", "_")
+    return os.path.join(cdir, f"{safe_t}_{interval}.csv")
+
+
+def get_cached_history(ticker, start=None, end=None, interval="1d", auto_adjust=False, cache_dir=None, force_refresh=None):
+    """
+    Return historical OHLCV for ticker using a CSV cache in cache_dir.
+    Only missing days and missing columns are fetched from yfinance.
+    - start, end: datetime/date-like; if None, yfinance defaults will be used for fetch.
+    - interval: '1d' supported here.
+    - auto_adjust: forwarded to yfinance download.
+    """
+    cache_dir = cache_dir or DEFAULT_DATA_DIR
+    force_refresh = DEFAULT_FORCE_REFRESH if force_refresh is None else bool(force_refresh)
+    _ensure_dir(cache_dir)
+
+    # Normalize dates
+    if end is None:
+        end = datetime.utcnow().date()
+    else:
+        end = pd.to_datetime(end).date()
+    if start is not None:
+        start = pd.to_datetime(start).date()
+
+    path = _cache_path(ticker, interval, cache_dir)
+
+    # Load existing cache
+    cached = None
+    if os.path.isfile(path) and not force_refresh:
+        try:
+            cached = pd.read_csv(path)
+            if 'Date' in cached.columns:
+                cached['Date'] = pd.to_datetime(cached['Date'])
+                cached = cached.sort_values('Date').drop_duplicates(subset=['Date'], keep='last')
+                cached = cached.set_index('Date')
+        except Exception:
+            cached = None
+
+    def _yf_fetch(s, e):
+        df = yf.download(ticker, start=s, end=(pd.to_datetime(e) + pd.Timedelta(days=1)).date(), interval=interval, auto_adjust=auto_adjust, progress=False)
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            # yfinance returns index as DatetimeIndex
+            df = df.reset_index().rename(columns={'Adj Close':'AdjClose'})
+            # Force the first column to be 'Date' to avoid pandas KeyErrors across yfinance versions
+            try:
+                cols = list(df.columns)
+                if 'Date' not in cols and len(cols) > 0:
+                    cols[0] = 'Date'
+                    df.columns = cols
+            except Exception:
+                pass
+            # Keep required columns if present
+            keep_cols = ['Date'] + [c for c in REQUIRED_PRICE_COLS if c in df.columns]
+            # If 'Date' still missing, bail out
+            if 'Date' not in keep_cols:
+                return pd.DataFrame(columns=['Date'] + REQUIRED_PRICE_COLS)
+            df = df[keep_cols]
+            # Coerce and clean dates
+            try:
+                df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+            except Exception:
+                df['Date'] = pd.to_datetime(df['Date'], errors='ignore')
+            df = df[df['Date'].notna()]
+            if df.empty:
+                return pd.DataFrame(columns=['Date'] + REQUIRED_PRICE_COLS)
+            df = df.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').set_index('Date')
+        else:
+            # Return a well-formed empty frame
+            df = pd.DataFrame(columns=['Date'] + REQUIRED_PRICE_COLS).set_index('Date', drop=True)
+        return df
+
+    # If force refresh, fetch full range
+    if force_refresh or cached is None or cached.empty:
+        fetched = _yf_fetch(start, end)
+        out = fetched.copy()
+    else:
+        out = cached.copy()
+        # Determine required columns
+        missing_cols = [c for c in REQUIRED_PRICE_COLS if c not in out.columns]
+        # Existing date range
+        min_d = out.index.min().date()
+        max_d = out.index.max().date()
+
+        # 1) Backfill earlier window if requested start is earlier than cache
+        if start is not None and start < min_d:
+            f1 = _yf_fetch(start, min(min_d - timedelta(days=1), end))
+            if not f1.empty:
+                out = pd.concat([f1, out], axis=0)
+
+        # 2) Append newer data if end is beyond cache max
+        if end > max_d:
+            f2 = _yf_fetch(max_d + timedelta(days=1), end)
+            if not f2.empty:
+                out = pd.concat([out, f2], axis=0)
+
+        # 3) If there are missing columns or NaNs in required columns within cache window, fetch that window and merge
+        needs_fill = False
+        if missing_cols:
+            needs_fill = True
+        else:
+            sub = out.loc[(out.index.date >= (start or min_d)) & (out.index.date <= end)]
+            if any(sub[c].isna().any() for c in [col for col in REQUIRED_PRICE_COLS if col in out.columns]):
+                needs_fill = True
+        if needs_fill:
+            f3 = _yf_fetch(out.index.min().date(), out.index.max().date())
+            if not f3.empty:
+                # Align columns and prefer existing values when present
+                out = f3.combine_first(out)
+
+    # Final tidy
+    if not out.empty:
+        # Ensure required columns exist; if some missing entirely, create as NaN
+        for c in REQUIRED_PRICE_COLS:
+            if c not in out.columns:
+                out[c] = np.nan
+        out = out.sort_index().drop_duplicates(keep='last')
+        # Persist to CSV with Date column
+        to_save = out.reset_index()
+        to_save.to_csv(path, index=False)
+
+    # Return requested window if start specified
+    if out is None or (isinstance(out, pd.DataFrame) and out.empty):
+        # Return a well-formed empty frame with the expected columns to avoid KeyErrors downstream
+        cols = ['Date'] + REQUIRED_PRICE_COLS
+        return pd.DataFrame(columns=cols)
+    if start is not None:
+        out = out.loc[(out.index.date >= start) & (out.index.date <= end)]
+    return out.reset_index().rename(columns={'index':'Date'})
+
 # -------------------- Black-Scholes helpers --------------------
 
 def bsm_call_price(S, K, T, r, sigma):
@@ -122,11 +266,43 @@ def get_closest_expiry_dates(option_dates, target_days):
 def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=20, r=0.01, hist_years=1):
     tk = yf.Ticker(ticker)
     # load underlying history (N years daily) to use in backtest & volatility estimates
-    period_str = f"{int(max(1, hist_years))}y"
-    hist = tk.history(period=period_str, interval="1d", auto_adjust=False)
-    if hist.empty:
+    today = datetime.utcnow().date()
+    start_date = today - timedelta(days=int(max(1, hist_years)) * 365)
+    hist = get_cached_history(ticker, start=start_date, end=today, interval="1d", auto_adjust=False, cache_dir=DEFAULT_DATA_DIR, force_refresh=DEFAULT_FORCE_REFRESH)
+    # Defensive normalization: ensure required columns exist; fallback to direct yfinance if needed
+    required_cols = ['Date','Open','High','Low','Close','Volume']
+    try:
+        # If Date exists as index but not column
+        if (hist is not None) and ('Date' not in hist.columns) and (getattr(hist.index, 'name', None) == 'Date' or isinstance(hist.index, pd.DatetimeIndex)):
+            hist = hist.reset_index().rename(columns={'index':'Date'})
+    except Exception:
+        pass
+    # If missing required columns or empty, try yfinance fallback
+    if hist is None or hist.empty or any(c not in hist.columns for c in required_cols[1:]):
+        try:
+            period_str = f"{int(max(1, hist_years))}y"
+            h2 = tk.history(period=period_str, interval="1d", auto_adjust=False)
+            if isinstance(h2, pd.DataFrame) and not h2.empty:
+                h2 = h2.reset_index()
+                if 'Date' not in h2.columns:
+                    # yfinance sometimes uses 'Datetime' for intraday; normalize
+                    if 'Datetime' in h2.columns:
+                        h2 = h2.rename(columns={'Datetime':'Date'})
+                    elif h2.columns[0].lower().startswith('date'):
+                        h2 = h2.rename(columns={h2.columns[0]:'Date'})
+                    else:
+                        h2 = h2.rename(columns={'index':'Date'})
+                h2 = h2.rename(columns={'Adj Close':'AdjClose'})
+                hist = h2
+        except Exception:
+            pass
+    if hist is None or hist.empty or 'Date' not in hist.columns:
         raise RuntimeError(f"No historical data for {ticker}")
-    hist = hist.reset_index()
+    # If any required OHLCV missing, create as NaN to avoid KeyErrors downstream
+    for c in required_cols[1:]:
+        if c not in hist.columns:
+            hist[c] = np.nan
+    # Final column selection and typing
     hist['Date'] = pd.to_datetime(hist['Date'])
     hist = hist[['Date','Open','High','Low','Close','Volume']].copy()
 
@@ -1175,7 +1351,12 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                 signals = generate_breakout_signals(hist)
                 plot_support_resistance_with_signals(t, hist, signals=signals)
         except Exception as e:
-            print(f"Ticker {t} error: {e}")
+            try:
+                import traceback as _tb
+                print(f"Ticker {t} error: {e} ({type(e).__name__})")
+                _tb.print_exc()
+            except Exception:
+                print(f"Ticker {t} error: {e}")
             continue
 
     df_all = pd.DataFrame(all_candidates)
@@ -1410,7 +1591,14 @@ if __name__ == '__main__':
     parser.add_argument('--bt_plock2_floor', type=float, default=1.2, help='Profit-lock level 2 floor multiple. Default 1.2x.')
     parser.add_argument('--bt_optimize', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable small parameter search to target <=2% max drawdown and positive profit (per ticker). Default true.')
     parser.add_argument('--bt_optimize_max', type=int, default=120, help='Max number of parameter sets to evaluate per ticker when bt_optimize is true. Smaller = faster. Default 120.')
+    # Data cache controls
+    parser.add_argument('--data_dir', type=str, default=os.environ.get('PRICE_DATA_DIR', 'data'), help='Directory to cache downloaded price data (default: data)')
+    parser.add_argument('--cache_refresh', action='store_true', help='Force refresh of cached price data for requested window')
     args = parser.parse_args()
+
+    # Apply cache args to module-level defaults
+    DEFAULT_DATA_DIR = args.data_dir or DEFAULT_DATA_DIR
+    DEFAULT_FORCE_REFRESH = bool(args.cache_refresh)
 
     def load_tickers_from_csv(path):
         import os, csv, re

@@ -279,3 +279,16 @@ Tips:
 - On macOS/Apple Silicon, ensure you have Command Line Tools installed if you hit build errors:
 
       xcode-select --install
+
+
+## Price data cache
+
+To avoid re-downloading historical prices every run, the script caches daily OHLCV per ticker in CSV files.
+- Default cache directory: data/
+- Cache file naming: data/<TICKER>_1d.csv
+- On each run, the cache is incrementally updated by fetching only missing dates. If any required columns are missing for existing rows, those rows are re-fetched and filled.
+
+Controls:
+- --data_dir PATH       Use a custom directory for the cache (defaults to data or env PRICE_DATA_DIR)
+- --cache_refresh       Force refresh for the requested window (re-downloads and overwrites cache for that range)
+- Environment: set PRICE_DATA_DIR to override the default cache directory
