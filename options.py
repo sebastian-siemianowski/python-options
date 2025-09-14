@@ -123,11 +123,16 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
         # no option chain (eg. some ETFs or delisted) -> return empty
         return pd.DataFrame(), hist
 
+    processed_expiries = set()
     for target in dte_targets:
         expiry = get_closest_expiry_dates(option_dates, target)
         if expiry is None:
             continue
         expiry_str = expiry.strftime('%Y-%m-%d')
+        # Avoid processing the same expiry multiple times when multiple target DTEs map to the same date
+        if expiry_str in processed_expiries:
+            continue
+        processed_expiries.add(expiry_str)
         try:
             chain = tk.option_chain(expiry_str)
             calls = chain.calls.copy()
@@ -205,6 +210,8 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
 
     df_ops = pd.DataFrame(opportunities)
     if not df_ops.empty:
+        # Deduplicate in case multiple target DTEs map to same expiry
+        df_ops = df_ops.drop_duplicates(subset=['ticker','expiry','strike','dte'], keep='first')
         # sort and return top candidates
         df_ops = df_ops.sort_values(['prob_10x','openInterest','volume'], ascending=[False,False,False])
     return df_ops, hist
@@ -455,7 +462,8 @@ def generate_breakout_signals(hist, window=20, lookback=5):
 
 def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None):
     all_candidates = []
-    backtest_rows = []
+    option_bt_rows = []
+    strat_rows = []
     for t in tqdm(tickers, desc='Tickers'):
         try:
             df_ops, hist = analyze_ticker_for_dtes(t, dte_targets=(0,3,7), min_oi=min_oi, min_volume=min_vol, hist_years=bt_years)
@@ -470,7 +478,7 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                     # approximate backtest of 10x condition for context
                     df_bt, metrics = approximate_backtest_option_10x(t, r, hist)
                     metrics_row = {**{'ticker':t, 'expiry':r['expiry'],'strike':r['strike'],'dte':r['dte']}, **metrics}
-                    backtest_rows.append(metrics_row)
+                    option_bt_rows.append(metrics_row)
 
             # Strategy backtest on extended history
             eq_df, trades_df, strat_metrics = backtest_breakout_option_strategy(
@@ -484,7 +492,7 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
             except Exception:
                 pass
 
-            # append summary metrics row for strategy
+            # collect summary metrics row for strategy (per-ticker)
             strat_row = {'ticker': t, 'strategy_total_trades': strat_metrics.get('total_trades',0),
                          'strategy_win_rate': strat_metrics.get('win_rate',0.0),
                          'strategy_avg_trade_ret_x': strat_metrics.get('avg_trade_ret_x',0.0),
@@ -495,7 +503,7 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                          'bt_years': bt_years, 'bt_dte': bt_dte, 'bt_moneyness': bt_moneyness,
                          'bt_tp_x': bt_tp_x if bt_tp_x is not None else '',
                          'bt_sl_x': bt_sl_x if bt_sl_x is not None else ''}
-            backtest_rows.append(strat_row)
+            strat_rows.append(strat_row)
 
             # generate chart with signals
             signals = generate_breakout_signals(hist)
@@ -505,8 +513,31 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
             continue
 
     df_all = pd.DataFrame(all_candidates)
-    df_bt_report = pd.DataFrame(backtest_rows)
+    # Per-option backtest results
+    df_bt_options = pd.DataFrame(option_bt_rows)
+    # Per-ticker strategy metrics
+    df_strat = pd.DataFrame(strat_rows).drop_duplicates(subset=['ticker'], keep='last')
+
+    # Merge strategy metrics onto option rows (by ticker)
+    if not df_bt_options.empty and not df_strat.empty:
+        df_bt_report = df_bt_options.merge(df_strat, on='ticker', how='left')
+    elif not df_bt_options.empty:
+        df_bt_report = df_bt_options.copy()
+    elif not df_strat.empty:
+        df_bt_report = df_strat.copy()
+    else:
+        df_bt_report = pd.DataFrame()
+
+    # If there are tickers with only strategy rows (no options), ensure they are present
+    if not df_strat.empty and not df_bt_options.empty:
+        tickers_with_options = set(df_bt_options['ticker'].unique())
+        only_strat = df_strat[~df_strat['ticker'].isin(tickers_with_options)]
+        if not only_strat.empty:
+            df_bt_report = pd.concat([df_bt_report, only_strat], ignore_index=True, sort=False)
+
+    # Save outputs
     if not df_all.empty:
+        df_all = df_all.drop_duplicates(subset=['ticker','expiry','strike','dte'], keep='first')
         df_all.to_csv(f"{out_prefix}.csv", index=False)
     if not df_bt_report.empty:
         df_bt_report.to_csv(f"{out_prefix}_backtest.csv", index=False)
