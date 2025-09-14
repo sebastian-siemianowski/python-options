@@ -40,222 +40,35 @@ from scipy.optimize import brentq
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-# -------------------- Local data cache (price history) --------------------
-DEFAULT_DATA_DIR = os.environ.get("PRICE_DATA_DIR", "data")
-DEFAULT_FORCE_REFRESH = False
-REQUIRED_PRICE_COLS = ["Open", "High", "Low", "Close", "Volume"]
-
-# -------------------- Lightweight caches for options metadata --------------------
-# We cache a few relatively static or moderately changing resources to avoid re-fetching:
-# - Expiration dates list (tk.options): cache ~12h
-# - Earnings dates/calendar: cache ~3 days
-# - Option chains (calls) per expiry: cache ~60 minutes
-# These caches are safe fallbacks; on any error or stale TTL they transparently re-fetch and overwrite.
-
-_DEF_EXP_TTL_HOURS = int(os.environ.get("EXPIRATIONS_TTL_HOURS", "12"))
-_DEF_EARN_TTL_DAYS = int(os.environ.get("EARNINGS_TTL_DAYS", "3"))
-_DEF_CHAIN_TTL_MIN = int(os.environ.get("OPTION_CHAIN_TTL_MIN", "60"))
+# -------------------- Data cache & metadata (moved to data_cache.py) --------------------
+from data_cache import (
+    DEFAULT_DATA_DIR, DEFAULT_FORCE_REFRESH, REQUIRED_PRICE_COLS,
+    _meta_dir, _options_dir, _now_utc, _parse_iso, _is_fresh, _read_meta_json, _write_meta_json,
+    load_price_history, get_cached_earnings, get_cached_option_expirations, get_cached_option_chain,
+    _ensure_dir,
+)
 
 
-def _ensure_dir(path):
+# Delegate previously in-file caches to data_cache module for cleaner architecture
+from data_cache import get_cached_option_expirations as get_cached_expirations  # noqa: E402
+from data_cache import get_cached_earnings as get_cached_earnings  # noqa: E402
+from data_cache import get_cached_option_chain as _dc_get_chain  # noqa: E402
+
+def get_cached_option_chain_calls(ticker, expiry_str, tk=None, cache_dir=None, ttl_minutes=None):
+    # tk and ttl are ignored; data_cache manages freshness
+    return _dc_get_chain(ticker, expiry_str, calls_only=True, cache_dir=cache_dir)
+
+
+def get_cached_option_chain_puts(ticker, expiry_str, tk=None, cache_dir=None, ttl_minutes=None):
+    # Puts are less used in this project; return combined chain if needed
+    df = _dc_get_chain(ticker, expiry_str, calls_only=False, cache_dir=cache_dir)
+    # Best-effort: if dataframe contains 'contractSymbol', try to filter for puts by heuristic
     try:
-        os.makedirs(path, exist_ok=True)
+        if 'contractSymbol' in df.columns:
+            return df[df['contractSymbol'].astype(str).str.contains('P', na=False)].copy()
     except Exception:
         pass
-
-
-def _meta_dir(cache_dir=None):
-    base = cache_dir or DEFAULT_DATA_DIR
-    path = os.path.join(base, "meta")
-    _ensure_dir(path)
-    return path
-
-
-def _options_dir(ticker=None, cache_dir=None):
-    base = cache_dir or DEFAULT_DATA_DIR
-    path = os.path.join(base, "options")
-    if ticker:
-        path = os.path.join(path, ticker.replace("/", "_"))
-    _ensure_dir(path)
-    return path
-
-
-def _now_utc():
-    return datetime.utcnow()
-
-
-def _parse_iso(ts):
-    try:
-        return pd.to_datetime(ts)
-    except Exception:
-        return None
-
-
-def _is_fresh(ts_iso, ttl_seconds):
-    try:
-        ts = _parse_iso(ts_iso)
-        if ts is None or pd.isna(ts):
-            return False
-        return (_now_utc() - ts).total_seconds() <= float(ttl_seconds)
-    except Exception:
-        return False
-
-
-def _read_meta_json(meta_file):
-    try:
-        import json
-        with open(meta_file, 'r') as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def _write_meta_json(meta_file, data):
-    try:
-        import json
-        _ensure_dir(os.path.dirname(meta_file))
-        with open(meta_file, 'w') as f:
-            json.dump(data, f, default=str)
-    except Exception:
-        pass
-
-
-def get_cached_expirations(ticker, tk=None, cache_dir=None, ttl_hours=_DEF_EXP_TTL_HOURS):
-    cache_dir = cache_dir or DEFAULT_DATA_DIR
-    meta_file = os.path.join(_meta_dir(cache_dir), f"{ticker.replace('/', '_')}_meta.json")
-    meta = _read_meta_json(meta_file)
-    key = "expirations"
-    ts_key = "expirations_ts"
-    ttl_sec = int(ttl_hours) * 3600
-    if key in meta and ts_key in meta and _is_fresh(meta.get(ts_key), ttl_sec):
-        exps = meta.get(key) or []
-        return [pd.to_datetime(d).strftime('%Y-%m-%d') for d in exps]
-    # fetch
-    try:
-        tk = tk or yf.Ticker(ticker)
-        exps = list(getattr(tk, 'options', []) or [])
-        # normalize to str YYYY-MM-DD
-        exps = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in exps]
-        meta[key] = exps
-        meta[ts_key] = _now_utc().isoformat()
-        _write_meta_json(meta_file, meta)
-        return exps
-    except Exception:
-        return meta.get(key, []) or []
-
-
-def get_cached_earnings(ticker, cache_dir=None, ttl_days=_DEF_EARN_TTL_DAYS):
-    cache_dir = cache_dir or DEFAULT_DATA_DIR
-    meta_file = os.path.join(_meta_dir(cache_dir), f"{ticker.replace('/', '_')}_meta.json")
-    meta = _read_meta_json(meta_file)
-    key = "earnings_dates"
-    ts_key = "earnings_ts"
-    ttl_sec = int(ttl_days) * 86400
-    if key in meta and ts_key in meta and _is_fresh(meta.get(ts_key), ttl_sec):
-        try:
-            return [pd.to_datetime(d).date() for d in meta.get(key, [])]
-        except Exception:
-            return None
-    # fetch
-    dates = []
-    try:
-        tk = yf.Ticker(ticker)
-        try:
-            edf = tk.get_earnings_dates(limit=40)
-        except Exception:
-            edf = None
-        if edf is not None and isinstance(edf, pd.DataFrame) and not edf.empty:
-            dates = [pd.to_datetime(d).date() for d in edf.index.to_pydatetime()]
-        else:
-            cal = getattr(tk, 'calendar', None)
-            if isinstance(cal, pd.DataFrame) and not cal.empty:
-                for val in cal.values.ravel():
-                    try:
-                        dd = pd.to_datetime(val).date()
-                        if dd not in dates:
-                            dates.append(dd)
-                    except Exception:
-                        pass
-    except Exception:
-        pass
-    if dates:
-        meta[key] = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in dates]
-        meta[ts_key] = _now_utc().isoformat()
-        _write_meta_json(meta_file, meta)
-        return dates
-    return meta.get(key) and [pd.to_datetime(d).date() for d in meta.get(key, [])] or None
-
-
-def get_cached_option_chain_calls(ticker, expiry_str, tk=None, cache_dir=None, ttl_minutes=_DEF_CHAIN_TTL_MIN):
-    cache_dir = cache_dir or DEFAULT_DATA_DIR
-    odir = _options_dir(ticker, cache_dir)
-    calls_path = os.path.join(odir, f"{expiry_str}_calls.csv")
-    meta_path = os.path.join(odir, f"{expiry_str}_meta.json")
-    meta = _read_meta_json(meta_path)
-    ttl_sec = int(ttl_minutes) * 60
-    if os.path.isfile(calls_path) and _is_fresh(meta.get('ts'), ttl_sec):
-        try:
-            df = pd.read_csv(calls_path)
-            return df
-        except Exception:
-            pass
-    # fetch fresh
-    try:
-        tk = tk or yf.Ticker(ticker)
-        chain = tk.option_chain(expiry_str)
-        calls = chain.calls.copy()
-        try:
-            calls.to_csv(calls_path, index=False)
-            _write_meta_json(meta_path, {'ts': _now_utc().isoformat(), 'expiry': expiry_str})
-        except Exception:
-            pass
-        return calls
-    except Exception:
-        # On failure, if we have an existing file, return it regardless of freshness
-        if os.path.isfile(calls_path):
-            try:
-                return pd.read_csv(calls_path)
-            except Exception:
-                pass
-        return pd.DataFrame()
-
-
-def get_cached_option_chain_puts(ticker, expiry_str, tk=None, cache_dir=None, ttl_minutes=_DEF_CHAIN_TTL_MIN):
-    """
-    Cache and return the puts option chain for a given ticker and expiry.
-    Stored under data/options/<TICKER>/<EXPIRY>_puts.csv with a TTL (minutes).
-    """
-    cache_dir = cache_dir or DEFAULT_DATA_DIR
-    odir = _options_dir(ticker, cache_dir)
-    puts_path = os.path.join(odir, f"{expiry_str}_puts.csv")
-    meta_path = os.path.join(odir, f"{expiry_str}_meta.json")
-    meta = _read_meta_json(meta_path)
-    ttl_sec = int(ttl_minutes) * 60
-    if os.path.isfile(puts_path) and _is_fresh(meta.get('ts_puts'), ttl_sec):
-        try:
-            return pd.read_csv(puts_path)
-        except Exception:
-            pass
-    # fetch fresh
-    try:
-        tk = tk or yf.Ticker(ticker)
-        chain = tk.option_chain(expiry_str)
-        puts = chain.puts.copy()
-        try:
-            puts.to_csv(puts_path, index=False)
-            meta['ts_puts'] = _now_utc().isoformat()
-            meta['expiry'] = expiry_str
-            _write_meta_json(meta_path, meta)
-        except Exception:
-            pass
-        return puts
-    except Exception:
-        if os.path.isfile(puts_path):
-            try:
-                return pd.read_csv(puts_path)
-            except Exception:
-                pass
-        return pd.DataFrame()
+    return df
 
 
 # Additional metadata caches: ticker info, dividends, splits
@@ -1984,162 +1797,8 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
 
 # -------------------- CLI --------------------
 
-# Pretty console helpers (Rich) with graceful fallback
-try:
-    from rich.console import Console
-    from rich.table import Table
-    from rich.panel import Panel
-    from rich.box import ROUNDED
-    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
-    import os as _os
-    _HAS_RICH = True
-    # Force colors in common non-TTY contexts (e.g., make) unless NO_COLOR is set.
-    _force_color = str(_os.environ.get("NO_COLOR", "")).strip() == ""
-    _CON = Console(force_terminal=_force_color, color_system="auto")
-except Exception:
-    _HAS_RICH = False
-    _CON = None
-
-
-def _fmt_pct(x):
-    try:
-        return f"{float(x)*100:.2f}%"
-    except Exception:
-        return "-"
-
-
-def _progress_iter(seq, description=""):
-    # Modern progress bar using Rich when available; falls back to sleek tqdm.
-    try:
-        total = len(seq)
-    except Exception:
-        total = None
-    if _HAS_RICH:
-        columns = [
-            SpinnerColumn(style="cyan"),
-            TextColumn("[bold cyan]{task.description}"),
-            BarColumn(bar_width=None, complete_style="bright_cyan", finished_style="green"),
-            TextColumn("{task.completed}/{task.total}" if total is not None else "{task.completed}", style="white"),
-            TextColumn("•", style="dim"),
-            TimeElapsedColumn(),
-            TextColumn("<", style="dim"),
-            TimeRemainingColumn(),
-        ]
-        with Progress(*columns, transient=True, console=_CON) as progress:
-            task_id = progress.add_task(description or "Working", total=total)
-            for item in seq:
-                yield item
-                progress.advance(task_id)
-    else:
-        it = tqdm(
-            seq,
-            desc=description or "Working",
-            dynamic_ncols=True,
-            bar_format="{l_bar}{bar:25} {n_fmt}/{total_fmt} • {elapsed}<{remaining} • {rate_fmt}",
-            colour="cyan",
-            mininterval=0.2,
-        )
-        for item in it:
-            yield item
-
-
-def _render_summary(tickers, df_res, df_bt):
-    import numpy as _np
-    import pandas as _pd
-    # Header printed at start; avoid duplicating here
-
-    if df_res is not None and not df_res.empty:
-        top = df_res[['ticker','expiry','dte','strike','mid','openInterest','volume','impliedVol','prob_10x']].head(10)
-        if _HAS_RICH:
-            tbl = Table(title="Top Option Candidates (preview)", box=ROUNDED, border_style="cyan")
-            for col in top.columns:
-                tbl.add_column(str(col), style="cyan" if col in ("ticker","expiry") else "white", justify="right")
-            for _, r in top.iterrows():
-                tbl.add_row(*[str(r[c]) for c in top.columns])
-            _CON.print(tbl)
-            _CON.print("Saved to [bold]screener_results.csv[/]", style="dim")
-        else:
-            print('Top results saved to screener_results.csv')
-            print(top.to_string(index=False))
-
-    if df_bt is not None and not df_bt.empty:
-        # Backtest table (key metrics)
-        cols = [
-            'ticker','strategy_total_trades','strategy_win_rate','strategy_avg_trade_ret_x',
-            'strategy_total_trade_profit_pct','strategy_CAGR','strategy_Sharpe','strategy_max_drawdown'
-        ]
-        present = [c for c in cols if c in df_bt.columns]
-        prev = df_bt[present].copy()
-        prev = prev.drop_duplicates(subset=['ticker']) if 'ticker' in prev.columns else prev
-        if _HAS_RICH:
-            # Add breathing room before the table
-            _CON.print("")
-            tbl2 = Table(title="Strategy Backtest Summary (per ticker)", box=ROUNDED, border_style="magenta")
-            for c in present:
-                tbl2.add_column(c, justify="right", style=("yellow" if c=="ticker" else "white"))
-            for _, r in prev.head(20).iterrows():
-                row_vals = []
-                for c in present:
-                    v = r[c]
-                    if c in ('strategy_win_rate','strategy_CAGR','strategy_max_drawdown'):
-                        row_vals.append(_fmt_pct(v))
-                    elif c == 'strategy_total_trade_profit_pct':
-                        row_vals.append(f"{float(v):.2f}%")
-                    elif c == 'strategy_total_trades':
-                        try:
-                            iv = int(round(float(v)))
-                            row_vals.append(f"{iv}")
-                        except Exception:
-                            row_vals.append(str(v))
-                    else:
-                        try:
-                            row_vals.append(f"{float(v):.4f}")
-                        except Exception:
-                            row_vals.append(str(v))
-                tbl2.add_row(*row_vals)
-            _CON.print(tbl2)
-            # And a blank line after
-            _CON.print("")
-        else:
-            print(prev.head(20).to_string(index=False))
-
-        # Spacer before combined profitability lines
-        if _HAS_RICH:
-            _CON.print("")
-        else:
-            print("")
-        # Combined profitability lines
-        try:
-            combined_line = None
-            avg_line = None
-            if 'strategy_total_trades' in df_bt.columns and 'strategy_avg_trade_ret_x' in df_bt.columns:
-                total_trades = float(df_bt['strategy_total_trades'].fillna(0).sum())
-                if total_trades > 0:
-                    weighted_avg_ret_x = (
-                        (df_bt['strategy_avg_trade_ret_x'].fillna(0) * df_bt['strategy_total_trades'].fillna(0)).sum() / total_trades
-                    )
-                    combined_profit_pct = (weighted_avg_ret_x - 1.0) * 100.0
-                    combined_line = f"Combined total profitability of all strategy trades: {combined_profit_pct:.2f}% (equal stake per trade)"
-            if 'strategy_total_trade_profit_pct' in df_bt.columns:
-                avg_pct = df_bt['strategy_total_trade_profit_pct'].dropna().mean()
-                if _np.isfinite(avg_pct):
-                    avg_line = f"Average per-ticker total trade profitability: {avg_pct:.2f}%"
-            if _HAS_RICH:
-                if combined_line is not None:
-                    style = "bold green" if ' -' not in combined_line and (combined_line.find(': ')!=-1 and float(combined_line.split(': ')[1].split('%')[0])>=0) else "bold red"
-                    _CON.print(combined_line, style=style)
-                if avg_line is not None:
-                    avg_val = float(avg_line.split(': ')[1].split('%')[0])
-                    style2 = "green" if avg_val>=0 else "red"
-                    _CON.print(avg_line, style=style2)
-                    _CON.print("")  # spacer after average profitability line
-            else:
-                if combined_line: print("\n" + combined_line)
-                if avg_line:
-                    print(avg_line)
-                    print("")  # spacer after average profitability line
-        except Exception:
-            pass
+# UI & formatting helpers moved to ui.py
+from ui import _HAS_RICH, _CON, _fmt_pct, _progress_iter, _render_summary
 
 
 
@@ -2191,6 +1850,13 @@ if __name__ == '__main__':
     # Apply cache args to module-level defaults
     DEFAULT_DATA_DIR = args.data_dir or DEFAULT_DATA_DIR
     DEFAULT_FORCE_REFRESH = bool(args.cache_refresh)
+    # Propagate to data_cache module so loaders use the same settings
+    try:
+        import data_cache as _cache_mod
+        _cache_mod.DEFAULT_DATA_DIR = DEFAULT_DATA_DIR
+        _cache_mod.DEFAULT_FORCE_REFRESH = DEFAULT_FORCE_REFRESH
+    except Exception:
+        pass
 
     def load_tickers_from_csv(path):
         import os, csv, re
