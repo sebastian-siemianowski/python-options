@@ -132,6 +132,28 @@ def get_cached_history(ticker, start=None, end=None, interval="1d", auto_adjust=
         out = fetched.copy()
     else:
         out = cached.copy()
+        # Ensure Date index is a proper DatetimeIndex
+        try:
+            if not isinstance(out.index, pd.DatetimeIndex):
+                # If 'Date' is a column, set it as index; otherwise coerce current index
+                if 'Date' in out.columns:
+                    out['Date'] = pd.to_datetime(out['Date'], errors='coerce')
+                    out = out.dropna(subset=['Date']).set_index('Date')
+                else:
+                    out.index = pd.to_datetime(out.index, errors='coerce')
+            # Drop NaT index values if any and sort
+            out = out[~out.index.isna()].sort_index()
+        except Exception:
+            # As a last resort, reset and rebuild with Date
+            try:
+                df_tmp = out.reset_index()
+                if 'Date' not in df_tmp.columns:
+                    df_tmp = df_tmp.rename(columns={df_tmp.columns[0]: 'Date'})
+                df_tmp['Date'] = pd.to_datetime(df_tmp['Date'], errors='coerce')
+                out = df_tmp.dropna(subset=['Date']).set_index('Date').sort_index()
+            except Exception:
+                pass
+
         # Determine required columns
         missing_cols = [c for c in REQUIRED_PRICE_COLS if c not in out.columns]
         # Existing date range
@@ -143,26 +165,36 @@ def get_cached_history(ticker, start=None, end=None, interval="1d", auto_adjust=
             f1 = _yf_fetch(start, min(min_d - timedelta(days=1), end))
             if not f1.empty:
                 out = pd.concat([f1, out], axis=0)
+                out = out[~out.index.isna()].sort_index()
 
         # 2) Append newer data if end is beyond cache max
         if end > max_d:
             f2 = _yf_fetch(max_d + timedelta(days=1), end)
             if not f2.empty:
                 out = pd.concat([out, f2], axis=0)
+                out = out[~out.index.isna()].sort_index()
 
         # 3) If there are missing columns or NaNs in required columns within cache window, fetch that window and merge
         needs_fill = False
         if missing_cols:
             needs_fill = True
         else:
-            sub = out.loc[(out.index.date >= (start or min_d)) & (out.index.date <= end)]
+            # Guard against non-datetime index
+            try:
+                idx_dates = out.index.date
+            except Exception:
+                out.index = pd.to_datetime(out.index, errors='coerce')
+                out = out[~out.index.isna()].sort_index()
+                idx_dates = out.index.date
+            sub = out.loc[(idx_dates >= (start or min_d)) & (idx_dates <= end)]
             if any(sub[c].isna().any() for c in [col for col in REQUIRED_PRICE_COLS if col in out.columns]):
                 needs_fill = True
-        if needs_fill:
+        if needs_fill and not out.empty:
             f3 = _yf_fetch(out.index.min().date(), out.index.max().date())
             if not f3.empty:
                 # Align columns and prefer existing values when present
                 out = f3.combine_first(out)
+                out = out[~out.index.isna()].sort_index()
 
     # Final tidy
     if not out.empty:
@@ -305,6 +337,14 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
     # Final column selection and typing
     hist['Date'] = pd.to_datetime(hist['Date'])
     hist = hist[['Date','Open','High','Low','Close','Volume']].copy()
+    # Persist normalized history to the local cache to ensure data folder is populated
+    try:
+        _ensure_dir(DEFAULT_DATA_DIR)
+        _cache_file = _cache_path(ticker, "1d", DEFAULT_DATA_DIR)
+        _to_save = hist.sort_values('Date').drop_duplicates(subset=['Date'], keep='last')
+        _to_save.to_csv(_cache_file, index=False)
+    except Exception:
+        pass
 
     # compute realized vol (rolling 21-day daily vol annualized)
     hist['ret'] = hist['Close'].pct_change()
