@@ -284,11 +284,11 @@ After setting up the environment (see steps above), you can run the screener wit
 - Using the helper script:
 
   chmod +x run.sh
-  ./run.sh --tickers_csv tickers.csv --min_oi 200 --min_vol 50
+  ./run.sh   # no parameters needed; uses tickers.csv if present or built-in defaults
 
 - Or using Make (pass extra args via ARGS):
 
-  make run
+  make run   # runs with defaults
   make run ARGS="--tickers_csv tickers.csv --min_oi 200 --min_vol 50"
 
 
@@ -300,10 +300,10 @@ You can now provide tickers via a CSV file. By default, the script looks for a f
 
 Examples:
 
-  # default (uses tickers.csv if it exists)
-  ./run.sh --min_oi 200 --min_vol 50
+  # default (uses tickers.csv if it exists; otherwise built-in defaults)
+  ./run.sh
 
-  # explicit CSV path
+  # explicit CSV path and optional thresholds
   ./run.sh --tickers_csv tickers.csv --min_oi 200 --min_vol 50
 
 Backward compatibility: you can still pass a comma-separated list via `--tickers`, which is used if a CSV isn’t provided/found.

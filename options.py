@@ -363,17 +363,28 @@ if __name__ == '__main__':
         import os, csv, re
         if not os.path.isfile(path):
             return []
-        tickers_set = []
+        # Accept tickers separated by commas/semicolons/whitespace. Ignore headers like 'ticker'/'symbol'.
+        header_tokens = {"TICKER", "SYMBOL", "TICKERS", "SYMBOLS"}
+        valid_re = re.compile(r"^[A-Z0-9.\-^]{1,15}$")
+        tickers_list = []
         with open(path, newline='') as f:
             reader = csv.reader(f)
             for row in reader:
                 for cell in row:
-                    for tok in re.split(r'[;,\s]+', cell.strip()):
-                        if tok:
-                            u = tok.upper()
-                            if u not in tickers_set:
-                                tickers_set.append(u)
-        return tickers_set
+                    cell = cell.strip()
+                    if not cell:
+                        continue
+                    for tok in re.split(r'[;,\s]+', cell):
+                        if not tok:
+                            continue
+                        u = tok.upper()
+                        if u in header_tokens:
+                            continue
+                        if not valid_re.match(u):
+                            continue
+                        if u not in tickers_list:
+                            tickers_list.append(u)
+        return tickers_list
 
     tickers = []
     if args.tickers_csv:
@@ -383,6 +394,12 @@ if __name__ == '__main__':
     if not tickers:
         # final fallback default list
         tickers = ['SPY','QQQ','AAPL','MSFT','NVDA','AMZN','TSLA','AMD','INTC','META','GOOG','MS','JNJ']
+
+    # Final sanitize: remove header-like tokens and obviously invalid symbols
+    import re as _re
+    _header_tokens = {"TICKER", "SYMBOL", "TICKERS", "SYMBOLS"}
+    _valid_re = _re.compile(r"^[A-Z0-9.\-^]{1,15}$")
+    tickers = [t for t in tickers if t and t not in _header_tokens and _valid_re.match(t)]
 
     print('Running screener on:', tickers)
     df_res, df_bt = run_screener(tickers, min_oi=args.min_oi, min_vol=args.min_vol)
