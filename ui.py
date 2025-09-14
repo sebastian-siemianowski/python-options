@@ -27,7 +27,7 @@ except Exception:
 
 def _fmt_pct(x):
     try:
-        return f"{float(x)*100:.2f}%"
+        return f"{float(x)*100:.0f}%"
     except Exception:
         return "-"
 
@@ -88,13 +88,14 @@ def _render_summary(tickers, df_res: pd.DataFrame, df_bt: pd.DataFrame):
     if df_bt is not None and not df_bt.empty:
         # Backtest table (key metrics) with yearly returns
         cols = [
-            'ticker','strategy_total_trades','strategy_win_rate','strategy_avg_trade_ret_x',
+            'ticker','current_recommendation','strategy_total_trades','strategy_win_rate','strategy_avg_trade_ret_x',
             'strategy_total_trade_profit_pct','strategy_CAGR','strategy_Sharpe','strategy_max_drawdown',
             '2020_return_pct','2021_return_pct','2022_return_pct','2023_return_pct','2024_return_pct','2025_return_pct'
         ]
         # Create readable column name mapping
         col_names = {
             'ticker': 'Ticker',
+            'current_recommendation': 'Signal',
             'strategy_total_trades': 'Total Trades', 
             'strategy_win_rate': 'Win Rate',
             'strategy_avg_trade_ret_x': 'Avg Trade Return',
@@ -119,25 +120,31 @@ def _render_summary(tickers, df_res: pd.DataFrame, df_bt: pd.DataFrame):
                 from rich.table import Table as _RichTable
             except Exception:
                 _RichTable = None
-            tbl2 = (_RichTable or Table)(title="Strategy Backtest Summary (per ticker)", box=ROUNDED, border_style="magenta")
+            tbl2 = (_RichTable or Table)(title="Strategy Backtest Summary (per ticker)", box=ROUNDED, border_style="magenta", width=None)
             for c in present:
                 display_name = col_names.get(c, c)
-                tbl2.add_column(display_name, justify="right", style=("yellow" if c=="ticker" else "white"))
+                justify = "center" if c in ("ticker", "current_recommendation") else "right"
+                style = "yellow" if c=="ticker" else "green" if c=="current_recommendation" else "white"
+                # Set minimum width for better readability
+                min_width = 8 if c == "current_recommendation" else 6 if c == "ticker" else None
+                tbl2.add_column(display_name, justify=justify, style=style, min_width=min_width)
             for _, r in prev.head(20).iterrows():
                 row_vals = []
                 for c in present:
                     v = r[c]
                     if c in ('strategy_win_rate','strategy_CAGR','strategy_max_drawdown'):
                         row_vals.append(_fmt_pct(v))
+                    elif c == 'strategy_avg_trade_ret_x':
+                        row_vals.append(_fmt_pct(float(v) - 1.0) if pd.notna(v) else "-")
                     elif c == 'strategy_total_trade_profit_pct':
-                        row_vals.append(f"{float(v):.2f}%")
+                        row_vals.append(f"{float(v):.0f}%")
                     elif c.endswith('_return_pct'):  # Handle yearly return columns
                         try:
                             val = float(v)
                             if pd.isna(val) or np.isnan(val):
                                 row_vals.append("N/A")
                             else:
-                                row_vals.append(f"{val:.2f}%")
+                                row_vals.append(f"{val:.0f}%")
                         except Exception:
                             row_vals.append("N/A")
                     elif c == 'strategy_total_trades':
@@ -146,6 +153,8 @@ def _render_summary(tickers, df_res: pd.DataFrame, df_bt: pd.DataFrame):
                             row_vals.append(f"{iv}")
                         except Exception:
                             row_vals.append(str(v))
+                    elif c == 'current_recommendation':
+                        row_vals.append(str(v))
                     else:
                         try:
                             row_vals.append(f"{float(v):.4f}")
