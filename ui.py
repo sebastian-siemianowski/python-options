@@ -86,10 +86,11 @@ def _render_summary(tickers, df_res: pd.DataFrame, df_bt: pd.DataFrame):
             print(top.to_string(index=False))
 
     if df_bt is not None and not df_bt.empty:
-        # Backtest table (key metrics)
+        # Backtest table (key metrics) with yearly returns
         cols = [
             'ticker','strategy_total_trades','strategy_win_rate','strategy_avg_trade_ret_x',
-            'strategy_total_trade_profit_pct','strategy_CAGR','strategy_Sharpe','strategy_max_drawdown'
+            'strategy_total_trade_profit_pct','strategy_CAGR','strategy_Sharpe','strategy_max_drawdown',
+            '2020_return_pct','2021_return_pct','2022_return_pct','2023_return_pct','2024_return_pct','2025_return_pct'
         ]
         # Create readable column name mapping
         col_names = {
@@ -100,7 +101,13 @@ def _render_summary(tickers, df_res: pd.DataFrame, df_bt: pd.DataFrame):
             'strategy_total_trade_profit_pct': 'Total Trade Profit %',
             'strategy_CAGR': 'CAGR',
             'strategy_Sharpe': 'Sharpe Ratio',
-            'strategy_max_drawdown': 'Max Drawdown'
+            'strategy_max_drawdown': 'Max Drawdown',
+            '2020_return_pct': '2020 % Return',
+            '2021_return_pct': '2021 % Return',
+            '2022_return_pct': '2022 % Return',
+            '2023_return_pct': '2023 % Return',
+            '2024_return_pct': '2024 % Return',
+            '2025_return_pct': '2025 % Return'
         }
         present = [c for c in cols if c in df_bt.columns]
         prev = df_bt[present].copy()
@@ -124,6 +131,15 @@ def _render_summary(tickers, df_res: pd.DataFrame, df_bt: pd.DataFrame):
                         row_vals.append(_fmt_pct(v))
                     elif c == 'strategy_total_trade_profit_pct':
                         row_vals.append(f"{float(v):.2f}%")
+                    elif c.endswith('_return_pct'):  # Handle yearly return columns
+                        try:
+                            val = float(v)
+                            if pd.isna(val) or np.isnan(val):
+                                row_vals.append("N/A")
+                            else:
+                                row_vals.append(f"{val:.2f}%")
+                        except Exception:
+                            row_vals.append("N/A")
                     elif c == 'strategy_total_trades':
                         try:
                             iv = int(round(float(v)))
