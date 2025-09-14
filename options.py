@@ -478,6 +478,23 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
     if float(min_oi) >= 1e7 and float(min_volume) >= 1e7:
         return pd.DataFrame(), hist
 
+    # Generate signals to ensure congruency with backtesting strategy
+    # Only screen for call options when there's a current BUY signal
+    signals = generate_breakout_signals(hist)
+    
+    # Check if there's a current BUY signal (look at the most recent signal)
+    current_buy_signal = False
+    if not signals.empty:
+        # Look for recent BUY signals (within last 5 days to account for timing)
+        recent_signals = signals.tail(5)  
+        buy_signals = recent_signals[recent_signals['signal'] == 'BUY']
+        call_signals = recent_signals[recent_signals.get('side', 'CALL') == 'CALL']
+        current_buy_signal = not buy_signals.empty and not call_signals.empty
+    
+    # If no current buy signal, return empty opportunities (maintain congruency with backtesting)
+    if not current_buy_signal:
+        return pd.DataFrame(), hist
+
     opportunities = []
 
     try:
