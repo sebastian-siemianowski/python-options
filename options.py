@@ -891,8 +891,9 @@ def backtest_breakout_option_strategy(
     plock1_floor=1.05,
     plock2_level=1.5,
     plock2_floor=1.2,
-    quick_take_level=1.03,
-    quick_take_days=2,
+    quick_take_level=1.02,
+    quick_take_days=3,
+    quick_take_mode='arm',
 ):
     """Simulate a strategy: on breakout BUY signal, buy a short-dated call (via BSM),
     manage with TP/SL, optional trailing stop, and optional regime/vol filters.
@@ -944,6 +945,11 @@ def backtest_breakout_option_strategy(
     df['sma50'] = df['Close'].rolling(50).mean()
     df['sma200'] = df['Close'].rolling(200).mean()
     df['sma200_prev'] = df['sma200'].shift(1)
+    # Lightweight EMA and SNR for adaptive exits
+    df['ema20'] = df['Close'].ewm(span=20, adjust=False).mean()
+    ema_slope_bt = (df['ema20'] - df['ema20'].shift(5)) / 5.0
+    per_day_vol_bt = (df['rv21'] / np.sqrt(252)).replace(0, np.nan)
+    df['snr_slope_bt'] = (ema_slope_bt / (df['Close'] * per_day_vol_bt)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     signals = generate_breakout_signals(df)
     signal_idx = set(signals.index.tolist())
@@ -1081,20 +1087,29 @@ def backtest_breakout_option_strategy(
             peak_price = price0
             trailing_active = False
             be_active = False
+            quick_lock_floor = 0.0
+            quick_armed = False
             for j in range(i+1, i + dte + 1):
                 t_remaining = max(1/252.0, (i + dte - j)/252.0)
                 S_t = float(closes.iloc[j])
                 sigma_t = float(vols.iloc[j]) if np.isfinite(vols.iloc[j]) else sigma0
                 model_price_t = bsm_call_price(S_t, K, t_remaining, r, max(1e-6, sigma_t)) if t_remaining>0 else max(S_t - K, 0.0)
                 peak_price = max(peak_price, model_price_t)
-                # Quick-take: if early small profit within first few days, lock in a win and exit
+                # Quick-take handling: either exit immediately or arm tight risk controls for a runner
                 try:
                     if quick_take_level is not None and quick_take_days is not None:
                         if (j - i) <= int(max(1, quick_take_days)) and model_price_t >= price0 * float(quick_take_level):
-                            exit_idx = j
-                            exit_price = model_price_t
-                            reason = 'quick_take'
-                            break
+                            if str(quick_take_mode).lower() == 'exit':
+                                exit_idx = j
+                                exit_price = model_price_t
+                                reason = 'quick_take'
+                                break
+                            else:
+                                # Arm: activate break-even and set a dynamic lock floor slightly above breakeven
+                                be_active = True
+                                quick_armed = True
+                                # Set a minimal lock at +2% over entry and allow it to ratchet up with peak
+                                quick_lock_floor = max(quick_lock_floor, price0 * max(float(be_floor_mult), 1.02))
                 except Exception:
                     pass
                 # Activate break-even once move in our favor exceeds threshold
@@ -1129,6 +1144,9 @@ def backtest_breakout_option_strategy(
                         dynamic_lock_floor = max(dynamic_lock_floor, price0 * float(plock2_floor))
                 except Exception:
                     dynamic_lock_floor = 0.0
+                # If quick-take is armed, ensure a minimal lock above breakeven
+                if quick_armed and quick_lock_floor > 0.0:
+                    dynamic_lock_floor = max(dynamic_lock_floor, quick_lock_floor)
                 if dynamic_lock_floor > 0.0 and model_price_t <= dynamic_lock_floor:
                     exit_idx = j
                     exit_price = max(model_price_t, dynamic_lock_floor)
@@ -1140,8 +1158,15 @@ def backtest_breakout_option_strategy(
                     exit_price = max(model_price_t, price0 * float(protect_mult))
                     reason = 'protect_stop'
                     break
-                # Fixed TP/SL
-                if tp_x is not None and model_price_t >= price0 * float(tp_x):
+                # Fixed or adaptive TP/SL
+                base_tp_mult = float(tp_x) if tp_x is not None else 1.2
+                snr_cur = float(df['snr_slope_bt'].iloc[j]) if 'snr_slope_bt' in df.columns else 0.0
+                v5_cur = float(rv5.iloc[j]) if j < len(rv5) else np.nan
+                v21_cur = float(vols.iloc[j]) if j < len(vols) else np.nan
+                adaptive_tp_mult = base_tp_mult
+                if np.isfinite(v5_cur) and np.isfinite(v21_cur) and (v5_cur < v21_cur) and snr_cur > 0.5:
+                    adaptive_tp_mult = max(base_tp_mult, 2.0)
+                if model_price_t >= price0 * adaptive_tp_mult:
                     exit_idx = j
                     exit_price = model_price_t
                     reason = 'tp'
@@ -1314,6 +1339,14 @@ def generate_breakout_signals(hist, window=20, lookback=5):
     df['rv5'] = df['Close'].pct_change().rolling(5).std() * np.sqrt(252)
     df['rv21'] = df['Close'].pct_change().rolling(21).std() * np.sqrt(252)
     df['rv63'] = df['Close'].pct_change().rolling(63).std() * np.sqrt(252)
+    # Trend persistence proxy via rolling lag-1 autocorrelation of returns → mapped to Hurst proxy
+    r = df['Close'].pct_change()
+    acf1 = r.rolling(100, min_periods=50).corr(r.shift(1))
+    df['hurst_proxy'] = (0.5 + 0.5 * acf1.clip(lower=0)).fillna(0.5)
+    # Slope SNR: EMA20 slope per day normalized by per-day volatility
+    ema_slope = (df['ema20'] - df['ema20'].shift(5)) / 5.0
+    per_day_vol = (df['rv21'] / np.sqrt(252)).replace(0, np.nan)
+    df['snr_slope'] = (ema_slope / (df['Close'] * per_day_vol)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     df['Price'] = df['Close']
 
     # High-confidence breakout conditions aimed at higher win rate
@@ -1328,7 +1361,9 @@ def generate_breakout_signals(hist, window=20, lookback=5):
     # Avoid short-term volatility blowups at entry
     cond_vol_regime = (df['rv5'] < df['rv63']) | df['rv63'].isna()
 
-    strict_mask = cond_breakout & cond_vol & cond_momo & cond_trend & cond_vol_regime
+    cond_persist = df['hurst_proxy'] > 0.55
+    cond_snr = df['snr_slope'] > 0.5
+    strict_mask = cond_breakout & cond_vol & cond_momo & cond_trend & cond_vol_regime & cond_persist & cond_snr
 
     # Adaptive relaxation: if too few strict signals, relax thresholds to ensure enough opportunities.
     strict_count = int(strict_mask.sum())
@@ -1346,8 +1381,8 @@ def generate_breakout_signals(hist, window=20, lookback=5):
             relaxed_mask = cond_breakout2 & cond_momo2 & cond_trend2 & cond_vol_regime
         buy_mask = buy_mask | relaxed_mask
 
-    # Post-breakout continuation entries: up to 2 days after a breakout if conditions hold
-    post_window = 2
+    # Post-breakout continuation entries: up to 3 days after a breakout if conditions hold
+    post_window = 3
     if buy_mask.any():
         breakout_idx = np.where(buy_mask.values)[0]
         cont_idx = []
@@ -1389,6 +1424,60 @@ def generate_breakout_signals(hist, window=20, lookback=5):
     squeeze = (rol_std20 <= thresh_std) if np.isfinite(thresh_std) else pd.Series(False, index=df.index)
     squeeze_breakout = squeeze & (df['Close'] > df['sma50']) & (df['Close'] > df['resistance']) & cond_vol_regime
     buy_mask = buy_mask | squeeze_breakout
+
+    # Probabilistic edge gate using lognormal dynamics to estimated strike within ~7DTE
+    # Estimated strike at small OTM level to bias toward higher win probability
+    dte_est = 7
+    m_est = 0.02
+    r = 0.01
+    # Realized vol proxy (annualized), clamp to avoid zeros
+    sigma = df['rv21'].fillna(df['rv21'].median()).clip(lower=1e-6)
+    T = max(1/252.0, dte_est/252.0)
+    # Parameters of ln(S_T)
+    mu_ln = np.log(df['Close'].clip(lower=1e-6)) + (r - 0.5 * (sigma**2)) * T
+    sig_ln = np.sqrt((sigma**2) * T)
+    K_est = df['Close'] * (1.0 + m_est)
+    # Probability S_T >= K_est
+    with np.errstate(divide='ignore', invalid='ignore'):
+        z = (np.log(K_est.clip(lower=1e-6)) - mu_ln) / sig_ln.replace(0, np.nan)
+    _z_clean = z.replace([np.inf, -np.inf], np.nan)
+    _cdf_vals = pd.Series(norm.cdf(_z_clean.values), index=df.index)
+    p_hit = 1.0 - _cdf_vals.fillna(0.0)
+
+    # Standardized feature ensemble score (logistic-style)
+    def _zscore(s):
+        s = s.astype(float)
+        m = np.nanmedian(s)
+        mad = np.nanmedian(np.abs(s - m)) + 1e-9
+        return (s - m) / (1.4826 * mad)
+    feat_momo = _zscore(df['ret20'])
+    feat_trend = _zscore((df['sma50'] - df['sma200']) / df['sma200'].replace(0, np.nan))
+    feat_vol = _zscore((df['rv63'] - df['rv5']) / df['rv63'].replace(0, np.nan))
+    # Distance to resistance normalized by ATR proxy
+    atr_proxy = df['Close'].pct_change().rolling(14).std().fillna(method='bfill')
+    feat_dist = _zscore((df['Close'] - df['resistance']) / (df['Close'] * (atr_proxy + 1e-6)))
+    # Weights emphasize trend and compression for higher win rate
+    w1, w2, w3, w4 = 0.8, 1.2, 1.0, 0.6
+    lin = w1*feat_momo + w2*feat_trend + w3*feat_vol + w4*feat_dist
+    # bounded logistic mapping
+    edge_score = 1.0 / (1.0 + np.exp(-lin.clip(-10, 10)))
+
+    # Apply gates with adaptive relaxation to maintain sufficient signals
+    base_mask = buy_mask.copy().fillna(False)
+    # Strict gate
+    p_thr_strict = 0.58
+    s_thr_strict = 0.60
+    gated_strict = base_mask & (p_hit >= p_thr_strict) & (edge_score >= s_thr_strict) & (df['hurst_proxy'] > 0.55) & (df['snr_slope'] > 0.5)
+    # Relaxed gate favors more trades while keeping quality via OR condition with persistence boost
+    p_thr_relaxed = 0.52
+    s_thr_relaxed = 0.56
+    gated_relaxed = base_mask & (
+        (p_hit >= p_thr_relaxed) |
+        (edge_score >= s_thr_relaxed) |
+        ((df['hurst_proxy'] > 0.52) & (df['snr_slope'] > 0.30))
+    )
+    # Choose strict if it yields adequate signals; otherwise relaxed
+    buy_mask = gated_strict if int(gated_strict.sum()) >= 40 else gated_relaxed
 
     # Enforce minimal spacing between signals to avoid over-clustering while keeping frequency high
     min_spacing = 3
@@ -1449,15 +1538,15 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                 candidate_cfgs = []
                 # Build a prioritized, compact grid. Current params first; then a few conservative/robust variants.
                 allocs = list(dict.fromkeys([max(0.005, bt_alloc_frac), 0.005, 0.01, 0.02]))
-                dtes = list(dict.fromkeys([bt_dte, 5, 7, 14, 21]))
+                dtes = list(dict.fromkeys([bt_dte, 3, 5, 7, 14, 21, 30]))
                 # Include slight ITM choices to raise win rate
-                moneys = list(dict.fromkeys([bt_moneyness, -0.02, 0.0, 0.02, 0.03, 0.05]))
-                tps = list(dict.fromkeys([1.2 if bt_tp_x is None else bt_tp_x, 1.1, 1.2, 1.5, 2.0]))
-                sls = list(dict.fromkeys([0.95 if bt_sl_x is None else bt_sl_x, 0.95, 0.9, 0.85, 0.8, 0.7]))
+                moneys = list(dict.fromkeys([bt_moneyness, -0.02, 0.0, 0.02, 0.03, 0.05, 0.08, 0.10]))
+                tps = list(dict.fromkeys([1.5 if bt_tp_x is None else bt_tp_x, 1.2, 1.5, 2.0, 2.5, 3.0]))
+                sls = list(dict.fromkeys([0.95 if bt_sl_x is None else bt_sl_x, 0.95, 0.9, 0.85, 0.8, 0.75]))
                 trail_starts = [1.1, 1.5]
-                trail_backs = [0.3, 0.5]
+                trail_backs = [0.25, 0.3, 0.5]
                 deltas_flag = list(dict.fromkeys([bt_use_target_delta, True, False]))
-                deltas = list(dict.fromkeys([bt_target_delta, 0.5, 0.25]))
+                deltas = list(dict.fromkeys([bt_target_delta, 0.5, 0.35, 0.25, 0.15]))
                 atr_tps = list(dict.fromkeys([bt_tp_atr_mult, 1.0, 1.5, 2.0]))
                 atr_sls = list(dict.fromkeys([bt_sl_atr_mult, 1.0, 0.8]))
                 cooldowns = list(dict.fromkeys([bt_cooldown_days, 0, 1, 2, 3, 5]))
@@ -1523,14 +1612,15 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                 best_key = None
                 best_metrics = None
                 # Feasibility: allow slightly deeper drawdown for more trades, require positive per-trade profitability and minimum trade count
-                target_dd = -0.07
-                def make_key(winr, tprofit, sh, cagr, ret, dd, tcount):
-                    # Prioritize configs with high win rate and enough trades, within risk and profitability constraints.
-                    feasible_flag = 1 if (dd >= target_dd and tprofit > 0 and tcount >= 12 and winr >= 0.60) else 0
+                target_dd = -0.10
+                def make_key(winr, tprofit, sh, cagr, ret, dd, tcount, avgx):
+                    # Prioritize configs with high win rate, high average per-trade return, and enough trades.
+                    feasible_flag = 1 if (dd >= target_dd and tprofit > 0 and tcount >= 12 and winr >= 0.60 and avgx >= 1.20) else 0
                     return (
                         feasible_flag,
                         round(winr, 6),
-                        min(int(tcount), 50),
+                        min(int(tcount), 60),
+                        round(avgx, 6),
                         round(tprofit, 6),
                         round(sh, 6),
                         round(dd, 6),
@@ -1566,17 +1656,14 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                     sh = float(_met.get('Sharpe', 0.0))
                     cagr = float(_met.get('CAGR', 0.0))
                     tcount = int(_met.get('total_trades', 0))
-                    key = make_key(winr, tprofit, sh, cagr, ret, dd, tcount)
+                    key = make_key(winr, tprofit, sh, cagr, ret, dd, tcount, float(_met.get('avg_trade_ret_x', 0.0)))
                     cfg = (a,d,m,tp,sl,ts,tb,uf,td,atp,asl,cd,tsf,tsm,use_atr)
                     if (best_key is None) or (key > best_key):
                         best_key = key
                         best = cfg
                         best_metrics = (dd, ret, tprofit)
-                    # Early stop once we find a feasible, profitable config (faster and ensures positive per-ticker profitability)
-                    if (dd >= target_dd and tprofit > 0):
-                        break
-                    # Ultra-early stop for a very strong configuration to keep speed
-                    if key[0] == 1 and winr >= 0.90 and sh >= 1.0 and cagr >= 0.05 and tcount >= 8:
+                    # Early stop only for a very strong configuration
+                    if key[0] == 1 and winr >= 0.85 and float(_met.get('avg_trade_ret_x', 0.0)) >= 1.40 and tcount >= 12:
                         break
                 if best is not None:
                     if len(best) == 15:
@@ -1964,7 +2051,7 @@ if __name__ == '__main__':
     parser.add_argument('--bt_plock2_level', type=float, default=1.5, help='Profit-lock level 2 activation multiple (>=1 disables). Default 1.5x.')
     parser.add_argument('--bt_plock2_floor', type=float, default=1.2, help='Profit-lock level 2 floor multiple. Default 1.2x.')
     parser.add_argument('--bt_optimize', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable small parameter search to target <=2% max drawdown and positive profit (per ticker). Default true.')
-    parser.add_argument('--bt_optimize_max', type=int, default=120, help='Max number of parameter sets to evaluate per ticker when bt_optimize is true. Smaller = faster. Default 120.')
+    parser.add_argument('--bt_optimize_max', type=int, default=360, help='Max number of parameter sets to evaluate per ticker when bt_optimize is true. Smaller = faster. Default 360.')
     # Data cache controls
     parser.add_argument('--data_dir', type=str, default=os.environ.get('PRICE_DATA_DIR', 'data'), help='Directory to cache downloaded price data (default: data)')
     parser.add_argument('--cache_refresh', action='store_true', help='Force refresh of cached price data for requested window')
