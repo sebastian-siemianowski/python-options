@@ -324,6 +324,8 @@ def backtest_breakout_option_strategy(
     plock1_floor=1.05,
     plock2_level=1.5,
     plock2_floor=1.2,
+    quick_take_level=1.03,
+    quick_take_days=2,
 ):
     """Simulate a strategy: on breakout BUY signal, buy a short-dated call (via BSM),
     manage with TP/SL, optional trailing stop, and optional regime/vol filters.
@@ -518,6 +520,16 @@ def backtest_breakout_option_strategy(
                 sigma_t = float(vols.iloc[j]) if np.isfinite(vols.iloc[j]) else sigma0
                 model_price_t = bsm_call_price(S_t, K, t_remaining, r, max(1e-6, sigma_t)) if t_remaining>0 else max(S_t - K, 0.0)
                 peak_price = max(peak_price, model_price_t)
+                # Quick-take: if early small profit within first few days, lock in a win and exit
+                try:
+                    if quick_take_level is not None and quick_take_days is not None:
+                        if (j - i) <= int(max(1, quick_take_days)) and model_price_t >= price0 * float(quick_take_level):
+                            exit_idx = j
+                            exit_price = model_price_t
+                            reason = 'quick_take'
+                            break
+                except Exception:
+                    pass
                 # Activate break-even once move in our favor exceeds threshold
                 if (not be_active) and (model_price_t >= price0 * float(be_activate_mult)):
                     be_active = True
@@ -722,6 +734,7 @@ def plot_support_resistance_with_signals(ticker, hist, signals=None, out_dir='pl
 
 def generate_breakout_signals(hist, window=20, lookback=5):
     # Buy when price closes above recent resistance by a margin, with strong volume and positive momentum in an uptrend.
+    # Additionally allow: post-breakout continuations, support-retest bounces, EMA20 pullback re-entries, and volatility-squeeze breakouts.
     # Vectorized for speed, with adaptive relaxation if too few signals are found.
     df = hist.copy()
     df['resistance'] = df['Close'].rolling(window).max().shift(1)
@@ -730,36 +743,101 @@ def generate_breakout_signals(hist, window=20, lookback=5):
     df['ret20'] = df['Close'] / df['Close'].shift(20) - 1.0
     df['sma50'] = df['Close'].rolling(50).mean()
     df['sma200'] = df['Close'].rolling(200).mean()
+    df['ema20'] = df['Close'].ewm(span=20, adjust=False).mean()
+    df['rv5'] = df['Close'].pct_change().rolling(5).std() * np.sqrt(252)
+    df['rv21'] = df['Close'].pct_change().rolling(21).std() * np.sqrt(252)
+    df['rv63'] = df['Close'].pct_change().rolling(63).std() * np.sqrt(252)
     df['Price'] = df['Close']
 
-    # Stricter, high-confidence conditions aimed at higher win rate
-    margin = 0.01   # 1.0% above resistance (stricter)
-    vol_mult = 2.0
-    momo_thr = 0.05  # +5%/20d momentum
+    # High-confidence breakout conditions aimed at higher win rate
+    margin = 0.005   # 0.5% above resistance
+    vol_mult = 1.5
+    momo_thr = 0.03  # +3%/20d momentum
 
     cond_breakout = df['Close'] > (df['resistance'] * (1.0 + margin))
     cond_vol = df['Volume'] > (vol_mult * df['vol_avg'].clip(lower=1e-6))
     cond_momo = df['ret20'] > momo_thr
     cond_trend = (df['Close'] > df['sma50']) & (df['Close'] > df['sma200'])
+    # Avoid short-term volatility blowups at entry
+    cond_vol_regime = (df['rv5'] < df['rv63']) | df['rv63'].isna()
 
-    buy_mask = cond_breakout & cond_vol & cond_momo & cond_trend
+    strict_mask = cond_breakout & cond_vol & cond_momo & cond_trend & cond_vol_regime
 
     # Adaptive relaxation: if too few strict signals, relax thresholds to ensure enough opportunities.
-    strict_count = int(buy_mask.sum())
-    if strict_count < 15:
+    strict_count = int(strict_mask.sum())
+    buy_mask = strict_mask.copy()
+    if strict_count < 60:
         # Looser breakout without extra margin, mild momentum, trend above at least SMA50
         cond_breakout2 = df['Close'] >= (df['resistance'])
         cond_momo2 = df['ret20'] > 0.0
-        cond_trend2 = (df['Close'] > df['sma50']) | (df['Close'] > df['sma200'])
+        cond_trend2 = (df['Close'] > df['sma50']) & ((df['Close'] > df['sma200']) | df['sma200'].isna())
         # Volume confirmation optional and lighter
         cond_vol2 = df['Volume'] >= (1.2 * df['vol_avg'].fillna(0).clip(lower=1e-6))
-        relaxed_mask = cond_breakout2 & cond_momo2 & cond_trend2 & cond_vol2
-        # If still very few, drop the volume condition
-        if int(relaxed_mask.sum()) < 15:
-            relaxed_mask = cond_breakout2 & cond_momo2 & cond_trend2
+        relaxed_mask = cond_breakout2 & cond_momo2 & cond_trend2 & cond_vol2 & cond_vol_regime
+        # If still very few, drop the volume condition (keep trend and momentum)
+        if int(relaxed_mask.sum()) < 60:
+            relaxed_mask = cond_breakout2 & cond_momo2 & cond_trend2 & cond_vol_regime
         buy_mask = buy_mask | relaxed_mask
 
-    signals = df.loc[buy_mask, ['Date', 'Price']].copy()
+    # Post-breakout continuation entries: up to 2 days after a breakout if conditions hold
+    post_window = 2
+    if buy_mask.any():
+        breakout_idx = np.where(buy_mask.values)[0]
+        cont_idx = []
+        for idx in breakout_idx:
+            for k in range(1, post_window+1):
+                j = idx + k
+                if j < len(df) and (df['Close'].iloc[j] > df['resistance'].iloc[j]) and cond_vol_regime.iloc[j]:
+                    cont_idx.append(j)
+        if cont_idx:
+            buy_mask.iloc[np.unique(cont_idx)] = True
+
+    # Support-retest bounce entries within 10 days of breakout cluster
+    look_ahead = 10
+    tol = 0.01
+    if buy_mask.any():
+        res_series = df['resistance'].fillna(method='ffill')
+        near_prior_res = (np.abs(df['Close'] - res_series) / res_series.clip(lower=1e-6)) <= tol
+        bounce = near_prior_res & (df['Close'] > df['Close'].shift(1)) & (df['Close'] > df['sma50']) & cond_vol_regime
+        any_breakout = buy_mask.rolling(look_ahead).max().astype(bool)
+        retest_mask = bounce & any_breakout
+        buy_mask = buy_mask | retest_mask
+
+    # EMA20 pullback re-entry in established uptrends (stricter guards)
+    uptrend = (df['sma50'] > df['sma200']) & (df['Close'] > df['sma200'])
+    pullback = (df['Close'] < df['ema20']) & uptrend
+    ema_rising = df['ema20'] > df['ema20'].shift(1)
+    sma50_rising = df['sma50'] > df['sma50'].shift(1)
+    reclose_above_ema = (df['Close'] > df['ema20']) & pullback.shift(1).fillna(False)
+    benign_vol = (df['rv5'] < df['rv21'] * 1.2) | df['rv21'].isna()
+    ema_reentry = reclose_above_ema & benign_vol & sma50_rising & ((df['Close'] > df['resistance']) | ema_rising)
+    buy_mask = buy_mask | ema_reentry
+
+    # Volatility squeeze breakout: use low-volatility regime plus breakout over resistance
+    rol_std20 = df['Close'].pct_change().rolling(20).std()
+    try:
+        thresh_std = np.nanpercentile(rol_std20.dropna().values, 20) if rol_std20.notna().any() else np.nan
+    except Exception:
+        thresh_std = np.nan
+    squeeze = (rol_std20 <= thresh_std) if np.isfinite(thresh_std) else pd.Series(False, index=df.index)
+    squeeze_breakout = squeeze & (df['Close'] > df['sma50']) & (df['Close'] > df['resistance']) & cond_vol_regime
+    buy_mask = buy_mask | squeeze_breakout
+
+    # Enforce minimal spacing between signals to avoid over-clustering while keeping frequency high
+    min_spacing = 3
+    if buy_mask.any() and min_spacing > 0:
+        idxs = np.where(buy_mask.values)[0]
+        keep = []
+        last = -min_spacing-1
+        for j in idxs:
+            if j - last >= min_spacing:
+                keep.append(j)
+                last = j
+        filtered = np.zeros_like(buy_mask.values, dtype=bool)
+        filtered[keep] = True
+        buy_mask = pd.Series(filtered, index=buy_mask.index)
+
+    signals = df.loc[buy_mask.fillna(False), ['Date', 'Price']].copy()
     signals['signal'] = 'BUY'
     return signals
 
@@ -832,7 +910,7 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                 deltas = list(dict.fromkeys([bt_target_delta, 0.5, 0.25]))
                 atr_tps = list(dict.fromkeys([bt_tp_atr_mult, 1.0, 1.5, 2.0]))
                 atr_sls = list(dict.fromkeys([bt_sl_atr_mult, 1.0, 0.8]))
-                cooldowns = list(dict.fromkeys([bt_cooldown_days, 3, 5]))
+                cooldowns = list(dict.fromkeys([bt_cooldown_days, 0, 1, 2, 3, 5]))
                 ts_fracs = list(dict.fromkeys([bt_time_stop_frac, 0.33, 0.5]))
                 ts_mults = list(dict.fromkeys([bt_time_stop_mult, 1.0, 1.1, 1.2]))
                 atr_exit_flags = list(dict.fromkeys([bt_use_underlying_atr_exits, False, True]))
@@ -894,22 +972,20 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                 best = None
                 best_key = None
                 best_metrics = None
-                # Stricter drawdown target to bias toward safer configs (allow slightly deeper to find profitability)
-                target_dd = -0.05
+                # Feasibility: allow slightly deeper drawdown for more trades, require positive per-trade profitability and minimum trade count
+                target_dd = -0.07
                 def make_key(winr, tprofit, sh, cagr, ret, dd, tcount):
-                    # Prioritize feasible configs (dd within target AND positive per-trade profitability),
-                    # then emphasize profitability, then win rate, then Sharpe, then drawdown (less negative),
-                    # then CAGR, then total return, then trade count.
-                    feasible_flag = 1 if (dd >= target_dd and tprofit > 0) else 0
+                    # Prioritize configs with high win rate and enough trades, within risk and profitability constraints.
+                    feasible_flag = 1 if (dd >= target_dd and tprofit > 0 and tcount >= 12 and winr >= 0.60) else 0
                     return (
                         feasible_flag,
-                        round(tprofit, 6),
                         round(winr, 6),
+                        min(int(tcount), 50),
+                        round(tprofit, 6),
                         round(sh, 6),
                         round(dd, 6),
                         round(cagr, 6),
-                        round(ret, 6),
-                        tcount
+                        round(ret, 6)
                     )
                 for cfg in candidate_cfgs:
                     # Backward-compatible unpacking in case of legacy-length tuples
