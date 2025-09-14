@@ -1064,10 +1064,9 @@ def plot_support_resistance_with_signals(ticker, hist, signals=None, out_dir='pl
     df['Date'] = pd.to_datetime(df['Date'])
     df = df.sort_values('Date').reset_index(drop=True)
     
-    # Identify data gaps and mark discontinuities
-    date_diffs = df['Date'].diff()
-    large_gaps = date_diffs > pd.Timedelta(days=7)
-    gap_indices = df.index[large_gaps].tolist()
+    # Data gaps are now automatically filled during data loading
+    # No gap detection needed as all business days are present
+    gap_indices = []
     
     dates = df['Date']
     prices = df['Close']

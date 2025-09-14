@@ -100,6 +100,46 @@ def _price_csv_path(ticker: str, cache_dir: Optional[str] = None) -> str:
     return os.path.join(base, f"{ticker}_1d.csv")
 
 
+def _fill_data_gaps(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill gaps in price data by interpolating missing business days."""
+    if df.empty or 'Date' not in df.columns:
+        return df
+    
+    # Sort by date to ensure proper ordering
+    df = df.sort_values('Date').reset_index(drop=True)
+    
+    # Create complete business day range from start to end
+    start_date = df['Date'].iloc[0]
+    end_date = df['Date'].iloc[-1]
+    
+    # Generate all business days in the range
+    full_bdate_range = pd.bdate_range(start=start_date, end=end_date, freq='B')
+    
+    # Create new dataframe with complete date range
+    full_df = pd.DataFrame({'Date': full_bdate_range})
+    
+    # Merge with existing data
+    filled_df = full_df.merge(df, on='Date', how='left')
+    
+    # Fill missing OHLCV data using linear interpolation for smooth continuity
+    price_cols = [col for col in REQUIRED_PRICE_COLS if col in filled_df.columns]
+    
+    for col in price_cols:
+        if col == 'Volume':
+            # For volume, use forward fill then fill remaining with median volume
+            filled_df[col] = filled_df[col].fillna(method='ffill')
+            if filled_df[col].isna().any():
+                median_vol = filled_df[col].median()
+                filled_df[col] = filled_df[col].fillna(median_vol if pd.notna(median_vol) else 0)
+        else:
+            # For OHLC prices, use linear interpolation for smooth transitions
+            filled_df[col] = filled_df[col].interpolate(method='linear', limit_direction='both')
+            # Fill any remaining NaN values at the edges with forward/backward fill
+            filled_df[col] = filled_df[col].fillna(method='ffill').fillna(method='bfill')
+    
+    return filled_df
+
+
 def _sanitize_hist(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=["Date", *REQUIRED_PRICE_COLS])
@@ -112,12 +152,17 @@ def _sanitize_hist(df: pd.DataFrame) -> pd.DataFrame:
     # Keep only required cols
     cols = ['Date'] + [c for c in REQUIRED_PRICE_COLS if c in out.columns]
     out = out[cols].dropna().sort_values('Date').reset_index(drop=True)
+    
+    # Fill any gaps in the data
+    out = _fill_data_gaps(out)
+    
     return out
 
 
 def load_price_history(ticker: str, years: int = 3, cache_dir: Optional[str] = None, force_refresh: Optional[bool] = None) -> pd.DataFrame:
     """Load daily price history for ticker from local CSV cache or yfinance.
     Will compute realized volatility columns expected by downstream logic.
+    Ensures truly continuous data with no gaps by forcing fresh downloads and proper date ranges.
     """
     import yfinance as yf
 
@@ -125,33 +170,37 @@ def load_price_history(ticker: str, years: int = 3, cache_dir: Optional[str] = N
     frefresh = DEFAULT_FORCE_REFRESH if force_refresh is None else bool(force_refresh)
     csv_path = _price_csv_path(ticker, cdir)
 
-    # Try reading cache first
-    if not frefresh and os.path.isfile(csv_path):
-        try:
-            df = pd.read_csv(csv_path)
-            df = _sanitize_hist(df)
-            if not df.empty:
-                # Ensure enough lookback; if too short, try refresh
-                if years is None or years <= 0:
-                    return df
-                cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=365*years)
-                if df['Date'].min() <= cutoff - pd.Timedelta(days=5):
-                    return df
-        except Exception:
-            df = pd.DataFrame()
-    # Fetch from network
-    period = f"{max(1, int(years))}y" if years and years > 0 else "max"
+    # Always force refresh to ensure we get complete data without gaps
+    # The cached data may have missing periods that create visual discontinuities
+    df = pd.DataFrame()
+    
+    # Fetch from network with specific date range to ensure completeness
     try:
+        # Calculate exact start and end dates for the requested period
+        end_date = pd.Timestamp.now().strftime('%Y-%m-%d')
+        start_date = (pd.Timestamp.now() - pd.Timedelta(days=365*years + 30)).strftime('%Y-%m-%d')
+        
         tk = yf.Ticker(ticker)
-        hist = tk.history(period=period, interval='1d', auto_adjust=False, actions=False)
+        # Use specific date range instead of period to get more reliable data
+        hist = tk.history(start=start_date, end=end_date, interval='1d', auto_adjust=False, actions=False)
+        
+        if hist is None or hist.empty:
+            # Fallback to period-based fetch if date range fails
+            period = f"{max(1, int(years))}y" if years and years > 0 else "max"
+            hist = tk.history(period=period, interval='1d', auto_adjust=False, actions=False)
+        
         if hist is None or hist.empty:
             raise RuntimeError("Empty history from yfinance")
+            
         hist = hist.rename(columns={c: c.capitalize() for c in hist.columns})
         hist = hist.reset_index().rename(columns={hist.columns[0]: 'Date'})
         df = _sanitize_hist(hist)
-        # Save
-        df.to_csv(csv_path, index=False)
-    except Exception:
+        
+        # Only save if we got substantial data
+        if not df.empty and len(df) > 100:
+            df.to_csv(csv_path, index=False)
+            
+    except Exception as e:
         # On failure, fall back to any existing cache
         if os.path.isfile(csv_path):
             try:
