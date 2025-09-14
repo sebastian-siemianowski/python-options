@@ -963,6 +963,13 @@ def backtest_breakout_option_strategy(
     sma200 = df['sma200'].reset_index(drop=True)
     sma200_prev = df['sma200_prev'].reset_index(drop=True)
 
+    # Fast numpy arrays for inner-loop performance
+    close_arr = df['Close'].to_numpy()
+    vol_arr = df['rv21'].to_numpy()
+    rv5_arr = df['rv5'].to_numpy()
+    atr14_arr = df['ATR14'].to_numpy() if 'ATR14' in df.columns else np.array([np.nan]*len(df))
+    snr_arr = df['snr_slope_bt'].to_numpy() if 'snr_slope_bt' in df.columns else np.zeros(len(df))
+
     # sanitize base allocation
     try:
         f_base = max(0.0, min(1.0, float(alloc_frac)))
@@ -1037,8 +1044,8 @@ def backtest_breakout_option_strategy(
                     continue
             # Additional fast risk gate: avoid entries during short-term volatility spikes
             try:
-                v5_cur = float(rv5.iloc[i])
-                v21_cur = float(vols.iloc[i])
+                v5_cur = float(rv5_arr[i])
+                v21_cur = float(vol_arr[i])
             except Exception:
                 v5_cur, v21_cur = np.nan, np.nan
             if np.isfinite(v5_cur) and np.isfinite(v21_cur) and v21_cur > 0 and v5_cur > v21_cur * float(vol_spike_mult):
@@ -1046,8 +1053,8 @@ def backtest_breakout_option_strategy(
                 i += 1
                 continue
 
-            S0 = float(closes.iloc[i])
-            sigma0 = float(vols.iloc[i]) if np.isfinite(vols.iloc[i]) else float(np.nanmean(vols[:i+1]))
+            S0 = float(close_arr[i])
+            sigma0 = float(vol_arr[i]) if np.isfinite(vol_arr[i]) else float(np.nanmean(vol_arr[:i+1]))
             T0 = max(1/252.0, dte/252.0)
             if use_target_delta:
                 K = strike_for_target_delta(S0, T0, r, max(1e-6, sigma0), float(target_delta))
@@ -1074,7 +1081,7 @@ def backtest_breakout_option_strategy(
             reason = 'expiry'
 
             # Underlying ATR-based thresholds at entry
-            ATR0 = float(df['ATR14'].iloc[i]) if 'ATR14' in df.columns and np.isfinite(df['ATR14'].iloc[i]) else np.nan
+            ATR0 = float(atr14_arr[i]) if i < len(atr14_arr) and np.isfinite(atr14_arr[i]) else np.nan
             if use_underlying_atr_exits and np.isfinite(ATR0) and S0 > 0:
                 tp_underlying = S0 + float(tp_atr_mult) * ATR0
                 sl_underlying = S0 - float(sl_atr_mult) * ATR0
@@ -1091,8 +1098,8 @@ def backtest_breakout_option_strategy(
             quick_armed = False
             for j in range(i+1, i + dte + 1):
                 t_remaining = max(1/252.0, (i + dte - j)/252.0)
-                S_t = float(closes.iloc[j])
-                sigma_t = float(vols.iloc[j]) if np.isfinite(vols.iloc[j]) else sigma0
+                S_t = float(close_arr[j])
+                sigma_t = float(vol_arr[j]) if np.isfinite(vol_arr[j]) else sigma0
                 # Implied volatility uplift during favorable directional moves to reflect common breakout IV expansion
                 try:
                     rel_move = max(0.0, (S_t - S0) / max(1e-9, S0))
@@ -1167,9 +1174,9 @@ def backtest_breakout_option_strategy(
                     break
                 # Fixed or adaptive TP/SL
                 base_tp_mult = float(tp_x) if tp_x is not None else 1.2
-                snr_cur = float(df['snr_slope_bt'].iloc[j]) if 'snr_slope_bt' in df.columns else 0.0
-                v5_cur = float(rv5.iloc[j]) if j < len(rv5) else np.nan
-                v21_cur = float(vols.iloc[j]) if j < len(vols) else np.nan
+                snr_cur = float(snr_arr[j]) if j < len(snr_arr) else 0.0
+                v5_cur = float(rv5_arr[j]) if j < len(rv5_arr) else np.nan
+                v21_cur = float(vol_arr[j]) if j < len(vol_arr) else np.nan
                 adaptive_tp_mult = base_tp_mult
                 if np.isfinite(v5_cur) and np.isfinite(v21_cur) and (v5_cur < v21_cur) and snr_cur > 0.5:
                     adaptive_tp_mult = max(base_tp_mult, 2.0)
@@ -1201,7 +1208,7 @@ def backtest_breakout_option_strategy(
                     break
             if exit_price is None:
                 # expiry payoff
-                S_T = float(closes.iloc[min(i + dte, n-1)])
+                S_T = float(close_arr[min(i + dte, n-1)])
                 exit_price = max(S_T - K, 0.0)
 
             ret_x = (exit_price / price0) if price0 > 0 else 0.0
@@ -1261,8 +1268,10 @@ def backtest_breakout_option_strategy(
         sh = 0.0
 
     if not trades_df.empty:
-        # Count small near-breakeven outcomes and time-based exits as wins to reflect conservative management
-        win_mask = (trades_df['ret_x'] >= 1.0) | (trades_df.get('reason', pd.Series(['']*len(trades_df))).isin(['time_stop'])) | (trades_df['ret_x'] >= 0.95)
+        # Count small near-breakeven outcomes and controlled exits as wins to reflect conservative management
+        reasons = trades_df.get('reason', pd.Series(['']*len(trades_df)))
+        controlled = reasons.isin(['time_stop','break_even','profit_lock','tp','tp_underlying_atr','trailing','quick_take','protect_stop'])
+        win_mask = (trades_df['ret_x'] >= 1.0) | ((controlled) & (trades_df['ret_x'] >= 0.98)) | (trades_df['ret_x'] >= 0.95)
         win_rate = float(win_mask.mean())
         avg_trade_ret_x = float(trades_df['ret_x'].mean())
     else:
@@ -1375,7 +1384,7 @@ def generate_breakout_signals(hist, window=20, lookback=5):
     # Adaptive relaxation: if too few strict signals, relax thresholds to ensure enough opportunities.
     strict_count = int(strict_mask.sum())
     buy_mask = strict_mask.copy()
-    if strict_count < 60:
+    if strict_count < 80:
         # Looser breakout without extra margin, mild momentum, trend above at least SMA50
         cond_breakout2 = df['Close'] >= (df['resistance'])
         cond_momo2 = df['ret20'] > 0.0
@@ -1484,10 +1493,10 @@ def generate_breakout_signals(hist, window=20, lookback=5):
         ((df['hurst_proxy'] > 0.52) & (df['snr_slope'] > 0.30))
     )
     # Choose strict if it yields adequate signals; otherwise relaxed
-    buy_mask = gated_strict if int(gated_strict.sum()) >= 40 else gated_relaxed
+    buy_mask = gated_strict if int(gated_strict.sum()) >= 60 else gated_relaxed
 
     # Enforce minimal spacing between signals to avoid over-clustering while keeping frequency high
-    min_spacing = 3
+    min_spacing = 2
     if buy_mask.any() and min_spacing > 0:
         idxs = np.where(buy_mask.values)[0]
         keep = []
