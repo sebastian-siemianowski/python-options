@@ -45,12 +45,179 @@ DEFAULT_DATA_DIR = os.environ.get("PRICE_DATA_DIR", "data")
 DEFAULT_FORCE_REFRESH = False
 REQUIRED_PRICE_COLS = ["Open", "High", "Low", "Close", "Volume"]
 
+# -------------------- Lightweight caches for options metadata --------------------
+# We cache a few relatively static or moderately changing resources to avoid re-fetching:
+# - Expiration dates list (tk.options): cache ~12h
+# - Earnings dates/calendar: cache ~3 days
+# - Option chains (calls) per expiry: cache ~60 minutes
+# These caches are safe fallbacks; on any error or stale TTL they transparently re-fetch and overwrite.
+
+_DEF_EXP_TTL_HOURS = int(os.environ.get("EXPIRATIONS_TTL_HOURS", "12"))
+_DEF_EARN_TTL_DAYS = int(os.environ.get("EARNINGS_TTL_DAYS", "3"))
+_DEF_CHAIN_TTL_MIN = int(os.environ.get("OPTION_CHAIN_TTL_MIN", "60"))
+
 
 def _ensure_dir(path):
     try:
         os.makedirs(path, exist_ok=True)
     except Exception:
         pass
+
+
+def _meta_dir(cache_dir=None):
+    base = cache_dir or DEFAULT_DATA_DIR
+    path = os.path.join(base, "meta")
+    _ensure_dir(path)
+    return path
+
+
+def _options_dir(ticker=None, cache_dir=None):
+    base = cache_dir or DEFAULT_DATA_DIR
+    path = os.path.join(base, "options")
+    if ticker:
+        path = os.path.join(path, ticker.replace("/", "_"))
+    _ensure_dir(path)
+    return path
+
+
+def _now_utc():
+    return datetime.utcnow()
+
+
+def _parse_iso(ts):
+    try:
+        return pd.to_datetime(ts)
+    except Exception:
+        return None
+
+
+def _is_fresh(ts_iso, ttl_seconds):
+    try:
+        ts = _parse_iso(ts_iso)
+        if ts is None or pd.isna(ts):
+            return False
+        return (_now_utc() - ts).total_seconds() <= float(ttl_seconds)
+    except Exception:
+        return False
+
+
+def _read_meta_json(meta_file):
+    try:
+        import json
+        with open(meta_file, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _write_meta_json(meta_file, data):
+    try:
+        import json
+        _ensure_dir(os.path.dirname(meta_file))
+        with open(meta_file, 'w') as f:
+            json.dump(data, f, default=str)
+    except Exception:
+        pass
+
+
+def get_cached_expirations(ticker, tk=None, cache_dir=None, ttl_hours=_DEF_EXP_TTL_HOURS):
+    cache_dir = cache_dir or DEFAULT_DATA_DIR
+    meta_file = os.path.join(_meta_dir(cache_dir), f"{ticker.replace('/', '_')}_meta.json")
+    meta = _read_meta_json(meta_file)
+    key = "expirations"
+    ts_key = "expirations_ts"
+    ttl_sec = int(ttl_hours) * 3600
+    if key in meta and ts_key in meta and _is_fresh(meta.get(ts_key), ttl_sec):
+        exps = meta.get(key) or []
+        return [pd.to_datetime(d).strftime('%Y-%m-%d') for d in exps]
+    # fetch
+    try:
+        tk = tk or yf.Ticker(ticker)
+        exps = list(getattr(tk, 'options', []) or [])
+        # normalize to str YYYY-MM-DD
+        exps = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in exps]
+        meta[key] = exps
+        meta[ts_key] = _now_utc().isoformat()
+        _write_meta_json(meta_file, meta)
+        return exps
+    except Exception:
+        return meta.get(key, []) or []
+
+
+def get_cached_earnings(ticker, cache_dir=None, ttl_days=_DEF_EARN_TTL_DAYS):
+    cache_dir = cache_dir or DEFAULT_DATA_DIR
+    meta_file = os.path.join(_meta_dir(cache_dir), f"{ticker.replace('/', '_')}_meta.json")
+    meta = _read_meta_json(meta_file)
+    key = "earnings_dates"
+    ts_key = "earnings_ts"
+    ttl_sec = int(ttl_days) * 86400
+    if key in meta and ts_key in meta and _is_fresh(meta.get(ts_key), ttl_sec):
+        try:
+            return [pd.to_datetime(d).date() for d in meta.get(key, [])]
+        except Exception:
+            return None
+    # fetch
+    dates = []
+    try:
+        tk = yf.Ticker(ticker)
+        try:
+            edf = tk.get_earnings_dates(limit=40)
+        except Exception:
+            edf = None
+        if edf is not None and isinstance(edf, pd.DataFrame) and not edf.empty:
+            dates = [pd.to_datetime(d).date() for d in edf.index.to_pydatetime()]
+        else:
+            cal = getattr(tk, 'calendar', None)
+            if isinstance(cal, pd.DataFrame) and not cal.empty:
+                for val in cal.values.ravel():
+                    try:
+                        dd = pd.to_datetime(val).date()
+                        if dd not in dates:
+                            dates.append(dd)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    if dates:
+        meta[key] = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in dates]
+        meta[ts_key] = _now_utc().isoformat()
+        _write_meta_json(meta_file, meta)
+        return dates
+    return meta.get(key) and [pd.to_datetime(d).date() for d in meta.get(key, [])] or None
+
+
+def get_cached_option_chain_calls(ticker, expiry_str, tk=None, cache_dir=None, ttl_minutes=_DEF_CHAIN_TTL_MIN):
+    cache_dir = cache_dir or DEFAULT_DATA_DIR
+    odir = _options_dir(ticker, cache_dir)
+    calls_path = os.path.join(odir, f"{expiry_str}_calls.csv")
+    meta_path = os.path.join(odir, f"{expiry_str}_meta.json")
+    meta = _read_meta_json(meta_path)
+    ttl_sec = int(ttl_minutes) * 60
+    if os.path.isfile(calls_path) and _is_fresh(meta.get('ts'), ttl_sec):
+        try:
+            df = pd.read_csv(calls_path)
+            return df
+        except Exception:
+            pass
+    # fetch fresh
+    try:
+        tk = tk or yf.Ticker(ticker)
+        chain = tk.option_chain(expiry_str)
+        calls = chain.calls.copy()
+        try:
+            calls.to_csv(calls_path, index=False)
+            _write_meta_json(meta_path, {'ts': _now_utc().isoformat(), 'expiry': expiry_str})
+        except Exception:
+            pass
+        return calls
+    except Exception:
+        # On failure, if we have an existing file, return it regardless of freshness
+        if os.path.isfile(calls_path):
+            try:
+                return pd.read_csv(calls_path)
+            except Exception:
+                pass
+        return pd.DataFrame()
 
 
 def _cache_path(ticker, interval="1d", cache_dir=None):
@@ -358,7 +525,7 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
     opportunities = []
 
     try:
-        option_dates = tk.options
+        option_dates = get_cached_expirations(ticker, tk=tk, cache_dir=DEFAULT_DATA_DIR)
     except Exception:
         option_dates = []
     if not option_dates:
@@ -376,8 +543,9 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
             continue
         processed_expiries.add(expiry_str)
         try:
-            chain = tk.option_chain(expiry_str)
-            calls = chain.calls.copy()
+            calls = get_cached_option_chain_calls(ticker, expiry_str, tk=tk, cache_dir=DEFAULT_DATA_DIR)
+            if calls is None or isinstance(calls, pd.DataFrame) and calls.empty:
+                continue
         except Exception:
             continue
 
@@ -1089,24 +1257,7 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
             earnings_dates = None
             if bt_skip_earnings:
                 try:
-                    tk2 = yf.Ticker(t)
-                    try:
-                        edf = tk2.get_earnings_dates(limit=40)
-                    except Exception:
-                        edf = None
-                    if edf is not None and not edf.empty:
-                        earnings_dates = [pd.to_datetime(d).date() for d in edf.index.to_pydatetime()]
-                    else:
-                        cal = getattr(tk2, 'calendar', None)
-                        if isinstance(cal, pd.DataFrame) and not cal.empty:
-                            # calendar index sometimes contains 'Earnings Date'
-                            for val in cal.values.ravel():
-                                try:
-                                    dd = pd.to_datetime(val).date()
-                                    if dd not in (earnings_dates or []):
-                                        earnings_dates = (earnings_dates or []) + [dd]
-                                except Exception:
-                                    pass
+                    earnings_dates = get_cached_earnings(t, cache_dir=DEFAULT_DATA_DIR)
                 except Exception:
                     earnings_dates = None
 
