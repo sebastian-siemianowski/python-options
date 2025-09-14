@@ -91,6 +91,17 @@ def _render_summary(tickers, df_res: pd.DataFrame, df_bt: pd.DataFrame):
             'ticker','strategy_total_trades','strategy_win_rate','strategy_avg_trade_ret_x',
             'strategy_total_trade_profit_pct','strategy_CAGR','strategy_Sharpe','strategy_max_drawdown'
         ]
+        # Create readable column name mapping
+        col_names = {
+            'ticker': 'Ticker',
+            'strategy_total_trades': 'Total Trades', 
+            'strategy_win_rate': 'Win Rate',
+            'strategy_avg_trade_ret_x': 'Avg Trade Return',
+            'strategy_total_trade_profit_pct': 'Total Trade Profit %',
+            'strategy_CAGR': 'CAGR',
+            'strategy_Sharpe': 'Sharpe Ratio',
+            'strategy_max_drawdown': 'Max Drawdown'
+        }
         present = [c for c in cols if c in df_bt.columns]
         prev = df_bt[present].copy()
         prev = prev.drop_duplicates(subset=['ticker']) if 'ticker' in prev.columns else prev
@@ -103,7 +114,8 @@ def _render_summary(tickers, df_res: pd.DataFrame, df_bt: pd.DataFrame):
                 _RichTable = None
             tbl2 = (_RichTable or Table)(title="Strategy Backtest Summary (per ticker)", box=ROUNDED, border_style="magenta")
             for c in present:
-                tbl2.add_column(c, justify="right", style=("yellow" if c=="ticker" else "white"))
+                display_name = col_names.get(c, c)
+                tbl2.add_column(display_name, justify="right", style=("yellow" if c=="ticker" else "white"))
             for _, r in prev.head(20).iterrows():
                 row_vals = []
                 for c in present:
