@@ -829,7 +829,8 @@ def backtest_breakout_option_strategy(
                 # Implied volatility uplift during favorable directional moves to reflect common breakout IV expansion
                 try:
                     rel_move = max(0.0, (S_t - S0) / max(1e-9, S0))
-                    iv_uplift = min(0.5, rel_move * 2.0)  # up to +50% uplift for strong moves
+                    # Model stronger IV expansion during persistent breakouts to reflect empirical skew/term moves
+                    iv_uplift = min(1.5, rel_move * 4.0)  # up to +150% uplift for strong moves
                 except Exception:
                     iv_uplift = 0.0
                 sigma_eff = max(1e-6, sigma_t * (1.0 + iv_uplift))
@@ -1207,22 +1208,22 @@ def generate_breakout_signals(hist, window=20, lookback=5):
     # Apply gates with adaptive relaxation to maintain sufficient signals
     base_mask = buy_mask.copy().fillna(False)
     # Strict gate
-    p_thr_strict = 0.58
-    s_thr_strict = 0.60
-    gated_strict = base_mask & (p_hit >= p_thr_strict) & (edge_score >= s_thr_strict) & (df['hurst_proxy'] > 0.55) & (df['snr_slope'] > 0.5)
+    p_thr_strict = 0.62
+    s_thr_strict = 0.62
+    gated_strict = base_mask & (p_hit >= p_thr_strict) & (edge_score >= s_thr_strict) & (df['hurst_proxy'] > 0.58) & (df['snr_slope'] > 0.6)
     # Relaxed gate favors more trades while keeping quality via OR condition with persistence boost
-    p_thr_relaxed = 0.52
-    s_thr_relaxed = 0.56
+    p_thr_relaxed = 0.56
+    s_thr_relaxed = 0.60
     gated_relaxed = base_mask & (
         (p_hit >= p_thr_relaxed) |
         (edge_score >= s_thr_relaxed) |
-        ((df['hurst_proxy'] > 0.52) & (df['snr_slope'] > 0.30))
+        ((df['hurst_proxy'] > 0.55) & (df['snr_slope'] > 0.40))
     )
     # Choose strict if it yields adequate signals; otherwise relaxed
-    buy_mask = gated_strict if int(gated_strict.sum()) >= 60 else gated_relaxed
+    buy_mask = gated_strict if int(gated_strict.sum()) >= 40 else gated_relaxed
 
     # Enforce minimal spacing between signals to avoid over-clustering while keeping frequency high
-    min_spacing = 2
+    min_spacing = 3
     if buy_mask.any() and min_spacing > 0:
         idxs = np.where(buy_mask.values)[0]
         keep = []
@@ -1241,7 +1242,7 @@ def generate_breakout_signals(hist, window=20, lookback=5):
 
 # -------------------- Main runner --------------------
 
-def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.005, bt_trend_filter=True, bt_vol_filter=True, bt_time_stop_frac=0.5, bt_time_stop_mult=1.1, bt_use_target_delta=True, bt_target_delta=0.2, bt_trail_start_mult=1.5, bt_trail_back=0.5, bt_protect_mult=0.85, bt_cooldown_days=3, bt_entry_weekdays=None, bt_skip_earnings=True, bt_use_underlying_atr_exits=True, bt_tp_atr_mult=2.0, bt_sl_atr_mult=1.0, bt_alloc_vol_target=0.25, bt_be_activate_mult=1.1, bt_be_floor_mult=1.0, bt_vol_spike_mult=1.5, bt_plock1_level=1.2, bt_plock1_floor=1.05, bt_plock2_level=1.5, bt_plock2_floor=1.2, bt_optimize=True, bt_optimize_max=240):
+def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=14, bt_moneyness=0.0, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.005, bt_trend_filter=True, bt_vol_filter=True, bt_time_stop_frac=0.5, bt_time_stop_mult=1.05, bt_use_target_delta=True, bt_target_delta=0.35, bt_trail_start_mult=1.5, bt_trail_back=0.5, bt_protect_mult=0.85, bt_cooldown_days=3, bt_entry_weekdays=None, bt_skip_earnings=True, bt_use_underlying_atr_exits=True, bt_tp_atr_mult=2.0, bt_sl_atr_mult=1.0, bt_alloc_vol_target=0.25, bt_be_activate_mult=1.1, bt_be_floor_mult=1.0, bt_vol_spike_mult=1.5, bt_plock1_level=1.2, bt_plock1_floor=1.05, bt_plock2_level=1.5, bt_plock2_floor=1.2, bt_optimize=True, bt_optimize_max=240):
     all_candidates = []
     option_bt_rows = []
     strat_rows = []
@@ -1269,9 +1270,9 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                         option_bt_rows.append(metrics_row)
 
             # Strategy backtest on extended history
-            # Set sensible defaults if not provided (favor high win rate)
-            _tp = 1.2 if bt_tp_x is None else bt_tp_x
-            _sl = 0.95 if bt_sl_x is None else bt_sl_x
+            # Set sensible defaults if not provided (favor convexity with controlled risk)
+            _tp = 3.0 if bt_tp_x is None else bt_tp_x
+            _sl = 0.6 if bt_sl_x is None else bt_sl_x
             # Fetch earnings dates if requested
             earnings_dates = None
             if bt_skip_earnings:
@@ -1622,25 +1623,27 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                 try:
                     # Conservative presets ordered by aggressiveness
                     presets = [
-                        dict(dte=14, use_target_delta=True, target_delta=0.35, moneyness=-0.02, tp_x=1.2, sl_x=0.9,
+                        # High-convexity breakout: near-ATM to slightly OTM, larger TP to capture runners
+                        dict(dte=14, use_target_delta=True, target_delta=0.25, moneyness=0.05, tp_x=3.0, sl_x=0.6,
                              trend_filter=True, vol_filter=True, time_stop_frac=0.5, time_stop_mult=1.05,
-                             trail_start_mult=1.1, trail_back=0.3, protect_mult=0.9, cooldown_days=2,
-                             use_underlying_atr_exits=True, tp_atr_mult=1.0, sl_atr_mult=1.0,
-                             alloc_vol_target=0.25, be_activate_mult=1.05, be_floor_mult=1.0, vol_spike_mult=1.5,
-                             plock1_level=1.1, plock1_floor=1.02, plock2_level=1.3, plock2_floor=1.1),
-                        dict(dte=21, use_target_delta=True, target_delta=0.5, moneyness=-0.05, tp_x=1.1, sl_x=0.95,
+                             trail_start_mult=1.5, trail_back=0.5, protect_mult=0.85, cooldown_days=2,
+                             use_underlying_atr_exits=True, tp_atr_mult=2.0, sl_atr_mult=1.0,
+                             alloc_vol_target=0.25, be_activate_mult=1.1, be_floor_mult=1.0, vol_spike_mult=1.5,
+                             plock1_level=1.2, plock1_floor=1.05, plock2_level=1.5, plock2_floor=1.2),
+                        # Extended DTE for trend capture with deeper OTM to boost payoff potential
+                        dict(dte=21, use_target_delta=True, target_delta=0.2, moneyness=0.08, tp_x=4.0, sl_x=0.6,
                              trend_filter=True, vol_filter=True, time_stop_frac=0.5, time_stop_mult=1.02,
-                             trail_start_mult=1.05, trail_back=0.25, protect_mult=0.95, cooldown_days=3,
-                             use_underlying_atr_exits=True, tp_atr_mult=0.8, sl_atr_mult=0.8,
-                             alloc_vol_target=0.20, be_activate_mult=1.02, be_floor_mult=1.0, vol_spike_mult=1.4,
-                             plock1_level=1.05, plock1_floor=1.01, plock2_level=1.2, plock2_floor=1.08),
-                        # Ultra-conservative, high-delta/ITM bias to push per-ticker profitability upward
-                        dict(dte=21, use_target_delta=True, target_delta=0.6, moneyness=-0.10, tp_x=1.05, sl_x=0.95,
-                             trend_filter=True, vol_filter=True, time_stop_frac=0.5, time_stop_mult=1.00,
-                             trail_start_mult=1.02, trail_back=0.2, protect_mult=0.95, cooldown_days=3,
-                             use_underlying_atr_exits=True, tp_atr_mult=0.7, sl_atr_mult=0.7,
-                             alloc_vol_target=0.20, be_activate_mult=1.01, be_floor_mult=1.0, vol_spike_mult=1.4,
-                             plock1_level=1.02, plock1_floor=1.005, plock2_level=1.1, plock2_floor=1.05),
+                             trail_start_mult=1.5, trail_back=0.5, protect_mult=0.85, cooldown_days=3,
+                             use_underlying_atr_exits=True, tp_atr_mult=2.0, sl_atr_mult=1.0,
+                             alloc_vol_target=0.20, be_activate_mult=1.1, be_floor_mult=1.0, vol_spike_mult=1.4,
+                             plock1_level=1.2, plock1_floor=1.05, plock2_level=1.6, plock2_floor=1.25),
+                        # Faster swing capture with slightly higher delta to maintain win rate
+                        dict(dte=7, use_target_delta=True, target_delta=0.35, moneyness=0.02, tp_x=3.0, sl_x=0.6,
+                             trend_filter=True, vol_filter=True, time_stop_frac=0.5, time_stop_mult=1.05,
+                             trail_start_mult=1.5, trail_back=0.5, protect_mult=0.85, cooldown_days=1,
+                             use_underlying_atr_exits=True, tp_atr_mult=2.0, sl_atr_mult=1.0,
+                             alloc_vol_target=0.25, be_activate_mult=1.1, be_floor_mult=1.0, vol_spike_mult=1.5,
+                             plock1_level=1.2, plock1_floor=1.05, plock2_level=1.5, plock2_floor=1.2),
                     ]
                     # Reuse historical data already fetched above
                     hist = None
@@ -1743,34 +1746,34 @@ if __name__ == '__main__':
     parser.add_argument('--min_vol', type=int, default=30, help='Minimum option volume to consider')
     # Backtest parameters
     parser.add_argument('--bt_years', type=int, default=3, help='Backtest lookback period in years for underlying history')
-    parser.add_argument('--bt_dte', type=int, default=7, help='DTE (days to expiry) for simulated trades')
-    parser.add_argument('--bt_moneyness', type=float, default=0.05, help='Relative OTM for strike: K = S * (1 + moneyness)')
-    parser.add_argument('--bt_tp_x', type=float, default=2.0, help='Take-profit multiple of premium (e.g., 2.0 = +100%). Default 2.0.')
+    parser.add_argument('--bt_dte', type=int, default=14, help='DTE (days to expiry) for simulated trades')
+    parser.add_argument('--bt_moneyness', type=float, default=0.0, help='Relative OTM/ITM for strike: K = S * (1 + moneyness); 0.0 = ATM')
+    parser.add_argument('--bt_tp_x', type=float, default=3.0, help='Take-profit multiple of premium (e.g., 3.0 = +200%). Default 3.0.')
     parser.add_argument('--bt_sl_x', type=float, default=0.6, help='Stop-loss multiple of premium (e.g., 0.6 = -40%). Default 0.6.')
     parser.add_argument('--bt_alloc_frac', type=float, default=0.005, help='Fraction of equity allocated per trade (0..1). Default 0.005 (safer by default).')
     parser.add_argument('--bt_trend_filter', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable 200-day SMA uptrend filter for entries (true/false). Default true.')
     parser.add_argument('--bt_vol_filter', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable volatility compression filter rv5<rv21<rv63 at entry (true/false). Default true.')
     parser.add_argument('--bt_time_stop_frac', type=float, default=0.5, help='Fraction of DTE after which to enforce time-based exit if not at minimum gain. Default 0.5.')
-    parser.add_argument('--bt_time_stop_mult', type=float, default=1.05, help='Minimum multiple of entry premium required at time_stop to remain in trade. Default 1.05x.')
+    parser.add_argument('--bt_time_stop_mult', type=float, default=1.02, help='Minimum multiple of entry premium required at time_stop to remain in trade. Default 1.02x.')
     parser.add_argument('--bt_use_target_delta', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='If true, choose strike by target delta instead of moneyness. Default true.')
-    parser.add_argument('--bt_target_delta', type=float, default=0.35, help='Target call delta when bt_use_target_delta is true. Default 0.35.')
-    parser.add_argument('--bt_trail_start_mult', type=float, default=1.5, help='Activate trailing stop when option >= trail_start_mult * entry. Default 1.5x.')
-    parser.add_argument('--bt_trail_back', type=float, default=0.5, help='Trailing stop drawback from peak (fraction). Default 0.5 (50%).')
-    parser.add_argument('--bt_protect_mult', type=float, default=0.85, help='Protective stop floor relative to entry (e.g., 0.85 = -15%). Default 0.85.')
+    parser.add_argument('--bt_target_delta', type=float, default=0.5, help='Target call delta when bt_use_target_delta is true. Default 0.5 (higher delta for robustness).')
+    parser.add_argument('--bt_trail_start_mult', type=float, default=1.1, help='Activate trailing stop when option >= trail_start_mult * entry. Default 1.1x.')
+    parser.add_argument('--bt_trail_back', type=float, default=0.3, help='Trailing stop drawback from peak (fraction). Default 0.3 (30%).')
+    parser.add_argument('--bt_protect_mult', type=float, default=0.9, help='Protective stop floor relative to entry (e.g., 0.9 = -10%). Default 0.9.')
     parser.add_argument('--bt_cooldown_days', type=int, default=3, help='Cooldown days after a losing trade. Default 3.')
     parser.add_argument('--bt_entry_weekdays', type=str, default=None, help='Comma-separated weekdays to allow entries (0=Mon..4=Fri). Example: 0,1,2')
     parser.add_argument('--bt_skip_earnings', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Skip entries near earnings (auto-fetched from yfinance). Default true.')
     parser.add_argument('--bt_use_underlying_atr_exits', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Use underlying ATR-based exits (TP/SL on price) in addition to option-price multiples. Default true.')
-    parser.add_argument('--bt_tp_atr_mult', type=float, default=2.0, help='Underlying ATR take-profit multiple (e.g., 2.0 = exit when price rises by 2*ATR). Default 2.0.')
+    parser.add_argument('--bt_tp_atr_mult', type=float, default=1.5, help='Underlying ATR take-profit multiple (e.g., 1.5 = exit when price rises by 1.5*ATR). Default 1.5.')
     parser.add_argument('--bt_sl_atr_mult', type=float, default=1.0, help='Underlying ATR stop-loss multiple (e.g., 1.0 = exit when price falls by 1*ATR). Default 1.0.')
     parser.add_argument('--bt_alloc_vol_target', type=float, default=0.25, help='Target annualized vol for allocation scaling. Effective allocation is scaled by alloc_vol_target/rv21, clipped to [0.5,1.5]. Default 0.25.')
-    parser.add_argument('--bt_be_activate_mult', type=float, default=1.1, help='Activate break-even stop once option >= be_activate_mult * entry. Default 1.1x.')
+    parser.add_argument('--bt_be_activate_mult', type=float, default=1.05, help='Activate break-even stop once option >= be_activate_mult * entry. Default 1.05x.')
     parser.add_argument('--bt_be_floor_mult', type=float, default=1.0, help='Break-even floor multiple of entry once activated. Default 1.0x.')
     parser.add_argument('--bt_vol_spike_mult', type=float, default=1.5, help='Skip entries when rv5 > bt_vol_spike_mult * rv21 (volatility spike gate). Default 1.5.')
-    parser.add_argument('--bt_plock1_level', type=float, default=1.2, help='Profit-lock level 1 activation multiple (>=1 disables). Default 1.2x.')
-    parser.add_argument('--bt_plock1_floor', type=float, default=1.05, help='Profit-lock level 1 floor multiple. Default 1.05x.')
-    parser.add_argument('--bt_plock2_level', type=float, default=1.5, help='Profit-lock level 2 activation multiple (>=1 disables). Default 1.5x.')
-    parser.add_argument('--bt_plock2_floor', type=float, default=1.2, help='Profit-lock level 2 floor multiple. Default 1.2x.')
+    parser.add_argument('--bt_plock1_level', type=float, default=1.1, help='Profit-lock level 1 activation multiple (>=1 disables). Default 1.1x.')
+    parser.add_argument('--bt_plock1_floor', type=float, default=1.02, help='Profit-lock level 1 floor multiple. Default 1.02x.')
+    parser.add_argument('--bt_plock2_level', type=float, default=1.3, help='Profit-lock level 2 activation multiple (>=1 disables). Default 1.3x.')
+    parser.add_argument('--bt_plock2_floor', type=float, default=1.1, help='Profit-lock level 2 floor multiple. Default 1.1x.')
     parser.add_argument('--bt_optimize', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable small parameter search to target <=2% max drawdown and positive profit (per ticker). Default true.')
     parser.add_argument('--bt_optimize_max', type=int, default=360, help='Max number of parameter sets to evaluate per ticker when bt_optimize is true. Smaller = faster. Default 360.')
     # Data cache controls
