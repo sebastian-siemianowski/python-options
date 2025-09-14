@@ -8,8 +8,13 @@ SHELL := /bin/bash
 #   make backtest ARGS="--tickers AAPL,MSFT --bt_years 3"
 #   make doctor                        # checks your Python environment and libs
 #   make doctor ARGS="--fix"           # auto-install requirements
-run:
+
+# Ensure virtual environment exists before running commands
+.venv/bin/python:
+	@bash ./setup_venv.sh
+
+run: .venv/bin/python
 	@bash ./run.sh $(ARGS)
 
-backtest:
+backtest: .venv/bin/python
 	@bash ./backtest.sh $(ARGS)
