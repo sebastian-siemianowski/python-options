@@ -771,7 +771,7 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
     strat_rows = []
     # Auto-detect backtest-only mode (backtest.sh sets min_oi and min_vol to huge values)
     _skip_plots = (float(min_oi) >= 1e7 and float(min_vol) >= 1e7)
-    for t in tqdm(tickers, desc='Tickers'):
+    for t in _progress_iter(tickers, "Tickers"):
         try:
             df_ops, hist = analyze_ticker_for_dtes(t, dte_targets=(0,3,7), min_oi=min_oi, min_volume=min_vol, hist_years=bt_years)
             if df_ops.empty:
@@ -1141,6 +1141,7 @@ try:
     from rich.table import Table
     from rich.panel import Panel
     from rich.box import ROUNDED
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
     import os as _os
     _HAS_RICH = True
     # Force colors in common non-TTY contexts (e.g., make) unless NO_COLOR is set.
@@ -1158,16 +1159,45 @@ def _fmt_pct(x):
         return "-"
 
 
+def _progress_iter(seq, description=""):
+    # Modern progress bar using Rich when available; falls back to sleek tqdm.
+    try:
+        total = len(seq)
+    except Exception:
+        total = None
+    if _HAS_RICH:
+        columns = [
+            SpinnerColumn(style="cyan"),
+            TextColumn("[bold cyan]{task.description}"),
+            BarColumn(bar_width=None, complete_style="bright_cyan", finished_style="green"),
+            TextColumn("{task.completed}/{task.total}" if total is not None else "{task.completed}", style="white"),
+            TextColumn("•", style="dim"),
+            TimeElapsedColumn(),
+            TextColumn("<", style="dim"),
+            TimeRemainingColumn(),
+        ]
+        with Progress(*columns, transient=True, console=_CON) as progress:
+            task_id = progress.add_task(description or "Working", total=total)
+            for item in seq:
+                yield item
+                progress.advance(task_id)
+    else:
+        it = tqdm(
+            seq,
+            desc=description or "Working",
+            dynamic_ncols=True,
+            bar_format="{l_bar}{bar:25} {n_fmt}/{total_fmt} • {elapsed}<{remaining} • {rate_fmt}",
+            colour="cyan",
+            mininterval=0.2,
+        )
+        for item in it:
+            yield item
+
+
 def _render_summary(tickers, df_res, df_bt):
     import numpy as _np
     import pandas as _pd
-    # Header
-    if _HAS_RICH:
-        _CON.print(Panel.fit("Options Screener & Strategy Backtest", style="bold white on dark_green", border_style="green", padding=(0,2)))
-        _CON.print(f"Running screener on: [bold cyan]{', '.join(tickers)}[/]", justify="left")
-    else:
-        print("Options Screener & Strategy Backtest")
-        print("Running screener on:", tickers)
+    # Header printed at start; avoid duplicating here
 
     if df_res is not None and not df_res.empty:
         top = df_res[['ticker','expiry','dte','strike','mid','openInterest','volume','impliedVol','prob_10x']].head(10)
@@ -1193,6 +1223,8 @@ def _render_summary(tickers, df_res, df_bt):
         prev = df_bt[present].copy()
         prev = prev.drop_duplicates(subset=['ticker']) if 'ticker' in prev.columns else prev
         if _HAS_RICH:
+            # Add breathing room before the table
+            _CON.print("")
             tbl2 = Table(title="Strategy Backtest Summary (per ticker)", box=ROUNDED, border_style="magenta")
             for c in present:
                 tbl2.add_column(c, justify="right", style=("yellow" if c=="ticker" else "white"))
@@ -1204,6 +1236,12 @@ def _render_summary(tickers, df_res, df_bt):
                         row_vals.append(_fmt_pct(v))
                     elif c == 'strategy_total_trade_profit_pct':
                         row_vals.append(f"{float(v):.2f}%")
+                    elif c == 'strategy_total_trades':
+                        try:
+                            iv = int(round(float(v)))
+                            row_vals.append(f"{iv}")
+                        except Exception:
+                            row_vals.append(str(v))
                     else:
                         try:
                             row_vals.append(f"{float(v):.4f}")
@@ -1211,10 +1249,16 @@ def _render_summary(tickers, df_res, df_bt):
                             row_vals.append(str(v))
                 tbl2.add_row(*row_vals)
             _CON.print(tbl2)
+            # And a blank line after
+            _CON.print("")
         else:
-            print('\nBacktest summary saved to screener_results_backtest.csv')
             print(prev.head(20).to_string(index=False))
 
+        # Spacer before combined profitability lines
+        if _HAS_RICH:
+            _CON.print("")
+        else:
+            print("")
         # Combined profitability lines
         try:
             combined_line = None
@@ -1239,21 +1283,15 @@ def _render_summary(tickers, df_res, df_bt):
                     avg_val = float(avg_line.split(': ')[1].split('%')[0])
                     style2 = "green" if avg_val>=0 else "red"
                     _CON.print(avg_line, style=style2)
-                _CON.print("Saved to [bold]screener_results_backtest.csv[/]", style="dim")
+                    _CON.print("")  # spacer after average profitability line
             else:
                 if combined_line: print("\n" + combined_line)
-                if avg_line: print(avg_line)
+                if avg_line:
+                    print(avg_line)
+                    print("")  # spacer after average profitability line
         except Exception:
             pass
 
-    # Footer notes
-    if _HAS_RICH:
-        _CON.print("\nPlots saved to [bold]plots/[/] (one per ticker)", style="dim")
-        _CON.print("Per-ticker equity curves saved to [bold]backtests/<TICKER>_equity.csv[/]", style="dim")
-    else:
-        print('\nPlots saved to plots/ (one per ticker)')
-        print('Per-ticker equity curves saved to backtests/<TICKER>_equity.csv')
-        print('Note: Rich (color console) not installed — run `make doctor --fix` to enable colored output.')
 
 
 if __name__ == '__main__':
@@ -1348,6 +1386,20 @@ if __name__ == '__main__':
             entry_weekdays_list = [d for d in entry_weekdays_list if 0 <= d <= 6]
         except Exception:
             entry_weekdays_list = None
+
+    # Print header first so it appears before any progress bars
+    if _HAS_RICH:
+        _CON.print("")  # top spacer
+        _CON.print("[bold white]Options Screener & Strategy Backtest[/]")
+        _CON.print("")  # spacer between title and tickers
+        _CON.print(f"Tickers: [cyan]{', '.join(tickers)}[/]")
+        _CON.print("")  # spacer after tickers
+    else:
+        print("")
+        print("Options Screener & Strategy Backtest")
+        print("")
+        print("Tickers:", ", ".join(tickers))
+        print("")
 
     # Run
     df_res, df_bt = run_screener(
