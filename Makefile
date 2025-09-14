@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor
+.PHONY: run backtest doctor clear
 # Usage:
 #   make run                           # runs with defaults (screener + backtest)
 #   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
@@ -18,3 +18,13 @@ run: .venv/bin/python
 
 backtest: .venv/bin/python
 	@bash ./backtest.sh $(ARGS)
+
+clear:
+	@echo "Clearing data cache..."
+	@rm -rf __pycache__/
+	@find . -name "*.pyc" -delete
+	@find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+	@rm -rf plots/*.png
+	@rm -rf data/meta/
+	@rm -f data/*.backup
+	@echo "Data cache cleared successfully!"
