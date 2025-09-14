@@ -51,6 +51,28 @@ def bsm_call_price(S, K, T, r, sigma):
     d2 = d1 - sigma*np.sqrt(T)
     return S * norm.cdf(d1) - K * np.exp(-r*T) * norm.cdf(d2)
 
+def bsm_call_delta(S, K, T, r, sigma):
+    # European call delta under BSM
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return 1.0 if S > K else 0.0
+    d1 = (np.log(S/K) + (r + 0.5*sigma*sigma)*T) / (sigma*np.sqrt(T))
+    return float(norm.cdf(d1))
+
+def strike_for_target_delta(S, T, r, sigma, target_delta):
+    # Solve for K such that call delta ~= target_delta using Brent on log-strike scale
+    target = float(target_delta)
+    if not (0.01 <= target <= 0.99):
+        target = 0.25
+    # Search K in [S*0.5, S*2.0]
+    def f(K):
+        return bsm_call_delta(S, K, T, r, sigma) - target
+    try:
+        return float(brentq(f, S*0.5, S*2.0, maxiter=200))
+    except Exception:
+        # fallback to moneyness of ~ (1 - target_delta) heuristic
+        mny = max(0.01, min(0.2, 0.3 - target*0.5))
+        return float(S * (1.0 + mny))
+
 
 def bsm_implied_vol(price, S, K, T, r):
     # invert BSM for calls using Brent
@@ -264,22 +286,54 @@ def approximate_backtest_option_10x(ticker, candidate_row, hist, r=0.01):
 
 # -------------------- Strategy backtest (multi-year, SL/TP) --------------------
 
-def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=None, sl_x=None, alloc_frac=0.1, trend_filter=True, vol_filter=True, time_stop_frac=0.5, time_stop_mult=1.2):
-    """Simulate a simple strategy: on breakout BUY signal, buy an OTM call (strike = S*(1+moneyness)),
-    price via BSM, hold until TP/SL or expiry. Returns equity curve and trade log + metrics.
+def backtest_breakout_option_strategy(
+    hist,
+    dte=7,
+    moneyness=0.05,
+    r=0.01,
+    tp_x=None,
+    sl_x=None,
+    alloc_frac=0.1,
+    trend_filter=True,
+    vol_filter=True,
+    time_stop_frac=0.5,
+    time_stop_mult=1.2,
+    use_target_delta=False,
+    target_delta=0.25,
+    trail_start_mult=1.5,
+    trail_back=0.5,
+    protect_mult=0.7,
+    cooldown_days=0,
+    entry_weekdays=None,
+    skip_earnings=False,
+    earnings_dates=None,
+    earnings_buffer_days=7,
+):
+    """Simulate a strategy: on breakout BUY signal, buy a short-dated call (via BSM),
+    manage with TP/SL, optional trailing stop, and optional regime/vol filters.
 
     Parameters:
         hist: DataFrame with Date, Close, Volume, rv21 columns
         dte: days to expiry for each trade
-        moneyness: e.g., 0.05 means 5% OTM strike K = S * (1 + moneyness)
+        moneyness: if use_target_delta=False, K = S * (1 + moneyness)
         r: risk-free rate
         tp_x: take-profit multiple of entry premium (e.g., 3.0 = +200%)
         sl_x: stop-loss multiple of entry premium (e.g., 0.5 = -50%)
-        alloc_frac: fraction of equity allocated per trade (0..1). Remaining stays in cash. Default 0.1 (10%).
-        trend_filter: if True, only take longs when above rising 200-day SMA with 50>200.
-        vol_filter: if True, require volatility compression (rv5 < rv21 < rv63) at entry.
-        time_stop_frac: fraction of DTE after which we exit if not at a minimum gain.
-        time_stop_mult: minimum multiple of entry premium to remain in trade at time_stop.
+        alloc_frac: fraction of equity allocated per trade (0..1)
+        trend_filter: only take longs when above rising 200-day SMA with 50>200
+        vol_filter: require volatility compression (rv5 < rv21 < rv63) at entry
+        time_stop_frac: fraction of DTE after which we exit if not at a minimum gain
+        time_stop_mult: minimum multiple of entry premium to remain in trade at time_stop
+        use_target_delta: if True, select strike by target delta; else use moneyness
+        target_delta: desired call delta (e.g., 0.25)
+        trail_start_mult: start trailing when option >= entry * trail_start_mult
+        trail_back: fraction below peak to exit once trailing active (e.g., 0.5 means exit if drawdown from peak >50%)
+        protect_mult: floor stop relative to entry while in trade (e.g., 0.7 = -30%)
+        cooldown_days: skip this many sessions after a losing trade
+        entry_weekdays: iterable of allowed weekday integers (0=Mon..4=Fri). None=all
+        skip_earnings: if True, skip entries within earnings_buffer_days of an earnings date
+        earnings_dates: list/array of earnings dates (datetime.date) to avoid
+        earnings_buffer_days: days around earnings to skip entries
     """
     df = hist.copy()
     if 'rv21' not in df.columns:
@@ -317,8 +371,24 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
     equity_curve = []
     trades = []
 
+    # Prepare weekday filter
+    allowed_weekdays = set(entry_weekdays) if entry_weekdays is not None else None
+
+    # Earnings skip set
+    earnings_set = set()
+    if skip_earnings and earnings_dates is not None and len(earnings_dates) > 0:
+        try:
+            edates = [pd.to_datetime(d).date() for d in earnings_dates]
+            for ed in edates:
+                # block a window around earnings
+                for off in range(-int(earnings_buffer_days), int(earnings_buffer_days)+1):
+                    earnings_set.add(ed + timedelta(days=off))
+        except Exception:
+            earnings_set = set()
+
     i = 0
     n = len(df)
+    cooldown = 0
     while i < n:
         # Not enough time remaining for a full trade
         if i >= n - 2:
@@ -328,6 +398,24 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
 
         # If buy signal today and enough room for trade horizon
         if i in signal_idx and i + dte < n:
+            # Cooldown after loss
+            if cooldown > 0:
+                cooldown -= 1
+                equity_curve.append({'Date': dates.iloc[i], 'equity': equity})
+                i += 1
+                continue
+            # Weekday filter
+            if allowed_weekdays is not None:
+                if int(pd.to_datetime(dates.iloc[i]).weekday()) not in allowed_weekdays:
+                    equity_curve.append({'Date': dates.iloc[i], 'equity': equity})
+                    i += 1
+                    continue
+            # Earnings proximity filter
+            if skip_earnings and len(earnings_set) > 0:
+                if pd.to_datetime(dates.iloc[i]).date() in earnings_set:
+                    equity_curve.append({'Date': dates.iloc[i], 'equity': equity})
+                    i += 1
+                    continue
             # Trend filter: only take trade in uptrend if enabled and we have enough SMA history
             if trend_filter:
                 sma_ok = not (np.isnan(sma200.iloc[i]) or np.isnan(sma200_prev.iloc[i]) or np.isnan(sma50.iloc[i]))
@@ -348,8 +436,12 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
 
             S0 = float(closes.iloc[i])
             sigma0 = float(vols.iloc[i]) if np.isfinite(vols.iloc[i]) else float(np.nanmean(vols[:i+1]))
-            K = S0 * (1.0 + float(moneyness))
-            price0 = bsm_call_price(S0, K, max(1/252.0, dte/252.0), r, max(1e-6, sigma0))
+            T0 = max(1/252.0, dte/252.0)
+            if use_target_delta:
+                K = strike_for_target_delta(S0, T0, r, max(1e-6, sigma0), float(target_delta))
+            else:
+                K = S0 * (1.0 + float(moneyness))
+            price0 = bsm_call_price(S0, K, T0, r, max(1e-6, sigma0))
             if price0 <= 0:
                 # skip unpriceable
                 equity_curve.append({'Date': dates.iloc[i], 'equity': equity})
@@ -359,13 +451,23 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
             exit_price = None
             reason = 'expiry'
 
-            # simulate daily and check SL/TP
+            # simulate daily and check SL/TP/Trailing/Time stop
             tstop_index = i + int(max(1, round(dte * float(time_stop_frac))))
+            peak_price = price0
+            trailing_active = False
             for j in range(i+1, i + dte + 1):
                 t_remaining = max(1/252.0, (i + dte - j)/252.0)
                 S_t = float(closes.iloc[j])
                 sigma_t = float(vols.iloc[j]) if np.isfinite(vols.iloc[j]) else sigma0
                 model_price_t = bsm_call_price(S_t, K, t_remaining, r, max(1e-6, sigma_t)) if t_remaining>0 else max(S_t - K, 0.0)
+                peak_price = max(peak_price, model_price_t)
+                # Protective stop from entry
+                if protect_mult is not None and model_price_t <= price0 * float(protect_mult):
+                    exit_idx = j
+                    exit_price = model_price_t
+                    reason = 'protect_stop'
+                    break
+                # Fixed TP/SL
                 if tp_x is not None and model_price_t >= price0 * float(tp_x):
                     exit_idx = j
                     exit_price = model_price_t
@@ -376,6 +478,16 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
                     exit_price = model_price_t
                     reason = 'sl'
                     break
+                # Activate trailing when threshold reached
+                if not trailing_active and model_price_t >= price0 * float(trail_start_mult):
+                    trailing_active = True
+                if trailing_active:
+                    trail_floor = max(price0 * float(sl_x if sl_x is not None else 0.0), peak_price * (1.0 - float(trail_back)))
+                    if model_price_t <= trail_floor:
+                        exit_idx = j
+                        exit_price = model_price_t
+                        reason = 'trailing'
+                        break
                 # Time-based exit if not achieving minimal progress
                 if j >= tstop_index and model_price_t < price0 * float(time_stop_mult):
                     exit_idx = j
@@ -404,6 +516,11 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
                 'S_entry': S0,
                 'S_exit': float(closes.iloc[exit_idx])
             })
+            # Post-trade cooldown if loser
+            if cooldown_days and ret_x <= 1.0:
+                cooldown = int(cooldown_days)
+            else:
+                cooldown = 0
             # Fill equity curve from i to exit_idx
             for k in range(i, exit_idx+1):
                 equity_curve.append({'Date': dates.iloc[k], 'equity': equity})
@@ -412,6 +529,8 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
 
         # No trade today
         equity_curve.append({'Date': dates.iloc[i], 'equity': equity})
+        if cooldown > 0:
+            cooldown -= 1
         i += 1
 
     eq_df = pd.DataFrame(equity_curve).drop_duplicates(subset=['Date'], keep='last')
@@ -523,7 +642,7 @@ def generate_breakout_signals(hist, window=20, lookback=5):
 
 # -------------------- Main runner --------------------
 
-def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.1, bt_trend_filter=True, bt_vol_filter=True, bt_time_stop_frac=0.5, bt_time_stop_mult=1.2):
+def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.1, bt_trend_filter=True, bt_vol_filter=True, bt_time_stop_frac=0.5, bt_time_stop_mult=1.2, bt_use_target_delta=False, bt_target_delta=0.25, bt_trail_start_mult=1.5, bt_trail_back=0.5, bt_protect_mult=0.7, bt_cooldown_days=0, bt_entry_weekdays=None, bt_skip_earnings=False):
     all_candidates = []
     option_bt_rows = []
     strat_rows = []
@@ -550,7 +669,11 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
             eq_df, trades_df, strat_metrics = backtest_breakout_option_strategy(
                 hist, dte=bt_dte, moneyness=bt_moneyness, r=0.01, tp_x=_tp, sl_x=_sl,
                 alloc_frac=bt_alloc_frac, trend_filter=bt_trend_filter,
-                vol_filter=bt_vol_filter, time_stop_frac=bt_time_stop_frac, time_stop_mult=bt_time_stop_mult
+                vol_filter=bt_vol_filter, time_stop_frac=bt_time_stop_frac, time_stop_mult=bt_time_stop_mult,
+                use_target_delta=bt_use_target_delta, target_delta=bt_target_delta,
+                trail_start_mult=bt_trail_start_mult, trail_back=bt_trail_back,
+                protect_mult=bt_protect_mult, cooldown_days=bt_cooldown_days,
+                entry_weekdays=bt_entry_weekdays, skip_earnings=bt_skip_earnings
             )
             # save equity curve per ticker
             try:
@@ -572,6 +695,11 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                          'bt_years': bt_years, 'bt_dte': bt_dte, 'bt_moneyness': bt_moneyness,
                          'bt_alloc_frac': bt_alloc_frac, 'bt_trend_filter': bt_trend_filter,
                          'bt_vol_filter': bt_vol_filter, 'bt_time_stop_frac': bt_time_stop_frac, 'bt_time_stop_mult': bt_time_stop_mult,
+                         'bt_use_target_delta': bt_use_target_delta, 'bt_target_delta': bt_target_delta,
+                         'bt_trail_start_mult': bt_trail_start_mult, 'bt_trail_back': bt_trail_back,
+                         'bt_protect_mult': bt_protect_mult, 'bt_cooldown_days': bt_cooldown_days,
+                         'bt_entry_weekdays': ','.join(map(str, bt_entry_weekdays)) if bt_entry_weekdays else '',
+                         'bt_skip_earnings': bt_skip_earnings,
                          'bt_tp_x': _tp if _tp is not None else '',
                          'bt_sl_x': _sl if _sl is not None else ''}
             strat_rows.append(strat_row)
@@ -635,6 +763,14 @@ if __name__ == '__main__':
     parser.add_argument('--bt_vol_filter', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable volatility compression filter rv5<rv21<rv63 at entry (true/false). Default true.')
     parser.add_argument('--bt_time_stop_frac', type=float, default=0.5, help='Fraction of DTE after which to enforce time-based exit if not at minimum gain. Default 0.5.')
     parser.add_argument('--bt_time_stop_mult', type=float, default=1.2, help='Minimum multiple of entry premium required at time_stop to remain in trade. Default 1.2x.')
+    parser.add_argument('--bt_use_target_delta', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=False, help='If true, choose strike by target delta instead of moneyness.')
+    parser.add_argument('--bt_target_delta', type=float, default=0.25, help='Target call delta when bt_use_target_delta is true. Default 0.25.')
+    parser.add_argument('--bt_trail_start_mult', type=float, default=1.5, help='Activate trailing stop when option >= trail_start_mult * entry. Default 1.5x.')
+    parser.add_argument('--bt_trail_back', type=float, default=0.5, help='Trailing stop drawback from peak (fraction). Default 0.5 (50%).')
+    parser.add_argument('--bt_protect_mult', type=float, default=0.7, help='Protective stop floor relative to entry (e.g., 0.7 = -30%). Default 0.7.')
+    parser.add_argument('--bt_cooldown_days', type=int, default=0, help='Cooldown days after a losing trade. Default 0.')
+    parser.add_argument('--bt_entry_weekdays', type=str, default=None, help='Comma-separated weekdays to allow entries (0=Mon..4=Fri). Example: 0,1,2')
+    parser.add_argument('--bt_skip_earnings', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=False, help='Skip entries near earnings (requires providing earnings dates externally).')
     args = parser.parse_args()
 
     def load_tickers_from_csv(path):
@@ -679,6 +815,15 @@ if __name__ == '__main__':
     _valid_re = _re.compile(r"^[A-Z0-9.\-^]{1,15}$")
     tickers = [t for t in tickers if t and t not in _header_tokens and _valid_re.match(t)]
 
+    # Parse entry weekdays if provided
+    entry_weekdays_list = None
+    if args.bt_entry_weekdays:
+        try:
+            entry_weekdays_list = [int(x) for x in str(args.bt_entry_weekdays).split(',') if str(x).strip()!='']
+            entry_weekdays_list = [d for d in entry_weekdays_list if 0 <= d <= 6]
+        except Exception:
+            entry_weekdays_list = None
+
     print('Running screener on:', tickers)
     df_res, df_bt = run_screener(
         tickers,
@@ -695,6 +840,14 @@ if __name__ == '__main__':
         bt_vol_filter=args.bt_vol_filter,
         bt_time_stop_frac=args.bt_time_stop_frac,
         bt_time_stop_mult=args.bt_time_stop_mult,
+        bt_use_target_delta=args.bt_use_target_delta,
+        bt_target_delta=args.bt_target_delta,
+        bt_trail_start_mult=args.bt_trail_start_mult,
+        bt_trail_back=args.bt_trail_back,
+        bt_protect_mult=args.bt_protect_mult,
+        bt_cooldown_days=args.bt_cooldown_days,
+        bt_entry_weekdays=entry_weekdays_list,
+        bt_skip_earnings=args.bt_skip_earnings,
     )
 
     print('\nScreener finished.')

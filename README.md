@@ -345,6 +345,19 @@ Key CLI flags:
 - --bt_moneyness PCT    # OTM percent for strike; K = S * (1 + PCT), e.g., 0.05 = 5% OTM (default: 0.05)
 - --bt_tp_x X           # optional take-profit multiple of entry premium, e.g., 3.0 for +200%
 - --bt_sl_x X           # optional stop-loss multiple of entry premium, e.g., 0.5 for -50%
+- --bt_alloc_frac F     # fraction of equity per trade, 0..1 (default: 0.1)
+- --bt_trend_filter T   # true/false; require uptrend (default: true)
+- --bt_vol_filter V     # true/false; require rv5<rv21<rv63 (default: true)
+- --bt_time_stop_frac Q # fraction of DTE for time-based check (default: 0.5)
+- --bt_time_stop_mult M # min multiple at time stop to remain (default: 1.2)
+- --bt_use_target_delta B # true/false; use target delta for strike (default: false)
+- --bt_target_delta D   # target delta value when enabled (default: 0.25)
+- --bt_trail_start_mult X # start trailing when option >= X * entry (default: 1.5)
+- --bt_trail_back B     # trailing drawback from peak fraction (default: 0.5)
+- --bt_protect_mult P   # protective floor vs entry (default: 0.7)
+- --bt_cooldown_days N  # cooldown days after losing trade (default: 0)
+- --bt_entry_weekdays W # comma-separated weekdays 0=Mon..6=Sun to allow entries (e.g., 0,1,2)
+- --bt_skip_earnings E  # true/false; skip entries near earnings (requires external earnings dates)
 
 Examples:
 
