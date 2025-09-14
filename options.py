@@ -264,29 +264,44 @@ def approximate_backtest_option_10x(ticker, candidate_row, hist, r=0.01):
 
 # -------------------- Strategy backtest (multi-year, SL/TP) --------------------
 
-def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=None, sl_x=None):
+def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=None, sl_x=None, alloc_frac=0.1, trend_filter=True):
     """Simulate a simple strategy: on breakout BUY signal, buy an OTM call (strike = S*(1+moneyness)),
     price via BSM, hold until TP/SL or expiry. Returns equity curve and trade log + metrics.
 
     Parameters:
         hist: DataFrame with Date, Close, Volume, rv21 columns
         dte: days to expiry for each trade
-        moneyness: e.g., 0.05 means 5% OTM strike K = S*(1+0.05)
+        moneyness: e.g., 0.05 means 5% OTM strike K = S * (1 + moneyness)
         r: risk-free rate
         tp_x: take-profit multiple of entry premium (e.g., 3.0 = +200%)
         sl_x: stop-loss multiple of entry premium (e.g., 0.5 = -50%)
+        alloc_frac: fraction of equity allocated per trade (0..1). Remaining stays in cash. Default 0.1 (10%).
+        trend_filter: if True, only take longs when above rising 200-day SMA.
     """
     df = hist.copy()
     if 'rv21' not in df.columns:
         df['ret'] = df['Close'].pct_change()
         df['rv21'] = df['ret'].rolling(21).std() * np.sqrt(252)
         df['rv21'] = df['rv21'].fillna(method='bfill').fillna(df['rv21'].median())
+    
+    # Trend filter components
+    df['sma200'] = df['Close'].rolling(200).mean()
+    df['sma200_prev'] = df['sma200'].shift(1)
+
     signals = generate_breakout_signals(df)
     signal_idx = set(signals.index.tolist())
 
     dates = df['Date'].reset_index(drop=True)
     closes = df['Close'].reset_index(drop=True)
     vols = df['rv21'].reset_index(drop=True)
+    sma200 = df['sma200'].reset_index(drop=True)
+    sma200_prev = df['sma200_prev'].reset_index(drop=True)
+
+    # sanitize allocation
+    try:
+        f = max(0.0, min(1.0, float(alloc_frac)))
+    except Exception:
+        f = 0.1
 
     equity = 1.0
     equity_curve = []
@@ -303,6 +318,15 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
 
         # If buy signal today and enough room for trade horizon
         if i in signal_idx and i + dte < n:
+            # Trend filter: only take trade in uptrend if enabled and we have enough SMA history
+            if trend_filter:
+                sma_ok = not (np.isnan(sma200.iloc[i]) or np.isnan(sma200_prev.iloc[i]))
+                if not sma_ok or not (closes.iloc[i] > sma200.iloc[i] and (sma200.iloc[i] - sma200_prev.iloc[i]) > 0):
+                    # skip trade if not in uptrend
+                    equity_curve.append({'Date': dates.iloc[i], 'equity': equity})
+                    i += 1
+                    continue
+
             S0 = float(closes.iloc[i])
             sigma0 = float(vols.iloc[i]) if np.isfinite(vols.iloc[i]) else float(np.nanmean(vols[:i+1]))
             K = S0 * (1.0 + float(moneyness))
@@ -338,7 +362,9 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
                 exit_price = max(S_T - K, 0.0)
 
             ret_x = (exit_price / price0) if price0 > 0 else 0.0
-            equity *= max(0.0, ret_x)
+
+            # Update equity using allocation fraction (unallocated part stays in cash)
+            equity = equity * ((1.0 - f) + f * max(0.0, ret_x))
 
             trades.append({
                 'entry_date': dates.iloc[i],
@@ -387,10 +413,15 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
     win_rate = float((trades_df['ret_x'] > 1.0).mean()) if not trades_df.empty else 0.0
     avg_trade_ret_x = float(trades_df['ret_x'].mean()) if not trades_df.empty else 0.0
 
+    # Total profitability across all trades if staking equally per trade (unit premium per trade)
+    n_tr = len(trades_df)
+    total_trade_profit_pct = float(((trades_df['ret_x'].sum() - n_tr) / n_tr) * 100.0) if n_tr > 0 else 0.0
+
     metrics = {
-        'total_trades': int(len(trades_df)),
+        'total_trades': int(n_tr),
         'win_rate': win_rate,
         'avg_trade_ret_x': avg_trade_ret_x,
+        'total_trade_profit_pct': total_trade_profit_pct,
         'total_return': total_ret,
         'CAGR': cagr,
         'Sharpe': sh,
@@ -460,7 +491,7 @@ def generate_breakout_signals(hist, window=20, lookback=5):
 
 # -------------------- Main runner --------------------
 
-def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None):
+def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.1, bt_trend_filter=True):
     all_candidates = []
     option_bt_rows = []
     strat_rows = []
@@ -481,8 +512,11 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                     option_bt_rows.append(metrics_row)
 
             # Strategy backtest on extended history
+            # Set sensible defaults if not provided
+            _tp = 3.0 if bt_tp_x is None else bt_tp_x
+            _sl = 0.5 if bt_sl_x is None else bt_sl_x
             eq_df, trades_df, strat_metrics = backtest_breakout_option_strategy(
-                hist, dte=bt_dte, moneyness=bt_moneyness, r=0.01, tp_x=bt_tp_x, sl_x=bt_sl_x
+                hist, dte=bt_dte, moneyness=bt_moneyness, r=0.01, tp_x=_tp, sl_x=_sl, alloc_frac=bt_alloc_frac, trend_filter=bt_trend_filter
             )
             # save equity curve per ticker
             try:
@@ -496,13 +530,15 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
             strat_row = {'ticker': t, 'strategy_total_trades': strat_metrics.get('total_trades',0),
                          'strategy_win_rate': strat_metrics.get('win_rate',0.0),
                          'strategy_avg_trade_ret_x': strat_metrics.get('avg_trade_ret_x',0.0),
+                         'strategy_total_trade_profit_pct': strat_metrics.get('total_trade_profit_pct',0.0),
                          'strategy_total_return': strat_metrics.get('total_return',0.0),
                          'strategy_CAGR': strat_metrics.get('CAGR',0.0),
                          'strategy_Sharpe': strat_metrics.get('Sharpe',0.0),
                          'strategy_max_drawdown': strat_metrics.get('max_drawdown',0.0),
                          'bt_years': bt_years, 'bt_dte': bt_dte, 'bt_moneyness': bt_moneyness,
-                         'bt_tp_x': bt_tp_x if bt_tp_x is not None else '',
-                         'bt_sl_x': bt_sl_x if bt_sl_x is not None else ''}
+                         'bt_alloc_frac': bt_alloc_frac, 'bt_trend_filter': bt_trend_filter,
+                         'bt_tp_x': _tp if _tp is not None else '',
+                         'bt_sl_x': _sl if _sl is not None else ''}
             strat_rows.append(strat_row)
 
             # generate chart with signals
@@ -557,8 +593,10 @@ if __name__ == '__main__':
     parser.add_argument('--bt_years', type=int, default=3, help='Backtest lookback period in years for underlying history')
     parser.add_argument('--bt_dte', type=int, default=7, help='DTE (days to expiry) for simulated trades')
     parser.add_argument('--bt_moneyness', type=float, default=0.05, help='Relative OTM for strike: K = S * (1 + moneyness)')
-    parser.add_argument('--bt_tp_x', type=float, default=None, help='Take-profit multiple of premium (e.g., 3.0 for +200%). Leave empty for none.')
-    parser.add_argument('--bt_sl_x', type=float, default=None, help='Stop-loss multiple of premium (e.g., 0.5 for -50%). Leave empty for none.')
+    parser.add_argument('--bt_tp_x', type=float, default=None, help='Take-profit multiple of premium (e.g., 3.0 for +200%). Leave empty to use default 3.0.')
+    parser.add_argument('--bt_sl_x', type=float, default=None, help='Stop-loss multiple of premium (e.g., 0.5 for -50%). Leave empty to use default 0.5.')
+    parser.add_argument('--bt_alloc_frac', type=float, default=0.1, help='Fraction of equity allocated per trade (0..1). Default 0.1.')
+    parser.add_argument('--bt_trend_filter', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable 200-day SMA uptrend filter for entries (true/false). Default true.')
     args = parser.parse_args()
 
     def load_tickers_from_csv(path):
@@ -614,6 +652,8 @@ if __name__ == '__main__':
         bt_moneyness=args.bt_moneyness,
         bt_tp_x=args.bt_tp_x,
         bt_sl_x=args.bt_sl_x,
+        bt_alloc_frac=args.bt_alloc_frac,
+        bt_trend_filter=args.bt_trend_filter,
     )
 
     print('\nScreener finished.')
@@ -623,6 +663,25 @@ if __name__ == '__main__':
     if not df_bt.empty:
         print('\nBacktest summary saved to screener_results_backtest.csv')
         print(df_bt.head(20).to_string(index=False))
+        try:
+            # Compute combined total profitability across all trades (weighted by trade counts)
+            if 'strategy_total_trades' in df_bt.columns and 'strategy_avg_trade_ret_x' in df_bt.columns:
+                total_trades = float(df_bt['strategy_total_trades'].fillna(0).sum())
+                if total_trades > 0:
+                    weighted_avg_ret_x = (
+                        (df_bt['strategy_avg_trade_ret_x'].fillna(0) * df_bt['strategy_total_trades'].fillna(0)).sum()
+                        / total_trades
+                    )
+                    combined_profit_pct = (weighted_avg_ret_x - 1.0) * 100.0
+                    print(f"\nCombined total profitability of all strategy trades: {combined_profit_pct:.2f}% (equal stake per trade)")
+            # If per-ticker total pct is present, also show its average
+            if 'strategy_total_trade_profit_pct' in df_bt.columns:
+                # Average of per-ticker totals (not weighted)
+                avg_pct = df_bt['strategy_total_trade_profit_pct'].dropna().mean()
+                if np.isfinite(avg_pct):
+                    print(f"Average per-ticker total trade profitability: {avg_pct:.2f}%")
+        except Exception as _e:
+            pass
 
     print('\nPlots saved to plots/ (one per ticker)')
     print('Per-ticker equity curves saved to backtests/<TICKER>_equity.csv')
