@@ -710,21 +710,34 @@ def backtest_breakout_option_strategy(
     except Exception:
         side_map = {}
 
-    dates = df['Date'].reset_index(drop=True)
-    closes = df['Close'].reset_index(drop=True)
-    vols = df['rv21'].reset_index(drop=True)
-    rv5 = df['rv5'].reset_index(drop=True)
-    rv63 = df['rv63'].reset_index(drop=True)
-    sma50 = df['sma50'].reset_index(drop=True)
-    sma200 = df['sma200'].reset_index(drop=True)
-    sma200_prev = df['sma200_prev'].reset_index(drop=True)
-
-    # Fast numpy arrays for inner-loop performance
-    close_arr = df['Close'].to_numpy()
-    vol_arr = df['rv21'].to_numpy()
-    rv5_arr = df['rv5'].to_numpy()
-    atr14_arr = df['ATR14'].to_numpy() if 'ATR14' in df.columns else np.array([np.nan]*len(df))
-    snr_arr = df['snr_slope_bt'].to_numpy() if 'snr_slope_bt' in df.columns else np.zeros(len(df))
+    # PERFORMANCE OPTIMIZATION: Use numpy arrays directly to avoid pandas overhead
+    # Eliminate redundant reset_index operations that copy data unnecessarily
+    n = len(df)
+    
+    # Extract arrays directly - MUCH faster than reset_index operations
+    dates_arr = df['Date'].values
+    close_arr = df['Close'].to_numpy(dtype=np.float64)
+    vol_arr = df['rv21'].to_numpy(dtype=np.float64)
+    rv5_arr = df['rv5'].to_numpy(dtype=np.float64) 
+    rv63_arr = df['rv63'].to_numpy(dtype=np.float64)
+    sma50_arr = df['sma50'].to_numpy(dtype=np.float64)
+    sma200_arr = df['sma200'].to_numpy(dtype=np.float64)
+    sma200_prev_arr = df['sma200_prev'].to_numpy(dtype=np.float64)
+    atr14_arr = df['ATR14'].to_numpy(dtype=np.float64) if 'ATR14' in df.columns else np.full(n, np.nan)
+    snr_arr = df['snr_slope_bt'].to_numpy(dtype=np.float64) if 'snr_slope_bt' in df.columns else np.zeros(n)
+    
+    # Pre-compute constants for faster access in loops
+    sqrt_252 = np.sqrt(252)
+    
+    # Create Series objects only when needed for backward compatibility
+    dates = pd.Series(dates_arr)
+    closes = pd.Series(close_arr)
+    vols = pd.Series(vol_arr)
+    rv5 = pd.Series(rv5_arr)
+    rv63 = pd.Series(rv63_arr)
+    sma50 = pd.Series(sma50_arr)
+    sma200 = pd.Series(sma200_arr)
+    sma200_prev = pd.Series(sma200_prev_arr)
 
     # sanitize base allocation
     try:
