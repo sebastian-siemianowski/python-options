@@ -1060,29 +1060,61 @@ def plot_support_resistance_with_signals(ticker, hist, signals=None, out_dir='pl
     os.makedirs(out_dir, exist_ok=True)
     dates = hist['Date']
     prices = hist['Close']
-    support, resistance = compute_pivots_levels(prices, window=20)
+    
+    # Compute dynamic support/resistance levels over time
+    support_series = prices.rolling(window=20, min_periods=1).min()
+    resistance_series = prices.rolling(window=20, min_periods=1).max()
+    
+    # Also compute longer-term levels for context
+    support_long = prices.rolling(window=50, min_periods=1).min()
+    resistance_long = prices.rolling(window=50, min_periods=1).max()
 
-    plt.figure(figsize=(12,6))
-    plt.plot(dates, prices)
-    # Per python_user_visible/charting rules we won't hardcode colors here in code comments; matplotlib will use defaults.
-    plt.axhline(support, linestyle='--', label='Support')
-    plt.axhline(resistance, linestyle='--', label='Resistance')
+    plt.figure(figsize=(14,8))  # Larger figure for better visibility
+    
+    # Plot price with enhanced styling
+    plt.plot(dates, prices, linewidth=1.5, alpha=0.8, label='Close Price')
+    
+    # Plot dynamic support/resistance bands
+    plt.fill_between(dates, support_series, resistance_series, alpha=0.1, label='S/R Band (20d)')
+    plt.plot(dates, support_series, linestyle='--', alpha=0.7, linewidth=1, label='Support (20d)')
+    plt.plot(dates, resistance_series, linestyle='--', alpha=0.7, linewidth=1, label='Resistance (20d)')
+    
+    # Plot longer-term levels
+    plt.plot(dates, support_long, linestyle=':', alpha=0.5, linewidth=1, label='Support (50d)')
+    plt.plot(dates, resistance_long, linestyle=':', alpha=0.5, linewidth=1, label='Resistance (50d)')
 
+    # Plot signals with enhanced markers
     if signals is not None and not signals.empty:
         buys = signals[signals['signal']=='BUY']
         sells = signals[signals['signal']=='SELL']
+        
         if not buys.empty:
-            plt.scatter(buys['Date'], buys['Price'], marker='^', s=80, label='BUY')
+            plt.scatter(buys['Date'], buys['Price'], marker='^', s=100, 
+                       edgecolors='darkgreen', linewidth=1, alpha=0.8, 
+                       label=f'BUY Signals ({len(buys)})', zorder=5)
         if not sells.empty:
-            plt.scatter(sells['Date'], sells['Price'], marker='v', s=80, label='SELL')
+            plt.scatter(sells['Date'], sells['Price'], marker='v', s=100, 
+                       edgecolors='darkred', linewidth=1, alpha=0.8,
+                       label=f'SELL Signals ({len(sells)})', zorder=5)
 
-    plt.title(f"{ticker} price with support/resistance and signals")
-    plt.xlabel('Date')
-    plt.ylabel('Close')
-    plt.legend()
+    # Enhanced formatting
+    plt.title(f"{ticker} - Complete Price Analysis with Trading Signals", fontsize=14, fontweight='bold')
+    plt.xlabel('Date', fontsize=12)
+    plt.ylabel('Price ($)', fontsize=12)
+    plt.legend(loc='upper left', framealpha=0.9)
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
+    
+    # Add summary text
+    total_signals = len(signals) if signals is not None and not signals.empty else 0
+    buy_count = len(signals[signals['signal']=='BUY']) if signals is not None and not signals.empty else 0
+    sell_count = len(signals[signals['signal']=='SELL']) if signals is not None and not signals.empty else 0
+    
+    plt.figtext(0.02, 0.02, f"Data: {len(hist)} days | Signals: {total_signals} total ({buy_count} BUY, {sell_count} SELL)", 
+                fontsize=10, alpha=0.7)
+    
     out_path = os.path.join(out_dir, f"{ticker}_support_resistance.png")
-    plt.savefig(out_path)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')  # Higher quality output
     plt.close()
     return out_path
 
@@ -1253,7 +1285,7 @@ def generate_breakout_signals(hist, window=20, lookback=5):
     signals_call['side'] = 'CALL'
 
     signals_put = df.loc[put_mask.fillna(False), ['Date', 'Price']].copy()
-    signals_put['signal'] = 'BUY'
+    signals_put['signal'] = 'SELL'  # PUT signals represent bearish/sell opportunities
     signals_put['side'] = 'PUT'
 
     signals = pd.concat([signals_call, signals_put], axis=0).sort_values('Date')
