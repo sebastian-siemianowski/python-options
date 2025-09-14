@@ -565,11 +565,18 @@ Besides price history, the following are cached automatically under data/ to red
 - Expiration dates list (yfinance Ticker.options) → data/meta/<TICKER>_meta.json (TTL ~ 12 hours)
 - Earnings dates (get_earnings_dates / calendar fallback) → data/meta/<TICKER>_meta.json (TTL ~ 3 days)
 - Option chains (calls) per expiry (Ticker.option_chain) → data/options/<TICKER>/<EXPIRY>_calls.csv (TTL ~ 60 minutes)
+- Option chains (puts) per expiry (Ticker.option_chain) → data/options/<TICKER>/<EXPIRY>_puts.csv (TTL ~ 60 minutes)
+- Ticker info/fast_info snapshot → data/meta/<TICKER>_meta.json (TTL ~ 1 day)
+- Dividends series → data/meta/<TICKER>_dividends.csv (TTL ~ 7 days)
+- Splits series → data/meta/<TICKER>_splits.csv (TTL ~ 30 days)
 
 You can override TTLs via environment variables:
 - EXPIRATIONS_TTL_HOURS (default 12)
 - EARNINGS_TTL_DAYS (default 3)
 - OPTION_CHAIN_TTL_MIN (default 60)
+- INFO_TTL_DAYS (default 1)
+- DIVIDENDS_TTL_DAYS (default 7)
+- SPLITS_TTL_DAYS (default 30)
 
 Notes:
 - On cache read errors or stale TTL, the script transparently re-fetches and overwrites the cache.

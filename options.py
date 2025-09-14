@@ -220,6 +220,189 @@ def get_cached_option_chain_calls(ticker, expiry_str, tk=None, cache_dir=None, t
         return pd.DataFrame()
 
 
+def get_cached_option_chain_puts(ticker, expiry_str, tk=None, cache_dir=None, ttl_minutes=_DEF_CHAIN_TTL_MIN):
+    """
+    Cache and return the puts option chain for a given ticker and expiry.
+    Stored under data/options/<TICKER>/<EXPIRY>_puts.csv with a TTL (minutes).
+    """
+    cache_dir = cache_dir or DEFAULT_DATA_DIR
+    odir = _options_dir(ticker, cache_dir)
+    puts_path = os.path.join(odir, f"{expiry_str}_puts.csv")
+    meta_path = os.path.join(odir, f"{expiry_str}_meta.json")
+    meta = _read_meta_json(meta_path)
+    ttl_sec = int(ttl_minutes) * 60
+    if os.path.isfile(puts_path) and _is_fresh(meta.get('ts_puts'), ttl_sec):
+        try:
+            return pd.read_csv(puts_path)
+        except Exception:
+            pass
+    # fetch fresh
+    try:
+        tk = tk or yf.Ticker(ticker)
+        chain = tk.option_chain(expiry_str)
+        puts = chain.puts.copy()
+        try:
+            puts.to_csv(puts_path, index=False)
+            meta['ts_puts'] = _now_utc().isoformat()
+            meta['expiry'] = expiry_str
+            _write_meta_json(meta_path, meta)
+        except Exception:
+            pass
+        return puts
+    except Exception:
+        if os.path.isfile(puts_path):
+            try:
+                return pd.read_csv(puts_path)
+            except Exception:
+                pass
+        return pd.DataFrame()
+
+
+# Additional metadata caches: ticker info, dividends, splits
+_DEF_INFO_TTL_DAYS = int(os.environ.get('INFO_TTL_DAYS', '1'))
+_DEF_DIV_TTL_DAYS = int(os.environ.get('DIVIDENDS_TTL_DAYS', '7'))
+_DEF_SPLIT_TTL_DAYS = int(os.environ.get('SPLITS_TTL_DAYS', '30'))
+
+
+def get_cached_ticker_info(ticker, cache_dir=None, ttl_days=_DEF_INFO_TTL_DAYS):
+    """
+    Cache lightweight ticker info as JSON under data/meta/<TICKER>_meta.json.
+    We prefer fast_info when available; fall back to info dict.
+    """
+    cache_dir = cache_dir or DEFAULT_DATA_DIR
+    meta_file = os.path.join(_meta_dir(cache_dir), f"{ticker.replace('/', '_')}_meta.json")
+    meta = _read_meta_json(meta_file)
+    key = 'info'
+    ts_key = 'info_ts'
+    ttl_sec = int(ttl_days) * 86400
+    if key in meta and ts_key in meta and _is_fresh(meta.get(ts_key), ttl_sec):
+        return meta.get(key)
+    try:
+        tk = yf.Ticker(ticker)
+        info = {}
+        try:
+            # fast_info is a SimpleNamespace-like; convert to dict
+            fi = getattr(tk, 'fast_info', None)
+            if fi is not None:
+                try:
+                    info = dict(fi)
+                except Exception:
+                    # Some yfinance versions return object with attributes
+                    info = {k: getattr(fi, k) for k in dir(fi) if not k.startswith('_')}
+        except Exception:
+            info = {}
+        if not info:
+            try:
+                info = dict(getattr(tk, 'info', {}) or {})
+            except Exception:
+                info = {}
+        if info:
+            meta[key] = info
+            meta[ts_key] = _now_utc().isoformat()
+            _write_meta_json(meta_file, meta)
+        return info
+    except Exception:
+        return meta.get(key, {})
+
+
+essential_div_cols = ['Date', 'Dividends']
+
+def get_cached_dividends(ticker, cache_dir=None, ttl_days=_DEF_DIV_TTL_DAYS):
+    """
+    Cache dividends series under data/meta/<TICKER>_dividends.csv with TTL.
+    Returns a DataFrame with columns ['Date','Dividends'].
+    """
+    cache_dir = cache_dir or DEFAULT_DATA_DIR
+    mdir = _meta_dir(cache_dir)
+    path = os.path.join(mdir, f"{ticker.replace('/', '_')}_dividends.csv")
+    meta_file = os.path.join(mdir, f"{ticker.replace('/', '_')}_meta.json")
+    meta = _read_meta_json(meta_file)
+    ts_key = 'dividends_ts'
+    ttl_sec = int(ttl_days) * 86400
+    if os.path.isfile(path) and _is_fresh(meta.get(ts_key), ttl_sec):
+        try:
+            return pd.read_csv(path)
+        except Exception:
+            pass
+    # fetch
+    try:
+        s = yf.Ticker(ticker).dividends
+        if s is None or len(s) == 0:
+            # still write empty
+            df = pd.DataFrame(columns=essential_div_cols)
+        else:
+            df = s.reset_index()
+            # yfinance names columns ['Date','Dividends'] typically
+            if 'Date' not in df.columns:
+                df = df.rename(columns={df.columns[0]: 'Date'})
+            if 'Dividends' not in df.columns and df.shape[1] > 1:
+                df = df.rename(columns={df.columns[1]: 'Dividends'})
+            df = df[['Date', 'Dividends']]
+        try:
+            df.to_csv(path, index=False)
+            meta[ts_key] = _now_utc().isoformat()
+            _write_meta_json(meta_file, meta)
+        except Exception:
+            pass
+        return df
+    except Exception:
+        # fallback to existing cache, even if stale
+        if os.path.isfile(path):
+            try:
+                return pd.read_csv(path)
+            except Exception:
+                pass
+        return pd.DataFrame(columns=essential_div_cols)
+
+
+essential_split_cols = ['Date', 'Stock Splits']
+
+def get_cached_splits(ticker, cache_dir=None, ttl_days=_DEF_SPLIT_TTL_DAYS):
+    """
+    Cache stock splits series under data/meta/<TICKER>_splits.csv with TTL.
+    Returns a DataFrame with columns ['Date','Stock Splits'].
+    """
+    cache_dir = cache_dir or DEFAULT_DATA_DIR
+    mdir = _meta_dir(cache_dir)
+    path = os.path.join(mdir, f"{ticker.replace('/', '_')}_splits.csv")
+    meta_file = os.path.join(mdir, f"{ticker.replace('/', '_')}_meta.json")
+    meta = _read_meta_json(meta_file)
+    ts_key = 'splits_ts'
+    ttl_sec = int(ttl_days) * 86400
+    if os.path.isfile(path) and _is_fresh(meta.get(ts_key), ttl_sec):
+        try:
+            return pd.read_csv(path)
+        except Exception:
+            pass
+    try:
+        s = yf.Ticker(ticker).splits
+        if s is None or len(s) == 0:
+            df = pd.DataFrame(columns=essential_split_cols)
+        else:
+            df = s.reset_index()
+            if 'Date' not in df.columns:
+                df = df.rename(columns={df.columns[0]: 'Date'})
+            # yfinance uses 'Stock Splits' or 'Stock Splits'
+            col_name = 'Stock Splits'
+            if col_name not in df.columns and df.shape[1] > 1:
+                df = df.rename(columns={df.columns[1]: col_name})
+            df = df[['Date', col_name]]
+        try:
+            df.to_csv(path, index=False)
+            meta[ts_key] = _now_utc().isoformat()
+            _write_meta_json(meta_file, meta)
+        except Exception:
+            pass
+        return df
+    except Exception:
+        if os.path.isfile(path):
+            try:
+                return pd.read_csv(path)
+            except Exception:
+                pass
+        return pd.DataFrame(columns=essential_split_cols)
+
+
 def _cache_path(ticker, interval="1d", cache_dir=None):
     cdir = cache_dir or DEFAULT_DATA_DIR
     safe_t = ticker.replace("/", "_")
