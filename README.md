@@ -307,3 +307,30 @@ Examples:
   ./run.sh --tickers_csv tickers.csv --min_oi 200 --min_vol 50
 
 Backward compatibility: you can still pass a comma-separated list via `--tickers`, which is used if a CSV isn’t provided/found.
+
+
+
+## Improved backtesting (multi-year strategy simulation)
+
+The screener now includes a more realistic multi-year backtest that simulates buying short-dated calls on breakout signals.
+It prices options via Black–Scholes using historical realized volatility and supports take-profit/stop-loss exits. Outputs include
+per-ticker equity curves under backtests/ and an aggregate summary in screener_results_backtest.csv.
+
+Key CLI flags:
+- --bt_years N          # years of underlying history to load for backtesting (default: 3)
+- --bt_dte D            # option DTE in days for simulated trades (default: 7)
+- --bt_moneyness PCT    # OTM percent for strike; K = S * (1 + PCT), e.g., 0.05 = 5% OTM (default: 0.05)
+- --bt_tp_x X           # optional take-profit multiple of entry premium, e.g., 3.0 for +200%
+- --bt_sl_x X           # optional stop-loss multiple of entry premium, e.g., 0.5 for -50%
+
+Examples:
+
+  # Run with defaults (uses tickers.csv if present)
+  ./run.sh
+
+  # 5-year backtest, 7DTE, 5% OTM, with TP=3x and SL=0.5x
+  ./run.sh --bt_years 5 --bt_dte 7 --bt_moneyness 0.05 --bt_tp_x 3 --bt_sl_x 0.5
+
+Outputs (in addition to the existing CSVs and plots):
+- backtests/<TICKER>_equity.csv   # per-ticker equity curve over time
+- screener_results_backtest.csv   # now includes strategy metrics (CAGR, Sharpe, max drawdown, win rate)
