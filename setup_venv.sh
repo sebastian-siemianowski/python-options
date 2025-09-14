@@ -1,27 +1,61 @@
 #!/usr/bin/env bash
 # setup_venv.sh
-# Create a virtual environment and install requirements without relying on a standalone `pip` in PATH.
+# Create a virtual environment and install requirements without relying on docker-wrapped python/pip.
 # Usage: bash setup_venv.sh
 
 set -euo pipefail
 
-# Prefer python3, fallback to python
-PY_CMD="python3"
-if ! command -v python3 >/dev/null 2>&1; then
-  if command -v python >/dev/null 2>&1; then
-    PY_CMD="python"
-  else
-    echo "Error: python3/python not found. Please install Python 3 first (see README)." >&2
-    exit 1
-  fi
+# Allow user to force a specific interpreter (e.g., export PYTHON=/usr/bin/python3)
+if [[ -n "${PYTHON:-}" ]]; then
+  CANDIDATES=("$PYTHON")
+else
+  # Try system interpreters first to avoid shell wrappers that may call Docker
+  CANDIDATES=(
+    "/usr/bin/python3"
+    "/opt/homebrew/bin/python3"   # Apple Silicon Homebrew
+    "/usr/local/bin/python3"      # Intel macOS Homebrew
+    "python3"
+    "python"
+  )
 fi
 
-echo "Using Python: $($PY_CMD --version 2>&1)"
+PY_CMD=""
+for c in "${CANDIDATES[@]}"; do
+  RES="$c"
+  # If candidate is not an absolute path, resolve to the real executable, bypassing aliases/functions
+  if [[ "$RES" != /* ]]; then
+    RES="$(type -P "$RES" 2>/dev/null || true)"
+  fi
+  if [[ -n "$RES" && -x "$RES" ]]; then
+    # Verify it is a working Python 3 and not a docker wrapper by running a tiny snippet
+    if "$RES" -c "import sys; assert sys.version_info >= (3,7); print(sys.executable)" >/dev/null 2>&1; then
+      PY_CMD="$RES"
+      break
+    fi
+  fi
+done
+
+if [[ -z "$PY_CMD" ]]; then
+  echo "Error: Could not find a working Python 3 interpreter."
+  echo "Tips:"
+  echo "  - On macOS, install with: brew install python@3"
+  echo "  - On Linux, install with your package manager (e.g., apt install python3 python3-venv)"
+  echo "  - If your shell wraps 'python' via Docker, run:"
+  echo "      export PYTHON=/usr/bin/python3"
+  echo "    and then re-run: bash setup_venv.sh"
+  exit 1
+fi
+
+echo "Using Python: $($PY_CMD --version 2>&1) [$PY_CMD]"
 
 # Create venv if missing
 if [[ ! -d .venv ]]; then
   echo "Creating virtual environment in .venv ..."
-  $PY_CMD -m venv .venv
+  "$PY_CMD" -m venv .venv || {
+    echo "Failed to create venv with $PY_CMD. If your python is docker-wrapped, set PYTHON to a system interpreter, e.g.:" >&2
+    echo "  export PYTHON=/usr/bin/python3" >&2
+    exit 1
+  }
 fi
 
 # Activate venv

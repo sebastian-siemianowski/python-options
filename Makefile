@@ -13,6 +13,3 @@ run:
 
 backtest:
 	@bash ./backtest.sh $(ARGS)
-
-doctor:
-	@bash ./doctor.sh $(ARGS)
