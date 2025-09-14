@@ -1064,10 +1064,6 @@ def plot_support_resistance_with_signals(ticker, hist, signals=None, out_dir='pl
     df['Date'] = pd.to_datetime(df['Date'])
     df = df.sort_values('Date').reset_index(drop=True)
     
-    # Data gaps are now automatically filled during data loading
-    # No gap detection needed as all business days are present
-    gap_indices = []
-    
     dates = df['Date']
     prices = df['Close']
     
@@ -1081,62 +1077,19 @@ def plot_support_resistance_with_signals(ticker, hist, signals=None, out_dir='pl
 
     plt.figure(figsize=(16,10))  # Even larger figure for better visibility
     
-    # Plot price with gap handling - break lines at discontinuities
-    if gap_indices:
-        prev_idx = 0
-        for gap_idx in gap_indices + [len(df)]:  # Include end of data
-            if gap_idx > prev_idx:
-                segment_dates = dates.iloc[prev_idx:gap_idx]
-                segment_prices = prices.iloc[prev_idx:gap_idx]
-                
-                if len(segment_dates) > 1:
-                    plt.plot(segment_dates, segment_prices, linewidth=1.5, alpha=0.8, 
-                            color='blue', label='Close Price' if prev_idx == 0 else "")
-                    
-                    # Plot support/resistance for this segment
-                    segment_support = support_series.iloc[prev_idx:gap_idx]
-                    segment_resistance = resistance_series.iloc[prev_idx:gap_idx]
-                    segment_support_long = support_long.iloc[prev_idx:gap_idx]
-                    segment_resistance_long = resistance_long.iloc[prev_idx:gap_idx]
-                    
-                    plt.fill_between(segment_dates, segment_support, segment_resistance, 
-                                   alpha=0.08, color='gray', 
-                                   label='S/R Band (20d)' if prev_idx == 0 else "")
-                    plt.plot(segment_dates, segment_support, linestyle='--', alpha=0.6, 
-                            linewidth=1, color='red', 
-                            label='Support (20d)' if prev_idx == 0 else "")
-                    plt.plot(segment_dates, segment_resistance, linestyle='--', alpha=0.6, 
-                            linewidth=1, color='green', 
-                            label='Resistance (20d)' if prev_idx == 0 else "")
-                    plt.plot(segment_dates, segment_support_long, linestyle=':', alpha=0.4, 
-                            linewidth=1, color='darkred', 
-                            label='Support (50d)' if prev_idx == 0 else "")
-                    plt.plot(segment_dates, segment_resistance_long, linestyle=':', alpha=0.4, 
-                            linewidth=1, color='darkgreen', 
-                            label='Resistance (50d)' if prev_idx == 0 else "")
-            
-            prev_idx = gap_idx
-            
-        # Add gap markers
-        for gap_idx in gap_indices:
-            if gap_idx < len(df) and gap_idx > 0:
-                gap_start_date = dates.iloc[gap_idx-1]
-                gap_end_date = dates.iloc[gap_idx]
-                gap_days = (gap_end_date - gap_start_date).days
-                plt.axvline(x=gap_start_date, color='orange', linestyle=':', alpha=0.7, linewidth=2)
-                plt.text(gap_start_date, plt.ylim()[1]*0.95, f'Gap: {gap_days}d', 
-                        rotation=90, verticalalignment='top', fontsize=8, color='orange')
-    else:
-        # No gaps - plot normally
-        plt.plot(dates, prices, linewidth=1.5, alpha=0.8, label='Close Price')
-        
-        plt.fill_between(dates, support_series, resistance_series, alpha=0.1, label='S/R Band (20d)')
-        plt.plot(dates, support_series, linestyle='--', alpha=0.7, linewidth=1, label='Support (20d)')
-        plt.plot(dates, resistance_series, linestyle='--', alpha=0.7, linewidth=1, label='Resistance (20d)')
-        plt.plot(dates, support_long, linestyle=':', alpha=0.5, linewidth=1, label='Support (50d)')
-        plt.plot(dates, resistance_long, linestyle=':', alpha=0.5, linewidth=1, label='Resistance (50d)')
+    # Plot using numeric indices to force continuous lines without gaps
+    # This prevents matplotlib from creating visual gaps for missing dates
+    x_indices = np.arange(len(df))
+    
+    plt.plot(x_indices, prices, linewidth=1.5, alpha=0.8, label='Close Price', color='blue')
+    
+    plt.fill_between(x_indices, support_series, resistance_series, alpha=0.1, label='S/R Band (20d)', color='gray')
+    plt.plot(x_indices, support_series, linestyle='--', alpha=0.7, linewidth=1, label='Support (20d)', color='red')
+    plt.plot(x_indices, resistance_series, linestyle='--', alpha=0.7, linewidth=1, label='Resistance (20d)', color='green')
+    plt.plot(x_indices, support_long, linestyle=':', alpha=0.5, linewidth=1, label='Support (50d)', color='darkred')
+    plt.plot(x_indices, resistance_long, linestyle=':', alpha=0.5, linewidth=1, label='Resistance (50d)', color='darkgreen')
 
-    # Plot signals with enhanced markers
+    # Plot signals with enhanced markers using numeric indices
     if signals is not None and not signals.empty:
         # Ensure signal dates are datetime
         signals_copy = signals.copy()
@@ -1145,20 +1098,48 @@ def plot_support_resistance_with_signals(ticker, hist, signals=None, out_dir='pl
         buys = signals_copy[signals_copy['signal']=='BUY']
         sells = signals_copy[signals_copy['signal']=='SELL']
         
+        # Convert signal dates to indices for plotting
         if not buys.empty:
-            plt.scatter(buys['Date'], buys['Price'], marker='^', s=120, 
+            buy_indices = []
+            buy_prices = []
+            for _, buy in buys.iterrows():
+                # Find closest date index in our data
+                date_diffs = np.abs((dates - buy['Date']).dt.total_seconds())
+                closest_idx = date_diffs.argmin()
+                buy_indices.append(closest_idx)
+                buy_prices.append(buy['Price'])
+            
+            plt.scatter(buy_indices, buy_prices, marker='^', s=120, 
                        color='lime', edgecolors='darkgreen', linewidth=2, alpha=0.9, 
                        label=f'BUY Signals ({len(buys)})', zorder=6)
+                       
         if not sells.empty:
-            plt.scatter(sells['Date'], sells['Price'], marker='v', s=120, 
+            sell_indices = []
+            sell_prices = []
+            for _, sell in sells.iterrows():
+                # Find closest date index in our data
+                date_diffs = np.abs((dates - sell['Date']).dt.total_seconds())
+                closest_idx = date_diffs.argmin()
+                sell_indices.append(closest_idx)
+                sell_prices.append(sell['Price'])
+            
+            plt.scatter(sell_indices, sell_prices, marker='v', s=120, 
                        color='red', edgecolors='darkred', linewidth=2, alpha=0.9,
                        label=f'SELL Signals ({len(sells)})', zorder=6)
 
-    # Enhanced formatting
-    plt.title(f"{ticker} - Complete Price Analysis with Trading Signals\n(Gaps in data are marked with orange lines)", 
+    # Enhanced formatting with proper date axis
+    plt.title(f"{ticker} - Complete Price Analysis with Trading Signals\n(Continuous data with no gaps)", 
              fontsize=16, fontweight='bold', pad=20)
     plt.xlabel('Date', fontsize=14)
     plt.ylabel('Price ($)', fontsize=14)
+    
+    # Set up date ticks on x-axis to show actual dates
+    # Sample dates evenly across the range
+    n_ticks = min(8, len(dates))  # Show at most 8 date labels
+    tick_indices = np.linspace(0, len(dates)-1, n_ticks, dtype=int)
+    tick_dates = [dates.iloc[i].strftime('%Y-%m') for i in tick_indices]
+    plt.xticks(tick_indices, tick_dates, rotation=45)
+    
     plt.legend(loc='upper left', framealpha=0.9, fontsize=11)
     plt.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
     plt.tight_layout()
@@ -1167,11 +1148,8 @@ def plot_support_resistance_with_signals(ticker, hist, signals=None, out_dir='pl
     total_signals = len(signals) if signals is not None and not signals.empty else 0
     buy_count = len(signals[signals['signal']=='BUY']) if signals is not None and not signals.empty else 0
     sell_count = len(signals[signals['signal']=='SELL']) if signals is not None and not signals.empty else 0
-    gap_count = len(gap_indices) if gap_indices else 0
     
-    summary_text = f"Data: {len(hist)} days | Signals: {total_signals} total ({buy_count} BUY, {sell_count} SELL)"
-    if gap_count > 0:
-        summary_text += f" | Data gaps: {gap_count}"
+    summary_text = f"Data: {len(hist)} days | Signals: {total_signals} total ({buy_count} BUY, {sell_count} SELL) | Continuous data - no gaps"
     
     plt.figtext(0.02, 0.02, summary_text, fontsize=11, alpha=0.8, 
                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
