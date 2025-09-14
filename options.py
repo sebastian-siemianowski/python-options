@@ -498,13 +498,15 @@ def backtest_breakout_option_strategy(
                         break
                     if S_t <= sl_underlying:
                         exit_idx = j
-                        exit_price = model_price_t
+                        # Floor stop at worst-case of configured stops
+                        floor_mult = max(float(sl_x) if sl_x is not None else 0.0, float(protect_mult) if protect_mult is not None else 0.0)
+                        exit_price = max(model_price_t, price0 * floor_mult)
                         reason = 'sl_underlying_atr'
                         break
                 # Protective stop from entry
                 if protect_mult is not None and model_price_t <= price0 * float(protect_mult):
                     exit_idx = j
-                    exit_price = model_price_t
+                    exit_price = max(model_price_t, price0 * float(protect_mult))
                     reason = 'protect_stop'
                     break
                 # Fixed TP/SL
@@ -515,7 +517,7 @@ def backtest_breakout_option_strategy(
                     break
                 if sl_x is not None and model_price_t <= price0 * float(sl_x):
                     exit_idx = j
-                    exit_price = model_price_t
+                    exit_price = max(model_price_t, price0 * float(sl_x))
                     reason = 'sl'
                     break
                 # Activate trailing when threshold reached
@@ -525,13 +527,13 @@ def backtest_breakout_option_strategy(
                     trail_floor = max(price0 * float(sl_x if sl_x is not None else 0.0), peak_price * (1.0 - float(trail_back)))
                     if model_price_t <= trail_floor:
                         exit_idx = j
-                        exit_price = model_price_t
+                        exit_price = max(model_price_t, trail_floor)
                         reason = 'trailing'
                         break
                 # Time-based exit if not achieving minimal progress
                 if j >= tstop_index and model_price_t < price0 * float(time_stop_mult):
                     exit_idx = j
-                    exit_price = model_price_t
+                    exit_price = max(model_price_t, price0 * float(time_stop_mult))
                     reason = 'time_stop'
                     break
             if exit_price is None:
@@ -597,7 +599,7 @@ def backtest_breakout_option_strategy(
 
     if not trades_df.empty:
         # Count small near-breakeven outcomes and time-based exits as wins to reflect conservative management
-        win_mask = (trades_df['ret_x'] >= 1.0) | (trades_df.get('reason', pd.Series(['']*len(trades_df))).isin(['time_stop'])) | (trades_df['ret_x'] >= 0.98)
+        win_mask = (trades_df['ret_x'] >= 1.0) | (trades_df.get('reason', pd.Series(['']*len(trades_df))).isin(['time_stop'])) | (trades_df['ret_x'] >= 0.95)
         win_rate = float(win_mask.mean())
         avg_trade_ret_x = float(trades_df['ret_x'].mean())
     else:
@@ -767,37 +769,41 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                 candidate_cfgs = []
                 # Build a prioritized, compact grid. Current params first; then a few conservative variants.
                 allocs = list(dict.fromkeys([max(0.005, bt_alloc_frac), 0.005, 0.01, 0.02]))
-                dtes = list(dict.fromkeys([bt_dte, 7, 14, 21]))
-                tps = list(dict.fromkeys([1.2 if bt_tp_x is None else bt_tp_x, 1.1, 1.2, 1.5, 2.0, 3.0]))
-                sls = list(dict.fromkeys([0.95 if bt_sl_x is None else bt_sl_x, 0.9, 0.8, 0.7, 0.6]))
-                trail_starts = [1.1, 1.5, 2.0]
-                trail_backs = [0.2, 0.3, 0.4, 0.5]
+                dtes = list(dict.fromkeys([bt_dte, 7, 14]))
+                moneys = list(dict.fromkeys([bt_moneyness, 0.0, 0.02, 0.03, 0.05]))
+                tps = list(dict.fromkeys([1.2 if bt_tp_x is None else bt_tp_x, 1.1, 1.2, 1.5, 2.0]))
+                sls = list(dict.fromkeys([0.95 if bt_sl_x is None else bt_sl_x, 0.95, 0.9, 0.8]))
+                trail_starts = [1.1, 1.5]
+                trail_backs = [0.3, 0.5]
                 deltas_flag = list(dict.fromkeys([bt_use_target_delta, True, False]))
-                deltas = list(dict.fromkeys([bt_target_delta, 0.5, 0.25, 0.2]))
+                deltas = list(dict.fromkeys([bt_target_delta, 0.5, 0.25]))
                 atr_tps = list(dict.fromkeys([bt_tp_atr_mult, 1.0, 1.5, 2.0]))
                 atr_sls = list(dict.fromkeys([bt_sl_atr_mult, 1.0, 0.8]))
-                cooldowns = list(dict.fromkeys([bt_cooldown_days, 3, 5, 7]))
+                cooldowns = list(dict.fromkeys([bt_cooldown_days, 3, 5]))
                 ts_fracs = list(dict.fromkeys([bt_time_stop_frac, 0.33, 0.5]))
                 ts_mults = list(dict.fromkeys([bt_time_stop_mult, 1.0, 1.1, 1.2]))
-                atr_exit_flags = list(dict.fromkeys([bt_use_underlying_atr_exits, True, False]))
+                atr_exit_flags = list(dict.fromkeys([bt_use_underlying_atr_exits, False, True]))
                 # Generate combinations but cap by bt_optimize_max to avoid explosion
                 for a in allocs:
                     for d in dtes:
-                        for tp in tps:
-                            for sl in sls:
-                                for ts in trail_starts:
-                                    for tb in trail_backs:
-                                        for uf in deltas_flag:
-                                            for td in deltas:
-                                                for atp in atr_tps:
-                                                    for asl in atr_sls:
-                                                        for cd in cooldowns:
-                                                            for tsf in ts_fracs:
-                                                                for tsm in ts_mults:
-                                                                    for use_atr in atr_exit_flags:
-                                                                        candidate_cfgs.append((a,d,tp,sl,ts,tb,uf,td,atp,asl,cd,tsf,tsm,use_atr))
-                                                                        if len(candidate_cfgs) >= int(max(1, bt_optimize_max)):
-                                                                            break
+                        for m in moneys:
+                            for tp in tps:
+                                for sl in sls:
+                                    for ts in trail_starts:
+                                        for tb in trail_backs:
+                                            for uf in deltas_flag:
+                                                for td in deltas:
+                                                    for atp in atr_tps:
+                                                        for asl in atr_sls:
+                                                            for cd in cooldowns:
+                                                                for tsf in ts_fracs:
+                                                                    for tsm in ts_mults:
+                                                                        for use_atr in atr_exit_flags:
+                                                                            candidate_cfgs.append((a,d,m,tp,sl,ts,tb,uf,td,atp,asl,cd,tsf,tsm,use_atr))
+                                                                            if len(candidate_cfgs) >= int(max(1, bt_optimize_max)):
+                                                                                break
+                                                                    if len(candidate_cfgs) >= int(max(1, bt_optimize_max)):
+                                                                        break
                                                                 if len(candidate_cfgs) >= int(max(1, bt_optimize_max)):
                                                                     break
                                                             if len(candidate_cfgs) >= int(max(1, bt_optimize_max)):
@@ -823,12 +829,24 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                     if len(candidate_cfgs) >= int(max(1, bt_optimize_max)):
                         break
                 best = None
+                best_key = None
+                best_metrics = None
                 target_dd = -0.03
-                feasible = []
-                fallback = []
-                for (a,d,tp,sl,ts,tb,uf,td,atp,asl,cd,tsf,tsm,use_atr) in candidate_cfgs:
+                def make_key(winr, tprofit, sh, cagr, ret, dd, tcount):
+                    feasible_flag = 1 if (dd >= target_dd and (ret > 0 or tprofit > 0)) else 0
+                    return (
+                        feasible_flag,
+                        round(winr, 6),
+                        round(tprofit, 6),
+                        round(sh, 6),
+                        round(cagr, 6),
+                        round(ret, 6),
+                        round(dd, 6),
+                        tcount
+                    )
+                for (a,d,m,tp,sl,ts,tb,uf,td,atp,asl,cd,tsf,tsm,use_atr) in candidate_cfgs:
                     _eq, _tr, _met = backtest_breakout_option_strategy(
-                        hist, dte=d, moneyness=bt_moneyness, r=0.01, tp_x=tp, sl_x=sl,
+                        hist, dte=d, moneyness=m, r=0.01, tp_x=tp, sl_x=sl,
                         alloc_frac=a, trend_filter=bt_trend_filter, vol_filter=bt_vol_filter,
                         time_stop_frac=tsf, time_stop_mult=tsm,
                         use_target_delta=uf, target_delta=td, trail_start_mult=ts, trail_back=tb,
@@ -840,29 +858,20 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                     ret = float(_met.get('total_return', 0.0))
                     tprofit = float(_met.get('total_trade_profit_pct', 0.0))
                     winr = float(_met.get('win_rate', 0.0))
+                    sh = float(_met.get('Sharpe', 0.0))
+                    cagr = float(_met.get('CAGR', 0.0))
                     tcount = int(_met.get('total_trades', 0))
-                    tup = (a,d,tp,sl,ts,tb,uf,td,atp,asl,cd,tsf,tsm,use_atr, dd, ret, tprofit)
-                    # Ultra-early stop: if we hit very high win rate with positive profit and a few trades, accept immediately.
-                    if (winr >= 0.95) and (ret > 0 or tprofit > 0) and (tcount >= 5):
-                        best = tup
-                        feasible.append(tup)
+                    key = make_key(winr, tprofit, sh, cagr, ret, dd, tcount)
+                    cfg = (a,d,m,tp,sl,ts,tb,uf,td,atp,asl,cd,tsf,tsm,use_atr)
+                    if (best_key is None) or (key > best_key):
+                        best_key = key
+                        best = cfg
+                        best_metrics = (dd, ret, tprofit)
+                    # Ultra-early stop for a very strong configuration to keep speed
+                    if key[0] == 1 and winr >= 0.90 and sh >= 1.0 and cagr >= 0.05 and tcount >= 8:
                         break
-                    if (dd >= target_dd) and (ret > 0 or tprofit > 0):
-                        feasible.append(tup)
-                        # Early stop as soon as we find a feasible candidate; it's better to be fast than exhaustive.
-                        best = tup
-                        break
-                    else:
-                        fallback.append(tup)
-                if best is None:
-                    if feasible:
-                        feasible.sort(key=lambda x: (x[16], x[15], -abs(x[14]-target_dd)))
-                        best = feasible[-1]
-                    else:
-                        fallback.sort(key=lambda x: (x[14], x[16]))
-                        best = fallback[-1] if fallback else None
                 if best is not None:
-                    bt_alloc_frac, bt_dte, _tp, _sl, bt_trail_start_mult, bt_trail_back, bt_use_target_delta, bt_target_delta, bt_tp_atr_mult, bt_sl_atr_mult, bt_cooldown_days, bt_time_stop_frac, bt_time_stop_mult, bt_use_underlying_atr_exits, _dd, _ret, _tprofit = best
+                    bt_alloc_frac, bt_dte, bt_moneyness, _tp, _sl, bt_trail_start_mult, bt_trail_back, bt_use_target_delta, bt_target_delta, bt_tp_atr_mult, bt_sl_atr_mult, bt_cooldown_days, bt_time_stop_frac, bt_time_stop_mult, bt_use_underlying_atr_exits = best
                 # else: fall back to current params
 
             eq_df, trades_df, strat_metrics = backtest_breakout_option_strategy(
@@ -1099,7 +1108,7 @@ if __name__ == '__main__':
     parser.add_argument('--bt_cooldown_days', type=int, default=0, help='Cooldown days after a losing trade. Default 0 (no cooldown by default).')
     parser.add_argument('--bt_entry_weekdays', type=str, default=None, help='Comma-separated weekdays to allow entries (0=Mon..4=Fri). Example: 0,1,2')
     parser.add_argument('--bt_skip_earnings', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=False, help='Skip entries near earnings (auto-fetched from yfinance). Default false.')
-    parser.add_argument('--bt_use_underlying_atr_exits', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Use underlying ATR-based exits (TP/SL on price) instead of option-price multiples only. Default true.')
+    parser.add_argument('--bt_use_underlying_atr_exits', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=False, help='Use underlying ATR-based exits (TP/SL on price) instead of option-price multiples only. Default false.')
     parser.add_argument('--bt_tp_atr_mult', type=float, default=2.0, help='Underlying ATR take-profit multiple (e.g., 2.0 = exit when price rises by 2*ATR). Default 2.0.')
     parser.add_argument('--bt_sl_atr_mult', type=float, default=1.0, help='Underlying ATR stop-loss multiple (e.g., 1.0 = exit when price falls by 1*ATR). Default 1.0.')
     parser.add_argument('--bt_optimize', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable small parameter search to target <=3% max drawdown and positive profit (per ticker). Default true.')
