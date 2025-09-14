@@ -319,6 +319,11 @@ def backtest_breakout_option_strategy(
     alloc_vol_target=0.25,
     be_activate_mult=1.1,
     be_floor_mult=1.0,
+    vol_spike_mult=1.8,
+    plock1_level=1.2,
+    plock1_floor=1.05,
+    plock2_level=1.5,
+    plock2_floor=1.2,
 ):
     """Simulate a strategy: on breakout BUY signal, buy a short-dated call (via BSM),
     manage with TP/SL, optional trailing stop, and optional regime/vol filters.
@@ -455,6 +460,16 @@ def backtest_breakout_option_strategy(
                     equity_curve.append({'Date': dates.iloc[i], 'equity': equity})
                     i += 1
                     continue
+            # Additional fast risk gate: avoid entries during short-term volatility spikes
+            try:
+                v5_cur = float(rv5.iloc[i])
+                v21_cur = float(vols.iloc[i])
+            except Exception:
+                v5_cur, v21_cur = np.nan, np.nan
+            if np.isfinite(v5_cur) and np.isfinite(v21_cur) and v21_cur > 0 and v5_cur > v21_cur * float(vol_spike_mult):
+                equity_curve.append({'Date': dates.iloc[i], 'equity': equity})
+                i += 1
+                continue
 
             S0 = float(closes.iloc[i])
             sigma0 = float(vols.iloc[i]) if np.isfinite(vols.iloc[i]) else float(np.nanmean(vols[:i+1]))
@@ -525,6 +540,20 @@ def backtest_breakout_option_strategy(
                     exit_idx = j
                     exit_price = max(model_price_t, price0 * float(be_floor_mult))
                     reason = 'break_even'
+                    break
+                # Profit-lock ladder: once price exceeds thresholds, ratchet a floor to lock in gains
+                dynamic_lock_floor = 0.0
+                try:
+                    if float(plock1_level) > 1.0 and model_price_t >= price0 * float(plock1_level):
+                        dynamic_lock_floor = max(dynamic_lock_floor, price0 * float(plock1_floor))
+                    if float(plock2_level) > 1.0 and model_price_t >= price0 * float(plock2_level):
+                        dynamic_lock_floor = max(dynamic_lock_floor, price0 * float(plock2_floor))
+                except Exception:
+                    dynamic_lock_floor = 0.0
+                if dynamic_lock_floor > 0.0 and model_price_t <= dynamic_lock_floor:
+                    exit_idx = j
+                    exit_price = max(model_price_t, dynamic_lock_floor)
+                    reason = 'profit_lock'
                     break
                 # Protective stop from entry
                 if protect_mult is not None and model_price_t <= price0 * float(protect_mult):
@@ -736,7 +765,7 @@ def generate_breakout_signals(hist, window=20, lookback=5):
 
 # -------------------- Main runner --------------------
 
-def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.03, bt_trend_filter=True, bt_vol_filter=True, bt_time_stop_frac=0.5, bt_time_stop_mult=1.2, bt_use_target_delta=False, bt_target_delta=0.25, bt_trail_start_mult=1.5, bt_trail_back=0.5, bt_protect_mult=0.7, bt_cooldown_days=0, bt_entry_weekdays=None, bt_skip_earnings=False, bt_use_underlying_atr_exits=True, bt_tp_atr_mult=2.0, bt_sl_atr_mult=1.0, bt_alloc_vol_target=0.25, bt_be_activate_mult=1.1, bt_be_floor_mult=1.0, bt_optimize=False, bt_optimize_max=120):
+def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.03, bt_trend_filter=True, bt_vol_filter=True, bt_time_stop_frac=0.5, bt_time_stop_mult=1.2, bt_use_target_delta=False, bt_target_delta=0.25, bt_trail_start_mult=1.5, bt_trail_back=0.5, bt_protect_mult=0.7, bt_cooldown_days=0, bt_entry_weekdays=None, bt_skip_earnings=False, bt_use_underlying_atr_exits=True, bt_tp_atr_mult=2.0, bt_sl_atr_mult=1.0, bt_alloc_vol_target=0.25, bt_be_activate_mult=1.1, bt_be_floor_mult=1.0, bt_vol_spike_mult=1.8, bt_plock1_level=1.2, bt_plock1_floor=1.05, bt_plock2_level=1.5, bt_plock2_floor=1.2, bt_optimize=False, bt_optimize_max=120):
     all_candidates = []
     option_bt_rows = []
     strat_rows = []
@@ -876,7 +905,9 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                         protect_mult=bt_protect_mult, cooldown_days=cd, entry_weekdays=bt_entry_weekdays,
                         skip_earnings=bt_skip_earnings, earnings_dates=earnings_dates,
                         use_underlying_atr_exits=use_atr, tp_atr_mult=atp, sl_atr_mult=asl,
-                        alloc_vol_target=bt_alloc_vol_target, be_activate_mult=bt_be_activate_mult, be_floor_mult=bt_be_floor_mult
+                        alloc_vol_target=bt_alloc_vol_target, be_activate_mult=bt_be_activate_mult, be_floor_mult=bt_be_floor_mult,
+                        vol_spike_mult=bt_vol_spike_mult, plock1_level=bt_plock1_level, plock1_floor=bt_plock1_floor,
+                        plock2_level=bt_plock2_level, plock2_floor=bt_plock2_floor
                     )
                     dd = float(_met.get('max_drawdown', 0.0))
                     ret = float(_met.get('total_return', 0.0))
@@ -912,7 +943,12 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                 sl_atr_mult=bt_sl_atr_mult,
                 alloc_vol_target=bt_alloc_vol_target,
                 be_activate_mult=bt_be_activate_mult,
-                be_floor_mult=bt_be_floor_mult
+                be_floor_mult=bt_be_floor_mult,
+                vol_spike_mult=bt_vol_spike_mult,
+                plock1_level=bt_plock1_level,
+                plock1_floor=bt_plock1_floor,
+                plock2_level=bt_plock2_level,
+                plock2_floor=bt_plock2_floor
             )
             # save equity curve per ticker
             try:
@@ -942,6 +978,11 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                          'bt_use_underlying_atr_exits': bt_use_underlying_atr_exits,
                          'bt_tp_atr_mult': bt_tp_atr_mult,
                          'bt_sl_atr_mult': bt_sl_atr_mult,
+                         'bt_vol_spike_mult': bt_vol_spike_mult,
+                         'bt_plock1_level': bt_plock1_level,
+                         'bt_plock1_floor': bt_plock1_floor,
+                         'bt_plock2_level': bt_plock2_level,
+                         'bt_plock2_floor': bt_plock2_floor,
                          'bt_tp_x': _tp if _tp is not None else '',
                          'bt_sl_x': _sl if _sl is not None else ''}
             strat_rows.append(strat_row)
@@ -1141,6 +1182,11 @@ if __name__ == '__main__':
     parser.add_argument('--bt_alloc_vol_target', type=float, default=0.25, help='Target annualized vol for allocation scaling. Effective allocation is scaled by alloc_vol_target/rv21, clipped to [0.5,1.5]. Default 0.25.')
     parser.add_argument('--bt_be_activate_mult', type=float, default=1.1, help='Activate break-even stop once option >= be_activate_mult * entry. Default 1.1x.')
     parser.add_argument('--bt_be_floor_mult', type=float, default=1.0, help='Break-even floor multiple of entry once activated. Default 1.0x.')
+    parser.add_argument('--bt_vol_spike_mult', type=float, default=1.8, help='Skip entries when rv5 > bt_vol_spike_mult * rv21 (volatility spike gate). Default 1.8.')
+    parser.add_argument('--bt_plock1_level', type=float, default=1.2, help='Profit-lock level 1 activation multiple (>=1 disables). Default 1.2x.')
+    parser.add_argument('--bt_plock1_floor', type=float, default=1.05, help='Profit-lock level 1 floor multiple. Default 1.05x.')
+    parser.add_argument('--bt_plock2_level', type=float, default=1.5, help='Profit-lock level 2 activation multiple (>=1 disables). Default 1.5x.')
+    parser.add_argument('--bt_plock2_floor', type=float, default=1.2, help='Profit-lock level 2 floor multiple. Default 1.2x.')
     parser.add_argument('--bt_optimize', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable small parameter search to target <=3% max drawdown and positive profit (per ticker). Default true.')
     parser.add_argument('--bt_optimize_max', type=int, default=120, help='Max number of parameter sets to evaluate per ticker when bt_optimize is true. Smaller = faster. Default 120.')
     args = parser.parse_args()
@@ -1226,6 +1272,11 @@ if __name__ == '__main__':
         bt_alloc_vol_target=args.bt_alloc_vol_target,
         bt_be_activate_mult=args.bt_be_activate_mult,
         bt_be_floor_mult=args.bt_be_floor_mult,
+        bt_vol_spike_mult=args.bt_vol_spike_mult,
+        bt_plock1_level=args.bt_plock1_level,
+        bt_plock1_floor=args.bt_plock1_floor,
+        bt_plock2_level=args.bt_plock2_level,
+        bt_plock2_floor=args.bt_plock2_floor,
         bt_optimize=args.bt_optimize,
         bt_optimize_max=args.bt_optimize_max, 
     )
