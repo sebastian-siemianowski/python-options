@@ -139,6 +139,7 @@ def load_price_history(ticker: str, years: int = 3, cache_dir: Optional[str] = N
     """Load daily price history for ticker from local CSV cache or yfinance.
     Will compute realized volatility columns expected by downstream logic.
     Preserves real market data without fabricating missing dates.
+    INCREMENTALLY adds new data to existing cache, never overwrites existing dates.
     """
     import yfinance as yf
 
@@ -146,27 +147,37 @@ def load_price_history(ticker: str, years: int = 3, cache_dir: Optional[str] = N
     frefresh = DEFAULT_FORCE_REFRESH if force_refresh is None else bool(force_refresh)
     csv_path = _price_csv_path(ticker, cdir)
 
-    # Try to use cached data first unless force refresh is requested
-    df = pd.DataFrame()
-    
-    if not frefresh and os.path.isfile(csv_path):
+    # Always try to load existing cached data first
+    existing_df = pd.DataFrame()
+    if os.path.isfile(csv_path):
         try:
-            df = pd.read_csv(csv_path)
-            df = _sanitize_hist(df)
-            
-            # Check if cached data is recent and substantial enough
-            if not df.empty and len(df) > 100:
-                df['Date'] = pd.to_datetime(df['Date'])
-                latest_date = df['Date'].max()
-                days_old = (pd.Timestamp.now() - latest_date).days
-                
-                # Use cache if less than 1 day old
-                if days_old <= 1:
-                    return df
+            existing_df = pd.read_csv(csv_path)
+            existing_df = _sanitize_hist(existing_df)
+            if not existing_df.empty:
+                existing_df['Date'] = pd.to_datetime(existing_df['Date'], utc=True)
         except Exception:
-            pass
+            existing_df = pd.DataFrame()
+    
+    # If we have good existing data and force refresh is not requested, check if we need updates
+    if not frefresh and not existing_df.empty and len(existing_df) > 100:
+        latest_date = existing_df['Date'].max()
+        days_old = (pd.Timestamp.now(tz='UTC') - latest_date).days
+        
+        # Use cache if less than 3 days old to prevent constant re-fetching
+        # This preserves original data and prevents fabrication on subsequent runs
+        if days_old <= 3:
+            # Add volatility features and return existing data
+            df = existing_df.copy()
+            if 'Close' in df.columns:
+                ret = df['Close'].pct_change()
+                df['rv21'] = ret.rolling(21).std() * np.sqrt(252)
+                df['rv5'] = ret.rolling(5).std() * np.sqrt(252)
+                df['rv63'] = ret.rolling(63).std() * np.sqrt(252)
+                df['rv21'] = df['rv21'].fillna(method='bfill').fillna(df['rv21'].median())
+            return df
     
     # Fetch fresh data from yfinance
+    new_df = pd.DataFrame()
     try:
         # Calculate exact start and end dates for the requested period
         end_date = pd.Timestamp.now().strftime('%Y-%m-%d')
@@ -183,25 +194,71 @@ def load_price_history(ticker: str, years: int = 3, cache_dir: Optional[str] = N
         
         if hist is None or hist.empty:
             raise RuntimeError("Empty history from yfinance")
+        
+        # Filter out future dates from raw yfinance data before any processing
+        if not hist.empty:
+            hist_index_tz = hist.index.tz if hasattr(hist.index, 'tz') else None
+            today = pd.Timestamp.now(tz=hist_index_tz or 'UTC').normalize()
+            hist = hist[hist.index <= today].copy()
             
         hist = hist.rename(columns={c: c.capitalize() for c in hist.columns})
         hist = hist.reset_index().rename(columns={hist.columns[0]: 'Date'})
-        df = _sanitize_hist(hist)
         
-        # Only save if we got substantial data
-        if not df.empty and len(df) > 100:
-            df.to_csv(csv_path, index=False)
-            
+        # Filter out future dates - only keep data up to today
+        if not hist.empty and 'Date' in hist.columns:
+            hist['Date'] = pd.to_datetime(hist['Date'], utc=True)
+            today = pd.Timestamp.now(tz='UTC').normalize()
+            hist = hist[hist['Date'] <= today].copy()
+        
+        new_df = _sanitize_hist(hist)
+        
     except Exception as e:
-        # On failure, fall back to any existing cache
-        if os.path.isfile(csv_path):
-            try:
-                df = pd.read_csv(csv_path)
-                df = _sanitize_hist(df)
-            except Exception:
-                df = pd.DataFrame(columns=['Date', *REQUIRED_PRICE_COLS])
+        # On failure, fall back to existing cache if available
+        if not existing_df.empty:
+            new_df = existing_df.copy()
         else:
-            df = pd.DataFrame(columns=['Date', *REQUIRED_PRICE_COLS])
+            new_df = pd.DataFrame(columns=['Date', *REQUIRED_PRICE_COLS])
+
+    # INCREMENTAL MERGE: Combine existing and new data, preserving all existing dates
+    if not existing_df.empty and not new_df.empty:
+        # Ensure both dataframes have UTC datetime
+        if 'Date' in existing_df.columns:
+            existing_df['Date'] = pd.to_datetime(existing_df['Date'], utc=True)
+        if 'Date' in new_df.columns:
+            new_df['Date'] = pd.to_datetime(new_df['Date'], utc=True)
+        
+        # Get existing date set
+        existing_dates = set(existing_df['Date'].dt.strftime('%Y-%m-%d'))
+        
+        # Only add new dates that don't exist in cache
+        if 'Date' in new_df.columns:
+            new_df['date_str'] = new_df['Date'].dt.strftime('%Y-%m-%d')
+            truly_new = new_df[~new_df['date_str'].isin(existing_dates)].copy()
+            truly_new = truly_new.drop(columns=['date_str'])
+        else:
+            truly_new = pd.DataFrame()
+        
+        # Combine: existing data + only truly new dates
+        if not truly_new.empty:
+            combined_df = pd.concat([existing_df, truly_new], ignore_index=True)
+            combined_df = combined_df.sort_values('Date').drop_duplicates(subset=['Date'], keep='first').reset_index(drop=True)
+            df = combined_df
+        else:
+            # No new data, keep existing
+            df = existing_df
+    elif not existing_df.empty:
+        # Only existing data available
+        df = existing_df
+    elif not new_df.empty:
+        # Only new data available (first time)
+        df = new_df
+    else:
+        # No data available
+        df = pd.DataFrame(columns=['Date', *REQUIRED_PRICE_COLS])
+
+    # Save the merged result (preserves existing + adds new)
+    if not df.empty and len(df) > 100:
+        df.to_csv(csv_path, index=False)
 
     # Add realized volatility features if available
     if not df.empty and 'Close' in df.columns:

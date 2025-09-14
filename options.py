@@ -417,7 +417,7 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
     # load underlying history (N years daily) to use in backtest & volatility estimates
     today = datetime.utcnow().date()
     start_date = today - timedelta(days=int(max(1, hist_years)) * 365)
-    hist = get_cached_history(ticker, start=start_date, end=today, interval="1d", auto_adjust=False, cache_dir=DEFAULT_DATA_DIR, force_refresh=DEFAULT_FORCE_REFRESH)
+    hist = load_price_history(ticker, years=hist_years, cache_dir=DEFAULT_DATA_DIR, force_refresh=DEFAULT_FORCE_REFRESH)
     # Defensive normalization: ensure required columns exist; fallback to direct yfinance if needed
     required_cols = ['Date','Open','High','Low','Close','Volume']
     try:
@@ -432,6 +432,12 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
             period_str = f"{int(max(1, hist_years))}y"
             h2 = tk.history(period=period_str, interval="1d", auto_adjust=False)
             if isinstance(h2, pd.DataFrame) and not h2.empty:
+                # Filter out future dates before processing
+                if not h2.empty:
+                    h2_index_tz = h2.index.tz if hasattr(h2.index, 'tz') else None
+                    today_ts = pd.Timestamp.now(tz=h2_index_tz or 'UTC').normalize()
+                    h2 = h2[h2.index <= today_ts].copy()
+                
                 h2 = h2.reset_index()
                 if 'Date' not in h2.columns:
                     # yfinance sometimes uses 'Datetime' for intraday; normalize
