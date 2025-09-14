@@ -291,6 +291,29 @@ After setting up the environment (see steps above), you can run the screener wit
   make run   # runs with defaults
   make run ARGS="--tickers_csv tickers.csv --min_oi 200 --min_vol 50"
 
+### Backtest-only shortcut (quick way to see profitability)
+
+If you only want to run the multi-year strategy backtest (skip the options screener) and print the total profitability and the average per-ticker profitability in the console, use:
+
+- Using the helper script:
+
+  chmod +x backtest.sh
+  ./backtest.sh            # uses tickers.csv if present, otherwise built-in defaults
+  ./backtest.sh --tickers AAPL,MSFT --bt_years 3 --bt_dte 7
+
+- Or using Make:
+
+  make backtest
+  make backtest ARGS="--tickers AAPL,MSFT --bt_years 3"
+
+What you’ll see in the console at the end:
+- "Combined total profitability of all strategy trades: ...% (equal stake per trade)"
+- "Average per-ticker total trade profitability: ...%"
+
+Additional outputs remain the same:
+- backtests/<TICKER>_equity.csv
+- screener_results_backtest.csv (contains per-ticker strategy metrics)
+
 
 ## Using a CSV for tickers
 
