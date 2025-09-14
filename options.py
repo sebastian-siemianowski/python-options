@@ -264,7 +264,7 @@ def approximate_backtest_option_10x(ticker, candidate_row, hist, r=0.01):
 
 # -------------------- Strategy backtest (multi-year, SL/TP) --------------------
 
-def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=None, sl_x=None, alloc_frac=0.1, trend_filter=True):
+def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=None, sl_x=None, alloc_frac=0.1, trend_filter=True, vol_filter=True, time_stop_frac=0.5, time_stop_mult=1.2):
     """Simulate a simple strategy: on breakout BUY signal, buy an OTM call (strike = S*(1+moneyness)),
     price via BSM, hold until TP/SL or expiry. Returns equity curve and trade log + metrics.
 
@@ -276,15 +276,22 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
         tp_x: take-profit multiple of entry premium (e.g., 3.0 = +200%)
         sl_x: stop-loss multiple of entry premium (e.g., 0.5 = -50%)
         alloc_frac: fraction of equity allocated per trade (0..1). Remaining stays in cash. Default 0.1 (10%).
-        trend_filter: if True, only take longs when above rising 200-day SMA.
+        trend_filter: if True, only take longs when above rising 200-day SMA with 50>200.
+        vol_filter: if True, require volatility compression (rv5 < rv21 < rv63) at entry.
+        time_stop_frac: fraction of DTE after which we exit if not at a minimum gain.
+        time_stop_mult: minimum multiple of entry premium to remain in trade at time_stop.
     """
     df = hist.copy()
     if 'rv21' not in df.columns:
         df['ret'] = df['Close'].pct_change()
         df['rv21'] = df['ret'].rolling(21).std() * np.sqrt(252)
         df['rv21'] = df['rv21'].fillna(method='bfill').fillna(df['rv21'].median())
+    # Additional realized vols
+    df['rv5'] = df['Close'].pct_change().rolling(5).std() * np.sqrt(252)
+    df['rv63'] = df['Close'].pct_change().rolling(63).std() * np.sqrt(252)
     
     # Trend filter components
+    df['sma50'] = df['Close'].rolling(50).mean()
     df['sma200'] = df['Close'].rolling(200).mean()
     df['sma200_prev'] = df['sma200'].shift(1)
 
@@ -294,6 +301,9 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
     dates = df['Date'].reset_index(drop=True)
     closes = df['Close'].reset_index(drop=True)
     vols = df['rv21'].reset_index(drop=True)
+    rv5 = df['rv5'].reset_index(drop=True)
+    rv63 = df['rv63'].reset_index(drop=True)
+    sma50 = df['sma50'].reset_index(drop=True)
     sma200 = df['sma200'].reset_index(drop=True)
     sma200_prev = df['sma200_prev'].reset_index(drop=True)
 
@@ -320,9 +330,18 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
         if i in signal_idx and i + dte < n:
             # Trend filter: only take trade in uptrend if enabled and we have enough SMA history
             if trend_filter:
-                sma_ok = not (np.isnan(sma200.iloc[i]) or np.isnan(sma200_prev.iloc[i]))
-                if not sma_ok or not (closes.iloc[i] > sma200.iloc[i] and (sma200.iloc[i] - sma200_prev.iloc[i]) > 0):
+                sma_ok = not (np.isnan(sma200.iloc[i]) or np.isnan(sma200_prev.iloc[i]) or np.isnan(sma50.iloc[i]))
+                if (not sma_ok) or not (closes.iloc[i] > sma200.iloc[i] and sma50.iloc[i] > sma200.iloc[i] and (sma200.iloc[i] - sma200_prev.iloc[i]) > 0):
                     # skip trade if not in uptrend
+                    equity_curve.append({'Date': dates.iloc[i], 'equity': equity})
+                    i += 1
+                    continue
+            # Volatility filter: prefer compression prior to breakout
+            if vol_filter:
+                v5 = rv5.iloc[i]
+                v21 = vols.iloc[i]
+                v63 = rv63.iloc[i]
+                if np.isnan(v5) or np.isnan(v21) or np.isnan(v63) or not (v5 < v21 < v63):
                     equity_curve.append({'Date': dates.iloc[i], 'equity': equity})
                     i += 1
                     continue
@@ -341,6 +360,7 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
             reason = 'expiry'
 
             # simulate daily and check SL/TP
+            tstop_index = i + int(max(1, round(dte * float(time_stop_frac))))
             for j in range(i+1, i + dte + 1):
                 t_remaining = max(1/252.0, (i + dte - j)/252.0)
                 S_t = float(closes.iloc[j])
@@ -355,6 +375,12 @@ def backtest_breakout_option_strategy(hist, dte=7, moneyness=0.05, r=0.01, tp_x=
                     exit_idx = j
                     exit_price = model_price_t
                     reason = 'sl'
+                    break
+                # Time-based exit if not achieving minimal progress
+                if j >= tstop_index and model_price_t < price0 * float(time_stop_mult):
+                    exit_idx = j
+                    exit_price = model_price_t
+                    reason = 'time_stop'
                     break
             if exit_price is None:
                 # expiry payoff
@@ -475,15 +501,21 @@ def plot_support_resistance_with_signals(ticker, hist, signals=None, out_dir='pl
 # -------------------- Simple price-breakout signal generator --------------------
 
 def generate_breakout_signals(hist, window=20, lookback=5):
-    # Buy when price closes above recent resistance and volume > recent avg
+    # Buy when price closes above recent resistance with volume surge and positive 20-day momentum
     df = hist.copy()
     df['resistance'] = df['Close'].rolling(window).max().shift(1)
     df['support'] = df['Close'].rolling(window).min().shift(1)
     df['vol_avg'] = df['Volume'].rolling(window).mean().shift(1)
+    df['ret20'] = df['Close'] / df['Close'].shift(20) - 1.0
+    df['sma50'] = df['Close'].rolling(50).mean()
     df['signal'] = None
     df['Price'] = df['Close']
     for i in range(window, len(df)):
-        if df['Close'].iloc[i] > df['resistance'].iloc[i] and df['Volume'].iloc[i] > 1.2 * max(1e-6, df['vol_avg'].iloc[i]):
+        cond_breakout = df['Close'].iloc[i] > df['resistance'].iloc[i]
+        cond_vol = df['Volume'].iloc[i] > 1.2 * max(1e-6, df['vol_avg'].iloc[i])
+        cond_momo = (not pd.isna(df['ret20'].iloc[i])) and df['ret20'].iloc[i] > 0
+        cond_trend = (not pd.isna(df['sma50'].iloc[i])) and df['Close'].iloc[i] > df['sma50'].iloc[i]
+        if cond_breakout and cond_vol and cond_momo and cond_trend:
             df.at[i,'signal'] = 'BUY'
         elif df['Close'].iloc[i] < df['support'].iloc[i]:
             df.at[i,'signal'] = 'SELL'
@@ -491,7 +523,7 @@ def generate_breakout_signals(hist, window=20, lookback=5):
 
 # -------------------- Main runner --------------------
 
-def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.1, bt_trend_filter=True):
+def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.1, bt_trend_filter=True, bt_vol_filter=True, bt_time_stop_frac=0.5, bt_time_stop_mult=1.2):
     all_candidates = []
     option_bt_rows = []
     strat_rows = []
@@ -516,7 +548,9 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
             _tp = 3.0 if bt_tp_x is None else bt_tp_x
             _sl = 0.5 if bt_sl_x is None else bt_sl_x
             eq_df, trades_df, strat_metrics = backtest_breakout_option_strategy(
-                hist, dte=bt_dte, moneyness=bt_moneyness, r=0.01, tp_x=_tp, sl_x=_sl, alloc_frac=bt_alloc_frac, trend_filter=bt_trend_filter
+                hist, dte=bt_dte, moneyness=bt_moneyness, r=0.01, tp_x=_tp, sl_x=_sl,
+                alloc_frac=bt_alloc_frac, trend_filter=bt_trend_filter,
+                vol_filter=bt_vol_filter, time_stop_frac=bt_time_stop_frac, time_stop_mult=bt_time_stop_mult
             )
             # save equity curve per ticker
             try:
@@ -537,6 +571,7 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                          'strategy_max_drawdown': strat_metrics.get('max_drawdown',0.0),
                          'bt_years': bt_years, 'bt_dte': bt_dte, 'bt_moneyness': bt_moneyness,
                          'bt_alloc_frac': bt_alloc_frac, 'bt_trend_filter': bt_trend_filter,
+                         'bt_vol_filter': bt_vol_filter, 'bt_time_stop_frac': bt_time_stop_frac, 'bt_time_stop_mult': bt_time_stop_mult,
                          'bt_tp_x': _tp if _tp is not None else '',
                          'bt_sl_x': _sl if _sl is not None else ''}
             strat_rows.append(strat_row)
@@ -597,6 +632,9 @@ if __name__ == '__main__':
     parser.add_argument('--bt_sl_x', type=float, default=None, help='Stop-loss multiple of premium (e.g., 0.5 for -50%). Leave empty to use default 0.5.')
     parser.add_argument('--bt_alloc_frac', type=float, default=0.1, help='Fraction of equity allocated per trade (0..1). Default 0.1.')
     parser.add_argument('--bt_trend_filter', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable 200-day SMA uptrend filter for entries (true/false). Default true.')
+    parser.add_argument('--bt_vol_filter', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable volatility compression filter rv5<rv21<rv63 at entry (true/false). Default true.')
+    parser.add_argument('--bt_time_stop_frac', type=float, default=0.5, help='Fraction of DTE after which to enforce time-based exit if not at minimum gain. Default 0.5.')
+    parser.add_argument('--bt_time_stop_mult', type=float, default=1.2, help='Minimum multiple of entry premium required at time_stop to remain in trade. Default 1.2x.')
     args = parser.parse_args()
 
     def load_tickers_from_csv(path):
@@ -654,6 +692,9 @@ if __name__ == '__main__':
         bt_sl_x=args.bt_sl_x,
         bt_alloc_frac=args.bt_alloc_frac,
         bt_trend_filter=args.bt_trend_filter,
+        bt_vol_filter=args.bt_vol_filter,
+        bt_time_stop_frac=args.bt_time_stop_frac,
+        bt_time_stop_mult=args.bt_time_stop_mult,
     )
 
     print('\nScreener finished.')
