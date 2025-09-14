@@ -37,11 +37,21 @@ else
   exit 1
 fi
 
+# Resolve the venv's Python explicitly to avoid shell aliases (e.g., docker-wrapped python)
+if [[ -x ".venv/bin/python" ]]; then
+  VENV_PY=".venv/bin/python"
+elif [[ -x ".venv/Scripts/python.exe" ]]; then
+  VENV_PY=".venv/Scripts/python.exe"
+else
+  # Fallback to whatever "python" resolves to in PATH within the venv
+  VENV_PY="$(command -v python || echo python)"
+fi
+
 echo "Upgrading pip ..."
-python -m pip install --upgrade pip
+"$VENV_PY" -m pip install --upgrade pip
 
 echo "Installing project requirements ..."
-python -m pip install -r requirements.txt
+"$VENV_PY" -m pip install -r requirements.txt
 
 echo "\nAll set! Virtual environment is active. To activate it later:"
 if [[ -f .venv/bin/activate ]]; then
@@ -51,4 +61,4 @@ else
 fi
 
 echo "To run the screener:"
-echo "  python options.py --tickers AAPL,MSFT,NVDA,SPY --min_oi 200 --min_vol 50"
+echo "  .venv/bin/python options.py --tickers AAPL,MSFT,NVDA,SPY --min_oi 200 --min_vol 50  # or 'python options.py' after activating the venv"

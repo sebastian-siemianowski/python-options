@@ -12,6 +12,13 @@
 
 set -euo pipefail
 
+# Encourage colored output from Rich even under make or non-TTY
+export PYTHONUNBUFFERED=1
+# Honor NO_COLOR if user sets it; otherwise force color
+if [[ -z "${NO_COLOR:-}" ]]; then
+  export FORCE_COLOR=1
+fi
+
 # Prefer virtualenv Python if available
 if [[ -x ".venv/bin/python" ]]; then
   PY_CMD=".venv/bin/python"

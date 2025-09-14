@@ -148,135 +148,6 @@ This will create a virtual environment and install requirements using `python -m
 Notes:
 - These instructions focus on macOS. Linux/Windows setup has been omitted intentionally to keep this README mac-specific.
 
----
-
-## Git: Push this project to a new GitHub repository (macOS)
-
-If you created a new, empty GitHub repo and push fails with commands like:
-
-  git remote add origin git@github.com:<USER>/<REPO>.git
-  git branch -M main
-  git push -u origin main
-
-use the checklist below.
-
-### A) Initialize and make the first commit
-
-From the project root:
-
-  git init
-  git add .
-  git commit -m "Initial commit"
-  git branch -M main
-
-If you get "src refspec main does not match any", it means there are no commits yet or the branch doesn't exist. Make the commit first, then rename/create the branch as above.
-
-### B) Connect the correct remote
-
-Use SSH (recommended) or HTTPS.
-
-- SSH (requires an SSH key added to your GitHub account):
-
-  git remote add origin git@github.com:<USER>/<REPO>.git
-
-  If "remote origin already exists":
-
-  git remote set-url origin git@github.com:<USER>/<REPO>.git
-
-- HTTPS (passwordless with a GitHub token):
-
-  git remote add origin https://github.com/<USER>/<REPO>.git
-
-  If it already exists:
-
-  git remote set-url origin https://github.com/<USER>/<REPO>.git
-
-### C) Verify your SSH setup (if using SSH)
-
-Test your SSH connection:
-
-  ssh -T git@github.com
-
-If you see "Permission denied (publickey)", create and add an SSH key:
-
-  ssh-keygen -t ed25519 -C "your_email@example.com"
-  eval "$(ssh-agent -s)"
-  ssh-add --apple-use-keychain ~/.ssh/id_ed25519
-  pbcopy < ~/.ssh/id_ed25519.pub   # then add the copied key at https://github.com/settings/keys
-  ssh -T git@github.com            # test again; you should see a success message
-
-Tip (macOS Keychain persistence):
-
-  git config --global credential.helper osxkeychain
-
-### D) Push
-
-  git push -u origin main
-
-If the remote has an auto-created README or .gitignore and you see "Updates were rejected because the remote contains work that you do not have":
-
-  git pull origin main --allow-unrelated-histories
-  git push -u origin main
-
-Alternatively, if you prefer a rebase:
-
-  git fetch origin
-  git rebase origin/main
-  git push -u origin main
-
-### E) Common errors and fixes
-
-- src refspec main does not match any
-  - Root cause: No commit or no branch named main.
-  - Fix: Make an initial commit, run `git branch -M main`, then push.
-
-- remote origin already exists
-  - Fix: `git remote set-url origin git@github.com:<USER>/<REPO>.git` (or HTTPS URL), or `git remote remove origin && git remote add origin <URL>`.
-
-- Permission denied (publickey)
-  - Fix: Ensure your SSH key is added to ssh-agent and to GitHub (see step C). Then `ssh -T git@github.com` to verify.
-
-- Updates were rejected / non-fast-forward
-  - Fix: `git pull --rebase origin main` (or `git pull origin main --allow-unrelated-histories` if the remote is unrelated), then push again.
-
-- Protected branch / required status checks
-  - Root cause: Branch protection rules in the GitHub repo.
-  - Fix: Temporarily relax protection or open a PR from a feature branch.
-
-- Wrong default branch name on GitHub
-  - If GitHub default branch is `main` but you're pushing `master` (or vice versa), rename locally: `git branch -M main` (or `master`) and set the same default on GitHub settings.
-
-With these steps, the standard sequence should work:
-
-  git add .
-  git commit -m "Initial commit"
-  git branch -M main
-  git remote add origin git@github.com:<USER>/<REPO>.git
-  git push -u origin main
-
-
----
-
-## One-command push script
-
-If you just want to automate the whole push process, use the included script:
-
-  bash push_to_new_repo.sh git@github.com:<USER>/<REPO>.git
-
-Or with HTTPS:
-
-  bash push_to_new_repo.sh https://github.com/<USER>/<REPO>.git
-
-What it does:
-- Initializes the repo if needed and creates the first commit if none exists.
-- Ensures your branch is named main.
-- Adds or updates the origin remote to the URL you provide.
-- Verifies SSH connectivity when using an SSH URL (informational check).
-- Pushes to origin main and automatically handles common issues (unrelated histories, non-fast-forward) by retrying with safe steps.
-
-Run it from the project root. On failure it prints actionable tips.
-
-
 ## Run command shortcuts
 
 After setting up the environment (see steps above), you can run the screener with a simple command:
@@ -313,7 +184,8 @@ What you’ll see in the console at the end (now with world‑class formatting):
 - "Average per-ticker total trade profitability: ...%" in green/red
 
 Notes:
-- Pretty console output uses the Rich library and automatically falls back to plain text if Rich is not available or if the output is not a TTY.
+- Pretty console output uses the Rich library and our scripts now force colors even when running under `make` or other non‑TTY contexts.
+- To disable colors, set NO_COLOR=1 (e.g., `NO_COLOR=1 make backtest`).
 
 Additional outputs remain the same:
 - backtests/<TICKER>_equity.csv
@@ -362,7 +234,10 @@ Key CLI flags:
 - --bt_protect_mult P   # protective floor vs entry (default: 0.7)
 - --bt_cooldown_days N  # cooldown days after losing trade (default: 0)
 - --bt_entry_weekdays W # comma-separated weekdays 0=Mon..6=Sun to allow entries (e.g., 0,1,2)
-- --bt_skip_earnings E  # true/false; skip entries near earnings (requires external earnings dates)
+- --bt_skip_earnings E  # true/false; skip entries near earnings (auto-fetched from yfinance)
+- --bt_use_underlying_atr_exits B # true/false; use ATR-based exits on underlying (default: true)
+- --bt_tp_atr_mult X   # underlying ATR take-profit multiple (default: 2.0)
+- --bt_sl_atr_mult X   # underlying ATR stop-loss multiple (default: 1.0)
 
 Examples:
 
@@ -375,3 +250,32 @@ Examples:
 Outputs (in addition to the existing CSVs and plots):
 - backtests/<TICKER>_equity.csv   # per-ticker equity curve over time
 - screener_results_backtest.csv   # now includes strategy metrics (CAGR, Sharpe, max drawdown, win rate)
+
+
+## Diagnose and fix missing Python libraries (Environment Doctor)
+
+If you suspect the wrong or missing libraries, use the built-in doctor:
+
+- Quick check:
+
+      make doctor
+
+- Auto-fix (installs/repairs packages from requirements.txt):
+
+      make doctor ARGS="--fix"
+
+You can also run the script directly:
+
+    chmod +x doctor.sh
+    ./doctor.sh           # check only
+    ./doctor.sh --fix     # attempt to install requirements automatically
+
+Tips:
+- It prefers the project virtualenv at .venv if present; otherwise it uses your system python3.
+- If no virtualenv is active, consider creating one first:
+
+      python3 -m venv .venv && source .venv/bin/activate
+
+- On macOS/Apple Silicon, ensure you have Command Line Tools installed if you hit build errors:
+
+      xcode-select --install

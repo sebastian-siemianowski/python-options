@@ -308,6 +308,10 @@ def backtest_breakout_option_strategy(
     skip_earnings=False,
     earnings_dates=None,
     earnings_buffer_days=7,
+    use_underlying_atr_exits=True,
+    atr_len=14,
+    tp_atr_mult=2.0,
+    sl_atr_mult=1.0,
 ):
     """Simulate a strategy: on breakout BUY signal, buy a short-dated call (via BSM),
     manage with TP/SL, optional trailing stop, and optional regime/vol filters.
@@ -343,6 +347,17 @@ def backtest_breakout_option_strategy(
     # Additional realized vols
     df['rv5'] = df['Close'].pct_change().rolling(5).std() * np.sqrt(252)
     df['rv63'] = df['Close'].pct_change().rolling(63).std() * np.sqrt(252)
+
+    # ATR calculations for underlying-based exits
+    if all(c in df.columns for c in ['High','Low','Close']):
+        df['H-L'] = (df['High'] - df['Low']).abs()
+        df['H-C1'] = (df['High'] - df['Close'].shift(1)).abs()
+        df['L-C1'] = (df['Low'] - df['Close'].shift(1)).abs()
+        df['TR'] = df[['H-L','H-C1','L-C1']].max(axis=1)
+        # use simple moving average ATR to avoid dependency bloat
+        df['ATR14'] = df['TR'].rolling(int(max(2, atr_len))).mean()
+    else:
+        df['ATR14'] = np.nan
     
     # Trend filter components
     df['sma50'] = df['Close'].rolling(50).mean()
@@ -451,6 +466,15 @@ def backtest_breakout_option_strategy(
             exit_price = None
             reason = 'expiry'
 
+            # Underlying ATR-based thresholds at entry
+            ATR0 = float(df['ATR14'].iloc[i]) if 'ATR14' in df.columns and np.isfinite(df['ATR14'].iloc[i]) else np.nan
+            if use_underlying_atr_exits and np.isfinite(ATR0) and S0 > 0:
+                tp_underlying = S0 + float(tp_atr_mult) * ATR0
+                sl_underlying = S0 - float(sl_atr_mult) * ATR0
+            else:
+                tp_underlying = np.nan
+                sl_underlying = np.nan
+
             # simulate daily and check SL/TP/Trailing/Time stop
             tstop_index = i + int(max(1, round(dte * float(time_stop_frac))))
             peak_price = price0
@@ -461,6 +485,18 @@ def backtest_breakout_option_strategy(
                 sigma_t = float(vols.iloc[j]) if np.isfinite(vols.iloc[j]) else sigma0
                 model_price_t = bsm_call_price(S_t, K, t_remaining, r, max(1e-6, sigma_t)) if t_remaining>0 else max(S_t - K, 0.0)
                 peak_price = max(peak_price, model_price_t)
+                # Underlying ATR-based exits
+                if use_underlying_atr_exits and np.isfinite(tp_underlying) and np.isfinite(sl_underlying):
+                    if S_t >= tp_underlying:
+                        exit_idx = j
+                        exit_price = model_price_t
+                        reason = 'tp_underlying_atr'
+                        break
+                    if S_t <= sl_underlying:
+                        exit_idx = j
+                        exit_price = model_price_t
+                        reason = 'sl_underlying_atr'
+                        break
                 # Protective stop from entry
                 if protect_mult is not None and model_price_t <= price0 * float(protect_mult):
                     exit_idx = j
@@ -642,7 +678,7 @@ def generate_breakout_signals(hist, window=20, lookback=5):
 
 # -------------------- Main runner --------------------
 
-def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.1, bt_trend_filter=True, bt_vol_filter=True, bt_time_stop_frac=0.5, bt_time_stop_mult=1.2, bt_use_target_delta=False, bt_target_delta=0.25, bt_trail_start_mult=1.5, bt_trail_back=0.5, bt_protect_mult=0.7, bt_cooldown_days=0, bt_entry_weekdays=None, bt_skip_earnings=False):
+def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.05, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.1, bt_trend_filter=True, bt_vol_filter=True, bt_time_stop_frac=0.5, bt_time_stop_mult=1.2, bt_use_target_delta=False, bt_target_delta=0.25, bt_trail_start_mult=1.5, bt_trail_back=0.5, bt_protect_mult=0.7, bt_cooldown_days=0, bt_entry_weekdays=None, bt_skip_earnings=False, bt_use_underlying_atr_exits=True, bt_tp_atr_mult=2.0, bt_sl_atr_mult=1.0):
     all_candidates = []
     option_bt_rows = []
     strat_rows = []
@@ -666,6 +702,31 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
             # Set sensible defaults if not provided
             _tp = 3.0 if bt_tp_x is None else bt_tp_x
             _sl = 0.5 if bt_sl_x is None else bt_sl_x
+            # Fetch earnings dates if requested
+            earnings_dates = None
+            if bt_skip_earnings:
+                try:
+                    tk2 = yf.Ticker(t)
+                    try:
+                        edf = tk2.get_earnings_dates(limit=40)
+                    except Exception:
+                        edf = None
+                    if edf is not None and not edf.empty:
+                        earnings_dates = [pd.to_datetime(d).date() for d in edf.index.to_pydatetime()]
+                    else:
+                        cal = getattr(tk2, 'calendar', None)
+                        if isinstance(cal, pd.DataFrame) and not cal.empty:
+                            # calendar index sometimes contains 'Earnings Date'
+                            for val in cal.values.ravel():
+                                try:
+                                    dd = pd.to_datetime(val).date()
+                                    if dd not in (earnings_dates or []):
+                                        earnings_dates = (earnings_dates or []) + [dd]
+                                except Exception:
+                                    pass
+                except Exception:
+                    earnings_dates = None
+
             eq_df, trades_df, strat_metrics = backtest_breakout_option_strategy(
                 hist, dte=bt_dte, moneyness=bt_moneyness, r=0.01, tp_x=_tp, sl_x=_sl,
                 alloc_frac=bt_alloc_frac, trend_filter=bt_trend_filter,
@@ -673,7 +734,11 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                 use_target_delta=bt_use_target_delta, target_delta=bt_target_delta,
                 trail_start_mult=bt_trail_start_mult, trail_back=bt_trail_back,
                 protect_mult=bt_protect_mult, cooldown_days=bt_cooldown_days,
-                entry_weekdays=bt_entry_weekdays, skip_earnings=bt_skip_earnings
+                entry_weekdays=bt_entry_weekdays, skip_earnings=bt_skip_earnings,
+                earnings_dates=earnings_dates,
+                use_underlying_atr_exits=bt_use_underlying_atr_exits,
+                tp_atr_mult=bt_tp_atr_mult,
+                sl_atr_mult=bt_sl_atr_mult
             )
             # save equity curve per ticker
             try:
@@ -700,6 +765,9 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                          'bt_protect_mult': bt_protect_mult, 'bt_cooldown_days': bt_cooldown_days,
                          'bt_entry_weekdays': ','.join(map(str, bt_entry_weekdays)) if bt_entry_weekdays else '',
                          'bt_skip_earnings': bt_skip_earnings,
+                         'bt_use_underlying_atr_exits': bt_use_underlying_atr_exits,
+                         'bt_tp_atr_mult': bt_tp_atr_mult,
+                         'bt_sl_atr_mult': bt_sl_atr_mult,
                          'bt_tp_x': _tp if _tp is not None else '',
                          'bt_sl_x': _sl if _sl is not None else ''}
             strat_rows.append(strat_row)
@@ -750,8 +818,11 @@ try:
     from rich.table import Table
     from rich.panel import Panel
     from rich.box import ROUNDED
+    import os as _os
     _HAS_RICH = True
-    _CON = Console()
+    # Force colors in common non-TTY contexts (e.g., make) unless NO_COLOR is set.
+    _force_color = str(_os.environ.get("NO_COLOR", "")).strip() == ""
+    _CON = Console(force_terminal=_force_color, color_system="auto")
 except Exception:
     _HAS_RICH = False
     _CON = None
@@ -859,6 +930,7 @@ def _render_summary(tickers, df_res, df_bt):
     else:
         print('\nPlots saved to plots/ (one per ticker)')
         print('Per-ticker equity curves saved to backtests/<TICKER>_equity.csv')
+        print('Note: Rich (color console) not installed — run `make doctor --fix` to enable colored output.')
 
 
 if __name__ == '__main__':
@@ -887,7 +959,10 @@ if __name__ == '__main__':
     parser.add_argument('--bt_protect_mult', type=float, default=0.7, help='Protective stop floor relative to entry (e.g., 0.7 = -30%). Default 0.7.')
     parser.add_argument('--bt_cooldown_days', type=int, default=0, help='Cooldown days after a losing trade. Default 0.')
     parser.add_argument('--bt_entry_weekdays', type=str, default=None, help='Comma-separated weekdays to allow entries (0=Mon..4=Fri). Example: 0,1,2')
-    parser.add_argument('--bt_skip_earnings', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=False, help='Skip entries near earnings (requires providing earnings dates externally).')
+    parser.add_argument('--bt_skip_earnings', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=False, help='Skip entries near earnings (auto-fetched from yfinance).')
+    parser.add_argument('--bt_use_underlying_atr_exits', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Use underlying ATR-based exits (TP/SL on price) instead of option-price multiples only. Default true.')
+    parser.add_argument('--bt_tp_atr_mult', type=float, default=2.0, help='Underlying ATR take-profit multiple (e.g., 2.0 = exit when price rises by 2*ATR). Default 2.0.')
+    parser.add_argument('--bt_sl_atr_mult', type=float, default=1.0, help='Underlying ATR stop-loss multiple (e.g., 1.0 = exit when price falls by 1*ATR). Default 1.0.')
     args = parser.parse_args()
 
     def load_tickers_from_csv(path):
@@ -965,6 +1040,9 @@ if __name__ == '__main__':
         bt_cooldown_days=args.bt_cooldown_days,
         bt_entry_weekdays=entry_weekdays_list,
         bt_skip_earnings=args.bt_skip_earnings,
+        bt_use_underlying_atr_exits=args.bt_use_underlying_atr_exits,
+        bt_tp_atr_mult=args.bt_tp_atr_mult,
+        bt_sl_atr_mult=args.bt_sl_atr_mult,
     )
 
     # Pretty render
