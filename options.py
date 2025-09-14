@@ -379,60 +379,14 @@ def get_cached_history(ticker, start=None, end=None, interval="1d", auto_adjust=
         out = out.loc[(out.index.date >= start) & (out.index.date <= end)]
     return out.reset_index().rename(columns={'index':'Date'})
 
-# -------------------- Black-Scholes helpers --------------------
-
-def bsm_call_price(S, K, T, r, sigma):
-    if T <= 0:
-        return max(S - K, 0.0)
-    if sigma <= 0 or S <= 0 or K <= 0:
-        return max(S - K, 0.0)
-    d1 = (np.log(S/K) + (r + 0.5*sigma*sigma)*T) / (sigma*np.sqrt(T))
-    d2 = d1 - sigma*np.sqrt(T)
-    return S * norm.cdf(d1) - K * np.exp(-r*T) * norm.cdf(d2)
-
-def bsm_call_delta(S, K, T, r, sigma):
-    # European call delta under BSM
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
-        return 1.0 if S > K else 0.0
-    d1 = (np.log(S/K) + (r + 0.5*sigma*sigma)*T) / (sigma*np.sqrt(T))
-    return float(norm.cdf(d1))
-
-def strike_for_target_delta(S, T, r, sigma, target_delta):
-    # Solve for K such that call delta ~= target_delta using Brent on log-strike scale
-    target = float(target_delta)
-    if not (0.01 <= target <= 0.99):
-        target = 0.25
-    # Search K in [S*0.5, S*2.0]
-    def f(K):
-        return bsm_call_delta(S, K, T, r, sigma) - target
-    try:
-        return float(brentq(f, S*0.5, S*2.0, maxiter=200))
-    except Exception:
-        # fallback to moneyness of ~ (1 - target_delta) heuristic
-        mny = max(0.01, min(0.2, 0.3 - target*0.5))
-        return float(S * (1.0 + mny))
-
-
-def bsm_implied_vol(price, S, K, T, r):
-    # invert BSM for calls using Brent
-    intrinsic = max(S - K, 0.0)
-    price = float(max(price, intrinsic + 1e-8))
-    def f(sig):
-        return bsm_call_price(S, K, T, r, sig) - price
-    try:
-        return brentq(f, 1e-6, 5.0, maxiter=300)
-    except Exception:
-        return np.nan
-
-
-def lognormal_prob_geq(S0, mu_ln, sigma_ln, threshold):
-    # Probability that lognormal(X; mu_ln, sigma_ln) >= threshold
-    # X ~ lognormal with parameters mu_ln, sigma_ln where ln(X) ~ N(mu_ln, sigma_ln^2)
-    if threshold <= 0:
-        return 1.0
-    z = (np.log(threshold) - mu_ln) / sigma_ln
-    return 1.0 - norm.cdf(z)
-
+# -------------------- Black-Scholes helpers (moved to bs_utils.py) --------------------
+from bs_utils import (
+    bsm_call_price,
+    bsm_call_delta,
+    strike_for_target_delta,
+    bsm_implied_vol,
+    lognormal_prob_geq,
+)
 # -------------------- Utility functions --------------------
 
 def days_to_expiry_from_date(expiry_date, ref_date=None):
@@ -625,47 +579,67 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
 # -------------------- Backtest approximation --------------------
 
 def approximate_backtest_option_10x(ticker, candidate_row, hist, r=0.01):
-    # candidate_row: one row from opportunities with expiry chosen.
-    # We'll perform a rolling backtest: for each historical business day in hist where we could have bought
-    # a call with same DTE relative to that day, compute whether the 10x payoff would have happened.
-    # This is an approximation because historical option chains differ; we model option prices via BSM
-
+    # Vectorized approximation: evaluate every eligible start day in parallel
     strike = float(candidate_row['strike'])
     dte = int(candidate_row['dte'])
-    mid_price = float(candidate_row['mid'])
-
-    results = []
-    dates = hist['Date'].values
-    for i in range(252, len(dates)-dte):
-        buy_date = dates[i]
-        S_buy = float(hist['Close'].iloc[i])
-        # use realized vol at index i
-        sigma = float(hist['rv21'].iloc[i])
-        T_buy = max(1/252.0, dte/252.0)
-        # approximate mid price at buy_date using BSM
-        price_model = bsm_call_price(S_buy, strike, T_buy, r, sigma)
-        if price_model <= 0:
-            continue
-        # required S at expiry for 10x from that price_model
-        thresh = strike + 10.0 * price_model
-
-        # look up actual close at expiry index
-        expiry_idx = i + dte
-        S_exp = float(hist['Close'].iloc[expiry_idx])
-        hit = 1 if S_exp >= thresh else 0
-        payoff = max(S_exp - strike, 0.0)
-        ret_x = payoff / price_model if price_model>0 else 0.0
-        results.append({'buy_date': buy_date, 'S_buy': S_buy, 'price_model': price_model, 'S_exp': S_exp, 'hit_10x': hit, 'ret_x': ret_x})
-
-    df_res = pd.DataFrame(results)
-    if df_res.empty:
+    if dte <= 0:
         return pd.DataFrame(), {}
 
-    hits = df_res['hit_10x'].sum()
-    tries = len(df_res)
-    hit_rate = hits / tries if tries>0 else 0.0
-    avg_return_x = df_res['ret_x'].mean()
-    metrics = {'tries':tries, 'hits':int(hits), 'hit_rate':float(hit_rate), 'avg_return_x':float(avg_return_x)}
+    # Ensure required columns
+    df = hist.copy()
+    if 'rv21' not in df.columns:
+        df['ret'] = df['Close'].pct_change()
+        df['rv21'] = df['ret'].rolling(21).std() * np.sqrt(252)
+        df['rv21'] = df['rv21'].fillna(method='bfill').fillna(df['rv21'].median())
+
+    n = len(df)
+    start_idx = 252  # warmup for volatility
+    end_idx = n - dte
+    if end_idx - start_idx <= 0:
+        return pd.DataFrame(), {}
+
+    idx = np.arange(start_idx, end_idx, dtype=int)
+    buy_dates = df['Date'].to_numpy()[idx]
+    S_buy = df['Close'].to_numpy()[idx].astype(float)
+    sigmas = df['rv21'].to_numpy()[idx].astype(float)
+    T_buy = max(1/252.0, dte/252.0)
+
+    # Model entry premium via vectorized BSM
+    prices = bsm_call_price(S_buy, strike, T_buy, r, sigmas)
+    # Filter non-positive premiums
+    valid = prices > 0
+    if not np.any(valid):
+        return pd.DataFrame(), {}
+
+    idx_v = idx[valid]
+    buy_dates_v = buy_dates[valid]
+    S_buy_v = S_buy[valid]
+    prices_v = prices[valid]
+
+    # Required expiry threshold for 10x
+    thresh_v = strike + 10.0 * prices_v
+    # Actual expiry prices
+    S_exp_all = df['Close'].to_numpy().astype(float)
+    S_exp_v = S_exp_all[idx_v + dte]
+
+    hit_v = (S_exp_v >= thresh_v).astype(int)
+    payoff_v = np.maximum(S_exp_v - strike, 0.0)
+    ret_x_v = np.divide(payoff_v, prices_v, out=np.zeros_like(payoff_v), where=prices_v>0)
+
+    df_res = pd.DataFrame({
+        'buy_date': buy_dates_v,
+        'S_buy': S_buy_v,
+        'price_model': prices_v,
+        'S_exp': S_exp_v,
+        'hit_10x': hit_v,
+        'ret_x': ret_x_v,
+    })
+
+    hits = int(hit_v.sum())
+    tries = int(len(df_res))
+    hit_rate = float(hits / tries) if tries > 0 else 0.0
+    avg_return_x = float(np.mean(ret_x_v)) if tries > 0 else 0.0
+    metrics = {'tries': tries, 'hits': hits, 'hit_rate': hit_rate, 'avg_return_x': avg_return_x}
     return df_res, metrics
 
 # -------------------- Strategy backtest (multi-year, SL/TP) --------------------
@@ -1814,15 +1788,15 @@ if __name__ == '__main__':
     parser.add_argument('--bt_years', type=int, default=3, help='Backtest lookback period in years for underlying history')
     parser.add_argument('--bt_dte', type=int, default=7, help='DTE (days to expiry) for simulated trades')
     parser.add_argument('--bt_moneyness', type=float, default=0.05, help='Relative OTM for strike: K = S * (1 + moneyness)')
-    parser.add_argument('--bt_tp_x', type=float, default=None, help='Take-profit multiple of premium (e.g., 3.0 for +200%). Leave empty to use default 3.0.')
-    parser.add_argument('--bt_sl_x', type=float, default=None, help='Stop-loss multiple of premium (e.g., 0.5 for -50%). Leave empty to use default 0.5.')
+    parser.add_argument('--bt_tp_x', type=float, default=2.0, help='Take-profit multiple of premium (e.g., 2.0 = +100%). Default 2.0.')
+    parser.add_argument('--bt_sl_x', type=float, default=0.6, help='Stop-loss multiple of premium (e.g., 0.6 = -40%). Default 0.6.')
     parser.add_argument('--bt_alloc_frac', type=float, default=0.005, help='Fraction of equity allocated per trade (0..1). Default 0.005 (safer by default).')
     parser.add_argument('--bt_trend_filter', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable 200-day SMA uptrend filter for entries (true/false). Default true.')
     parser.add_argument('--bt_vol_filter', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable volatility compression filter rv5<rv21<rv63 at entry (true/false). Default true.')
     parser.add_argument('--bt_time_stop_frac', type=float, default=0.5, help='Fraction of DTE after which to enforce time-based exit if not at minimum gain. Default 0.5.')
-    parser.add_argument('--bt_time_stop_mult', type=float, default=1.1, help='Minimum multiple of entry premium required at time_stop to remain in trade. Default 1.1x.')
+    parser.add_argument('--bt_time_stop_mult', type=float, default=1.05, help='Minimum multiple of entry premium required at time_stop to remain in trade. Default 1.05x.')
     parser.add_argument('--bt_use_target_delta', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='If true, choose strike by target delta instead of moneyness. Default true.')
-    parser.add_argument('--bt_target_delta', type=float, default=0.2, help='Target call delta when bt_use_target_delta is true. Default 0.2.')
+    parser.add_argument('--bt_target_delta', type=float, default=0.35, help='Target call delta when bt_use_target_delta is true. Default 0.35.')
     parser.add_argument('--bt_trail_start_mult', type=float, default=1.5, help='Activate trailing stop when option >= trail_start_mult * entry. Default 1.5x.')
     parser.add_argument('--bt_trail_back', type=float, default=0.5, help='Trailing stop drawback from peak (fraction). Default 0.5 (50%).')
     parser.add_argument('--bt_protect_mult', type=float, default=0.85, help='Protective stop floor relative to entry (e.g., 0.85 = -15%). Default 0.85.')
