@@ -275,3 +275,35 @@ What it does:
 - Pushes to origin main and automatically handles common issues (unrelated histories, non-fast-forward) by retrying with safe steps.
 
 Run it from the project root. On failure it prints actionable tips.
+
+
+## Run command shortcuts
+
+After setting up the environment (see steps above), you can run the screener with a simple command:
+
+- Using the helper script:
+
+  chmod +x run.sh
+  ./run.sh --tickers_csv tickers.csv --min_oi 200 --min_vol 50
+
+- Or using Make (pass extra args via ARGS):
+
+  make run
+  make run ARGS="--tickers_csv tickers.csv --min_oi 200 --min_vol 50"
+
+
+## Using a CSV for tickers
+
+You can now provide tickers via a CSV file. By default, the script looks for a file named `tickers.csv` in the project root.
+
+- CSV format: one ticker per line is recommended. A header like `ticker` is supported. Comma/space/semicolon-separated values are also accepted.
+
+Examples:
+
+  # default (uses tickers.csv if it exists)
+  ./run.sh --min_oi 200 --min_vol 50
+
+  # explicit CSV path
+  ./run.sh --tickers_csv tickers.csv --min_oi 200 --min_vol 50
+
+Backward compatibility: you can still pass a comma-separated list via `--tickers`, which is used if a CSV isn’t provided/found.

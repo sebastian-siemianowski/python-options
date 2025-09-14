@@ -351,13 +351,39 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--tickers', type=str, default='SPY,QQQ,AAPL,MSFT,NVDA,AMZN,TSLA,AMD,INTC,META,GOOG,MS,JNJ',
-                        help='Comma-separated tickers to screen')
+    parser.add_argument('--tickers_csv', type=str, default='tickers.csv',
+                        help='Path to a CSV file containing tickers. If present, this takes precedence over --tickers.')
+    parser.add_argument('--tickers', type=str, default=None,
+                        help='Optional: comma-separated tickers to screen (fallback if CSV not provided/found).')
     parser.add_argument('--min_oi', type=int, default=200, help='Minimum open interest to consider')
     parser.add_argument('--min_vol', type=int, default=30, help='Minimum option volume to consider')
     args = parser.parse_args()
 
-    tickers = [x.strip().upper() for x in args.tickers.split(',') if x.strip()]
+    def load_tickers_from_csv(path):
+        import os, csv, re
+        if not os.path.isfile(path):
+            return []
+        tickers_set = []
+        with open(path, newline='') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                for cell in row:
+                    for tok in re.split(r'[;,\s]+', cell.strip()):
+                        if tok:
+                            u = tok.upper()
+                            if u not in tickers_set:
+                                tickers_set.append(u)
+        return tickers_set
+
+    tickers = []
+    if args.tickers_csv:
+        tickers = load_tickers_from_csv(args.tickers_csv)
+    if not tickers and args.tickers:
+        tickers = [x.strip().upper() for x in args.tickers.split(',') if x.strip()]
+    if not tickers:
+        # final fallback default list
+        tickers = ['SPY','QQQ','AAPL','MSFT','NVDA','AMZN','TSLA','AMD','INTC','META','GOOG','MS','JNJ']
+
     print('Running screener on:', tickers)
     df_res, df_bt = run_screener(tickers, min_oi=args.min_oi, min_vol=args.min_vol)
 
