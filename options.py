@@ -412,7 +412,8 @@ def get_closest_expiry_dates(option_dates, target_days):
 
 # -------------------- Screener core --------------------
 
-def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=20, r=0.01, hist_years=1):
+def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=20, r=0.01, hist_years=1,
+                          option_types=("call",), target_x=4.0, leap_min_dte=180):
     tk = yf.Ticker(ticker)
     # load underlying history (N years daily) to use in backtest & volatility estimates
     today = datetime.utcnow().date()
@@ -479,20 +480,25 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
         return pd.DataFrame(), hist
 
     # Generate signals to ensure congruency with backtesting strategy
-    # Only screen for call options when there's a current BUY signal
     signals = generate_breakout_signals(hist)
-    
-    # Check if there's a current BUY signal (look at the most recent signal)
+
+    # Check for recent BUY (for calls) and SELL (for puts) signals within last 5 days
     current_buy_signal = False
+    current_sell_signal = False
     if not signals.empty:
-        # Look for recent BUY signals (within last 5 days to account for timing)
-        recent_signals = signals.tail(5)  
-        buy_signals = recent_signals[recent_signals['signal'] == 'BUY']
-        call_signals = recent_signals[recent_signals.get('side', 'CALL') == 'CALL']
-        current_buy_signal = not buy_signals.empty and not call_signals.empty
-    
-    # If no current buy signal, return empty opportunities (maintain congruency with backtesting)
-    if not current_buy_signal:
+        recent_signals = signals.tail(5)
+        if 'signal' in recent_signals.columns:
+            current_buy_signal = any((recent_signals['signal'] == 'BUY') & (recent_signals.get('side', 'CALL') == 'CALL'))
+            current_sell_signal = any((recent_signals['signal'] == 'SELL') & (recent_signals.get('side', 'PUT') == 'PUT'))
+
+    # Gate by selected option types: if only calls requested, require BUY; if only puts, require SELL; if both, allow either
+    _req_calls = any(str(x).lower() in ('call','calls','c') for x in (option_types or ()))
+    _req_puts  = any(str(x).lower() in ('put','puts','p') for x in (option_types or ()))
+    if (_req_calls and not _req_puts) and not current_buy_signal:
+        return pd.DataFrame(), hist
+    if (_req_puts and not _req_calls) and not current_sell_signal:
+        return pd.DataFrame(), hist
+    if (_req_calls and _req_puts) and not (current_buy_signal or current_sell_signal):
         return pd.DataFrame(), hist
 
     opportunities = []
@@ -551,9 +557,9 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
                 # extremely cheap option; skip absurd pennies due to noise
                 continue
 
-            # Required underlying at expiry to yield 4x option price (300% return)
-            payoff_needed = mid * 4.0
-            S_thresh = strike + payoff_needed  # must be >= this for payoff >= 4x
+            # Underlying threshold to yield target_x multiple of option price at expiry
+            payoff_needed = mid * float(target_x)
+            S_thresh = strike + payoff_needed  # must be >= this for payoff >= target_x
 
             # Derive implied vol for this option if available or approximate with historical rv21
             implied = np.nan
@@ -573,8 +579,8 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
 
             prob_4x = float(lognormal_prob_geq(spot, mu_ln, sigma_ln, S_thresh))
 
-            # approximate expected return conditional on achieving 4x (simplistic)
-            expected_return_if_hit = 4.0
+            # approximate expected return conditional on achieving target_x (simplistic)
+            expected_return_if_hit = float(target_x)
 
             opportunities.append({
                 'ticker': ticker,
@@ -586,10 +592,163 @@ def analyze_ticker_for_dtes(ticker, dte_targets=(0,3,7), min_oi=100, min_volume=
                 'volume': volm,
                 'impliedVol': implied,
                 'S0': spot,
-                'S_thresh_for_4x': S_thresh,
+                'S_thresh_for_target': S_thresh,
                 'prob_4x': prob_4x,
-                'estimated_return_if_hit_x': expected_return_if_hit
+                'estimated_return_if_hit_x': expected_return_if_hit,
+                'option_type': 'CALL',
+                'signal': 'BUY'
             })
+
+    # Additionally process CALL LEAP options if requested
+    if _req_calls and any(str(x).lower() in ('leap','leaps','call_leap','call_leaps') for x in (option_types or ())):
+        try:
+            today_d = datetime.utcnow().date()
+            leap_dates = []
+            for d in option_dates:
+                try:
+                    d_dt = pd.to_datetime(d).date()
+                    dd = (d_dt - today_d).days
+                    if dd >= int(leap_min_dte):
+                        leap_dates.append((d_dt, dd))
+                except Exception:
+                    continue
+            if leap_dates:
+                # choose the nearest expiry beyond leap_min_dte
+                leap_dates.sort(key=lambda x: x[1])
+                expiry_dt, days_to_expiry = leap_dates[0]
+                expiry_str = pd.to_datetime(expiry_dt).strftime('%Y-%m-%d')
+                if expiry_str not in processed_expiries:
+                    processed_expiries.add(expiry_str)
+                    try:
+                        calls_leap = get_cached_option_chain_calls(ticker, expiry_str, tk=tk, cache_dir=DEFAULT_DATA_DIR)
+                    except Exception:
+                        calls_leap = None
+                    if isinstance(calls_leap, pd.DataFrame) and not calls_leap.empty:
+                        if 'bid' in calls_leap.columns and 'ask' in calls_leap.columns:
+                            calls_leap['mid'] = (calls_leap['bid'].fillna(0) + calls_leap['ask'].fillna(0)) / 2.0
+                        else:
+                            calls_leap['mid'] = calls_leap['lastPrice'].fillna(0.0)
+                        calls_leap['openInterest'] = calls_leap.get('openInterest', np.nan)
+                        calls_leap['volume'] = calls_leap.get('volume', np.nan)
+                        calls_leap = calls_leap.assign(strike=lambda df: df['strike'].astype(float))
+
+                        spot = float(hist['Close'].iloc[-1])
+                        T_years = max(1/252.0, float(days_to_expiry)/252.0)
+
+                        for _, row in calls_leap.iterrows():
+                            strike = float(row['strike'])
+                            mid = float(row['mid'])
+                            oi = float(row['openInterest']) if not pd.isna(row['openInterest']) else 0.0
+                            volm = float(row['volume']) if not pd.isna(row['volume']) else 0.0
+                            if oi < min_oi and volm < min_volume:
+                                continue
+                            if mid <= 0.01:
+                                continue
+                            payoff_needed = mid * float(target_x)
+                            S_thresh = strike + payoff_needed
+                            implied = np.nan
+                            if 'impliedVolatility' in row.index and not pd.isna(row['impliedVolatility']):
+                                implied = float(row['impliedVolatility'])
+                            else:
+                                implied = bsm_implied_vol(mid, spot, strike, T_years, r)
+                            if not np.isfinite(implied) or implied <= 0:
+                                implied = float(hist['rv21'].iloc[-1])
+                            mu_ln = np.log(max(spot,1e-8)) + (r - 0.5*implied*implied) * T_years
+                            sigma_ln = np.sqrt(max(1e-12, implied*implied * T_years))
+                            prob_4x = float(lognormal_prob_geq(spot, mu_ln, sigma_ln, S_thresh))
+
+                            opportunities.append({
+                                'ticker': ticker,
+                                'expiry': expiry_str,
+                                'dte': int(days_to_expiry),
+                                'strike': strike,
+                                'mid': mid,
+                                'openInterest': oi,
+                                'volume': volm,
+                                'impliedVol': implied,
+                                'S0': spot,
+                                'S_thresh_for_target': S_thresh,
+                                'prob_4x': prob_4x,
+                                'estimated_return_if_hit_x': float(target_x),
+                                'option_type': 'CALL_LEAP',
+                                'signal': 'BUY'
+                            })
+        except Exception:
+            pass
+
+    # Additionally process PUT options if requested
+    if _req_puts:
+        processed_expiries_put = set()
+        for target in dte_targets:
+            expiry = get_closest_expiry_dates(option_dates, target)
+            if expiry is None:
+                continue
+            expiry_str = expiry.strftime('%Y-%m-%d')
+            if expiry_str in processed_expiries_put:
+                continue
+            processed_expiries_put.add(expiry_str)
+            try:
+                puts = get_cached_option_chain_puts(ticker, expiry_str, tk=tk, cache_dir=DEFAULT_DATA_DIR)
+                if puts is None or isinstance(puts, pd.DataFrame) and puts.empty:
+                    continue
+            except Exception:
+                continue
+
+            # Compute mid and ensure fields
+            if 'bid' in puts.columns and 'ask' in puts.columns:
+                puts['mid'] = (puts['bid'].fillna(0) + puts['ask'].fillna(0)) / 2.0
+            else:
+                puts['mid'] = puts['lastPrice'].fillna(0.0)
+            puts['openInterest'] = puts.get('openInterest', np.nan)
+            puts['volume'] = puts.get('volume', np.nan)
+            puts = puts.assign(strike=lambda df: df['strike'].astype(float))
+
+            spot = float(hist['Close'].iloc[-1])
+            days_to_expiry = max(0, (pd.to_datetime(expiry_str).date() - datetime.utcnow().date()).days)
+            T_years = max(1/252.0, days_to_expiry/252.0)
+
+            for _, row in puts.iterrows():
+                strike = float(row['strike'])
+                mid = float(row['mid'])
+                oi = float(row['openInterest']) if not pd.isna(row['openInterest']) else 0.0
+                volm = float(row['volume']) if not pd.isna(row['volume']) else 0.0
+                if oi < min_oi and volm < min_volume:
+                    continue
+                if mid <= 0.01:
+                    continue
+
+                # Threshold for put to reach target_x multiple: K - S_T >= target_x * mid => S_T <= K - target_x*mid
+                S_down = strike - (mid * float(target_x))
+                if not np.isfinite(S_down) or S_down <= 0:
+                    prob_target = 0.0
+                else:
+                    implied = np.nan
+                    if 'impliedVolatility' in row.index and not pd.isna(row['impliedVolatility']):
+                        implied = float(row['impliedVolatility'])
+                    else:
+                        # Fallback to realized vol
+                        implied = float(hist['rv21'].iloc[-1])
+                    mu_ln = np.log(max(spot,1e-8)) + (r - 0.5*implied*implied) * T_years
+                    sigma_ln = np.sqrt(max(1e-12, implied*implied * T_years))
+                    z = (np.log(S_down) - mu_ln) / sigma_ln
+                    prob_target = float(norm.cdf(z))
+
+                opportunities.append({
+                    'ticker': ticker,
+                    'expiry': expiry_str,
+                    'dte': days_to_expiry,
+                    'strike': strike,
+                    'mid': mid,
+                    'openInterest': oi,
+                    'volume': volm,
+                    'impliedVol': float(row.get('impliedVolatility', np.nan)) if 'impliedVolatility' in row.index else np.nan,
+                    'S0': spot,
+                    'S_thresh_for_target': S_down,
+                    'prob_4x': prob_target,
+                    'estimated_return_if_hit_x': float(target_x),
+                    'option_type': 'PUT',
+                    'signal': 'SELL'
+                })
 
     df_ops = pd.DataFrame(opportunities)
     if not df_ops.empty:
@@ -2007,7 +2166,7 @@ def generate_breakout_signals(hist, window=20, lookback=5):
 
 # -------------------- Options Screening Display --------------------
 
-def display_options_screening_table(all_candidates, min_profit_chance=80.0):
+def display_options_screening_table(all_candidates, min_profit_chance=80.0, target_return_x=4.0, option_types=None):
     """
     Display enhanced options screening table with call options buy entries for 0, 3, 7 DTE
     showing profit chances, risk amounts, and filtering for 80%+ profit chances.
@@ -2030,29 +2189,16 @@ def display_options_screening_table(all_candidates, min_profit_chance=80.0):
     if not all_candidates:
         if _HAS_RICH:
             console.print()
-            header_panel = Panel("CALL OPTIONS SCREENING - BUY ENTRIES", 
+            header_panel = Panel("OPTIONS SCREENING - ENTRIES", 
                                 style="bold cyan", box=ROUNDED)
             console.print(header_panel)
-            console.print("NO CALL OPTIONS FOUND meeting current screening criteria", style="yellow")
-            console.print("\nGenerating sample data to demonstrate the options screening table format:", style="dim")
+            console.print("No options found meeting current screening criteria", style="yellow")
         else:
             print("\n" + "="*90)
-            print("CALL OPTIONS SCREENING - BUY ENTRIES")
+            print("OPTIONS SCREENING - ENTRIES")
             print("="*90)
-            print("NO CALL OPTIONS FOUND meeting current screening criteria")
-            print("\nGenerating sample data to demonstrate the options screening table format:")
-            print("="*90)
-        
-        # Generate sample option data to show table functionality
-        sample_candidates = [
-            {'ticker': 'AAPL', 'expiry': '2025-01-17', 'dte': 0, 'strike': 250.0, 'mid': 0.15, 'prob_4x': 0.85, 'openInterest': 500, 'volume': 150},
-            {'ticker': 'AAPL', 'expiry': '2025-01-20', 'dte': 3, 'strike': 255.0, 'mid': 0.25, 'prob_4x': 0.82, 'openInterest': 300, 'volume': 80},
-            {'ticker': 'MSFT', 'expiry': '2025-01-17', 'dte': 0, 'strike': 440.0, 'mid': 0.18, 'prob_4x': 0.88, 'openInterest': 400, 'volume': 120},
-            {'ticker': 'NVDA', 'expiry': '2025-01-24', 'dte': 7, 'strike': 150.0, 'mid': 0.35, 'prob_4x': 0.81, 'openInterest': 600, 'volume': 200},
-            {'ticker': 'SPY', 'expiry': '2025-01-20', 'dte': 3, 'strike': 600.0, 'mid': 0.12, 'prob_4x': 0.83, 'openInterest': 800, 'volume': 300},
-            {'ticker': 'MSTR', 'expiry': '2025-01-24', 'dte': 7, 'strike': 400.0, 'mid': 0.45, 'prob_4x': 0.86, 'openInterest': 250, 'volume': 90}
-        ]
-        all_candidates = sample_candidates
+            print("No options found meeting current screening criteria")
+        return
     
     # Convert to DataFrame for easier manipulation
     df = pd.DataFrame(all_candidates)
@@ -2069,12 +2215,12 @@ def display_options_screening_table(all_candidates, min_profit_chance=80.0):
     # Header
     if _HAS_RICH:
         console.print()
-        header_panel = Panel("CALL OPTIONS SCREENING - BUY ENTRIES", 
+        header_panel = Panel("OPTIONS SCREENING - ENTRIES", 
                             style="bold cyan", box=ROUNDED)
         console.print(header_panel)
     else:
         print("\n" + "="*90)
-        print("CALL OPTIONS SCREENING - BUY ENTRIES")
+        print("OPTIONS SCREENING - ENTRIES")
         print("="*90)
     
     # FILTER INFORMATION SECTION
@@ -2084,10 +2230,10 @@ def display_options_screening_table(all_candidates, min_profit_chance=80.0):
         filter_table.add_column("Criteria", style="cyan", justify="left")
         filter_table.add_column("Value", style="white", justify="left")
         
-        filter_table.add_row("Minimum Profit Chance:", f"{min_profit_chance}% (4x return probability)")
-        filter_table.add_row("Target Return:", "300% (4x multiplier)")
+        filter_table.add_row("Minimum Profit Chance:", f"{min_profit_chance}% (probability to reach {(float(target_return_x)-1.0)*100:.0f}% return)")
+        filter_table.add_row("Target Return:", f"{(float(target_return_x)-1.0)*100:.0f}% ({float(target_return_x):.1f}x multiplier)")
         filter_table.add_row("Days to Expiry:", "0, 3, and 7 days")
-        filter_table.add_row("Option Type:", "CALL options only")
+        filter_table.add_row("Option Types:", ", ".join(option_types) if option_types else "CALL")
         
         console.print(filter_table)
         
@@ -2117,10 +2263,10 @@ def display_options_screening_table(all_candidates, min_profit_chance=80.0):
     else:
         print("\nFILTER CRITERIA & STATISTICS")
         print("─" * 50)
-        print(f"Minimum Profit Chance:     {min_profit_chance}% (4x return probability)")
-        print(f"Target Return:             300% (4x multiplier)")
+        print(f"Minimum Profit Chance:     {min_profit_chance}% (probability to reach {(float(target_return_x)-1.0)*100:.0f}% return)")
+        print(f"Target Return:             {(float(target_return_x)-1.0)*100:.0f}% ({float(target_return_x):.1f}x multiplier)")
         print(f"Days to Expiry:            0, 3, and 7 days")
-        print(f"Option Type:              CALL options only")
+        print(f"Option Types:              {', '.join(option_types) if option_types else 'CALL'}")
         
         print("\nFILTERING RESULTS")
         print("─" * 50)
@@ -2154,12 +2300,13 @@ def display_options_screening_table(all_candidates, min_profit_chance=80.0):
     # Add calculated columns
     if not df_filtered.empty:
         df_filtered['option_symbol'] = df_filtered.apply(
-            lambda row: f"{row['ticker']}{pd.to_datetime(row['expiry']).strftime('%y%m%d')}C{int(row['strike']):05d}000", 
+            lambda row: f"{row['ticker']}{pd.to_datetime(row['expiry']).strftime('%y%m%d')}{'C' if str(row.get('option_type','CALL')).upper().startswith('C') else 'P'}{int(row['strike']):05d}000",
             axis=1
         )
         df_filtered['profit_chance_pct'] = (df_filtered['prob_4x'] * 100).round(2)
         df_filtered['amount_to_risk'] = df_filtered['mid'].round(2)
-        df_filtered['potential_profit_4x'] = (df_filtered['mid'] * 4.0).round(2)
+        df_filtered['potential_profit_4x'] = (df_filtered['mid'] * float(target_return_x)).round(2)
+        df_filtered['action'] = df_filtered.get('signal', '').replace({'BUY':'BUY','SELL':'SELL'}).fillna('HOLD')
         
         # Sort by profit chance descending, then by DTE
         df_filtered = df_filtered.sort_values(['profit_chance_pct', 'dte'], ascending=[False, True])
@@ -2187,6 +2334,7 @@ def display_options_screening_table(all_candidates, min_profit_chance=80.0):
                 
                 # Add columns with styling
                 dte_table.add_column("Ticker", style="yellow", justify="center")
+                dte_table.add_column("Action", style="green", justify="center")
                 dte_table.add_column("Option Symbol", style="white", justify="left")
                 dte_table.add_column("Strike", style="white", justify="right")
                 dte_table.add_column("Mid Price", style="white", justify="right")
@@ -2203,6 +2351,7 @@ def display_options_screening_table(all_candidates, min_profit_chance=80.0):
                     
                     dte_table.add_row(
                         row['ticker'],
+                        str(row.get('action','')),
                         row['option_symbol'],
                         f"${row['strike']:.0f}",
                         f"${row['mid']:.2f}",
@@ -2219,17 +2368,17 @@ def display_options_screening_table(all_candidates, min_profit_chance=80.0):
                 print("─" * 75)
                 
                 # Table headers with better spacing
-                print(f"{'Ticker':<8} {'Option Symbol':<20} {'Strike':<8} {'Mid Price':<10} {'Profit %':<10} {'Risk $':<10} {'Pot. Profit':<12} {'OI':<8} {'Volume':<8}")
-                print("─" * 8 + " " + "─" * 20 + " " + "─" * 8 + " " + "─" * 10 + " " + "─" * 10 + " " + "─" * 10 + " " + "─" * 12 + " " + "─" * 8 + " " + "─" * 8)
+                print(f"{'Ticker':<8} {'Action':<8} {'Option Symbol':<20} {'Strike':<8} {'Mid Price':<10} {'Profit %':<10} {'Risk $':<10} {'Pot. Profit':<12} {'OI':<8} {'Volume':<8}")
+                print("─" * 8 + " " + "─" * 8 + " " + "─" * 20 + " " + "─" * 8 + " " + "─" * 10 + " " + "─" * 10 + " " + "─" * 10 + " " + "─" * 12 + " " + "─" * 8 + " " + "─" * 8)
                 
                 # Display each option with clean formatting
                 for idx, (_, row) in enumerate(dte_data.head(10).iterrows()):  # Limit to top 10 per DTE
                     profit_indicator = "[E]" if row['profit_chance_pct'] >= 85 else "[G]" if row['profit_chance_pct'] >= min_profit_chance else "[L]"
-                    print(f"{row['ticker']:<8} {row['option_symbol']:<20} ${row['strike']:<7.0f} ${row['mid']:<9.2f} {profit_indicator}{row['profit_chance_pct']:<8.1f}% ${row['amount_to_risk']:<9.2f} ${row['potential_profit_4x']:<11.2f} {int(row['openInterest']):<8} {int(row['volume']):<8}")
+                    print(f"{row['ticker']:<8} {str(row.get('action','')):<8} {row['option_symbol']:<20} ${row['strike']:<7.0f} ${row['mid']:<9.2f} {profit_indicator}{row['profit_chance_pct']:<8.1f}% ${row['amount_to_risk']:<9.2f} ${row['potential_profit_4x']:<11.2f} {int(row['openInterest']):<8} {int(row['volume']):<8}")
 
 # -------------------- Main runner --------------------
 
-def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', bt_years=3, bt_dte=7, bt_moneyness=0.0, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.15, bt_trend_filter=False, bt_vol_filter=False, bt_time_stop_frac=0.3, bt_time_stop_mult=1.02, bt_use_target_delta=True, bt_target_delta=0.10, bt_trail_start_mult=1.15, bt_trail_back=0.25, bt_protect_mult=0.70, bt_cooldown_days=0, bt_entry_weekdays=None, bt_skip_earnings=False, bt_use_underlying_atr_exits=True, bt_tp_atr_mult=5.0, bt_sl_atr_mult=0.6, bt_alloc_vol_target=0.6, bt_be_activate_mult=1.03, bt_be_floor_mult=0.95, bt_vol_spike_mult=3.0, bt_plock1_level=1.08, bt_plock1_floor=1.01, bt_plock2_level=1.20, bt_plock2_floor=1.05, bt_optimize=True, bt_optimize_max=240):
+def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results', option_types=("call","put","call_leap"), min_profit_chance=80.0, target_return_x=4.0, leap_min_dte=180, bt_years=3, bt_dte=7, bt_moneyness=0.0, bt_tp_x=None, bt_sl_x=None, bt_alloc_frac=0.15, bt_trend_filter=False, bt_vol_filter=False, bt_time_stop_frac=0.3, bt_time_stop_mult=1.02, bt_use_target_delta=True, bt_target_delta=0.10, bt_trail_start_mult=1.15, bt_trail_back=0.25, bt_protect_mult=0.70, bt_cooldown_days=0, bt_entry_weekdays=None, bt_skip_earnings=False, bt_use_underlying_atr_exits=True, bt_tp_atr_mult=5.0, bt_sl_atr_mult=0.6, bt_alloc_vol_target=0.6, bt_be_activate_mult=1.03, bt_be_floor_mult=0.95, bt_vol_spike_mult=3.0, bt_plock1_level=1.08, bt_plock1_floor=1.01, bt_plock2_level=1.20, bt_plock2_floor=1.05, bt_optimize=True, bt_optimize_max=240):
     all_candidates = []
     option_bt_rows = []
     strat_rows = []
@@ -2245,7 +2394,7 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
                     hist = analyze_ticker_for_dtes(t, dte_targets=(0,3,7), min_oi=min_oi, min_volume=min_vol, hist_years=bt_years)[1]
                 df_ops = pd.DataFrame()
             else:
-                df_ops, hist = analyze_ticker_for_dtes(t, dte_targets=(0,3,7), min_oi=min_oi, min_volume=min_vol, hist_years=bt_years)
+                df_ops, hist = analyze_ticker_for_dtes(t, dte_targets=(0,3,7), min_oi=min_oi, min_volume=min_vol, hist_years=bt_years, option_types=option_types, target_x=target_return_x, leap_min_dte=leap_min_dte)
                 if not df_ops.empty:
                     # select top N per ticker
                     topn = df_ops.head(10)
@@ -2430,7 +2579,7 @@ def run_screener(tickers, min_oi=200, min_vol=30, out_prefix='screener_results',
 
     # Display options screening table before saving outputs
     if not _skip_plots:
-        display_options_screening_table(all_candidates, min_profit_chance=80.0)
+        display_options_screening_table(all_candidates, min_profit_chance=min_profit_chance, target_return_x=target_return_x, option_types=tuple(option_types) if option_types else None)
 
     # Save outputs
     if not df_all.empty:
@@ -2487,6 +2636,11 @@ if __name__ == '__main__':
     parser.add_argument('--bt_plock2_floor', type=float, default=1.12, help='Profit-lock level 2 floor multiple. Default 1.12x for higher profit lock.')
     parser.add_argument('--bt_optimize', type=lambda x: str(x).lower() in ['1','true','yes','y'], default=True, help='Enable small parameter search to target <=2% max drawdown and positive profit (per ticker). Default true.')
     parser.add_argument('--bt_optimize_max', type=int, default=360, help='Max number of parameter sets to evaluate per ticker when bt_optimize is true. Smaller = faster. Default 360.')
+    # Screener display and selection controls
+    parser.add_argument('--option_types', type=str, default='CALL,PUT,CALL_LEAP', help='Comma-separated option types to include (CALL, PUT, CALL_LEAP)')
+    parser.add_argument('--min_profit_chance', type=float, default=80.0, help='Minimum probability threshold (in %) to reach target return')
+    parser.add_argument('--target_return_x', type=float, default=4.0, help='Target return multiple (e.g., 4.0 = 300% return)')
+    parser.add_argument('--leap_min_dte', type=int, default=180, help='Minimum DTE for CALL LEAP options')
     # Data cache controls
     parser.add_argument('--data_dir', type=str, default=os.environ.get('PRICE_DATA_DIR', 'data'), help='Directory to cache downloaded price data (default: data)')
     parser.add_argument('--cache_refresh', action='store_true', help='Force refresh of cached price data for requested window')
@@ -2568,12 +2722,19 @@ if __name__ == '__main__':
         print("Tickers:", ", ".join(tickers))
         print("")
 
+    # Parse option types
+    option_types = tuple([s.strip().lower() for s in str(getattr(args, 'option_types', 'CALL,PUT,CALL_LEAP')).split(',') if s.strip()])
+
     # Run
     df_res, df_bt = run_screener(
         tickers,
         min_oi=args.min_oi,
         min_vol=args.min_vol,
         out_prefix='screener_results',
+        option_types=option_types,
+        min_profit_chance=args.min_profit_chance,
+        target_return_x=args.target_return_x,
+        leap_min_dte=args.leap_min_dte,
         bt_years=args.bt_years,
         bt_dte=args.bt_dte,
         bt_moneyness=args.bt_moneyness,
@@ -2604,7 +2765,7 @@ if __name__ == '__main__':
         bt_plock2_level=args.bt_plock2_level,
         bt_plock2_floor=args.bt_plock2_floor,
         bt_optimize=args.bt_optimize,
-        bt_optimize_max=args.bt_optimize_max, 
+        bt_optimize_max=args.bt_optimize_max,
     )
 
     # Pretty render
