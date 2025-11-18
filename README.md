@@ -581,3 +581,34 @@ You can override TTLs via environment variables:
 Notes:
 - On cache read errors or stale TTL, the script transparently re-fetches and overwrites the cache.
 - To force a clean refresh, delete specific cache files in data/meta or data/options for the affected ticker/expiry.
+
+
+
+## Revenue Growth Screener (Top 50)
+
+This project includes a script to rank small/mid caps by 3-year revenue CAGR using yfinance.
+
+How to run (uses the project virtualenv via Make):
+
+  make top50
+
+Defaults:
+- Universe source: CSV
+- CSV path: data/universes/russell2500_tickers.csv
+- Output: top50_small_mid_revenue_cagr.csv
+
+Providing the universe:
+- Place a file at data/universes/russell2500_tickers.csv with a header `ticker` and one symbol per row.
+- Example:
+
+  ticker
+  AAPL
+  MSFT
+
+Overriding defaults:
+
+  make top50 ARGS="--csv path/to/your_list.csv --min_mkt_cap 1e8 --max_mkt_cap 2e10 --top_n 100"
+
+Notes:
+- The script attempts multiple sources in yfinance to construct at least 4 annual revenue values. Some tickers may be skipped if data is missing.
+- Market cap filter is read from yfinance fast_info/info and used to restrict to small/mid caps.

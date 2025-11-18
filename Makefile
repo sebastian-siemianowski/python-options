@@ -1,23 +1,44 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear
+.PHONY: run backtest doctor clear top50 build-russell
 # Usage:
 #   make run                           # runs with defaults (screener + backtest)
 #   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
 #   make backtest                      # runs backtest-only convenience wrapper
 #   make backtest ARGS="--tickers AAPL,MSFT --bt_years 3"
-#   make doctor                        # checks your Python environment and libs
-#   make doctor ARGS="--fix"           # auto-install requirements
+#   make doctor                        # (re)installs requirements into the venv
+#   make top50                         # runs the revenue growth screener
+#   make top50 ARGS=""                 # extra args (reserved)
+#   make build-russell                 # builds data/russell2500_tickers.csv from public sources
 
 # Ensure virtual environment exists before running commands
 .venv/bin/python:
 	@bash ./setup_venv.sh
 
-run: .venv/bin/python
+# Dependency stamp to ensure requirements are installed before running tools
+.venv/.deps_installed: requirements.txt | .venv/bin/python
+	@echo "Installing/updating Python dependencies from requirements.txt ..."
+	@.venv/bin/python -m pip install -r requirements.txt
+	@touch .venv/.deps_installed
+
+run: .venv/.deps_installed
 	@bash ./run.sh $(ARGS)
 
-backtest: .venv/bin/python
+backtest: .venv/.deps_installed
 	@bash ./backtest.sh $(ARGS)
+
+build-russell: .venv/.deps_installed
+	@.venv/bin/python scripts/build_russell2500.py --out data/universes/russell2500_tickers.csv
+
+ top50: .venv/.deps_installed
+	@.venv/bin/python top50_revenue_growth.py $(ARGS)
+
+# Manually (re)install requirements and refresh the dependency stamp
+doctor: .venv/bin/python
+	@echo "(Re)installing dependencies into the virtual environment ..."
+	@.venv/bin/python -m pip install -r requirements.txt
+	@touch .venv/.deps_installed
+	@echo "Dependencies installed."
 
 clear:
 	@echo "Clearing data cache..."
