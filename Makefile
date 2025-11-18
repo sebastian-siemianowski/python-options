@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 build-russell
+.PHONY: run backtest doctor clear top50 build-russell bagger50
 # Usage:
 #   make run                           # runs with defaults (screener + backtest)
 #   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
@@ -10,6 +10,8 @@ SHELL := /bin/bash
 #   make top50                         # runs the revenue growth screener
 #   make top50 ARGS=""                 # extra args (reserved)
 #   make build-russell                 # builds data/russell2500_tickers.csv from public sources
+#   make bagger50                      # ranks by highest 100× Bagger Score (adds 100× Score column)
+#   make bagger50 ARGS="--bagger_horizon 15"   # optional flags; also supports --top_n, --plain, --bagger_verbose
 
 # Ensure virtual environment exists before running commands
 .venv/bin/python:
@@ -32,6 +34,9 @@ build-russell: .venv/.deps_installed
 
  top50: .venv/.deps_installed
 	@.venv/bin/python top50_revenue_growth.py $(ARGS)
+
+bagger50: .venv/.deps_installed
+	@.venv/bin/python top50_revenue_growth.py --sort_by bagger $(ARGS)
 
 # Manually (re)install requirements and refresh the dependency stamp
 doctor: .venv/bin/python

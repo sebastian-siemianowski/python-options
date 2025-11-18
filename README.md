@@ -612,3 +612,29 @@ Overriding defaults:
 Notes:
 - The script attempts multiple sources in yfinance to construct at least 4 annual revenue values. Some tickers may be skipped if data is missing.
 - Market cap filter is read from yfinance fast_info/info and used to restrict to small/mid caps.
+
+### Top 50 by 100× Bagger Score
+
+In addition to sorting by 3Y revenue CAGR, you can rank the universe by the modelled 100× Bagger Score (0–100) that estimates the probability-like chance of a stock becoming a 100× over a chosen horizon.
+
+How to run (uses the project virtualenv via Make):
+
+  make bagger50
+
+Output:
+- Same CSV: top50_small_mid_revenue_cagr.csv (sorted by the 100× score when invoked via `bagger50`).
+- Console table columns include: `#`, `Ticker`, `Mkt Cap`, `100× Score`, `Rev CAGR 3Y`, `Rev 3Y Ago`, `Rev Recent`.
+
+Optional flags (pass via ARGS):
+
+  make bagger50 ARGS="--bagger_horizon 15"     # change 100× horizon (years)
+  make bagger50 ARGS="--top_n 50"               # number of rows (default 50)
+  make bagger50 ARGS="--plain"                  # plain (non-rich) console output
+  make bagger50 ARGS="--bagger_verbose"         # show sub-score breakdown
+
+Tip:
+- If your universe file is missing, build it first:
+
+  make build-russell
+
+This will generate `data/universes/russell2500_tickers.csv` which is used by both `top50` and `bagger50` by default.
