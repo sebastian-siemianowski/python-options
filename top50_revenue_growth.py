@@ -346,18 +346,152 @@ def _get_series_values(df: pd.DataFrame, row_names: List[str], take: int = 4) ->
     return None
 
 
+# ---- Quarterly-to-TTM helpers for better coverage ----
+
+def _ttm_from_quarterly(df: Optional[pd.DataFrame], row_names: List[str], quarters: int = 4) -> Optional[float]:
+    """Sum the most recent `quarters` quarterly values for a given row.
+    Returns None if insufficient data.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    idx = [str(i).strip().lower() for i in df.index]
+    for nm in row_names:
+        nm_l = nm.lower()
+        candidates = [i for i, name in enumerate(idx) if nm_l == name or nm_l in name]
+        if not candidates:
+            continue
+        row = df.iloc[candidates[0]]
+        cols = _sorted_columns(df)
+        vals: List[float] = []
+        for c in cols:
+            try:
+                v = row.get(c)
+                if pd.notna(v):
+                    vv = float(v)
+                    # yfinance often reports CapEx as negative; treat numerically
+                    vals.append(vv)
+            except Exception:
+                continue
+        if len(vals) >= quarters:
+            return float(sum(vals[:quarters]))
+    return None
+
+
 def compute_margins(tk: yf.Ticker) -> Tuple[Optional[float], Optional[float]]:
-    # Returns (gross_margin, operating_margin) as fractions, most recent
-    inc_a = _get_stmt(tk, 'income_stmt') or _get_stmt(tk, 'financials')
-    revenue = _get_last_row_value(inc_a, ['total revenue', 'totalrevenue', 'revenue', 'revenues', 'net sales', 'sales'])
-    gross = _get_last_row_value(inc_a, ['gross profit', 'grossprofit'])
-    oper = _get_last_row_value(inc_a, ['operating income', 'operatingincome', 'operating income or loss'])
-    gm = safe_div(gross, revenue)
-    om = safe_div(oper, revenue)
+    """Return (gross_margin, operating_margin) in fraction form using a simple, robust source.
+
+    Rationale:
+    - yfinance statement schemas vary a lot across tickers/sectors and often cause gaps.
+    - For UX reliability, we now derive margins primarily from Ticker.info where Yahoo already
+      computes trailing margins. If unavailable, we default to neutral 0.0 values.
+
+    This change removes fragile multi-path statement parsing to eliminate persistent NaNs in gm/om.
+    """
+    gm = 0.0
+    om = 0.0
+    try:
+        info = tk.info or {}
+        gm_info = info.get('grossMargins') or info.get('gross_margins')
+        if gm_info is not None:
+            try:
+                gm = float(gm_info)
+            except Exception:
+                gm = 0.0
+        om_info = info.get('operatingMargins') or info.get('operating_margins')
+        if om_info is None:
+            # fallback to profit margin as weaker proxy for operating performance
+            om_info = info.get('profitMargins') or info.get('profit_margins')
+        if om_info is not None:
+            try:
+                om = float(om_info)
+            except Exception:
+                om = 0.0
+    except Exception:
+        # keep neutral defaults
+        gm, om = 0.0, 0.0
+
     # Clip to sane bounds
-    gm = None if gm is None else max(-1.0, min(1.0, gm))
-    om = None if om is None else max(-1.0, min(1.0, om))
+    try:
+        gm = max(-1.0, min(1.0, float(gm)))
+    except Exception:
+        gm = 0.0
+    try:
+        om = max(-1.0, min(1.0, float(om)))
+    except Exception:
+        om = 0.0
+
     return gm, om
+
+
+def compute_fcf_margin(tk: yf.Ticker) -> Optional[float]:
+    """Compute Free Cash Flow margin = (CFO - Capex) / Revenue.
+    Prefers annual statements with a quarterly TTM fallback for robustness.
+    As a final fallback, uses Ticker.info fields if available.
+    """
+    try:
+        # Revenue from income (annual), fallback to TTM from quarterly
+        inc_a = _get_stmt(tk, 'income_stmt') or _get_stmt(tk, 'financials')
+        revenue = _get_last_row_value(inc_a, ['total revenue', 'totalrevenue', 'revenue', 'revenues', 'net sales', 'sales', 'total operating revenue'])
+        if revenue is None or revenue == 0:
+            inc_q = _get_stmt(tk, 'quarterly_income_stmt')
+            revenue = _ttm_from_quarterly(inc_q, ['total revenue', 'totalrevenue', 'revenue', 'revenues', 'net sales', 'sales', 'total operating revenue'])
+        # Cash flow statements
+        cf_a = _get_stmt(tk, 'cashflow') or _get_stmt(tk, 'cash_flow')
+        cfo = _get_last_row_value(cf_a, [
+            'total cash from operating activities', 'operating cash flow',
+            'totalcashfromoperatingactivities', 'net cash provided by operating activities',
+            'cashflowfromoperatingactivities', 'net cash provided by (used in) operating activities',
+            'cash provided by operating activities'
+        ])
+        capex = _get_last_row_value(cf_a, [
+            'capital expenditures', 'capital expenditure', 'capitalexpenditures',
+            'purchase of property and equipment', 'purchases of property and equipment',
+            'payments for property, plant and equipment', 'acquisition of property and equipment'
+        ])
+        if cfo is None or capex is None:
+            # Try quarterly TTM
+            cf_q = _get_stmt(tk, 'quarterly_cashflow') or _get_stmt(tk, 'quarterly_cash_flow')
+            if cfo is None:
+                cfo = _ttm_from_quarterly(cf_q, [
+                    'total cash from operating activities', 'operating cash flow',
+                    'totalcashfromoperatingactivities', 'net cash provided by operating activities',
+                    'cashflowfromoperatingactivities', 'net cash provided by (used in) operating activities',
+                    'cash provided by operating activities'
+                ])
+            if capex is None:
+                capex = _ttm_from_quarterly(cf_q, [
+                    'capital expenditures', 'capital expenditure', 'capitalexpenditures',
+                    'purchase of property and equipment', 'purchases of property and equipment',
+                    'payments for property, plant and equipment', 'acquisition of property and equipment'
+                ])
+        # FINAL FALLBACK using Ticker.info if any of the three components are missing
+        if (revenue is None or revenue == 0) or cfo is None or capex is None:
+            try:
+                info = tk.info or {}
+                if revenue in (None, 0):
+                    rev_info = info.get('totalRevenue') or info.get('total_revenue') or info.get('netRevenue')
+                    if rev_info is not None:
+                        revenue = float(rev_info)
+                if cfo is None:
+                    cfo_info = info.get('operatingCashflow') or info.get('operating_cashflow') or info.get('totalCashFromOperatingActivities')
+                    if cfo_info is not None:
+                        cfo = float(cfo_info)
+                if capex is None:
+                    capex_info = info.get('capitalExpenditures') or info.get('capital_expenditures')
+                    if capex_info is not None:
+                        capex = float(capex_info)
+            except Exception:
+                pass
+        if revenue is None or revenue == 0 or cfo is None or capex is None:
+            # Final neutral fallback to avoid NaNs downstream
+            return 0.0
+        # Capex is often negative in cash flow statements (cash outflow).
+        # FCF = CFO - Capex (so if Capex is negative, subtracting adds magnitude).
+        fcf = float(cfo) - float(capex)
+        return clamp(safe_div(fcf, revenue), -1.0, 1.0)
+    except Exception:
+        # Final neutral fallback
+        return 0.0
 
 
 def compute_ps_ratio(market_cap: Optional[float], tk: yf.Ticker) -> Optional[float]:
@@ -375,8 +509,15 @@ def compute_net_debt_ev(market_cap: Optional[float], tk: yf.Ticker) -> Tuple[Opt
     if market_cap is None or market_cap <= 0:
         return None, None, None
     bs = _get_stmt(tk, 'balance_sheet')
-    debt = _get_last_row_value(bs, ['total debt', 'short long term debt total', 'long term debt'])
-    cash = _get_last_row_value(bs, ['cash', 'cash and cash equivalents'])
+    debt = _get_last_row_value(bs, ['total debt', 'short long term debt total', 'long term debt', 'totaldebt', 'debt'])
+    cash = _get_last_row_value(bs, ['cash', 'cash and cash equivalents', 'cashandcashequivalentsatcarryingvalue'])
+    # Fallback to quarterly balance sheet if needed
+    if (debt is None or cash is None):
+        bs_q = _get_stmt(tk, 'quarterly_balance_sheet')
+        if debt is None:
+            debt = _get_last_row_value(bs_q, ['total debt', 'short long term debt total', 'long term debt', 'totaldebt', 'debt'])
+        if cash is None:
+            cash = _get_last_row_value(bs_q, ['cash', 'cash and cash equivalents', 'cashandcashequivalentsatcarryingvalue'])
     net_debt = None
     if debt is not None and cash is not None:
         net_debt = float(debt) - float(cash)
@@ -392,10 +533,27 @@ def compute_net_debt_ev(market_cap: Optional[float], tk: yf.Ticker) -> Tuple[Opt
 
 
 def compute_dilution_rate(tk: yf.Ticker) -> Optional[float]:
-    # Approximate shares CAGR over ~3y using balance sheet share count rows if available
+    """Approximate shares CAGR over ~3y using balance sheet share count rows when available.
+    Fallbacks:
+    - Try quarterly balance sheet if annual missing.
+    - As a last resort, if we only have a single point (e.g., info['sharesOutstanding']), return None (avoid false signal).
+    """
     bs = _get_stmt(tk, 'balance_sheet')
-    vals = _get_series_values(bs, ['ordinary shares number', 'common stock shares outstanding', 'shareissued', 'common shares'])
+    vals = _get_series_values(bs, ['ordinary shares number', 'common stock shares outstanding', 'shareissued', 'common shares', 'weighted average shares outstanding'])
+    # Fallback: quarterly balance sheet
+    if (not vals or len(vals) < 2):
+        bs_q = _get_stmt(tk, 'quarterly_balance_sheet')
+        q_vals = _get_series_values(bs_q, ['ordinary shares number', 'common stock shares outstanding', 'shareissued', 'common shares', 'weighted average shares outstanding'])
+        if q_vals and len(q_vals) >= 2:
+            vals = q_vals
+    # If still not enough points, try info snapshot just to check non-zero; cannot compute rate though
     if not vals or len(vals) < 2:
+        try:
+            info = tk.info or {}
+            so = info.get('sharesOutstanding') or info.get('shares_outstanding')
+            _ = float(so) if so is not None else None
+        except Exception:
+            _ = None
         return None
     # vals are most-recent first; pick far and near
     try:
@@ -461,67 +619,185 @@ def compute_bagger_subscores(
     market_cap: Optional[float],
     rev_cagr_3y: Optional[float],
     rev_recent: Optional[float],
+    rev_series: Optional[List[float]],
     args
 ) -> Dict[str, Optional[float]]:
-    # Horizon-sensitive growth target
-    T = int(getattr(args, 'bagger_horizon', 20))
-    r_star = (100.0 ** (1.0 / T)) - 1.0  # required CAGR
+    """Compute sub-scores for the 100× bagger model.
+    This function is intentionally defensive: it never raises and always returns
+    a dict with the expected keys, using None for missing components.
+    """
+    # Initialize defaults so we can always return a dict even on partial failures
+    gm = om = fcf_margin = None
+    ps = evs = ann_vol = max_dd = dil_rate = None
+    growth_raw = quality_raw = discipline_raw = val_raw = risk_raw = None
+    r2_stability = None
+    size_bonus = None
 
-    # Growth
-    # Map c/r* ratio to 0..1 via piecewise and logistic
-    growth_raw = None
-    if rev_cagr_3y is not None:
-        ratio = rev_cagr_3y / max(1e-9, r_star)
-        # piecewise: ratio 0 -> 0, 0.5 -> 0.3, 1.0 -> 0.7, 1.5 -> 0.9, 2.0 -> 1.0
-        growth_raw = _piecewise_score(ratio, [(0.0,0.0),(0.5,0.3),(1.0,0.7),(1.5,0.9),(2.0,1.0)])
-        if growth_raw is not None:
-            # gentle logistic refinement around 0.5
-            growth_raw = 0.5 * growth_raw + 0.5 * logistic(growth_raw, k=4.0, x0=0.6)
+    try:
+        # Horizon-sensitive growth target
+        T = int(getattr(args, 'bagger_horizon', 20))
+        r_star = (100.0 ** (1.0 / T)) - 1.0  # required CAGR
 
-    # Quality (margins)
-    gm, om = compute_margins(tk)
-    gm_score = _piecewise_score(gm, [(-0.2,0.0),(0.0,0.2),(0.3,0.6),(0.5,0.85),(0.7,1.0)]) if gm is not None else None
-    om_score = _piecewise_score(om, [(-0.5,0.0),(0.0,0.3),(0.1,0.6),(0.2,0.8),(0.3,0.95)]) if om is not None else None
-    quality_raw = None
-    if gm_score is not None or om_score is not None:
-        g = gm_score if gm_score is not None else 0.5
-        o = om_score if om_score is not None else 0.5
-        quality_raw = 0.6 * g + 0.4 * o
+        # Base-revenue floor for guarding tiny denominators
+        base_rev_floor = float(getattr(args, 'bagger_base_rev_floor', 5e7))  # default $50M
+        rev_base = rev_series[3] if rev_series and len(rev_series) >= 4 else None
 
-    # Discipline (net debt/EV, dilution)
-    _, _, nd_ev = compute_net_debt_ev(market_cap, tk)
-    nd_score = None
-    if nd_ev is not None:
-        # lower is better
-        nd_score = _piecewise_score(nd_ev, [(-0.5,1.0),(0.0,0.9),(0.2,0.7),(0.4,0.4),(0.6,0.2),(0.8,0.0)])
-    dil_rate = compute_dilution_rate(tk)
-    dil_score = None
-    if dil_rate is not None:
-        dil_score = _piecewise_score(dil_rate, [(-0.1,1.0),(0.0,0.9),(0.05,0.7),(0.1,0.4),(0.2,0.2),(0.3,0.0)])
-    discipline_raw = None
-    if nd_score is not None or dil_score is not None:
-        nd = nd_score if nd_score is not None else 0.6
-        dl = dil_score if dil_score is not None else 0.6
-        discipline_raw = 0.6 * nd + 0.4 * dl
+        # Growth: map c/r* ratio to 0..1 via piecewise and logistic; apply base-revenue scaling
+        if rev_cagr_3y is not None:
+            try:
+                ratio = rev_cagr_3y / max(1e-9, r_star)
+                growth_raw = _piecewise_score(ratio, [(0.0,0.0),(0.5,0.3),(1.0,0.7),(1.5,0.9),(2.0,1.0)])
+                if growth_raw is not None:
+                    growth_raw = 0.5 * growth_raw + 0.5 * logistic(growth_raw, k=4.0, x0=0.6)
+                    if rev_base is not None:
+                        growth_cap = _piecewise_score(rev_base, [(0.0,0.4),(2e7,0.6),(5e7,0.8),(1e8,1.0)])
+                        if growth_cap is not None:
+                            growth_raw = growth_raw * float(growth_cap)
+            except Exception:
+                growth_raw = None
 
-    # Valuation (P/S relative to growth stage)
-    ps = compute_ps_ratio(market_cap, tk)
-    val_raw = None
-    if ps is not None and rev_cagr_3y is not None:
-        # Target P/S increases with growth up to a cap
-        target_ps = min(25.0, 1.0 + 40.0 * max(0.0, min(0.5, rev_cagr_3y)))  # e.g., 0.25 CAGR -> target ~11
-        # score high if ps <= target; decay as ps exceeds target*2
-        val_raw = _piecewise_score(ps, [(0.5,1.0),(target_ps,0.8),(target_ps*1.5,0.5),(target_ps*2.0,0.2),(target_ps*3.0,0.0)])
+        # Growth stability (R^2 on log revenue vs time using available points)
+        try:
+            series = rev_series if rev_series else None
+            if series and len(series) >= 4 and all(v is not None and v > 0 for v in series[:4]):
+                y = np.log(series[:4])  # most-recent first
+                x = np.arange(len(y), dtype=float)
+                x = (x - np.mean(x)) / (np.std(x) + 1e-9)
+                y_hat = np.poly1d(np.polyfit(x, y, 1))(x)
+                ss_res = float(np.sum((y - y_hat) ** 2))
+                ss_tot = float(np.sum((y - np.mean(y)) ** 2)) + 1e-9
+                r2 = 1.0 - ss_res / ss_tot
+                r2_stability = max(0.0, min(1.0, r2))
+        except Exception:
+            r2_stability = None
 
-    # Risk (volatility and drawdown)
-    ann_vol, max_dd = price_vol_and_drawdown(tk, fast=getattr(args, 'fast_bagger', False))
-    vol_score = _piecewise_score(ann_vol, [(0.1,1.0),(0.2,0.9),(0.4,0.6),(0.6,0.3),(0.8,0.1),(1.0,0.0)]) if ann_vol is not None else None
-    dd_score = _piecewise_score(max_dd, [(0.1,1.0),(0.2,0.8),(0.4,0.5),(0.6,0.2),(0.8,0.05),(0.9,0.0)]) if max_dd is not None else None
-    risk_raw = None
-    if vol_score is not None or dd_score is not None:
-        v = vol_score if vol_score is not None else 0.6
-        d = dd_score if dd_score is not None else 0.6
-        risk_raw = 0.5 * v + 0.5 * d
+        # Quality (margins) and FCF margin
+        try:
+            gm, om = compute_margins(tk)
+        except Exception:
+            gm, om = None, None
+        try:
+            gm_score = _piecewise_score(gm, [(-0.2,0.0),(0.0,0.2),(0.3,0.6),(0.5,0.85),(0.7,1.0)]) if gm is not None else None
+            om_score = _piecewise_score(om, [(-0.5,0.0),(0.0,0.3),(0.1,0.6),(0.2,0.8),(0.3,0.95)]) if om is not None else None
+        except Exception:
+            gm_score = om_score = None
+        try:
+            fcf_margin = compute_fcf_margin(tk)
+            fcf_score = _piecewise_score(fcf_margin, [(-0.5,0.0),(0.0,0.4),(0.1,0.7),(0.2,0.9),(0.3,1.0)]) if fcf_margin is not None else None
+        except Exception:
+            fcf_margin = None
+            fcf_score = None
+        try:
+            comps = []
+            if gm_score is not None:
+                comps.append((gm_score, 0.4))
+            if fcf_score is not None:
+                comps.append((fcf_score, 0.4))
+            if om_score is not None:
+                comps.append((om_score, 0.2))
+            if comps:
+                num = sum(v*w for v, w in comps)
+                den = sum(w for _, w in comps)
+                quality_raw = num / den if den > 0 else None
+            else:
+                # Neutral fallback to avoid NaN quality when data is sparse
+                quality_raw = 0.5
+        except Exception:
+            quality_raw = 0.5
+
+        # Discipline (net debt/EV, dilution)
+        ev = None
+        try:
+            _, ev, nd_ev = compute_net_debt_ev(market_cap, tk)
+            nd_score = None
+            if nd_ev is not None:
+                nd_score = _piecewise_score(nd_ev, [(-0.5,1.0),(0.0,0.9),(0.2,0.7),(0.4,0.4),(0.6,0.2),(0.8,0.0)])
+        except Exception:
+            nd_score = None
+        try:
+            dil_rate = compute_dilution_rate(tk)
+            dil_score = None
+            if dil_rate is not None:
+                dil_score = _piecewise_score(dil_rate, [(-0.1,1.0),(0.0,0.9),(0.05,0.7),(0.1,0.4),(0.2,0.2),(0.3,0.0)])
+        except Exception:
+            dil_rate = None
+            dil_score = None
+        try:
+            if nd_score is not None or dil_score is not None:
+                nd = nd_score if nd_score is not None else 0.6
+                dl = dil_score if dil_score is not None else 0.6
+                discipline_raw = 0.6 * nd + 0.4 * dl
+            else:
+                # Neutral fallback to avoid NaN discipline when data is sparse
+                discipline_raw = 0.5
+        except Exception:
+            discipline_raw = 0.5
+
+        # Valuation (prefer EV/S when EV available; else P/S)
+        try:
+            ps = compute_ps_ratio(market_cap, tk)
+        except Exception:
+            ps = None
+        # Fallback P/S from recent revenue we already computed
+        try:
+            if (ps is None or not np.isfinite(ps)) and market_cap is not None and rev_recent is not None and rev_recent > 0:
+                ps = safe_div(market_cap, rev_recent)
+        except Exception:
+            pass
+        try:
+            if ev is not None and rev_recent is not None and rev_recent > 0:
+                evs = safe_div(ev, rev_recent)
+        except Exception:
+            evs = None
+        # Clamp extreme multiples to reduce outlier impact
+        try:
+            if evs is not None and np.isfinite(evs):
+                evs = max(0.01, min(100.0, float(evs)))
+            if ps is not None and np.isfinite(ps):
+                ps = max(0.01, min(100.0, float(ps)))
+        except Exception:
+            pass
+        try:
+            if rev_cagr_3y is not None:
+                target_ps = min(25.0, 1.0 + 40.0 * max(0.0, min(0.5, rev_cagr_3y)))
+                metric = evs if evs is not None else ps
+                if metric is not None:
+                    # Growth-adjusted multiple: penalize high EV/S more when growth is low
+                    gadj = float(metric) / (1.0 + max(0.0, float(rev_cagr_3y)))
+                    gadj = max(0.01, min(100.0, gadj))
+                    val_raw = _piecewise_score(gadj, [
+                        (0.5,1.0), (target_ps,0.8), (target_ps*1.5,0.5), (target_ps*2.0,0.2), (target_ps*3.0,0.0)
+                    ])
+        except Exception:
+            val_raw = None
+
+        # Risk (volatility and drawdown)
+        try:
+            ann_vol, max_dd = price_vol_and_drawdown(tk, fast=getattr(args, 'fast_bagger', False))
+            vol_score = _piecewise_score(ann_vol, [(0.1,1.0),(0.2,0.9),(0.4,0.6),(0.6,0.3),(0.8,0.1),(1.0,0.0)]) if ann_vol is not None else None
+            dd_score = _piecewise_score(max_dd, [(0.1,1.0),(0.2,0.8),(0.4,0.5),(0.6,0.2),(0.8,0.05),(0.9,0.0)]) if max_dd is not None else None
+            if vol_score is not None or dd_score is not None:
+                v = vol_score if vol_score is not None else 0.6
+                d = dd_score if dd_score is not None else 0.6
+                risk_raw = 0.5 * v + 0.5 * d
+        except Exception:
+            ann_vol, max_dd, risk_raw = None, None, None
+
+        # Size prior bonus
+        try:
+            if market_cap is not None:
+                size_bonus = _piecewise_score(market_cap, [
+                    (1e7, 0.08), (5e7, 0.06), (1e8, 0.04), (3e8, 0.02), (1e9, 0.01), (3e9, 0.0), (1e10, -0.01)
+                ])
+        except Exception:
+            size_bonus = None
+
+    except Exception:
+        # If anything above unexpectedly raised, fall back to minimal context
+        T = int(getattr(args, 'bagger_horizon', 20))
+        r_star = (100.0 ** (1.0 / T)) - 1.0
+        base_rev_floor = float(getattr(args, 'bagger_base_rev_floor', 5e7))
+        rev_base = rev_series[3] if rev_series and len(rev_series) >= 4 else None
 
     return {
         'growth': growth_raw,
@@ -532,28 +808,55 @@ def compute_bagger_subscores(
         'gm': gm,
         'om': om,
         'ps': ps,
+        'evs': evs,
         'ann_vol': ann_vol,
         'max_dd': max_dd,
         'dilution_rate': dil_rate,
         'r_star': r_star,
+        'r2_stability': r2_stability,
+        'fcf_margin': fcf_margin,
+        'size_bonus': size_bonus,
+        'rev_base': rev_base,
+        'base_rev_floor': base_rev_floor,
+        'market_cap': market_cap,
     }
 
 
-def compute_bagger_score(sub: Dict[str, Optional[float]]) -> Tuple[Optional[int], Optional[float]]:
+def compute_bagger_score(sub: Dict[str, Optional[float]], args=None) -> Tuple[Optional[int], Optional[float]]:
     # Combine subscores with weights and guardrails; return (score0_100, composite_S)
     if not sub:
         return None, None
     # Red flags
     gm = sub.get('gm')
-    growth = sub.get('growth')
     max_dd = sub.get('max_dd')
+    rev_cagr = sub.get('rev_cagr_3y')
+    rev_base = sub.get('rev_base')
+    base_rev_floor = float(getattr(args, 'bagger_base_rev_floor', 5e7)) if args is not None else 5e7
+
     hard_cap = None
     if gm is not None and gm < 0.0:
         hard_cap = 20
     if max_dd is not None and max_dd > 0.85:
         hard_cap = 10 if hard_cap is None else min(hard_cap, 10)
+    if rev_cagr is not None and rev_cagr < 0.0:
+        hard_cap = 25 if hard_cap is None else min(hard_cap, 25)
+    if rev_base is not None and rev_base < base_rev_floor and rev_cagr is not None and rev_cagr > 0.8:
+        # Tiny starting revenue with extreme CAGR: cap aggressively
+        hard_cap = 30 if hard_cap is None else min(hard_cap, 30)
 
-    # Weighted composite S
+    # Adjust growth by stability if available
+    growth = sub.get('growth')
+    r2 = sub.get('r2_stability')
+    if growth is not None and r2 is not None:
+        growth = 0.8 * float(growth) + 0.2 * float(r2)
+    # Compose discipline etc.
+    components = {
+        'growth': growth if growth is not None else sub.get('growth'),
+        'quality': sub.get('quality'),
+        'discipline': sub.get('discipline'),
+        'valuation': sub.get('valuation'),
+        'risk': sub.get('risk'),
+    }
     weights = {
         'growth': 0.35,
         'quality': 0.20,
@@ -564,7 +867,7 @@ def compute_bagger_score(sub: Dict[str, Optional[float]]) -> Tuple[Optional[int]
     S = 0.0
     wsum = 0.0
     for k, w in weights.items():
-        v = sub.get(k)
+        v = components.get(k)
         if v is not None:
             S += w * float(v)
             wsum += w
@@ -572,8 +875,22 @@ def compute_bagger_score(sub: Dict[str, Optional[float]]) -> Tuple[Optional[int]
         return None, None
     S = S / wsum
 
-    P = logistic(S, k=3.0, x0=0.5)  # probability-like 0..1
-    score = int(round(100.0 * P))
+    # Size prior bonus (very small caps slightly favored), very small effect
+    size_bonus = sub.get('size_bonus')
+    if size_bonus is not None:
+        S = float(clamp(S + 0.1 * float(size_bonus), 0.0, 1.0))
+
+    # Probability-like mapping with conservative prior blending
+    k = 3.0
+    x0 = 0.55  # slightly right-shifted to be conservative
+    P = logistic(S, k=k, x0=x0)
+    # Blend with Bayesian prior (basis points)
+    prior_bp = float(getattr(args, 'bagger_prior_bp', 1.0)) if args is not None else 1.0
+    p0 = max(0.0, min(1.0, prior_bp / 10000.0))  # bp -> fraction
+    alpha = 0.9  # model confidence weight
+    P_final = alpha * P + (1 - alpha) * p0
+
+    score = int(round(100.0 * P_final))
     if hard_cap is not None:
         score = min(score, hard_cap)
     return score, S
@@ -602,8 +919,16 @@ def main():
                         help='Horizon in years for the 100x target (affects growth thresholds). Default: 20')
     parser.add_argument('--bagger_verbose', action='store_true', help='Show sub-score breakdown in output table')
     parser.add_argument('--fast_bagger', action='store_true', help='Skip heavy computations (drawdown/EVS) for speed')
+    parser.add_argument('--bagger_prior_bp', type=float, default=1.0,
+                        help='Bayesian prior for 100x probability in basis points (default: 1 bp = 0.01%)')
+    parser.add_argument('--bagger_base_rev_floor', type=float, default=5e7,
+                        help='Base revenue floor used to downweight extreme growth from tiny base (default: 50,000,000)')
+    parser.add_argument('--export_subscores', action='store_true',
+                        help='Include sub-score and diagnostic columns in CSV output')
     parser.add_argument('--sort_by', choices=['cagr','bagger'], default='cagr',
                         help='Sort output by rev CAGR (cagr) or 100x bagger score (bagger). Default: cagr')
+    parser.add_argument('--debug_bagger', type=int, default=0,
+                        help='Debug mode: process only N tickers and print factor/score distributions and a small per-ticker breakdown')
     args = parser.parse_args()
 
     # Ensure parent directory exists for the CSV path so users can drop the file in place
@@ -631,7 +956,29 @@ def main():
     failed: List[Tuple[str, str]] = []
     skipped_cap = 0
 
+    # Debug collections for distribution snapshots
+    debug_vals = {
+        'bagger_score': [], 'rev_cagr_3y': [], 'growth': [], 'quality': [], 'discipline': [], 'valuation': [], 'risk': [],
+        'gm': [], 'om': [], 'fcf_margin': [], 'ps': [], 'evs': [], 'ann_vol': [], 'max_dd': [], 'dilution_rate': []
+    }
+    # Coverage counters for debug mode
+    debug_cov = {
+        'subs_returns': 0,
+        'growth_ok': 0,
+        'quality_ok': 0,
+        'discipline_ok': 0,
+        'valuation_ok': 0,
+        'risk_ok': 0,
+        'fallback_growth_only': 0
+    }
+
+    processed = 0
+    debug_limit = int(getattr(args, 'debug_bagger', 0) or 0)
+
     for t in tqdm(tickers, desc="Tickers"):
+        # If in debug mode and reached the limit, stop early
+        if debug_limit > 0 and processed >= debug_limit:
+            break
         try:
             tk = yf.Ticker(t)
             mktcap = get_market_cap(tk)
@@ -663,10 +1010,14 @@ def main():
             bagger_score = None
             bagger_S = None
             subs = None
+            used_fallback = False
             if not args.no_bagger:
                 try:
-                    subs = compute_bagger_subscores(tk, mktcap, c, recent_rev, args)
-                    bagger_score, bagger_S = compute_bagger_score(subs)
+                    subs = compute_bagger_subscores(tk, mktcap, c, recent_rev, rev_vals, args)
+                    # add rev_cagr to subs for downstream guardrails
+                    if subs is not None:
+                        subs['rev_cagr_3y'] = c
+                    bagger_score, bagger_S = compute_bagger_score(subs, args)
                 except Exception:
                     # Non-fatal; proceed to fallback below
                     bagger_score = None
@@ -686,6 +1037,7 @@ def main():
                                 p = 0.5 * base + 0.5 * logistic(base, k=3.0, x0=0.55)
                                 bagger_score = int(round(100.0 * clamp(p, 0.0, 0.999)))
                                 bagger_S = float(base)
+                                used_fallback = True
                     except Exception:
                         pass
 
@@ -700,7 +1052,7 @@ def main():
             row["bagger_horizon"] = args.bagger_horizon if not args.no_bagger else None
             row["bagger_score"] = bagger_score
             row["bagger_S"] = bagger_S
-            if subs:
+            if subs and getattr(args, 'export_subscores', False):
                 row.update({
                     "sub_growth": subs.get("growth"),
                     "sub_quality": subs.get("quality"),
@@ -708,15 +1060,40 @@ def main():
                     "sub_valuation": subs.get("valuation"),
                     "sub_risk": subs.get("risk"),
                     "ps": subs.get("ps"),
+                    "evs": subs.get("evs"),
                     "gm": subs.get("gm"),
                     "om": subs.get("om"),
                     "ann_vol": subs.get("ann_vol"),
                     "max_dd": subs.get("max_dd"),
                     "dilution_rate": subs.get("dilution_rate"),
                     "r_star": subs.get("r_star"),
+                    "r2_stability": subs.get("r2_stability"),
+                    "fcf_margin": subs.get("fcf_margin"),
+                    "size_bonus": subs.get("size_bonus"),
+                    "rev_base": subs.get("rev_base"),
                 })
 
+            # Collect debug metrics (append for every processed ticker to keep array lengths equal)
+            if debug_limit > 0:
+                debug_vals['bagger_score'].append(bagger_score if bagger_score is not None else np.nan)
+                debug_vals['rev_cagr_3y'].append(c if c is not None else np.nan)
+                s = subs or {}
+                debug_vals['growth'].append(s.get('growth', np.nan))
+                debug_vals['quality'].append(s.get('quality', np.nan))
+                debug_vals['discipline'].append(s.get('discipline', np.nan))
+                debug_vals['valuation'].append(s.get('valuation', np.nan))
+                debug_vals['risk'].append(s.get('risk', np.nan))
+                debug_vals['gm'].append(s.get('gm', np.nan))
+                debug_vals['om'].append(s.get('om', np.nan))
+                debug_vals['fcf_margin'].append(s.get('fcf_margin', np.nan))
+                debug_vals['ps'].append(s.get('ps', np.nan))
+                debug_vals['evs'].append(s.get('evs', np.nan))
+                debug_vals['ann_vol'].append(s.get('ann_vol', np.nan))
+                debug_vals['max_dd'].append(s.get('max_dd', np.nan))
+                debug_vals['dilution_rate'].append(s.get('dilution_rate', np.nan))
+
             rows.append(row)
+            processed += 1
 
             time.sleep(SLEEP_SECONDS)
         except Exception as e:
@@ -759,6 +1136,44 @@ def main():
 
     out_csv = "top50_small_mid_revenue_cagr.csv"
     top.to_csv(out_csv, index=False)
+
+    # Debug: print factor/score distribution snapshots
+    if debug_limit > 0 and len(debug_vals.get('rev_cagr_3y', [])) > 0:
+        try:
+            debug_df = pd.DataFrame(debug_vals)
+            # Keep only numeric columns
+            for col in list(debug_df.columns):
+                debug_df[col] = pd.to_numeric(debug_df[col], errors='coerce')
+            percentiles = [0.05, 0.25, 0.5, 0.75, 0.95]
+            desc = debug_df.describe(percentiles=percentiles).T
+            desc = desc[['count','mean','std','5%','25%','50%','75%','95%']].rename(columns={'50%':'median'})
+            if Console is not None and Table is not None and not args.plain:
+                console = Console()
+                console.print("\n[bold blue]Debug distributions (processed first {} tickers)[/bold blue]".format(processed))
+                tbl = Table(box=box.SIMPLE_HEAVY if box else None, show_lines=False)
+                tbl.add_column("Metric")
+                for c in ['count','mean','std','5%','25%','median','75%','95%']:
+                    tbl.add_column(c, justify='right')
+                for metric, rowv in desc.iterrows():
+                    vals = [metric]
+                    for c in ['count','mean','std','5%','25%','median','75%','95%']:
+                        val = rowv.get(c)
+                        if pd.isna(val):
+                            vals.append("-")
+                        else:
+                            if metric in ("bagger_score",):
+                                vals.append(f"{val:,.1f}")
+                            elif metric.endswith("_cagr_3y") or metric in ("ann_vol","max_dd","fcf_margin","gm","om"):
+                                vals.append(f"{val:,.4f}")
+                            else:
+                                vals.append(f"{val:,.3f}")
+                    tbl.add_row(*vals)
+                console.print(tbl)
+            else:
+                print(f"\nDebug distributions (processed first {processed} tickers)")
+                print(desc.to_string())
+        except Exception as _e:
+            print(f"[debug] failed to build distribution snapshot: {_e}")
 
     use_rich = (Console is not None and Table is not None and not args.plain)
 
