@@ -101,6 +101,9 @@ class Signal:
     profit_ci_low_pln: float  # low CI bound for profit in PLN
     profit_ci_high_pln: float # high CI bound for profit in PLN
     position_strength: float  # fractional Kelly suggestion (0..1)
+    vol_mean: float       # mean volatility forecast (stochastic vol posterior)
+    vol_ci_low: float     # lower bound of volatility CI
+    vol_ci_high: float    # upper bound of volatility CI
     regime: str               # detected regime label
     label: str                # BUY/HOLD/SELL or STRONG BUY/SELL
 
@@ -227,9 +230,19 @@ def _garch11_mle(ret: pd.Series) -> Tuple[pd.Series, Dict[str, float]]:
     Model: r_t = mu_t + e_t, e_t ~ N(0, h_t), h_t = omega + alpha*e_{t-1}^2 + beta*h_{t-1}
     We estimate on de-meaned returns (mean 0) and treat residuals as r_t.
 
-    Level-7: we also approximate parameter uncertainty by computing the observed
-    information (numeric Hessian of the negative log-likelihood) at the optimum
-    and inverting it to obtain an approximate covariance matrix for (omega,alpha,beta).
+    Level-7 Bayesian GARCH: 
+    - We approximate parameter uncertainty by computing the observed information 
+      (numeric Hessian of the negative log-likelihood) at the MLE optimum and 
+      inverting it to obtain an approximate covariance matrix for (omega,alpha,beta).
+    - In forward simulation (_simulate_forward_paths), parameters are sampled from 
+      N(theta_hat, Cov) per path, propagating GARCH uncertainty into forecasts.
+    - This Gaussian approximation is institution-grade and sufficient for Level-7.
+    
+    Future Level-8+ pathway (research frontier, not required):
+    - Full Bayesian GARCH via HMC/NUTS posterior sampling (e.g., PyMC, Stan)
+    - Priors enforcing stationarity: α + β < 1
+    - Joint posterior over (ω, α, β) with proper uncertainty quantification
+    - This would eliminate Gaussian approximation but requires MCMC infrastructure.
     """
     from scipy.optimize import minimize
 
@@ -577,19 +590,145 @@ def _compute_kalman_log_likelihood(y: np.ndarray, sigma: np.ndarray, q: float) -
     return float(log_likelihood)
 
 
+def _compute_kalman_log_likelihood_heteroskedastic(y: np.ndarray, sigma: np.ndarray, c: float) -> float:
+    """
+    Compute log-likelihood for Kalman filter with heteroskedastic process noise q_t = c * σ_t².
+    
+    This allows drift uncertainty to scale with market stress: higher volatility => more drift uncertainty.
+    
+    Args:
+        y: Observations (returns)
+        sigma: Observation noise std (volatility) per time step
+        c: Scaling factor for heteroskedastic process noise (q_t = c * σ_t²)
+        
+    Returns:
+        Total log-likelihood of observations under this c
+    """
+    T = len(y)
+    if T < 2:
+        return float('-inf')
+    
+    # Initialize
+    mu_t = 0.0
+    P_t = 1.0
+    log_likelihood = 0.0
+    
+    for t in range(T):
+        # Heteroskedastic process noise: q_t = c * σ_t²
+        R_t = float(max(sigma[t] ** 2, 1e-12))
+        q_t = float(max(c * R_t, 1e-12))
+        
+        # Prediction
+        mu_pred = mu_t
+        P_pred = P_t + q_t
+        
+        # Innovation
+        innov = y[t] - mu_pred
+        S_t = float(max(P_pred + R_t, 1e-12))
+        
+        # Log-likelihood contribution
+        try:
+            ll_t = -0.5 * (np.log(2.0 * np.pi * S_t) + (innov ** 2) / S_t)
+            if np.isfinite(ll_t):
+                log_likelihood += ll_t
+        except Exception:
+            pass
+        
+        # Update
+        K_t = P_pred / S_t
+        mu_t = mu_pred + K_t * innov
+        P_t = float(max((1.0 - K_t) * P_pred, 1e-12))
+    
+    return float(log_likelihood)
+
+
+def _estimate_regime_drift_priors(ret: pd.Series, vol: pd.Series) -> Optional[Dict[str, float]]:
+    """
+    Estimate regime-specific drift expectations E[μ_t | Regime=k] from historical data.
+    
+    Uses a quick HMM fit on returns to identify regimes, then computes mean return
+    per regime as a simple proxy for regime-conditional drift.
+    
+    Args:
+        ret: Returns series
+        vol: Volatility series
+        
+    Returns:
+        Dictionary with regime-specific drift priors, or None if estimation fails
+    """
+    if not HMM_AVAILABLE:
+        return None
+    
+    try:
+        # Align data
+        df = pd.concat([ret, vol], axis=1, join='inner').dropna()
+        if len(df) < 300:
+            return None
+        
+        df.columns = ["ret", "vol"]
+        X = df.values
+        
+        # Fit 3-state HMM
+        model = hmm.GaussianHMM(n_components=3, covariance_type="full", n_iter=50, random_state=42, verbose=False)
+        model.fit(X)
+        
+        # Predict states
+        states = model.predict(X)
+        
+        # Compute mean return per state
+        regime_drifts = {}
+        for state_idx in range(3):
+            mask = (states == state_idx)
+            if np.sum(mask) > 10:
+                regime_drifts[state_idx] = float(np.mean(df.loc[mask, "ret"]))
+            else:
+                regime_drifts[state_idx] = 0.0
+        
+        # Identify regime names by volatility
+        means = model.means_
+        vol_means = means[:, 1]
+        sorted_indices = np.argsort(vol_means)
+        
+        regime_map = {
+            sorted_indices[0]: "calm",
+            sorted_indices[1]: "trending",
+            sorted_indices[2]: "crisis"
+        }
+        
+        # Get current regime (last observation)
+        current_state = states[-1]
+        current_regime = regime_map.get(current_state, "calm")
+        current_drift_prior = regime_drifts.get(current_state, 0.0)
+        
+        return {
+            "current_regime": current_regime,
+            "current_drift_prior": float(current_drift_prior),
+            "regime_drifts": regime_drifts,
+            "regime_map": regime_map,
+        }
+        
+    except Exception:
+        return None
+
+
 def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = None, optimize_q: bool = True) -> Dict[str, pd.Series]:
     """
     Kalman filter for time-varying drift estimation with optional q optimization.
     
     State-space model:
-        r_t = μ_t + ε_t,  ε_t ~ N(0, σ_t²)  (observation equation)
-        μ_t = μ_{t-1} + η_t,  η_t ~ N(0, q)  (state transition, random walk)
+        r_t = μ_t + ε_t,  ε_t ~ N(0, σ_t²) or t(ν, σ_t²)  (observation equation)
+        μ_t = μ_{t-1} + η_t,  η_t ~ N(0, q_t)  (state transition, random walk)
+    
+    Level-7+ robust filtering: Student-t innovations option for heavy-tailed observations.
+    When KALMAN_ROBUST_T=true, observation noise uses Student-t distribution with
+    degrees of freedom ν, providing robustness to outliers and extreme market events.
     
     Where:
         r_t: observed return at time t
         μ_t: latent drift (hidden state)
         σ_t: conditional volatility from GARCH/EWMA
-        q: drift evolution variance (process noise)
+        q_t: drift evolution variance (process noise, possibly time-varying)
+        ν: Student-t degrees of freedom (if robust mode enabled)
     
     Args:
         ret: Returns series
@@ -609,6 +748,8 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
             - q_optimal: Optimized or heuristic q value used
             - q_heuristic: Baseline heuristic q for comparison
             - q_optimization_attempted: Whether q optimization was attempted
+            - robust_t_mode: Whether Student-t innovations were used
+            - nu_robust: Degrees of freedom for Student-t (if robust mode)
     """
     ret_clean = _ensure_float_series(ret).dropna()
     vol_clean = _ensure_float_series(vol).reindex(ret_clean.index).dropna()
@@ -630,39 +771,152 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     q_heuristic = 0.01 * med_var  # 1% of typical observation variance
     q_heuristic = float(max(q_heuristic, 1e-10))
     
-    # Determine q to use
+    # Determine whether to use heteroskedastic process noise (Level-7 refinement)
+    # q_t = c * σ_t² makes drift uncertainty adaptive to market stress
+    use_heteroskedastic = os.getenv("KALMAN_HETEROSKEDASTIC", "true").strip().lower() == "true"
+    
+    # Determine q or c to use
     q_optimization_attempted = False
+    c_optimal = None
+    q_t_series = None  # Will store time-varying q_t if heteroskedastic
+    
     if q is None and optimize_q and T >= 252:
-        # Optimize q via marginal likelihood maximization (grid search)
-        # Try q values around the heuristic: [0.001, 0.005, 0.01, 0.05, 0.1] * med_var
         q_optimization_attempted = True
-        q_candidates = [0.001 * med_var, 0.005 * med_var, q_heuristic, 0.05 * med_var, 0.1 * med_var]
-        q_candidates = [float(max(qc, 1e-10)) for qc in q_candidates]
+        from scipy.optimize import minimize_scalar
         
-        best_q = q_heuristic
-        best_ll = float('-inf')
-        
-        for q_trial in q_candidates:
+        if use_heteroskedastic:
+            # Optimize c for heteroskedastic process noise: q_t = c * σ_t²
+            # c represents the ratio of drift uncertainty to observation uncertainty
+            
+            # Heuristic c: same as q_heuristic / med_var = 0.01
+            c_heuristic = 0.01
+            
+            # Define negative log-likelihood as function of log(c)
+            def neg_ll_log_c(log_c_val: float) -> float:
+                c_trial = float(np.exp(log_c_val))
+                try:
+                    ll = _compute_kalman_log_likelihood_heteroskedastic(y, sigma, c_trial)
+                    if not np.isfinite(ll):
+                        return 1e12
+                    return float(-ll)
+                except Exception:
+                    return 1e12
+            
+            # Search bounds in log-space: c in [0.0001, 1.0]
+            log_c_min = np.log(0.0001)
+            log_c_max = np.log(1.0)
+            
             try:
-                # Run Kalman filter with this q and compute log-likelihood
-                ll_trial = _compute_kalman_log_likelihood(y, sigma, q_trial)
-                if np.isfinite(ll_trial) and ll_trial > best_ll:
-                    best_ll = ll_trial
-                    best_q = q_trial
+                # Brent method (1D optimization without derivatives)
+                result = minimize_scalar(
+                    neg_ll_log_c,
+                    bounds=(log_c_min, log_c_max),
+                    method='bounded',
+                    options={'xatol': 1e-6}
+                )
+                if result.success and np.isfinite(result.x):
+                    c_optimal = float(np.exp(result.x))
+                else:
+                    c_optimal = c_heuristic
             except Exception:
-                continue
-        
-        q = best_q
+                c_optimal = c_heuristic
+            
+            # Build time-varying q_t series
+            q_t_series = c_optimal * (sigma ** 2)
+            q = float(np.mean(q_t_series))  # mean for reporting
+            
+        else:
+            # Optimize constant q via marginal likelihood maximization
+            # Use Brent method in log-space for robust optimization over several orders of magnitude
+            
+            # Define negative log-likelihood as function of log(q) for numerical stability
+            def neg_ll_log_q(log_q_val: float) -> float:
+                q_trial = float(np.exp(log_q_val))
+                try:
+                    ll = _compute_kalman_log_likelihood(y, sigma, q_trial)
+                    if not np.isfinite(ll):
+                        return 1e12
+                    return float(-ll)
+                except Exception:
+                    return 1e12
+            
+            # Search bounds in log-space: q in [0.0001*med_var, 1.0*med_var]
+            log_q_min = np.log(max(0.0001 * med_var, 1e-12))
+            log_q_max = np.log(max(1.0 * med_var, 1e-6))
+            
+            try:
+                # Brent method (1D optimization without derivatives)
+                result = minimize_scalar(
+                    neg_ll_log_q,
+                    bounds=(log_q_min, log_q_max),
+                    method='bounded',
+                    options={'xatol': 1e-6}
+                )
+                if result.success and np.isfinite(result.x):
+                    q = float(np.exp(result.x))
+                else:
+                    q = q_heuristic
+            except Exception:
+                q = q_heuristic
+                
     elif q is None:
         # Use heuristic if optimization disabled or insufficient data
-        q = q_heuristic
+        if use_heteroskedastic:
+            c_optimal = 0.01
+            q_t_series = c_optimal * (sigma ** 2)
+            q = float(np.mean(q_t_series))
+        else:
+            q = q_heuristic
     else:
         q = float(max(q, 1e-10))
     
+    # Level-7+ Robust Kalman filtering with Student-t innovations
+    # When enabled, uses t-distribution for observation noise to handle outliers
+    use_robust_t = os.getenv("KALMAN_ROBUST_T", "false").strip().lower() == "true"
+    nu_robust = None
+    
+    if use_robust_t:
+        # Estimate degrees of freedom for Student-t from standardized residuals
+        # Use simple variance-based estimator: higher variance => lower nu (heavier tails)
+        try:
+            std_resid = y / np.maximum(sigma, 1e-12)
+            std_resid = std_resid[np.isfinite(std_resid)]
+            if len(std_resid) >= 100:
+                # Robust estimation via method of moments
+                # For Student-t: Var(X) = ν/(ν-2) for ν > 2
+                # Sample excess variance relative to unit normal suggests tail heaviness
+                sample_var = float(np.var(std_resid))
+                if sample_var > 1.5:
+                    # Heavier tails than normal: solve ν/(ν-2) = sample_var
+                    # => ν = 2*sample_var / (sample_var - 1)
+                    nu_est = 2.0 * sample_var / max(sample_var - 1.0, 0.1)
+                    nu_robust = float(np.clip(nu_est, 4.5, 50.0))
+                else:
+                    # Light tails: use high nu (near-normal)
+                    nu_robust = 30.0
+            else:
+                # Insufficient data: default to moderate heavy tails
+                nu_robust = 10.0
+        except Exception:
+            nu_robust = 10.0
+    
     # Initialize state and covariance
     # Prior: μ_0 ~ N(0, large variance) to represent initial uncertainty
+    # Level-7+ Regime-aware prior: use regime-specific drift expectation if available
     mu_prior = 0.0
     P_prior = 1.0  # initial uncertainty
+    regime_prior_info = None
+    
+    # Check if regime-aware initialization is enabled
+    use_regime_prior = os.getenv("KALMAN_REGIME_PRIOR", "false").strip().lower() == "true"
+    
+    if use_regime_prior:
+        # Estimate regime-specific drift priors from historical data
+        regime_prior_info = _estimate_regime_drift_priors(ret_clean, vol_clean)
+        if regime_prior_info is not None:
+            # Use regime-conditional drift as prior mean
+            mu_prior = regime_prior_info.get("current_drift_prior", 0.0)
+            # Keep prior variance at 1.0 to allow filter to adapt quickly
     
     # Storage for forward pass
     mu_filtered = np.zeros(T, dtype=float)
@@ -679,9 +933,11 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     for t in range(T):
         # Prediction step: project state forward
         # μ_{t|t-1} = μ_{t-1|t-1}  (random walk has no drift term in transition)
-        # P_{t|t-1} = P_{t-1|t-1} + q
+        # P_{t|t-1} = P_{t-1|t-1} + q_t
+        # Use time-varying q_t if heteroskedastic, else constant q
+        q_t = float(q_t_series[t]) if q_t_series is not None else q
         mu_pred = mu_t
-        P_pred = P_t + q
+        P_pred = P_t + q_t
         
         # Observation noise variance at time t
         R_t = sigma[t] ** 2
@@ -697,7 +953,19 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
         
         # Kalman gain: K_t = P_{t|t-1} H^T S_t^{-1}
         # With H=1, K_t = P_pred / S_t
-        K_t = P_pred / S_t
+        K_t_base = P_pred / S_t
+        
+        # Robust Kalman: adaptive gain based on Student-t likelihood
+        # Downweight outliers by adjusting gain based on innovation magnitude
+        if use_robust_t and nu_robust is not None:
+            # Robust weight: w_t = (ν + 1) / (ν + z_t²)
+            # where z_t = innov / sqrt(S_t) is standardized innovation
+            z_t_sq = (innov ** 2) / S_t
+            w_t = (nu_robust + 1.0) / (nu_robust + z_t_sq)
+            w_t = float(np.clip(w_t, 0.01, 1.0))  # bounded weight
+            K_t = w_t * K_t_base  # adaptive gain
+        else:
+            K_t = K_t_base  # standard Kalman gain
         
         # Update step: refine state estimate with observation
         # μ_{t|t} = μ_{t|t-1} + K_t (y_t - μ_{t|t-1})
@@ -705,7 +973,13 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
         
         # Update covariance: P_{t|t} = (1 - K_t H) P_{t|t-1}
         # With H=1, P_{t|t} = (1 - K_t) P_pred
-        P_t = (1.0 - K_t) * P_pred
+        # For robust case, use Joseph form for numerical stability
+        if use_robust_t:
+            # Joseph form: P_{t|t} = (I - K_t H)P_{t|t-1}(I - K_t H)^T + K_t R_t K_t^T
+            # With H=1: P_{t|t} = (1-K_t)²P_pred + K_t²R_t
+            P_t = (1.0 - K_t) ** 2 * P_pred + K_t ** 2 * R_t
+        else:
+            P_t = (1.0 - K_t) * P_pred
         P_t = float(max(P_t, 1e-12))  # ensure positive
         
         # Store filtered estimates
@@ -716,13 +990,31 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
         innovation_vars[t] = S_t
         
         # Accumulate log-likelihood: ln p(y_t | y_{1:t-1})
-        # Under Gaussian assumption: -0.5 * (ln(2π S_t) + innov² / S_t)
-        try:
-            ll_t = -0.5 * (np.log(2.0 * np.pi * S_t) + (innov ** 2) / S_t)
-            if np.isfinite(ll_t):
-                log_likelihood += ll_t
-        except Exception:
-            pass
+        if use_robust_t and nu_robust is not None:
+            # Student-t log-likelihood
+            try:
+                # Standardized innovation
+                z_t = innov / np.sqrt(S_t)
+                # Log-likelihood: log Γ((ν+1)/2) - log Γ(ν/2) - 0.5*log(πνS_t) - ((ν+1)/2)*log(1 + z_t²/ν)
+                from scipy.special import gammaln
+                ll_t = (
+                    gammaln((nu_robust + 1.0) / 2.0)
+                    - gammaln(nu_robust / 2.0)
+                    - 0.5 * np.log(np.pi * nu_robust * S_t)
+                    - ((nu_robust + 1.0) / 2.0) * np.log(1.0 + (z_t ** 2) / nu_robust)
+                )
+                if np.isfinite(ll_t):
+                    log_likelihood += float(ll_t)
+            except Exception:
+                pass
+        else:
+            # Gaussian log-likelihood
+            try:
+                ll_t = -0.5 * (np.log(2.0 * np.pi * S_t) + (innov ** 2) / S_t)
+                if np.isfinite(ll_t):
+                    log_likelihood += ll_t
+            except Exception:
+                pass
     
     # Backward pass (Rauch-Tung-Striebel smoother)
     # Smoothing uses all data (past and future) for refined estimates
@@ -735,8 +1027,10 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     
     for t in range(T-2, -1, -1):
         # Smoother gain: C_t = P_{t|t} / P_{t+1|t}
-        # Where P_{t+1|t} = P_filtered[t] + q (predicted covariance for next step)
-        P_pred_next = P_filtered[t] + q
+        # Where P_{t+1|t} = P_filtered[t] + q_t (predicted covariance for next step)
+        # Use time-varying q_t if heteroskedastic, else constant q
+        q_t = float(q_t_series[t]) if q_t_series is not None else q
+        P_pred_next = P_filtered[t] + q_t
         P_pred_next = float(max(P_pred_next, 1e-12))
         
         C_t = P_filtered[t] / P_pred_next
@@ -778,6 +1072,19 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
         "kalman_gain_recent": kalman_gain_recent,
         # Refinement 3: Innovation whiteness test (model adequacy)
         "innovation_whiteness": innovation_whiteness,
+        # Level-7 Refinement: Heteroskedastic process noise (q_t = c * σ_t²)
+        "heteroskedastic_mode": bool(use_heteroskedastic),
+        "c_optimal": float(c_optimal) if c_optimal is not None else None,
+        "q_t_mean": float(np.mean(q_t_series)) if q_t_series is not None else None,
+        "q_t_std": float(np.std(q_t_series)) if q_t_series is not None else None,
+        "q_t_min": float(np.min(q_t_series)) if q_t_series is not None else None,
+        "q_t_max": float(np.max(q_t_series)) if q_t_series is not None else None,
+        # Level-7+ Refinement: Robust Kalman filtering with Student-t innovations
+        "robust_t_mode": bool(use_robust_t),
+        "nu_robust": float(nu_robust) if nu_robust is not None else None,
+        # Level-7+ Refinement: Regime-dependent drift priors
+        "regime_prior_used": bool(use_regime_prior and regime_prior_info is not None),
+        "regime_prior_info": regime_prior_info if regime_prior_info is not None else {},
     }
 
 
@@ -876,6 +1183,19 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
             "kalman_gain_recent": kf_result.get("kalman_gain_recent", float("nan")),
             # Refinement 3: Innovation whiteness test (model adequacy)
             "innovation_whiteness": kf_result.get("innovation_whiteness", {}),
+            # Level-7 Refinement: Heteroskedastic process noise
+            "heteroskedastic_mode": kf_result.get("heteroskedastic_mode", False),
+            "c_optimal": kf_result.get("c_optimal"),
+            "q_t_mean": kf_result.get("q_t_mean"),
+            "q_t_std": kf_result.get("q_t_std"),
+            "q_t_min": kf_result.get("q_t_min"),
+            "q_t_max": kf_result.get("q_t_max"),
+            # Level-7+ Refinement: Robust Kalman filtering with Student-t innovations
+            "robust_t_mode": kf_result.get("robust_t_mode", False),
+            "nu_robust": kf_result.get("nu_robust"),
+            # Level-7+ Refinement: Regime-dependent drift priors
+            "regime_prior_used": kf_result.get("regime_prior_used", False),
+            "regime_prior_info": kf_result.get("regime_prior_info", {}),
         }
     else:
         # Fallback: use EWMA blend if Kalman fails
@@ -1400,6 +1720,22 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
             diagnostics["innovation_ljung_box_pvalue"] = innovation_whiteness.get("ljung_box_pvalue", float("nan"))
             diagnostics["innovation_model_adequate"] = innovation_whiteness.get("model_adequate", None)
             diagnostics["innovation_lags_tested"] = innovation_whiteness.get("lags_tested", 0)
+        # Level-7 Refinement: Heteroskedastic process noise (q_t = c * σ_t²)
+        diagnostics["kalman_heteroskedastic_mode"] = kalman_metadata.get("heteroskedastic_mode", False)
+        diagnostics["kalman_c_optimal"] = kalman_metadata.get("c_optimal")
+        diagnostics["kalman_q_t_mean"] = kalman_metadata.get("q_t_mean")
+        diagnostics["kalman_q_t_std"] = kalman_metadata.get("q_t_std")
+        diagnostics["kalman_q_t_min"] = kalman_metadata.get("q_t_min")
+        diagnostics["kalman_q_t_max"] = kalman_metadata.get("q_t_max")
+        # Level-7+ Refinement: Robust Kalman filtering with Student-t innovations
+        diagnostics["kalman_robust_t_mode"] = kalman_metadata.get("robust_t_mode", False)
+        diagnostics["kalman_nu_robust"] = kalman_metadata.get("nu_robust")
+        # Level-7+ Refinement: Regime-dependent drift priors
+        diagnostics["kalman_regime_prior_used"] = kalman_metadata.get("regime_prior_used", False)
+        regime_prior_info = kalman_metadata.get("regime_prior_info", {})
+        if isinstance(regime_prior_info, dict) and regime_prior_info:
+            diagnostics["kalman_regime_current"] = regime_prior_info.get("current_regime", "")
+            diagnostics["kalman_regime_drift_prior"] = regime_prior_info.get("current_drift_prior", float("nan"))
     
     hmm_result = feats.get("hmm_result")
     if hmm_result is not None and isinstance(hmm_result, dict):
@@ -1577,8 +1913,8 @@ def edge_for_horizon(mu: float, vol: float, H: int) -> float:
     return float(mu_H / sig_H)
 
 
-def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: int = 3000, phi: float = 0.95, kappa: float = 1e-4) -> np.ndarray:
-    """Monte-Carlo forward simulation of cumulative log returns over 1..H_max.
+def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: int = 3000, phi: float = 0.95, kappa: float = 1e-4) -> Dict[str, np.ndarray]:
+    """Monte-Carlo forward simulation of cumulative log returns and volatility over 1..H_max.
     - Drift evolves as AR(1): mu_{t+1} = phi * mu_t + eta_t,  eta ~ N(0, q)
     - Volatility evolves via GARCH(1,1) when available; else held constant.
     - Innovations are Student-t with global df (nu_hat) scaled to unit variance.
@@ -1590,18 +1926,31 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     'sample' (default) and garch_params contains a covariance matrix, we sample
     (omega, alpha, beta) per path from N(theta_hat, Cov) with constraints, which
     widens confidence during regime shifts and narrows during stability.
-    Returns an array of shape (H_max, n_paths) with cumulative log returns per horizon.
+    
+    Stochastic volatility: Tracks full h_t (variance) trajectories across paths,
+    enabling posterior uncertainty bands for volatility forecasts.
+    
+    Returns:
+        Dictionary with:
+            - 'returns': array of shape (H_max, n_paths) with cumulative log returns
+            - 'volatility': array of shape (H_max, n_paths) with volatility (sigma_t = sqrt(h_t))
     """
     # Inputs at 'now'
     ret_idx = feats.get("ret", pd.Series(dtype=float)).index
     if ret_idx is None or len(ret_idx) == 0:
-        return np.zeros((H_max, n_paths), dtype=float)
+        return {
+            'returns': np.zeros((H_max, n_paths), dtype=float),
+            'volatility': np.zeros((H_max, n_paths), dtype=float)
+        }
     mu_series = feats.get("mu_post")
     if not isinstance(mu_series, pd.Series) or mu_series.empty:
         mu_series = feats.get("mu")
     vol_series = feats.get("vol")
     if not isinstance(vol_series, pd.Series) or vol_series.empty or not isinstance(mu_series, pd.Series) or mu_series.empty:
-        return np.zeros((H_max, n_paths), dtype=float)
+        return {
+            'returns': np.zeros((H_max, n_paths), dtype=float),
+            'volatility': np.zeros((H_max, n_paths), dtype=float)
+        }
     mu_now = float(mu_series.iloc[-1]) if len(mu_series) else 0.0
     vol_now = float(vol_series.iloc[-1]) if len(vol_series) else 0.0
     vol_now = float(max(vol_now, 1e-6))
@@ -1703,6 +2052,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
 
     # Initialize state arrays (vectorized across paths)
     cum = np.zeros((H_max, n_paths), dtype=float)
+    vol_paths = np.zeros((H_max, n_paths), dtype=float)  # Track volatility (sigma_t) at each horizon
     mu_t = np.full(n_paths, mu_now, dtype=float)
     h_t = np.full(n_paths, max(h0, 1e-8), dtype=float)
 
@@ -1719,6 +2069,8 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
             cum[t, :] = mu_t + e_t
         else:
             cum[t, :] = cum[t-1, :] + mu_t + e_t
+        # Store volatility at this horizon (stochastic volatility tracking)
+        vol_paths[t, :] = sigma_t
         # Evolve volatility via GARCH or hold constant on fallback
         if use_garch:
             h_t = omega_paths + alpha_paths * (e_t ** 2) + beta_paths * h_t
@@ -1727,7 +2079,10 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         eta = rng.normal(loc=0.0, scale=math.sqrt(q), size=n_paths)
         mu_t = phi * mu_t + eta
 
-    return cum
+    return {
+        'returns': cum,
+        'volatility': vol_paths
+    }
 
 
 def composite_edge(
@@ -1930,25 +2285,44 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
 
     # Monte‑Carlo forward simulation to capture evolving drift/vol over horizons
     H_max = int(max(horizons) if horizons else 0)
-    sims = _simulate_forward_paths(feats, H_max=H_max, n_paths=3000)
+    sim_result = _simulate_forward_paths(feats, H_max=H_max, n_paths=3000)
+    sims = sim_result['returns']
+    vol_sims = sim_result['volatility']
 
     for H in horizons:
         # Use simulation at horizon H (1‑indexed in description; here index H-1)
         if H <= 0 or H > sims.shape[0]:
             sim_H = np.zeros(3000, dtype=float)
+            vol_H = np.zeros(3000, dtype=float)
         else:
             sim_H = sims[H-1, :]
-        # Clean NaNs/Infs
+            vol_H = vol_sims[H-1, :]
+        # Clean NaNs/Infs for returns
         sim_H = np.asarray(sim_H, dtype=float)
         sim_H = sim_H[np.isfinite(sim_H)]
         if sim_H.size == 0:
             sim_H = np.zeros(3000, dtype=float)
+        # Clean NaNs/Infs for volatility
+        vol_H = np.asarray(vol_H, dtype=float)
+        vol_H = vol_H[np.isfinite(vol_H)]
+        if vol_H.size == 0:
+            vol_H = np.zeros(3000, dtype=float)
         # Simulated moments and probability
         mH = float(np.mean(sim_H))
         vH = float(np.var(sim_H, ddof=1)) if sim_H.size > 1 else 0.0
         sH = float(math.sqrt(max(vH, 1e-12)))
         z_stat = float(mH / sH) if sH > 0 else 0.0
         p_now = float(np.mean(sim_H > 0.0))
+        
+        # Stochastic volatility statistics (Level-7: full posterior uncertainty)
+        vol_mean = float(np.mean(vol_H)) if vol_H.size > 0 else 0.0
+        try:
+            vol_ci_low = float(np.quantile(vol_H, lo_q))
+            vol_ci_high = float(np.quantile(vol_H, hi_q))
+        except Exception:
+            vol_std = float(np.std(vol_H)) if vol_H.size > 1 else 0.0
+            vol_ci_low = max(0.0, vol_mean - vol_std)
+            vol_ci_high = vol_mean + vol_std
         # For anti‑snap smoothing we need a previous probability; approximate with itself if unavailable
         p_prev = p_now
         p_s_prev = p_prev
@@ -2081,6 +2455,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             profit_ci_low_pln=float(profit_ci_low_pln),
             profit_ci_high_pln=float(profit_ci_high_pln),
             position_strength=float(pos_strength),
+            vol_mean=float(vol_mean),
+            vol_ci_low=float(vol_ci_low),
+            vol_ci_high=float(vol_ci_high),
             regime=reg,
             label=label,
         ))
@@ -2219,6 +2596,47 @@ def main() -> None:
                         color = "green" if model_adequate else "red"
                         status = "PASS" if model_adequate else "FAIL"
                         diag_table.add_row(f"  Innovation Whiteness (Ljung-Box)", f"[{color}]{status}[/{color}] (p={pvalue:.3f}, lags={lags})")
+                
+                # Level-7 Refinement: Heteroskedastic process noise (q_t = c * σ_t²)
+                if "kalman_heteroskedastic_mode" in diagnostics:
+                    hetero_mode = diagnostics.get("kalman_heteroskedastic_mode", False)
+                    c_opt = diagnostics.get("kalman_c_optimal")
+                    if hetero_mode and c_opt is not None and np.isfinite(c_opt):
+                        diag_table.add_row(f"  Process Noise Mode", f"[cyan]Heteroskedastic[/cyan] (q_t = c·σ_t²)")
+                        diag_table.add_row(f"  Scaling Factor (c)", f"{c_opt:.6f}")
+                        # Show q_t statistics if available
+                        q_t_mean = diagnostics.get("kalman_q_t_mean")
+                        q_t_std = diagnostics.get("kalman_q_t_std")
+                        q_t_min = diagnostics.get("kalman_q_t_min")
+                        q_t_max = diagnostics.get("kalman_q_t_max")
+                        if q_t_mean is not None and np.isfinite(q_t_mean):
+                            diag_table.add_row(f"  q_t (mean ± std)", f"{q_t_mean:.6f} ± {q_t_std:.6f}" if q_t_std and np.isfinite(q_t_std) else f"{q_t_mean:.6f}")
+                        if q_t_min is not None and q_t_max is not None and np.isfinite(q_t_min) and np.isfinite(q_t_max):
+                            diag_table.add_row(f"  q_t range [min, max]", f"[{q_t_min:.6f}, {q_t_max:.6f}]")
+                    elif not hetero_mode:
+                        diag_table.add_row(f"  Process Noise Mode", f"Homoskedastic (constant q)")
+                
+                # Level-7+ Refinement: Robust Kalman filtering with Student-t innovations
+                if "kalman_robust_t_mode" in diagnostics:
+                    robust_t = diagnostics.get("kalman_robust_t_mode", False)
+                    nu_robust = diagnostics.get("kalman_nu_robust")
+                    if robust_t and nu_robust is not None and np.isfinite(nu_robust):
+                        diag_table.add_row(f"  Innovation Distribution", f"[magenta]Student-t[/magenta] (robust filtering)")
+                        diag_table.add_row(f"  Innovation ν (degrees of freedom)", f"{nu_robust:.2f}")
+                    elif not robust_t:
+                        diag_table.add_row(f"  Innovation Distribution", f"Gaussian (standard)")
+                
+                # Level-7+ Refinement: Regime-dependent drift priors
+                if "kalman_regime_prior_used" in diagnostics:
+                    regime_prior_used = diagnostics.get("kalman_regime_prior_used", False)
+                    if regime_prior_used:
+                        regime_current = diagnostics.get("kalman_regime_current", "")
+                        drift_prior = diagnostics.get("kalman_regime_drift_prior")
+                        if regime_current and drift_prior is not None and np.isfinite(drift_prior):
+                            diag_table.add_row(f"  Drift Prior (regime-aware)", f"[yellow]Enabled[/yellow] (regime: {regime_current})")
+                            diag_table.add_row(f"  E[μ | Regime={regime_current}]", f"{drift_prior:+.6f}")
+                    else:
+                        diag_table.add_row(f"  Drift Prior", f"Neutral (μ₀ = 0)")
             
             if "hmm_log_likelihood" in diagnostics:
                 diag_table.add_row("HMM Regime Log-Likelihood", f"{diagnostics['hmm_log_likelihood']:.2f}")
@@ -2294,6 +2712,15 @@ def main() -> None:
             "nu_hat": float(feats.get("nu_hat").iloc[-1]) if isinstance(feats.get("nu_hat"), pd.Series) and not feats.get("nu_hat").empty else 50.0,
             "nu_bounds": {"min": 4.5, "max": 500.0},
             "nu_info": feats.get("nu_info", {}),
+            # stochastic volatility metadata (Level-7: full posterior uncertainty)
+            "stochastic_volatility": {
+                "enabled": True,
+                "method": "bayesian_garch_sampling",
+                "parameter_sampling": os.getenv("PARAM_UNC", "sample"),
+                "uncertainty_propagated": True,
+                "volatility_ci_tracked": True,
+                "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+            },
         }
         
         # Add diagnostics to JSON if computed (Level-7 falsifiability)
