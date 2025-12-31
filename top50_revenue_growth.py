@@ -10,6 +10,12 @@ import numpy as np
 import yfinance as yf
 from tqdm import tqdm
 
+# Reuse existing project caches for price history
+try:
+    from data_cache import load_price_history
+except Exception:
+    load_price_history = None
+
 # Pretty console output
 try:
     from rich.console import Console
@@ -25,8 +31,9 @@ DEFAULT_UNIVERSE = 'csv'  # 'csv' or 'russell_2500'
 DEFAULT_CSV_PATH = 'data/universes/russell2500_tickers.csv'
 
 # Market cap bounds (USD)
-MIN_MKT_CAP = 300e6      # 300 million
-MAX_MKT_CAP = 10e9       # 10 billion
+# Widen defaults to reduce over-filtering of small caps in Russell-like universes.
+MIN_MKT_CAP = 10e6       # 10 million (was 300 million)
+MAX_MKT_CAP = 100e9      # 100 billion (was 10 billion)
 
 # How many to output
 TOP_N = 50
@@ -37,6 +44,92 @@ MIN_UNIVERSE_SIZE = 2400
 SLEEP_SECONDS = 0.05  # rate-limiting between requests
 
 # ========================== Helpers =====================================
+
+# Simple meta cache for Ticker.info with TTL under data/meta/
+META_DIR = os.path.join('data', 'meta')
+INFO_TTL_DAYS_DEFAULT = 1
+SECTOR_EVS: Dict[str, List[float]] = {}
+
+# Lightweight market cap cache (leverages builder cache when available)
+CAPS_CACHE_FILE = os.path.join(META_DIR, 'caps_cache.csv')  # from builder
+
+_CAPS_CACHE_MAP: Dict[str, float] = {}
+_CAPS_CACHE_LOADED = False
+
+def _load_caps_cache_once() -> None:
+    global _CAPS_CACHE_LOADED, _CAPS_CACHE_MAP
+    if _CAPS_CACHE_LOADED:
+        return
+    _CAPS_CACHE_LOADED = True
+    _CAPS_CACHE_MAP = {}
+    try:
+        if os.path.exists(CAPS_CACHE_FILE):
+            df = pd.read_csv(CAPS_CACHE_FILE)
+            for _, row in df.iterrows():
+                sym = str(row.get('ticker', '')).strip().upper()
+                val = row.get('marketCap', None)
+                try:
+                    cap = float(val) if pd.notna(val) else float('nan')
+                except Exception:
+                    cap = float('nan')
+                if sym:
+                    _CAPS_CACHE_MAP[sym] = cap
+    except Exception:
+        _CAPS_CACHE_MAP = {}
+
+
+def _meta_path_for(ticker: str) -> str:
+    os.makedirs(META_DIR, exist_ok=True)
+    return os.path.join(META_DIR, f"{ticker.upper()}_meta.json")
+
+
+def _now_ts_iso() -> str:
+    try:
+        return pd.Timestamp.utcnow().isoformat()
+    except Exception:
+        import datetime
+        return datetime.datetime.utcnow().isoformat()
+
+
+def _is_fresh_iso(ts_iso: str, ttl_days: float) -> bool:
+    try:
+        t = pd.to_datetime(ts_iso)
+        return (pd.Timestamp.utcnow() - t).total_seconds() <= ttl_days * 86400.0
+    except Exception:
+        return False
+
+
+def get_info_cached(tk: yf.Ticker, ttl_days: Optional[float] = None) -> Dict:
+    ttl = INFO_TTL_DAYS_DEFAULT if ttl_days is None else float(ttl_days)
+    try:
+        sym = tk.ticker if hasattr(tk, 'ticker') else None
+        if not sym:
+            return tk.info or {}
+        path = _meta_path_for(sym)
+        data = {}
+        if os.path.exists(path):
+            try:
+                import json
+                with open(path, 'r') as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+        if data and _is_fresh_iso(data.get('info_ts', ''), ttl) and isinstance(data.get('info'), dict):
+            return data.get('info', {})
+        # refresh
+        info_live = tk.info or {}
+        try:
+            import json
+            with open(path, 'w') as f:
+                json.dump({'info': info_live, 'info_ts': _now_ts_iso()}, f)
+        except Exception:
+            pass
+        return info_live
+    except Exception:
+        try:
+            return tk.info or {}
+        except Exception:
+            return {}
 
 def safe_div(a: Optional[float], b: Optional[float]) -> Optional[float]:
     try:
@@ -169,22 +262,184 @@ def cagr(begin: float, end: float, years: int = 3) -> Optional[float]:
         return None
 
 
-def get_market_cap(tk: yf.Ticker) -> Optional[float]:
-    # Prefer fast_info when available
-    mkt = None
+def get_market_cap(tk: yf.Ticker, retries: int = 3) -> Optional[float]:
+    """Robust market cap fetch with multiple fallbacks and shared cache.
+    Order of attempts:
+    0) Shared caps_cache.csv if present (builder output)
+    1) fast_info.market_cap (object or dict)
+    2) info['marketCap']
+    3) EV inversion when enterpriseValue, totalDebt, totalCash available
+    4) sharesOutstanding/impliedSharesOutstanding/floatShares * price
+       where price is from fast_info/info/history or cached price history.
+    """
+    # Load shared cache once and try it first
     try:
-        fi = getattr(tk, 'fast_info', None)
-        if fi and isinstance(fi, dict):
-            mkt = fi.get('market_cap') or fi.get('marketCap')
+        _load_caps_cache_once()
+        sym = tk.ticker if hasattr(tk, 'ticker') else None
+        if sym:
+            key = str(sym).strip().upper()
+            cap0 = _CAPS_CACHE_MAP.get(key, None)
+            if cap0 is not None and pd.notna(cap0) and float(cap0) > 0:
+                return float(cap0)
     except Exception:
         pass
-    if mkt is None:
+
+    def _get_fast_info_cap(fi_obj) -> Optional[float]:
+        try:
+            if fi_obj is None:
+                return None
+            # fast_info may be an object with attributes or a dict
+            if isinstance(fi_obj, dict):
+                v = fi_obj.get('market_cap') or fi_obj.get('marketCap')
+                return float(v) if v is not None else None
+            v = getattr(fi_obj, 'market_cap', None)
+            if v is None:
+                v = getattr(fi_obj, 'marketCap', None)
+            return float(v) if v is not None else None
+        except Exception:
+            return None
+
+    def _get_price_snapshot(tk_: yf.Ticker) -> Optional[float]:
+        # Try fast_info.last_price, then info current price, then last close from cache/history
+        try:
+            fi = getattr(tk_, 'fast_info', None)
+            if fi is not None:
+                if isinstance(fi, dict):
+                    p = fi.get('last_price') or fi.get('lastPrice') or fi.get('lastClose') or fi.get('regular_market_price')
+                    if p is not None:
+                        return float(p)
+                else:
+                    for attr in ('last_price','lastPrice','last_close','regular_market_price','previous_close'):
+                        val = getattr(fi, attr, None)
+                        if val is not None:
+                            return float(val)
+        except Exception:
+            pass
+        try:
+            info = tk_.info or {}
+            p = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
+            if p is not None:
+                return float(p)
+        except Exception:
+            pass
+        # price cache
+        try:
+            if load_price_history is not None:
+                df = load_price_history(tk_.ticker if hasattr(tk_, 'ticker') else None, years=1)
+                if df is not None and not df.empty and 'Close' in df.columns:
+                    return float(pd.Series(df['Close']).dropna().iloc[-1])
+        except Exception:
+            pass
+        try:
+            hist = tk_.history(period='5d', interval='1d', auto_adjust=True)
+            if hist is not None and not hist.empty and 'Close' in hist.columns:
+                return float(hist['Close'].dropna().iloc[-1])
+        except Exception:
+            pass
+        return None
+
+    def _get_shares_outstanding(tk_: yf.Ticker) -> Optional[float]:
+        # Try info field, then balance sheet rows, then implied/float-based approximations
+        try:
+            info = tk_.info or {}
+            for key in ('sharesOutstanding','shares_outstanding','impliedSharesOutstanding','implied_shares_outstanding'):
+                so = info.get(key)
+                if so is not None and float(so) > 0:
+                    return float(so)
+            # As a last resort, approximate from floatShares by scaling to total (heuristic factor 1.3)
+            fs = info.get('floatShares') or info.get('float_shares')
+            if fs is not None and float(fs) > 0:
+                approx = float(fs) * 1.3
+                if approx > 0:
+                    return approx
+        except Exception:
+            pass
+        try:
+            bs = getattr(tk_, 'balance_sheet', None)
+            if isinstance(bs, pd.DataFrame) and not bs.empty:
+                vals = _get_series_values(bs, ['ordinary shares number', 'common stock shares outstanding', 'shareissued', 'common shares', 'weighted average shares outstanding'], take=1)
+                if vals and len(vals) >= 1:
+                    so2 = float(vals[0])
+                    if so2 > 0:
+                        return so2
+        except Exception:
+            pass
+        try:
+            bsq = getattr(tk_, 'quarterly_balance_sheet', None)
+            if isinstance(bsq, pd.DataFrame) and not bsq.empty:
+                vals = _get_series_values(bsq, ['ordinary shares number', 'common stock shares outstanding', 'shareissued', 'common shares', 'weighted average shares outstanding'], take=1)
+                if vals and len(vals) >= 1:
+                    so3 = float(vals[0])
+                    if so3 > 0:
+                        return so3
+        except Exception:
+            pass
+        return None
+
+    def _ev_inversion_cap(info_dict: Dict) -> Optional[float]:
+        try:
+            ev = info_dict.get('enterpriseValue') or info_dict.get('enterprise_value')
+            td = info_dict.get('totalDebt') or info_dict.get('total_debt')
+            cash = info_dict.get('totalCash') or info_dict.get('total_cash') or info_dict.get('cash')
+            if ev is None or (td is None and cash is None):
+                return None
+            td = float(td) if td is not None else 0.0
+            cash = float(cash) if cash is not None else 0.0
+            ev = float(ev)
+            cap = ev - (td - cash)
+            if cap > 0:
+                return cap
+        except Exception:
+            pass
+        return None
+
+    cap: Optional[float] = None
+    for attempt in range(max(1, int(retries) + 1)):
+        # 1) fast_info
+        try:
+            fi = getattr(tk, 'fast_info', None)
+            cap = _get_fast_info_cap(fi)
+            if cap is not None and cap > 0:
+                break
+        except Exception:
+            pass
+        # 2) info marketCap or EV inversion
+        info = {}
         try:
             info = tk.info or {}
-            mkt = info.get('marketCap') or info.get('market_cap')
+            v = info.get('marketCap') or info.get('market_cap')
+            if v is not None and float(v) > 0:
+                cap = float(v)
+                break
+            # EV inversion
+            cap_ev = _ev_inversion_cap(info)
+            if cap_ev is not None and cap_ev > 0:
+                cap = float(cap_ev)
+                break
         except Exception:
-            mkt = None
-    return float(mkt) if mkt is not None else None
+            info = {}
+        # 3) shares * price
+        try:
+            price = _get_price_snapshot(tk)
+            shares = _get_shares_outstanding(tk)
+            if price is not None and shares is not None and price > 0 and shares > 0:
+                cap = float(price) * float(shares)
+                if cap > 0:
+                    break
+        except Exception:
+            pass
+        time.sleep(0.12 * (1 + attempt))
+
+    # Persist to in-memory cache for this run; file persisted later
+    try:
+        if cap is not None and cap > 0:
+            _load_caps_cache_once()
+            if sym:
+                _CAPS_CACHE_MAP[str(sym).strip().upper()] = float(cap)
+            return float(cap)
+    except Exception:
+        pass
+    return None
 
 
 def _sorted_columns(df: pd.DataFrame) -> List:
@@ -197,7 +452,7 @@ def _sorted_columns(df: pd.DataFrame) -> List:
         return cols
 
 
-def get_revenue_values(tk: yf.Ticker) -> Optional[List[float]]:
+def get_revenue_values(tk: yf.Ticker, max_points: int = 6) -> Optional[List[float]]:
     # Try annual income statement first
     try:
         # yfinance >=0.2: income_stmt property
@@ -205,7 +460,7 @@ def get_revenue_values(tk: yf.Ticker) -> Optional[List[float]]:
         if isinstance(income, pd.DataFrame) and not income.empty:
             df = income.copy()
             idx = [str(i).lower() for i in df.index]
-            candidates = [i for i, name in enumerate(idx) if 'total revenue' in name or 'totalrevenue' in name or name.strip() == 'revenue' or 'net sales' in name or 'sales' in name]
+            candidates = [i for i, name in enumerate(idx) if 'total revenue' in name or 'totalrevenue' in name or name.strip() == 'revenue' or 'net sales' in name or 'sales' in name or 'total operating revenue' in name or 'operating revenue' in name]
             if candidates:
                 row = df.iloc[candidates[0]]
                 vals = []
@@ -218,6 +473,8 @@ def get_revenue_values(tk: yf.Ticker) -> Optional[List[float]]:
                         pass
                 if len(vals) >= 4:
                     return vals[:4]  # most recent first
+                if len(vals) >= 2:
+                    return vals[:min(len(vals), 6)]
     except Exception:
         pass
 
@@ -227,7 +484,7 @@ def get_revenue_values(tk: yf.Ticker) -> Optional[List[float]]:
         if isinstance(fin, pd.DataFrame) and not fin.empty:
             df = fin.copy()
             idx = [str(i).lower() for i in df.index]
-            candidates = [i for i, name in enumerate(idx) if 'total revenue' in name or 'totalrevenue' in name or name.strip() == 'revenue' or 'net sales' in name or 'sales' in name]
+            candidates = [i for i, name in enumerate(idx) if 'total revenue' in name or 'totalrevenue' in name or name.strip() == 'revenue' or 'net sales' in name or 'sales' in name or 'total operating revenue' in name or 'operating revenue' in name]
             if candidates:
                 row = df.iloc[candidates[0]]
                 vals = []
@@ -240,16 +497,18 @@ def get_revenue_values(tk: yf.Ticker) -> Optional[List[float]]:
                         pass
                 if len(vals) >= 4:
                     return vals[:4]
+                if len(vals) >= 2:
+                    return vals[:min(len(vals), 6)]
     except Exception:
         pass
 
-    # Fallback: quarterly income statement -> construct rolling 12-quarter sums for 4 points
+    # Fallback: quarterly income statement -> construct rolling 4-quarter TTM sums
     try:
         q = getattr(tk, 'quarterly_income_stmt', None)
         if isinstance(q, pd.DataFrame) and not q.empty:
             df = q.copy()
             idx = [str(i).lower() for i in df.index]
-            candidates = [i for i, name in enumerate(idx) if 'total revenue' in name or 'totalrevenue' in name or name.strip() == 'revenue' or 'net sales' in name or 'sales' in name]
+            candidates = [i for i, name in enumerate(idx) if 'total revenue' in name or 'totalrevenue' in name or name.strip() == 'revenue' or 'net sales' in name or 'sales' in name or 'total operating revenue' in name or 'operating revenue' in name]
             if candidates:
                 row = df.iloc[candidates[0]]
                 # Sort columns descending by quarter date
@@ -265,13 +524,14 @@ def get_revenue_values(tk: yf.Ticker) -> Optional[List[float]]:
                     except Exception:
                         v = None
                     series.append(v)
-                # Build rolling 12-quarter sums shifted by 0, 4, 8, 12 quarters
+                # Build rolling 4-quarter TTM sums shifted by 0, 4, 8, 12 quarters
                 def sum_window(start: int) -> Optional[float]:
-                    window = series[start:start+12]
-                    if len(window) < 12:
+                    window = series[start:start+4]
+                    if len(window) < 4:
                         return None
                     nums = [x for x in window if x is not None]
-                    if len(nums) < 10:  # tolerate some missing but require most
+                    # tolerate one missing quarter in the TTM window
+                    if len(nums) < 3:
                         return None
                     return float(sum(nums))
                 vals = []
@@ -281,6 +541,8 @@ def get_revenue_values(tk: yf.Ticker) -> Optional[List[float]]:
                         vals.append(s)
                 if len(vals) >= 4:
                     return vals[:4]
+                if len(vals) >= 2:
+                    return vals[:len(vals)]
     except Exception:
         pass
 
@@ -375,6 +637,60 @@ def _ttm_from_quarterly(df: Optional[pd.DataFrame], row_names: List[str], quarte
         if len(vals) >= quarters:
             return float(sum(vals[:quarters]))
     return None
+
+
+def compute_ltm_momentum_pair(tk: yf.Ticker) -> Tuple[Optional[float], Optional[float]]:
+    """Return (current_ltm_momentum, previous_ltm_momentum).
+    Current: last 4q vs prior 4q; Previous: the 4q window before that vs its prior 4q.
+    Requires at least 12 quarters of data for both; with 8 quarters, only current is computed.
+    """
+    try:
+        q = getattr(tk, 'quarterly_income_stmt', None)
+        if not isinstance(q, pd.DataFrame) or q.empty:
+            return None, None
+        idx = [str(i).strip().lower() for i in q.index]
+        candidates = [i for i, name in enumerate(idx) if 'total revenue' in name or 'totalrevenue' in name or name.strip() == 'revenue' or 'net sales' in name or 'sales' in name]
+        if not candidates:
+            return None, None
+        row = q.iloc[candidates[0]]
+        cols = _sorted_columns(q)
+        vals: List[Optional[float]] = []
+        for c in cols:
+            try:
+                v = row.get(c)
+                vals.append(float(v) if pd.notna(v) else None)
+            except Exception:
+                vals.append(None)
+        numeric = [v for v in vals if v is not None]
+        if len(numeric) < 8:
+            return None, None
+        seq: List[float] = []
+        for v in vals:
+            if v is not None:
+                seq.append(float(v))
+            if len(seq) >= 20:
+                break
+        # compute helper
+        def mom_from(seq_slice: List[float]) -> Optional[float]:
+            if len(seq_slice) < 8:
+                return None
+            s_recent = sum(seq_slice[:4])
+            s_prior = sum(seq_slice[4:8])
+            if s_prior <= 0 or s_recent <= 0:
+                return None
+            return (s_recent / s_prior) - 1.0
+        current = mom_from(seq)
+        previous = None
+        if len(seq) >= 12:
+            previous = mom_from(seq[4:12])
+        return current, previous
+    except Exception:
+        return None, None
+
+
+def compute_ltm_momentum(tk: yf.Ticker) -> Optional[float]:
+    cur, _ = compute_ltm_momentum_pair(tk)
+    return cur
 
 
 def compute_margins(tk: yf.Ticker) -> Tuple[Optional[float], Optional[float]]:
@@ -568,28 +884,154 @@ def compute_dilution_rate(tk: yf.Ticker) -> Optional[float]:
         return None
 
 
-def price_vol_and_drawdown(tk: yf.Ticker, fast: bool = False) -> Tuple[Optional[float], Optional[float]]:
-    # Returns (ann_vol, max_drawdown) using 1y (fast) or 3y window
+def price_vol_and_drawdown(tk: yf.Ticker, fast: bool = False) -> Tuple[Optional[float], Optional[float], Optional[int]]:
+    # Returns (ann_vol, max_drawdown, sma200_regime_above)
     try:
-        period = '1y' if fast else '3y'
-        hist = tk.history(period=period, interval='1d', auto_adjust=True)
-        if hist is None or hist.empty or 'Close' not in hist:
-            return None, None
-        close = hist['Close'].dropna()
+        # Prefer cached price history if available
+        df = None
+        if load_price_history is not None:
+            years = 1 if fast else 3
+            try:
+                df = load_price_history(tk.ticker if hasattr(tk, 'ticker') else None, years=years)
+            except Exception:
+                df = None
+        if df is None or df.empty or 'Close' not in df.columns:
+            period = '1y' if fast else '3y'
+            hist = tk.history(period=period, interval='1d', auto_adjust=True)
+            if hist is None or hist.empty or 'Close' not in hist:
+                return None, None, None
+            df = hist.reset_index().rename(columns={'index':'Date'})
+        close = pd.Series(df['Close']).dropna()
         if len(close) < 60:
-            return None, None
+            return None, None, None
+        # Robust volatility: winsorize returns at 5th/95th percentiles
         rets = close.pct_change().dropna()
-        ann_vol = float(np.std(rets)) * (252.0 ** 0.5)
+        if len(rets) < 20:
+            return None, None, None
+        q_lo, q_hi = np.nanpercentile(rets.values, [5, 95])
+        rets_w = rets.clip(lower=q_lo, upper=q_hi)
+        ann_vol = float(np.nanstd(rets_w)) * (252.0 ** 0.5)
         # Max drawdown
-        roll_max = np.maximum.accumulate(close.values)
-        dd = (close.values - roll_max) / roll_max
-        max_dd = float(np.min(dd)) if len(dd) else None
+        vals = close.values
+        roll_max = np.maximum.accumulate(vals)
+        dd = (vals - roll_max) / roll_max
+        max_dd = float(np.nanmin(dd)) if len(dd) else None
         if max_dd is not None:
             max_dd = abs(max_dd)
-        return ann_vol, max_dd
+        # 200d SMA regime
+        sma_window = 200 if not fast else 100
+        sma = close.rolling(sma_window).mean()
+        regime = None
+        try:
+            regime = 1 if float(close.iloc[-1]) >= float(sma.iloc[-1]) else 0
+        except Exception:
+            regime = None
+        return ann_vol, max_dd, regime
     except Exception:
-        return None, None
+        return None, None, None
 
+
+def compute_breakout_score(tk: yf.Ticker, fast: bool = False) -> Optional[float]:
+    """Return a conservative upside breakout score in [0,1].
+    Ingredients:
+      - 55-day Donchian upper-band breakout using High (or Close fallback), prior-high (shifted)
+      - 20-day return filter (recent momentum)
+      - 100/200-day SMA alignment (trend filter)
+      - Volume confirmation via 20-day z-score if Volume available
+    Returns None if insufficient data or features cannot be computed.
+    """
+    try:
+        # Prefer cache if available
+        df = None
+        if load_price_history is not None:
+            years = 1 if fast else 2
+            try:
+                df = load_price_history(tk.ticker if hasattr(tk, 'ticker') else None, years=years)
+            except Exception:
+                df = None
+        if df is None or df.empty or 'Close' not in df.columns:
+            period = '1y' if fast else '2y'
+            hist = tk.history(period=period, interval='1d', auto_adjust=True)
+            if hist is None or hist.empty or 'Close' not in hist:
+                return None
+            df = hist.reset_index().rename(columns={'index':'Date'})
+        close = pd.Series(df['Close']).dropna()
+        if len(close) < 60:
+            return None
+        high = pd.Series(df['High']) if 'High' in df.columns else close
+        vol = pd.Series(df['Volume']) if 'Volume' in df.columns else None
+        # Donchian 55-day prior high
+        win = 55 if not fast else 34
+        upper = high.rolling(win, min_periods=win).max().shift(1)
+        if upper.isna().all() or pd.isna(upper.iloc[-1]):
+            return None
+        last = float(close.iloc[-1])
+        up = float(upper.iloc[-1])
+        if not np.isfinite(last) or not np.isfinite(up) or up <= 0:
+            return None
+        # Breakout distance
+        dist = (last - up) / up
+        # 20-day momentum
+        ret20 = None
+        if len(close) >= 22 and close.iloc[-21] > 0:
+            ret20 = float(close.iloc[-1] / close.iloc[-21] - 1.0)
+        # SMA alignment
+        sma100 = close.rolling(100 if not fast else 60).mean()
+        sma200 = close.rolling(200 if not fast else 120).mean()
+        align = None
+        try:
+            align = 1 if (float(last) > float(sma100.iloc[-1]) and float(sma100.iloc[-1]) >= float(sma200.iloc[-1])) else 0
+        except Exception:
+            align = None
+        # Volume z-score
+        vol_z = None
+        if vol is not None and isinstance(vol, pd.Series):
+            vwin = 20
+            if len(vol.dropna()) >= vwin + 1:
+                vmean = vol.rolling(vwin).mean()
+                vstd = vol.rolling(vwin).std()
+                try:
+                    denom = vstd.iloc[-1]
+                    vol_z = float((vol.iloc[-1] - vmean.iloc[-1]) / denom) if denom and denom != 0 else None
+                except Exception:
+                    vol_z = None
+        # Map to base score
+        base = 0.0
+        if dist > 0:
+            s_dist = _piecewise_score(dist, [(0.0, 0.55), (0.02, 0.7), (0.05, 0.85), (0.10, 0.95), (0.20, 1.0)])
+            base += s_dist if s_dist is not None else 0.6
+        else:
+            near = _piecewise_score(dist, [(-0.03, 0.0), (-0.01, 0.1), (0.0, 0.2)])
+            base += near if near is not None else 0.0
+        if ret20 is not None:
+            mom = _piecewise_score(ret20, [(-0.05, 0.0), (0.0, 0.2), (0.05, 0.6), (0.10, 0.85), (0.20, 1.0)])
+            if mom is not None:
+                base = 0.7 * base + 0.3 * mom
+        if align is not None:
+            if align == 1:
+                base = clamp((base or 0.0) + 0.1, 0.0, 1.0) or base
+            else:
+                base = clamp((base or 0.0) * 0.85, 0.0, 1.0) or base
+        if vol_z is not None and np.isfinite(vol_z):
+            mult = _piecewise_score(vol_z, [(-1.0, 0.9), (0.0, 1.0), (1.0, 1.05), (2.0, 1.12), (3.0, 1.18)])
+            if mult is not None:
+                base = clamp(base * float(mult), 0.0, 1.0) or base
+        score = 0.5 * base + 0.5 * logistic(base, k=3.5, x0=0.55)
+        # Additional short-horizon drawdown safety
+        try:
+            w = 63
+            if len(close) > w:
+                window = close.iloc[-w:]
+                maxp = float(np.nanmax(window.values))
+                if maxp > 0:
+                    dd3m = 1.0 - (float(window.iloc[-1]) / maxp)
+                    if dd3m > 0.4:
+                        score *= 0.8
+        except Exception:
+            pass
+        return float(clamp(score, 0.0, 1.0))
+    except Exception:
+        return None
 
 def _piecewise_score(x: Optional[float], points: List[Tuple[float, float]]) -> Optional[float]:
     """Map x to [0,1] by linear interpolation between sorted (x, y) points.
@@ -642,19 +1084,65 @@ def compute_bagger_subscores(
         base_rev_floor = float(getattr(args, 'bagger_base_rev_floor', 5e7))  # default $50M
         rev_base = rev_series[3] if rev_series and len(rev_series) >= 4 else None
 
-        # Growth: map c/r* ratio to 0..1 via piecewise and logistic; apply base-revenue scaling
+        # Growth: map c/r* ratio to 0..1 via piecewise and logistic; blend with LTM momentum and 5Y CAGR; apply base-revenue scaling
         if rev_cagr_3y is not None:
             try:
                 ratio = rev_cagr_3y / max(1e-9, r_star)
-                growth_raw = _piecewise_score(ratio, [(0.0,0.0),(0.5,0.3),(1.0,0.7),(1.5,0.9),(2.0,1.0)])
-                if growth_raw is not None:
-                    growth_raw = 0.5 * growth_raw + 0.5 * logistic(growth_raw, k=4.0, x0=0.6)
-                    if rev_base is not None:
-                        growth_cap = _piecewise_score(rev_base, [(0.0,0.4),(2e7,0.6),(5e7,0.8),(1e8,1.0)])
-                        if growth_cap is not None:
-                            growth_raw = growth_raw * float(growth_cap)
+                cagr3_score = _piecewise_score(ratio, [(0.0,0.0),(0.5,0.3),(1.0,0.7),(1.5,0.9),(2.0,1.0)])
+                if cagr3_score is not None:
+                    cagr3_score = 0.5 * cagr3_score + 0.5 * logistic(cagr3_score, k=4.0, x0=0.6)
+                # 5Y CAGR if available
+                cagr5_score = None
+                try:
+                    if rev_series and len(rev_series) >= 6 and rev_series[5] > 0 and rev_series[0] > 0:
+                        c5 = (rev_series[0] / rev_series[5]) ** (1.0/5.0) - 1.0
+                        ratio5 = c5 / max(1e-9, r_star)
+                        cagr5_score = _piecewise_score(ratio5, [(0.0,0.0),(0.5,0.25),(1.0,0.6),(1.5,0.85),(2.0,0.97)])
+                        if cagr5_score is not None:
+                            cagr5_score = 0.5 * cagr5_score + 0.5 * logistic(cagr5_score, k=3.5, x0=0.55)
+                except Exception:
+                    cagr5_score = None
+                # LTM momentum and trend
+                ltm_cur, ltm_prev = compute_ltm_momentum_pair(tk)
+                ltm_mom = ltm_cur
+                ltm_trend_bonus = None
+                # Map LTM momentum relative to a softer target (half of r_star) to 0..1
+                ltm_score = None
+                if ltm_mom is not None:
+                    mom_ratio = ltm_mom / max(1e-9, (0.5 * r_star))
+                    ltm_score = _piecewise_score(mom_ratio, [(0.0,0.0),(0.5,0.35),(1.0,0.7),(1.5,0.9),(2.0,1.0)])
+                    if ltm_score is not None:
+                        ltm_score = 0.4 * ltm_score + 0.6 * logistic(ltm_score, k=4.0, x0=0.6)
+                if ltm_cur is not None and ltm_prev is not None:
+                    # bonus 0..0.1 when momentum improving
+                    delta = ltm_cur - ltm_prev
+                    ltm_trend_bonus = _piecewise_score(delta, [(-0.5,0.0), (0.0,0.0), (0.2,0.05), (0.5,0.1)])
+                # Blend components
+                parts = []
+                if cagr3_score is not None:
+                    parts.append((cagr3_score, 0.5))
+                if cagr5_score is not None:
+                    parts.append((cagr5_score, 0.2))
+                if ltm_score is not None:
+                    parts.append((ltm_score, 0.3))
+                if parts:
+                    num = sum(v*w for v, w in parts)
+                    den = sum(w for _, w in parts)
+                    growth_raw = num / den if den > 0 else None
+                    if ltm_trend_bonus is not None and growth_raw is not None:
+                        growth_raw = clamp(growth_raw + 0.1 * float(ltm_trend_bonus), 0.0, 1.0)
+                # Apply base revenue cap to mitigate tiny denominators
+                if growth_raw is not None and rev_base is not None:
+                    growth_cap = _piecewise_score(rev_base, [(0.0,0.4),(2e7,0.6),(5e7,0.8),(1e8,1.0)])
+                    if growth_cap is not None:
+                        growth_raw = growth_raw * float(growth_cap)
+                # Save ltm_momentum into locals for export later
+                ltm_momentum_local = ltm_mom
             except Exception:
                 growth_raw = None
+                ltm_momentum_local = None
+        else:
+            ltm_momentum_local = None
 
         # Growth stability (R^2 on log revenue vs time using available points)
         try:
@@ -704,6 +1192,15 @@ def compute_bagger_subscores(
                 quality_raw = 0.5
         except Exception:
             quality_raw = 0.5
+
+        # Sector (for valuation normalization)
+        try:
+            info = get_info_cached(tk, ttl_days=getattr(args, 'info_ttl_days', 1.0))
+            sector = str(info.get('sector', 'UNKNOWN')).strip().upper() if isinstance(info, dict) else 'UNKNOWN'
+            if not sector:
+                sector = 'UNKNOWN'
+        except Exception:
+            sector = 'UNKNOWN'
 
         # Discipline (net debt/EV, dilution)
         ev = None
@@ -773,15 +1270,31 @@ def compute_bagger_subscores(
 
         # Risk (volatility and drawdown)
         try:
-            ann_vol, max_dd = price_vol_and_drawdown(tk, fast=getattr(args, 'fast_bagger', False))
+            fast_flag = getattr(args, 'fast_bagger', False)
+            ann_vol, max_dd, regime = price_vol_and_drawdown(tk, fast=fast_flag)
             vol_score = _piecewise_score(ann_vol, [(0.1,1.0),(0.2,0.9),(0.4,0.6),(0.6,0.3),(0.8,0.1),(1.0,0.0)]) if ann_vol is not None else None
             dd_score = _piecewise_score(max_dd, [(0.1,1.0),(0.2,0.8),(0.4,0.5),(0.6,0.2),(0.8,0.05),(0.9,0.0)]) if max_dd is not None else None
             if vol_score is not None or dd_score is not None:
                 v = vol_score if vol_score is not None else 0.6
                 d = dd_score if dd_score is not None else 0.6
                 risk_raw = 0.5 * v + 0.5 * d
+                # Regime penalty if below 200d SMA
+                if regime is not None and regime == 0:
+                    risk_raw = clamp((risk_raw or 0.5) * 0.9, 0.0, 1.0)
         except Exception:
-            ann_vol, max_dd, risk_raw = None, None, None
+            ann_vol, max_dd, regime = None, None, None
+            risk_raw = None
+
+        # Technical breakout (optional)
+        breakout_score = None
+        try:
+            if not getattr(args, 'no_breakout', False):
+                breakout_score = compute_breakout_score(tk, fast=getattr(args, 'fast_bagger', False))
+                # If risk is very poor, dampen breakout to avoid chasing noisy spikes
+                if breakout_score is not None and (max_dd is not None and max_dd > 0.7):
+                    breakout_score = float(clamp(breakout_score * 0.8, 0.0, 1.0))
+        except Exception:
+            breakout_score = None
 
         # Size prior bonus
         try:
@@ -819,6 +1332,9 @@ def compute_bagger_subscores(
         'rev_base': rev_base,
         'base_rev_floor': base_rev_floor,
         'market_cap': market_cap,
+        'ltm_momentum': ltm_momentum_local,
+        'regime': regime,
+        'breakout': breakout_score,
     }
 
 
@@ -875,6 +1391,25 @@ def compute_bagger_score(sub: Dict[str, Optional[float]], args=None) -> Tuple[Op
         return None, None
     S = S / wsum
 
+    # Integrate breakout as a modest, gated boost
+    try:
+        bw = float(getattr(args, 'bagger_breakout_weight', 0.1)) if args is not None else 0.1
+        breakout = sub.get('breakout')
+        if bw > 0.0 and breakout is not None:
+            gate = 1.0
+            regime = sub.get('regime')
+            if regime is not None and int(regime) == 0:
+                gate *= 0.5
+            risk = sub.get('risk')
+            if risk is not None:
+                gate *= (0.5 + 0.5 * float(clamp(risk, 0.0, 1.0)))
+            growth_for_gate = growth if growth is not None else sub.get('growth')
+            if growth_for_gate is not None:
+                gate *= (0.3 + 0.7 * float(clamp(growth_for_gate, 0.0, 1.0)))
+            S = float(clamp(S + bw * float(breakout) * gate, 0.0, 1.0))
+    except Exception:
+        pass
+
     # Size prior bonus (very small caps slightly favored), very small effect
     size_bonus = sub.get('size_bonus')
     if size_bonus is not None:
@@ -915,9 +1450,11 @@ def main():
     parser.add_argument('--show_failures', action='store_true', help='Show sample list of failed/skipped tickers')
     # 100x bagger scoring options
     parser.add_argument('--no_bagger', action='store_true', help='Disable 100x bagger scoring for speed')
-    parser.add_argument('--bagger_horizon', type=int, choices=[10,15,20,25,30], default=20,
-                        help='Horizon in years for the 100x target (affects growth thresholds). Default: 20')
+    parser.add_argument('--bagger_horizon', type=int, choices=[5,10,15,20,25,30], default=5,
+                        help='Horizon in years for the 100x target (affects growth thresholds). Default: 5')
     parser.add_argument('--bagger_verbose', action='store_true', help='Show sub-score breakdown in output table')
+    parser.add_argument('--no_breakout', action='store_true', help='Disable breakout-aware component in bagger scoring')
+    parser.add_argument('--bagger_breakout_weight', type=float, default=0.1, help='Weight of breakout component added to composite S (default 0.1)')
     parser.add_argument('--fast_bagger', action='store_true', help='Skip heavy computations (drawdown/EVS) for speed')
     parser.add_argument('--bagger_prior_bp', type=float, default=1.0,
                         help='Bayesian prior for 100x probability in basis points (default: 1 bp = 0.01%)')
@@ -929,6 +1466,14 @@ def main():
                         help='Sort output by rev CAGR (cagr) or 100x bagger score (bagger). Default: cagr')
     parser.add_argument('--debug_bagger', type=int, default=0,
                         help='Debug mode: process only N tickers and print factor/score distributions and a small per-ticker breakdown')
+    parser.add_argument('--no_sector_norm', action='store_true', help='Disable sector-aware valuation normalization')
+    parser.add_argument('--info_ttl_days', type=float, default=1.0, help='TTL in days for cached Ticker.info snapshots (default 1)')
+    # Parallelism controls
+    parser.add_argument('--workers', type=int, default=0,
+                        help='Number of parallel worker threads to use for per-ticker processing (default: auto; 0=auto).')
+    parser.add_argument('--no_parallel', action='store_true', help='Disable parallel processing and run single-threaded.')
+    parser.add_argument('--rate_per_sec', type=float, default=0.0,
+                        help='Optional global soft rate limit (requests/sec) for yfinance calls. 0 disables.')
     args = parser.parse_args()
 
     # Ensure parent directory exists for the CSV path so users can drop the file in place
@@ -954,12 +1499,14 @@ def main():
     start_ts = time.time()
     rows: List[Dict[str, float]] = []
     failed: List[Tuple[str, str]] = []
-    skipped_cap = 0
+    skipped_low = 0
+    skipped_high = 0
 
     # Debug collections for distribution snapshots
     debug_vals = {
         'bagger_score': [], 'rev_cagr_3y': [], 'growth': [], 'quality': [], 'discipline': [], 'valuation': [], 'risk': [],
-        'gm': [], 'om': [], 'fcf_margin': [], 'ps': [], 'evs': [], 'ann_vol': [], 'max_dd': [], 'dilution_rate': []
+        'gm': [], 'om': [], 'fcf_margin': [], 'ps': [], 'evs': [], 'ann_vol': [], 'max_dd': [], 'dilution_rate': [],
+        'ltm_momentum': []
     }
     # Coverage counters for debug mode
     debug_cov = {
@@ -975,145 +1522,325 @@ def main():
     processed = 0
     debug_limit = int(getattr(args, 'debug_bagger', 0) or 0)
 
-    for t in tqdm(tickers, desc="Tickers"):
-        # If in debug mode and reached the limit, stop early
-        if debug_limit > 0 and processed >= debug_limit:
-            break
+    # --- Parallel or sequential processing of tickers ---
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    # Simple soft rate limiter (global) to avoid hammering yfinance
+    class _RateLimiter:
+        def __init__(self, rate_per_sec: float):
+            self.rate = float(rate_per_sec)
+            self.lock = threading.Lock()
+            self._next = 0.0
+        def acquire(self):
+            if self.rate <= 0:
+                return
+            with self.lock:
+                now = time.time()
+                if now < self._next:
+                    time.sleep(self._next - now)
+                # schedule next slot
+                self._next = max(self._next, now) + 1.0 / self.rate
+
+    rate_limiter = _RateLimiter(args.rate_per_sec if hasattr(args, 'rate_per_sec') else 0.0)
+
+    # Refactor per-ticker processing into a function for reuse by threads
+    def _process_one(ticker_sym: str):
+        nonlocal processed
+        local_debug = {}
         try:
-            tk = yf.Ticker(t)
+            # Soft global rate limit slot (one per ticker task)
+            rate_limiter.acquire()
+            tk = yf.Ticker(ticker_sym)
             mktcap = get_market_cap(tk)
             if mktcap is None:
-                failed.append((t, "no market cap"))
-                time.sleep(SLEEP_SECONDS)
-                continue
-            if not (args.min_mkt_cap <= mktcap <= args.max_mkt_cap):
-                skipped_cap += 1
-                time.sleep(SLEEP_SECONDS)
-                continue
+                return ('fail', ticker_sym, "no market cap")
+            if mktcap < args.min_mkt_cap:
+                return ('skip_cap_low', ticker_sym, None)
+            if mktcap > args.max_mkt_cap:
+                return ('skip_cap_high', ticker_sym, None)
 
             rev_vals = get_revenue_values(tk)
-            if not rev_vals or len(rev_vals) < 4:
-                failed.append((t, "insufficient revenue history"))
-                time.sleep(SLEEP_SECONDS)
-                continue
+            if not rev_vals or len(rev_vals) < 2:
+                return ('fail', ticker_sym, "insufficient revenue history")
 
+            # Use as many points as available up to 4, assuming each step ~1 fiscal year (annual or TTM window)
+            past_index = min(3, len(rev_vals) - 1)
             recent_rev = rev_vals[0]
-            rev_3yr_ago = rev_vals[3]
-
-            c = cagr(rev_3yr_ago, recent_rev, years=3)
+            past_rev = rev_vals[past_index]
+            effective_years = max(1, past_index)  # 1..3 years
+            c = cagr(past_rev, recent_rev, years=effective_years)
             if c is None or (isinstance(c, float) and math.isnan(c)):
-                failed.append((t, "cagr failed"))
-                time.sleep(SLEEP_SECONDS)
-                continue
+                return ('fail', ticker_sym, "cagr failed")
 
-            # 100x bagger scoring (optional)
             bagger_score = None
             bagger_S = None
             subs = None
-            used_fallback = False
             if not args.no_bagger:
                 try:
                     subs = compute_bagger_subscores(tk, mktcap, c, recent_rev, rev_vals, args)
-                    # add rev_cagr to subs for downstream guardrails
                     if subs is not None:
                         subs['rev_cagr_3y'] = c
                     bagger_score, bagger_S = compute_bagger_score(subs, args)
                 except Exception:
-                    # Non-fatal; proceed to fallback below
+                    subs = None
                     bagger_score = None
                     bagger_S = None
-                    subs = None
-                # Fallback: if advanced scoring failed or yielded None, compute a growth-only score
                 if bagger_score is None:
                     try:
                         T = int(getattr(args, 'bagger_horizon', 20))
                         r_star = (100.0 ** (1.0 / T)) - 1.0
-                        # Map ratio of observed CAGR to required CAGR to 0..100
                         ratio = c / max(1e-9, r_star) if c is not None else None
                         if ratio is not None:
-                            # Piecewise to [0,1], then logistic for probability-like shape
                             base = _piecewise_score(ratio, [(0.0,0.0),(0.5,0.25),(1.0,0.6),(1.5,0.85),(2.0,0.97),(3.0,0.995)])
                             if base is not None:
                                 p = 0.5 * base + 0.5 * logistic(base, k=3.0, x0=0.55)
                                 bagger_score = int(round(100.0 * clamp(p, 0.0, 0.999)))
                                 bagger_S = float(base)
-                                used_fallback = True
                     except Exception:
                         pass
 
             row = {
-                "ticker": t,
+                "ticker": ticker_sym,
                 "marketCap": mktcap,
-                "rev_3yr_ago": rev_3yr_ago,
+                "rev_3yr_ago": past_rev,
                 "rev_recent": recent_rev,
                 "rev_3yr_cagr": c,
+                "rev_cagr_years": effective_years,
+                "tradingview": f"https://www.tradingview.com/chart/?symbol={ticker_sym}",
             }
-            # Attach bagger fields
             row["bagger_horizon"] = args.bagger_horizon if not args.no_bagger else None
             row["bagger_score"] = bagger_score
             row["bagger_S"] = bagger_S
-            if subs and getattr(args, 'export_subscores', False):
+            if subs is None:
+                subs = {}
+            row.update({
+                "_sub_growth": subs.get("growth"),
+                "_sub_quality": subs.get("quality"),
+                "_sub_discipline": subs.get("discipline"),
+                "_sub_valuation": subs.get("valuation"),
+                "_sub_risk": subs.get("risk"),
+                "ps": subs.get("ps"),
+                "evs": subs.get("evs"),
+                "gm": subs.get("gm"),
+                "om": subs.get("om"),
+                "ann_vol": subs.get("ann_vol"),
+                "max_dd": subs.get("max_dd"),
+                "dilution_rate": subs.get("dilution_rate"),
+                "r_star": subs.get("r_star"),
+                "r2_stability": subs.get("r2_stability"),
+                "fcf_margin": subs.get("fcf_margin"),
+                "size_bonus": subs.get("size_bonus"),
+                "rev_base": subs.get("rev_base"),
+                "ltm_momentum": subs.get("ltm_momentum"),
+                "breakout": subs.get("breakout"),
+                "regime": subs.get("regime"),
+            })
+            try:
+                info = get_info_cached(tk, ttl_days=getattr(args, 'info_ttl_days', 1.0))
+                row["sector"] = str(info.get('sector', 'UNKNOWN')).strip().upper()
+            except Exception:
+                row["sector"] = 'UNKNOWN'
+
+            if getattr(args, 'export_subscores', False):
                 row.update({
-                    "sub_growth": subs.get("growth"),
-                    "sub_quality": subs.get("quality"),
-                    "sub_discipline": subs.get("discipline"),
-                    "sub_valuation": subs.get("valuation"),
-                    "sub_risk": subs.get("risk"),
-                    "ps": subs.get("ps"),
-                    "evs": subs.get("evs"),
-                    "gm": subs.get("gm"),
-                    "om": subs.get("om"),
-                    "ann_vol": subs.get("ann_vol"),
-                    "max_dd": subs.get("max_dd"),
-                    "dilution_rate": subs.get("dilution_rate"),
-                    "r_star": subs.get("r_star"),
-                    "r2_stability": subs.get("r2_stability"),
-                    "fcf_margin": subs.get("fcf_margin"),
-                    "size_bonus": subs.get("size_bonus"),
-                    "rev_base": subs.get("rev_base"),
+                    "sub_growth": row.get("_sub_growth"),
+                    "sub_quality": row.get("_sub_quality"),
+                    "sub_discipline": row.get("_sub_discipline"),
+                    "sub_valuation": row.get("_sub_valuation"),
+                    "sub_risk": row.get("_sub_risk"),
                 })
 
-            # Collect debug metrics (append for every processed ticker to keep array lengths equal)
             if debug_limit > 0:
-                debug_vals['bagger_score'].append(bagger_score if bagger_score is not None else np.nan)
-                debug_vals['rev_cagr_3y'].append(c if c is not None else np.nan)
                 s = subs or {}
-                debug_vals['growth'].append(s.get('growth', np.nan))
-                debug_vals['quality'].append(s.get('quality', np.nan))
-                debug_vals['discipline'].append(s.get('discipline', np.nan))
-                debug_vals['valuation'].append(s.get('valuation', np.nan))
-                debug_vals['risk'].append(s.get('risk', np.nan))
-                debug_vals['gm'].append(s.get('gm', np.nan))
-                debug_vals['om'].append(s.get('om', np.nan))
-                debug_vals['fcf_margin'].append(s.get('fcf_margin', np.nan))
-                debug_vals['ps'].append(s.get('ps', np.nan))
-                debug_vals['evs'].append(s.get('evs', np.nan))
-                debug_vals['ann_vol'].append(s.get('ann_vol', np.nan))
-                debug_vals['max_dd'].append(s.get('max_dd', np.nan))
-                debug_vals['dilution_rate'].append(s.get('dilution_rate', np.nan))
-
-            rows.append(row)
-            processed += 1
-
-            time.sleep(SLEEP_SECONDS)
+                local_debug = {
+                    'bagger_score': bagger_score if bagger_score is not None else np.nan,
+                    'rev_cagr_3y': c if c is not None else np.nan,
+                    'growth': s.get('growth', np.nan),
+                    'quality': s.get('quality', np.nan),
+                    'discipline': s.get('discipline', np.nan),
+                    'valuation': s.get('valuation', np.nan),
+                    'risk': s.get('risk', np.nan),
+                    'gm': s.get('gm', np.nan),
+                    'om': s.get('om', np.nan),
+                    'fcf_margin': s.get('fcf_margin', np.nan),
+                    'ps': s.get('ps', np.nan),
+                    'evs': s.get('evs', np.nan),
+                    'ann_vol': s.get('ann_vol', np.nan),
+                    'max_dd': s.get('max_dd', np.nan),
+                    'dilution_rate': s.get('dilution_rate', np.nan),
+                }
+            return ('ok', row, local_debug)
         except Exception as e:
-            failed.append((t, str(e)))
-            time.sleep(SLEEP_SECONDS)
-            continue
+            return ('fail', ticker_sym, str(e))
 
+    # Decide on worker count
+    max_workers = 1
+    if not args.no_parallel:
+        if args.workers and args.workers > 0:
+            max_workers = int(args.workers)
+        else:
+            try:
+                import os as _os
+                cpu = max(1, os.cpu_count() or 4)
+                max_workers = min(16, cpu * 2)
+            except Exception:
+                max_workers = 8
+    if max_workers <= 1:
+        # Sequential path (original behavior)
+        for t in tqdm(tickers, desc="Tickers"):
+            if debug_limit > 0 and processed >= debug_limit:
+                break
+            status = _process_one(t)
+            if status[0] == 'ok':
+                _, row, dbg = status
+                rows.append(row)
+                if debug_limit > 0 and isinstance(dbg, dict):
+                    for k, v in dbg.items():
+                        debug_vals[k].append(v)
+                processed += 1
+            elif status[0] == 'skip_cap_low':
+                skipped_low += 1
+            elif status[0] == 'skip_cap_high':
+                skipped_high += 1
+            else:
+                _, sym, reason = status
+                failed.append((sym, reason))
+            time.sleep(SLEEP_SECONDS)
+    else:
+        # Parallel path
+        # Apply debug limit by slicing tickers
+        tick_list = tickers[:debug_limit] if debug_limit > 0 else tickers
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(_process_one, t): t for t in tick_list}
+            for fut in tqdm(as_completed(futures), total=len(futures), desc="Tickers"):
+                status = fut.result()
+                if status[0] == 'ok':
+                    _, row, dbg = status
+                    rows.append(row)
+                    if debug_limit > 0 and isinstance(dbg, dict):
+                        for k, v in dbg.items():
+                            debug_vals[k].append(v)
+                    processed += 1
+                elif status[0] == 'skip_cap_low':
+                    skipped_low += 1
+                elif status[0] == 'skip_cap_high':
+                    skipped_high += 1
+                else:
+                    _, sym, reason = status
+                    failed.append((sym, reason))
     elapsed = time.time() - start_ts
     total = len(tickers)
     kept = len(rows)
     skipped = total - kept
 
+    # Persist updated market cap cache for future runs (merge rows into cache file)
+    try:
+        _load_caps_cache_once()
+        # Merge current successful caps into cache map
+        for r in rows:
+            try:
+                sym = str(r.get('ticker','')).strip().upper()
+                capv = r.get('marketCap', None)
+                if sym and capv is not None and float(capv) > 0:
+                    _CAPS_CACHE_MAP[sym] = float(capv)
+            except Exception:
+                pass
+        # Write cache file
+        os.makedirs(META_DIR, exist_ok=True)
+        caps_rows = [(k, v) for k, v in _CAPS_CACHE_MAP.items() if v is not None and pd.notna(v) and float(v) > 0]
+        if caps_rows:
+            pd.DataFrame(caps_rows, columns=['ticker','marketCap']).to_csv(CAPS_CACHE_FILE, index=False)
+    except Exception:
+        pass
+
     # Aggregate failure reasons
     reason_counts: Dict[str, int] = {}
     for _, reason in failed:
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
-    if skipped_cap:
-        reason_counts["filtered by market cap"] = reason_counts.get("filtered by market cap", 0) + skipped_cap
+    if skipped_low:
+        reason_counts["filtered by market cap (below min)"] = reason_counts.get("filtered by market cap (below min)", 0) + skipped_low
+    if skipped_high:
+        reason_counts["filtered by market cap (above max)"] = reason_counts.get("filtered by market cap (above max)", 0) + skipped_high
 
     df = pd.DataFrame(rows)
+
+    # Sector-aware valuation normalization post-pass
+    if not args.no_bagger and not args.no_sector_norm and not df.empty:
+        try:
+            # Use EV/S if available else P/S, per sector percentile (lower multiple → better score)
+            metric = df["evs"].where(df["evs"].notna(), df["ps"])
+            df["val_metric"] = metric
+            # Compute per-sector percentiles robustly
+            def sector_pct(g: pd.DataFrame) -> pd.Series:
+                m = g["val_metric"].astype(float)
+                # rank with pct; smaller multiples better (low rank → low pct). Convert to (1-pct)
+                pct = m.rank(pct=True, method='average')
+                return 1.0 - pct
+            pct_series = df.groupby(df["sector"].fillna("UNKNOWN"), group_keys=False).apply(sector_pct)
+            df["sector_val_pct"] = pct_series.values
+            # Map percentile to a [0,1] valuation score; blend with existing _sub_valuation when present
+            # Higher percentile (cheaper vs sector) → higher score
+            val_sec_score = df["sector_val_pct"].clip(0,1).apply(lambda p: _piecewise_score(p, [(0.0,0.0),(0.25,0.4),(0.5,0.7),(0.75,0.9),(0.9,0.97),(1.0,1.0)]))
+            df["_sub_valuation_sec"] = val_sec_score
+            # Blend: 60% sector-relative, 40% global valuation when both exist; else whichever exists
+            def blend_val(row):
+                a = row.get("_sub_valuation_sec")
+                b = row.get("_sub_valuation")
+                try:
+                    if pd.notna(a) and pd.notna(b):
+                        return 0.6*float(a) + 0.4*float(b)
+                    if pd.notna(a):
+                        return float(a)
+                    if pd.notna(b):
+                        return float(b)
+                except Exception:
+                    pass
+                return np.nan
+            df["_sub_valuation_adj"] = df.apply(blend_val, axis=1)
+            # Recompute bagger_S and bagger_score when we have an adjusted valuation component
+            mask = df["_sub_valuation_adj"].notna()
+            if mask.any():
+                # Rebuild composite S partially: replace valuation component and re-map to score
+                def recompute_score(row):
+                    try:
+                        components = {
+                            'growth': row.get('_sub_growth', np.nan),
+                            'quality': row.get('_sub_quality', np.nan),
+                            'discipline': row.get('_sub_discipline', np.nan),
+                            'valuation': row.get('_sub_valuation_adj', np.nan),
+                            'risk': row.get('_sub_risk', np.nan),
+                        }
+                        weights = {'growth':0.35,'quality':0.20,'discipline':0.15,'valuation':0.15,'risk':0.15}
+                        S = 0.0; wsum = 0.0
+                        for k,w in weights.items():
+                            v = components.get(k)
+                            if pd.notna(v):
+                                S += w*float(v); wsum += w
+                        if wsum == 0:
+                            return row.get('bagger_score'), row.get('bagger_S')
+                        S = S/wsum
+                        # size bonus
+                        try:
+                            size_bonus = row.get('size_bonus')
+                            if pd.notna(size_bonus):
+                                S = float(clamp(S + 0.1*float(size_bonus), 0.0, 1.0))
+                        except Exception:
+                            pass
+                        P = logistic(S, k=3.0, x0=0.55)
+                        prior_bp = float(getattr(args, 'bagger_prior_bp', 1.0))
+                        p0 = max(0.0, min(1.0, prior_bp/10000.0))
+                        P_final = 0.9*P + 0.1*p0
+                        return int(round(100.0*P_final)), S
+                    except Exception:
+                        return row.get('bagger_score'), row.get('bagger_S')
+                recomputed = df.apply(recompute_score, axis=1)
+                df['bagger_score'] = [a for a,_ in recomputed]
+                df['bagger_S'] = [b for _,b in recomputed]
+        except Exception as _e:
+            # Non-fatal; continue without sector normalization
+            pass
+
     if df.empty:
         print("No rows collected. Tips: ensure your CSV has many small/mid tickers; consider widening cap bounds; check network access.")
         if args.show_failures and failed:
@@ -1190,9 +1917,11 @@ def main():
         tbl.add_column("Mkt Cap", justify="right")
         if not args.no_bagger:
             tbl.add_column("100× Score", justify="right")
-        tbl.add_column("Rev CAGR 3Y", justify="right")
-        tbl.add_column("Rev 3Y Ago", justify="right")
+        # Reordered columns per request: Rev Recent, Rev 3Y Ago, Rev CAGR 3Y, then TradingView link
         tbl.add_column("Rev Recent", justify="right")
+        tbl.add_column("Rev 3Y Ago", justify="right")
+        tbl.add_column("Rev CAGR 3Y", justify="right")
+        tbl.add_column("TradingView", justify="left")
         for idx, row in top.iterrows():
             cells = [
                 f"{idx+1}",
@@ -1202,9 +1931,10 @@ def main():
             if not args.no_bagger:
                 cells.append("-" if pd.isna(row.get("bagger_score")) else f"{int(row.get('bagger_score'))}")
             cells.extend([
-                fmt_pct(row["rev_3yr_cagr_pct"]),
+                human_money(row["rev_recent"]),
                 human_money(row["rev_3yr_ago"]),
-                human_money(row["rev_recent"]) 
+                fmt_pct(row["rev_3yr_cagr_pct"]),
+                str(row.get("tradingview", f"https://www.tradingview.com/chart/?symbol={row['ticker']}") )
             ])
             tbl.add_row(*cells)
         console.print(tbl)
@@ -1222,11 +1952,16 @@ def main():
                 console.print(f"  • {f[0]} — {f[1]}")
     else:
         print(f"Saved top {len(top)} to {out_csv}")
-        # Select columns for plain output
+        # Select columns for plain output (reordered and add TradingView)
         cols = ["ticker", "marketCap"]
         if not args.no_bagger and "bagger_score" in top.columns:
             cols.append("bagger_score")
-        cols += ["rev_3yr_cagr_pct", "rev_3yr_ago", "rev_recent"]
+        # Requested order: Rev Recent, Rev 3Y Ago, Rev CAGR 3Y, then TradingView link
+        cols += ["rev_recent", "rev_3yr_ago", "rev_3yr_cagr_pct", "tradingview"]
+        # Ensure the TradingView column exists for all rows
+        if "tradingview" not in top.columns:
+            top = top.copy()
+            top["tradingview"] = top["ticker"].apply(lambda t: f"https://www.tradingview.com/chart/?symbol={t}")
         print(top[cols].to_string(index=False))
         if reason_counts:
             print("\nSkip summary:")

@@ -145,18 +145,78 @@ def _save_caps_cache(cache: dict) -> None:
 
 
 def _fetch_cap_once(ticker: str) -> float:
+    """Robust market cap fetch using multiple fallbacks.
+    Tries fast_info, info['marketCap'], then sharesOutstanding * price.
+    Returns NaN on failure.
+    """
     try:
         tk = yf.Ticker(ticker)
-        fi = getattr(tk, "fast_info", None)
-        if isinstance(fi, dict):
-            m = fi.get("market_cap") or fi.get("marketCap")
-            if m is not None:
+        # 1) fast_info (object or dict)
+        try:
+            fi = getattr(tk, "fast_info", None)
+            if fi is not None:
+                if isinstance(fi, dict):
+                    m = fi.get("market_cap") or fi.get("marketCap")
+                    if m is not None and float(m) > 0:
+                        return float(m)
+                else:
+                    v = getattr(fi, 'market_cap', None)
+                    if v is None:
+                        v = getattr(fi, 'marketCap', None)
+                    if v is not None and float(v) > 0:
+                        return float(v)
+        except Exception:
+            pass
+        # 2) info['marketCap']
+        try:
+            info = tk.info or {}
+            m = info.get("marketCap") or info.get("market_cap")
+            if m is not None and float(m) > 0:
                 return float(m)
-        info = tk.info or {}
-        m = info.get("marketCap") or info.get("market_cap")
-        return float(m) if m is not None else float("nan")
+        except Exception:
+            info = {}
+        # 3) sharesOutstanding * price
+        price = None
+        try:
+            # fast_info last/regular price
+            fi = getattr(tk, "fast_info", None)
+            if fi is not None:
+                if isinstance(fi, dict):
+                    price = fi.get('last_price') or fi.get('regular_market_price') or fi.get('lastClose') or fi.get('previous_close')
+                else:
+                    for attr in ("last_price","regular_market_price","last_close","previous_close"):
+                        val = getattr(fi, attr, None)
+                        if val is not None:
+                            price = val
+                            break
+            if price is None and info:
+                price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
+            if price is None:
+                # last close from short history
+                hist = tk.history(period='5d', interval='1d', auto_adjust=True)
+                if hist is not None and not hist.empty and 'Close' in hist.columns:
+                    price = float(hist['Close'].dropna().iloc[-1])
+            price = float(price) if price is not None else None
+        except Exception:
+            price = None
+        shares = None
+        try:
+            so = info.get('sharesOutstanding') if info else None
+            if so is not None:
+                shares = float(so)
+            else:
+                # balance sheet fallback
+                bs = getattr(tk, 'balance_sheet', None)
+                if isinstance(bs, pd.DataFrame) and not bs.empty and 'Common Stock' in bs.index:
+                    # too schema-dependent; skip heavy parsing in builder for speed
+                    shares = None
+        except Exception:
+            shares = None
+        if price is not None and price > 0 and shares is not None and shares > 0:
+            return float(price) * float(shares)
+        return float('nan')
     except Exception:
-        return float("nan")
+        return float('nan')
 
 
 def get_market_cap_with_cache(ticker: str, cache: dict, retries: int = 2, delay: float = 0.2) -> float:
@@ -173,13 +233,34 @@ def get_market_cap_with_cache(ticker: str, cache: dict, retries: int = 2, delay:
     return cap
 
 
-def rank_smallest_by_market_cap(universe: List[str]) -> List[Tuple[str, float]]:
+def rank_smallest_by_market_cap(universe: List[str], workers: int = 0) -> List[Tuple[str, float]]:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     cache = _load_caps_cache()
     rows: List[Tuple[str, float]] = []
-    for sym in tqdm(universe, desc="Fetching market caps"):
+
+    # Decide worker count (0 -> auto)
+    if workers is None or workers <= 0:
+        try:
+            cpu = os.cpu_count() or 4
+            workers = min(16, max(4, cpu * 2))
+        except Exception:
+            workers = 8
+
+    def _fetch(sym: str) -> Tuple[str, float]:
+        # polite pacing per thread
         m = get_market_cap_with_cache(sym, cache)
-        rows.append((sym, m))
-        time.sleep(SLEEP_BETWEEN_REQUESTS)
+        return (sym, m)
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_fetch, sym): sym for sym in universe}
+        for fut in tqdm(as_completed(futs), total=len(futs), desc="Fetching market caps"):
+            try:
+                sym, m = fut.result()
+                rows.append((sym, m))
+            except Exception:
+                # mark as NaN on error
+                rows.append((futs[fut], float('nan')))
+
     # Persist cache after pass
     _save_caps_cache(cache)
 

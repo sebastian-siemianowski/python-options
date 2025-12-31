@@ -638,3 +638,149 @@ Tip:
   make build-russell
 
 This will generate `data/universes/russell2500_tickers.csv` which is used by both `top50` and `bagger50` by default.
+
+
+
+### 100× Bagger Score: Ideation Funnel and Current Improvement
+
+New: Breakout-aware scoring (conservative)
+- The bagger model now adds a modest, risk-aware breakout component to avoid names with poor technical context and to prefer those showing a constructive upside breakout consistent with trend-following literature.
+- Ingredients: 55-day Donchian upper-band breakout, 20-day return filter, 100/200-day SMA alignment, and volume confirmation (20-day z-score). The effect is kept small by default and gated by risk, regime, and fundamental growth quality.
+- Configure:
+  - --no_breakout                      Disable the breakout component entirely
+  - --bagger_breakout_weight 0.0..1.0  Weight added to the composite S (default 0.1)
+- Outputs: When --export_subscores is used, the CSV includes columns 'breakout' and 'regime' for transparency.
+
+This project’s 100× Bagger Score has an ongoing improvement roadmap guided by an ideation funnel.
+
+- Funnel (100 → 25 → 5 → 1):
+  - Generated 100 candidate improvements across data robustness, feature engineering, normalization/mapping, guardrails/priors, calibration, performance/caching, and UX/debuggability.
+  - Shortlisted the top 25 based on impact × feasibility × robustness × runtime.
+  - Narrowed to 5 finalists:
+    1) Blend LTM revenue momentum with 3Y CAGR (adds timeliness)
+    2) Sector‑aware valuation normalization (EV/S within sector percentiles)
+    3) Statement/price caches with TTL (stability + speed)
+    4) Growth stability upgrade (blend 5Y CAGR; add LTM vs prior‑LTM momentum trend)
+    5) Risk regime filter (200d SMA + outlier‑robust volatility mapping)
+  - Implemented the following improvements in code with minimal footprint and no new dependencies:
+  1) Blend LTM revenue momentum with 3Y CAGR (adds timeliness)
+  2) Sector‑aware valuation normalization (EV/S within sector percentiles)
+  3) Price caches with TTL via existing data_cache (stability + speed)
+  4) Growth stability upgrade (blend 5Y CAGR; add LTM vs prior‑LTM momentum trend)
+  5) Risk regime filter (200d SMA + outlier‑robust volatility mapping)
+
+What’s implemented now
+- LTM revenue momentum signal from quarterly income statements:
+  - ltm_momentum = (sum of last 4 quarters / prior 4 quarters) − 1
+- Growth sub‑score now blends:
+  - 50% weight to 3‑year revenue CAGR vs the horizon‑implied 100× CAGR threshold r*
+  - 20% weight to 5‑year revenue CAGR when available
+  - 30% weight to LTM revenue momentum vs a softer target (0.5·r*) plus a small bonus for rising momentum trend
+- Valuation now includes a sector‑aware normalization:
+  - EV/S or P/S is converted to a sector percentile, mapped to a [0,1] score, and blended with the global valuation score.
+- Risk uses winsorized realized volatility and incorporates a 200‑day SMA regime penalty.
+- Guardrails remain in place (tiny‑base revenue cap, negative margin caps, drawdown caps, etc.).
+
+How to run and inspect
+- Top 50 by 100× score:
+
+  make bagger50
+
+- Audit distributions quickly (first 100 tickers):
+
+  make bagger50 ARGS="--debug_bagger 100 --export_subscores --plain"
+
+- Relevant CLI flags:
+  - --bagger_horizon 5|10|15|20|25|30    # target 100× years (default: 5)
+  - --fast_bagger                       # skip heavier calcs (faster)
+  - --export_subscores                  # include subscores/diagnostics in CSV
+
+Rationale
+- 3Y CAGR can lag inflections; LTM momentum adds responsiveness using available quarterly data.
+- Conservative mapping and modest blending (30%) prevent runaway effects while increasing timeliness.
+
+Next candidates (not yet implemented)
+- Sector‑aware valuation normalization
+- Statement/price caches with TTL
+- Risk regime filter and robust volatility mapping
+
+
+## PLN/JPY FX Signals
+
+Generate scientifically grounded Buy/Hold/Sell signals for Polish zloty vs Japanese yen across multiple horizons (1d, 3d, 7d, ~1m, ~3m, ~6m, ~12m) using volatility-adjusted expected returns, multi-window momentum, and a 200-day trend filter.
+
+Quick start:
+
+  make fx-plnjpy
+
+Options:
+
+  make fx-plnjpy ARGS="--start 2010-01-01 --horizons 1,3,7,21,63,126,252 --json fx_signals.json --csv fx_signals.csv"
+  
+Easy mode (plain English):
+
+  make fx-plnjpy ARGS="--simple"
+
+- --simple prints a friendly table with:
+  - Timeframe (e.g., 1 day, 1 week, 3 months)
+  - Chance PLN goes up (percent)
+  - Recommendation (BUY/HOLD/SELL)
+  - Why (one‑line explanation of trend, momentum, and volatility)
+- When exporting with --simple, CSV/JSON include the simple fields (and JSON still includes the detailed signals for compatibility).
+
+What it does:
+- Downloads PLNJPY=X daily prices (JPY per PLN) from Yahoo Finance.
+- Computes EWM drift and volatility (63d), 200-day trend, and 21/63/126/252-day momentum.
+- For each horizon H, forms a normalized score z combining (mu/vol)*sqrt(H) with momentum/trend tilts and volatility-regime dampening.
+- Maps scores to BUY/HOLD/SELL with horizon-aware thresholds and prints a table; optionally writes JSON/CSV.
+
+Note: A BUY indicates long PLN vs JPY (expect PLN to appreciate vs JPY).
+
+Columns (console/exports):
+- Horizon (trading days): Number of trading days in the forecast horizon.
+- Edge z (risk-adjusted): Risk-adjusted edge combining drift/vol with momentum/trend filters.
+- Pr[return>0] (prob_up in CSV/JSON): Estimated probability the horizon return is positive, mapped via the Normal CDF of Edge z.
+- E[log return] (expected_log_return): Expected cumulative log return over the horizon from the daily drift estimate.
+- Signal: Decision based on prob_up: BUY (>=58%), HOLD (42–58%), SELL (<=42%).
+
+Exports:
+- CSV columns are named: horizon_trading_days, edge_z_risk_adjusted, prob_up, expected_log_return, signal.
+- JSON includes the above signals and a "column_descriptions" block documenting each field.
+
+
+
+## Upgraded PLN/JPY FX Signals (methodology and flags)
+
+What’s new (world‑class, research‑grounded upgrades):
+- Context‑aware scoring while keeping the scientifically sound Sharpe‑style core z = (mu/vol)·sqrt(H)
+- Risk features:
+  - Volatility percentile vs own 3‑year history (dampen in top‑vol regimes)
+  - Downside volatility (semi‑std) penalty, realized skewness (252d) guardrail
+  - Trend‑slope proxies (100d/200d) in addition to 200d z‑distance
+- Macro and cross‑asset tilts (optional):
+  - VIX 63d z‑score and 5‑day change dampen conviction in stress (JPY safe‑haven)
+  - USDJPY 63d momentum (JPY weakness supports PLNJPY up)
+  - EURPLN 63d momentum (EURPLN down implies PLN strength; supportive)
+- Diagnostics: optional context table and JSON context block
+
+CLI (examples):
+- Default run:
+
+  make fx-plnjpy
+
+- Diagnostics and disable context tilts:
+
+  make fx-plnjpy ARGS="--diag --no_macro --no_cross"
+
+- Custom horizons and export:
+
+  make fx-plnjpy ARGS="--start 2010-01-01 --horizons 1,3,7,21,63,126,252 --json fx_signals.json --csv fx_signals.csv"
+
+New flags:
+- --no_macro          Disable macro (VIX) tilt
+- --no_cross          Disable cross‑asset (USDJPY/EURPLN) tilt
+- --diag              Print a context diagnostics table under the signals
+
+Notes:
+- A BUY indicates long PLN vs JPY (expect PLN to appreciate vs JPY). Tilts are modest and risk‑aware; the base z‑score remains the dominant driver.
+- Data source: Yahoo Finance (yfinance). No new dependencies beyond SciPy (already in requirements.txt).

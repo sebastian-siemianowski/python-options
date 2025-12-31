@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 build-russell bagger50
+.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy
 # Usage:
 #   make run                           # runs with defaults (screener + backtest)
 #   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
@@ -12,6 +12,7 @@ SHELL := /bin/bash
 #   make build-russell                 # builds data/russell2500_tickers.csv from public sources
 #   make bagger50                      # ranks by highest 100× Bagger Score (adds 100× Score column)
 #   make bagger50 ARGS="--bagger_horizon 15"   # optional flags; also supports --top_n, --plain, --bagger_verbose
+#   make fx-plnjpy                     # generate PLN/JPY FX signals (see README)
 
 # Ensure virtual environment exists before running commands
 .venv/bin/python:
@@ -37,6 +38,9 @@ build-russell: .venv/.deps_installed
 
 bagger50: .venv/.deps_installed
 	@.venv/bin/python top50_revenue_growth.py --sort_by bagger $(ARGS)
+
+fx-plnjpy: .venv/.deps_installed
+	@.venv/bin/python scripts/fx_pln_jpy_signals.py $(ARGS)
 
 # Manually (re)install requirements and refresh the dependency stamp
 doctor: .venv/bin/python
