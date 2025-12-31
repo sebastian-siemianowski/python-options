@@ -27,9 +27,20 @@ import pandas as pd
 import yfinance as yf
 from scipy.stats import t as student_t, norm
 from rich.console import Console
-from rich.table import Table
 import logging
 import os
+
+# Import presentation layer for display logic
+from fx_signals_presentation import (
+    render_detailed_signal_table,
+    render_simplified_signal_table,
+    render_multi_asset_summary_table,
+    build_asset_display_label,
+    extract_symbol_from_title,
+    format_horizon_label,
+    DETAILED_COLUMN_DESCRIPTIONS,
+    SIMPLIFIED_COLUMN_DESCRIPTIONS,
+)
 
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
 logging.getLogger("yfinance").setLevel(logging.ERROR)
@@ -238,8 +249,8 @@ def fetch_px(start: Optional[str], end: Optional[str]) -> pd.Series:
     return _fetch_px_symbol(PAIR, start, end)
 
 
-def _fetch_usdpln(start: Optional[str], end: Optional[str]) -> pd.Series:
-    """Fetch USD/PLN as a Series. Tries multiple routes:
+def fetch_usd_to_pln_exchange_rate(start: Optional[str], end: Optional[str]) -> pd.Series:
+    """Fetch USD/PLN exchange rate as a Series. Tries multiple routes:
     1) USDPLN=X directly
     2) Invert PLNUSD=X
     3) Cross via EUR: USDPLN = EURPLN / EURUSD
@@ -270,7 +281,7 @@ def _fetch_usdpln(start: Optional[str], end: Optional[str]) -> pd.Series:
         raise RuntimeError(f"Unable to get USDPLN via direct, inverse, or EUR cross: {e}")
 
 
-def _detect_quote_currency(symbol: str) -> str:
+def detect_quote_currency(symbol: str) -> str:
     """Try to detect the quote currency for a Yahoo symbol.
     Returns uppercase ISO code like 'USD','EUR','GBP','GBp','JPY', or '' if unknown.
     """
@@ -396,7 +407,7 @@ def _align_fx_asof(native_px: pd.Series, fx_px: pd.Series, max_gap_days: int = 7
     return fx_aligned
 
 
-def _fx_leg_to_pln(quote_ccy: str, start: Optional[str], end: Optional[str], native_index: Optional[pd.DatetimeIndex] = None) -> pd.Series:
+def convert_currency_to_pln(quote_ccy: str, start: Optional[str], end: Optional[str], native_index: Optional[pd.DatetimeIndex] = None) -> pd.Series:
     """Return a Series of FX rate in PLN per 1 unit of quote_ccy.
     Expands the fetch window to cover the native price index +/- 30 days for overlap robustness."""
     q = (quote_ccy or "").upper().strip()
@@ -417,7 +428,7 @@ def _fx_leg_to_pln(quote_ccy: str, start: Optional[str], end: Optional[str], nat
         # Return a flat-1 series over the native index for easy alignment
         return pd.Series(1.0, index=pd.DatetimeIndex(native_index) if native_index is not None else [pd.Timestamp("1970-01-01")])
     if q == "USD":
-        return _fetch_usdpln(s_ext, e_ext)
+        return fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
     if q == "EUR":
         try:
             eurpln, _ = _fetch_with_fallback(["EURPLN=X"], s_ext, e_ext)
@@ -425,7 +436,7 @@ def _fx_leg_to_pln(quote_ccy: str, start: Optional[str], end: Optional[str], nat
         except Exception:
             # EURPLN via USD: EURPLN = EURUSD * USDPLN
             eurusd, _ = _fetch_with_fallback(["EURUSD=X"], s_ext, e_ext)
-            return eurusd * _fetch_usdpln(s_ext, e_ext)
+            return eurusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
     if q in ("GBP", "GBX", "GBPp", "GBP P", "GBp"):
         gbppln, _ = _fetch_with_fallback(["GBPPLN=X"], s_ext, e_ext)
         return gbppln * (0.01 if q in ("GBX", "GBPp", "GBP P", "GBp") else 1.0)
@@ -447,7 +458,7 @@ def _fx_leg_to_pln(quote_ccy: str, start: Optional[str], end: Optional[str], nat
                 cadusd = 1.0 / usdcad
             except Exception:
                 cadusd, _ = _fetch_with_fallback(["CADUSD=X"], s_ext, e_ext)
-            return cadusd * _fetch_usdpln(s_ext, e_ext)
+            return cadusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
     if q == "CHF":
         try:
             chfpln, _ = _fetch_with_fallback(["CHFPLN=X"], s_ext, e_ext)
@@ -458,14 +469,14 @@ def _fx_leg_to_pln(quote_ccy: str, start: Optional[str], end: Optional[str], nat
                 chfusd = 1.0 / usdchf
             except Exception:
                 chfusd, _ = _fetch_with_fallback(["CHFUSD=X"], s_ext, e_ext)
-            return chfusd * _fetch_usdpln(s_ext, e_ext)
+            return chfusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
     if q == "AUD":
         try:
             audpln, _ = _fetch_with_fallback(["AUDPLN=X"], s_ext, e_ext)
             return audpln
         except Exception:
             audusd, _ = _fetch_with_fallback(["AUDUSD=X"], s_ext, e_ext)
-            return audusd * _fetch_usdpln(s_ext, e_ext)
+            return audusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
     if q == "SEK":
         try:
             sekpln, _ = _fetch_with_fallback(["SEKPLN=X"], s_ext, e_ext)
@@ -495,13 +506,13 @@ def _fx_leg_to_pln(quote_ccy: str, start: Optional[str], end: Optional[str], nat
             hkdpln, _ = _fetch_with_fallback(["HKDPLN=X"], s_ext, e_ext)
             return hkdpln
         except Exception:
-            usdpln = _fetch_usdpln(s_ext, e_ext)
+            usdpln = fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
             usdhkd, _ = _fetch_with_fallback(["USDHKD=X"], s_ext, e_ext)
             return usdpln / usdhkd
     if q == "KRW":
         # PLN per KRW = (PLN per USD) / (KRW per USD)
         try:
-            usdpln = _fetch_usdpln(s_ext, e_ext)
+            usdpln = fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
             usdkrw, _ = _fetch_with_fallback(["USDKRW=X"], s_ext, e_ext)
             # Align by native index if available
             if native_index is not None and len(native_index) > 0:
@@ -512,7 +523,7 @@ def _fx_leg_to_pln(quote_ccy: str, start: Optional[str], end: Optional[str], nat
             # Fallback: try KRWUSD and invert
             try:
                 krwusd, _ = _fetch_with_fallback(["KRWUSD=X"], s_ext, e_ext)
-                usdpln = _fetch_usdpln(s_ext, e_ext)
+                usdpln = fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
                 if native_index is not None and len(native_index) > 0:
                     usdpln = usdpln.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
                     krwusd = krwusd.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
@@ -520,19 +531,19 @@ def _fx_leg_to_pln(quote_ccy: str, start: Optional[str], end: Optional[str], nat
             except Exception:
                 pass
         # As last resort, assume USD (may be wrong for KRW assets but avoids crash)
-        return _fetch_usdpln(s_ext, e_ext)
+        return fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
     # Default: assume USD
-    return _fetch_usdpln(s_ext, e_ext)
+    return fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
 
 
-def _convert_to_pln(native_px: pd.Series, quote_ccy: str, start: Optional[str], end: Optional[str]) -> Tuple[pd.Series, str]:
+def convert_price_series_to_pln(native_px: pd.Series, quote_ccy: str, start: Optional[str], end: Optional[str]) -> Tuple[pd.Series, str]:
     """Convert a native price series quoted in quote_ccy into PLN.
     Returns (pln_series, units_suffix).
     """
     sfx = "(PLN)"
     native_px = _ensure_float_series(native_px)
     # Get FX leg over the native range (with padding)
-    fx = _fx_leg_to_pln(quote_ccy, start, end, native_index=native_px.index)
+    fx = convert_currency_to_pln(quote_ccy, start, end, native_index=native_px.index)
     # Try increasingly permissive alignments
     fx_al = _align_fx_asof(native_px, fx, max_gap_days=7)
     if fx_al.isna().all():
@@ -628,7 +639,7 @@ def fetch_px_asset(asset: str, start: Optional[str], end: Optional[str]) -> Tupl
         btc_px, _used = _fetch_with_fallback([asset] if asset == "BTC-USD" else [asset, "BTC-USD"], start, end)
         btc_px = _ensure_float_series(btc_px)
         # Use USD→PLN leg expanded to BTC date range and robust asof alignment
-        usdpln_px = _fx_leg_to_pln("USD", start, end, native_index=btc_px.index)
+        usdpln_px = convert_currency_to_pln("USD", start, end, native_index=btc_px.index)
         usdpln_aligned = _align_fx_asof(btc_px, usdpln_px, max_gap_days=7)
         if usdpln_aligned.isna().all():
             usdpln_aligned = usdpln_px.reindex(btc_px.index).ffill().bfill()
@@ -647,7 +658,7 @@ def fetch_px_asset(asset: str, start: Optional[str], end: Optional[str]) -> Tupl
         mstr_px = _fetch_px_symbol("MSTR", start, end)
         mstr_px = _ensure_float_series(mstr_px)
         # Use USD→PLN leg expanded to MSTR date range and robust asof alignment
-        usdpln_px = _fx_leg_to_pln("USD", start, end, native_index=mstr_px.index)
+        usdpln_px = convert_currency_to_pln("USD", start, end, native_index=mstr_px.index)
         usdpln_aligned = _align_fx_asof(mstr_px, usdpln_px, max_gap_days=7)
         if usdpln_aligned.isna().all():
             usdpln_aligned = usdpln_px.reindex(mstr_px.index).ffill().bfill()
@@ -676,7 +687,7 @@ def fetch_px_asset(asset: str, start: Optional[str], end: Optional[str]) -> Tupl
             metal_px, used = _fetch_with_fallback(candidates, start, end)
             metal_px = _ensure_float_series(metal_px)
             metal_name = "Silver"
-        usdpln_px = _fetch_usdpln(start, end)
+        usdpln_px = fetch_usd_to_pln_exchange_rate(start, end)
         usdpln_aligned = usdpln_px.reindex(metal_px.index).ffill()
         df = pd.concat([metal_px, usdpln_aligned], axis=1).dropna()
         df.columns = ["metal_usd", "usdpln"]
@@ -704,8 +715,8 @@ def fetch_px_asset(asset: str, start: Optional[str], end: Optional[str]) -> Tupl
         raise last_err if last_err else RuntimeError(f"No data for {asset}")
 
     px_native = _ensure_float_series(px_native)
-    qcy = _detect_quote_currency(used_sym)
-    px_pln, _ = _convert_to_pln(px_native, qcy, start, end)
+    qcy = detect_quote_currency(used_sym)
+    px_pln, _ = convert_price_series_to_pln(px_native, qcy, start, end)
     if px_pln is None or px_pln.empty:
         raise RuntimeError(f"No overlapping FX data to convert {used_sym} to PLN")
     # Title with full name
@@ -1659,252 +1670,6 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     return sigs, thresholds
 
 
-# -------------------------
-# Output
-# -------------------------
-
-def print_table(asset: str, title: str, sigs: List[Signal], px: pd.Series, ci_level: float, used_t_map: bool, show_caption: bool = True) -> None:
-    console = Console()
-    last_close = _to_float(px.iloc[-1])
-
-    table = Table(title=f"{asset} — {title} — last close {last_close:.4f} on {px.index[-1].date()}")
-    # Clearer column headers
-    table.add_column("Horizon (trading days)", justify="right")
-    table.add_column("Edge z (risk-adjusted)", justify="right")
-    table.add_column("Pr[return>0]", justify="right")
-    table.add_column("E[log return]", justify="right")
-    table.add_column(f"CI ±{int(ci_level*100)}% (log)", justify="right")
-    table.add_column("Position strength (0–1)", justify="right")
-    table.add_column("Regime", justify="left")
-    table.add_column("Profit on 1,000,000 PLN (PLN)", justify="right")
-    table.add_column("Signal", justify="center")
-    # Add a concise caption describing columns (once, if requested)
-    if show_caption:
-        cdf_name = "Student-t" if used_t_map else "Normal"
-        table.caption = (
-            "Edge z = (expected log return / realized vol) scaled to horizon; "
-            f"Pr[return>0] mapped from Edge z via {cdf_name} CDF using a single globally fitted Student‑t tail (ν) per asset; "
-            f"E[log return] sums daily drift; CI is two-sided {int(ci_level*100)}% band for log return (log domain). "
-            "Volatility is modeled via GARCH(1,1) (MLE) with EWMA fallback if unavailable. "
-            "Position strength uses a half‑Kelly sizing heuristic (0–1) for real‑world robustness. "
-            f"Profit assumes investing 1,000,000 PLN; profit CI is exp-mapped from the log-return CI into PLN. "
-            "A minimum edge floor is enforced to reduce churn: if |edge| < EDGE_FLOOR, action is HOLD. BUY = long PLN vs JPY."
-            )
-
-    for s in sigs:
-        table.add_row(
-            str(s.horizon_days),
-            f"{s.score:+.2f}",
-            f"{100*s.p_up:5.1f}%",
-            f"{s.exp_ret:+.4f}",
-            f"[{s.ci_low:+.4f}, {s.ci_high:+.4f}]",
-            f"{s.position_strength:.2f}",
-            s.regime,
-            f"{s.profit_pln:,.0f} [ {s.profit_ci_low_pln:,.0f} .. {s.profit_ci_high_pln:,.0f} ]",
-            s.label,
-        )
-
-    console.print(table)
-
-
-def timeframe_label(H: int) -> str:
-    mapping = {1: "1 day", 2: "2 days", 3: "3 days", 5: "1 week (5d)", 7: "1 week", 10: "2 weeks (10d)", 14: "2 weeks", 21: "1 month", 42: "2 months", 63: "3 months", 84: "4 months", 105: "5 months", 126: "6 months", 189: "9 months", 252: "12 months"}
-    return mapping.get(H, f"{H} days")
-
-
-def _summary_display_label(asset: str, title: str) -> str:
-    """Build a concise display like "Ticker (Name)" when available.
-    - If title already contains "(SYMBOL)" in its first part, use that part as-is.
-    - Else combine the provided asset ticker with the name part from title.
-    """
-    try:
-        name_part = title.split(" — ")[0].strip()
-    except Exception:
-        name_part = title.strip()
-    # If name_part already contains parentheses (e.g., "Company Name (TICKER)"), use it
-    if "(" in name_part and ")" in name_part:
-        return name_part
-    # Otherwise prepend the asset symbol for clarity
-    if asset:
-        return f"{asset} — {name_part}"
-    return name_part
-
-
-def _format_profit_cell(label: str, profit_pln: float) -> str:
-    """Return a rich-formatted cell like "BUY (+12,345)" with color by profit sign.
-    Strong labels are bolded. Profit shown in PLN without currency code to keep it compact.
-    """
-    profit_txt = f"{profit_pln:+,.0f}"
-    # Color by profit sign
-    if np.isfinite(profit_pln) and profit_pln > 0:
-        profit_txt = f"[green]{profit_txt}[/green]"
-    elif np.isfinite(profit_pln) and profit_pln < 0:
-        profit_txt = f"[red]{profit_txt}[/red]"
-    # Emphasize STRONG labels
-    lab = label
-    if isinstance(label, str) and label.upper().startswith("STRONG "):
-        lab = f"[bold]{label}[/bold]"
-    return f"{lab} ({profit_txt})"
-
-
-def _extract_symbol_from_title(title: str) -> str:
-    """Extract the canonical symbol from a title like "Company Name (TICKER) — ...".
-    Returns empty string if not found.
-    Uses the last pair of parentheses to be robust to names containing parentheses.
-    """
-    try:
-        s = str(title)
-        # Find last '(' and next ')'
-        l = s.rfind('(')
-        r = s.find(')', l + 1) if l != -1 else -1
-        if l != -1 and r != -1 and r > l + 1:
-            token = s[l+1:r].strip()
-            # Very basic sanitation
-            return token.upper()
-    except Exception:
-        pass
-    return ""
-
-
-def print_summary_table(summary_rows: List[Dict], horizons: List[int]) -> None:
-    """Print a compact summary table across assets.
-    Columns: "Ticker (name)", then one column per trading-day horizon (e.g., 1d,3d,7d,...).
-    Each cell: "Signal (±Profit)" for a 1,000,000 PLN notional.
-    Sorted so that assets whose nearest horizon is SELL come first, then HOLD, then BUY, then STRONG BUY.
-    """
-    if not summary_rows:
-        return
-    console = Console()
-    table = Table(title="Summary across assets — signals and profit on 1,000,000 PLN")
-    table.add_column("Ticker (name)", justify="left", no_wrap=True)
-    # Ensure stable order of horizons
-    horizons_sorted = list(sorted(horizons))
-
-    # Helper: normalize label to category and priority
-    def _label_category_priority(label: str) -> Tuple[str, int]:
-        if not isinstance(label, str):
-            return ("HOLD", 1)
-        u = label.upper().strip()
-        # Map STRONG SELL -> SELL bucket
-        if "SELL" in u:
-            # SELL bucket priority 0 (comes first)
-            return ("SELL", 0)
-        if u.startswith("STRONG BUY"):
-            return ("STRONG BUY", 3)
-        if "BUY" in u:
-            return ("BUY", 2)
-        # Default HOLD bucket
-        return ("HOLD", 1)
-
-    # Compute sort keys per asset: (bucket_priority, nearest_horizon_days, display_name)
-    def _sort_key(row: Dict) -> Tuple[int, int, str]:
-        per_h = row.get("by_horizon", {})
-        cat_pri = ("HOLD", 1)
-        nearest_H = 10**9
-        for H in horizons_sorted:
-            if H in per_h:
-                label, _profit = per_h[H]
-                cat, pri = _label_category_priority(label)
-                cat_pri = (cat, pri)
-                nearest_H = H
-                break
-        return (cat_pri[1], nearest_H, str(row.get("display", "")))
-
-    # Sort rows according to the specified order
-    summary_rows_sorted = sorted(summary_rows, key=_sort_key)
-
-    for H in horizons_sorted:
-        table.add_column(f"{H}d", justify="center")
-    for row in summary_rows_sorted:
-        cells = [row.get("display", "")] 
-        per_h = row.get("by_horizon", {})
-        for H in horizons_sorted:
-            cell = per_h.get(H)
-            if cell is None:
-                cells.append("")
-            else:
-                label, profit = cell
-                cells.append(_format_profit_cell(label, profit))
-        table.add_row(*cells)
-    table.caption = "Profit figures are expected PLN P/L on a 1,000,000 PLN notional for each horizon; signals are model-based."
-    console.print(table)
-
-
-def simple_context(feats: Dict[str, pd.Series]) -> Tuple[str, str, str]:
-    trend = safe_last(feats["trend_z"])  # z-distance to 200D SMA
-    moms = [safe_last(feats["mom21"]), safe_last(feats["mom63"]), safe_last(feats["mom126"]), safe_last(feats["mom252"])]
-    vol_reg = safe_last(feats["vol_regime"])  # relative to 1y median
-
-    # Trend
-    if np.isfinite(trend) and trend > 0.5:
-        trend_s = "Uptrend"
-    elif np.isfinite(trend) and trend < -0.5:
-        trend_s = "Downtrend"
-    else:
-        trend_s = "Sideways"
-
-    # Momentum agreement
-    valid_m = [m for m in moms if np.isfinite(m)]
-    if valid_m:
-        pos = sum(1 for m in valid_m if m > 0)
-        if pos >= 3:
-            mom_s = "Momentum mostly positive"
-        elif pos <= 1:
-            mom_s = "Momentum mostly negative"
-        else:
-            mom_s = "Momentum mixed"
-    else:
-        mom_s = "Momentum unclear"
-
-    # Volatility regime
-    if np.isfinite(vol_reg) and vol_reg > 1.5:
-        vol_s = "High volatility (signals weaker)"
-    elif np.isfinite(vol_reg) and vol_reg < 0.8:
-        vol_s = "Calm volatility (signals stronger)"
-    else:
-        vol_s = "Normal volatility"
-
-    return trend_s, mom_s, vol_s
-
-
-def explanation_for_signal(edge: float, p_up: float, trend_s: str, mom_s: str, vol_s: str) -> str:
-    # Strength descriptor
-    strength = "slight"
-    if abs(edge) >= 1.5:
-        strength = "strong"
-    elif abs(edge) >= 0.7:
-        strength = "moderate"
-    direction = "rise" if edge >= 0 else "fall"
-    return f"{trend_s}. {mom_s}. {vol_s}. About {p_up*100:.0f}% chance of a {direction}. Confidence {strength}."
-
-
-def print_simple(asset: str, title: str, sigs: List[Signal], px: pd.Series, feats: Dict[str, pd.Series]) -> List[str]:
-    console = Console()
-    last_close = _to_float(px.iloc[-1])
-    trend_s, mom_s, vol_s = simple_context(feats)
-
-    table = Table(title=f"{asset} — {title} — Last price {last_close:.4f} on {px.index[-1].date()}")
-    table.add_column("Timeframe", justify="left")
-    table.add_column("Chance it goes up", justify="right")
-    table.add_column("Recommendation", justify="center")
-    table.add_column("Why (plain English)", justify="left")
-    table.caption = "Simple view: chance is based on our model today. BUY means we expect the price to rise over the timeframe."
-
-    explanations: List[str] = []
-    for s in sigs:
-        expl = explanation_for_signal(s.score, s.p_up, trend_s, mom_s, vol_s)
-        explanations.append(expl)
-        table.add_row(
-            timeframe_label(s.horizon_days),
-            f"{s.p_up*100:5.1f}%",
-            s.label,
-            expl,
-        )
-
-    console.print(table)
-    return explanations
-
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Generate signals across multiple horizons for PLN/JPY, Gold (PLN), Silver (PLN), Bitcoin (PLN), and MicroStrategy (PLN).")
     p.add_argument("--start", type=str, default="2005-01-01")
@@ -1922,29 +1687,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--force_caption", action="store_true", help="Force showing the caption for every detailed table.")
     p.set_defaults(t_map=True)
     return p.parse_args()
-
-
-# Column descriptions for exports
-COLUMN_DESCRIPTIONS = {
-    "horizon_trading_days": "Number of trading days in the forecast horizon.",
-    "edge_z_risk_adjusted": "Risk-adjusted edge (z-score) combining drift/vol with momentum/trend filters.",
-    "prob_up": "Estimated probability the horizon return is positive (Student-t by default).",
-    "expected_log_return": "Expected cumulative log return over the horizon from the daily drift estimate.",
-    "ci_low_log": "Lower bound of the two-sided confidence interval for log return.",
-    "ci_high_log": "Upper bound of the two-sided confidence interval for log return.",
-    "profit_pln_on_1m_pln": "Expected profit in Polish zloty (PLN) when investing 1,000,000 PLN.",
-    "profit_ci_low_pln": "Lower confidence bound for profit (PLN) on 1,000,000 PLN.",
-    "profit_ci_high_pln": "Upper confidence bound for profit (PLN) on 1,000,000 PLN.",
-    "signal": "Decision label based on prob_up: BUY (>=58%), HOLD (42–58%), SELL (<=42%).",
-}
-
-# Simple-mode column descriptions
-SIMPLE_COLUMN_DESCRIPTIONS = {
-    "timeframe": "Plain-English period (e.g., 1 day, 1 week, 3 months).",
-    "chance_up": "Chance that the price goes up over this period (percent).",
-    "recommendation": "BUY (expect price to rise), HOLD (unclear), or SELL (expect price to fall).",
-    "why": "Short explanation combining trend, momentum, and volatility context.",
-}
 
 
 def main() -> None:
@@ -1971,7 +1713,7 @@ def main() -> None:
 
         # De-duplicate by resolved symbol extracted from title (e.g., "Company (SYMBOL) — ...").
         # If not found, fall back to the asset token to avoid duplicates from identical inputs.
-        canon = _extract_symbol_from_title(title)
+        canon = extract_symbol_from_title(title)
         if not canon:
             canon = asset.strip().upper()
         if canon in processed_syms:
@@ -1985,7 +1727,7 @@ def main() -> None:
 
         # Print table for this asset
         if args.simple:
-            explanations = print_simple(asset, title, sigs, px, feats)
+            explanations = render_simplified_signal_table(asset, title, sigs, px, feats)
         else:
             # Determine caption policy for detailed view
             if args.force_caption:
@@ -1994,16 +1736,22 @@ def main() -> None:
                 show_caption = False
             else:
                 show_caption = not caption_printed
-            print_table(asset, title, sigs, px, ci_level=args.ci, used_t_map=args.t_map, show_caption=show_caption)
+            render_detailed_signal_table(asset, title, sigs, px, confidence_level=args.ci, used_student_t_mapping=args.t_map, show_caption=show_caption)
             caption_printed = caption_printed or show_caption
             explanations = []
 
         # Build summary row for this asset
-        display = _summary_display_label(asset, title)
-        by_h = {int(s.horizon_days): (s.label, float(s.profit_pln)) for s in sigs}
+        asset_label = build_asset_display_label(asset, title)
+        horizon_signals = {
+            int(s.horizon_days): {"label": s.label, "profit_pln": float(s.profit_pln)}
+            for s in sigs
+        }
+        # Find nearest horizon label for sorting
+        nearest_label = sigs[0].label if sigs else "HOLD"
         summary_rows.append({
-            "display": display,
-            "by_horizon": by_h,
+            "asset_label": asset_label,
+            "horizon_signals": horizon_signals,
+            "nearest_label": nearest_label,
         })
 
         # Prepare JSON block
@@ -2039,7 +1787,7 @@ def main() -> None:
                 csv_rows_simple.append({
                     "asset": title,
                     "symbol": asset,
-                    "timeframe": timeframe_label(s.horizon_days),
+                    "timeframe": format_horizon_label(s.horizon_days),
                     "chance_up_pct": f"{s.p_up*100:.1f}",
                     "recommendation": s.label,
                     "why": explanations[i],
@@ -2055,7 +1803,7 @@ def main() -> None:
 
     # After processing all assets, print a compact summary
     try:
-        print_summary_table(summary_rows, horizons)
+        render_multi_asset_summary_table(summary_rows, horizons)
     except Exception as e:
         Console().print(f"[yellow]Warning:[/yellow] Could not print summary table: {e}")
 
@@ -2063,8 +1811,8 @@ def main() -> None:
     if args.json:
         payload = {
             "assets": all_blocks,
-            "column_descriptions": COLUMN_DESCRIPTIONS,
-            "simple_column_descriptions": SIMPLE_COLUMN_DESCRIPTIONS,
+            "column_descriptions": DETAILED_COLUMN_DESCRIPTIONS,
+            "simple_column_descriptions": SIMPLIFIED_COLUMN_DESCRIPTIONS,
         }
         with open(args.json, "w") as f:
             json.dump(payload, f, indent=2)
