@@ -30,6 +30,13 @@ from rich.console import Console
 import logging
 import os
 
+# HMM regime detection
+try:
+    from hmmlearn import hmm
+    HMM_AVAILABLE = True
+except ImportError:
+    HMM_AVAILABLE = False
+
 # Import presentation layer for display logic
 from fx_signals_presentation import (
     render_detailed_signal_table,
@@ -493,46 +500,56 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
         # In case of alignment/type issues, keep baseline mu
         pass
 
-    # Trend filter (200D z-distance)
+    # Trend filter (200D z-distance) - kept for diagnostics
     sma200 = px.rolling(200).mean()
     trend_z = (px - sma200) / px.rolling(200).std()
 
-    # Regime-dependent priors on drift (Bayesian-style shrinkage)
-    # Regime thresholds
-    vol_shock_thr = 2.5
-    vol_calm_thr = 0.85
-    trend_thr = 0.7  # |trend_z|>=0.7 considered trending
-    prior_scale = 0.25  # prior magnitude scaled to daily vol in trends
-    cap_coeff = 0.75    # cap |mu_post| <= cap_coeff * vol
-
-    # Compute regime-dependent weights and prior using numpy for robust alignment
-    idx = mu_blend.index
-    vr = np.asarray(vol_regime.reindex(idx), dtype=float).ravel()
-    tz = np.asarray(trend_z.reindex(idx), dtype=float).ravel()
-    vol_arr = np.asarray(vol.reindex(idx), dtype=float).ravel()
-    mu_bl_arr = np.asarray(mu_blend.reindex(idx), dtype=float).ravel()
-
-    w_arr = np.full(len(idx), 0.7, dtype=float)
-    with np.errstate(invalid='ignore'):
-        w_arr[vr <= vol_calm_thr] = 0.5
-        w_arr[vr >= vol_shock_thr] = 0.2
-    tr_mask_arr = np.isfinite(tz) & (np.abs(tz) >= trend_thr)
-    w_arr[tr_mask_arr] = np.maximum(w_arr[tr_mask_arr], 0.85)
-
-    prior_mu_arr = np.zeros(len(idx), dtype=float)
-    prior_mu_arr[tr_mask_arr] = np.sign(tz[tr_mask_arr]) * prior_scale * vol_arr[tr_mask_arr]
-
-    mu_post_arr = w_arr * mu_bl_arr + (1.0 - w_arr) * prior_mu_arr
-    cap_arr = cap_coeff * vol_arr
-    mu_post_arr = np.clip(mu_post_arr, -cap_arr, cap_arr)
-
-    mu_post = pd.Series(mu_post_arr, index=idx)
+    # HMM regime-aware drift estimation (replaces threshold-based shrinkage)
+    # Fit preliminary HMM to get regime posteriors for drift adjustment
+    hmm_result_prelim = fit_hmm_regimes(
+        {"ret": ret, "vol": vol},
+        n_states=3,
+        random_seed=42
+    )
+    
+    # Use HMM regime posteriors to weight drift estimates if available
+    if hmm_result_prelim is not None and "posterior_probs" in hmm_result_prelim:
+        try:
+            posterior_probs = hmm_result_prelim["posterior_probs"]
+            regime_means = hmm_result_prelim["means"][:, 0]  # drift component from each regime
+            
+            # Align posteriors with mu_blend index
+            posterior_aligned = posterior_probs.reindex(mu_blend.index).ffill().fillna(0.333)
+            
+            # Regime-conditional drift: weight mu_blend by regime persistence
+            # In calm regimes: trust sample drift more (less shrinkage)
+            # In crisis regimes: shrink toward regime-learned drift (more conservative)
+            regime_names = hmm_result_prelim["regime_names"]
+            calm_idx = [k for k, v in regime_names.items() if v == "calm"]
+            crisis_idx = [k for k, v in regime_names.items() if v == "crisis"]
+            
+            p_calm = posterior_aligned.iloc[:, calm_idx[0]].values if calm_idx else np.zeros(len(mu_blend))
+            p_crisis = posterior_aligned.iloc[:, crisis_idx[0]].values if crisis_idx else np.zeros(len(mu_blend))
+            
+            # Shrinkage weight: high in crisis (shrink toward 0), low in calm (trust sample)
+            shrinkage = 0.5 + 0.3 * p_crisis - 0.2 * p_calm
+            shrinkage = np.clip(shrinkage, 0.2, 0.9)
+            
+            # Posterior drift with regime-aware shrinkage (no hard-coded thresholds)
+            mu_post = pd.Series(
+                (1.0 - shrinkage) * mu_blend.values + shrinkage * 0.0,  # shrink toward zero in crisis
+                index=mu_blend.index
+            )
+            
+        except Exception:
+            # Fallback: use simple blend without shrinkage
+            mu_post = mu_blend.copy()
+    else:
+        # HMM not available: use simple blend without threshold-based shrinkage
+        mu_post = mu_blend.copy()
+    
     # Robust fallback for NaNs
-    mu_blend_ser = _ensure_float_series(mu_blend)
-    if isinstance(mu_blend_ser, pd.DataFrame):
-        mu_blend_ser = mu_blend_ser.iloc[:, 0]
-    mu_post = mu_post.combine_first(mu_blend_ser)
-    mu_post = mu_post.fillna(0.0)
+    mu_post = mu_post.fillna(mu_blend).fillna(0.0)
 
     # Short-term mean-reversion z (5d move over 1m vol)
     r5 = (log_px - log_px.shift(5))
@@ -580,6 +597,9 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
     mom126 = mom_t(126)
     mom252 = mom_t(252)
 
+    # Reuse HMM result from drift estimation (avoid duplicate fitting)
+    hmm_result = hmm_result_prelim
+
     return {
         "px": px,
         "ret": ret,
@@ -602,6 +622,176 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
         # meta (not series)
         "vol_source": vol_source,
         "garch_params": garch_params,
+        # HMM regime detection
+        "hmm_result": hmm_result,
+    }
+
+
+# -------------------------
+# HMM Regime Detection (Formal Bayesian Inference)
+# -------------------------
+
+def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed: int = 42) -> Optional[Dict]:
+    """
+    Fit a Hidden Markov Model with Gaussian emissions to detect market regimes.
+    
+    Each regime (state) has:
+    - Its own μ (drift) dynamics captured by emission mean
+    - Its own σ (volatility) dynamics captured by emission covariance
+    - Persistence captured by transition matrix
+    
+    Args:
+        feats: Feature dictionary from compute_features()
+        n_states: Number of hidden states (default 3: calm, trending, crisis)
+        random_seed: Random seed for reproducibility
+        
+    Returns:
+        Dictionary with HMM model, state sequence, and regime metadata, or None on failure
+    """
+    if not HMM_AVAILABLE:
+        return None
+        
+    try:
+        # Extract returns and volatility as observations
+        ret = feats.get("ret", pd.Series(dtype=float))
+        vol = feats.get("vol", pd.Series(dtype=float))
+        
+        if ret.empty or vol.empty:
+            return None
+            
+        # Align and clean data
+        df = pd.concat([ret, vol], axis=1, join="inner").dropna()
+        if len(df) < 300:  # Need sufficient history for stable HMM
+            return None
+            
+        df.columns = ["ret", "vol"]
+        X = df.values  # Shape (T, 2): returns and volatility as features
+        
+        # Fit Gaussian HMM with full covariance (allows each state its own μ and σ)
+        model = hmm.GaussianHMM(
+            n_components=n_states,
+            covariance_type="full",
+            n_iter=100,
+            random_state=random_seed,
+            verbose=False
+        )
+        
+        model.fit(X)
+        
+        # Infer hidden state sequence (Viterbi for most likely path)
+        states = model.predict(X)
+        
+        # Posterior probabilities for each state at each time
+        posteriors = model.predict_proba(X)
+        
+        # Identify regime characteristics from emission parameters
+        means = model.means_  # Shape (n_states, 2): [drift, vol] per state
+        covars = model.covars_  # Shape (n_states, 2, 2)
+        transmat = model.transmat_  # Shape (n_states, n_states)
+        
+        # Label states by volatility level: calm < normal < crisis
+        vol_means = means[:, 1]  # volatility component
+        sorted_indices = np.argsort(vol_means)
+        
+        regime_names = {
+            sorted_indices[0]: "calm",
+            sorted_indices[1]: "trending" if n_states == 3 else "normal",
+            sorted_indices[2]: "crisis" if n_states == 3 else "volatile"
+        }
+        
+        # Build regime series aligned with returns index
+        regime_series = pd.Series(
+            [regime_names.get(s, f"state_{s}") for s in states],
+            index=df.index,
+            name="regime"
+        )
+        
+        # Posterior probability series (one per state)
+        posterior_df = pd.DataFrame(
+            posteriors,
+            index=df.index,
+            columns=[regime_names.get(i, f"state_{i}") for i in range(n_states)]
+        )
+        
+        return {
+            "model": model,
+            "regime_series": regime_series,
+            "posterior_probs": posterior_df,
+            "states": states,
+            "means": means,
+            "covars": covars,
+            "transmat": transmat,
+            "regime_names": regime_names,
+            "n_states": n_states,
+        }
+        
+    except Exception as e:
+        # Silent fallback on HMM failure
+        return None
+
+
+def infer_current_regime(feats: Dict[str, pd.Series], hmm_result: Optional[Dict] = None) -> Tuple[str, Dict[str, float]]:
+    """
+    Infer the current market regime using posterior inference from HMM.
+    
+    Args:
+        feats: Feature dictionary
+        hmm_result: Result from fit_hmm_regimes(), or None to use threshold fallback
+        
+    Returns:
+        Tuple of (regime_label, regime_metadata_dict)
+        regime_label: "calm", "trending", "crisis", or threshold-based fallback
+        regime_metadata: probabilities and diagnostics
+    """
+    # If HMM available and fitted, use posterior inference
+    if hmm_result is not None and "regime_series" in hmm_result:
+        try:
+            regime_series = hmm_result["regime_series"]
+            posterior_probs = hmm_result["posterior_probs"]
+            
+            if not regime_series.empty:
+                current_regime = regime_series.iloc[-1]
+                current_probs = posterior_probs.iloc[-1].to_dict()
+                
+                return str(current_regime), {
+                    "method": "hmm_posterior",
+                    "probabilities": current_probs,
+                    "persistence": float(hmm_result["transmat"][hmm_result["states"][-1], hmm_result["states"][-1]]) if len(hmm_result["states"]) > 0 else 0.5,
+                }
+        except Exception:
+            pass
+    
+    # Fallback to threshold-based regime detection (original logic)
+    vol_regime = feats.get("vol_regime", pd.Series(dtype=float))
+    trend_z = feats.get("trend_z", pd.Series(dtype=float))
+    
+    vr = safe_last(vol_regime) if not vol_regime.empty else float("nan")
+    tz = safe_last(trend_z) if not trend_z.empty else float("nan")
+    
+    # Threshold-based classification
+    if np.isfinite(vr) and vr > 1.8:
+        if np.isfinite(tz) and tz > 0:
+            label = "High-vol uptrend"
+        elif np.isfinite(tz) and tz < 0:
+            label = "High-vol downtrend"
+        else:
+            label = "crisis"  # Map to HMM-style label
+    elif np.isfinite(vr) and vr < 0.85:
+        if np.isfinite(tz) and tz > 0:
+            label = "Calm uptrend"
+        elif np.isfinite(tz) and tz < 0:
+            label = "Calm downtrend"
+        else:
+            label = "calm"  # Map to HMM-style label
+    elif np.isfinite(tz) and abs(tz) > 0.5:
+        label = "trending"
+    else:
+        label = "Normal"
+    
+    return label, {
+        "method": "threshold_fallback",
+        "vol_regime": float(vr) if np.isfinite(vr) else None,
+        "trend_z": float(tz) if np.isfinite(tz) else None,
     }
 
 
@@ -951,25 +1141,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         except Exception:
             return float(np.clip(base_p, 0.001, 0.999))
 
-    # Regime label for diagnostics (based on 'now')
-    def regime_label(vr: float, tz: float) -> str:
-        if np.isfinite(vr) and vr > 1.8:
-            if np.isfinite(tz) and tz > 0:
-                return "High‑vol uptrend"
-            elif np.isfinite(tz) and tz < 0:
-                return "High‑vol downtrend"
-            return "High volatility"
-        if np.isfinite(vr) and vr < 0.85:
-            if np.isfinite(tz) and tz > 0:
-                return "Calm uptrend"
-            elif np.isfinite(tz) and tz < 0:
-                return "Calm downtrend"
-            return "Calm / range"
-        if np.isfinite(tz) and abs(tz) > 0.5:
-            return "Trending"
-        return "Normal"
-
-    reg = regime_label(vol_reg_now, trend_now)
+    # Regime detection via HMM posterior inference (replaces threshold-based heuristics)
+    hmm_result = feats.get("hmm_result")
+    reg, regime_meta = infer_current_regime(feats, hmm_result)
 
     # CI quantile based on 'now'
     alpha = np.clip(ci, 1e-6, 0.999999)
@@ -1002,14 +1176,18 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     sigs: List[Signal] = []
     thresholds: Dict[int, Dict[str, float]] = {}
 
-    # Adaptive smoothing alpha from regime (use 'now')
-    if np.isfinite(vol_reg_now) and vol_reg_now > 1.5:
-        alpha_edge = 0.55
-    elif np.isfinite(vol_reg_now) and vol_reg_now < 0.8:
-        alpha_edge = 0.30
+    # Regime-aware smoothing from HMM posterior uncertainty (replaces threshold-based)
+    # Use regime persistence and uncertainty from posterior probabilities
+    if regime_meta.get("method") == "hmm_posterior":
+        # High persistence (diagonal transition prob) => low smoothing (trust signal)
+        # Low persistence => high smoothing (reduce whipsaws)
+        persistence = regime_meta.get("persistence", 0.5)
+        alpha_edge = 0.30 + 0.25 * (1.0 - persistence)  # 0.30-0.55 range
+        alpha_p = min(0.75, alpha_edge + 0.10)
     else:
+        # Fallback for threshold-based regime
         alpha_edge = 0.40
-    alpha_p = min(0.75, alpha_edge + 0.10)
+        alpha_p = 0.50
 
     # Monte‑Carlo forward simulation to capture evolving drift/vol over horizons
     H_max = int(max(horizons) if horizons else 0)
@@ -1073,11 +1251,24 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             sell_thr = base_sell - skew_delta
         else:
             buy_thr, sell_thr = base_buy, base_sell
-        # Uncertainty components
-        if np.isfinite(vol_reg_now):
-            u_vol = float(np.clip(vol_reg_now - 1.0, 0.0, 1.5) / 1.5)
+        # Regime-based uncertainty (replaces threshold-based components)
+        # Use HMM posterior entropy as uncertainty measure
+        if regime_meta.get("method") == "hmm_posterior":
+            probs = regime_meta.get("probabilities", {})
+            # Shannon entropy of regime posteriors: high entropy = high uncertainty
+            entropy = 0.0
+            for p in probs.values():
+                if p > 1e-12:
+                    entropy -= p * np.log(p)
+            # Normalize by max entropy (log(3) for 3 states)
+            u_regime = float(np.clip(entropy / np.log(3.0), 0.0, 1.0))
         else:
-            u_vol = 0.0
+            # Fallback: use vol_regime deviation if available
+            u_regime = 0.5
+            if np.isfinite(vol_reg_now):
+                u_regime = float(np.clip(abs(vol_reg_now - 1.0) / 1.5, 0.0, 1.0))
+        
+        # Tail uncertainty from global Student-t fit
         if np.isfinite(nu_glob):
             nu_eff = float(np.clip(nu_glob, 3.0, 200.0))
             inv_nu = 1.0 / nu_eff
@@ -1085,11 +1276,14 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             u_tail = float(np.clip((inv_nu - inv_min) / (inv_max - inv_min), 0.0, 1.0))
         else:
             u_tail = 0.0
+        
+        # Forecast uncertainty from simulated variance vs historical
         med_sig_H = (med_vol_last * math.sqrt(H)) if (np.isfinite(med_vol_last) and med_vol_last > 0) else sig_H
         ratio = float(sig_H / med_sig_H) if med_sig_H > 0 else 1.0
         u_sig = float(np.clip(ratio - 1.0, 0.0, 1.0))
-        # With GARCH modeling volatility, weigh uncertainty mostly by tails and forecast sigma
-        U = float(np.clip(0.2 * u_vol + 0.4 * u_tail + 0.4 * u_sig, 0.0, 1.0))
+        
+        # Combined uncertainty: regime entropy dominates, tail and forecast refine
+        U = float(np.clip(0.5 * u_regime + 0.3 * u_tail + 0.2 * u_sig, 0.0, 1.0))
         widen_delta = 0.04 * U
         buy_thr += widen_delta
         sell_thr -= widen_delta
