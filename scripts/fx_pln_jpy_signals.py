@@ -29,6 +29,7 @@ from scipy.stats import t as student_t, norm
 from rich.console import Console
 from rich.table import Table
 import logging
+import os
 
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
 logging.getLogger("yfinance").setLevel(logging.ERROR)
@@ -37,6 +38,16 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 PAIR = "PLNJPY=X"
 DEFAULT_HORIZONS = [1, 3, 7, 21, 63, 126, 252]
 NOTIONAL_PLN = 1_000_000  # for profit column
+
+# Transaction-cost/slippage hurdle: minimum absolute edge required to act
+# Can be overridden via environment variable EDGE_FLOOR (e.g., 0.10)
+try:
+    _edge_env = os.getenv("EDGE_FLOOR", "0.10")
+    EDGE_FLOOR = float(_edge_env)
+except Exception:
+    EDGE_FLOOR = 0.10
+# Clamp to a reasonable range to avoid misuse
+EDGE_FLOOR = float(np.clip(EDGE_FLOOR, 0.0, 1.5))
 
 
 @dataclass(frozen=True)
@@ -527,6 +538,8 @@ def _resolve_symbol_candidates(asset: str) -> List[str]:
         "NOVO": ["NVO", "NOVO-B.CO", "NOVOB.CO", "NOVO-B.CO"],
         "NOVOB": ["NVO", "NOVOB.CO", "NOVO-B.CO"],
         "NVO": ["NVO", "NOVO-B.CO", "NOVOB.CO"],
+        # Kratos (alias to KTOS)
+        "KRATOS": ["KTOS"],
         # keep identity candidates (with improved MTX mapping to MTU Aero Engines on XETRA)
         "RKLB": ["RKLB"],
         "MTX": ["MTX.DE", "MTX"],
@@ -776,6 +789,11 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
 
     # Rolling skewness (directional asymmetry) and excess kurtosis (Fisher)
     skew = ret.rolling(252, min_periods=63).skew()
+    # Optional stabilization: smooth skew to avoid warm-up swings when it first becomes defined
+    try:
+        skew_s = skew.ewm(span=30, adjust=False).mean()
+    except Exception:
+        skew_s = skew
     ex_kurt = ret.rolling(252, min_periods=63).kurt()  # normal ~ 0
     # Convert excess kurtosis to t degrees of freedom via: excess = 6/(nu-4) => nu = 4 + 6/excess
     # Handle near-zero/negative excess by mapping to large nu (approx normal)
@@ -808,6 +826,7 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
         "z5": z5,
         "nu": nu,
         "skew": skew,
+        "skew_s": skew_s,
         "mom21": mom21,
         "mom63": mom63,
         "mom126": mom126,
@@ -926,10 +945,10 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     """
     buy_thr = float(buy_thr)
     sell_thr = float(sell_thr)
-    # Strong tiers
-    if p_up >= max(0.66, buy_thr + 0.06) and pos_strength >= 0.6:
+    # Strong tiers (adjusted for half‑Kelly scaling: 0.30 instead of 0.60)
+    if p_up >= max(0.66, buy_thr + 0.06) and pos_strength >= 0.30:
         return "STRONG BUY"
-    if p_up <= min(0.34, sell_thr - 0.06) and pos_strength >= 0.6:
+    if p_up <= min(0.34, sell_thr - 0.06) and pos_strength >= 0.30:
         return "STRONG SELL"
     # Base labels
     if p_up >= buy_thr:
@@ -983,7 +1002,14 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             return 1e6
     nu_now_c = _clip_nu_val(nu_now)
     nu_prev_c = _clip_nu_val(nu_prev)
-    skew_now, skew_prev = _tail2("skew", 0.0)
+    # Prefer smoothed skew if available; fallback to raw skew; default neutral 0.0
+    skew_now, skew_prev = _tail2("skew_s", np.nan)
+    if not np.isfinite(skew_now) or not np.isfinite(skew_prev):
+        skew_now_fallback, skew_prev_fallback = _tail2("skew", 0.0)
+        if not np.isfinite(skew_now):
+            skew_now = skew_now_fallback
+        if not np.isfinite(skew_prev):
+            skew_prev = skew_prev_fallback
 
     moms_now = [
         _tail2("mom21", 0.0)[0],
@@ -1022,7 +1048,12 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         try:
             phi = float(norm.pdf(z))
             corr = (g1 / 6.0) * (1.0 - z * z) + (g2 / 24.0) * (z ** 3 - 3.0 * z) - (g1 ** 2 / 36.0) * (2.0 * z ** 3 - 5.0 * z)
-            p = base_p + phi * corr
+            # Damp skew influence in extreme tails to stabilize mapping for |z|>~3
+            try:
+                damp = math.exp(-0.5 * z * z)
+            except Exception:
+                damp = 0.0
+            p = base_p + phi * (corr * damp)
             return float(np.clip(p, 0.001, 0.999))
         except Exception:
             return float(np.clip(base_p, 0.001, 0.999))
@@ -1059,12 +1090,19 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         z_star = float(norm.ppf(tail))
 
     # Median vol for uncertainty component (use rolling median series if available)
+    vol_series = feats.get("vol", pd.Series(dtype=float))
     try:
-        vol_series = feats.get("vol", pd.Series(dtype=float))
         med_vol_series = vol_series.rolling(252, min_periods=63).median()
         med_vol_last = safe_last(med_vol_series) if med_vol_series is not None else float('nan')
     except Exception:
         med_vol_last = float('nan')
+    # Explicit, readable fallback to long-run belief anchor (global median over entire history)
+    if not np.isfinite(med_vol_last) or med_vol_last <= 0:
+        try:
+            med_vol_last = float(np.nanmedian(np.asarray(vol_series.values, dtype=float)))
+        except Exception:
+            med_vol_last = float('nan')
+    # Final guard: fall back to current vol (or 1.0) if global median is unavailable
     if not np.isfinite(med_vol_last) or med_vol_last <= 0:
         med_vol_last = vol_now if np.isfinite(vol_now) and vol_now > 0 else 1.0
 
@@ -1097,10 +1135,11 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         mu_H = (mu_now * H) if np.isfinite(mu_now) else 0.0
         sig_H = (vol_now * math.sqrt(H)) if (np.isfinite(vol_now) and vol_now > 0) else 1.0
 
-        # Fractional Kelly sizing (magnitude‑only for strength)
+        # Fractional Kelly sizing (magnitude‑only for strength) — half‑Kelly for real‑world robustness
         denom = sig_H ** 2 if sig_H > 0 else 1.0
         f_star = float(np.clip(mu_H / denom, -1.0, 1.0))
-        pos_strength = float(min(1.0, abs(f_star)))
+        # Half‑Kelly: scale position by 0.5×|f*|, capped at 1.0
+        pos_strength = float(min(1.0, 0.5 * abs(f_star)))
 
         # Dynamic thresholds (asymmetry via skew + uncertainty widening), based on 'now'
         g1 = float(np.clip(skew_now if np.isfinite(skew_now) else 0.0, -1.5, 1.5))
@@ -1140,7 +1179,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             sell_thr = min(sell_thr, mid - 0.06)
             buy_thr = max(buy_thr, mid + 0.06)
 
-        thresholds[int(H)] = {"buy_thr": float(buy_thr), "sell_thr": float(sell_thr), "uncertainty": float(U)}
+        thresholds[int(H)] = {"buy_thr": float(buy_thr), "sell_thr": float(sell_thr), "uncertainty": float(U), "edge_floor": float(EDGE_FLOOR)}
 
         # Hysteresis bands and 2‑day confirmation on smoothed probabilities
         buy_enter = buy_thr + 0.01
@@ -1151,10 +1190,19 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         elif (p_s_prev <= sell_enter) and (p_s_now <= sell_enter):
             label = "SELL"
         # Strong tiers based on current (unsmoothed) conviction and Kelly strength
-        if p_now >= max(0.66, buy_thr + 0.06) and pos_strength >= 0.6:
+        if p_now >= max(0.66, buy_thr + 0.06) and pos_strength >= 0.30:
             label = "STRONG BUY"
-        if p_now <= min(0.34, sell_thr - 0.06) and pos_strength >= 0.6:
+        if p_now <= min(0.34, sell_thr - 0.06) and pos_strength >= 0.30:
             label = "STRONG SELL"
+
+        # Transaction-cost/slippage hurdle: if absolute edge is below EDGE_FLOOR, force HOLD
+        edge_floor_applied = False
+        try:
+            if np.isfinite(edge_now) and abs(edge_now) < float(EDGE_FLOOR):
+                label = "HOLD"
+                edge_floor_applied = True
+        except Exception:
+            pass
 
         # CI bounds for expected log return
         ci_low = float(mu_H - z_star * sig_H)
@@ -1211,10 +1259,11 @@ def print_table(asset: str, title: str, sigs: List[Signal], px: pd.Series, ci_le
         table.caption = (
             "Edge z = (expected log return / realized vol) scaled to horizon; "
             f"Pr[return>0] mapped from Edge z via {cdf_name} CDF; "
-            f"E[log return] sums daily drift; CI is two-sided {int(ci_level*100)}% band for log return. "
-            "Position strength is a conservative fractional‑Kelly suggestion (0–1). "
-            f"Profit assumes investing 1,000,000 PLN; profit shown in PLN with CI band. BUY = long PLN vs JPY."
-        )
+            f"E[log return] sums daily drift; CI is two-sided {int(ci_level*100)}% band for log return (log domain). "
+            "Position strength uses a half‑Kelly sizing heuristic (0–1) for real‑world robustness. "
+            f"Profit assumes investing 1,000,000 PLN; profit CI is exp-mapped from the log-return CI into PLN. "
+            "A minimum edge floor is enforced to reduce churn: if |edge| < EDGE_FLOOR, action is HOLD. BUY = long PLN vs JPY."
+            )
 
     for s in sigs:
         table.add_row(
@@ -1416,7 +1465,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start", type=str, default="2005-01-01")
     p.add_argument("--end", type=str, default=None)
     p.add_argument("--horizons", type=str, default=",".join(map(str, DEFAULT_HORIZONS)))
-    p.add_argument("--assets", type=str, default="PLNJPY=X,GC=F,SI=F,BTC-USD,MSTR,NFLX,NVO,RKLB,GOOO,GLDW,SGLP,GLDE,FACC,SLVI,MTX,TKA,IBKR,HOOD", help="Comma-separated Yahoo symbols. Metals, FX and USD/EUR/GBP/JPY/CAD/DKK assets are converted to PLN.")
+    p.add_argument("--assets", type=str, default="PLNJPY=X,GC=F,SI=F,BTC-USD,MSTR,NFLX,NVO,KTOS,RKLB,GOOO,GLDW,SGLP,GLDE,FACC,SLVI,MTX,TKA,IBKR,HOOD", help="Comma-separated Yahoo symbols. Metals, FX and USD/EUR/GBP/JPY/CAD/DKK assets are converted to PLN.")
     p.add_argument("--json", type=str, default=None)
     p.add_argument("--csv", type=str, default=None)
     p.add_argument("--simple", action="store_true", help="Print an easy-to-read summary with simple explanations.")
@@ -1509,8 +1558,12 @@ def main() -> None:
             "notional_pln": NOTIONAL_PLN,
             "signals": [s.__dict__ for s in sigs],
             "ci_level": args.ci,
+            "ci_domain": "log_return",
+            "profit_ci_domain": "arithmetic_pln",
             "probability_mapping": ("student_t" if args.t_map else "normal"),
             "nu_clip": {"min": 4.5, "max": 500.0},
+            "edgeworth_damped": True,
+            "kelly_rule": "half",
             "decision_thresholds": thresholds,
         }
         all_blocks.append(block)
