@@ -374,6 +374,189 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
     console.print(table)
 
 
+def render_portfolio_allocation_table(
+    portfolio_result: Dict,
+    horizon_days: int,
+    notional_pln: float = 1_000_000.0
+) -> None:
+    """
+    Render Kelly portfolio allocation table showing optimal weights.
+    
+    Displays:
+    - Asset allocations (Kelly weights)
+    - Expected returns per asset
+    - Portfolio-level metrics (leverage, diversification, Sharpe)
+    - Correlation matrix
+    - Comparison with equal-weight allocation
+    
+    Args:
+        portfolio_result: Dictionary from build_multi_asset_portfolio()
+        horizon_days: Forecast horizon in trading days
+        notional_pln: Notional amount in PLN for position sizing
+    """
+    console = Console()
+    
+    # Extract data
+    asset_names = portfolio_result["asset_names"]
+    weights_kelly = portfolio_result["weights_clamped"]
+    expected_returns = portfolio_result["expected_returns"]
+    correlation_matrix = portfolio_result["correlation_matrix"]
+    portfolio_stats = portfolio_result["portfolio_stats"]
+    leverage = portfolio_result["leverage"]
+    div_ratio = portfolio_result["diversification_ratio"]
+    
+    # Build allocation table
+    alloc_table = Table(
+        title=f"📊 Kelly Portfolio Allocation ({format_horizon_label(horizon_days)} horizon)",
+        show_header=True,
+        header_style="bold cyan"
+    )
+    alloc_table.add_column("Asset", justify="left", style="bold")
+    alloc_table.add_column("Kelly Weight", justify="right")
+    alloc_table.add_column("Position (PLN)", justify="right")
+    alloc_table.add_column(f"E[Return] ({horizon_days}d)", justify="right")
+    alloc_table.add_column("Equal-Weight", justify="right", style="dim")
+    
+    # Equal weight for comparison
+    n_assets = len(asset_names)
+    equal_weight = 1.0 / n_assets if n_assets > 0 else 0.0
+    
+    for i, name in enumerate(asset_names):
+        weight = weights_kelly[i]
+        position_pln = weight * notional_pln
+        exp_ret = expected_returns[i]
+        
+        # Color code weights
+        if weight > 0.15:
+            weight_str = f"[bold green]{weight:+7.2%}[/bold green]"
+        elif weight > 0.05:
+            weight_str = f"[green]{weight:+7.2%}[/green]"
+        elif weight < -0.05:
+            weight_str = f"[red]{weight:+7.2%}[/red]"
+        else:
+            weight_str = f"{weight:+7.2%}"
+        
+        # Position size formatting
+        if abs(position_pln) >= 1_000_000:
+            pos_str = f"{position_pln:+,.0f}"
+        else:
+            pos_str = f"{position_pln:+,.0f}"
+        
+        # Expected return formatting
+        ret_str = f"{exp_ret:+.4f}"
+        if exp_ret > 0.01:
+            ret_str = f"[green]{ret_str}[/green]"
+        elif exp_ret < -0.01:
+            ret_str = f"[red]{ret_str}[/red]"
+        
+        alloc_table.add_row(
+            name,
+            weight_str,
+            pos_str,
+            ret_str,
+            f"{equal_weight:.2%}"
+        )
+    
+    console.print(alloc_table)
+    
+    # Portfolio metrics table
+    metrics_table = Table(
+        title="📈 Portfolio Metrics",
+        show_header=True,
+        header_style="bold magenta"
+    )
+    metrics_table.add_column("Metric", justify="left", style="cyan")
+    metrics_table.add_column("Value", justify="right")
+    metrics_table.add_column("Interpretation", justify="left", style="dim")
+    
+    # Leverage
+    lev_color = "yellow" if leverage > 0.8 else "green"
+    lev_interp = "High" if leverage > 0.8 else ("Moderate" if leverage > 0.5 else "Conservative")
+    metrics_table.add_row(
+        "Leverage (Σ|w_i|)",
+        f"[{lev_color}]{leverage:.3f}[/{lev_color}]",
+        lev_interp
+    )
+    
+    # Diversification ratio
+    div_color = "green" if div_ratio < 0.8 else ("yellow" if div_ratio < 0.95 else "red")
+    div_interp = "Well diversified" if div_ratio < 0.8 else ("Moderate diversification" if div_ratio < 0.95 else "Low diversification")
+    metrics_table.add_row(
+        "Diversification Ratio",
+        f"[{div_color}]{div_ratio:.3f}[/{div_color}]",
+        div_interp + " (lower = better)"
+    )
+    
+    # Portfolio expected return
+    port_ret = portfolio_stats["expected_return"]
+    ret_color = "green" if port_ret > 0 else "red"
+    metrics_table.add_row(
+        f"Expected Return ({horizon_days}d)",
+        f"[{ret_color}]{port_ret:+.6f}[/{ret_color}]",
+        f"≈ {port_ret * 100:.3f}% over horizon"
+    )
+    
+    # Portfolio volatility
+    port_vol = portfolio_stats["volatility"]
+    metrics_table.add_row(
+        f"Portfolio Volatility ({horizon_days}d)",
+        f"{port_vol:.6f}",
+        f"≈ {port_vol * 100:.3f}% std dev"
+    )
+    
+    # Sharpe ratio
+    sharpe = portfolio_stats["sharpe_ratio"]
+    sharpe_color = "green" if sharpe > 1.0 else ("yellow" if sharpe > 0.5 else "red")
+    sharpe_interp = "Excellent" if sharpe > 1.5 else ("Good" if sharpe > 1.0 else ("Fair" if sharpe > 0.5 else "Poor"))
+    metrics_table.add_row(
+        "Sharpe Ratio",
+        f"[{sharpe_color}]{sharpe:.3f}[/{sharpe_color}]",
+        sharpe_interp
+    )
+    
+    console.print(metrics_table)
+    
+    # Correlation matrix table
+    corr_table = Table(
+        title="🔗 Asset Correlation Matrix",
+        show_header=True,
+        header_style="bold blue"
+    )
+    corr_table.add_column("", justify="left", style="bold")
+    for name in asset_names:
+        corr_table.add_column(name[:8], justify="right")
+    
+    for i, name in enumerate(asset_names):
+        row_values = [name[:8]]
+        for j in range(len(asset_names)):
+            corr = correlation_matrix[i, j]
+            if i == j:
+                corr_str = "1.00"
+            else:
+                # Color code correlations
+                if abs(corr) > 0.7:
+                    corr_str = f"[red]{corr:+.2f}[/red]"
+                elif abs(corr) > 0.4:
+                    corr_str = f"[yellow]{corr:+.2f}[/yellow]"
+                else:
+                    corr_str = f"[green]{corr:+.2f}[/green]"
+            row_values.append(corr_str)
+        corr_table.add_row(*row_values)
+    
+    console.print(corr_table)
+    
+    # Add explanatory caption
+    console.print(
+        "\n[dim]💡 Kelly Criterion: Maximizes log-wealth growth while managing risk via covariance matrix.[/dim]"
+    )
+    console.print(
+        "[dim]   Weights computed as w = (1/2) × Σ⁻¹ × μ where Σ is EWMA covariance (λ=0.94).[/dim]"
+    )
+    console.print(
+        "[dim]   Diversification ratio < 1 indicates correlation benefits captured.[/dim]\n"
+    )
+
+
 # Column descriptions for exports
 DETAILED_COLUMN_DESCRIPTIONS = {
     "horizon_trading_days": "Number of trading days in the forecast horizon.",
