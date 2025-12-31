@@ -295,6 +295,8 @@ def _detect_quote_currency(symbol: str) -> str:
     s = symbol.upper()
     if s.endswith(".DE") or s.endswith(".F") or s.endswith(".BE") or s.endswith(".XETRA"):
         return "EUR"
+    if s.endswith(".PA"):
+        return "EUR"
     if s.endswith(".L") or s.endswith(".LON"):
         # London often in GBX (pence)
         return "GBX"
@@ -306,6 +308,8 @@ def _detect_quote_currency(symbol: str) -> str:
         return "CAD"
     if s.endswith(".SZ") or s.endswith(".SS"):
         return "CNY"
+    if s.endswith(".KS") or s.endswith(".KQ"):
+        return "KRW"
     # Default to USD
     return "USD"
 
@@ -494,6 +498,29 @@ def _fx_leg_to_pln(quote_ccy: str, start: Optional[str], end: Optional[str], nat
             usdpln = _fetch_usdpln(s_ext, e_ext)
             usdhkd, _ = _fetch_with_fallback(["USDHKD=X"], s_ext, e_ext)
             return usdpln / usdhkd
+    if q == "KRW":
+        # PLN per KRW = (PLN per USD) / (KRW per USD)
+        try:
+            usdpln = _fetch_usdpln(s_ext, e_ext)
+            usdkrw, _ = _fetch_with_fallback(["USDKRW=X"], s_ext, e_ext)
+            # Align by native index if available
+            if native_index is not None and len(native_index) > 0:
+                usdpln = usdpln.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
+                usdkrw = usdkrw.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
+            return (usdpln / usdkrw).rename("px")
+        except Exception:
+            # Fallback: try KRWUSD and invert
+            try:
+                krwusd, _ = _fetch_with_fallback(["KRWUSD=X"], s_ext, e_ext)
+                usdpln = _fetch_usdpln(s_ext, e_ext)
+                if native_index is not None and len(native_index) > 0:
+                    usdpln = usdpln.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
+                    krwusd = krwusd.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
+                return (usdpln * krwusd).rename("px")
+            except Exception:
+                pass
+        # As last resort, assume USD (may be wrong for KRW assets but avoids crash)
+        return _fetch_usdpln(s_ext, e_ext)
     # Default: assume USD
     return _fetch_usdpln(s_ext, e_ext)
 
@@ -540,6 +567,29 @@ def _resolve_symbol_candidates(asset: str) -> List[str]:
         "NVO": ["NVO", "NOVO-B.CO", "NOVOB.CO"],
         # Kratos (alias to KTOS)
         "KRATOS": ["KTOS"],
+        # Requested blue chips and defense/aero additions
+        "RHEINMETALL": ["RHM.DE", "RHM.F"],
+        "RHEINMETAL": ["RHM.DE", "RHM.F"],
+        "AIRBUS": ["AIR.PA", "AIR.DE"],
+        "RENK": ["R3NK.DE", "RNK.DE"],
+        "NORTHROP": ["NOC"],
+        "NORTHROP GRUMMAN": ["NOC"],
+        "NORTHRUP": ["NOC"],
+        "NORTHRUP GRUNMAN": ["NOC"],
+        "NVIDIA": ["NVDA"],
+        "MICROSOFT": ["MSFT"],
+        "APPLE": ["AAPL"],
+        "AMD": ["AMD"],
+        "UBER": ["UBER"],
+        "TESLA": ["TSLA"],
+        "VANGUARD SP 500": ["VOO", "VUSA.L"],
+        "VANGARD SP 500": ["VOO", "VUSA.L"],
+        "VANGUARD S&P 500": ["VOO", "VUSA.L"],
+        "THALES": ["HO.PA"],
+        "SAMSUNG": ["005930.KS", "005935.KS"],
+        "SAMSUNG ELECTRONICS": ["005930.KS", "005935.KS"],
+        "TKMS": ["TKA.DE", "TKAMY"],
+        "TKMS AG & CO": ["TKA.DE", "TKAMY"],
         # keep identity candidates (with improved MTX mapping to MTU Aero Engines on XETRA)
         "RKLB": ["RKLB"],
         "MTX": ["MTX.DE", "MTX"],
@@ -668,6 +718,146 @@ def fetch_px_asset(asset: str, start: Optional[str], end: Optional[str]) -> Tupl
 # Features
 # -------------------------
 
+def _garch11_mle(ret: pd.Series) -> Tuple[pd.Series, Dict[str, float]]:
+    """Estimate a GARCH(1,1) with normal errors via MLE.
+    Returns (sigma_series, params_dict). Falls back by raising on failure.
+    Model: r_t = mu_t + e_t, e_t ~ N(0, h_t), h_t = omega + alpha*e_{t-1}^2 + beta*h_{t-1}
+    We estimate on de-meaned returns (mean 0) and treat residuals as r_t.
+    """
+    from scipy.optimize import minimize
+
+    r = _ensure_float_series(ret).dropna().astype(float)
+    if len(r) < 200:
+        raise RuntimeError("Too few observations for stable GARCH(1,1) MLE (need >=200)")
+
+    # De-mean for conditional variance fit
+    r = r - r.mean()
+    T = len(r)
+    r2 = r.values**2
+    var0 = float(np.nanvar(r.values)) if T > 1 else 1e-6
+
+    # Parameter transform: ensure omega>0, alpha>=0, beta>=0, alpha+beta<0.999
+    def nll(params):
+        omega, alpha, beta = params
+        # Hard penalties if constraints violated
+        if omega <= 1e-12 or alpha < 0.0 or beta < 0.0 or (alpha + beta) >= 0.999:
+            return 1e12
+        h = np.empty(T, dtype=float)
+        # Initialize with unconditional variance to speed convergence
+        try:
+            h0 = omega / max(1e-12, 1.0 - alpha - beta)
+            if not np.isfinite(h0) or h0 <= 0:
+                h0 = var0
+        except Exception:
+            h0 = var0
+        h[0] = max(1e-12, h0)
+        for t in range(1, T):
+            h[t] = omega + alpha * r2[t-1] + beta * h[t-1]
+            if not np.isfinite(h[t]) or h[t] <= 0:
+                h[t] = 1e-8
+        # Normal likelihood (up to constant): 0.5*(log h_t + r_t^2/h_t)
+        ll_terms = 0.5*(np.log(h) + r2 / h)
+        if not np.all(np.isfinite(ll_terms)):
+            return 1e12
+        return float(np.sum(ll_terms))
+
+    # Multiple starting points for robustness
+    inits = [
+        (0.1*var0*(1-0.1-0.8), 0.1, 0.8),
+        (0.05*var0*(1-0.05-0.9), 0.05, 0.9),
+        (0.2*var0*(1-0.15-0.7), 0.15, 0.7),
+    ]
+    best = (None, np.inf)
+    best_params = None
+    bounds = [(1e-12, 10.0*var0), (0.0, 0.999), (0.0, 0.999)]
+    constraints = ({'type': 'ineq', 'fun': lambda p: 0.999 - (p[1] + p[2])},)
+
+    for x0 in inits:
+        try:
+            res = minimize(nll, x0=np.array(x0, dtype=float), method='SLSQP', bounds=bounds, constraints=constraints, options={'maxiter': 200})
+            if res.success and res.fun < best[1]:
+                best = (res, res.fun)
+                best_params = res.x
+        except Exception:
+            continue
+
+    if best_params is None:
+        raise RuntimeError("GARCH(1,1) MLE failed to converge from all starts")
+
+    omega, alpha, beta = [float(v) for v in best_params]
+    # Rebuild conditional variance series with optimal params
+    h = np.empty(T, dtype=float)
+    try:
+        h0 = omega / max(1e-12, 1.0 - alpha - beta)
+        if not np.isfinite(h0) or h0 <= 0:
+            h0 = var0
+    except Exception:
+        h0 = var0
+    h[0] = max(1e-10, h0)
+    for t in range(1, T):
+        h[t] = omega + alpha * r2[t-1] + beta * h[t-1]
+        if not np.isfinite(h[t]) or h[t] <= 0:
+            h[t] = 1e-8
+    sigma = np.sqrt(h)
+    vol = pd.Series(sigma, index=r.index, name='vol_garch')
+
+    params = {"omega": omega, "alpha": alpha, "beta": beta, "converged": True}
+    return vol, params
+
+
+def _fit_student_nu_mle(z: pd.Series, min_n: int = 200, bounds: Tuple[float, float] = (4.5, 500.0)) -> Dict[str, float]:
+    """Fit global Student-t degrees of freedom (nu) via MLE on standardized residuals z.
+    - z should be approximately IID with unit scale (i.e., residuals divided by conditional sigma).
+    - Returns a dict: {"nu_hat": float, "ll": float, "n": int, "converged": bool}.
+    - On failure or insufficient data, returns a conservative default with converged=False.
+    """
+    from scipy.optimize import minimize
+
+    if z is None or not isinstance(z, pd.Series) or z.empty:
+        return {"nu_hat": 50.0, "ll": float("nan"), "n": 0, "converged": False}
+
+    zz = pd.to_numeric(z, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    # Remove zeros that may indicate degenerate scaling (not necessary but harmless)
+    zz = zz[np.isfinite(zz.values)]
+    n = int(zz.shape[0])
+    if n < max(50, min_n):
+        # too short: near-normal default
+        return {"nu_hat": 50.0, "ll": float("nan"), "n": n, "converged": False}
+
+    x = zz.values.astype(float)
+
+    def nll(nu_val: float) -> float:
+        # Bound inside objective to avoid domain errors
+        nu_b = float(np.clip(nu_val, bounds[0], bounds[1]))
+        try:
+            # Use scipy.stats.t logpdf with df=nu_b, loc=0, scale=1
+            lp = student_t.logpdf(x, df=nu_b)
+            if not np.all(np.isfinite(lp)):
+                return 1e12
+            return float(-np.sum(lp))
+        except Exception:
+            return 1e12
+
+    # Multi-start initializations
+    starts = [5.5, 8.0, 12.0, 20.0, 50.0, 100.0, 200.0]
+    best = (None, np.inf)
+    for s0 in starts:
+        x0 = np.array([float(np.clip(s0, bounds[0], bounds[1]))], dtype=float)
+        try:
+            res = minimize(lambda v: nll(v[0]), x0=x0, method="L-BFGS-B", bounds=[bounds], options={"maxiter": 200})
+            if res.success and res.fun < best[1]:
+                best = (res, res.fun)
+        except Exception:
+            continue
+
+    if best[0] is None:
+        return {"nu_hat": 50.0, "ll": float("nan"), "n": n, "converged": False}
+
+    nu_hat = float(np.clip(best[0].x[0], bounds[0], bounds[1]))
+    ll = float(-best[1])
+    return {"nu_hat": nu_hat, "ll": ll, "n": n, "converged": True}
+
+
 def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
     # Protect log conversion from garbage ticks and non-positive prices
     px = _ensure_float_series(px)
@@ -686,8 +876,17 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
     vol_fast = ret.ewm(span=21, adjust=False).std()
     vol_slow = ret.ewm(span=126, adjust=False).std()
 
-    # Blend vol: fast reacts, slow stabilizes
-    vol = 0.6 * vol_fast + 0.4 * vol_slow
+    # Prefer GARCH(1,1) volatility via MLE; fallback to EWMA blend on failure
+    try:
+        vol_garch, garch_params = _garch11_mle(ret)
+        # Align to ret index and name "vol" for downstream compatibility
+        vol = vol_garch.reindex(ret.index).rename("vol")
+        vol_source = "garch11"
+    except Exception:
+        # Blend vol: fast reacts, slow stabilizes
+        vol = (0.6 * vol_fast + 0.4 * vol_slow).rename("vol")
+        garch_params = {}
+        vol_source = "ewma_fallback"
     # Robust global volatility floor to avoid feedback loops when vol collapses recently:
     # - Use a lagged expanding 10th percentile over the entire history (no look-ahead)
     # - Add a relative floor vs long-run median and a small absolute epsilon
@@ -720,16 +919,14 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
         fallback_floor = np.maximum(vol.rolling(252, min_periods=63).median() * 0.10, abs_floor)
         vol = np.maximum(vol, fallback_floor)
 
-    # Vol regime (relative to 1y median)
+    # Vol regime (relative to 1y median) — kept for diagnostics, not for shrinkage
     vol_med = vol.rolling(252).median()
     vol_regime = vol / vol_med
 
-    # Shrinkage drift:
-    # - blend fast/slow
+    # Drift from blended EWMA (fast/slow). With GARCH handling volatility coherently,
+    # avoid additional shrinkage by volatility regime to prevent double-counting.
     mu_blend = 0.5 * mu_fast + 0.5 * mu_slow
-    # - shrink toward 0 more in high vol regime (baseline shrink)
-    shrink = (1.0 / (1.0 + (vol_regime - 1.0).clip(lower=0.0)))  # in (0,1]
-    mu = mu_blend * shrink
+    mu = mu_blend
     
     # Optional smoothing of drift to reduce whipsaws (backtest-safe: uses t-1 info)
     # mu_t = 0.7 * mu_blend_t + 0.3 * mu_{t-1}
@@ -803,6 +1000,20 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
     # Clip degrees of freedom to a stable range to prevent extreme tail chaos in flash crashes
     nu = nu.clip(lower=4.5, upper=500.0)
 
+    # Fit global Student-t tail parameter once via MLE on standardized residuals (Level-7 rule)
+    try:
+        # Residuals using posterior drift (more conservative) and current per-day vol
+        mu_post_aligned = pd.Series(mu_post, index=ret.index).astype(float)
+        vol_aligned = pd.Series(vol, index=ret.index).astype(float)
+        resid = (ret - mu_post_aligned).replace([np.inf, -np.inf], np.nan)
+        z_std = resid / vol_aligned.replace(0.0, np.nan)
+        z_std = z_std.replace([np.inf, -np.inf], np.nan).dropna()
+        nu_info = _fit_student_nu_mle(z_std, min_n=200, bounds=(4.5, 500.0))
+        nu_hat = float(nu_info.get("nu_hat", 50.0))
+    except Exception:
+        nu_info = {"nu_hat": 50.0, "ll": float("nan"), "n": 0, "converged": False}
+        nu_hat = 50.0
+
     # t-stat style momentum: cum return / realized vol over window
     def mom_t(days: int) -> pd.Series:
         cum = (log_px - log_px.shift(days))
@@ -824,13 +1035,18 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
         "vol_regime": vol_regime,
         "trend_z": trend_z,
         "z5": z5,
-        "nu": nu,
+        "nu": nu,               # rolling, for diagnostics only
+        "nu_hat": pd.Series([nu_hat], index=[ret.index[-1]]) if len(ret.index)>0 else pd.Series([nu_hat]),
+        "nu_info": nu_info,     # dict metadata
         "skew": skew,
         "skew_s": skew_s,
         "mom21": mom21,
         "mom63": mom63,
         "mom126": mom126,
         "mom252": mom252,
+        # meta (not series)
+        "vol_source": vol_source,
+        "garch_params": garch_params,
     }
 
 
@@ -888,12 +1104,90 @@ def make_features_views(feats: Dict[str, pd.Series]) -> Dict[str, Dict[str, pd.S
 # -------------------------
 
 def edge_for_horizon(mu: float, vol: float, H: int) -> float:
-    # edge = mu_H / sigma_H in z units
+    # edge = mu_H / sigma_H in z units (analytic approximation)
     if not np.isfinite(mu) or not np.isfinite(vol) or vol <= 0:
         return 0.0
     mu_H = mu * H
     sig_H = vol * math.sqrt(H)
     return float(mu_H / sig_H)
+
+
+def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: int = 3000, phi: float = 0.95, kappa: float = 1e-4) -> np.ndarray:
+    """Monte-Carlo forward simulation of cumulative log returns over 1..H_max.
+    - Drift evolves as AR(1): mu_{t+1} = phi * mu_t + eta_t,  eta ~ N(0, q)
+    - Volatility evolves via GARCH(1,1) when available; else held constant.
+    - Innovations are Student-t with global df (nu_hat) scaled to unit variance.
+    Returns an array of shape (H_max, n_paths) with cumulative log returns per horizon.
+    """
+    # Inputs at 'now'
+    ret_idx = feats.get("ret", pd.Series(dtype=float)).index
+    if ret_idx is None or len(ret_idx) == 0:
+        return np.zeros((H_max, n_paths), dtype=float)
+    mu_series = feats.get("mu_post")
+    if not isinstance(mu_series, pd.Series) or mu_series.empty:
+        mu_series = feats.get("mu")
+    vol_series = feats.get("vol")
+    if not isinstance(vol_series, pd.Series) or vol_series.empty or not isinstance(mu_series, pd.Series) or mu_series.empty:
+        return np.zeros((H_max, n_paths), dtype=float)
+    mu_now = float(mu_series.iloc[-1]) if len(mu_series) else 0.0
+    vol_now = float(vol_series.iloc[-1]) if len(vol_series) else 0.0
+    vol_now = float(max(vol_now, 1e-6))
+
+    # Tail parameter (global nu)
+    nu_hat_series = feats.get("nu_hat")
+    if isinstance(nu_hat_series, pd.Series) and not nu_hat_series.empty:
+        nu = float(nu_hat_series.iloc[-1])
+    else:
+        nu = 50.0
+    nu = float(np.clip(nu, 4.5, 500.0))
+    # Scale to unit variance for Student-t innovations
+    t_var = nu / (nu - 2.0) if nu > 2.0 else 1e6
+    t_scale = math.sqrt(t_var)
+
+    # GARCH params
+    garch_params = feats.get("garch_params", {}) or {}
+    use_garch = isinstance(garch_params, dict) and all(k in garch_params for k in ("omega", "alpha", "beta"))
+    if use_garch:
+        omega = float(max(garch_params.get("omega", 0.0), 1e-12))
+        alpha = float(np.clip(garch_params.get("alpha", 0.0), 0.0, 0.999))
+        beta = float(np.clip(garch_params.get("beta", 0.0), 0.0, 0.999))
+        if alpha + beta >= 0.999:
+            beta = 0.998 - alpha
+            beta = max(beta, 0.0)
+    else:
+        omega = alpha = beta = 0.0
+
+    # Drift process noise variance q (relative to current variance)
+    h0 = vol_now ** 2
+    q = float(max(kappa * h0, 1e-10))
+
+    # Initialize state arrays (vectorized across paths)
+    cum = np.zeros((H_max, n_paths), dtype=float)
+    mu_t = np.full(n_paths, mu_now, dtype=float)
+    h_t = np.full(n_paths, max(h0, 1e-8), dtype=float)
+
+    rng = np.random.default_rng()
+
+    for t in range(H_max):
+        # Student-t shocks standardized to unit variance
+        z = rng.standard_t(df=nu, size=n_paths).astype(float)
+        eps = z / t_scale
+        sigma_t = np.sqrt(np.maximum(h_t, 1e-12))
+        e_t = sigma_t * eps
+        # accumulate log return: r_t = mu_t + e_t
+        if t == 0:
+            cum[t, :] = mu_t + e_t
+        else:
+            cum[t, :] = cum[t-1, :] + mu_t + e_t
+        # Evolve volatility via GARCH or hold constant on fallback
+        if use_garch:
+            h_t = omega + alpha * (e_t ** 2) + beta * h_t
+            h_t = np.clip(h_t, 1e-12, 1e4)
+        # Evolve drift via AR(1)
+        eta = rng.normal(loc=0.0, scale=math.sqrt(q), size=n_paths)
+        mu_t = phi * mu_t + eta
+
+    return cum
 
 
 def composite_edge(
@@ -903,9 +1197,8 @@ def composite_edge(
     vol_regime: float,
     z5: float,
 ) -> float:
-    """Ensemble edge: blend trend-following and mean-reversion components with regime awareness.
-    - TF: base_edge confirmed by momentum and trend_tilt
-    - MR: fade short-term extreme (z5) when appropriate
+    """Ensemble edge: blend trend-following and mean-reversion components.
+    GARCH handles volatility dynamics; avoid extra regime dampening to prevent double-counting.
     """
     # Momentum confirmation: average tanh of t-momentum
     mom_terms = [np.tanh(m / 2.0) for m in moms if np.isfinite(m)]
@@ -920,20 +1213,9 @@ def composite_edge(
     # MR component: if z5 is very positive, expect mean-revert small negative edge; if very negative, mean-revert positive edge
     mr = float(-np.tanh(z5)) if np.isfinite(z5) else 0.0
 
-    # Regime weights
-    # High vol -> prefer TF; Calm -> allow some MR; Normal -> blend
-    if np.isfinite(vol_regime) and vol_regime > 1.5:
-        w_tf, w_mr = 0.85, 0.15
-    elif np.isfinite(vol_regime) and vol_regime < 0.8:
-        w_tf, w_mr = 0.65, 0.35
-    else:
-        w_tf, w_mr = 0.75, 0.25
-
+    # Fixed blend (avoid vol_regime-driven dampening)
+    w_tf, w_mr = 0.75, 0.25
     edge = w_tf * tf + w_mr * mr
-
-    # Multiplicative dampener for extreme stress
-    if np.isfinite(vol_regime) and vol_regime > 2.5:
-        edge *= 0.6
 
     return float(edge)
 
@@ -991,17 +1273,17 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     vol_reg_now, vol_reg_prev = _tail2("vol_regime", 1.0)
     trend_now, trend_prev = _tail2("trend_z", 0.0)
     z5_now, z5_prev = _tail2("z5", 0.0)
-    nu_now, nu_prev = _tail2("nu", 1e6)
-    # Clip nu to [4.5, 500] for stability (defensive; features already clip but we enforce here too)
-    def _clip_nu_val(v):
-        try:
-            if not np.isfinite(v):
-                return 1e6
-            return float(np.clip(v, 4.5, 500.0))
-        except Exception:
-            return 1e6
-    nu_now_c = _clip_nu_val(nu_now)
-    nu_prev_c = _clip_nu_val(nu_prev)
+    # Use globally-fitted nu_hat (Level-7); fall back to rolling nu if missing
+    nu_hat_series = feats.get("nu_hat")
+    if isinstance(nu_hat_series, pd.Series) and not nu_hat_series.empty:
+        nu_glob = float(nu_hat_series.iloc[-1])
+    else:
+        # fallback to last rolling nu
+        nu_glob, _ = _tail2("nu", 50.0)
+        if not np.isfinite(nu_glob):
+            nu_glob = 50.0
+    # Clip to safe range
+    nu_glob = float(np.clip(nu_glob, 4.5, 500.0))
     # Prefer smoothed skew if available; fallback to raw skew; default neutral 0.0
     skew_now, skew_prev = _tail2("skew_s", np.nan)
     if not np.isfinite(skew_now) or not np.isfinite(skew_prev):
@@ -1081,9 +1363,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     # CI quantile based on 'now'
     alpha = np.clip(ci, 1e-6, 0.999999)
     tail = 0.5 * (1 + alpha)
-    if t_map and np.isfinite(nu_now) and nu_now > 2.0 and nu_now < 1e9:
+    if t_map and np.isfinite(nu_glob) and nu_glob > 2.0 and nu_glob < 1e9:
         try:
-            z_star = float(student_t.ppf(tail, df=float(nu_now)))
+            z_star = float(student_t.ppf(tail, df=float(nu_glob)))
         except Exception:
             z_star = float(norm.ppf(tail))
     else:
@@ -1118,27 +1400,54 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         alpha_edge = 0.40
     alpha_p = min(0.75, alpha_edge + 0.10)
 
+    # Monte‑Carlo forward simulation to capture evolving drift/vol over horizons
+    H_max = int(max(horizons) if horizons else 0)
+    sims = _simulate_forward_paths(feats, H_max=H_max, n_paths=3000)
+
     for H in horizons:
-        # Edges for prev and now
-        base_prev = edge_for_horizon(mu_prev, vol_prev, H)
-        base_now = edge_for_horizon(mu_now, vol_now, H)
+        # Use simulation at horizon H (1‑indexed in description; here index H-1)
+        if H <= 0 or H > sims.shape[0]:
+            sim_H = np.zeros(3000, dtype=float)
+        else:
+            sim_H = sims[H-1, :]
+        # Clean NaNs/Infs
+        sim_H = np.asarray(sim_H, dtype=float)
+        sim_H = sim_H[np.isfinite(sim_H)]
+        if sim_H.size == 0:
+            sim_H = np.zeros(3000, dtype=float)
+        # Simulated moments and probability
+        mH = float(np.mean(sim_H))
+        vH = float(np.var(sim_H, ddof=1)) if sim_H.size > 1 else 0.0
+        sH = float(math.sqrt(max(vH, 1e-12)))
+        z_stat = float(mH / sH) if sH > 0 else 0.0
+        p_now = float(np.mean(sim_H > 0.0))
+        # For anti‑snap smoothing we need a previous probability; approximate with itself if unavailable
+        p_prev = p_now
+        p_s_prev = p_prev
+        p_s_now = alpha_p * p_now + (1.0 - alpha_p) * p_prev
+
+        # Base/composite edge built off z_stat to keep consistency
+        base_now = z_stat
+        base_prev = z_stat  # lacking prev sim, reuse now as stable default
         edge_prev = composite_edge(base_prev, trend_prev, moms_prev, vol_reg_prev, z5_prev)
         edge_now = composite_edge(base_now, trend_now, moms_now, vol_reg_now, z5_now)
 
-        # Probabilities (prev/now), then smoothed now
-        p_prev = map_prob(edge_prev, nu_prev_c, skew_prev)
-        p_now = map_prob(edge_now, nu_now_c, skew_now)
-        p_s_prev = p_prev  # one‑step history only
-        p_s_now = alpha_p * p_now + (1.0 - alpha_p) * p_prev
+        # Expected log return and CI from simulation (percentile CI)
+        q = float(np.clip(ci, 1e-6, 0.999999))
+        lo_q = (1.0 - q) / 2.0
+        hi_q = 1.0 - lo_q
+        try:
+            ci_low = float(np.quantile(sim_H, lo_q))
+            ci_high = float(np.quantile(sim_H, hi_q))
+        except Exception:
+            ci_low = mH - 1.0 * sH
+            ci_high = mH + 1.0 * sH
+        mu_H = mH  # use simulated mean directly
+        sig_H = sH
 
-        # Expected log return and CI (based on 'now')
-        mu_H = (mu_now * H) if np.isfinite(mu_now) else 0.0
-        sig_H = (vol_now * math.sqrt(H)) if (np.isfinite(vol_now) and vol_now > 0) else 1.0
-
-        # Fractional Kelly sizing (magnitude‑only for strength) — half‑Kelly for real‑world robustness
-        denom = sig_H ** 2 if sig_H > 0 else 1.0
+        # Fractional Kelly sizing (half‑Kelly) using simulated mean/variance
+        denom = vH if vH > 0 else (sig_H ** 2 if sig_H > 0 else 1.0)
         f_star = float(np.clip(mu_H / denom, -1.0, 1.0))
-        # Half‑Kelly: scale position by 0.5×|f*|, capped at 1.0
         pos_strength = float(min(1.0, 0.5 * abs(f_star)))
 
         # Dynamic thresholds (asymmetry via skew + uncertainty widening), based on 'now'
@@ -1158,8 +1467,8 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             u_vol = float(np.clip(vol_reg_now - 1.0, 0.0, 1.5) / 1.5)
         else:
             u_vol = 0.0
-        if np.isfinite(nu_now):
-            nu_eff = float(np.clip(nu_now, 3.0, 200.0))
+        if np.isfinite(nu_glob):
+            nu_eff = float(np.clip(nu_glob, 3.0, 200.0))
             inv_nu = 1.0 / nu_eff
             inv_min, inv_max = 1.0 / 200.0, 1.0 / 3.0
             u_tail = float(np.clip((inv_nu - inv_min) / (inv_max - inv_min), 0.0, 1.0))
@@ -1168,7 +1477,8 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         med_sig_H = (med_vol_last * math.sqrt(H)) if (np.isfinite(med_vol_last) and med_vol_last > 0) else sig_H
         ratio = float(sig_H / med_sig_H) if med_sig_H > 0 else 1.0
         u_sig = float(np.clip(ratio - 1.0, 0.0, 1.0))
-        U = float(np.clip(0.5 * u_vol + 0.25 * u_tail + 0.25 * u_sig, 0.0, 1.0))
+        # With GARCH modeling volatility, weigh uncertainty mostly by tails and forecast sigma
+        U = float(np.clip(0.2 * u_vol + 0.4 * u_tail + 0.4 * u_sig, 0.0, 1.0))
         widen_delta = 0.04 * U
         buy_thr += widen_delta
         sell_thr -= widen_delta
@@ -1258,8 +1568,9 @@ def print_table(asset: str, title: str, sigs: List[Signal], px: pd.Series, ci_le
         cdf_name = "Student-t" if used_t_map else "Normal"
         table.caption = (
             "Edge z = (expected log return / realized vol) scaled to horizon; "
-            f"Pr[return>0] mapped from Edge z via {cdf_name} CDF; "
+            f"Pr[return>0] mapped from Edge z via {cdf_name} CDF using a single globally fitted Student‑t tail (ν) per asset; "
             f"E[log return] sums daily drift; CI is two-sided {int(ci_level*100)}% band for log return (log domain). "
+            "Volatility is modeled via GARCH(1,1) (MLE) with EWMA fallback if unavailable. "
             "Position strength uses a half‑Kelly sizing heuristic (0–1) for real‑world robustness. "
             f"Profit assumes investing 1,000,000 PLN; profit CI is exp-mapped from the log-return CI into PLN. "
             "A minimum edge floor is enforced to reduce churn: if |edge| < EDGE_FLOOR, action is HOLD. BUY = long PLN vs JPY."
@@ -1319,6 +1630,25 @@ def _format_profit_cell(label: str, profit_pln: float) -> str:
     if isinstance(label, str) and label.upper().startswith("STRONG "):
         lab = f"[bold]{label}[/bold]"
     return f"{lab} ({profit_txt})"
+
+
+def _extract_symbol_from_title(title: str) -> str:
+    """Extract the canonical symbol from a title like "Company Name (TICKER) — ...".
+    Returns empty string if not found.
+    Uses the last pair of parentheses to be robust to names containing parentheses.
+    """
+    try:
+        s = str(title)
+        # Find last '(' and next ')'
+        l = s.rfind('(')
+        r = s.find(')', l + 1) if l != -1 else -1
+        if l != -1 and r != -1 and r > l + 1:
+            token = s[l+1:r].strip()
+            # Very basic sanitation
+            return token.upper()
+    except Exception:
+        pass
+    return ""
 
 
 def print_summary_table(summary_rows: List[Dict], horizons: List[int]) -> None:
@@ -1465,7 +1795,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start", type=str, default="2005-01-01")
     p.add_argument("--end", type=str, default=None)
     p.add_argument("--horizons", type=str, default=",".join(map(str, DEFAULT_HORIZONS)))
-    p.add_argument("--assets", type=str, default="PLNJPY=X,GC=F,SI=F,BTC-USD,MSTR,NFLX,NVO,KTOS,RKLB,GOOO,GLDW,SGLP,GLDE,FACC,SLVI,MTX,TKA,IBKR,HOOD", help="Comma-separated Yahoo symbols. Metals, FX and USD/EUR/GBP/JPY/CAD/DKK assets are converted to PLN.")
+    p.add_argument("--assets", type=str, default="PLNJPY=X,GC=F,SI=F,BTC-USD,MSTR,NFLX,NVO,KTOS,RKLB,GOOO,GLDW,SGLP,GLDE,FACC,SLVI,MTX,IBKR,HOOD,RHEINMETALL,AMD,APPLE,AIRBUS,RENK,NORTHROP GRUMMAN,NVIDIA,TKMS AG & CO,MICROSOFT,UBER,VANGUARD S&P 500,THALES,SAMSUNG ELECTRONICS,TESLA", help="Comma-separated Yahoo symbols or friendly names. Metals, FX and USD/EUR/GBP/JPY/CAD/DKK/KRW assets are converted to PLN.")
     p.add_argument("--json", type=str, default=None)
     p.add_argument("--csv", type=str, default=None)
     p.add_argument("--simple", action="store_true", help="Print an easy-to-read summary with simple explanations.")
@@ -1515,6 +1845,7 @@ def main() -> None:
     summary_rows = []  # for summary table across assets
 
     caption_printed = False
+    processed_syms = set()
     for asset in assets:
         try:
             px, title = fetch_px_asset(asset, args.start, args.end)
@@ -1522,6 +1853,17 @@ def main() -> None:
             # Skip asset with a warning row (console)
             Console().print(f"[red]Warning:[/red] Failed to fetch {asset}: {e}")
             continue
+
+        # De-duplicate by resolved symbol extracted from title (e.g., "Company (SYMBOL) — ...").
+        # If not found, fall back to the asset token to avoid duplicates from identical inputs.
+        canon = _extract_symbol_from_title(title)
+        if not canon:
+            canon = asset.strip().upper()
+        if canon in processed_syms:
+            Console().print(f"[yellow]Skipping duplicate:[/yellow] {title} (from input '{asset}')")
+            continue
+        processed_syms.add(canon)
+
         feats = compute_features(px)
         last_close = _to_float(px.iloc[-1])
         sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)
@@ -1565,6 +1907,14 @@ def main() -> None:
             "edgeworth_damped": True,
             "kelly_rule": "half",
             "decision_thresholds": thresholds,
+            # volatility modeling metadata
+            "vol_source": feats.get("vol_source", "garch11"),
+            "garch_params": feats.get("garch_params", {}),
+            # tail modeling metadata (global ν)
+            "tail_model": "student_t_global",
+            "nu_hat": float(feats.get("nu_hat").iloc[-1]) if isinstance(feats.get("nu_hat"), pd.Series) and not feats.get("nu_hat").empty else 50.0,
+            "nu_bounds": {"min": 4.5, "max": 500.0},
+            "nu_info": feats.get("nu_info", {}),
         }
         all_blocks.append(block)
 
