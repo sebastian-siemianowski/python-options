@@ -359,7 +359,21 @@ def _garch11_mle(ret: pd.Series) -> Tuple[pd.Series, Dict[str, float]]:
         cov = None
         se = None
 
-    params: Dict[str, float] = {"omega": omega, "alpha": alpha, "beta": beta, "converged": True}
+    # Compute final log-likelihood at optimum (negative nll)
+    final_nll = float(best[1])
+    final_ll = float(-final_nll)
+    
+    params: Dict[str, float] = {
+        "omega": omega, 
+        "alpha": alpha, 
+        "beta": beta, 
+        "converged": True,
+        "log_likelihood": final_ll,
+        "nll": final_nll,
+        "n_obs": int(T),
+        "aic": float(2.0 * 3 - 2.0 * final_ll),  # AIC = 2k - 2*ln(L), k=3 params
+        "bic": float(3 * np.log(T) - 2.0 * final_ll),  # BIC = k*ln(n) - 2*ln(L)
+    }
     if cov is not None:
         params["cov"] = cov.tolist()
     if se is not None:
@@ -713,6 +727,23 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
             columns=[regime_names.get(i, f"state_{i}") for i in range(n_states)]
         )
         
+        # Compute log-likelihood and information criteria for model diagnostics
+        try:
+            log_likelihood = float(model.score(X))
+            n_obs = int(len(X))
+            # Count free parameters: n_states-1 for initial probs, n_states*(n_states-1) for transitions,
+            # n_states*n_features for means, n_states*n_features*(n_features+1)/2 for full covariance
+            n_features = X.shape[1]
+            n_params = (n_states - 1) + n_states * (n_states - 1) + n_states * n_features + n_states * n_features * (n_features + 1) // 2
+            aic = float(2.0 * n_params - 2.0 * log_likelihood)
+            bic = float(n_params * np.log(n_obs) - 2.0 * log_likelihood)
+        except Exception:
+            log_likelihood = float("nan")
+            n_obs = int(len(X))
+            n_params = 0
+            aic = float("nan")
+            bic = float("nan")
+        
         return {
             "model": model,
             "regime_series": regime_series,
@@ -723,11 +754,297 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
             "transmat": transmat,
             "regime_names": regime_names,
             "n_states": n_states,
+            "log_likelihood": log_likelihood,
+            "n_obs": n_obs,
+            "n_params": n_params,
+            "aic": aic,
+            "bic": bic,
         }
         
     except Exception as e:
         # Silent fallback on HMM failure
         return None
+
+
+def track_parameter_stability(ret: pd.Series, window_days: int = 252, step_days: int = 63) -> Dict[str, pd.DataFrame]:
+    """
+    Track GARCH parameter stability over time using rolling window estimation.
+    
+    Fits GARCH(1,1) on expanding windows to detect parameter drift.
+    Returns time series of parameters, standard errors, and log-likelihoods.
+    
+    Args:
+        ret: Returns series
+        window_days: Minimum window size for initial fit
+        step_days: Days between refits (trades off compute vs resolution)
+        
+    Returns:
+        Dictionary with DataFrames tracking parameters over time
+    """
+    ret_clean = _ensure_float_series(ret).dropna()
+    if len(ret_clean) < max(300, window_days):
+        return {}
+    
+    # Time points to evaluate (start at window_days, step forward)
+    dates = ret_clean.index
+    eval_dates = []
+    for i in range(window_days, len(dates), step_days):
+        eval_dates.append(dates[i])
+    
+    if not eval_dates:
+        return {}
+    
+    # Storage for parameter evolution
+    records = []
+    
+    for eval_date in eval_dates:
+        # Use expanding window up to eval_date
+        window_ret = ret_clean.loc[:eval_date]
+        
+        # Try to fit GARCH
+        try:
+            _, params = _garch11_mle(window_ret)
+            record = {
+                "date": eval_date,
+                "omega": params.get("omega", float("nan")),
+                "alpha": params.get("alpha", float("nan")),
+                "beta": params.get("beta", float("nan")),
+                "se_omega": params.get("se_omega", float("nan")),
+                "se_alpha": params.get("se_alpha", float("nan")),
+                "se_beta": params.get("se_beta", float("nan")),
+                "log_likelihood": params.get("log_likelihood", float("nan")),
+                "aic": params.get("aic", float("nan")),
+                "bic": params.get("bic", float("nan")),
+                "n_obs": params.get("n_obs", 0),
+                "converged": params.get("converged", False),
+            }
+            records.append(record)
+        except Exception:
+            # Skip windows where GARCH fails
+            continue
+    
+    if not records:
+        return {}
+    
+    df = pd.DataFrame(records).set_index("date")
+    
+    # Compute parameter drift statistics (rolling z-score of parameter changes)
+    param_cols = ["omega", "alpha", "beta"]
+    drift_stats = {}
+    
+    for col in param_cols:
+        if col in df.columns:
+            changes = df[col].diff()
+            se_col = f"se_{col}"
+            if se_col in df.columns:
+                # Normalized change (z-score): change / standard error
+                z_change = changes / df[se_col].replace(0, np.nan)
+                drift_stats[f"{col}_drift_z"] = z_change
+    
+    drift_df = pd.DataFrame(drift_stats, index=df.index)
+    
+    return {
+        "param_evolution": df,
+        "param_drift": drift_df,
+    }
+
+
+def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int = 21, horizons: List[int] = [1, 21, 63]) -> Dict[str, pd.DataFrame]:
+    """
+    Perform walk-forward out-of-sample testing to validate predictive power.
+    
+    Splits data into non-overlapping train/test windows, fits model on train,
+    predicts on test, and tracks hit rates and prediction errors.
+    
+    Args:
+        px: Price series
+        train_days: Training window size (days)
+        test_days: Test window size (days)
+        horizons: Forecast horizons to test
+        
+    Returns:
+        Dictionary with out-of-sample performance metrics
+    """
+    px_clean = _ensure_float_series(px).dropna()
+    if len(px_clean) < train_days + test_days + max(horizons):
+        return {}
+    
+    log_px = np.log(px_clean)
+    dates = px_clean.index
+    
+    # Define walk-forward windows
+    windows = []
+    start_idx = 0
+    while start_idx + train_days + test_days <= len(dates):
+        train_end_idx = start_idx + train_days
+        test_end_idx = min(train_end_idx + test_days, len(dates))
+        
+        train_dates = dates[start_idx:train_end_idx]
+        test_dates = dates[train_end_idx:test_end_idx]
+        
+        if len(test_dates) > 0:
+            windows.append({
+                "train_start": train_dates[0],
+                "train_end": train_dates[-1],
+                "test_start": test_dates[0],
+                "test_end": test_dates[-1],
+            })
+        
+        # Move forward by test_days (non-overlapping)
+        start_idx = test_end_idx
+    
+    if not windows:
+        return {}
+    
+    # Track predictions and outcomes for each horizon
+    results = {h: [] for h in horizons}
+    
+    for window in windows:
+        # Fit features on training data
+        train_px = px_clean.loc[window["train_start"]:window["train_end"]]
+        
+        try:
+            train_feats = compute_features(train_px)
+            
+            # Get predictions at end of training window
+            mu_now = safe_last(train_feats.get("mu_post", pd.Series([0.0])))
+            vol_now = safe_last(train_feats.get("vol", pd.Series([1.0])))
+            
+            if not np.isfinite(mu_now):
+                mu_now = 0.0
+            if not np.isfinite(vol_now) or vol_now <= 0:
+                vol_now = 1.0
+            
+            # For each horizon, predict and measure actual outcome
+            test_log_px = log_px.loc[window["test_start"]:window["test_end"]]
+            train_end_log_px = float(log_px.loc[window["train_end"]])
+            
+            for H in horizons:
+                # Predicted return over H days
+                pred_ret_H = mu_now * H
+                pred_sign = np.sign(pred_ret_H) if pred_ret_H != 0 else 0
+                
+                # Actual return H days forward from train_end
+                try:
+                    forward_idx = dates.get_loc(window["train_end"]) + H
+                    if forward_idx < len(dates):
+                        forward_date = dates[forward_idx]
+                        actual_log_px = float(log_px.loc[forward_date])
+                        actual_ret_H = actual_log_px - train_end_log_px
+                        actual_sign = np.sign(actual_ret_H) if actual_ret_H != 0 else 0
+                        
+                        # Prediction error
+                        pred_error = actual_ret_H - pred_ret_H
+                        
+                        # Direction hit (1 if signs match, 0 otherwise)
+                        hit = 1 if (pred_sign * actual_sign > 0) else 0
+                        
+                        results[H].append({
+                            "train_end": window["train_end"],
+                            "forecast_date": forward_date,
+                            "predicted_return": pred_ret_H,
+                            "actual_return": actual_ret_H,
+                            "prediction_error": pred_error,
+                            "direction_hit": hit,
+                        })
+                except Exception:
+                    continue
+                    
+        except Exception:
+            continue
+    
+    # Aggregate results into DataFrames
+    oos_metrics = {}
+    for H in horizons:
+        if results[H]:
+            df = pd.DataFrame(results[H]).set_index("train_end")
+            
+            # Compute cumulative statistics
+            hit_rate = df["direction_hit"].mean() if len(df) > 0 else float("nan")
+            mean_error = df["prediction_error"].mean() if len(df) > 0 else float("nan")
+            rmse = np.sqrt((df["prediction_error"] ** 2).mean()) if len(df) > 0 else float("nan")
+            
+            oos_metrics[f"H{H}"] = {
+                "predictions": df,
+                "hit_rate": float(hit_rate),
+                "mean_error": float(mean_error),
+                "rmse": float(rmse),
+                "n_forecasts": len(df),
+            }
+    
+    return oos_metrics
+
+
+def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_oos: bool = False) -> Dict:
+    """
+    Compute comprehensive diagnostics: log-likelihood monitoring, parameter stability, 
+    and optionally out-of-sample tests.
+    
+    Args:
+        px: Price series
+        feats: Feature dictionary from compute_features
+        enable_oos: If True, run expensive out-of-sample validation
+        
+    Returns:
+        Dictionary with all diagnostic metrics
+    """
+    diagnostics = {}
+    
+    # 1. Log-likelihood monitoring from fitted models
+    garch_params = feats.get("garch_params", {})
+    if isinstance(garch_params, dict):
+        diagnostics["garch_log_likelihood"] = garch_params.get("log_likelihood", float("nan"))
+        diagnostics["garch_aic"] = garch_params.get("aic", float("nan"))
+        diagnostics["garch_bic"] = garch_params.get("bic", float("nan"))
+        diagnostics["garch_n_obs"] = garch_params.get("n_obs", 0)
+    
+    hmm_result = feats.get("hmm_result")
+    if hmm_result is not None and isinstance(hmm_result, dict):
+        diagnostics["hmm_log_likelihood"] = hmm_result.get("log_likelihood", float("nan"))
+        diagnostics["hmm_aic"] = hmm_result.get("aic", float("nan"))
+        diagnostics["hmm_bic"] = hmm_result.get("bic", float("nan"))
+        diagnostics["hmm_n_obs"] = hmm_result.get("n_obs", 0)
+    
+    nu_info = feats.get("nu_info", {})
+    if isinstance(nu_info, dict):
+        diagnostics["student_t_log_likelihood"] = nu_info.get("ll", float("nan"))
+        diagnostics["student_t_nu"] = nu_info.get("nu_hat", float("nan"))
+        diagnostics["student_t_n_obs"] = nu_info.get("n", 0)
+    
+    # 2. Parameter stability tracking (expensive, only if enough data)
+    ret = feats.get("ret", pd.Series(dtype=float))
+    if not ret.empty and len(ret) >= 600:
+        try:
+            stability = track_parameter_stability(ret, window_days=252, step_days=126)
+            if stability:
+                diagnostics["parameter_stability"] = stability
+                
+                # Summary statistics: recent drift magnitude
+                param_drift = stability.get("param_drift")
+                if param_drift is not None and not param_drift.empty:
+                    recent_drift = param_drift.tail(1)
+                    for col in param_drift.columns:
+                        val = safe_last(param_drift[col])
+                        diagnostics[f"recent_{col}"] = float(val) if np.isfinite(val) else float("nan")
+        except Exception:
+            pass
+    
+    # 3. Out-of-sample tests (very expensive, optional)
+    if enable_oos and not px.empty and len(px) >= 800:
+        try:
+            oos_metrics = walk_forward_validation(px, train_days=504, test_days=21, horizons=[1, 21, 63])
+            if oos_metrics:
+                diagnostics["out_of_sample"] = oos_metrics
+                
+                # Summary: hit rates for each horizon
+                for horizon_key, metrics in oos_metrics.items():
+                    if isinstance(metrics, dict):
+                        hit_rate = metrics.get("hit_rate", float("nan"))
+                        diagnostics[f"oos_{horizon_key}_hit_rate"] = float(hit_rate)
+        except Exception:
+            pass
+    
+    return diagnostics
 
 
 def infer_current_regime(feats: Dict[str, pd.Series], hmm_result: Optional[Dict] = None) -> Tuple[str, Dict[str, float]]:
@@ -1364,6 +1681,9 @@ def parse_args() -> argparse.Namespace:
     # Caption controls for detailed view
     p.add_argument("--no_caption", action="store_true", help="Suppress the long column explanation caption in detailed tables.")
     p.add_argument("--force_caption", action="store_true", help="Force showing the caption for every detailed table.")
+    # Diagnostics controls (Level-7 falsifiability)
+    p.add_argument("--diagnostics", action="store_true", help="Enable full diagnostics: log-likelihood monitoring, parameter stability tracking, and out-of-sample tests (expensive).")
+    p.add_argument("--diagnostics_lite", action="store_true", help="Enable lightweight diagnostics: log-likelihood monitoring and parameter stability (no OOS tests).")
     p.set_defaults(t_map=True)
     return p.parse_args()
 
@@ -1403,6 +1723,12 @@ def main() -> None:
         feats = compute_features(px)
         last_close = _to_float(px.iloc[-1])
         sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)
+        
+        # Compute diagnostics if requested (Level-7 falsifiability)
+        diagnostics = {}
+        if args.diagnostics or args.diagnostics_lite:
+            enable_oos = args.diagnostics  # Full diagnostics include expensive OOS tests
+            diagnostics = compute_all_diagnostics(px, feats, enable_oos=enable_oos)
 
         # Print table for this asset
         if args.simple:
@@ -1418,6 +1744,56 @@ def main() -> None:
             render_detailed_signal_table(asset, title, sigs, px, confidence_level=args.ci, used_student_t_mapping=args.t_map, show_caption=show_caption)
             caption_printed = caption_printed or show_caption
             explanations = []
+        
+        # Display diagnostics if computed (Level-7: model falsifiability)
+        if diagnostics and (args.diagnostics or args.diagnostics_lite):
+            from rich.table import Table
+            console = Console()
+            diag_table = Table(title=f"📊 Diagnostics for {asset} — Model Falsifiability Metrics")
+            diag_table.add_column("Metric", justify="left", style="cyan")
+            diag_table.add_column("Value", justify="right")
+            
+            # Log-likelihood monitoring
+            if "garch_log_likelihood" in diagnostics:
+                diag_table.add_row("GARCH(1,1) Log-Likelihood", f"{diagnostics['garch_log_likelihood']:.2f}")
+                diag_table.add_row("GARCH(1,1) AIC", f"{diagnostics['garch_aic']:.2f}")
+                diag_table.add_row("GARCH(1,1) BIC", f"{diagnostics['garch_bic']:.2f}")
+            
+            if "hmm_log_likelihood" in diagnostics:
+                diag_table.add_row("HMM Regime Log-Likelihood", f"{diagnostics['hmm_log_likelihood']:.2f}")
+                diag_table.add_row("HMM AIC", f"{diagnostics['hmm_aic']:.2f}")
+                diag_table.add_row("HMM BIC", f"{diagnostics['hmm_bic']:.2f}")
+            
+            if "student_t_log_likelihood" in diagnostics:
+                diag_table.add_row("Student-t Tail Log-Likelihood", f"{diagnostics['student_t_log_likelihood']:.2f}")
+                diag_table.add_row("Student-t Degrees of Freedom (ν)", f"{diagnostics['student_t_nu']:.2f}")
+            
+            # Parameter stability (recent drift z-scores)
+            drift_cols = [k for k in diagnostics.keys() if k.startswith("recent_") and k.endswith("_drift_z")]
+            if drift_cols:
+                diag_table.add_row("", "")  # spacer
+                diag_table.add_row("[bold]Parameter Stability[/bold]", "[bold]Recent Drift (z-score)[/bold]")
+                for col in drift_cols:
+                    param_name = col.replace("recent_", "").replace("_drift_z", "")
+                    val = diagnostics[col]
+                    if np.isfinite(val):
+                        color = "green" if abs(val) < 2.0 else ("yellow" if abs(val) < 3.0 else "red")
+                        diag_table.add_row(f"  {param_name}", f"[{color}]{val:+.2f}[/{color}]")
+            
+            # Out-of-sample test results (if enabled)
+            oos_keys = [k for k in diagnostics.keys() if k.startswith("oos_") and k.endswith("_hit_rate")]
+            if oos_keys:
+                diag_table.add_row("", "")  # spacer
+                diag_table.add_row("[bold]Out-of-Sample Tests[/bold]", "[bold]Direction Hit Rate[/bold]")
+                for key in oos_keys:
+                    horizon_label = key.replace("oos_", "").replace("_hit_rate", "")
+                    hit_rate = diagnostics[key]
+                    if np.isfinite(hit_rate):
+                        color = "green" if hit_rate >= 0.55 else ("yellow" if hit_rate >= 0.50 else "red")
+                        diag_table.add_row(f"  {horizon_label}", f"[{color}]{hit_rate*100:.1f}%[/{color}]")
+            
+            console.print(diag_table)
+            console.print("")  # blank line
 
         # Build summary row for this asset
         asset_label = build_asset_display_label(asset, title)
@@ -1458,6 +1834,22 @@ def main() -> None:
             "nu_bounds": {"min": 4.5, "max": 500.0},
             "nu_info": feats.get("nu_info", {}),
         }
+        
+        # Add diagnostics to JSON if computed (Level-7 falsifiability)
+        if diagnostics:
+            # Filter out non-serializable objects (DataFrames) for JSON
+            serializable_diagnostics = {}
+            for k, v in diagnostics.items():
+                if k in ("parameter_stability", "out_of_sample"):
+                    # Skip raw DataFrames; summary metrics already in top-level diagnostics
+                    continue
+                if isinstance(v, (int, float, str, bool, type(None))):
+                    serializable_diagnostics[k] = v
+                elif isinstance(v, dict):
+                    # Nested dicts are OK if they contain serializable values
+                    serializable_diagnostics[k] = v
+            block["diagnostics"] = serializable_diagnostics
+        
         all_blocks.append(block)
 
         # Prepare CSV rows
