@@ -723,6 +723,10 @@ def _garch11_mle(ret: pd.Series) -> Tuple[pd.Series, Dict[str, float]]:
     Returns (sigma_series, params_dict). Falls back by raising on failure.
     Model: r_t = mu_t + e_t, e_t ~ N(0, h_t), h_t = omega + alpha*e_{t-1}^2 + beta*h_{t-1}
     We estimate on de-meaned returns (mean 0) and treat residuals as r_t.
+
+    Level-7: we also approximate parameter uncertainty by computing the observed
+    information (numeric Hessian of the negative log-likelihood) at the optimum
+    and inverting it to obtain an approximate covariance matrix for (omega,alpha,beta).
     """
     from scipy.optimize import minimize
 
@@ -785,6 +789,7 @@ def _garch11_mle(ret: pd.Series) -> Tuple[pd.Series, Dict[str, float]]:
         raise RuntimeError("GARCH(1,1) MLE failed to converge from all starts")
 
     omega, alpha, beta = [float(v) for v in best_params]
+
     # Rebuild conditional variance series with optimal params
     h = np.empty(T, dtype=float)
     try:
@@ -801,7 +806,61 @@ def _garch11_mle(ret: pd.Series) -> Tuple[pd.Series, Dict[str, float]]:
     sigma = np.sqrt(h)
     vol = pd.Series(sigma, index=r.index, name='vol_garch')
 
-    params = {"omega": omega, "alpha": alpha, "beta": beta, "converged": True}
+    # Approximate covariance of parameters via numeric Hessian of nll at optimum
+    def _approx_hessian(x: np.ndarray) -> Optional[np.ndarray]:
+        try:
+            x = np.asarray(x, dtype=float)
+            k = x.size
+            H = np.zeros((k, k), dtype=float)
+            # Step sizes scaled to parameter magnitudes
+            eps_base = 1e-6
+            h_vec = np.maximum(np.abs(x) * 1e-3, eps_base)
+            f0 = nll(x)
+            # Diagonal second derivatives
+            for i in range(k):
+                ei = np.zeros(k); ei[i] = h_vec[i]
+                f_plus = nll(x + ei)
+                f_minus = nll(x - ei)
+                H[i, i] = (f_plus - 2.0 * f0 + f_minus) / (h_vec[i] ** 2)
+            # Off-diagonals via mixed partials (central)
+            for i in range(k):
+                for j in range(i+1, k):
+                    ei = np.zeros(k); ei[i] = h_vec[i]
+                    ej = np.zeros(k); ej[j] = h_vec[j]
+                    f_pp = nll(x + ei + ej)
+                    f_pm = nll(x + ei - ej)
+                    f_mp = nll(x - ei + ej)
+                    f_mm = nll(x - ei - ej)
+                    mixed = (f_pp - f_pm - f_mp + f_mm) / (4.0 * h_vec[i] * h_vec[j])
+                    H[i, j] = mixed
+                    H[j, i] = mixed
+            return H
+        except Exception:
+            return None
+
+    cov = None
+    se = None
+    try:
+        H = _approx_hessian(np.array([omega, alpha, beta], dtype=float))
+        if H is not None:
+            # Regularize slightly to improve conditioning
+            lam = 1e-8
+            H_reg = H + lam * np.eye(3)
+            cov_try = np.linalg.pinv(H_reg)
+            # Ensure symmetry and positive diagonals
+            cov_try = 0.5 * (cov_try + cov_try.T)
+            if np.all(np.isfinite(cov_try)) and np.all(np.diag(cov_try) >= 0):
+                cov = cov_try
+                se = np.sqrt(np.maximum(np.diag(cov), 0.0))
+    except Exception:
+        cov = None
+        se = None
+
+    params: Dict[str, float] = {"omega": omega, "alpha": alpha, "beta": beta, "converged": True}
+    if cov is not None:
+        params["cov"] = cov.tolist()
+    if se is not None:
+        params["se_omega"], params["se_alpha"], params["se_beta"] = [float(x) for x in se]
     return vol, params
 
 
@@ -1117,6 +1176,10 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     - Drift evolves as AR(1): mu_{t+1} = phi * mu_t + eta_t,  eta ~ N(0, q)
     - Volatility evolves via GARCH(1,1) when available; else held constant.
     - Innovations are Student-t with global df (nu_hat) scaled to unit variance.
+    Level-7 parameter uncertainty: if PARAM_UNC environment variable is set to
+    'sample' (default) and garch_params contains a covariance matrix, we sample
+    (omega, alpha, beta) per path from N(theta_hat, Cov) with constraints, which
+    widens confidence during regime shifts and narrows during stability.
     Returns an array of shape (H_max, n_paths) with cumulative log returns per horizon.
     """
     # Inputs at 'now'
@@ -1147,15 +1210,67 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     # GARCH params
     garch_params = feats.get("garch_params", {}) or {}
     use_garch = isinstance(garch_params, dict) and all(k in garch_params for k in ("omega", "alpha", "beta"))
+
+    # Determine parameter uncertainty mode
+    param_unc_mode = os.getenv("PARAM_UNC", "sample").strip().lower()
+    if param_unc_mode not in ("none", "sample"):
+        param_unc_mode = "sample"
+
+    # Build per-path parameters (possibly sampled)
     if use_garch:
-        omega = float(max(garch_params.get("omega", 0.0), 1e-12))
-        alpha = float(np.clip(garch_params.get("alpha", 0.0), 0.0, 0.999))
-        beta = float(np.clip(garch_params.get("beta", 0.0), 0.0, 0.999))
-        if alpha + beta >= 0.999:
-            beta = 0.998 - alpha
-            beta = max(beta, 0.0)
+        base_theta = np.array([
+            float(max(garch_params.get("omega", 0.0), 1e-12)),
+            float(np.clip(garch_params.get("alpha", 0.0), 0.0, 0.999)),
+            float(np.clip(garch_params.get("beta", 0.0), 0.0, 0.999)),
+        ], dtype=float)
+        cov = garch_params.get("cov")
+        if isinstance(cov, list):
+            try:
+                cov = np.array(cov, dtype=float)
+            except Exception:
+                cov = None
+        # Sample theta per path if enabled and covariance available
+        if (param_unc_mode == "sample") and (cov is not None) and np.shape(cov) == (3, 3):
+            rng = np.random.default_rng()
+            try:
+                thetas = rng.multivariate_normal(mean=base_theta, cov=cov, size=n_paths).astype(float)
+            except Exception:
+                # Fall back to eigen-decomposition sampling with small regularization
+                try:
+                    eigvals, eigvecs = np.linalg.eigh(0.5*(cov+cov.T) + 1e-12*np.eye(3))
+                    eigvals = np.clip(eigvals, 0.0, None)
+                    z = rng.normal(size=(n_paths, 3)) * np.sqrt(eigvals)
+                    thetas = (z @ eigvecs.T) + base_theta
+                except Exception:
+                    thetas = np.tile(base_theta, (n_paths, 1))
+            # Enforce constraints; replace invalid draws with base_theta
+            omega_s = thetas[:, 0]
+            alpha_s = thetas[:, 1]
+            beta_s  = thetas[:, 2]
+            # Fix obvious violations
+            omega_s = np.maximum(omega_s, 1e-12)
+            alpha_s = np.clip(alpha_s, 0.0, 0.999)
+            beta_s  = np.clip(beta_s, 0.0, 0.999)
+            # Enforce alpha+beta < 0.999 by shrinking both toward base proportionally
+            ab = alpha_s + beta_s
+            viol = ab >= 0.999
+            if np.any(viol):
+                # target sum slightly below 1
+                target = 0.998
+                scale = target / np.maximum(ab[viol], 1e-12)
+                alpha_s[viol] *= scale
+                beta_s[viol] *= scale
+            omega_paths = omega_s
+            alpha_paths = alpha_s
+            beta_paths = beta_s
+        else:
+            omega_paths = np.full(n_paths, base_theta[0], dtype=float)
+            alpha_paths = np.full(n_paths, base_theta[1], dtype=float)
+            beta_paths  = np.full(n_paths, base_theta[2], dtype=float)
     else:
-        omega = alpha = beta = 0.0
+        omega_paths = np.zeros(n_paths, dtype=float)
+        alpha_paths = np.zeros(n_paths, dtype=float)
+        beta_paths  = np.zeros(n_paths, dtype=float)
 
     # Drift process noise variance q (relative to current variance)
     h0 = vol_now ** 2
@@ -1181,7 +1296,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
             cum[t, :] = cum[t-1, :] + mu_t + e_t
         # Evolve volatility via GARCH or hold constant on fallback
         if use_garch:
-            h_t = omega + alpha * (e_t ** 2) + beta * h_t
+            h_t = omega_paths + alpha_paths * (e_t ** 2) + beta_paths * h_t
             h_t = np.clip(h_t, 1e-12, 1e4)
         # Evolve drift via AR(1)
         eta = rng.normal(loc=0.0, scale=math.sqrt(q), size=n_paths)
