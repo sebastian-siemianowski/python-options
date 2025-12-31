@@ -434,6 +434,353 @@ def _fit_student_nu_mle(z: pd.Series, min_n: int = 200, bounds: Tuple[float, flo
     return {"nu_hat": nu_hat, "ll": ll, "n": n, "converged": True}
 
 
+def _test_innovation_whiteness(innovations: np.ndarray, innovation_vars: np.ndarray, lags: int = 20) -> Dict[str, float]:
+    """
+    Test innovation whiteness using Ljung-Box test for autocorrelation.
+    
+    Refinement 3: Model adequacy via innovation whiteness testing.
+    If innovations are not white noise (autocorrelated), the model may be misspecified.
+    
+    Args:
+        innovations: Prediction errors from Kalman filter
+        innovation_vars: Innovation variances (for standardization)
+        lags: Number of lags to test
+        
+    Returns:
+        Dictionary with test statistic, p-value, and interpretation
+    """
+    try:
+        # Standardize innovations by their predicted variance
+        std_innovations = innovations / np.sqrt(np.maximum(innovation_vars, 1e-12))
+        std_innovations = std_innovations[np.isfinite(std_innovations)]
+        
+        if len(std_innovations) < max(30, lags + 10):
+            return {
+                "ljung_box_statistic": float("nan"),
+                "ljung_box_pvalue": float("nan"),
+                "lags_tested": 0,
+                "model_adequate": None,
+                "note": "insufficient_data"
+            }
+        
+        n = len(std_innovations)
+        lags = min(lags, n // 5)  # conservative lag limit
+        
+        # Compute Ljung-Box statistic manually
+        # Q = n(n+2) Σ(ρ_k² / (n-k)) for k=1..m
+        # Under H0 (white noise), Q ~ χ²(m)
+        
+        # Compute autocorrelations
+        acf_vals = []
+        for lag in range(1, lags + 1):
+            if lag >= n:
+                break
+            try:
+                # Sample autocorrelation at lag k
+                mean_innov = float(np.mean(std_innovations))
+                numerator = float(np.sum((std_innovations[lag:] - mean_innov) * (std_innovations[:-lag] - mean_innov)))
+                denominator = float(np.sum((std_innovations - mean_innov) ** 2))
+                rho_k = numerator / denominator if abs(denominator) > 1e-12 else 0.0
+                acf_vals.append(rho_k)
+            except Exception:
+                break
+        
+        if not acf_vals:
+            return {
+                "ljung_box_statistic": float("nan"),
+                "ljung_box_pvalue": float("nan"),
+                "lags_tested": 0,
+                "model_adequate": None,
+                "note": "acf_computation_failed"
+            }
+        
+        # Ljung-Box statistic
+        Q = 0.0
+        m = len(acf_vals)
+        for k, rho_k in enumerate(acf_vals, start=1):
+            Q += (rho_k ** 2) / float(n - k)
+        Q *= n * (n + 2)
+        
+        # Compute p-value using chi-squared distribution
+        from scipy.stats import chi2
+        pvalue = float(1.0 - chi2.cdf(Q, df=m))
+        
+        # Interpretation: reject H0 (white noise) if p < 0.05
+        # model_adequate = True if we fail to reject (p >= 0.05)
+        model_adequate = bool(pvalue >= 0.05)
+        
+        return {
+            "ljung_box_statistic": float(Q),
+            "ljung_box_pvalue": float(pvalue),
+            "lags_tested": int(m),
+            "model_adequate": model_adequate,
+            "note": "pass" if model_adequate else "fail_autocorrelation_detected"
+        }
+        
+    except Exception as e:
+        return {
+            "ljung_box_statistic": float("nan"),
+            "ljung_box_pvalue": float("nan"),
+            "lags_tested": 0,
+            "model_adequate": None,
+            "note": f"test_failed: {str(e)}"
+        }
+
+
+def _compute_kalman_log_likelihood(y: np.ndarray, sigma: np.ndarray, q: float) -> float:
+    """
+    Compute log-likelihood for Kalman filter with given process noise q.
+    Used for q optimization via marginal likelihood maximization.
+    
+    Args:
+        y: Observations (returns)
+        sigma: Observation noise std (volatility) per time step
+        q: Process noise variance to evaluate
+        
+    Returns:
+        Total log-likelihood of observations under this q
+    """
+    T = len(y)
+    if T < 2:
+        return float('-inf')
+    
+    # Initialize
+    mu_t = 0.0
+    P_t = 1.0
+    log_likelihood = 0.0
+    
+    for t in range(T):
+        # Prediction
+        mu_pred = mu_t
+        P_pred = P_t + q
+        
+        # Observation variance
+        R_t = float(max(sigma[t] ** 2, 1e-12))
+        
+        # Innovation
+        innov = y[t] - mu_pred
+        S_t = float(max(P_pred + R_t, 1e-12))
+        
+        # Log-likelihood contribution
+        try:
+            ll_t = -0.5 * (np.log(2.0 * np.pi * S_t) + (innov ** 2) / S_t)
+            if np.isfinite(ll_t):
+                log_likelihood += ll_t
+        except Exception:
+            pass
+        
+        # Update
+        K_t = P_pred / S_t
+        mu_t = mu_pred + K_t * innov
+        P_t = float(max((1.0 - K_t) * P_pred, 1e-12))
+    
+    return float(log_likelihood)
+
+
+def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = None, optimize_q: bool = True) -> Dict[str, pd.Series]:
+    """
+    Kalman filter for time-varying drift estimation with optional q optimization.
+    
+    State-space model:
+        r_t = μ_t + ε_t,  ε_t ~ N(0, σ_t²)  (observation equation)
+        μ_t = μ_{t-1} + η_t,  η_t ~ N(0, q)  (state transition, random walk)
+    
+    Where:
+        r_t: observed return at time t
+        μ_t: latent drift (hidden state)
+        σ_t: conditional volatility from GARCH/EWMA
+        q: drift evolution variance (process noise)
+    
+    Args:
+        ret: Returns series
+        vol: Conditional volatility series (from GARCH or EWMA)
+        q: Process noise variance. If None, estimated via heuristic or optimization.
+        optimize_q: If True and q is None, optimize q via marginal likelihood maximization.
+        
+    Returns:
+        Dictionary with:
+            - mu_kf_filtered: Forward-pass filtered drift estimates
+            - mu_kf_smoothed: Backward-pass smoothed drift estimates (preferred)
+            - var_kf_filtered: Forward-pass filtered drift variance
+            - var_kf_smoothed: Backward-pass smoothed drift variance
+            - kalman_gain: Kalman gain series (diagnostic)
+            - log_likelihood: Total log-likelihood of observations
+            - innovations: Prediction errors (diagnostic)
+            - q_optimal: Optimized or heuristic q value used
+            - q_heuristic: Baseline heuristic q for comparison
+            - q_optimization_attempted: Whether q optimization was attempted
+    """
+    ret_clean = _ensure_float_series(ret).dropna()
+    vol_clean = _ensure_float_series(vol).reindex(ret_clean.index).dropna()
+    
+    # Align series
+    df = pd.concat([ret_clean, vol_clean], axis=1, join='inner').dropna()
+    if len(df) < 50:
+        # Not enough data for stable Kalman filtering
+        return {}
+    
+    df.columns = ['ret', 'vol']
+    y = df['ret'].values.astype(float)  # observations
+    sigma = df['vol'].values.astype(float)  # observation noise std
+    T = len(y)
+    idx = df.index
+    
+    # Compute heuristic baseline q
+    med_var = float(np.nanmedian(sigma ** 2))
+    q_heuristic = 0.01 * med_var  # 1% of typical observation variance
+    q_heuristic = float(max(q_heuristic, 1e-10))
+    
+    # Determine q to use
+    q_optimization_attempted = False
+    if q is None and optimize_q and T >= 252:
+        # Optimize q via marginal likelihood maximization (grid search)
+        # Try q values around the heuristic: [0.001, 0.005, 0.01, 0.05, 0.1] * med_var
+        q_optimization_attempted = True
+        q_candidates = [0.001 * med_var, 0.005 * med_var, q_heuristic, 0.05 * med_var, 0.1 * med_var]
+        q_candidates = [float(max(qc, 1e-10)) for qc in q_candidates]
+        
+        best_q = q_heuristic
+        best_ll = float('-inf')
+        
+        for q_trial in q_candidates:
+            try:
+                # Run Kalman filter with this q and compute log-likelihood
+                ll_trial = _compute_kalman_log_likelihood(y, sigma, q_trial)
+                if np.isfinite(ll_trial) and ll_trial > best_ll:
+                    best_ll = ll_trial
+                    best_q = q_trial
+            except Exception:
+                continue
+        
+        q = best_q
+    elif q is None:
+        # Use heuristic if optimization disabled or insufficient data
+        q = q_heuristic
+    else:
+        q = float(max(q, 1e-10))
+    
+    # Initialize state and covariance
+    # Prior: μ_0 ~ N(0, large variance) to represent initial uncertainty
+    mu_prior = 0.0
+    P_prior = 1.0  # initial uncertainty
+    
+    # Storage for forward pass
+    mu_filtered = np.zeros(T, dtype=float)
+    P_filtered = np.zeros(T, dtype=float)
+    K_gain = np.zeros(T, dtype=float)
+    innovations = np.zeros(T, dtype=float)
+    innovation_vars = np.zeros(T, dtype=float)
+    
+    # Forward pass (Kalman filter)
+    mu_t = mu_prior
+    P_t = P_prior
+    log_likelihood = 0.0
+    
+    for t in range(T):
+        # Prediction step: project state forward
+        # μ_{t|t-1} = μ_{t-1|t-1}  (random walk has no drift term in transition)
+        # P_{t|t-1} = P_{t-1|t-1} + q
+        mu_pred = mu_t
+        P_pred = P_t + q
+        
+        # Observation noise variance at time t
+        R_t = sigma[t] ** 2
+        R_t = float(max(R_t, 1e-12))  # floor
+        
+        # Innovation (prediction error)
+        innov = y[t] - mu_pred
+        
+        # Innovation variance: S_t = H P_{t|t-1} H^T + R_t
+        # With H=1 (observation matrix), S_t = P_pred + R_t
+        S_t = P_pred + R_t
+        S_t = float(max(S_t, 1e-12))
+        
+        # Kalman gain: K_t = P_{t|t-1} H^T S_t^{-1}
+        # With H=1, K_t = P_pred / S_t
+        K_t = P_pred / S_t
+        
+        # Update step: refine state estimate with observation
+        # μ_{t|t} = μ_{t|t-1} + K_t (y_t - μ_{t|t-1})
+        mu_t = mu_pred + K_t * innov
+        
+        # Update covariance: P_{t|t} = (1 - K_t H) P_{t|t-1}
+        # With H=1, P_{t|t} = (1 - K_t) P_pred
+        P_t = (1.0 - K_t) * P_pred
+        P_t = float(max(P_t, 1e-12))  # ensure positive
+        
+        # Store filtered estimates
+        mu_filtered[t] = mu_t
+        P_filtered[t] = P_t
+        K_gain[t] = K_t
+        innovations[t] = innov
+        innovation_vars[t] = S_t
+        
+        # Accumulate log-likelihood: ln p(y_t | y_{1:t-1})
+        # Under Gaussian assumption: -0.5 * (ln(2π S_t) + innov² / S_t)
+        try:
+            ll_t = -0.5 * (np.log(2.0 * np.pi * S_t) + (innov ** 2) / S_t)
+            if np.isfinite(ll_t):
+                log_likelihood += ll_t
+        except Exception:
+            pass
+    
+    # Backward pass (Rauch-Tung-Striebel smoother)
+    # Smoothing uses all data (past and future) for refined estimates
+    mu_smoothed = np.zeros(T, dtype=float)
+    P_smoothed = np.zeros(T, dtype=float)
+    
+    # Initialize backward pass with last filtered estimate
+    mu_smoothed[T-1] = mu_filtered[T-1]
+    P_smoothed[T-1] = P_filtered[T-1]
+    
+    for t in range(T-2, -1, -1):
+        # Smoother gain: C_t = P_{t|t} / P_{t+1|t}
+        # Where P_{t+1|t} = P_filtered[t] + q (predicted covariance for next step)
+        P_pred_next = P_filtered[t] + q
+        P_pred_next = float(max(P_pred_next, 1e-12))
+        
+        C_t = P_filtered[t] / P_pred_next
+        
+        # Smoothed state: μ_{t|T} = μ_{t|t} + C_t (μ_{t+1|T} - μ_{t+1|t})
+        mu_pred_next = mu_filtered[t]  # prediction for t+1 from t (random walk)
+        mu_smoothed[t] = mu_filtered[t] + C_t * (mu_smoothed[t+1] - mu_pred_next)
+        
+        # Smoothed covariance: P_{t|T} = P_{t|t} + C_t (P_{t+1|T} - P_{t+1|t}) C_t
+        P_smoothed[t] = P_filtered[t] + C_t * (P_smoothed[t+1] - P_pred_next) * C_t
+        P_smoothed[t] = float(max(P_smoothed[t], 1e-12))
+    
+    # Compute Kalman gain statistics for situational awareness
+    kalman_gain_mean = float(np.mean(K_gain))
+    kalman_gain_recent = float(K_gain[-1]) if len(K_gain) > 0 else float("nan")
+    
+    # Refinement 3: Innovation whiteness test (Ljung-Box)
+    # Test if standardized innovations are white noise (model adequacy check)
+    innovation_whiteness = _test_innovation_whiteness(innovations, innovation_vars, lags=min(20, T // 5))
+    
+    # Build output series aligned with original index
+    return {
+        "mu_kf_filtered": pd.Series(mu_filtered, index=idx, name="mu_kf_filtered"),
+        "mu_kf_smoothed": pd.Series(mu_smoothed, index=idx, name="mu_kf_smoothed"),
+        "var_kf_filtered": pd.Series(P_filtered, index=idx, name="var_kf_filtered"),
+        "var_kf_smoothed": pd.Series(P_smoothed, index=idx, name="var_kf_smoothed"),
+        "kalman_gain": pd.Series(K_gain, index=idx, name="kalman_gain"),
+        "innovations": pd.Series(innovations, index=idx, name="innovations"),
+        "innovation_vars": pd.Series(innovation_vars, index=idx, name="innovation_vars"),
+        "log_likelihood": float(log_likelihood),
+        "process_noise_var": float(q),
+        "n_obs": int(T),
+        # Refinement 1: q optimization metadata
+        "q_optimal": float(q),
+        "q_heuristic": float(q_heuristic),
+        "q_optimization_attempted": bool(q_optimization_attempted),
+        # Refinement 2: Kalman gain statistics (situational awareness)
+        "kalman_gain_mean": kalman_gain_mean,
+        "kalman_gain_recent": kalman_gain_recent,
+        # Refinement 3: Innovation whiteness test (model adequacy)
+        "innovation_whiteness": innovation_whiteness,
+    }
+
+
 def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
     # Protect log conversion from garbage ticks and non-positive prices
     px = _ensure_float_series(px)
@@ -499,71 +846,100 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
     vol_med = vol.rolling(252).median()
     vol_regime = vol / vol_med
 
-    # Drift from blended EWMA (fast/slow). With GARCH handling volatility coherently,
-    # avoid additional shrinkage by volatility regime to prevent double-counting.
-    mu_blend = 0.5 * mu_fast + 0.5 * mu_slow
-    mu = mu_blend
+    # ========================================
+    # Pillar 1: State-Space Model for Drift (Kalman Filter)
+    # ========================================
+    # Institution-grade drift estimation using Kalman filter with:
+    # - Forward pass: real-time filtered estimates
+    # - Backward pass: smoothed estimates using all data (preferred for signals)
+    # - Uncertainty quantification: Var(μ̂_t) propagated into forecasts
     
-    # Optional smoothing of drift to reduce whipsaws (backtest-safe: uses t-1 info)
-    # mu_t = 0.7 * mu_blend_t + 0.3 * mu_{t-1}
-    try:
-        mu_smoothed = 0.7 * mu_blend + 0.3 * mu.shift(1)
-        # Use smoothed where available; fallback to baseline mu
-        mu = mu_smoothed.combine_first(mu)
-    except Exception:
-        # In case of alignment/type issues, keep baseline mu
-        pass
-
+    # Run Kalman filter on returns with GARCH/EWMA volatility
+    kf_result = _kalman_filter_drift(ret, vol, q=None)  # q auto-estimated
+    
+    # Extract Kalman-filtered drift estimates
+    if kf_result and "mu_kf_smoothed" in kf_result:
+        # Use backward-smoothed estimates (uses all data, statistically optimal)
+        mu_kf = kf_result["mu_kf_smoothed"]
+        var_kf = kf_result["var_kf_smoothed"]
+        kalman_available = True
+        kalman_metadata = {
+            "log_likelihood": kf_result.get("log_likelihood", float("nan")),
+            "process_noise_var": kf_result.get("process_noise_var", float("nan")),
+            "n_obs": kf_result.get("n_obs", 0),
+            # Refinement 1: q optimization metadata
+            "q_optimal": kf_result.get("q_optimal", float("nan")),
+            "q_heuristic": kf_result.get("q_heuristic", float("nan")),
+            "q_optimization_attempted": kf_result.get("q_optimization_attempted", False),
+            # Refinement 2: Kalman gain statistics (situational awareness)
+            "kalman_gain_mean": kf_result.get("kalman_gain_mean", float("nan")),
+            "kalman_gain_recent": kf_result.get("kalman_gain_recent", float("nan")),
+            # Refinement 3: Innovation whiteness test (model adequacy)
+            "innovation_whiteness": kf_result.get("innovation_whiteness", {}),
+        }
+    else:
+        # Fallback: use EWMA blend if Kalman fails
+        mu_blend = 0.5 * mu_fast + 0.5 * mu_slow
+        mu_kf = mu_blend
+        var_kf = pd.Series(0.0, index=mu_kf.index)  # no uncertainty quantified
+        kalman_available = False
+        kalman_metadata = {}
+    
     # Trend filter (200D z-distance) - kept for diagnostics
     sma200 = px.rolling(200).mean()
     trend_z = (px - sma200) / px.rolling(200).std()
 
-    # HMM regime-aware drift estimation (replaces threshold-based shrinkage)
-    # Fit preliminary HMM to get regime posteriors for drift adjustment
+    # HMM regime detection (for regime-aware adjustments, not drift estimation)
+    # Fit HMM to get regime posteriors
     hmm_result_prelim = fit_hmm_regimes(
         {"ret": ret, "vol": vol},
         n_states=3,
         random_seed=42
     )
     
-    # Use HMM regime posteriors to weight drift estimates if available
+    # Apply light regime-aware shrinkage to Kalman drift in extreme regimes
+    # (Kalman already handles uncertainty; this adds regime-specific conservatism)
     if hmm_result_prelim is not None and "posterior_probs" in hmm_result_prelim:
         try:
             posterior_probs = hmm_result_prelim["posterior_probs"]
-            regime_means = hmm_result_prelim["means"][:, 0]  # drift component from each regime
             
-            # Align posteriors with mu_blend index
-            posterior_aligned = posterior_probs.reindex(mu_blend.index).ffill().fillna(0.333)
+            # Align posteriors with mu_kf index
+            posterior_aligned = posterior_probs.reindex(mu_kf.index).ffill().fillna(0.333)
             
-            # Regime-conditional drift: weight mu_blend by regime persistence
-            # In calm regimes: trust sample drift more (less shrinkage)
-            # In crisis regimes: shrink toward regime-learned drift (more conservative)
+            # Extract regime probabilities
             regime_names = hmm_result_prelim["regime_names"]
             calm_idx = [k for k, v in regime_names.items() if v == "calm"]
             crisis_idx = [k for k, v in regime_names.items() if v == "crisis"]
             
-            p_calm = posterior_aligned.iloc[:, calm_idx[0]].values if calm_idx else np.zeros(len(mu_blend))
-            p_crisis = posterior_aligned.iloc[:, crisis_idx[0]].values if crisis_idx else np.zeros(len(mu_blend))
+            p_calm = posterior_aligned.iloc[:, calm_idx[0]].values if calm_idx else np.zeros(len(mu_kf))
+            p_crisis = posterior_aligned.iloc[:, crisis_idx[0]].values if crisis_idx else np.zeros(len(mu_kf))
             
-            # Shrinkage weight: high in crisis (shrink toward 0), low in calm (trust sample)
-            shrinkage = 0.5 + 0.3 * p_crisis - 0.2 * p_calm
-            shrinkage = np.clip(shrinkage, 0.2, 0.9)
+            # Light shrinkage in crisis regimes (Kalman handles most uncertainty)
+            # Shrink toward zero in extreme crisis to be conservative
+            shrinkage = 0.3 * p_crisis  # 0-30% shrinkage based on crisis probability
+            shrinkage = np.clip(shrinkage, 0.0, 0.5)
             
-            # Posterior drift with regime-aware shrinkage (no hard-coded thresholds)
-            mu_post = pd.Series(
-                (1.0 - shrinkage) * mu_blend.values + shrinkage * 0.0,  # shrink toward zero in crisis
-                index=mu_blend.index
+            # Final drift: Kalman estimate with regime-aware shrinkage
+            mu_final = pd.Series(
+                (1.0 - shrinkage) * mu_kf.values,  # shrink toward zero in crisis
+                index=mu_kf.index,
+                name="mu_final"
             )
             
         except Exception:
-            # Fallback: use simple blend without shrinkage
-            mu_post = mu_blend.copy()
+            # Fallback: use Kalman estimate without regime adjustment
+            mu_final = mu_kf.copy()
     else:
-        # HMM not available: use simple blend without threshold-based shrinkage
-        mu_post = mu_blend.copy()
+        # HMM not available: use pure Kalman estimate
+        mu_final = mu_kf.copy()
     
     # Robust fallback for NaNs
-    mu_post = mu_post.fillna(mu_blend).fillna(0.0)
+    mu_final = mu_final.fillna(0.0)
+    
+    # Legacy aliases for backward compatibility
+    mu_blend = 0.5 * mu_fast + 0.5 * mu_slow  # kept for diagnostics
+    mu_post = mu_final  # primary drift estimate
+    mu = mu_final  # shorthand
 
     # Short-term mean-reversion z (5d move over 1m vol)
     r5 = (log_px - log_px.shift(5))
@@ -638,6 +1014,12 @@ def compute_features(px: pd.Series) -> Dict[str, pd.Series]:
         "garch_params": garch_params,
         # HMM regime detection
         "hmm_result": hmm_result,
+        # Pillar 1: Kalman filter drift estimation
+        "mu_kf": mu_kf if kalman_available else mu_blend,  # Kalman-filtered drift
+        "var_kf": var_kf if kalman_available else pd.Series(0.0, index=ret.index),  # drift variance
+        "mu_final": mu_final,  # final drift after regime adjustment
+        "kalman_available": kalman_available,  # flag for diagnostics
+        "kalman_metadata": kalman_metadata,  # log-likelihood, process noise, etc.
     }
 
 
@@ -998,6 +1380,27 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         diagnostics["garch_bic"] = garch_params.get("bic", float("nan"))
         diagnostics["garch_n_obs"] = garch_params.get("n_obs", 0)
     
+    # Pillar 1: Kalman filter drift diagnostics (including refinements)
+    kalman_metadata = feats.get("kalman_metadata", {})
+    if isinstance(kalman_metadata, dict):
+        diagnostics["kalman_log_likelihood"] = kalman_metadata.get("log_likelihood", float("nan"))
+        diagnostics["kalman_process_noise_var"] = kalman_metadata.get("process_noise_var", float("nan"))
+        diagnostics["kalman_n_obs"] = kalman_metadata.get("n_obs", 0)
+        # Refinement 1: q optimization
+        diagnostics["kalman_q_optimal"] = kalman_metadata.get("q_optimal", float("nan"))
+        diagnostics["kalman_q_heuristic"] = kalman_metadata.get("q_heuristic", float("nan"))
+        diagnostics["kalman_q_optimization_attempted"] = kalman_metadata.get("q_optimization_attempted", False)
+        # Refinement 2: Kalman gain (situational awareness)
+        diagnostics["kalman_gain_mean"] = kalman_metadata.get("kalman_gain_mean", float("nan"))
+        diagnostics["kalman_gain_recent"] = kalman_metadata.get("kalman_gain_recent", float("nan"))
+        # Refinement 3: Innovation whiteness (model adequacy)
+        innovation_whiteness = kalman_metadata.get("innovation_whiteness", {})
+        if isinstance(innovation_whiteness, dict):
+            diagnostics["innovation_ljung_box_statistic"] = innovation_whiteness.get("ljung_box_statistic", float("nan"))
+            diagnostics["innovation_ljung_box_pvalue"] = innovation_whiteness.get("ljung_box_pvalue", float("nan"))
+            diagnostics["innovation_model_adequate"] = innovation_whiteness.get("model_adequate", None)
+            diagnostics["innovation_lags_tested"] = innovation_whiteness.get("lags_tested", 0)
+    
     hmm_result = feats.get("hmm_result")
     if hmm_result is not None and isinstance(hmm_result, dict):
         diagnostics["hmm_log_likelihood"] = hmm_result.get("log_likelihood", float("nan"))
@@ -1179,6 +1582,10 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     - Drift evolves as AR(1): mu_{t+1} = phi * mu_t + eta_t,  eta ~ N(0, q)
     - Volatility evolves via GARCH(1,1) when available; else held constant.
     - Innovations are Student-t with global df (nu_hat) scaled to unit variance.
+    
+    Pillar 1 integration: Drift uncertainty from Kalman filter (var_kf) is propagated
+    into process noise q, widening forecast confidence intervals when drift is uncertain.
+    
     Level-7 parameter uncertainty: if PARAM_UNC environment variable is set to
     'sample' (default) and garch_params contains a covariance matrix, we sample
     (omega, alpha, beta) per path from N(theta_hat, Cov) with constraints, which
@@ -1198,6 +1605,14 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     mu_now = float(mu_series.iloc[-1]) if len(mu_series) else 0.0
     vol_now = float(vol_series.iloc[-1]) if len(vol_series) else 0.0
     vol_now = float(max(vol_now, 1e-6))
+    
+    # Pillar 1: Extract Kalman drift uncertainty for proper uncertainty propagation
+    var_kf_series = feats.get("var_kf")
+    if isinstance(var_kf_series, pd.Series) and not var_kf_series.empty:
+        var_kf_now = float(var_kf_series.iloc[-1])
+        var_kf_now = float(max(var_kf_now, 0.0))
+    else:
+        var_kf_now = 0.0  # fallback if Kalman not available
 
     # Tail parameter (global nu)
     nu_hat_series = feats.get("nu_hat")
@@ -1276,8 +1691,15 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         beta_paths  = np.zeros(n_paths, dtype=float)
 
     # Drift process noise variance q (relative to current variance)
+    # Pillar 1: Incorporate Kalman drift uncertainty into process noise
+    # This properly propagates drift estimation uncertainty into forecast confidence intervals
     h0 = vol_now ** 2
-    q = float(max(kappa * h0, 1e-10))
+    q_baseline = kappa * h0  # baseline AR(1) process noise
+    q_kalman = var_kf_now  # additional uncertainty from drift estimation
+    
+    # Combined process noise: baseline evolution + current drift uncertainty
+    # When Kalman drift is uncertain, forecast intervals widen appropriately
+    q = float(max(q_baseline + q_kalman, 1e-10))
 
     # Initialize state arrays (vectorized across paths)
     cum = np.zeros((H_max, n_paths), dtype=float)
@@ -1758,6 +2180,45 @@ def main() -> None:
                 diag_table.add_row("GARCH(1,1) Log-Likelihood", f"{diagnostics['garch_log_likelihood']:.2f}")
                 diag_table.add_row("GARCH(1,1) AIC", f"{diagnostics['garch_aic']:.2f}")
                 diag_table.add_row("GARCH(1,1) BIC", f"{diagnostics['garch_bic']:.2f}")
+            
+            # Pillar 1: Kalman filter drift diagnostics (with refinements)
+            if "kalman_log_likelihood" in diagnostics:
+                diag_table.add_row("Kalman Filter Log-Likelihood", f"{diagnostics['kalman_log_likelihood']:.2f}")
+                if "kalman_process_noise_var" in diagnostics:
+                    diag_table.add_row("Kalman Process Noise (q)", f"{diagnostics['kalman_process_noise_var']:.6f}")
+                if "kalman_n_obs" in diagnostics:
+                    diag_table.add_row("Kalman Observations", f"{diagnostics['kalman_n_obs']}")
+                
+                # Refinement 1: q optimization results
+                if "kalman_q_optimal" in diagnostics and "kalman_q_heuristic" in diagnostics:
+                    q_opt = diagnostics["kalman_q_optimal"]
+                    q_heur = diagnostics["kalman_q_heuristic"]
+                    q_optimized = diagnostics.get("kalman_q_optimization_attempted", False)
+                    if np.isfinite(q_opt) and np.isfinite(q_heur):
+                        ratio = q_opt / q_heur if q_heur > 0 else 1.0
+                        opt_label = "optimized" if q_optimized else "heuristic"
+                        diag_table.add_row(f"  q ({opt_label})", f"{q_opt:.6f} ({ratio:.2f}× heuristic)")
+                
+                # Refinement 2: Kalman gain (situational awareness)
+                if "kalman_gain_mean" in diagnostics and "kalman_gain_recent" in diagnostics:
+                    gain_mean = diagnostics["kalman_gain_mean"]
+                    gain_recent = diagnostics["kalman_gain_recent"]
+                    if np.isfinite(gain_mean):
+                        # Interpretation: high gain = aggressive learning, low gain = stable drift
+                        interpretation = "aggressive" if gain_mean > 0.3 else ("moderate" if gain_mean > 0.1 else "stable")
+                        diag_table.add_row(f"  Kalman Gain (mean)", f"{gain_mean:.4f} [{interpretation}]")
+                    if np.isfinite(gain_recent):
+                        diag_table.add_row(f"  Kalman Gain (recent)", f"{gain_recent:.4f}")
+                
+                # Refinement 3: Innovation whiteness (model adequacy)
+                if "innovation_ljung_box_pvalue" in diagnostics:
+                    pvalue = diagnostics["innovation_ljung_box_pvalue"]
+                    model_adequate = diagnostics.get("innovation_model_adequate", None)
+                    lags = diagnostics.get("innovation_lags_tested", 0)
+                    if np.isfinite(pvalue) and model_adequate is not None:
+                        color = "green" if model_adequate else "red"
+                        status = "PASS" if model_adequate else "FAIL"
+                        diag_table.add_row(f"  Innovation Whiteness (Ljung-Box)", f"[{color}]{status}[/{color}] (p={pvalue:.3f}, lags={lags})")
             
             if "hmm_log_likelihood" in diagnostics:
                 diag_table.add_row("HMM Regime Log-Likelihood", f"{diagnostics['hmm_log_likelihood']:.2f}")
