@@ -514,6 +514,73 @@ def render_portfolio_allocation_table(
         sharpe_interp
     )
     
+    # CVaR / Tail Risk metrics (if available)
+    cvar_info = portfolio_result.get("cvar_constraint", {})
+    if cvar_info and isinstance(cvar_info, dict):
+        # Add spacer
+        metrics_table.add_row("", "", "")
+        metrics_table.add_row("[bold]Tail Risk (CVaR @ 95%)[/bold]", "", "[bold]Anti-Lehman Insurance[/bold]")
+        
+        # CVaR (Expected Shortfall)
+        cvar = cvar_info.get("cvar_constrained", float('nan'))
+        if np.isfinite(cvar):
+            cvar_pct = cvar * 100
+            # Color: green if small loss, yellow if moderate, red if large
+            if cvar > -0.10:  # Less than -10% loss
+                cvar_color = "green"
+                cvar_interp = "Low tail risk"
+            elif cvar > -0.20:  # -10% to -20% loss
+                cvar_color = "yellow"
+                cvar_interp = "Moderate tail risk"
+            else:  # Worse than -20%
+                cvar_color = "red"
+                cvar_interp = "High tail risk"
+            
+            metrics_table.add_row(
+                "CVaR₉₅ (Expected Shortfall)",
+                f"[{cvar_color}]{cvar:+.4f}[/{cvar_color}]",
+                f"{cvar_interp} (≈ {cvar_pct:.2f}%)"
+            )
+        
+        # VaR (Value at Risk)
+        tail_metrics = cvar_info.get("tail_risk_metrics", {})
+        var = tail_metrics.get("var", float('nan'))
+        if np.isfinite(var):
+            var_pct = var * 100
+            metrics_table.add_row(
+                "VaR₉₅ (5th percentile)",
+                f"{var:+.4f}",
+                f"≈ {var_pct:.2f}% threshold"
+            )
+        
+        # Worst case scenario
+        worst_case = tail_metrics.get("worst_case", float('nan'))
+        if np.isfinite(worst_case):
+            worst_pct = worst_case * 100
+            metrics_table.add_row(
+                "Worst Case (min return)",
+                f"[red]{worst_case:+.4f}[/red]",
+                f"≈ {worst_pct:.2f}% max loss"
+            )
+        
+        # Constraint status
+        constraint_active = cvar_info.get("constraint_active", False)
+        scaling_factor = cvar_info.get("scaling_factor", 1.0)
+        r_max = cvar_info.get("r_max", -0.20)
+        
+        if constraint_active:
+            status_str = f"[yellow]ACTIVE[/yellow] (scaled by {scaling_factor:.2f}×)"
+            interp = f"Reduced to meet {r_max*100:.0f}% max loss"
+        else:
+            status_str = "[green]INACTIVE[/green]"
+            interp = f"Within {r_max*100:.0f}% limit"
+        
+        metrics_table.add_row(
+            "CVaR Constraint",
+            status_str,
+            interp
+        )
+    
     console.print(metrics_table)
     
     # Correlation matrix table
