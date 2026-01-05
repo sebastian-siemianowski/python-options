@@ -1918,6 +1918,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     - Drift evolves as AR(1): mu_{t+1} = phi * mu_t + eta_t,  eta ~ N(0, q)
     - Volatility evolves via GARCH(1,1) when available; else held constant.
     - Innovations are Student-t with global df (nu_hat) scaled to unit variance.
+    - Jump-diffusion (Merton model): captures discontinuous gap risk via rare large moves.
     
     Pillar 1 integration: Drift uncertainty from Kalman filter (var_kf) is propagated
     into process noise q, widening forecast confidence intervals when drift is uncertain.
@@ -1929,6 +1930,14 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     
     Stochastic volatility: Tracks full h_t (variance) trajectories across paths,
     enabling posterior uncertainty bands for volatility forecasts.
+    
+    Level-7 jump-diffusion: Merton model adds discontinuous jumps to capture gap risk:
+        dS/S = μ dt + σ dW + J dN
+    Where:
+        - dW: continuous Brownian motion (Student-t innovations)
+        - dN: Poisson process with intensity λ (jump arrival rate)
+        - J: jump size ~ N(μ_J, σ_J²) (typically negative for crash risk)
+    Jump parameters calibrated from historical returns: count large moves (>3σ) as jumps.
     
     Returns:
         Dictionary with:
@@ -2050,6 +2059,61 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     # When Kalman drift is uncertain, forecast intervals widen appropriately
     q = float(max(q_baseline + q_kalman, 1e-10))
 
+    # Level-7 Jump-Diffusion: Calibrate jump parameters from historical returns
+    # Detect large moves (>3σ outliers) as empirical jumps to estimate:
+    #   - λ (jump intensity): frequency of jumps per day
+    #   - μ_J (jump mean): average jump size
+    #   - σ_J (jump std): volatility of jump sizes
+    jump_intensity = 0.0
+    jump_mean = 0.0
+    jump_std = 0.05
+    enable_jumps = os.getenv("ENABLE_JUMPS", "true").strip().lower() == "true"
+    
+    if enable_jumps:
+        try:
+            # Get historical returns for calibration
+            ret_hist = feats.get("ret", pd.Series(dtype=float))
+            vol_hist = feats.get("vol", pd.Series(dtype=float))
+            
+            if isinstance(ret_hist, pd.Series) and isinstance(vol_hist, pd.Series) and len(ret_hist) >= 252:
+                # Align returns and volatility
+                df_jump = pd.concat([ret_hist, vol_hist], axis=1, join='inner').dropna()
+                if len(df_jump) >= 252:
+                    df_jump.columns = ['ret', 'vol']
+                    
+                    # Identify jumps: returns that exceed 3σ threshold (outliers)
+                    # Standardize returns by conditional volatility
+                    z_scores = df_jump['ret'] / df_jump['vol']
+                    jump_threshold = 3.0
+                    jump_mask = np.abs(z_scores) > jump_threshold
+                    
+                    n_jumps = int(np.sum(jump_mask))
+                    n_days = len(df_jump)
+                    
+                    if n_jumps > 0:
+                        # Jump intensity: λ = frequency of jumps per day
+                        jump_intensity = float(n_jumps / n_days)
+                        
+                        # Jump sizes: extract returns on jump days
+                        jump_returns = df_jump.loc[jump_mask, 'ret'].values
+                        
+                        # Jump mean and std (typically negative mean for crash risk)
+                        jump_mean = float(np.mean(jump_returns))
+                        jump_std = float(np.std(jump_returns))
+                        
+                        # Floor jump std to avoid degenerate case
+                        jump_std = float(max(jump_std, 0.01))
+                    else:
+                        # No historical jumps detected: use conservative defaults
+                        jump_intensity = 0.01  # ~2.5 jumps per year
+                        jump_mean = -0.02  # small negative bias (crash risk)
+                        jump_std = 0.05
+        except Exception:
+            # Fallback to conservative defaults if calibration fails
+            jump_intensity = 0.01
+            jump_mean = -0.02
+            jump_std = 0.05
+
     # Initialize state arrays (vectorized across paths)
     cum = np.zeros((H_max, n_paths), dtype=float)
     vol_paths = np.zeros((H_max, n_paths), dtype=float)  # Track volatility (sigma_t) at each horizon
@@ -2059,16 +2123,37 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     rng = np.random.default_rng()
 
     for t in range(H_max):
-        # Student-t shocks standardized to unit variance
+        # Student-t shocks standardized to unit variance (continuous component)
         z = rng.standard_t(df=nu, size=n_paths).astype(float)
         eps = z / t_scale
         sigma_t = np.sqrt(np.maximum(h_t, 1e-12))
         e_t = sigma_t * eps
-        # accumulate log return: r_t = mu_t + e_t
+        
+        # Level-7 Jump-Diffusion: Add discontinuous jump component
+        # Merton model: dS/S = μ dt + σ dW + J dN
+        jump_component = np.zeros(n_paths, dtype=float)
+        if enable_jumps and jump_intensity > 0:
+            # Poisson arrivals: number of jumps in this time step
+            # For daily data, dt=1, so intensity per step = jump_intensity
+            n_jumps = rng.poisson(lam=jump_intensity, size=n_paths)
+            
+            # For paths with jumps, draw jump sizes from N(μ_J, σ_J²)
+            # Total jump = sum of all jumps in this step (if multiple)
+            for path_idx in range(n_paths):
+                if n_jumps[path_idx] > 0:
+                    # Draw jump sizes (log returns)
+                    jump_sizes = rng.normal(loc=jump_mean, scale=jump_std, size=int(n_jumps[path_idx]))
+                    jump_component[path_idx] = float(np.sum(jump_sizes))
+        
+        # Total return: continuous (drift + diffusion) + jumps
+        # r_t = μ_t + e_t + J_t
+        r_t = mu_t + e_t + jump_component
+        
+        # Accumulate log return
         if t == 0:
-            cum[t, :] = mu_t + e_t
+            cum[t, :] = r_t
         else:
-            cum[t, :] = cum[t-1, :] + mu_t + e_t
+            cum[t, :] = cum[t-1, :] + r_t
         # Store volatility at this horizon (stochastic volatility tracking)
         vol_paths[t, :] = sigma_t
         # Evolve volatility via GARCH or hold constant on fallback
@@ -2113,6 +2198,145 @@ def composite_edge(
     edge = w_tf * tf + w_mr * mr
 
     return float(edge)
+
+
+def compute_dynamic_thresholds(
+    skew: float,
+    regime_meta: Dict[str, float],
+    sig_H: float,
+    med_vol_last: float,
+    H: int
+) -> Dict[str, float]:
+    """
+    Compute dynamic buy/sell thresholds with asymmetry and uncertainty adjustments.
+    
+    Level-7 modularization: Separates threshold computation from signal generation
+    for better testability and maintainability.
+    
+    Args:
+        skew: Return skewness (asymmetry measure)
+        regime_meta: Regime detection metadata with method and probabilities
+        sig_H: Forecast volatility at horizon H
+        med_vol_last: Long-run median volatility
+        H: Forecast horizon in days
+        
+    Returns:
+        Dictionary with buy_thr, sell_thr, and uncertainty metrics
+    """
+    # Base thresholds
+    base_buy, base_sell = 0.58, 0.42
+    
+    # Skew adjustment: shift thresholds based on return asymmetry
+    g1 = float(np.clip(skew if np.isfinite(skew) else 0.0, -1.5, 1.5))
+    skew_delta = 0.02 * float(np.tanh(abs(g1) / 0.75))
+    
+    if g1 < 0:  # Negative skew (crash risk)
+        buy_thr = base_buy + skew_delta
+        sell_thr = base_sell + skew_delta
+    elif g1 > 0:  # Positive skew (rally potential)
+        buy_thr = base_buy - skew_delta
+        sell_thr = base_sell - skew_delta
+    else:
+        buy_thr, sell_thr = base_buy, base_sell
+    
+    # Regime-based uncertainty (HMM posterior entropy or vol regime deviation)
+    if regime_meta.get("method") == "hmm_posterior":
+        # Use Shannon entropy of regime posteriors as uncertainty measure
+        probs = regime_meta.get("probabilities", {})
+        entropy = 0.0
+        for p in probs.values():
+            if p > 1e-12:
+                entropy -= p * np.log(p)
+        # Normalize by max entropy (log(3) for 3 states)
+        u_regime = float(np.clip(entropy / np.log(3.0), 0.0, 1.0))
+    else:
+        # Fallback: use vol_regime deviation if available
+        vol_regime = regime_meta.get("vol_regime", 1.0)
+        u_regime = float(np.clip(abs(vol_regime - 1.0) / 1.5, 0.0, 1.0)) if np.isfinite(vol_regime) else 0.5
+    
+    # Forecast uncertainty from realized vol vs historical
+    med_sig_H = (med_vol_last * math.sqrt(H)) if (np.isfinite(med_vol_last) and med_vol_last > 0) else sig_H
+    ratio = float(sig_H / med_sig_H) if med_sig_H > 0 else 1.0
+    u_sig = float(np.clip(ratio - 1.0, 0.0, 1.0))
+    
+    # Combined uncertainty: regime entropy dominates, forecast uncertainty refines
+    U = float(np.clip(0.5 * u_regime + 0.5 * u_sig, 0.0, 1.0))
+    
+    # Widen thresholds based on uncertainty
+    widen_delta = 0.04 * U
+    buy_thr += widen_delta
+    sell_thr -= widen_delta
+    
+    # Clamp to reasonable ranges
+    buy_thr = float(np.clip(buy_thr, 0.55, 0.70))
+    sell_thr = float(np.clip(sell_thr, 0.30, 0.45))
+    
+    # Ensure minimum separation
+    if buy_thr - sell_thr < 0.12:
+        mid = 0.5
+        sell_thr = min(sell_thr, mid - 0.06)
+        buy_thr = max(buy_thr, mid + 0.06)
+    
+    return {
+        "buy_thr": float(buy_thr),
+        "sell_thr": float(sell_thr),
+        "uncertainty": float(U),
+        "u_regime": float(u_regime),
+        "u_forecast": float(u_sig),
+        "skew_adjustment": float(skew_delta),
+    }
+
+
+def apply_confirmation_logic(
+    p_smoothed_now: float,
+    p_smoothed_prev: float,
+    p_raw: float,
+    pos_strength: float,
+    buy_thr: float,
+    sell_thr: float,
+    edge: float,
+    edge_floor: float
+) -> str:
+    """
+    Apply 2-day confirmation with hysteresis to reduce signal churn.
+    
+    Level-7 modularization: Separates confirmation logic from main signal flow.
+    
+    Args:
+        p_smoothed_now: Smoothed probability (current)
+        p_smoothed_prev: Smoothed probability (previous)
+        p_raw: Raw probability without smoothing
+        pos_strength: Position strength (Kelly fraction)
+        buy_thr: Buy threshold
+        sell_thr: Sell threshold
+        edge: Composite edge score
+        edge_floor: Minimum edge required to act
+        
+    Returns:
+        Signal label: "STRONG BUY", "BUY", "HOLD", "SELL", or "STRONG SELL"
+    """
+    # Hysteresis bands (slightly wider than base thresholds)
+    buy_enter = buy_thr + 0.01
+    sell_enter = sell_thr - 0.01
+    
+    # Base label from 2-day confirmation (smoothed probabilities)
+    label = "HOLD"
+    if (p_smoothed_prev >= buy_enter) and (p_smoothed_now >= buy_enter):
+        label = "BUY"
+    elif (p_smoothed_prev <= sell_enter) and (p_smoothed_now <= sell_enter):
+        label = "SELL"
+    
+    # Strong tiers based on raw conviction and Kelly strength
+    if p_raw >= max(0.66, buy_thr + 0.06) and pos_strength >= 0.30:
+        label = "STRONG BUY"
+    if p_raw <= min(0.34, sell_thr - 0.06) and pos_strength >= 0.30:
+        label = "STRONG SELL"
+    
+    # Transaction-cost hurdle: force HOLD if absolute edge below floor
+    if np.isfinite(edge) and abs(edge) < float(edge_floor):
+        label = "HOLD"
+    
+    return label
 
 
 def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.58, sell_thr: float = 0.42) -> str:
@@ -2352,85 +2576,41 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         f_star = float(np.clip(mu_H / denom, -1.0, 1.0))
         pos_strength = float(min(1.0, 0.5 * abs(f_star)))
 
-        # Dynamic thresholds (asymmetry via skew + uncertainty widening), based on 'now'
-        g1 = float(np.clip(skew_now if np.isfinite(skew_now) else 0.0, -1.5, 1.5))
-        base_buy, base_sell = 0.58, 0.42
-        skew_delta = 0.02 * float(np.tanh(abs(g1) / 0.75))
-        if g1 < 0:
-            buy_thr = base_buy + skew_delta
-            sell_thr = base_sell + skew_delta
-        elif g1 > 0:
-            buy_thr = base_buy - skew_delta
-            sell_thr = base_sell - skew_delta
-        else:
-            buy_thr, sell_thr = base_buy, base_sell
-        # Regime-based uncertainty (replaces threshold-based components)
-        # Use HMM posterior entropy as uncertainty measure
-        if regime_meta.get("method") == "hmm_posterior":
-            probs = regime_meta.get("probabilities", {})
-            # Shannon entropy of regime posteriors: high entropy = high uncertainty
-            entropy = 0.0
-            for p in probs.values():
-                if p > 1e-12:
-                    entropy -= p * np.log(p)
-            # Normalize by max entropy (log(3) for 3 states)
-            u_regime = float(np.clip(entropy / np.log(3.0), 0.0, 1.0))
-        else:
-            # Fallback: use vol_regime deviation if available
-            u_regime = 0.5
-            if np.isfinite(vol_reg_now):
-                u_regime = float(np.clip(abs(vol_reg_now - 1.0) / 1.5, 0.0, 1.0))
+        # Level-7 Modularization: Use helper function for dynamic thresholds
+        # Enriched regime_meta with vol_regime for fallback path
+        regime_meta_enriched = dict(regime_meta)
+        regime_meta_enriched["vol_regime"] = vol_reg_now
         
-        # Tail uncertainty from global Student-t fit
-        if np.isfinite(nu_glob):
-            nu_eff = float(np.clip(nu_glob, 3.0, 200.0))
-            inv_nu = 1.0 / nu_eff
-            inv_min, inv_max = 1.0 / 200.0, 1.0 / 3.0
-            u_tail = float(np.clip((inv_nu - inv_min) / (inv_max - inv_min), 0.0, 1.0))
-        else:
-            u_tail = 0.0
+        threshold_result = compute_dynamic_thresholds(
+            skew=skew_now,
+            regime_meta=regime_meta_enriched,
+            sig_H=sig_H,
+            med_vol_last=med_vol_last,
+            H=H
+        )
         
-        # Forecast uncertainty from simulated variance vs historical
-        med_sig_H = (med_vol_last * math.sqrt(H)) if (np.isfinite(med_vol_last) and med_vol_last > 0) else sig_H
-        ratio = float(sig_H / med_sig_H) if med_sig_H > 0 else 1.0
-        u_sig = float(np.clip(ratio - 1.0, 0.0, 1.0))
+        buy_thr = threshold_result["buy_thr"]
+        sell_thr = threshold_result["sell_thr"]
+        U = threshold_result["uncertainty"]
         
-        # Combined uncertainty: regime entropy dominates, tail and forecast refine
-        U = float(np.clip(0.5 * u_regime + 0.3 * u_tail + 0.2 * u_sig, 0.0, 1.0))
-        widen_delta = 0.04 * U
-        buy_thr += widen_delta
-        sell_thr -= widen_delta
-        buy_thr = float(np.clip(buy_thr, 0.55, 0.70))
-        sell_thr = float(np.clip(sell_thr, 0.30, 0.45))
-        if buy_thr - sell_thr < 0.12:
-            mid = 0.5
-            sell_thr = min(sell_thr, mid - 0.06)
-            buy_thr = max(buy_thr, mid + 0.06)
+        thresholds[int(H)] = {
+            "buy_thr": float(buy_thr),
+            "sell_thr": float(sell_thr),
+            "uncertainty": float(U),
+            "edge_floor": float(EDGE_FLOOR)
+        }
 
-        thresholds[int(H)] = {"buy_thr": float(buy_thr), "sell_thr": float(sell_thr), "uncertainty": float(U), "edge_floor": float(EDGE_FLOOR)}
-
-        # Hysteresis bands and 2‑day confirmation on smoothed probabilities
-        buy_enter = buy_thr + 0.01
-        sell_enter = sell_thr - 0.01
-        label = "HOLD"
-        if (p_s_prev >= buy_enter) and (p_s_now >= buy_enter):
-            label = "BUY"
-        elif (p_s_prev <= sell_enter) and (p_s_now <= sell_enter):
-            label = "SELL"
-        # Strong tiers based on current (unsmoothed) conviction and Kelly strength
-        if p_now >= max(0.66, buy_thr + 0.06) and pos_strength >= 0.30:
-            label = "STRONG BUY"
-        if p_now <= min(0.34, sell_thr - 0.06) and pos_strength >= 0.30:
-            label = "STRONG SELL"
-
-        # Transaction-cost/slippage hurdle: if absolute edge is below EDGE_FLOOR, force HOLD
-        edge_floor_applied = False
-        try:
-            if np.isfinite(edge_now) and abs(edge_now) < float(EDGE_FLOOR):
-                label = "HOLD"
-                edge_floor_applied = True
-        except Exception:
-            pass
+        # Level-7 Modularization: Use helper function for confirmation logic
+        label = apply_confirmation_logic(
+            p_smoothed_now=p_s_now,
+            p_smoothed_prev=p_s_prev,
+            p_raw=p_now,
+            pos_strength=pos_strength,
+            buy_thr=buy_thr,
+            sell_thr=sell_thr,
+            edge=edge_now,
+            edge_floor=EDGE_FLOOR
+        )
 
         # CI bounds for expected log return
         ci_low = float(mu_H - z_star * sig_H)
