@@ -3174,7 +3174,6 @@ def main() -> None:
                     # Prepare plot directory if plots requested
                     plot_dir = None
                     if args.validation_plots:
-                        import os
                         plot_dir = "plots/kalman_validation"
                         os.makedirs(plot_dir, exist_ok=True)
                     
