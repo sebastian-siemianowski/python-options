@@ -397,13 +397,20 @@ def _garch11_mle(ret: pd.Series) -> Tuple[pd.Series, Dict[str, float]]:
 def _fit_student_nu_mle(z: pd.Series, min_n: int = 200, bounds: Tuple[float, float] = (4.5, 500.0)) -> Dict[str, float]:
     """Fit global Student-t degrees of freedom (nu) via MLE on standardized residuals z.
     - z should be approximately IID with unit scale (i.e., residuals divided by conditional sigma).
-    - Returns a dict: {"nu_hat": float, "ll": float, "n": int, "converged": bool}.
+    - Returns a dict: {"nu_hat": float, "ll": float, "n": int, "converged": bool, "se_nu": float}.
     - On failure or insufficient data, returns a conservative default with converged=False.
+    
+    Tier 2 Enhancement: Posterior parameter variance tracking
+    Computes standard error for ν via numeric Hessian (observed information matrix).
+    This enables:
+        ✔ Automatic conservatism during ν uncertainty
+        ✔ ν sampling in Monte Carlo simulation
+        ✔ Wider forecast intervals when tail parameter is uncertain
     """
     from scipy.optimize import minimize
 
     if z is None or not isinstance(z, pd.Series) or z.empty:
-        return {"nu_hat": 50.0, "ll": float("nan"), "n": 0, "converged": False}
+        return {"nu_hat": 50.0, "ll": float("nan"), "n": 0, "converged": False, "se_nu": float("nan")}
 
     zz = pd.to_numeric(z, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
     # Remove zeros that may indicate degenerate scaling (not necessary but harmless)
@@ -411,7 +418,7 @@ def _fit_student_nu_mle(z: pd.Series, min_n: int = 200, bounds: Tuple[float, flo
     n = int(zz.shape[0])
     if n < max(50, min_n):
         # too short: near-normal default
-        return {"nu_hat": 50.0, "ll": float("nan"), "n": n, "converged": False}
+        return {"nu_hat": 50.0, "ll": float("nan"), "n": n, "converged": False, "se_nu": float("nan")}
 
     x = zz.values.astype(float)
 
@@ -440,11 +447,47 @@ def _fit_student_nu_mle(z: pd.Series, min_n: int = 200, bounds: Tuple[float, flo
             continue
 
     if best[0] is None:
-        return {"nu_hat": 50.0, "ll": float("nan"), "n": n, "converged": False}
+        return {"nu_hat": 50.0, "ll": float("nan"), "n": n, "converged": False, "se_nu": float("nan")}
 
     nu_hat = float(np.clip(best[0].x[0], bounds[0], bounds[1]))
     ll = float(-best[1])
-    return {"nu_hat": nu_hat, "ll": ll, "n": n, "converged": True}
+    
+    # Compute standard error via numeric Hessian (observed information)
+    # Hessian approximation: second derivative of negative log-likelihood
+    se_nu = None
+    try:
+        # Finite difference approximation: d²NLL/dν²
+        eps = max(0.01 * abs(nu_hat), 0.1)  # adaptive step size
+        
+        # Central difference for second derivative
+        nll_0 = nll(nu_hat)
+        nll_plus = nll(nu_hat + eps)
+        nll_minus = nll(nu_hat - eps)
+        
+        # Second derivative: (f(x+h) - 2f(x) + f(x-h)) / h²
+        d2_nll = (nll_plus - 2.0 * nll_0 + nll_minus) / (eps ** 2)
+        
+        # Standard error: sqrt(1 / observed_information)
+        # observed_information = d²(-LL)/dν² = d²NLL/dν²
+        if d2_nll > 1e-12:  # positive curvature (proper minimum)
+            se_nu = float(np.sqrt(1.0 / d2_nll))
+            # Sanity check: SE should be reasonable relative to estimate
+            if se_nu > 10.0 * nu_hat or not np.isfinite(se_nu):
+                se_nu = None
+        else:
+            se_nu = None
+    except Exception:
+        se_nu = None
+    
+    result = {
+        "nu_hat": nu_hat,
+        "ll": ll,
+        "n": n,
+        "converged": True,
+        "se_nu": float(se_nu) if se_nu is not None else float("nan"),
+    }
+    
+    return result
 
 
 def _test_innovation_whiteness(innovations: np.ndarray, innovation_vars: np.ndarray, lags: int = 20) -> Dict[str, float]:
@@ -1751,6 +1794,8 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         diagnostics["student_t_log_likelihood"] = nu_info.get("ll", float("nan"))
         diagnostics["student_t_nu"] = nu_info.get("nu_hat", float("nan"))
         diagnostics["student_t_n_obs"] = nu_info.get("n", 0)
+        # Tier 2: Add standard error for posterior parameter variance tracking
+        diagnostics["student_t_se_nu"] = nu_info.get("se_nu", float("nan"))
     
     # 2. Parameter stability tracking (expensive, only if enough data)
     ret = feats.get("ret", pd.Series(dtype=float))
@@ -2034,16 +2079,35 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     else:
         var_kf_now = 0.0  # fallback if Kalman not available
 
-    # Tail parameter (global nu)
+    # Tail parameter (global nu) with posterior uncertainty
     nu_hat_series = feats.get("nu_hat")
+    nu_info = feats.get("nu_info", {})
+    
     if isinstance(nu_hat_series, pd.Series) and not nu_hat_series.empty:
-        nu = float(nu_hat_series.iloc[-1])
+        nu_hat = float(nu_hat_series.iloc[-1])
     else:
-        nu = 50.0
-    nu = float(np.clip(nu, 4.5, 500.0))
-    # Scale to unit variance for Student-t innovations
-    t_var = nu / (nu - 2.0) if nu > 2.0 else 1e6
-    t_scale = math.sqrt(t_var)
+        nu_hat = 50.0
+    nu_hat = float(np.clip(nu_hat, 4.5, 500.0))
+    
+    # Extract standard error for ν (Tier 2: posterior parameter variance)
+    se_nu = None
+    if isinstance(nu_info, dict) and "se_nu" in nu_info:
+        se_nu_val = nu_info.get("se_nu", float("nan"))
+        if np.isfinite(se_nu_val) and se_nu_val > 0:
+            se_nu = float(se_nu_val)
+    
+    # Determine if ν sampling is enabled (Tier 2: propagate tail parameter uncertainty)
+    nu_sample_mode = os.getenv("NU_SAMPLE", "true").strip().lower() == "true"
+    
+    # Sample ν per path if uncertainty available and sampling enabled
+    if nu_sample_mode and se_nu is not None and se_nu > 0:
+        rng = np.random.default_rng()
+        # Sample from N(nu_hat, se_nu²) and clip to valid range
+        nu_samples = rng.normal(loc=nu_hat, scale=se_nu, size=n_paths)
+        nu_samples = np.clip(nu_samples, 4.5, 500.0)
+    else:
+        # Use point estimate for all paths
+        nu_samples = np.full(n_paths, nu_hat, dtype=float)
 
     # GARCH params
     garch_params = feats.get("garch_params", {}) or {}
@@ -2186,8 +2250,23 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
 
     for t in range(H_max):
         # Student-t shocks standardized to unit variance (continuous component)
-        z = rng.standard_t(df=nu, size=n_paths).astype(float)
-        eps = z / t_scale
+        # Tier 2: Use path-specific ν samples for proper tail parameter uncertainty propagation
+        # Draw Student-t per path with its own degrees of freedom
+        z = np.zeros(n_paths, dtype=float)
+        for path_idx in range(n_paths):
+            nu_path = nu_samples[path_idx]
+            # Draw from Student-t with df=nu_path and scale to unit variance
+            z_raw = rng.standard_t(df=nu_path)
+            # Variance of t(ν) is ν/(ν-2) for ν>2
+            if nu_path > 2.0:
+                t_var_path = nu_path / (nu_path - 2.0)
+                t_scale_path = math.sqrt(t_var_path)
+                z[path_idx] = float(z_raw / t_scale_path)
+            else:
+                # Edge case: use raw draw for very low ν (shouldn't happen with clipping)
+                z[path_idx] = float(z_raw)
+        
+        eps = z
         sigma_t = np.sqrt(np.maximum(h_t, 1e-12))
         e_t = sigma_t * eps
         
@@ -2892,6 +2971,39 @@ def main() -> None:
             if "student_t_log_likelihood" in diagnostics:
                 diag_table.add_row("Student-t Tail Log-Likelihood", f"{diagnostics['student_t_log_likelihood']:.2f}")
                 diag_table.add_row("Student-t Degrees of Freedom (ν)", f"{diagnostics['student_t_nu']:.2f}")
+                
+                # Tier 2: Display ν standard error (posterior parameter variance)
+                if "student_t_se_nu" in diagnostics:
+                    se_nu = diagnostics["student_t_se_nu"]
+                    if np.isfinite(se_nu) and se_nu > 0:
+                        nu_hat = diagnostics.get("student_t_nu", float("nan"))
+                        # Coefficient of variation: SE/estimate (relative uncertainty)
+                        cv_nu = (se_nu / nu_hat) if np.isfinite(nu_hat) and nu_hat > 0 else float("nan")
+                        if np.isfinite(cv_nu):
+                            uncertainty_level = "low" if cv_nu < 0.05 else ("moderate" if cv_nu < 0.10 else "high")
+                            diag_table.add_row("  SE(ν) [posterior uncertainty]", f"{se_nu:.3f} ({cv_nu*100:.1f}% CV, {uncertainty_level})")
+                        else:
+                            diag_table.add_row("  SE(ν) [posterior uncertainty]", f"{se_nu:.3f}")
+            
+            # Tier 2: Parameter Uncertainty Summary (μ, σ, ν)
+            param_unc_env = os.getenv("PARAM_UNC", "sample").strip().lower()
+            nu_sample_env = os.getenv("NU_SAMPLE", "true").strip().lower()
+            
+            param_unc_active = {
+                "μ (drift)": "Kalman var_kf → process noise q",
+                "σ (volatility)": f"GARCH sampling: {'✓ enabled' if param_unc_env == 'sample' else '✗ disabled'}",
+                "ν (tails)": f"Student-t sampling: {'✓ enabled' if nu_sample_env == 'true' else '✗ disabled'}"
+            }
+            
+            diag_table.add_row("", "")  # spacer
+            diag_table.add_row("[bold cyan]Tier 2: Posterior Parameter Variance[/bold cyan]", "[bold]Status[/bold]")
+            for param, status in param_unc_active.items():
+                if "✓" in status:
+                    diag_table.add_row(f"  {param}", f"[green]{status}[/green]")
+                elif "✗" in status:
+                    diag_table.add_row(f"  {param}", f"[yellow]{status}[/yellow]")
+                else:
+                    diag_table.add_row(f"  {param}", status)
             
             # Parameter stability (recent drift z-scores)
             drift_cols = [k for k in diagnostics.keys() if k.startswith("recent_") and k.endswith("_drift_z")]
