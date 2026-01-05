@@ -1677,15 +1677,16 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
     return oos_metrics
 
 
-def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_oos: bool = False) -> Dict:
+def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_oos: bool = False, enable_pit_calibration: bool = False) -> Dict:
     """
     Compute comprehensive diagnostics: log-likelihood monitoring, parameter stability, 
-    and optionally out-of-sample tests.
+    and optionally out-of-sample tests and PIT calibration verification.
     
     Args:
         px: Price series
         feats: Feature dictionary from compute_features
         enable_oos: If True, run expensive out-of-sample validation
+        enable_pit_calibration: If True, run PIT calibration verification (expensive)
         
     Returns:
         Dictionary with all diagnostic metrics
@@ -1782,6 +1783,33 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
                         diagnostics[f"oos_{horizon_key}_hit_rate"] = float(hit_rate)
         except Exception:
             pass
+    
+    # 4. PIT calibration verification (Level-7: probability calibration test)
+    if enable_pit_calibration and not px.empty and len(px) >= 1000:
+        try:
+            from pit_calibration import run_pit_calibration_test
+            
+            # Run calibration test for key horizons
+            calibration_results = run_pit_calibration_test(
+                px=px,
+                horizons=[1, 21, 63],
+                n_bins=10,
+                train_days=504,
+                test_days=21,
+                max_predictions=500
+            )
+            
+            if calibration_results:
+                diagnostics["pit_calibration"] = calibration_results
+                
+                # Summary: calibration status per horizon
+                for horizon, metrics in calibration_results.items():
+                    diagnostics[f"pit_H{horizon}_ece"] = metrics.expected_calibration_error
+                    diagnostics[f"pit_H{horizon}_calibrated"] = metrics.calibrated
+                    diagnostics[f"pit_H{horizon}_diagnosis"] = metrics.calibration_diagnosis
+                    diagnostics[f"pit_H{horizon}_n_predictions"] = metrics.n_predictions
+        except Exception as e:
+            diagnostics["pit_calibration_error"] = str(e)
     
     return diagnostics
 
@@ -2663,6 +2691,7 @@ def parse_args() -> argparse.Namespace:
     # Diagnostics controls (Level-7 falsifiability)
     p.add_argument("--diagnostics", action="store_true", help="Enable full diagnostics: log-likelihood monitoring, parameter stability tracking, and out-of-sample tests (expensive).")
     p.add_argument("--diagnostics_lite", action="store_true", help="Enable lightweight diagnostics: log-likelihood monitoring and parameter stability (no OOS tests).")
+    p.add_argument("--pit-calibration", action="store_true", help="Enable PIT calibration verification: tests if predicted probabilities match actual outcomes (Level-7 requirement, very expensive).")
     p.set_defaults(t_map=True)
     return p.parse_args()
 
@@ -2705,9 +2734,10 @@ def main() -> None:
         
         # Compute diagnostics if requested (Level-7 falsifiability)
         diagnostics = {}
-        if args.diagnostics or args.diagnostics_lite:
+        if args.diagnostics or args.diagnostics_lite or args.pit_calibration:
             enable_oos = args.diagnostics  # Full diagnostics include expensive OOS tests
-            diagnostics = compute_all_diagnostics(px, feats, enable_oos=enable_oos)
+            enable_pit = args.pit_calibration  # PIT calibration verification
+            diagnostics = compute_all_diagnostics(px, feats, enable_oos=enable_oos, enable_pit_calibration=enable_pit)
 
         # Print table for this asset
         if args.simple:
@@ -2853,6 +2883,18 @@ def main() -> None:
             
             console.print(diag_table)
             console.print("")  # blank line
+            
+            # Display PIT calibration report if available
+            if "pit_calibration" in diagnostics:
+                try:
+                    from pit_calibration import format_calibration_report
+                    calibration_report = format_calibration_report(
+                        calibration_results=diagnostics["pit_calibration"],
+                        asset_name=asset
+                    )
+                    console.print(calibration_report)
+                except Exception:
+                    pass
 
         # Build summary row for this asset
         asset_label = build_asset_display_label(asset, title)
