@@ -1677,16 +1677,17 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
     return oos_metrics
 
 
-def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_oos: bool = False, enable_pit_calibration: bool = False) -> Dict:
+def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_oos: bool = False, enable_pit_calibration: bool = False, enable_model_comparison: bool = False) -> Dict:
     """
     Compute comprehensive diagnostics: log-likelihood monitoring, parameter stability, 
-    and optionally out-of-sample tests and PIT calibration verification.
+    and optionally out-of-sample tests, PIT calibration verification, and structural model comparison.
     
     Args:
         px: Price series
         feats: Feature dictionary from compute_features
         enable_oos: If True, run expensive out-of-sample validation
         enable_pit_calibration: If True, run PIT calibration verification (expensive)
+        enable_model_comparison: If True, run structural model comparison (AIC/BIC falsifiability)
         
     Returns:
         Dictionary with all diagnostic metrics
@@ -1810,6 +1811,39 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
                     diagnostics[f"pit_H{horizon}_n_predictions"] = metrics.n_predictions
         except Exception as e:
             diagnostics["pit_calibration_error"] = str(e)
+    
+    # 5. Structural model comparison (Level-7: formal falsifiability via AIC/BIC)
+    if enable_model_comparison:
+        try:
+            from model_comparison import run_all_comparisons
+            
+            # Get required inputs
+            ret = feats.get("ret", pd.Series(dtype=float))
+            vol = feats.get("vol", pd.Series(dtype=float))
+            garch_params = feats.get("garch_params", {})
+            nu_info = feats.get("nu_info", {})
+            kalman_metadata = feats.get("kalman_metadata", {})
+            
+            if not ret.empty and not vol.empty:
+                # Run all model comparisons
+                comparison_results = run_all_comparisons(
+                    returns=ret,
+                    volatility=vol,
+                    garch_params=garch_params if isinstance(garch_params, dict) else None,
+                    student_t_params=nu_info if isinstance(nu_info, dict) else None,
+                    kalman_metadata=kalman_metadata if isinstance(kalman_metadata, dict) else None,
+                )
+                
+                diagnostics["model_comparison"] = comparison_results
+                
+                # Summary: winner per category
+                for category, result in comparison_results.items():
+                    if result is not None and hasattr(result, 'winner_aic'):
+                        diagnostics[f"model_comparison_{category}_winner_aic"] = result.winner_aic
+                        diagnostics[f"model_comparison_{category}_winner_bic"] = result.winner_bic
+                        diagnostics[f"model_comparison_{category}_recommendation"] = result.recommendation
+        except Exception as e:
+            diagnostics["model_comparison_error"] = str(e)
     
     return diagnostics
 
@@ -2692,6 +2726,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--diagnostics", action="store_true", help="Enable full diagnostics: log-likelihood monitoring, parameter stability tracking, and out-of-sample tests (expensive).")
     p.add_argument("--diagnostics_lite", action="store_true", help="Enable lightweight diagnostics: log-likelihood monitoring and parameter stability (no OOS tests).")
     p.add_argument("--pit-calibration", action="store_true", help="Enable PIT calibration verification: tests if predicted probabilities match actual outcomes (Level-7 requirement, very expensive).")
+    p.add_argument("--model-comparison", action="store_true", help="Enable structural model comparison: GARCH vs EWMA, Student-t vs Gaussian, Kalman vs EWMA using AIC/BIC (Level-7 falsifiability).")
     p.set_defaults(t_map=True)
     return p.parse_args()
 
@@ -2734,10 +2769,11 @@ def main() -> None:
         
         # Compute diagnostics if requested (Level-7 falsifiability)
         diagnostics = {}
-        if args.diagnostics or args.diagnostics_lite or args.pit_calibration:
+        if args.diagnostics or args.diagnostics_lite or args.pit_calibration or args.model_comparison:
             enable_oos = args.diagnostics  # Full diagnostics include expensive OOS tests
             enable_pit = args.pit_calibration  # PIT calibration verification
-            diagnostics = compute_all_diagnostics(px, feats, enable_oos=enable_oos, enable_pit_calibration=enable_pit)
+            enable_model_comp = args.model_comparison  # Structural model comparison via AIC/BIC
+            diagnostics = compute_all_diagnostics(px, feats, enable_oos=enable_oos, enable_pit_calibration=enable_pit, enable_model_comparison=enable_model_comp)
 
         # Print table for this asset
         if args.simple:
@@ -2895,6 +2931,103 @@ def main() -> None:
                     console.print(calibration_report)
                 except Exception:
                     pass
+            
+            # Display model comparison results if available
+            if "model_comparison" in diagnostics and diagnostics["model_comparison"]:
+                from rich.table import Table
+                comparison_results = diagnostics["model_comparison"]
+                
+                # Create comparison table for each category
+                for category, result in comparison_results.items():
+                    if result is None or not hasattr(result, 'winner_aic'):
+                        continue
+                    
+                    category_title = {
+                        'volatility': 'Volatility Models',
+                        'tails': 'Tail Distribution Models',
+                        'drift': 'Drift Models'
+                    }.get(category, category.title())
+                    
+                    comp_table = Table(title=f"📊 Model Comparison: {category_title} — {asset}")
+                    comp_table.add_column("Model", justify="left", style="cyan")
+                    comp_table.add_column("Params", justify="right")
+                    comp_table.add_column("Log-Lik", justify="right")
+                    comp_table.add_column("AIC", justify="right")
+                    comp_table.add_column("BIC", justify="right")
+                    comp_table.add_column("Δ AIC", justify="right")
+                    comp_table.add_column("Δ BIC", justify="right")
+                    comp_table.add_column("Akaike Wt", justify="right")
+                    
+                    for model in result.models:
+                        name = model.name
+                        
+                        # Highlight winners
+                        if name == result.winner_aic and name == result.winner_bic:
+                            name = f"[bold green]{name}[/bold green] ⭐"
+                        elif name == result.winner_aic:
+                            name = f"[bold yellow]{name}[/bold yellow] (AIC)"
+                        elif name == result.winner_bic:
+                            name = f"[bold blue]{name}[/bold blue] (BIC)"
+                        
+                        delta_aic = result.delta_aic.get(model.name, float('nan'))
+                        delta_bic = result.delta_bic.get(model.name, float('nan'))
+                        weight = result.akaike_weights.get(model.name, 0.0)
+                        
+                        # Color code deltas (lower is better)
+                        if np.isfinite(delta_aic):
+                            if delta_aic < 2.0:
+                                delta_aic_str = f"[green]{delta_aic:+.1f}[/green]"
+                            elif delta_aic < 7.0:
+                                delta_aic_str = f"[yellow]{delta_aic:+.1f}[/yellow]"
+                            else:
+                                delta_aic_str = f"[red]{delta_aic:+.1f}[/red]"
+                        else:
+                            delta_aic_str = "—"
+                        
+                        if np.isfinite(delta_bic):
+                            if delta_bic < 2.0:
+                                delta_bic_str = f"[green]{delta_bic:+.1f}[/green]"
+                            elif delta_bic < 10.0:
+                                delta_bic_str = f"[yellow]{delta_bic:+.1f}[/yellow]"
+                            else:
+                                delta_bic_str = f"[red]{delta_bic:+.1f}[/red]"
+                        else:
+                            delta_bic_str = "—"
+                        
+                        comp_table.add_row(
+                            name,
+                            str(model.n_params),
+                            f"{model.log_likelihood:.2f}",
+                            f"{model.aic:.2f}",
+                            f"{model.bic:.2f}",
+                            delta_aic_str,
+                            delta_bic_str,
+                            f"{weight:.1%}" if np.isfinite(weight) else "—"
+                        )
+                    
+                    # Add recommendation row
+                    comp_table.add_row("", "", "", "", "", "", "", "")
+                    comp_table.add_row(
+                        f"[bold]Recommendation:[/bold]",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        ""
+                    )
+                    
+                    console.print(comp_table)
+                    console.print(f"[dim]{result.recommendation}[/dim]\n")
+                
+                # Summary interpretation
+                console.print("[bold cyan]Model Comparison Interpretation:[/bold cyan]")
+                console.print("[dim]• Δ AIC/BIC < 2: Substantial support (competitive models)[/dim]")
+                console.print("[dim]• Δ AIC/BIC 4-7: Considerably less support[/dim]")
+                console.print("[dim]• Δ AIC/BIC > 10: Essentially no support[/dim]")
+                console.print("[dim]• Akaike weight: Probability this model is best[/dim]")
+                console.print("[dim]• Lower AIC/BIC = better (fit + parsimony tradeoff)[/dim]\n")
 
         # Build summary row for this asset
         asset_label = build_asset_display_label(asset, title)
