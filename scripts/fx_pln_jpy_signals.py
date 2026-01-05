@@ -2806,6 +2806,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--diagnostics_lite", action="store_true", help="Enable lightweight diagnostics: log-likelihood monitoring and parameter stability (no OOS tests).")
     p.add_argument("--pit-calibration", action="store_true", help="Enable PIT calibration verification: tests if predicted probabilities match actual outcomes (Level-7 requirement, very expensive).")
     p.add_argument("--model-comparison", action="store_true", help="Enable structural model comparison: GARCH vs EWMA, Student-t vs Gaussian, Kalman vs EWMA using AIC/BIC (Level-7 falsifiability).")
+    p.add_argument("--validate-kalman", action="store_true", help="🧪 Run Level-7 Kalman validation science: drift reasonableness, predictive likelihood improvement, PIT calibration, and stress-regime behavior analysis.")
+    p.add_argument("--validation-plots", action="store_true", help="Generate diagnostic plots for Kalman validation (requires --validate-kalman).")
     p.set_defaults(t_map=True)
     return p.parse_args()
 
@@ -3140,6 +3142,226 @@ def main() -> None:
                 console.print("[dim]• Δ AIC/BIC > 10: Essentially no support[/dim]")
                 console.print("[dim]• Akaike weight: Probability this model is best[/dim]")
                 console.print("[dim]• Lower AIC/BIC = better (fit + parsimony tradeoff)[/dim]\n")
+
+        # 🧪 Level-7 Validation Science: Kalman Filter Validation Suite
+        if args.validate_kalman:
+            try:
+                from kalman_validation import (
+                    run_full_validation_suite,
+                    validate_drift_reasonableness,
+                    compare_predictive_likelihood,
+                    validate_pit_calibration,
+                    analyze_stress_regime_behavior
+                )
+                from rich.table import Table
+                from rich.panel import Panel
+                
+                console = Console()
+                console.print("\n")
+                console.print(Panel.fit(
+                    f"🧪 [bold cyan]Level-7 Validation Science[/bold cyan] — {asset}\n"
+                    "[dim]Does my model behave like reality?[/dim]",
+                    border_style="cyan"
+                ))
+                
+                # Extract required series from features
+                ret = feats.get("ret")
+                mu_kf = feats.get("mu_kf", feats.get("mu"))
+                var_kf = feats.get("var_kf", pd.Series(0.0, index=ret.index))
+                vol = feats.get("vol")
+                
+                if mu_kf is not None and ret is not None and vol is not None:
+                    # Prepare plot directory if plots requested
+                    plot_dir = None
+                    if args.validation_plots:
+                        import os
+                        plot_dir = "plots/kalman_validation"
+                        os.makedirs(plot_dir, exist_ok=True)
+                    
+                    # 1. Drift Reasonableness Validation
+                    console.print("\n[bold yellow]1. Posterior Drift Reasonableness[/bold yellow]")
+                    drift_result = validate_drift_reasonableness(
+                        px, ret, mu_kf, var_kf, asset_name=asset,
+                        plot=args.validation_plots,
+                        save_path=f"{plot_dir}/{asset}_drift_validation.png" if plot_dir else None
+                    )
+                    
+                    drift_table = Table(title="Drift Sanity Checks", show_header=True)
+                    drift_table.add_column("Metric", style="cyan")
+                    drift_table.add_column("Value", justify="right")
+                    drift_table.add_column("Status", justify="center")
+                    
+                    drift_table.add_row(
+                        "Observations",
+                        str(drift_result.observations),
+                        ""
+                    )
+                    drift_table.add_row(
+                        "Drift Smoothness Ratio",
+                        f"{drift_result.drift_smoothness_ratio:.4f}",
+                        "✅" if drift_result.drift_smoothness_ratio < 0.5 else "⚠️"
+                    )
+                    drift_table.add_row(
+                        "Crisis Uncertainty Spike",
+                        f"{drift_result.crisis_uncertainty_spike:.2f}×",
+                        "✅" if drift_result.crisis_uncertainty_spike > 1.5 else "⚠️"
+                    )
+                    drift_table.add_row(
+                        "Regime Breaks Detected",
+                        "Yes" if drift_result.regime_break_detected else "No",
+                        "✅" if drift_result.regime_break_detected else "ℹ️"
+                    )
+                    drift_table.add_row(
+                        "Noise Tracking Score",
+                        f"{drift_result.noise_tracking_score:.4f}",
+                        "✅" if drift_result.noise_tracking_score < 0.4 else "⚠️"
+                    )
+                    
+                    console.print(drift_table)
+                    console.print(f"[dim]{drift_result.diagnostic_message}[/dim]\n")
+                    
+                    # 2. Predictive Likelihood Improvement
+                    console.print("[bold yellow]2. Predictive Likelihood Improvement[/bold yellow]")
+                    ll_result = compare_predictive_likelihood(px, asset_name=asset)
+                    
+                    ll_table = Table(title="Model Comparison (Out-of-Sample)", show_header=True)
+                    ll_table.add_column("Model", style="cyan")
+                    ll_table.add_column("Log-Likelihood", justify="right")
+                    ll_table.add_column("Δ LL", justify="right")
+                    
+                    ll_table.add_row("Kalman Filter", f"{ll_result.ll_kalman:.2f}", "—")
+                    ll_table.add_row(
+                        "Zero Drift (μ=0)",
+                        f"{ll_result.ll_zero_drift:.2f}",
+                        f"[green]{ll_result.delta_ll_vs_zero:+.2f}[/green]" if ll_result.delta_ll_vs_zero > 0 else f"[red]{ll_result.delta_ll_vs_zero:+.2f}[/red]"
+                    )
+                    ll_table.add_row(
+                        "EWMA Drift",
+                        f"{ll_result.ll_ewma_drift:.2f}",
+                        f"[green]{ll_result.delta_ll_vs_ewma:+.2f}[/green]" if ll_result.delta_ll_vs_ewma > 0 else f"[red]{ll_result.delta_ll_vs_ewma:+.2f}[/red]"
+                    )
+                    ll_table.add_row(
+                        "Constant Drift",
+                        f"{ll_result.ll_constant_drift:.2f}",
+                        f"[green]{ll_result.delta_ll_vs_constant:+.2f}[/green]" if ll_result.delta_ll_vs_constant > 0 else f"[red]{ll_result.delta_ll_vs_constant:+.2f}[/red]"
+                    )
+                    
+                    console.print(ll_table)
+                    console.print(f"[bold]Best Model:[/bold] {ll_result.best_model}")
+                    console.print(f"[dim]{ll_result.diagnostic_message}[/dim]\n")
+                    
+                    # 3. PIT Calibration Check
+                    console.print("[bold yellow]3. Probability Integral Transform (PIT) Calibration[/bold yellow]")
+                    pit_result = validate_pit_calibration(
+                        px, ret, mu_kf, var_kf, vol, asset_name=asset,
+                        plot=args.validation_plots,
+                        save_path=f"{plot_dir}/{asset}_pit_calibration.png" if plot_dir else None
+                    )
+                    
+                    pit_table = Table(title="Forecast Calibration", show_header=True)
+                    pit_table.add_column("Metric", style="cyan")
+                    pit_table.add_column("Value", justify="right")
+                    pit_table.add_column("Expected", justify="right")
+                    pit_table.add_column("Status", justify="center")
+                    
+                    pit_table.add_row(
+                        "Observations",
+                        str(pit_result.n_observations),
+                        "—",
+                        ""
+                    )
+                    pit_table.add_row(
+                        "KS Statistic",
+                        f"{pit_result.ks_statistic:.4f}",
+                        "—",
+                        ""
+                    )
+                    pit_table.add_row(
+                        "KS p-value",
+                        f"{pit_result.ks_pvalue:.4f}",
+                        "> 0.05",
+                        "✅" if pit_result.ks_pvalue >= 0.05 else "⚠️"
+                    )
+                    pit_table.add_row(
+                        "PIT Mean",
+                        f"{pit_result.pit_mean:.4f}",
+                        "0.5000",
+                        "✅" if abs(pit_result.pit_mean - 0.5) < 0.05 else "⚠️"
+                    )
+                    expected_std = 1.0 / np.sqrt(12)
+                    pit_table.add_row(
+                        "PIT Std Dev",
+                        f"{pit_result.pit_std:.4f}",
+                        f"{expected_std:.4f}",
+                        "✅" if abs(pit_result.pit_std - expected_std) < 0.05 else "⚠️"
+                    )
+                    
+                    console.print(pit_table)
+                    console.print(f"[dim]{pit_result.diagnostic_message}[/dim]\n")
+                    
+                    # 4. Stress-Regime Behavior
+                    console.print("[bold yellow]4. Stress-Regime Behavior Analysis[/bold yellow]")
+                    stress_result = analyze_stress_regime_behavior(
+                        px, ret, mu_kf, var_kf, vol, asset_name=asset
+                    )
+                    
+                    stress_table = Table(title="Risk Intelligence", show_header=True)
+                    stress_table.add_column("Metric", style="cyan")
+                    stress_table.add_column("Normal", justify="right")
+                    stress_table.add_column("Stress", justify="right")
+                    stress_table.add_column("Ratio", justify="right")
+                    
+                    stress_table.add_row(
+                        "Drift Uncertainty σ(μ̂)",
+                        f"{stress_result.avg_uncertainty_normal:.6f}",
+                        f"{stress_result.avg_uncertainty_stress:.6f}",
+                        f"[green]{stress_result.uncertainty_spike_ratio:.2f}×[/green]" if stress_result.uncertainty_spike_ratio > 1.2 else f"{stress_result.uncertainty_spike_ratio:.2f}×"
+                    )
+                    stress_table.add_row(
+                        "Kelly Half-Fraction",
+                        f"{stress_result.avg_kelly_normal:.4f}",
+                        f"{stress_result.avg_kelly_stress:.4f}",
+                        f"[green]{stress_result.kelly_reduction_ratio:.2f}×[/green]" if stress_result.kelly_reduction_ratio < 0.9 else f"{stress_result.kelly_reduction_ratio:.2f}×"
+                    )
+                    
+                    console.print(stress_table)
+                    
+                    if stress_result.stress_periods_detected:
+                        console.print(f"\n[bold]Stress Periods Detected:[/bold] {len(stress_result.stress_periods_detected)}")
+                        for i, (start, end) in enumerate(stress_result.stress_periods_detected[:5], 1):
+                            console.print(f"  {i}. {start} → {end}")
+                        if len(stress_result.stress_periods_detected) > 5:
+                            console.print(f"  ... and {len(stress_result.stress_periods_detected) - 5} more")
+                    
+                    console.print(f"\n[dim]{stress_result.diagnostic_message}[/dim]\n")
+                    
+                    # Overall validation summary
+                    all_passed = (
+                        drift_result.validation_passed and
+                        ll_result.improvement_significant and
+                        pit_result.calibration_passed and
+                        stress_result.system_backed_off
+                    )
+                    
+                    if all_passed:
+                        console.print(Panel.fit(
+                            "[bold green]✅ ALL VALIDATION CHECKS PASSED[/bold green]\n"
+                            "[dim]Model demonstrates structural realism and statistical rigor.[/dim]",
+                            border_style="green"
+                        ))
+                    else:
+                        console.print(Panel.fit(
+                            "[bold yellow]⚠️ SOME VALIDATION CHECKS FAILED[/bold yellow]\n"
+                            "[dim]Review diagnostics above for tuning guidance.[/dim]",
+                            border_style="yellow"
+                        ))
+                else:
+                    console.print("[red]⚠️ Kalman filter data not available for validation[/red]")
+                    
+            except Exception as e:
+                console.print(f"[red]⚠️ Validation failed: {e}[/red]")
+                import traceback
+                console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
         # Build summary row for this asset
         asset_label = build_asset_display_label(asset, title)

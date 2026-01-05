@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy
+.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy tests
 # Usage:
 #   make run                           # runs with defaults (screener + backtest)
 #   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
@@ -13,6 +13,7 @@ SHELL := /bin/bash
 #   make bagger50                      # ranks by highest 100× Bagger Score (adds 100× Score column)
 #   make bagger50 ARGS="--bagger_horizon 15"   # optional flags; also supports --top_n, --plain, --bagger_verbose
 #   make fx-plnjpy                     # generate PLN/JPY FX signals (see README)
+#   make tests                         # runs all tests in the tests/ directory
 
 # Ensure virtual environment exists before running commands
 .venv/bin/python:
@@ -41,6 +42,10 @@ bagger50: .venv/.deps_installed
 
 fx-plnjpy: .venv/.deps_installed
 	@.venv/bin/python scripts/fx_pln_jpy_signals.py $(ARGS)
+
+tests: .venv/.deps_installed
+	@echo "Running all tests..."
+	@.venv/bin/python -m unittest discover -s tests -p "test_*.py" -v
 
 # Manually (re)install requirements and refresh the dependency stamp
 doctor: .venv/bin/python
