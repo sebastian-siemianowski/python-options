@@ -1,0 +1,106 @@
+{
+  "pair": "PLNJPY=X",
+  "as_of": "2025-12-22",
+  "last_close": 43.797000885009766,
+  "notional_pln": 1000000,
+  "signals": [
+    {
+      "horizon_days": 1,
+      "score": 0.7014740138407831,
+      "p_up": 0.7501222930580009,
+      "exp_ret": 0.0013973781193299829,
+      "ci_low": -0.002831317791172891,
+      "ci_high": 0.005626074029832857,
+      "profit_pln": 1398.3549070617496,
+      "profit_ci_low_pln": -2827.313391090214,
+      "profit_ci_high_pln": 5641.930106200733,
+      "label": "BUY"
+    },
+    {
+      "horizon_days": 3,
+      "score": 0.9806214590169215,
+      "p_up": 0.8245074517557283,
+      "exp_ret": 0.004192134357989949,
+      "ci_low": -0.0031321818087597627,
+      "ci_high": 0.011516450524739659,
+      "profit_pln": 4200.933644861849,
+      "profit_ci_low_pln": -3127.2816447215355,
+      "profit_ci_high_pln": 11583.0201442213,
+      "label": "BUY"
+    },
+    {
+      "horizon_days": 7,
+      "score": 1.329036020642799,
+      "p_up": 0.892632636162835,
+      "exp_ret": 0.00978164683530988,
+      "ci_low": -0.0014064309139965713,
+      "ci_high": 0.02096972458461633,
+      "profit_pln": 9829.643510575803,
+      "profit_ci_low_pln": -1405.4423535403425,
+      "profit_ci_high_pln": 21191.134183738082,
+      "label": "BUY"
+    },
+    {
+      "horizon_days": 21,
+      "score": 2.067590739697898,
+      "p_up": 0.966562267513267,
+      "exp_ret": 0.02934494050592964,
+      "ci_low": 0.009966621405100014,
+      "ci_high": 0.04872325960675926,
+      "profit_pln": 29779.74596511146,
+      "profit_ci_low_pln": 10016.453591469965,
+      "profit_ci_high_pln": 49929.752559156885,
+      "label": "BUY"
+    },
+    {
+      "horizon_days": 63,
+      "score": 3.3468050372710887,
+      "p_up": 0.9960519448723218,
+      "exp_ret": 0.08803482151778892,
+      "ci_low": 0.054470588269869565,
+      "ci_high": 0.12159905476570829,
+      "profit_pln": 92026.14737406022,
+      "profit_ci_low_pln": 55981.41771650145,
+      "profit_ci_high_pln": 129301.22305313897,
+      "label": "BUY"
+    },
+    {
+      "horizon_days": 126,
+      "score": 4.60048597590658,
+      "p_up": 0.999446716770678,
+      "exp_ret": 0.17606964303557784,
+      "ci_low": 0.12860264916571634,
+      "ci_high": 0.22353663690543935,
+      "profit_pln": 192521.10654863276,
+      "profit_ci_low_pln": 137238.15184747367,
+      "profit_ci_high_pln": 250491.4535743683,
+      "label": "BUY"
+    },
+    {
+      "horizon_days": 252,
+      "score": 6.373458562213523,
+      "p_up": 0.9999500906049781,
+      "exp_ret": 0.3521392860711557,
+      "ci_low": 0.285010819575317,
+      "ci_high": 0.4192677525669944,
+      "profit_pln": 422106.5895639755,
+      "profit_ci_low_pln": 329776.41565972404,
+      "profit_ci_high_pln": 520847.51110429474,
+      "label": "BUY"
+    }
+  ],
+  "column_descriptions": {
+    "horizon_trading_days": "Number of trading days in the forecast horizon.",
+    "edge_z_risk_adjusted": "Risk-adjusted edge (z-score) combining drift/vol with momentum/trend filters.",
+    "prob_up": "Estimated probability the horizon return is positive (Student-t by default).",
+    "expected_log_return": "Expected cumulative log return over the horizon from the daily drift estimate.",
+    "ci_low_log": "Lower bound of the two-sided confidence interval for log return.",
+    "ci_high_log": "Upper bound of the two-sided confidence interval for log return.",
+    "profit_pln_on_1m_pln": "Expected profit in Polish zloty (PLN) when investing 1,000,000 PLN.",
+    "profit_ci_low_pln": "Lower confidence bound for profit (PLN) on 1,000,000 PLN.",
+    "profit_ci_high_pln": "Upper confidence bound for profit (PLN) on 1,000,000 PLN.",
+    "signal": "Decision label based on prob_up: BUY (>=58%), HOLD (42\u201358%), SELL (<=42%)."
+  },
+  "ci_level": 0.68,
+  "probability_mapping": "student_t"
+}
