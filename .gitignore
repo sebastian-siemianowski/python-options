@@ -1,0 +1,70 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Generated output files (FX signals, backtests, screeners)
+fx_all.csv
+fx_all.json
+fx_signals.csv
+fx_signals.json
+backtest_report.csv
+screener_results.csv
+screener_results_backtest.csv
+
+# Generated plots and visualizations
+plots/*.png
+plots/kalman_validation/*.png
+
+# Data cache and metadata
+data/meta/
+*.backup
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Logs
+*.log
