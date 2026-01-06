@@ -68,6 +68,8 @@ from fx_data_utils import (
     convert_currency_to_pln,
     convert_price_series_to_pln,
     _resolve_symbol_candidates,
+    DEFAULT_ASSET_UNIVERSE,
+    get_default_asset_universe,
 )
 
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
@@ -2791,7 +2793,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start", type=str, default="2005-01-01")
     p.add_argument("--end", type=str, default=None)
     p.add_argument("--horizons", type=str, default=",".join(map(str, DEFAULT_HORIZONS)))
-    p.add_argument("--assets", type=str, default="PLNJPY=X,GC=F,SI=F,BTC-USD,SPY,AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,SMH,MSTR,NFLX,NVO,KTOS,RKLB,GOOO,GLDW,SGLP,GLDE,FACC,SLVI,MTX,IBKR,HOOD,RHEINMETALL,AMD,APPLE,AIRBUS,RENK,NORTHROP GRUMMAN,NVIDIA,TKMS AG & CO,MICROSOFT,UBER,VANGUARD S&P 500,THALES,HENSOLDT,TESLA,SAMSUNG,BAE SYSTEMS,NEWMONT,HOWMET AEROSPACE,BROADCOM", help="Comma-separated Yahoo symbols or friendly names. Metals, FX and USD/EUR/GBP/JPY/CAD/DKK/KRW assets are converted to PLN.")
+    p.add_argument("--assets", type=str, default=",".join(DEFAULT_ASSET_UNIVERSE), help="Comma-separated Yahoo symbols or friendly names. Metals, FX and USD/EUR/GBP/JPY/CAD/DKK/KRW assets are converted to PLN.")
     p.add_argument("--json", type=str, default=None)
     p.add_argument("--csv", type=str, default=None)
     p.add_argument("--simple", action="store_true", help="Print an easy-to-read summary with simple explanations.")

@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tests
+.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune-q show-q clear-q tests
 # Usage:
 #   make run                           # runs with defaults (screener + backtest)
 #   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
@@ -19,6 +19,10 @@ SHELL := /bin/bash
 #   make fx-model-comparison           # structural model comparison via AIC/BIC (GARCH vs EWMA, etc.)
 #   make fx-validate-kalman            # Level-7 Kalman validation science (drift, likelihood, PIT, stress)
 #   make fx-validate-kalman-plots      # Kalman validation with diagnostic plots saved to plots/kalman_validation/
+#   make tune-q                        # estimate optimal Kalman drift q parameters via MLE (caches results)
+#   make tune-q ARGS="--force"         # re-estimate q for all assets (ignore cache)
+#   make show-q                        # display cached q parameter estimates
+#   make clear-q                       # clear q parameter cache
 #   make tests                         # runs all tests in the tests/ directory
 
 # Ensure virtual environment exists before running commands
@@ -74,6 +78,28 @@ fx-validate-kalman-plots: .venv/.deps_installed
 	@echo "Running Kalman validation with diagnostic plots..."
 	@mkdir -p plots/kalman_validation
 	@.venv/bin/python scripts/fx_pln_jpy_signals.py --validate-kalman --validation-plots $(ARGS)
+
+# Kalman q parameter tuning via MLE
+tune-q: .venv/.deps_installed
+	@echo "Estimating optimal Kalman drift q parameters via MLE..."
+	@mkdir -p cache
+	@.venv/bin/python tuning/tune_q_mle.py \
+		--cache-json cache/kalman_q_cache.json \
+		--cache-csv cache/kalman_q_cache.csv \
+		$(ARGS)
+
+show-q:
+	@if [ -f cache/kalman_q_cache.csv ]; then \
+		echo "=== Cached Kalman q Parameters ==="; \
+		cat cache/kalman_q_cache.csv; \
+	else \
+		echo "No cache file found. Run 'make tune-q' first."; \
+	fi
+
+clear-q:
+	@echo "Clearing Kalman q parameter cache..."
+	@rm -f cache/kalman_q_cache.json cache/kalman_q_cache.csv
+	@echo "Cache cleared."
 
 tests: .venv/.deps_installed
 	@echo "Running all tests..."

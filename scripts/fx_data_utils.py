@@ -17,6 +17,78 @@ import yfinance as yf
 
 
 # -------------------------
+# Asset Universe Configuration
+# -------------------------
+
+# Default asset universe: comprehensive list of FX pairs, commodities, stocks, and ETFs
+# This centralized constant is used by fx_pln_jpy_signals.py and tuning/tune_q_mle.py
+# Individual scripts can override via command-line arguments
+DEFAULT_ASSET_UNIVERSE = [
+    # FX pairs
+    "PLNJPY=X",
+    # Commodities
+    "GC=F",  # Gold futures
+    "SI=F",  # Silver futures
+    # Cryptocurrency
+    "BTC-USD",
+    # Major indices and ETFs
+    "SPY",
+    "SMH",  # Semiconductor ETF
+    "VOO",  # Vanguard S&P 500 ETF
+    "GLD",  # Gold ETF
+    "SLV",  # Silver ETF
+    # Tech giants (Magnificent 7)
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "AMZN",
+    "NVDA",
+    "META",
+    "TSLA",
+    # Other major tech & growth stocks
+    "MSTR",  # MicroStrategy
+    "NFLX",  # Netflix
+    "NVO",   # Novo Nordisk
+    "AMD",
+    "UBER",
+    "AVGO",  # Broadcom (semiconductor)
+    # Defense & Aerospace (US)
+    "KTOS",  # Kratos Defense
+    "RKLB",  # Rocket Lab
+    "NOC",   # Northrop Grumman
+    "HWM",   # Howmet Aerospace
+    # Defense & Aerospace (Europe)
+    "RHM.DE",   # Rheinmetall (German defense)
+    "AIR.PA",   # Airbus (European aerospace)
+    "HO.PA",    # Thales (French defense electronics)
+    "HAG.DE",   # Hensoldt (German defense electronics)
+    "BA.L",     # BAE Systems (British defense)
+    "FACC.VI",  # FACC AG (Austrian aerospace components)
+    "MTX.DE",   # MTU Aero Engines (German aerospace)
+    # Financial services
+    "IBKR",   # Interactive Brokers
+    "HOOD",   # Robinhood
+    # Asian tech & manufacturing
+    "005930.KS",  # Samsung Electronics (Korean)
+    # Mining & commodities
+    "NEM",    # Newmont Mining
+]
+
+
+def get_default_asset_universe() -> List[str]:
+    """
+    Get the default asset universe.
+    
+    Returns a copy of the centralized asset list to prevent external modification.
+    This function provides a clean API for retrieving the asset universe.
+    
+    Returns:
+        List of asset symbols/names
+    """
+    return DEFAULT_ASSET_UNIVERSE.copy()
+
+
+# -------------------------
 # Utils
 # -------------------------
 
