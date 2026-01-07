@@ -777,22 +777,22 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
     try:
         if not os.path.exists(cache_path):
             return None
-        
+
         with open(cache_path, 'r') as f:
             cache = json.load(f)
-        
+
         # Direct lookup
         if asset_symbol in cache:
             data = cache[asset_symbol]
             q_val = data.get('q')
             c_val = data.get('c', 1.0)
-            
+
             # Validate basic parameters
             if q_val is not None and q_val > 0 and c_val > 0:
                 # Load noise model (default to Gaussian for backwards compatibility)
                 noise_model = data.get('noise_model', 'gaussian')
                 nu_val = data.get('nu')
-                
+
                 result = {
                     'q': float(q_val),
                     'c': float(c_val),
@@ -809,11 +809,11 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
                     'delta_ll_vs_const': data.get('delta_ll_vs_const'),
                     'delta_ll_vs_ewma': data.get('delta_ll_vs_ewma')
                 }
-                
+
                 return result
-        
+
         return None
-        
+
     except Exception as e:
         if os.getenv('DEBUG'):
             print(f"Warning: Failed to load tuned params for {asset_symbol}: {e}")
@@ -862,7 +862,7 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     """
     ret_clean = _ensure_float_series(ret).dropna()
     vol_clean = _ensure_float_series(vol).reindex(ret_clean.index).dropna()
-    
+
     # Align series
     df = pd.concat([ret_clean, vol_clean], axis=1, join='inner').dropna()
     if len(df) < 50:
@@ -889,7 +889,7 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     c_optimal = None
     q_t_series = None  # Will store time-varying q_t if heteroskedastic
     tuned_params_source = None
-    
+
     # Priority 1: Try to load pre-tuned parameters from cache (if asset_symbol provided)
     if q is None and asset_symbol is not None:
         tuned_params = _load_tuned_kalman_params(asset_symbol)
@@ -897,12 +897,12 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
             q = tuned_params['q']
             c_optimal = tuned_params['c']
             tuned_params_source = 'cache'
-            
+
             # For heteroskedastic mode, use cached c to build q_t series
             if use_heteroskedastic and c_optimal is not None:
                 q_t_series = c_optimal * (sigma ** 2)
                 q = float(np.mean(q_t_series))  # mean for reporting
-            
+
             # Log cache usage for diagnostics
             if os.getenv('DEBUG'):
                 print(f"  Using tuned params from cache: q={q:.2e}, c={c_optimal:.3f}")
@@ -1236,6 +1236,8 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     ret = log_px.diff().dropna()
     ret = winsorize(ret, p=0.01)
     ret.name = "ret"
+    if len(ret) < 300:
+        return {}
 
     # Multi-speed EWMA for drift and vol
     mu_fast = ret.ewm(span=21, adjust=False).mean()
@@ -2701,6 +2703,49 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     return "HOLD"
 
 
+def generate_historical_signals(asset: str, start: str, end: str) -> pd.DataFrame:
+    """
+    Generate historical signals for a given asset over a date range.
+    This is a simplified, vectorized version for efficient backtesting.
+    """
+    px, _ = fetch_px_asset(asset, start, end)
+    if px.empty:
+        return pd.DataFrame(columns=['date', 'signal_label', 'pos_strength'])
+
+    feats = compute_features(px, asset_symbol=asset)
+    if not feats or 'px' not in feats or feats['px'].empty:
+        return pd.DataFrame(columns=['date', 'signal_label', 'pos_strength'])
+
+    # Use backtest-safe (lagged) features
+    feats_bt = shift_features(feats, lag=1)
+
+    # Check for empty data after lagging
+    if 'mu_post' not in feats_bt or feats_bt['mu_post'].empty:
+        return pd.DataFrame(columns=['date', 'signal_label', 'pos_strength'])
+
+    # Align all series for safety
+    df = pd.DataFrame({
+        'mu': feats_bt.get('mu_post'),
+        'vol': feats_bt.get('vol')
+    }).dropna()
+
+    # Use a fixed horizon for this example backtest
+    H = 21
+    df['edge'] = (df['mu'] * H) / (df['vol'] * np.sqrt(H))
+    df['p_up'] = norm.cdf(df['edge'])
+
+    df['signal_label'] = 'HOLD'
+    df.loc[df['p_up'] > 0.58, 'signal_label'] = 'BUY'
+    df.loc[df['p_up'] < 0.42, 'signal_label'] = 'SELL'
+
+    # Simplified position strength
+    df['pos_strength'] = (0.5 * np.abs(df['mu']) / (df['vol']**2)).clip(0,1)
+    df['pos_strength'] = np.where(df['signal_label'] == 'HOLD', 0, df['pos_strength'])
+
+    df['date'] = df.index
+    return df[['date', 'signal_label', 'pos_strength']].reset_index(drop=True)
+
+
 def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]: 
     """Compute signals using regime‑aware priors, tail‑aware probability mapping, and
     anti‑snap logic (two‑day confirmation + hysteresis + smoothing) without extra flags.
@@ -2943,16 +2988,16 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         kalman_metadata = feats.get("kalman_metadata", {})
         delta_ll = kalman_metadata.get("delta_ll_vs_zero", float("nan"))
         pit_pvalue = kalman_metadata.get("pit_ks_pvalue", float("nan"))
-        
+
         drift_weight = 1.0  # Default: trust drift fully
-        
+
         if np.isfinite(delta_ll) and delta_ll < 0:
             # Drift model performs worse than zero-drift baseline
             drift_weight = 0.0
         elif np.isfinite(pit_pvalue) and pit_pvalue < 0.05:
             # Calibration warning: model forecasts not well-calibrated
             drift_weight = 0.3
-        
+
         # Fractional Kelly sizing (half‑Kelly) with drift confidence adjustment
         f_star = float(np.clip(mu_H / denom, -1.0, 1.0))
         pos_strength_raw = float(min(1.0, 0.5 * abs(f_star)))
