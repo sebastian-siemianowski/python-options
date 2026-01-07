@@ -860,9 +860,13 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
             - robust_t_mode: Whether Student-t innovations were used
             - nu_robust: Degrees of freedom for Student-t (if robust mode)
     """
+    ret = ret.iloc[20:].astype(float)
+    vol = vol.iloc[20:].astype(float)
+    assert len(ret) == len(vol)
+
     ret_clean = _ensure_float_series(ret).dropna()
     vol_clean = _ensure_float_series(vol).reindex(ret_clean.index).dropna()
-    
+
     # Align series
     df = pd.concat([ret_clean, vol_clean], axis=1, join='inner').dropna()
     if len(df) < 50:
@@ -1236,6 +1240,9 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     ret = log_px.diff().dropna()
     ret = winsorize(ret, p=0.01)
     ret.name = "ret"
+    if len(ret) < 300:
+        return {}
+
 
     # Multi-speed EWMA for drift and vol
     mu_fast = ret.ewm(span=21, adjust=False).mean()
