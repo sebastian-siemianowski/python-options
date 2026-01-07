@@ -64,7 +64,7 @@ def save_cache(cache: Dict[str, Dict], cache_json: str, cache_csv: str) -> None:
     # Write JSON (atomic via temp file) - stores full metadata
     json_temp = cache_json + '.tmp'
     with open(json_temp, 'w') as f:
-        json.dump(cache, f, indent=2)
+        json.dump(cache, f, indent=2, sort_keys=True)
     os.replace(json_temp, cache_json)
     
     # Write CSV (human-friendly summary with key diagnostics)
@@ -129,33 +129,34 @@ def kalman_filter_drift(returns: np.ndarray, vol: np.ndarray, q: float, c: float
     for t in range(n):
         # Predict
         mu_pred = float(mu)
-        P_pred = float(P) + q_val
-        
+        P_pred = float(max(P + q_val, 1e-18))
+
         # Observation variance with scale factor (extract scalar from array)
         vol_t = vol[t]
         vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
         R = c_val * (vol_scalar ** 2)
-        
+
+        # Total forecast variance, floored for numerical stability
+        forecast_var = max(P_pred + R, 1e-18)
+
         # Update (Kalman gain)
-        K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
-        
+        K = P_pred / forecast_var
+
         # Innovation (extract scalar from array)
         ret_t = returns[t]
         r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
         innovation = r_val - mu_pred
-        
+
         # Update state (keep as Python float)
         mu = float(mu_pred + K * innovation)
-        P = float((1.0 - K) * P_pred)
-        
+        P = float(max((1.0 - K) * P_pred, 1e-12))
+
         # Store filtered estimates
         mu_filtered[t] = mu
         P_filtered[t] = P
-        
+
         # Accumulate log-likelihood: log p(r_t | past) = log N(r_t; μ_pred, P_pred + R)
-        forecast_var = P_pred + R
-        if forecast_var > 1e-12:
-            log_likelihood += -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
+        log_likelihood += -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
     
     return mu_filtered, P_filtered, log_likelihood
 
@@ -221,6 +222,7 @@ def kalman_filter_drift_student_t(returns: np.ndarray, vol: np.ndarray, q: float
     nu_val = float(nu) if np.ndim(nu) == 0 else float(nu.item()) if hasattr(nu, 'item') else float(nu)
     
     # Validate nu
+    nu_val = max(nu_val, 4.01)
     if nu_val < 2.1 or nu_val > 30:
         nu_val = float(np.clip(nu_val, 2.1, 30))
     
@@ -235,7 +237,7 @@ def kalman_filter_drift_student_t(returns: np.ndarray, vol: np.ndarray, q: float
     for t in range(n):
         # Predict
         mu_pred = float(mu)
-        P_pred = float(P) + q_val
+        P_pred = float(max(P + q_val, 1e-18))
         
         # Observation scale
         vol_t = vol[t]
@@ -250,8 +252,11 @@ def kalman_filter_drift_student_t(returns: np.ndarray, vol: np.ndarray, q: float
         # Observation variance (effective for gain computation)
         R = c_val * (vol_scalar ** 2)
         
+        # Total forecast variance, floored for numerical stability
+        forecast_var = max(P_pred + R, 1e-18)
+
         # Kalman gain (adjusted for tail heaviness)
-        K = nu_adjust * P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
+        K = nu_adjust * P_pred / forecast_var
         
         # Innovation
         ret_t = returns[t]
@@ -260,7 +265,7 @@ def kalman_filter_drift_student_t(returns: np.ndarray, vol: np.ndarray, q: float
         
         # Update state
         mu = float(mu_pred + K * innovation)
-        P = float((1.0 - K) * P_pred)
+        P = float(max((1.0 - K) * P_pred, 1e-12))
         
         # Store filtered estimates
         mu_filtered[t] = mu
@@ -268,11 +273,10 @@ def kalman_filter_drift_student_t(returns: np.ndarray, vol: np.ndarray, q: float
         
         # Accumulate log-likelihood: log p(r_t | past) under Student-t
         # Total forecast variance includes state uncertainty
-        forecast_scale = np.sqrt(P_pred + R)
-        if forecast_scale > 1e-12:
-            ll_t = student_t_logpdf(r_val, nu_val, mu_pred, forecast_scale)
-            if np.isfinite(ll_t):
-                log_likelihood += ll_t
+        forecast_scale = np.sqrt(forecast_var)
+        ll_t = student_t_logpdf(r_val, nu_val, mu_pred, forecast_scale)
+        if np.isfinite(ll_t):
+            log_likelihood += ll_t
     
     return mu_filtered, P_filtered, log_likelihood
 
@@ -302,7 +306,8 @@ def compute_pit_ks_pvalue(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.
     
     # Total forecast variance = scaled observation variance + parameter uncertainty
     forecast_std = np.sqrt(c * (vol_flat ** 2) + P_flat)
-    
+    assert forecast_std.min() > 0
+
     # Standardize returns
     standardized = (returns_flat - mu_flat) / forecast_std
     
@@ -530,6 +535,12 @@ def optimize_q_mle(
         
         # Average likelihood per observation
         avg_ll_oos = total_ll_oos / max(total_obs, 1)
+
+        # High CV variance check
+        if 'fold_lls' in locals() and len(fold_lls) > 1:
+            cv_variance = np.std(fold_lls)
+            if cv_variance > 5.0:
+                diagnostics['cv_variance_warning'] = True
         
         # PRODUCTION FIX: Add explicit calibration penalty based on PIT distribution
         # Well-calibrated forecasts should have standardized innovations ~ N(0,1)
@@ -580,6 +591,7 @@ def optimize_q_mle(
         if not np.isfinite(penalized_ll):
             return 1e12
         
+        assert np.isfinite(avg_ll_oos)
         return -penalized_ll  # Minimize negative = maximize
     
     # Enhanced grid search in log-space
@@ -671,7 +683,9 @@ def optimize_q_mle(
         ll_optimal = -best_neg_ll
     
     # Comprehensive diagnostics for production monitoring
+    assert q_min <= q_optimal <= q_max
     diagnostics = {
+        'cv_variance_warning': False,
         'grid_best_q': float(grid_best_q),
         'grid_best_c': float(grid_best_c),
         'refined_best_q': float(q_optimal),
