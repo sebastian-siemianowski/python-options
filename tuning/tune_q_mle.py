@@ -1190,15 +1190,85 @@ def tune_asset_q(
             else:
                 print(f"  ✓ Selected Gaussian (Student-t fit failed)")
         
-        # Helper function to compute zero-drift baseline log-likelihood
+        # =================================================================
+        # Upgrade #4: Model Comparison - Baseline Models
+        # =================================================================
+        # Compare Kalman drift model against simpler baselines for formal model selection
+        
         def compute_zero_drift_ll(returns_arr, vol_arr, c):
-            """Compute log-likelihood of zero-drift model (μ=0 for all t)."""
+            """
+            Compute log-likelihood of zero-drift model (μ=0 for all t).
+            
+            This is the simplest baseline: assumes no predictable drift.
+            """
+            # Ensure 1D arrays
+            returns_flat = np.asarray(returns_arr).flatten()
+            vol_flat = np.asarray(vol_arr).flatten()
+            
             ll = 0.0
-            for t in range(len(returns_arr)):
-                ret_t = float(returns_arr[t]) if np.ndim(returns_arr[t]) == 0 else float(returns_arr[t].item())
-                vol_t = float(vol_arr[t]) if np.ndim(vol_arr[t]) == 0 else float(vol_arr[t].item())
+            for t in range(len(returns_flat)):
+                ret_t = float(returns_flat[t])
+                vol_t = float(vol_flat[t])
                 R = c * (vol_t ** 2)
                 innovation = ret_t - 0.0
+                forecast_var = R
+                if forecast_var > 1e-12:
+                    ll += -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
+            return float(ll)
+        
+        def compute_constant_drift_ll(returns_arr, vol_arr, c):
+            """
+            Compute log-likelihood of constant-drift model (μ = mean(returns) for all t).
+            
+            This baseline assumes drift exists but is fixed over time.
+            Parameters: c (1 parameter)
+            """
+            # Ensure 1D arrays
+            returns_flat = np.asarray(returns_arr).flatten()
+            vol_flat = np.asarray(vol_arr).flatten()
+            
+            # Estimate constant drift as sample mean
+            mu_const = float(np.mean(returns_flat))
+            
+            ll = 0.0
+            for t in range(len(returns_flat)):
+                ret_t = float(returns_flat[t])
+                vol_t = float(vol_flat[t])
+                R = c * (vol_t ** 2)
+                innovation = ret_t - mu_const
+                forecast_var = R
+                if forecast_var > 1e-12:
+                    ll += -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
+            return float(ll), float(mu_const)
+        
+        def compute_ewma_drift_ll(returns_arr, vol_arr, c, span=21):
+            """
+            Compute log-likelihood of EWMA-drift model (μ_t = EWMA of past returns).
+            
+            This baseline uses exponentially weighted moving average for time-varying drift.
+            Parameters: c, span (2 parameters effectively, but span is fixed)
+            """
+            # Ensure 1D arrays
+            returns_flat = np.asarray(returns_arr).flatten()
+            vol_flat = np.asarray(vol_arr).flatten()
+            
+            # Compute EWMA drift estimates
+            ret_series = pd.Series(returns_flat)
+            mu_ewma = ret_series.ewm(span=span, adjust=False).mean().values
+            
+            ll = 0.0
+            for t in range(len(returns_flat)):
+                if t == 0:
+                    # First observation: use zero drift
+                    mu_t = 0.0
+                else:
+                    # Use EWMA estimate from previous time step (no look-ahead)
+                    mu_t = float(mu_ewma[t-1])
+                
+                ret_t = float(returns_flat[t])
+                vol_t = float(vol_flat[t])
+                R = c * (vol_t ** 2)
+                innovation = ret_t - mu_t
                 forecast_var = R
                 if forecast_var > 1e-12:
                     ll += -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
@@ -1207,9 +1277,49 @@ def tune_asset_q(
         # Run full Kalman filter with optimal (q, c)
         mu_filtered, P_filtered, ll_full = kalman_filter_drift(returns_arr, vol_arr, q_optimal, c_optimal)
         
-        # Compute zero-drift baseline for comparison
+        # =================================================================
+        # Compute all baseline models for formal model comparison
+        # =================================================================
+        print(f"  🔬 Model comparison:")
+        
+        # Baseline 1: Zero-drift (0 parameters: just uses c from Kalman)
         ll_zero = compute_zero_drift_ll(returns_arr, vol_arr, c_optimal)
+        aic_zero = compute_aic(ll_zero, n_params=0)  # c is shared, not counted
+        bic_zero = compute_bic(ll_zero, n_params=0, n_obs=n_obs)
+        print(f"     Zero-drift:     LL={ll_zero:.1f}, AIC={aic_zero:.1f}, BIC={bic_zero:.1f}")
+        
+        # Baseline 2: Constant-drift (1 parameter: mu_const, c is shared)
+        ll_const, mu_const = compute_constant_drift_ll(returns_arr, vol_arr, c_optimal)
+        aic_const = compute_aic(ll_const, n_params=1)
+        bic_const = compute_bic(ll_const, n_params=1, n_obs=n_obs)
+        print(f"     Constant-drift: LL={ll_const:.1f}, AIC={aic_const:.1f}, BIC={bic_const:.1f}, μ={mu_const:.6f}")
+        
+        # Baseline 3: EWMA-drift (1 parameter: span is fixed, c is shared)
+        ll_ewma = compute_ewma_drift_ll(returns_arr, vol_arr, c_optimal, span=21)
+        aic_ewma = compute_aic(ll_ewma, n_params=1)
+        bic_ewma = compute_bic(ll_ewma, n_params=1, n_obs=n_obs)
+        print(f"     EWMA-drift:     LL={ll_ewma:.1f}, AIC={aic_ewma:.1f}, BIC={bic_ewma:.1f}")
+        
+        # Model 4: Kalman-drift (already computed, with 2 or 3 params depending on noise model)
+        print(f"     Kalman-drift:   LL={ll_full:.1f}, AIC={aic_final:.1f}, BIC={bic_final:.1f} ({noise_model})")
+        
+        # Compute ΔLL for all baselines vs Kalman
         delta_ll_vs_zero = float(ll_full - ll_zero)
+        delta_ll_vs_const = float(ll_full - ll_const)
+        delta_ll_vs_ewma = float(ll_full - ll_ewma)
+        
+        # Determine best model by BIC (lower is better)
+        model_comparison = {
+            "zero_drift": {"ll": ll_zero, "aic": aic_zero, "bic": bic_zero, "n_params": 0},
+            "constant_drift": {"ll": ll_const, "aic": aic_const, "bic": bic_const, "n_params": 1},
+            "ewma_drift": {"ll": ll_ewma, "aic": aic_ewma, "bic": bic_ewma, "n_params": 1},
+            "kalman_drift": {"ll": ll_full, "aic": aic_final, "bic": bic_final, "n_params": 2 if noise_model == "gaussian" else 3}
+        }
+        
+        best_model_name = min(model_comparison.keys(), key=lambda k: model_comparison[k]["bic"])
+        best_bic = model_comparison[best_model_name]["bic"]
+        
+        print(f"  ✓ Best model by BIC: {best_model_name} (BIC={best_bic:.1f})")
         
         # Compute drift diagnostics
         mean_drift_var = float(np.mean(mu_filtered ** 2))
@@ -1246,8 +1356,14 @@ def tune_asset_q(
             # Likelihood and model comparison
             'log_likelihood': float(ll_full),
             'delta_ll_vs_zero': float(delta_ll_vs_zero),
+            'delta_ll_vs_const': float(delta_ll_vs_const),
+            'delta_ll_vs_ewma': float(delta_ll_vs_ewma),
             'aic': float(aic_final),
             'bic': float(bic_final),
+            
+            # Upgrade #4: Model comparison results
+            'model_comparison': model_comparison,
+            'best_model_by_bic': best_model_name,
             
             # Calibration diagnostics
             'ks_statistic': float(ks_statistic),
@@ -1473,8 +1589,8 @@ Examples:
     
     if cache:
         print(f"\nBest-fit parameters (sorted by model type, then q) — ALL ASSETS:")
-        print(f"{'Asset':<20} {'Model':<10} {'log10(q)':<10} {'c':<8} {'ν':<6} {'ΔLL':<8} {'BIC':<10} {'PIT p':<10}")
-        print("-" * 110)
+        print(f"{'Asset':<20} {'Model':<10} {'log10(q)':<10} {'c':<8} {'ν':<6} {'ΔLL_0':<8} {'ΔLL_c':<8} {'ΔLL_e':<8} {'BestModel':<12} {'BIC':<10} {'PIT p':<10}")
+        print("-" * 145)
         
         # Sort by model type, then q
         sorted_assets = sorted(cache.items(), key=lambda x: (
@@ -1486,19 +1602,37 @@ Examples:
             q_val = data.get('q', float('nan'))
             c_val = data.get('c', 1.0)
             nu_val = data.get('nu')
-            delta_ll = data.get('delta_ll_vs_zero', float('nan'))
+            delta_ll_zero = data.get('delta_ll_vs_zero', float('nan'))
+            delta_ll_const = data.get('delta_ll_vs_const', float('nan'))
+            delta_ll_ewma = data.get('delta_ll_vs_ewma', float('nan'))
             bic_val = data.get('bic', float('nan'))
             pit_p = data.get('pit_ks_pvalue', float('nan'))
             model = data.get('noise_model', 'gaussian')
+            best_model = data.get('best_model_by_bic', 'kalman_drift')
             
             log10_q = np.log10(q_val) if q_val > 0 else float('nan')
             
             nu_str = f"{nu_val:.1f}" if nu_val is not None else "-"
             model_abbr = "Student-t" if model == "student_t" else "Gaussian"
             
+            # Shorten best model name for display
+            best_model_abbr = {
+                'zero_drift': 'Zero',
+                'constant_drift': 'Const',
+                'ewma_drift': 'EWMA',
+                'kalman_drift': 'Kalman'
+            }.get(best_model, best_model[:8])
+            
             warn_marker = " ⚠️" if data.get('calibration_warning') else ""
             
-            print(f"{asset:<20} {model_abbr:<10} {log10_q:>8.2f}   {c_val:>6.3f}  {nu_str:<6} {delta_ll:>6.1f}  {bic_val:>9.1f}  {pit_p:.4f}{warn_marker}")
+            print(f"{asset:<20} {model_abbr:<10} {log10_q:>8.2f}   {c_val:>6.3f}  {nu_str:<6} {delta_ll_zero:>6.1f}  {delta_ll_const:>6.1f}  {delta_ll_ewma:>6.1f}  {best_model_abbr:<12} {bic_val:>9.1f}  {pit_p:.4f}{warn_marker}")
+        
+        # Add legend
+        print("\nColumn Legend:")
+        print("  ΔLL_0: ΔLL vs zero-drift baseline")
+        print("  ΔLL_c: ΔLL vs constant-drift baseline")
+        print("  ΔLL_e: ΔLL vs EWMA-drift baseline")
+        print("  BestModel: Best model by BIC (Zero/Const/EWMA/Kalman)")
         
         print(f"\nCache files:")
         print(f"  JSON: {args.cache_json}")

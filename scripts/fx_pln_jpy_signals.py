@@ -803,7 +803,11 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
                     'delta_ll_vs_zero': data.get('delta_ll_vs_zero'),
                     'pit_ks_pvalue': data.get('pit_ks_pvalue'),
                     'bic': data.get('bic'),
-                    'aic': data.get('aic')
+                    'aic': data.get('aic'),
+                    'best_model_by_bic': data.get('best_model_by_bic', 'kalman_drift'),
+                    'model_comparison': data.get('model_comparison', {}),
+                    'delta_ll_vs_const': data.get('delta_ll_vs_const'),
+                    'delta_ll_vs_ewma': data.get('delta_ll_vs_ewma')
                 }
                 
                 return result
@@ -1288,57 +1292,162 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     vol_regime = vol / vol_med
 
     # ========================================
-    # Pillar 1: State-Space Model for Drift (Kalman Filter)
+    # Pillar 1: Model-Based Drift Estimation
     # ========================================
-    # Institution-grade drift estimation using Kalman filter with:
-    # - Forward pass: real-time filtered estimates
-    # - Backward pass: smoothed estimates using all data (preferred for signals)
-    # - Uncertainty quantification: Var(μ̂_t) propagated into forecasts
+    # Use best model selected by BIC from tune_q_mle.py model comparison:
+    # - zero_drift: μ = 0 (no predictable drift)
+    # - constant_drift: μ = constant (fixed drift)
+    # - ewma_drift: μ = EWMA of returns (adaptive)
+    # - kalman_drift: μ from Kalman filter (state-space model)
     
-    # Run Kalman filter on returns with GARCH/EWMA volatility
-    # Uses pre-tuned parameters from cache if available, otherwise auto-estimates
-    kf_result = _kalman_filter_drift(ret, vol, q=None, asset_symbol=asset_symbol)
+    # Load tuned parameters and model selection results
+    tuned_params = None
+    if asset_symbol is not None:
+        tuned_params = _load_tuned_kalman_params(asset_symbol)
     
-    # Extract Kalman-filtered drift estimates
-    if kf_result and "mu_kf_smoothed" in kf_result:
-        # Use backward-smoothed estimates (uses all data, statistically optimal)
-        mu_kf = kf_result["mu_kf_smoothed"]
-        var_kf = kf_result["var_kf_smoothed"]
-        kalman_available = True
-        kalman_metadata = {
-            "log_likelihood": kf_result.get("log_likelihood", float("nan")),
-            "process_noise_var": kf_result.get("process_noise_var", float("nan")),
-            "n_obs": kf_result.get("n_obs", 0),
-            # Refinement 1: q optimization metadata
-            "q_optimal": kf_result.get("q_optimal", float("nan")),
-            "q_heuristic": kf_result.get("q_heuristic", float("nan")),
-            "q_optimization_attempted": kf_result.get("q_optimization_attempted", False),
-            # Refinement 2: Kalman gain statistics (situational awareness)
-            "kalman_gain_mean": kf_result.get("kalman_gain_mean", float("nan")),
-            "kalman_gain_recent": kf_result.get("kalman_gain_recent", float("nan")),
-            # Refinement 3: Innovation whiteness test (model adequacy)
-            "innovation_whiteness": kf_result.get("innovation_whiteness", {}),
-            # Level-7 Refinement: Heteroskedastic process noise
-            "heteroskedastic_mode": kf_result.get("heteroskedastic_mode", False),
-            "c_optimal": kf_result.get("c_optimal"),
-            "q_t_mean": kf_result.get("q_t_mean"),
-            "q_t_std": kf_result.get("q_t_std"),
-            "q_t_min": kf_result.get("q_t_min"),
-            "q_t_max": kf_result.get("q_t_max"),
-            # Level-7+ Refinement: Robust Kalman filtering with Student-t innovations
-            "robust_t_mode": kf_result.get("robust_t_mode", False),
-            "nu_robust": kf_result.get("nu_robust"),
-            # Level-7+ Refinement: Regime-dependent drift priors
-            "regime_prior_used": kf_result.get("regime_prior_used", False),
-            "regime_prior_info": kf_result.get("regime_prior_info", {}),
-        }
-    else:
-        # Fallback: use EWMA blend if Kalman fails
-        mu_blend = 0.5 * mu_fast + 0.5 * mu_slow
-        mu_kf = mu_blend
-        var_kf = pd.Series(0.0, index=mu_kf.index)  # no uncertainty quantified
+    best_model = tuned_params.get('best_model_by_bic', 'kalman_drift') if tuned_params else 'kalman_drift'
+    
+    # Print model selection information for user transparency
+    if asset_symbol and tuned_params:
+        model_comparison = tuned_params.get('model_comparison', {})
+        print(f"\n{'='*80}")
+        print(f"📊 Model Selection for {asset_symbol}")
+        print(f"{'='*80}")
+        print(f"Selected Model: {best_model.upper().replace('_', ' ')}")
+        
+        if model_comparison:
+            print(f"\nBIC Comparison (lower is better):")
+            for model_name, metrics in sorted(model_comparison.items(), key=lambda x: x[1].get('bic', float('inf'))):
+                bic = metrics.get('bic', float('nan'))
+                ll = metrics.get('ll', float('nan'))
+                n_params = metrics.get('n_params', 0)
+                marker = " ← SELECTED" if model_name == best_model else ""
+                print(f"  {model_name:20s}: BIC={bic:10.1f}, LL={ll:10.1f}, params={n_params}{marker}")
+        
+        # Show delta LL comparisons
+        delta_ll_zero = tuned_params.get('delta_ll_vs_zero', float('nan'))
+        delta_ll_const = tuned_params.get('delta_ll_vs_const', float('nan'))
+        delta_ll_ewma = tuned_params.get('delta_ll_vs_ewma', float('nan'))
+        
+        print(f"\nLog-Likelihood Improvements (vs baselines):")
+        print(f"  vs Zero-drift:     ΔLL = {delta_ll_zero:+7.2f}")
+        print(f"  vs Constant-drift: ΔLL = {delta_ll_const:+7.2f}")
+        print(f"  vs EWMA-drift:     ΔLL = {delta_ll_ewma:+7.2f}")
+        
+        # Explain the selection
+        print(f"\nRationale:")
+        if best_model == 'zero_drift':
+            print(f"  • No predictable drift detected (μ = 0 is best fit)")
+            print(f"  • Complex drift models do not improve fit enough to justify added parameters")
+        elif best_model == 'constant_drift':
+            print(f"  • Drift exists but is constant over time (μ = {ret.mean():.6f})")
+            print(f"  • Time-varying drift models do not justify additional complexity")
+        elif best_model == 'ewma_drift':
+            print(f"  • Drift varies over time following recent return patterns")
+            print(f"  • EWMA provides better fit than constant or Kalman state-space models")
+        else:  # kalman_drift
+            print(f"  • Drift evolves stochastically (state-space model justified)")
+            print(f"  • Kalman filter provides best balance of fit and parsimony")
+            
+            # Show Kalman parameters if available
+            noise_model = tuned_params.get('noise_model', 'gaussian')
+            q_val = tuned_params.get('q', float('nan'))
+            c_val = tuned_params.get('c', float('nan'))
+            nu_val = tuned_params.get('nu')
+            
+            print(f"\n  Kalman Parameters:")
+            print(f"    Noise Model: {noise_model}")
+            print(f"    Process Noise (q): {q_val:.2e}")
+            print(f"    Observation Scale (c): {c_val:.3f}")
+            if nu_val is not None:
+                print(f"    Student-t df (ν): {nu_val:.1f}")
+        
+        print(f"{'='*80}\n")
+    
+    # Apply drift estimation based on best model selection
+    if best_model == 'zero_drift':
+        # Zero-drift model: assume no predictable drift (μ = 0)
+        mu_kf = pd.Series(0.0, index=ret.index, name="mu_zero")
+        var_kf = pd.Series(0.0, index=ret.index)
         kalman_available = False
-        kalman_metadata = {}
+        kalman_metadata = {
+            "model_selected": "zero_drift",
+            "reason": "BIC comparison favored zero-drift baseline",
+            "delta_ll_vs_zero": tuned_params.get('delta_ll_vs_zero', float('nan')) if tuned_params else float('nan')
+        }
+    
+    elif best_model == 'constant_drift':
+        # Constant-drift model: μ = mean(returns) for all t
+        const_drift = float(ret.mean())
+        mu_kf = pd.Series(const_drift, index=ret.index, name="mu_const")
+        var_kf = pd.Series(0.0, index=ret.index)
+        kalman_available = False
+        kalman_metadata = {
+            "model_selected": "constant_drift",
+            "constant_drift_value": const_drift,
+            "reason": "BIC comparison favored constant-drift baseline",
+            "delta_ll_vs_const": tuned_params.get('delta_ll_vs_const', float('nan')) if tuned_params else float('nan')
+        }
+    
+    elif best_model == 'ewma_drift':
+        # EWMA-drift model: μ = EWMA of past returns
+        mu_ewma = ret.ewm(span=21, adjust=False).mean()
+        mu_kf = mu_ewma.rename("mu_ewma")
+        var_kf = pd.Series(0.0, index=ret.index)
+        kalman_available = False
+        kalman_metadata = {
+            "model_selected": "ewma_drift",
+            "ewma_span": 21,
+            "reason": "BIC comparison favored EWMA-drift baseline",
+            "delta_ll_vs_ewma": tuned_params.get('delta_ll_vs_ewma', float('nan')) if tuned_params else float('nan')
+        }
+    
+    else:
+        # Kalman-drift model (default): full state-space estimation
+        # Run Kalman filter on returns with GARCH/EWMA volatility
+        # Uses pre-tuned parameters from cache if available, otherwise auto-estimates
+        kf_result = _kalman_filter_drift(ret, vol, q=None, asset_symbol=asset_symbol)
+        
+        # Extract Kalman-filtered drift estimates
+        if kf_result and "mu_kf_smoothed" in kf_result:
+            # Use backward-smoothed estimates (uses all data, statistically optimal)
+            mu_kf = kf_result["mu_kf_smoothed"]
+            var_kf = kf_result["var_kf_smoothed"]
+            kalman_available = True
+            kalman_metadata = {
+                "log_likelihood": kf_result.get("log_likelihood", float("nan")),
+                "process_noise_var": kf_result.get("process_noise_var", float("nan")),
+                "n_obs": kf_result.get("n_obs", 0),
+                # Refinement 1: q optimization metadata
+                "q_optimal": kf_result.get("q_optimal", float("nan")),
+                "q_heuristic": kf_result.get("q_heuristic", float("nan")),
+                "q_optimization_attempted": kf_result.get("q_optimization_attempted", False),
+                # Refinement 2: Kalman gain statistics (situational awareness)
+                "kalman_gain_mean": kf_result.get("kalman_gain_mean", float("nan")),
+                "kalman_gain_recent": kf_result.get("kalman_gain_recent", float("nan")),
+                # Refinement 3: Innovation whiteness test (model adequacy)
+                "innovation_whiteness": kf_result.get("innovation_whiteness", {}),
+                # Level-7 Refinement: Heteroskedastic process noise
+                "heteroskedastic_mode": kf_result.get("heteroskedastic_mode", False),
+                "c_optimal": kf_result.get("c_optimal"),
+                "q_t_mean": kf_result.get("q_t_mean"),
+                "q_t_std": kf_result.get("q_t_std"),
+                "q_t_min": kf_result.get("q_t_min"),
+                "q_t_max": kf_result.get("q_t_max"),
+                # Level-7+ Refinement: Robust Kalman filtering with Student-t innovations
+                "robust_t_mode": kf_result.get("robust_t_mode", False),
+                "nu_robust": kf_result.get("nu_robust"),
+                # Level-7+ Refinement: Regime-dependent drift priors
+                "regime_prior_used": kf_result.get("regime_prior_used", False),
+                "regime_prior_info": kf_result.get("regime_prior_info", {}),
+            }
+        else:
+            # Fallback: use EWMA blend if Kalman fails
+            mu_blend = 0.5 * mu_fast + 0.5 * mu_slow
+            mu_kf = mu_blend
+            var_kf = pd.Series(0.0, index=mu_kf.index)  # no uncertainty quantified
+            kalman_available = False
+            kalman_metadata = {}
     
     # Trend filter (200D z-distance) - kept for diagnostics
     sma200 = px.rolling(200).mean()
@@ -2804,10 +2913,50 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         mu_H = mH  # use simulated mean directly
         sig_H = sH
 
-        # Fractional Kelly sizing (half‑Kelly) using simulated mean/variance
-        denom = vH if vH > 0 else (sig_H ** 2 if sig_H > 0 else 1.0)
+        # ========================================================================
+        # Upgrade #2: Drift Confidence → Kelly Scaling
+        # ========================================================================
+        # Incorporate drift uncertainty (P_t) into Kelly denominator to prevent ruin
+        # Add drift_weight based on model quality (ΔLL, PIT) to scale position size
+        
+        # Extract drift uncertainty (variance of drift estimate) from Kalman filter
+        var_kf_series = feats.get("var_kf_smoothed", pd.Series(dtype=float))
+        if isinstance(var_kf_series, pd.Series) and not var_kf_series.empty:
+            P_t = float(var_kf_series.iloc[-1])  # Latest drift variance
+        else:
+            P_t = 0.0  # No drift uncertainty if Kalman not available
+        
+        # Ensure P_t is valid
+        if not np.isfinite(P_t) or P_t < 0:
+            P_t = 0.0
+        
+        # Kelly denominator: total variance = observation variance + drift uncertainty scaled by horizon
+        # Original: denom = vH (observation variance over horizon H)
+        # Upgraded: denom = vH + H * P_t (adds drift parameter uncertainty)
+        denom_base = vH if vH > 0 else (sig_H ** 2 if sig_H > 0 else 1.0)
+        denom = denom_base + float(H) * P_t
+        
+        # Compute drift_weight based on model quality metrics
+        # - ΔLL < 0: drift model worse than zero-drift → weight = 0
+        # - PIT p < 0.05: miscalibration warning → weight = 0.3
+        # - Otherwise: well-calibrated drift → weight = 1.0
+        kalman_metadata = feats.get("kalman_metadata", {})
+        delta_ll = kalman_metadata.get("delta_ll_vs_zero", float("nan"))
+        pit_pvalue = kalman_metadata.get("pit_ks_pvalue", float("nan"))
+        
+        drift_weight = 1.0  # Default: trust drift fully
+        
+        if np.isfinite(delta_ll) and delta_ll < 0:
+            # Drift model performs worse than zero-drift baseline
+            drift_weight = 0.0
+        elif np.isfinite(pit_pvalue) and pit_pvalue < 0.05:
+            # Calibration warning: model forecasts not well-calibrated
+            drift_weight = 0.3
+        
+        # Fractional Kelly sizing (half‑Kelly) with drift confidence adjustment
         f_star = float(np.clip(mu_H / denom, -1.0, 1.0))
-        pos_strength = float(min(1.0, 0.5 * abs(f_star)))
+        pos_strength_raw = float(min(1.0, 0.5 * abs(f_star)))
+        pos_strength = drift_weight * pos_strength_raw
 
         # Level-7 Modularization: Use helper function for dynamic thresholds
         # Enriched regime_meta with vol_regime for fallback path
