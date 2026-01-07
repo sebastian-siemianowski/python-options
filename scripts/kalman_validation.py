@@ -353,6 +353,8 @@ def compare_predictive_likelihood(
         
         try:
             train_feats = compute_features(train_px)
+            if not train_feats:
+                continue
             
             # Get Kalman drift and volatility at end of training
             mu_kf = train_feats.get("mu_kf", train_feats.get("mu"))

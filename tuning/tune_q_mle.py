@@ -1085,16 +1085,21 @@ def tune_asset_q(
         # Compute returns
         log_px = np.log(px)
         returns = log_px.diff().dropna()
+
+        if len(returns) < 300:
+            print(f"  ⚠️  {asset}: Insufficient returns data ({len(returns)} days)")
+            return None
         
         # Compute EWMA volatility (observation noise)
         vol = returns.ewm(span=21, adjust=False).std()
         
         # Align series
-        returns = returns.iloc[20:]  # Skip initial EWMA warmup
+        returns = returns.iloc[20:]
         vol = vol.iloc[20:]
-        
-        returns_arr = returns.values
-        vol_arr = vol.values
+        assert len(returns) == len(vol)
+
+        returns_arr = returns.values.astype('float64')
+        vol_arr = vol.values.astype('float64')
         n_obs = len(returns_arr)
         
         # Compute kurtosis to assess tail heaviness

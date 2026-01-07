@@ -134,10 +134,11 @@ class TestKalmanValidation(unittest.TestCase):
     
     def test_predictive_likelihood_comparison(self):
         """Test predictive likelihood improvement testing."""
+        # Pass synthetic data directly to the function
         result = compare_predictive_likelihood(
             px=self.px,
             asset_name="TestAsset",
-            train_days=252,
+            train_days=350,
             test_days=63,
             max_windows=5
         )
