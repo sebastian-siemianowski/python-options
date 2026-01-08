@@ -72,6 +72,48 @@ DEFAULT_ASSET_UNIVERSE = [
     "005930.KS",  # Samsung Electronics (Korean)
     # Mining & commodities
     "NEM",    # Newmont Mining
+    # VanEck ETFs
+    "AFK",
+    "ANGL",
+    "BRF",
+    "CNXT",
+    "DURA",
+    "EGPT",
+    "EMLC",
+    "FLTR",
+    "GDX",
+    "GDXJ",
+    "GLIN",
+    "MOTG",
+    "GRNB",
+    "HYEM",
+    "IDX",
+    "ITM",
+    "MLN",
+    "MOAT",
+    "MOO",
+    "MOTI",
+    "NLR",
+    "OIH",
+    "PPH",
+    "REMX",
+    "RSX",
+    "RSXJ",
+    "RTH",
+    "SLX",
+    "SMOG",
+    "VNM",
+    # VanEck UCITS ETFs
+    "ESPO",
+    "GFA",
+    "HDRO",
+    "TCBT",
+    "TDIV",
+    "TEET",
+    "TGBT",
+    "TRET",
+    "TSWE",
+    "TAT",
 ]
 
 
