@@ -21,6 +21,7 @@ import json
 import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+from multiprocessing import Pool, cpu_count
 
 import numpy as np
 import pandas as pd
@@ -3053,6 +3054,71 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
+    """
+    Worker function to process a single asset in parallel.
+    Only performs computation, no console output.
+    
+    Args:
+        args_tuple: (asset, args, horizons)
+        
+    Returns:
+        Dictionary with processed results or None if failed
+    """
+    asset, args, horizons = args_tuple
+    
+    try:
+        # Fetch price data
+        try:
+            px, title = fetch_px_asset(asset, args.start, args.end)
+        except Exception as e:
+            return {
+                "status": "error",
+                "asset": asset,
+                "error": str(e)
+            }
+        
+        # De-duplicate by resolved symbol
+        canon = extract_symbol_from_title(title)
+        if not canon:
+            canon = asset.strip().upper()
+        
+        # Compute features and signals
+        feats = compute_features(px, asset_symbol=asset)
+        last_close = _to_float(px.iloc[-1])
+        sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)
+        
+        # Compute diagnostics if requested
+        diagnostics = {}
+        if args.diagnostics or args.diagnostics_lite or args.pit_calibration or args.model_comparison:
+            enable_oos = args.diagnostics
+            enable_pit = args.pit_calibration
+            enable_model_comp = args.model_comparison
+            diagnostics = compute_all_diagnostics(px, feats, enable_oos=enable_oos, enable_pit_calibration=enable_pit, enable_model_comparison=enable_model_comp)
+        
+        return {
+            "status": "success",
+            "asset": asset,
+            "canon": canon,
+            "title": title,
+            "px": px,
+            "feats": feats,
+            "sigs": sigs,
+            "thresholds": thresholds,
+            "diagnostics": diagnostics,
+            "last_close": last_close,
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "status": "error",
+            "asset": asset,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+
 def main() -> None:
     args = parse_args()
     horizons = sorted({int(x.strip()) for x in args.horizons.split(",") if x.strip()})
@@ -3065,37 +3131,63 @@ def main() -> None:
     csv_rows_detailed = []  # for CSV detailed export
     summary_rows = []  # for summary table across assets
 
+    # ============================================================================
+    # PARALLEL PROCESSING: Compute features/signals for all assets concurrently
+    # ============================================================================
+    n_workers = min(cpu_count(), len(assets))
+    
+    console = Console()
+    console.print(f"[cyan]🚀 Processing {len(assets)} assets in parallel using {n_workers} workers...[/cyan]")
+    
+    # Prepare work items for parallel processing
+    work_items = [(asset, args, horizons) for asset in assets]
+    
+    # Execute parallel computation (data fetch + feature computation + signal generation)
+    with Pool(processes=n_workers) as pool:
+        results = pool.map(process_single_asset, work_items)
+    
+    console.print(f"[green]✓ Parallel computation complete! Now displaying results...[/green]\n")
+    
+    # ============================================================================
+    # SEQUENTIAL DISPLAY & AGGREGATION: Process results in order with console output
+    # ============================================================================
     caption_printed = False
     processed_syms = set()
-    for asset in assets:
-        try:
-            px, title = fetch_px_asset(asset, args.start, args.end)
-        except Exception as e:
-            # Skip asset with a warning row (console)
-            Console().print(f"[red]Warning:[/red] Failed to fetch {asset}: {e}")
+    
+    for result in results:
+        # Handle None or error results
+        if result is None:
             continue
-
-        # De-duplicate by resolved symbol extracted from title (e.g., "Company (SYMBOL) — ...").
-        # If not found, fall back to the asset token to avoid duplicates from identical inputs.
-        canon = extract_symbol_from_title(title)
-        if not canon:
-            canon = asset.strip().upper()
+            
+        if result.get("status") == "error":
+            asset = result.get("asset", "unknown")
+            error = result.get("error", "unknown error")
+            console.print(f"[red]Warning:[/red] Failed to process {asset}: {error}")
+            if os.getenv('DEBUG'):
+                traceback_info = result.get("traceback", "")
+                if traceback_info:
+                    console.print(f"[dim]{traceback_info}[/dim]")
+            continue
+        
+        if result.get("status") != "success":
+            continue
+        
+        # Extract computed results from worker
+        asset = result["asset"]
+        canon = result["canon"]
+        title = result["title"]
+        px = result["px"]
+        feats = result["feats"]
+        sigs = result["sigs"]
+        thresholds = result["thresholds"]
+        diagnostics = result["diagnostics"]
+        last_close = result["last_close"]
+        
+        # De-duplicate check
         if canon in processed_syms:
-            Console().print(f"[yellow]Skipping duplicate:[/yellow] {title} (from input '{asset}')")
+            console.print(f"[yellow]Skipping duplicate:[/yellow] {title} (from input '{asset}')")
             continue
         processed_syms.add(canon)
-
-        feats = compute_features(px, asset_symbol=asset)
-        last_close = _to_float(px.iloc[-1])
-        sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)
-        
-        # Compute diagnostics if requested (Level-7 falsifiability)
-        diagnostics = {}
-        if args.diagnostics or args.diagnostics_lite or args.pit_calibration or args.model_comparison:
-            enable_oos = args.diagnostics  # Full diagnostics include expensive OOS tests
-            enable_pit = args.pit_calibration  # PIT calibration verification
-            enable_model_comp = args.model_comparison  # Structural model comparison via AIC/BIC
-            diagnostics = compute_all_diagnostics(px, feats, enable_oos=enable_oos, enable_pit_calibration=enable_pit, enable_model_comparison=enable_model_comp)
 
         # Print table for this asset
         if args.simple:
