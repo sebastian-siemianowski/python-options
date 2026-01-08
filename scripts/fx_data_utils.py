@@ -795,6 +795,115 @@ def _resolve_symbol_candidates(asset: str) -> List[str]:
         "MTX": ["MTX.DE", "MTX"],
         "IBKR": ["IBKR"],
         "HOOD": ["HOOD"],
+
+        # S&P 100 additions by sector
+
+        # Information Technology
+        "ACCENTURE": ["ACN"],
+        "ADOBE": ["ADBE"],
+        "SALESFORCE": ["CRM"],
+        "CISCO": ["CSCO"],
+        "INTEL": ["INTC"],
+        "ORACLE": ["ORCL"],
+        "PALANTIR": ["PLTR"],
+        "QUALCOMM": ["QCOM"],
+        "TEXAS INSTRUMENTS": ["TXN"],
+
+        # Health Care
+        "ABBVIE": ["ABBV"],
+        "ABBOTT LABS": ["ABT"],
+        "AMGEN": ["AMGN"],
+        "BRISTOL MYERS SQUIBB": ["BMY"],
+        "CVS HEALTH": ["CVS"],
+        "DANAHER": ["DHR"],
+        "GILEAD SCIENCES": ["GILD"],
+        "INTUITIVE SURGICAL": ["ISRG"],
+        "JOHNSON & JOHNSON": ["JNJ"],
+        "ELI LILLY": ["LLY"],
+        "MEDTRONIC": ["MDT"],
+        "MERCK": ["MRK"],
+        "THERMO FISHER SCIENTIFIC": ["TMO"],
+        "UNITEDHEALTH": ["UNH"],
+
+        # Financials
+        "AMERICAN INTERNATIONAL GROUP": ["AIG"],
+        "AMERICAN EXPRESS": ["AXP"],
+        "BANK OF AMERICA": ["BAC"],
+        "BNY MELLON": ["BK"],
+        "BLACKROCK": ["BLK"],
+        "BERKSHIRE HATHAWAY": ["BRK.B"],
+        "CITIGROUP": ["C"],
+        "CAPITAL ONE": ["COF"],
+        "GOLDMAN SACHS": ["GS"],
+        "JPMORGAN CHASE": ["JPM"],
+        "MASTERCARD": ["MA"],
+        "METLIFE": ["MET"],
+        "MORGAN STANLEY": ["MS"],
+        "PAYPAL": ["PYPL"],
+        "CHARLES SCHWAB": ["SCHW"],
+        "US BANCORP": ["USB"],
+        "VISA": ["V"],
+        "WELLS FARGO": ["WFC"],
+
+        # Consumer Discretionary
+        "BOOKING HOLDINGS": ["BKNG"],
+        "GENERAL MOTORS": ["GM"],
+        "HOME DEPOT": ["HD"],
+        "LOWES": ["LOW"],
+        "MCDONALDS": ["MCD"],
+        "NIKE": ["NKE"],
+        "STARBUCKS": ["SBUX"],
+        "TARGET": ["TGT"],
+
+        # Industrials
+        "BOEING": ["BA"],
+        "CATERPILLAR": ["CAT"],
+        "DEERE & COMPANY": ["DE"],
+        "EMERSON ELECTRIC": ["EMR"],
+        "FEDEX": ["FDX"],
+        "GENERAL DYNAMICS": ["GD"],
+        "GE AEROSPACE": ["GE"],
+        "HONEYWELL": ["HON"],
+        "LOCKHEED MARTIN": ["LMT"],
+        "3M": ["MMM"],
+        "RTX CORPORATION": ["RTX"],
+        "UNION PACIFIC": ["UNP"],
+        "UPS": ["UPS"],
+
+        # Communication Services
+        "COMCAST": ["CMCSA"],
+        "DISNEY": ["DIS"],
+        "AT&T": ["T"],
+        "T-MOBILE": ["TMUS"],
+        "VERIZON": ["VZ"],
+
+        # Consumer Staples
+        "COLGATE-PALMOLIVE": ["CL"],
+        "COSTCO": ["COST"],
+        "COCA-COLA": ["KO"],
+        "MONDELEZ": ["MDLZ"],
+        "ALTRIA": ["MO"],
+        "PEPSICO": ["PEP"],
+        "PROCTER & GAMBLE": ["PG"],
+        "PHILIP MORRIS": ["PM"],
+        "WALMART": ["WMT"],
+
+        # Energy
+        "CONOCOPHILLIPS": ["COP"],
+        "CHEVRON": ["CVX"],
+        "EXXONMOBIL": ["XOM"],
+
+        # Utilities
+        "DUKE ENERGY": ["DUK"],
+        "NEXTERA ENERGY": ["NEE"],
+        "SOUTHERN COMPANY": ["SO"],
+
+        # Real Estate
+        "AMERICAN TOWER": ["AMT"],
+        "SIMON PROPERTY GROUP": ["SPG"],
+
+        # Materials
+        "LINDE": ["LIN"],
         # Vaneck ETFs
         "VANECK SEMICONDUCTOR": ["SMH"],
         "VANECK GOLD MINERS": ["GDX"],
