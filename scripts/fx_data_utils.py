@@ -218,7 +218,6 @@ DEFAULT_ASSET_UNIVERSE = [
     "TATT",   # TAT Technologies Ltd
     "TDG",    # TransDigm Group Inc
     "TDY",    # Teledyne Technologies Incorporated
-    "TGI",    # Triumph Group, Inc.
     "TXT",    # Textron Inc.
     "VSAT",   # ViaSat Inc
     "VSEC",   # VSE Corporation
@@ -337,8 +336,6 @@ MAPPING = {
     "HEIA": ["HEI-A", "HEI", "HEIA.AS", "HEI.A"],
     # ManTech acquired by CACI; use acquirer first
     "MANT": ["CACI", "MANT"],
-    # Triumph Group; if primary fails, no clean alt
-    "TGI": ["TGI"],
     # Thin/micro-cap or delisted: Starfighters (FJET) rarely returns; try none to skip earlier
     "FJET": ["FJET"],
     # Netflix and Novo Nordisk
@@ -713,14 +710,20 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     - Tries yf.download first
     - Falls back to Ticker.history
     - Tries again without auto_adjust
+    - Falls back to period='max' pulls to dodge timezone/metadata issues
     Normalizes DatetimeIndex to tz-naive for stability.
     """
-    # Try standard download
-    try:
-        df = yf.download(symbol, start=start, end=end, auto_adjust=True, progress=False, threads=False)
+    def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         if df is not None and not df.empty:
             if hasattr(df.index, "tz") and df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
+        return df if df is not None else pd.DataFrame()
+
+    # Try standard download
+    try:
+        df = yf.download(symbol, start=start, end=end, auto_adjust=True, progress=False, threads=False)
+        df = _normalize(df)
+        if df is not None and not df.empty:
             return df
     except Exception:
         pass
@@ -728,18 +731,32 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     try:
         tk = yf.Ticker(symbol)
         df = tk.history(start=start, end=end, auto_adjust=True)
+        df = _normalize(df)
         if df is not None and not df.empty:
-            if hasattr(df.index, "tz") and df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
             return df
     except Exception:
         pass
     # Try without auto_adjust
     try:
         df = yf.download(symbol, start=start, end=end, auto_adjust=False, progress=False, threads=False)
+        df = _normalize(df)
         if df is not None and not df.empty:
-            if hasattr(df.index, "tz") and df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
+            return df
+    except Exception:
+        pass
+    # Period max fallback to dodge tz/metadata issues for dash/dot tickers
+    try:
+        tk = yf.Ticker(symbol)
+        df = tk.history(period="max", auto_adjust=True)
+        df = _normalize(df)
+        if df is not None and not df.empty:
+            return df
+    except Exception:
+        pass
+    try:
+        df = yf.download(symbol, period="max", auto_adjust=True, progress=False, threads=False)
+        df = _normalize(df)
+        if df is not None and not df.empty:
             return df
     except Exception:
         pass
@@ -813,13 +830,17 @@ def _fetch_with_fallback(symbols: List[str], start: Optional[str], end: Optional
     raise RuntimeError(f"No data for symbols: {symbols}")
 
 
-def fetch_px(pair: str, start: Optional[str], end: Optional[str]) -> pd.Series:
-    """Fetch price series with mapping/dot-dash fallbacks."""
+def fetch_px(pair: str, start: Optional[str], end: Optional[str]) -> Tuple[pd.Series, str]:
+    """Fetch price series with mapping/dot-dash fallbacks.
+    Returns (series, display_name).
+    """
     candidates = _resolve_symbol_candidates(pair)
     last_err: Optional[Exception] = None
     for sym in candidates:
         try:
-            return _fetch_px_symbol(sym, start, end)
+            px = _fetch_px_symbol(sym, start, end)
+            title = _resolve_display_name(sym)
+            return px, title
         except Exception as e:
             last_err = e
             continue
@@ -1139,315 +1160,41 @@ def convert_price_series_to_pln(native_px: pd.Series, quote_ccy: str, start: Opt
 def _resolve_symbol_candidates(asset: str) -> List[str]:
     a = asset.strip()
     u = a.upper()
-    mapping = {
-        # Prefer active, liquid proxies first to avoid Yahoo "possibly delisted" noise
-        "GOOO": ["GOOG", "GOOGL", "GOOO"],
-        "GLDW": ["GLDM", "GLD", "GLDW"],
-        "SGLP": ["SGLP.L", "SGLP", "SGLP.LON"],
-        "GLDE": ["GLD", "IAU", "GLDE"],
-        "FACC": ["FACC.VI", "FACC"],
-        "SLVI": ["SLV", "SLVP", "SLVI"],
-        "TKA": ["TKA.DE", "TKA"],
-        # Dot/dash and delisting-friendly fixes
-        # Berkshire Hathaway Class B; BRK-B is the working Yahoo symbol
+
+    # Start from global mapping and layer in hotfixes for known problematic tickers
+    mapping = dict(MAPPING)
+    mapping.update({
         "BRK.B": ["BRK-B", "BRKB", "BRK.B"],
-        # Moog Class A; MOG-A works, dot variants often fail
+        "HEIA": ["HEI-A", "HEI.A", "HEI", "HEIA.AS"],
         "MOG.A": ["MOG-A", "MOG.A", "MOGA"],
-        # HEICO Class A trades on NYSE and AMS; HEI-A/HEI/HEIA.AS resolve
-        "HEIA": ["HEI-A", "HEI", "HEIA.AS", "HEI.A"],
-        # ManTech acquired by CACI; use acquirer first
         "MANT": ["CACI", "MANT"],
-        # Triumph Group; if primary fails, no clean alt
-        "TGI": ["TGI"],
-        # Thin/micro-cap or delisted: Starfighters (FJET) rarely returns; try none to skip earlier
-        "FJET": ["FJET"],
-        # Netflix and Novo Nordisk
-        "NFLX": ["NFLX"],
-        "NOVO": ["NVO", "NOVO-B.CO", "NOVOB.CO", "NOVO-B.CO"],
-        # Kratos (alias to KTOS)
-        "KRATOS": ["KTOS"],
-        # Requested blue chips and defense/aero additions
-        "RHEINMETALL": ["RHM.DE", "RHM.F"],
-        "AIRBUS": ["AIR.PA", "AIR.DE"],
-        "RENK": ["R3NK.DE", "RNK.DE"],
-        "NORTHROP": ["NOC"],
-        "NORTHROP GRUMMAN": ["NOC"],
-        "NORTHRUP": ["NOC"],
-        "NORTHRUP GRUNMAN": ["NOC"],
-        "NVIDIA": ["NVDA"],
-        "MICROSOFT": ["MSFT"],
-        "APPLE": ["AAPL"],
-        "AMD": ["AMD"],
-        "UBER": ["UBER"],
-        "TESLA": ["TSLA"],
-        "VANGUARD SP 500": ["VOO", "VUSA.L"],
-        "VANGUARD SP 500": ["VOO", "VUSA.L"],
-        "VANGUARD S&P 500": ["VOO", "VUSA.L"],
-        "THALES": ["HO.PA"],
-        "HENSOLDT": ["HAG.DE"],
-        "SAMSUNG": ["005930.KS", "005935.KS"],
-        "TKMS AG & CO": ["TKA.DE", "TKAMY"],
-        # Additional defense, aerospace, and mining companies
-        "BAE SYSTEMS": ["BA.L"],
-        "BAE": ["BA.L"],
-        "NEWMONT": ["NEM"],
-        "NEWMONT CORP": ["NEM"],
-        "HOWMET": ["HWM"],
-        "HOWMET AEROSPACE": ["HWM"],
-        "BROADCOM": ["AVGO"],
-        # SPY, S&P 500, Magnificent 7, and Semiconductor ETFs
-        "SPY": ["SPY"],
-        "SP500": ["^GSPC", "SPY"],
-        "S&P500": ["^GSPC", "SPY"],
-        "S&P 500": ["^GSPC", "SPY"],
-        "MAGNIFICENT 7": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"],
-        "MAGNIFICENT SEVEN": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"],
-        "MAG7": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"],
-        "GOOGLE": ["GOOGL", "GOOG"],
-        "ALPHABET": ["GOOGL", "GOOG"],
-        "AMAZON": ["AMZN"],
-        "META": ["META"],
-        "FACEBOOK": ["META"],
-        "SEMICONDUCTOR ETF": ["SMH", "SOXX"],
-        "SMH": ["SMH"],
-        "SOXX": ["SOXX"],
-        # keep identity candidates (with improved MTX mapping to MTU Aero Engines on XETRA)
-        "RKLB": ["RKLB"],
-        "MTX": ["MTX.DE", "MTX"],
-        "IBKR": ["IBKR"],
-        "HOOD": ["HOOD"],
-        # S&P 100 additions by sector
-        # Information Technology
-        "ACCENTURE": ["ACN"],
-        "ADOBE": ["ADBE"],
-        "SALESFORCE": ["CRM"],
-        "CISCO": ["CSCO"],
-        "INTEL": ["INTC"],
-        "ORACLE": ["ORCL"],
-        "PALANTIR": ["PLTR"],
-        "QUALCOMM": ["QCOM"],
-        "TEXAS INSTRUMENTS": ["TXN"],
-        # Health Care
-        "ABBVIE": ["ABBV"],
-        "ABBOTT LABS": ["ABT"],
-        "AMGEN": ["AMGN"],
-        "BRISTOL MYERS SQUIBB": ["BMY"],
-        "CVS HEALTH": ["CVS"],
-        "DANAHER": ["DHR"],
-        "GILEAD SCIENCES": ["GILD"],
-        "INTUITIVE SURGICAL": ["ISRG"],
-        "JOHNSON & JOHNSON": ["JNJ"],
-        "ELI LILLY": ["LLY"],
-        "MEDTRONIC": ["MDT"],
-        "MERCK": ["MRK"],
-        "THERMO FISHER SCIENTIFIC": ["TMO"],
-        "UNITEDHEALTH": ["UNH"],
-        # Financials
-        "AMERICAN INTERNATIONAL GROUP": ["AIG"],
-        "AMERICAN EXPRESS": ["AXP"],
-        "BANK OF AMERICA": ["BAC"],
-        "BNY MELLON": ["BK"],
-        "BLACKROCK": ["BLK"],
-        "BERKSHIRE HATHAWAY": ["BRK.B"],
-        "CITIGROUP": ["C"],
-        "CAPITAL ONE": ["COF"],
-        "GOLDMAN SACHS": ["GS"],
-        "JPMORGAN CHASE": ["JPM"],
-        "MASTERCARD": ["MA"],
-        "METLIFE": ["MET"],
-        "MORGAN STANLEY": ["MS"],
-        "PAYPAL": ["PYPL"],
-        "CHARLES SCHWAB": ["SCHW"],
-        "US BANCORP": ["USB"],
-        "VISA": ["V"],
-        "WELLS FARGO": ["WFC"],
-        # Consumer Discretionary
-        "BOOKING HOLDINGS": ["BKNG"],
-        "GENERAL MOTORS": ["GM"],
-        "HOME DEPOT": ["HD"],
-        "LOWES": ["LOW"],
-        "MCDONALDS": ["MCD"],
-        "NIKE": ["NKE"],
-        "STARBUCKS": ["SBUX"],
-        "TARGET": ["TGT"],
-        # Industrials
-        "CATERPILLAR": ["CAT"],
-        "DEERE & COMPANY": ["DE"],
-        "EMERSON ELECTRIC": ["EMR"],
-        "FEDEX": ["FDX"],
-        "3M": ["MMM"],
-        "UNION PACIFIC": ["UNP"],
-        "UPS": ["UPS"],
-        # Military
-        "BOEING": ["BA"],
-        "ARCHER AVIATION": ["ACHR"],
-        "AAR CORP": ["AIR"],
-        "AIR INDUSTRIES GROUP": ["AIRI"],
-        "AIRO GROUP HOLDINGS": ["AIRO"],
-        "AMERICAN OUTDOOR BRANDS": ["AOUT"],
-        "ASTROTECH": ["ASTC"],
-        "ATI": ["ATI"],
-        "ASTRONICS": ["ATRO"],
-        "AEROVIRONMENT": ["AVAV"],
-        "AXON ENTERPRISE": ["AXON"],
-        "A2Z CUST2MATE SOLUTIONS": ["AZ"],
-        "BOOZ ALLEN HAMILTON": ["BAH"],
-        "BETA TECHNOLOGIES": ["BETA"],
-        "BWX TECHNOLOGIES": ["BWXT"],
-        "BYRNA TECHNOLOGIES": ["BYRN"],
-        "CACI INTERNATIONAL": ["CACI"],
-        "CAE": ["CAE"],
-        "CADRE HOLDINGS": ["CDRE"],
-        "CODA OCTOPUS GROUP": ["CODA"],
-        "CPI AEROSTRUCTURES": ["CVU"],
-        "CURTISS-WRIGHT": ["CW"],
-        "DUCOMMUN": ["DCO"],
-        "DEFSEC TECHNOLOGIES": ["DFSC"],
-        "DRAGANFLY": ["DPRO"],
-        "LEONARDO DRS": ["DRS"],
-        "EHANG HOLDINGS": ["EH"],
-        "EMBRAER": ["EMBJ"],
-        "ELBIT SYSTEMS": ["ESLT"],
-        "EVE HOLDING": ["EVEX"],
-        "VERTICAL AEROSPACE": ["EVTL"],
-        "STARFIGHTERS SPACE": ["FJET"],
-        "FIREFLY AEROSPACE": ["FLY"],
-        "FTAI AVIATION": ["FTAI"],
-        "GENERAL DYNAMICS": ["GD"],
-        "GE AEROSPACE": ["GE"],
-        "HYPERSCALE DATA": ["GPUS"],
-        "HEICO": ["HEI", "HEIA"],
-        "HUNTINGTON INGALLS INDUSTRIES": ["HII"],
-        "NEW HORIZON AIRCRAFT": ["HOVR"],
-        "HOWMET AEROSPACE": ["HWM"],
-        "HEXCEL": ["HXL"],
-        "HONEYWELL INTERNATIONAL": ["HON"],
-        "INNOVATIVE SOLUTIONS & SUPPORT": ["ISSC"],
-        "JOBY AVIATION": ["JOBY"],
-        "NAUTICUS ROBOTICS": ["KITT"],
-        "KARMAN HOLDINGS": ["KRMN"],
-        "KRATOS DEFENSE & SECURITY SOLUTIONS": ["KTOS"],
-        "LEIDOS HOLDINGS": ["LDOS"],
-        "L3HARRIS TECHNOLOGIES": ["LHX"],
-        "LOCKHEED MARTIN": ["LMT"],
-        "LOAR HOLDINGS": ["LOAR"],
-        "INTUITIVE MACHINES": ["LUNR"],
-        "MANTECH INTERNATIONAL": ["MANT"],
-        "MOMENTUS": ["MNTS"],
-        "MOOG": ["MOG.A"],
-        "MERCURY SYSTEMS": ["MRCY"],
-        "MSA SAFETY": ["MSA"],
-        "NORTHROP GRUMMAN": ["NOC"],
-        "NATIONAL PRESTO INDUSTRIES": ["NPK"],
-        "OPTEX SYSTEMS HOLDINGS": ["OPXS"],
-        "OSHKOSH": ["OSK"],
-        "GRABAGUN DIGITAL HOLDINGS": ["PEW"],
-        "PARK AEROSPACE": ["PKE"],
-        "PLANET LABS": ["PL"],
-        "OUTDOOR HOLDING": ["POWW"],
-        "PARAZERO TECHNOLOGIES": ["PRZO"],
-        "RED CAT HOLDINGS": ["RCAT"],
-        "REDWIRE": ["RDW"],
-        "STURM RUGER & CO": ["RGR"],
-        "ROCKET LAB": ["RKLB"],
-        "RTX": ["RTX"],
-        "SCIENCE APPLICATIONS INTERNATIONAL": ["SAIC"],
-        "STANDARDAERO": ["SARO"],
-        "SATELLOGIC": ["SATL"],
-        "SIDUS SPACE": ["SIDU"],
-        "SIFCO INDUSTRIES": ["SIF"],
-        "SKY HARBOUR GROUP": ["SKYH"],
-        "SAFE PRO GROUP": ["SPAI"],
-        "VIRGIN GALACTIC HOLDINGS": ["SPCE"],
-        "SPIRIT AEROSYSTEMS HOLDINGS": ["SPR"],
-        "SMITH & WESSON BRANDS": ["SWBI"],
-        "TAT TECHNOLOGIES": ["TATT"],
-        "TRANSDIGM GROUP": ["TDG"],
-        "TELEDYNE TECHNOLOGIES": ["TDY"],
-        "TRIUMPH GROUP": ["TGI"],
-        "TEXTRON": ["TXT"],
-        "VIASAT": ["VSAT"],
-        "VSE": ["VSEC"],
-        "VIRTRA": ["VTSI"],
-        "V2X": ["VVX"],
-        "VISIONWAVE HOLDINGS": ["VWAV"],
-        "VOYAGER TECHNOLOGIES": ["VOYG"],
-        "WOODWARD": ["WWD"],
+    })
 
-    # Communication Services
-    "COMCAST": ["CMCSA"],
-    "DISNEY": ["DIS"],
-    "AT&T": ["T"],
-    "T-MOBILE": ["TMUS"],
-    "VERIZON": ["VZ"],
+    # Generic normalization to handle dots/dashes/class suffixes
+    generic_candidates: List[str] = []
+    variants = {
+        a,
+        u,
+        a.replace('.', '-'),
+        a.replace('-', '.'),
+        a.replace('.', ''),
+        a.replace('-', ''),
+    }
+    for v in variants:
+        if v:
+            generic_candidates.append(v.upper())
 
-    # Consumer Staples
-    "COLGATE-PALMOLIVE": ["CL"],
-    "COSTCO": ["COST"],
-    "COCA-COLA": ["KO"],
-    "MONDELEZ": ["MDLZ"],
-    "ALTRIA": ["MO"],
-    "PEPSICO": ["PEP"],
-    "PROCTER & GAMBLE": ["PG"],
-    "PHILIP MORRIS": ["PM"],
-    "WALMART": ["WMT"],
+    mapped = mapping.get(u, [])
+    candidates = mapped + [c for c in generic_candidates if c not in mapped]
+    if a not in candidates:
+        candidates.append(a)
 
-    # Energy
-    "CONOCOPHILLIPS": ["COP"],
-    "CHEVRON": ["CVX"],
-    "EXXONMOBIL": ["XOM"],
+    seen = set()
+    deduped: List[str] = []
+    for c in candidates:
+        if c not in seen:
+            deduped.append(c)
+            seen.add(c)
+    return deduped
 
-    # Utilities
-#         "DUKE ENERGY": ["DUK"],
-    "NEXTERA ENERGY": ["NEE"],
-    "SOUTHERN COMPANY": ["SO"],
 
-    # Real Estate
-#         "AMERICAN TOWER": ["AMT"],
-#         "SIMON PROPERTY GROUP": ["SPG"],
-
-    # Materials
-    "LINDE": ["LIN"],
-    # Vaneck ETFs
-    "VANECK SEMICONDUCTOR": ["SMH"],
-#         "VANECK GOLD MINERS": ["GDX"],
-#         "VANECK JUNIOR GOLD MINERS": ["GDXJ"],
-    "VANECK OIL SERVICES": ["OIH"],
-#         "VANECK RETAIL": ["RTH"],
-    "VANECK AGRIBUSINESS": ["MOO"],
-    "VANECK GAMING ETF": ["ESPO"],
-#         "VANECK AFRICA INDEX": ["AFK"],
-    "VANECK FALLEN ANGEL HIGH YIELD BOND": ["ANGL"],
-#         "VANECK BRAZIL SMALL-CAP": ["BRF"],
-    "VANECK CHINEXT": ["CNXT"],
-    "VANECK MORNINGSTAR DURABLE DIVIDEND": ["DURA"],
-    "VANECK EGYPT INDEX": ["EGPT"],
-#         "VANECK JP MORGAN EM LOCAL CURRENCY BOND": ["EMLC"],
-    "VANECK INVESTMENT GRADE FLOATING RATE": ["FLTR"],
-    "VANECK INDIA GROWTH LEADERS": ["GLIN"],
-    "VANECK MORNINGSTAR GLOBAL WIDE MOAT": ["MOTG"],
-#         "VANECK GREEN BOND": ["GRNB"],
-#         "VANECK EMERGING MARKETS HIGH YIELD BOND": ["HYEM"],
-#         "VANECK INDONESIA INDEX": ["IDX"],
-    "VANECK INTERMEDIATE MUNI": ["ITM"],
-#         "VANECK LONG MUNI": ["MLN"],
-#         "VANECK MORNINGSTAR WIDE MOAT": ["MOAT"],
-    "VANECK MORNINGSTAR INTERNATIONAL MOAT": ["MOTI"],
-#         "VANECK URANIUM+NUCLEAR ENERGY": ["NLR"],
-#         "VANECK PHARMACEUTICAL": ["PPH"],
-#         "VANECK RARE EARTH/STRATEGIC METALS": ["REMX"],
-#         "VANECK RUSSIA": ["RSX"],
-#         "VANECK RUSSIA SMALL-CAP": ["RSXJ"],
-#         "VANECK STEEL": ["SLX"],
-#         "VANECK LOW CARBON ENERGY": ["SMOG"],
-#         "VANECK VIETNAM": ["VNM"],
-#         "VANECK GLOBAL FALLEN ANGEL HIGH YIELD BOND UCITS": ["GFA"],
-#         "VANECK HYDROGEN ECONOMY UCITS": ["HDRO"],
-#         "VANECK IBOXX EUR CORPORATES UCITS": ["TCBT"],
-#         "VANECK MORNINGSTAR DEVELOPED MARKETS DIVIDEND LEADERS UCITS": ["TDIV"],
-#         "VANECK SUSTAINABLE EUROPEAN EQUAL WEIGHT UCITS": ["TEET"],
-#         "VANECK IBOXX EUR SOVEREIGN DIVERSIFIED 1-10 UCITS": ["TGBT"],
-#         "VANECK GLOBAL REAL ESTATE UCITS": ["TRET"],
-#         "VANECK SUSTAINABLE WORLD EQUAL WEIGHT UCITS": ["TSWE"],
-#         "VANECK IBOXX EUR SOVEREIGN CAPPED AAA-AA 1-5 UCITS": ["TAT"],
-}
