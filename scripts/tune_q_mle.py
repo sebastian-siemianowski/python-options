@@ -7,7 +7,7 @@ Automatic per-asset Kalman drift process-noise parameter (q) estimation via MLE.
 Optimizes q by maximizing out-of-sample log-likelihood of returns under the
 Gaussian state-space drift model, using EWMA volatility as observation variance.
 
-Caches results persistently (JSON + CSV) for reuse across runs.
+Caches results persistently (JSON only) for reuse across runs.
 """
 
 from __future__ import annotations
@@ -57,41 +57,13 @@ def load_cache(cache_json: str) -> Dict[str, Dict]:
     return {}
 
 
-def save_cache(cache: Dict[str, Dict], cache_json: str, cache_csv: str) -> None:
-    """Save cache to both JSON and CSV formats atomically."""
-    # Create cache directory if needed
+def save_cache_json(cache: Dict[str, Dict], cache_json: str) -> None:
+    """Persist cache to JSON atomically."""
     os.makedirs(os.path.dirname(cache_json) if os.path.dirname(cache_json) else '.', exist_ok=True)
-    
-    # Write JSON (atomic via temp file) - stores full metadata
     json_temp = cache_json + '.tmp'
     with open(json_temp, 'w') as f:
         json.dump(cache, f, indent=2)
     os.replace(json_temp, cache_json)
-    
-    # Write CSV (human-friendly summary with key diagnostics)
-    csv_rows = []
-    for asset, data in cache.items():
-        csv_rows.append({
-            'asset': asset,
-            'q': data.get('q'),
-            'c': data.get('c', 1.0),  # Default to 1.0 for old cache entries
-            'log_likelihood': data.get('log_likelihood'),
-            'delta_ll_vs_zero': data.get('delta_ll_vs_zero', float('nan')),
-            'ks_statistic': data.get('ks_statistic', float('nan')),
-            'pit_ks_pvalue': data.get('pit_ks_pvalue'),
-            'calibration_warning': data.get('calibration_warning', False),
-            'mean_drift_var': data.get('mean_drift_var', float('nan')),
-            'mean_posterior_unc': data.get('mean_posterior_unc', float('nan')),
-            'n_obs': data.get('n_obs'),
-            'fallback_reason': data.get('fallback_reason', ''),
-            'timestamp': data.get('timestamp')
-        })
-    
-    if csv_rows:
-        df = pd.DataFrame(csv_rows)
-        csv_temp = cache_csv + '.tmp'
-        df.to_csv(csv_temp, index=False)
-        os.replace(csv_temp, cache_csv)
 
 
 def kalman_filter_drift(returns: np.ndarray, vol: np.ndarray, q: float, c: float = 1.0) -> Tuple[np.ndarray, np.ndarray, float]:
@@ -430,8 +402,8 @@ def optimize_q_mle(
     
     # Use expanding window walk-forward cross-validation (proper time-series CV)
     # Each fold trains on [0, train_end] and tests on [train_end+1, test_end]
-    min_train = max(252, int(n * 0.4))  # At least 252 days or 40% of data for training
-    test_window = max(63, int(n * 0.1))  # Test on ~10% or 63 days
+    min_train = min(max(60, int(n * 0.4)), max(n - 5, 1))
+    test_window = min(max(20, int(n * 0.1)), max(n - min_train, 5))
     
     fold_splits = []
     train_end = min_train
@@ -469,7 +441,7 @@ def optimize_q_mle(
                 ret_train = returns_robust[train_start:train_end]
                 vol_train = vol[train_start:train_end]
                 
-                if len(ret_train) < 50:
+                if len(ret_train) < 3:
                     continue
                 
                 mu_filt_train, P_filt_train, _ = kalman_filter_drift(ret_train, vol_train, q, c)
@@ -757,8 +729,8 @@ def optimize_q_c_nu_mle(
         adaptive_lambda = prior_lambda
     
     # Walk-forward CV splits
-    min_train = max(252, int(n * 0.4))
-    test_window = max(63, int(n * 0.1))
+    min_train = min(max(60, int(n * 0.4)), max(n - 5, 1))
+    test_window = min(max(20, int(n * 0.1)), max(n - min_train, 5))
     
     fold_splits = []
     train_end = min_train
@@ -794,7 +766,7 @@ def optimize_q_c_nu_mle(
                 ret_train = returns_robust[train_start:train_end]
                 vol_train = vol[train_start:train_end]
                 
-                if len(ret_train) < 50:
+                if len(ret_train) < 3:
                     continue
                 
                 # Train Student-t filter
@@ -1061,29 +1033,34 @@ def tune_asset_q(
             # Fallback: direct download
             df = _download_prices(asset, start_date, end_date)
             if df.empty:
-                return None
+                raise RuntimeError(f"No data for {asset}")
             px = df['Close']
             title = asset
         
-        if len(px) < 252:
-            print(f"  ⚠️  {asset}: Insufficient data ({len(px)} days)")
-            return None
+        # Allow very small histories; tune will still run cross-validation with short splits
+        if len(px) < 10:
+            raise RuntimeError(f"Insufficient data ({len(px)} days)")
         
         # Compute returns
         log_px = np.log(px)
         returns = log_px.diff().dropna()
-        
-        # Compute EWMA volatility (observation noise)
-        vol = returns.ewm(span=21, adjust=False).std()
-        
-        # Align series
-        returns = returns.iloc[20:]  # Skip initial EWMA warmup
-        vol = vol.iloc[20:]
-        
+
+        # Compute EWMA volatility (observation noise) with a span that adapts to short histories
+        span = max(5, min(21, max(len(returns) // 2, 5)))
+        vol = returns.ewm(span=span, adjust=False).std()
+
+        # Align series with a smaller warmup for tiny datasets
+        warmup = min(20, max(len(returns) // 4, 1))
+        returns = returns.iloc[warmup:]
+        vol = vol.iloc[warmup:]
+
+        if len(returns) < 5:
+            raise RuntimeError(f"Insufficient data after preprocessing ({len(returns)} returns)")
+
         returns_arr = returns.values
         vol_arr = vol.values
         n_obs = len(returns_arr)
-        
+
         # Compute kurtosis to assess tail heaviness
         excess_kurtosis = compute_kurtosis(returns_arr)
         
@@ -1417,7 +1394,7 @@ def tune_asset_q(
         print(f"  ❌ {asset}: Failed - {e}")
         if os.getenv('DEBUG'):
             traceback.print_exc()
-        return None
+        raise
 
 
 def main():
@@ -1430,15 +1407,12 @@ Examples:
   %(prog)s --max-assets 10 --dry-run        # Preview first 10 assets
   %(prog)s --prior-lambda 2.0 --prior-mean -5.5  # Custom regularization
   %(prog)s --debug                          # Enable debug output
-  %(prog)s --no-clear-cache                 # Keep existing cache (default: clear)
         """
     )
     parser.add_argument('--assets', type=str, help='Comma-separated list of asset symbols')
     parser.add_argument('--assets-file', type=str, help='Path to file with asset list (one per line)')
     parser.add_argument('--cache-json', type=str, default='cache/kalman_q_cache.json',
                        help='Path to JSON cache file')
-    parser.add_argument('--cache-csv', type=str, default='cache/kalman_q_cache.csv',
-                       help='Path to CSV cache file')
     parser.add_argument('--force', action='store_true',
                        help='Force re-estimation even if cached values exist')
     parser.add_argument('--start', type=str, default='2015-01-01',
@@ -1453,8 +1427,9 @@ Examples:
                        help='Preview what would be done without actually processing')
     parser.add_argument('--debug', action='store_true',
                        help='Enable debug output (stack traces on errors)')
+    # Cache is always preserved; legacy flag kept for compatibility
     parser.add_argument('--no-clear-cache', action='store_true',
-                       help='Do not clear existing cache before running (default: clear cache)')
+                       help='Deprecated: cache is always preserved; flag is ignored')
     
     # Bayesian regularization parameters
     parser.add_argument('--prior-mean', type=float, default=-6.0,
@@ -1475,28 +1450,8 @@ Examples:
     print("Model selection: Gaussian vs Student-t via BIC")
     print("Enhancements: Fat-tail support, Multi-fold CV, Adaptive regularization")
     
-    # Clear cache by default (unless --no-clear-cache is specified)
-    if not args.no_clear_cache and not args.dry_run:
-        cache_cleared = False
-        if os.path.exists(args.cache_json):
-            try:
-                os.remove(args.cache_json)
-                print(f"✓ Cleared previous cache: {args.cache_json}")
-                cache_cleared = True
-            except Exception as e:
-                print(f"⚠️  Failed to clear JSON cache: {e}")
-        
-        if os.path.exists(args.cache_csv):
-            try:
-                os.remove(args.cache_csv)
-                print(f"✓ Cleared previous cache: {args.cache_csv}")
-                cache_cleared = True
-            except Exception as e:
-                print(f"⚠️  Failed to clear CSV cache: {e}")
-        
-        if cache_cleared:
-            print("Starting fresh tuning run...")
-    
+    # Cache is always preserved; no automatic clearing
+
     # Load asset list
     assets = load_asset_list(args.assets, args.assets_file)
     
@@ -1529,7 +1484,9 @@ Examples:
     student_t_count = 0
     gaussian_count = 0
 
-    assets_to_process = []
+    assets_to_process: List[str] = []
+    failure_reasons: Dict[str, str] = {}
+
     for i, asset in enumerate(assets, 1):
         print(f"\n[{i}/{len(assets)}] {asset}")
 
@@ -1569,6 +1526,7 @@ Examples:
                     result = future.result()
                 except Exception as e:
                     print(f"  ❌ {asset}: Failed - {e}")
+                    failure_reasons[asset] = str(e)
                     if args.debug:
                         import traceback
                         traceback.print_exc()
@@ -1588,14 +1546,15 @@ Examples:
                         calibration_warnings += 1
                 else:
                     failed += 1
+                    failure_reasons[asset] = "tune_asset_q returned None"
     else:
         print("\nNo assets to process (all reused from cache).")
 
-    # Save updated cache
+    # Save updated cache (JSON only)
     if new_estimates > 0:
-        save_cache(cache, args.cache_json, args.cache_csv)
-        print(f"\n✓ Cache updated: {args.cache_json}, {args.cache_csv}")
-
+        save_cache_json(cache, args.cache_json)
+        print(f"\n✓ Cache updated: {args.cache_json}")
+    
     # Summary report
     print("\n" + "=" * 80)
     print("Kalman Drift MLE Tuning Summary")
@@ -1656,9 +1615,13 @@ Examples:
         print("  ΔLL_e: ΔLL vs EWMA-drift baseline")
         print("  BestModel: Best model by BIC (Zero/Const/EWMA/Kalman)")
         
-        print(f"\nCache files:")
+        print(f"\nCache file:")
         print(f"  JSON: {args.cache_json}")
-        print(f"  CSV:  {args.cache_csv}")
+    
+    if failure_reasons:
+        print("\nFailed tickers and reasons:")
+        for a, msg in failure_reasons.items():
+            print(f"  {a}: {msg}")
     
     print("=" * 80)
 
