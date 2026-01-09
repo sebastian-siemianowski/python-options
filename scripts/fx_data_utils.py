@@ -232,6 +232,223 @@ DEFAULT_ASSET_UNIVERSE = [
 #     "TAT",    # VanEck iBoxx EUR Sovereign Capped AAA-AA 1-5 UCITS ETF
 ]
 
+MAPPING = {
+    # Prefer active, liquid proxies first to avoid Yahoo "possibly delisted" noise
+    "GOOO": ["GOOG", "GOOGL", "GOOO"],
+    "GLDW": ["GLDM", "GLD", "GLDW"],
+    "SGLP": ["SGLP.L", "SGLP", "SGLP.LON"],
+    "GLDE": ["GLD", "IAU", "GLDE"],
+    "FACC": ["FACC.VI", "FACC"],
+    "SLVI": ["SLV", "SLVP", "SLVI"],
+    "TKA": ["TKA.DE", "TKA"],
+    # Netflix and Novo Nordisk
+    "NFLX": ["NFLX"],
+    "NOVO": ["NVO", "NOVO-B.CO", "NOVOB.CO", "NOVO-B.CO"],
+    # Kratos (alias to KTOS)
+    "KRATOS": ["KTOS"],
+    # Requested blue chips and defense/aero additions
+    "RHEINMETALL": ["RHM.DE", "RHM.F"],
+    "AIRBUS": ["AIR.PA", "AIR.DE"],
+    "RENK": ["R3NK.DE", "RNK.DE"],
+    "NORTHROP": ["NOC"],
+    "NORTHROP GRUMMAN": ["NOC"],
+    "NORTHRUP": ["NOC"],
+    "NORTHRUP GRUNMAN": ["NOC"],
+    "NVIDIA": ["NVDA"],
+    "MICROSOFT": ["MSFT"],
+    "APPLE": ["AAPL"],
+    "AMD": ["AMD"],
+    "UBER": ["UBER"],
+    "TESLA": ["TSLA"],
+    "VANGUARD SP 500": ["VOO", "VUSA.L"],
+    "VANGARD SP 500": ["VOO", "VUSA.L"],
+    "VANGUARD S&P 500": ["VOO", "VUSA.L"],
+    "THALES": ["HO.PA"],
+    "HENSOLDT": ["HAG.DE"],
+    "SAMSUNG": ["005930.KS", "005935.KS"],
+    "TKMS AG & CO": ["TKA.DE", "TKAMY"],
+    # Additional defense, aerospace, and mining companies
+    "BAE SYSTEMS": ["BA.L"],
+    "BAE": ["BA.L"],
+    "NEWMONT": ["NEM"],
+    "NEWMONT CORP": ["NEM"],
+    "HOWMET": ["HWM"],
+    "HOWMET AEROSPACE": ["HWM"],
+    "BROADCOM": ["AVGO"],
+    # SPY, S&P 500, Magnificent 7, and Semiconductor ETFs
+    "SPY": ["SPY"],
+    "SP500": ["^GSPC", "SPY"],
+    "S&P500": ["^GSPC", "SPY"],
+    "S&P 500": ["^GSPC", "SPY"],
+    "MAGNIFICENT 7": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"],
+    "MAGNIFICENT SEVEN": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"],
+    "MAG7": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"],
+    "GOOGLE": ["GOOGL", "GOOG"],
+    "ALPHABET": ["GOOGL", "GOOG"],
+    "AMAZON": ["AMZN"],
+    "META": ["META"],
+    "FACEBOOK": ["META"],
+    "SEMICONDUCTOR ETF": ["SMH", "SOXX"],
+    "SMH": ["SMH"],
+    "SOXX": ["SOXX"],
+    # keep identity candidates (with improved MTX mapping to MTU Aero Engines on XETRA)
+    "RKLB": ["RKLB"],
+    "MTX": ["MTX.DE", "MTX"],
+    "IBKR": ["IBKR"],
+    "HOOD": ["HOOD"],
+
+    # S&P 100 additions by sector
+
+    # Information Technology
+    "ACCENTURE": ["ACN"],
+    "ADOBE": ["ADBE"],
+    "SALESFORCE": ["CRM"],
+    "CISCO": ["CSCO"],
+    "INTEL": ["INTC"],
+    "ORACLE": ["ORCL"],
+    "PALANTIR": ["PLTR"],
+    "QUALCOMM": ["QCOM"],
+    "TEXAS INSTRUMENTS": ["TXN"],
+
+    # Health Care
+    "ABBVIE": ["ABBV"],
+    "ABBOTT LABS": ["ABT"],
+    "AMGEN": ["AMGN"],
+    "BRISTOL MYERS SQUIBB": ["BMY"],
+    "CVS HEALTH": ["CVS"],
+    "DANAHER": ["DHR"],
+    "GILEAD SCIENCES": ["GILD"],
+    "INTUITIVE SURGICAL": ["ISRG"],
+    "JOHNSON & JOHNSON": ["JNJ"],
+    "ELI LILLY": ["LLY"],
+    "MEDTRONIC": ["MDT"],
+    "MERCK": ["MRK"],
+    "THERMO FISHER SCIENTIFIC": ["TMO"],
+    "UNITEDHEALTH": ["UNH"],
+
+    # Financials
+    "AMERICAN INTERNATIONAL GROUP": ["AIG"],
+    "AMERICAN EXPRESS": ["AXP"],
+    "BANK OF AMERICA": ["BAC"],
+    "BNY MELLON": ["BK"],
+    "BLACKROCK": ["BLK"],
+    "BERKSHIRE HATHAWAY": ["BRK.B"],
+    "CITIGROUP": ["C"],
+    "CAPITAL ONE": ["COF"],
+    "GOLDMAN SACHS": ["GS"],
+    "JPMORGAN CHASE": ["JPM"],
+    "MASTERCARD": ["MA"],
+    "METLIFE": ["MET"],
+    "MORGAN STANLEY": ["MS"],
+    "PAYPAL": ["PYPL"],
+    "CHARLES SCHWAB": ["SCHW"],
+    "US BANCORP": ["USB"],
+    "VISA": ["V"],
+    "WELLS FARGO": ["WFC"],
+
+    # Consumer Discretionary
+    "BOOKING HOLDINGS": ["BKNG"],
+    "GENERAL MOTORS": ["GM"],
+    "HOME DEPOT": ["HD"],
+    "LOWES": ["LOW"],
+    "MCDONALDS": ["MCD"],
+    "NIKE": ["NKE"],
+    "STARBUCKS": ["SBUX"],
+    "TARGET": ["TGT"],
+
+    # Industrials
+    "BOEING": ["BA"],
+    "CATERPILLAR": ["CAT"],
+    "DEERE & COMPANY": ["DE"],
+    "EMERSON ELECTRIC": ["EMR"],
+    "FEDEX": ["FDX"],
+    "GENERAL DYNAMICS": ["GD"],
+    "GE AEROSPACE": ["GE"],
+    "HONEYWELL": ["HON"],
+    "LOCKHEED MARTIN": ["LMT"],
+    "3M": ["MMM"],
+    "RTX CORPORATION": ["RTX"],
+    "UNION PACIFIC": ["UNP"],
+    "UPS": ["UPS"],
+
+    # Communication Services
+    "COMCAST": ["CMCSA"],
+    "DISNEY": ["DIS"],
+    "AT&T": ["T"],
+    "T-MOBILE": ["TMUS"],
+    "VERIZON": ["VZ"],
+
+    # Consumer Staples
+    "COLGATE-PALMOLIVE": ["CL"],
+    "COSTCO": ["COST"],
+    "COCA-COLA": ["KO"],
+    "MONDELEZ": ["MDLZ"],
+    "ALTRIA": ["MO"],
+    "PEPSICO": ["PEP"],
+    "PROCTER & GAMBLE": ["PG"],
+    "PHILIP MORRIS": ["PM"],
+    "WALMART": ["WMT"],
+
+    # Energy
+    "CONOCOPHILLIPS": ["COP"],
+    "CHEVRON": ["CVX"],
+    "EXXONMOBIL": ["XOM"],
+
+    # Utilities
+#         "DUKE ENERGY": ["DUK"],
+    "NEXTERA ENERGY": ["NEE"],
+    "SOUTHERN COMPANY": ["SO"],
+
+    # Real Estate
+#         "AMERICAN TOWER": ["AMT"],
+#         "SIMON PROPERTY GROUP": ["SPG"],
+
+    # Materials
+    "LINDE": ["LIN"],
+    # Vaneck ETFs
+    "VANECK SEMICONDUCTOR": ["SMH"],
+#         "VANECK GOLD MINERS": ["GDX"],
+#         "VANECK JUNIOR GOLD MINERS": ["GDXJ"],
+    "VANECK OIL SERVICES": ["OIH"],
+#         "VANECK RETAIL": ["RTH"],
+    "VANECK AGRIBUSINESS": ["MOO"],
+    "VANECK GAMING ETF": ["ESPO"],
+#         "VANECK AFRICA INDEX": ["AFK"],
+    "VANECK FALLEN ANGEL HIGH YIELD BOND": ["ANGL"],
+#         "VANECK BRAZIL SMALL-CAP": ["BRF"],
+    "VANECK CHINEXT": ["CNXT"],
+    "VANECK MORNINGSTAR DURABLE DIVIDEND": ["DURA"],
+    "VANECK EGYPT INDEX": ["EGPT"],
+#         "VANECK JP MORGAN EM LOCAL CURRENCY BOND": ["EMLC"],
+    "VANECK INVESTMENT GRADE FLOATING RATE": ["FLTR"],
+    "VANECK INDIA GROWTH LEADERS": ["GLIN"],
+    "VANECK MORNINGSTAR GLOBAL WIDE MOAT": ["MOTG"],
+#         "VANECK GREEN BOND": ["GRNB"],
+#         "VANECK EMERGING MARKETS HIGH YIELD BOND": ["HYEM"],
+#         "VANECK INDONESIA INDEX": ["IDX"],
+    "VANECK INTERMEDIATE MUNI": ["ITM"],
+#         "VANECK LONG MUNI": ["MLN"],
+#         "VANECK MORNINGSTAR WIDE MOAT": ["MOAT"],
+    "VANECK MORNINGSTAR INTERNATIONAL MOAT": ["MOTI"],
+#         "VANECK URANIUM+NUCLEAR ENERGY": ["NLR"],
+#         "VANECK PHARMACEUTICAL": ["PPH"],
+#         "VANECK RARE EARTH/STRATEGIC METALS": ["REMX"],
+#         "VANECK RUSSIA": ["RSX"],
+#         "VANECK RUSSIA SMALL-CAP": ["RSXJ"],
+#         "VANECK STEEL": ["SLX"],
+#         "VANECK LOW CARBON ENERGY": ["SMOG"],
+#         "VANECK VIETNAM": ["VNM"],
+#         "VANECK GLOBAL FALLEN ANGEL HIGH YIELD BOND UCITS": ["GFA"],
+#         "VANECK HYDROGEN ECONOMY UCITS": ["HDRO"],
+#         "VANECK IBOXX EUR CORPORATES UCITS": ["TCBT"],
+#         "VANECK MORNINGSTAR DEVELOPED MARKETS DIVIDEND LEADERS UCITS": ["TDIV"],
+#         "VANECK SUSTAINABLE EUROPEAN EQUAL WEIGHT UCITS": ["TEET"],
+#         "VANECK IBOXX EUR SOVEREIGN DIVERSIFIED 1-10 UCITS": ["TGBT"],
+#         "VANECK GLOBAL REAL ESTATE UCITS": ["TRET"],
+#         "VANECK SUSTAINABLE WORLD EQUAL WEIGHT UCITS": ["TSWE"],
+#         "VANECK IBOXX EUR SOVEREIGN CAPPED AAA-AA 1-5 UCITS": ["TAT"],
+}
+
 
 def get_default_asset_universe() -> List[str]:
     """
@@ -951,6 +1168,6 @@ def _resolve_symbol_candidates(asset: str) -> List[str]:
     special = {"PLNJPY=X", "BTC-USD", "BTCUSD=X", "MSTR", "GC=F", "SI=F", "XAU=X", "XAG=X", "XAUUSD=X", "XAGUSD=X"}
     if u in special:
         return [u]
-    if u in mapping:
-        return mapping[u]
+    if u in MAPPING:
+        return MAPPING[u]
     return [u]
