@@ -34,7 +34,6 @@ plots/kalman_validation/*.png
 # Data cache and metadata
 data/meta/
 *.backup
-cache/
 
 # Distribution / packaging
 .Python
