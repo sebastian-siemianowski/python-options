@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from multiprocessing import Pool, cpu_count
@@ -3067,16 +3068,29 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
     """
     asset, args, horizons = args_tuple
     
-    try:
-        # Fetch price data
+    # Retry mechanism for data fetching
+    max_retries = 3
+    last_error = None
+    px, title = None, None
+
+    for attempt in range(max_retries):
         try:
             px, title = fetch_px_asset(asset, args.start, args.end)
+            last_error = None  # Reset error on success
+            break
         except Exception as e:
-            return {
-                "status": "error",
-                "asset": asset,
-                "error": str(e)
-            }
+            last_error = e
+            if attempt < max_retries - 1:
+                time.sleep(2)  # Wait before retrying
+
+    if last_error is not None:
+        return {
+            "status": "error",
+            "asset": asset,
+            "error": str(last_error),
+        }
+
+    try:
         
         # De-duplicate by resolved symbol
         canon = extract_symbol_from_title(title)
@@ -3153,6 +3167,7 @@ def main() -> None:
     # ============================================================================
     caption_printed = False
     processed_syms = set()
+    failed_assets = []
     
     for result in results:
         # Handle None or error results
@@ -3163,6 +3178,7 @@ def main() -> None:
             asset = result.get("asset", "unknown")
             error = result.get("error", "unknown error")
             console.print(f"[red]Warning:[/red] Failed to process {asset}: {error}")
+            failed_assets.append({"asset": asset, "error": error})
             if os.getenv('DEBUG'):
                 traceback_info = result.get("traceback", "")
                 if traceback_info:
@@ -3786,6 +3802,17 @@ def main() -> None:
         render_multi_asset_summary_table(summary_rows, horizons)
     except Exception as e:
         Console().print(f"[yellow]Warning:[/yellow] Could not print summary table: {e}")
+
+    # Display summary of failed assets
+    if failed_assets:
+        console.print("\n[bold red]Summary of Failed Tickers[/bold red]")
+        from rich.table import Table
+        failed_table = Table(title="Failed Ticker Processing", show_header=True, header_style="bold magenta")
+        failed_table.add_column("Ticker", style="dim", width=12)
+        failed_table.add_column("Error")
+        for failed in failed_assets:
+            failed_table.add_row(failed["asset"], failed["error"])
+        console.print(failed_table)
 
     # Exports
     if args.json:
