@@ -122,24 +122,111 @@ DEFAULT_ASSET_UNIVERSE = [
     "TSLA",   # Tesla, Inc.
 
     # Industrials
-    "BA",     # Boeing
     "CAT",    # Caterpillar Inc.
     "DE",     # Deere & Company
     "EMR",    # Emerson Electric
     "FDX",    # FedEx
-    "GD",     # General Dynamics
-    "GE",     # GE Aerospace
-    "HON",    # Honeywell
-    "LMT",    # Lockheed Martin
     "MMM",    # 3M
-    "RTX",    # RTX Corporation
     "UBER",   # Uber
     "UNP",    # Union Pacific Corporation
     "UPS",    # United Parcel Service
-    "KTOS",   # Kratos Defense
-    "RKLB",   # Rocket Lab
-    "NOC",    # Northrop Grumman
-    "HWM",    # Howmet Aerospace
+
+    # Military
+    "ACHR",   # Archer Aviation Inc
+    "AIR",    # AAR Corp
+    "AIRI",   # Air Industries Group
+    "AIRO",   # AIRO Group Holdings Inc
+    "AOUT",   # American Outdoor Brands Inc
+    "ASTC",   # Astrotech Corp
+    "ATI",    # ATI Inc
+    "ATRO",   # Astronics Corporation
+    "AVAV",   # AeroVironment, Inc.
+    "AXON",   # Axon Enterprise, Inc.
+    "AZ",     # A2Z Cust2Mate Solutions Corp
+    "BA",     # Boeing Co
+    "BAH",    # Booz Allen Hamilton Holding Corp
+    "BETA",   # Beta Technologies Inc
+    "BWXT",   # BWX Technologies, Inc.
+    "BYRN",   # Byrna Technologies Inc
+    "CACI",   # CACI International Inc
+    "CAE",    # CAE Inc
+    "CDRE",   # Cadre Holdings Inc
+    "CODA",   # Coda Octopus Group Inc
+    "CVU",    # CPI Aerostructures Inc
+    "CW",     # Curtiss-Wright Corporation
+    "DCO",    # Ducommun Incorporated
+    "DFSC",   # Defsec Technologies Inc
+    "DPRO",   # Draganfly Inc
+    "DRS",    # Leonardo DRS Inc
+    "EH",     # Ehang Holdings Ltd
+    "EMBJ",   # Embraer SA
+    "ESLT",   # Elbit Systems Ltd
+    "EVEX",   # Eve Holding Inc
+    "EVTL",   # Vertical Aerospace Ltd
+    "FJET",   # Starfighters Space Inc
+    "FLY",    # Firefly Aerospace Inc
+    "FTAI",   # FTAI Aviation
+    "GD",     # General Dynamics Corp
+    "GE",     # GE Aerospace
+    "GPUS",   # Hyperscale Data Inc
+    "HEI",    # HEICO Corporation
+    "HEIA",   # HEICO Corp. (Class A)
+    "HII",    # Huntington Ingalls Industries, Inc.
+    "HOVR",   # New Horizon Aircraft Ltd
+    "HWM",    # Howmet Aerospace Inc.
+    "HXL",    # Hexcel Corporation
+    "HON",    # Honeywell International Inc
+    "ISSC",   # Innovative Solutions & Support Inc
+    "JOBY",   # Joby Aviation
+    "KITT",   # Nauticus Robotics Inc
+    "KRMN",   # Karman Holdings Inc
+    "KTOS",   # Kratos Defense & Security Solutions, Inc.
+    "LDOS",   # Leidos Holdings, Inc.
+    "LHX",    # L3Harris Technologies Inc
+    "LMT",    # Lockheed Martin Corp
+    "LOAR",   # Loar Holdings Inc
+    "LUNR",   # Intuitive Machines Inc
+    "MANT",   # ManTech International Corporation
+    "MNTS",   # Momentus Inc
+    "MOG.A",  # Moog Inc
+    "MRCY",   # Mercury Systems, Inc.
+    "MSA",    # MSA Safety Incorporated
+    "NOC",    # Northrop Grumman Corp
+    "NPK",    # National Presto Industries Inc
+    "OPXS",   # Optex Systems Holdings Inc
+    "OSK",    # Oshkosh Corporation
+    "PEW",    # Grabagun Digital Holdings Inc
+    "PKE",    # Park Aerospace Corp
+    "PL",     # Planet Labs PBC
+    "POWW",   # Outdoor Holding Co
+    "PRZO",   # Parazero Technologies Ltd
+    "RCAT",   # Red Cat Holdings, Inc.
+    "RDW",    # Redwire Corp
+    "RGR",    # Sturm Ruger & Co Inc
+    "RKLB",   # Rocket Lab Corp
+    "RTX",    # RTX Corp
+    "SAIC",   # Science Applications International Corp
+    "SARO",   # StandardAero Inc
+    "SATL",   # Satellogic Inc
+    "SIDU",   # Sidus Space Inc
+    "SIF",    # SIFCO Industries Inc
+    "SKYH",   # Sky Harbour Group Corp
+    "SPAI",   # Safe Pro Group Inc
+    "SPCE",   # Virgin Galactic Holdings Inc
+    "SPR",    # Spirit AeroSystems Holdings, Inc.
+    "SWBI",   # Smith & Wesson Brands Inc
+    "TATT",   # TAT Technologies Ltd
+    "TDG",    # TransDigm Group Inc
+    "TDY",    # Teledyne Technologies Incorporated
+    "TGI",    # Triumph Group, Inc.
+    "TXT",    # Textron Inc.
+    "VSAT",   # ViaSat Inc
+    "VSEC",   # VSE Corporation
+    "VTSI",   # Virtra Inc
+    "VVX",    # V2X, Inc.
+    "VWAV",   # Visionwave Holdings Inc
+    "VOYG",   # Voyager Technologies Inc
+    "WWD",    # Woodward, Inc.
     "RHM.DE", # Rheinmetall (German defense)
     "AIR.PA", # Airbus (European aerospace)
     "HO.PA",  # Thales (French defense electronics)
@@ -357,19 +444,109 @@ MAPPING = {
     "TARGET": ["TGT"],
 
     # Industrials
-    "BOEING": ["BA"],
     "CATERPILLAR": ["CAT"],
     "DEERE & COMPANY": ["DE"],
     "EMERSON ELECTRIC": ["EMR"],
     "FEDEX": ["FDX"],
-    "GENERAL DYNAMICS": ["GD"],
-    "GE AEROSPACE": ["GE"],
-    "HONEYWELL": ["HON"],
-    "LOCKHEED MARTIN": ["LMT"],
     "3M": ["MMM"],
-    "RTX CORPORATION": ["RTX"],
     "UNION PACIFIC": ["UNP"],
     "UPS": ["UPS"],
+
+    # Military
+    "BOEING": ["BA"],
+    "ARCHER AVIATION": ["ACHR"],
+    "AAR CORP": ["AIR"],
+    "AIR INDUSTRIES GROUP": ["AIRI"],
+    "AIRO GROUP HOLDINGS": ["AIRO"],
+    "AMERICAN OUTDOOR BRANDS": ["AOUT"],
+    "ASTROTECH": ["ASTC"],
+    "ATI": ["ATI"],
+    "ASTRONICS": ["ATRO"],
+    "AEROVIRONMENT": ["AVAV"],
+    "AXON ENTERPRISE": ["AXON"],
+    "A2Z CUST2MATE SOLUTIONS": ["AZ"],
+    "BOOZ ALLEN HAMILTON": ["BAH"],
+    "BETA TECHNOLOGIES": ["BETA"],
+    "BWX TECHNOLOGIES": ["BWXT"],
+    "BYRNA TECHNOLOGIES": ["BYRN"],
+    "CACI INTERNATIONAL": ["CACI"],
+    "CAE": ["CAE"],
+    "CADRE HOLDINGS": ["CDRE"],
+    "CODA OCTOPUS GROUP": ["CODA"],
+    "CPI AEROSTRUCTURES": ["CVU"],
+    "CURTISS-WRIGHT": ["CW"],
+    "DUCOMMUN": ["DCO"],
+    "DEFSEC TECHNOLOGIES": ["DFSC"],
+    "DRAGANFLY": ["DPRO"],
+    "LEONARDO DRS": ["DRS"],
+    "EHANG HOLDINGS": ["EH"],
+    "EMBRAER": ["EMBJ"],
+    "ELBIT SYSTEMS": ["ESLT"],
+    "EVE HOLDING": ["EVEX"],
+    "VERTICAL AEROSPACE": ["EVTL"],
+    "STARFIGHTERS SPACE": ["FJET"],
+    "FIREFLY AEROSPACE": ["FLY"],
+    "FTAI AVIATION": ["FTAI"],
+    "GENERAL DYNAMICS": ["GD"],
+    "GE AEROSPACE": ["GE"],
+    "HYPERSCALE DATA": ["GPUS"],
+    "HEICO": ["HEI", "HEIA"],
+    "HUNTINGTON INGALLS INDUSTRIES": ["HII"],
+    "NEW HORIZON AIRCRAFT": ["HOVR"],
+    "HOWMET AEROSPACE": ["HWM"],
+    "HEXCEL": ["HXL"],
+    "HONEYWELL INTERNATIONAL": ["HON"],
+    "INNOVATIVE SOLUTIONS & SUPPORT": ["ISSC"],
+    "JOBY AVIATION": ["JOBY"],
+    "NAUTICUS ROBOTICS": ["KITT"],
+    "KARMAN HOLDINGS": ["KRMN"],
+    "KRATOS DEFENSE & SECURITY SOLUTIONS": ["KTOS"],
+    "LEIDOS HOLDINGS": ["LDOS"],
+    "L3HARRIS TECHNOLOGIES": ["LHX"],
+    "LOCKHEED MARTIN": ["LMT"],
+    "LOAR HOLDINGS": ["LOAR"],
+    "INTUITIVE MACHINES": ["LUNR"],
+    "MANTECH INTERNATIONAL": ["MANT"],
+    "MOMENTUS": ["MNTS"],
+    "MOOG": ["MOG.A"],
+    "MERCURY SYSTEMS": ["MRCY"],
+    "MSA SAFETY": ["MSA"],
+    "NORTHROP GRUMMAN": ["NOC"],
+    "NATIONAL PRESTO INDUSTRIES": ["NPK"],
+    "OPTEX SYSTEMS HOLDINGS": ["OPXS"],
+    "OSHKOSH": ["OSK"],
+    "GRABAGUN DIGITAL HOLDINGS": ["PEW"],
+    "PARK AEROSPACE": ["PKE"],
+    "PLANET LABS": ["PL"],
+    "OUTDOOR HOLDING": ["POWW"],
+    "PARAZERO TECHNOLOGIES": ["PRZO"],
+    "RED CAT HOLDINGS": ["RCAT"],
+    "REDWIRE": ["RDW"],
+    "STURM RUGER & CO": ["RGR"],
+    "ROCKET LAB": ["RKLB"],
+    "RTX": ["RTX"],
+    "SCIENCE APPLICATIONS INTERNATIONAL": ["SAIC"],
+    "STANDARDAERO": ["SARO"],
+    "SATELLOGIC": ["SATL"],
+    "SIDUS SPACE": ["SIDU"],
+    "SIFCO INDUSTRIES": ["SIF"],
+    "SKY HARBOUR GROUP": ["SKYH"],
+    "SAFE PRO GROUP": ["SPAI"],
+    "VIRGIN GALACTIC HOLDINGS": ["SPCE"],
+    "SPIRIT AEROSYSTEMS HOLDINGS": ["SPR"],
+    "SMITH & WESSON BRANDS": ["SWBI"],
+    "TAT TECHNOLOGIES": ["TATT"],
+    "TRANSDIGM GROUP": ["TDG"],
+    "TELEDYNE TECHNOLOGIES": ["TDY"],
+    "TRIUMPH GROUP": ["TGI"],
+    "TEXTRON": ["TXT"],
+    "VIASAT": ["VSAT"],
+    "VSE": ["VSEC"],
+    "VIRTRA": ["VTSI"],
+    "V2X": ["VVX"],
+    "VISIONWAVE HOLDINGS": ["VWAV"],
+    "VOYAGER TECHNOLOGIES": ["VOYG"],
+    "WOODWARD": ["WWD"],
 
     # Communication Services
     "COMCAST": ["CMCSA"],
