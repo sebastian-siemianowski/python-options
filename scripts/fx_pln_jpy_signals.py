@@ -1202,18 +1202,18 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
         # Refinement 3: Innovation whiteness test (model adequacy)
         "innovation_whiteness": innovation_whiteness,
         # Level-7 Refinement: Heteroskedastic process noise (q_t = c * σ_t²)
-        "heteroskedastic_mode": bool(use_heteroskedastic),
-        "c_optimal": float(c_optimal) if c_optimal is not None else None,
-        "q_t_mean": float(np.mean(q_t_series)) if q_t_series is not None else None,
-        "q_t_std": float(np.std(q_t_series)) if q_t_series is not None else None,
-        "q_t_min": float(np.min(q_t_series)) if q_t_series is not None else None,
-        "q_t_max": float(np.max(q_t_series)) if q_t_series is not None else None,
+        "kalman_heteroskedastic_mode": bool(use_heteroskedastic),
+        "kalman_c_optimal": float(c_optimal) if c_optimal is not None else None,
+        "kalman_q_t_mean": float(np.mean(q_t_series)) if q_t_series is not None else None,
+        "kalman_q_t_std": float(np.std(q_t_series)) if q_t_series is not None else None,
+        "kalman_q_t_min": float(np.min(q_t_series)) if q_t_series is not None else None,
+        "kalman_q_t_max": float(np.max(q_t_series)) if q_t_series is not None else None,
         # Level-7+ Refinement: Robust Kalman filtering with Student-t innovations
-        "robust_t_mode": bool(use_robust_t),
-        "nu_robust": float(nu_robust) if nu_robust is not None else None,
+        "kalman_robust_t_mode": bool(use_robust_t),
+        "kalman_nu_robust": float(nu_robust) if nu_robust is not None else None,
         # Level-7+ Refinement: Regime-dependent drift priors
-        "regime_prior_used": bool(use_regime_prior and regime_prior_info is not None),
-        "regime_prior_info": regime_prior_info if regime_prior_info is not None else {},
+        "kalman_regime_prior_used": bool(use_regime_prior and regime_prior_info is not None),
+        "kalman_regime_info": regime_prior_info if regime_prior_info is not None else {},
     }
 
 
@@ -1429,18 +1429,18 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 # Refinement 3: Innovation whiteness test (model adequacy)
                 "innovation_whiteness": kf_result.get("innovation_whiteness", {}),
                 # Level-7 Refinement: Heteroskedastic process noise
-                "heteroskedastic_mode": kf_result.get("heteroskedastic_mode", False),
-                "c_optimal": kf_result.get("c_optimal"),
-                "q_t_mean": kf_result.get("q_t_mean"),
-                "q_t_std": kf_result.get("q_t_std"),
-                "q_t_min": kf_result.get("q_t_min"),
-                "q_t_max": kf_result.get("q_t_max"),
+                "kalman_heteroskedastic_mode": kf_result.get("heteroskedastic_mode", False),
+                "kalman_c_optimal": kf_result.get("c_optimal"),
+                "kalman_q_t_mean": kf_result.get("q_t_mean"),
+                "kalman_q_t_std": kf_result.get("q_t_std"),
+                "kalman_q_t_min": kf_result.get("q_t_min"),
+                "kalman_q_t_max": kf_result.get("q_t_max"),
                 # Level-7+ Refinement: Robust Kalman filtering with Student-t innovations
-                "robust_t_mode": kf_result.get("robust_t_mode", False),
-                "nu_robust": kf_result.get("nu_robust"),
+                "kalman_robust_t_mode": kf_result.get("robust_t_mode", False),
+                "kalman_nu_robust": kf_result.get("nu_robust"),
                 # Level-7+ Refinement: Regime-dependent drift priors
-                "regime_prior_used": kf_result.get("regime_prior_used", False),
-                "regime_prior_info": kf_result.get("regime_prior_info", {}),
+                "kalman_regime_prior_used": kf_result.get("regime_prior_used", False),
+                "kalman_regime_info": kf_result.get("regime_prior_info", {}),
             }
         else:
             # Fallback: use EWMA blend if Kalman fails
@@ -1621,7 +1621,7 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
             return None
             
         # Align and clean data
-        df = pd.concat([ret, vol], axis=1, join="inner").dropna()
+        df = pd.concat([ret, vol], axis=1, join='inner').dropna()
         if len(df) < 300:  # Need sufficient history for stable HMM
             return None
             
@@ -1953,7 +1953,7 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         diagnostics["kalman_log_likelihood"] = kalman_metadata.get("log_likelihood", float("nan"))
         diagnostics["kalman_process_noise_var"] = kalman_metadata.get("process_noise_var", float("nan"))
         diagnostics["kalman_n_obs"] = kalman_metadata.get("n_obs", 0)
-        # Refinement 1: q optimization
+        # Refinement 1: q optimization results
         diagnostics["kalman_q_optimal"] = kalman_metadata.get("q_optimal", float("nan"))
         diagnostics["kalman_q_heuristic"] = kalman_metadata.get("q_heuristic", float("nan"))
         diagnostics["kalman_q_optimization_attempted"] = kalman_metadata.get("q_optimization_attempted", False)
@@ -2288,7 +2288,11 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     if isinstance(nu_hat_series, pd.Series) and not nu_hat_series.empty:
         nu_hat = float(nu_hat_series.iloc[-1])
     else:
-        nu_hat = 50.0
+        # fallback to last rolling nu
+        nu_hat, _ = _tail2("nu", 50.0)
+        if not np.isfinite(nu_hat):
+            nu_hat = 50.0
+    # Clip to safe range
     nu_hat = float(np.clip(nu_hat, 4.5, 500.0))
     
     # Extract standard error for ν (Tier 2: posterior parameter variance)
@@ -3050,6 +3054,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-comparison", action="store_true", help="Enable structural model comparison: GARCH vs EWMA, Student-t vs Gaussian, Kalman vs EWMA using AIC/BIC (Level-7 falsifiability).")
     p.add_argument("--validate-kalman", action="store_true", help="🧪 Run Level-7 Kalman validation science: drift reasonableness, predictive likelihood improvement, PIT calibration, and stress-regime behavior analysis.")
     p.add_argument("--validation-plots", action="store_true", help="Generate diagnostic plots for Kalman validation (requires --validate-kalman).")
+    p.add_argument("--failures-json", type=str, default=os.path.join(os.path.dirname(__file__), "fx_failures.json"), help="Where to write failure log (set to '' to disable)")
     p.set_defaults(t_map=True)
     return p.parse_args()
 
@@ -3119,6 +3124,49 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         }
 
 
+def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, horizons: List[int], max_retries: int = 3):
+    """Run asset processing with bounded retries and collect failures."""
+    console = Console()
+    remaining = list(dict.fromkeys(a.strip() for a in assets if a and a.strip()))
+    successes: List[Dict] = []
+    failures: Dict[str, Dict[str, object]] = {}
+    processed_canon = set()
+    attempt = 1
+    while attempt <= max_retries and remaining:
+        n_workers = min(cpu_count(), len(remaining))
+        console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(remaining)} assets with {n_workers} workers...[/cyan]")
+        work_items = [(asset, args, horizons) for asset in remaining]
+        with Pool(processes=n_workers) as pool:
+            results = pool.map(process_single_asset, work_items)
+        next_remaining: List[str] = []
+        for asset, result in zip(remaining, results):
+            if not result or result.get("status") != "success":
+                err = (result or {}).get("error", "unknown error")
+                try:
+                    disp = _resolve_display_name(asset.strip().upper())
+                except Exception:
+                    disp = asset
+                entry = failures.get(asset, {"attempts": 0, "last_error": None, "display_name": disp})
+                entry["attempts"] = int(entry.get("attempts", 0)) + 1
+                entry["last_error"] = err
+                entry["display_name"] = entry.get("display_name") or disp
+                failures[asset] = entry
+                next_remaining.append(asset)
+                continue
+            canon = result.get("canon") or asset.strip().upper()
+            if canon in processed_canon:
+                continue
+            processed_canon.add(canon)
+            successes.append(result)
+            if asset in failures:
+                failures.pop(asset, None)
+        remaining = list(dict.fromkeys(next_remaining))
+        attempt += 1
+    if remaining:
+        console.print(f"[yellow]Retry budget exhausted; {len(remaining)} assets still failing.[/yellow]")
+    return successes, failures
+
+
 def main() -> None:
     args = parse_args()
     horizons = sorted({int(x.strip()) for x in args.horizons.split(",") if x.strip()})
@@ -3126,35 +3174,32 @@ def main() -> None:
     # Parse assets
     assets = [a.strip() for a in args.assets.split(",") if a.strip()]
 
+    console = Console()
+    console.print(f"[cyan]Validating {len(assets)} requested assets against fx_data_utils mappings...[/cyan]")
+    for a in assets:
+        try:
+            _resolve_symbol_candidates(a)
+        except Exception as e:
+            console.print(f"[yellow]Warning:[/yellow] Could not resolve mapping for {a}: {e}")
+
     all_blocks = []  # for JSON export
     csv_rows_simple = []  # for CSV simple export
     csv_rows_detailed = []  # for CSV detailed export
     summary_rows = []  # for summary table across assets
 
-    # ============================================================================
-    # PARALLEL PROCESSING: Compute features/signals for all assets concurrently
-    # ============================================================================
-    n_workers = min(cpu_count(), len(assets))
-    
-    console = Console()
-    console.print(f"[cyan]🚀 Processing {len(assets)} assets in parallel using {n_workers} workers...[/cyan]")
-    
-    # Prepare work items for parallel processing
-    work_items = [(asset, args, horizons) for asset in assets]
-    
-    # Execute parallel computation (data fetch + feature computation + signal generation)
-    with Pool(processes=n_workers) as pool:
-        results = pool.map(process_single_asset, work_items)
-    
-    console.print(f"[green]✓ Parallel computation complete! Now displaying results...[/green]\n")
-    
-    # ============================================================================
+    # =========================================================================
+    # RETRYING PARALLEL PROCESSING: Compute features/signals with bounded retries
+    # =========================================================================
+    success_results, failures = _process_assets_with_retries(assets, args, horizons, max_retries=3)
+    console.print(f"[green]✓ Parallel computation attempts complete. Now displaying results...[/green]\n")
+
+    # =========================================================================
     # SEQUENTIAL DISPLAY & AGGREGATION: Process results in order with console output
-    # ============================================================================
+    # =========================================================================
     caption_printed = False
     processed_syms = set()
-    
-    for result in results:
+
+    for result in success_results:
         # Handle None or error results
         if result is None:
             continue
@@ -3787,15 +3832,46 @@ def main() -> None:
     except Exception as e:
         Console().print(f"[yellow]Warning:[/yellow] Could not print summary table: {e}")
 
+    # Build structured failure log for exports
+    failure_log = [
+        {
+            "asset": asset,
+            "display_name": info.get("display_name", asset),
+            "attempts": info.get("attempts", 0),
+            "last_error": info.get("last_error", "")
+        }
+        for asset, info in failures.items()
+    ]
+
+    # Print failure summary table (if any)
+    if failures:
+        from rich.table import Table
+        fail_table = Table(title="Failed Assets After Retries")
+        fail_table.add_column("Asset", style="red", justify="left")
+        fail_table.add_column("Display Name", justify="left")
+        fail_table.add_column("Attempts", justify="right")
+        fail_table.add_column("Last Error", justify="left")
+        for asset, info in failures.items():
+            fail_table.add_row(asset, str(info.get("display_name", asset)), str(info.get("attempts", "")), str(info.get("last_error", "")))
+        Console().print(fail_table)
+
     # Exports
     if args.json:
         payload = {
             "assets": all_blocks,
             "column_descriptions": DETAILED_COLUMN_DESCRIPTIONS,
             "simple_column_descriptions": SIMPLIFIED_COLUMN_DESCRIPTIONS,
+            "failed_assets": failure_log,
         }
         with open(args.json, "w") as f:
             json.dump(payload, f, indent=2)
+
+    if args.failures_json and failure_log:
+        try:
+            with open(args.failures_json, "w") as f:
+                json.dump({"failed_assets": failure_log}, f, indent=2)
+        except Exception as e:
+            Console().print(f"[yellow]Warning:[/yellow] Could not write failures JSON: {e}")
 
     if args.csv:
         if args.simple:

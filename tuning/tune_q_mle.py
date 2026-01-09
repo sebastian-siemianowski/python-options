@@ -24,6 +24,7 @@ import pandas as pd
 from scipy.optimize import minimize_scalar, minimize
 from scipy.stats import norm, kstest, t as student_t
 from scipy.special import gammaln
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Add scripts directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
@@ -1519,18 +1520,19 @@ Examples:
     # Load existing cache
     cache = load_cache(args.cache_json)
     print(f"Loaded cache with {len(cache)} existing entries")
-    
-    # Process each asset
+
+    # Process each asset (parallel by default)
     new_estimates = 0
     reused_cached = 0
     failed = 0
     calibration_warnings = 0
     student_t_count = 0
     gaussian_count = 0
-    
+
+    assets_to_process = []
     for i, asset in enumerate(assets, 1):
         print(f"\n[{i}/{len(assets)}] {asset}")
-        
+
         # Check cache
         if not args.force and asset in cache:
             cached_q = cache[asset].get('q', float('nan'))
@@ -1543,37 +1545,57 @@ Examples:
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f})")
             reused_cached += 1
             continue
-        
-        # Estimate parameters
-        result = tune_asset_q(
-            asset, 
-            args.start, 
-            args.end,
-            prior_log_q_mean=args.prior_mean,
-            prior_lambda=args.prior_lambda
-        )
-        
-        if result:
-            cache[asset] = result
-            new_estimates += 1
-            
-            # Count model types
-            if result.get('noise_model') == 'student_t':
-                student_t_count += 1
-            else:
-                gaussian_count += 1
-            
-            # Count calibration warnings
-            if result.get('calibration_warning'):
-                calibration_warnings += 1
-        else:
-            failed += 1
-    
+
+        assets_to_process.append(asset)
+
+    if assets_to_process:
+        worker_count = min(max(1, os.cpu_count() or 1), len(assets_to_process))
+        print(f"\nRunning {len(assets_to_process)} assets with {worker_count} workers...")
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {
+                executor.submit(
+                    tune_asset_q,
+                    asset,
+                    args.start,
+                    args.end,
+                    args.prior_mean,
+                    args.prior_lambda
+                ): asset
+                for asset in assets_to_process
+            }
+            for idx, future in enumerate(as_completed(future_map), 1):
+                asset = future_map[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    print(f"  ❌ {asset}: Failed - {e}")
+                    if args.debug:
+                        import traceback
+                        traceback.print_exc()
+                    failed += 1
+                    continue
+
+                if result:
+                    cache[asset] = result
+                    new_estimates += 1
+
+                    if result.get('noise_model') == 'student_t':
+                        student_t_count += 1
+                    else:
+                        gaussian_count += 1
+
+                    if result.get('calibration_warning'):
+                        calibration_warnings += 1
+                else:
+                    failed += 1
+    else:
+        print("\nNo assets to process (all reused from cache).")
+
     # Save updated cache
     if new_estimates > 0:
         save_cache(cache, args.cache_json, args.cache_csv)
         print(f"\n✓ Cache updated: {args.cache_json}, {args.cache_csv}")
-    
+
     # Summary report
     print("\n" + "=" * 80)
     print("Kalman Drift MLE Tuning Summary")
