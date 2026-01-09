@@ -31,215 +31,57 @@ DEFAULT_ASSET_UNIVERSE = [
     "SI=F",  # Silver futures
     # Cryptocurrency
     "BTC-USD",
+    # Major indices and ETFs
+    "SPY",
+    "SMH",  # Semiconductor ETF
+    "VOO",  # Vanguard S&P 500 ETF
+    "GLD",  # Gold ETF
+    "SLV",  # Silver ETF
+    # Tech giants (Magnificent 7)
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "AMZN",
+    "NVDA",
+    "META",
+    "TSLA",
+    # Other major tech & growth stocks
     "MSTR",  # MicroStrategy
-
-    # -------------------------
-    # Major Indices and Broad Market ETFs
-    # -------------------------
-    "SPY",   # SPDR S&P 500 ETF
-    "VOO",   # Vanguard S&P 500 ETF
-    "GLD",   # Gold ETF
-    "SLV",   # Silver ETF
-
-    # -------------------------
-    # S&P 100 Companies by Sector
-    # -------------------------
-
-    # Information Technology
-    "AAPL",   # Apple Inc.
-    "ACN",    # Accenture
-    "ADBE",   # Adobe Inc.
-    "AMD",    # Advanced Micro Devices
-    "AVGO",   # Broadcom
-    "CRM",    # Salesforce
-    "CSCO",   # Cisco
-    "IBM",    # IBM
-    "INTC",   # Intel
-    "INTU",   # Intuit
-    "MSFT",   # Microsoft
-    "NOW",    # ServiceNow
-    "NVDA",   # Nvidia
-    "ORCL",   # Oracle Corporation
-    "PLTR",   # Palantir Technologies
-    "QCOM",   # Qualcomm
-    "SMH",    # VanEck Semiconductor ETF
-    "TXN",    # Texas Instruments
-    "GOOG",   # Alphabet Inc. (Class C)
-    "GOOGL",  # Alphabet Inc. (Class A)
-    "META",   # Meta Platforms
-    "NFLX",   # Netflix, Inc.
-
-    # Health Care
-    "ABBV",   # AbbVie
-    "ABT",    # Abbott Laboratories
-    "AMGN",   # Amgen
-    "BMY",    # Bristol Myers Squibb
-    "CVS",    # CVS Health
-    "DHR",    # Danaher Corporation
-    "GILD",   # Gilead Sciences
-    "ISRG",   # Intuitive Surgical
-    "JNJ",    # Johnson & Johnson
-    "LLY",    # Eli Lilly and Company
-    "MDT",    # Medtronic
-    "MRK",    # Merck & Co.
-    "NVO",    # Novo Nordisk
-    "PFE",    # Pfizer
-    "TMO",    # Thermo Fisher Scientific
-    "UNH",    # UnitedHealth Group
-
-    # Financials
-    "AIG",    # American International Group
-    "AXP",    # American Express
-    "BAC",    # Bank of America
-    "BK",     # BNY Mellon
-    "BLK",    # BlackRock
-    "BRK.B",  # Berkshire Hathaway (Class B)
-    "C",      # Citigroup
-    "COF",    # Capital One
-    "GS",     # Goldman Sachs
+    "NFLX",  # Netflix
+    "NVO",   # Novo Nordisk
+    "AMD",
+    "UBER",
+    "AVGO",  # Broadcom (semiconductor)
+    # Defense & Aerospace (US)
+    "KTOS",  # Kratos Defense
+    "RKLB",  # Rocket Lab
+    "NOC",   # Northrop Grumman
+    "HWM",   # Howmet Aerospace
+    # Defense & Aerospace (Europe)
+    "RHM.DE",   # Rheinmetall (German defense)
+    "AIR.PA",   # Airbus (European aerospace)
+    "HO.PA",    # Thales (French defense electronics)
+    "HAG.DE",   # Hensoldt (German defense electronics)
+    "BA.L",     # BAE Systems (British defense)
+    "FACC.VI",  # FACC AG (Austrian aerospace components)
+    "MTX.DE",   # MTU Aero Engines (German aerospace)
+    # Financial services
     "IBKR",   # Interactive Brokers
-    "JPM",    # JPMorgan Chase
-    "MA",     # Mastercard
-    "MET",    # MetLife
-    "MS",     # Morgan Stanley
-    "PYPL",   # PayPal
-    "SCHW",   # Charles Schwab Corporation
-    "USB",    # U.S. Bancorp
-    "V",      # Visa Inc.
-    "WFC",    # Wells Fargo
     "HOOD",   # Robinhood
-
-    # Consumer Discretionary
-    "AMZN",   # Amazon
-    "BKNG",   # Booking Holdings
-    "GM",     # General Motors
-    "HD",     # Home Depot
-    "LOW",    # Lowe's
-    "MCD",    # McDonald's
-    "NKE",    # Nike, Inc.
-    "SBUX",   # Starbucks
-    "TGT",    # Target Corporation
-    "TSLA",   # Tesla, Inc.
-
-    # Industrials
-    "BA",     # Boeing
-    "CAT",    # Caterpillar Inc.
-    "DE",     # Deere & Company
-    "EMR",    # Emerson Electric
-    "FDX",    # FedEx
-    "GD",     # General Dynamics
-    "GE",     # GE Aerospace
-    "HON",    # Honeywell
-    "LMT",    # Lockheed Martin
-    "MMM",    # 3M
-    "RTX",    # RTX Corporation
-    "UBER",   # Uber
-    "UNP",    # Union Pacific Corporation
-    "UPS",    # United Parcel Service
-    "KTOS",   # Kratos Defense
-    "RKLB",   # Rocket Lab
-    "NOC",    # Northrop Grumman
-    "HWM",    # Howmet Aerospace
-    "RHM.DE", # Rheinmetall (German defense)
-    "AIR.PA", # Airbus (European aerospace)
-    "HO.PA",  # Thales (French defense electronics)
-    "HAG.DE", # Hensoldt (German defense electronics)
-    "BA.L",   # BAE Systems (British defense)
-    "FACC.VI",# FACC AG (Austrian aerospace components)
-    "MTX.DE", # MTU Aero Engines (German aerospace)
-
-    # Communication Services
-    "CMCSA",  # Comcast
-    "DIS",    # Walt Disney Company (The)
-    "T",      # AT&T
-    "TMUS",   # T-Mobile US
-    "VZ",     # Verizon
-
-    # Consumer Staples
-    "CL",     # Colgate-Palmolive
-    "COST",   # Costco
-    "KO",     # Coca-Cola Company (The)
-    "MDLZ",   # Mondelēz International
-    "MO",     # Altria
-    "PEP",    # PepsiCo
-    "PG",     # Procter & Gamble
-    "PM",     # Philip Morris International
-    "WMT",    # Walmart
-
-    # Energy
-    "COP",    # ConocoPhillips
-    "CVX",    # Chevron Corporation
-    "XOM",    # ExxonMobil
-
-    # Utilities
-#     "DUK",    # Duke Energy
-    "NEE",    # NextEra Energy
-    "SO",     # Southern Company
-
-    # Real Estate
-#     "AMT",    # American Tower
-    "SPG",    # Simon Property Group
-
-    # Materials
-    "LIN",    # Linde plc
+    # Asian tech & manufacturing
+    "005930.KS",  # Samsung Electronics (Korean)
+    # Mining & commodities
     "NEM",    # Newmont Mining
-
-    # Asian Tech & Manufacturing
-    "005930.KS", # Samsung Electronics (Korean)
-
-    # -------------------------
-    # VanEck ETFs
-    # -------------------------
-    "AFK",    # VanEck Africa Index ETF
-    "ANGL",   # VanEck Fallen Angel High Yield Bond ETF
-#     "BRF",    # VanEck Brazil Small-Cap ETF
-    "CNXT",   # VanEck ChiNext ETF
-#     "DURA",   # VanEck Morningstar Durable Dividend ETF
-    "EGPT",   # VanEck Egypt Index ETF
-#     "EMLC",   # VanEck J.P. Morgan EM Local Currency Bond ETF
-    "FLTR",   # VanEck Investment Grade Floating Rate ETF
-#     "GDX",    # VanEck Gold Miners ETF
-#     "GDXJ",   # VanEck Junior Gold Miners ETF
-    "GLIN",   # VanEck India Growth Leaders ETF
-    "MOTG",   # VanEck Morningstar Global Wide Moat ETF
-#     "GRNB",   # VanEck Green Bond ETF
-#     "HYEM",   # VanEck Emerging Markets High Yield Bond ETF
-    "IDX",    # VanEck Indonesia Index ETF
-#     "ITM",    # VanEck Intermediate Muni ETF
-    "MLN",    # VanEck Long Muni ETF
-#     "MOAT",   # VanEck Morningstar Wide Moat ETF
-#     "MOO",    # VanEck Agribusiness ETF
-#     "MOTI",   # VanEck Morningstar International Moat ETF
-    "NLR",    # VanEck Uranium+Nuclear Energy ETF
-#     "OIH",    # VanEck Oil Services ETF
-#     "PPH",    # VanEck Pharmaceutical ETF
-#     "REMX",   # VanEck Rare Earth/Strategic Metals ETF
-#     "RSX",    # VanEck Russia ETF
-#     "RSXJ",   # VanEck Russia Small-Cap ETF
-#     "RTH",    # VanEck Retail ETF
-#     "SLX",    # VanEck Steel ETF
-#     "SMOG",   # VanEck Low Carbon Energy ETF
-#     "VNM",    # VanEck Vietnam ETF
-#     "ESPO",   # VanEck Video Gaming and eSports UCITS ETF
-#     "GFA",    # VanEck Global Fallen Angel High Yield Bond UCITS ETF
-#     "HDRO",   # VanEck Hydrogen Economy UCITS ETF
-#     "TCBT",   # VanEck iBoxx EUR Corporates UCITS ETF
-#     "TDIV",   # VanEck Morningstar Developed Markets Dividend Leaders UCITS ETF
-#     "TEET",   # VanEck Sustainable European Equal Weight UCITS ETF
-#     "TGBT",   # VanEck iBoxx EUR Sovereign Diversified 1-10 UCITS ETF
-#     "TRET",   # VanEck Global Real Estate UCITS ETF
-#     "TSWE",   # VanEck Sustainable World Equal Weight UCITS ETF
-#     "TAT",    # VanEck iBoxx EUR Sovereign Capped AAA-AA 1-5 UCITS ETF
 ]
 
 
 def get_default_asset_universe() -> List[str]:
     """
     Get the default asset universe.
-
+    
     Returns a copy of the centralized asset list to prevent external modification.
     This function provides a clean API for retrieving the asset universe.
-
+    
     Returns:
         List of asset symbols/names
     """
@@ -795,157 +637,6 @@ def _resolve_symbol_candidates(asset: str) -> List[str]:
         "MTX": ["MTX.DE", "MTX"],
         "IBKR": ["IBKR"],
         "HOOD": ["HOOD"],
-
-        # S&P 100 additions by sector
-
-        # Information Technology
-        "ACCENTURE": ["ACN"],
-        "ADOBE": ["ADBE"],
-        "SALESFORCE": ["CRM"],
-        "CISCO": ["CSCO"],
-        "INTEL": ["INTC"],
-        "ORACLE": ["ORCL"],
-        "PALANTIR": ["PLTR"],
-        "QUALCOMM": ["QCOM"],
-        "TEXAS INSTRUMENTS": ["TXN"],
-
-        # Health Care
-        "ABBVIE": ["ABBV"],
-        "ABBOTT LABS": ["ABT"],
-        "AMGEN": ["AMGN"],
-        "BRISTOL MYERS SQUIBB": ["BMY"],
-        "CVS HEALTH": ["CVS"],
-        "DANAHER": ["DHR"],
-        "GILEAD SCIENCES": ["GILD"],
-        "INTUITIVE SURGICAL": ["ISRG"],
-        "JOHNSON & JOHNSON": ["JNJ"],
-        "ELI LILLY": ["LLY"],
-        "MEDTRONIC": ["MDT"],
-        "MERCK": ["MRK"],
-        "THERMO FISHER SCIENTIFIC": ["TMO"],
-        "UNITEDHEALTH": ["UNH"],
-
-        # Financials
-        "AMERICAN INTERNATIONAL GROUP": ["AIG"],
-        "AMERICAN EXPRESS": ["AXP"],
-        "BANK OF AMERICA": ["BAC"],
-        "BNY MELLON": ["BK"],
-        "BLACKROCK": ["BLK"],
-        "BERKSHIRE HATHAWAY": ["BRK.B"],
-        "CITIGROUP": ["C"],
-        "CAPITAL ONE": ["COF"],
-        "GOLDMAN SACHS": ["GS"],
-        "JPMORGAN CHASE": ["JPM"],
-        "MASTERCARD": ["MA"],
-        "METLIFE": ["MET"],
-        "MORGAN STANLEY": ["MS"],
-        "PAYPAL": ["PYPL"],
-        "CHARLES SCHWAB": ["SCHW"],
-        "US BANCORP": ["USB"],
-        "VISA": ["V"],
-        "WELLS FARGO": ["WFC"],
-
-        # Consumer Discretionary
-        "BOOKING HOLDINGS": ["BKNG"],
-        "GENERAL MOTORS": ["GM"],
-        "HOME DEPOT": ["HD"],
-        "LOWES": ["LOW"],
-        "MCDONALDS": ["MCD"],
-        "NIKE": ["NKE"],
-        "STARBUCKS": ["SBUX"],
-        "TARGET": ["TGT"],
-
-        # Industrials
-        "BOEING": ["BA"],
-        "CATERPILLAR": ["CAT"],
-        "DEERE & COMPANY": ["DE"],
-        "EMERSON ELECTRIC": ["EMR"],
-        "FEDEX": ["FDX"],
-        "GENERAL DYNAMICS": ["GD"],
-        "GE AEROSPACE": ["GE"],
-        "HONEYWELL": ["HON"],
-        "LOCKHEED MARTIN": ["LMT"],
-        "3M": ["MMM"],
-        "RTX CORPORATION": ["RTX"],
-        "UNION PACIFIC": ["UNP"],
-        "UPS": ["UPS"],
-
-        # Communication Services
-        "COMCAST": ["CMCSA"],
-        "DISNEY": ["DIS"],
-        "AT&T": ["T"],
-        "T-MOBILE": ["TMUS"],
-        "VERIZON": ["VZ"],
-
-        # Consumer Staples
-        "COLGATE-PALMOLIVE": ["CL"],
-        "COSTCO": ["COST"],
-        "COCA-COLA": ["KO"],
-        "MONDELEZ": ["MDLZ"],
-        "ALTRIA": ["MO"],
-        "PEPSICO": ["PEP"],
-        "PROCTER & GAMBLE": ["PG"],
-        "PHILIP MORRIS": ["PM"],
-        "WALMART": ["WMT"],
-
-        # Energy
-        "CONOCOPHILLIPS": ["COP"],
-        "CHEVRON": ["CVX"],
-        "EXXONMOBIL": ["XOM"],
-
-        # Utilities
-#         "DUKE ENERGY": ["DUK"],
-        "NEXTERA ENERGY": ["NEE"],
-        "SOUTHERN COMPANY": ["SO"],
-
-        # Real Estate
-#         "AMERICAN TOWER": ["AMT"],
-#         "SIMON PROPERTY GROUP": ["SPG"],
-
-        # Materials
-        "LINDE": ["LIN"],
-        # Vaneck ETFs
-        "VANECK SEMICONDUCTOR": ["SMH"],
-#         "VANECK GOLD MINERS": ["GDX"],
-#         "VANECK JUNIOR GOLD MINERS": ["GDXJ"],
-        "VANECK OIL SERVICES": ["OIH"],
-#         "VANECK RETAIL": ["RTH"],
-        "VANECK AGRIBUSINESS": ["MOO"],
-        "VANECK GAMING ETF": ["ESPO"],
-#         "VANECK AFRICA INDEX": ["AFK"],
-        "VANECK FALLEN ANGEL HIGH YIELD BOND": ["ANGL"],
-#         "VANECK BRAZIL SMALL-CAP": ["BRF"],
-        "VANECK CHINEXT": ["CNXT"],
-        "VANECK MORNINGSTAR DURABLE DIVIDEND": ["DURA"],
-        "VANECK EGYPT INDEX": ["EGPT"],
-#         "VANECK JP MORGAN EM LOCAL CURRENCY BOND": ["EMLC"],
-        "VANECK INVESTMENT GRADE FLOATING RATE": ["FLTR"],
-        "VANECK INDIA GROWTH LEADERS": ["GLIN"],
-        "VANECK MORNINGSTAR GLOBAL WIDE MOAT": ["MOTG"],
-#         "VANECK GREEN BOND": ["GRNB"],
-#         "VANECK EMERGING MARKETS HIGH YIELD BOND": ["HYEM"],
-#         "VANECK INDONESIA INDEX": ["IDX"],
-        "VANECK INTERMEDIATE MUNI": ["ITM"],
-#         "VANECK LONG MUNI": ["MLN"],
-#         "VANECK MORNINGSTAR WIDE MOAT": ["MOAT"],
-        "VANECK MORNINGSTAR INTERNATIONAL MOAT": ["MOTI"],
-#         "VANECK URANIUM+NUCLEAR ENERGY": ["NLR"],
-#         "VANECK PHARMACEUTICAL": ["PPH"],
-#         "VANECK RARE EARTH/STRATEGIC METALS": ["REMX"],
-#         "VANECK RUSSIA": ["RSX"],
-#         "VANECK RUSSIA SMALL-CAP": ["RSXJ"],
-#         "VANECK STEEL": ["SLX"],
-#         "VANECK LOW CARBON ENERGY": ["SMOG"],
-#         "VANECK VIETNAM": ["VNM"],
-#         "VANECK GLOBAL FALLEN ANGEL HIGH YIELD BOND UCITS": ["GFA"],
-#         "VANECK HYDROGEN ECONOMY UCITS": ["HDRO"],
-#         "VANECK IBOXX EUR CORPORATES UCITS": ["TCBT"],
-#         "VANECK MORNINGSTAR DEVELOPED MARKETS DIVIDEND LEADERS UCITS": ["TDIV"],
-#         "VANECK SUSTAINABLE EUROPEAN EQUAL WEIGHT UCITS": ["TEET"],
-#         "VANECK IBOXX EUR SOVEREIGN DIVERSIFIED 1-10 UCITS": ["TGBT"],
-#         "VANECK GLOBAL REAL ESTATE UCITS": ["TRET"],
-#         "VANECK SUSTAINABLE WORLD EQUAL WEIGHT UCITS": ["TSWE"],
-#         "VANECK IBOXX EUR SOVEREIGN CAPPED AAA-AA 1-5 UCITS": ["TAT"],
     }
     # For known special assets already handled elsewhere, leave as-is
     special = {"PLNJPY=X", "BTC-USD", "BTCUSD=X", "MSTR", "GC=F", "SI=F", "XAU=X", "XAG=X", "XAUUSD=X", "XAGUSD=X"}
