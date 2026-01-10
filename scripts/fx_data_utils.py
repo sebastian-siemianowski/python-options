@@ -9,6 +9,9 @@ Separates data acquisition and currency conversion logic from signal computation
 from __future__ import annotations
 
 import math
+import os
+import json
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -630,6 +633,12 @@ MAPPING = {
 }
 
 
+# FX rate cache (JSON on disk) to avoid repeated network calls
+FX_RATE_CACHE_PATH = os.path.join("cache", "fx_rates.json")
+FX_RATE_CACHE_MAX_AGE_DAYS = 1
+_FX_RATE_CACHE: Optional[Dict[str, dict]] = None
+
+
 def get_default_asset_universe() -> List[str]:
     """
     Get the default asset universe.
@@ -816,11 +825,86 @@ def _fetch_px_symbol(symbol: str, start: Optional[str], end: Optional[str]) -> p
     raise RuntimeError(f"No price column found for {symbol}")
 
 
+def _load_fx_cache() -> Dict[str, dict]:
+    global _FX_RATE_CACHE
+    if _FX_RATE_CACHE is not None:
+        return _FX_RATE_CACHE
+    try:
+        with open(FX_RATE_CACHE_PATH, "r") as f:
+            _FX_RATE_CACHE = json.load(f)
+    except Exception:
+        _FX_RATE_CACHE = {}
+    return _FX_RATE_CACHE
+
+
+def _store_fx_cache(cache: Dict[str, dict]) -> None:
+    try:
+        os.makedirs(os.path.dirname(FX_RATE_CACHE_PATH), exist_ok=True)
+        tmp = FX_RATE_CACHE_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cache, f)
+        os.replace(tmp, FX_RATE_CACHE_PATH)
+    except Exception:
+        pass
+
+
+def _maybe_load_cached_series(symbol: str, start: Optional[str], end: Optional[str], max_age_days: int = FX_RATE_CACHE_MAX_AGE_DAYS) -> Optional[pd.Series]:
+    cache = _load_fx_cache()
+    entry = cache.get(symbol)
+    if not entry:
+        return None
+    try:
+        ts = datetime.fromisoformat(entry.get("timestamp"))
+        if datetime.utcnow() - ts > timedelta(days=max_age_days):
+            return None
+        cached_start = entry.get("start")
+        cached_end = entry.get("end")
+        # Require coverage of requested window when provided
+        if start and cached_start and cached_start > start:
+            return None
+        if end and cached_end and cached_end < end:
+            return None
+        data = entry.get("data", [])
+        if not data:
+            return None
+        idx = [pd.to_datetime(d[0]) for d in data]
+        vals = [float(d[1]) for d in data]
+        s = pd.Series(vals, index=idx, name="px").dropna()
+        return s
+    except Exception:
+        return None
+
+
+def _maybe_store_cached_series(symbol: str, series: pd.Series) -> None:
+    if series is None or series.empty:
+        return
+    cache = _load_fx_cache()
+    try:
+        s_clean = _ensure_float_series(series).dropna()
+        if s_clean.empty:
+            return
+        data = [(pd.to_datetime(i).date().isoformat(), float(v)) for i, v in s_clean.items()]
+        cache[symbol] = {
+            "start": s_clean.index.min().date().isoformat(),
+            "end": s_clean.index.max().date().isoformat(),
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": data,
+        }
+        _store_fx_cache(cache)
+    except Exception:
+        pass
+
+
 def _fetch_with_fallback(symbols: List[str], start: Optional[str], end: Optional[str]) -> Tuple[pd.Series, str]:
     last_err: Optional[Exception] = None
     for sym in symbols:
+        # Try cached FX rates first to avoid extra network calls
+        cached = _maybe_load_cached_series(sym, start, end)
+        if cached is not None:
+            return cached, sym
         try:
             px = _fetch_px_symbol(sym, start, end)
+            _maybe_store_cached_series(sym, px)
             return px, sym
         except Exception as e:
             last_err = e
@@ -1196,5 +1280,3 @@ def _resolve_symbol_candidates(asset: str) -> List[str]:
             deduped.append(c)
             seen.add(c)
     return deduped
-
-
