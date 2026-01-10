@@ -85,37 +85,44 @@ NOTIONAL_PLN = 1_000_000  # for profit column
 # Sector mapping for summary grouping
 SECTOR_MAP = {
     "FX / Commodities / Crypto": {
-        "PLNJPY=X", "GC=F", "SI=F", "BTC-USD", "BTCUSD=X", "MSTR"
+        "PLNJPY=X", "GC=F", "SI=F", "BTC-USD", "BTCUSD=X", "MSTR", "XAGUSD", "SGLP", "GLDE", "GLDW", "SLVI"
     },
     "Indices / Broad ETFs": {
-        "SPY", "VOO", "GLD", "SLV", "SMH"
+        "SPY", "VOO", "GLD", "SLV", "SMH", "SOXX"
     },
     "Information Technology": {
-        "AAPL", "ACN", "ADBE", "AMD", "AVGO", "CRM", "CSCO", "IBM", "INTC", "INTU", "MSFT", "NOW", "NVDA", "ORCL", "PLTR", "QCOM", "TXN", "GOOG", "GOOGL", "META", "NFLX", "AMZN"
+        "AAPL", "ACN", "ADBE", "AMD", "AVGO", "CRM", "CSCO", "IBM", "INTC", "INTU", "MSFT", "NOW", "NVDA", "ORCL", "PLTR", "QCOM", "TXN", "GOOG", "GOOGL", "META", "NFLX", "AMZN",
+        "SOUN", "SYM", "IONQ", "IOT", "GLBE", "GRND"
     },
     "Health Care": {
-        "ABBV", "ABT", "AMGN", "BMY", "CVS", "DHR", "GILD", "ISRG", "JNJ", "LLY", "MDT", "MRK", "NVO", "PFE", "TMO", "UNH"
+        "ABBV", "ABT", "AMGN", "BMY", "CVS", "DHR", "GILD", "ISRG", "JNJ", "LLY", "MDT", "MRK", "NVO", "PFE", "TMO", "UNH", "REGN", "CRSP", "BEAM", "BAYN"
     },
     "Financials": {
-        "AIG", "AXP", "BAC", "BK", "BLK", "BRK.B", "C", "COF", "GS", "IBKR", "JPM", "MA", "MET", "MS", "PYPL", "SCHW", "USB", "V", "WFC", "HOOD"
+        "AIG", "AXP", "BLK", "BRK.B", "COF", "IBKR", "MA", "MET", "PYPL", "SCHW", "V", "HOOD", "NU"
+    },
+    "Banks": {
+        "JPM", "BAC", "WFC", "C", "USB", "PNC", "TFC", "GS", "MS", "BK"
     },
     "Consumer Discretionary": {
-        "BKNG", "GM", "HD", "LOW", "MCD", "NKE", "SBUX", "TGT", "TSLA"
+        "BKNG", "GM", "HD", "LOW", "MCD", "NKE", "SBUX", "TGT", "TSLA", "VOW3", "BMW3", "CELH"
     },
     "Industrials": {
-        "CAT", "DE", "EMR", "FDX", "MMM", "UBER", "UNP", "UPS"
+        "CAT", "DE", "EMR", "FDX", "MMM", "UBER", "UNP", "UPS", "TKA", "MTX.DE"
     },
     "Defense & Aerospace": {
-        "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE"
+        "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE", "R3NK", "R3NK.DE", "RHM", "KOZ1", "SAABY", "SAF", "FINMY", "EXA", "BKSY", "ASTS", "THEON"
     },
     "Communication Services": {"CMCSA", "DIS", "T", "TMUS", "VZ"},
     "Consumer Staples": {"CL", "COST", "KO", "MDLZ", "MO", "PEP", "PG", "PM", "WMT"},
     "Energy": {"COP", "CVX", "XOM"},
     "Utilities": {"NEE", "SO"},
     "Real Estate": {"SPG"},
-    "Materials": {"LIN", "NEM"},
+    "Materials": {"LIN", "NEM", "B", "AEM"},
     "Asian Tech & Manufacturing": {"005930.KS"},
     "VanEck ETFs": {"AFK", "ANGL", "CNXT", "EGPT", "FLTR", "GLIN", "MOTG", "IDX", "MLN", "NLR"},
+    "Options / Structured Products": {
+        "TSLD", "PLTI", "QQQO", "METI", "MSFI", "MAGD", "AMDI", "AMZD", "GOOO", "BABI", "BABY", "AAPI", "AVGI", "MSTP"
+    }
 }
 
 # Transaction-cost/slippage hurdle: minimum absolute edge required to act
@@ -3193,7 +3200,7 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
         next_pending: List[str] = []
         for asset, result in zip(pending, results):
             if not result or result.get("status") != "success":
-                err = (result or {}).get("error", "unknown error")
+                err = (result or {}).get("error", "unknown")
                 try:
                     disp = _resolve_display_name(asset.strip().upper())
                 except Exception:

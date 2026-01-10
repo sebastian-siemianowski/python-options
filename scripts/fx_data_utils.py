@@ -276,6 +276,86 @@ DEFAULT_ASSET_UNIVERSE = [
     # Asian Tech & Manufacturing
     "005930.KS", # Samsung Electronics (Korean)
 
+    # Banks (US top 10)
+    "JPM",   # JPMorgan Chase
+    "BAC",   # Bank of America
+    "WFC",   # Wells Fargo
+    "C",     # Citigroup
+    "USB",   # U.S. Bancorp
+    "PNC",   # PNC Financial Services
+    "TFC",   # Truist Financial
+    "GS",    # Goldman Sachs
+    "MS",    # Morgan Stanley
+    "BK",    # Bank of New York Mellon
+
+    # Additional requested tickers
+    "SOUN",  # SoundHound AI Inc-A
+    "SYM",   # Symbotic Inc
+    "THEON", # Theon International
+    "TKA",   # Thyssen-Krupp AG
+    "TSLD",  # IS Tesla Options
+    "VOW3",  # Volkswagen AG-Pref
+    "XAGUSD",# London Silver Commodity
+    "PLTI",  # IS Palantir Options
+    "QQQO",  # IS Nasdaq 100 Options
+    "R3NK",  # Renk Group AG
+    "REGN",  # Regeneron Pharmaceuticals
+    "RHM",   # Rheinmetall AG
+    "RKLB",  # Rocket Lab Corp
+    "SAABY", # Saab AB Unsponsored ADR
+    "SAF",   # Safran SA
+    "SGLP",  # Invesco Physical Gold
+    "SLVI",  # IS Silver Yield Options
+    "SNT",   # Synektik SA
+    "METI",  # IS Meta Options
+    "MRCY",  # Mercury Systems Inc
+    "MSFI",  # IS Microsoft Options
+    "MSTP",  # YieldMax MSTR Option Income
+    "NU",    # Nu Holdings Ltd
+    "IONQ",  # IonQ Inc
+    "IOT",   # Samsara Inc
+    "KOZ1",  # Kongsberg Gruppen ASA
+    "MAGD",  # IS Magnificent 7 Options
+    "FACC",  # FACC AG
+    "FINMY", # Leonardo SPA ADR
+    "GLBE",  # Global-E Online Ltd
+    "GLDE",  # IS Gold Yield Options
+    "GLDW",  # WisdomTree Core Physical Gold
+    "GOOO",  # IS Alphabet Options
+    "GRND",  # Grindr Inc
+    "HAG",   # Hensoldt AG
+    "HO",    # Thales SA
+    "BAYN",  # Bayer AG
+    "BEAM",  # Beam Therapeutics Inc
+    "BKSY",  # BlackSky Technology
+    "BMW3",  # Bayerische Motoren Werke AG
+    "CELH",  # Celsius Holdings Inc
+    "CRSP",  # CRISPR Therapeutics AG
+    "CW",    # Curtiss-Wright Corp
+    "DFNG",  # VanEck Defense ETF
+    "DPRO",  # Draganfly Inc
+    "ESLT",  # Elbit Systems Ltd
+    "EXA",   # Exail Technologies
+    "ASTS",  # AST SpaceMobile Inc
+    "AVAV",  # AeroVironment Inc
+    "AVGI",  # IS Broadcom Options
+    "AVGO",  # Broadcom Inc
+    "B",     # Barrick Mining Corp
+    "BABI",  # IS Alibaba Options
+    "BABY",  # IS Alibaba Options (alt)
+    "AAPI",  # IS Apple Options
+    "ACP",   # Asseco Poland SA
+    "AEM",   # Agnico Eagle Mines Ltd
+    "AIR",   # Airbus SE
+    "AIRI",  # Air Industries Group
+    "AM",    # Dassault Aviation SA
+    "AMD",   # Advanced Micro Devices Inc
+    "AMDI",  # IS AMD Options
+    "AMZD",  # IS Amazon Options
+    "AMZN",  # Amazon.com Inc
+    "FTAI",  # FTAI Aviation Ltd
+    "MSTR",  # MicroStrategy Inc
+
     # -------------------------
     # VanEck ETFs
     # -------------------------
@@ -330,26 +410,18 @@ MAPPING = {
     "FACC": ["FACC.VI", "FACC"],
     "SLVI": ["SLV", "SLVP", "SLVI"],
     "TKA": ["TKA.DE", "TKA"],
-    # Dot/dash and delisting-friendly fixes
-    # Berkshire Hathaway Class B; BRK-B is the working Yahoo symbol
-    "BRK.B": ["BRK-B", "BRKB", "BRK.B"],
-    # Moog Class A; MOG-A works, dot variants often fail
-    "MOG.A": ["MOG-A", "MOG.A", "MOGA"],
-    # HEICO Class A trades on NYSE and AMS; HEI-A/HEI/HEIA.AS resolve
-    "HEIA": ["HEI-A", "HEI", "HEIA.AS", "HEI.A"],
-    # ManTech acquired by CACI; use acquirer first
-    "MANT": ["CACI", "MANT"],
-    # Thin/micro-cap or delisted: Starfighters (FJET) rarely returns; try none to skip earlier
-    "FJET": ["FJET"],
+
     # Netflix and Novo Nordisk
     "NFLX": ["NFLX"],
     "NOVO": ["NVO", "NOVO-B.CO", "NOVOB.CO", "NOVO-B.CO"],
-    # Kratos (alias to KTOS)
+
+    # Kratos alias
     "KRATOS": ["KTOS"],
+
     # Requested blue chips and defense/aero additions
-    "RHEINMETALL": ["RHM.DE", "RHM.F"],
+    "RHEINMETALL": ["RHM.DE", "RHM.F", "RHM"],
     "AIRBUS": ["AIR.PA", "AIR.DE"],
-    "RENK": ["R3NK.DE", "RNK.DE"],
+    "RENK": ["R3NK.DE", "RNK.DE", "R3NK"],
     "NORTHROP": ["NOC"],
     "NORTHROP GRUMMAN": ["NOC"],
     "NORTHRUP": ["NOC"],
@@ -361,13 +433,12 @@ MAPPING = {
     "UBER": ["UBER"],
     "TESLA": ["TSLA"],
     "VANGUARD SP 500": ["VOO", "VUSA.L"],
-    "VANGUARD SP 500": ["VOO", "VUSA.L"],
+    "VANGARD SP 500": ["VOO", "VUSA.L"],
     "VANGUARD S&P 500": ["VOO", "VUSA.L"],
-    "THALES": ["HO.PA"],
-    "HENSOLDT": ["HAG.DE"],
+    "THALES": ["HO.PA", "HO"],
+    "HENSOLDT": ["HAG.DE", "HAG"],
     "SAMSUNG": ["005930.KS", "005935.KS"],
     "TKMS AG & CO": ["TKA.DE", "TKAMY"],
-    # Additional defense, aerospace, and mining companies
     "BAE SYSTEMS": ["BA.L"],
     "BAE": ["BA.L"],
     "NEWMONT": ["NEM"],
@@ -375,6 +446,7 @@ MAPPING = {
     "HOWMET": ["HWM"],
     "HOWMET AEROSPACE": ["HWM"],
     "BROADCOM": ["AVGO"],
+
     # SPY, S&P 500, Magnificent 7, and Semiconductor ETFs
     "SPY": ["SPY"],
     "SP500": ["^GSPC", "SPY"],
@@ -391,11 +463,13 @@ MAPPING = {
     "SEMICONDUCTOR ETF": ["SMH", "SOXX"],
     "SMH": ["SMH"],
     "SOXX": ["SOXX"],
-    # keep identity candidates (with improved MTX mapping to MTU Aero Engines on XETRA)
+
+    # Identity / alias candidates
     "RKLB": ["RKLB"],
     "MTX": ["MTX.DE", "MTX"],
     "IBKR": ["IBKR"],
     "HOOD": ["HOOD"],
+
     # S&P 100 additions by sector
     # Information Technology
     "ACCENTURE": ["ACN"],
@@ -407,6 +481,7 @@ MAPPING = {
     "PALANTIR": ["PLTR"],
     "QUALCOMM": ["QCOM"],
     "TEXAS INSTRUMENTS": ["TXN"],
+
     # Health Care
     "ABBVIE": ["ABBV"],
     "ABBOTT LABS": ["ABT"],
@@ -422,6 +497,7 @@ MAPPING = {
     "MERCK": ["MRK"],
     "THERMO FISHER SCIENTIFIC": ["TMO"],
     "UNITEDHEALTH": ["UNH"],
+
     # Financials
     "AMERICAN INTERNATIONAL GROUP": ["AIG"],
     "AMERICAN EXPRESS": ["AXP"],
@@ -441,6 +517,7 @@ MAPPING = {
     "US BANCORP": ["USB"],
     "VISA": ["V"],
     "WELLS FARGO": ["WFC"],
+
     # Consumer Discretionary
     "BOOKING HOLDINGS": ["BKNG"],
     "GENERAL MOTORS": ["GM"],
@@ -450,6 +527,7 @@ MAPPING = {
     "NIKE": ["NKE"],
     "STARBUCKS": ["SBUX"],
     "TARGET": ["TGT"],
+
     # Industrials
     "CATERPILLAR": ["CAT"],
     "DEERE & COMPANY": ["DE"],
@@ -458,7 +536,8 @@ MAPPING = {
     "3M": ["MMM"],
     "UNION PACIFIC": ["UNP"],
     "UPS": ["UPS"],
-    # Military
+
+    # Military / Defense & Aerospace
     "BOEING": ["BA"],
     "ARCHER AVIATION": ["ACHR"],
     "AAR CORP": ["AIR"],
@@ -577,61 +656,61 @@ MAPPING = {
     "CHEVRON": ["CVX"],
     "EXXONMOBIL": ["XOM"],
 
-    # Utilities
-#         "DUKE ENERGY": ["DUK"],
+    # Utilities (commented keep for reference)
+    # "DUKE ENERGY": ["DUK"],
     "NEXTERA ENERGY": ["NEE"],
     "SOUTHERN COMPANY": ["SO"],
 
-    # Real Estate
-#         "AMERICAN TOWER": ["AMT"],
-#         "SIMON PROPERTY GROUP": ["SPG"],
+    # Real Estate (commented keep for reference)
+    # "AMERICAN TOWER": ["AMT"],
+    # "SIMON PROPERTY GROUP": ["SPG"],
 
     # Materials
     "LINDE": ["LIN"],
-    # Vaneck ETFs
+
+    # VanEck ETFs and related
     "VANECK SEMICONDUCTOR": ["SMH"],
-#         "VANECK GOLD MINERS": ["GDX"],
-#         "VANECK JUNIOR GOLD MINERS": ["GDXJ"],
+    # "VANECK GOLD MINERS": ["GDX"],
+    # "VANECK JUNIOR GOLD MINERS": ["GDXJ"],
     "VANECK OIL SERVICES": ["OIH"],
-#         "VANECK RETAIL": ["RTH"],
+    # "VANECK RETAIL": ["RTH"],
     "VANECK AGRIBUSINESS": ["MOO"],
     "VANECK GAMING ETF": ["ESPO"],
-#         "VANECK AFRICA INDEX": ["AFK"],
+    # "VANECK AFRICA INDEX": ["AFK"],
     "VANECK FALLEN ANGEL HIGH YIELD BOND": ["ANGL"],
-#         "VANECK BRAZIL SMALL-CAP": ["BRF"],
+    # "VANECK BRAZIL SMALL-CAP": ["BRF"],
     "VANECK CHINEXT": ["CNXT"],
     "VANECK MORNINGSTAR DURABLE DIVIDEND": ["DURA"],
     "VANECK EGYPT INDEX": ["EGPT"],
-#         "VANECK JP MORGAN EM LOCAL CURRENCY BOND": ["EMLC"],
+    # "VANECK JP MORGAN EM LOCAL CURRENCY BOND": ["EMLC"],
     "VANECK INVESTMENT GRADE FLOATING RATE": ["FLTR"],
     "VANECK INDIA GROWTH LEADERS": ["GLIN"],
     "VANECK MORNINGSTAR GLOBAL WIDE MOAT": ["MOTG"],
-#         "VANECK GREEN BOND": ["GRNB"],
-#         "VANECK EMERGING MARKETS HIGH YIELD BOND": ["HYEM"],
-#         "VANECK INDONESIA INDEX": ["IDX"],
+    # "VANECK GREEN BOND": ["GRNB"],
+    # "VANECK EMERGING MARKETS HIGH YIELD BOND": ["HYEM"],
+    # "VANECK INDONESIA INDEX": ["IDX"],
     "VANECK INTERMEDIATE MUNI": ["ITM"],
-#         "VANECK LONG MUNI": ["MLN"],
-#         "VANECK MORNINGSTAR WIDE MOAT": ["MOAT"],
+    # "VANECK LONG MUNI": ["MLN"],
+    # "VANECK MORNINGSTAR WIDE MOAT": ["MOAT"],
     "VANECK MORNINGSTAR INTERNATIONAL MOAT": ["MOTI"],
-#         "VANECK URANIUM+NUCLEAR ENERGY": ["NLR"],
-#         "VANECK PHARMACEUTICAL": ["PPH"],
-#         "VANECK RARE EARTH/STRATEGIC METALS": ["REMX"],
-#         "VANECK RUSSIA": ["RSX"],
-#         "VANECK RUSSIA SMALL-CAP": ["RSXJ"],
-#         "VANECK STEEL": ["SLX"],
-#         "VANECK LOW CARBON ENERGY": ["SMOG"],
-#         "VANECK VIETNAM": ["VNM"],
-#         "VANECK GLOBAL FALLEN ANGEL HIGH YIELD BOND UCITS": ["GFA"],
-#         "VANECK HYDROGEN ECONOMY UCITS": ["HDRO"],
-#         "VANECK IBOXX EUR CORPORATES UCITS": ["TCBT"],
-#         "VANECK MORNINGSTAR DEVELOPED MARKETS DIVIDEND LEADERS UCITS": ["TDIV"],
-#         "VANECK SUSTAINABLE EUROPEAN EQUAL WEIGHT UCITS": ["TEET"],
-#         "VANECK IBOXX EUR SOVEREIGN DIVERSIFIED 1-10 UCITS": ["TGBT"],
-#         "VANECK GLOBAL REAL ESTATE UCITS": ["TRET"],
-#         "VANECK SUSTAINABLE WORLD EQUAL WEIGHT UCITS": ["TSWE"],
-#         "VANECK IBOXX EUR SOVEREIGN CAPPED AAA-AA 1-5 UCITS": ["TAT"],
+    # "VANECK URANIUM+NUCLEAR ENERGY": ["NLR"],
+    # "VANECK PHARMACEUTICAL": ["PPH"],
+    # "VANECK RARE EARTH/STRATEGIC METALS": ["REMX"],
+    # "VANECK RUSSIA": ["RSX"],
+    # "VANECK RUSSIA SMALL-CAP": ["RSXJ"],
+    # "VANECK STEEL": ["SLX"],
+    # "VANECK LOW CARBON ENERGY": ["SMOG"],
+    # "VANECK VIETNAM": ["VNM"],
+    # "VANECK GLOBAL FALLEN ANGEL HIGH YIELD BOND UCITS": ["GFA"],
+    # "VANECK HYDROGEN ECONOMY UCITS": ["HDRO"],
+    # "VANECK IBOXX EUR CORPORATES UCITS": ["TCBT"],
+    # "VANECK MORNINGSTAR DEVELOPED MARKETS DIVIDEND LEADERS UCITS": ["TDIV"],
+    # "VANECK SUSTAINABLE EUROPEAN EQUAL WEIGHT UCITS": ["TEET"],
+    # "VANECK IBOXX EUR SOVEREIGN DIVERSIFIED 1-10 UCITS": ["TGBT"],
+    # "VANECK GLOBAL REAL ESTATE UCITS": ["TRET"],
+    # "VANECK SUSTAINABLE WORLD EQUAL WEIGHT UCITS": ["TSWE"],
+    # "VANECK IBOXX EUR SOVEREIGN CAPPED AAA-AA 1-5 UCITS": ["TAT"],
 }
-
 
 # FX rate cache (JSON on disk) to avoid repeated network calls
 FX_RATE_CACHE_PATH = os.path.join("cache", "fx_rates.json")
