@@ -731,6 +731,8 @@ MAPPING = {
     "AMDI": ["AMD", "AMDI"],            # AMD options -> AMD
     "BMW3": ["BMW.DE", "BMW3"],         # BMW preference
     "DFNG": ["ITA", "PPA", "DFNG"],    # Defense ETF proxy
+    "TRET": ["VNQ", "RWO", "TRET"],     # Global real estate UCITS -> US/global REIT proxies
+    "GFA": ["ANGL", "FALN", "GFA"],     # Global fallen angel UCITS -> US fallen angel proxies
 }
 
 # FX rate cache (JSON on disk) to avoid repeated network calls
