@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests
+.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20
 # Usage:
 #   make run                           # runs with defaults (screener + backtest)
 #   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
@@ -44,14 +44,14 @@ backtest: .venv/.deps_installed
 build-russell: .venv/.deps_installed
 	@.venv/bin/python scripts/build_russell2500.py --out data/universes/russell2500_tickers.csv
 
- top50: .venv/.deps_installed
+top50: .venv/.deps_installed
 	@.venv/bin/python top50_revenue_growth.py $(ARGS)
 
 bagger50: .venv/.deps_installed
 	@.venv/bin/python top50_revenue_growth.py --sort_by bagger $(ARGS)
 
 fx-plnjpy: .venv/.deps_installed
-	@.venv/bin/python scripts/fx_pln_jpy_signals.py $(ARGS)
+	@.venv/bin/python scripts/fx_pln_jpy_signals.py $(ARGS) --cache-json cache/fx_plnjpy.json
 
 # Diagnostics and validation convenience targets for FX signals
 fx-diagnostics: .venv/.deps_installed
@@ -118,3 +118,15 @@ clear:
 	@rm -rf data/meta/
 	@rm -f data/*.backup
 	@echo "Data cache cleared successfully!"
+
+stocks: fx-plnjpy
+
+# Render from cached results only (no network/compute)
+report: .venv/.deps_installed
+	@.venv/bin/python scripts/fx_pln_jpy_signals.py --from-cache --cache-json cache/fx_plnjpy.json
+
+# Quick smoke: run only the first 20 assets
+ top20: .venv/.deps_installed
+	@ASSETS=$$(PYTHONPATH=$(CURDIR) ./.venv/bin/python -c "import importlib.util, pathlib; fx=pathlib.Path('scripts/fx_data_utils.py'); spec=importlib.util.spec_from_file_location('fx_data_utils', fx); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); assets=sorted(list(getattr(mod,'DEFAULT_ASSET_UNIVERSE'))); print(','.join(assets[:20]))"); \
+	if [ -z "$$ASSETS" ]; then echo 'No assets resolved'; exit 1; fi; \
+	$(MAKE) fx-plnjpy ARGS="--assets $$ASSETS"

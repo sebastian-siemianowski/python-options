@@ -96,11 +96,22 @@ def format_profit_with_signal(signal_label: str, profit_pln: float) -> str:
     elif np.isfinite(profit_pln) and profit_pln < 0:
         profit_txt = f"[red]{profit_txt}[/red]"
     
-    # Emphasize STRONG labels
-    label = signal_label
-    if isinstance(signal_label, str) and signal_label.upper().startswith("STRONG "):
-        label = f"[bold]{signal_label}[/bold]"
-    
+    # Colorize labels for clarity
+    if isinstance(signal_label, str):
+        label_upper = signal_label.upper()
+        if label_upper.startswith("STRONG BUY"):
+            label = f"[bold green]{signal_label}[/bold green]"
+        elif label_upper.startswith("STRONG SELL"):
+            label = f"[bold red]{signal_label}[/bold red]"
+        elif "SELL" in label_upper:
+            label = f"[red]{signal_label}[/red]"
+        elif "BUY" in label_upper:
+            label = f"[green]{signal_label}[/green]"
+        else:
+            label = signal_label
+    else:
+        label = signal_label
+
     return f"{label} ({profit_txt})"
 
 
@@ -319,7 +330,7 @@ def render_simplified_signal_table(
     return explanations
 
 
-def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[int]) -> None:
+def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[int], title_override: str = None, asset_col_width: int = None) -> None:
     """Render compact summary table comparing signals across multiple assets.
     
     Columns: "Ticker (name)", then one column per trading-day horizon.
@@ -329,6 +340,7 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
     Args:
         summary_rows: List of dictionaries containing asset summaries
         horizons: List of horizon days to display as columns
+        title_override: Optional custom title for the table
     """
     if not summary_rows:
         return
@@ -351,12 +363,22 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
 
     sorted_rows = sorted(summary_rows, key=signal_sort_key)
 
+    # Determine fixed asset column width from longest label (strip rich markup)
+    import re
+    def _plain_len(text: str) -> int:
+        if not isinstance(text, str):
+            return 0
+        return len(re.sub(r"\[/?[^\]]+\]", "", text))
+    if asset_col_width is None:
+        longest_asset = max((_plain_len(r.get("asset_label", "")) for r in sorted_rows), default=0)
+        asset_col_width = max(15, int((longest_asset + 2) * 0.75))
+
     console = Console()
-    table = Table(title="Multi-Asset Signal Summary (1,000,000 PLN notional)")
-    table.add_column("Asset", justify="left", style="bold")
+    table = Table(title=title_override or "Multi-Asset Signal Summary (1,000,000 PLN notional)")
+    table.add_column("Asset", justify="left", style="bold", min_width=asset_col_width, max_width=asset_col_width)
     
     for horizon in horizons:
-        table.add_column(format_horizon_label(horizon), justify="center")
+        table.add_column(format_horizon_label(horizon), justify="center", min_width=18, max_width=18, overflow="fold")
 
     for row in sorted_rows:
         asset_label = row.get("asset_label", "Unknown")
@@ -372,6 +394,33 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         table.add_row(asset_label, *cells)
 
     console.print(table)
+
+
+def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) -> None:
+    """Render summary tables grouped by sector to keep outputs scannable.
+    Expects each row to optionally carry 'sector' key; rows without sector go to 'Unspecified'.
+    """
+    if not summary_rows:
+        return
+
+    buckets: Dict[str, List[Dict]] = {}
+    for row in summary_rows:
+        sector = row.get("sector", "Unspecified") or "Unspecified"
+        buckets.setdefault(sector, []).append(row)
+
+    import re
+    def _plain_len(text: str) -> int:
+        if not isinstance(text, str):
+            return 0
+        return len(re.sub(r"\[/?[^\]]+\]", "", text))
+    longest_asset = max((_plain_len(r.get("asset_label", "")) for r in summary_rows), default=0)
+    asset_col_width = max(15, int((longest_asset + 2) * 0.75))
+
+    for sector, rows in sorted(buckets.items()):
+        console = Console()
+        header = f"[bold cyan]{sector}[/bold cyan] — Multi-Asset Signal Summary (1,000,000 PLN notional)"
+        console.print("")
+        render_multi_asset_summary_table(rows, horizons, title_override=header, asset_col_width=asset_col_width)
 
 
 def render_portfolio_allocation_table(

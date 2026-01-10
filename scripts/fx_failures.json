@@ -1,34 +1,124 @@
 {
   "failed_assets": [
     {
-      "asset": "BRK.B",
-      "display_name": "BRK.B",
+      "asset": "005930.KS",
+      "display_name": "Samsung Electronics Co., Ltd.",
       "attempts": 3,
-      "last_error": "No data for BRK.B"
+      "last_error": "name 'EDGE_FLOOR' is not defined"
     },
     {
-      "asset": "HEIA",
-      "display_name": "HEIA",
+      "asset": "AAPL",
+      "display_name": "Apple Inc.",
       "attempts": 3,
-      "last_error": "No data for HEIA"
+      "last_error": "name 'EDGE_FLOOR' is not defined"
     },
     {
-      "asset": "MANT",
-      "display_name": "MANT",
+      "asset": "ABBV",
+      "display_name": "AbbVie Inc.",
       "attempts": 3,
-      "last_error": "No data for MANT"
+      "last_error": "name 'EDGE_FLOOR' is not defined"
     },
     {
-      "asset": "MOG.A",
-      "display_name": "MOG.A",
+      "asset": "ABT",
+      "display_name": "Abbott Laboratories",
       "attempts": 3,
-      "last_error": "No data for MOG.A"
+      "last_error": "name 'EDGE_FLOOR' is not defined"
     },
     {
-      "asset": "TGI",
-      "display_name": "TGI",
+      "asset": "ACHR",
+      "display_name": "Archer Aviation Inc.",
       "attempts": 3,
-      "last_error": "No data for TGI"
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "ACN",
+      "display_name": "Accenture plc",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "ADBE",
+      "display_name": "Adobe Inc.",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "AFK",
+      "display_name": "VanEck Africa Index ETF",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "AIG",
+      "display_name": "American International Group, Inc.",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "AIR",
+      "display_name": "AAR Corp.",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "AIR.PA",
+      "display_name": "Airbus SE",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "AIRI",
+      "display_name": "Air Industries Group",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "AIRO",
+      "display_name": "AIRO Group Holdings, Inc.",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "AMD",
+      "display_name": "Advanced Micro Devices, Inc.",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "AMGN",
+      "display_name": "Amgen Inc.",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "AMZN",
+      "display_name": "Amazon.com, Inc.",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "ANGL",
+      "display_name": "VanEck Fallen Angel High Yield Bond ETF",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "AOUT",
+      "display_name": "American Outdoor Brands, Inc.",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "ASTC",
+      "display_name": "Astrotech Corporation",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
+    },
+    {
+      "asset": "ATI",
+      "display_name": "ATI Inc.",
+      "attempts": 3,
+      "last_error": "name 'EDGE_FLOOR' is not defined"
     }
   ]
 }

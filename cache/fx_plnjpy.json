@@ -1,0 +1,4994 @@
+{
+  "assets": [
+    {
+      "symbol": "005930.KS",
+      "title": "Samsung Electronics Co., Ltd. (005930.KS) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 502074.9578475952,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": 0.06487279330108825,
+          "p_up": 0.49066666666666664,
+          "exp_ret": -0.0009223452786933288,
+          "ci_low": -0.025807964555359508,
+          "ci_high": 0.023963273997972847,
+          "profit_pln": -921.9200490330204,
+          "profit_ci_low_pln": -25477.78555236302,
+          "profit_ci_high_pln": 24252.700493102795,
+          "position_strength": 0.0,
+          "vol_mean": 0.02452110369973001,
+          "vol_ci_low": 0.024521103699730006,
+          "vol_ci_high": 0.024521103699730012,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": 0.08304444788727045,
+          "p_up": 0.495,
+          "exp_ret": -0.0005470513658708999,
+          "ci_low": -0.04354168239844036,
+          "ci_high": 0.04244757966669856,
+          "profit_pln": -546.9017605542748,
+          "profit_ci_low_pln": -42607.35316251163,
+          "profit_ci_high_pln": 43361.361589802975,
+          "position_strength": 0.0,
+          "vol_mean": 0.02452110369973001,
+          "vol_ci_low": 0.024521103699730012,
+          "vol_ci_high": 0.024521103699730012,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": 0.09048884941834007,
+          "p_up": 0.48966666666666664,
+          "exp_ret": -0.000184736437545198,
+          "ci_low": -0.06730173321782174,
+          "ci_high": 0.06693226034273134,
+          "profit_pln": -184.71937482023026,
+          "profit_ci_low_pln": -65086.935553437805,
+          "profit_ci_high_pln": 69223.04691865167,
+          "position_strength": 0.0,
+          "vol_mean": 0.02452110369973001,
+          "vol_ci_low": 0.024521103699730012,
+          "vol_ci_high": 0.024521103699730012,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.10253103280264181,
+          "p_up": 0.5063333333333333,
+          "exp_ret": 0.00153935684947024,
+          "ci_low": -0.11353368130923505,
+          "ci_high": 0.11661239500817552,
+          "profit_pln": 1540.5422674075187,
+          "profit_ci_low_pln": -107325.87052855991,
+          "profit_ci_high_pln": 123683.79981979216,
+          "position_strength": 0.0,
+          "vol_mean": 0.02452110369973001,
+          "vol_ci_low": 0.024521103699730012,
+          "vol_ci_high": 0.024521103699730012,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": 0.09916474387690521,
+          "p_up": 0.504,
+          "exp_ret": 0.0017404063916279136,
+          "ci_low": -0.19450976449907179,
+          "ci_high": 0.19799057728232763,
+          "profit_pln": 1741.9217778336106,
+          "profit_ci_low_pln": -176761.860290774,
+          "profit_ci_high_pln": 218950.9079372667,
+          "position_strength": 0.0,
+          "vol_mean": 0.02452110369973001,
+          "vol_ci_low": 0.024521103699730012,
+          "vol_ci_high": 0.024521103699730012,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": 0.09925607634118383,
+          "p_up": 0.5046666666666667,
+          "exp_ret": 0.0025044830404594405,
+          "ci_low": -0.2760611618414187,
+          "ci_high": 0.28107012792233754,
+          "profit_pln": 2507.6218779509495,
+          "profit_ci_low_pln": -241233.47821565255,
+          "profit_ci_high_pln": 324546.4883715921,
+          "position_strength": 0.0,
+          "vol_mean": 0.02452110369973001,
+          "vol_ci_low": 0.024521103699730012,
+          "vol_ci_high": 0.024521103699730012,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": 0.09688830594982595,
+          "p_up": 0.5026666666666667,
+          "exp_ret": 0.002292421907702178,
+          "ci_low": -0.39165038925266105,
+          "ci_high": 0.3962352330680654,
+          "profit_pln": 2295.0515158102203,
+          "profit_ci_low_pln": -324059.6113194281,
+          "profit_ci_high_pln": 486218.8842629147,
+          "position_strength": 0.0,
+          "vol_mean": 0.02452110369973001,
+          "vol_ci_low": 0.024521103699730012,
+          "vol_ci_high": 0.024521103699730012,
+          "regime": "crisis",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5793088304729046,
+          "sell_thr": 0.40926514929357105,
+          "uncertainty": 0.1255460147416694,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5792460033352794,
+          "sell_thr": 0.4093279764311961,
+          "uncertainty": 0.12397533630104199,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5797923572524388,
+          "sell_thr": 0.40878162251403677,
+          "uncertainty": 0.13763418423002574,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5795348170709862,
+          "sell_thr": 0.4090391626954894,
+          "uncertainty": 0.13119567969371052,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.5791479742856078,
+          "sell_thr": 0.40942600548086777,
+          "uncertainty": 0.12152461005925111,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.5792396243773044,
+          "sell_thr": 0.4093343553891712,
+          "uncertainty": 0.12381586235166522,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5792390873613663,
+          "sell_thr": 0.40933489240510934,
+          "uncertainty": 0.12380243695321183,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "ewma_fallback",
+      "garch_params": {},
+      "tail_model": "student_t_global",
+      "nu_hat": 499.9999999979612,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 499.9999999979612,
+        "ll": -7150.563096295947,
+        "n": 5176,
+        "converged": true,
+        "se_nu": 44.30945253002167
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "AAPL",
+      "title": "Apple Inc. (AAPL) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 936.8574055064237,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": 0.3253335393314644,
+          "p_up": 0.5213333333333333,
+          "exp_ret": 0.0006536448648401785,
+          "ci_low": -0.012118216133533973,
+          "ci_high": 0.01342550586321433,
+          "profit_pln": 653.8585371975714,
+          "profit_ci_low_pln": -12045.086251712411,
+          "profit_ci_high_pln": 13516.032635975562,
+          "position_strength": 0.5,
+          "vol_mean": 0.012753266344553899,
+          "vol_ci_low": 0.012753266344553899,
+          "vol_ci_high": 0.012753266344553899,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": 0.39220102762567066,
+          "p_up": 0.5556666666666666,
+          "exp_ret": 0.003101209155477923,
+          "ci_low": -0.018933363501839363,
+          "ci_high": 0.02513578181279521,
+          "profit_pln": 3106.0228794261848,
+          "profit_ci_low_pln": -18755.253221952597,
+          "profit_ci_high_pln": 25454.349122321808,
+          "position_strength": 0.5,
+          "vol_mean": 0.012753266344553899,
+          "vol_ci_low": 0.012753266344553899,
+          "vol_ci_high": 0.012753266344553899,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": 0.4240942326097489,
+          "p_up": 0.5763333333333334,
+          "exp_ret": 0.006259270864975686,
+          "ci_low": -0.02785833412694555,
+          "ci_high": 0.04037687585689692,
+          "profit_pln": 6278.901036337325,
+          "profit_ci_low_pln": -27473.869193823553,
+          "profit_ci_high_pln": 41203.10457005938,
+          "position_strength": 0.5,
+          "vol_mean": 0.012753266344553899,
+          "vol_ci_low": 0.012753266344553899,
+          "vol_ci_high": 0.012753266344553899,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.4966983823922585,
+          "p_up": 0.606,
+          "exp_ret": 0.016603363226124757,
+          "ci_low": -0.042544415081754494,
+          "ci_high": 0.075751141534004,
+          "profit_pln": 16741.965084476673,
+          "profit_ci_low_pln": -41652.100524637746,
+          "profit_ci_high_pln": 78694.09859380605,
+          "position_strength": 0.5,
+          "vol_mean": 0.012753266344553899,
+          "vol_ci_low": 0.012753266344553899,
+          "vol_ci_high": 0.012753266344553899,
+          "regime": "calm",
+          "label": "BUY"
+        },
+        {
+          "horizon_days": 63,
+          "score": 0.4531079839841293,
+          "p_up": 0.5833333333333334,
+          "exp_ret": 0.02292652798602198,
+          "ci_low": -0.0801958399316906,
+          "ci_high": 0.12604889590373458,
+          "profit_pln": 23191.360855519426,
+          "profit_ci_low_pln": -77064.41895446925,
+          "profit_ci_high_pln": 134337.63139068143,
+          "position_strength": 0.5,
+          "vol_mean": 0.012753266344553899,
+          "vol_ci_low": 0.012753266344553899,
+          "vol_ci_high": 0.012753266344553899,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": 0.4298550281329471,
+          "p_up": 0.5836666666666667,
+          "exp_ret": 0.028297087724342893,
+          "ci_low": -0.11971741900129956,
+          "ci_high": 0.17631159444998534,
+          "profit_pln": 28701.253543203853,
+          "profit_ci_low_pln": -112828.90100553677,
+          "profit_ci_high_pln": 192809.67362527136,
+          "position_strength": 0.5,
+          "vol_mean": 0.012753266344553899,
+          "vol_ci_low": 0.012753266344553899,
+          "vol_ci_high": 0.012753266344553899,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": 0.41640301299240756,
+          "p_up": 0.5766666666666667,
+          "exp_ret": 0.03650028473403095,
+          "ci_low": -0.17428936459152566,
+          "ci_high": 0.24728993405958755,
+          "profit_pln": 37174.599336612155,
+          "profit_ci_low_pln": -159946.2193336988,
+          "profit_ci_high_pln": 280550.3341176914,
+          "position_strength": 0.4070096447690867,
+          "vol_mean": 0.012753266344553899,
+          "vol_ci_low": 0.012753266344553899,
+          "vol_ci_high": 0.012753266344553899,
+          "regime": "calm",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5905359694351514,
+          "sell_thr": 0.41428893836422254,
+          "uncertainty": 0.20308788838661074,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5905359694351514,
+          "sell_thr": 0.41428893836422254,
+          "uncertainty": 0.20308788838661074,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5905359694351514,
+          "sell_thr": 0.41428893836422254,
+          "uncertainty": 0.20308788838661074,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5905359694351514,
+          "sell_thr": 0.41428893836422254,
+          "uncertainty": 0.20308788838661074,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.5905359694351514,
+          "sell_thr": 0.41428893836422254,
+          "uncertainty": 0.20308788838661074,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.5905359694351514,
+          "sell_thr": 0.41428893836422254,
+          "uncertainty": 0.20308788838661074,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5905359694351514,
+          "sell_thr": 0.41428893836422254,
+          "uncertainty": 0.20308788838661074,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "ewma_fallback",
+      "garch_params": {},
+      "tail_model": "student_t_global",
+      "nu_hat": 499.9999999971465,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 499.9999999971465,
+        "ll": -7148.900108058793,
+        "n": 5261,
+        "converged": true,
+        "se_nu": 47.62814600400219
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "ABBV",
+      "title": "AbbVie Inc. (ABBV) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 794.9399830390321,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.15276877588387577,
+          "p_up": 0.30633333333333335,
+          "exp_ret": -0.010293163753071046,
+          "ci_low": -0.03035248155488427,
+          "ci_high": 0.009766154048742178,
+          "profit_pln": -10240.370435068868,
+          "profit_ci_low_pln": -29896.470323518275,
+          "profit_ci_high_pln": 9813.998556631454,
+          "position_strength": 0.5,
+          "vol_mean": 0.01964112349835492,
+          "vol_ci_low": 0.019641123498354916,
+          "vol_ci_high": 0.019641123498354923,
+          "regime": "crisis",
+          "label": "STRONG SELL"
+        },
+        {
+          "horizon_days": 3,
+          "score": -0.20207904657712566,
+          "p_up": 0.27566666666666667,
+          "exp_ret": -0.028567892407988186,
+          "ci_low": -0.07789227618644161,
+          "ci_high": 0.02075649137046524,
+          "profit_pln": -28163.688401059873,
+          "profit_ci_low_pln": -74935.92739399702,
+          "profit_ci_high_pln": 20973.405530248845,
+          "position_strength": 0.5,
+          "vol_mean": 0.01964112349835492,
+          "vol_ci_low": 0.019641123498354916,
+          "vol_ci_high": 0.019641123498354916,
+          "regime": "crisis",
+          "label": "STRONG SELL"
+        },
+        {
+          "horizon_days": 7,
+          "score": -0.07200701681274577,
+          "p_up": 0.3406666666666667,
+          "exp_ret": -0.05823794548662171,
+          "ci_low": -0.20204901046623822,
+          "ci_high": 0.08557311949299481,
+          "profit_pln": -56574.56309745146,
+          "profit_ci_low_pln": -182945.1172798172,
+          "profit_ci_high_pln": 89341.21050908761,
+          "position_strength": 0.5,
+          "vol_mean": 0.01964112349835492,
+          "vol_ci_low": 0.019641123498354916,
+          "vol_ci_high": 0.019641123498354916,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.07805841160939091,
+          "p_up": 0.4176666666666667,
+          "exp_ret": -0.11767234577556157,
+          "ci_low": -0.6946127557721271,
+          "ci_high": 0.459268064221004,
+          "profit_pln": -111012.71466029083,
+          "profit_ci_low_pln": -500732.2508906462,
+          "profit_ci_high_pln": 582914.9687827477,
+          "position_strength": 0.17515377604720414,
+          "vol_mean": 0.01964112349835492,
+          "vol_ci_low": 0.019641123498354916,
+          "vol_ci_high": 0.019641123498354916,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": 0.16471469427919988,
+          "p_up": 0.4613333333333333,
+          "exp_ret": -0.15473766586364643,
+          "ci_low": -1.9153371794928302,
+          "ci_high": 1.6058618477655375,
+          "profit_pln": -143360.12610896086,
+          "profit_ci_low_pln": -852707.8396835162,
+          "profit_ci_high_pln": 3982151.6091778763,
+          "position_strength": 0.024733290440365895,
+          "vol_mean": 0.01964112349835492,
+          "vol_ci_low": 0.019641123498354916,
+          "vol_ci_high": 0.019641123498354916,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": 0.18197653621127516,
+          "p_up": 0.462,
+          "exp_ret": -0.19079090117200928,
+          "ci_low": -3.1365427958688565,
+          "ci_high": 2.754960993524838,
+          "profit_pln": -173694.6504313833,
+          "profit_ci_low_pln": -956567.305668342,
+          "profit_ci_high_pln": 14720427.692371767,
+          "position_strength": 0.010893622939384699,
+          "vol_mean": 0.01964112349835492,
+          "vol_ci_low": 0.019641123498354916,
+          "vol_ci_high": 0.019641123498354916,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": 0.18454076457549604,
+          "p_up": 0.478,
+          "exp_ret": -0.2707044612935693,
+          "ci_low": -4.684348986912598,
+          "ci_high": 4.14294006432546,
+          "profit_pln": -237158.08759414835,
+          "profit_ci_low_pln": -990761.252799779,
+          "profit_ci_high_pln": 61987737.48339955,
+          "position_strength": 0.00688505984875034,
+          "vol_mean": 0.01964112349835492,
+          "vol_ci_low": 0.019641123498354916,
+          "vol_ci_high": 0.019641123498354916,
+          "regime": "crisis",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5900489980749122,
+          "sell_thr": 0.4168271189790137,
+          "uncertainty": 0.1652734886987306,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.6009065174084651,
+          "sell_thr": 0.4059695996454607,
+          "uncertainty": 0.43671147203755556,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.6041769254239434,
+          "sell_thr": 0.4026991916299824,
+          "uncertainty": 0.5184716724245122,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.6041769254239434,
+          "sell_thr": 0.4026991916299824,
+          "uncertainty": 0.5184716724245122,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.6041769254239434,
+          "sell_thr": 0.4026991916299824,
+          "uncertainty": 0.5184716724245122,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.6041769254239434,
+          "sell_thr": 0.4026991916299824,
+          "uncertainty": 0.5184716724245122,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.6041769254239434,
+          "sell_thr": 0.4026991916299824,
+          "uncertainty": 0.5184716724245122,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "ewma_fallback",
+      "garch_params": {},
+      "tail_model": "student_t_global",
+      "nu_hat": 500.0,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 500.0,
+        "ll": -3719.6076915947597,
+        "n": 3255,
+        "converged": true,
+        "se_nu": 34.51174641550266
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "ABT",
+      "title": "Abbott Laboratories (ABT) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 454.8293364952697,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.27778726656297703,
+          "p_up": 0.5036666666666667,
+          "exp_ret": 3.589404266660268e-05,
+          "ci_low": -0.012824219061370531,
+          "ci_high": 0.012896007146703737,
+          "profit_pln": 35.89468686548969,
+          "profit_ci_low_pln": -12742.33915313272,
+          "profit_ci_high_pln": 12979.519251641314,
+          "position_strength": 0.0,
+          "vol_mean": 0.012956912670822844,
+          "vol_ci_low": 0.012956912670822843,
+          "vol_ci_high": 0.012956912670822846,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": -0.2978248377927843,
+          "p_up": 0.494,
+          "exp_ret": -0.0005406267863021357,
+          "ci_low": -0.023021946020985267,
+          "ci_high": 0.021940692448380993,
+          "profit_pln": -540.4806739730539,
+          "profit_ci_low_pln": -22758.9630143632,
+          "profit_ci_high_pln": 22183.159492200844,
+          "position_strength": 0.0,
+          "vol_mean": 0.013438827035843664,
+          "vol_ci_low": 0.012424224281105066,
+          "vol_ci_high": 0.01450939387750085,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": -0.3003550130594743,
+          "p_up": 0.4846666666666667,
+          "exp_ret": -0.0009997472215362208,
+          "ci_low": -0.03743791020043112,
+          "ci_high": 0.03543841575735868,
+          "profit_pln": -999.2476407814088,
+          "profit_ci_low_pln": -36745.77587417149,
+          "profit_ci_high_pln": 36073.84034052985,
+          "position_strength": 0.0,
+          "vol_mean": 0.014233811614982212,
+          "vol_ci_low": 0.012585092110235344,
+          "vol_ci_high": 0.015831539475027325,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": -0.3232286017790021,
+          "p_up": 0.48,
+          "exp_ret": -0.00397269949260603,
+          "ci_low": -0.07237976482289481,
+          "ci_high": 0.06443436583768274,
+          "profit_pln": -3964.818761356459,
+          "profit_ci_low_pln": -69822.41999693617,
+          "profit_ci_high_pln": 66555.57346569218,
+          "position_strength": 0.0,
+          "vol_mean": 0.015330854765179433,
+          "vol_ci_low": 0.013094489602118016,
+          "vol_ci_high": 0.017622595488762972,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": -0.2941247397299148,
+          "p_up": 0.49366666666666664,
+          "exp_ret": -0.002366909157991039,
+          "ci_low": -0.12634209082327832,
+          "ci_high": 0.12160827250729625,
+          "profit_pln": -2364.1102372091714,
+          "profit_ci_low_pln": -118686.6939852289,
+          "profit_ci_high_pln": 129311.63270796464,
+          "position_strength": 0.0,
+          "vol_mean": 0.015798208935639036,
+          "vol_ci_low": 0.01332485100236729,
+          "vol_ci_high": 0.018171085393187902,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": -0.2798830899367659,
+          "p_up": 0.504,
+          "exp_ret": -2.908002156975028e-06,
+          "ci_low": -0.1806691027595268,
+          "ci_high": 0.18066328675521287,
+          "profit_pln": -2.9079979287915947,
+          "profit_ci_low_pln": -165288.48325921697,
+          "profit_ci_high_pln": 198011.72495759878,
+          "position_strength": 0.0,
+          "vol_mean": 0.015700802792975466,
+          "vol_ci_low": 0.01323374686819683,
+          "vol_ci_high": 0.018047278119661198,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": -0.28362813236536827,
+          "p_up": 0.501,
+          "exp_ret": -0.0013000880932200808,
+          "ci_low": -0.2596477157963745,
+          "ci_high": 0.2570475396099344,
+          "profit_pln": -1299.2433448171248,
+          "profit_ci_low_pln": -228676.73705160109,
+          "profit_ci_high_pln": 293106.59908148076,
+          "position_strength": 0.0,
+          "vol_mean": 0.015747503349754347,
+          "vol_ci_low": 0.013287358850428999,
+          "vol_ci_high": 0.018070226491645275,
+          "regime": "calm",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5816814358716021,
+          "sell_thr": 0.41940737614424545,
+          "uncertainty": 0.028425746591958758,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5816814358716021,
+          "sell_thr": 0.41940737614424545,
+          "uncertainty": 0.028425746591958758,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5816814358716021,
+          "sell_thr": 0.41940737614424545,
+          "uncertainty": 0.028425746591958758,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5827482579155636,
+          "sell_thr": 0.418340554100284,
+          "uncertainty": 0.05509629769099536,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.5837245116240328,
+          "sell_thr": 0.4173643003918147,
+          "uncertainty": 0.07950264040272717,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.584395734926233,
+          "sell_thr": 0.41669307708961456,
+          "uncertainty": 0.09628322295773076,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5846488405223829,
+          "sell_thr": 0.41643997149346473,
+          "uncertainty": 0.10261086286147672,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "garch11",
+      "garch_params": {
+        "omega": 2.2801655660041604e-05,
+        "alpha": 0.10899,
+        "beta": 0.8019900000000001,
+        "converged": true,
+        "log_likelihood": 19917.521575157385,
+        "nll": -19917.521575157385,
+        "n_obs": 5281,
+        "aic": -39829.04315031477,
+        "bic": -39809.32753805665
+      },
+      "tail_model": "student_t_global",
+      "nu_hat": 499.9999999996854,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 499.9999999996854,
+        "ll": -7176.501747335231,
+        "n": 5262,
+        "converged": true,
+        "se_nu": 147.63880047465315
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "ACHR",
+      "title": "Archer Aviation Inc. (ACHR) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 31.82216251306727,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.23415566369662572,
+          "p_up": 0.516,
+          "exp_ret": 0.0024290176478294783,
+          "ci_low": -0.04143739985451563,
+          "ci_high": 0.046295435150174584,
+          "profit_pln": 2431.97010123275,
+          "profit_ci_low_pln": -40590.607370787126,
+          "profit_ci_high_pln": 47383.79924261915,
+          "position_strength": 0.0,
+          "vol_mean": 0.02943964003231064,
+          "vol_ci_low": 0.029439640032310636,
+          "vol_ci_high": 0.029439640032310643,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": -0.19832005366035407,
+          "p_up": 0.5273333333333333,
+          "exp_ret": 0.007391801850077196,
+          "ci_low": -0.06792448959551517,
+          "ci_high": 0.08270809329566955,
+          "profit_pln": 7419.188655064524,
+          "profit_ci_low_pln": -65668.97737297228,
+          "profit_ci_high_pln": 86224.68599713873,
+          "position_strength": 0.0,
+          "vol_mean": 0.028170796055142753,
+          "vol_ci_low": 0.02689116126328745,
+          "vol_ci_high": 0.029091378311221168,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": -0.12185707001487364,
+          "p_up": 0.5566666666666666,
+          "exp_ret": 0.021417568586935394,
+          "ci_low": -0.09166158500614288,
+          "ci_high": 0.13449672218001366,
+          "profit_pln": 21648.570930909995,
+          "profit_ci_low_pln": -87586.12816114908,
+          "profit_ci_high_pln": 143960.90929831783,
+          "position_strength": 0.0,
+          "vol_mean": 0.025713042591484835,
+          "vol_ci_low": 0.023284609495259526,
+          "vol_ci_high": 0.027734932377118528,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.0028802787428849896,
+          "p_up": 0.6306666666666667,
+          "exp_ret": 0.061190813106725236,
+          "ci_low": -0.11969752870890886,
+          "ci_high": 0.24207915492235932,
+          "profit_pln": 63101.74858226136,
+          "profit_ci_low_pln": -112811.2547374831,
+          "profit_ci_high_pln": 273895.0238872142,
+          "position_strength": 0.0,
+          "vol_mean": 0.0192441151557842,
+          "vol_ci_low": 0.015955845211678435,
+          "vol_ci_high": 0.02224174546175472,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": 0.22899160959706658,
+          "p_up": 0.7486666666666667,
+          "exp_ret": 0.17220166752522384,
+          "ci_low": -0.11095621397261737,
+          "ci_high": 0.4553595490230651,
+          "profit_pln": 187917.37341622138,
+          "profit_ci_low_pln": -105022.06440049455,
+          "profit_ci_high_pln": 576740.1965265546,
+          "position_strength": 0.0,
+          "vol_mean": 0.01200407468044968,
+          "vol_ci_low": 0.010032110056892118,
+          "vol_ci_high": 0.01384984169868809,
+          "regime": "calm",
+          "label": "BUY"
+        },
+        {
+          "horizon_days": 126,
+          "score": 0.48456917687549295,
+          "p_up": 0.853,
+          "exp_ret": 0.3464899870119095,
+          "ci_low": -0.03294092371887247,
+          "ci_high": 0.7259208977426914,
+          "profit_pln": 414095.33443973114,
+          "profit_ci_low_pln": -32404.280142628526,
+          "profit_ci_high_pln": 1066633.381944864,
+          "position_strength": 0.0,
+          "vol_mean": 0.010893657853033046,
+          "vol_ci_low": 0.009397414837139325,
+          "vol_ci_high": 0.01215652626855555,
+          "regime": "calm",
+          "label": "BUY"
+        },
+        {
+          "horizon_days": 252,
+          "score": 0.8364650999139419,
+          "p_up": 0.9413333333333334,
+          "exp_ret": 0.70080286578371,
+          "ci_low": 0.1751391189880659,
+          "ci_high": 1.2264666125793542,
+          "profit_pln": 1015370.1298158056,
+          "profit_ci_low_pln": 191411.9531088301,
+          "profit_ci_high_pln": 2409162.3384802137,
+          "position_strength": 0.0,
+          "vol_mean": 0.010797262649783802,
+          "vol_ci_low": 0.0093869068728041,
+          "vol_ci_high": 0.012071932228563564,
+          "regime": "calm",
+          "label": "BUY"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5737289922535516,
+          "sell_thr": 0.4118032689558654,
+          "uncertainty": 0.024071541221077502,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5735530065477007,
+          "sell_thr": 0.41197925466171625,
+          "uncertainty": 0.01967189857480593,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.573548263787373,
+          "sell_thr": 0.41198399742204406,
+          "uncertainty": 0.01955332956661186,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.573548263787373,
+          "sell_thr": 0.41198399742204406,
+          "uncertainty": 0.01955332956661186,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.573548263787373,
+          "sell_thr": 0.41198399742204406,
+          "uncertainty": 0.01955332956661186,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.573548263787373,
+          "sell_thr": 0.41198399742204406,
+          "uncertainty": 0.01955332956661186,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.573548263787373,
+          "sell_thr": 0.41198399742204406,
+          "uncertainty": 0.01955332956661186,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "garch11",
+      "garch_params": {
+        "omega": 6.104627597199207e-06,
+        "alpha": 0.05,
+        "beta": 0.9,
+        "converged": true,
+        "log_likelihood": 3100.5292987787807,
+        "nll": -3100.5292987787807,
+        "n_obs": 1269,
+        "aic": -6195.058597557561,
+        "bic": -6179.620644154418
+      },
+      "tail_model": "student_t_global",
+      "nu_hat": 4.500000000000001,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 4.500000000000001,
+        "ll": -2202.3199895057132,
+        "n": 1250,
+        "converged": true,
+        "se_nu": 0.12757486483060568
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "ACN",
+      "title": "Accenture plc (ACN) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 1013.7941378475807,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.24807340313620466,
+          "p_up": 0.5,
+          "exp_ret": -0.0001654683813811584,
+          "ci_low": -0.018884591029703315,
+          "ci_high": 0.018553654266941,
+          "profit_pln": -165.4546922436051,
+          "profit_ci_low_pln": -18707.39432279278,
+          "profit_ci_high_pln": 18726.84274521652,
+          "position_strength": 0.23396508407128025,
+          "vol_mean": 0.018568033712843927,
+          "vol_ci_low": 0.018568033712843924,
+          "vol_ci_high": 0.01856803371284393,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": -0.22758422705854592,
+          "p_up": 0.5076666666666667,
+          "exp_ret": 0.0005980164574279322,
+          "ci_low": -0.031545986505094825,
+          "ci_high": 0.03274201941995068,
+          "profit_pln": 598.1953049190025,
+          "profit_ci_low_pln": -31053.603029240763,
+          "profit_ci_high_pln": 33283.937664175144,
+          "position_strength": 0.2867610937019473,
+          "vol_mean": 0.018568033712843927,
+          "vol_ci_low": 0.018568033712843924,
+          "vol_ci_high": 0.018568033712843924,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": -0.21179001949333837,
+          "p_up": 0.517,
+          "exp_ret": 0.0019852759131518097,
+          "ci_low": -0.04794678978974272,
+          "ci_high": 0.051917341616046345,
+          "profit_pln": 1987.2478781264301,
+          "profit_ci_low_pln": -46815.49512394112,
+          "profit_ci_high_pln": 53288.67577524021,
+          "position_strength": 0.39451981231428357,
+          "vol_mean": 0.018568033712843927,
+          "vol_ci_low": 0.018568033712843924,
+          "vol_ci_high": 0.018568033712843924,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": -0.19131268527558154,
+          "p_up": 0.5286666666666666,
+          "exp_ret": 0.005653661340107809,
+          "ci_low": -0.07849384611975838,
+          "ci_high": 0.08980116879997399,
+          "profit_pln": 5669.673444832269,
+          "profit_ci_low_pln": -75492.25077598132,
+          "profit_ci_high_pln": 93956.7493463691,
+          "position_strength": 0.3955981835740234,
+          "vol_mean": 0.018568033712843927,
+          "vol_ci_low": 0.018568033712843924,
+          "vol_ci_high": 0.018568033712843924,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": -0.20028873961225596,
+          "p_up": 0.5236666666666666,
+          "exp_ret": 0.008165736502275063,
+          "ci_low": -0.13985891773778142,
+          "ci_high": 0.15619039074233154,
+          "profit_pln": 8199.167061679891,
+          "profit_ci_low_pln": -130519.10492231678,
+          "profit_ci_high_pln": 169048.75796385354,
+          "position_strength": 0.1846436013060705,
+          "vol_mean": 0.018568033712843927,
+          "vol_ci_low": 0.018568033712843924,
+          "vol_ci_high": 0.018568033712843924,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": -0.19950720057581267,
+          "p_up": 0.5256666666666666,
+          "exp_ret": 0.011893382358266686,
+          "ci_low": -0.19968925575020607,
+          "ci_high": 0.22347602046673942,
+          "profit_pln": 11964.389857446411,
+          "profit_ci_low_pln": -181014.79151514,
+          "profit_ci_high_pln": 250415.6555331547,
+          "position_strength": 0.13162922872206453,
+          "vol_mean": 0.018568033712843927,
+          "vol_ci_low": 0.018568033712843924,
+          "vol_ci_high": 0.018568033712843924,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": -0.2139677735113824,
+          "p_up": 0.5106666666666667,
+          "exp_ret": 0.01090930270899761,
+          "ci_low": -0.2851964583559447,
+          "ci_high": 0.3070150637739399,
+          "profit_pln": 10969.02613452122,
+          "profit_ci_low_pln": -248133.47065329016,
+          "profit_ci_high_pln": 359361.4450312608,
+          "position_strength": 0.06164676472048733,
+          "vol_mean": 0.018568033712843927,
+          "vol_ci_low": 0.018568033712843924,
+          "vol_ci_high": 0.018568033712843924,
+          "regime": "crisis",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5932080021667598,
+          "sell_thr": 0.42050473935503957,
+          "uncertainty": 0.1587907851465038,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5930188614978653,
+          "sell_thr": 0.42069388002393404,
+          "uncertainty": 0.1540622684241414,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5933884964398692,
+          "sell_thr": 0.42032424508193017,
+          "uncertainty": 0.16330314197423912,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5927884474292916,
+          "sell_thr": 0.42092429409250776,
+          "uncertainty": 0.14830191670979842,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.5931259229929621,
+          "sell_thr": 0.42058681852883734,
+          "uncertainty": 0.1567388058015594,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.5933611238136259,
+          "sell_thr": 0.4203516177081735,
+          "uncertainty": 0.1626188263181565,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5931301066201404,
+          "sell_thr": 0.42058263490165904,
+          "uncertainty": 0.15684339648101708,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "ewma_fallback",
+      "garch_params": {},
+      "tail_model": "student_t_global",
+      "nu_hat": 499.99999943410023,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 499.99999943410023,
+        "ll": -7167.456323423715,
+        "n": 5261,
+        "converged": true,
+        "se_nu": 56.70417857337912
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "ADBE",
+      "title": "Adobe Inc. (ADBE) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 1206.2441604463966,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.4639581145993301,
+          "p_up": 0.37166666666666665,
+          "exp_ret": -0.005641661227824186,
+          "ci_low": -0.022585889054827862,
+          "ci_high": 0.01130256659917949,
+          "profit_pln": -5625.776942410177,
+          "profit_ci_low_pln": -22332.737329985088,
+          "profit_ci_high_pln": 11366.681933300482,
+          "position_strength": 0.5,
+          "vol_mean": 0.017155133902562687,
+          "vol_ci_low": 0.017155133902562684,
+          "vol_ci_high": 0.01715513390256269,
+          "regime": "calm",
+          "label": "SELL"
+        },
+        {
+          "horizon_days": 3,
+          "score": -0.5215851020638,
+          "p_up": 0.3416666666666667,
+          "exp_ret": -0.016831370086593855,
+          "ci_low": -0.05786926825613136,
+          "ci_high": 0.02420652808294365,
+          "profit_pln": -16690.51395153842,
+          "profit_ci_low_pln": -56226.679495759105,
+          "profit_ci_high_pln": 24501.884452819533,
+          "position_strength": 0.5,
+          "vol_mean": 0.017155133902562687,
+          "vol_ci_low": 0.01715513390256269,
+          "vol_ci_high": 0.01715513390256269,
+          "regime": "calm",
+          "label": "SELL"
+        },
+        {
+          "horizon_days": 7,
+          "score": -0.4308221432809007,
+          "p_up": 0.38766666666666666,
+          "exp_ret": -0.034953101341966816,
+          "ci_low": -0.1560777137561615,
+          "ci_high": 0.08617151107222787,
+          "profit_pln": -34349.29708228796,
+          "profit_ci_low_pln": -144507.29576380661,
+          "profit_ci_high_pln": 89993.25818683102,
+          "position_strength": 0.5,
+          "vol_mean": 0.017155133902562687,
+          "vol_ci_low": 0.01715513390256269,
+          "vol_ci_high": 0.01715513390256269,
+          "regime": "calm",
+          "label": "SELL"
+        },
+        {
+          "horizon_days": 21,
+          "score": -0.30719045708993314,
+          "p_up": 0.4583333333333333,
+          "exp_ret": -0.06195310482552262,
+          "ci_low": -0.565737847823007,
+          "ci_high": 0.4418316381719617,
+          "profit_pln": -60073.03620345539,
+          "profit_ci_low_pln": -432059.0618643252,
+          "profit_ci_high_pln": 555553.822501067,
+          "position_strength": 0.1209428129849562,
+          "vol_mean": 0.017155133902562687,
+          "vol_ci_low": 0.01715513390256269,
+          "vol_ci_high": 0.01715513390256269,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": -0.24972922353348603,
+          "p_up": 0.4886666666666667,
+          "exp_ret": -0.06975440387789131,
+          "ci_low": -1.5858245142865521,
+          "ci_high": 1.4463157065307697,
+          "profit_pln": -67377.1596654914,
+          "profit_ci_low_pln": -795221.1196215726,
+          "profit_ci_high_pln": 3247436.8484985367,
+          "position_strength": 0.015036268468759394,
+          "vol_mean": 0.017155133902562687,
+          "vol_ci_low": 0.01715513390256269,
+          "vol_ci_high": 0.01715513390256269,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": -0.2374514905041072,
+          "p_up": 0.49266666666666664,
+          "exp_ret": -0.07482366055284015,
+          "ci_low": -2.605656250949747,
+          "ci_high": 2.4560089298440664,
+          "profit_pln": -72092.90147274338,
+          "profit_ci_low_pln": -926145.345896141,
+          "profit_ci_high_pln": 10658189.912939874,
+          "position_strength": 0.005787874763059795,
+          "vol_mean": 0.017155133902562687,
+          "vol_ci_low": 0.01715513390256269,
+          "vol_ci_high": 0.01715513390256269,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": -0.2175998656300811,
+          "p_up": 0.49766666666666665,
+          "exp_ret": -0.011507361016964457,
+          "ci_low": -3.8795732058866728,
+          "ci_high": 3.8565584838527442,
+          "profit_pln": -11441.404575460612,
+          "profit_ci_low_pln": -979340.3592865898,
+          "profit_ci_high_pln": 46302279.3641037,
+          "position_strength": 0.0003810614648876932,
+          "vol_mean": 0.017155133902562687,
+          "vol_ci_low": 0.01715513390256269,
+          "vol_ci_high": 0.01715513390256269,
+          "regime": "calm",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5901687476895567,
+          "sell_thr": 0.42902600577509414,
+          "uncertainty": 0.014284273930782417,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.59667455465297,
+          "sell_thr": 0.4225201988116809,
+          "uncertainty": 0.1769294480161135,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.6101687476895568,
+          "sell_thr": 0.4090260057750942,
+          "uncertainty": 0.5142842739307825,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.6101687476895568,
+          "sell_thr": 0.4090260057750942,
+          "uncertainty": 0.5142842739307825,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.6101687476895568,
+          "sell_thr": 0.4090260057750942,
+          "uncertainty": 0.5142842739307825,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.6101687476895568,
+          "sell_thr": 0.4090260057750942,
+          "uncertainty": 0.5142842739307825,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.6101687476895568,
+          "sell_thr": 0.4090260057750942,
+          "uncertainty": 0.5142842739307825,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "ewma_fallback",
+      "garch_params": {},
+      "tail_model": "student_t_global",
+      "nu_hat": 500.0,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 500.0,
+        "ll": -6004.385525569522,
+        "n": 5261,
+        "converged": true,
+        "se_nu": 27.071800334368948
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "AFK",
+      "title": "VanEck Africa Index ETF (AFK) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 98.82569174929813,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": 0.0673361637386245,
+          "p_up": 0.5193333333333333,
+          "exp_ret": 0.0003615885459602211,
+          "ci_low": -0.015530472961837492,
+          "ci_high": 0.016253650053757934,
+          "profit_pln": 361.6539269786223,
+          "profit_ci_low_pln": -15410.49706376585,
+          "profit_ci_high_pln": 16386.459192558432,
+          "position_strength": 0.0,
+          "vol_mean": 0.014687399768394718,
+          "vol_ci_low": 0.014687399768394716,
+          "vol_ci_high": 0.01468739976839472,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": 0.03432223164539572,
+          "p_up": 0.49266666666666664,
+          "exp_ret": -0.0005741802839027058,
+          "ci_low": -0.02732117573828632,
+          "ci_high": 0.026172815170480906,
+          "profit_pln": -574.0154739485304,
+          "profit_ci_low_pln": -26951.32829342117,
+          "profit_ci_high_pln": 26518.33108618584,
+          "position_strength": 0.0,
+          "vol_mean": 0.014687399768394718,
+          "vol_ci_low": 0.014687399768394716,
+          "vol_ci_high": 0.014687399768394716,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": 0.013780139702101735,
+          "p_up": 0.49066666666666664,
+          "exp_ret": -0.0019756387884436962,
+          "ci_low": -0.04230977710406591,
+          "ci_high": 0.03835849952717852,
+          "profit_pln": -1973.6884986999437,
+          "profit_ci_low_pln": -41427.209328606776,
+          "profit_ci_high_pln": 39103.68429218902,
+          "position_strength": 0.0,
+          "vol_mean": 0.014687399768394718,
+          "vol_ci_low": 0.014687399768394716,
+          "vol_ci_high": 0.014687399768394716,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.008822096189636253,
+          "p_up": 0.47733333333333333,
+          "exp_ret": -0.003923138065757735,
+          "ci_low": -0.07445430597173736,
+          "ci_high": 0.06660802984022188,
+          "profit_pln": -3915.4526132648693,
+          "profit_ci_low_pln": -71750.11143342592,
+          "profit_ci_high_pln": 68876.4283880412,
+          "position_strength": 0.0,
+          "vol_mean": 0.014687399768394718,
+          "vol_ci_low": 0.014687399768394716,
+          "vol_ci_high": 0.014687399768394716,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": -0.020432987266108982,
+          "p_up": 0.465,
+          "exp_ret": -0.011915605830388401,
+          "ci_low": -0.1375971594246544,
+          "ci_high": 0.11376594776387759,
+          "profit_pln": -11844.896127537697,
+          "profit_ci_low_pln": -128550.32366536556,
+          "profit_ci_high_pln": 120489.84103844251,
+          "position_strength": 0.0,
+          "vol_mean": 0.014687399768394718,
+          "vol_ci_low": 0.014687399768394716,
+          "vol_ci_high": 0.014687399768394716,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": -0.06931826420553935,
+          "p_up": 0.44166666666666665,
+          "exp_ret": -0.028092202916540455,
+          "ci_low": -0.20335480408855966,
+          "ci_high": 0.14717039825547873,
+          "profit_pln": -27701.28610898881,
+          "profit_ci_low_pln": -184011.32605894876,
+          "profit_ci_high_pln": 158551.36134206882,
+          "position_strength": 0.0,
+          "vol_mean": 0.014687399768394718,
+          "vol_ci_low": 0.014687399768394716,
+          "vol_ci_high": 0.014687399768394716,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": -0.11437661554698453,
+          "p_up": 0.409,
+          "exp_ret": -0.055390914639909125,
+          "ci_low": -0.3064387467266427,
+          "ci_high": 0.1956569174468244,
+          "profit_pln": -53884.77463851849,
+          "profit_ci_low_pln": -263936.3968963644,
+          "profit_ci_high_pln": 216109.6077654783,
+          "position_strength": 0.0,
+          "vol_mean": 0.014687399768394718,
+          "vol_ci_low": 0.014687399768394716,
+          "vol_ci_high": 0.014687399768394716,
+          "regime": "trending",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.6021406355507819,
+          "sell_thr": 0.4094289468570432,
+          "uncertainty": 0.4088961086717348,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.6014463529667604,
+          "sell_thr": 0.41012322944106466,
+          "uncertainty": 0.3915390440711977,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.6011413996892695,
+          "sell_thr": 0.4104281827185555,
+          "uncertainty": 0.38391521213392527,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.6013672676680833,
+          "sell_thr": 0.4102023147397417,
+          "uncertainty": 0.38956191160427106,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.6020515890099136,
+          "sell_thr": 0.4095179933979114,
+          "uncertainty": 0.4066699451500289,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.6017107537670227,
+          "sell_thr": 0.4098588286408024,
+          "uncertainty": 0.39814906407775347,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.6020209252433162,
+          "sell_thr": 0.40954865716450883,
+          "uncertainty": 0.4059033509850926,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "ewma_fallback",
+      "garch_params": {},
+      "tail_model": "student_t_global",
+      "nu_hat": 500.0,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 500.0,
+        "ll": -5973.196429578051,
+        "n": 4374,
+        "converged": true,
+        "se_nu": 42.51028969092719
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "AIG",
+      "title": "American International Group, Inc. (AIG) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 272.4569368609009,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": 0.10282427108773481,
+          "p_up": 0.5066666666666667,
+          "exp_ret": 0.00036614413773686927,
+          "ci_low": -0.030746040301536715,
+          "ci_high": 0.03147832857701045,
+          "profit_pln": 366.2111766833398,
+          "profit_ci_low_pln": -30278.187933701738,
+          "profit_ci_high_pln": 31979.01089964783,
+          "position_strength": 0.0,
+          "vol_mean": 0.029785268394610768,
+          "vol_ci_low": 0.029785268394610764,
+          "vol_ci_high": 0.02978526839461077,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": 0.10441314665022,
+          "p_up": 0.507,
+          "exp_ret": 0.0007179222897289767,
+          "ci_low": -0.05123472480049631,
+          "ci_high": 0.05267056937995427,
+          "profit_pln": 718.1800576181452,
+          "profit_ci_low_pln": -49944.35726282831,
+          "profit_ci_high_pln": 54082.340917029906,
+          "position_strength": 0.0,
+          "vol_mean": 0.027507214527237322,
+          "vol_ci_low": 0.021373935397056208,
+          "vol_ci_high": 0.03356285578815441,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": 0.1005895129185149,
+          "p_up": 0.5043333333333333,
+          "exp_ret": 0.0007001861837736852,
+          "ci_low": -0.07810698171940274,
+          "ci_high": 0.0795073540869501,
+          "profit_pln": 700.4313713419031,
+          "profit_ci_low_pln": -75134.52244823771,
+          "profit_ci_high_pln": 82753.52216370746,
+          "position_strength": 0.0,
+          "vol_mean": 0.02490702975167943,
+          "vol_ci_low": 0.01691539715457695,
+          "vol_ci_high": 0.03255339728830914,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.09806879567050672,
+          "p_up": 0.5,
+          "exp_ret": 0.0007492673317195019,
+          "ci_low": -0.13228600866478318,
+          "ci_high": 0.1337845433282222,
+          "profit_pln": 749.5481026065231,
+          "profit_ci_low_pln": -123909.61019917524,
+          "profit_ci_high_pln": 143146.4945703349,
+          "position_strength": 0.0,
+          "vol_mean": 0.022303777199236558,
+          "vol_ci_low": 0.015022876670790625,
+          "vol_ci_high": 0.028557298232506703,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": 0.10954584208568074,
+          "p_up": 0.5103333333333333,
+          "exp_ret": 0.004602301224437767,
+          "ci_low": -0.22053761601768715,
+          "ci_high": 0.2297422184665627,
+          "profit_pln": 4612.908078454492,
+          "profit_ci_low_pln": -197912.5330421837,
+          "profit_ci_high_pln": 258275.60790315628,
+          "position_strength": 0.0,
+          "vol_mean": 0.0223032120566799,
+          "vol_ci_low": 0.015078023155515248,
+          "vol_ci_high": 0.028553861620913838,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": 0.09542194664705589,
+          "p_up": 0.5056666666666667,
+          "exp_ret": 0.0007139694196186337,
+          "ci_low": -0.3213831407040301,
+          "ci_high": 0.32281107954326743,
+          "profit_pln": 714.2243564535189,
+          "profit_ci_low_pln": -274854.6349468568,
+          "profit_ci_high_pln": 381004.4262724446,
+          "position_strength": 0.0,
+          "vol_mean": 0.022342310236523513,
+          "vol_ci_low": 0.015027846894533051,
+          "vol_ci_high": 0.028066677382051895,
+          "regime": "crisis",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": 0.06676928682432515,
+          "p_up": 0.49166666666666664,
+          "exp_ret": -0.015527670290024298,
+          "ci_low": -0.46228384990973787,
+          "ci_high": 0.4312285093296893,
+          "profit_pln": -15407.737578651437,
+          "profit_ci_low_pln": -370156.46646412136,
+          "profit_ci_high_pln": 539147.2192748445,
+          "position_strength": 0.0,
+          "vol_mean": 0.022153840442750577,
+          "vol_ci_low": 0.014950847923562344,
+          "vol_ci_high": 0.028185712595857677,
+          "regime": "crisis",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.6240701698677945,
+          "sell_thr": 0.40704020631203436,
+          "uncertainty": 0.7128745444470019,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.6227593116860911,
+          "sell_thr": 0.4083510644937378,
+          "uncertainty": 0.6801030899044151,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.6225146174225856,
+          "sell_thr": 0.40859575875724324,
+          "uncertainty": 0.6739857333167798,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.6216280888325846,
+          "sell_thr": 0.40948228734724434,
+          "uncertainty": 0.6518225185667523,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.6208470551596981,
+          "sell_thr": 0.4102633210201309,
+          "uncertainty": 0.6322966767445888,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.6212339008501514,
+          "sell_thr": 0.4098764753296776,
+          "uncertainty": 0.6419678190059221,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.6205866346108453,
+          "sell_thr": 0.4105237415689836,
+          "uncertainty": 0.6257861630232715,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "garch11",
+      "garch_params": {
+        "omega": 6.112551102446277e-05,
+        "alpha": 0.3172695542712119,
+        "beta": 0.5834550828510775,
+        "converged": true,
+        "log_likelihood": 18064.79381419497,
+        "nll": -18064.79381419497,
+        "n_obs": 5281,
+        "aic": -36123.58762838994,
+        "bic": -36103.87201613182
+      },
+      "tail_model": "student_t_global",
+      "nu_hat": 13.224610032111633,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 13.224610032111633,
+        "ll": -7326.521606150132,
+        "n": 5262,
+        "converged": true,
+        "se_nu": 1.3308308083254572
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "AIR",
+      "title": "AAR Corp. (AIR) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 350.47721256883233,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": 0.8610529047199179,
+          "p_up": 0.8876666666666667,
+          "exp_ret": 0.02883132894507596,
+          "ci_low": 0.004040390964391974,
+          "ci_high": 0.05362226692575994,
+          "profit_pln": 29250.974985518762,
+          "profit_ci_low_pln": 4048.5643481458224,
+          "profit_ci_high_pln": 55085.986001487174,
+          "position_strength": 0.5,
+          "vol_mean": 0.023768904154249072,
+          "vol_ci_low": 0.02376890415424907,
+          "vol_ci_high": 0.023768904154249076,
+          "regime": "calm",
+          "label": "STRONG BUY"
+        },
+        {
+          "horizon_days": 3,
+          "score": 1.0406739397059805,
+          "p_up": 0.9193333333333333,
+          "exp_ret": 0.0813105733643052,
+          "ci_low": 0.02337925367617577,
+          "ci_high": 0.13924189305243462,
+          "profit_pln": 84707.72558661533,
+          "profit_ci_low_pln": 23654.69074327997,
+          "profit_ci_high_pln": 149402.09876140975,
+          "position_strength": 0.5,
+          "vol_mean": 0.023795835008384142,
+          "vol_ci_low": 0.022461882622261748,
+          "vol_ci_high": 0.02516386315365082,
+          "regime": "calm",
+          "label": "STRONG BUY"
+        },
+        {
+          "horizon_days": 7,
+          "score": 0.7511541440323396,
+          "p_up": 0.839,
+          "exp_ret": 0.16789880458935802,
+          "ci_low": 0.0026077595980347756,
+          "ci_high": 0.33318984958068126,
+          "profit_pln": 182816.90894846636,
+          "profit_ci_low_pln": 2611.162760662422,
+          "profit_ci_high_pln": 395412.1917435496,
+          "position_strength": 0.5,
+          "vol_mean": 0.023763510792250003,
+          "vol_ci_low": 0.02156357162319945,
+          "vol_ci_high": 0.025904609197619246,
+          "regime": "calm",
+          "label": "STRONG BUY"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.38095310737083776,
+          "p_up": 0.6976666666666667,
+          "exp_ret": 0.3563379006287156,
+          "ci_low": -0.32903516149183043,
+          "ci_high": 1.0417109627492618,
+          "profit_pln": 428090.0192609984,
+          "profit_ci_low_pln": -280382.28653012565,
+          "profit_ci_high_pln": 1834061.8427512588,
+          "position_strength": 0.3758503561973895,
+          "vol_mean": 0.02390421558001312,
+          "vol_ci_low": 0.020748708312463362,
+          "vol_ci_high": 0.026970476926748435,
+          "regime": "calm",
+          "label": "STRONG BUY"
+        },
+        {
+          "horizon_days": 63,
+          "score": 0.1772480254038794,
+          "p_up": 0.585,
+          "exp_ret": 0.5151850414427691,
+          "ci_low": -1.5699990859521251,
+          "ci_high": 2.600369168837663,
+          "profit_pln": 673948.2229353153,
+          "profit_ci_low_pln": -791954.6274796359,
+          "profit_ci_high_pln": 12468709.345092596,
+          "position_strength": 0.05870585734721532,
+          "vol_mean": 0.02399759906971203,
+          "vol_ci_low": 0.02047733093230478,
+          "vol_ci_high": 0.027362324909382542,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": 0.10005148071664416,
+          "p_up": 0.553,
+          "exp_ret": 0.5024927273055261,
+          "ci_low": -2.99505750706769,
+          "ci_high": 4.0000429616787425,
+          "profit_pln": 652836.2098105986,
+          "profit_ci_low_pln": -949966.250290379,
+          "profit_ci_high_pln": 53600495.71171268,
+          "position_strength": 0.020352083218951534,
+          "vol_mean": 0.024090053520324946,
+          "vol_ci_low": 0.020513924118643702,
+          "vol_ci_high": 0.027613898101447674,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": 0.06313325966319072,
+          "p_up": 0.5443333333333333,
+          "exp_ret": 0.5011651297421252,
+          "ci_low": -4.817900892816991,
+          "ci_high": 5.820231152301241,
+          "profit_pln": 650643.364415932,
+          "profit_ci_low_pln": -991916.2620254869,
+          "profit_ci_high_pln": 336049954.4988573,
+          "position_strength": 0.008776413865340896,
+          "vol_mean": 0.023983847997932788,
+          "vol_ci_low": 0.020513022101179657,
+          "vol_ci_high": 0.02742848030867144,
+          "regime": "calm",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5831477355895078,
+          "sell_thr": 0.41616106144759374,
+          "uncertainty": 0.08733342677392691,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5910826259418508,
+          "sell_thr": 0.4082261710952508,
+          "uncertainty": 0.2857056855825007,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.6004213465469275,
+          "sell_thr": 0.39888745049017404,
+          "uncertainty": 0.5191737007094186,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.6004213465469275,
+          "sell_thr": 0.39888745049017404,
+          "uncertainty": 0.5191737007094186,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.6004213465469275,
+          "sell_thr": 0.39888745049017404,
+          "uncertainty": 0.5191737007094186,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.6004213465469275,
+          "sell_thr": 0.39888745049017404,
+          "uncertainty": 0.5191737007094186,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.6004213465469275,
+          "sell_thr": 0.39888745049017404,
+          "uncertainty": 0.5191737007094186,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "garch11",
+      "garch_params": {
+        "omega": 2.8181046446010243e-05,
+        "alpha": 0.07167631590957455,
+        "beta": 0.88108071330915,
+        "converged": true,
+        "log_likelihood": 17139.459692074895,
+        "nll": -17139.459692074895,
+        "n_obs": 5281,
+        "aic": -34272.91938414979,
+        "bic": -34253.20377189167,
+        "cov": [
+          [
+            6.949254468368251e-11,
+            1.1149530706968832e-07,
+            -2.2511189542195325e-07
+          ],
+          [
+            1.1149530706968832e-07,
+            0.00022265692627667188,
+            -0.00039803854256942393
+          ],
+          [
+            -2.2511189542195325e-07,
+            -0.00039803854256942393,
+            0.0007651738867977609
+          ]
+        ],
+        "se_omega": 8.336218848115883e-06,
+        "se_alpha": 0.014921693143764613,
+        "se_beta": 0.0276617766384909
+      },
+      "tail_model": "student_t_global",
+      "nu_hat": 500.0,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 500.0,
+        "ll": -6135.047902799712,
+        "n": 5262,
+        "converged": true,
+        "se_nu": 34.302948091469915
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "AIR.PA",
+      "title": "Airbus SE (AIR.PA) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 905.7861183170317,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.03833922342304433,
+          "p_up": 0.504,
+          "exp_ret": 0.00014867730685613108,
+          "ci_low": -0.013591927780211083,
+          "ci_high": 0.013889282393923345,
+          "profit_pln": 148.68835987469353,
+          "profit_ci_low_pln": -13499.97460822372,
+          "profit_ci_high_pln": 13986.186600169593,
+          "position_strength": 0.0,
+          "vol_mean": 0.013672564479372002,
+          "vol_ci_low": 0.013672564479372,
+          "vol_ci_high": 0.013672564479372004,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": -0.04315038952238448,
+          "p_up": 0.506,
+          "exp_ret": 0.00010458801181131435,
+          "ci_low": -0.023795426198060885,
+          "ci_high": 0.024004602221683515,
+          "profit_pln": 104.59348132818569,
+          "profit_ci_low_pln": -23514.54733228009,
+          "profit_ci_high_pln": 24295.03191258031,
+          "position_strength": 0.0,
+          "vol_mean": 0.013672564479372002,
+          "vol_ci_low": 0.013672564479372004,
+          "vol_ci_high": 0.013672564479372004,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": -0.06057808062906253,
+          "p_up": 0.49633333333333335,
+          "exp_ret": -0.0006922980490378752,
+          "ci_low": -0.03719220377834781,
+          "ci_high": 0.035807607680272066,
+          "profit_pln": -692.0584660343732,
+          "profit_ci_low_pln": -36509.06904620188,
+          "profit_ci_high_pln": 36456.42105243429,
+          "position_strength": 0.0,
+          "vol_mean": 0.013672564479372002,
+          "vol_ci_low": 0.013672564479372004,
+          "vol_ci_high": 0.013672564479372004,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": -0.05192216387204124,
+          "p_up": 0.5,
+          "exp_ret": -0.0004607419576025789,
+          "ci_low": -0.06295016911755585,
+          "ci_high": 0.0620286852023507,
+          "profit_pln": -460.63583232625047,
+          "profit_ci_low_pln": -61009.736763235065,
+          "profit_ci_high_pln": 63992.86514092584,
+          "position_strength": 0.0,
+          "vol_mean": 0.013672564479372002,
+          "vol_ci_low": 0.013672564479372004,
+          "vol_ci_high": 0.013672564479372004,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": -0.0449765204274864,
+          "p_up": 0.49366666666666664,
+          "exp_ret": 0.00021704116909775006,
+          "ci_low": -0.11223433002654365,
+          "ci_high": 0.11266841236473915,
+          "profit_pln": 217.0647242363266,
+          "profit_ci_low_pln": -106165.21936991518,
+          "profit_ci_high_pln": 119260.73838874119,
+          "position_strength": 0.0,
+          "vol_mean": 0.013672564479372002,
+          "vol_ci_low": 0.013672564479372004,
+          "vol_ci_high": 0.013672564479372004,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": -0.0554759210318681,
+          "p_up": 0.49366666666666664,
+          "exp_ret": -0.0019160375688643916,
+          "ci_low": -0.15983386995669258,
+          "ci_high": 0.1560017948189638,
+          "profit_pln": -1914.2031406799154,
+          "profit_ci_low_pln": -147714.63258933258,
+          "profit_ci_high_pln": 168828.30092318635,
+          "position_strength": 0.0,
+          "vol_mean": 0.013672564479372002,
+          "vol_ci_low": 0.013672564479372004,
+          "vol_ci_high": 0.013672564479372004,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": -0.04922244366605125,
+          "p_up": 0.5006666666666667,
+          "exp_ret": -0.0008334136506132461,
+          "ci_low": -0.22266116506882114,
+          "ci_high": 0.22099433776759467,
+          "profit_pln": -833.0664579151437,
+          "profit_ci_low_pln": -199613.9979101248,
+          "profit_ci_high_pln": 247316.36794891144,
+          "position_strength": 0.0,
+          "vol_mean": 0.013672564479372002,
+          "vol_ci_low": 0.013672564479372004,
+          "vol_ci_high": 0.013672564479372004,
+          "regime": "trending",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5988412584627107,
+          "sell_thr": 0.41511843827088096,
+          "uncertainty": 0.296535252397872,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5988412584627107,
+          "sell_thr": 0.41511843827088096,
+          "uncertainty": 0.296535252397872,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5988412584627107,
+          "sell_thr": 0.41511843827088096,
+          "uncertainty": 0.296535252397872,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5988412584627107,
+          "sell_thr": 0.41511843827088096,
+          "uncertainty": 0.296535252397872,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.5988412584627107,
+          "sell_thr": 0.41511843827088096,
+          "uncertainty": 0.296535252397872,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.5988412584627107,
+          "sell_thr": 0.41511843827088096,
+          "uncertainty": 0.296535252397872,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5988412584627107,
+          "sell_thr": 0.41511843827088096,
+          "uncertainty": 0.296535252397872,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "ewma_fallback",
+      "garch_params": {},
+      "tail_model": "student_t_global",
+      "nu_hat": 499.99999999389814,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 499.99999999389814,
+        "ll": -7352.203783655954,
+        "n": 5354,
+        "converged": true,
+        "se_nu": 50.8395460126529
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "AIRI",
+      "title": "Air Industries Group (AIRI) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 11.992005946308609,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": 0.11994905004788425,
+          "p_up": 0.7023333333333334,
+          "exp_ret": 0.020739307965845423,
+          "ci_low": -0.0384747304515753,
+          "ci_high": 0.07995334638326615,
+          "profit_pln": 20955.86188184573,
+          "profit_ci_low_pln": -37743.97979230459,
+          "profit_ci_high_pln": 83236.5295941917,
+          "position_strength": 0.5,
+          "vol_mean": 0.03860128414410815,
+          "vol_ci_low": 0.03860128414410814,
+          "vol_ci_high": 0.038601284144108156,
+          "regime": "trending",
+          "label": "STRONG BUY"
+        },
+        {
+          "horizon_days": 3,
+          "score": 0.21746725578971243,
+          "p_up": 0.728,
+          "exp_ret": 0.05865157072230305,
+          "ci_low": -0.06582861645022532,
+          "ci_high": 0.18313175789483144,
+          "profit_pln": 60405.69997237921,
+          "profit_ci_low_pln": -63708.68452885159,
+          "profit_ci_high_pln": 200972.63528293552,
+          "position_strength": 0.5,
+          "vol_mean": 0.03576029559457189,
+          "vol_ci_low": 0.03134256766024952,
+          "vol_ci_high": 0.03972963444483312,
+          "regime": "trending",
+          "label": "STRONG BUY"
+        },
+        {
+          "horizon_days": 7,
+          "score": 0.17241663369783322,
+          "p_up": 0.6746666666666666,
+          "exp_ret": 0.125630731528986,
+          "ci_low": -0.17687067761362393,
+          "ci_high": 0.4281321406715959,
+          "profit_pln": 133863.39096643307,
+          "profit_ci_low_pln": -162111.86479008032,
+          "profit_ci_high_pln": 534388.8227415938,
+          "position_strength": 0.5,
+          "vol_mean": 0.03171345037077155,
+          "vol_ci_low": 0.025953323768039393,
+          "vol_ci_high": 0.036913849637279283,
+          "regime": "trending",
+          "label": "STRONG BUY"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.036165169920457735,
+          "p_up": 0.6043333333333333,
+          "exp_ret": 0.2812037185055839,
+          "ci_low": -0.8602967093026658,
+          "ci_high": 1.4227041463138335,
+          "profit_pln": 324723.44712925906,
+          "profit_ci_low_pln": -576963.4551836171,
+          "profit_ci_high_pln": 3148322.9590382776,
+          "position_strength": 0.12474639154747068,
+          "vol_mean": 0.02772197799461306,
+          "vol_ci_low": 0.022838353701518467,
+          "vol_ci_high": 0.03206637137655073,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": -0.06639821096000269,
+          "p_up": 0.5433333333333333,
+          "exp_ret": 0.4164430549066373,
+          "ci_low": -3.078364445476872,
+          "ci_high": 3.911250555290146,
+          "profit_pln": 516557.6383470667,
+          "profit_ci_low_pln": -953965.5129759441,
+          "profit_ci_high_pln": 48961392.40624026,
+          "position_strength": 0.019709163637905185,
+          "vol_mean": 0.027500159564232494,
+          "vol_ci_low": 0.022762743116759913,
+          "vol_ci_high": 0.03168067153417879,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": -0.10169025422944547,
+          "p_up": 0.524,
+          "exp_ret": 0.44447177124373155,
+          "ci_low": -5.450683347117351,
+          "ci_high": 6.339626889604813,
+          "profit_pln": 559666.117707396,
+          "profit_ci_low_pln": -995706.6301737935,
+          "profit_ci_high_pln": 565584873.2332041,
+          "position_strength": 0.007392865403802076,
+          "vol_mean": 0.027463112856271253,
+          "vol_ci_low": 0.02277401577541415,
+          "vol_ci_high": 0.03146713715389223,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": -0.11143143065315259,
+          "p_up": 0.5226666666666666,
+          "exp_ret": 0.5618463418940627,
+          "ci_low": -8.311780509682748,
+          "ci_high": 9.435473193470873,
+          "profit_pln": 753907.826115886,
+          "profit_ci_low_pln": -999754.3936506646,
+          "profit_ci_high_pln": 12523890626.138092,
+          "position_strength": 0.004124528636610339,
+          "vol_mean": 0.027289095360220946,
+          "vol_ci_low": 0.02259156869094584,
+          "vol_ci_high": 0.03147083415930523,
+          "regime": "trending",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5946515099725107,
+          "sell_thr": 0.3942799186749788,
+          "uncertainty": 0.5046448912191487,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5946515099725107,
+          "sell_thr": 0.3942799186749788,
+          "uncertainty": 0.5046448912191487,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5946515099725107,
+          "sell_thr": 0.3942799186749788,
+          "uncertainty": 0.5046448912191487,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5946515099725107,
+          "sell_thr": 0.3942799186749788,
+          "uncertainty": 0.5046448912191487,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.5946515099725107,
+          "sell_thr": 0.3942799186749788,
+          "uncertainty": 0.5046448912191487,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.5946515099725107,
+          "sell_thr": 0.3942799186749788,
+          "uncertainty": 0.5046448912191487,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5946515099725107,
+          "sell_thr": 0.3942799186749788,
+          "uncertainty": 0.5046448912191487,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "garch11",
+      "garch_params": {
+        "omega": 0.00011959749693001951,
+        "alpha": 0.15,
+        "beta": 0.7,
+        "converged": true,
+        "log_likelihood": 11744.460122109325,
+        "nll": -11744.460122109325,
+        "n_obs": 5281,
+        "aic": -23482.92024421865,
+        "bic": -23463.20463196053
+      },
+      "tail_model": "student_t_global",
+      "nu_hat": 6.601206613676253,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 6.601206613676253,
+        "ll": -7151.727565542285,
+        "n": 5262,
+        "converged": true,
+        "se_nu": 0.3801806183407279
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "AIRO",
+      "title": "AIRO Group Holdings, Inc. (AIRO) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 45.11450437842177,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.28326275930576855,
+          "p_up": 0.5016666666666667,
+          "exp_ret": 0.0007402586240522179,
+          "ci_low": -0.07772773459941086,
+          "ci_high": 0.0792082518475153,
+          "profit_pln": 740.5326830880465,
+          "profit_ci_low_pln": -74783.70336013673,
+          "profit_ci_high_pln": 82429.71658837273,
+          "position_strength": 0.0,
+          "vol_mean": 0.0771042438343863,
+          "vol_ci_low": 0.07710424383438627,
+          "vol_ci_high": 0.07710424383438633,
+          "regime": "Normal",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": -0.27810955632251333,
+          "p_up": 0.5156666666666667,
+          "exp_ret": 0.0021839667727496953,
+          "ci_low": -0.13201236077123119,
+          "ci_high": 0.1363802943167306,
+          "profit_pln": 2186.353365278615,
+          "profit_ci_low_pln": -123669.83710424017,
+          "profit_ci_high_pln": 146117.672764696,
+          "position_strength": 0.0,
+          "vol_mean": 0.0771042438343863,
+          "vol_ci_low": 0.07710424383438627,
+          "vol_ci_high": 0.07710424383438627,
+          "regime": "Normal",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": -0.26896035603305174,
+          "p_up": 0.5126666666666667,
+          "exp_ret": 0.005826347442428434,
+          "ci_low": -0.19918704972116374,
+          "ci_high": 0.21083974460602062,
+          "profit_pln": 5843.353616606039,
+          "profit_ci_low_pln": -180603.38890995475,
+          "profit_ci_high_pln": 234714.46955193765,
+          "position_strength": 0.0,
+          "vol_mean": 0.0771042438343863,
+          "vol_ci_low": 0.07710424383438627,
+          "vol_ci_high": 0.07710424383438627,
+          "regime": "Normal",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": -0.30116306112437147,
+          "p_up": 0.494,
+          "exp_ret": -0.0051233904243243,
+          "ci_low": -0.36271407975206915,
+          "ci_high": 0.35246729890342055,
+          "profit_pln": -5110.288245014361,
+          "profit_ci_low_pln": -304214.655820441,
+          "profit_ci_high_pln": 422573.13528650964,
+          "position_strength": 0.0,
+          "vol_mean": 0.0771042438343863,
+          "vol_ci_low": 0.07710424383438627,
+          "vol_ci_high": 0.07710424383438627,
+          "regime": "Normal",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": -0.29977336599249993,
+          "p_up": 0.49933333333333335,
+          "exp_ret": -0.007866337830317493,
+          "ci_low": -0.6380403467435921,
+          "ci_high": 0.622307671082957,
+          "profit_pln": -7835.479162802583,
+          "profit_ci_low_pln": -471673.25251444936,
+          "profit_ci_high_pln": 863222.7898607916,
+          "position_strength": 0.0,
+          "vol_mean": 0.0771042438343863,
+          "vol_ci_low": 0.07710424383438627,
+          "vol_ci_high": 0.07710424383438627,
+          "regime": "Normal",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": -0.31942980326522985,
+          "p_up": 0.482,
+          "exp_ret": -0.03445564412363484,
+          "ci_low": -0.9276588047953858,
+          "ci_high": 0.858747516548116,
+          "profit_pln": -33868.80766817912,
+          "profit_ci_low_pln": -604521.4802164555,
+          "profit_ci_high_pln": 1360202.72683175,
+          "position_strength": 0.0,
+          "vol_mean": 0.0771042438343863,
+          "vol_ci_low": 0.07710424383438627,
+          "vol_ci_high": 0.07710424383438627,
+          "regime": "Normal",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": -0.31961555239287076,
+          "p_up": 0.478,
+          "exp_ret": -0.048330323856694474,
+          "ci_low": -1.2932532325116712,
+          "ci_high": 1.1965925847982821,
+          "profit_pln": -47181.003756665006,
+          "profit_ci_low_pln": -725623.2816824868,
+          "profit_ci_high_pln": 2308823.158062417,
+          "position_strength": 0.0,
+          "vol_mean": 0.0771042438343863,
+          "vol_ci_low": 0.07710424383438627,
+          "vol_ci_high": 0.07710424383438627,
+          "regime": "Normal",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5749435712606571,
+          "sell_thr": 0.3941507310342522,
+          "uncertainty": 0.259910502830061,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5746863136589176,
+          "sell_thr": 0.3944079886359917,
+          "uncertainty": 0.2534790627865734,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5746887816672918,
+          "sell_thr": 0.39440552062761763,
+          "uncertainty": 0.25354076299592554,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5748304204986376,
+          "sell_thr": 0.3942638817962717,
+          "uncertainty": 0.25708173377957333,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.5751843911625668,
+          "sell_thr": 0.3939099111323426,
+          "uncertainty": 0.2659310003778024,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.5752307631056228,
+          "sell_thr": 0.3938635391892865,
+          "uncertainty": 0.26709029895420366,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5749318167341307,
+          "sell_thr": 0.3941624855607786,
+          "uncertainty": 0.2596166396669012,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "ewma_fallback",
+      "garch_params": {},
+      "tail_model": "student_t_global",
+      "nu_hat": 50.0,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 50.0,
+        "ll": NaN,
+        "n": 124,
+        "converged": false,
+        "se_nu": NaN
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "AMD",
+      "title": "Advanced Micro Devices, Inc. (AMD) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 733.860203356613,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": 0.30136577612329507,
+          "p_up": 0.5133333333333333,
+          "exp_ret": 0.0006363231595045267,
+          "ci_low": -0.028202513141506062,
+          "ci_high": 0.029475159460515113,
+          "profit_pln": 636.525656035003,
+          "profit_ci_low_pln": -27808.534683435915,
+          "profit_ci_high_pln": 29913.851538438506,
+          "position_strength": 0.4774331349622987,
+          "vol_mean": 0.01972303472896428,
+          "vol_ci_low": 0.01972303472896428,
+          "vol_ci_high": 0.01972303472896428,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": 0.3073986861070739,
+          "p_up": 0.5093333333333333,
+          "exp_ret": 0.001449574376433508,
+          "ci_low": -0.048082817053397314,
+          "ci_high": 0.05098196580626432,
+          "profit_pln": 1450.6255172108683,
+          "profit_ci_low_pln": -46945.14538571226,
+          "profit_ci_high_pln": 52303.91565939763,
+          "position_strength": 0.36868222635173536,
+          "vol_mean": 0.01826452349350131,
+          "vol_ci_low": 0.016021359031854518,
+          "vol_ci_high": 0.02017128349159058,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": 0.32298340319697394,
+          "p_up": 0.5283333333333333,
+          "exp_ret": 0.0034838267870893284,
+          "ci_low": -0.06929938064688422,
+          "ci_high": 0.07626703422106289,
+          "profit_pln": 3489.9023650021286,
+          "profit_ci_low_pln": -66952.6980447459,
+          "profit_ci_high_pln": 79250.73256019499,
+          "position_strength": 0.4103783716696773,
+          "vol_mean": 0.01617172991465804,
+          "vol_ci_low": 0.013187568952565372,
+          "vol_ci_high": 0.018731266465066208,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.3579642262066347,
+          "p_up": 0.5466666666666666,
+          "exp_ret": 0.010778507520739097,
+          "ci_low": -0.10949584429215091,
+          "ci_high": 0.1310528593336291,
+          "profit_pln": 10836.80489756378,
+          "profit_ci_low_pln": -103714.11094332628,
+          "profit_ci_high_pln": 140028.04084189434,
+          "position_strength": 0.4649463785547137,
+          "vol_mean": 0.014387426426758424,
+          "vol_ci_low": 0.011766389428337092,
+          "vol_ci_high": 0.016511143708148938,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": 0.3613024508395111,
+          "p_up": 0.538,
+          "exp_ret": 0.019370866792197548,
+          "ci_low": -0.18758231256920743,
+          "ci_high": 0.22632404615360252,
+          "profit_pln": 19559.699344994464,
+          "profit_ci_low_pln": -171039.11852785692,
+          "profit_ci_high_pln": 253981.94747430636,
+          "position_strength": 0.28222477765711845,
+          "vol_mean": 0.014305350726694935,
+          "vol_ci_low": 0.011718830413780005,
+          "vol_ci_high": 0.0163788551487974,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": 0.3579802874136029,
+          "p_up": 0.536,
+          "exp_ret": 0.026503348020469848,
+          "ci_low": -0.2691768548430021,
+          "ci_high": 0.32218355088394174,
+          "profit_pln": 26857.685196476577,
+          "profit_ci_low_pln": -235991.87483771722,
+          "profit_ci_high_pln": 380138.07827383216,
+          "position_strength": 0.18916750455804446,
+          "vol_mean": 0.014165239515892955,
+          "vol_ci_low": 0.0116554084904582,
+          "vol_ci_high": 0.016411605864695766,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": 0.37263362164752,
+          "p_up": 0.5513333333333333,
+          "exp_ret": 0.04464042641667146,
+          "ci_low": -0.3720761867481146,
+          "ci_high": 0.46135703958145746,
+          "profit_pln": 45651.80353688847,
+          "profit_ci_low_pln": -310698.27513321437,
+          "profit_ci_high_pln": 586225.0953328972,
+          "position_strength": 0.16041205236366776,
+          "vol_mean": 0.014459900676567638,
+          "vol_ci_low": 0.011775615687850417,
+          "vol_ci_high": 0.016671893690068048,
+          "regime": "calm",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5830441078601517,
+          "sell_thr": 0.41568044090170164,
+          "uncertainty": 0.09204583698062677,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.582852904904923,
+          "sell_thr": 0.4158716438569304,
+          "uncertainty": 0.08726576309990833,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5819907187005235,
+          "sell_thr": 0.41673383006132986,
+          "uncertainty": 0.06571110798992177,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5809895630509069,
+          "sell_thr": 0.4177349857109465,
+          "uncertainty": 0.040682216749505146,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.5808529810558591,
+          "sell_thr": 0.41787156770599426,
+          "uncertainty": 0.03726766687331187,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.58106505537098,
+          "sell_thr": 0.41765949339087344,
+          "uncertainty": 0.04256952475133205,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5809932586971552,
+          "sell_thr": 0.41773129006469817,
+          "uncertainty": 0.04077460790571355,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "garch11",
+      "garch_params": {
+        "omega": 3.283681866924622e-05,
+        "alpha": 0.15,
+        "beta": 0.7,
+        "converged": true,
+        "log_likelihood": 14533.636624849669,
+        "nll": -14533.636624849669,
+        "n_obs": 5281,
+        "aic": -29061.273249699338,
+        "bic": -29041.557637441216
+      },
+      "tail_model": "student_t_global",
+      "nu_hat": 4.5,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 4.5,
+        "ll": -9172.873707310207,
+        "n": 5262,
+        "converged": true,
+        "se_nu": 0.06841853914742695
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "AMGN",
+      "title": "Amgen Inc. (AMGN) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 1177.889545457001,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.20345592701246126,
+          "p_up": 0.327,
+          "exp_ret": -0.007926435970163294,
+          "ci_low": -0.025913683664330014,
+          "ci_high": 0.010060811724003424,
+          "profit_pln": -7895.104613218628,
+          "profit_ci_low_pln": -25580.805726849954,
+          "profit_ci_high_pln": 10111.591843812163,
+          "position_strength": 0.5,
+          "vol_mean": 0.01791835973145821,
+          "vol_ci_low": 0.017918359731458208,
+          "vol_ci_high": 0.017918359731458215,
+          "regime": "calm",
+          "label": "STRONG SELL"
+        },
+        {
+          "horizon_days": 3,
+          "score": -0.2684189545335059,
+          "p_up": 0.2946666666666667,
+          "exp_ret": -0.022543088967369264,
+          "ci_low": -0.06526396399042136,
+          "ci_high": 0.020177786055682836,
+          "profit_pln": -22290.89219015601,
+          "profit_ci_low_pln": -63179.85604637666,
+          "profit_ci_high_pln": 20382.733723158573,
+          "position_strength": 0.5,
+          "vol_mean": 0.01791835973145821,
+          "vol_ci_low": 0.017918359731458208,
+          "vol_ci_high": 0.017918359731458208,
+          "regime": "calm",
+          "label": "STRONG SELL"
+        },
+        {
+          "horizon_days": 7,
+          "score": -0.15826979563627347,
+          "p_up": 0.3443333333333333,
+          "exp_ret": -0.0475004858505589,
+          "ci_low": -0.17245373565997946,
+          "ci_high": 0.07745276395886164,
+          "profit_pln": -46389.99017944245,
+          "profit_ci_low_pln": -158402.77614876107,
+          "profit_ci_high_pln": 80531.19123727614,
+          "position_strength": 0.5,
+          "vol_mean": 0.01791835973145821,
+          "vol_ci_low": 0.017918359731458208,
+          "vol_ci_high": 0.017918359731458208,
+          "regime": "calm",
+          "label": "SELL"
+        },
+        {
+          "horizon_days": 21,
+          "score": -0.01954634618353817,
+          "p_up": 0.42133333333333334,
+          "exp_ret": -0.10191265403580367,
+          "ci_low": -0.6263283693058941,
+          "ci_high": 0.42250306123428677,
+          "profit_pln": -96891.56889938499,
+          "profit_ci_low_pln": -465449.12429052754,
+          "profit_ci_high_pln": 525775.8903537819,
+          "position_strength": 0.1836046716240422,
+          "vol_mean": 0.01791835973145821,
+          "vol_ci_low": 0.017918359731458208,
+          "vol_ci_high": 0.017918359731458208,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": 0.03568707377588351,
+          "p_up": 0.452,
+          "exp_ret": -0.19056040763056403,
+          "ci_low": -1.773889211616963,
+          "ci_high": 1.3927683963558348,
+          "profit_pln": -173504.17043368472,
+          "profit_ci_low_pln": -830328.1856563364,
+          "profit_ci_high_pln": 3025980.1483994774,
+          "position_strength": 0.03766148662530639,
+          "vol_mean": 0.01791835973145821,
+          "vol_ci_low": 0.017918359731458208,
+          "vol_ci_high": 0.017918359731458208,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": 0.07709749525810482,
+          "p_up": 0.4693333333333333,
+          "exp_ret": -0.17268708079317233,
+          "ci_low": -2.834001221563138,
+          "ci_high": 2.488627059976793,
+          "profit_pln": -158599.13585437357,
+          "profit_ci_low_pln": -941222.7980713492,
+          "profit_ci_high_pln": 11044728.074064972,
+          "position_strength": 0.012080212554019466,
+          "vol_mean": 0.01791835973145821,
+          "vol_ci_low": 0.017918359731458208,
+          "vol_ci_high": 0.017918359731458208,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": 0.12833381098584118,
+          "p_up": 0.498,
+          "exp_ret": 0.015155704545673897,
+          "ci_low": -4.037612017505782,
+          "ci_high": 4.0679234265971305,
+          "profit_pln": 15271.134640043816,
+          "profit_ci_low_pln": -982360.4549138985,
+          "profit_ci_high_pln": 57435490.926886,
+          "position_strength": 0.0004571720952702183,
+          "vol_mean": 0.01791835973145821,
+          "vol_ci_low": 0.017918359731458208,
+          "vol_ci_high": 0.017918359731458208,
+          "regime": "calm",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5974137359414697,
+          "sell_thr": 0.4048383600328744,
+          "uncertainty": 0.40719219885744207,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.6054357994489488,
+          "sell_thr": 0.39681629652539535,
+          "uncertainty": 0.6077437865444175,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.6158051452510277,
+          "sell_thr": 0.3864469507233164,
+          "uncertainty": 0.8669774315963907,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.6158051452510277,
+          "sell_thr": 0.3864469507233164,
+          "uncertainty": 0.8669774315963907,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.6158051452510277,
+          "sell_thr": 0.3864469507233164,
+          "uncertainty": 0.8669774315963907,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.6158051452510277,
+          "sell_thr": 0.3864469507233164,
+          "uncertainty": 0.8669774315963907,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.6158051452510277,
+          "sell_thr": 0.3864469507233164,
+          "uncertainty": 0.8669774315963907,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "ewma_fallback",
+      "garch_params": {},
+      "tail_model": "student_t_global",
+      "nu_hat": 500.0,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 500.0,
+        "ll": -6034.412174157989,
+        "n": 5261,
+        "converged": true,
+        "se_nu": 27.264978952937437
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "AMZN",
+      "title": "Amazon.com, Inc. (AMZN) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 893.5489606034243,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.03213614250719077,
+          "p_up": 0.5236666666666666,
+          "exp_ret": 0.001845208268526297,
+          "ci_low": -0.019928669102405448,
+          "ci_high": 0.02361908563945804,
+          "profit_pln": 1846.9117128787627,
+          "profit_ci_low_pln": -19731.40574832455,
+          "profit_ci_high_pln": 23900.225299824608,
+          "position_strength": 0.5,
+          "vol_mean": 0.021359838828317046,
+          "vol_ci_low": 0.021359838828317046,
+          "vol_ci_high": 0.021359838828317046,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": -0.031151715298334076,
+          "p_up": 0.5343333333333333,
+          "exp_ret": 0.0032603157795444045,
+          "ci_low": -0.03462700338036774,
+          "ci_high": 0.04114763493945656,
+          "profit_pln": 3265.6363897540787,
+          "profit_ci_low_pln": -34034.349007278084,
+          "profit_ci_high_pln": 42005.930672706745,
+          "position_strength": 0.5,
+          "vol_mean": 0.02157589357554528,
+          "vol_ci_low": 0.01997138629658623,
+          "vol_ci_high": 0.02315974927544201,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": 0.009462719898245764,
+          "p_up": 0.5603333333333333,
+          "exp_ret": 0.00840941699922767,
+          "ci_low": -0.05163592935880638,
+          "ci_high": 0.06845476335726172,
+          "profit_pln": 8444.875471694591,
+          "profit_ci_low_pln": -50325.44746466783,
+          "profit_ci_high_pln": 70852.1820977046,
+          "position_strength": 0.5,
+          "vol_mean": 0.022088261904956143,
+          "vol_ci_low": 0.019414622639470865,
+          "vol_ci_high": 0.024658342683772948,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.02410893574419637,
+          "p_up": 0.555,
+          "exp_ret": 0.016741822083281274,
+          "ci_low": -0.08820698526710197,
+          "ci_high": 0.12169062943366452,
+          "profit_pln": 16882.751761341686,
+          "profit_ci_low_pln": -84428.65267077171,
+          "profit_ci_high_pln": 129404.64317292189,
+          "position_strength": 0.5,
+          "vol_mean": 0.023012176291592985,
+          "vol_ci_low": 0.01943565231135069,
+          "vol_ci_high": 0.026392425313394037,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": 0.03653592886875867,
+          "p_up": 0.5663333333333334,
+          "exp_ret": 0.034092316943338564,
+          "ci_low": -0.1595636655589079,
+          "ci_high": 0.22774829944558503,
+          "profit_pln": 34680.1208253531,
+          "profit_ci_low_pln": -147484.31021923336,
+          "profit_ci_high_pln": 255769.20784469537,
+          "position_strength": 0.4571358338503734,
+          "vol_mean": 0.023279780695771482,
+          "vol_ci_low": 0.01965505841727232,
+          "vol_ci_high": 0.02698395547285692,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": 0.042555781625082556,
+          "p_up": 0.58,
+          "exp_ret": 0.050290074258119925,
+          "ci_low": -0.22295225767415927,
+          "ci_high": 0.32353240619039914,
+          "profit_pln": 51576.0872922566,
+          "profit_ci_low_pln": -199846.95044972355,
+          "profit_ci_high_pln": 382000.9409280012,
+          "position_strength": 0.33871692292895095,
+          "vol_mean": 0.023256677265200296,
+          "vol_ci_low": 0.019599796225458488,
+          "vol_ci_high": 0.02682980251139405,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": 0.04237246489631652,
+          "p_up": 0.5823333333333334,
+          "exp_ret": 0.07097879110130066,
+          "ci_low": -0.3151834400627419,
+          "ci_high": 0.45714102226534326,
+          "profit_pln": 73558.45663434856,
+          "profit_ci_low_pln": -270344.9859697867,
+          "profit_ci_high_pln": 579551.6204914355,
+          "position_strength": 0.23935339542774706,
+          "vol_mean": 0.023214207296036855,
+          "vol_ci_low": 0.019556584645878134,
+          "vol_ci_high": 0.02662975585800872,
+          "regime": "calm",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5899600222289255,
+          "sell_thr": 0.40866526618574633,
+          "uncertainty": 0.26618445053974016,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5900571678378957,
+          "sell_thr": 0.40856812057677605,
+          "uncertainty": 0.26861309076399653,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5908515030638148,
+          "sell_thr": 0.4077737853508569,
+          "uncertainty": 0.2884714714119755,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5910515494136719,
+          "sell_thr": 0.4075737390009999,
+          "uncertainty": 0.2934726301584002,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.5925000280426067,
+          "sell_thr": 0.4061252603720651,
+          "uncertainty": 0.32968459588177135,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.5924458317419512,
+          "sell_thr": 0.4061794566727206,
+          "uncertainty": 0.32832968836538323,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5924299328915057,
+          "sell_thr": 0.40619535552316605,
+          "uncertainty": 0.32793221710424714,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "garch11",
+      "garch_params": {
+        "omega": 5.002029665316858e-05,
+        "alpha": 0.10899,
+        "beta": 0.8019900000000001,
+        "converged": true,
+        "log_likelihood": 17913.573145535967,
+        "nll": -17913.573145535967,
+        "n_obs": 5281,
+        "aic": -35821.146291071935,
+        "bic": -35801.43067881381
+      },
+      "tail_model": "student_t_global",
+      "nu_hat": 59.34691842763938,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 59.34691842763938,
+        "ll": -7126.345934641519,
+        "n": 5262,
+        "converged": true,
+        "se_nu": 25.720859897820734
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "ANGL",
+      "title": "VanEck Fallen Angel High Yield Bond ETF (ANGL) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 106.80831906713865,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.07171729633955976,
+          "p_up": 0.521,
+          "exp_ret": 0.0003333628876245628,
+          "ci_low": -0.004870683703703164,
+          "ci_high": 0.005537409478952289,
+          "profit_pln": 333.41845920698,
+          "profit_ci_low_pln": -4858.84115873092,
+          "profit_ci_high_pln": 5552.769268882374,
+          "position_strength": 0.5,
+          "vol_mean": 0.005239664848363021,
+          "vol_ci_low": 0.00523966484836302,
+          "vol_ci_high": 0.005239664848363022,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": -0.05736128814145952,
+          "p_up": 0.54,
+          "exp_ret": 0.0007617210378239239,
+          "ci_low": -0.008383986205049663,
+          "ci_high": 0.009907428280697511,
+          "profit_pln": 762.0112209685282,
+          "profit_ci_low_pln": -8348.9386072918,
+          "profit_ci_high_pln": 9956.669331310008,
+          "position_strength": 0.5,
+          "vol_mean": 0.005239664848363021,
+          "vol_ci_low": 0.00523966484836302,
+          "vol_ci_high": 0.00523966484836302,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": -0.018755562266369097,
+          "p_up": 0.5543333333333333,
+          "exp_ret": 0.001867450385274868,
+          "ci_low": -0.011965826119189036,
+          "ci_high": 0.01570072688973877,
+          "profit_pln": 1869.1951566678356,
+          "profit_ci_low_pln": -11894.520316153012,
+          "profit_ci_high_pln": 15824.630913923831,
+          "position_strength": 0.5,
+          "vol_mean": 0.005239664848363021,
+          "vol_ci_low": 0.00523966484836302,
+          "vol_ci_high": 0.00523966484836302,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.0005171544150943674,
+          "p_up": 0.5643333333333334,
+          "exp_ret": 0.003986761469071414,
+          "ci_low": -0.02080476817555977,
+          "ci_high": 0.0287782911137026,
+          "profit_pln": 3994.7191742202294,
+          "profit_ci_low_pln": -20589.84206265335,
+          "profit_ci_high_pln": 29196.387193488605,
+          "position_strength": 0.5,
+          "vol_mean": 0.005239664848363021,
+          "vol_ci_low": 0.00523966484836302,
+          "vol_ci_high": 0.00523966484836302,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": 0.01950691965914586,
+          "p_up": 0.5783333333333334,
+          "exp_ret": 0.007794480969023347,
+          "ci_low": -0.03405577580648198,
+          "ci_high": 0.049644737744528676,
+          "profit_pln": 7824.937014074829,
+          "profit_ci_low_pln": -33482.405164241725,
+          "profit_ci_high_pln": 50897.68576848841,
+          "position_strength": 0.5,
+          "vol_mean": 0.005239664848363021,
+          "vol_ci_low": 0.00523966484836302,
+          "vol_ci_high": 0.00523966484836302,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": -0.009701606958595566,
+          "p_up": 0.556,
+          "exp_ret": 0.008706599169246012,
+          "ci_low": -0.05047200165748887,
+          "ci_high": 0.0678851999959809,
+          "profit_pln": 8744.611844077932,
+          "profit_ci_low_pln": -49219.451420879464,
+          "profit_ci_high_pln": 70242.43758998328,
+          "position_strength": 0.5,
+          "vol_mean": 0.005239664848363021,
+          "vol_ci_low": 0.00523966484836302,
+          "vol_ci_high": 0.00523966484836302,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": -0.0390297790993997,
+          "p_up": 0.538,
+          "exp_ret": 0.009013343639930189,
+          "ci_low": -0.07456654325838542,
+          "ci_high": 0.0925932305382458,
+          "profit_pln": 9054.086138431394,
+          "profit_ci_low_pln": -71854.28983579001,
+          "profit_ci_high_pln": 97015.41213019649,
+          "position_strength": 0.5,
+          "vol_mean": 0.005239664848363021,
+          "vol_ci_low": 0.00523966484836302,
+          "vol_ci_high": 0.00523966484836302,
+          "regime": "trending",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5969078721767165,
+          "sell_thr": 0.4141407591585491,
+          "uncertainty": 0.28458891272709225,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5969078721767165,
+          "sell_thr": 0.4141407591585491,
+          "uncertainty": 0.28458891272709225,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5969078721767165,
+          "sell_thr": 0.4141407591585491,
+          "uncertainty": 0.28458891272709225,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5969078721767165,
+          "sell_thr": 0.4141407591585491,
+          "uncertainty": 0.28458891272709225,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.5969078721767165,
+          "sell_thr": 0.4141407591585491,
+          "uncertainty": 0.28458891272709225,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.5969078721767165,
+          "sell_thr": 0.4141407591585491,
+          "uncertainty": 0.28458891272709225,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5969078721767165,
+          "sell_thr": 0.4141407591585491,
+          "uncertainty": 0.28458891272709225,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "ewma_fallback",
+      "garch_params": {},
+      "tail_model": "student_t_global",
+      "nu_hat": 499.99999999999994,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 499.99999999999994,
+        "ll": -4684.73187189957,
+        "n": 3437,
+        "converged": true,
+        "se_nu": 49.513406144574915
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "AOUT",
+      "title": "American Outdoor Brands, Inc. (AOUT) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 32.508450508117676,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.26357589936995673,
+          "p_up": 0.5056666666666667,
+          "exp_ret": -2.357477631266258e-06,
+          "ci_low": -0.03150314679762122,
+          "ci_high": 0.03149843184235868,
+          "profit_pln": -2.3574748524435307,
+          "profit_ci_low_pln": -31012.092759899468,
+          "profit_ci_high_pln": 31999.757256071738,
+          "position_strength": 0.0,
+          "vol_mean": 0.03122074524021357,
+          "vol_ci_low": 0.031220745240213562,
+          "vol_ci_high": 0.031220745240213576,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": -0.27730370348291056,
+          "p_up": 0.491,
+          "exp_ret": -0.0009892781301362235,
+          "ci_low": -0.05535291053759415,
+          "ci_high": 0.0533743542773217,
+          "profit_pln": -988.7889558499729,
+          "profit_ci_low_pln": -53848.817695440695,
+          "profit_ci_high_pln": 54824.44926084007,
+          "position_strength": 0.0,
+          "vol_mean": 0.030653425663620282,
+          "vol_ci_low": 0.028470327159947698,
+          "vol_ci_high": 0.032641233550781516,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": -0.2902423734495568,
+          "p_up": 0.49933333333333335,
+          "exp_ret": -0.0029070149565660706,
+          "ci_low": -0.08530949454420239,
+          "ci_high": 0.07949546463107024,
+          "profit_pln": -2902.793680016003,
+          "profit_ci_low_pln": -81771.94615317596,
+          "profit_ci_high_pln": 82740.6488900051,
+          "position_strength": 0.0,
+          "vol_mean": 0.030352010673610486,
+          "vol_ci_low": 0.02751395744849684,
+          "vol_ci_high": 0.03306420287903839,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": -0.30043327828677985,
+          "p_up": 0.47633333333333333,
+          "exp_ret": -0.0070018516776503645,
+          "ci_low": -0.15068369160069908,
+          "ci_high": 0.13667998824539837,
+          "profit_pln": -6977.395826229693,
+          "profit_ci_low_pln": -139880.2812727409,
+          "profit_ci_high_pln": 146461.20874801528,
+          "position_strength": 0.0,
+          "vol_mean": 0.030107993856258744,
+          "vol_ci_low": 0.027048213676772924,
+          "vol_ci_high": 0.033076690383035505,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": -0.3101710602761103,
+          "p_up": 0.4736666666666667,
+          "exp_ret": -0.015360141126337932,
+          "ci_low": -0.2647663264179482,
+          "ci_high": 0.23404604416527233,
+          "profit_pln": -15242.77584279088,
+          "profit_ci_low_pln": -232614.75331400562,
+          "profit_ci_high_pln": 263702.67700314743,
+          "position_strength": 0.0,
+          "vol_mean": 0.029929613252434123,
+          "vol_ci_low": 0.026959201053932916,
+          "vol_ci_high": 0.03282522912780507,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": -0.2993070450558585,
+          "p_up": 0.485,
+          "exp_ret": -0.016951587393067232,
+          "ci_low": -0.3757543935439351,
+          "ci_high": 0.3418512187578006,
+          "profit_pln": -16808.71766417258,
+          "profit_ci_low_pln": -313229.0122814637,
+          "profit_ci_high_pln": 407550.86476853775,
+          "position_strength": 0.0,
+          "vol_mean": 0.029901715651227682,
+          "vol_ci_low": 0.02699003837819536,
+          "vol_ci_high": 0.03292085227439142,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": -0.2860163784507793,
+          "p_up": 0.477,
+          "exp_ret": -0.01493471051697009,
+          "ci_low": -0.5177978804848367,
+          "ci_high": 0.4879284594508965,
+          "profit_pln": -14823.740848001866,
+          "profit_ci_low_pln": -404168.80415697274,
+          "profit_ci_high_pln": 628938.3106627804,
+          "position_strength": 0.0,
+          "vol_mean": 0.029788602041304037,
+          "vol_ci_low": 0.026896075634205183,
+          "vol_ci_high": 0.032790506829220266,
+          "regime": "trending",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5930030009333899,
+          "sell_thr": 0.40535761969633577,
+          "uncertainty": 0.3455672654631755,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5929264595517748,
+          "sell_thr": 0.4054341610779508,
+          "uncertainty": 0.3436537309227997,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5927641157594526,
+          "sell_thr": 0.405596504870273,
+          "uncertainty": 0.339595136114746,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5929043500946144,
+          "sell_thr": 0.40545627053511124,
+          "uncertainty": 0.3431009944937894,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.5929502204483456,
+          "sell_thr": 0.40541040018138,
+          "uncertainty": 0.34424775333706925,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.593314661365206,
+          "sell_thr": 0.40504595926451964,
+          "uncertainty": 0.35335877625857914,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5931216528416221,
+          "sell_thr": 0.40523896778810353,
+          "uncertainty": 0.3485335631689812,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "garch11",
+      "garch_params": {
+        "omega": 0.000210181013831693,
+        "alpha": 0.09784984813899703,
+        "beta": 0.6707220316966317,
+        "converged": true,
+        "log_likelihood": 4077.7732276068527,
+        "nll": -4077.7732276068527,
+        "n_obs": 1352,
+        "aic": -8149.5464552137055,
+        "bic": -8133.918434443896,
+        "cov": [
+          [
+            1.0364140303651858e-08,
+            2.0636590749192525e-06,
+            -1.3453142985109357e-05
+          ],
+          [
+            2.0636590749192525e-06,
+            0.0009095203131659151,
+            -0.003083142692674524
+          ],
+          [
+            -1.3453142985109357e-05,
+            -0.003083142692674524,
+            0.017942896925730815
+          ]
+        ],
+        "se_omega": 0.0001018044218275997,
+        "se_alpha": 0.030158254478101266,
+        "se_beta": 0.1339510990090444
+      },
+      "tail_model": "student_t_global",
+      "nu_hat": 32.31674816334807,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 32.31674816334807,
+        "ll": -1872.9716743848942,
+        "n": 1333,
+        "converged": true,
+        "se_nu": 16.486141777314423
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "ASTC",
+      "title": "Astrotech Corporation (ASTC) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 11.919765014073846,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": -0.8710471414043068,
+          "p_up": 0.12633333333333333,
+          "exp_ret": -0.055694163021230224,
+          "ci_low": -0.1064218894974232,
+          "ci_high": -0.004966436545037242,
+          "profit_pln": -54171.6390513699,
+          "profit_ci_low_pln": -100954.7297034452,
+          "profit_ci_high_pln": -4954.124190335141,
+          "position_strength": 0.5,
+          "vol_mean": 0.04788607276704553,
+          "vol_ci_low": 0.04788607276704553,
+          "vol_ci_high": 0.04788607276704553,
+          "regime": "trending",
+          "label": "STRONG SELL"
+        },
+        {
+          "horizon_days": 3,
+          "score": -1.0426950596697682,
+          "p_up": 0.09433333333333334,
+          "exp_ret": -0.1601414002940614,
+          "ci_low": -0.2807466715748067,
+          "ci_high": -0.03953612901331613,
+          "profit_pln": -147976.69589763274,
+          "profit_ci_low_pln": -244780.37015146093,
+          "profit_ci_high_pln": -38764.77511700194,
+          "position_strength": 0.5,
+          "vol_mean": 0.0478706854813318,
+          "vol_ci_low": 0.04584472016970635,
+          "vol_ci_high": 0.05003128713920463,
+          "regime": "trending",
+          "label": "STRONG SELL"
+        },
+        {
+          "horizon_days": 7,
+          "score": -0.7715324771365533,
+          "p_up": 0.166,
+          "exp_ret": -0.3328753187513725,
+          "ci_low": -0.6779630165440298,
+          "ci_high": 0.012212379041284804,
+          "profit_pln": -283140.4324700386,
+          "profit_ci_low_pln": -492349.9854350768,
+          "profit_ci_high_pln": 12287.25463480207,
+          "position_strength": 0.5,
+          "vol_mean": 0.04780712751922431,
+          "vol_ci_low": 0.04405337123749017,
+          "vol_ci_high": 0.051578536266286654,
+          "regime": "trending",
+          "label": "STRONG SELL"
+        },
+        {
+          "horizon_days": 21,
+          "score": -0.43168079580984614,
+          "p_up": 0.30233333333333334,
+          "exp_ret": -0.7144814098164957,
+          "ci_low": -2.117067100328316,
+          "ci_high": 0.6881042806953247,
+          "profit_pln": -510554.13218463986,
+          "profit_ci_low_pln": -879615.8140095551,
+          "profit_ci_high_pln": 989939.5884152516,
+          "position_strength": 0.17994473190763968,
+          "vol_mean": 0.047777225348640685,
+          "vol_ci_low": 0.04142471579304886,
+          "vol_ci_high": 0.054156073454844134,
+          "regime": "trending",
+          "label": "SELL"
+        },
+        {
+          "horizon_days": 63,
+          "score": -0.2274373811550517,
+          "p_up": 0.41,
+          "exp_ret": -0.9899974818051482,
+          "ci_low": -5.187869987850435,
+          "ci_high": 3.2078750242401384,
+          "profit_pln": -628422.3732742658,
+          "profit_ci_low_pln": -994416.1120939245,
+          "profit_ci_high_pln": 23726487.17265678,
+          "position_strength": 0.02783444793790682,
+          "vol_mean": 0.04730155633724513,
+          "vol_ci_low": 0.03927436056893467,
+          "vol_ci_high": 0.05547957512152159,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": -0.15659643283431363,
+          "p_up": 0.442,
+          "exp_ret": -0.9805899675081228,
+          "ci_low": -7.9377631481038415,
+          "ci_high": 5.976583213087596,
+          "profit_pln": -624910.2571995014,
+          "profit_ci_low_pln": -999642.995848751,
+          "profit_ci_high_pln": 393091538.32506526,
+          "position_strength": 0.010037575580319081,
+          "vol_mean": 0.047560851253481334,
+          "vol_ci_low": 0.038679202097753766,
+          "vol_ci_high": 0.05624897840506628,
+          "regime": "trending",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": -0.12431307024380583,
+          "p_up": 0.4533333333333333,
+          "exp_ret": -1.0349357165430813,
+          "ci_low": -11.627358963748584,
+          "ci_high": 9.55748753066242,
+          "profit_pln": -644750.783161316,
+          "profit_ci_low_pln": -999991.0812875303,
+          "profit_ci_high_pln": 14149249432.611616,
+          "position_strength": 0.004570142422988726,
+          "vol_mean": 0.04797907894957664,
+          "vol_ci_low": 0.03868609614245289,
+          "vol_ci_high": 0.056858744125150434,
+          "regime": "trending",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.589327336146013,
+          "sell_thr": 0.4094987135230187,
+          "uncertainty": 0.24785778278742754,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.599747418617719,
+          "sell_thr": 0.39907863105131275,
+          "uncertainty": 0.5083598445800769,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.599747418617719,
+          "sell_thr": 0.39907863105131275,
+          "uncertainty": 0.5083598445800769,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.599747418617719,
+          "sell_thr": 0.39907863105131275,
+          "uncertainty": 0.5083598445800769,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.599747418617719,
+          "sell_thr": 0.39907863105131275,
+          "uncertainty": 0.5083598445800769,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.599747418617719,
+          "sell_thr": 0.39907863105131275,
+          "uncertainty": 0.5083598445800769,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.599747418617719,
+          "sell_thr": 0.39907863105131275,
+          "uncertainty": 0.5083598445800769,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "garch11",
+      "garch_params": {
+        "omega": 3.805591807707845e-05,
+        "alpha": 0.053435650099778575,
+        "beta": 0.9305082903113788,
+        "converged": true,
+        "log_likelihood": 13700.78439430286,
+        "nll": -13700.78439430286,
+        "n_obs": 5281,
+        "aic": -27395.56878860572,
+        "bic": -27375.8531763476,
+        "cov": [
+          [
+            1.2122044104305104e-10,
+            7.800502655294084e-08,
+            -1.299167870589239e-07
+          ],
+          [
+            7.800502655294084e-08,
+            7.260467520253972e-05,
+            -0.00010232976304372014
+          ],
+          [
+            -1.299167870589239e-07,
+            -0.00010232976304372014,
+            0.00015646278125263158
+          ]
+        ],
+        "se_omega": 1.1010015487866084e-05,
+        "se_alpha": 0.008520837705445383,
+        "se_beta": 0.012508508354421464
+      },
+      "tail_model": "student_t_global",
+      "nu_hat": 500.0,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 500.0,
+        "ll": -6217.64101203638,
+        "n": 5262,
+        "converged": true,
+        "se_nu": 40.904501980689545
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    },
+    {
+      "symbol": "ATI",
+      "title": "ATI Inc. (ATI) \u2014 PLN per share",
+      "as_of": "2026-01-09",
+      "last_close": 441.7537329278566,
+      "notional_pln": 1000000,
+      "signals": [
+        {
+          "horizon_days": 1,
+          "score": 0.10997993955626725,
+          "p_up": 0.49466666666666664,
+          "exp_ret": -0.00022499910491817295,
+          "ci_low": -0.021651926878038297,
+          "ci_high": 0.021201928668201954,
+          "profit_pln": -224.97379451791312,
+          "profit_ci_low_pln": -21419.20654997298,
+          "profit_ci_high_pln": 21428.286468015755,
+          "position_strength": 0.0,
+          "vol_mean": 0.014170113523427029,
+          "vol_ci_low": 0.014170113523427027,
+          "vol_ci_high": 0.01417011352342703,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 3,
+          "score": 0.09710666822812766,
+          "p_up": 0.488,
+          "exp_ret": -0.001005768363717612,
+          "ci_low": -0.03989072369690724,
+          "ci_high": 0.037879186969472026,
+          "profit_pln": -1005.2627482417531,
+          "profit_ci_low_pln": -39105.563592964245,
+          "profit_ci_high_pln": 38605.74819059503,
+          "position_strength": 0.0,
+          "vol_mean": 0.013777038177359752,
+          "vol_ci_low": 0.01227825957758399,
+          "vol_ci_high": 0.014968777174019019,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 7,
+          "score": 0.10826934508854333,
+          "p_up": 0.5023333333333333,
+          "exp_ret": -0.0007406883707276212,
+          "ci_low": -0.05979550464635225,
+          "ci_high": 0.05831412790489701,
+          "profit_pln": -740.4141288097632,
+          "profit_ci_low_pln": -58042.86025154148,
+          "profit_ci_high_pln": 60047.93405155207,
+          "position_strength": 0.0,
+          "vol_mean": 0.013404993396682942,
+          "vol_ci_low": 0.011145935925587618,
+          "vol_ci_high": 0.01536967393146578,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 21,
+          "score": 0.12284592799638802,
+          "p_up": 0.49333333333333335,
+          "exp_ret": 0.0004931769404222539,
+          "ci_low": -0.10108782264696994,
+          "ci_high": 0.10207417652781445,
+          "profit_pln": 493.2985721639582,
+          "profit_ci_low_pln": -96146.34941993438,
+          "profit_ci_high_pln": 107465.61663539955,
+          "position_strength": 0.0,
+          "vol_mean": 0.01311977026985655,
+          "vol_ci_low": 0.010752797682599163,
+          "vol_ci_high": 0.015027867787182079,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 63,
+          "score": 0.08828566042549973,
+          "p_up": 0.48733333333333334,
+          "exp_ret": -0.006255244940147571,
+          "ci_low": -0.17813448921009736,
+          "ci_high": 0.16562399932980224,
+          "profit_pln": -6235.721624435087,
+          "profit_ci_low_pln": -163170.128667969,
+          "profit_ci_high_pln": 180129.28888800106,
+          "position_strength": 0.0,
+          "vol_mean": 0.012974611220664352,
+          "vol_ci_low": 0.010724403737713736,
+          "vol_ci_high": 0.01484049602483062,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 126,
+          "score": 0.07442077969120539,
+          "p_up": 0.49333333333333335,
+          "exp_ret": -0.013006235036639202,
+          "ci_low": -0.2586793431962776,
+          "ci_high": 0.23266687312299922,
+          "profit_pln": -12922.01946627347,
+          "profit_ci_low_pln": -227929.44696872163,
+          "profit_ci_high_pln": 261961.01616514777,
+          "position_strength": 0.0,
+          "vol_mean": 0.01303342161462912,
+          "vol_ci_low": 0.01078167258213517,
+          "vol_ci_high": 0.015079030433752453,
+          "regime": "calm",
+          "label": "HOLD"
+        },
+        {
+          "horizon_days": 252,
+          "score": 0.06387803014267585,
+          "p_up": 0.4676666666666667,
+          "exp_ret": -0.02339069959765619,
+          "ci_low": -0.38036886599803854,
+          "ci_high": 0.3335874668027262,
+          "profit_pln": -23119.257707960085,
+          "profit_ci_low_pln": -316390.79749077506,
+          "profit_ci_high_pln": 395967.1419844133,
+          "position_strength": 0.0,
+          "vol_mean": 0.012948753840814078,
+          "vol_ci_low": 0.010733592980327921,
+          "vol_ci_high": 0.014835015321971812,
+          "regime": "calm",
+          "label": "HOLD"
+        }
+      ],
+      "ci_level": 0.68,
+      "ci_domain": "log_return",
+      "profit_ci_domain": "arithmetic_pln",
+      "probability_mapping": "student_t",
+      "nu_clip": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "edgeworth_damped": true,
+      "kelly_rule": "half",
+      "decision_thresholds": {
+        "1": {
+          "buy_thr": 0.5813317659598457,
+          "sell_thr": 0.4159878656757418,
+          "uncertainty": 0.06679875355129844,
+          "edge_floor": 0.1
+        },
+        "3": {
+          "buy_thr": 0.5823812563696086,
+          "sell_thr": 0.41493837526597904,
+          "uncertainty": 0.09303601379536836,
+          "edge_floor": 0.1
+        },
+        "7": {
+          "buy_thr": 0.5822483235428336,
+          "sell_thr": 0.4150713080927539,
+          "uncertainty": 0.08971269312599689,
+          "edge_floor": 0.1
+        },
+        "21": {
+          "buy_thr": 0.5820905570821436,
+          "sell_thr": 0.41522907455344393,
+          "uncertainty": 0.08576853160874581,
+          "edge_floor": 0.1
+        },
+        "63": {
+          "buy_thr": 0.581565415732914,
+          "sell_thr": 0.4157542159026736,
+          "uncertainty": 0.07263999787800429,
+          "edge_floor": 0.1
+        },
+        "126": {
+          "buy_thr": 0.5818028900213799,
+          "sell_thr": 0.41551674161420765,
+          "uncertainty": 0.07857685508965223,
+          "edge_floor": 0.1
+        },
+        "252": {
+          "buy_thr": 0.5824194811866076,
+          "sell_thr": 0.41490015044897993,
+          "uncertainty": 0.09399163422034568,
+          "edge_floor": 0.1
+        }
+      },
+      "vol_source": "garch11",
+      "garch_params": {
+        "omega": 2.7606615563851797e-05,
+        "alpha": 0.15,
+        "beta": 0.7,
+        "converged": true,
+        "log_likelihood": 15212.2218863597,
+        "nll": -15212.2218863597,
+        "n_obs": 5281,
+        "aic": -30418.4437727194,
+        "bic": -30398.72816046128
+      },
+      "tail_model": "student_t_global",
+      "nu_hat": 4.5,
+      "nu_bounds": {
+        "min": 4.5,
+        "max": 500.0
+      },
+      "nu_info": {
+        "nu_hat": 4.5,
+        "ll": -9131.919602764216,
+        "n": 5262,
+        "converged": true,
+        "se_nu": 0.09532994534861318
+      },
+      "stochastic_volatility": {
+        "enabled": true,
+        "method": "bayesian_garch_sampling",
+        "parameter_sampling": "sample",
+        "uncertainty_propagated": true,
+        "volatility_ci_tracked": true,
+        "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
+      }
+    }
+  ],
+  "summary_rows": [
+    {
+      "asset_label": "Samsung Electronics Co., Ltd. (005930.KS)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": -921.9200490330204
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": -546.9017605542748
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": -184.71937482023026
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": 1540.5422674075187
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": 1741.9217778336106
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": 2507.6218779509495
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": 2295.0515158102203
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Asian Tech & Manufacturing"
+    },
+    {
+      "asset_label": "Apple Inc. (AAPL)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": 653.8585371975714
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": 3106.0228794261848
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": 6278.901036337325
+        },
+        "21": {
+          "label": "BUY",
+          "profit_pln": 16741.965084476673
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": 23191.360855519426
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": 28701.253543203853
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": 37174.599336612155
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Information Technology"
+    },
+    {
+      "asset_label": "AbbVie Inc. (ABBV)",
+      "horizon_signals": {
+        "1": {
+          "label": "STRONG SELL",
+          "profit_pln": -10240.370435068868
+        },
+        "3": {
+          "label": "STRONG SELL",
+          "profit_pln": -28163.688401059873
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": -56574.56309745146
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": -111012.71466029083
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": -143360.12610896086
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": -173694.6504313833
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": -237158.08759414835
+        }
+      },
+      "nearest_label": "STRONG SELL",
+      "sector": "Health Care"
+    },
+    {
+      "asset_label": "Abbott Laboratories (ABT)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": 35.89468686548969
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": -540.4806739730539
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": -999.2476407814088
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": -3964.818761356459
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": -2364.1102372091714
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": -2.9079979287915947
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": -1299.2433448171248
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Health Care"
+    },
+    {
+      "asset_label": "Archer Aviation Inc. (ACHR)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": 2431.97010123275
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": 7419.188655064524
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": 21648.570930909995
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": 63101.74858226136
+        },
+        "63": {
+          "label": "BUY",
+          "profit_pln": 187917.37341622138
+        },
+        "126": {
+          "label": "BUY",
+          "profit_pln": 414095.33443973114
+        },
+        "252": {
+          "label": "BUY",
+          "profit_pln": 1015370.1298158056
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Defense & Aerospace"
+    },
+    {
+      "asset_label": "Accenture plc (ACN)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": -165.4546922436051
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": 598.1953049190025
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": 1987.2478781264301
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": 5669.673444832269
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": 8199.167061679891
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": 11964.389857446411
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": 10969.02613452122
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Information Technology"
+    },
+    {
+      "asset_label": "Adobe Inc. (ADBE)",
+      "horizon_signals": {
+        "1": {
+          "label": "SELL",
+          "profit_pln": -5625.776942410177
+        },
+        "3": {
+          "label": "SELL",
+          "profit_pln": -16690.51395153842
+        },
+        "7": {
+          "label": "SELL",
+          "profit_pln": -34349.29708228796
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": -60073.03620345539
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": -67377.1596654914
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": -72092.90147274338
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": -11441.404575460612
+        }
+      },
+      "nearest_label": "SELL",
+      "sector": "Information Technology"
+    },
+    {
+      "asset_label": "VanEck Africa Index ETF (AFK)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": 361.6539269786223
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": -574.0154739485304
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": -1973.6884986999437
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": -3915.4526132648693
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": -11844.896127537697
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": -27701.28610898881
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": -53884.77463851849
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "VanEck ETFs"
+    },
+    {
+      "asset_label": "American International Group, Inc. (AIG)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": 366.2111766833398
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": 718.1800576181452
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": 700.4313713419031
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": 749.5481026065231
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": 4612.908078454492
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": 714.2243564535189
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": -15407.737578651437
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Financials"
+    },
+    {
+      "asset_label": "AAR Corp. (AIR)",
+      "horizon_signals": {
+        "1": {
+          "label": "STRONG BUY",
+          "profit_pln": 29250.974985518762
+        },
+        "3": {
+          "label": "STRONG BUY",
+          "profit_pln": 84707.72558661533
+        },
+        "7": {
+          "label": "STRONG BUY",
+          "profit_pln": 182816.90894846636
+        },
+        "21": {
+          "label": "STRONG BUY",
+          "profit_pln": 428090.0192609984
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": 673948.2229353153
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": 652836.2098105986
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": 650643.364415932
+        }
+      },
+      "nearest_label": "STRONG BUY",
+      "sector": "Defense & Aerospace"
+    },
+    {
+      "asset_label": "Airbus SE (AIR.PA)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": 148.68835987469353
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": 104.59348132818569
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": -692.0584660343732
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": -460.63583232625047
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": 217.0647242363266
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": -1914.2031406799154
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": -833.0664579151437
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Defense & Aerospace"
+    },
+    {
+      "asset_label": "Air Industries Group (AIRI)",
+      "horizon_signals": {
+        "1": {
+          "label": "STRONG BUY",
+          "profit_pln": 20955.86188184573
+        },
+        "3": {
+          "label": "STRONG BUY",
+          "profit_pln": 60405.69997237921
+        },
+        "7": {
+          "label": "STRONG BUY",
+          "profit_pln": 133863.39096643307
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": 324723.44712925906
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": 516557.6383470667
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": 559666.117707396
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": 753907.826115886
+        }
+      },
+      "nearest_label": "STRONG BUY",
+      "sector": "Defense & Aerospace"
+    },
+    {
+      "asset_label": "AIRO Group Holdings, Inc. (AIRO)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": 740.5326830880465
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": 2186.353365278615
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": 5843.353616606039
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": -5110.288245014361
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": -7835.479162802583
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": -33868.80766817912
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": -47181.003756665006
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Defense & Aerospace"
+    },
+    {
+      "asset_label": "Advanced Micro Devices, Inc. (AMD)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": 636.525656035003
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": 1450.6255172108683
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": 3489.9023650021286
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": 10836.80489756378
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": 19559.699344994464
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": 26857.685196476577
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": 45651.80353688847
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Information Technology"
+    },
+    {
+      "asset_label": "Amgen Inc. (AMGN)",
+      "horizon_signals": {
+        "1": {
+          "label": "STRONG SELL",
+          "profit_pln": -7895.104613218628
+        },
+        "3": {
+          "label": "STRONG SELL",
+          "profit_pln": -22290.89219015601
+        },
+        "7": {
+          "label": "SELL",
+          "profit_pln": -46389.99017944245
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": -96891.56889938499
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": -173504.17043368472
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": -158599.13585437357
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": 15271.134640043816
+        }
+      },
+      "nearest_label": "STRONG SELL",
+      "sector": "Health Care"
+    },
+    {
+      "asset_label": "Amazon.com, Inc. (AMZN)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": 1846.9117128787627
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": 3265.6363897540787
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": 8444.875471694591
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": 16882.751761341686
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": 34680.1208253531
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": 51576.0872922566
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": 73558.45663434856
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Information Technology"
+    },
+    {
+      "asset_label": "VanEck Fallen Angel High Yield Bond ETF (ANGL)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": 333.41845920698
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": 762.0112209685282
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": 1869.1951566678356
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": 3994.7191742202294
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": 7824.937014074829
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": 8744.611844077932
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": 9054.086138431394
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "VanEck ETFs"
+    },
+    {
+      "asset_label": "American Outdoor Brands, Inc. (AOUT)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": -2.3574748524435307
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": -988.7889558499729
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": -2902.793680016003
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": -6977.395826229693
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": -15242.77584279088
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": -16808.71766417258
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": -14823.740848001866
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Defense & Aerospace"
+    },
+    {
+      "asset_label": "Astrotech Corporation (ASTC)",
+      "horizon_signals": {
+        "1": {
+          "label": "STRONG SELL",
+          "profit_pln": -54171.6390513699
+        },
+        "3": {
+          "label": "STRONG SELL",
+          "profit_pln": -147976.69589763274
+        },
+        "7": {
+          "label": "STRONG SELL",
+          "profit_pln": -283140.4324700386
+        },
+        "21": {
+          "label": "SELL",
+          "profit_pln": -510554.13218463986
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": -628422.3732742658
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": -624910.2571995014
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": -644750.783161316
+        }
+      },
+      "nearest_label": "STRONG SELL",
+      "sector": "Defense & Aerospace"
+    },
+    {
+      "asset_label": "ATI Inc. (ATI)",
+      "horizon_signals": {
+        "1": {
+          "label": "HOLD",
+          "profit_pln": -224.97379451791312
+        },
+        "3": {
+          "label": "HOLD",
+          "profit_pln": -1005.2627482417531
+        },
+        "7": {
+          "label": "HOLD",
+          "profit_pln": -740.4141288097632
+        },
+        "21": {
+          "label": "HOLD",
+          "profit_pln": 493.2985721639582
+        },
+        "63": {
+          "label": "HOLD",
+          "profit_pln": -6235.721624435087
+        },
+        "126": {
+          "label": "HOLD",
+          "profit_pln": -12922.01946627347
+        },
+        "252": {
+          "label": "HOLD",
+          "profit_pln": -23119.257707960085
+        }
+      },
+      "nearest_label": "HOLD",
+      "sector": "Defense & Aerospace"
+    }
+  ],
+  "horizons": [
+    1,
+    3,
+    7,
+    21,
+    63,
+    126,
+    252
+  ],
+  "column_descriptions": {
+    "horizon_trading_days": "Number of trading days in the forecast horizon.",
+    "edge_z_risk_adjusted": "Risk-adjusted edge (z-score) combining drift/vol with momentum/trend filters.",
+    "prob_up": "Estimated probability the horizon return is positive (Student-t by default).",
+    "expected_log_return": "Expected cumulative log return over the horizon from the daily drift estimate.",
+    "ci_low_log": "Lower bound of the two-sided confidence interval for log return.",
+    "ci_high_log": "Upper bound of the two-sided confidence interval for log return.",
+    "profit_pln_on_1m_pln": "Expected profit in Polish zloty (PLN) when investing 1,000,000 PLN.",
+    "profit_ci_low_pln": "Lower confidence bound for profit (PLN) on 1,000,000 PLN.",
+    "profit_ci_high_pln": "Upper confidence bound for profit (PLN) on 1,000,000 PLN.",
+    "signal": "Decision label based on prob_up: BUY (>=58%), HOLD (42\u201358%), SELL (<=42%)."
+  },
+  "simple_column_descriptions": {
+    "timeframe": "Plain-English period (e.g., 1 day, 1 week, 3 months).",
+    "chance_up": "Chance that the price goes up over this period (percent).",
+    "recommendation": "BUY (expect price to rise), HOLD (unclear), or SELL (expect price to fall).",
+    "why": "Short explanation combining trend, momentum, and volatility context."
+  },
+  "failed_assets": []
+}

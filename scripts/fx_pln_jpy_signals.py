@@ -43,6 +43,7 @@ from fx_signals_presentation import (
     render_detailed_signal_table,
     render_simplified_signal_table,
     render_multi_asset_summary_table,
+    render_sector_summary_tables,
     build_asset_display_label,
     extract_symbol_from_title,
     format_horizon_label,
@@ -81,6 +82,42 @@ PAIR = "PLNJPY=X"
 DEFAULT_HORIZONS = [1, 3, 7, 21, 63, 126, 252]
 NOTIONAL_PLN = 1_000_000  # for profit column
 
+# Sector mapping for summary grouping
+SECTOR_MAP = {
+    "FX / Commodities / Crypto": {
+        "PLNJPY=X", "GC=F", "SI=F", "BTC-USD", "BTCUSD=X", "MSTR"
+    },
+    "Indices / Broad ETFs": {
+        "SPY", "VOO", "GLD", "SLV", "SMH"
+    },
+    "Information Technology": {
+        "AAPL", "ACN", "ADBE", "AMD", "AVGO", "CRM", "CSCO", "IBM", "INTC", "INTU", "MSFT", "NOW", "NVDA", "ORCL", "PLTR", "QCOM", "TXN", "GOOG", "GOOGL", "META", "NFLX", "AMZN"
+    },
+    "Health Care": {
+        "ABBV", "ABT", "AMGN", "BMY", "CVS", "DHR", "GILD", "ISRG", "JNJ", "LLY", "MDT", "MRK", "NVO", "PFE", "TMO", "UNH"
+    },
+    "Financials": {
+        "AIG", "AXP", "BAC", "BK", "BLK", "BRK.B", "C", "COF", "GS", "IBKR", "JPM", "MA", "MET", "MS", "PYPL", "SCHW", "USB", "V", "WFC", "HOOD"
+    },
+    "Consumer Discretionary": {
+        "BKNG", "GM", "HD", "LOW", "MCD", "NKE", "SBUX", "TGT", "TSLA"
+    },
+    "Industrials": {
+        "CAT", "DE", "EMR", "FDX", "MMM", "UBER", "UNP", "UPS"
+    },
+    "Defense & Aerospace": {
+        "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE"
+    },
+    "Communication Services": {"CMCSA", "DIS", "T", "TMUS", "VZ"},
+    "Consumer Staples": {"CL", "COST", "KO", "MDLZ", "MO", "PEP", "PG", "PM", "WMT"},
+    "Energy": {"COP", "CVX", "XOM"},
+    "Utilities": {"NEE", "SO"},
+    "Real Estate": {"SPG"},
+    "Materials": {"LIN", "NEM"},
+    "Asian Tech & Manufacturing": {"005930.KS"},
+    "VanEck ETFs": {"AFK", "ANGL", "CNXT", "EGPT", "FLTR", "GLIN", "MOTG", "IDX", "MLN", "NLR"},
+}
+
 # Transaction-cost/slippage hurdle: minimum absolute edge required to act
 # Can be overridden via environment variable EDGE_FLOOR (e.g., 0.10)
 try:
@@ -90,6 +127,15 @@ except Exception:
     EDGE_FLOOR = 0.10
 # Clamp to a reasonable range to avoid misuse
 EDGE_FLOOR = float(np.clip(EDGE_FLOOR, 0.0, 1.5))
+
+DEFAULT_CACHE_PATH = os.path.join("cache", "fx_plnjpy.json")
+
+def get_sector(symbol: str) -> str:
+    s = symbol.upper().strip()
+    for sector, tickers in SECTOR_MAP.items():
+        if s in tickers:
+            return sector
+    return "Unspecified"
 
 
 @dataclass(frozen=True)
@@ -1177,7 +1223,7 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     kalman_gain_recent = float(K_gain[-1]) if len(K_gain) > 0 else float("nan")
     
     # Refinement 3: Innovation whiteness test (Ljung-Box)
-    # Test if standardized innovations are white noise (model adequacy check)
+    # Test if standardized innovations are white noise (model adequacy)
     innovation_whiteness = _test_innovation_whiteness(innovations, innovation_vars, lags=min(20, T // 5))
     
     # Build output series aligned with original index
@@ -1947,7 +1993,7 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         diagnostics["garch_bic"] = garch_params.get("bic", float("nan"))
         diagnostics["garch_n_obs"] = garch_params.get("n_obs", 0)
     
-    # Pillar 1: Kalman filter drift diagnostics (including refinements)
+    # Pillar 1: Kalman filter drift diagnostics (with refinements)
     kalman_metadata = feats.get("kalman_metadata", {})
     if isinstance(kalman_metadata, dict):
         diagnostics["kalman_log_likelihood"] = kalman_metadata.get("log_likelihood", float("nan"))
@@ -2493,7 +2539,6 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
                     jump_component[path_idx] = float(np.sum(jump_sizes))
         
         # Total return: continuous (drift + diffusion) + jumps
-        # r_t = μ_t + e_t + J_t
         r_t = mu_t + e_t + jump_component
         
         # Accumulate log return
@@ -3040,6 +3085,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--assets", type=str, default=",".join(DEFAULT_ASSET_UNIVERSE), help="Comma-separated Yahoo symbols or friendly names. Metals, FX and USD/EUR/GBP/JPY/CAD/DKK/KRW assets are converted to PLN.")
     p.add_argument("--json", type=str, default=None)
     p.add_argument("--csv", type=str, default=None)
+    p.add_argument("--cache-json", type=str, default=DEFAULT_CACHE_PATH, help="Path to auto-write cache JSON (default cache/fx_plnjpy.json)")
+    p.add_argument("--from-cache", action="store_true", help="Render tables from cache JSON and skip computation")
     p.add_argument("--simple", action="store_true", help="Print an easy-to-read summary with simple explanations.")
     p.add_argument("--t_map", action="store_true", help="Use Student-t mapping based on realized kurtosis for probabilities (default on).")
     p.add_argument("--no_t_map", dest="t_map", action="store_false", help="Disable Student-t mapping; use Normal CDF.")
@@ -3125,21 +3172,26 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
 
 
 def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, horizons: List[int], max_retries: int = 3):
-    """Run asset processing with bounded retries and collect failures."""
+    """Run asset processing with bounded retries and collect failures.
+    Retries only the assets that failed on prior attempts.
+    """
     console = Console()
-    remaining = list(dict.fromkeys(a.strip() for a in assets if a and a.strip()))
+    pending = list(dict.fromkeys(a.strip() for a in assets if a and a.strip()))
     successes: List[Dict] = []
     failures: Dict[str, Dict[str, object]] = {}
     processed_canon = set()
+
     attempt = 1
-    while attempt <= max_retries and remaining:
-        n_workers = min(cpu_count(), len(remaining))
-        console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(remaining)} assets with {n_workers} workers...[/cyan]")
-        work_items = [(asset, args, horizons) for asset in remaining]
+    while attempt <= max_retries and pending:
+        n_workers = min(cpu_count(), len(pending))
+        console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} workers...[/cyan]")
+        work_items = [(asset, args, horizons) for asset in pending]
+
         with Pool(processes=n_workers) as pool:
             results = pool.map(process_single_asset, work_items)
-        next_remaining: List[str] = []
-        for asset, result in zip(remaining, results):
+
+        next_pending: List[str] = []
+        for asset, result in zip(pending, results):
             if not result or result.get("status") != "success":
                 err = (result or {}).get("error", "unknown error")
                 try:
@@ -3151,25 +3203,62 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
                 entry["last_error"] = err
                 entry["display_name"] = entry.get("display_name") or disp
                 failures[asset] = entry
-                next_remaining.append(asset)
+                next_pending.append(asset)
                 continue
+
+                
             canon = result.get("canon") or asset.strip().upper()
             if canon in processed_canon:
                 continue
             processed_canon.add(canon)
             successes.append(result)
+            # drop from pending on success; nothing to add to next_pending
             if asset in failures:
                 failures.pop(asset, None)
-        remaining = list(dict.fromkeys(next_remaining))
+
+        pending = list(dict.fromkeys(next_pending))
         attempt += 1
-    if remaining:
-        console.print(f"[yellow]Retry budget exhausted; {len(remaining)} assets still failing.[/yellow]")
+
+    if pending:
+        console.print(f"[yellow]Retry budget exhausted; {len(pending)} assets still failing.[/yellow]")
     return successes, failures
 
 
 def main() -> None:
     args = parse_args()
     horizons = sorted({int(x.strip()) for x in args.horizons.split(",") if x.strip()})
+
+    # Fast path: render from cache only
+    if args.from_cache:
+        cache_path = args.cache_json or DEFAULT_CACHE_PATH
+        if not os.path.exists(cache_path):
+            Console().print(f"[red]Cache not found:[/red] {cache_path}")
+            return
+        with open(cache_path, "r") as f:
+            payload = json.load(f)
+        horizons_cached = payload.get("horizons") or horizons
+        summary_rows_cached = payload.get("summary_rows")
+        # Fallback reconstruction if summary_rows missing
+        if not summary_rows_cached:
+            summary_rows_cached = []
+            for asset in payload.get("assets", []):
+                sym = asset.get("symbol") or ""
+                title = asset.get("title") or sym
+                asset_label = build_asset_display_label(sym, title)
+                sector = asset.get("sector", "Unspecified")
+                horizon_signals = {}
+                for sig in asset.get("signals", []):
+                    h = sig.get("horizon_days")
+                    if h is None:
+                        continue
+                    horizon_signals[int(h)] = {"label": sig.get("label", "HOLD"), "profit_pln": float(sig.get("profit_pln", 0.0))}
+                nearest_label = next(iter(horizon_signals.values()), {}).get("label", "HOLD")
+                summary_rows_cached.append({"asset_label": asset_label, "horizon_signals": horizon_signals, "nearest_label": nearest_label, "sector": sector})
+        try:
+            render_sector_summary_tables(summary_rows_cached, horizons_cached)
+        except Exception as e:
+            Console().print(f"[yellow]Warning:[/yellow] Could not print summary tables from cache: {e}")
+        return
 
     # Parse assets
     assets = [a.strip() for a in args.assets.split(",") if a.strip()]
@@ -3359,11 +3448,10 @@ def main() -> None:
                         nu_hat = diagnostics.get("student_t_nu", float("nan"))
                         # Coefficient of variation: SE/estimate (relative uncertainty)
                         cv_nu = (se_nu / nu_hat) if np.isfinite(nu_hat) and nu_hat > 0 else float("nan")
-                        if np.isfinite(cv_nu):
-                            uncertainty_level = "low" if cv_nu < 0.05 else ("moderate" if cv_nu < 0.10 else "high")
-                            diag_table.add_row("  SE(ν) [posterior uncertainty]", f"{se_nu:.3f} ({cv_nu*100:.1f}% CV, {uncertainty_level})")
-                        else:
-                            diag_table.add_row("  SE(ν) [posterior uncertainty]", f"{se_nu:.3f}")
+                        uncertainty_level = "low" if cv_nu < 0.05 else ("moderate" if cv_nu < 0.10 else "high")
+                        diag_table.add_row("  SE(ν) [posterior uncertainty]", f"{se_nu:.3f} ({cv_nu*100:.1f}% CV, {uncertainty_level})")
+                    else:
+                        diag_table.add_row("  SE(ν) [posterior uncertainty]", f"{se_nu:.3f}")
             
             # Tier 2: Parameter Uncertainty Summary (μ, σ, ν)
             param_unc_env = os.getenv("PARAM_UNC", "sample").strip().lower()
@@ -3665,7 +3753,6 @@ def main() -> None:
                         "0.5000",
                         "✅" if abs(pit_result.pit_mean - 0.5) < 0.05 else "⚠️"
                     )
-                    expected_std = 1.0 / np.sqrt(12)
                     pit_table.add_row(
                         "PIT Std Dev",
                         f"{pit_result.pit_std:.4f}",
@@ -3746,12 +3833,12 @@ def main() -> None:
             int(s.horizon_days): {"label": s.label, "profit_pln": float(s.profit_pln)}
             for s in sigs
         }
-        # Find nearest horizon label for sorting
         nearest_label = sigs[0].label if sigs else "HOLD"
         summary_rows.append({
             "asset_label": asset_label,
             "horizon_signals": horizon_signals,
             "nearest_label": nearest_label,
+            "sector": get_sector(canon),
         })
 
         # Prepare JSON block
@@ -3828,9 +3915,10 @@ def main() -> None:
 
     # After processing all assets, print a compact summary
     try:
-        render_multi_asset_summary_table(summary_rows, horizons)
+        # Group summary rows by sector and render one table per sector
+        render_sector_summary_tables(summary_rows, horizons)
     except Exception as e:
-        Console().print(f"[yellow]Warning:[/yellow] Could not print summary table: {e}")
+        Console().print(f"[yellow]Warning:[/yellow] Could not print summary tables: {e}")
 
     # Build structured failure log for exports
     failure_log = [
@@ -3856,47 +3944,28 @@ def main() -> None:
         Console().print(fail_table)
 
     # Exports
-    if args.json:
-        payload = {
-            "assets": all_blocks,
-            "column_descriptions": DETAILED_COLUMN_DESCRIPTIONS,
-            "simple_column_descriptions": SIMPLIFIED_COLUMN_DESCRIPTIONS,
-            "failed_assets": failure_log,
-        }
-        with open(args.json, "w") as f:
+    cache_path = args.cache_json or DEFAULT_CACHE_PATH
+    payload = {
+        "assets": all_blocks,
+        "summary_rows": summary_rows,
+        "horizons": horizons,
+        "column_descriptions": DETAILED_COLUMN_DESCRIPTIONS,
+        "simple_column_descriptions": SIMPLIFIED_COLUMN_DESCRIPTIONS,
+        "failed_assets": failure_log,
+    }
+    try:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "w") as f:
             json.dump(payload, f, indent=2)
-
-    if args.failures_json and failure_log:
+    except Exception as e:
+        Console().print(f"[yellow]Warning:[/yellow] Could not write cache JSON: {e}")
+    
+    if args.json:
         try:
-            with open(args.failures_json, "w") as f:
-                json.dump({"failed_assets": failure_log}, f, indent=2)
+            with open(args.json, "w") as f:
+                json.dump(payload, f, indent=2)
         except Exception as e:
-            Console().print(f"[yellow]Warning:[/yellow] Could not write failures JSON: {e}")
-
-    if args.csv:
-        if args.simple:
-            df = pd.DataFrame(csv_rows_simple)
-            df.to_csv(args.csv, index=False)
-        else:
-            if csv_rows_detailed:
-                df = pd.DataFrame(csv_rows_detailed)
-                rename_map = {
-                    "horizon_days": "horizon_trading_days",
-                    "score": "edge_z_risk_adjusted",
-                    "p_up": "prob_up",
-                    "exp_ret": "expected_log_return",
-                    "ci_low": "ci_low_log",
-                    "ci_high": "ci_high_log",
-                    "profit_pln": "profit_pln_on_1m_pln",
-                    "profit_ci_low_pln": "profit_ci_low_pln",
-                    "profit_ci_high_pln": "profit_ci_high_pln",
-                    "label": "signal",
-                }
-                df = df.rename(columns=rename_map)
-                # ensure asset/symbol columns at the front
-                cols = ["asset", "symbol"] + [c for c in df.columns if c not in ("asset", "symbol")]
-                df = df[cols]
-                df.to_csv(args.csv, index=False)
+            Console().print(f"[yellow]Warning:[/yellow] Could not write JSON export: {e}")
 
 
 if __name__ == "__main__":
