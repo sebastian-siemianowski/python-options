@@ -363,12 +363,12 @@ DEFAULT_ASSET_UNIVERSE = [
     "ANGL",   # VanEck Fallen Angel High Yield Bond ETF
 #     "BRF",    # VanEck Brazil Small-Cap ETF
     "CNXT",   # VanEck ChiNext ETF
-#     "DURA",   # VanEck Morningstar Durable Dividend ETF
+    "DURA",   # VanEck Morningstar Durable Dividend ETF
     "EGPT",   # VanEck Egypt Index ETF
 #     "EMLC",   # VanEck J.P. Morgan EM Local Currency Bond ETF
     "FLTR",   # VanEck Investment Grade Floating Rate ETF
-#     "GDX",    # VanEck Gold Miners ETF
-#     "GDXJ",   # VanEck Junior Gold Miners ETF
+    "GDX",    # VanEck Gold Miners ETF
+    "GDXJ",   # VanEck Junior Gold Miners ETF
     "GLIN",   # VanEck India Growth Leaders ETF
     "MOTG",   # VanEck Morningstar Global Wide Moat ETF
 #     "GRNB",   # VanEck Green Bond ETF
@@ -376,27 +376,27 @@ DEFAULT_ASSET_UNIVERSE = [
     "IDX",    # VanEck Indonesia Index ETF
 #     "ITM",    # VanEck Intermediate Muni ETF
     "MLN",    # VanEck Long Muni ETF
-#     "MOAT",   # VanEck Morningstar Wide Moat ETF
-#     "MOO",    # VanEck Agribusiness ETF
-#     "MOTI",   # VanEck Morningstar International Moat ETF
+    "MOAT",   # VanEck Morningstar Wide Moat ETF
+    "MOO",    # VanEck Agribusiness ETF
+    "MOTI",   # VanEck Morningstar International Moat ETF
     "NLR",    # VanEck Uranium+Nuclear Energy ETF
-#     "OIH",    # VanEck Oil Services ETF
-#     "PPH",    # VanEck Pharmaceutical ETF
-#     "REMX",   # VanEck Rare Earth/Strategic Metals ETF
+    "OIH",    # VanEck Oil Services ETF
+    "PPH",    # VanEck Pharmaceutical ETF
+    "REMX",   # VanEck Rare Earth/Strategic Metals ETF
 #     "RSX",    # VanEck Russia ETF
 #     "RSXJ",   # VanEck Russia Small-Cap ETF
 #     "RTH",    # VanEck Retail ETF
 #     "SLX",    # VanEck Steel ETF
 #     "SMOG",   # VanEck Low Carbon Energy ETF
 #     "VNM",    # VanEck Vietnam ETF
-#     "ESPO",   # VanEck Video Gaming and eSports UCITS ETF
-#     "GFA",    # VanEck Global Fallen Angel High Yield Bond UCITS ETF
+    "ESPO",   # VanEck Video Gaming and eSports UCITS ETF
+    "GFA",    # VanEck Global Fallen Angel High Yield Bond UCITS ETF
 #     "HDRO",   # VanEck Hydrogen Economy UCITS ETF
 #     "TCBT",   # VanEck iBoxx EUR Corporates UCITS ETF
 #     "TDIV",   # VanEck Morningstar Developed Markets Dividend Leaders UCITS ETF
 #     "TEET",   # VanEck Sustainable European Equal Weight UCITS ETF
 #     "TGBT",   # VanEck iBoxx EUR Sovereign Diversified 1-10 UCITS ETF
-#     "TRET",   # VanEck Global Real Estate UCITS ETF
+    "TRET",   # VanEck Global Real Estate UCITS ETF
 #     "TSWE",   # VanEck Sustainable World Equal Weight UCITS ETF
 #     "TAT",    # VanEck iBoxx EUR Sovereign Capped AAA-AA 1-5 UCITS ETF
 ]
@@ -670,10 +670,10 @@ MAPPING = {
 
     # VanEck ETFs and related
     "VANECK SEMICONDUCTOR": ["SMH"],
-    # "VANECK GOLD MINERS": ["GDX"],
-    # "VANECK JUNIOR GOLD MINERS": ["GDXJ"],
+    "VANECK GOLD MINERS": ["GDX"],
+    "VANECK JUNIOR GOLD MINERS": ["GDXJ"],
     "VANECK OIL SERVICES": ["OIH"],
-    # "VANECK RETAIL": ["RTH"],
+    "VANECK RETAIL": ["RTH"],
     "VANECK AGRIBUSINESS": ["MOO"],
     "VANECK GAMING ETF": ["ESPO"],
     # "VANECK AFRICA INDEX": ["AFK"],
@@ -693,9 +693,9 @@ MAPPING = {
     # "VANECK LONG MUNI": ["MLN"],
     # "VANECK MORNINGSTAR WIDE MOAT": ["MOAT"],
     "VANECK MORNINGSTAR INTERNATIONAL MOAT": ["MOTI"],
-    # "VANECK URANIUM+NUCLEAR ENERGY": ["NLR"],
-    # "VANECK PHARMACEUTICAL": ["PPH"],
-    # "VANECK RARE EARTH/STRATEGIC METALS": ["REMX"],
+    "VANECK URANIUM+NUCLEAR ENERGY": ["NLR"],
+    "VANECK PHARMACEUTICAL": ["PPH"],
+    "VANECK RARE EARTH/STRATEGIC METALS": ["REMX"],
     # "VANECK RUSSIA": ["RSX"],
     # "VANECK RUSSIA SMALL-CAP": ["RSXJ"],
     # "VANECK STEEL": ["SLX"],
@@ -707,9 +707,30 @@ MAPPING = {
     # "VANECK MORNINGSTAR DEVELOPED MARKETS DIVIDEND LEADERS UCITS": ["TDIV"],
     # "VANECK SUSTAINABLE EUROPEAN EQUAL WEIGHT UCITS": ["TEET"],
     # "VANECK IBOXX EUR SOVEREIGN DIVERSIFIED 1-10 UCITS": ["TGBT"],
-    # "VANECK GLOBAL REAL ESTATE UCITS": ["TRET"],
+    "VANECK GLOBAL REAL ESTATE UCITS": ["TRET"],
     # "VANECK SUSTAINABLE WORLD EQUAL WEIGHT UCITS": ["TSWE"],
     # "VANECK IBOXX EUR SOVEREIGN CAPPED AAA-AA 1-5 UCITS": ["TAT"],
+
+    "METI": ["META", "METI"],           # Meta options -> Meta Platforms
+    "HO": ["HO.PA", "HO"],              # Thales SA
+    "HAG": ["HAG.DE", "HAG"],           # Hensoldt AG
+    "TSLD": ["TSLA", "TSLD"],           # Tesla options -> Tesla
+    "R3NK": ["R3NK.DE", "RNK.DE", "R3NK"],  # Renk Group
+    "THEON": ["THEON.AS", "THEON"],      # Theon International
+    "QQQO": ["QQQ", "QQQO"],            # Nasdaq-100 options -> QQQ
+    "BAYN": ["BAYN.DE", "BAYRY", "BAYN"],  # Bayer AG
+    "VOW3": ["VOW3.DE", "VLKPF", "VOW3"],  # Volkswagen Pref
+    "KOZ1": ["KOG.OL", "KOZ1"],         # Kongsberg Gruppen ASA
+    "MSFI": ["MSFT", "MSFI"],           # Microsoft options -> Microsoft
+    "BABY": ["BABA", "BABY"],           # Alibaba options -> Alibaba
+    "BABI": ["BABA", "BABI"],           # Alibaba options -> Alibaba
+    "AVGI": ["AVGO", "AVGI"],           # Broadcom options -> Broadcom
+    "XAGUSD": ["XAGUSD=X", "SI=F", "XAGUSD"], # Silver spot -> silver futures fallback
+    "MAGD": ["QQQ", "MAGD"],            # Magnificent 7 options -> QQQ proxy
+    "EXA": ["EXA.PA", "EXA"],           # Exail Technologies
+    "AMDI": ["AMD", "AMDI"],            # AMD options -> AMD
+    "BMW3": ["BMW.DE", "BMW3"],         # BMW preference
+    "DFNG": ["ITA", "PPA", "DFNG"],    # Defense ETF proxy
 }
 
 # FX rate cache (JSON on disk) to avoid repeated network calls
