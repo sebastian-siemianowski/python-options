@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20
+.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20 data
 # Usage:
 #   make run                           # runs with defaults (screener + backtest)
 #   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
@@ -24,6 +24,7 @@ SHELL := /bin/bash
 #   make show-q                        # display cached q parameter estimates
 #   make clear-q                       # clear q parameter cache
 #   make tests                         # runs all tests in the tests/ directory
+#   make data                          # precaches securities data for faster screening/backtesting
 
 # Ensure virtual environment exists before running commands
 .venv/bin/python:
@@ -126,7 +127,11 @@ report: .venv/.deps_installed
 	@.venv/bin/python scripts/fx_pln_jpy_signals.py --from-cache --cache-json cache/fx_plnjpy.json
 
 # Quick smoke: run only the first 20 assets
- top20: .venv/.deps_installed
+top20: .venv/.deps_installed
 	@ASSETS=$$(PYTHONPATH=$(CURDIR) ./.venv/bin/python -c "import importlib.util, pathlib; fx=pathlib.Path('scripts/fx_data_utils.py'); spec=importlib.util.spec_from_file_location('fx_data_utils', fx); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); assets=sorted(list(getattr(mod,'DEFAULT_ASSET_UNIVERSE'))); print(','.join(assets[:20]))"); \
 	if [ -z "$$ASSETS" ]; then echo 'No assets resolved'; exit 1; fi; \
 	$(MAKE) fx-plnjpy ARGS="--assets $$ASSETS"
+
+# Precache securities data (full history). Slow down concurrency to avoid 401s.
+data: .venv/.deps_installed
+	@.venv/bin/python scripts/precache_data.py --workers 2 --batch-size 16
