@@ -163,7 +163,8 @@ class TECDDriftModelV3(DriftModel):
             self._H[t] = H_t
             self._T[t] = T_t
             self._J[t] = J_t
-            self._mu[t] = mu_t
+            # mu_t is in normalized space; store price-space drift for likelihood/PIT
+            self._mu[t] = mu_t * sigma_t
 
             # Prepare for next step
             E_prev = E_t

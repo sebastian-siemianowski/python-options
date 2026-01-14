@@ -26,8 +26,13 @@ from scipy.stats import norm, kstest, t as student_t
 from scipy.special import gammaln
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-# Add scripts directory to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+# Add repository root (parent of scripts) and scripts directory to sys.path for imports
+SCRIPT_DIR = os.path.dirname(__file__)
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, os.pardir))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
 from fx_data_utils import fetch_px, _download_prices, get_default_asset_universe
 
