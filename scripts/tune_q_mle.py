@@ -1763,7 +1763,7 @@ def tune_asset_q(
         }
 
         # Add Student-t specific diagnostics if applicable
-        if noise_model == "student_t":
+        if noise_model == "phi_student_t":
             result['grid_best_nu'] = opt_diagnostics.get('grid_best_nu')
             result['refined_best_nu'] = opt_diagnostics.get('refined_best_nu')
             result['refined_best_phi'] = float(phi_selected) if phi_selected is not None else None
@@ -1771,7 +1771,7 @@ def tune_asset_q(
             result['refined_best_phi'] = float(phi_selected)
 
         # Add Gaussian comparison if Student-t was selected
-        if noise_model == "student_t" and student_t_fit_success:
+        if noise_model == "phi_student_t" and student_t_fit_success:
             result['gaussian_bic'] = float(bic_gauss)
             result['gaussian_log_likelihood'] = float(ll_gauss_full)
             result['gaussian_pit_ks_pvalue'] = float(pit_p_gauss)
