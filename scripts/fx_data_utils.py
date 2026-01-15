@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import pathlib
 
 
 # -------------------------
@@ -612,8 +613,7 @@ MAPPING = {
     "RTX": ["RTX"],
     "SCIENCE APPLICATIONS INTERNATIONAL": ["SAIC"],
     "STANDARDAERO": ["SARO"],
-    "SATELLOGIC": ["SATL"],
-    "SIDUS SPACE": ["SIDU"],
+    "SATELLOGIC": ["SIDU"],
     "SIFCO INDUSTRIES": ["SIF"],
     "SKY HARBOUR GROUP": ["SKYH"],
     "SAFE PRO GROUP": ["SPAI"],
@@ -1382,3 +1382,31 @@ def _resolve_symbol_candidates(asset: str) -> List[str]:
             deduped.append(c)
             seen.add(c)
     return deduped
+
+
+def drop_first_k_from_kalman_cache(k: int = 4, cache_path: str = 'cache/kalman_q_cache.json') -> List[str]:
+    """
+    Remove the first k tickers from the Kalman q cache JSON (in file order).
+    Returns the list of removed tickers (empty if none removed).
+    Safe against missing/invalid cache and writes atomically like other helpers.
+    """
+    path = pathlib.Path(cache_path)
+    if not path.exists():
+        return []
+    try:
+        raw = path.read_text()
+        data = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to load cache {cache_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError('Cache JSON is not an object mapping tickers to entries')
+    keys = list(data.keys())
+    removed = keys[: max(0, int(k))]
+    if not removed:
+        return []
+    for key in removed:
+        data.pop(key, None)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(path)
+    return removed
