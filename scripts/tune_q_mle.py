@@ -279,16 +279,11 @@ class GaussianDriftModel:
                         forecast_var = P_pred + R
 
                         if forecast_var > 1e-12:
-                            # Use Student-t log-likelihood for consistency with the φ-Student-t model
-                            forecast_scale = np.sqrt(forecast_var)
-                            ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_scale)
-                            # Optional tail-penalty remains implicit via logpdf; keep standardized storage for KS
-                            standardized_innov = innovation / forecast_scale
-                            standardized_innov_abs = abs(standardized_innov)
+                            # Gaussian log-likelihood for φ-Gaussian model
+                            ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
+                            standardized_innov = innovation / np.sqrt(forecast_var)
                             if len(all_standardized) < 1000:
                                 all_standardized.append(float(standardized_innov))
-                            if standardized_innov_abs > 5.0:
-                                ll_contrib -= 5.0 * (standardized_innov_abs - 5.0)
                             ll_fold += ll_contrib
 
                         K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
