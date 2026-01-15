@@ -8,6 +8,8 @@ Optimizes q by maximizing out-of-sample log-likelihood of returns under the
 Gaussian state-space drift model, using EWMA volatility as observation variance.
 
 Caches results persistently (JSON only) for reuse across runs.
+
+IMPORTANT AI AGENT INSTRUCTIONS: DO NOT REPLACE ELSE STATEMENTS WITH TERNARY : EXPRESSIONS
 """
 
 from __future__ import annotations
@@ -255,6 +257,61 @@ def kalman_filter_drift_student_t(returns: np.ndarray, vol: np.ndarray, q: float
     return mu_filtered, P_filtered, log_likelihood
 
 
+def kalman_filter_drift_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t.
+
+    Args:
+        returns: Observed returns.
+        vol: Observation noise std (EWMA volatility).
+        q: Process noise variance.
+        c: Observation variance scale.
+        phi: Drift persistence (-1 < φ < 1.999). φ>0 trend, φ<0 mean-reversion.
+
+    Returns:
+        mu_filtered: Posterior mean of drift.
+        P_filtered: Posterior variance of drift.
+        log_likelihood: Total log-likelihood.
+    """
+    n = len(returns)
+    q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+    c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+    phi_val = float(np.clip(phi, -0.999, 0.999))
+
+    mu = 0.0
+    P = 1e-4
+    mu_filtered = np.zeros(n)
+    P_filtered = np.zeros(n)
+    log_likelihood = 0.0
+
+    for t in range(n):
+        mu_pred = phi_val * mu
+        P_pred = (phi_val ** 2) * P + q_val
+
+        vol_t = vol[t]
+        vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
+        R = c_val * (vol_scalar ** 2)
+
+        ret_t = returns[t]
+        r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
+        innovation = r_val - mu_pred
+
+        S = P_pred + R
+        if S <= 1e-12:
+            S = 1e-12
+        K = P_pred / S
+
+        mu = mu_pred + K * innovation
+        P = (1.0 - K) * P_pred
+        P = float(max(P, 1e-12))
+
+        mu_filtered[t] = mu
+        P_filtered[t] = P
+
+        log_likelihood += -0.5 * (np.log(2 * np.pi * S) + (innovation ** 2) / S)
+
+    return mu_filtered, P_filtered, float(log_likelihood)
+
+
 def compute_pit_ks_pvalue(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float = 1.0) -> Tuple[float, float]:
     """
     Compute PIT (Probability Integral Transform) and KS test statistic + p-value.
@@ -383,11 +440,18 @@ def optimize_q_mle(
     ret_mean = float(np.mean(returns_robust))
     vol_mean = float(np.mean(vol))
     vol_std = float(np.std(vol))
-    vol_cv = vol_std / vol_mean if vol_mean > 0 else 0.0  # Coefficient of variation
+    
+    if vol_mean > 0:
+        vol_cv = vol_std / vol_mean  # Coefficient of variation
+    else:
+        vol_cv = 0.0
     
     # Compute return-to-volatility ratio (Sharpe-like metric for drift strength)
     # Higher ratio suggests stronger persistent drift → allow higher q
-    rv_ratio = abs(ret_mean) / ret_std if ret_std > 0 else 0.0
+    if ret_std > 0:
+        rv_ratio = abs(ret_mean) / ret_std
+    else:
+        rv_ratio = 0.0
     
     # Adaptive prior based on volatility regime and return characteristics
     # High vol_cv suggests more regime changes → higher q
@@ -449,7 +513,7 @@ def optimize_q_mle(
                 if len(ret_train) < 3:
                     continue
                 
-                mu_filt_train, P_filt_train, _ = kalman_filter_drift(ret_train, vol_train, q, c)
+                mu_filt_train, P_filt_train, _ = kalman_filter_drift(returns_robust[train_start:train_end], vol_train, q, c)
                 
                 # Get final state from training period
                 mu_final = float(mu_filt_train[-1])
@@ -465,8 +529,14 @@ def optimize_q_mle(
                     P_pred = P_pred + q
                     
                     # Extract scalar values safely
-                    ret_t = float(returns_robust[t]) if np.ndim(returns_robust[t]) == 0 else float(returns_robust[t].item())
-                    vol_t = float(vol[t]) if np.ndim(vol[t]) == 0 else float(vol[t].item())
+                    if np.ndim(returns_robust[t]) == 0:
+                        ret_t = float(returns_robust[t])
+                    else:
+                        ret_t = float(returns_robust[t].item())
+                    if np.ndim(vol[t]) == 0:
+                        vol_t = float(vol[t])
+                    else:
+                        vol_t = float(vol[t].item())
                     
                     R = c * (vol_t ** 2)
                     innovation = ret_t - mu_pred
@@ -719,8 +789,15 @@ def optimize_q_c_nu_mle(
     ret_mean = float(np.mean(returns_robust))
     vol_mean = float(np.mean(vol))
     vol_std = float(np.std(vol))
-    vol_cv = vol_std / vol_mean if vol_mean > 0 else 0.0
-    rv_ratio = abs(ret_mean) / ret_std if ret_std > 0 else 0.0
+    
+    if vol_mean > 0:
+        vol_cv = vol_std / vol_mean  # Coefficient of variation
+    else:
+        vol_cv = 0.0
+    if ret_std > 0:
+        rv_ratio = abs(ret_mean) / ret_std
+    else:
+        rv_ratio = 0.0
     
     # Adaptive prior
     if vol_cv > 0.5 or rv_ratio > 0.15:
@@ -733,7 +810,8 @@ def optimize_q_c_nu_mle(
         adaptive_prior_mean = prior_log_q_mean
         adaptive_lambda = prior_lambda
     
-    # Walk-forward CV splits
+    # Use expanding window walk-forward cross-validation (proper time-series CV)
+    # Each fold trains on [0, train_end] and tests on [train_end+1, test_end]
     min_train = min(max(60, int(n * 0.4)), max(n - 5, 1))
     test_window = min(max(20, int(n * 0.1)), max(n - min_train, 5))
     
@@ -741,7 +819,7 @@ def optimize_q_c_nu_mle(
     train_end = min_train
     while train_end + test_window <= n:
         test_end = min(train_end + test_window, n)
-        if test_end - train_end >= 20:
+        if test_end - train_end >= 20:  # Minimum test size
             fold_splits.append((0, train_end, train_end, test_end))
         train_end += test_window
     
@@ -775,7 +853,7 @@ def optimize_q_c_nu_mle(
                     continue
                 
                 # Train Student-t filter
-                mu_filt_train, P_filt_train, _ = kalman_filter_drift_student_t(ret_train, vol_train, q, c, nu)
+                mu_filt_train, P_filt_train, _ = kalman_filter_drift_student_t(returns_robust[train_start:train_end], vol_train, q, c, nu)
                 
                 mu_final = float(mu_filt_train[-1])
                 P_final = float(P_filt_train[-1])
@@ -788,8 +866,14 @@ def optimize_q_c_nu_mle(
                 for t in range(test_start, test_end):
                     P_pred = P_pred + q
                     
-                    ret_t = float(returns_robust[t]) if np.ndim(returns_robust[t]) == 0 else float(returns_robust[t].item())
-                    vol_t = float(vol[t]) if np.ndim(vol[t]) == 0 else float(vol[t].item())
+                    if np.ndim(returns_robust[t]) == 0:
+                        ret_t = float(returns_robust[t])
+                    else:
+                        ret_t = float(returns_robust[t].item())
+                    if np.ndim(vol[t]) == 0:
+                        vol_t = float(vol[t])
+                    else:
+                        vol_t = float(vol[t].item())
                     
                     # Student-t forecast
                     forecast_scale = np.sqrt(P_pred + c * (vol_t ** 2))
@@ -802,7 +886,10 @@ def optimize_q_c_nu_mle(
                     # Update state for next prediction
                     R = c * (vol_t ** 2)
                     nu_adjust = min(nu / (nu + 3), 1.0)
-                    K = nu_adjust * P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
+                    if (P_pred + R) > 1e-12:
+                        K = nu_adjust * P_pred / (P_pred + R)
+                    else:
+                        K = 0.0
                     innovation = ret_t - mu_pred
                     mu_pred = mu_pred + K * innovation
                     P_pred = (1.0 - K) * P_pred
@@ -878,6 +965,7 @@ def optimize_q_c_nu_mle(
         np.array([best_log_q_grid, best_log_c_grid, best_log_nu_grid]),
         np.array([adaptive_prior_mean, np.log10(0.9), np.log10(6.0)]),
         np.array([adaptive_prior_mean, np.log10(0.85), np.log10(4.0)]),
+        np.array([adaptive_prior_mean, np.log10(1.2), np.log10(8.0)]),
         np.array([best_log_q_grid - 0.5, best_log_c_grid, best_log_nu_grid]),
         np.array([best_log_q_grid + 0.5, best_log_c_grid, best_log_nu_grid]),
     ]
@@ -932,74 +1020,362 @@ def optimize_q_c_nu_mle(
     return q_optimal, c_optimal, nu_optimal, ll_optimal, diagnostics
 
 
-def compute_bic(log_likelihood: float, n_params: int, n_obs: int) -> float:
-    """
-    Compute Bayesian Information Criterion (BIC).
+def optimize_q_c_phi_mle(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    train_frac: float = 0.7,
+    q_min: float = 1e-10,
+    q_max: float = 1e-1,
+    c_min: float = 0.3,
+    c_max: float = 3.0,
+    phi_min: float = -0.999,
+    phi_max: float = 0.999,
+    prior_log_q_mean: float = -6.0,
+    prior_lambda: float = 1.0
+) -> Tuple[float, float, float, Dict]:
+    """Jointly optimize (q, c, φ) via maximum likelihood for φ-Kalman filter."""
+    n = len(returns)
     
-    BIC = -2*LL + k*ln(n)
+    # Winsorize returns for robustness
+    ret_p005 = np.percentile(returns, 0.5)
+    ret_p995 = np.percentile(returns, 99.5)
+    returns_robust = np.clip(returns, ret_p005, ret_p995)
     
-    Lower BIC indicates better model fit with penalty for complexity.
+    # Compute statistics for adaptive prior
+    ret_std = float(np.std(returns_robust))
+    ret_mean = float(np.mean(returns_robust))
+    vol_mean = float(np.mean(vol))
+    vol_std = float(np.std(vol))
     
-    Args:
-        log_likelihood: Log-likelihood of the model
-        n_params: Number of parameters
-        n_obs: Number of observations
-    
-    Returns:
-        BIC value
-    """
-    return -2.0 * log_likelihood + n_params * np.log(n_obs)
+    if vol_mean > 0:
+        vol_cv = vol_std / vol_mean  # Coefficient of variation
+    else:
+        vol_cv = 0.0
+    if ret_std > 0:
+        rv_ratio = abs(ret_mean) / ret_std
+    else:
+        rv_ratio = 0.0
 
+    # Adaptive prior
+    if vol_cv > 0.5 or rv_ratio > 0.15:
+        adaptive_prior_mean = prior_log_q_mean + 0.5
+        adaptive_lambda = prior_lambda * 0.5
+    elif vol_cv < 0.2 and rv_ratio < 0.05:
+        adaptive_prior_mean = prior_log_q_mean - 0.3
+        adaptive_lambda = prior_lambda * 1.5
+    else:
+        adaptive_prior_mean = prior_log_q_mean
+        adaptive_lambda = prior_lambda
+    
+    # Use expanding window walk-forward cross-validation (proper time-series CV)
+    # Each fold trains on [0, train_end] and tests on [train_end+1, test_end]
+    min_train = min(max(60, int(n * 0.4)), max(n - 5, 1))
+    test_window = min(max(20, int(n * 0.1)), max(n - min_train, 5))
+    
+    fold_splits = []
+    train_end = min_train
+    while train_end + test_window <= n:
+        test_end = min(train_end + test_window, n)
+        if test_end - train_end >= 20:  # Minimum test size
+            fold_splits.append((0, train_end, train_end, test_end))
+        train_end += test_window
+    
+    if not fold_splits:
+        split_idx = int(n * train_frac)
+        fold_splits = [(0, split_idx, split_idx, n)]
+    
+    def negative_penalized_ll_cv_phi(params: np.ndarray) -> float:
+        # params = [log_q, log_c, phi]
+        log_q, log_c, phi = params
+        q = 10 ** log_q
+        c = 10 ** log_c
+        phi = float(np.clip(phi, phi_min, phi_max))
+        
+        # Validate parameters
+        if q <= 0 or c <= 0 or not np.isfinite(q) or not np.isfinite(c):
+            return 1e12
+        
+        # Compute average out-of-sample log-likelihood across folds
+        total_ll_oos = 0.0
+        total_obs = 0
+        
+        # Track standardized innovations for calibration check
+        all_standardized = []
+        
+        for train_start, train_end, test_start, test_end in fold_splits:
+            try:
+                # Run Kalman filter ONLY on training data (no look-ahead)
+                ret_train = returns_robust[train_start:train_end]
+                vol_train = vol[train_start:train_end]
+                
+                if len(ret_train) < 3:
+                    continue
+                
+                mu_filt_train, P_filt_train, _ = kalman_filter_drift_phi(returns_robust[train_start:train_end], vol_train, q, c, phi)
+                
+                # Get final state from training period
+                mu_final = float(mu_filt_train[-1])
+                P_final = float(P_filt_train[-1])
+                
+                # Compute one-step-ahead predictions on test set
+                ll_fold = 0.0
+                mu_pred = mu_final
+                P_pred = P_final
+                
+                for t in range(test_start, test_end):
+                    # One-step prediction
+                    P_pred = P_pred + q
+                    
+                    # Extract scalar values safely
+                    ret_t = float(returns_robust[t]) if np.ndim(returns_robust[t]) == 0 else float(returns_robust[t].item())
+                    vol_t = float(vol[t]) if np.ndim(vol[t]) == 0 else float(vol[t].item())
+                    
+                    R = c * (vol_t ** 2)
+                    innovation = ret_t - mu_pred
+                    forecast_var = P_pred + R
+                    
+                    # Safe log-likelihood computation with numerical stability
+                    if forecast_var > 1e-12:
+                        # Robust likelihood: downweight extreme innovations (Student-t-like behavior)
+                        # Use Huber-like loss for extreme deviations
+                        standardized_innov = innovation / np.sqrt(forecast_var)
+                        standardized_innov_abs = abs(standardized_innov)
+                        
+                        # Store for calibration check (limit to reasonable range)
+                        if len(all_standardized) < 1000:  # Limit memory
+                            all_standardized.append(float(standardized_innov))
+                        
+                        if standardized_innov_abs > 5.0:  # Extreme outlier
+                            # Use linear penalty beyond 5 sigma instead of quadratic
+                            ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 12.5 - 5.0 * (standardized_innov_abs - 5.0)
+                        else:
+                            ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
+                        
+                        ll_fold += ll_contrib
+                    
+                    # Update state with observation (for next prediction)
+                    K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
+                    mu_pred = mu_pred + K * innovation
+                    P_pred = (1.0 - K) * P_pred
+                
+                total_ll_oos += ll_fold
+                total_obs += (test_end - test_start)
+                
+            except Exception:
+                # Skip problematic folds
+                continue
+        
+        if total_obs == 0:
+            return 1e12
+        
+        # Average likelihood per observation
+        avg_ll_oos = total_ll_oos / max(total_obs, 1)
+        
+        # PRODUCTION FIX: Add explicit calibration penalty based on PIT distribution
+        # Well-calibrated forecasts should have standardized innovations ~ N(0,1)
+        # which means PIT ~ Uniform(0,1)
+        calibration_penalty = 0.0
+        if len(all_standardized) >= 30:  # Need sufficient samples
+            try:
+                # Compute PIT values from standardized innovations
+                pit_values = norm.cdf(all_standardized)
+                
+                # KS test against uniform distribution
+                ks_result = kstest(pit_values, 'uniform')
+                ks_stat = float(ks_result.statistic)
+                
+                # STRENGTHENED: Much heavier penalty for poor calibration
+                # Penalize deviations from uniform distribution aggressively
+                # KS statistic ranges from 0 (perfect) to 1 (worst)
+                # Target: KS stat < 0.05 for well-calibrated model
+                if ks_stat > 0.05:
+                    # Apply aggressive quadratic penalty
+                    # Scale to make this comparable to likelihood (typically in range -1000 to 0)
+                    calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
+                    
+                    # Additional linear penalty for moderate miscalibration
+                    if ks_stat > 0.10:
+                        calibration_penalty -= 100.0 * (ks_stat - 0.10)
+                    
+                    # Severe penalty for extreme miscalibration
+                    if ks_stat > 0.15:
+                        calibration_penalty -= 200.0 * (ks_stat - 0.15)
+            except Exception:
+                pass  # Skip calibration penalty if computation fails
+        
+        # Add adaptive Bayesian prior regularization on q
+        # Scale priors by 1/n to make them weak relative to data (standard Bayesian practice)
+        prior_scale = 1.0 / max(total_obs, 100)  # Normalize by number of observations
+        log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
+        
+        # Add weak regularization on c to prefer values near 0.9-1.0
+        # EWMA typically underestimates volatility by ~5-15%, so c should be around 0.85-1.0
+        c_target = 0.9
+        log_c_target = np.log10(c_target)
+        log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2  # Weak prior on c
+        
+        # Total penalized likelihood with calibration term
+        penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + calibration_penalty
+        
+        return -penalized_ll if np.isfinite(penalized_ll) else 1e12
 
-def compute_aic(log_likelihood: float, n_params: int) -> float:
-    """
-    Compute Akaike Information Criterion (AIC).
+    # Grid search (phi in linear space)
+    log_q_min = np.log10(q_min)
+    log_q_max = np.log10(q_max)
+    log_c_min = np.log10(c_min)
+    log_c_max = np.log10(c_max)
+    phi_grid = np.linspace(phi_min, phi_max, 5)
+    log_q_grid = np.linspace(log_q_min, log_q_max, 5)
+    log_c_grid = np.linspace(log_c_min, log_c_max, 4)
+
+    best_neg_ll = float('inf')
+    best_log_q_grid = adaptive_prior_mean
+    best_log_c_grid = np.log10(0.9)
+    best_phi_grid = 0.0
+
+    for lq in log_q_grid:
+        for lc in log_c_grid:
+            for ph in phi_grid:
+                try:
+                    neg_ll = negative_penalized_ll_cv_phi(np.array([lq, lc, ph]))
+                    if neg_ll < best_neg_ll:
+                        best_neg_ll = neg_ll
+                        best_log_q_grid = lq
+                        best_log_c_grid = lc
+                        best_phi_grid = ph
+                except Exception:
+                    continue
     
-    AIC = -2*LL + 2*k
+    grid_best_q = 10 ** best_log_q_grid
+    grid_best_c = 10 ** best_log_c_grid
+    grid_best_phi = float(np.clip(best_phi_grid, phi_min, phi_max))
+
+    bounds = [(log_q_min, log_q_max), (log_c_min, log_c_max), (phi_min, phi_max)]
+    start_points = [
+        np.array([best_log_q_grid, best_log_c_grid, best_phi_grid]),
+        np.array([adaptive_prior_mean, np.log10(0.9), 0.0]),
+        np.array([adaptive_prior_mean, np.log10(0.7), 0.3]),
+        np.array([adaptive_prior_mean, np.log10(1.2), -0.3]),
+        np.array([best_log_q_grid + 0.5, best_log_c_grid, best_phi_grid]),
+        np.array([best_log_q_grid - 0.5, best_log_c_grid, best_phi_grid]),
+        np.array([best_log_q_grid, best_log_c_grid + 0.2, best_phi_grid]),
+        np.array([best_log_q_grid, best_log_c_grid - 0.2, best_phi_grid]),
+    ]
+
+    # Fine optimization
+    best_result = None
+    best_fun = float('inf')
     
-    Lower AIC indicates better model fit with penalty for complexity.
+    for x0 in start_points:
+        try:
+            result = minimize(
+                negative_penalized_ll_cv_phi,
+                x0=x0,
+                method='L-BFGS-B',
+                bounds=bounds,
+                options={'maxiter': 100, 'ftol': 1e-6}
+            )
+            
+            if result.fun < best_fun:
+                best_fun = result.fun
+                best_result = result
+        except Exception:
+            continue
     
-    Args:
-        log_likelihood: Log-likelihood of the model
-        n_params: Number of parameters
+    if best_result is not None and best_result.success:
+        log_q_opt, log_c_opt, phi_opt = best_result.x
+        q_optimal = 10 ** log_q_opt
+        c_optimal = 10 ** log_c_opt
+        phi_optimal = float(np.clip(phi_opt, phi_min, phi_max))
+        ll_optimal = -best_result.fun
+    else:
+        q_optimal = grid_best_q
+        c_optimal = grid_best_c
+        phi_optimal = grid_best_phi
+        ll_optimal = -best_neg_ll
+
+    diagnostics = {
+        'grid_best_q': float(grid_best_q),
+        'grid_best_c': float(grid_best_c),
+        'refined_best_q': float(q_optimal),
+        'refined_best_c': float(c_optimal),
+        'prior_applied': adaptive_lambda > 0,
+        'prior_log_q_mean': float(adaptive_prior_mean),
+        'prior_lambda': float(adaptive_lambda),
+        'vol_cv': float(vol_cv),
+        'rv_ratio': float(rv_ratio),
+        'n_folds': int(len(fold_splits)),
+        'optimization_successful': best_result is not None and (best_result.success if best_result else False)
+    }
     
-    Returns:
-        AIC value
-    """
-    return -2.0 * log_likelihood + 2.0 * n_params
+    return q_optimal, c_optimal, phi_optimal, ll_optimal, diagnostics
 
 
 def compute_kurtosis(data: np.ndarray) -> float:
     """
     Compute sample excess kurtosis (Fisher's definition: kurtosis - 3).
-    
+
     Positive excess kurtosis indicates heavy tails (fat-tailed distribution).
     Zero indicates normal distribution.
     Negative indicates light tails.
-    
+
     Args:
         data: Sample data
-    
+
     Returns:
         Excess kurtosis
     """
     data_clean = data[np.isfinite(data)]
     if len(data_clean) < 4:
         return 0.0
-    
+
     mean = np.mean(data_clean)
     std = np.std(data_clean, ddof=1)
     if std <= 0:
         return 0.0
-    
+
     n = len(data_clean)
     m4 = np.mean(((data_clean - mean) / std) ** 4)
-    
+
     # Fisher's definition: excess kurtosis = kurtosis - 3
     excess_kurtosis = m4 - 3.0
-    
+
     return float(excess_kurtosis)
 
+def compute_aic(log_likelihood: float, n_params: int) -> float:
+    """
+    Compute Akaike Information Criterion (AIC).
+
+    AIC = -2*LL + 2*k
+
+    Lower AIC indicates better model fit with penalty for complexity.
+
+    Args:
+        log_likelihood: Log-likelihood of the model
+        n_params: Number of parameters
+
+    Returns:
+        AIC value
+    """
+    return -2.0 * log_likelihood + 2.0 * n_params
+
+def compute_bic(log_likelihood: float, n_params: int, n_obs: int) -> float:
+    """
+    Compute Bayesian Information Criterion (BIC).
+
+    BIC = -2*LL + k*ln(n)
+
+    Lower BIC indicates better model fit with penalty for complexity.
+
+    Args:
+        log_likelihood: Log-likelihood of the model
+        n_params: Number of parameters
+        n_obs: Number of observations
+
+    Returns:
+        BIC value
+    """
+    return -2.0 * log_likelihood + n_params * np.log(n_obs)
 
 def tune_asset_q(
     asset: str,
@@ -1092,6 +1468,21 @@ def tune_asset_q(
         print(f"     Gaussian: q={q_gauss:.2e}, c={c_gauss:.3f}, LL={ll_gauss_full:.1f}, BIC={bic_gauss:.1f}, PIT p={pit_p_gauss:.4f}")
         
         # =================================================================
+        # STEP 1.5: Fit φ-Kalman Model (q, c, φ)
+        # =================================================================
+        print(f"  🔧 Fitting φ-Kalman model...")
+        q_phi, c_phi, phi_opt, ll_phi_cv, opt_diag_phi = optimize_q_c_phi_mle(
+            returns_arr, vol_arr,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda
+        )
+        mu_phi, P_phi, ll_phi_full = kalman_filter_drift_phi(returns_arr, vol_arr, q_phi, c_phi, phi_opt)
+        ks_phi, pit_p_phi = compute_pit_ks_pvalue(returns_arr, mu_phi, vol_arr, P_phi, c_phi)
+        aic_phi = compute_aic(ll_phi_full, n_params=3)
+        bic_phi = compute_bic(ll_phi_full, n_params=3, n_obs=n_obs)
+        print(f"     φ-Kalman: q={q_phi:.2e}, c={c_phi:.3f}, φ={phi_opt:+.3f}, LL={ll_phi_full:.1f}, BIC={bic_phi:.1f}, PIT p={pit_p_phi:.4f}")
+        
+        # =================================================================
         # STEP 2: Fit Student-t Model (q, c, ν)
         # =================================================================
         print(f"  🔧 Fitting Student-t model...")
@@ -1135,43 +1526,30 @@ def tune_asset_q(
         # STEP 3: Model Selection via BIC
         # =================================================================
         # Lower BIC is better (penalizes complexity)
-        if student_t_fit_success and bic_student < bic_gauss:
-            # Student-t wins
-            noise_model = "student_t"
-            q_optimal = q_student
-            c_optimal = c_student
-            nu_optimal = nu_student
-            mu_filtered = mu_student
-            P_filtered = P_student
-            ll_full = ll_student_full
-            ks_statistic = ks_student
-            ks_pvalue = pit_p_student
-            aic_final = aic_student
-            bic_final = bic_student
-            opt_diagnostics = opt_diag_student
-            
-            bic_improvement = bic_gauss - bic_student
-            print(f"  ✓ Selected Student-t (ΔBIC={bic_improvement:.1f} better)")
+        candidate_models = []
+        candidate_models.append(("gaussian", bic_gauss, aic_gauss, ll_gauss_full, mu_gauss, P_gauss, ks_gauss, pit_p_gauss, q_gauss, c_gauss, None, opt_diag_gauss))
+        candidate_models.append(("phi_gaussian", bic_phi, aic_phi, ll_phi_full, mu_phi, P_phi, ks_phi, pit_p_phi, q_phi, c_phi, phi_opt, opt_diag_phi))
+        if student_t_fit_success:
+            candidate_models.append(("student_t", bic_student, aic_student, ll_student_full, mu_student, P_student, ks_student, pit_p_student, q_student, c_student, nu_student, opt_diag_student))
+
+        candidate_models = [m for m in candidate_models if np.isfinite(m[1])]
+        best_entry = min(candidate_models, key=lambda x: x[1])
+        noise_model, bic_final, aic_final, ll_full, mu_filtered, P_filtered, ks_statistic, ks_pvalue, q_optimal, c_optimal, extra_param, opt_diagnostics = best_entry
+
+        nu_optimal = None
+        phi_selected = None
+        if noise_model == "student_t":
+            nu_optimal = extra_param
+        elif noise_model == "phi_gaussian":
+            phi_selected = extra_param
+
+        print(f"  ✓ Selected {noise_model} (BIC={bic_final:.1f})")
+        if noise_model == "student_t":
+            print(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_student:+.1f}, ΔBIC vs φ-Kalman = {bic_phi - bic_student:+.1f})")
+        elif noise_model == "phi_gaussian":
+            print(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_phi:+.1f})")
         else:
-            # Gaussian wins (either Student-t failed or BIC worse)
-            noise_model = "gaussian"
-            q_optimal = q_gauss
-            c_optimal = c_gauss
-            nu_optimal = None
-            mu_filtered = mu_gauss
-            P_filtered = P_gauss
-            ll_full = ll_gauss_full
-            ks_statistic = ks_gauss
-            ks_pvalue = pit_p_gauss
-            aic_final = aic_gauss
-            bic_final = bic_gauss
-            opt_diagnostics = opt_diag_gauss
-            
-            if student_t_fit_success:
-                bic_diff = bic_student - bic_gauss
-                print(f"  ✓ Selected Gaussian (Student-t ΔBIC={bic_diff:+.1f} worse)")
-            else:
-                print(f"  ✓ Selected Gaussian (Student-t fit failed)")
+            print(f"    (ΔBIC vs φ-Kalman = {bic_phi - bic_gauss:+.1f})")
         
         # =================================================================
         # Upgrade #4: Model Comparison - Baseline Models
@@ -1257,8 +1635,7 @@ def tune_asset_q(
                     ll += -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
             return float(ll)
         
-        # Run full Kalman filter with optimal (q, c)
-        mu_filtered, P_filtered, ll_full = kalman_filter_drift(returns_arr, vol_arr, q_optimal, c_optimal)
+        # (No additional Kalman rerun here; use the variant already selected above)
         
         # =================================================================
         # Compute all baseline models for formal model comparison
@@ -1283,27 +1660,34 @@ def tune_asset_q(
         bic_ewma = compute_bic(ll_ewma, n_params=1, n_obs=n_obs)
         print(f"     EWMA-drift:     LL={ll_ewma:.1f}, AIC={aic_ewma:.1f}, BIC={bic_ewma:.1f}")
         
-        # Model 4: Kalman-drift (already computed, with 2 or 3 params depending on noise model)
-        print(f"     Kalman-drift:   LL={ll_full:.1f}, AIC={aic_final:.1f}, BIC={bic_final:.1f} ({noise_model})")
+        # Kalman variants printed separately
+        print(f"     Kalman-Gaussian: LL={ll_gauss_full:.1f}, AIC={aic_gauss:.1f}, BIC={bic_gauss:.1f}")
+        print(f"     Kalman-φ-Gaussian: LL={ll_phi_full:.1f}, AIC={aic_phi:.1f}, BIC={bic_phi:.1f}, φ={phi_opt:+.3f}")
+        if student_t_fit_success:
+            print(f"     Kalman-Student-t: LL={ll_student_full:.1f}, AIC={aic_student:.1f}, BIC={bic_student:.1f}, ν={nu_student:.1f}")
         
-        # Compute ΔLL for all baselines vs Kalman
+        # Selected model summary (already chosen above)
+        print(f"     Selected:        LL={ll_full:.1f}, AIC={aic_final:.1f}, BIC={bic_final:.1f} ({noise_model})")
+        
+        # ΔLL against baselines using the selected model's LL
         delta_ll_vs_zero = float(ll_full - ll_zero)
         delta_ll_vs_const = float(ll_full - ll_const)
         delta_ll_vs_ewma = float(ll_full - ll_ewma)
-        
-        # Determine best model by BIC (lower is better)
+
+        # Aggregate model comparison metrics for diagnostics and cache
         model_comparison = {
-            "zero_drift": {"ll": ll_zero, "aic": aic_zero, "bic": bic_zero, "n_params": 0},
-            "constant_drift": {"ll": ll_const, "aic": aic_const, "bic": bic_const, "n_params": 1},
-            "ewma_drift": {"ll": ll_ewma, "aic": aic_ewma, "bic": bic_ewma, "n_params": 1},
-            "kalman_drift": {"ll": ll_full, "aic": aic_final, "bic": bic_final, "n_params": 2 if noise_model == "gaussian" else 3}
+            'zero_drift': {'ll': ll_zero, 'aic': aic_zero, 'bic': bic_zero, 'n_params': 0},
+            'constant_drift': {'ll': ll_const, 'aic': aic_const, 'bic': bic_const, 'n_params': 1},
+            'ewma_drift': {'ll': ll_ewma, 'aic': aic_ewma, 'bic': bic_ewma, 'n_params': 1},
+            'kalman_gaussian': {'ll': ll_gauss_full, 'aic': aic_gauss, 'bic': bic_gauss, 'n_params': 2},
+            'kalman_phi_gaussian': {'ll': ll_phi_full, 'aic': aic_phi, 'bic': bic_phi, 'n_params': 3},
         }
+        if student_t_fit_success:
+            model_comparison['kalman_student_t'] = {'ll': ll_student_full, 'aic': aic_student, 'bic': bic_student, 'n_params': 3}
         
-        best_model_name = min(model_comparison.keys(), key=lambda k: model_comparison[k]["bic"])
-        best_bic = model_comparison[best_model_name]["bic"]
-        
-        print(f"  ✓ Best model by BIC: {best_model_name} (BIC={best_bic:.1f})")
-        
+        # Best model across baselines and Kalman variants by BIC
+        best_model_name = min(model_comparison.items(), key=lambda kv: kv[1]['bic'])[0]
+
         # Compute drift diagnostics
         mean_drift_var = float(np.mean(mu_filtered ** 2))
         mean_posterior_unc = float(np.mean(P_filtered))
@@ -1312,30 +1696,31 @@ def tune_asset_q(
         forecast_std = np.sqrt(c_optimal * (vol_arr ** 2) + P_filtered)
         standardized_residuals = (returns_arr - mu_filtered) / forecast_std
         std_residual_kurtosis = compute_kurtosis(standardized_residuals)
-        
+
         # Calibration warning flag
         calibration_warning = (ks_pvalue < 0.05)
-        
+
         # Print calibration status
         if calibration_warning:
             if ks_pvalue < 0.01:
                 print(f"  ⚠️  Severe miscalibration (PIT p={ks_pvalue:.4f})")
             else:
                 print(f"  ⚠️  Calibration warning (PIT p={ks_pvalue:.4f})")
-        
+
         # Build result dictionary with extended schema
         result = {
             # Asset identifier
             'asset': asset,
-            
+
             # Model selection
             'noise_model': noise_model,  # "gaussian" or "student_t"
-            
+
             # Parameters
             'q': float(q_optimal),
             'c': float(c_optimal),
             'nu': float(nu_optimal) if nu_optimal is not None else None,
-            
+            'phi': float(phi_selected) if phi_selected is not None else None,
+
             # Likelihood and model comparison
             'log_likelihood': float(ll_full),
             'delta_ll_vs_zero': float(delta_ll_vs_zero),
@@ -1343,28 +1728,28 @@ def tune_asset_q(
             'delta_ll_vs_ewma': float(delta_ll_vs_ewma),
             'aic': float(aic_final),
             'bic': float(bic_final),
-            
+
             # Upgrade #4: Model comparison results
             'model_comparison': model_comparison,
             'best_model_by_bic': best_model_name,
-            
+
             # Calibration diagnostics
             'ks_statistic': float(ks_statistic),
             'pit_ks_pvalue': float(ks_pvalue),
             'calibration_warning': bool(calibration_warning),
             'std_residual_kurtosis': float(std_residual_kurtosis),
-            
+
             # Drift diagnostics
             'mean_drift_var': float(mean_drift_var),
             'mean_posterior_unc': float(mean_posterior_unc),
-            
+
             # Data characteristics
             'n_obs': int(n_obs),
             'excess_kurtosis': float(excess_kurtosis),
-            
+
             # Metadata
             'timestamp': datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            
+
             # Optimization diagnostics from selected model
             'grid_best_q': opt_diagnostics.get('grid_best_q'),
             'grid_best_c': opt_diagnostics.get('grid_best_c'),
@@ -1379,19 +1764,21 @@ def tune_asset_q(
             'robust_optimization': True,
             'optimization_successful': opt_diagnostics.get('optimization_successful', False)
         }
-        
+
         # Add Student-t specific diagnostics if applicable
         if noise_model == "student_t":
             result['grid_best_nu'] = opt_diagnostics.get('grid_best_nu')
             result['refined_best_nu'] = opt_diagnostics.get('refined_best_nu')
-        
+        if noise_model == "phi_gaussian":
+            result['refined_best_phi'] = float(phi_selected)
+
         # Add Gaussian comparison if Student-t was selected
         if noise_model == "student_t" and student_t_fit_success:
             result['gaussian_bic'] = float(bic_gauss)
             result['gaussian_log_likelihood'] = float(ll_gauss_full)
             result['gaussian_pit_ks_pvalue'] = float(pit_p_gauss)
             result['bic_improvement'] = float(bic_gauss - bic_student)
-        
+
         return result
         
     except Exception as e:
@@ -1606,9 +1993,10 @@ Examples:
                 'zero_drift': 'Zero',
                 'constant_drift': 'Const',
                 'ewma_drift': 'EWMA',
-                'kalman_drift': 'Kalman'
+                'kalman_drift': 'Kalman',
+                'phi_kalman_drift': 'PhiKal'
             }.get(best_model, best_model[:8])
-            
+
             warn_marker = " ⚠️" if data.get('calibration_warning') else ""
             
             print(f"{asset:<20} {model_abbr:<10} {log10_q:>8.2f}   {c_val:>6.3f}  {nu_str:<6} {delta_ll_zero:>6.1f}  {delta_ll_const:>6.1f}  {delta_ll_ewma:>6.1f}  {best_model_abbr:<12} {bic_val:>9.1f}  {pit_p:.4f}{warn_marker}")

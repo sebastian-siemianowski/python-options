@@ -1,0 +1,4 @@
+# Copilot Guardrails
+# Do not rewrite explicit `if/else` blocks into ternary expressions.
+# Preserve existing `else` blocks exactly as authored.
+# No stylistic rewrites of conditionals without explicit user request.
