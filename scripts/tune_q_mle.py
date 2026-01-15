@@ -988,14 +988,14 @@ class StudentTDriftModel:
 
         for lq in log_q_grid:
             for lc in log_c_grid:
-                for lnu in log_nu_grid:
+                for ln in log_nu_grid:
                     try:
-                        neg_ll = negative_penalized_ll_cv_student_t(np.array([lq, lc, lnu]))
+                        neg_ll = negative_penalized_ll_cv_student_t(np.array([lq, lc, ln]))
                         if neg_ll < best_neg_ll:
                             best_neg_ll = neg_ll
                             best_log_q_grid = lq
                             best_log_c_grid = lc
-                            best_log_nu_grid = lnu
+                            best_log_nu_grid = ln
                     except Exception:
                         continue
 
@@ -1190,16 +1190,7 @@ def optimize_q_c_phi_nu_mle(
                     forecast_var = P_pred + R
 
                     if forecast_var > 1e-12:
-                        # Use Student-t log-likelihood for consistency with the φ-Student-t model
-                        forecast_scale = np.sqrt(forecast_var)
-                        ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_scale)
-                        # Optional tail-penalty remains implicit via logpdf; keep standardized storage for KS
-                        standardized_innov = innovation / forecast_scale
-                        standardized_innov_abs = abs(standardized_innov)
-                        if len(all_standardized) < 1000:
-                            all_standardized.append(float(standardized_innov))
-                        if standardized_innov_abs > 5.0:
-                            ll_contrib -= 5.0 * (standardized_innov_abs - 5.0)
+                        ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, np.sqrt(forecast_var))
                         ll_fold += ll_contrib
 
                     K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
@@ -1219,6 +1210,7 @@ def optimize_q_c_phi_nu_mle(
         log_prior_c = -0.1 * prior_scale * (log_c - np.log10(0.9)) ** 2
         log_prior_phi = -0.05 * prior_scale * (phi_clip ** 2)
         log_prior_nu = -0.05 * prior_scale * (log_nu - np.log10(6.0)) ** 2
+
         penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + log_prior_nu
         return -penalized_ll if np.isfinite(penalized_ll) else 1e12
 
@@ -2032,7 +2024,7 @@ Examples:
                 'ewma_drift': 'EWMA',
                 'kalman_drift': 'Kalman',
                 'phi_kalman_drift': 'PhiKal',
-                'phi_kalman_student_t': 'PhiKal-t'
+                'kalman_phi_student_t': 'PhiKal-t'
             }.get(best_model, best_model[:8])
 
             warn_marker = " ⚠️" if data.get('calibration_warning') else ""
