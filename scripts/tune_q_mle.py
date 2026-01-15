@@ -73,71 +73,372 @@ def save_cache_json(cache: Dict[str, Dict], cache_json: str) -> None:
     os.replace(json_temp, cache_json)
 
 
-def kalman_filter_drift(returns: np.ndarray, vol: np.ndarray, q: float, c: float = 1.0) -> Tuple[np.ndarray, np.ndarray, float]:
-    """
-    Run Kalman filter for drift estimation with fixed process noise q and observation variance scale c.
-    
-    State-space model:
-        μ_t = μ_{t-1} + w_t,  w_t ~ N(0, q)         (state evolution)
-        r_t = μ_t + v_t,      v_t ~ N(0, c·σ_t²)    (observation with scaled variance)
-    
-    Args:
-        returns: Observed returns
-        vol: EWMA volatility estimates
-        q: Process noise variance (drift evolution)
-        c: Observation variance scale factor (corrects EWMA bias)
-    
-    Returns:
-        mu_filtered: Posterior mean of drift at each time step
-        P_filtered: Posterior variance of drift at each time step
-        log_likelihood: Total log-likelihood of observations
-    """
-    n = len(returns)
-    
-    # Ensure q and c are scalars
-    q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, 'item') else float(q)
-    c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, 'item') else float(c)
-    
-    # Initialize state
-    mu = 0.0  # Initial drift estimate
-    P = 1e-4  # Initial uncertainty
-    
-    mu_filtered = np.zeros(n)
-    P_filtered = np.zeros(n)
-    log_likelihood = 0.0
-    
-    for t in range(n):
-        # Predict
-        mu_pred = float(mu)
-        P_pred = float(P) + q_val
-        
-        # Observation variance with scale factor (extract scalar from array)
-        vol_t = vol[t]
-        vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
-        R = c_val * (vol_scalar ** 2)
-        
-        # Update (Kalman gain)
-        K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
-        
-        # Innovation (extract scalar from array)
-        ret_t = returns[t]
-        r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
-        innovation = r_val - mu_pred
-        
-        # Update state (keep as Python float)
-        mu = float(mu_pred + K * innovation)
-        P = float((1.0 - K) * P_pred)
-        
-        # Store filtered estimates
-        mu_filtered[t] = mu
-        P_filtered[t] = P
-        
-        # Accumulate log-likelihood: log p(r_t | past) = log N(r_t; μ_pred, P_pred + R)
-        forecast_var = P_pred + R
-        if forecast_var > 1e-12:
-            log_likelihood += -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
-    
-    return mu_filtered, P_filtered, log_likelihood
+class GaussianDriftModel:
+    """Encapsulates Gaussian Kalman drift model logic for modular reuse."""
+
+    @staticmethod
+    def filter(returns: np.ndarray, vol: np.ndarray, q: float, c: float = 1.0) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Run Kalman filter for drift estimation with fixed process noise q and observation variance scale c."""
+        n = len(returns)
+
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, 'item') else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, 'item') else float(c)
+
+        mu = 0.0
+        P = 1e-4
+
+        mu_filtered = np.zeros(n)
+        P_filtered = np.zeros(n)
+        log_likelihood = 0.0
+
+        for t in range(n):
+            mu_pred = float(mu)
+            P_pred = float(P) + q_val
+
+            vol_t = vol[t]
+            vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
+            R = c_val * (vol_scalar ** 2)
+
+            K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
+
+            ret_t = returns[t]
+            r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
+            innovation = r_val - mu_pred
+
+            mu = float(mu_pred + K * innovation)
+            P = float((1.0 - K) * P_pred)
+
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+
+            forecast_var = P_pred + R
+            if forecast_var > 1e-12:
+                log_likelihood += -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
+
+        return mu_filtered, P_filtered, log_likelihood
+
+    @staticmethod
+    def filter_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t."""
+        n = len(returns)
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+
+        mu = 0.0
+        P = 1e-4
+        mu_filtered = np.zeros(n)
+        P_filtered = np.zeros(n)
+        log_likelihood = 0.0
+
+        for t in range(n):
+            mu_pred = phi_val * mu
+            P_pred = (phi_val ** 2) * P + q_val
+
+            vol_t = vol[t]
+            vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
+            R = c_val * (vol_scalar ** 2)
+
+            ret_t = returns[t]
+            r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
+            innovation = r_val - mu_pred
+
+            S = P_pred + R
+            if S <= 1e-12:
+                S = 1e-12
+            K = P_pred / S
+
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            P = float(max(P, 1e-12))
+
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+
+            log_likelihood += -0.5 * (np.log(2 * np.pi * S) + (innovation ** 2) / S)
+
+        return mu_filtered, P_filtered, float(log_likelihood)
+
+    @staticmethod
+    def pit_ks(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float = 1.0) -> Tuple[float, float]:
+        """PIT/KS for Gaussian forecasts including parameter uncertainty."""
+        returns_flat = np.asarray(returns).flatten()
+        mu_flat = np.asarray(mu_filtered).flatten()
+        vol_flat = np.asarray(vol).flatten()
+        P_flat = np.asarray(P_filtered).flatten()
+
+        forecast_std = np.sqrt(c * (vol_flat ** 2) + P_flat)
+        standardized = (returns_flat - mu_flat) / forecast_std
+        pit_values = norm.cdf(standardized)
+        ks_result = kstest(pit_values, 'uniform')
+        return float(ks_result.statistic), float(ks_result.pvalue)
+
+    @classmethod
+    def optimize_params(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        train_frac: float = 0.7,
+        q_min: float = 1e-10,
+        q_max: float = 1e-1,
+        c_min: float = 0.3,
+        c_max: float = 3.0,
+        prior_log_q_mean: float = -6.0,
+        prior_lambda: float = 1.0
+    ) -> Tuple[float, float, float, Dict]:
+        """Jointly optimize (q, c) via maximum likelihood with enhanced Bayesian regularization."""
+        n = len(returns)
+
+        ret_p005 = np.percentile(returns, 0.5)
+        ret_p995 = np.percentile(returns, 99.5)
+        returns_robust = np.clip(returns, ret_p005, ret_p995)
+
+        ret_std = float(np.std(returns_robust))
+        ret_mean = float(np.mean(returns_robust))
+        vol_mean = float(np.mean(vol))
+        vol_std = float(np.std(vol))
+
+        if vol_mean > 0:
+            vol_cv = vol_std / vol_mean
+        else:
+            vol_cv = 0.0
+
+        if ret_std > 0:
+            rv_ratio = abs(ret_mean) / ret_std
+        else:
+            rv_ratio = 0.0
+
+        if vol_cv > 0.5 or rv_ratio > 0.15:
+            adaptive_prior_mean = prior_log_q_mean + 0.5
+            adaptive_lambda = prior_lambda * 0.5
+        elif vol_cv < 0.2 and rv_ratio < 0.05:
+            adaptive_prior_mean = prior_log_q_mean - 0.3
+            adaptive_lambda = prior_lambda * 1.5
+        else:
+            adaptive_prior_mean = prior_log_q_mean
+            adaptive_lambda = prior_lambda
+
+        min_train = min(max(60, int(n * 0.4)), max(n - 5, 1))
+        test_window = min(max(20, int(n * 0.1)), max(n - min_train, 5))
+
+        fold_splits = []
+        train_end = min_train
+        while train_end + test_window <= n:
+            test_end = min(train_end + test_window, n)
+            if test_end - train_end >= 20:
+                fold_splits.append((0, train_end, train_end, test_end))
+            train_end += test_window
+
+        if not fold_splits:
+            split_idx = int(n * train_frac)
+            fold_splits = [(0, split_idx, split_idx, n)]
+
+        def negative_penalized_ll_cv(params: np.ndarray) -> float:
+            log_q, log_c = params
+            q = 10 ** log_q
+            c = 10 ** log_c
+
+            if q <= 0 or c <= 0 or not np.isfinite(q) or not np.isfinite(c):
+                return 1e12
+
+            total_ll_oos = 0.0
+            total_obs = 0
+            all_standardized = []
+
+            for train_start, train_end, test_start, test_end in fold_splits:
+                try:
+                    ret_train = returns_robust[train_start:train_end]
+                    vol_train = vol[train_start:train_end]
+
+                    if len(ret_train) < 3:
+                        continue
+
+                    mu_filt_train, P_filt_train, _ = cls.filter(returns_robust[train_start:train_end], vol_train, q, c)
+
+                    mu_final = float(mu_filt_train[-1])
+                    P_final = float(P_filt_train[-1])
+
+                    ll_fold = 0.0
+                    mu_pred = mu_final
+                    P_pred = P_final
+
+                    for t in range(test_start, test_end):
+                        P_pred = P_pred + q
+
+                        if np.ndim(returns_robust[t]) == 0:
+                            ret_t = float(returns_robust[t])
+                        else:
+                            ret_t = float(returns_robust[t].item())
+                        if np.ndim(vol[t]) == 0:
+                            vol_t = float(vol[t])
+                        else:
+                            vol_t = float(vol[t].item())
+
+                        R = c * (vol_t ** 2)
+                        innovation = ret_t - mu_pred
+                        forecast_var = P_pred + R
+
+                        if forecast_var > 1e-12:
+                            standardized_innov = innovation / np.sqrt(forecast_var)
+                            standardized_innov_abs = abs(standardized_innov)
+
+                            if len(all_standardized) < 1000:
+                                all_standardized.append(float(standardized_innov))
+
+                            if standardized_innov_abs > 5.0:
+                                ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 12.5 - 5.0 * (standardized_innov_abs - 5.0)
+                            else:
+                                ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
+
+                            ll_fold += ll_contrib
+
+                        K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
+                        mu_pred = mu_pred + K * innovation
+                        P_pred = (1.0 - K) * P_pred
+
+                    total_ll_oos += ll_fold
+                    total_obs += (test_end - test_start)
+
+                except Exception:
+                    continue
+
+            if total_obs == 0:
+                return 1e12
+
+            avg_ll_oos = total_ll_oos / max(total_obs, 1)
+
+            calibration_penalty = 0.0
+            if len(all_standardized) >= 30:
+                try:
+                    pit_values = norm.cdf(all_standardized)
+
+                    ks_result = kstest(pit_values, 'uniform')
+                    ks_stat = float(ks_result.statistic)
+
+                    if ks_stat > 0.05:
+                        calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
+
+                        if ks_stat > 0.10:
+                            calibration_penalty -= 100.0 * (ks_stat - 0.10)
+
+                        if ks_stat > 0.15:
+                            calibration_penalty -= 200.0 * (ks_stat - 0.15)
+                except Exception:
+                    pass
+
+            prior_scale = 1.0 / max(total_obs, 100)
+            log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
+
+            c_target = 0.9
+            log_c_target = np.log10(c_target)
+            log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
+
+            penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + calibration_penalty
+
+            if not np.isfinite(penalized_ll):
+                return 1e12
+
+            return -penalized_ll
+
+        log_q_min = np.log10(q_min)
+        log_q_max = np.log10(q_max)
+        log_c_min = np.log10(c_min)
+        log_c_max = np.log10(c_max)
+
+        log_q_grid = np.concatenate([
+            np.linspace(log_q_min, adaptive_prior_mean - 1.0, 5),
+            np.linspace(adaptive_prior_mean - 1.0, adaptive_prior_mean + 1.0, 7),
+            np.linspace(adaptive_prior_mean + 1.0, log_q_max, 3)
+        ])
+
+        log_c_grid = np.concatenate([
+            np.linspace(log_c_min, np.log10(0.7), 3),
+            np.linspace(np.log10(0.7), np.log10(1.0), 7),
+            np.linspace(np.log10(1.0), log_c_max, 2)
+        ])
+
+        best_neg_ll = float('inf')
+        best_log_q_grid = adaptive_prior_mean
+        best_log_c_grid = np.log10(0.9)
+
+        for lq in log_q_grid:
+            for lc in log_c_grid:
+                try:
+                    neg_ll = negative_penalized_ll_cv(np.array([lq, lc]))
+                    if neg_ll < best_neg_ll:
+                        best_neg_ll = neg_ll
+                        best_log_q_grid = lq
+                        best_log_c_grid = lc
+                except Exception:
+                    continue
+
+        grid_best_q = 10 ** best_log_q_grid
+        grid_best_c = 10 ** best_log_c_grid
+
+        bounds = [(log_q_min, log_q_max), (log_c_min, log_c_max)]
+
+        best_result = None
+        best_fun = float('inf')
+
+        start_points = [
+            np.array([best_log_q_grid, best_log_c_grid]),
+            np.array([adaptive_prior_mean, np.log10(0.9)]),
+            np.array([adaptive_prior_mean, np.log10(0.7)]),
+            np.array([adaptive_prior_mean, np.log10(1.2)]),
+            np.array([best_log_q_grid - 0.5, best_log_c_grid]),
+            np.array([best_log_q_grid + 0.5, best_log_c_grid]),
+            np.array([best_log_q_grid, best_log_c_grid - 0.2]),
+            np.array([best_log_q_grid, best_log_c_grid + 0.2]),
+            np.array([-7.0, 0.0]),
+            np.array([-5.0, 0.0]),
+        ]
+
+        for x0 in start_points:
+            try:
+                result = minimize(
+                    negative_penalized_ll_cv,
+                    x0=x0,
+                    method='L-BFGS-B',
+                    bounds=bounds,
+                    options={'maxiter': 150, 'ftol': 1e-7}
+                )
+
+                if result.fun < best_fun:
+                    best_fun = result.fun
+                    best_result = result
+            except Exception:
+                continue
+
+        if best_result is not None and best_result.success:
+            log_q_opt, log_c_opt = best_result.x
+            q_optimal = 10 ** log_q_opt
+            c_optimal = 10 ** log_c_opt
+            ll_optimal = -best_result.fun
+        else:
+            q_optimal = grid_best_q
+            c_optimal = grid_best_c
+            ll_optimal = -best_neg_ll
+
+        diagnostics = {
+            'grid_best_q': float(grid_best_q),
+            'grid_best_c': float(grid_best_c),
+            'refined_best_q': float(q_optimal),
+            'refined_best_c': float(c_optimal),
+            'prior_applied': adaptive_lambda > 0,
+            'prior_log_q_mean': float(adaptive_prior_mean),
+            'prior_lambda': float(adaptive_lambda),
+            'vol_cv': float(vol_cv),
+            'rv_ratio': float(rv_ratio),
+            'ret_mean': float(ret_mean),
+            'ret_std': float(ret_std),
+            'n_folds': int(len(fold_splits)),
+            'adaptive_regularization': True,
+            'robust_optimization': True,
+            'winsorized': True,
+            'optimization_successful': best_result is not None and (best_result.success if best_result else False)
+        }
+
+        return q_optimal, c_optimal, ll_optimal, diagnostics
 
 
 class StudentTDriftModel:
@@ -359,6 +660,7 @@ class StudentTDriftModel:
 
             total_ll_oos = 0.0
             total_obs = 0
+            all_standardized = []
 
             for train_start, train_end, test_start, test_end in fold_splits:
                 try:
@@ -389,12 +691,23 @@ class StudentTDriftModel:
                         else:
                             vol_t = float(vol[t].item())
 
-                        forecast_scale = np.sqrt(P_pred + c * (vol_t ** 2))
+                        R = c * (vol_t ** 2)
+                        innovation = ret_t - mu_pred
+                        forecast_var = P_pred + R
 
-                        if forecast_scale > 1e-12:
-                            ll_contrib = cls.logpdf(ret_t, nu, mu_pred, forecast_scale)
-                            if np.isfinite(ll_contrib):
-                                ll_fold += ll_contrib
+                        if forecast_var > 1e-12:
+                            standardized_innov = innovation / np.sqrt(forecast_var)
+                            standardized_innov_abs = abs(standardized_innov)
+
+                            if len(all_standardized) < 1000:
+                                all_standardized.append(float(standardized_innov))
+
+                            if standardized_innov_abs > 5.0:
+                                ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 12.5 - 5.0 * (standardized_innov_abs - 5.0)
+                            else:
+                                ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
+
+                            ll_fold += ll_contrib
 
                         R = c * (vol_t ** 2)
                         nu_adjust = min(nu / (nu + 3.0), 1.0)
@@ -525,6 +838,45 @@ class StudentTDriftModel:
         return q_optimal, c_optimal, nu_optimal, ll_optimal, diagnostics
 
 
+# Compatibility wrappers to preserve existing API surface
+
+def kalman_filter_drift(returns: np.ndarray, vol: np.ndarray, q: float, c: float = 1.0) -> Tuple[np.ndarray, np.ndarray, float]:
+    return GaussianDriftModel.filter(returns, vol, q, c)
+
+
+def kalman_filter_drift_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:
+    return GaussianDriftModel.filter_phi(returns, vol, q, c, phi)
+
+
+def compute_pit_ks_pvalue(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float = 1.0) -> Tuple[float, float]:
+    return GaussianDriftModel.pit_ks(returns, mu_filtered, vol, P_filtered, c)
+
+
+def optimize_q_mle(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    train_frac: float = 0.7,
+    q_min: float = 1e-10,
+    q_max: float = 1e-1,
+    c_min: float = 0.3,
+    c_max: float = 3.0,
+    prior_log_q_mean: float = -6.0,
+    prior_lambda: float = 1.0
+) -> Tuple[float, float, float, Dict]:
+    """Delegate Gaussian q/c optimization to GaussianDriftModel for modularity."""
+    return GaussianDriftModel.optimize_params(
+        returns=returns,
+        vol=vol,
+        train_frac=train_frac,
+        q_min=q_min,
+        q_max=q_max,
+        c_min=c_min,
+        c_max=c_max,
+        prior_log_q_mean=prior_log_q_mean,
+        prior_lambda=prior_lambda,
+    )
+
+
 def student_t_logpdf(x: float, nu: float, mu: float, scale: float) -> float:
     """Compatibility wrapper for StudentTDriftModel.logpdf."""
     return StudentTDriftModel.logpdf(x, nu, mu, scale)
@@ -533,61 +885,6 @@ def student_t_logpdf(x: float, nu: float, mu: float, scale: float) -> float:
 def kalman_filter_drift_student_t(returns: np.ndarray, vol: np.ndarray, q: float, c: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
     """Compatibility wrapper for StudentTDriftModel.filter."""
     return StudentTDriftModel.filter(returns, vol, q, c, nu)
-
-
-def kalman_filter_drift_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:
-    """Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t.
-
-    Args:
-        returns: Observed returns.
-        vol: Observation noise std (EWMA volatility).
-        q: Process noise variance.
-        c: Observation variance scale.
-        phi: Drift persistence (-0.999 < φ < 0.999). φ>0 trend, φ<0 mean-reversion.
-
-    Returns:
-        mu_filtered: Posterior mean of drift.
-        P_filtered: Posterior variance of drift.
-        log_likelihood: Total log-likelihood.
-    """
-    n = len(returns)
-    q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
-    c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
-    phi_val = float(np.clip(phi, -0.999, 0.999))
-
-    mu = 0.0
-    P = 1e-4
-    mu_filtered = np.zeros(n)
-    P_filtered = np.zeros(n)
-    log_likelihood = 0.0
-
-    for t in range(n):
-        mu_pred = phi_val * mu
-        P_pred = (phi_val ** 2) * P + q_val
-
-        vol_t = vol[t]
-        vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
-        R = c_val * (vol_scalar ** 2)
-
-        ret_t = returns[t]
-        r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
-        innovation = r_val - mu_pred
-
-        S = P_pred + R
-        if S <= 1e-12:
-            S = 1e-12
-        K = P_pred / S
-
-        mu = mu_pred + K * innovation
-        P = (1.0 - K) * P_pred
-        P = float(max(P, 1e-12))
-
-        mu_filtered[t] = mu
-        P_filtered[t] = P
-
-        log_likelihood += -0.5 * (np.log(2 * np.pi * S) + (innovation ** 2) / S)
-
-    return mu_filtered, P_filtered, float(log_likelihood)
 
 
 def kalman_filter_drift_phi_student_t(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
@@ -619,14 +916,13 @@ def optimize_q_mle(
     vol: np.ndarray,
     train_frac: float = 0.7,
     q_min: float = 1e-10,
-    q_max: float = 1e-1,  # EXPANDED: from 1e-2 to 1e-1 to allow higher process noise
-    c_min: float = 0.3,   # EXPANDED: from 0.5 to 0.3 for more flexibility
-    c_max: float = 3.0,   # EXPANDED: from 2.0 to 3.0 for more flexibility
+    q_max: float = 1e-1,
+    c_min: float = 0.3,
+    c_max: float = 3.0,
     prior_log_q_mean: float = -6.0,
     prior_lambda: float = 1.0
 ) -> Tuple[float, float, float, Dict]:
-    """
-    Jointly optimize (q, c) via maximum likelihood with enhanced Bayesian regularization.
+    """Jointly optimize (q, c) via maximum likelihood with enhanced Bayesian regularization.
     
     Production-Grade Improvements:
     - Walk-forward cross-validation without look-ahead bias
@@ -741,12 +1037,11 @@ def optimize_q_mle(
                 # Get final state from training period
                 mu_final = float(mu_filt_train[-1])
                 P_final = float(P_filt_train[-1])
-                
-                # Compute one-step-ahead predictions on test set
+
                 ll_fold = 0.0
                 mu_pred = mu_final
                 P_pred = P_final
-                
+
                 for t in range(test_start, test_end):
                     # One-step prediction
                     P_pred = P_pred + q
@@ -760,7 +1055,7 @@ def optimize_q_mle(
                         vol_t = float(vol[t])
                     else:
                         vol_t = float(vol[t].item())
-                    
+
                     R = c * (vol_t ** 2)
                     innovation = ret_t - mu_pred
                     forecast_var = P_pred + R
@@ -788,10 +1083,10 @@ def optimize_q_mle(
                     K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
                     mu_pred = mu_pred + K * innovation
                     P_pred = (1.0 - K) * P_pred
-                
+
                 total_ll_oos += ll_fold
                 total_obs += (test_end - test_start)
-                
+
             except Exception:
                 # Skip problematic folds
                 continue
@@ -1084,11 +1379,9 @@ def optimize_q_c_phi_mle(
 
                 mu_filt_train, P_filt_train, _ = kalman_filter_drift_phi(returns_robust[train_start:train_end], vol_train, q, c, phi)
 
-                # Get final state from training period
                 mu_final = float(mu_filt_train[-1])
                 P_final = float(P_filt_train[-1])
 
-                # Compute one-step-ahead predictions on test set
                 ll_fold = 0.0
                 mu_pred = mu_final
                 P_pred = P_final
@@ -1151,11 +1444,11 @@ def optimize_q_c_phi_mle(
             try:
                 # Compute PIT values from standardized innovations
                 pit_values = norm.cdf(all_standardized)
-
+                
                 # KS test against uniform distribution
                 ks_result = kstest(pit_values, 'uniform')
                 ks_stat = float(ks_result.statistic)
-
+                
                 # STRENGTHENED: Much heavier penalty for poor calibration
                 # Penalize deviations from uniform distribution aggressively
                 # KS statistic ranges from 0 (perfect) to 1 (worst)
@@ -1164,28 +1457,28 @@ def optimize_q_c_phi_mle(
                     # Apply aggressive quadratic penalty
                     # Scale to make this comparable to likelihood (typically in range -1000 to 0)
                     calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
-
+                    
                     # Additional linear penalty for moderate miscalibration
                     if ks_stat > 0.10:
                         calibration_penalty -= 100.0 * (ks_stat - 0.10)
-
+                    
                     # Severe penalty for extreme miscalibration
                     if ks_stat > 0.15:
                         calibration_penalty -= 200.0 * (ks_stat - 0.15)
             except Exception:
                 pass  # Skip calibration penalty if computation fails
-
+        
         # Add adaptive Bayesian prior regularization on q
         # Scale priors by 1/n to make them weak relative to data (standard Bayesian practice)
         prior_scale = 1.0 / max(total_obs, 100)  # Normalize by number of observations
         log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
-
+        
         # Add weak regularization on c to prefer values near 0.9-1.0
         # EWMA typically underestimates volatility by ~5-15%, so c should be around 0.85-1.0
         c_target = 0.9
         log_c_target = np.log10(c_target)
         log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2  # Weak prior on c
-
+        
         # Total penalized likelihood with calibration term
         log_prior_phi = -0.05 * prior_scale * (phi ** 2)
         penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty
