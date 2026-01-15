@@ -265,7 +265,7 @@ def kalman_filter_drift_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: f
         vol: Observation noise std (EWMA volatility).
         q: Process noise variance.
         c: Observation variance scale.
-        phi: Drift persistence (-1 < φ < 1.999). φ>0 trend, φ<0 mean-reversion.
+        phi: Drift persistence (-0.999 < φ < 0.999). φ>0 trend, φ<0 mean-reversion.
 
     Returns:
         mu_filtered: Posterior mean of drift.
@@ -855,15 +855,17 @@ def optimize_q_c_nu_mle(
                 # Train Student-t filter
                 mu_filt_train, P_filt_train, _ = kalman_filter_drift_student_t(returns_robust[train_start:train_end], vol_train, q, c, nu)
                 
+                # Get final state from training period
                 mu_final = float(mu_filt_train[-1])
                 P_final = float(P_filt_train[-1])
                 
-                # One-step-ahead predictions on test set
+                # Compute one-step-ahead predictions on test set
                 ll_fold = 0.0
                 mu_pred = mu_final
                 P_pred = P_final
                 
                 for t in range(test_start, test_end):
+                    # One-step prediction
                     P_pred = P_pred + q
                     
                     if np.ndim(returns_robust[t]) == 0:
@@ -1123,13 +1125,14 @@ def optimize_q_c_phi_mle(
                 P_pred = P_final
                 
                 for t in range(test_start, test_end):
-                    # One-step prediction
-                    P_pred = P_pred + q
+                    # One-step prediction with phi persistence
+                    mu_pred = phi * mu_pred
+                    P_pred = (phi ** 2) * P_pred + q
                     
                     # Extract scalar values safely
                     ret_t = float(returns_robust[t]) if np.ndim(returns_robust[t]) == 0 else float(returns_robust[t].item())
                     vol_t = float(vol[t]) if np.ndim(vol[t]) == 0 else float(vol[t].item())
-                    
+
                     R = c * (vol_t ** 2)
                     innovation = ret_t - mu_pred
                     forecast_var = P_pred + R
