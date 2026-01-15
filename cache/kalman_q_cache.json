@@ -1,312 +1,4 @@
 {
-  "INTU": {
-    "asset": "INTU",
-    "noise_model": "gaussian",
-    "q": 1.2744637119185458e-08,
-    "c": 0.8594334202190521,
-    "nu": null,
-    "phi": null,
-    "log_likelihood": 7629.725961927546,
-    "delta_ll_vs_zero": 0.20832753829290596,
-    "delta_ll_vs_const": -7.495699977427648,
-    "delta_ll_vs_ewma": 72.8520049881472,
-    "aic": -15255.451923855093,
-    "bic": -15243.610304496515,
-    "model_comparison": {
-      "zero_drift": {
-        "ll": 7629.5176343892535,
-        "aic": -15259.035268778507,
-        "bic": -15259.035268778507,
-        "n_params": 0
-      },
-      "constant_drift": {
-        "ll": 7637.221661904974,
-        "aic": -15272.443323809948,
-        "bic": -15266.52251413066,
-        "n_params": 1
-      },
-      "ewma_drift": {
-        "ll": 7556.873956939399,
-        "aic": -15111.747913878798,
-        "bic": -15105.82710419951,
-        "n_params": 1
-      },
-      "kalman_gaussian": {
-        "ll": 7629.725961927546,
-        "aic": -15255.451923855093,
-        "bic": -15243.610304496515,
-        "n_params": 2
-      },
-      "kalman_phi_gaussian": {
-        "ll": 7630.6120121913145,
-        "aic": -15255.224024382629,
-        "bic": -15237.461595344763,
-        "n_params": 3
-      },
-      "kalman_student_t": {
-        "ll": 7633.113597254716,
-        "aic": -15260.227194509433,
-        "bic": -15242.464765471566,
-        "n_params": 3
-      }
-    },
-    "best_model_by_bic": "constant_drift",
-    "ks_statistic": 0.022146918069813504,
-    "pit_ks_pvalue": 0.13218135523361563,
-    "calibration_warning": false,
-    "std_residual_kurtosis": 0.22702660386595586,
-    "mean_drift_var": 1.7115261893135628e-06,
-    "mean_posterior_unc": 1.8265313742314652e-06,
-    "n_obs": 2754,
-    "excess_kurtosis": 7.704439525829693,
-    "timestamp": "2026-01-15T01:41:19Z",
-    "grid_best_q": 1.7782794100389228e-08,
-    "grid_best_c": 0.8366600265340756,
-    "refined_best_q": 1.2744637119185458e-08,
-    "refined_best_c": 0.8594334202190521,
-    "prior_applied": true,
-    "prior_log_q_mean": -6.0,
-    "prior_lambda": 1.0,
-    "vol_cv": 0.49732431135223815,
-    "rv_ratio": 0.03735855877967694,
-    "n_folds": 6,
-    "robust_optimization": true,
-    "optimization_successful": true
-  },
-  "CSCO": {
-    "asset": "CSCO",
-    "noise_model": "student_t",
-    "q": 7.413581069080515e-09,
-    "c": 0.7491195944278821,
-    "nu": 25.04883894604635,
-    "phi": null,
-    "log_likelihood": 8255.052747519743,
-    "delta_ll_vs_zero": 18.805928593421413,
-    "delta_ll_vs_const": 13.677442326752498,
-    "delta_ll_vs_ewma": 87.87594666558562,
-    "aic": -16504.105495039486,
-    "bic": -16486.34306600162,
-    "model_comparison": {
-      "zero_drift": {
-        "ll": 8236.246818926322,
-        "aic": -16472.493637852644,
-        "bic": -16472.493637852644,
-        "n_params": 0
-      },
-      "constant_drift": {
-        "ll": 8241.37530519299,
-        "aic": -16480.75061038598,
-        "bic": -16474.82980070669,
-        "n_params": 1
-      },
-      "ewma_drift": {
-        "ll": 8167.176800854158,
-        "aic": -16332.353601708315,
-        "bic": -16326.432792029027,
-        "n_params": 1
-      },
-      "kalman_gaussian": {
-        "ll": 8245.173759367492,
-        "aic": -16486.347518734983,
-        "bic": -16474.505899376407,
-        "n_params": 2
-      },
-      "kalman_phi_gaussian": {
-        "ll": 8248.587706186774,
-        "aic": -16491.175412373548,
-        "bic": -16473.412983335682,
-        "n_params": 3
-      },
-      "kalman_student_t": {
-        "ll": 8255.052747519743,
-        "aic": -16504.105495039486,
-        "bic": -16486.34306600162,
-        "n_params": 3
-      }
-    },
-    "best_model_by_bic": "kalman_student_t",
-    "ks_statistic": 0.020078349079643232,
-    "pit_ks_pvalue": 0.21395664456627617,
-    "calibration_warning": false,
-    "std_residual_kurtosis": 0.4833255376055692,
-    "mean_drift_var": 7.352680261030437e-07,
-    "mean_posterior_unc": 1.2776954106446771e-06,
-    "n_obs": 2754,
-    "excess_kurtosis": 11.823132445315666,
-    "timestamp": "2026-01-15T01:41:20Z",
-    "grid_best_q": 1.7782794100389228e-08,
-    "grid_best_c": 0.646330407009565,
-    "refined_best_q": 7.413581069080515e-09,
-    "refined_best_c": 0.7491195944278821,
-    "prior_applied": true,
-    "prior_log_q_mean": -6.0,
-    "prior_lambda": 1.0,
-    "vol_cv": 0.49437684973985674,
-    "rv_ratio": 0.03837550967221514,
-    "n_folds": 6,
-    "robust_optimization": true,
-    "optimization_successful": true,
-    "grid_best_nu": 12.363855899425669,
-    "refined_best_nu": 25.04883894604635,
-    "gaussian_bic": -16474.505899376407,
-    "gaussian_log_likelihood": 8245.173759367492,
-    "gaussian_pit_ks_pvalue": 0.057712153325697124,
-    "bic_improvement": 11.837166625213285
-  },
-  "MSFT": {
-    "asset": "MSFT",
-    "noise_model": "gaussian",
-    "q": 8.630192250942188e-09,
-    "c": 0.8714618835785569,
-    "nu": null,
-    "phi": null,
-    "log_likelihood": 8001.673670246213,
-    "delta_ll_vs_zero": 3.906800574960471,
-    "delta_ll_vs_const": -8.247273794506327,
-    "delta_ll_vs_ewma": 66.47219758994015,
-    "aic": -15999.347340492426,
-    "bic": -15987.505721133848,
-    "model_comparison": {
-      "zero_drift": {
-        "ll": 7997.766869671253,
-        "aic": -15995.533739342505,
-        "bic": -15995.533739342505,
-        "n_params": 0
-      },
-      "constant_drift": {
-        "ll": 8009.920944040719,
-        "aic": -16017.841888081439,
-        "bic": -16011.92107840215,
-        "n_params": 1
-      },
-      "ewma_drift": {
-        "ll": 7935.201472656273,
-        "aic": -15868.402945312546,
-        "bic": -15862.482135633258,
-        "n_params": 1
-      },
-      "kalman_gaussian": {
-        "ll": 8001.673670246213,
-        "aic": -15999.347340492426,
-        "bic": -15987.505721133848,
-        "n_params": 2
-      },
-      "kalman_phi_gaussian": {
-        "ll": 7997.56145802995,
-        "aic": -15989.1229160599,
-        "bic": -15971.360487022033,
-        "n_params": 3
-      },
-      "kalman_student_t": {
-        "ll": 8004.448494501586,
-        "aic": -16002.896989003171,
-        "bic": -15985.134559965305,
-        "n_params": 3
-      }
-    },
-    "best_model_by_bic": "constant_drift",
-    "ks_statistic": 0.02581630472015589,
-    "pit_ks_pvalue": 0.05002110450873032,
-    "calibration_warning": false,
-    "std_residual_kurtosis": 0.20596456863399926,
-    "mean_drift_var": 1.5996951911760138e-06,
-    "mean_posterior_unc": 1.541583520579097e-06,
-    "n_obs": 2754,
-    "excess_kurtosis": 8.067631638972877,
-    "timestamp": "2026-01-15T01:41:21Z",
-    "grid_best_q": 1.7782794100389228e-08,
-    "grid_best_c": 0.8879040017426008,
-    "refined_best_q": 8.630192250942188e-09,
-    "refined_best_c": 0.8714618835785569,
-    "prior_applied": true,
-    "prior_log_q_mean": -6.0,
-    "prior_lambda": 1.0,
-    "vol_cv": 0.4733281573238412,
-    "rv_ratio": 0.05906438090653633,
-    "n_folds": 6,
-    "robust_optimization": true,
-    "optimization_successful": true
-  },
-  "IBM": {
-    "asset": "IBM",
-    "noise_model": "student_t",
-    "q": 8.404101107329462e-09,
-    "c": 0.7315979094592436,
-    "nu": 21.96233055173552,
-    "phi": null,
-    "log_likelihood": 8317.70912526774,
-    "delta_ll_vs_zero": 26.328125627409463,
-    "delta_ll_vs_const": 22.767735865134455,
-    "delta_ll_vs_ewma": 100.35255981957562,
-    "aic": -16629.41825053548,
-    "bic": -16611.655821497614,
-    "model_comparison": {
-      "zero_drift": {
-        "ll": 8291.38099964033,
-        "aic": -16582.76199928066,
-        "bic": -16582.76199928066,
-        "n_params": 0
-      },
-      "constant_drift": {
-        "ll": 8294.941389402606,
-        "aic": -16587.88277880521,
-        "bic": -16581.96196912592,
-        "n_params": 1
-      },
-      "ewma_drift": {
-        "ll": 8217.356565448164,
-        "aic": -16432.71313089633,
-        "bic": -16426.79232121704,
-        "n_params": 1
-      },
-      "kalman_gaussian": {
-        "ll": 8302.175056976976,
-        "aic": -16600.35011395395,
-        "bic": -16588.508494595375,
-        "n_params": 2
-      },
-      "kalman_phi_gaussian": {
-        "ll": 8302.193438224125,
-        "aic": -16598.38687644825,
-        "bic": -16580.624447410384,
-        "n_params": 3
-      },
-      "kalman_student_t": {
-        "ll": 8317.70912526774,
-        "aic": -16629.41825053548,
-        "bic": -16611.655821497614,
-        "n_params": 3
-      }
-    },
-    "best_model_by_bic": "kalman_student_t",
-    "ks_statistic": 0.021611266706131504,
-    "pit_ks_pvalue": 0.15043258406786753,
-    "calibration_warning": false,
-    "std_residual_kurtosis": 0.6979455343556702,
-    "mean_drift_var": 9.378262784464703e-07,
-    "mean_posterior_unc": 1.1950656664973623e-06,
-    "n_obs": 2754,
-    "excess_kurtosis": 10.588405877999303,
-    "timestamp": "2026-01-15T01:41:22Z",
-    "grid_best_q": 1.7782794100389228e-08,
-    "grid_best_c": 0.646330407009565,
-    "refined_best_q": 8.404101107329462e-09,
-    "refined_best_c": 0.7315979094592436,
-    "prior_applied": true,
-    "prior_log_q_mean": -6.0,
-    "prior_lambda": 1.0,
-    "vol_cv": 0.4730206715487473,
-    "rv_ratio": 0.030193860560925993,
-    "n_folds": 6,
-    "robust_optimization": true,
-    "optimization_successful": true,
-    "grid_best_nu": 12.363855899425669,
-    "refined_best_nu": 21.96233055173552,
-    "gaussian_bic": -16588.508494595375,
-    "gaussian_log_likelihood": 8302.175056976976,
-    "gaussian_pit_ks_pvalue": 0.08589601759453014,
-    "bic_improvement": 23.147326902239
-  },
   "INTC": {
     "asset": "INTC",
     "noise_model": "student_t",
@@ -22000,5 +21692,305 @@
     "gaussian_log_likelihood": 8871.702053370196,
     "gaussian_pit_ks_pvalue": 1.634787306221383e-07,
     "bic_improvement": 8.23525509220417
+  },
+  "IBM": {
+    "asset": "IBM",
+    "noise_model": "gaussian",
+    "q": 8.104172831456732e-09,
+    "c": 0.8064545089468699,
+    "nu": null,
+    "phi": null,
+    "log_likelihood": 8305.587753131067,
+    "delta_ll_vs_zero": -3.6344499275237467,
+    "delta_ll_vs_const": -6.854892210067192,
+    "delta_ll_vs_ewma": 63.55641243272294,
+    "aic": -16607.175506262134,
+    "bic": -16595.333160818962,
+    "model_comparison": {
+      "zero_drift": {
+        "ll": 8309.22220305859,
+        "aic": -16618.44440611718,
+        "bic": -16618.44440611718,
+        "n_params": 0
+      },
+      "constant_drift": {
+        "ll": 8312.442645341134,
+        "aic": -16622.88529068227,
+        "bic": -16616.96411796068,
+        "n_params": 1
+      },
+      "ewma_drift": {
+        "ll": 8242.031340698344,
+        "aic": -16482.06268139669,
+        "bic": -16476.1415086751,
+        "n_params": 1
+      },
+      "kalman_gaussian": {
+        "ll": 8305.587753131067,
+        "aic": -16607.175506262134,
+        "bic": -16595.333160818962,
+        "n_params": 2
+      },
+      "kalman_phi_gaussian": {
+        "ll": 8306.094923960583,
+        "aic": -16606.189847921167,
+        "bic": -16588.426329756407,
+        "n_params": 3
+      },
+      "kalman_phi_student_t": {
+        "ll": 8079.17567094625,
+        "aic": -16152.3513418925,
+        "bic": -16134.58782372774,
+        "n_params": 3,
+        "phi": 0.8922986784033304
+      }
+    },
+    "best_model_by_bic": "zero_drift",
+    "ks_statistic": 0.023680677902150393,
+    "pit_ks_pvalue": 0.089569993922055,
+    "calibration_warning": false,
+    "std_residual_kurtosis": 0.6966170144108248,
+    "mean_drift_var": 9.420590108429091e-07,
+    "mean_posterior_unc": 1.1532602024562643e-06,
+    "n_obs": 2755,
+    "excess_kurtosis": 10.592479396522645,
+    "timestamp": "2026-01-15T15:10:06Z",
+    "grid_best_q": 1.7782794100389228e-08,
+    "grid_best_c": 0.7883735163105243,
+    "refined_best_q": 8.104172831456732e-09,
+    "refined_best_c": 0.8064545089468699,
+    "prior_applied": true,
+    "prior_log_q_mean": -6.0,
+    "prior_lambda": 1.0,
+    "vol_cv": 0.47291558160791786,
+    "rv_ratio": 0.030093955680423383,
+    "n_folds": 6,
+    "robust_optimization": true,
+    "optimization_successful": true
+  },
+  "INTU": {
+    "asset": "INTU",
+    "noise_model": "gaussian",
+    "q": 1.2985541831602037e-08,
+    "c": 0.8595532152494728,
+    "nu": null,
+    "phi": null,
+    "log_likelihood": 7632.471541853738,
+    "delta_ll_vs_zero": 0.1492977705784142,
+    "delta_ll_vs_const": -7.533803594649726,
+    "delta_ll_vs_ewma": 72.78545045451665,
+    "aic": -15260.943083707476,
+    "bic": -15249.100738264302,
+    "model_comparison": {
+      "zero_drift": {
+        "ll": 7632.32224408316,
+        "aic": -15264.64448816632,
+        "bic": -15264.64448816632,
+        "n_params": 0
+      },
+      "constant_drift": {
+        "ll": 7640.005345448388,
+        "aic": -15278.010690896775,
+        "bic": -15272.08951817519,
+        "n_params": 1
+      },
+      "ewma_drift": {
+        "ll": 7559.686091399221,
+        "aic": -15117.372182798443,
+        "bic": -15111.451010076857,
+        "n_params": 1
+      },
+      "kalman_gaussian": {
+        "ll": 7632.471541853738,
+        "aic": -15260.943083707476,
+        "bic": -15249.100738264302,
+        "n_params": 2
+      },
+      "kalman_phi_gaussian": {
+        "ll": 7631.2670358927,
+        "aic": -15256.5340717854,
+        "bic": -15238.77055362064,
+        "n_params": 3
+      },
+      "kalman_phi_student_t": {
+        "ll": 7361.849464978057,
+        "aic": -14717.698929956114,
+        "bic": -14699.935411791354,
+        "n_params": 3,
+        "phi": 0.9485129871304493
+      }
+    },
+    "best_model_by_bic": "constant_drift",
+    "ks_statistic": 0.02247504993921884,
+    "pit_ks_pvalue": 0.12179625302989516,
+    "calibration_warning": false,
+    "std_residual_kurtosis": 0.22798972161574538,
+    "mean_drift_var": 1.7126015433828812e-06,
+    "mean_posterior_unc": 1.8418250081526294e-06,
+    "n_obs": 2755,
+    "excess_kurtosis": 7.707413114149519,
+    "timestamp": "2026-01-15T15:10:09Z",
+    "grid_best_q": 1.7782794100389228e-08,
+    "grid_best_c": 0.8366600265340756,
+    "refined_best_q": 1.2985541831602037e-08,
+    "refined_best_c": 0.8595532152494728,
+    "prior_applied": true,
+    "prior_log_q_mean": -6.0,
+    "prior_lambda": 1.0,
+    "vol_cv": 0.49722373837681016,
+    "rv_ratio": 0.03723399187170182,
+    "n_folds": 6,
+    "robust_optimization": true,
+    "optimization_successful": true
+  },
+  "MSFT": {
+    "asset": "MSFT",
+    "noise_model": "gaussian",
+    "q": 8.681753510633136e-09,
+    "c": 0.8715759658635014,
+    "nu": null,
+    "phi": null,
+    "log_likelihood": 8005.256738508377,
+    "delta_ll_vs_zero": 3.8796379958776015,
+    "delta_ll_vs_const": -8.245419356464481,
+    "delta_ll_vs_ewma": 66.4264073239192,
+    "aic": -16006.513477016753,
+    "bic": -15994.67113157358,
+    "model_comparison": {
+      "zero_drift": {
+        "ll": 8001.377100512499,
+        "aic": -16002.754201024998,
+        "bic": -16002.754201024998,
+        "n_params": 0
+      },
+      "constant_drift": {
+        "ll": 8013.502157864841,
+        "aic": -16025.004315729682,
+        "bic": -16019.083143008096,
+        "n_params": 1
+      },
+      "ewma_drift": {
+        "ll": 7938.8303311844575,
+        "aic": -15875.660662368915,
+        "bic": -15869.739489647329,
+        "n_params": 1
+      },
+      "kalman_gaussian": {
+        "ll": 8005.256738508377,
+        "aic": -16006.513477016753,
+        "bic": -15994.67113157358,
+        "n_params": 2
+      },
+      "kalman_phi_gaussian": {
+        "ll": 8004.34667537019,
+        "aic": -16002.69335074038,
+        "bic": -15984.929832575619,
+        "n_params": 3
+      },
+      "kalman_phi_student_t": {
+        "ll": 7726.739957009391,
+        "aic": -15447.479914018782,
+        "bic": -15429.716395854022,
+        "n_params": 3,
+        "phi": 0.9911602559662999
+      }
+    },
+    "best_model_by_bic": "constant_drift",
+    "ks_statistic": 0.025925822355702788,
+    "pit_ks_pvalue": 0.04841501965418282,
+    "calibration_warning": true,
+    "std_residual_kurtosis": 0.20686140392547614,
+    "mean_drift_var": 1.5999480245238211e-06,
+    "mean_posterior_unc": 1.5448584565620768e-06,
+    "n_obs": 2755,
+    "excess_kurtosis": 8.071322502114194,
+    "timestamp": "2026-01-15T15:10:09Z",
+    "grid_best_q": 1.7782794100389228e-08,
+    "grid_best_c": 0.8879040017426008,
+    "refined_best_q": 8.681753510633136e-09,
+    "refined_best_c": 0.8715759658635014,
+    "prior_applied": true,
+    "prior_log_q_mean": -6.0,
+    "prior_lambda": 1.0,
+    "vol_cv": 0.47331565530021014,
+    "rv_ratio": 0.05899810139102918,
+    "n_folds": 6,
+    "robust_optimization": true,
+    "optimization_successful": true
+  },
+  "CSCO": {
+    "asset": "CSCO",
+    "noise_model": "gaussian",
+    "q": 8.027420425253726e-09,
+    "c": 0.813916968786368,
+    "nu": null,
+    "phi": null,
+    "log_likelihood": 8247.9642222806,
+    "delta_ll_vs_zero": -3.40916168822514,
+    "delta_ll_vs_const": -8.213615258235222,
+    "delta_ll_vs_ewma": 60.41674783328199,
+    "aic": -16491.9284445612,
+    "bic": -16480.086099118027,
+    "model_comparison": {
+      "zero_drift": {
+        "ll": 8251.373383968825,
+        "aic": -16502.74676793765,
+        "bic": -16502.74676793765,
+        "n_params": 0
+      },
+      "constant_drift": {
+        "ll": 8256.177837538835,
+        "aic": -16510.35567507767,
+        "bic": -16504.43450235608,
+        "n_params": 1
+      },
+      "ewma_drift": {
+        "ll": 8187.547474447318,
+        "aic": -16373.094948894635,
+        "bic": -16367.17377617305,
+        "n_params": 1
+      },
+      "kalman_gaussian": {
+        "ll": 8247.9642222806,
+        "aic": -16491.9284445612,
+        "bic": -16480.086099118027,
+        "n_params": 2
+      },
+      "kalman_phi_gaussian": {
+        "ll": 8251.057948670075,
+        "aic": -16496.11589734015,
+        "bic": -16478.35237917539,
+        "n_params": 3
+      },
+      "kalman_phi_student_t": {
+        "ll": 8016.013119417057,
+        "aic": -16026.026238834114,
+        "bic": -16008.262720669354,
+        "n_params": 3,
+        "phi": -0.20187350033390905
+      }
+    },
+    "best_model_by_bic": "constant_drift",
+    "ks_statistic": 0.025444912579185852,
+    "pit_ks_pvalue": 0.055494034100664114,
+    "calibration_warning": false,
+    "std_residual_kurtosis": 0.48027935176403425,
+    "mean_drift_var": 7.587073925452322e-07,
+    "mean_posterior_unc": 1.2885604129366346e-06,
+    "n_obs": 2755,
+    "excess_kurtosis": 11.821057142573842,
+    "timestamp": "2026-01-15T15:10:10Z",
+    "grid_best_q": 1.7782794100389228e-08,
+    "grid_best_c": 0.8366600265340756,
+    "refined_best_q": 8.027420425253726e-09,
+    "refined_best_c": 0.813916968786368,
+    "prior_applied": true,
+    "prior_log_q_mean": -6.0,
+    "prior_lambda": 1.0,
+    "vol_cv": 0.4943409676893267,
+    "rv_ratio": 0.03873371804906422,
+    "n_folds": 6,
+    "robust_optimization": true,
+    "optimization_successful": true
   }
 }
