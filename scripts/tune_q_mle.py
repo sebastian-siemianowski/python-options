@@ -1190,8 +1190,11 @@ def optimize_q_c_phi_nu_mle(
                     forecast_var = P_pred + R
 
                     if forecast_var > 1e-12:
-                        ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, np.sqrt(forecast_var))
+                        forecast_std = np.sqrt(forecast_var)
+                        ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_std)
                         ll_fold += ll_contrib
+                        if len(all_standardized) < 1000:
+                            all_standardized.append(float(innovation / forecast_std))
 
                     K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
                     mu_pred = mu_pred + K * innovation
@@ -1205,13 +1208,27 @@ def optimize_q_c_phi_nu_mle(
         if total_obs == 0:
             return 1e12
         avg_ll = total_ll_oos / max(total_obs, 1)
+        calibration_penalty = 0.0
+        if len(all_standardized) >= 30:
+            try:
+                pit_values = student_t.cdf(all_standardized, df=nu)
+                ks_result = kstest(pit_values, 'uniform')
+                ks_stat = float(ks_result.statistic)
+                if ks_stat > 0.05:
+                    calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
+                    if ks_stat > 0.10:
+                        calibration_penalty -= 100.0 * (ks_stat - 0.10)
+                    if ks_stat > 0.15:
+                        calibration_penalty -= 200.0 * (ks_stat - 0.15)
+            except Exception:
+                pass
         prior_scale = 1.0 / max(total_obs, 100)
         log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
         log_prior_c = -0.1 * prior_scale * (log_c - np.log10(0.9)) ** 2
         log_prior_phi = -0.05 * prior_scale * (phi_clip ** 2)
         log_prior_nu = -0.05 * prior_scale * (log_nu - np.log10(6.0)) ** 2
 
-        penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + log_prior_nu
+        penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + log_prior_nu + calibration_penalty
         return -penalized_ll if np.isfinite(penalized_ll) else 1e12
 
     log_q_min = np.log10(q_min)
