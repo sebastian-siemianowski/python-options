@@ -598,8 +598,8 @@ class PhiGaussianDriftModel:
         log_c_min = np.log10(c_min)
         log_c_max = np.log10(c_max)
         phi_grid = np.linspace(phi_min, phi_max, 5)
-        log_q_grid = np.linspace(log_q_min, log_q_max, 5)
-        log_c_grid = np.linspace(log_c_min, log_c_max, 4)
+        log_q_grid = np.linspace(log_q_min, log_q_max, 4)
+        log_c_grid = np.linspace(log_c_min, log_c_max, 3)
 
         best_neg_ll = float('inf')
         best_log_q_grid = adaptive_prior_mean
@@ -1718,7 +1718,14 @@ def tune_asset_q(
             'kalman_phi_gaussian': {'ll': ll_phi_full, 'aic': aic_phi, 'bic': bic_phi, 'n_params': 3},
         }
         if student_t_fit_success:
-            model_comparison['kalman_phi_student_t'] = {'ll': ll_student_full, 'aic': aic_student, 'bic': bic_student, 'n_params': 3, 'phi': float(phi_opt)}
+            model_comparison['kalman_phi_student_t'] = {
+                'll': ll_student_full,
+                'aic': aic_student,
+                'bic': bic_student,
+                'n_params': 4,
+                'phi': float(phi_opt),
+                'nu': float(nu_student)
+            }
         
         # Best model across baselines and Kalman variants by BIC
         best_model_name = min(model_comparison.items(), key=lambda kv: kv[1]['bic'])[0]
