@@ -27,6 +27,7 @@ from scipy.optimize import minimize_scalar, minimize
 from scipy.stats import norm, kstest, t as student_t
 from scipy.special import gammaln
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import warnings
 
 # Add repository root (parent of scripts) and scripts directory to sys.path for imports
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -1099,15 +1100,6 @@ def optimize_q_mle(
         prior_lambda=prior_lambda,
     )
 
-
-def student_t_logpdf(x: float, nu: float, mu: float, scale: float) -> float:
-    return StudentTDriftModel.logpdf(x, nu, mu, scale)
-
-
-def kalman_filter_drift_student_t(returns: np.ndarray, vol: np.ndarray, q: float, c: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
-    return StudentTDriftModel.filter(returns, vol, q, c, nu)
-
-
 def kalman_filter_drift_phi_student_t(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
     """Thin wrapper for φ-Student-t Kalman filter."""
     return StudentTDriftModel.filter_phi(returns, vol, q, c, phi, nu)
@@ -1115,35 +1107,6 @@ def kalman_filter_drift_phi_student_t(returns: np.ndarray, vol: np.ndarray, q: f
 
 def compute_pit_ks_pvalue_student_t(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float, nu: float) -> Tuple[float, float]:
     return StudentTDriftModel.pit_ks(returns, mu_filtered, vol, P_filtered, c, nu)
-
-
-def optimize_q_c_nu_mle(
-    returns: np.ndarray,
-    vol: np.ndarray,
-    train_frac: float = 0.7,
-    q_min: float = 1e-10,
-    q_max: float = 1e-1,
-    c_min: float = 0.3,
-    c_max: float = 3.0,
-    nu_min: float = 2.1,
-    nu_max: float = 30.0,
-    prior_log_q_mean: float = -6.0,
-    prior_lambda: float = 1.0
-) -> Tuple[float, float, float, float, Dict]:
-    """Wrapper that delegates Student-t (q, c, nu) optimization to StudentTDriftModel."""
-    return StudentTDriftModel.optimize_params(
-        returns=returns,
-        vol=vol,
-        train_frac=train_frac,
-        q_min=q_min,
-        q_max=q_max,
-        c_min=c_min,
-        c_max=c_max,
-        nu_min=nu_min,
-        nu_max=nu_max,
-        prior_log_q_mean=prior_log_q_mean,
-        prior_lambda=prior_lambda,
-    )
 
 def optimize_q_c_phi_nu_mle(
     returns: np.ndarray,
