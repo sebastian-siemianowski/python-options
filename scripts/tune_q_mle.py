@@ -1972,11 +1972,11 @@ Examples:
         def _model_label(data: dict) -> str:
             phi_val = data.get('phi')
             noise_model = data.get('noise_model', 'gaussian')
-            if noise_model == 'student_t' and phi_val is not None:
+            if noise_model == 'phi_student_t' and phi_val is not None:
                 return 'Phi-Student-t'
-            if noise_model == 'student_t':
+            if noise_model == 'phi_student_t':
                 return 'Student-t'
-            if phi_val is not None:
+            if noise_model == 'phi_gaussian' or phi_val is not None:
                 return 'Phi-Gaussian'
             return 'Gaussian'
         
