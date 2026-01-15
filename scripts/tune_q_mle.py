@@ -1520,7 +1520,7 @@ def tune_asset_q(
         candidate_models.append(("gaussian", bic_gauss, aic_gauss, ll_gauss_full, mu_gauss, P_gauss, ks_gauss, pit_p_gauss, q_gauss, c_gauss, None, opt_diag_gauss))
         candidate_models.append(("phi_gaussian", bic_phi, aic_phi, ll_phi_full, mu_phi, P_phi, ks_phi, pit_p_phi, q_phi, c_phi, phi_opt, opt_diag_phi))
         if student_t_fit_success:
-            candidate_models.append(("phi_student_t", bic_student, aic_student, ll_student_full, mu_student, P_student, ks_student, pit_p_student, q_student, c_student, (phi_student, nu_student), opt_diag_student))
+            candidate_models.append(('kalman_phi_student_t', bic_student, aic_student, ll_student_full, mu_student, P_student, ks_student, pit_p_student, q_student, c_student, (phi_student, nu_student), opt_diag_student))
 
         candidate_models = [m for m in candidate_models if np.isfinite(m[1])]
         best_entry = min(candidate_models, key=lambda x: x[1])
@@ -1528,13 +1528,13 @@ def tune_asset_q(
 
         nu_optimal = None
         phi_selected = None
-        if noise_model == "phi_student_t":
+        if noise_model == 'kalman_phi_student_t':
             phi_selected, nu_optimal = extra_param
         elif noise_model == "phi_gaussian":
             phi_selected = extra_param
 
         print(f"  ✓ Selected {noise_model} (BIC={bic_final:.1f})")
-        if noise_model == "phi_student_t":
+        if noise_model == 'kalman_phi_student_t':
             print(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_student:+.1f}, ΔBIC vs φ-Kalman = {bic_phi - bic_student:+.1f})")
         elif noise_model == "phi_gaussian":
             print(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_phi:+.1f})")
@@ -1763,7 +1763,7 @@ def tune_asset_q(
         }
 
         # Add Student-t specific diagnostics if applicable
-        if noise_model == "phi_student_t":
+        if noise_model == 'kalman_phi_student_t':
             result['grid_best_nu'] = opt_diagnostics.get('grid_best_nu')
             result['refined_best_nu'] = opt_diagnostics.get('refined_best_nu')
             result['refined_best_phi'] = float(phi_selected) if phi_selected is not None else None
@@ -1771,7 +1771,7 @@ def tune_asset_q(
             result['refined_best_phi'] = float(phi_selected)
 
         # Add Gaussian comparison if Student-t was selected
-        if noise_model == "phi_student_t" and student_t_fit_success:
+        if noise_model == 'kalman_phi_student_t' and student_t_fit_success:
             result['gaussian_bic'] = float(bic_gauss)
             result['gaussian_log_likelihood'] = float(ll_gauss_full)
             result['gaussian_pit_ks_pvalue'] = float(pit_p_gauss)
@@ -1885,7 +1885,7 @@ Examples:
             cached_q = cache[asset].get('q', float('nan'))
             cached_c = cache[asset].get('c', 1.0)
             cached_model = cache[asset].get('noise_model', 'gaussian')
-            if cached_model == 'phi_student_t':
+            if cached_model == 'kalman_phi_student_t':
                 cached_nu = cache[asset].get('nu', float('nan'))
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f}, ν={cached_nu:.1f})")
             else:
@@ -1927,7 +1927,7 @@ Examples:
                     cache[asset] = result
                     new_estimates += 1
 
-                    if result.get('noise_model') == 'phi_student_t':
+                    if result.get('noise_model') == 'kalman_phi_student_t':
                         student_t_count += 1
                     else:
                         gaussian_count += 1
@@ -1964,9 +1964,9 @@ Examples:
         def _model_label(data: dict) -> str:
             phi_val = data.get('phi')
             noise_model = data.get('noise_model', 'gaussian')
-            if noise_model == 'phi_student_t' and phi_val is not None:
+            if noise_model == 'kalman_phi_student_t' and phi_val is not None:
                 return 'Phi-Student-t'
-            if noise_model == 'phi_student_t':
+            if noise_model == 'kalman_phi_student_t':
                 return 'Student-t'
             if noise_model == 'phi_gaussian' or phi_val is not None:
                 return 'Phi-Gaussian'
