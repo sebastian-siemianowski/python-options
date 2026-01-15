@@ -1885,7 +1885,7 @@ Examples:
             cached_q = cache[asset].get('q', float('nan'))
             cached_c = cache[asset].get('c', 1.0)
             cached_model = cache[asset].get('noise_model', 'gaussian')
-            if cached_model == 'student_t':
+            if cached_model == 'phi_student_t':
                 cached_nu = cache[asset].get('nu', float('nan'))
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f}, ν={cached_nu:.1f})")
             else:
@@ -1927,7 +1927,7 @@ Examples:
                     cache[asset] = result
                     new_estimates += 1
 
-                    if result.get('noise_model') == 'student_t':
+                    if result.get('noise_model') == 'phi_student_t':
                         student_t_count += 1
                     else:
                         gaussian_count += 1
