@@ -309,7 +309,7 @@ class GaussianDriftModel:
             calibration_penalty = 0.0
             if len(all_standardized) >= 30:
                 try:
-                    pit_values = norm.cdf(all_standardized)
+                    pit_values = student_t.cdf(all_standardized, df=nu)
 
                     ks_result = kstest(pit_values, 'uniform')
                     ks_stat = float(ks_result.statistic)
