@@ -312,6 +312,83 @@ def kalman_filter_drift_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: f
     return mu_filtered, P_filtered, float(log_likelihood)
 
 
+def kalman_filter_drift_phi_student_t(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Kalman filter with persistent/mean-reverting drift and Student-t observations.
+
+    State-space:
+        μ_t = φ μ_{t-1} + w_t,   w_t ~ N(0, q)
+        r_t = μ_t + v_t,         v_t ~ StudentT(ν, scale=sqrt(c)·σ_t)
+
+    Args:
+        returns: Observed returns.
+        vol: Observation noise std (EWMA volatility).
+        q: Process noise variance.
+        c: Observation variance scale.
+        phi: Drift persistence (-0.999 < φ < 0.999).
+        nu: Student-t degrees of freedom (2.1 ≤ ν ≤ 30).
+
+    Returns:
+        mu_filtered: Posterior mean of drift.
+        P_filtered: Posterior variance of drift.
+        log_likelihood: Total log-likelihood.
+    """
+    n = len(returns)
+    q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+    c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+    phi_val = float(np.clip(phi, -0.999, 0.999))
+    nu_val = float(nu) if np.ndim(nu) == 0 else float(nu.item()) if hasattr(nu, "item") else float(nu)
+    if nu_val < 2.1:
+        nu_val = 2.1
+    if nu_val > 30.0:
+        nu_val = 30.0
+
+    mu = 0.0
+    P = 1e-4
+    mu_filtered = np.zeros(n)
+    P_filtered = np.zeros(n)
+    log_likelihood = 0.0
+
+    for t in range(n):
+        mu_pred = phi_val * mu
+        P_pred = (phi_val ** 2) * P + q_val
+
+        vol_t = vol[t]
+        if np.ndim(vol_t) == 0:
+            vol_scalar = float(vol_t)
+        else:
+            vol_scalar = float(vol_t.item())
+        R = c_val * (vol_scalar ** 2)
+
+        ret_t = returns[t]
+        if np.ndim(ret_t) == 0:
+            r_val = float(ret_t)
+        else:
+            r_val = float(ret_t.item())
+        innovation = r_val - mu_pred
+
+        S = P_pred + R
+        if S <= 1e-12:
+            S = 1e-12
+        nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
+        K = nu_adjust * P_pred / S
+
+        mu = mu_pred + K * innovation
+        P = (1.0 - K) * P_pred
+        if P < 1e-12:
+            P = 1e-12
+
+        mu_filtered[t] = mu
+        P_filtered[t] = P
+
+        forecast_scale = np.sqrt(S)
+        if forecast_scale > 1e-12:
+            ll_t = student_t_logpdf(r_val, nu_val, mu_pred, forecast_scale)
+            if np.isfinite(ll_t):
+                log_likelihood += ll_t
+
+    return mu_filtered, P_filtered, float(log_likelihood)
+
+
 def compute_pit_ks_pvalue(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float = 1.0) -> Tuple[float, float]:
     """
     Compute PIT (Probability Integral Transform) and KS test statistic + p-value.
@@ -1218,7 +1295,8 @@ def optimize_q_c_phi_mle(
         log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2  # Weak prior on c
         
         # Total penalized likelihood with calibration term
-        penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + calibration_penalty
+        log_prior_phi = -0.05 * prior_scale * (phi ** 2)
+        penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty
         
         return -penalized_ll if np.isfinite(penalized_ll) else 1e12
 
@@ -1496,9 +1574,9 @@ def tune_asset_q(
                 prior_lambda=prior_lambda
             )
             
-            # Run full Student-t Kalman filter
-            mu_student, P_student, ll_student_full = kalman_filter_drift_student_t(
-                returns_arr, vol_arr, q_student, c_student, nu_student
+            # Run full φ-Student-t Kalman filter (persistent drift with heavy tails)
+            mu_student, P_student, ll_student_full = kalman_filter_drift_phi_student_t(
+                returns_arr, vol_arr, q_student, c_student, phi_opt, nu_student
             )
             
             # Compute Student-t PIT calibration
@@ -1510,7 +1588,7 @@ def tune_asset_q(
             aic_student = compute_aic(ll_student_full, n_params=3)
             bic_student = compute_bic(ll_student_full, n_params=3, n_obs=n_obs)
             
-            print(f"     Student-t: q={q_student:.2e}, c={c_student:.3f}, ν={nu_student:.1f}, LL={ll_student_full:.1f}, BIC={bic_student:.1f}, PIT p={pit_p_student:.4f}")
+            print(f"     φ-Student-t: q={q_student:.2e}, c={c_student:.3f}, φ={phi_opt:+.3f}, ν={nu_student:.1f}, LL={ll_student_full:.1f}, BIC={bic_student:.1f}, PIT p={pit_p_student:.4f}")
             
             student_t_fit_success = True
             
@@ -1524,7 +1602,7 @@ def tune_asset_q(
             bic_student = 1e12
             aic_student = 1e12
             pit_p_student = 0.0
-        
+
         # =================================================================
         # STEP 3: Model Selection via BIC
         # =================================================================
@@ -1543,8 +1621,9 @@ def tune_asset_q(
         phi_selected = None
         if noise_model == "student_t":
             nu_optimal = extra_param
+            phi_selected = float(phi_opt)
         elif noise_model == "phi_gaussian":
-            phi_selected = extra_param
+             phi_selected = extra_param
 
         print(f"  ✓ Selected {noise_model} (BIC={bic_final:.1f})")
         if noise_model == "student_t":
@@ -1667,7 +1746,7 @@ def tune_asset_q(
         print(f"     Kalman-Gaussian: LL={ll_gauss_full:.1f}, AIC={aic_gauss:.1f}, BIC={bic_gauss:.1f}")
         print(f"     Kalman-φ-Gaussian: LL={ll_phi_full:.1f}, AIC={aic_phi:.1f}, BIC={bic_phi:.1f}, φ={phi_opt:+.3f}")
         if student_t_fit_success:
-            print(f"     Kalman-Student-t: LL={ll_student_full:.1f}, AIC={aic_student:.1f}, BIC={bic_student:.1f}, ν={nu_student:.1f}")
+            print(f"     Kalman-φ-Student-t: LL={ll_student_full:.1f}, AIC={aic_student:.1f}, BIC={bic_student:.1f}, φ={phi_opt:+.3f}, ν={nu_student:.1f}")
         
         # Selected model summary (already chosen above)
         print(f"     Selected:        LL={ll_full:.1f}, AIC={aic_final:.1f}, BIC={bic_final:.1f} ({noise_model})")
@@ -1686,7 +1765,7 @@ def tune_asset_q(
             'kalman_phi_gaussian': {'ll': ll_phi_full, 'aic': aic_phi, 'bic': bic_phi, 'n_params': 3},
         }
         if student_t_fit_success:
-            model_comparison['kalman_student_t'] = {'ll': ll_student_full, 'aic': aic_student, 'bic': bic_student, 'n_params': 3}
+            model_comparison['kalman_phi_student_t'] = {'ll': ll_student_full, 'aic': aic_student, 'bic': bic_student, 'n_params': 3, 'phi': float(phi_opt)}
         
         # Best model across baselines and Kalman variants by BIC
         best_model_name = min(model_comparison.items(), key=lambda kv: kv[1]['bic'])[0]
@@ -1772,6 +1851,7 @@ def tune_asset_q(
         if noise_model == "student_t":
             result['grid_best_nu'] = opt_diagnostics.get('grid_best_nu')
             result['refined_best_nu'] = opt_diagnostics.get('refined_best_nu')
+            result['refined_best_phi'] = float(phi_selected) if phi_selected is not None else None
         if noise_model == "phi_gaussian":
             result['refined_best_phi'] = float(phi_selected)
 
@@ -1964,56 +2044,112 @@ Examples:
     print(f"  Student-t models:     {student_t_count}")
     
     if cache:
-        print(f"\nBest-fit parameters (sorted by model type, then q) — ALL ASSETS:")
-        print(f"{'Asset':<20} {'Model':<10} {'log10(q)':<10} {'c':<8} {'ν':<6} {'ΔLL_0':<8} {'ΔLL_c':<8} {'ΔLL_e':<8} {'BestModel':<12} {'BIC':<10} {'PIT p':<10}")
-        print("-" * 145)
+        print("\nBest-fit parameters (grouped by model family, then q) — ALL ASSETS:")
+
+        def _model_label(data: dict) -> str:
+            phi_val = data.get('phi')
+            noise_model = data.get('noise_model', 'gaussian')
+            if noise_model == 'student_t' and phi_val is not None:
+                return 'Phi-Student-t'
+            if noise_model == 'student_t':
+                return 'Student-t'
+            if phi_val is not None:
+                return 'Phi-Gaussian'
+            return 'Gaussian'
         
-        # Sort by model type, then q
-        sorted_assets = sorted(cache.items(), key=lambda x: (
-            x[1].get('noise_model', 'gaussian'),
-            -x[1].get('q', 0)  # Descending q
-        ))
-        
+        col_specs = [
+            ("Asset", 18), ("Model", 14), ("log10(q)", 9), ("c", 7), ("ν", 7), ("φ", 7),
+            ("ΔLL0", 8), ("ΔLLc", 8), ("ΔLLe", 8), ("BestModel", 12), ("BIC", 10), ("PIT p", 8)
+        ]
+
+        def fmt_row(values):
+            parts = []
+            for (val, (_, width)) in zip(values, col_specs):
+                parts.append(f"{val:<{width}}")
+            return "| " + " | ".join(parts) + " |"
+
+        sep_line = "+" + "+".join(["-" * (w + 2) for _, w in col_specs]) + "+"
+        header_line = fmt_row([name for name, _ in col_specs])
+
+        print(sep_line)
+        print(header_line)
+        print(sep_line)
+
+        # Sort by model family, then descending q
+        sorted_assets = sorted(
+            cache.items(),
+            key=lambda x: (
+                _model_label(x[1]),
+                -x[1].get('q', 0)
+            )
+        )
+
+        last_group = None
         for asset, data in sorted_assets:
             q_val = data.get('q', float('nan'))
             c_val = data.get('c', 1.0)
             nu_val = data.get('nu')
+            phi_val = data.get('phi')
             delta_ll_zero = data.get('delta_ll_vs_zero', float('nan'))
             delta_ll_const = data.get('delta_ll_vs_const', float('nan'))
             delta_ll_ewma = data.get('delta_ll_vs_ewma', float('nan'))
             bic_val = data.get('bic', float('nan'))
             pit_p = data.get('pit_ks_pvalue', float('nan'))
-            model = data.get('noise_model', 'gaussian')
+            model = _model_label(data)
             best_model = data.get('best_model_by_bic', 'kalman_drift')
-            
+
             log10_q = np.log10(q_val) if q_val > 0 else float('nan')
-            
+
             nu_str = f"{nu_val:.1f}" if nu_val is not None else "-"
-            model_abbr = "Student-t" if model == "student_t" else "Gaussian"
-            
-            # Shorten best model name for display
+            phi_str = f"{phi_val:.3f}" if phi_val is not None else "-"
+
             best_model_abbr = {
                 'zero_drift': 'Zero',
                 'constant_drift': 'Const',
                 'ewma_drift': 'EWMA',
                 'kalman_drift': 'Kalman',
-                'phi_kalman_drift': 'PhiKal'
+                'phi_kalman_drift': 'PhiKal',
+                'phi_kalman_student_t': 'PhiKal-t'
             }.get(best_model, best_model[:8])
 
             warn_marker = " ⚠️" if data.get('calibration_warning') else ""
-            
-            print(f"{asset:<20} {model_abbr:<10} {log10_q:>8.2f}   {c_val:>6.3f}  {nu_str:<6} {delta_ll_zero:>6.1f}  {delta_ll_const:>6.1f}  {delta_ll_ewma:>6.1f}  {best_model_abbr:<12} {bic_val:>9.1f}  {pit_p:.4f}{warn_marker}")
-        
-        # Add legend
+
+            if model != last_group:
+                if last_group is not None:
+                    print(sep_line)
+                print(f"| Group: {model:<{sum(w+3 for _, w in col_specs)-9}}|")
+                print(sep_line)
+                last_group = model
+
+            row = fmt_row([
+                asset,
+                model,
+                f"{log10_q:>7.2f}",
+                f"{c_val:>5.3f}",
+                nu_str,
+                phi_str,
+                f"{delta_ll_zero:>6.1f}",
+                f"{delta_ll_const:>6.1f}",
+                f"{delta_ll_ewma:>6.1f}",
+                best_model_abbr,
+                f"{bic_val:>8.1f}",
+                f"{pit_p:.4f}{warn_marker}"
+            ])
+            print(row)
+
+        print(sep_line)
+
         print("\nColumn Legend:")
+        print("  Model: Gaussian / Student-t / Phi-Gaussian / Phi-Student-t (φ from cache)")
+        print("  φ: Drift persistence (if AR(1) model)")
         print("  ΔLL_0: ΔLL vs zero-drift baseline")
         print("  ΔLL_c: ΔLL vs constant-drift baseline")
         print("  ΔLL_e: ΔLL vs EWMA-drift baseline")
-        print("  BestModel: Best model by BIC (Zero/Const/EWMA/Kalman)")
-        
-        print(f"\nCache file:")
+        print("  BestModel: Best model by BIC (Zero/Const/EWMA/Kalman/PhiKal)")
+ 
+        print("\nCache file:")
         print(f"  JSON: {args.cache_json}")
-    
+
     if failure_reasons:
         print("\nFailed tickers and reasons:")
         for a, msg in failure_reasons.items():
