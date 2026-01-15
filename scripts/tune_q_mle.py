@@ -279,17 +279,16 @@ class GaussianDriftModel:
                         forecast_var = P_pred + R
 
                         if forecast_var > 1e-12:
-                            standardized_innov = innovation / np.sqrt(forecast_var)
+                            # Use Student-t log-likelihood for consistency with the φ-Student-t model
+                            forecast_scale = np.sqrt(forecast_var)
+                            ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_scale)
+                            # Optional tail-penalty remains implicit via logpdf; keep standardized storage for KS
+                            standardized_innov = innovation / forecast_scale
                             standardized_innov_abs = abs(standardized_innov)
-
                             if len(all_standardized) < 1000:
                                 all_standardized.append(float(standardized_innov))
-
                             if standardized_innov_abs > 5.0:
-                                ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 12.5 - 5.0 * (standardized_innov_abs - 5.0)
-                            else:
-                                ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
-
+                                ll_contrib -= 5.0 * (standardized_innov_abs - 5.0)
                             ll_fold += ll_contrib
 
                         K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
@@ -550,17 +549,16 @@ class PhiGaussianDriftModel:
                         forecast_var = P_pred + R
 
                         if forecast_var > 1e-12:
-                            standardized_innov = innovation / np.sqrt(forecast_var)
+                            # Use Student-t log-likelihood for consistency with the φ-Student-t model
+                            forecast_scale = np.sqrt(forecast_var)
+                            ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_scale)
+                            # Optional tail-penalty remains implicit via logpdf; keep standardized storage for KS
+                            standardized_innov = innovation / forecast_scale
                             standardized_innov_abs = abs(standardized_innov)
-
                             if len(all_standardized) < 1000:
                                 all_standardized.append(float(standardized_innov))
-
                             if standardized_innov_abs > 5.0:
-                                ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 12.5 - 5.0 * (standardized_innov_abs - 5.0)
-                            else:
-                                ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
-
+                                ll_contrib -= 5.0 * (standardized_innov_abs - 5.0)
                             ll_fold += ll_contrib
 
                         K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
@@ -582,13 +580,16 @@ class PhiGaussianDriftModel:
             if len(all_standardized) >= 30:
                 try:
                     pit_values = norm.cdf(all_standardized)
+
                     ks_result = kstest(pit_values, 'uniform')
                     ks_stat = float(ks_result.statistic)
 
                     if ks_stat > 0.05:
                         calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
+
                         if ks_stat > 0.10:
                             calibration_penalty -= 100.0 * (ks_stat - 0.10)
+
                         if ks_stat > 0.15:
                             calibration_penalty -= 200.0 * (ks_stat - 0.15)
                 except Exception:
@@ -948,26 +949,10 @@ class StudentTDriftModel:
                         forecast_var = P_pred + R
 
                         if forecast_var > 1e-12:
-                            standardized_innov = innovation / np.sqrt(forecast_var)
-                            standardized_innov_abs = abs(standardized_innov)
-
-                            if len(all_standardized) < 1000:
-                                all_standardized.append(float(standardized_innov))
-
-                            if standardized_innov_abs > 5.0:
-                                ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 12.5 - 5.0 * (standardized_innov_abs - 5.0)
-                            else:
-                                ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
-
+                            ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, np.sqrt(forecast_var))
                             ll_fold += ll_contrib
 
-                        R = c * (vol_t ** 2)
-                        nu_adjust = min(nu / (nu + 3.0), 1.0)
-                        if (P_pred + R) > 1e-12:
-                            K = nu_adjust * P_pred / (P_pred + R)
-                        else:
-                            K = 0.0
-                        innovation = ret_t - mu_pred
+                        K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
                         mu_pred = mu_pred + K * innovation
                         P_pred = (1.0 - K) * P_pred
 
@@ -984,7 +969,8 @@ class StudentTDriftModel:
 
             prior_scale = 1.0 / max(total_obs, 100)
             log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
-            log_prior_c = -0.1 * prior_scale * (log_c - np.log10(0.9)) ** 2
+            log_c_target = np.log10(0.9)
+            log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
             log_prior_nu = -0.05 * prior_scale * (log_nu - np.log10(6.0)) ** 2
 
             penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + log_prior_nu
@@ -1001,9 +987,9 @@ class StudentTDriftModel:
         log_nu_min = np.log10(nu_min)
         log_nu_max = np.log10(nu_max)
 
-        log_q_grid = np.linspace(log_q_min, log_q_max, 5)
-        log_c_grid = np.linspace(log_c_min, log_c_max, 4)
-        log_nu_grid = np.linspace(log_nu_min, log_nu_max, 4)
+        log_q_grid = np.linspace(log_q_min, log_q_max, 4)
+        log_c_grid = np.linspace(log_c_min, log_c_max, 3)
+        log_nu_grid = np.linspace(log_nu_min, log_nu_max, 3)
 
         best_neg_ll = float('inf')
         best_log_q_grid = adaptive_prior_mean
@@ -1072,10 +1058,8 @@ class StudentTDriftModel:
         diagnostics = {
             'grid_best_q': float(grid_best_q),
             'grid_best_c': float(grid_best_c),
-            'grid_best_nu': float(grid_best_nu),
             'refined_best_q': float(q_optimal),
             'refined_best_c': float(c_optimal),
-            'refined_best_nu': float(nu_optimal),
             'prior_applied': adaptive_lambda > 0,
             'prior_log_q_mean': float(adaptive_prior_mean),
             'prior_lambda': float(adaptive_lambda),
@@ -1252,17 +1236,27 @@ def optimize_q_c_phi_nu_mle(
                     R = c * (vol_t ** 2)
                     innovation = ret_t - mu_pred
                     forecast_var = P_pred + R
+
                     if forecast_var > 1e-12:
-                        std_innov = innovation / np.sqrt(forecast_var)
+                        # Use Student-t log-likelihood for consistency with the φ-Student-t model
+                        forecast_scale = np.sqrt(forecast_var)
+                        ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_scale)
+                        # Optional tail-penalty remains implicit via logpdf; keep standardized storage for KS
+                        standardized_innov = innovation / forecast_scale
+                        standardized_innov_abs = abs(standardized_innov)
                         if len(all_standardized) < 1000:
-                            all_standardized.append(float(std_innov))
-                        ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
+                            all_standardized.append(float(standardized_innov))
+                        if standardized_innov_abs > 5.0:
+                            ll_contrib -= 5.0 * (standardized_innov_abs - 5.0)
                         ll_fold += ll_contrib
+
                     K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
                     mu_pred = mu_pred + K * innovation
                     P_pred = (1.0 - K) * P_pred
+
                 total_ll_oos += ll_fold
                 total_obs += (te_end - te_start)
+
             except Exception:
                 continue
         if total_obs == 0:
@@ -1304,6 +1298,7 @@ def optimize_q_c_phi_nu_mle(
                 best_res = res
         except Exception:
             continue
+
     if best_res is not None and best_res.success:
         lq_opt, lc_opt, phi_opt, ln_opt = best_res.x
         q_opt = 10 ** lq_opt
@@ -1318,6 +1313,7 @@ def optimize_q_c_phi_nu_mle(
         phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
         nu_opt = 10 ** ln_opt
         ll_opt = -best_neg
+
     diagnostics = {
         'grid_best_q': float(10 ** grid_best[0]),
         'grid_best_c': float(10 ** grid_best[1]),
