@@ -1224,7 +1224,8 @@ def optimize_q_c_phi_nu_mle(
                 pass
         prior_scale = 1.0 / max(total_obs, 100)
         log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
-        log_prior_c = -0.1 * prior_scale * (log_c - np.log10(0.9)) ** 2
+        log_c_target = np.log10(0.9)
+        log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
         log_prior_phi = -0.05 * prior_scale * (phi_clip ** 2)
         log_prior_nu = -0.05 * prior_scale * (log_nu - np.log10(6.0)) ** 2
 
@@ -1237,6 +1238,7 @@ def optimize_q_c_phi_nu_mle(
     log_c_max = np.log10(c_max)
     log_nu_min = np.log10(nu_min)
     log_nu_max = np.log10(nu_max)
+
     grid_best = (adaptive_prior_mean, np.log10(0.9), 0.0, np.log10(6.0))
     best_neg = float('inf')
     for lq in np.linspace(log_q_min, log_q_max, 4):
@@ -1288,6 +1290,7 @@ def optimize_q_c_phi_nu_mle(
         'prior_lambda': float(adaptive_lambda)
     }
     return q_opt, c_opt, phi_opt, nu_opt, ll_opt, diagnostics
+
 
 def optimize_q_c_phi_mle(
     returns: np.ndarray,
@@ -1981,9 +1984,9 @@ Examples:
         def _model_label(data: dict) -> str:
             phi_val = data.get('phi')
             noise_model = data.get('noise_model', 'gaussian')
-            if noise_model == 'kalman_phi_student_t' and phi_val is not None:
+            if noise_model in ('kalman_phi_student_t', 'phi_student_t') and phi_val is not None:
                 return 'Phi-Student-t'
-            if noise_model == 'kalman_phi_student_t':
+            if noise_model in ('kalman_phi_student_t', 'phi_student_t'):
                 return 'Student-t'
             if noise_model == 'phi_gaussian' or phi_val is not None:
                 return 'Phi-Gaussian'
@@ -2041,7 +2044,9 @@ Examples:
                 'ewma_drift': 'EWMA',
                 'kalman_drift': 'Kalman',
                 'phi_kalman_drift': 'PhiKal',
-                'kalman_phi_student_t': 'PhiKal-t'
+                'kalman_phi_student_t': 'PhiKal-t',
+                'phi_student_t': 'PhiKal-t',
+                'phi_kalman_student_t': 'PhiKal-t'
             }.get(best_model, best_model[:8])
 
             warn_marker = " ⚠️" if data.get('calibration_warning') else ""
