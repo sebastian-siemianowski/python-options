@@ -684,7 +684,7 @@ class PhiGaussianDriftModel:
         return q_optimal, c_optimal, phi_optimal, ll_optimal, diagnostics
 
 
-class StudentTDriftModel:
+class PhiStudentTDriftModel:
     """Encapsulates Student-t heavy-tail logic so drift model behavior stays modular."""
 
     nu_min_default: float = 2.1
@@ -898,7 +898,7 @@ class StudentTDriftModel:
                     vol_train = vol[tr_start:tr_end]
                     if len(ret_train) < 3:
                         continue
-                    mu_filt_train, P_filt_train, _ = StudentTDriftModel.filter_phi(ret_train, vol_train, q, c, phi_clip, nu)
+                    mu_filt_train, P_filt_train, _ = PhiStudentTDriftModel.filter_phi(ret_train, vol_train, q, c, phi_clip, nu)
                     mu_pred = float(mu_filt_train[-1])
                     P_pred = float(P_filt_train[-1])
                     ll_fold = 0.0
@@ -912,13 +912,13 @@ class StudentTDriftModel:
                         forecast_var = P_pred + R
 
                         if forecast_var > 1e-12:
-                            forecast_std = np.sqrt(forecast_var)
-                            ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_std)
+                            ll_contrib = PhiStudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_var)
                             ll_fold += ll_contrib
                             if len(all_standardized) < 1000:
-                                all_standardized.append(float(innovation / forecast_std))
+                                all_standardized.append(float(innovation / np.sqrt(forecast_var)))
 
-                        K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
+                        nu_adjust = min(nu / (nu + 3.0), 1.0)
+                        K = nu_adjust * P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
                         mu_pred = mu_pred + K * innovation
                         P_pred = (1.0 - K) * P_pred
 
@@ -1008,9 +1008,15 @@ class StudentTDriftModel:
             'refined_best_c': float(c_opt),
             'refined_best_phi': float(phi_opt),
             'refined_best_nu': float(nu_opt),
+            'prior_applied': adaptive_lambda > 0,
             'prior_log_q_mean': float(adaptive_prior_mean),
-            'prior_lambda': float(adaptive_lambda)
+            'prior_lambda': float(adaptive_lambda),
+            'vol_cv': float(vol_cv),
+            'rv_ratio': float(rv_ratio),
+            'n_folds': int(len(fold_splits)),
+            'optimization_successful': best_res is not None and (best_res.success if best_res else False)
         }
+
         return q_opt, c_opt, phi_opt, nu_opt, ll_opt, diagnostics
 
 
@@ -1054,11 +1060,11 @@ def optimize_q_mle(
 
 def kalman_filter_drift_phi_student_t(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
     """Thin wrapper for φ-Student-t Kalman filter."""
-    return StudentTDriftModel.filter_phi(returns, vol, q, c, phi, nu)
+    return PhiStudentTDriftModel.filter_phi(returns, vol, q, c, phi, nu)
 
 
 def compute_pit_ks_pvalue_student_t(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float, nu: float) -> Tuple[float, float]:
-    return StudentTDriftModel.pit_ks(returns, mu_filtered, vol, P_filtered, c, nu)
+    return PhiStudentTDriftModel.pit_ks(returns, mu_filtered, vol, P_filtered, c, nu)
 
 def optimize_q_c_phi_mle(
     returns: np.ndarray,
@@ -1260,11 +1266,11 @@ def tune_asset_q(
         print(f"     φ-Gaussian-Kalman: q={q_phi:.2e}, c={c_phi:.3f}, φ={phi_opt:+.3f}, LL={ll_phi_full:.1f}, BIC={bic_phi:.1f}, PIT p={pit_p_phi:.4f}")
         
         # =================================================================
-        # STEP 2: Fit Kalmar Student-t Model (q, c, φ, ν)
+        # STEP 2: Fit Kalman φ-Student-t Model (q, c, φ, ν)
         # =================================================================
-        print(f"  🔧 Fitting Kalmar φ-Student-t model...")
+        print(f"  🔧 Fitting Kalman φ-Student-t model...")
         try:
-            q_student, c_student, phi_student, nu_student, ll_student_cv, opt_diag_student = StudentTDriftModel.optimize_params(
+            q_student, c_student, phi_student, nu_student, ll_student_cv, opt_diag_student = PhiStudentTDriftModel.optimize_params(
                 returns_arr, vol_arr,
                 prior_log_q_mean=prior_log_q_mean,
                 prior_lambda=prior_lambda
@@ -1284,7 +1290,7 @@ def tune_asset_q(
             aic_student = compute_aic(ll_student_full, n_params=4)
             bic_student = compute_bic(ll_student_full, n_params=4, n_obs=n_obs)
 
-            print(f"    Kalmar φ-Student-t: q={q_student:.2e}, c={c_student:.3f}, φ={phi_student:+.3f}, ν={nu_student:.1f}, LL={ll_student_full:.1f}, BIC={bic_student:.1f}, PIT p={pit_p_student:.4f}")
+            print(f"    Kalman φ-Student-t: q={q_student:.2e}, c={c_student:.3f}, φ={phi_student:+.3f}, ν={nu_student:.1f}, LL={ll_student_full:.1f}, BIC={bic_student:.1f}, PIT p={pit_p_student:.4f}")
 
             student_t_fit_success = True
 
@@ -1550,7 +1556,7 @@ def tune_asset_q(
             'optimization_successful': opt_diagnostics.get('optimization_successful', False)
         }
 
-        # Add Kalmar Phi Student-t specific diagnostics if applicable
+        # Add Kalman Phi Student-t specific diagnostics if applicable
         if noise_model == 'kalman_phi_student_t':
             result['grid_best_nu'] = opt_diagnostics.get('grid_best_nu')
             result['refined_best_nu'] = opt_diagnostics.get('refined_best_nu')
@@ -1558,7 +1564,7 @@ def tune_asset_q(
         if noise_model == "phi_gaussian":
             result['refined_best_phi'] = float(phi_selected)
 
-        # Add Gaussian comparison if Kalmar Phi Student-t was selected
+        # Add Gaussian comparison if Kalman Phi Student-t was selected
         if noise_model == 'kalman_phi_student_t' and student_t_fit_success:
             result['gaussian_bic'] = float(bic_gauss)
             result['gaussian_log_likelihood'] = float(ll_gauss_full)
@@ -1577,7 +1583,7 @@ def tune_asset_q(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Estimate optimal Kalman drift parameters with Kalmar Phi Student-t noise support",
+        description="Estimate optimal Kalman drift parameters with Kalman Phi Student-t noise support",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
