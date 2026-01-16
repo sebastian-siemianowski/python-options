@@ -893,412 +893,113 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
 
 def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = None, optimize_q: bool = True, asset_symbol: Optional[str] = None, phi: Optional[float] = None) -> Dict[str, pd.Series]:
     """
-    Kalman filter for time-varying drift estimation with optional q optimization.
-    
-    State-space model:
-        r_t = μ_t + ε_t,  ε_t ~ N(0, σ_t²) or t(ν, σ_t²)  (observation equation)
-        μ_t = μ_{t-1} + η_t,  η_t ~ N(0, q_t)  (state transition, random walk)
-    
-    Level-7+ robust filtering: Student-t innovations option for heavy-tailed observations.
-    When KALMAN_ROBUST_T=true, observation noise uses Student-t distribution with
-    degrees of freedom ν, providing robustness to outliers and extreme market events.
-    
-    Where:
-        r_t: observed return at time t
-        μ_t: latent drift (hidden state)
-        σ_t: conditional volatility from GARCH/EWMA
-        q_t: drift evolution variance (process noise, possibly time-varying)
-        ν: Student-t degrees of freedom (if robust mode enabled)
-    
-    Args:
-        ret: Returns series
-        vol: Conditional volatility series (from GARCH or EWMA)
-        q: Process noise variance. If None, estimated via heuristic or optimization.
-        optimize_q: If True and q is None, optimize q via marginal likelihood maximization.
-        
-    Returns:
-        Dictionary with:
-            - mu_kf_filtered: Forward-pass filtered drift estimates
-            - mu_kf_smoothed: Backward-pass smoothed drift estimates (preferred)
-            - var_kf_filtered: Forward-pass filtered drift variance
-            - var_kf_smoothed: Backward-pass smoothed drift variance
-            - kalman_gain: Kalman gain series (diagnostic)
-            - log_likelihood: Total log-likelihood of observations
-            - innovations: Prediction errors (diagnostic)
-            - q_optimal: Optimized or heuristic q value used
-            - q_heuristic: Baseline heuristic q for comparison
-            - q_optimization_attempted: Whether q optimization was attempted
-            - robust_t_mode: Whether Student-t innovations were used
+    Kalman filter for time-varying drift estimation using pre-tuned parameters only.
+    All parameters (q, c, phi, nu, noise_model) must come from tuning/cache or explicit args.
+    No internal optimization, heuristics, or robustness overlays are performed here.
     """
     ret_clean = _ensure_float_series(ret).dropna()
     vol_clean = _ensure_float_series(vol).reindex(ret_clean.index).dropna()
-    
-    # Align series
     df = pd.concat([ret_clean, vol_clean], axis=1, join='inner').dropna()
     if len(df) < 50:
-        # Not enough data for stable Kalman filtering
         return {}
-    
     df.columns = ['ret', 'vol']
-    y = df['ret'].values.astype(float)  # observations
-    sigma = df['vol'].values.astype(float)  # observation noise std
-    T = len(y)
+    y = df['ret'].values.astype(float)
+    sigma = df['vol'].values.astype(float)
     idx = df.index
-    
-    # AR(1) persistence for drift (phi=1.0 => random walk). If tuned φ is provided, use it.
-    phi_used = float(phi) if phi is not None and np.isfinite(phi) else 1.0
-    # Keep near-unit roots but cap extremes for numerical stability
+
+    tuned_params = None
+    if asset_symbol is not None:
+        tuned_params = _load_tuned_kalman_params(asset_symbol)
+    noise_model = (tuned_params or {}).get('noise_model', 'gaussian')
+    phi_used = phi if phi is not None else (tuned_params or {}).get('phi')
+    phi_used = float(phi_used) if phi_used is not None and np.isfinite(phi_used) else 1.0
     phi_used = float(np.clip(phi_used, -0.9999, 0.9999)) if abs(phi_used) > 1.0 else phi_used
 
-    # Compute heuristic baseline q
-    med_var = float(np.nanmedian(sigma ** 2))
-    q_heuristic = 0.01 * med_var  # 1% of typical observation variance
-    q_heuristic = float(max(q_heuristic, 1e-10))
-    
-    # Determine whether to use heteroskedastic process noise (Level-7 refinement)
-    # q_t = c * σ_t² makes drift uncertainty adaptive to market stress
-    use_heteroskedastic = os.getenv("KALMAN_HETEROSKEDASTIC", "true").strip().lower() == "true"
-    
-    # Determine q or c to use
-    q_optimization_attempted = False
-    c_optimal = None
-    q_t_series = None  # Will store time-varying q_t if heteroskedastic
-    tuned_params_source = None
-    
-    # Priority 1: Try to load pre-tuned parameters from cache (if asset_symbol provided)
-    if q is None and asset_symbol is not None:
-        tuned_params = _load_tuned_kalman_params(asset_symbol)
-        if tuned_params is not None:
-            q = tuned_params.get('q')
-            c_optimal = tuned_params.get('c')
-            tuned_params_source = 'cache'
-            # Normalize to safe finite floats
-            try:
-                c_optimal = float(c_optimal)
-            except Exception:
-                c_optimal = None
-            try:
-                q = float(q) if q is not None else None
-            except Exception:
-                q = None
-            if c_optimal is None or not np.isfinite(c_optimal) or c_optimal <= 0:
-                c_optimal = 0.01
-            if q is None or not np.isfinite(q) or q <= 0:
-                q = q_heuristic
-            if use_heteroskedastic:
-                c_safe = c_optimal if c_optimal is not None and np.isfinite(c_optimal) and c_optimal > 0 else 0.01
-                q_t_series = float(c_safe) * (sigma ** 2)
-                q = float(np.mean(q_t_series))
-            elif os.getenv('DEBUG'):
-                print(f"  Using tuned params from cache: q={q:.2e}, c={c_optimal:.3f}")
+    q_used = q if q is not None else (tuned_params or {}).get('q')
+    c_used = (tuned_params or {}).get('c')
+    nu_used = (tuned_params or {}).get('nu') if 'student_t' in noise_model else None
 
-    # Priority 2: Optimize if not provided and cache miss
-    if q is None and optimize_q and T >= 252:
-        q_optimization_attempted = True
-        from scipy.optimize import minimize_scalar
-        
-        if use_heteroskedastic:
-            # Optimize c for heteroskedastic process noise: q_t = c * σ_t²
-            # c represents the ratio of drift uncertainty to observation uncertainty
-            
-            # Heuristic c: same as q_heuristic / med_var = 0.01
-            c_heuristic = 0.01
-            
-            # Define negative log-likelihood as function of log(c)
-            def neg_ll_log_c(log_c_val: float) -> float:
-                c_trial = float(np.exp(log_c_val))
-                try:
-                    ll = _compute_kalman_log_likelihood_heteroskedastic(y, sigma, c_trial)
-                    if not np.isfinite(ll):
-                        return 1e12
-                    return float(-ll)
-                except Exception:
-                    return 1e12
-            
-            # Search bounds in log-space: c in [0.0001, 1.0]
-            log_c_min = np.log(0.0001)
-            log_c_max = np.log(1.0)
-            
-            try:
-                # Brent method (1D optimization without derivatives)
-                result = minimize_scalar(
-                    neg_ll_log_c,
-                    bounds=(log_c_min, log_c_max),
-                    method='bounded',
-                    options={'xatol': 1e-6}
-                )
-                if result.success and np.isfinite(result.x):
-                    c_optimal = float(np.exp(result.x))
-                else:
-                    c_optimal = c_heuristic
-            except Exception:
-                c_optimal = c_heuristic
-            
-            # Build time-varying q_t series
-            q_t_series = c_optimal * (sigma ** 2)
-            q = float(np.mean(q_t_series))  # mean for reporting
-            
-        else:
-            # Optimize constant q via marginal likelihood maximization
-            # Use Brent method in log-space for robust optimization over several orders of magnitude
-            
-            # Define negative log-likelihood as function of log(q) for numerical stability
-            def neg_ll_log_q(log_q_val: float) -> float:
-                q_trial = float(np.exp(log_q_val))
-                try:
-                    ll = _compute_kalman_log_likelihood(y, sigma, q_trial)
-                    if not np.isfinite(ll):
-                        return 1e12
-                    return float(-ll)
-                except Exception:
-                    return 1e12
-            
-            # Search bounds in log-space: q in [0.0001*med_var, 1.0*med_var]
-            log_q_min = np.log(max(0.0001 * med_var, 1e-12))
-            log_q_max = np.log(max(1.0 * med_var, 1e-6))
-            
-            try:
-                # Brent method (1D optimization without derivatives)
-                result = minimize_scalar(
-                    neg_ll_log_q,
-                    bounds=(log_q_min, log_q_max),
-                    method='bounded',
-                    options={'xatol': 1e-6}
-                )
-                if result.success and np.isfinite(result.x):
-                    q = float(np.exp(result.x))
-                else:
-                    q = q_heuristic
-            except Exception:
-                q = q_heuristic
-                
-    elif q is None:
-        # Use heuristic if optimization disabled or insufficient data
-        if use_heteroskedastic:
-            c_optimal = 0.01
-            q_t_series = c_optimal * (sigma ** 2)
-            q = float(np.mean(q_t_series))
-        else:
-            q = q_heuristic
-    else:
-        q = float(max(q, 1e-10))
-    
-    # Level-7+ Robust Kalman filtering with Student-t innovations
-    # When enabled, uses t-distribution for observation noise to handle outliers
-    use_robust_t = os.getenv("KALMAN_ROBUST_T", "false").strip().lower() == "true"
-    nu_robust = None
-    
-    if use_robust_t:
-        # Estimate degrees of freedom for Student-t from standardized residuals
-        # Use simple variance-based estimator: higher variance => lower nu (heavier tails)
-        try:
-            std_resid = y / np.maximum(sigma, 1e-12)
-            std_resid = std_resid[np.isfinite(std_resid)]
-            if len(std_resid) >= 100:
-                # Robust estimation via method of moments
-                # For Student-t: Var(X) = ν/(ν-2) for ν > 2
-                # Sample excess variance relative to unit normal suggests tail heaviness
-                sample_var = float(np.var(std_resid))
-                if sample_var > 1.5:
-                    # Heavier tails than normal: solve ν/(ν-2) = sample_var
-                    # => ν = 2*sample_var / (sample_var - 1)
-                    nu_est = 2.0 * sample_var / max(sample_var - 1.0, 0.1)
-                    nu_robust = float(np.clip(nu_est, 4.5, 50.0))
-                else:
-                    # Light tails: use high nu (near-normal)
-                    nu_robust = 30.0
-            else:
-                # Insufficient data: default to moderate heavy tails
-                nu_robust = 10.0
-        except Exception:
-            nu_robust = 10.0
-    
-    # Initialize state and covariance
-    # Prior: μ_0 ~ N(0, large variance) to represent initial uncertainty
-    # Level-7+ Regime-aware prior: use regime-specific drift expectation if available
-    mu_prior = 0.0
-    P_prior = 1.0  # initial uncertainty
-    regime_prior_info = None
-    
-    # Check if regime-aware initialization is enabled
-    use_regime_prior = os.getenv("KALMAN_REGIME_PRIOR", "false").strip().lower() == "true"
-    
-    if use_regime_prior:
-        # Estimate regime-specific drift priors from historical data
-        regime_prior_info = _estimate_regime_drift_priors(ret_clean, vol_clean)
-        if regime_prior_info is not None:
-            # Use regime-conditional drift as prior mean
-            mu_prior = regime_prior_info.get("current_drift_prior", 0.0)
-            # Keep prior variance at 1.0 to allow filter to adapt quickly
-    
-    # Storage for forward pass
+    if q_used is None or not np.isfinite(q_used) or q_used <= 0:
+        return {}
+    if c_used is not None and (not np.isfinite(c_used) or c_used <= 0):
+        c_used = None
+    if 'student_t' in noise_model and (nu_used is None or not np.isfinite(nu_used)):
+        return {}
+
+    heteroskedastic = c_used is not None
+    q_t_series = c_used * (sigma ** 2) if heteroskedastic else None
+    q_scalar = float(q_used)
+
+    T = len(y)
     mu_filtered = np.zeros(T, dtype=float)
     P_filtered = np.zeros(T, dtype=float)
     K_gain = np.zeros(T, dtype=float)
     innovations = np.zeros(T, dtype=float)
     innovation_vars = np.zeros(T, dtype=float)
-    
-    # Forward pass (Kalman filter)
-    mu_t = mu_prior
-    P_t = P_prior
+
+    mu_t = 0.0
+    P_t = 1.0
     log_likelihood = 0.0
-    
+
     for t in range(T):
-        # Prediction step: project state forward
-        # μ_{t|t-1} = φ μ_{t-1|t-1}
-        # P_{t|t-1} = φ² P_{t-1|t-1} + q_t
-        # Use time-varying q_t if heteroskedastic, else constant q
-        q_t = float(q_t_series[t]) if q_t_series is not None else q
+        q_t = float(q_t_series[t]) if q_t_series is not None else q_scalar
         mu_pred = phi_used * mu_t
         P_pred = (phi_used ** 2) * P_t + q_t
-        
-        # Observation noise variance at time t
-        R_t = sigma[t] ** 2
-        R_t = float(max(R_t, 1e-12))  # floor
-        
-        # Innovation (prediction error)
+        R_t = float(max(sigma[t] ** 2, 1e-12))
         innov = y[t] - mu_pred
-        
-        # Innovation variance: S_t = H P_{t|t-1} H^T + R_t
-        # With H=1 (observation matrix), S_t = P_pred + R_t
-        S_t = P_pred + R_t
-        S_t = float(max(S_t, 1e-12))
-        
-        # Kalman gain: K_t = P_{t|t-1} H^T S_t^{-1}
-        # With H=1, K_t = P_pred / S_t
-        K_t_base = P_pred / S_t
-        
-        # Robust Kalman: adaptive gain based on Student-t likelihood
-        # Downweight outliers by adjusting gain based on innovation magnitude
-        if use_robust_t and nu_robust is not None:
-            # Robust weight: w_t = (ν + 1) / (ν + z_t²)
-            # where z_t = innov / sqrt(S_t) is standardized innovation
-            z_t_sq = (innov ** 2) / S_t
-            w_t = (nu_robust + 1.0) / (nu_robust + z_t_sq)
-            w_t = float(np.clip(w_t, 0.01, 1.0))  # bounded weight
-            K_t = w_t * K_t_base  # adaptive gain
+        S_t = float(max(P_pred + R_t, 1e-12))
+
+        if 'student_t' in noise_model:
+            nu_adj = min(nu_used / (nu_used + 3.0), 1.0)
+            K_t = nu_adj * P_pred / S_t
         else:
-            K_t = K_t_base  # standard Kalman gain
-        
-        # Update step: refine state estimate with observation
-        # μ_{t|t} = μ_{t|t-1} + K_t (y_t - μ_{t|t-1})
+            K_t = P_pred / S_t
+
         mu_t = mu_pred + K_t * innov
-        
-        # Update covariance: P_{t|t} = (1 - K_t H) P_{t|t-1}
-        # With H=1, P_{t|t} = (1 - K_t) P_pred
-        # For robust case, use Joseph form for numerical stability
-        if use_robust_t:
-            # Joseph form: P_{t|t} = (I - K_t H)P_{t|t-1}(I - K_t H)^T + K_t R_t K_t^T
-            # With H=1: P_{t|t} = (1-K_t)²P_pred + K_t²R_t
-            P_t = (1.0 - K_t) ** 2 * P_pred + K_t ** 2 * R_t
-        else:
-            P_t = (1.0 - K_t) * P_pred
-        P_t = float(max(P_t, 1e-12))  # ensure positive
-        
-        # Store filtered estimates
+        P_t = float(max((1.0 - K_t) * P_pred, 1e-12))
+
         mu_filtered[t] = mu_t
         P_filtered[t] = P_t
         K_gain[t] = K_t
         innovations[t] = innov
         innovation_vars[t] = S_t
-        
-        # Accumulate log-likelihood: ln p(y_t | y_{1:t-1})
-        if use_robust_t and nu_robust is not None:
-            # Student-t log-likelihood
+
+        if 'student_t' in noise_model:
             try:
-                # Standardized innovation
-                z_t = innov / np.sqrt(S_t)
-                # Log-likelihood: log Γ((ν+1)/2) - log Γ(ν/2) - 0.5*log(πνS_t) - ((ν+1)/2)*log(1 + z_t²/ν)
-                from scipy.special import gammaln
-                ll_t = (
-                    gammaln((nu_robust + 1.0) / 2.0)
-                    - gammaln(nu_robust / 2.0)
-                    - 0.5 * np.log(np.pi * nu_robust * S_t)
-                    - ((nu_robust + 1.0) / 2.0) * np.log(1.0 + (z_t ** 2) / nu_robust)
-                )
+                ll_t = StudentTDriftModel.logpdf(innov, nu_used, 0.0, math.sqrt(S_t))
                 if np.isfinite(ll_t):
-                    log_likelihood += float(ll_t)
+                    log_likelihood += ll_t
             except Exception:
                 pass
         else:
-            # Gaussian log-likelihood
             try:
                 ll_t = -0.5 * (np.log(2.0 * np.pi * S_t) + (innov ** 2) / S_t)
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
             except Exception:
                 pass
-    
-    # Backward pass (Rauch-Tung-Striebel smoother)
-    # Smoothing uses all data (past and future) for refined estimates
-    mu_smoothed = np.zeros(T, dtype=float)
-    P_smoothed = np.zeros(T, dtype=float)
-    
-    # Initialize backward pass with last filtered estimate
-    mu_smoothed[T-1] = mu_filtered[T-1]
-    P_smoothed[T-1] = P_filtered[T-1]
-    
-    for t in range(T-2, -1, -1):
-        # Smoother gain: C_t = P_{t|t} φ / P_{t+1|t}
-        # Where P_{t+1|t} = φ² P_{t|t} + q_t (predicted covariance for next step)
-        # Use time-varying q_t if heteroskedastic, else constant q
-        q_t = float(q_t_series[t]) if q_t_series is not None else q
-        P_pred_next = (phi_used ** 2) * P_filtered[t] + q_t
-        P_pred_next = float(max(P_pred_next, 1e-12))
-        
-        C_t = (phi_used * P_filtered[t]) / P_pred_next
-        
-        # Smoothed state: μ_{t|T} = μ_{t|t} + C_t (μ_{t+1|T} - μ_{t+1|t})
-        mu_pred_next = phi_used * mu_filtered[t]
-        mu_smoothed[t] = mu_filtered[t] + C_t * (mu_smoothed[t+1] - mu_pred_next)
-        
-        # Smoothed covariance: P_{t|T} = P_{t|t} + C_t (P_{t+1|T} - P_{t+1|t}) C_t
-        P_smoothed[t] = P_filtered[t] + C_t * (P_smoothed[t+1] - P_pred_next) * C_t
-        P_smoothed[t] = float(max(P_smoothed[t], 1e-12))
-    
-    # Compute Kalman gain statistics for situational awareness
+
     kalman_gain_mean = float(np.mean(K_gain))
-    kalman_gain_recent = float(K_gain[-1]) if len(K_gain) > 0 else float("nan")
-    
-    # Refinement 3: Innovation whiteness test (Ljung-Box)
-    # Test if standardized innovations are white noise (model adequacy)
-    innovation_whiteness = _test_innovation_whiteness(innovations, innovation_vars, lags=min(20, T // 5))
-    
-    # Build output series aligned with original index
+    kalman_gain_recent = float(K_gain[-1]) if len(K_gain) > 0 else float('nan')
+
     return {
         "mu_kf_filtered": pd.Series(mu_filtered, index=idx, name="mu_kf_filtered"),
-        "mu_kf_smoothed": pd.Series(mu_smoothed, index=idx, name="mu_kf_smoothed"),
+        "mu_kf_smoothed": pd.Series(mu_filtered, index=idx, name="mu_kf_smoothed"),  # no RTS smoothing here
         "var_kf_filtered": pd.Series(P_filtered, index=idx, name="var_kf_filtered"),
-        "var_kf_smoothed": pd.Series(P_smoothed, index=idx, name="var_kf_smoothed"),
+        "var_kf_smoothed": pd.Series(P_filtered, index=idx, name="var_kf_smoothed"),
         "kalman_gain": pd.Series(K_gain, index=idx, name="kalman_gain"),
         "innovations": pd.Series(innovations, index=idx, name="innovations"),
         "innovation_vars": pd.Series(innovation_vars, index=idx, name="innovation_vars"),
         "log_likelihood": float(log_likelihood),
-        "process_noise_var": float(q),
+        "process_noise_var": float(q_scalar),
         "n_obs": int(T),
-        # Refinement 1: q optimization metadata
-        "q_optimal": float(q),
-        "q_heuristic": float(q_heuristic),
-        "q_optimization_attempted": bool(q_optimization_attempted),
-        # Refinement 2: Kalman gain statistics (situational awareness)
         "kalman_gain_mean": kalman_gain_mean,
         "kalman_gain_recent": kalman_gain_recent,
-        # Refinement 3: Innovation whiteness test (model adequacy)
-        "innovation_whiteness": innovation_whiteness,
-        # Level-7 Refinement: Heteroskedastic process noise (q_t = c * σ_t²)
-        "kalman_heteroskedastic_mode": bool(use_heteroskedastic),
-        "kalman_c_optimal": float(c_optimal) if c_optimal is not None else None,
-        "kalman_q_t_mean": float(np.mean(q_t_series)) if q_t_series is not None else None,
-        "kalman_q_t_std": float(np.std(q_t_series)) if q_t_series is not None else None,
-        "kalman_q_t_min": float(np.min(q_t_series)) if q_t_series is not None else None,
-        "kalman_q_t_max": float(np.max(q_t_series)) if q_t_series is not None else None,
-        # Level-7+ Refinement: Robust Kalman filtering with Student-t innovations
-        "kalman_robust_t_mode": bool(use_robust_t),
-        "kalman_nu_robust": float(nu_robust) if nu_robust is not None else None,
-        # Level-7+ Refinement: Regime-dependent drift priors
-        "kalman_regime_prior_used": bool(use_regime_prior and regime_prior_info is not None),
-        "kalman_regime_info": regime_prior_info if regime_prior_info is not None else {},
+        "kalman_heteroskedastic_mode": bool(heteroskedastic),
+        "kalman_c_optimal": float(c_used) if c_used is not None else None,
         "phi_used": float(phi_used),
+        "kalman_noise_model": noise_model,
+        "kalman_nu": float(nu_used) if nu_used is not None else None,
     }
 
 
