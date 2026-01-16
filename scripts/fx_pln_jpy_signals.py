@@ -1501,7 +1501,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 "kalman_gain_recent": kf_result.get("kalman_gain_recent", float("nan")),
                 # Refinement 3: Innovation whiteness test (model adequacy)
                 "innovation_whiteness": kf_result.get("innovation_whiteness", {}),
-                # Level-7 Refinement: Heteroskedastic process noise
+                # Level-7 Refinement: Heteroskedastic process noise (q_t = c * σ_t²)
                 "kalman_heteroskedastic_mode": kf_result.get("heteroskedastic_mode", False),
                 "kalman_c_optimal": kf_result.get("c_optimal"),
                 "kalman_q_t_mean": kf_result.get("q_t_mean"),
@@ -3231,13 +3231,21 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
         for asset, result in zip(pending, results):
             if not result or result.get("status") != "success":
                 err = (result or {}).get("error", "unknown")
+                tb = (result or {}).get("traceback")
+                if tb:
+                    tb_lines = [line.strip() for line in str(tb).splitlines() if line.strip()]
+                    loc_line = next((ln for ln in tb_lines if ln.startswith("File ")), None)
+                    if loc_line:
+                        err = f"{err} @ {loc_line}"
                 try:
                     disp = _resolve_display_name(asset.strip().upper())
                 except Exception:
                     disp = asset
-                entry = failures.get(asset, {"attempts": 0, "last_error": None, "display_name": disp})
+                entry = failures.get(asset, {"attempts": 0, "last_error": None, "display_name": disp, "traceback": None})
                 entry["attempts"] = int(entry.get("attempts", 0)) + 1
                 entry["last_error"] = err
+                if tb:
+                    entry["traceback"] = tb
                 entry["display_name"] = entry.get("display_name") or disp
                 failures[asset] = entry
                 next_pending.append(asset)
@@ -3963,7 +3971,8 @@ def main() -> None:
             "asset": asset,
             "display_name": info.get("display_name", asset),
             "attempts": info.get("attempts", 0),
-            "last_error": info.get("last_error", "")
+            "last_error": info.get("last_error", ""),
+            "traceback": info.get("traceback", ""),
         }
         for asset, info in failures.items()
     ]
