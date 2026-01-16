@@ -843,44 +843,48 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
     try:
         if not os.path.exists(cache_path):
             return None
-        
         with open(cache_path, 'r') as f:
             cache = json.load(f)
-        
-        # Direct lookup
-        if asset_symbol in cache:
-            data = cache[asset_symbol]
-            q_val = data.get('q')
-            c_val = data.get('c', 1.0)
-            
-            # Validate basic parameters
-            if q_val is not None and q_val > 0 and c_val > 0:
-                # Load noise model (default to Gaussian for backwards compatibility)
-                noise_model = data.get('noise_model', 'gaussian')
-                nu_val = data.get('nu')
-                
-                result = {
-                    'q': float(q_val),
-                    'c': float(c_val),
-                    'noise_model': noise_model,
-                    'nu': float(nu_val) if nu_val is not None else None,
-                    'phi': float(data.get('phi')) if data.get('phi') is not None else None,
-                    'source': 'tuned_cache',
-                    'timestamp': data.get('timestamp'),
-                    'delta_ll_vs_zero': data.get('delta_ll_vs_zero'),
-                    'pit_ks_pvalue': data.get('pit_ks_pvalue'),
-                    'bic': data.get('bic'),
-                    'aic': data.get('aic'),
-                    'best_model_by_bic': data.get('best_model_by_bic', 'kalman_drift'),
-                    'model_comparison': data.get('model_comparison', {}),
-                    'delta_ll_vs_const': data.get('delta_ll_vs_const'),
-                    'delta_ll_vs_ewma': data.get('delta_ll_vs_ewma')
-                }
-
-                return result
-        
-        return None
-        
+        if asset_symbol not in cache:
+            return None
+        data = cache[asset_symbol]
+        q_val = data.get('q')
+        c_val = data.get('c', 1.0)
+        noise_model_raw = data.get('noise_model', 'gaussian')
+        # Normalize/validate supported models (backward compatible)
+        supported_models = {'gaussian', 'student_t', 'phi_gaussian', 'kalman_phi_student_t'}
+        noise_model = noise_model_raw if noise_model_raw in supported_models else 'gaussian'
+        requires_phi = 'phi' in noise_model
+        requires_nu = 'student_t' in noise_model
+        phi_val = data.get('phi')
+        nu_val = data.get('nu')
+        # Basic parameter validation
+        if q_val is None or not np.isfinite(q_val) or q_val <= 0:
+            return None
+        if c_val is None or not np.isfinite(c_val) or c_val <= 0:
+            return None
+        if requires_phi and (phi_val is None or not np.isfinite(phi_val)):
+            return None
+        if requires_nu and (nu_val is None or not np.isfinite(nu_val)):
+            return None
+        result = {
+            'q': float(q_val),
+            'c': float(c_val),
+            'noise_model': noise_model,
+            'nu': float(nu_val) if nu_val is not None and np.isfinite(nu_val) else None,
+            'phi': float(phi_val) if phi_val is not None and np.isfinite(phi_val) else None,
+            'source': 'tuned_cache',
+            'timestamp': data.get('timestamp'),
+            'delta_ll_vs_zero': data.get('delta_ll_vs_zero'),
+            'pit_ks_pvalue': data.get('pit_ks_pvalue'),
+            'bic': data.get('bic'),
+            'aic': data.get('aic'),
+            'best_model_by_bic': data.get('best_model_by_bic', 'kalman_drift'),
+            'model_comparison': data.get('model_comparison', {}),
+            'delta_ll_vs_const': data.get('delta_ll_vs_const'),
+            'delta_ll_vs_ewma': data.get('delta_ll_vs_ewma')
+        }
+        return result
     except Exception as e:
         if os.getenv('DEBUG'):
             print(f"Warning: Failed to load tuned params for {asset_symbol}: {e}")
