@@ -531,7 +531,7 @@ def _fit_student_nu_mle(z: pd.Series, min_n: int = 200, bounds: Tuple[float, flo
         nll_minus = nll(nu_hat - eps)
         
         # Second derivative: (f(x+h) - 2f(x) + f(x-h)) / h²
-        d2_nll = (nll_plus - 2.0 * nll_0 + nll_minus) / (eps ** 2)
+        d2_nll = (nll_plus - 2.0 * nll_0 + nll_minus) / (eps ** 2);
         
         # Standard error: sqrt(1 / observed_information)
         # observed_information = d²(-LL)/dν² = d²NLL/dν²
@@ -925,7 +925,6 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
             - q_heuristic: Baseline heuristic q for comparison
             - q_optimization_attempted: Whether q optimization was attempted
             - robust_t_mode: Whether Student-t innovations were used
-            - nu_robust: Degrees of freedom for Student-t (if robust mode)
     """
     ret_clean = _ensure_float_series(ret).dropna()
     vol_clean = _ensure_float_series(vol).reindex(ret_clean.index).dropna()
@@ -966,19 +965,29 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     if q is None and asset_symbol is not None:
         tuned_params = _load_tuned_kalman_params(asset_symbol)
         if tuned_params is not None:
-            q = tuned_params['q']
-            c_optimal = tuned_params['c']
+            q = tuned_params.get('q')
+            c_optimal = tuned_params.get('c')
             tuned_params_source = 'cache'
-            
-            # For heteroskedastic mode, use cached c to build q_t series
-            if use_heteroskedastic and c_optimal is not None:
-                q_t_series = c_optimal * (sigma ** 2)
-                q = float(np.mean(q_t_series))  # mean for reporting
-            
-            # Log cache usage for diagnostics
-            if os.getenv('DEBUG'):
+            # Normalize to safe finite floats
+            try:
+                c_optimal = float(c_optimal)
+            except Exception:
+                c_optimal = None
+            try:
+                q = float(q) if q is not None else None
+            except Exception:
+                q = None
+            if c_optimal is None or not np.isfinite(c_optimal) or c_optimal <= 0:
+                c_optimal = 0.01
+            if q is None or not np.isfinite(q) or q <= 0:
+                q = q_heuristic
+            if use_heteroskedastic:
+                c_safe = c_optimal if c_optimal is not None and np.isfinite(c_optimal) and c_optimal > 0 else 0.01
+                q_t_series = float(c_safe) * (sigma ** 2)
+                q = float(np.mean(q_t_series))
+            elif os.getenv('DEBUG'):
                 print(f"  Using tuned params from cache: q={q:.2e}, c={c_optimal:.3f}")
-    
+
     # Priority 2: Optimize if not provided and cache miss
     if q is None and optimize_q and T >= 252:
         q_optimization_attempted = True
@@ -2938,6 +2947,11 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         phi_sim = km.get("phi_used") or km.get("kalman_phi")
     if phi_sim is None:
         phi_sim = feats.get("phi_used")
+    # Safe fallback: default to random-walk drift if phi missing/invalid
+    try:
+        phi_sim = float(phi_sim)
+    except Exception:
+        phi_sim = 1.0
     sim_result = _simulate_forward_paths(feats, H_max=H_max, n_paths=3000, phi=phi_sim)
     sims = sim_result['returns']
     vol_sims = sim_result['volatility']
@@ -3234,7 +3248,8 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
                 tb = (result or {}).get("traceback")
                 if tb:
                     tb_lines = [line.strip() for line in str(tb).splitlines() if line.strip()]
-                    loc_line = next((ln for ln in tb_lines if ln.startswith("File ")), None)
+                    loc_lines = [ln for ln in tb_lines if ln.startswith("File ")]
+                    loc_line = loc_lines[-1] if loc_lines else None
                     if loc_line:
                         err = f"{err} @ {loc_line}"
                 try:
