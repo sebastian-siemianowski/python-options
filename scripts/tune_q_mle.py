@@ -829,9 +829,8 @@ class StudentTDriftModel:
         ks_result = kstest(pit_values, 'uniform')
         return float(ks_result.statistic), float(ks_result.pvalue)
 
-    @classmethod
+    @staticmethod
     def optimize_params(
-        cls,
         returns: np.ndarray,
         vol: np.ndarray,
         train_frac: float = 0.7,
@@ -839,31 +838,25 @@ class StudentTDriftModel:
         q_max: float = 1e-1,
         c_min: float = 0.3,
         c_max: float = 3.0,
+        phi_min: float = -0.999,
+        phi_max: float = 0.999,
         nu_min: float = 2.1,
         nu_max: float = 30.0,
         prior_log_q_mean: float = -6.0,
         prior_lambda: float = 1.0
-    ) -> Tuple[float, float, float, float, Dict]:
-        """Jointly optimize (q, c, nu) for Student-t observation noise via MLE."""
+    ) -> Tuple[float, float, float, float, float, Dict]:
+        """Jointly optimize (q, c, φ, ν) for the φ-Student-t drift model via CV MLE."""
         n = len(returns)
-
         ret_p005 = np.percentile(returns, 0.5)
         ret_p995 = np.percentile(returns, 99.5)
         returns_robust = np.clip(returns, ret_p005, ret_p995)
 
-        ret_std = float(np.std(returns_robust))
-        ret_mean = float(np.mean(returns_robust))
         vol_mean = float(np.mean(vol))
         vol_std = float(np.std(vol))
-
-        if vol_mean > 0:
-            vol_cv = vol_std / vol_mean
-        else:
-            vol_cv = 0.0
-        if ret_std > 0:
-            rv_ratio = abs(ret_mean) / ret_std
-        else:
-            rv_ratio = 0.0
+        vol_cv = vol_std / vol_mean if vol_mean > 0 else 0.0
+        ret_std = float(np.std(returns_robust))
+        ret_mean = float(np.mean(returns_robust))
+        rv_ratio = abs(ret_mean) / ret_std if ret_std > 0 else 0.0
 
         if vol_cv > 0.5 or rv_ratio > 0.15:
             adaptive_prior_mean = prior_log_q_mean + 0.5
@@ -877,7 +870,6 @@ class StudentTDriftModel:
 
         min_train = min(max(60, int(n * 0.4)), max(n - 5, 1))
         test_window = min(max(20, int(n * 0.1)), max(n - min_train, 5))
-
         fold_splits = []
         train_end = min_train
         while train_end + test_window <= n:
@@ -885,90 +877,82 @@ class StudentTDriftModel:
             if test_end - train_end >= 20:
                 fold_splits.append((0, train_end, train_end, test_end))
             train_end += test_window
-
         if not fold_splits:
             split_idx = int(n * train_frac)
             fold_splits = [(0, split_idx, split_idx, n)]
 
-        def negative_penalized_ll_cv_student_t(params: np.ndarray) -> float:
-            log_q, log_c, log_nu = params
+        def neg_pen_ll(params: np.ndarray) -> float:
+            log_q, log_c, phi, log_nu = params
             q = 10 ** log_q
             c = 10 ** log_c
+            phi_clip = float(np.clip(phi, phi_min, phi_max))
             nu = 10 ** log_nu
-
-            if q <= 0 or c <= 0 or nu < nu_min or nu > nu_max:
+            if q <= 0 or c <= 0 or not np.isfinite(q) or not np.isfinite(c) or nu < nu_min or nu > nu_max:
                 return 1e12
-            if not (np.isfinite(q) and np.isfinite(c) and np.isfinite(nu)):
-                return 1e12
-
             total_ll_oos = 0.0
             total_obs = 0
             all_standardized = []
-
-            for train_start, train_end, test_start, test_end in fold_splits:
+            for tr_start, tr_end, te_start, te_end in fold_splits:
                 try:
-                    ret_train = returns_robust[train_start:train_end]
-                    vol_train = vol[train_start:train_end]
-
+                    ret_train = returns_robust[tr_start:tr_end]
+                    vol_train = vol[tr_start:tr_end]
                     if len(ret_train) < 3:
                         continue
-
-                    mu_filt_train, P_filt_train, _ = cls.filter(ret_train, vol_train, q, c, nu)
-
-                    mu_final = float(mu_filt_train[-1])
-                    P_final = float(P_filt_train[-1])
-
+                    mu_filt_train, P_filt_train, _ = StudentTDriftModel.filter_phi(ret_train, vol_train, q, c, phi_clip, nu)
+                    mu_pred = float(mu_filt_train[-1])
+                    P_pred = float(P_filt_train[-1])
                     ll_fold = 0.0
-                    mu_pred = mu_final
-                    P_pred = P_final
-
-                    for t in range(test_start, test_end):
-                        P_pred = P_pred + q
-
-                        if np.ndim(returns_robust[t]) == 0:
-                            ret_t = float(returns_robust[t])
-                        else:
-                            ret_t = float(returns_robust[t].item())
-                        if np.ndim(vol[t]) == 0:
-                            vol_t = float(vol[t])
-                        else:
-                            vol_t = float(vol[t].item())
-
+                    for t in range(te_start, te_end):
+                        mu_pred = phi_clip * mu_pred
+                        P_pred = (phi_clip ** 2) * P_pred + q
+                        ret_t = float(returns_robust[t]) if np.ndim(returns_robust[t]) == 0 else float(returns_robust[t].item())
+                        vol_t = float(vol[t]) if np.ndim(vol[t]) == 0 else float(vol[t].item())
                         R = c * (vol_t ** 2)
                         innovation = ret_t - mu_pred
                         forecast_var = P_pred + R
 
                         if forecast_var > 1e-12:
-                            ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, np.sqrt(forecast_var))
+                            forecast_std = np.sqrt(forecast_var)
+                            ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_std)
                             ll_fold += ll_contrib
+                            if len(all_standardized) < 1000:
+                                all_standardized.append(float(innovation / forecast_std))
 
                         K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
                         mu_pred = mu_pred + K * innovation
                         P_pred = (1.0 - K) * P_pred
 
                     total_ll_oos += ll_fold
-                    total_obs += (test_end - test_start)
+                    total_obs += (te_end - te_start)
 
                 except Exception:
                     continue
-
             if total_obs == 0:
                 return 1e12
-
-            avg_ll_oos = total_ll_oos / max(total_obs, 1)
-
+            avg_ll = total_ll_oos / max(total_obs, 1)
+            calibration_penalty = 0.0
+            if len(all_standardized) >= 30:
+                try:
+                    pit_values = student_t.cdf(all_standardized, df=nu)
+                    ks_result = kstest(pit_values, 'uniform')
+                    ks_stat = float(ks_result.statistic)
+                    if ks_stat > 0.05:
+                        calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
+                        if ks_stat > 0.10:
+                            calibration_penalty -= 100.0 * (ks_stat - 0.10)
+                        if ks_stat > 0.15:
+                            calibration_penalty -= 200.0 * (ks_stat - 0.15)
+                except Exception:
+                    pass
             prior_scale = 1.0 / max(total_obs, 100)
             log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
             log_c_target = np.log10(0.9)
             log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
+            log_prior_phi = -0.05 * prior_scale * (phi_clip ** 2)
             log_prior_nu = -0.05 * prior_scale * (log_nu - np.log10(6.0)) ** 2
 
-            penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + log_prior_nu
-
-            if not np.isfinite(penalized_ll):
-                return 1e12
-
-            return -penalized_ll
+            penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + log_prior_nu + calibration_penalty
+            return -penalized_ll if np.isfinite(penalized_ll) else 1e12
 
         log_q_min = np.log10(q_min)
         log_q_max = np.log10(q_max)
@@ -977,89 +961,57 @@ class StudentTDriftModel:
         log_nu_min = np.log10(nu_min)
         log_nu_max = np.log10(nu_max)
 
-        log_q_grid = np.linspace(log_q_min, log_q_max, 4)
-        log_c_grid = np.linspace(log_c_min, log_c_max, 3)
-        log_nu_grid = np.linspace(log_nu_min, log_nu_max, 3)
-
-        best_neg_ll = float('inf')
-        best_log_q_grid = adaptive_prior_mean
-        best_log_c_grid = np.log10(0.9)
-        best_log_nu_grid = np.log10(6.0)
-
-        for lq in log_q_grid:
-            for lc in log_c_grid:
-                for ln in log_nu_grid:
-                    try:
-                        neg_ll = negative_penalized_ll_cv_student_t(np.array([lq, lc, ln]))
-                        if neg_ll < best_neg_ll:
-                            best_neg_ll = neg_ll
-                            best_log_q_grid = lq
-                            best_log_c_grid = lc
-                            best_log_nu_grid = ln
-                    except Exception:
-                        continue
-
-        grid_best_q = 10 ** best_log_q_grid
-        grid_best_c = 10 ** best_log_c_grid
-        grid_best_nu = 10 ** best_log_nu_grid
-
-        bounds = [(log_q_min, log_q_max), (log_c_min, log_c_max), (log_nu_min, log_nu_max)]
-
-        best_result = None
+        grid_best = (adaptive_prior_mean, np.log10(0.9), 0.0, np.log10(6.0))
+        best_neg = float('inf')
+        for lq in np.linspace(log_q_min, log_q_max, 4):
+            for lc in np.linspace(log_c_min, log_c_max, 3):
+                for lp in np.linspace(phi_min, phi_max, 5):
+                    for ln in np.linspace(log_nu_min, log_nu_max, 3):
+                        val = neg_pen_ll(np.array([lq, lc, lp, ln]))
+                        if val < best_neg:
+                            best_neg = val
+                            grid_best = (lq, lc, lp, ln)
+        bounds = [(log_q_min, log_q_max), (log_c_min, log_c_max), (phi_min, phi_max), (log_nu_min, log_nu_max)]
+        start_points = [np.array(grid_best), np.array([adaptive_prior_mean, np.log10(0.9), 0.0, np.log10(6.0)])]
+        best_res = None
         best_fun = float('inf')
-
-        start_points = [
-            np.array([best_log_q_grid, best_log_c_grid, best_log_nu_grid]),
-            np.array([adaptive_prior_mean, np.log10(0.9), np.log10(6.0)]),
-            np.array([adaptive_prior_mean, np.log10(0.85), np.log10(4.0)]),
-            np.array([adaptive_prior_mean, np.log10(1.2), np.log10(8.0)]),
-            np.array([best_log_q_grid - 0.5, best_log_c_grid, best_log_nu_grid]),
-            np.array([best_log_q_grid + 0.5, best_log_c_grid, best_log_nu_grid]),
-        ]
-
         for x0 in start_points:
             try:
-                result = minimize(
-                    negative_penalized_ll_cv_student_t,
-                    x0=x0,
-                    method='L-BFGS-B',
-                    bounds=bounds,
-                    options={'maxiter': 100, 'ftol': 1e-6}
-                )
-
-                if result.fun < best_fun:
-                    best_fun = result.fun
-                    best_result = result
+                res = minimize(neg_pen_ll, x0=x0, method='L-BFGS-B', bounds=bounds, options={'maxiter': 120, 'ftol': 1e-6})
+                if res.fun < best_fun:
+                    best_fun = res.fun
+                    best_res = res
             except Exception:
                 continue
 
-        if best_result is not None and best_result.success:
-            log_q_opt, log_c_opt, log_nu_opt = best_result.x
-            q_optimal = 10 ** log_q_opt
-            c_optimal = 10 ** log_c_opt
-            nu_optimal = 10 ** log_nu_opt
-            ll_optimal = -best_result.fun
+        if best_res is not None and best_res.success:
+            lq_opt, lc_opt, phi_opt, ln_opt = best_res.x
+            q_opt = 10 ** lq_opt
+            c_opt = 10 ** lc_opt
+            phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
+            nu_opt = 10 ** ln_opt
+            ll_opt = -best_res.fun
         else:
-            q_optimal = grid_best_q
-            c_optimal = grid_best_c
-            nu_optimal = grid_best_nu
-            ll_optimal = -best_neg_ll
+            lq_opt, lc_opt, phi_opt, ln_opt = grid_best
+            q_opt = 10 ** lq_opt
+            c_opt = 10 ** lc_opt
+            phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
+            nu_opt = 10 ** ln_opt
+            ll_opt = -best_neg
 
         diagnostics = {
-            'grid_best_q': float(grid_best_q),
-            'grid_best_c': float(grid_best_c),
-            'refined_best_q': float(q_optimal),
-            'refined_best_c': float(c_optimal),
-            'prior_applied': adaptive_lambda > 0,
+            'grid_best_q': float(10 ** grid_best[0]),
+            'grid_best_c': float(10 ** grid_best[1]),
+            'grid_best_phi': float(grid_best[2]),
+            'grid_best_nu': float(10 ** grid_best[3]),
+            'refined_best_q': float(q_opt),
+            'refined_best_c': float(c_opt),
+            'refined_best_phi': float(phi_opt),
+            'refined_best_nu': float(nu_opt),
             'prior_log_q_mean': float(adaptive_prior_mean),
-            'prior_lambda': float(adaptive_lambda),
-            'vol_cv': float(vol_cv),
-            'rv_ratio': float(rv_ratio),
-            'n_folds': int(len(fold_splits)),
-            'optimization_successful': best_result is not None and (best_result.success if best_result else False)
+            'prior_lambda': float(adaptive_lambda)
         }
-
-        return q_optimal, c_optimal, nu_optimal, ll_optimal, diagnostics
+        return q_opt, c_opt, phi_opt, nu_opt, ll_opt, diagnostics
 
 
 # Compatibility wrappers to preserve existing API surface
@@ -1107,190 +1059,6 @@ def kalman_filter_drift_phi_student_t(returns: np.ndarray, vol: np.ndarray, q: f
 
 def compute_pit_ks_pvalue_student_t(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float, nu: float) -> Tuple[float, float]:
     return StudentTDriftModel.pit_ks(returns, mu_filtered, vol, P_filtered, c, nu)
-
-def optimize_q_c_phi_nu_mle(
-    returns: np.ndarray,
-    vol: np.ndarray,
-    train_frac: float = 0.7,
-    q_min: float = 1e-10,
-    q_max: float = 1e-1,
-    c_min: float = 0.3,
-    c_max: float = 3.0,
-    phi_min: float = -0.999,
-    phi_max: float = 0.999,
-    nu_min: float = 2.1,
-    nu_max: float = 30.0,
-    prior_log_q_mean: float = -6.0,
-    prior_lambda: float = 1.0
-) -> Tuple[float, float, float, float, float, Dict]:
-    """Jointly optimize (q, c, φ, ν) for the φ-Student-t drift model via CV MLE."""
-    n = len(returns)
-    ret_p005 = np.percentile(returns, 0.5)
-    ret_p995 = np.percentile(returns, 99.5)
-    returns_robust = np.clip(returns, ret_p005, ret_p995)
-
-    vol_mean = float(np.mean(vol))
-    vol_std = float(np.std(vol))
-    vol_cv = vol_std / vol_mean if vol_mean > 0 else 0.0
-    ret_std = float(np.std(returns_robust))
-    ret_mean = float(np.mean(returns_robust))
-    rv_ratio = abs(ret_mean) / ret_std if ret_std > 0 else 0.0
-
-    if vol_cv > 0.5 or rv_ratio > 0.15:
-        adaptive_prior_mean = prior_log_q_mean + 0.5
-        adaptive_lambda = prior_lambda * 0.5
-    elif vol_cv < 0.2 and rv_ratio < 0.05:
-        adaptive_prior_mean = prior_log_q_mean - 0.3
-        adaptive_lambda = prior_lambda * 1.5
-    else:
-        adaptive_prior_mean = prior_log_q_mean
-        adaptive_lambda = prior_lambda
-
-    min_train = min(max(60, int(n * 0.4)), max(n - 5, 1))
-    test_window = min(max(20, int(n * 0.1)), max(n - min_train, 5))
-    fold_splits = []
-    train_end = min_train
-    while train_end + test_window <= n:
-        test_end = min(train_end + test_window, n)
-        if test_end - train_end >= 20:
-            fold_splits.append((0, train_end, train_end, test_end))
-        train_end += test_window
-    if not fold_splits:
-        split_idx = int(n * train_frac)
-        fold_splits = [(0, split_idx, split_idx, n)]
-
-    def neg_pen_ll(params: np.ndarray) -> float:
-        log_q, log_c, phi, log_nu = params
-        q = 10 ** log_q
-        c = 10 ** log_c
-        phi_clip = float(np.clip(phi, phi_min, phi_max))
-        nu = 10 ** log_nu
-        if q <= 0 or c <= 0 or not np.isfinite(q) or not np.isfinite(c) or nu < nu_min or nu > nu_max:
-            return 1e12
-        total_ll_oos = 0.0
-        total_obs = 0
-        all_standardized = []
-        for tr_start, tr_end, te_start, te_end in fold_splits:
-            try:
-                ret_train = returns_robust[tr_start:tr_end]
-                vol_train = vol[tr_start:tr_end]
-                if len(ret_train) < 3:
-                    continue
-                mu_filt_train, P_filt_train, _ = StudentTDriftModel.filter_phi(ret_train, vol_train, q, c, phi_clip, nu)
-                mu_pred = float(mu_filt_train[-1])
-                P_pred = float(P_filt_train[-1])
-                ll_fold = 0.0
-                for t in range(te_start, te_end):
-                    mu_pred = phi_clip * mu_pred
-                    P_pred = (phi_clip ** 2) * P_pred + q
-                    ret_t = float(returns_robust[t]) if np.ndim(returns_robust[t]) == 0 else float(returns_robust[t].item())
-                    vol_t = float(vol[t]) if np.ndim(vol[t]) == 0 else float(vol[t].item())
-                    R = c * (vol_t ** 2)
-                    innovation = ret_t - mu_pred
-                    forecast_var = P_pred + R
-
-                    if forecast_var > 1e-12:
-                        forecast_std = np.sqrt(forecast_var)
-                        ll_contrib = StudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_std)
-                        ll_fold += ll_contrib
-                        if len(all_standardized) < 1000:
-                            all_standardized.append(float(innovation / forecast_std))
-
-                    K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
-                    mu_pred = mu_pred + K * innovation
-                    P_pred = (1.0 - K) * P_pred
-
-                total_ll_oos += ll_fold
-                total_obs += (te_end - te_start)
-
-            except Exception:
-                continue
-        if total_obs == 0:
-            return 1e12
-        avg_ll = total_ll_oos / max(total_obs, 1)
-        calibration_penalty = 0.0
-        if len(all_standardized) >= 30:
-            try:
-                pit_values = student_t.cdf(all_standardized, df=nu)
-                ks_result = kstest(pit_values, 'uniform')
-                ks_stat = float(ks_result.statistic)
-                if ks_stat > 0.05:
-                    calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
-                    if ks_stat > 0.10:
-                        calibration_penalty -= 100.0 * (ks_stat - 0.10)
-                    if ks_stat > 0.15:
-                        calibration_penalty -= 200.0 * (ks_stat - 0.15)
-            except Exception:
-                pass
-        prior_scale = 1.0 / max(total_obs, 100)
-        log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
-        log_c_target = np.log10(0.9)
-        log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
-        log_prior_phi = -0.05 * prior_scale * (phi_clip ** 2)
-        log_prior_nu = -0.05 * prior_scale * (log_nu - np.log10(6.0)) ** 2
-
-        penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + log_prior_nu + calibration_penalty
-        return -penalized_ll if np.isfinite(penalized_ll) else 1e12
-
-    log_q_min = np.log10(q_min)
-    log_q_max = np.log10(q_max)
-    log_c_min = np.log10(c_min)
-    log_c_max = np.log10(c_max)
-    log_nu_min = np.log10(nu_min)
-    log_nu_max = np.log10(nu_max)
-
-    grid_best = (adaptive_prior_mean, np.log10(0.9), 0.0, np.log10(6.0))
-    best_neg = float('inf')
-    for lq in np.linspace(log_q_min, log_q_max, 4):
-        for lc in np.linspace(log_c_min, log_c_max, 3):
-            for lp in np.linspace(phi_min, phi_max, 5):
-                for ln in np.linspace(log_nu_min, log_nu_max, 3):
-                    val = neg_pen_ll(np.array([lq, lc, lp, ln]))
-                    if val < best_neg:
-                        best_neg = val
-                        grid_best = (lq, lc, lp, ln)
-    bounds = [(log_q_min, log_q_max), (log_c_min, log_c_max), (phi_min, phi_max), (log_nu_min, log_nu_max)]
-    start_points = [np.array(grid_best), np.array([adaptive_prior_mean, np.log10(0.9), 0.0, np.log10(6.0)])]
-    best_res = None
-    best_fun = float('inf')
-    for x0 in start_points:
-        try:
-            res = minimize(neg_pen_ll, x0=x0, method='L-BFGS-B', bounds=bounds, options={'maxiter': 120, 'ftol': 1e-6})
-            if res.fun < best_fun:
-                best_fun = res.fun
-                best_res = res
-        except Exception:
-            continue
-
-    if best_res is not None and best_res.success:
-        lq_opt, lc_opt, phi_opt, ln_opt = best_res.x
-        q_opt = 10 ** lq_opt
-        c_opt = 10 ** lc_opt
-        phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
-        nu_opt = 10 ** ln_opt
-        ll_opt = -best_res.fun
-    else:
-        lq_opt, lc_opt, phi_opt, ln_opt = grid_best
-        q_opt = 10 ** lq_opt
-        c_opt = 10 ** lc_opt
-        phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
-        nu_opt = 10 ** ln_opt
-        ll_opt = -best_neg
-
-    diagnostics = {
-        'grid_best_q': float(10 ** grid_best[0]),
-        'grid_best_c': float(10 ** grid_best[1]),
-        'grid_best_phi': float(grid_best[2]),
-        'grid_best_nu': float(10 ** grid_best[3]),
-        'refined_best_q': float(q_opt),
-        'refined_best_c': float(c_opt),
-        'refined_best_phi': float(phi_opt),
-        'refined_best_nu': float(nu_opt),
-        'prior_log_q_mean': float(adaptive_prior_mean),
-        'prior_lambda': float(adaptive_lambda)
-    }
-    return q_opt, c_opt, phi_opt, nu_opt, ll_opt, diagnostics
-
 
 def optimize_q_c_phi_mle(
     returns: np.ndarray,
@@ -1492,11 +1260,11 @@ def tune_asset_q(
         print(f"     φ-Gaussian-Kalman: q={q_phi:.2e}, c={c_phi:.3f}, φ={phi_opt:+.3f}, LL={ll_phi_full:.1f}, BIC={bic_phi:.1f}, PIT p={pit_p_phi:.4f}")
         
         # =================================================================
-        # STEP 2: Fit Student-t Model (q, c, φ, ν)
+        # STEP 2: Fit Kalmar Student-t Model (q, c, φ, ν)
         # =================================================================
-        print(f"  🔧 Fitting φ-Student-t model...")
+        print(f"  🔧 Fitting Kalmar φ-Student-t model...")
         try:
-            q_student, c_student, phi_student, nu_student, ll_student_cv, opt_diag_student = optimize_q_c_phi_nu_mle(
+            q_student, c_student, phi_student, nu_student, ll_student_cv, opt_diag_student = StudentTDriftModel.optimize_params(
                 returns_arr, vol_arr,
                 prior_log_q_mean=prior_log_q_mean,
                 prior_lambda=prior_lambda
@@ -1516,7 +1284,7 @@ def tune_asset_q(
             aic_student = compute_aic(ll_student_full, n_params=4)
             bic_student = compute_bic(ll_student_full, n_params=4, n_obs=n_obs)
 
-            print(f"     φ-Student-t: q={q_student:.2e}, c={c_student:.3f}, φ={phi_student:+.3f}, ν={nu_student:.1f}, LL={ll_student_full:.1f}, BIC={bic_student:.1f}, PIT p={pit_p_student:.4f}")
+            print(f"    Kalmar φ-Student-t: q={q_student:.2e}, c={c_student:.3f}, φ={phi_student:+.3f}, ν={nu_student:.1f}, LL={ll_student_full:.1f}, BIC={bic_student:.1f}, PIT p={pit_p_student:.4f}")
 
             student_t_fit_success = True
 
