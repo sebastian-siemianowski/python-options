@@ -545,6 +545,7 @@ class PhiGaussianDriftModel:
                         forecast_var = P_pred + R
 
                         if forecast_var > 1e-12:
+                            # Gaussian log-likelihood for φ-Gaussian model
                             ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
                             standardized_innov = innovation / np.sqrt(forecast_var)
                             if len(all_standardized) < 1000:
@@ -912,10 +913,11 @@ class PhiStudentTDriftModel:
                         forecast_var = P_pred + R
 
                         if forecast_var > 1e-12:
-                            ll_contrib = PhiStudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_var)
+                            forecast_std = np.sqrt(forecast_var)
+                            ll_contrib = PhiStudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_std)
                             ll_fold += ll_contrib
                             if len(all_standardized) < 1000:
-                                all_standardized.append(float(innovation / np.sqrt(forecast_var)))
+                                all_standardized.append(float(innovation / forecast_std))
 
                         nu_adjust = min(nu / (nu + 3.0), 1.0)
                         K = nu_adjust * P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
