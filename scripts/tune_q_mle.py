@@ -1479,7 +1479,7 @@ def tune_asset_q(
         # =================================================================
         # STEP 1.5: Fit φ-Kalman Model (q, c, φ)
         # =================================================================
-        print(f"  🔧 Fitting φ-Kalman model...")
+        print(f"  🔧 Fitting φ-Gaussian-Kalman model...")
         q_phi, c_phi, phi_opt, ll_phi_cv, opt_diag_phi = optimize_q_c_phi_mle(
             returns_arr, vol_arr,
             prior_log_q_mean=prior_log_q_mean,
@@ -1489,7 +1489,7 @@ def tune_asset_q(
         ks_phi, pit_p_phi = compute_pit_ks_pvalue(returns_arr, mu_phi, vol_arr, P_phi, c_phi)
         aic_phi = compute_aic(ll_phi_full, n_params=3)
         bic_phi = compute_bic(ll_phi_full, n_params=3, n_obs=n_obs)
-        print(f"     φ-Kalman: q={q_phi:.2e}, c={c_phi:.3f}, φ={phi_opt:+.3f}, LL={ll_phi_full:.1f}, BIC={bic_phi:.1f}, PIT p={pit_p_phi:.4f}")
+        print(f"     φ-Gaussian-Kalman: q={q_phi:.2e}, c={c_phi:.3f}, φ={phi_opt:+.3f}, LL={ll_phi_full:.1f}, BIC={bic_phi:.1f}, PIT p={pit_p_phi:.4f}")
         
         # =================================================================
         # STEP 2: Fit Student-t Model (q, c, φ, ν)
@@ -1555,12 +1555,12 @@ def tune_asset_q(
 
         print(f"  ✓ Selected {noise_model} (BIC={bic_final:.1f})")
         if noise_model == 'kalman_phi_student_t':
-            print(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_student:+.1f}, ΔBIC vs φ-Kalman = {bic_phi - bic_student:+.1f})")
+            print(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_student:+.1f}, ΔBIC vs φ-Gaussian Kalman = {bic_phi - bic_student:+.1f})")
         elif noise_model == "phi_gaussian":
             print(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_phi:+.1f})")
         else:
-            print(f"    (ΔBIC vs φ-Kalman = {bic_phi - bic_gauss:+.1f})")
-        
+            print(f"    (ΔBIC vs φ-Gaussian Kalman = {bic_phi - bic_gauss:+.1f})")
+            print(f"")
         # =================================================================
         # Upgrade #4: Model Comparison - Baseline Models
         # =================================================================
@@ -1730,7 +1730,7 @@ def tune_asset_q(
             'asset': asset,
 
             # Model selection
-            'noise_model': noise_model,  # "gaussian" or "student_t"
+            'noise_model': noise_model,  # "gaussian", "phi_gaussian", or "kalman_phi_student_t"
 
             # Parameters
             'q': float(q_optimal),
@@ -1782,7 +1782,7 @@ def tune_asset_q(
             'optimization_successful': opt_diagnostics.get('optimization_successful', False)
         }
 
-        # Add Student-t specific diagnostics if applicable
+        # Add Kalmar Phi Student-t specific diagnostics if applicable
         if noise_model == 'kalman_phi_student_t':
             result['grid_best_nu'] = opt_diagnostics.get('grid_best_nu')
             result['refined_best_nu'] = opt_diagnostics.get('refined_best_nu')
@@ -1790,7 +1790,7 @@ def tune_asset_q(
         if noise_model == "phi_gaussian":
             result['refined_best_phi'] = float(phi_selected)
 
-        # Add Gaussian comparison if Student-t was selected
+        # Add Gaussian comparison if Kalmar Phi Student-t was selected
         if noise_model == 'kalman_phi_student_t' and student_t_fit_success:
             result['gaussian_bic'] = float(bic_gauss)
             result['gaussian_log_likelihood'] = float(ll_gauss_full)
@@ -1809,7 +1809,7 @@ def tune_asset_q(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Estimate optimal Kalman drift parameters with Student-t noise support",
+        description="Estimate optimal Kalman drift parameters with Kalmar Phi Student-t noise support",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -2045,8 +2045,6 @@ Examples:
                 'kalman_drift': 'Kalman',
                 'phi_kalman_drift': 'PhiKal',
                 'kalman_phi_student_t': 'PhiKal-t',
-                'phi_student_t': 'PhiKal-t',
-                'phi_kalman_student_t': 'PhiKal-t'
             }.get(best_model, best_model[:8])
 
             warn_marker = " ⚠️" if data.get('calibration_warning') else ""
@@ -2077,7 +2075,7 @@ Examples:
         print(sep_line)
 
         print("\nColumn Legend:")
-        print("  Model: Gaussian / Student-t / Phi-Gaussian / Phi-Student-t (φ from cache)")
+        print("  Model: Gaussian / Phi-Gaussian / Phi-Student-t (φ from cache)")
         print("  φ: Drift persistence (if AR(1) model)")
         print("  ΔLL_0: ΔLL vs zero-drift baseline")
         print("  ΔLL_c: ΔLL vs constant-drift baseline")
