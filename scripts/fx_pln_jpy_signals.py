@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from scipy.stats import t as student_t, norm
+from scipy.special import gammaln
 from rich.console import Console
 import logging
 import os
@@ -77,6 +78,20 @@ from fx_data_utils import (
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
 logging.getLogger("yfinance").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
+class StudentTDriftModel:
+    """Minimal Student-t helper used for Kalman log-likelihood and mapping."""
+
+    @staticmethod
+    def logpdf(x: float, nu: float, mu: float, scale: float) -> float:
+        if scale <= 0 or nu <= 0:
+            return -1e12
+        z = (x - mu) / scale
+        log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
+        log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
+        return float(log_norm + log_kernel)
+
 
 PAIR = "PLNJPY=X"
 DEFAULT_HORIZONS = [1, 3, 7, 21, 63, 126, 252]
@@ -1340,19 +1355,22 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     # Clip degrees of freedom to a stable range to prevent extreme tail chaos in flash crashes
     nu = nu.clip(lower=4.5, upper=500.0)
 
-    # Fit global Student-t tail parameter once via MLE on standardized residuals (Level-7 rule)
-    try:
-        # Residuals using posterior drift (more conservative) and current per-day vol
-        mu_post_aligned = pd.Series(mu_post, index=ret.index).astype(float)
-        vol_aligned = pd.Series(vol, index=ret.index).astype(float)
-        resid = (ret - mu_post_aligned).replace([np.inf, -np.inf], np.nan)
-        z_std = resid / vol_aligned.replace(0.0, np.nan)
-        z_std = z_std.replace([np.inf, -np.inf], np.nan).dropna()
-        nu_info = _fit_student_nu_mle(z_std, min_n=200, bounds=(4.5, 500.0))
-        nu_hat = float(nu_info.get("nu_hat", 50.0))
-    except Exception:
-        nu_info = {"nu_hat": 50.0, "ll": float("nan"), "n": 0, "converged": False}
-        nu_hat = 50.0
+    # Tail parameter: prefer tuned ν from cache for Student-t world; otherwise keep legacy estimate
+    if tuned_noise_model == 'kalman_phi_student_t' and tuned_nu is not None and np.isfinite(tuned_nu):
+        nu_hat = float(tuned_nu)
+        nu_info = {"nu_hat": nu_hat, "source": "tuned_cache"}
+    else:
+        try:
+            mu_post_aligned = pd.Series(mu_post, index=ret.index).astype(float)
+            vol_aligned = pd.Series(vol, index=ret.index).astype(float)
+            resid = (ret - mu_post_aligned).replace([np.inf, -np.inf], np.nan)
+            z_std = resid / vol_aligned.replace(0.0, np.nan)
+            z_std = z_std.replace([np.inf, -np.inf], np.nan).dropna()
+            nu_info = _fit_student_nu_mle(z_std, min_n=200, bounds=(4.5, 500.0))
+            nu_hat = float(nu_info.get("nu_hat", 50.0))
+        except Exception:
+            nu_info = {"nu_hat": 50.0, "ll": float("nan"), "n": 0, "converged": False}
+            nu_hat = 50.0
 
     # t-stat style momentum: cum return / realized vol over window
     def mom_t(days: int) -> pd.Series:
@@ -2093,7 +2111,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         var_kf_now = float(var_kf_series.iloc[-1])
         var_kf_now = float(max(var_kf_now, 0.0))
     else:
-        var_kf_now = 0.0  # fallback if Kalman not available
+        var_kf_now = 0.0
 
     # Tail parameter (global nu) with posterior uncertainty
     nu_hat_series = feats.get("nu_hat")
@@ -2194,16 +2212,14 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         alpha_paths = np.zeros(n_paths, dtype=float)
         beta_paths  = np.zeros(n_paths, dtype=float)
 
-    # Drift process noise variance q (relative to current variance)
-    # Pillar 1: Incorporate Kalman drift uncertainty into process noise
-    # This properly propagates drift estimation uncertainty into forecast confidence intervals
+    # Drift process noise variance q: use tuned Kalman process noise, never mix with posterior P
+    km = feats.get("kalman_metadata", {}) or {}
+    tuned_q = km.get("process_noise_var")
     h0 = vol_now ** 2
-    q_baseline = kappa * h0  # baseline AR(1) process noise
-    q_kalman = var_kf_now  # additional uncertainty from drift estimation
-    
-    # Combined process noise: baseline evolution + current drift uncertainty
-    # When Kalman drift is uncertain, forecast intervals widen appropriately
-    q = float(max(q_baseline + q_kalman, 1e-10))
+    if tuned_q is None or not np.isfinite(tuned_q) or tuned_q <= 0:
+        q = float(max(kappa * h0, 1e-10))
+    else:
+        q = float(max(tuned_q, 1e-10))
 
     # Level-7 Jump-Diffusion: Calibrate jump parameters from historical returns
     # Detect large moves (>3σ) as empirical jumps to estimate:
@@ -2584,17 +2600,32 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     ]
 
     # Mapping function that accepts per‑day skew/nu
+    km_prob = (feats.get("kalman_metadata") or {})
+    noise_model = km_prob.get("kalman_noise_model")
+    tuned_nu_meta = km_prob.get("kalman_nu")
+    is_student_world = noise_model == 'kalman_phi_student_t'
+    nu_prob = float(tuned_nu_meta) if is_student_world and tuned_nu_meta is not None and np.isfinite(tuned_nu_meta) else nu_glob
+
+    # Mapping function that accepts per‑day skew/nu
     def map_prob(edge: float, nu_val: float, skew_val: float) -> float:
         if not np.isfinite(edge):
             return 0.5
         z = float(edge)
+        nu_eff = nu_prob if is_student_world else nu_val
         # Base symmetric mapping (Student‑t preferred)
-        if t_map and np.isfinite(nu_val) and 2.0 < nu_val < 1e9:
+        if is_student_world:
             try:
-                base_p = float(student_t.cdf(z, df=float(nu_val)))
+                base_p = float(student_t.cdf(z, df=nu_eff))
+            except Exception:
+                base_p = float(norm.cdf(z))
+        elif t_map and np.isfinite(nu_eff) and 2.0 < nu_eff < 1e9:
+            try:
+                base_p = float(student_t.cdf(z, df=float(nu_eff)))
             except Exception:
                 base_p = float(norm.cdf(z))
         else:
+            base_p = float(norm.cdf(z))
+        if not np.isfinite(base_p):
             base_p = float(norm.cdf(z))
         # Edgeworth asymmetry using realized skew and (optional) kurt proxy from nu
         g1 = float(np.clip(skew_val if np.isfinite(skew_val) else 0.0, -1.5, 1.5))
@@ -2624,7 +2655,12 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     # CI quantile based on 'now'
     alpha = np.clip(ci, 1e-6, 0.999999)
     tail = 0.5 * (1 + alpha)
-    if t_map and np.isfinite(nu_glob) and nu_glob > 2.0 and nu_glob < 1e9:
+    if is_student_world:
+        try:
+            z_star = float(student_t.ppf(tail, df=float(nu_prob)))
+        except Exception:
+            z_star = float(norm.ppf(tail))
+    elif t_map and np.isfinite(nu_glob) and nu_glob > 2.0 and nu_glob < 1e9:
         try:
             z_star = float(student_t.ppf(tail, df=float(nu_glob)))
         except Exception:
