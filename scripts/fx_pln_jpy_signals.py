@@ -1095,7 +1095,8 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     if asset_symbol is not None:
         tuned_params = _load_tuned_kalman_params(asset_symbol)
 
-    best_model = tuned_params.get('best_model_by_bic', 'kalman_drift') if tuned_params else 'kalman_drift'
+        best_model = tuned_params.get('best_model_by_bic', 'kalman_gaussian') if tuned_params else 'kalman_gaussian'
+        kalman_keys = {'kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t'}
 
     # Print model selection information for user transparency
     if asset_symbol and tuned_params:
@@ -1192,10 +1193,8 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             "delta_ll_vs_ewma": tuned_params.get('delta_ll_vs_ewma', float('nan')) if tuned_params else float('nan')
         }
     
-    else:
+    elif best_model in kalman_keys:
         # Kalman-drift model (default): full state-space estimation
-        # Run Kalman filter on returns with GARCH/EWMA volatility
-        # Uses pre-tuned parameters from cache if available, otherwise auto-estimates
         tuned_phi = tuned_params.get('phi') if tuned_params else None
         kf_result = _kalman_filter_drift(ret, vol, q=None, asset_symbol=asset_symbol, phi=tuned_phi)
 
@@ -1241,8 +1240,21 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             mu_kf = mu_blend
             var_kf = pd.Series(0.0, index=mu_kf.index)  # no uncertainty quantified
             kalman_available = False
-            kalman_metadata = {}
-    
+            kalman_metadata = {
+                "model_selected": str(best_model),
+                "reason": "Unrecognized model key; defaulting to EWMA blend"
+            }
+    else:
+        # Unknown model key: fallback to EWMA blend
+        mu_blend = 0.5 * mu_fast + 0.5 * mu_slow
+        mu_kf = mu_blend
+        var_kf = pd.Series(0.0, index=mu_kf.index)
+        kalman_available = False
+        kalman_metadata = {
+            "model_selected": str(best_model),
+            "reason": "Unrecognized model key; defaulting to EWMA blend"
+        }
+
     # Trend filter (200D z-distance) - kept for diagnostics
     sma200 = px.rolling(200).mean()
     trend_z = (px - sma200) / px.rolling(200).std()
