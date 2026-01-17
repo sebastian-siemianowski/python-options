@@ -931,13 +931,12 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
 
     if q_used is None or not np.isfinite(q_used) or q_used <= 0:
         return {}
-    if c_used is not None and (not np.isfinite(c_used) or c_used <= 0):
-        c_used = None
+    if c_used is None or not np.isfinite(c_used) or c_used <= 0:
+        c_used = 1.0
     if is_student_t and (nu_used is None or not np.isfinite(nu_used)):
         return {}
 
-    heteroskedastic = c_used is not None
-    q_t_series = c_used * (sigma ** 2) if heteroskedastic else None
+    obs_scale = float(c_used)
     q_scalar = float(q_used)
 
     T = len(y)
@@ -952,10 +951,9 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     log_likelihood = 0.0
 
     for t in range(T):
-        q_t = float(q_t_series[t]) if q_t_series is not None else q_scalar
         mu_pred = phi_used * mu_t
-        P_pred = (phi_used ** 2) * P_t + q_t
-        R_t = float(max(sigma[t] ** 2, 1e-12))
+        P_pred = (phi_used ** 2) * P_t + q_scalar
+        R_t = float(max(obs_scale * (sigma[t] ** 2), 1e-12))
         innov = y[t] - mu_pred
         S_t = float(max(P_pred + R_t, 1e-12))
 
@@ -1005,8 +1003,8 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
         "n_obs": int(T),
         "kalman_gain_mean": kalman_gain_mean,
         "kalman_gain_recent": kalman_gain_recent,
-        "kalman_heteroskedastic_mode": bool(heteroskedastic),
-        "kalman_c_optimal": float(c_used) if c_used is not None else None,
+        "kalman_heteroskedastic_mode": False,
+        "kalman_c_optimal": obs_scale,
         "phi_used": float(phi_used) if phi_used is not None and np.isfinite(phi_used) else None,
         "kalman_noise_model": noise_model,
         "kalman_nu": float(nu_used) if nu_used is not None else None,
@@ -1773,10 +1771,10 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         diagnostics["kalman_q_optimal"] = kalman_metadata.get("q_optimal", float("nan"))
         diagnostics["kalman_q_heuristic"] = kalman_metadata.get("q_heuristic", float("nan"))
         diagnostics["kalman_q_optimization_attempted"] = kalman_metadata.get("q_optimization_attempted", False)
-        # Refinement 2: Kalman gain (situational awareness)
+        # Refinement 2: Kalman gain statistics (situational awareness)
         diagnostics["kalman_gain_mean"] = kalman_metadata.get("kalman_gain_mean", float("nan"))
         diagnostics["kalman_gain_recent"] = kalman_metadata.get("kalman_gain_recent", float("nan"))
-        # Refinement 3: Innovation whiteness (model adequacy)
+        # Refinement 3: Innovation whiteness test (model adequacy)
         innovation_whiteness = kalman_metadata.get("innovation_whiteness", {})
         if isinstance(innovation_whiteness, dict):
             diagnostics["innovation_ljung_box_statistic"] = innovation_whiteness.get("ljung_box_statistic", float("nan"))
