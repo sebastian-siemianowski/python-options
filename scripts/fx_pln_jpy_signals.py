@@ -2612,14 +2612,11 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         nu_eff = nu_prob if is_student_world else nu_val
         # Base symmetric mapping dictated solely by model identity
         if is_student_world:
-            try:
-                base_p = float(student_t.cdf(z, df=nu_eff))
-            except Exception:
-                raise
+            base_p = float(student_t.cdf(z, df=nu_eff))
         else:
             base_p = float(norm.cdf(z))
         if not np.isfinite(base_p):
-            base_p = float(norm.cdf(z))
+            return 0.5
         # Edgeworth asymmetry using realized skew and (optional) kurt proxy from nu
         g1 = float(np.clip(skew_val if np.isfinite(skew_val) else 0.0, -1.5, 1.5))
         if np.isfinite(nu_val) and nu_val > 4.5 and nu_val < 1e9:
