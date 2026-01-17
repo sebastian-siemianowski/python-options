@@ -853,14 +853,14 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
         data = cache[asset_symbol]
         q_val = data.get('q')
         c_val = data.get('c', 1.0)
-        noise_model_raw = data.get('noise_model', 'gaussian')
-        # Normalize/validate supported models (backward compatible)
-        supported_models = {'gaussian', 'student_t', 'phi_gaussian', 'kalman_phi_student_t'}
-        noise_model = noise_model_raw if noise_model_raw in supported_models else 'gaussian'
-        requires_phi = 'phi' in noise_model
-        requires_nu = 'student_t' in noise_model
         phi_val = data.get('phi')
         nu_val = data.get('nu')
+        noise_model_raw = data.get('noise_model', 'gaussian')
+        # Normalize/validate supported models (backward compatible)
+        supported_models = {'gaussian', 'phi_gaussian', 'kalman_phi_student_t'}
+        noise_model = noise_model_raw if noise_model_raw in supported_models else 'gaussian'
+        requires_phi = 'phi' in noise_model
+        requires_nu = noise_model == 'kalman_phi_student_t'
         # Basic parameter validation
         if q_val is None or not np.isfinite(q_val) or q_val <= 0:
             return None
@@ -914,19 +914,26 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     if asset_symbol is not None:
         tuned_params = _load_tuned_kalman_params(asset_symbol)
     noise_model = (tuned_params or {}).get('noise_model', 'gaussian')
+    requires_phi = 'phi' in noise_model
+    is_student_t = noise_model == 'kalman_phi_student_t'
+
     phi_used = phi if phi is not None else (tuned_params or {}).get('phi')
-    phi_used = float(phi_used) if phi_used is not None and np.isfinite(phi_used) else 1.0
-    phi_used = float(np.clip(phi_used, -0.9999, 0.9999)) if abs(phi_used) > 1.0 else phi_used
+    if requires_phi:
+        if phi_used is None or not np.isfinite(phi_used):
+            return {}
+        phi_used = float(phi_used)
+    else:
+        phi_used = 1.0
 
     q_used = q if q is not None else (tuned_params or {}).get('q')
     c_used = (tuned_params or {}).get('c')
-    nu_used = (tuned_params or {}).get('nu') if 'student_t' in noise_model else None
+    nu_used = (tuned_params or {}).get('nu') if is_student_t else None
 
     if q_used is None or not np.isfinite(q_used) or q_used <= 0:
         return {}
     if c_used is not None and (not np.isfinite(c_used) or c_used <= 0):
         c_used = None
-    if 'student_t' in noise_model and (nu_used is None or not np.isfinite(nu_used)):
+    if is_student_t and (nu_used is None or not np.isfinite(nu_used)):
         return {}
 
     heteroskedastic = c_used is not None
@@ -952,7 +959,7 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
         innov = y[t] - mu_pred
         S_t = float(max(P_pred + R_t, 1e-12))
 
-        if 'student_t' in noise_model:
+        if is_student_t:
             nu_adj = min(nu_used / (nu_used + 3.0), 1.0)
             K_t = nu_adj * P_pred / S_t
         else:
@@ -967,7 +974,7 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
         innovations[t] = innov
         innovation_vars[t] = S_t
 
-        if 'student_t' in noise_model:
+        if is_student_t:
             try:
                 ll_t = StudentTDriftModel.logpdf(innov, nu_used, 0.0, math.sqrt(S_t))
                 if np.isfinite(ll_t):
@@ -1000,7 +1007,7 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
         "kalman_gain_recent": kalman_gain_recent,
         "kalman_heteroskedastic_mode": bool(heteroskedastic),
         "kalman_c_optimal": float(c_used) if c_used is not None else None,
-        "phi_used": float(phi_used),
+        "phi_used": float(phi_used) if phi_used is not None and np.isfinite(phi_used) else None,
         "kalman_noise_model": noise_model,
         "kalman_nu": float(nu_used) if nu_used is not None else None,
     }
@@ -1092,12 +1099,12 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     
     # Load tuned parameters and model selection results
     tuned_params = None
+    best_model = 'kalman_gaussian'
+    kalman_keys = {'kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t'}
     if asset_symbol is not None:
         tuned_params = _load_tuned_kalman_params(asset_symbol)
-
-        best_model = tuned_params.get('best_model_by_bic', 'kalman_gaussian') if tuned_params else 'kalman_gaussian'
-        kalman_keys = {'kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t'}
-
+        if tuned_params:
+            best_model = tuned_params.get('best_model_by_bic', 'kalman_gaussian')
     # Print model selection information for user transparency
     if asset_symbol and tuned_params:
         model_comparison = tuned_params.get('model_comparison', {})
@@ -1194,7 +1201,6 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         }
     
     elif best_model in kalman_keys:
-        # Kalman-drift model (default): full state-space estimation
         tuned_phi = tuned_params.get('phi') if tuned_params else None
         kf_result = _kalman_filter_drift(ret, vol, q=None, asset_symbol=asset_symbol, phi=tuned_phi)
 
