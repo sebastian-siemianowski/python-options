@@ -1415,7 +1415,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         # Pillar 1: Kalman filter drift estimation
         "mu_kf": mu_kf if kalman_available else mu_blend,  # Kalman-filtered drift
         "var_kf": var_kf if kalman_available else pd.Series(0.0, index=ret.index),  # drift variance
-        "mu_final": mu_final,  # final drift after regime adjustment
+        "mu_final": mu_final,  # shorthand
         "kalman_available": kalman_available,  # flag for diagnostics
         "kalman_metadata": kalman_metadata,  # log-likelihood, process noise, etc.
         "phi_used": kalman_metadata.get("phi_used", tuned_params.get("phi") if tuned_params else None),
@@ -2212,14 +2212,10 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         alpha_paths = np.zeros(n_paths, dtype=float)
         beta_paths  = np.zeros(n_paths, dtype=float)
 
-    # Drift process noise variance q: use tuned Kalman process noise; keep uncertainty in P only
-    km = feats.get("kalman_metadata", {}) or {}
-    tuned_q = km.get("process_noise_var")
+    # Drift uncertainty: propagate posterior P only (no external q leakage)
+    drift_unc_now = max(var_kf_now, 1e-10)
+
     h0 = vol_now ** 2
-    if tuned_q is None or not np.isfinite(tuned_q) or tuned_q <= 0:
-        q = float(max(kappa * h0, 1e-10))
-    else:
-        q = float(max(tuned_q, 1e-10))
 
     # Level-7 Jump-Diffusion: Calibrate jump parameters from historical returns
     # Detect large moves (>3σ) as empirical jumps to estimate:
@@ -2336,8 +2332,8 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         if use_garch:
             h_t = omega_paths + alpha_paths * (e_t ** 2) + beta_paths * h_t
             h_t = np.clip(h_t, 1e-12, 1e4)
-        # Evolve drift via AR(1)
-        eta = rng.normal(loc=0.0, scale=math.sqrt(q), size=n_paths)
+        # Evolve drift via AR(1) using posterior drift uncertainty only
+        eta = rng.normal(loc=0.0, scale=math.sqrt(drift_unc_now), size=n_paths)
         mu_t = phi * mu_t + eta
 
     return {
