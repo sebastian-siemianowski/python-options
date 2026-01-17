@@ -932,7 +932,8 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     requires_phi = 'phi' in noise_model
     is_student_t = noise_model == 'kalman_phi_student_t'
 
-    phi_used = phi if phi is not None else (tuned_params or {}).get('phi')
+    # φ is structural: only from tuned cache; required when model has φ
+    phi_used = (tuned_params or {}).get('phi')
     if requires_phi:
         if phi_used is None or not np.isfinite(phi_used):
             raise ValueError("phi required by selected model but missing from tuning cache")
@@ -2698,12 +2699,11 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         phi_sim = km.get("phi_used") or km.get("kalman_phi")
     if phi_sim is None:
         phi_sim = feats.get("phi_used")
-    # If model requires phi, fail loudly when missing
-    if isinstance(km, dict) and km.get("kalman_noise_model", "").startswith("kalman_phi") and (phi_sim is None or not np.isfinite(phi_sim)):
-        raise ValueError("phi required by model but missing for simulation")
-    try:
+    if isinstance(km, dict) and km.get("kalman_noise_model", "").startswith("kalman_phi"):
+        if phi_sim is None or not np.isfinite(phi_sim):
+            raise ValueError("phi required by model but missing for simulation")
         phi_sim = float(phi_sim)
-    except Exception:
+    else:
         phi_sim = 1.0
     sim_result = _simulate_forward_paths(feats, H_max=H_max, n_paths=3000, phi=phi_sim)
     sims = sim_result['returns']
