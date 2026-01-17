@@ -1101,10 +1101,14 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     tuned_params = None
     best_model = 'kalman_gaussian'
     kalman_keys = {'kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t'}
+    tuned_noise_model = 'gaussian'
+    tuned_nu = None
     if asset_symbol is not None:
         tuned_params = _load_tuned_kalman_params(asset_symbol)
         if tuned_params:
             best_model = tuned_params.get('best_model_by_bic', 'kalman_gaussian')
+            tuned_noise_model = tuned_params.get('noise_model', 'gaussian')
+            tuned_nu = tuned_params.get('nu') if tuned_noise_model == 'kalman_phi_student_t' else None
     # Print model selection information for user transparency
     if asset_symbol and tuned_params:
         model_comparison = tuned_params.get('model_comparison', {})
@@ -2555,11 +2559,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     if isinstance(nu_hat_series, pd.Series) and not nu_hat_series.empty:
         nu_glob = float(nu_hat_series.iloc[-1])
     else:
-        # fallback to last rolling nu
         nu_glob, _ = _tail2("nu", 50.0)
         if not np.isfinite(nu_glob):
             nu_glob = 50.0
-    # Clip to safe range
     nu_glob = float(np.clip(nu_glob, 4.5, 500.0))
     # Prefer smoothed skew if available; fallback to raw skew; default neutral 0.0
     skew_now, skew_prev = _tail2("skew_s", np.nan)
