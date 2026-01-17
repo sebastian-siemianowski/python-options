@@ -664,7 +664,7 @@ def _test_innovation_whiteness(innovations: np.ndarray, innovation_vars: np.ndar
         }
 
 
-def _compute_kalman_log_likelihood(y: np.ndarray, sigma: np.ndarray, q: float) -> float:
+def _compute_kalman_log_likelihood(y: np.ndarray, sigma: np.ndarray, q: float, c: float = 1.0) -> float:
     """
     Compute log-likelihood for Kalman filter with given process noise q.
     Used for q optimization via marginal likelihood maximization.
@@ -692,7 +692,7 @@ def _compute_kalman_log_likelihood(y: np.ndarray, sigma: np.ndarray, q: float) -
         P_pred = P_t + q
         
         # Observation variance
-        R_t = float(max(sigma[t] ** 2, 1e-12))
+        R_t = float(max(c * (sigma[t] ** 2), 1e-12))
         
         # Innovation
         innov = y[t] - mu_pred
@@ -739,7 +739,7 @@ def _compute_kalman_log_likelihood_heteroskedastic(y: np.ndarray, sigma: np.ndar
     
     for t in range(T):
         # Heteroskedastic process noise: q_t = c * σ_t²
-        R_t = float(max(sigma[t] ** 2, 1e-12))
+        R_t = float(max(c * (sigma[t] ** 2), 1e-12))
         q_t = float(max(c * R_t, 1e-12))
         
         # Prediction
@@ -1357,6 +1357,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
 
     # Tail parameter: prefer tuned ν from cache for Student-t world; otherwise keep legacy estimate
     if tuned_noise_model == 'kalman_phi_student_t' and tuned_nu is not None and np.isfinite(tuned_nu):
+        # Level-7 rule: ν is fixed from tuning cache in Student-t world
         nu_hat = float(tuned_nu)
         nu_info = {"nu_hat": nu_hat, "source": "tuned_cache"}
     else:
@@ -2120,7 +2121,6 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     if isinstance(nu_hat_series, pd.Series) and not nu_hat_series.empty:
         nu_hat = float(nu_hat_series.iloc[-1])
     else:
-        # fallback to last rolling nu
         nu_hat, _ = _tail2("nu", 50.0)
         if not np.isfinite(nu_hat):
             nu_hat = 50.0
@@ -2212,7 +2212,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         alpha_paths = np.zeros(n_paths, dtype=float)
         beta_paths  = np.zeros(n_paths, dtype=float)
 
-    # Drift process noise variance q: use tuned Kalman process noise, never mix with posterior P
+    # Drift process noise variance q: use tuned Kalman process noise; keep uncertainty in P only
     km = feats.get("kalman_metadata", {}) or {}
     tuned_q = km.get("process_noise_var")
     h0 = vol_now ** 2
@@ -2785,20 +2785,16 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # Extract drift uncertainty (variance of drift estimate) from Kalman filter
         var_kf_series = feats.get("var_kf_smoothed", pd.Series(dtype=float))
         if isinstance(var_kf_series, pd.Series) and not var_kf_series.empty:
-            P_t = float(var_kf_series.iloc[-1])  # Latest drift variance
+            P_t = float(var_kf_series.iloc[-1])
         else:
-            P_t = 0.0  # No drift uncertainty if Kalman not available
-        
-        # Ensure P_t is valid
+            P_t = 0.0
         if not np.isfinite(P_t) or P_t < 0:
             P_t = 0.0
-        
-        # Kelly denominator: total variance = observation variance + drift uncertainty scaled by horizon
-        # Original: denom = vH (observation variance over horizon H)
-        # Upgraded: denom = vH + H * P_t (adds drift parameter uncertainty)
+
+        # Kelly denominator: include posterior drift variance only (no q leakage)
         denom_base = vH if vH > 0 else (sig_H ** 2 if sig_H > 0 else 1.0)
         denom = denom_base + float(H) * P_t
-        
+
         # Compute drift_weight based on model quality metrics
         # - ΔLL < 0: drift model worse than zero-drift → weight = 0
         # - PIT p < 0.05: miscalibration warning → weight = 0.3
