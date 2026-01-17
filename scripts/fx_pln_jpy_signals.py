@@ -909,7 +909,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
         return None
 
 
-def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = None, optimize_q: bool = True, asset_symbol: Optional[str] = None, phi: Optional[float] = None) -> Dict[str, pd.Series]:
+def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = None, optimize_q: bool = True, asset_symbol: Optional[str] = None) -> Dict[str, pd.Series]:
     """
     Kalman filter for time-varying drift estimation using pre-tuned parameters only.
     All parameters (q, c, phi, nu, noise_model) must come from tuning/cache or explicit args.
@@ -1219,8 +1219,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         }
     
     elif best_model in kalman_keys:
-        tuned_phi = tuned_params.get('phi') if tuned_params else None
-        kf_result = _kalman_filter_drift(ret, vol, q=None, asset_symbol=asset_symbol, phi=tuned_phi)
+        kf_result = _kalman_filter_drift(ret, vol, q=None, asset_symbol=asset_symbol)
 
         # Extract Kalman-filtered drift estimates
         if kf_result and "mu_kf_smoothed" in kf_result:
@@ -1430,39 +1429,39 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
 def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed: int = 42) -> Optional[Dict]:
     """
     Fit a Hidden Markov Model with Gaussian emissions to detect market regimes.
-    
+
     Each regime (state) has:
     - Its own μ (drift) dynamics captured by emission mean
     - Its own σ (volatility) dynamics captured by emission covariance
     - Persistence captured by transition matrix
-    
+
     Args:
         feats: Feature dictionary from compute_features()
         n_states: Number of hidden states (default 3: calm, trending, crisis)
         random_seed: Random seed for reproducibility
-        
+
     Returns:
         Dictionary with HMM model, state sequence, and regime metadata, or None on failure
     """
     if not HMM_AVAILABLE:
         return None
-        
+
     try:
         # Extract returns and volatility as observations
         ret = feats.get("ret", pd.Series(dtype=float))
         vol = feats.get("vol", pd.Series(dtype=float))
-        
+
         if ret.empty or vol.empty:
             return None
-            
+
         # Align and clean data
         df = pd.concat([ret, vol], axis=1, join='inner').dropna()
         if len(df) < 300:  # Need sufficient history for stable HMM
             return None
-            
+
         df.columns = ["ret", "vol"]
         X = df.values  # Shape (T, 2): returns and volatility as features
-        
+
         # Fit Gaussian HMM with full covariance (allows each state its own μ and σ)
         model = hmm.GaussianHMM(
             n_components=n_states,
@@ -1471,44 +1470,44 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
             random_state=random_seed,
             verbose=False
         )
-        
+
         model.fit(X)
-        
+
         # Infer hidden state sequence (Viterbi for most likely path)
         states = model.predict(X)
-        
+
         # Posterior probabilities for each state at each time
         posteriors = model.predict_proba(X)
-        
+
         # Identify regime characteristics from emission parameters
         means = model.means_  # Shape (n_states, 2): [drift, vol] per state
         covars = model.covars_  # Shape (n_states, 2, 2)
         transmat = model.transmat_  # Shape (n_states, n_states)
-        
+
         # Label states by volatility level: calm < normal < crisis
         vol_means = means[:, 1]  # volatility component
         sorted_indices = np.argsort(vol_means)
-        
+
         regime_names = {
             sorted_indices[0]: "calm",
             sorted_indices[1]: "trending" if n_states == 3 else "normal",
             sorted_indices[2]: "crisis" if n_states == 3 else "volatile"
         }
-        
+
         # Build regime series aligned with returns index
         regime_series = pd.Series(
             [regime_names.get(s, f"state_{s}") for s in states],
             index=df.index,
             name="regime"
         )
-        
+
         # Posterior probability series (one per state)
         posterior_df = pd.DataFrame(
             posteriors,
             index=df.index,
             columns=[regime_names.get(i, f"state_{i}") for i in range(n_states)]
         )
-        
+
         # Compute log-likelihood and information criteria for model diagnostics
         try:
             log_likelihood = float(model.score(X))
@@ -1525,7 +1524,7 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
             n_params = 0
             aic = float("nan")
             bic = float("nan")
-        
+
         return {
             "model": model,
             "regime_series": regime_series,
@@ -1542,7 +1541,7 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
             "aic": aic,
             "bic": bic,
         }
-        
+
     except Exception as e:
         # Silent fallback on HMM failure
         return None
@@ -1551,38 +1550,38 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
 def track_parameter_stability(ret: pd.Series, window_days: int = 252, step_days: int = 63) -> Dict[str, pd.DataFrame]:
     """
     Track GARCH parameter stability over time using rolling window estimation.
-    
+
     Fits GARCH(1,1) on expanding windows to detect parameter drift.
     Returns time series of parameters, standard errors, and log-likelihoods.
-    
+
     Args:
         ret: Returns series
         window_days: Minimum window size for initial fit
         step_days: Days between refits (trades off compute vs resolution)
-        
+
     Returns:
         Dictionary with DataFrames tracking parameters over time
     """
     ret_clean = _ensure_float_series(ret).dropna()
     if len(ret_clean) < max(300, window_days):
         return {}
-    
+
     # Time points to evaluate (start at window_days, step forward)
     dates = ret_clean.index
     eval_dates = []
     for i in range(window_days, len(dates), step_days):
         eval_dates.append(dates[i])
-    
+
     if not eval_dates:
         return {}
-    
+
     # Storage for parameter evolution
     records = []
-    
+
     for eval_date in eval_dates:
         # Use expanding window up to eval_date
         window_ret = ret_clean.loc[:eval_date]
-        
+
         # Try to fit GARCH
         try:
             _, params = _garch11_mle(window_ret)
@@ -1604,16 +1603,16 @@ def track_parameter_stability(ret: pd.Series, window_days: int = 252, step_days:
         except Exception:
             # Skip windows where GARCH fails
             continue
-    
+
     if not records:
         return {}
-    
+
     df = pd.DataFrame(records).set_index("date")
-    
+
     # Compute parameter drift statistics (rolling z-score of parameter changes)
     param_cols = ["omega", "alpha", "beta"]
     drift_stats = {}
-    
+
     for col in param_cols:
         if col in df.columns:
             changes = df[col].diff()
@@ -1622,9 +1621,9 @@ def track_parameter_stability(ret: pd.Series, window_days: int = 252, step_days:
                 # Normalized change (z-score): change / standard error
                 z_change = changes / df[se_col].replace(0, np.nan)
                 drift_stats[f"{col}_drift_z"] = z_change
-    
+
     drift_df = pd.DataFrame(drift_stats, index=df.index)
-    
+
     return {
         "param_evolution": df,
         "param_drift": drift_df,
@@ -1634,36 +1633,36 @@ def track_parameter_stability(ret: pd.Series, window_days: int = 252, step_days:
 def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int = 21, horizons: List[int] = [1, 21, 63]) -> Dict[str, pd.DataFrame]:
     """
     Perform walk-forward out-of-sample testing to validate predictive power.
-    
+
     Splits data into non-overlapping train/test windows, fits model on train,
     predicts on test, and tracks hit rates and prediction errors.
-    
+
     Args:
         px: Price series
         train_days: Training window size (days)
         test_days: Test window size (days)
         horizons: Forecast horizons to test
-        
+
     Returns:
         Dictionary with out-of-sample performance metrics
     """
     px_clean = _ensure_float_series(px).dropna()
     if len(px_clean) < train_days + test_days + max(horizons):
         return {}
-    
+
     log_px = np.log(px_clean)
     dates = px_clean.index
-    
+
     # Define walk-forward windows
     windows = []
     start_idx = 0
     while start_idx + train_days + test_days <= len(dates):
         train_end_idx = start_idx + train_days
         test_end_idx = min(train_end_idx + test_days, len(dates))
-        
+
         train_dates = dates[start_idx:train_end_idx]
         test_dates = dates[train_end_idx:test_end_idx]
-        
+
         if len(test_dates) > 0:
             windows.append({
                 "train_start": train_dates[0],
@@ -1671,41 +1670,41 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
                 "test_start": test_dates[0],
                 "test_end": test_dates[-1],
             })
-        
+
         # Move forward by test_days (non-overlapping)
         start_idx = test_end_idx
-    
+
     if not windows:
         return {}
-    
+
     # Track predictions and outcomes for each horizon
     results = {h: [] for h in horizons}
-    
+
     for window in windows:
         # Fit features on training data
         train_px = px_clean.loc[window["train_start"]:window["train_end"]]
-        
+
         try:
             train_feats = compute_features(train_px)
-            
+
             # Get predictions at end of training window
             mu_now = safe_last(train_feats.get("mu_post", pd.Series([0.0])))
             vol_now = safe_last(train_feats.get("vol", pd.Series([1.0])))
-            
+
             if not np.isfinite(mu_now):
                 mu_now = 0.0
             if not np.isfinite(vol_now) or vol_now <= 0:
                 vol_now = 1.0
-            
+
             # For each horizon, predict and measure actual outcome
             test_log_px = log_px.loc[window["test_start"]:window["test_end"]]
             train_end_log_px = float(log_px.loc[window["train_end"]])
-            
+
             for H in horizons:
                 # Predicted return over H days
                 pred_ret_H = mu_now * H
                 pred_sign = np.sign(pred_ret_H) if pred_ret_H != 0 else 0
-                
+
                 # Actual return H days forward from train_end
                 try:
                     forward_idx = dates.get_loc(window["train_end"]) + H
@@ -1714,13 +1713,13 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
                         actual_log_px = float(log_px.loc[forward_date])
                         actual_ret_H = actual_log_px - train_end_log_px
                         actual_sign = np.sign(actual_ret_H) if actual_ret_H != 0 else 0
-                        
+
                         # Prediction error
                         pred_error = actual_ret_H - pred_ret_H
-                        
+
                         # Direction hit (1 if signs match, 0 otherwise)
                         hit = 1 if (pred_sign * actual_sign > 0) else 0
-                        
+
                         results[H].append({
                             "train_end": window["train_end"],
                             "forecast_date": forward_date,
@@ -1731,21 +1730,21 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
                         })
                 except Exception:
                     continue
-                    
+
         except Exception:
             continue
-    
+
     # Aggregate results into DataFrames
     oos_metrics = {}
     for H in horizons:
         if results[H]:
             df = pd.DataFrame(results[H]).set_index("train_end")
-            
+
             # Compute cumulative statistics
             hit_rate = df["direction_hit"].mean() if len(df) > 0 else float("nan")
             mean_error = df["prediction_error"].mean() if len(df) > 0 else float("nan")
             rmse = np.sqrt((df["prediction_error"] ** 2).mean()) if len(df) > 0 else float("nan")
-            
+
             oos_metrics[f"H{H}"] = {
                 "predictions": df,
                 "hit_rate": float(hit_rate),
@@ -1753,7 +1752,7 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
                 "rmse": float(rmse),
                 "n_forecasts": len(df),
             }
-    
+
     return oos_metrics
 
 
