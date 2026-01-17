@@ -935,7 +935,7 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     phi_used = phi if phi is not None else (tuned_params or {}).get('phi')
     if requires_phi:
         if phi_used is None or not np.isfinite(phi_used):
-            return {}
+            raise ValueError("phi required by selected model but missing from tuning cache")
         phi_used = float(phi_used)
     else:
         phi_used = 1.0
@@ -947,9 +947,9 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     if q_used is None or not np.isfinite(q_used) or q_used <= 0:
         return {}
     if c_used is None or not np.isfinite(c_used) or c_used <= 0:
-        c_used = 1.0
+        raise ValueError("Observation scale c required by tuned model but missing/invalid")
     if is_student_t and (nu_used is None or not np.isfinite(nu_used)):
-        return {}
+        raise ValueError("Student-t model selected but ν missing from tuning cache")
 
     obs_scale = float(c_used)
     q_scalar = float(q_used)
@@ -1361,6 +1361,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         nu_hat = float(tuned_nu)
         nu_info = {"nu_hat": nu_hat, "source": "tuned_cache"}
     else:
+        # Non-Student-t worlds may estimate ν diagnostically; Student-t world never refits
         try:
             mu_post_aligned = pd.Series(mu_post, index=ret.index).astype(float)
             vol_aligned = pd.Series(vol, index=ret.index).astype(float)
@@ -2124,7 +2125,6 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         nu_hat, _ = _tail2("nu", 50.0)
         if not np.isfinite(nu_hat):
             nu_hat = 50.0
-    # Clip to safe range
     nu_hat = float(np.clip(nu_hat, 4.5, 500.0))
     
     # Extract standard error for ν (Tier 2: posterior parameter variance)
@@ -2604,7 +2604,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     noise_model = km_prob.get("kalman_noise_model")
     tuned_nu_meta = km_prob.get("kalman_nu")
     is_student_world = noise_model == 'kalman_phi_student_t'
-    nu_prob = float(tuned_nu_meta) if is_student_world and tuned_nu_meta is not None and np.isfinite(tuned_nu_meta) else nu_glob
+    if is_student_world and (tuned_nu_meta is None or not np.isfinite(tuned_nu_meta)):
+        raise ValueError("Student-t model selected but ν missing from tuning cache")
+    nu_prob = float(tuned_nu_meta) if is_student_world else nu_glob
 
     # Mapping function that accepts per‑day skew/nu
     def map_prob(edge: float, nu_val: float, skew_val: float) -> float:
@@ -2612,17 +2614,12 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             return 0.5
         z = float(edge)
         nu_eff = nu_prob if is_student_world else nu_val
-        # Base symmetric mapping (Student‑t preferred)
+        # Base symmetric mapping dictated solely by model identity
         if is_student_world:
             try:
                 base_p = float(student_t.cdf(z, df=nu_eff))
             except Exception:
-                base_p = float(norm.cdf(z))
-        elif t_map and np.isfinite(nu_eff) and 2.0 < nu_eff < 1e9:
-            try:
-                base_p = float(student_t.cdf(z, df=float(nu_eff)))
-            except Exception:
-                base_p = float(norm.cdf(z))
+                raise
         else:
             base_p = float(norm.cdf(z))
         if not np.isfinite(base_p):
@@ -2656,15 +2653,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     alpha = np.clip(ci, 1e-6, 0.999999)
     tail = 0.5 * (1 + alpha)
     if is_student_world:
-        try:
-            z_star = float(student_t.ppf(tail, df=float(nu_prob)))
-        except Exception:
-            z_star = float(norm.ppf(tail))
-    elif t_map and np.isfinite(nu_glob) and nu_glob > 2.0 and nu_glob < 1e9:
-        try:
-            z_star = float(student_t.ppf(tail, df=float(nu_glob)))
-        except Exception:
-            z_star = float(norm.ppf(tail))
+        z_star = float(student_t.ppf(tail, df=float(nu_prob)))
     else:
         z_star = float(norm.ppf(tail))
 
@@ -2709,7 +2698,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         phi_sim = km.get("phi_used") or km.get("kalman_phi")
     if phi_sim is None:
         phi_sim = feats.get("phi_used")
-    # Safe fallback: default to random-walk drift if phi missing/invalid
+    # If model requires phi, fail loudly when missing
+    if isinstance(km, dict) and km.get("kalman_noise_model", "").startswith("kalman_phi") and (phi_sim is None or not np.isfinite(phi_sim)):
+        raise ValueError("phi required by model but missing for simulation")
     try:
         phi_sim = float(phi_sim)
     except Exception:
