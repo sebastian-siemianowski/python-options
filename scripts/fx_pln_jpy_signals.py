@@ -126,7 +126,7 @@ SECTOR_MAP = {
         "CAT", "DE", "EMR", "FDX", "MMM", "UBER", "UNP", "UPS", "TKA", "TKA.DE", "MTX.DE"
     },
     "Defense & Aerospace": {
-        "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HEI.A", "HEI-A", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MOG-A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE", "R3NK", "R3NK.DE", "RHM", "KOZ1", "SAABY", "SAF", "FINMY", "EXA", "EXA.PA", "BKSY", "ASTS", "THEON", "THEON.AS", "KOG", "KOG.OL",
+        "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HEI.A", "HEI-A", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MOG-A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE", "R3NK", "R3NK.DE", "KOZ1", "SAABY", "SAF", "FINMY", "EXA", "EXA.PA", "BKSY", "ASTS", "THEON", "THEON.AS", "KOG", "KOG.OL",
         "SNT"
     },
     "Communication Services": {"CMCSA", "DIS", "T", "TMUS", "VZ"},
@@ -1813,11 +1813,12 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         diagnostics["kalman_nu_robust"] = kalman_metadata.get("nu_robust")
         # Level-7+ Refinement: Regime-dependent drift priors
         diagnostics["kalman_regime_prior_used"] = kalman_metadata.get("regime_prior_used", False)
-        regime_prior_info = kalman_metadata.get("regime_prior_info", {})
-        if isinstance(regime_prior_info, dict) and regime_prior_info:
-            diagnostics["kalman_regime_current"] = regime_prior_info.get("current_regime", "")
-            diagnostics["kalman_regime_drift_prior"] = regime_prior_info.get("current_drift_prior", float("nan"))
-    
+        diagnostics["kalman_regime_info"] = kalman_metadata.get("regime_prior_info", {})
+        # φ persistence (from tuned cache or filter)
+        diagnostics["kalman_phi"] = tuned_params.get("phi") if tuned_params else kalman_metadata.get("phi_used")
+        diagnostics["phi_used"] = kalman_metadata.get("phi_used")
+    }
+
     hmm_result = feats.get("hmm_result")
     if hmm_result is not None and isinstance(hmm_result, dict):
         diagnostics["hmm_log_likelihood"] = hmm_result.get("log_likelihood", float("nan"))
@@ -3332,7 +3333,7 @@ def main() -> None:
                     comp_table = Table(title=f"📊 Model Comparison: {category_title} — {asset}")
                     comp_table.add_column("Model", justify="left", style="cyan")
                     comp_table.add_column("Params", justify="right")
-                    comp_table.add_column("Log-Lik", justify="right")
+                    comp_table.add_column("Log-Likelihood", justify="right")
                     comp_table.add_column("AIC", justify="right")
                     comp_table.add_column("BIC", justify="right")
                     comp_table.add_column("Δ AIC", justify="right")
