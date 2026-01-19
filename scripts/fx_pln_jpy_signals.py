@@ -75,6 +75,7 @@ from fx_data_utils import (
     get_default_asset_universe,
     SECTOR_MAP,
     get_sector,
+    download_prices_bulk,
 )
 
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
@@ -2905,9 +2906,11 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         }
 
 
-def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, horizons: List[int], max_retries: int = 3):
+def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, horizons: List[int], max_retries: int = 3, use_bulk: bool = True):
     """Run asset processing with bounded retries and collect failures.
     Retries only the assets that failed on prior attempts.
+    When use_bulk is True, prefetches prices in batches to reduce Yahoo rate limits
+    and processes sequentially to reuse the shared in-memory cache.
     """
     console = Console()
     pending = list(dict.fromkeys(a.strip() for a in assets if a and a.strip()))
@@ -2921,8 +2924,23 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
         console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} workers...[/cyan]")
         work_items = [(asset, args, horizons) for asset in pending]
 
-        with Pool(processes=n_workers) as pool:
-            results = pool.map(process_single_asset, work_items)
+        if use_bulk and attempt == 1 and pending:
+            try:
+                console.print(f"[cyan]Prefetching {len(pending)} assets in bulk to reduce rate limits...[/cyan]")
+                download_prices_bulk(pending, start=args.start, end=args.end)
+            except Exception as e:
+                console.print(f"[yellow]Warning:[/yellow] Bulk prefetch failed: {e}. Falling back to standard fetch.")
+
+        if use_bulk:
+            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets sequentially (cache reused)...[/cyan]")
+            work_items = [(asset, args, horizons) for asset in pending]
+            results = [process_single_asset(item) for item in work_items]
+        else:
+            n_workers = min(cpu_count(), len(pending))
+            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} workers...[/cyan]")
+            work_items = [(asset, args, horizons) for asset in pending]
+            with Pool(processes=n_workers) as pool:
+                results = pool.map(process_single_asset, work_items)
 
         next_pending: List[str] = []
         for asset, result in zip(pending, results):

@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import pathlib
+import functools
 
 
 # -------------------------
@@ -968,6 +969,23 @@ def winsorize(x, p: float = 0.01):
 # Data
 # -------------------------
 
+_PX_CACHE: Dict[Tuple[str, Optional[str], Optional[str]], pd.DataFrame] = {}
+
+
+def _px_cache_key(symbol: str, start: Optional[str], end: Optional[str]) -> Tuple[str, Optional[str], Optional[str]]:
+    return (symbol.upper().strip(), start, end)
+
+
+def _get_cached_prices(symbol: str, start: Optional[str], end: Optional[str]) -> Optional[pd.DataFrame]:
+    return _PX_CACHE.get(_px_cache_key(symbol, start, end))
+
+
+def _store_cached_prices(symbol: str, start: Optional[str], end: Optional[str], df: pd.DataFrame) -> None:
+    if df is None or df.empty:
+        return
+    _PX_CACHE[_px_cache_key(symbol, start, end)] = df
+
+
 def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> pd.DataFrame:
     """Robust Yahoo fetch with multiple strategies.
     Returns a DataFrame with OHLC columns (if available).
@@ -977,6 +995,9 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     - Falls back to period='max' pulls to dodge timezone/metadata issues
     Normalizes DatetimeIndex to tz-naive for stability.
     """
+    cached = _get_cached_prices(symbol, start, end)
+    if cached is not None and not cached.empty:
+        return cached
     def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         if df is not None and not df.empty:
             if hasattr(df.index, "tz") and df.index.tz is not None:
@@ -988,6 +1009,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         df = yf.download(symbol, start=start, end=end, auto_adjust=True, progress=False, threads=False)
         df = _normalize(df)
         if df is not None and not df.empty:
+            _store_cached_prices(symbol, start, end, df)
             return df
     except Exception:
         pass
@@ -997,6 +1019,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         df = tk.history(start=start, end=end, auto_adjust=True)
         df = _normalize(df)
         if df is not None and not df.empty:
+            _store_cached_prices(symbol, start, end, df)
             return df
     except Exception:
         pass
@@ -1005,6 +1028,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         df = yf.download(symbol, start=start, end=end, auto_adjust=False, progress=False, threads=False)
         df = _normalize(df)
         if df is not None and not df.empty:
+            _store_cached_prices(symbol, start, end, df)
             return df
     except Exception:
         pass
@@ -1014,6 +1038,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         df = tk.history(period="max", auto_adjust=True)
         df = _normalize(df)
         if df is not None and not df.empty:
+            _store_cached_prices(symbol, start, end, df)
             return df
     except Exception:
         pass
@@ -1021,10 +1046,96 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         df = yf.download(symbol, period="max", auto_adjust=True, progress=False, threads=False)
         df = _normalize(df)
         if df is not None and not df.empty:
+            _store_cached_prices(symbol, start, end, df)
             return df
     except Exception:
         pass
     return pd.DataFrame()
+
+
+def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 25) -> Dict[str, pd.Series]:
+    """Download multiple symbols in chunks to reduce rate limiting.
+    Uses yf.download with list input; falls back to per-symbol for failures.
+    Populates the local price cache so subsequent single fetches reuse data.
+    Returns mapping symbol -> close price Series.
+    """
+    cleaned = [s.strip() for s in symbols if s and s.strip()]
+    dedup = []
+    seen = set()
+    for s in cleaned:
+        u = s.upper()
+        if u not in seen:
+            seen.add(u)
+            dedup.append(u)
+
+    result: Dict[str, pd.Series] = {}
+    # Check cache first
+    for sym in list(dedup):
+        cached = _get_cached_prices(sym, start, end)
+        if cached is not None and not cached.empty:
+            if "Close" in cached:
+                ser = cached["Close"].dropna()
+            elif "Adj Close" in cached:
+                ser = cached["Adj Close"].dropna()
+            else:
+                ser = pd.Series(dtype=float)
+            ser.name = "px"
+            result[sym] = ser
+    remaining = [s for s in dedup if s not in result]
+
+    for i in range(0, len(remaining), chunk_size):
+        chunk = remaining[i:i + chunk_size]
+        if not chunk:
+            continue
+        try:
+            df = yf.download(chunk, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False)
+        except Exception:
+            df = None
+        if df is not None and not df.empty:
+            # Normalize index
+            if hasattr(df.index, "tz") and df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            # When multiple tickers, columns become MultiIndex
+            for sym in chunk:
+                try:
+                    ser = None
+                    if isinstance(df.columns, pd.MultiIndex):
+                        if (sym, "Close") in df.columns:
+                            ser = df[(sym, "Close")].dropna()
+                        elif (sym, "Adj Close") in df.columns:
+                            ser = df[(sym, "Adj Close")].dropna()
+                    else:
+                        # Single-symbol response even though list length 1
+                        if "Close" in df:
+                            ser = df["Close"].dropna()
+                        elif "Adj Close" in df:
+                            ser = df["Adj Close"].dropna()
+                    if ser is not None and not ser.empty:
+                        ser.name = "px"
+                        result[sym] = ser
+                        _store_cached_prices(sym, start, end, ser.to_frame(name="Close"))
+                except Exception:
+                    continue
+
+    # Fallback individually for missing symbols
+    for sym in remaining:
+        if sym in result:
+            continue
+        try:
+            df = _download_prices(sym, start, end)
+            if df is not None and not df.empty:
+                ser = None
+                if "Close" in df:
+                    ser = df["Close"].dropna()
+                elif "Adj Close" in df:
+                    ser = df["Adj Close"].dropna()
+                if ser is not None and not ser.empty:
+                    ser.name = "px"
+                    result[sym] = ser
+        except Exception:
+            continue
+
+    return result
 
 
 # Display-name cache for full asset names (e.g., company longName)
