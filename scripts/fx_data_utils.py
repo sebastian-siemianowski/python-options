@@ -1053,14 +1053,15 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     return pd.DataFrame()
 
 
-def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 25) -> Dict[str, pd.Series]:
+def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 25, progress: bool = True, log_fn=None) -> Dict[str, pd.Series]:
     """Download multiple symbols in chunks to reduce rate limiting.
     Uses yf.download with list input; falls back to per-symbol for failures.
     Populates the local price cache so subsequent single fetches reuse data.
-    Returns mapping symbol -> close price Series.
+    Returns mapping symbol -> close price Series. Progress logging is on by default.
     """
+    log = log_fn if log_fn is not None else (print if progress else None)
     cleaned = [s.strip() for s in symbols if s and s.strip()]
-    dedup = []
+    dedup: List[str] = []
     seen = set()
     for s in cleaned:
         u = s.upper()
@@ -1069,7 +1070,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
             dedup.append(u)
 
     result: Dict[str, pd.Series] = {}
-    # Check cache first
+    cached_hits = 0
     for sym in list(dedup):
         cached = _get_cached_prices(sym, start, end)
         if cached is not None and not cached.empty:
@@ -1081,31 +1082,38 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                 ser = pd.Series(dtype=float)
             ser.name = "px"
             result[sym] = ser
+            cached_hits += 1
     remaining = [s for s in dedup if s not in result]
 
+    total_need = len(remaining)
+    if log and (cached_hits or total_need):
+        total_chunks = (total_need + chunk_size - 1) // max(1, chunk_size)
+        log(f"Bulk download: {total_need} uncached, {cached_hits} from cache, {total_chunks} chunk(s), chunk size ≤ {chunk_size}.")
+
+    fetched_count = 0
     for i in range(0, len(remaining), chunk_size):
         chunk = remaining[i:i + chunk_size]
         if not chunk:
             continue
+        if log:
+            log(f"  Chunk {i//chunk_size + 1}: fetching {len(chunk)} tickers…")
         try:
             df = yf.download(chunk, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False)
         except Exception:
             df = None
         if df is not None and not df.empty:
-            # Normalize index
             if hasattr(df.index, "tz") and df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
-            # When multiple tickers, columns become MultiIndex
+            is_multi = isinstance(df.columns, pd.MultiIndex)
             for sym in chunk:
+                ser = None
                 try:
-                    ser = None
-                    if isinstance(df.columns, pd.MultiIndex):
+                    if is_multi:
                         if (sym, "Close") in df.columns:
                             ser = df[(sym, "Close")].dropna()
                         elif (sym, "Adj Close") in df.columns:
                             ser = df[(sym, "Adj Close")].dropna()
                     else:
-                        # Single-symbol response even though list length 1
                         if "Close" in df:
                             ser = df["Close"].dropna()
                         elif "Adj Close" in df:
@@ -1114,13 +1122,18 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                         ser.name = "px"
                         result[sym] = ser
                         _store_cached_prices(sym, start, end, ser.to_frame(name="Close"))
+                        fetched_count += 1
                 except Exception:
                     continue
+            if log:
+                done = fetched_count
+                pct = (done / max(1, total_need)) * 100.0
+                log(f"    ✓ Cached {done}/{total_need} ({pct:.1f}%) so far")
 
-    # Fallback individually for missing symbols
-    for sym in remaining:
-        if sym in result:
-            continue
+    missing_after_bulk = [s for s in remaining if s not in result]
+    if log and missing_after_bulk:
+        log(f"  Falling back to individual fetch for {len(missing_after_bulk)} symbol(s)…")
+    for sym in missing_after_bulk:
         try:
             df = _download_prices(sym, start, end)
             if df is not None and not df.empty:
@@ -1134,7 +1147,6 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                     result[sym] = ser
         except Exception:
             continue
-
     return result
 
 
