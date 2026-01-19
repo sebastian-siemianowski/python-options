@@ -823,6 +823,71 @@ MAPPING = {
     "GFA": ["ANGL", "FALN", "GFA"],     # Global fallen angel UCITS -> US fallen angel proxies
 }
 
+SECTOR_MAP = {
+    "FX / Commodities / Crypto": {
+        "PLNJPY=X", "GC=F", "SI=F", "BTC-USD", "BTCUSD=X", "MSTR", "XAGUSD", "SGLP", "SGLP.L", "GLDE", "GLDW", "GLDM", "SLVI",
+        "BAL"
+    },
+    "Indices / Broad ETFs": {
+        "SPY", "VOO", "GLD", "SLV", "SMH", "SOXX", "QQQ", "MOAT", "MOO", "MOTI", "ITA"
+    },
+    "Information Technology": {
+        "AAPL", "ACN", "ADBE", "AMD", "AVGO", "CRM", "CSCO", "IBM", "INTC", "INTU", "MSFT", "NOW", "NVDA", "ORCL", "PLTR", "QCOM", "TXN", "GOOG", "GOOGL", "META", "NFLX", "AMZN",
+        "SOUN", "SYM", "IONQ", "IOT", "GLBE", "GRND", "BABA", "ESPO"
+    },
+    "Health Care": {
+        "ABBV", "ABT", "AMGN", "BMY", "CVS", "DHR", "GILD", "ISRG", "JNJ", "LLY", "MDT", "MRK", "NVO", "PFE", "TMO", "UNH", "REGN", "CRSP", "BEAM", "BAYN", "PPH"
+    },
+    "Financials": {
+        "AIG", "AXP", "BLK", "BRK.B", "BRK-B", "COF", "IBKR", "MA", "MET", "PYPL", "SCHW", "V", "HOOD", "NU", "ACP"
+    },
+    "Banks": {
+        "JPM", "BAC", "WFC", "C", "USB", "PNC", "TFC", "GS", "MS", "BK"
+    },
+    "Consumer Discretionary": {
+        "BKNG", "GM", "HD", "LOW", "MCD", "NKE", "SBUX", "TGT", "TSLA", "VOW3", "VOW3.DE", "BMW", "BMW.DE", "CELH"
+    },
+    "Industrials": {
+        "CAT", "DE", "EMR", "FDX", "MMM", "UBER", "UNP", "UPS", "TKA", "TKA.DE", "MTX.DE"
+    },
+    "Defense & Aerospace": {
+        "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HEI.A", "HEI-A", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MOG-A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE", "R3NK", "R3NK.DE", "KOZ1", "SAABY", "SAF", "FINMY", "EXA", "EXA.PA", "BKSY", "ASTS", "THEON", "THEON.AS", "KOG", "KOG.OL",
+        "SNT"
+    },
+    "Communication Services": {"CMCSA", "DIS", "T", "TMUS", "VZ"},
+    "Consumer Staples": {"CL", "COST", "KO", "MDLZ", "MO", "PEP", "PG", "PM", "WMT"},
+    "Energy": {"COP", "CVX", "XOM", "AM", "OIH"},
+    "Utilities": {"NEE", "SO"},
+    "Real Estate": {"SPG", "VNQ"},
+    "Materials": {"LIN", "NEM", "B", "AEM", "GDX", "GDXJ", "REMX", "MOO"},
+    "Asian Tech & Manufacturing": {"005930.KS"},
+    "VanEck ETFs": {"AFK", "ANGL", "CNXT", "EGPT", "FLTR", "GLIN", "MOTG", "IDX", "MLN", "NLR", "DURA"},
+    "Options / Structured Products": {
+        "TSLD", "PLTI", "QQQO", "METI", "MSFI", "MAGD", "AMDI", "AMZD", "GOOO", "BABI", "BABY", "AAPI", "AVGI", "MSTP"
+    },
+    "Nuclear": {"OKLO", "CCJ", "UUUU", "GEV", "LEU"},
+    "Critical Materials": {"MP", "CRML", "IDR", "FCX", "UAMY"},
+    "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR"},
+    "Drones": {"ONDS", "UMAC", "AVAV", "KTOS", "DPRO"},
+    "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY"},
+    "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SEI", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"}
+}
+
+def get_sector(symbol: str) -> str:
+    s = symbol.upper().strip()
+    candidates = {s}
+    if "-" in s:
+        candidates.add(s.replace("-", "."))
+    if "." in s:
+        base, suffix = s.rsplit(".", 1)
+        if len(suffix) <= 4:
+            candidates.add(base)
+    for cand in candidates:
+        for sector, tickers in SECTOR_MAP.items():
+            if cand in tickers:
+                return sector
+    return "Unspecified"
+
 # FX rate cache (JSON on disk) to avoid repeated network calls
 FX_RATE_CACHE_PATH = os.path.join("cache", "fx_rates.json")
 FX_RATE_CACHE_MAX_AGE_DAYS = 1
