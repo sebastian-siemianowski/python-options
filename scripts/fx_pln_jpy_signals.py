@@ -22,6 +22,7 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from multiprocessing import Pool, cpu_count
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -2932,13 +2933,18 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
                 console.print(f"[yellow]Warning:[/yellow] Bulk prefetch failed: {e}. Falling back to standard fetch.")
 
         if use_bulk:
-            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets sequentially (cache reused)...[/cyan]")
-            work_items = [(asset, args, horizons) for asset in pending]
-            results = [process_single_asset(item) for item in work_items]
+            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets in parallel with shared cache...[/cyan]")
+            results = []
+            with ThreadPoolExecutor(max_workers=n_workers) as ex:
+                future_map = {ex.submit(process_single_asset, item): item for item in work_items}
+                for fut in as_completed(future_map):
+                    try:
+                        results.append(fut.result())
+                    except Exception as exc:
+                        asset = future_map[fut][0]
+                        results.append({"status": "error", "asset": asset, "error": str(exc)})
         else:
-            n_workers = min(cpu_count(), len(pending))
-            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} workers...[/cyan]")
-            work_items = [(asset, args, horizons) for asset in pending]
+            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} worker process(es)...[/cyan]")
             with Pool(processes=n_workers) as pool:
                 results = pool.map(process_single_asset, work_items)
 

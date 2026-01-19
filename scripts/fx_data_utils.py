@@ -20,6 +20,12 @@ import pandas as pd
 import yfinance as yf
 import pathlib
 import functools
+from threading import Lock
+
+PRICE_CACHE_DIR = os.path.join("scripts", "quant", "cache", "prices")
+PRICE_CACHE_DIR_PATH = pathlib.Path(PRICE_CACHE_DIR)
+PRICE_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
+_price_file_lock = Lock()
 
 
 # -------------------------
@@ -977,14 +983,77 @@ def _px_cache_key(symbol: str, start: Optional[str], end: Optional[str]) -> Tupl
     return (symbol.upper().strip(), start, end)
 
 
-def _get_cached_prices(symbol: str, start: Optional[str], end: Optional[str]) -> Optional[pd.DataFrame]:
-    return _PX_CACHE.get(_px_cache_key(symbol, start, end))
-
-
 def _store_cached_prices(symbol: str, start: Optional[str], end: Optional[str], df: pd.DataFrame) -> None:
     if df is None or df.empty:
         return
     _PX_CACHE[_px_cache_key(symbol, start, end)] = df
+
+
+def _price_cache_path(symbol: str) -> pathlib.Path:
+    safe = symbol.replace("/", "_")
+    return PRICE_CACHE_DIR_PATH / f"{safe.upper()}.csv"
+
+
+def _load_disk_prices(symbol: str) -> Optional[pd.DataFrame]:
+    path = _price_cache_path(symbol)
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path, index_col=0)
+        # Normalize index to timezone-naive datetimes, drop duplicates, and sort
+        df.index = pd.to_datetime(df.index, format="ISO8601", errors="coerce")
+        df = df[~df.index.isna()]
+        if hasattr(df.index, "tz") and df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        return df
+    except Exception:
+        return None
+
+
+def _store_disk_prices(symbol: str, df: pd.DataFrame) -> None:
+    if df is None or df.empty:
+        return
+    path = _price_cache_path(symbol)
+    tmp = path.with_suffix(".tmp")
+    with _price_file_lock:
+        try:
+            df.to_csv(tmp)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _merge_and_store(symbol: str, new_df: pd.DataFrame) -> pd.DataFrame:
+    existing = _load_disk_prices(symbol)
+    if existing is not None and not existing.empty:
+        combined = pd.concat([existing, new_df], axis=0)
+        combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+    else:
+        combined = new_df
+    _store_disk_prices(symbol, combined)
+    return combined
+
+
+def _get_cached_prices(symbol: str, start: Optional[str], end: Optional[str]) -> Optional[pd.DataFrame]:
+    hit = _PX_CACHE.get(_px_cache_key(symbol, start, end))
+    if hit is not None:
+        return hit
+    disk = _load_disk_prices(symbol)
+    if disk is None or disk.empty:
+        return None
+    # Index already normalized in _load_disk_prices
+    if start:
+        disk = disk[disk.index >= pd.to_datetime(start)]
+    if end:
+        disk = disk[disk.index <= pd.to_datetime(end)]
+    if disk.empty:
+        return None
+    _PX_CACHE[_px_cache_key(symbol, start, end)] = disk
+    return disk
 
 
 def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> pd.DataFrame:
@@ -1005,11 +1074,27 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
                 df.index = df.index.tz_localize(None)
         return df if df is not None else pd.DataFrame()
 
+    # Determine incremental fetch window based on disk cache
+    disk_df = _load_disk_prices(symbol)
+    fetch_start = start
+    if disk_df is not None and not disk_df.empty:
+        last_dt = pd.to_datetime(disk_df.index.max()).to_pydatetime()
+        if end:
+            end_dt = pd.to_datetime(end)
+            if last_dt >= end_dt:
+                _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
+                return disk_df
+        fetch_start = (last_dt + timedelta(days=1)).date().isoformat()
+
     # Try standard download
     try:
-        df = yf.download(symbol, start=start, end=end, auto_adjust=True, progress=False, threads=False)
+        df = yf.download(symbol, start=fetch_start, end=end, auto_adjust=True, progress=False, threads=False)
         df = _normalize(df)
         if df is not None and not df.empty:
+            if disk_df is not None and not disk_df.empty:
+                df = _merge_and_store(symbol, pd.concat([disk_df, df]))
+            else:
+                _store_disk_prices(symbol, df)
             _store_cached_prices(symbol, start, end, df)
             return df
     except Exception:
@@ -1017,18 +1102,26 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     # Try Ticker.history
     try:
         tk = yf.Ticker(symbol)
-        df = tk.history(start=start, end=end, auto_adjust=True)
+        df = tk.history(start=fetch_start, end=end, auto_adjust=True)
         df = _normalize(df)
         if df is not None and not df.empty:
+            if disk_df is not None and not disk_df.empty:
+                df = _merge_and_store(symbol, pd.concat([disk_df, df]))
+            else:
+                _store_disk_prices(symbol, df)
             _store_cached_prices(symbol, start, end, df)
             return df
     except Exception:
         pass
     # Try without auto_adjust
     try:
-        df = yf.download(symbol, start=start, end=end, auto_adjust=False, progress=False, threads=False)
+        df = yf.download(symbol, start=fetch_start, end=end, auto_adjust=False, progress=False, threads=False)
         df = _normalize(df)
         if df is not None and not df.empty:
+            if disk_df is not None and not disk_df.empty:
+                df = _merge_and_store(symbol, pd.concat([disk_df, df]))
+            else:
+                _store_disk_prices(symbol, df)
             _store_cached_prices(symbol, start, end, df)
             return df
     except Exception:
@@ -1039,6 +1132,10 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         df = tk.history(period="max", auto_adjust=True)
         df = _normalize(df)
         if df is not None and not df.empty:
+            if disk_df is not None and not disk_df.empty:
+                df = _merge_and_store(symbol, pd.concat([disk_df, df]))
+            else:
+                _store_disk_prices(symbol, df)
             _store_cached_prices(symbol, start, end, df)
             return df
     except Exception:
@@ -1047,6 +1144,10 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         df = yf.download(symbol, period="max", auto_adjust=True, progress=False, threads=False)
         df = _normalize(df)
         if df is not None and not df.empty:
+            if disk_df is not None and not disk_df.empty:
+                df = _merge_and_store(symbol, pd.concat([disk_df, df]))
+            else:
+                _store_disk_prices(symbol, df)
             _store_cached_prices(symbol, start, end, df)
             return df
     except Exception:
@@ -1054,7 +1155,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     return pd.DataFrame()
 
 
-def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 25, progress: bool = True, log_fn=None) -> Dict[str, pd.Series]:
+def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None) -> Dict[str, pd.Series]:
     """Download multiple symbols in chunks to reduce rate limiting.
     Uses yf.download with list input; falls back to per-symbol for failures.
     Populates the local price cache so subsequent single fetches reuse data.
@@ -1070,10 +1171,21 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
             seen.add(u)
             dedup.append(u)
 
+    # Resolve each symbol to a viable primary candidate (proxy) to avoid TZ/errors
+    primary_map: Dict[str, str] = {}
+    for sym in dedup:
+        try:
+            cands = _resolve_symbol_candidates(sym)
+            primary = cands[0] if cands else sym
+        except Exception:
+            primary = sym
+        primary_map[sym] = primary
+
     result: Dict[str, pd.Series] = {}
     cached_hits = 0
     for sym in list(dedup):
-        cached = _get_cached_prices(sym, start, end)
+        primary = primary_map.get(sym, sym)
+        cached = _get_cached_prices(primary, start, end)
         if cached is not None and not cached.empty:
             if "Close" in cached:
                 ser = cached["Close"].dropna()
@@ -1095,8 +1207,10 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
 
     def _download_chunk(chunk_syms: List[str]) -> Dict[str, pd.Series]:
         out: Dict[str, pd.Series] = {}
+        # Fetch using primary proxies
+        fetch_syms = [primary_map.get(s, s) for s in chunk_syms]
         try:
-            df = yf.download(chunk_syms, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False)
+            df = yf.download(fetch_syms, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False)
         except Exception:
             df = None
         if df is None or df.empty:
@@ -1105,13 +1219,14 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
             df.index = df.index.tz_localize(None)
         is_multi = isinstance(df.columns, pd.MultiIndex)
         for sym in chunk_syms:
+            primary = primary_map.get(sym, sym)
             ser = None
             try:
                 if is_multi:
-                    if (sym, "Close") in df.columns:
-                        ser = df[(sym, "Close")].dropna()
-                    elif (sym, "Adj Close") in df.columns:
-                        ser = df[(sym, "Adj Close")].dropna()
+                    if (primary, "Close") in df.columns:
+                        ser = df[(primary, "Close")].dropna()
+                    elif (primary, "Adj Close") in df.columns:
+                        ser = df[(primary, "Adj Close")].dropna()
                 else:
                     if "Close" in df:
                         ser = df["Close"].dropna()
@@ -1128,7 +1243,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
     if log and chunks:
         log(f"  Launching {len(chunks)} chunk(s) in parallel…")
 
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(chunks)))) as ex:
+    with ThreadPoolExecutor(max_workers=min(12, max(1, len(chunks)))) as ex:
         future_map = {ex.submit(_download_chunk, c): c for c in chunks}
         for fut in as_completed(future_map):
             chunk_syms = future_map[fut]
@@ -1148,9 +1263,11 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
     missing_after_bulk = [s for s in remaining if s not in result]
     if log and missing_after_bulk:
         log(f"  Falling back to individual fetch for {len(missing_after_bulk)} symbol(s)…")
-    for sym in missing_after_bulk:
+
+    def _fetch_single(sym: str) -> Optional[Tuple[str, pd.Series]]:
+        primary = primary_map.get(sym, sym)
         try:
-            df = _download_prices(sym, start, end)
+            df = _download_prices(primary, start, end)
             if df is not None and not df.empty:
                 ser = None
                 if "Close" in df:
@@ -1159,9 +1276,21 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                     ser = df["Adj Close"].dropna()
                 if ser is not None and not ser.empty:
                     ser.name = "px"
-                    result[sym] = ser
+                    return sym, ser
         except Exception:
-            continue
+            return None
+        return None
+
+    if missing_after_bulk:
+        with ThreadPoolExecutor(max_workers=min(16, len(missing_after_bulk))) as ex:
+            futures = {ex.submit(_fetch_single, s): s for s in missing_after_bulk}
+            for fut in as_completed(futures):
+                res = fut.result()
+                if res is None:
+                    continue
+                sym, ser = res
+                result[sym] = ser
+                _store_cached_prices(sym, start, end, ser.to_frame(name="Close"))
     return result
 
 
