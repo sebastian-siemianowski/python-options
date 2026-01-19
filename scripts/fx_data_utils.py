@@ -13,6 +13,7 @@ import os
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -1091,40 +1092,54 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         log(f"Bulk download: {total_need} uncached, {cached_hits} from cache, {total_chunks} chunk(s), chunk size ≤ {chunk_size}.")
 
     fetched_count = 0
-    for i in range(0, len(remaining), chunk_size):
-        chunk = remaining[i:i + chunk_size]
-        if not chunk:
-            continue
-        if log:
-            log(f"  Chunk {i//chunk_size + 1}: fetching {len(chunk)} tickers…")
+
+    def _download_chunk(chunk_syms: List[str]) -> Dict[str, pd.Series]:
+        out: Dict[str, pd.Series] = {}
         try:
-            df = yf.download(chunk, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False)
+            df = yf.download(chunk_syms, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False)
         except Exception:
             df = None
-        if df is not None and not df.empty:
-            if hasattr(df.index, "tz") and df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
-            is_multi = isinstance(df.columns, pd.MultiIndex)
-            for sym in chunk:
-                ser = None
-                try:
-                    if is_multi:
-                        if (sym, "Close") in df.columns:
-                            ser = df[(sym, "Close")].dropna()
-                        elif (sym, "Adj Close") in df.columns:
-                            ser = df[(sym, "Adj Close")].dropna()
-                    else:
-                        if "Close" in df:
-                            ser = df["Close"].dropna()
-                        elif "Adj Close" in df:
-                            ser = df["Adj Close"].dropna()
-                    if ser is not None and not ser.empty:
-                        ser.name = "px"
-                        result[sym] = ser
-                        _store_cached_prices(sym, start, end, ser.to_frame(name="Close"))
-                        fetched_count += 1
-                except Exception:
-                    continue
+        if df is None or df.empty:
+            return out
+        if hasattr(df.index, "tz") and df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        is_multi = isinstance(df.columns, pd.MultiIndex)
+        for sym in chunk_syms:
+            ser = None
+            try:
+                if is_multi:
+                    if (sym, "Close") in df.columns:
+                        ser = df[(sym, "Close")].dropna()
+                    elif (sym, "Adj Close") in df.columns:
+                        ser = df[(sym, "Adj Close")].dropna()
+                else:
+                    if "Close" in df:
+                        ser = df["Close"].dropna()
+                    elif "Adj Close" in df:
+                        ser = df["Adj Close"].dropna()
+                if ser is not None and not ser.empty:
+                    ser.name = "px"
+                    out[sym] = ser
+            except Exception:
+                continue
+        return out
+
+    chunks = [remaining[i:i + chunk_size] for i in range(0, len(remaining), chunk_size) if remaining[i:i + chunk_size]]
+    if log and chunks:
+        log(f"  Launching {len(chunks)} chunk(s) in parallel…")
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(chunks)))) as ex:
+        future_map = {ex.submit(_download_chunk, c): c for c in chunks}
+        for fut in as_completed(future_map):
+            chunk_syms = future_map[fut]
+            try:
+                out = fut.result()
+            except Exception:
+                out = {}
+            for sym, ser in out.items():
+                result[sym] = ser
+                _store_cached_prices(sym, start, end, ser.to_frame(name="Close"))
+                fetched_count += 1
             if log:
                 done = fetched_count
                 pct = (done / max(1, total_need)) * 100.0
