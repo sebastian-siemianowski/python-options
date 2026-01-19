@@ -77,6 +77,7 @@ from fx_data_utils import (
     SECTOR_MAP,
     get_sector,
     download_prices_bulk,
+    fetch_px_asset,
 )
 
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
@@ -133,116 +134,6 @@ class Signal:
     label: str                # BUY/HOLD/SELL or STRONG BUY/SELL
 
 
-
-
-
-def fetch_px_asset(asset: str, start: Optional[str], end: Optional[str]) -> Tuple[pd.Series, str]:
-    """
-    Return a price series for the requested asset expressed in PLN terms when needed.
-    - PLNJPY=X: native series (JPY per PLN); title indicates JPY per PLN.
-    - Gold: try XAUUSD=X, GC=F, XAU=X; convert USD to PLN via USDPLN=X (or robust alternatives) → PLN per troy ounce.
-    - Silver: try XAGUSD=X, SI=F, XAG=X; convert USD to PLN via USDPLN=X (or robust alternatives) → PLN per troy ounce.
-    - Bitcoin (BTC-USD): convert USD to PLN via USDPLN → PLN per BTC.
-    - MicroStrategy (MSTR): convert USD share price to PLN via USDPLN → PLN per share.
-    - Generic equities/ETFs: fetch in native quote currency and convert to PLN via detected FX.
-    Returns (px_series, title_suffix) where title_suffix describes units.
-    """
-    asset = asset.strip().upper()
-    if asset == "PLNJPY=X":
-        px = _fetch_px_symbol(asset, start, end)
-        title = "Polish Zloty vs Japanese Yen (PLNJPY=X) — JPY per PLN"
-        return px, title
-
-    # Bitcoin in USD → PLN
-    if asset in ("BTC-USD", "BTCUSD=X"):
-        # Prefer robust USD path (avoid unreliable BTC-PLN tickers that 404)
-        btc_px, _used = _fetch_with_fallback([asset] if asset == "BTC-USD" else [asset, "BTC-USD"], start, end)
-        btc_px = _ensure_float_series(btc_px)
-        # Use USD→PLN leg expanded to BTC date range and robust asof alignment
-        usdpln_px = convert_currency_to_pln("USD", start, end, native_index=btc_px.index)
-        usdpln_aligned = _align_fx_asof(btc_px, usdpln_px, max_gap_days=7)
-        if usdpln_aligned.isna().all():
-            usdpln_aligned = usdpln_px.reindex(btc_px.index).ffill().bfill()
-        usdpln_aligned = _ensure_float_series(usdpln_aligned)
-        # Direct vectorized conversion
-        px_pln = (btc_px * usdpln_aligned).dropna()
-        px_pln.name = "px"
-        if px_pln.empty:
-            raise RuntimeError("No overlap between BTC-USD and USDPLN data to compute PLN price")
-        # Display name
-        disp = "Bitcoin"
-        return px_pln, f"{disp} (BTC-USD) — PLN per BTC"
-
-    # MicroStrategy equity (USD) → PLN
-    if asset == "MSTR":
-        mstr_px = _fetch_px_symbol("MSTR", start, end)
-        mstr_px = _ensure_float_series(mstr_px)
-        # Use USD→PLN leg expanded to MSTR date range and robust asof alignment
-        usdpln_px = convert_currency_to_pln("USD", start, end, native_index=mstr_px.index)
-        usdpln_aligned = _align_fx_asof(mstr_px, usdpln_px, max_gap_days=7)
-        if usdpln_aligned.isna().all():
-            usdpln_aligned = usdpln_px.reindex(mstr_px.index).ffill().bfill()
-        usdpln_aligned = _ensure_float_series(usdpln_aligned)
-        # Direct vectorized conversion (ensure 1-D float Series)
-        px_pln = (mstr_px * usdpln_aligned).dropna()
-        px_pln.name = "px"
-        if px_pln.empty:
-            raise RuntimeError("No overlap between MSTR and USDPLN data to compute PLN price")
-        disp = _resolve_display_name("MSTR") or "MicroStrategy"
-        return px_pln, f"{disp} (MSTR) — PLN per share"
-
-    # Metals in USD → convert to PLN
-    if asset in ("XAUUSD=X", "GC=F", "XAU=X", "XAGUSD=X", "SI=F", "XAG=X"):
-        if asset.startswith("XAU") or asset in ("GC=F", "XAU=X"):
-            candidates = ["GC=F", "XAU=X", "XAUUSD=X"]
-            if asset not in candidates:
-                candidates = [asset] + candidates
-            metal_px, used = _fetch_with_fallback(candidates, start, end)
-            metal_px = _ensure_float_series(metal_px)
-            metal_name = "Gold"
-        else:
-            candidates = ["SI=F", "XAG=X", "XAGUSD=X"]
-            if asset not in candidates:
-                candidates = [asset] + candidates
-            metal_px, used = _fetch_with_fallback(candidates, start, end)
-            metal_px = _ensure_float_series(metal_px)
-            metal_name = "Silver"
-        usdpln_px = fetch_usd_to_pln_exchange_rate(start, end)
-        usdpln_aligned = usdpln_px.reindex(metal_px.index).ffill()
-        df = pd.concat([metal_px, usdpln_aligned], axis=1).dropna()
-        df.columns = ["metal_usd", "usdpln"]
-        px_pln = (df["metal_usd"] * df["usdpln"]).rename("px")
-        title = f"{metal_name} ({used}) — PLN per troy oz"
-        if px_pln.empty:
-            raise RuntimeError(f"No overlap between {metal_name} and USDPLN data to compute PLN price")
-        return px_pln, title
-
-    # Generic: resolve symbol candidates and convert to PLN using detected currency
-    candidates = _resolve_symbol_candidates(asset)
-    px_native = None
-    used_sym = None
-    last_err: Optional[Exception] = None
-    for sym in candidates:
-        try:
-            s = _fetch_px_symbol(sym, start, end)
-            px_native = s
-            used_sym = sym
-            break
-        except Exception as e:
-            last_err = e
-            continue
-    if px_native is None:
-        raise last_err if last_err else RuntimeError(f"No data for {asset}")
-
-    px_native = _ensure_float_series(px_native)
-    qcy = detect_quote_currency(used_sym)
-    px_pln, _ = convert_price_series_to_pln(px_native, qcy, start, end)
-    if px_pln is None or px_pln.empty:
-        raise RuntimeError(f"No overlapping FX data to convert {used_sym} to PLN")
-    # Title with full name
-    disp = _resolve_display_name(used_sym)
-    title = f"{disp} ({used_sym}) — PLN per share"
-    return px_pln, title
 
 
 # -------------------------
@@ -2475,7 +2366,7 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     return "HOLD"
 
 
-def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]: 
+def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68) -> Tuple[List<Signal], Dict[int, Dict[str, float]]]: 
     """Compute signals using regime‑aware priors, tail‑aware probability mapping, and
     anti‑snap logic (two‑day confirmation + hysteresis + smoothing) without extra flags.
     
