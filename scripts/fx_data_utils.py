@@ -400,6 +400,53 @@ DEFAULT_ASSET_UNIVERSE = [
     "TRET",   # VanEck Global Real Estate UCITS ETF
 #     "TSWE",   # VanEck Sustainable World Equal Weight UCITS ETF
 #     "TAT",    # VanEck iBoxx EUR Sovereign Capped AAA-AA 1-5 UCITS ETF
+
+    # -------------------------
+    # Thematic additions
+    # -------------------------
+    # Nuclear
+    "OKLO",
+    "CCJ",
+    "UUUU",
+    "GEV",
+    "LEU",
+    # Critical materials
+    "MP",
+    "CRML",
+    "IDR",
+    "FCX",
+    "UAMY",
+    # Space
+    "RKLB",
+    "ASTS",
+    "PL",
+    "BKSY",
+    "LUNR",
+    # Drones
+    "ONDS",
+    "UMAC",
+    "AVAV",
+    "KTOS",
+    "DPRO",
+    # AI utility / infrastructure
+    "IREN",
+    "NBIS",
+    "CIFR",
+    "CRWV",
+    "GLXY",
+    # Growth Screen (Michael Kao list)
+    "NUTX",
+    "RCAT",
+    "MU",
+    "SEI",
+    "SANM",
+    "SEZL",
+    "AMCR",
+    "PSIX",
+    "DLO",
+    "COMM",
+    "PGY",
+    "FOUR",
 ]
 
 MAPPING = {
@@ -470,6 +517,47 @@ MAPPING = {
     "MTX": ["MTX.DE", "MTX"],
     "IBKR": ["IBKR"],
     "HOOD": ["HOOD"],
+
+    # Thematic additions
+    "OKLO": ["OKLO"],
+    "OKLO INC": ["OKLO"],
+    "CAMECO": ["CCJ"],
+    "CAMECO CORPORATION": ["CCJ"],
+    "ENERGY FUELS": ["UUUU"],
+    "GE VERNOVA": ["GEV"],
+    "CENTRUS ENERGY": ["LEU"],
+    "MP MATERIALS": ["MP"],
+    "CRITICAL METALS": ["CRML"],
+    "IDAHO STRATEGIC RESOURCES": ["IDR"],
+    "FREEPORT": ["FCX"],
+    "FREEPORT-MCMORAN": ["FCX"],
+    "UNITED STATES ANTIMONY": ["UAMY"],
+    "U.S. ANTIMONY": ["UAMY"],
+    "ONDAS": ["ONDS"],
+    "UNUSUAL MACHINES": ["UMAC"],
+    "AEROVIRONMENT": ["AVAV"],
+    "KRATOS": ["KTOS"],
+    "DRAGANFLY": ["DPRO"],
+    "IRIS ENERGY": ["IREN"],
+    "NEBIUS": ["NBIS"],
+    "CIPHER MINING": ["CIFR"],
+    "COREWEAVE": ["CRWV"],
+    "GALAXY DIGITAL": ["GLXY"],
+    "AST SPACEMOBILE": ["ASTS"],
+    "BLACKSKY": ["BKSY"],
+    "INTUITIVE MACHINES": ["LUNR"],
+    "NUTEX": ["NUTX"],
+    "RED CAT": ["RCAT"],
+    "MICRON": ["MU"],
+    "SEI INVESTMENTS": ["SEI", "SEIC"],
+    "SANMINA": ["SANM"],
+    "SEZZLE": ["SEZL"],
+    "AMCOR": ["AMCR"],
+    "POWER SOLUTIONS": ["PSIX"],
+    "DLOCAL": ["DLO"],
+    "COMMSCOPE": ["COMM"],
+    "PAGAYA": ["PGY"],
+    "SHIFT4": ["FOUR"],
 
     # S&P 100 additions by sector
     # Information Technology

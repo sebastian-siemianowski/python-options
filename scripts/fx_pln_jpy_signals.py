@@ -139,7 +139,13 @@ SECTOR_MAP = {
     "VanEck ETFs": {"AFK", "ANGL", "CNXT", "EGPT", "FLTR", "GLIN", "MOTG", "IDX", "MLN", "NLR", "DURA"},
     "Options / Structured Products": {
         "TSLD", "PLTI", "QQQO", "METI", "MSFI", "MAGD", "AMDI", "AMZD", "GOOO", "BABI", "BABY", "AAPI", "AVGI", "MSTP"
-    }
+    },
+    "Nuclear": {"OKLO", "CCJ", "UUUU", "GEV", "LEU"},
+    "Critical Materials": {"MP", "CRML", "IDR", "FCX", "UAMY"},
+    "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR"},
+    "Drones": {"ONDS", "UMAC", "AVAV", "KTOS", "DPRO"},
+    "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY"},
+    "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SEI", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"}
 }
 
 # Transaction-cost/slippage hurdle: minimum absolute edge required to act
@@ -1817,7 +1823,6 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         # φ persistence (from tuned cache or filter)
         diagnostics["kalman_phi"] = tuned_params.get("phi") if tuned_params else kalman_metadata.get("phi_used")
         diagnostics["phi_used"] = kalman_metadata.get("phi_used")
-    }
 
     hmm_result = feats.get("hmm_result")
     if hmm_result is not None and isinstance(hmm_result, dict):
