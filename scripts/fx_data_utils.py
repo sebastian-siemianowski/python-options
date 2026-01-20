@@ -179,6 +179,22 @@ def _c(text: str, color: str) -> str:
     return f"{_COLORS.get(color, '')}{text}{_COLORS['reset']}" if text else text
 
 
+def _cap_date_to_today(date_str: Optional[str]) -> Optional[str]:
+    """Cap a date string to today's date. Never return a future date.
+    This prevents attempts to download data for dates that don't exist yet.
+    """
+    if date_str is None:
+        return None
+    try:
+        dt = pd.to_datetime(date_str).date()
+        today = datetime.now().date()
+        if dt > today:
+            return today.isoformat()
+        return date_str
+    except Exception:
+        return date_str
+
+
 def _human_action(meta: Dict) -> str:
     t = (meta or {}).get("type")
     if t == "proxy_override":
@@ -1440,6 +1456,9 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     - Falls back to period='max' pulls to dodge timezone/metadata issues
     Normalizes DatetimeIndex to tz-naive for stability.
     """
+    # Cap end date to today - never attempt to fetch future data
+    end = _cap_date_to_today(end)
+    
     cached = _get_cached_prices(symbol, start, end)
     if cached is not None and not cached.empty:
         return cached
@@ -1824,6 +1843,9 @@ def _maybe_store_cached_series(symbol: str, series: pd.Series) -> None:
 
 
 def _fetch_with_fallback(symbols: List[str], start: Optional[str], end: Optional[str]) -> Tuple[pd.Series, str]:
+    # Cap end date to today - never attempt to fetch future data
+    end = _cap_date_to_today(end)
+    
     last_err: Optional[Exception] = None
     for sym in symbols:
         # Try cached FX rates first to avoid extra network calls
@@ -2043,6 +2065,8 @@ def convert_currency_to_pln(quote_ccy: str, start: Optional[str], end: Optional[
         try:
             s_ext = (pd.to_datetime(native_index.min()) - pd.Timedelta(days=30)).date().isoformat()
             e_ext = (pd.to_datetime(native_index.max()) + pd.Timedelta(days=5)).date().isoformat()
+            # Cap end date to today - never fetch future data
+            e_ext = _cap_date_to_today(e_ext)
         except Exception:
             pass
 
