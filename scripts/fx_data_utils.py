@@ -890,6 +890,50 @@ DEFAULT_ASSET_UNIVERSE = [
     "SPIR",   # Spire Global — Space data constellation economics
     "GSAT",   # Globalstar — Spectrum asset optionality
     "IRDM",   # Iridium — Satcom network rail with upside skew
+    "MDA.TO", # MDA Space — Satellite systems & robotics backbone
+    "MDALF",  # MDA Space (US ADR)
+
+    # -------------------------
+    # AI Software / Data Gravity
+    # -------------------------
+    "CFLT",   # Confluent — Kafka data spine of real-time AI systems
+    "ESTC",   # Elastic — Search + observability + AI substrate
+    "PATH",   # UiPath — AI automation layer
+
+    # -------------------------
+    # AI Hardware / Edge Compute
+    # -------------------------
+    "MRVL",   # Marvell — AI networking silicon
+    "NXPI",   # NXP Semiconductors — Edge AI + automotive brains
+    "ADI",    # Analog Devices — Sensor-to-AI interface layer
+    "ON",     # ON Semiconductor — EV + power + edge AI
+
+    # -------------------------
+    # Industrial / Infrastructure Transition
+    # -------------------------
+    "PWR",    # Quanta Services — Grid + energy infrastructure rebuild
+    "VRT",    # Vertiv — Data-center power & cooling backbone
+    "JCI",    # Johnson Controls — Smart buildings, energy efficiency OS
+
+    # -------------------------
+    # Advanced Materials / Manufacturing
+    # -------------------------
+    "CRS",    # Carpenter Technology — Specialty alloys for aerospace/nuclear/hypersonic
+    "KMT",    # Kennametal — Cutting tools for advanced manufacturing
+
+    # -------------------------
+    # Biotech Platforms (Genomics / Sequencing)
+    # -------------------------
+    "VRTX",   # Vertex Pharma — Genetic disease cash-flow engine
+    "ILMN",   # Illumina — Genomics sequencing infrastructure
+    "PACB",   # PacBio — Long-read sequencing optionality
+
+    # -------------------------
+    # Energy Transition / Storage / Grid
+    # -------------------------
+    "FLNC",   # Fluence Energy — Grid-scale battery systems
+    "ENPH",   # Enphase Energy — Solar + storage intelligence
+    "BE",     # Bloom Energy — Solid oxide fuel cells
 ]
 
 MAPPING = {
@@ -915,6 +959,11 @@ MAPPING = {
     "KOZ1": ["KOG.OL", "KOZ1"],
     "EXA": ["EXA.PA", "EXA"],
     "THEON": ["THEON.AS", "THEON"],
+
+    # Canadian tickers
+    "MDA": ["MDA.TO", "MDALF"],
+    "MDA.TO": ["MDA.TO", "MDALF"],
+    "MDALF": ["MDALF", "MDA.TO"],
 
     # YieldMax and structured product proxies (route to underlying)
     "QQQO": ["QQQ"],
@@ -1317,7 +1366,7 @@ SECTOR_MAP = {
     "Energy": {"COP", "CVX", "XOM", "AM", "OIH"},
     "Utilities": {"NEE", "SO"},
     "Real Estate": {"SPG", "VNQ"},
-    "Materials": {"LIN", "NEM", "B", "AEM", "GDX", "GDXJ", "REMX", "MOO"},
+    "Materials": {"LIN", "NEM", "B", "AEM", "GDX", "GDXJ", "REMX", "MOO", "CRS", "KMT"},
     "Asian Tech & Manufacturing": {"005930.KS"},
     "VanEck ETFs": {"AFK", "ANGL", "CNXT", "EGPT", "FLTR", "GLIN", "MOTG", "IDX", "MLN", "NLR", "DURA"},
     "Options / Structured Products": {
@@ -1325,16 +1374,20 @@ SECTOR_MAP = {
     },
     "Nuclear": {"OKLO", "CCJ", "UUUU", "GEV", "LEU", "SMR"},
     "Critical Materials": {"MP", "CRML", "IDR", "FCX", "UAMY"},
-    "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR", "SPIR", "GSAT", "IRDM", "ASTR"},
+    "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR", "SPIR", "GSAT", "IRDM", "ASTR", "MDA.TO", "MDALF"},
     "Drones": {"ONDS", "UMAC", "AVAV", "KTOS", "DPRO"},
-    "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY", "SMCI", "ANET"},
+    "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY", "SMCI", "ANET", "VRT"},
+    "AI Software / Data Platforms": {"CFLT", "ESTC", "PATH", "DDOG", "SNOW", "MDB"},
     "Semiconductor Equipment": {"ASML", "LRCX", "AMAT", "TSM", "ARM", "SNPS", "CDNS"},
     "AI Power Semiconductors": {"NVTS", "WOLF", "AEHR", "ALAB", "CRDO"},
-    "Cloud & Cybersecurity": {"CRWD", "ZS", "DDOG", "SNOW", "MDB"},
+    "AI Hardware / Edge Compute": {"MRVL", "NXPI", "ADI", "ON"},
+    "Cloud & Cybersecurity": {"CRWD", "ZS"},
     "Fintech": {"HUBS", "AFRM", "NU", "COIN", "PYPL"},
-    "Batteries & Energy Tech": {"ENVX", "QS"},
+    "Batteries & Energy Tech": {"ENVX", "QS", "FLNC", "ENPH", "BE"},
     "TechBio / AI Drug Discovery": {"RXRX", "SDGR", "ABCL", "NTLA", "TEM"},
+    "Biotech Platforms / Genomics": {"VRTX", "ILMN", "PACB", "EXAI"},
     "Quantum Computing": {"IONQ", "QBTS", "ARQQ", "RGTI", "QUBT"},
+    "Industrial Infrastructure": {"PWR", "JCI"},
     "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"}
 }
 
@@ -2021,14 +2074,60 @@ def _fetch_px_symbol(symbol: str, start: Optional[str], end: Optional[str]) -> p
     if data is None or data.empty:
         raise RuntimeError(f"No data for {symbol}")
     px = None
-    for col in ("Close", "Adj Close"):
-        if isinstance(data, pd.DataFrame) and col in data.columns:
-            px = data[col].dropna()
-            break
+    
+    # Handle MultiIndex columns (e.g., from yf.download with single ticker)
+    if isinstance(data, pd.DataFrame) and isinstance(data.columns, pd.MultiIndex):
+        # Flatten MultiIndex: try to get Close or Adj Close column
+        for col_name in ("Close", "Adj Close"):
+            try:
+                if col_name in data.columns.get_level_values(0):
+                    px = data[col_name]
+                    # If still a DataFrame (shouldn't be, but just in case), take first column
+                    if isinstance(px, pd.DataFrame):
+                        px = px.iloc[:, 0]
+                    px = px.dropna()
+                    break
+            except Exception:
+                continue
+        # Alternative: try (col_name, symbol) tuple
+        if px is None or (hasattr(px, 'empty') and px.empty):
+            for col_name in ("Close", "Adj Close"):
+                try:
+                    if (col_name, symbol) in data.columns:
+                        px = data[(col_name, symbol)].dropna()
+                        break
+                    # Try uppercase symbol
+                    if (col_name, symbol.upper()) in data.columns:
+                        px = data[(col_name, symbol.upper())].dropna()
+                        break
+                except Exception:
+                    continue
+    
+    # Handle regular single-level columns
+    if px is None or (hasattr(px, 'empty') and px.empty):
+        for col in ("Close", "Adj Close"):
+            if isinstance(data, pd.DataFrame) and col in data.columns:
+                col_data = data[col]
+                # Ensure it's a Series, not DataFrame
+                if isinstance(col_data, pd.DataFrame):
+                    col_data = col_data.iloc[:, 0]
+                px = col_data.dropna()
+                break
+    
     if px is None and isinstance(data, pd.Series):
         px = data.dropna()
-    if px is None or px.empty:
+    
+    if px is None or (hasattr(px, 'empty') and px.empty):
         raise RuntimeError(f"No price column found for {symbol}")
+    
+    # Ensure px is a Series before calling to_numeric
+    if isinstance(px, pd.DataFrame):
+        if px.shape[1] == 1:
+            px = px.iloc[:, 0]
+        else:
+            # Take the first column if multiple
+            px = px.iloc[:, 0]
+    
     # Coerce to numeric float - this is critical to avoid string multiplication errors
     px = pd.to_numeric(px, errors="coerce").dropna()
     if px.empty:
