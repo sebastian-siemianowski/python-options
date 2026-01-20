@@ -21,6 +21,19 @@ import yfinance as yf
 import pathlib
 import functools
 from threading import Lock
+import requests
+
+# Configure yfinance with longer timeout (default is 10 seconds, which is too short for bulk downloads)
+YFINANCE_TIMEOUT = 60  # seconds
+
+# Apply timeout to yfinance session
+try:
+    yf.utils.requests_session = requests.Session()
+    yf.utils.requests_session.request = functools.partial(
+        yf.utils.requests_session.request, timeout=YFINANCE_TIMEOUT
+    )
+except Exception:
+    pass  # Fallback: yfinance will use its defaults
 
 PRICE_CACHE_DIR = os.path.join("scripts", "quant", "cache", "prices")
 PRICE_CACHE_DIR_PATH = pathlib.Path(PRICE_CACHE_DIR)
@@ -1301,6 +1314,9 @@ def _merge_and_store(symbol: str, new_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _get_cached_prices(symbol: str, start: Optional[str], end: Optional[str]) -> Optional[pd.DataFrame]:
+    """Get cached prices, but only if they cover the requested date range.
+    Returns None if cache is stale or doesn't cover the range, forcing a refresh.
+    """
     hit = _PX_CACHE.get(_px_cache_key(symbol, start, end))
     if hit is not None:
         return hit
@@ -1308,6 +1324,19 @@ def _get_cached_prices(symbol: str, start: Optional[str], end: Optional[str]) ->
     if disk is None or disk.empty:
         return None
     # Index already normalized in _load_disk_prices
+    
+    # Check if cache extends to the requested end date (or today if end is None)
+    cache_max_date = pd.to_datetime(disk.index.max()).date()
+    if end:
+        requested_end = pd.to_datetime(end).date()
+    else:
+        requested_end = datetime.now().date()
+    
+    # If cache is more than 1 day behind the requested end, return None to force refresh
+    # (Allow 1 day buffer for weekends/holidays)
+    if (requested_end - cache_max_date).days > 1:
+        return None
+    
     if start:
         disk = disk[disk.index >= pd.to_datetime(start)]
     if end:
@@ -1321,6 +1350,7 @@ def _get_cached_prices(symbol: str, start: Optional[str], end: Optional[str]) ->
 def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> pd.DataFrame:
     """Robust Yahoo fetch with multiple strategies.
     Returns a DataFrame with OHLC columns (if available).
+    - Checks if cached data is up-to-date; if not, fetches incremental updates
     - Tries yf.download first
     - Falls back to Ticker.history
     - Tries again without auto_adjust
@@ -1339,18 +1369,25 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     # Determine incremental fetch window based on disk cache
     disk_df = _load_disk_prices(symbol)
     fetch_start = start
+    
+    # Determine the target end date
+    if end:
+        target_end = pd.to_datetime(end).date()
+    else:
+        target_end = datetime.now().date()
+    
     if disk_df is not None and not disk_df.empty:
-        last_dt = pd.to_datetime(disk_df.index.max()).to_pydatetime()
-        if end:
-            end_dt = pd.to_datetime(end)
-            if last_dt >= end_dt:
-                _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
-                return disk_df
-        fetch_start = (last_dt + timedelta(days=1)).date().isoformat()
+        last_dt = pd.to_datetime(disk_df.index.max()).date()
+        # If disk cache already covers up to target end, use it
+        if last_dt >= target_end:
+            _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
+            return disk_df
+        # Otherwise, fetch incrementally from day after last cached date
+        fetch_start = (last_dt + timedelta(days=1)).isoformat()
 
     # Try standard download
     try:
-        df = yf.download(symbol, start=fetch_start, end=end, auto_adjust=True, progress=False, threads=False)
+        df = yf.download(symbol, start=fetch_start, end=end, auto_adjust=True, progress=False, threads=False, timeout=YFINANCE_TIMEOUT)
         df = _normalize(df)
         if df is not None and not df.empty:
             if disk_df is not None and not disk_df.empty:
@@ -1364,7 +1401,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     # Try Ticker.history
     try:
         tk = yf.Ticker(symbol)
-        df = tk.history(start=fetch_start, end=end, auto_adjust=True)
+        df = tk.history(start=fetch_start, end=end, auto_adjust=True, timeout=YFINANCE_TIMEOUT)
         df = _normalize(df)
         if df is not None and not df.empty:
             if disk_df is not None and not disk_df.empty:
@@ -1377,7 +1414,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         pass
     # Try without auto_adjust
     try:
-        df = yf.download(symbol, start=fetch_start, end=end, auto_adjust=False, progress=False, threads=False)
+        df = yf.download(symbol, start=fetch_start, end=end, auto_adjust=False, progress=False, threads=False, timeout=YFINANCE_TIMEOUT)
         df = _normalize(df)
         if df is not None and not df.empty:
             if disk_df is not None and not disk_df.empty:
@@ -1391,7 +1428,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     # Period max fallback to dodge tz/metadata issues for dash/dot tickers
     try:
         tk = yf.Ticker(symbol)
-        df = tk.history(period="max", auto_adjust=True)
+        df = tk.history(period="max", auto_adjust=True, timeout=YFINANCE_TIMEOUT)
         df = _normalize(df)
         if df is not None and not df.empty:
             if disk_df is not None and not disk_df.empty:
@@ -1403,7 +1440,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     except Exception:
         pass
     try:
-        df = yf.download(symbol, period="max", auto_adjust=True, progress=False, threads=False)
+        df = yf.download(symbol, period="max", auto_adjust=True, progress=False, threads=False, timeout=YFINANCE_TIMEOUT)
         df = _normalize(df)
         if df is not None and not df.empty:
             if disk_df is not None and not disk_df.empty:
@@ -1489,7 +1526,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         out: Dict[str, pd.Series] = {}
         fetch_syms = chunk_syms
         try:
-            df = yf.download(fetch_syms, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False)
+            df = yf.download(fetch_syms, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False, timeout=YFINANCE_TIMEOUT)
         except Exception:
             df = None
         if df is None or df.empty:
