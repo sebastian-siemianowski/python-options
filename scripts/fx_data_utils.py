@@ -1500,35 +1500,172 @@ def _store_cached_prices(symbol: str, start: Optional[str], end: Optional[str], 
 
 
 def _price_cache_path(symbol: str) -> pathlib.Path:
-    safe = symbol.replace("/", "_")
+    safe = symbol.replace("/", "_").replace("=", "_").replace(":", "_")
     return PRICE_CACHE_DIR_PATH / f"{safe.upper()}.csv"
 
 
+# Standard column names for price data
+STANDARD_PRICE_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
+
+
+def _normalize_price_dataframe(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """Normalize a price DataFrame to have standard columns.
+    
+    Standard format:
+    - Index: Date (datetime, timezone-naive)
+    - Columns: Open, High, Low, Close, Adj Close, Volume, Ticker
+    
+    Args:
+        df: Input DataFrame (may have various column formats from Yahoo Finance)
+        symbol: Ticker symbol to add to Ticker column
+        
+    Returns:
+        Normalized DataFrame with standard columns
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=STANDARD_PRICE_COLUMNS)
+    
+    result = pd.DataFrame(index=df.index)
+    
+    # Handle MultiIndex columns (from yf.download with single ticker)
+    if isinstance(df.columns, pd.MultiIndex):
+        # Flatten MultiIndex - take first level values
+        flat_df = pd.DataFrame(index=df.index)
+        for col_name in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
+            try:
+                if col_name in df.columns.get_level_values(0):
+                    col_data = df[col_name]
+                    if isinstance(col_data, pd.DataFrame):
+                        col_data = col_data.iloc[:, 0]
+                    flat_df[col_name] = col_data
+            except Exception:
+                pass
+        df = flat_df
+    
+    # Map various column name formats to standard names
+    column_mappings = {
+        "Open": ["Open", "open", "OPEN"],
+        "High": ["High", "high", "HIGH"],
+        "Low": ["Low", "low", "LOW"],
+        "Close": ["Close", "close", "CLOSE", "Price", "price"],
+        "Adj Close": ["Adj Close", "Adj_Close", "adj close", "Adjusted Close", "adjusted_close", "AdjClose"],
+        "Volume": ["Volume", "volume", "VOLUME", "Vol", "vol"],
+    }
+    
+    for standard_name, possible_names in column_mappings.items():
+        for name in possible_names:
+            if name in df.columns:
+                col_data = df[name]
+                # Ensure it's a Series
+                if isinstance(col_data, pd.DataFrame):
+                    col_data = col_data.iloc[:, 0]
+                result[standard_name] = col_data
+                break
+        else:
+            # Column not found - use NaN
+            result[standard_name] = np.nan
+    
+    # If Close is NaN but Adj Close exists, copy Adj Close to Close
+    if result["Close"].isna().all() and not result["Adj Close"].isna().all():
+        result["Close"] = result["Adj Close"]
+    
+    # If Adj Close is NaN but Close exists, copy Close to Adj Close
+    if result["Adj Close"].isna().all() and not result["Close"].isna().all():
+        result["Adj Close"] = result["Close"]
+    
+    # Add Ticker column
+    result["Ticker"] = symbol.upper()
+    
+    # Ensure numeric types for price/volume columns
+    for col in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
+        if col in result.columns:
+            result[col] = pd.to_numeric(result[col], errors="coerce")
+    
+    # Normalize index
+    result.index.name = "Date"
+    
+    return result
+
+
 def _load_disk_prices(symbol: str) -> Optional[pd.DataFrame]:
+    """Load price data from disk cache.
+    
+    Returns DataFrame with standard columns: Open, High, Low, Close, Adj Close, Volume, Ticker
+    """
     path = _price_cache_path(symbol)
     if not path.exists():
         return None
     try:
         df = pd.read_csv(path, index_col=0)
+        
         # Normalize index to timezone-naive datetimes, drop duplicates, and sort
         df.index = pd.to_datetime(df.index, format="ISO8601", errors="coerce")
         df = df[~df.index.isna()]
         if hasattr(df.index, "tz") and df.index.tz is not None:
             df.index = df.index.tz_localize(None)
         df = df[~df.index.duplicated(keep="last")].sort_index()
+        df.index.name = "Date"
+        
+        # Check if Ticker column exists; if not, normalize the dataframe
+        if "Ticker" not in df.columns:
+            df = _normalize_price_dataframe(df, symbol)
+        
         return df
     except Exception:
         return None
 
 
+def get_price_series(df: pd.DataFrame, price_col: str = "Close") -> pd.Series:
+    """Extract a price series from a standardized price DataFrame.
+    
+    Args:
+        df: DataFrame with standard columns (Open, High, Low, Close, Adj Close, Volume, Ticker)
+        price_col: Column to extract ("Close", "Adj Close", "Open", "High", "Low")
+        
+    Returns:
+        Series with price data, or empty Series if column not found
+    """
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+    
+    # Try requested column first
+    if price_col in df.columns:
+        px = df[price_col]
+        if isinstance(px, pd.DataFrame):
+            px = px.iloc[:, 0]
+        return pd.to_numeric(px, errors="coerce").dropna()
+    
+    # Fallback to Close or Adj Close
+    for col in ["Close", "Adj Close"]:
+        if col in df.columns:
+            px = df[col]
+            if isinstance(px, pd.DataFrame):
+                px = px.iloc[:, 0]
+            return pd.to_numeric(px, errors="coerce").dropna()
+    
+    return pd.Series(dtype=float)
+
+
 def _store_disk_prices(symbol: str, df: pd.DataFrame) -> None:
+    """Store price data to disk cache with standard format.
+    
+    Standard format:
+    - Index: Date
+    - Columns: Open, High, Low, Close, Adj Close, Volume, Ticker
+    """
     if df is None or df.empty:
         return
+    
+    # Normalize to standard format before saving
+    normalized = _normalize_price_dataframe(df, symbol)
+    if normalized.empty:
+        return
+    
     path = _price_cache_path(symbol)
     tmp = path.with_suffix(".tmp")
     with _price_file_lock:
         try:
-            df.to_csv(tmp)
+            normalized.to_csv(tmp)
             os.replace(tmp, path)
         except Exception:
             try:
@@ -1538,12 +1675,26 @@ def _store_disk_prices(symbol: str, df: pd.DataFrame) -> None:
 
 
 def _merge_and_store(symbol: str, new_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge new price data with existing cached data and store.
+    
+    Both existing and new data are normalized to standard format before merging.
+    """
+    # Normalize new data
+    new_normalized = _normalize_price_dataframe(new_df, symbol)
+    
     existing = _load_disk_prices(symbol)
     if existing is not None and not existing.empty:
-        combined = pd.concat([existing, new_df], axis=0)
+        # Existing data is already normalized by _load_disk_prices
+        combined = pd.concat([existing, new_normalized], axis=0)
+        # Remove Ticker column temporarily for deduplication, then add back
+        ticker_val = symbol.upper()
+        if "Ticker" in combined.columns:
+            combined = combined.drop(columns=["Ticker"])
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+        combined["Ticker"] = ticker_val
     else:
-        combined = new_df
+        combined = new_normalized
+    
     _store_disk_prices(symbol, combined)
     return combined
 
@@ -1913,17 +2064,14 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
     for primary, orig_list in list(primary_to_originals.items()):
         cached = _get_cached_prices(primary, start, end)
         if cached is not None and not cached.empty:
-            if "Close" in cached:
-                ser = cached["Close"].dropna()
-            elif "Adj Close" in cached:
-                ser = cached["Adj Close"].dropna()
-            else:
-                ser = pd.Series(dtype=float)
-            ser.name = "px"
-            for orig in orig_list:
-                result[orig] = ser
-            cached_hits += 1
-            satisfied_primaries.add(primary)
+            # Use standardized price extraction
+            ser = get_price_series(cached, "Close")
+            if not ser.empty:
+                ser.name = "px"
+                for orig in orig_list:
+                    result[orig] = ser
+                cached_hits += 1
+                satisfied_primaries.add(primary)
 
     remaining_primaries = [p for p in primary_to_originals if p not in satisfied_primaries]
 
@@ -1934,8 +2082,9 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
 
     fetched_count = 0
 
-    def _download_chunk(chunk_syms: List[str]) -> Dict[str, pd.Series]:
-        out: Dict[str, pd.Series] = {}
+    def _download_chunk(chunk_syms: List[str]) -> Dict[str, pd.DataFrame]:
+        """Download a chunk of symbols and return dict of symbol -> DataFrame (OHLCV data)."""
+        out: Dict[str, pd.DataFrame] = {}
         fetch_syms = chunk_syms
         try:
             df = yf.download(fetch_syms, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False, timeout=YFINANCE_TIMEOUT)
@@ -1946,22 +2095,22 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         if hasattr(df.index, "tz") and df.index.tz is not None:
             df.index = df.index.tz_localize(None)
         is_multi = isinstance(df.columns, pd.MultiIndex)
+        
         for primary in chunk_syms:
-            ser = None
             try:
-                if is_multi:
-                    if (primary, "Close") in df.columns:
-                        ser = df[(primary, "Close")].dropna()
-                    elif (primary, "Adj Close") in df.columns:
-                        ser = df[(primary, "Adj Close")].dropna()
+                if is_multi and len(chunk_syms) > 1:
+                    # Extract all OHLCV columns for this symbol
+                    sym_df = pd.DataFrame(index=df.index)
+                    for col in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
+                        if (primary, col) in df.columns:
+                            sym_df[col] = df[(primary, col)]
+                    if not sym_df.empty and ("Close" in sym_df.columns or "Adj Close" in sym_df.columns):
+                        out[primary] = sym_df.dropna(how="all")
                 else:
-                    if "Close" in df:
-                        ser = df["Close"].dropna()
-                    elif "Adj Close" in df:
-                        ser = df["Adj Close"].dropna()
-                if ser is not None and not ser.empty:
-                    ser.name = "px"
-                    out[primary] = ser
+                    # Single symbol or non-MultiIndex
+                    sym_df = df.copy() if not is_multi else df
+                    if not sym_df.empty and ("Close" in sym_df.columns or "Adj Close" in sym_df.columns):
+                        out[primary] = sym_df.dropna(how="all")
             except Exception:
                 continue
         return out
@@ -1978,16 +2127,18 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                 out = fut.result()
             except Exception:
                 out = {}
-            for primary, ser in out.items():
-                for orig in primary_to_originals.get(primary, []):
-                    result[orig] = ser
-                # Store in cache - ensure we have a DataFrame
-                if isinstance(ser, pd.DataFrame):
-                    _store_cached_prices(primary, start, end, ser)
-                elif isinstance(ser, pd.Series):
-                    _store_cached_prices(primary, start, end, ser.to_frame(name="Close"))
-                fetched_count += 1
-                satisfied_primaries.add(primary)
+            for primary, sym_df in out.items():
+                # Store full OHLCV data using standardized format
+                _store_disk_prices(primary, sym_df)
+                
+                # Extract Close series for return value
+                ser = get_price_series(sym_df, "Close")
+                if not ser.empty:
+                    ser.name = "px"
+                    for orig in primary_to_originals.get(primary, []):
+                        result[orig] = ser
+                    fetched_count += 1
+                    satisfied_primaries.add(primary)
             if log:
                 done = fetched_count
                 pct = (done / max(1, total_need)) * 100.0
@@ -2001,12 +2152,8 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         try:
             df = _download_prices(primary, start, end)
             if df is not None and not df.empty:
-                ser = None
-                if "Close" in df:
-                    ser = df["Close"].dropna()
-                elif "Adj Close" in df:
-                    ser = df["Adj Close"].dropna()
-                if ser is not None and not ser.empty:
+                ser = get_price_series(df, "Close")
+                if not ser.empty:
                     ser.name = "px"
                     return primary, ser
         except Exception:
@@ -2023,11 +2170,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                 primary, ser = res
                 for orig in primary_to_originals.get(primary, []):
                     result[orig] = ser
-                # Store in cache - ensure we have a DataFrame
-                if isinstance(ser, pd.DataFrame):
-                    _store_cached_prices(primary, start, end, ser)
-                elif isinstance(ser, pd.Series):
-                    _store_cached_prices(primary, start, end, ser.to_frame(name="Close"))
+                # Data already stored by _download_prices via _store_disk_prices
                 satisfied_primaries.add(primary)
     return result
 
@@ -2070,70 +2213,69 @@ def _resolve_display_name(symbol: str) -> str:
 
 
 def _fetch_px_symbol(symbol: str, start: Optional[str], end: Optional[str]) -> pd.Series:
+    """Fetch price series for a symbol.
+    
+    Uses _download_prices which returns standardized DataFrame format.
+    Falls back to various column extraction methods for compatibility.
+    
+    Returns:
+        Series with Close prices, named "px"
+    """
     data = _download_prices(symbol, start, end)
     if data is None or data.empty:
         raise RuntimeError(f"No data for {symbol}")
-    px = None
     
-    # Handle MultiIndex columns (e.g., from yf.download with single ticker)
+    # First try using the standardized get_price_series helper
+    px = get_price_series(data, "Close")
+    if not px.empty:
+        px.name = "px"
+        return px
+    
+    # Fallback: Handle MultiIndex columns (e.g., from yf.download with single ticker)
     if isinstance(data, pd.DataFrame) and isinstance(data.columns, pd.MultiIndex):
-        # Flatten MultiIndex: try to get Close or Adj Close column
         for col_name in ("Close", "Adj Close"):
             try:
                 if col_name in data.columns.get_level_values(0):
                     px = data[col_name]
-                    # If still a DataFrame (shouldn't be, but just in case), take first column
                     if isinstance(px, pd.DataFrame):
                         px = px.iloc[:, 0]
-                    px = px.dropna()
-                    break
+                    px = pd.to_numeric(px, errors="coerce").dropna()
+                    if not px.empty:
+                        px.name = "px"
+                        return px
             except Exception:
                 continue
-        # Alternative: try (col_name, symbol) tuple
-        if px is None or (hasattr(px, 'empty') and px.empty):
-            for col_name in ("Close", "Adj Close"):
-                try:
-                    if (col_name, symbol) in data.columns:
-                        px = data[(col_name, symbol)].dropna()
-                        break
-                    # Try uppercase symbol
-                    if (col_name, symbol.upper()) in data.columns:
-                        px = data[(col_name, symbol.upper())].dropna()
-                        break
-                except Exception:
-                    continue
+        # Try (col_name, symbol) tuple
+        for col_name in ("Close", "Adj Close"):
+            try:
+                for sym_variant in [symbol, symbol.upper()]:
+                    if (col_name, sym_variant) in data.columns:
+                        px = pd.to_numeric(data[(col_name, sym_variant)], errors="coerce").dropna()
+                        if not px.empty:
+                            px.name = "px"
+                            return px
+            except Exception:
+                continue
     
-    # Handle regular single-level columns
-    if px is None or (hasattr(px, 'empty') and px.empty):
-        for col in ("Close", "Adj Close"):
-            if isinstance(data, pd.DataFrame) and col in data.columns:
-                col_data = data[col]
-                # Ensure it's a Series, not DataFrame
-                if isinstance(col_data, pd.DataFrame):
-                    col_data = col_data.iloc[:, 0]
-                px = col_data.dropna()
-                break
+    # Fallback: Handle regular single-level columns
+    for col in ("Close", "Adj Close", "close", "Price"):
+        if isinstance(data, pd.DataFrame) and col in data.columns:
+            col_data = data[col]
+            if isinstance(col_data, pd.DataFrame):
+                col_data = col_data.iloc[:, 0]
+            px = pd.to_numeric(col_data, errors="coerce").dropna()
+            if not px.empty:
+                px.name = "px"
+                return px
     
-    if px is None and isinstance(data, pd.Series):
-        px = data.dropna()
+    # Fallback: If data is a Series
+    if isinstance(data, pd.Series):
+        px = pd.to_numeric(data, errors="coerce").dropna()
+        if not px.empty:
+            px.name = "px"
+            return px
     
-    if px is None or (hasattr(px, 'empty') and px.empty):
-        raise RuntimeError(f"No price column found for {symbol}")
-    
-    # Ensure px is a Series before calling to_numeric
-    if isinstance(px, pd.DataFrame):
-        if px.shape[1] == 1:
-            px = px.iloc[:, 0]
-        else:
-            # Take the first column if multiple
-            px = px.iloc[:, 0]
-    
-    # Coerce to numeric float - this is critical to avoid string multiplication errors
-    px = pd.to_numeric(px, errors="coerce").dropna()
-    if px.empty:
-        raise RuntimeError(f"No numeric price data for {symbol}")
-    px.name = "px"
-    return px
+    raise RuntimeError(f"No price column found for {symbol}")
 
 
 def _load_fx_cache() -> Dict[str, dict]:

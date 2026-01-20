@@ -1196,42 +1196,16 @@ def tune_asset_q(
         try:
             px, title = fetch_px(asset, start_date, end_date)
         except Exception:
-            # Fallback: direct download
+            # Fallback: direct download with standardized format
             df = _download_prices(asset, start_date, end_date)
             if df is None or df.empty:
                 raise RuntimeError(f"No data for {asset}")
             
-            # Handle MultiIndex columns
-            px = None
-            if isinstance(df.columns, pd.MultiIndex):
-                for col_name in ("Close", "Adj Close"):
-                    try:
-                        if col_name in df.columns.get_level_values(0):
-                            px = df[col_name]
-                            if isinstance(px, pd.DataFrame):
-                                px = px.iloc[:, 0]
-                            break
-                    except Exception:
-                        continue
-            
-            # Handle regular columns
-            if px is None:
-                for col in ("Close", "Adj Close"):
-                    if col in df.columns:
-                        col_data = df[col]
-                        if isinstance(col_data, pd.DataFrame):
-                            col_data = col_data.iloc[:, 0]
-                        px = col_data
-                        break
-            
-            if px is None:
+            # Use standardized price extraction
+            px = get_price_series(df, "Close")
+            if px.empty:
                 raise RuntimeError(f"No price column found for {asset}")
             
-            # Ensure it's a Series
-            if isinstance(px, pd.DataFrame):
-                px = px.iloc[:, 0]
-            
-            px = pd.to_numeric(px, errors="coerce").dropna()
             title = asset
         
         # Allow very small histories; tune will still run cross-validation with short splits
