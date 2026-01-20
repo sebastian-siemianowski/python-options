@@ -22,7 +22,7 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from multiprocessing import Pool, cpu_count
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -2824,9 +2824,9 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
                 console.print(f"[yellow]Warning:[/yellow] Bulk prefetch failed: {e}. Falling back to standard fetch.")
 
         if use_bulk:
-            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets in parallel with shared cache...[/cyan]")
+            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets in parallel (process pool, {n_workers} workers)...[/cyan]")
             results_with_asset: List[Tuple[str, Dict]] = []
-            with ThreadPoolExecutor(max_workers=n_workers) as ex:
+            with ProcessPoolExecutor(max_workers=n_workers) as ex:
                 future_map = {ex.submit(process_single_asset, item): item for item in work_items}
                 for fut in as_completed(future_map):
                     asset_for_future = future_map[fut][0]
