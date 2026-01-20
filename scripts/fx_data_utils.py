@@ -851,6 +851,46 @@ DEFAULT_ASSET_UNIVERSE = [
     "AFRM",   # Affirm — Consumer credit restructuring layer
     "COIN",   # Coinbase — Regulated crypto financial infrastructure
     # Note: NU (Nubank) already included above
+
+    # -------------------------
+    # AI Power & Semiconductor Choke Points
+    # -------------------------
+    "NVTS",   # Navitas Semiconductor — GaN/SiC power for AI data centers; long power-cycle optionality
+    "WOLF",   # Wolfspeed — SiC substrate scale; post-restructuring rebound optionality
+    "AEHR",   # Aehr Test Systems — SiC test bottleneck; picks-and-shovels
+    "ALAB",   # Astera Labs — AI interconnect/PCIe/CXL infrastructure optionality
+    "CRDO",   # Credo Technology — High-speed connectivity for AI racks
+
+    # -------------------------
+    # Batteries & Energy Tech Moonshots
+    # -------------------------
+    "ENVX",   # Enovix — 3D battery architecture; nonlinear upside if it scales
+    "QS",     # QuantumScape — Solid-state battery; classic "works or doesn't" asymmetry
+    "SMR",    # NuScale Power — Small modular nuclear optionality if deployment inflects
+
+    # -------------------------
+    # TechBio / AI-Drug Discovery Platforms
+    # -------------------------
+    "RXRX",   # Recursion — AI+biotech platform bet; NVIDIA collaboration tailwind
+    "SDGR",   # Schrödinger — Computational chemistry stack
+    "ABCL",   # AbCellera — Antibody discovery platform economics
+    "NTLA",   # Intellia — In-vivo gene editing optionality
+    "EXAI",   # Exscientia — AI-first drug design platform bet
+    "TEM",    # Tempus AI — Clinical data + AI diagnostics flywheel optionality
+
+    # -------------------------
+    # Quantum / Security Optionality
+    # -------------------------
+    "QBTS",   # D-Wave Quantum — Commercial niche; asymmetric if adoption accelerates
+    "ARQQ",   # Arqit Quantum — Security thesis; very high dispersion
+
+    # -------------------------
+    # Space / Spectrum / Network Rails
+    # -------------------------
+    "SPIR",   # Spire Global — Space data constellation economics
+    "GSAT",   # Globalstar — Spectrum asset optionality
+    "IRDM",   # Iridium — Satcom network rail with upside skew
+    "ASTR",   # Astra Space — Extreme-risk optionality (check if still listed/tradable)
 ]
 
 MAPPING = {
@@ -1284,14 +1324,18 @@ SECTOR_MAP = {
     "Options / Structured Products": {
         "TSLD", "PLTI", "QQQO", "METI", "MSFI", "MAGD", "AMDI", "AMZD", "GOOO", "BABI", "BABY", "AAPI", "AVGI", "MSTP"
     },
-    "Nuclear": {"OKLO", "CCJ", "UUUU", "GEV", "LEU"},
+    "Nuclear": {"OKLO", "CCJ", "UUUU", "GEV", "LEU", "SMR"},
     "Critical Materials": {"MP", "CRML", "IDR", "FCX", "UAMY"},
-    "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR"},
+    "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR", "SPIR", "GSAT", "IRDM", "ASTR"},
     "Drones": {"ONDS", "UMAC", "AVAV", "KTOS", "DPRO"},
     "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY", "SMCI", "ANET"},
     "Semiconductor Equipment": {"ASML", "LRCX", "AMAT", "TSM", "ARM", "SNPS", "CDNS"},
+    "AI Power Semiconductors": {"NVTS", "WOLF", "AEHR", "ALAB", "CRDO"},
     "Cloud & Cybersecurity": {"CRWD", "ZS", "DDOG", "SNOW", "MDB"},
     "Fintech": {"HUBS", "AFRM", "NU", "COIN", "PYPL"},
+    "Batteries & Energy Tech": {"ENVX", "QS"},
+    "TechBio / AI Drug Discovery": {"RXRX", "SDGR", "ABCL", "NTLA", "EXAI", "TEM"},
+    "Quantum Computing": {"QBTS", "ARQQ", "IONQ"},
     "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SEI", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"}
 }
 

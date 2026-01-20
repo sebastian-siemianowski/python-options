@@ -1,13 +1,20 @@
 {
-  "updated": "2026-01-20T19:02:37.035222",
-  "count": 1,
+  "updated": "2026-01-20T19:29:08.876940",
+  "count": 2,
   "failures": {
     "FCX": {
       "display_name": "Freeport-McMoRan Inc.",
       "attempts": 1,
       "last_error": "No price column found for SEI",
       "traceback": null,
-      "timestamp": "2026-01-20T19:02:37.035210"
+      "timestamp": "2026-01-20T19:29:08.876928"
+    },
+    "AEHR": {
+      "display_name": "Aehr Test Systems, Inc.",
+      "attempts": 1,
+      "last_error": "No data for EXAI",
+      "traceback": null,
+      "timestamp": "2026-01-20T19:29:08.876939"
     }
   }
 }
