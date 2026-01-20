@@ -43,6 +43,64 @@ PRECIOUS_METAL_FX_TO_FUTURES = {
     "XPDUSD=X": "PA=F",
 }
 
+# Yahoo punctuation/country suffix normalization hotfixes
+PUNCTUATION_OVERRIDES = {
+    "BRK.B": "BRK-B",
+    "MOG.A": "MOG-A",
+    "BTC.USD": "BTC-USD",
+    "HO-PA": "HO.PA",
+    "BA-L": "BA.L",
+    "005930-KS": "005930.KS",
+    "FACCVI": "FACC.VI",
+    "HAGDE": "HAG.DE",
+    "HO-PA": "HO.PA",
+    "BTCUSD": "BTC-USD",
+    "BTCUSD=X": "BTC-USD",
+}
+
+COUNTRY_SUFFIX_COMPLETIONS = {
+    "BAYN": "BAYN.DE",
+    "BMW3": "BMW3.DE",
+    "VOW3": "VOW3.DE",
+    "RHM": "RHM.DE",
+    "TKA": "TKA.DE",
+    "R3NK": "R3NK.DE",
+    "KOZ1": "KOZ1.DE",
+    "HEIA": "HEIA.AS",
+    "SAF": "SAF.PA",
+    "SGLP": "SGLP.L",
+    "MAGD": "MAGD.L",
+}
+
+# Proxy overrides for synthetic/alias tickers to liquid underlyings
+PROXY_OVERRIDES = {
+    "TSLD": "TSLA",
+    "QQQO": "QQQ",
+    "METI": "META",
+    "MSFI": "MSFT",
+    "MAGD": "QQQ",
+    "AVGI": "AVGO",
+    "BABI": "BABA",
+    "BABY": "BABA",
+    "AMDI": "AMD",
+    "DFNG": "ITA",
+    "GFA": "ANGL",
+    "TRET": "VNQ",
+    "GLDE": "GLD",
+    "GOOO": "GOOG",
+    "SGLP": "SGLP.L",
+    "HAG": "HAG.DE",
+    "HO": "HO.PA",
+    "BAYN": "BAYN.DE",
+    "BMW3": "BMW3.DE",
+    "VOW3": "VOW3.DE",
+    "RHM": "RHM.DE",
+    "R3NK": "R3NK.DE",
+    "KOZ1": "KOZ1.DE",
+    "XAGUSD": "SI=F",
+    "MANT": "CACI",
+}
+
 
 def _log_symbol_map(original: str, normalized: str, meta: Dict) -> None:
     message = f"[SYMBOL_MAP] {original} -> {normalized}"
@@ -109,7 +167,7 @@ def _detect_delisted_or_unsupported(symbol: str, ticker: yf.Ticker) -> Tuple[boo
     return False, ""
 
 
-def normalize_yahoo_ticker(symbol: str) -> Tuple[str, Dict]:
+def normalize_yahoo_ticker(symbol: str, perform_lookup: bool = True) -> Tuple[str, Dict]:
     meta: Dict[str, object] = {"original": symbol}
 
     if symbol is None:
@@ -126,29 +184,56 @@ def normalize_yahoo_ticker(symbol: str) -> Tuple[str, Dict]:
     normalized = raw
     upper = raw.upper()
 
+    # Punctuation and suffix grammar fixes
+    if upper in PUNCTUATION_OVERRIDES:
+        normalized = PUNCTUATION_OVERRIDES[upper]
+        meta["type"] = "punctuation_fix"
+        meta["reason"] = "Yahoo punctuation grammar"
+        _log_symbol_map(raw, normalized, meta)
+        upper = normalized.upper()
+
+    if upper in COUNTRY_SUFFIX_COMPLETIONS:
+        normalized = COUNTRY_SUFFIX_COMPLETIONS[upper]
+        meta["type"] = meta.get("type", "suffix_completion")
+        meta["reason"] = meta.get("reason", "country_exchange_suffix")
+        _log_symbol_map(raw, normalized, meta)
+        upper = normalized.upper()
+
+    mapped_or_fixed = meta.get("type") is not None
+
+    if upper in PROXY_OVERRIDES:
+        normalized = PROXY_OVERRIDES[upper]
+        meta["type"] = "proxy_override"
+        meta["reason"] = "mapped_to_liquid_underlying"
+        _log_symbol_map(raw, normalized, meta)
+        mapped_or_fixed = True
+        upper = normalized.upper()
+
     if upper in YAHOO_TICKER_OVERRIDES:
         normalized = YAHOO_TICKER_OVERRIDES[upper]
         meta["type"] = "override"
         meta["reason"] = "deterministic_override"
         _log_symbol_map(raw, normalized, meta)
+        mapped_or_fixed = True
     elif upper in PRECIOUS_METAL_FX_TO_FUTURES:
         normalized = PRECIOUS_METAL_FX_TO_FUTURES[upper]
         meta["type"] = "commodity_proxy"
         meta["reason"] = "Yahoo spot unavailable"
         _log_symbol_map(raw, normalized, meta)
+        mapped_or_fixed = True
 
-    try:
-        tk = yf.Ticker(normalized)
-        flagged, reason = _detect_delisted_or_unsupported(normalized, tk)
-    except Exception:
-        flagged = True
-        reason = "ticker_init_failed"
-
-    if flagged:
-        meta["status"] = "delisted_or_unsupported"
-        meta["reason"] = reason
-        _log_symbol_fail(raw, "delisted_or_unsupported", reason)
-        return normalized, meta
+    if perform_lookup and not mapped_or_fixed:
+        try:
+            tk = yf.Ticker(normalized)
+            flagged, reason = _detect_delisted_or_unsupported(normalized, tk)
+        except Exception:
+            flagged = True
+            reason = "ticker_init_failed"
+        if flagged:
+            meta["status"] = "delisted_or_unsupported"
+            meta["reason"] = reason
+            _log_symbol_fail(raw, "delisted_or_unsupported", reason)
+            return normalized, meta
 
     meta["status"] = "ok"
     return normalized, meta
@@ -237,7 +322,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "GS",     # Goldman Sachs
     "IBKR",   # Interactive Brokers
     "JPM",    # JPMorgan Chase
-    "MA",     # Mastercard
+    "MA"     # Mastercard
     "MET",    # MetLife
     "MS",     # Morgan Stanley
     "PYPL",   # PayPal
@@ -1300,7 +1385,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
     # Normalize symbols and keep lineage for deterministic mapping
     normalized_entries: List[Tuple[str, str, Dict]] = []
     for sym in dedup:
-        norm, meta = normalize_yahoo_ticker(sym)
+        norm, meta = normalize_yahoo_ticker(sym, perform_lookup=False)
         normalized_entries.append((sym, norm, meta))
 
     result: Dict[str, pd.Series] = {}
@@ -1324,6 +1409,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         primary_to_originals.setdefault(primary, []).append(orig)
 
     # Try cached first for all primaries
+    satisfied_primaries: Set[str] = set()
     for primary, orig_list in list(primary_to_originals.items()):
         cached = _get_cached_prices(primary, start, end)
         if cached is not None and not cached.empty:
@@ -1337,8 +1423,9 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
             for orig in orig_list:
                 result[orig] = ser
             cached_hits += 1
+            satisfied_primaries.add(primary)
 
-    remaining_primaries = [p for p in primary_to_originals if p not in {k for k, v in result.items()}]
+    remaining_primaries = [p for p in primary_to_originals if p not in satisfied_primaries]
 
     total_need = len(remaining_primaries)
     if log and (cached_hits or total_need):
@@ -1396,12 +1483,13 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                     result[orig] = ser
                 _store_cached_prices(primary, start, end, ser.to_frame(name="Close"))
                 fetched_count += 1
+                satisfied_primaries.add(primary)
             if log:
                 done = fetched_count
                 pct = (done / max(1, total_need)) * 100.0
                 log(f"    ✓ Cached {done}/{total_need} ({pct:.1f}%) so far")
 
-    missing_after_bulk = [p for p in remaining_primaries if p not in {k for k, v in result.items()}]
+    missing_after_bulk = [p for p in remaining_primaries if p not in satisfied_primaries]
     if log and missing_after_bulk:
         log(f"  Falling back to individual fetch for {len(missing_after_bulk)} symbol(s)…")
 
@@ -1432,6 +1520,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                 for orig in primary_to_originals.get(primary, []):
                     result[orig] = ser
                 _store_cached_prices(primary, start, end, ser.to_frame(name="Close"))
+                satisfied_primaries.add(primary)
     return result
 
 
