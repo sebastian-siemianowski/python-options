@@ -466,7 +466,25 @@ MAPPING = {
     "FACC": ["FACC.VI", "FACC"],
     "SLVI": ["SLV", "SLVP", "SLVI"],
     "TKA": ["TKA.DE", "TKA"],
-
+    # Add missing dash/dot aliases for EU tickers
+    # Dash / no-suffix Vienna alias
+    "FACCVI": ["FACC.VI", "FACC"],
+    "HAG-DE": ["HAG.DE", "HAG"],
+    "HAGDE": ["HAG.DE", "HAG"],
+    "HO-PA": ["HO.PA", "HO"],
+    "AIR-PA": ["AIR.PA", "AIR.DE", "AIR"],
+    "MTX-DE": ["MTX.DE", "MTX"],
+    "BA-L": ["BA.L", "BA"],
+    "SAABY": ["SAAB-B.ST", "SAAB.ST", "SAABY"],
+    "RHM-DE": ["RHM.DE", "RHM.F", "RHM"],
+    "RHMDE": ["RHM.DE", "RHM.F", "RHM"],
+    "THEON": ["THEO.AS", "THEON"],
+    "VOYG": ["VOYG.TO", "VOYG"],
+    "GEV": ["GEV.OL", "GEV"],
+    "LEU": ["LEU", "LEU.MI"],
+    "SO": ["SO", "SO.US"],
+    "TRET": ["TRET.L", "TRET"],
+    "WWD": ["WWD"],
     # Netflix and Novo Nordisk
     "NFLX": ["NFLX"],
     "NOVO": ["NVO", "NOVO-B.CO", "NOVOB.CO", "NOVO-B.CO"],
@@ -1628,22 +1646,29 @@ def convert_currency_to_pln(quote_ccy: str, start: Optional[str], end: Optional[
         s, _ = _fetch_with_fallback(sym_list, s_ext, e_ext)
         return s
 
+    def _finish(series: pd.Series) -> pd.Series:
+        s = _ensure_float_series(series).dropna()
+        if native_index is not None and len(native_index) > 0:
+            try:
+                s = s.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
+            except Exception:
+                pass
+        return s
+
     if q in ("PLN", "PLN "):
-        # Return a flat-1 series over the native index for easy alignment
-        return pd.Series(1.0, index=pd.DatetimeIndex(native_index) if native_index is not None else [pd.Timestamp("1970-01-01")])
+        return _finish(pd.Series(1.0, index=pd.DatetimeIndex(native_index) if native_index is not None else [pd.Timestamp("1970-01-01")]))
     if q == "USD":
-        return fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
+        return _finish(fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
     if q == "EUR":
         try:
             eurpln, _ = _fetch_with_fallback(["EURPLN=X"], s_ext, e_ext)
-            return eurpln
+            return _finish(eurpln)
         except Exception:
-            # EURPLN via USD: EURPLN = EURUSD * USDPLN
             eurusd, _ = _fetch_with_fallback(["EURUSD=X"], s_ext, e_ext)
-            return eurusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
+            return _finish(eurusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
     if q in ("GBP", "GBX", "GBPp", "GBP P", "GBp"):
         gbppln, _ = _fetch_with_fallback(["GBPPLN=X"], s_ext, e_ext)
-        return gbppln * (0.01 if q in ("GBX", "GBPp", "GBP P", "GBp") else 1.0)
+        return _finish(gbppln * (0.01 if q in ("GBX", "GBPp", "GBP P", "GBp") else 1.0))
     if q == "JPY":
         try:
             plnjpy, _ = _fetch_with_fallback(["PLNJPY=X"], s_ext, e_ext)
@@ -1714,30 +1739,25 @@ def convert_currency_to_pln(quote_ccy: str, start: Optional[str], end: Optional[
             usdhkd, _ = _fetch_with_fallback(["USDHKD=X"], s_ext, e_ext)
             return usdpln / usdhkd
     if q == "KRW":
-        # PLN per KRW = (PLN per USD) / (KRW per USD)
         try:
             usdpln = fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
             usdkrw, _ = _fetch_with_fallback(["USDKRW=X"], s_ext, e_ext)
-            # Align by native index if available
             if native_index is not None and len(native_index) > 0:
                 usdpln = usdpln.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
                 usdkrw = usdkrw.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
-            return (usdpln / usdkrw).rename("px")
+            return _finish(usdpln / usdkrw)
         except Exception:
-            # Fallback: try KRWUSD and invert
             try:
                 krwusd, _ = _fetch_with_fallback(["KRWUSD=X"], s_ext, e_ext)
                 usdpln = fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
                 if native_index is not None and len(native_index) > 0:
                     usdpln = usdpln.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
                     krwusd = krwusd.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
-                return (usdpln * krwusd).rename("px")
+                return _finish(usdpln * krwusd)
             except Exception:
                 pass
-        # As last resort, assume USD (may be wrong for KRW assets but avoids crash)
-        return fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
-    # Default: assume USD
-    return fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
+        return _finish(fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
+    return _finish(fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
 
 
 def convert_price_series_to_pln(native_px: pd.Series, quote_ccy: str, start: Optional[str], end: Optional[str]) -> Tuple[pd.Series, str]:

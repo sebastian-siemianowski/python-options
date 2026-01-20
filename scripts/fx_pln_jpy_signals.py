@@ -2366,7 +2366,7 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     return "HOLD"
 
 
-def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68) -> Tuple[List<Signal], Dict[int, Dict[str, float]]]: 
+def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]:
     """Compute signals using regime‑aware priors, tail‑aware probability mapping, and
     anti‑snap logic (two‑day confirmation + hysteresis + smoothing) without extra flags.
     
