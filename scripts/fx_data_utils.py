@@ -811,7 +811,6 @@ DEFAULT_ASSET_UNIVERSE = [
     "NUTX",
     "RCAT",
     "MU",
-    "SEI",
     "SANM",
     "SEZL",
     "AMCR",
@@ -875,14 +874,15 @@ DEFAULT_ASSET_UNIVERSE = [
     "SDGR",   # Schrödinger — Computational chemistry stack
     "ABCL",   # AbCellera — Antibody discovery platform economics
     "NTLA",   # Intellia — In-vivo gene editing optionality
-    "EXAI",   # Exscientia — AI-first drug design platform bet
     "TEM",    # Tempus AI — Clinical data + AI diagnostics flywheel optionality
 
     # -------------------------
     # Quantum / Security Optionality
     # -------------------------
-    "QBTS",   # D-Wave Quantum — Commercial niche; asymmetric if adoption accelerates
-    "ARQQ",   # Arqit Quantum — Security thesis; very high dispersion
+    "QBTS",   # D-Wave Quantum — Quantum systems & services; asymmetric if adoption accelerates
+    "ARQQ",   # Arqit Quantum — Post-quantum security; very high dispersion
+    "RGTI",   # Rigetti Computing — Full-stack quantum computing
+    "QUBT",   # Quantum Computing Inc. — Quantum solutions
 
     # -------------------------
     # Space / Spectrum / Network Rails
@@ -890,7 +890,6 @@ DEFAULT_ASSET_UNIVERSE = [
     "SPIR",   # Spire Global — Space data constellation economics
     "GSAT",   # Globalstar — Spectrum asset optionality
     "IRDM",   # Iridium — Satcom network rail with upside skew
-    "ASTR",   # Astra Space — Extreme-risk optionality (check if still listed/tradable)
 ]
 
 MAPPING = {
@@ -1334,9 +1333,9 @@ SECTOR_MAP = {
     "Cloud & Cybersecurity": {"CRWD", "ZS", "DDOG", "SNOW", "MDB"},
     "Fintech": {"HUBS", "AFRM", "NU", "COIN", "PYPL"},
     "Batteries & Energy Tech": {"ENVX", "QS"},
-    "TechBio / AI Drug Discovery": {"RXRX", "SDGR", "ABCL", "NTLA", "EXAI", "TEM"},
-    "Quantum Computing": {"QBTS", "ARQQ", "IONQ"},
-    "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SEI", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"}
+    "TechBio / AI Drug Discovery": {"RXRX", "SDGR", "ABCL", "NTLA", "TEM"},
+    "Quantum Computing": {"IONQ", "QBTS", "ARQQ", "RGTI", "QUBT"},
+    "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"}
 }
 
 def get_sector(symbol: str) -> str:
