@@ -1672,72 +1672,71 @@ def convert_currency_to_pln(quote_ccy: str, start: Optional[str], end: Optional[
     if q == "JPY":
         try:
             plnjpy, _ = _fetch_with_fallback(["PLNJPY=X"], s_ext, e_ext)
-            return 1.0 / plnjpy
+            return _finish(1.0 / plnjpy)
         except Exception:
             jpypln, _ = _fetch_with_fallback(["JPYPLN=X"], s_ext, e_ext)
-            return jpypln
+            return _finish(jpypln)
     if q == "CAD":
         try:
             cadpln, _ = _fetch_with_fallback(["CADPLN=X"], s_ext, e_ext)
-            return cadpln
+            return _finish(cadpln)
         except Exception:
-            # Try CADUSD cross
             try:
                 usdcad, _ = _fetch_with_fallback(["USDCAD=X"], s_ext, e_ext)
                 cadusd = 1.0 / usdcad
             except Exception:
                 cadusd, _ = _fetch_with_fallback(["CADUSD=X"], s_ext, e_ext)
-            return cadusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
+            return _finish(cadusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
     if q == "CHF":
         try:
             chfpln, _ = _fetch_with_fallback(["CHFPLN=X"], s_ext, e_ext)
-            return chfpln
+            return _finish(chfpln)
         except Exception:
             try:
                 usdchf, _ = _fetch_with_fallback(["USDCHF=X"], s_ext, e_ext)
                 chfusd = 1.0 / usdchf
             except Exception:
                 chfusd, _ = _fetch_with_fallback(["CHFUSD=X"], s_ext, e_ext)
-            return chfusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
+            return _finish(chfusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
     if q == "AUD":
         try:
             audpln, _ = _fetch_with_fallback(["AUDPLN=X"], s_ext, e_ext)
-            return audpln
+            return _finish(audpln)
         except Exception:
             audusd, _ = _fetch_with_fallback(["AUDUSD=X"], s_ext, e_ext)
-            return audusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
+            return _finish(audusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
     if q == "SEK":
         try:
             sekpln, _ = _fetch_with_fallback(["SEKPLN=X"], s_ext, e_ext)
-            return sekpln
+            return _finish(sekpln)
         except Exception:
             eurpln, _ = _fetch_with_fallback(["EURPLN=X"], s_ext, e_ext)
             eurseK, _ = _fetch_with_fallback(["EURSEK=X"], s_ext, e_ext)
-            return eurpln / eurseK
+            return _finish(eurpln / eurseK)
     if q == "NOK":
         try:
             nokpln, _ = _fetch_with_fallback(["NOKPLN=X"], s_ext, e_ext)
-            return nokpln
+            return _finish(nokpln)
         except Exception:
             eurpln, _ = _fetch_with_fallback(["EURPLN=X"], s_ext, e_ext)
             eurnok, _ = _fetch_with_fallback(["EURNOK=X"], s_ext, e_ext)
-            return eurpln / eurnok
+            return _finish(eurpln / eurnok)
     if q == "DKK":
         try:
             dkkpln, _ = _fetch_with_fallback(["DKKPLN=X"], s_ext, e_ext)
-            return dkkpln
+            return _finish(dkkpln)
         except Exception:
             eurpln, _ = _fetch_with_fallback(["EURPLN=X"], s_ext, e_ext)
             eurdkk, _ = _fetch_with_fallback(["EURDKK=X"], s_ext, e_ext)
-            return eurpln / eurdkk
+            return _finish(eurpln / eurdkk)
     if q == "HKD":
         try:
             hkdpln, _ = _fetch_with_fallback(["HKDPLN=X"], s_ext, e_ext)
-            return hkdpln
+            return _finish(hkdpln)
         except Exception:
             usdpln = fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
             usdhkd, _ = _fetch_with_fallback(["USDHKD=X"], s_ext, e_ext)
-            return usdpln / usdhkd
+            return _finish(usdpln / usdhkd)
     if q == "KRW":
         try:
             usdpln = fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
@@ -1756,7 +1755,6 @@ def convert_currency_to_pln(quote_ccy: str, start: Optional[str], end: Optional[
                 return _finish(usdpln * krwusd)
             except Exception:
                 pass
-        return _finish(fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
     return _finish(fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
 
 
@@ -1767,18 +1765,23 @@ def convert_price_series_to_pln(native_px: pd.Series, quote_ccy: str, start: Opt
     sfx = "(PLN)"
     native_px = _ensure_float_series(native_px)
     # Get FX leg over the native range (with padding)
-    fx = convert_currency_to_pln(quote_ccy, start, end, native_index=native_px.index)
+    fx = _ensure_float_series(convert_currency_to_pln(quote_ccy, start, end, native_index=native_px.index))
     # Try increasingly permissive alignments
     fx_al = _align_fx_asof(native_px, fx, max_gap_days=7)
     if fx_al.isna().all():
         fx_al = _align_fx_asof(native_px, fx, max_gap_days=14)
     if fx_al.isna().all():
         fx_al = _align_fx_asof(native_px, fx, max_gap_days=30)
-    # Fallback: strict calendar alignment with ffill/bfill
+    # Fallbacks: calendar align then constant back/forward fill using last known FX
     if fx_al.isna().all():
         fx_al = fx.reindex(native_px.index).ffill().bfill()
+    if fx_al.isna().all() and not fx.empty:
+        last_fx = float(fx.iloc[-1]) if np.isfinite(fx.iloc[-1]) else float("nan")
+        if np.isfinite(last_fx):
+            fx_al = pd.Series(last_fx, index=native_px.index, name="fx")
     fx_al = _ensure_float_series(fx_al)
-    pln = (native_px * fx_al).dropna()
+    pln = _ensure_float_series(native_px) * fx_al
+    pln = pln.replace([np.inf, -np.inf], np.nan).dropna()
     pln.name = "px"
     return pln, sfx
 
@@ -1916,8 +1919,8 @@ def fetch_px_asset(asset: str, start: Optional[str], end: Optional[str]) -> Tupl
             metal_px, used = _fetch_with_fallback(candidates, start, end)
             metal_px = _ensure_float_series(metal_px)
             metal_name = "Silver"
-        usdpln_px = fetch_usd_to_pln_exchange_rate(start, end)
-        usdpln_aligned = usdpln_px.reindex(metal_px.index).ffill()
+        usdpln_px = _ensure_float_series(fetch_usd_to_pln_exchange_rate(start, end))
+        usdpln_aligned = _ensure_float_series(usdpln_px.reindex(metal_px.index).ffill().bfill())
         df = pd.concat([metal_px, usdpln_aligned], axis=1).dropna()
         df.columns = ["metal_usd", "usdpln"]
         px_pln = (df["metal_usd"] * df["usdpln"]).rename("px")

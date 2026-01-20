@@ -2825,44 +2825,46 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
 
         if use_bulk:
             console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets in parallel with shared cache...[/cyan]")
-            results = []
+            results_with_asset: List[Tuple[str, Dict]] = []
             with ThreadPoolExecutor(max_workers=n_workers) as ex:
                 future_map = {ex.submit(process_single_asset, item): item for item in work_items}
                 for fut in as_completed(future_map):
+                    asset_for_future = future_map[fut][0]
                     try:
-                        results.append(fut.result())
+                        res = fut.result()
                     except Exception as exc:
-                        asset = future_map[fut][0]
-                        results.append({"status": "error", "asset": asset, "error": str(exc)})
+                        res = {"status": "error", "asset": asset_for_future, "error": str(exc)}
+                    results_with_asset.append((asset_for_future, res))
         else:
             console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} worker process(es)...[/cyan]")
             with Pool(processes=n_workers) as pool:
                 results = pool.map(process_single_asset, work_items)
-
+            results_with_asset = list(zip(pending, results))
+ 
         next_pending: List[str] = []
-        for asset, result in zip(pending, results):
+        for asset, result in results_with_asset:
             if not result or result.get("status") != "success":
-                err = (result or {}).get("error", "unknown")
-                tb = (result or {}).get("traceback")
-                if tb:
-                    tb_lines = [line.strip() for line in str(tb).splitlines() if line.strip()]
-                    loc_lines = [ln for ln in tb_lines if ln.startswith("File ")]
-                    loc_line = loc_lines[-1] if loc_lines else None
-                    if loc_line:
-                        err = f"{err} @ {loc_line}"
-                try:
-                    disp = _resolve_display_name(asset.strip().upper())
-                except Exception:
-                    disp = asset
-                entry = failures.get(asset, {"attempts": 0, "last_error": None, "display_name": disp, "traceback": None})
-                entry["attempts"] = int(entry.get("attempts", 0)) + 1
-                entry["last_error"] = err
-                if tb:
-                    entry["traceback"] = tb
-                entry["display_name"] = entry.get("display_name") or disp
-                failures[asset] = entry
-                next_pending.append(asset)
-                continue
+                 err = (result or {}).get("error", "unknown")
+                 tb = (result or {}).get("traceback")
+                 if tb:
+                     tb_lines = [line.strip() for line in str(tb).splitlines() if line.strip()]
+                     loc_lines = [ln for ln in tb_lines if ln.startswith("File ")]
+                     loc_line = loc_lines[-1] if loc_lines else None
+                     if loc_line:
+                         err = f"{err} @ {loc_line}"
+                 try:
+                     disp = _resolve_display_name(asset.strip().upper())
+                 except Exception:
+                     disp = asset
+                 entry = failures.get(asset, {"attempts": 0, "last_error": None, "display_name": disp, "traceback": None})
+                 entry["attempts"] = int(entry.get("attempts", 0)) + 1
+                 entry["last_error"] = err
+                 if tb:
+                     entry["traceback"] = tb
+                 entry["display_name"] = entry.get("display_name") or disp
+                 failures[asset] = entry
+                 next_pending.append(asset)
+                 continue
 
                 
             canon = result.get("canon") or asset.strip().upper()
