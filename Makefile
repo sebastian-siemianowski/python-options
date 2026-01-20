@@ -1,7 +1,8 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20 data four purge failed
+.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20 data four purge failed setup
 # Usage:
+#   make setup                         # full setup: install deps + download all data (runs 3x for reliability)
 #   make run                           # runs with defaults (screener + backtest)
 #   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
 #   make backtest                      # runs backtest-only convenience wrapper
@@ -152,3 +153,43 @@ failed: .venv/.deps_installed
 # Purge cached data for failed assets
 purge: .venv/.deps_installed
 	@.venv/bin/python scripts/purge_failed.py $(ARGS)
+
+# Full setup: create venv, install dependencies, and download all data (runs 3x for reliability)
+setup:
+	@echo "============================================================"
+	@echo "STEP 1/4: Setting up Python virtual environment..."
+	@echo "============================================================"
+	@bash ./setup_venv.sh
+	@echo ""
+	@echo "============================================================"
+	@echo "STEP 2/4: Installing Python dependencies..."
+	@echo "============================================================"
+	@.venv/bin/python -m pip install --upgrade pip
+	@.venv/bin/python -m pip install -r requirements.txt
+	@touch .venv/.deps_installed
+	@echo ""
+	@echo "============================================================"
+	@echo "STEP 3/4: Downloading price data (Pass 1 of 3)..."
+	@echo "============================================================"
+	@.venv/bin/python scripts/precache_data.py --workers 2 --batch-size 16 || true
+	@echo ""
+	@echo "============================================================"
+	@echo "STEP 3/4: Downloading price data (Pass 2 of 3)..."
+	@echo "============================================================"
+	@.venv/bin/python scripts/precache_data.py --workers 2 --batch-size 16 || true
+	@echo ""
+	@echo "============================================================"
+	@echo "STEP 3/4: Downloading price data (Pass 3 of 3)..."
+	@echo "============================================================"
+	@.venv/bin/python scripts/precache_data.py --workers 2 --batch-size 16 || true
+	@echo ""
+	@echo "============================================================"
+	@echo "STEP 4/4: Setup complete!"
+	@echo "============================================================"
+	@echo ""
+	@echo "You can now run:"
+	@echo "  make fx-plnjpy    - Generate FX/asset signals"
+	@echo "  make tune         - Tune Kalman filter parameters"
+	@echo "  make failed       - List any assets that failed to download"
+	@echo "  make purge        - Purge cache for failed assets"
+	@echo ""
