@@ -151,24 +151,107 @@ PROXY_OVERRIDES = {
 }
 
 
+# Display-name cache for full asset names (e.g., company longName)
+_DISPLAY_NAME_CACHE: Dict[str, str] = {}
+
+# Pretty-print headers only once per run
+_SYMBOL_MAP_HEADER_PRINTED = False
+_SYMBOL_FAIL_HEADER_PRINTED = False
+
+# Optional ANSI color (disable with FX_LOG_COLOR=0)
+_USE_COLOR = os.getenv("FX_LOG_COLOR", "1") != "0"
+_COLORS = {
+    "green": "\033[92m" if _USE_COLOR else "",
+    "yellow": "\033[93m" if _USE_COLOR else "",
+    "red": "\033[91m" if _USE_COLOR else "",
+    "cyan": "\033[96m" if _USE_COLOR else "",
+    "reset": "\033[0m" if _USE_COLOR else "",
+}
+
+# Column widths for pretty tables
+_COL_W_ORIG = 14
+_COL_W_NORM = 14
+_COL_W_ACT = 27
+_COL_W_WHY = 35
+
+
+def _c(text: str, color: str) -> str:
+    return f"{_COLORS.get(color, '')}{text}{_COLORS['reset']}" if text else text
+
+
+def _human_action(meta: Dict) -> str:
+    t = (meta or {}).get("type")
+    if t == "proxy_override":
+        return "Proxied"
+    if t == "suffix_completion":
+        return "Exchange suffix added"
+    if t == "punctuation_fix":
+        return "Punctuation fixed"
+    if t == "commodity_proxy":
+        return "Commodity proxy"
+    if t == "override":
+        return "Override"
+    return "Adjusted"
+
+
+def _human_reason(meta: Dict) -> str:
+    r = (meta or {}).get("reason") or ""
+    mapping = {
+        "mapped_to_liquid_underlying": "Use more liquid listing",
+        "country_exchange_suffix": "Add correct exchange suffix",
+        "Yahoo punctuation grammar": "Normalize Yahoo punctuation",
+        "Yahoo spot unavailable": "Spot unsupported; use futures",
+        "deterministic_override": "Explicit override",
+    }
+    return mapping.get(r, r or "Normalized")
+
+
+def _map_border() -> str:
+    return f"+{'-'*(_COL_W_ORIG+2)}+{'-'*(_COL_W_NORM+2)}+{'-'*(_COL_W_ACT+2)}+{'-'*(_COL_W_WHY+2)}+"
+
+
+def _fail_border() -> str:
+    return f"+{'-'*(_COL_W_ORIG+2)}+{'-'*(_COL_W_ACT+2)}+{'-'*(_COL_W_WHY+2)}+"
+
+
+def _print_symbol_map_header():
+    global _SYMBOL_MAP_HEADER_PRINTED
+    if _SYMBOL_MAP_HEADER_PRINTED:
+        return
+    print("\n" + _c("Symbol mappings", "cyan"))
+    print(_map_border())
+    print(f"| {'Original':<{_COL_W_ORIG}} | {'Normalized':<{_COL_W_NORM}} | {'Action':<{_COL_W_ACT}} | {'Why':<{_COL_W_WHY}} |")
+    print(_map_border())
+    _SYMBOL_MAP_HEADER_PRINTED = True
+
+
+def _print_symbol_fail_header():
+    global _SYMBOL_FAIL_HEADER_PRINTED
+    if _SYMBOL_FAIL_HEADER_PRINTED:
+        return
+    print("\n" + _c("Symbol failures", "red"))
+    print(_fail_border())
+    print(f"| {'Original':<{_COL_W_ORIG}} | {'Status':<{_COL_W_ACT}} | {'Reason':<{_COL_W_WHY}} |")
+    print(_fail_border())
+    _SYMBOL_FAIL_HEADER_PRINTED = True
+
+
 def _log_symbol_map(original: str, normalized: str, meta: Dict) -> None:
-    message = f"[SYMBOL_MAP] {original} -> {normalized}"
-    detail_parts: List[str] = []
-    if "type" in meta:
-        detail_parts.append(str(meta.get("type")))
-    if "reason" in meta:
-        detail_parts.append(str(meta.get("reason")))
-    if detail_parts:
-        joined = ": ".join(detail_parts)
-        message = f"{message} ({joined})"
-    print(message)
+    _print_symbol_map_header()
+    action = _human_action(meta)
+    why = _human_reason(meta)
+    icon = "✔" if _USE_COLOR else "*"
+    orig_disp = _c(original, "cyan")
+    action_disp = _c(icon + " " + action, "green")
+    print(f"| {orig_disp:<{_COL_W_ORIG}} | {normalized:<{_COL_W_NORM}} | {action_disp:<{_COL_W_ACT}} | {why:<{_COL_W_WHY}} |")
 
 
 def _log_symbol_fail(original: str, status: str, reason: Optional[str] = None) -> None:
-    message = f"[SYMBOL_FAIL] {original} -> {status}"
-    if reason:
-        message = f"{message} ({reason})"
-    print(message)
+    _print_symbol_fail_header()
+    r = reason or ""
+    icon = "✖" if _USE_COLOR else "!"
+    status_disp = _c(icon + " " + status, "red")
+    print(f"| {original:<{_COL_W_ORIG}} | {status_disp:<{_COL_W_ACT}} | {r:<{_COL_W_WHY}} |")
 
 
 def _safe_lookup(container, key: str) -> Optional[str]:
@@ -726,11 +809,11 @@ MAPPING = {
     "FACC": ["FACC.VI", "FACC"],
     "SLVI": ["SLV", "SLVP", "SLVI"],
     "TKA": ["TKA.DE", "TKA"],
-    
+
     # Silver spot and commodity proxies
     "XAGUSD": ["SI=F", "SLV"],
     "XAGUSD=X": ["SI=F", "SLV"],
-    
+
     # German/European tickers that need suffix completion
     "VOW3": ["VOW3.DE", "VOW3"],
     "BMW3": ["BMW3.DE", "BMW3"],
@@ -740,7 +823,7 @@ MAPPING = {
     "KOZ1": ["KOG.OL", "KOZ1"],
     "EXA": ["EXA.PA", "EXA"],
     "THEON": ["THEON.AS", "THEON"],
-    
+
     # YieldMax and structured product proxies (route to underlying)
     "QQQO": ["QQQ"],
     "MAGD": ["QQQ"],
@@ -1324,19 +1407,19 @@ def _get_cached_prices(symbol: str, start: Optional[str], end: Optional[str]) ->
     if disk is None or disk.empty:
         return None
     # Index already normalized in _load_disk_prices
-    
+
     # Check if cache extends to the requested end date (or today if end is None)
     cache_max_date = pd.to_datetime(disk.index.max()).date()
     if end:
         requested_end = pd.to_datetime(end).date()
     else:
         requested_end = datetime.now().date()
-    
+
     # If cache is more than 1 day behind the requested end, return None to force refresh
     # (Allow 1 day buffer for weekends/holidays)
     if (requested_end - cache_max_date).days > 1:
         return None
-    
+
     if start:
         disk = disk[disk.index >= pd.to_datetime(start)]
     if end:
@@ -1369,13 +1452,13 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     # Determine incremental fetch window based on disk cache
     disk_df = _load_disk_prices(symbol)
     fetch_start = start
-    
+
     # Determine the target end date
     if end:
         target_end = pd.to_datetime(end).date()
     else:
         target_end = datetime.now().date()
-    
+
     if disk_df is not None and not disk_df.empty:
         last_dt = pd.to_datetime(disk_df.index.max()).date()
         # If disk cache already covers up to target end, use it
@@ -2125,7 +2208,7 @@ def _resolve_symbol_candidates(asset: str) -> List[str]:
 
     # Get explicit mappings only - no automatic variant generation
     mapped = mapping.get(u, [])
-    
+
     # Build candidate list: mapped first, then original symbol
     candidates: List[str] = list(mapped)
     if u not in candidates:
