@@ -371,7 +371,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "GS",     # Goldman Sachs
     "IBKR",   # Interactive Brokers
     "JPM",    # JPMorgan Chase
-    "MA"     # Mastercard
+    "MA",     # Mastercard
     "MET",    # MetLife
     "MS",     # Morgan Stanley
     "PYPL",   # PayPal
@@ -481,7 +481,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "SARO",   # StandardAero Inc
     "SATL",   # Satellogic Inc
     "SIDU",   # Sidus Space Inc
-    "SIF"    # SIFCO Industries Inc
+    "SIF",    # SIFCO Industries Inc
     "SKYH",   # Sky Harbour Group Corp
     "SPAI",   # Safe Pro Group Inc
     "SPCE",   # Virgin Galactic Holdings Inc
