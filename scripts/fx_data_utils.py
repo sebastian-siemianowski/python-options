@@ -46,9 +46,22 @@ PRECIOUS_METAL_FX_TO_FUTURES = {
 # Yahoo punctuation/country suffix normalization hotfixes
 PUNCTUATION_OVERRIDES = {
     "BRK.B": "BRK-B",
-    "MOG.A": "MOG-A",
+    # Moog class A is dot on Yahoo
+    "MOG-A": "MOG.A",
+    "MOG.A": "MOG.A",
     "BTC.USD": "BTC-USD",
     "HO-PA": "HO.PA",
+    "HOPA": "HO.PA",
+    "AIRPA": "AIR.PA",
+    "SAF-PA": "SAF.PA",
+    "TKA-DE": "TKA.DE",
+    "RHM-DE": "RHM.DE",
+    "BMW3-DE": "BMW3.DE",
+    "BAYN-DE": "BAYN.DE",
+    "KOZ1-DE": "KOZ1.DE",
+    "HEIAAS": "HEIA.AS",
+    "SAFPA": "SAF.PA",
+    "AIR-PA": "AIR.PA",
     "BA-L": "BA.L",
     "005930-KS": "005930.KS",
     "FACCVI": "FACC.VI",
@@ -99,6 +112,10 @@ PROXY_OVERRIDES = {
     "KOZ1": "KOZ1.DE",
     "XAGUSD": "SI=F",
     "MANT": "CACI",
+    "SAF": "SAF.PA",
+    "AIR": "AIR.PA",
+    "BTCUSD": "BTC-USD",
+    "MAMET": "META",
 }
 
 
@@ -432,7 +449,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "SARO",   # StandardAero Inc
     "SATL",   # Satellogic Inc
     "SIDU",   # Sidus Space Inc
-    "SIF",    # SIFCO Industries Inc
+    "SIF"    # SIFCO Industries Inc
     "SKYH",   # Sky Harbour Group Corp
     "SPAI",   # Safe Pro Group Inc
     "SPCE",   # Virgin Galactic Holdings Inc
@@ -1511,7 +1528,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
 
     if missing_after_bulk:
         with ThreadPoolExecutor(max_workers=min(16, len(missing_after_bulk))) as ex:
-            futures = {ex.submit(_fetch_single, p): p for p in missing_after_bulk}
+            futures = {ex.submit(_fetch_single, p) for p in missing_after_bulk}
             for fut in as_completed(futures):
                 res = fut.result()
                 if res is None:
