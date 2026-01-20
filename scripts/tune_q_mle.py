@@ -1204,6 +1204,7 @@ def tune_asset_q(
             title = asset
         
         # Allow very small histories; tune will still run cross-validation with short splits
+        px = pd.to_numeric(px, errors="coerce").dropna()
         if len(px) < 10:
             raise RuntimeError(f"Insufficient data ({len(px)} days)")
         

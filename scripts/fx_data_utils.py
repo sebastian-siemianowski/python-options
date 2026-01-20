@@ -116,6 +116,7 @@ PROXY_OVERRIDES = {
     "AIR": "AIR.PA",
     "BTCUSD": "BTC-USD",
     "MAMET": "META",
+    "SIFSKYH": "SIF",
 }
 
 
@@ -382,7 +383,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "ATRO",   # Astronics Corporation
     "AVAV",   # AeroVironment, Inc.
     "AXON",   # Axon Enterprise, Inc.
-    "AZ",     # A2Z Cust2Mate Solutions Corp
+    "AZ"     # A2Z Cust2Mate Solutions Corp
     "BA",     # Boeing Co
     "BAH",    # Booz Allen Hamilton Holding Corp
     "BETA",   # Beta Technologies Inc
@@ -1035,28 +1036,9 @@ MAPPING = {
     # "VANECK SUSTAINABLE WORLD EQUAL WEIGHT UCITS": ["TSWE"],
     # "VANECK IBOXX EUR SOVEREIGN CAPPED AAA-AA 1-5 UCITS": ["TAT"],
 
-    "METI": ["META", "METI"],           # Meta options -> Meta Platforms
-    "HO": ["HO.PA", "HO"],              # Thales SA
-    "HAG": ["HAG.DE", "HAG"],           # Hensoldt AG
-    "TSLD": ["TSLA", "TSLD"],           # Tesla options -> Tesla
-    "R3NK": ["R3NK.DE", "RNK.DE", "R3NK"],  # Renk Group
-    "THEON": ["THEON.AS", "THEON"],      # Theon International
-    "QQQO": ["QQQ", "QQQO"],            # Nasdaq-100 options -> QQQ
-    "BAYN": ["BAYN.DE", "BAYRY", "BAYN"],  # Bayer AG
-    "VOW3": ["VOW3.DE", "VLKPF", "VOW3"],  # Volkswagen Pref
-    "KOZ1": ["KOG.OL", "KOZ1"],         # Kongsberg Gruppen ASA
-    "MSFI": ["MSFT", "MSFI"],           # Microsoft options -> Microsoft
-    "BABY": ["BABA", "BABY"],           # Alibaba options -> Alibaba
-    "BABI": ["BABA", "BABI"],           # Alibaba options -> Alibaba
-    "AVGI": ["AVGO", "AVGI"],           # Broadcom options -> Broadcom
-    "XAGUSD": ["XAGUSD=X", "SI=F", "XAGUSD"], # Silver spot -> silver futures fallback
-    "MAGD": ["QQQ", "MAGD"],            # Magnificent 7 options -> QQQ proxy
-    "EXA": ["EXA.PA", "EXA"],           # Exail Technologies
-    "AMDI": ["AMD", "AMDI"],            # AMD options -> AMD
-    "BMW3": ["BMW.DE", "BMW3"],         # BMW preference
-    "DFNG": ["ITA", "PPA", "DFNG"],    # Defense ETF proxy
-    "TRET": ["VNQ", "RWO", "TRET"],     # Global real estate UCITS -> US/global REIT proxies
-    "GFA": ["ANGL", "FALN", "GFA"],     # Global fallen angel UCITS -> US fallen angel proxies
+    "AZBA": ["AZ", "AZBA"],
+    "MAMET": ["META", "MAMET"],
+    "SIFSKYH": ["SIF"],
 }
 
 SECTOR_MAP = {
