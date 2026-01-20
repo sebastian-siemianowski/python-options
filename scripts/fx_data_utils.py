@@ -27,6 +27,132 @@ PRICE_CACHE_DIR_PATH = pathlib.Path(PRICE_CACHE_DIR)
 PRICE_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
 _price_file_lock = Lock()
 
+# Deterministic overrides for Yahoo tickers that routinely fail or change format
+YAHOO_TICKER_OVERRIDES = {
+    "XAGUSD=X": "SI=F",
+    "VOYG.TO": "VOYG",
+    "MTXDE": "MTX.DE",
+    "GEV.OL": "GEV",
+}
+
+# Precious metal FX tickers mapped to liquid COMEX futures because Yahoo spot tickers are unreliable
+PRECIOUS_METAL_FX_TO_FUTURES = {
+    "XAUUSD=X": "GC=F",
+    "XAGUSD=X": "SI=F",
+    "XPTUSD=X": "PL=F",
+    "XPDUSD=X": "PA=F",
+}
+
+
+def _log_symbol_map(original: str, normalized: str, meta: Dict) -> None:
+    message = f"[SYMBOL_MAP] {original} -> {normalized}"
+    detail_parts: List[str] = []
+    if "type" in meta:
+        detail_parts.append(str(meta.get("type")))
+    if "reason" in meta:
+        detail_parts.append(str(meta.get("reason")))
+    if detail_parts:
+        joined = ": ".join(detail_parts)
+        message = f"{message} ({joined})"
+    print(message)
+
+
+def _log_symbol_fail(original: str, status: str, reason: Optional[str] = None) -> None:
+    message = f"[SYMBOL_FAIL] {original} -> {status}"
+    if reason:
+        message = f"{message} ({reason})"
+    print(message)
+
+
+def _safe_lookup(container, key: str) -> Optional[str]:
+    if container is None:
+        return None
+    if isinstance(container, dict):
+        return container.get(key)
+    if hasattr(container, key):
+        return getattr(container, key)
+    return None
+
+
+def _detect_delisted_or_unsupported(symbol: str, ticker: yf.Ticker) -> Tuple[bool, str]:
+    timezone = None
+    exchange = None
+    history_empty = False
+
+    try:
+        timezone = _safe_lookup(getattr(ticker, "fast_info", None), "timezone")
+        if timezone is None:
+            timezone = _safe_lookup(getattr(ticker, "info", None), "timezone")
+    except Exception:
+        timezone = None
+
+    try:
+        exchange = _safe_lookup(getattr(ticker, "fast_info", None), "exchange")
+        if exchange is None:
+            exchange = _safe_lookup(getattr(ticker, "info", None), "exchange")
+    except Exception:
+        exchange = None
+
+    try:
+        hist = ticker.history(period="1mo", auto_adjust=False)
+        if hist is None or hist.empty:
+            history_empty = True
+    except Exception:
+        history_empty = True
+
+    if timezone in (None, ""):
+        return True, "missing_timezone"
+    if exchange in (None, ""):
+        return True, "missing_exchange"
+    if history_empty:
+        return True, "empty_history"
+    return False, ""
+
+
+def normalize_yahoo_ticker(symbol: str) -> Tuple[str, Dict]:
+    meta: Dict[str, object] = {"original": symbol}
+
+    if symbol is None:
+        meta["status"] = "invalid"
+        _log_symbol_fail("None", "invalid", "empty symbol")
+        return "", meta
+
+    raw = str(symbol).strip()
+    if raw == "":
+        meta["status"] = "invalid"
+        _log_symbol_fail(symbol, "invalid", "empty symbol")
+        return raw, meta
+
+    normalized = raw
+    upper = raw.upper()
+
+    if upper in YAHOO_TICKER_OVERRIDES:
+        normalized = YAHOO_TICKER_OVERRIDES[upper]
+        meta["type"] = "override"
+        meta["reason"] = "deterministic_override"
+        _log_symbol_map(raw, normalized, meta)
+    elif upper in PRECIOUS_METAL_FX_TO_FUTURES:
+        normalized = PRECIOUS_METAL_FX_TO_FUTURES[upper]
+        meta["type"] = "commodity_proxy"
+        meta["reason"] = "Yahoo spot unavailable"
+        _log_symbol_map(raw, normalized, meta)
+
+    try:
+        tk = yf.Ticker(normalized)
+        flagged, reason = _detect_delisted_or_unsupported(normalized, tk)
+    except Exception:
+        flagged = True
+        reason = "ticker_init_failed"
+
+    if flagged:
+        meta["status"] = "delisted_or_unsupported"
+        meta["reason"] = reason
+        _log_symbol_fail(raw, "delisted_or_unsupported", reason)
+        return normalized, meta
+
+    meta["status"] = "ok"
+    return normalized, meta
+
 
 # -------------------------
 # Asset Universe Configuration
@@ -466,25 +592,7 @@ MAPPING = {
     "FACC": ["FACC.VI", "FACC"],
     "SLVI": ["SLV", "SLVP", "SLVI"],
     "TKA": ["TKA.DE", "TKA"],
-    # Add missing dash/dot aliases for EU tickers
-    # Dash / no-suffix Vienna alias
-    "FACCVI": ["FACC.VI", "FACC"],
-    "HAG-DE": ["HAG.DE", "HAG"],
-    "HAGDE": ["HAG.DE", "HAG"],
-    "HO-PA": ["HO.PA", "HO"],
-    "AIR-PA": ["AIR.PA", "AIR.DE", "AIR"],
-    "MTX-DE": ["MTX.DE", "MTX"],
-    "BA-L": ["BA.L", "BA"],
-    "SAABY": ["SAAB-B.ST", "SAAB.ST", "SAABY"],
-    "RHM-DE": ["RHM.DE", "RHM.F", "RHM"],
-    "RHMDE": ["RHM.DE", "RHM.F", "RHM"],
-    "THEON": ["THEO.AS", "THEON"],
-    "VOYG": ["VOYG.TO", "VOYG"],
-    "GEV": ["GEV.OL", "GEV"],
-    "LEU": ["LEU", "LEU.MI"],
-    "SO": ["SO", "SO.US"],
-    "TRET": ["TRET.L", "TRET"],
-    "WWD": ["WWD"],
+
     # Netflix and Novo Nordisk
     "NFLX": ["NFLX"],
     "NOVO": ["NVO", "NOVO-B.CO", "NOVOB.CO", "NOVO-B.CO"],
@@ -1189,20 +1297,34 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
             seen.add(u)
             dedup.append(u)
 
-    # Resolve each symbol to a viable primary candidate (proxy) to avoid TZ/errors
-    primary_map: Dict[str, str] = {}
+    # Normalize symbols and keep lineage for deterministic mapping
+    normalized_entries: List[Tuple[str, str, Dict]] = []
     for sym in dedup:
-        try:
-            cands = _resolve_symbol_candidates(sym)
-            primary = cands[0] if cands else sym
-        except Exception:
-            primary = sym
-        primary_map[sym] = primary
+        norm, meta = normalize_yahoo_ticker(sym)
+        normalized_entries.append((sym, norm, meta))
 
     result: Dict[str, pd.Series] = {}
     cached_hits = 0
-    for sym in list(dedup):
-        primary = primary_map.get(sym, sym)
+
+    # Build primary fetch targets with resolution fallbacks; skip explicit delisted/invalid
+    primary_map: Dict[str, str] = {}
+    primary_to_originals: Dict[str, List[str]] = {}
+    for orig, norm, meta in normalized_entries:
+        status = meta.get("status")
+        if status in {"invalid", "delisted_or_unsupported"}:
+            # Preserve lineage with an empty series to avoid silent drops
+            result[orig] = pd.Series(dtype=float)
+            continue
+        try:
+            cands = _resolve_symbol_candidates(norm)
+            primary = cands[0] if cands else norm
+        except Exception:
+            primary = norm
+        primary_map[orig] = primary
+        primary_to_originals.setdefault(primary, []).append(orig)
+
+    # Try cached first for all primaries
+    for primary, orig_list in list(primary_to_originals.items()):
         cached = _get_cached_prices(primary, start, end)
         if cached is not None and not cached.empty:
             if "Close" in cached:
@@ -1212,11 +1334,13 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
             else:
                 ser = pd.Series(dtype=float)
             ser.name = "px"
-            result[sym] = ser
+            for orig in orig_list:
+                result[orig] = ser
             cached_hits += 1
-    remaining = [s for s in dedup if s not in result]
 
-    total_need = len(remaining)
+    remaining_primaries = [p for p in primary_to_originals if p not in {k for k, v in result.items()}]
+
+    total_need = len(remaining_primaries)
     if log and (cached_hits or total_need):
         total_chunks = (total_need + chunk_size - 1) // max(1, chunk_size)
         log(f"Bulk download: {total_need} uncached, {cached_hits} from cache, {total_chunks} chunk(s), chunk size ≤ {chunk_size}.")
@@ -1225,8 +1349,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
 
     def _download_chunk(chunk_syms: List[str]) -> Dict[str, pd.Series]:
         out: Dict[str, pd.Series] = {}
-        # Fetch using primary proxies
-        fetch_syms = [primary_map.get(s, s) for s in chunk_syms]
+        fetch_syms = chunk_syms
         try:
             df = yf.download(fetch_syms, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False)
         except Exception:
@@ -1236,8 +1359,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         if hasattr(df.index, "tz") and df.index.tz is not None:
             df.index = df.index.tz_localize(None)
         is_multi = isinstance(df.columns, pd.MultiIndex)
-        for sym in chunk_syms:
-            primary = primary_map.get(sym, sym)
+        for primary in chunk_syms:
             ser = None
             try:
                 if is_multi:
@@ -1252,12 +1374,12 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                         ser = df["Adj Close"].dropna()
                 if ser is not None and not ser.empty:
                     ser.name = "px"
-                    out[sym] = ser
+                    out[primary] = ser
             except Exception:
                 continue
         return out
 
-    chunks = [remaining[i:i + chunk_size] for i in range(0, len(remaining), chunk_size) if remaining[i:i + chunk_size]]
+    chunks = [remaining_primaries[i:i + chunk_size] for i in range(0, len(remaining_primaries), chunk_size) if remaining_primaries[i:i + chunk_size]]
     if log and chunks:
         log(f"  Launching {len(chunks)} chunk(s) in parallel…")
 
@@ -1269,21 +1391,21 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                 out = fut.result()
             except Exception:
                 out = {}
-            for sym, ser in out.items():
-                result[sym] = ser
-                _store_cached_prices(sym, start, end, ser.to_frame(name="Close"))
+            for primary, ser in out.items():
+                for orig in primary_to_originals.get(primary, []):
+                    result[orig] = ser
+                _store_cached_prices(primary, start, end, ser.to_frame(name="Close"))
                 fetched_count += 1
             if log:
                 done = fetched_count
                 pct = (done / max(1, total_need)) * 100.0
                 log(f"    ✓ Cached {done}/{total_need} ({pct:.1f}%) so far")
 
-    missing_after_bulk = [s for s in remaining if s not in result]
+    missing_after_bulk = [p for p in remaining_primaries if p not in {k for k, v in result.items()}]
     if log and missing_after_bulk:
         log(f"  Falling back to individual fetch for {len(missing_after_bulk)} symbol(s)…")
 
-    def _fetch_single(sym: str) -> Optional[Tuple[str, pd.Series]]:
-        primary = primary_map.get(sym, sym)
+    def _fetch_single(primary: str) -> Optional[Tuple[str, pd.Series]]:
         try:
             df = _download_prices(primary, start, end)
             if df is not None and not df.empty:
@@ -1294,21 +1416,22 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                     ser = df["Adj Close"].dropna()
                 if ser is not None and not ser.empty:
                     ser.name = "px"
-                    return sym, ser
+                    return primary, ser
         except Exception:
             return None
         return None
 
     if missing_after_bulk:
         with ThreadPoolExecutor(max_workers=min(16, len(missing_after_bulk))) as ex:
-            futures = {ex.submit(_fetch_single, s): s for s in missing_after_bulk}
+            futures = {ex.submit(_fetch_single, p): p for p in missing_after_bulk}
             for fut in as_completed(futures):
                 res = fut.result()
                 if res is None:
                     continue
-                sym, ser = res
-                result[sym] = ser
-                _store_cached_prices(sym, start, end, ser.to_frame(name="Close"))
+                primary, ser = res
+                for orig in primary_to_originals.get(primary, []):
+                    result[orig] = ser
+                _store_cached_prices(primary, start, end, ser.to_frame(name="Close"))
     return result
 
 
@@ -1646,116 +1769,116 @@ def convert_currency_to_pln(quote_ccy: str, start: Optional[str], end: Optional[
         s, _ = _fetch_with_fallback(sym_list, s_ext, e_ext)
         return s
 
-    def _finish(series: pd.Series) -> pd.Series:
-        s = _ensure_float_series(series).dropna()
-        if native_index is not None and len(native_index) > 0:
-            try:
-                s = s.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
-            except Exception:
-                pass
-        return s
-
     if q in ("PLN", "PLN "):
-        return _finish(pd.Series(1.0, index=pd.DatetimeIndex(native_index) if native_index is not None else [pd.Timestamp("1970-01-01")]))
+        # Return a flat-1 series over the native index for easy alignment
+        return pd.Series(1.0, index=pd.DatetimeIndex(native_index) if native_index is not None else [pd.Timestamp("1970-01-01")])
     if q == "USD":
-        return _finish(fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
+        return fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
     if q == "EUR":
         try:
             eurpln, _ = _fetch_with_fallback(["EURPLN=X"], s_ext, e_ext)
-            return _finish(eurpln)
+            return eurpln
         except Exception:
+            # EURPLN via USD: EURPLN = EURUSD * USDPLN
             eurusd, _ = _fetch_with_fallback(["EURUSD=X"], s_ext, e_ext)
-            return _finish(eurusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
+            return eurusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
     if q in ("GBP", "GBX", "GBPp", "GBP P", "GBp"):
         gbppln, _ = _fetch_with_fallback(["GBPPLN=X"], s_ext, e_ext)
-        return _finish(gbppln * (0.01 if q in ("GBX", "GBPp", "GBP P", "GBp") else 1.0))
+        return gbppln * (0.01 if q in ("GBX", "GBPp", "GBP P", "GBp") else 1.0)
     if q == "JPY":
         try:
             plnjpy, _ = _fetch_with_fallback(["PLNJPY=X"], s_ext, e_ext)
-            return _finish(1.0 / plnjpy)
+            return 1.0 / plnjpy
         except Exception:
             jpypln, _ = _fetch_with_fallback(["JPYPLN=X"], s_ext, e_ext)
-            return _finish(jpypln)
+            return jpypln
     if q == "CAD":
         try:
             cadpln, _ = _fetch_with_fallback(["CADPLN=X"], s_ext, e_ext)
-            return _finish(cadpln)
+            return cadpln
         except Exception:
+            # Try CADUSD cross
             try:
                 usdcad, _ = _fetch_with_fallback(["USDCAD=X"], s_ext, e_ext)
                 cadusd = 1.0 / usdcad
             except Exception:
                 cadusd, _ = _fetch_with_fallback(["CADUSD=X"], s_ext, e_ext)
-            return _finish(cadusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
+            return cadusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
     if q == "CHF":
         try:
             chfpln, _ = _fetch_with_fallback(["CHFPLN=X"], s_ext, e_ext)
-            return _finish(chfpln)
+            return chfpln
         except Exception:
             try:
                 usdchf, _ = _fetch_with_fallback(["USDCHF=X"], s_ext, e_ext)
                 chfusd = 1.0 / usdchf
             except Exception:
                 chfusd, _ = _fetch_with_fallback(["CHFUSD=X"], s_ext, e_ext)
-            return _finish(chfusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
+            return chfusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
     if q == "AUD":
         try:
             audpln, _ = _fetch_with_fallback(["AUDPLN=X"], s_ext, e_ext)
-            return _finish(audpln)
+            return audpln
         except Exception:
             audusd, _ = _fetch_with_fallback(["AUDUSD=X"], s_ext, e_ext)
-            return _finish(audusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
+            return audusd * fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
     if q == "SEK":
         try:
             sekpln, _ = _fetch_with_fallback(["SEKPLN=X"], s_ext, e_ext)
-            return _finish(sekpln)
+            return sekpln
         except Exception:
             eurpln, _ = _fetch_with_fallback(["EURPLN=X"], s_ext, e_ext)
             eurseK, _ = _fetch_with_fallback(["EURSEK=X"], s_ext, e_ext)
-            return _finish(eurpln / eurseK)
+            return eurpln / eurseK
     if q == "NOK":
         try:
             nokpln, _ = _fetch_with_fallback(["NOKPLN=X"], s_ext, e_ext)
-            return _finish(nokpln)
+            return nokpln
         except Exception:
             eurpln, _ = _fetch_with_fallback(["EURPLN=X"], s_ext, e_ext)
             eurnok, _ = _fetch_with_fallback(["EURNOK=X"], s_ext, e_ext)
-            return _finish(eurpln / eurnok)
+            return eurpln / eurnok
     if q == "DKK":
         try:
             dkkpln, _ = _fetch_with_fallback(["DKKPLN=X"], s_ext, e_ext)
-            return _finish(dkkpln)
+            return dkkpln
         except Exception:
             eurpln, _ = _fetch_with_fallback(["EURPLN=X"], s_ext, e_ext)
             eurdkk, _ = _fetch_with_fallback(["EURDKK=X"], s_ext, e_ext)
-            return _finish(eurpln / eurdkk)
+            return eurpln / eurdkk
     if q == "HKD":
         try:
             hkdpln, _ = _fetch_with_fallback(["HKDPLN=X"], s_ext, e_ext)
-            return _finish(hkdpln)
+            return hkdpln
         except Exception:
             usdpln = fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
             usdhkd, _ = _fetch_with_fallback(["USDHKD=X"], s_ext, e_ext)
-            return _finish(usdpln / usdhkd)
+            return usdpln / usdhkd
     if q == "KRW":
+        # PLN per KRW = (PLN per USD) / (KRW per USD)
         try:
             usdpln = fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
             usdkrw, _ = _fetch_with_fallback(["USDKRW=X"], s_ext, e_ext)
+            # Align by native index if available
             if native_index is not None and len(native_index) > 0:
                 usdpln = usdpln.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
                 usdkrw = usdkrw.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
-            return _finish(usdpln / usdkrw)
+            return (usdpln / usdkrw).rename("px")
         except Exception:
+            # Fallback: try KRWUSD and invert
             try:
                 krwusd, _ = _fetch_with_fallback(["KRWUSD=X"], s_ext, e_ext)
                 usdpln = fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
                 if native_index is not None and len(native_index) > 0:
                     usdpln = usdpln.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
                     krwusd = krwusd.reindex(pd.DatetimeIndex(native_index)).ffill().bfill()
-                return _finish(usdpln * krwusd)
+                return (usdpln * krwusd).rename("px")
             except Exception:
                 pass
-    return _finish(fetch_usd_to_pln_exchange_rate(s_ext, e_ext))
+        # As last resort, assume USD (may be wrong for KRW assets but avoids crash)
+        return fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
+    # Default: assume USD
+    return fetch_usd_to_pln_exchange_rate(s_ext, e_ext)
 
 
 def convert_price_series_to_pln(native_px: pd.Series, quote_ccy: str, start: Optional[str], end: Optional[str]) -> Tuple[pd.Series, str]:
@@ -1765,23 +1888,18 @@ def convert_price_series_to_pln(native_px: pd.Series, quote_ccy: str, start: Opt
     sfx = "(PLN)"
     native_px = _ensure_float_series(native_px)
     # Get FX leg over the native range (with padding)
-    fx = _ensure_float_series(convert_currency_to_pln(quote_ccy, start, end, native_index=native_px.index))
+    fx = convert_currency_to_pln(quote_ccy, start, end, native_index=native_px.index)
     # Try increasingly permissive alignments
     fx_al = _align_fx_asof(native_px, fx, max_gap_days=7)
     if fx_al.isna().all():
         fx_al = _align_fx_asof(native_px, fx, max_gap_days=14)
     if fx_al.isna().all():
         fx_al = _align_fx_asof(native_px, fx, max_gap_days=30)
-    # Fallbacks: calendar align then constant back/forward fill using last known FX
+    # Fallback: strict calendar alignment with ffill/bfill
     if fx_al.isna().all():
         fx_al = fx.reindex(native_px.index).ffill().bfill()
-    if fx_al.isna().all() and not fx.empty:
-        last_fx = float(fx.iloc[-1]) if np.isfinite(fx.iloc[-1]) else float("nan")
-        if np.isfinite(last_fx):
-            fx_al = pd.Series(last_fx, index=native_px.index, name="fx")
     fx_al = _ensure_float_series(fx_al)
-    pln = _ensure_float_series(native_px) * fx_al
-    pln = pln.replace([np.inf, -np.inf], np.nan).dropna()
+    pln = (native_px * fx_al).dropna()
     pln.name = "px"
     return pln, sfx
 
@@ -1853,104 +1971,3 @@ def drop_first_k_from_kalman_cache(k: int = 4, cache_path: str = 'cache/kalman_q
     tmp.write_text(json.dumps(data, indent=2))
     tmp.replace(path)
     return removed
-
-def fetch_px_asset(asset: str, start: Optional[str], end: Optional[str]) -> Tuple[pd.Series, str]:
-    """
-    Return a price series for the requested asset expressed in PLN terms when needed.
-    - PLNJPY=X: native series (JPY per PLN); title indicates JPY per PLN.
-    - Gold: try XAUUSD=X, GC=F, XAU=X; convert USD to PLN via USDPLN=X (or robust alternatives) → PLN per troy ounce.
-    - Silver: try XAGUSD=X, SI=F, XAG=X; convert USD to PLN via USDPLN=X (or robust alternatives) → PLN per troy ounce.
-    - Bitcoin (BTC-USD): convert USD to PLN via USDPLN → PLN per BTC.
-    - MicroStrategy (MSTR): convert USD share price to PLN via USDPLN → PLN per share.
-    - Generic equities/ETFs: fetch in native quote currency and convert to PLN via detected FX.
-    Returns (px_series, title_suffix) where title_suffix describes units.
-    """
-    asset = asset.strip().upper()
-    if asset == "PLNJPY=X":
-        px = _fetch_px_symbol(asset, start, end)
-        title = "Polish Zloty vs Japanese Yen (PLNJPY=X) — JPY per PLN"
-        return px, title
-
-    # Bitcoin in USD → PLN
-    if asset in ("BTC-USD", "BTCUSD=X"):
-        btc_px, _used = _fetch_with_fallback([asset] if asset == "BTC-USD" else [asset, "BTC-USD"], start, end)
-        btc_px = _ensure_float_series(btc_px)
-        usdpln_px = convert_currency_to_pln("USD", start, end, native_index=btc_px.index)
-        usdpln_aligned = _align_fx_asof(btc_px, usdpln_px, max_gap_days=7)
-        if usdpln_aligned.isna().all():
-            usdpln_aligned = usdpln_px.reindex(btc_px.index).ffill().bfill()
-        usdpln_aligned = _ensure_float_series(usdpln_aligned)
-        px_pln = (btc_px * usdpln_aligned).dropna()
-        px_pln.name = "px"
-        if px_pln.empty:
-            raise RuntimeError("No overlap between BTC-USD and USDPLN data to compute PLN price")
-        disp = "Bitcoin"
-        return px_pln, f"{disp} (BTC-USD) — PLN per BTC"
-
-    # MicroStrategy equity (USD) → PLN
-    if asset == "MSTR":
-        mstr_px = _fetch_px_symbol("MSTR", start, end)
-        mstr_px = _ensure_float_series(mstr_px)
-        usdpln_px = convert_currency_to_pln("USD", start, end, native_index=mstr_px.index)
-        usdpln_aligned = _align_fx_asof(mstr_px, usdpln_px, max_gap_days=7)
-        if usdpln_aligned.isna().all():
-            usdpln_aligned = usdpln_px.reindex(mstr_px.index).ffill().bfill()
-        usdpln_aligned = _ensure_float_series(usdpln_aligned)
-        px_pln = (mstr_px * usdpln_aligned).dropna()
-        px_pln.name = "px"
-        if px_pln.empty:
-            raise RuntimeError("No overlap between MSTR and USDPLN data to compute PLN price")
-        disp = _resolve_display_name("MSTR") or "MicroStrategy"
-        return px_pln, f"{disp} (MSTR) — PLN per share"
-
-    # Metals in USD → convert to PLN
-    if asset in ("XAUUSD=X", "GC=F", "XAU=X", "XAGUSD=X", "SI=F", "XAG=X"):
-        if asset.startswith("XAU") or asset in ("GC=F", "XAU=X"):
-            candidates = ["GC=F", "XAU=X", "XAUUSD=X"]
-            if asset not in candidates:
-                candidates = [asset] + candidates
-            metal_px, used = _fetch_with_fallback(candidates, start, end)
-            metal_px = _ensure_float_series(metal_px)
-            metal_name = "Gold"
-        else:
-            candidates = ["SI=F", "XAG=X", "XAGUSD=X"]
-            if asset not in candidates:
-                candidates = [asset] + candidates
-            metal_px, used = _fetch_with_fallback(candidates, start, end)
-            metal_px = _ensure_float_series(metal_px)
-            metal_name = "Silver"
-        usdpln_px = _ensure_float_series(fetch_usd_to_pln_exchange_rate(start, end))
-        usdpln_aligned = _ensure_float_series(usdpln_px.reindex(metal_px.index).ffill().bfill())
-        df = pd.concat([metal_px, usdpln_aligned], axis=1).dropna()
-        df.columns = ["metal_usd", "usdpln"]
-        px_pln = (df["metal_usd"] * df["usdpln"]).rename("px")
-        title = f"{metal_name} ({used}) — PLN per troy oz"
-        if px_pln.empty:
-            raise RuntimeError(f"No overlap between {metal_name} and USDPLN data to compute PLN price")
-        return px_pln, title
-
-    # Generic: resolve symbol candidates and convert to PLN using detected currency
-    candidates = _resolve_symbol_candidates(asset)
-    px_native = None
-    used_sym = None
-    last_err: Optional[Exception] = None
-    for sym in candidates:
-        try:
-            s = _fetch_px_symbol(sym, start, end)
-            px_native = s
-            used_sym = sym
-            break
-        except Exception as e:
-            last_err = e
-            continue
-    if px_native is None:
-        raise last_err if last_err else RuntimeError(f"No data for {asset}")
-
-    px_native = _ensure_float_series(px_native)
-    qcy = detect_quote_currency(used_sym)
-    px_pln, _ = convert_price_series_to_pln(px_native, qcy, start, end)
-    if px_pln is None or px_pln.empty:
-        raise RuntimeError(f"No overlapping FX data to convert {used_sym} to PLN")
-    disp = _resolve_display_name(used_sym)
-    title = f"{disp} ({used_sym}) — PLN per share"
-    return px_pln, title
