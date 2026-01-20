@@ -33,6 +33,16 @@ YAHOO_TICKER_OVERRIDES = {
     "VOYG.TO": "VOYG",
     "MTXDE": "MTX.DE",
     "GEV.OL": "GEV",
+    "KOZ1-DE": "KOZ1.DE",
+    "MTX-DE": "MTX.DE",
+    "BAYN-DE": "BAYN.DE",
+    "VOW3DE": "VOW3.DE",
+    "R3NK-DE": "R3NK.DE",
+    "RHMDE": "RHM.DE",
+    "HEIA-AS": "HEIA.AS",
+    "TKA-DE": "TKA.DE",
+    "THEON": "THEON.AS",
+    "EXA": "EXA.PA",
 }
 
 # Precious metal FX tickers mapped to liquid COMEX futures because Yahoo spot tickers are unreliable
