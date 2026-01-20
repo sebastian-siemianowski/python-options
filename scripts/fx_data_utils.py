@@ -38,6 +38,12 @@ except Exception:
 PRICE_CACHE_DIR = os.path.join("scripts", "quant", "cache", "prices")
 PRICE_CACHE_DIR_PATH = pathlib.Path(PRICE_CACHE_DIR)
 PRICE_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
+
+FAILED_CACHE_DIR = os.path.join("cache", "failed")
+FAILED_CACHE_DIR_PATH = pathlib.Path(FAILED_CACHE_DIR)
+FAILED_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
+FAILED_ASSETS_FILE = FAILED_CACHE_DIR_PATH / "failed_assets.json"
+
 _price_file_lock = Lock()
 
 # Deterministic overrides for Yahoo tickers that routinely fail or change format
@@ -1412,6 +1418,161 @@ def _merge_and_store(symbol: str, new_df: pd.DataFrame) -> pd.DataFrame:
     return combined
 
 
+# ============================================================================
+# Failed Assets Cache Management
+# ============================================================================
+
+def save_failed_assets(failures: Dict[str, Dict], append: bool = True) -> str:
+    """Save failed assets to cache/failed/failed_assets.json.
+    
+    Args:
+        failures: Dict mapping asset symbol to failure info dict containing:
+            - display_name: Human-readable name
+            - attempts: Number of retry attempts
+            - last_error: Last error message
+            - traceback: Optional full traceback
+        append: If True, merge with existing failures; if False, overwrite
+    
+    Returns:
+        Path to the saved file
+    """
+    if not failures:
+        return str(FAILED_ASSETS_FILE)
+    
+    FAILED_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
+    
+    existing = {}
+    if append and FAILED_ASSETS_FILE.exists():
+        try:
+            with open(FAILED_ASSETS_FILE, "r") as f:
+                data = json.load(f)
+                existing = data.get("failures", {})
+        except Exception:
+            existing = {}
+    
+    # Merge: update existing with new failures
+    for asset, info in failures.items():
+        existing[asset] = {
+            "display_name": info.get("display_name", asset),
+            "attempts": info.get("attempts", 1),
+            "last_error": str(info.get("last_error", "")),
+            "traceback": str(info.get("traceback", "")) if info.get("traceback") else None,
+            "timestamp": datetime.now().isoformat(),
+        }
+    
+    payload = {
+        "updated": datetime.now().isoformat(),
+        "count": len(existing),
+        "failures": existing,
+    }
+    
+    try:
+        tmp = FAILED_ASSETS_FILE.with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, FAILED_ASSETS_FILE)
+    except Exception as e:
+        print(f"Warning: Could not save failed assets: {e}")
+    
+    return str(FAILED_ASSETS_FILE)
+
+
+def load_failed_assets() -> Dict[str, Dict]:
+    """Load failed assets from cache/failed/failed_assets.json.
+    
+    Returns:
+        Dict mapping asset symbol to failure info
+    """
+    if not FAILED_ASSETS_FILE.exists():
+        return {}
+    try:
+        with open(FAILED_ASSETS_FILE, "r") as f:
+            data = json.load(f)
+            return data.get("failures", {})
+    except Exception:
+        return {}
+
+
+def get_failed_asset_symbols() -> List[str]:
+    """Get list of failed asset symbols.
+    
+    Returns:
+        List of asset symbols that have failed
+    """
+    failures = load_failed_assets()
+    return list(failures.keys())
+
+
+def purge_failed_assets_from_cache(verbose: bool = True) -> Dict[str, bool]:
+    """Remove cached price data for all failed assets.
+    
+    This cleans up potentially corrupted or problematic cache files
+    for assets that have consistently failed to process.
+    
+    Args:
+        verbose: If True, print progress information
+    
+    Returns:
+        Dict mapping asset symbol to whether it was successfully purged
+    """
+    failures = load_failed_assets()
+    if not failures:
+        if verbose:
+            print("No failed assets found in cache/failed/failed_assets.json")
+        return {}
+    
+    results = {}
+    purged_count = 0
+    
+    for asset in failures.keys():
+        # Normalize symbol for cache lookup
+        safe = asset.strip().upper().replace("=", "_").replace("/", "_").replace(":", "_")
+        cache_path = PRICE_CACHE_DIR_PATH / f"{safe}.csv"
+        
+        try:
+            if cache_path.exists():
+                cache_path.unlink()
+                results[asset] = True
+                purged_count += 1
+                if verbose:
+                    print(f"  ✓ Purged: {asset} ({cache_path.name})")
+            else:
+                results[asset] = False
+                if verbose:
+                    print(f"  - Not cached: {asset}")
+        except Exception as e:
+            results[asset] = False
+            if verbose:
+                print(f"  ✗ Failed to purge {asset}: {e}")
+    
+    if verbose:
+        print(f"\nPurged {purged_count}/{len(failures)} cached files")
+    
+    return results
+
+
+def clear_failed_assets_list(verbose: bool = True) -> bool:
+    """Clear the failed assets list (but don't purge cache files).
+    
+    Returns:
+        True if successfully cleared, False otherwise
+    """
+    try:
+        if FAILED_ASSETS_FILE.exists():
+            FAILED_ASSETS_FILE.unlink()
+            if verbose:
+                print(f"Cleared failed assets list: {FAILED_ASSETS_FILE}")
+            return True
+        else:
+            if verbose:
+                print("No failed assets file to clear")
+            return True
+    except Exception as e:
+        if verbose:
+            print(f"Failed to clear: {e}")
+        return False
+
+
 def _get_cached_prices(symbol: str, start: Optional[str], end: Optional[str]) -> Optional[pd.DataFrame]:
     """Get cached prices, but only if they cover the requested date range.
     Returns None if cache is stale or doesn't cover the range, forcing a refresh.
@@ -1671,7 +1832,11 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
             for primary, ser in out.items():
                 for orig in primary_to_originals.get(primary, []):
                     result[orig] = ser
-                _store_cached_prices(primary, start, end, ser.to_frame(name="Close"))
+                # Store in cache - ensure we have a DataFrame
+                if isinstance(ser, pd.DataFrame):
+                    _store_cached_prices(primary, start, end, ser)
+                elif isinstance(ser, pd.Series):
+                    _store_cached_prices(primary, start, end, ser.to_frame(name="Close"))
                 fetched_count += 1
                 satisfied_primaries.add(primary)
             if log:
@@ -1709,7 +1874,11 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                 primary, ser = res
                 for orig in primary_to_originals.get(primary, []):
                     result[orig] = ser
-                _store_cached_prices(primary, start, end, ser.to_frame(name="Close"))
+                # Store in cache - ensure we have a DataFrame
+                if isinstance(ser, pd.DataFrame):
+                    _store_cached_prices(primary, start, end, ser)
+                elif isinstance(ser, pd.Series):
+                    _store_cached_prices(primary, start, end, ser.to_frame(name="Close"))
                 satisfied_primaries.add(primary)
     return result
 

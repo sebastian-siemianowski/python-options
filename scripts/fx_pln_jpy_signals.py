@@ -77,6 +77,7 @@ from fx_data_utils import (
     SECTOR_MAP,
     get_sector,
     download_prices_bulk,
+    save_failed_assets,
 )
 
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
@@ -3710,6 +3711,14 @@ def main() -> None:
         for asset, info in failures.items():
             fail_table.add_row(asset, str(info.get("display_name", asset)), str(info.get("attempts", "")), str(info.get("last_error", "")))
         Console().print(fail_table)
+        
+        # Save failed assets to cache/failed/ for later purging
+        try:
+            saved_path = save_failed_assets(failures, append=True)
+            Console().print(f"[dim]Failed assets saved to: {saved_path}[/dim]")
+            Console().print(f"[dim]Run 'make purge' to purge cached data for failed assets[/dim]")
+        except Exception as e:
+            Console().print(f"[yellow]Warning:[/yellow] Could not save failed assets: {e}")
 
     # Exports
     cache_path = args.cache_json or DEFAULT_CACHE_PATH

@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20 data four
+.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20 data four purge failed
 # Usage:
 #   make run                           # runs with defaults (screener + backtest)
 #   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
@@ -25,6 +25,9 @@ SHELL := /bin/bash
 #   make clear-q                       # clear q parameter cache
 #   make tests                         # runs all tests in the tests/ directory
 #   make data                          # precaches securities data for faster screening/backtesting
+#   make failed                        # list assets that failed processing
+#   make purge                          # purge cached data for failed assets
+#   make purge ARGS="--all"             # purge cache AND clear the failed assets list
 
 # Ensure virtual environment exists before running commands
 .venv/bin/python:
@@ -141,3 +144,11 @@ four:
 		echo "cache/kalman_q_cache.json not found"; exit 1; \
 	fi
 	@PYTHONPATH=$(CURDIR) .venv/bin/python -c "from scripts.fx_data_utils import drop_first_k_from_kalman_cache; removed = drop_first_k_from_kalman_cache(4, 'cache/kalman_q_cache.json'); print(f'Removed {len(removed)} entries: {', '.join(removed)}')"
+
+# List failed assets
+failed: .venv/.deps_installed
+	@.venv/bin/python scripts/purge_failed.py --list
+
+# Purge cached data for failed assets
+purge: .venv/.deps_installed
+	@.venv/bin/python scripts/purge_failed.py $(ARGS)
