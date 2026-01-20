@@ -1,0 +1,13 @@
+{
+  "updated": "2026-01-20T19:02:37.035222",
+  "count": 1,
+  "failures": {
+    "FCX": {
+      "display_name": "Freeport-McMoRan Inc.",
+      "attempts": 1,
+      "last_error": "No price column found for SEI",
+      "traceback": null,
+      "timestamp": "2026-01-20T19:02:37.035210"
+    }
+  }
+}

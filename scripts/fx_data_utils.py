@@ -820,6 +820,37 @@ DEFAULT_ASSET_UNIVERSE = [
     "COMM",
     "PGY",
     "FOUR",
+
+    # -------------------------
+    # AI Infrastructure & Semiconductor Equipment
+    # -------------------------
+    "ASML",   # ASML Holding — Monopoly in EUV lithography, gatekeeper of advanced chips
+    "LRCX",   # Lam Research — Critical wafer fabrication equipment, AI fabs leverage
+    "AMAT",   # Applied Materials — Broadest semiconductor tooling exposure
+    "TSM",    # TSMC — Foundry backbone of AI civilization
+    "ARM",    # Arm Holdings — Architecture layer for future compute
+    "SMCI",   # Super Micro Computer — AI server systems integrator
+    "ANET",   # Arista Networks — AI data-center networking spine
+    "SNPS",   # Synopsys — Chip design software monopoly layer
+    "CDNS",   # Cadence Design — Digital silicon design infrastructure
+
+    # -------------------------
+    # Cloud & Cybersecurity Infrastructure
+    # -------------------------
+    "CRWD",   # CrowdStrike — AI-native cybersecurity platform
+    "ZS",     # Zscaler — Zero-trust security backbone
+    "DDOG",   # Datadog — Cloud observability nervous system
+    "SNOW",   # Snowflake — Data-cloud substrate for AI
+    "MDB",    # MongoDB — Modern data infrastructure layer
+
+    # -------------------------
+    # Fintech & Digital Finance
+    # -------------------------
+    "HUBS",   # HubSpot — SMB operating system
+    # "SQ",   # Block — Fintech + merchant + crypto convergence (disabled: Yahoo Finance YFTzMissingError)
+    "AFRM",   # Affirm — Consumer credit restructuring layer
+    "COIN",   # Coinbase — Regulated crypto financial infrastructure
+    # Note: NU (Nubank) already included above
 ]
 
 MAPPING = {
@@ -1257,7 +1288,10 @@ SECTOR_MAP = {
     "Critical Materials": {"MP", "CRML", "IDR", "FCX", "UAMY"},
     "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR"},
     "Drones": {"ONDS", "UMAC", "AVAV", "KTOS", "DPRO"},
-    "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY"},
+    "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY", "SMCI", "ANET"},
+    "Semiconductor Equipment": {"ASML", "LRCX", "AMAT", "TSM", "ARM", "SNPS", "CDNS"},
+    "Cloud & Cybersecurity": {"CRWD", "ZS", "DDOG", "SNOW", "MDB"},
+    "Fintech": {"HUBS", "AFRM", "NU", "COIN", "PYPL"},
     "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SEI", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"}
 }
 
@@ -1617,6 +1651,8 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     - Falls back to period='max' pulls to dodge timezone/metadata issues
     Normalizes DatetimeIndex to tz-naive for stability.
     """
+    import time
+    
     # Cap end date to today - never attempt to fetch future data
     end = _cap_date_to_today(end)
     
@@ -1648,72 +1684,89 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         # Otherwise, fetch incrementally from day after last cached date
         fetch_start = (last_dt + timedelta(days=1)).isoformat()
 
+    # Helper to attempt fetch with retries for transient errors
+    def _try_fetch_with_retry(fetch_func, max_retries=2, delay=0.5):
+        last_exc = None
+        for attempt in range(max_retries):
+            try:
+                result = fetch_func()
+                if result is not None and not result.empty:
+                    return result
+            except Exception as e:
+                last_exc = e
+                err_str = str(e).lower()
+                # Retry on transient timezone/metadata errors
+                if "timezone" in err_str or "tz" in err_str or "metadata" in err_str:
+                    if attempt < max_retries - 1:
+                        time.sleep(delay * (attempt + 1))
+                        continue
+                break
+        return None
+
     # Try standard download
-    try:
-        df = yf.download(symbol, start=fetch_start, end=end, auto_adjust=True, progress=False, threads=False, timeout=YFINANCE_TIMEOUT)
-        df = _normalize(df)
-        if df is not None and not df.empty:
-            if disk_df is not None and not disk_df.empty:
-                df = _merge_and_store(symbol, pd.concat([disk_df, df]))
-            else:
-                _store_disk_prices(symbol, df)
-            _store_cached_prices(symbol, start, end, df)
-            return df
-    except Exception:
-        pass
+    df = _try_fetch_with_retry(
+        lambda: _normalize(yf.download(symbol, start=fetch_start, end=end, auto_adjust=True, progress=False, threads=False, timeout=YFINANCE_TIMEOUT))
+    )
+    if df is not None and not df.empty:
+        if disk_df is not None and not disk_df.empty:
+            df = _merge_and_store(symbol, pd.concat([disk_df, df]))
+        else:
+            _store_disk_prices(symbol, df)
+        _store_cached_prices(symbol, start, end, df)
+        return df
+
     # Try Ticker.history
-    try:
-        tk = yf.Ticker(symbol)
-        df = tk.history(start=fetch_start, end=end, auto_adjust=True, timeout=YFINANCE_TIMEOUT)
-        df = _normalize(df)
-        if df is not None and not df.empty:
-            if disk_df is not None and not disk_df.empty:
-                df = _merge_and_store(symbol, pd.concat([disk_df, df]))
-            else:
-                _store_disk_prices(symbol, df)
-            _store_cached_prices(symbol, start, end, df)
-            return df
-    except Exception:
-        pass
+    df = _try_fetch_with_retry(
+        lambda: _normalize(yf.Ticker(symbol).history(start=fetch_start, end=end, auto_adjust=True, timeout=YFINANCE_TIMEOUT))
+    )
+    if df is not None and not df.empty:
+        if disk_df is not None and not disk_df.empty:
+            df = _merge_and_store(symbol, pd.concat([disk_df, df]))
+        else:
+            _store_disk_prices(symbol, df)
+        _store_cached_prices(symbol, start, end, df)
+        return df
+
     # Try without auto_adjust
-    try:
-        df = yf.download(symbol, start=fetch_start, end=end, auto_adjust=False, progress=False, threads=False, timeout=YFINANCE_TIMEOUT)
-        df = _normalize(df)
-        if df is not None and not df.empty:
-            if disk_df is not None and not disk_df.empty:
-                df = _merge_and_store(symbol, pd.concat([disk_df, df]))
-            else:
-                _store_disk_prices(symbol, df)
-            _store_cached_prices(symbol, start, end, df)
-            return df
-    except Exception:
-        pass
+    df = _try_fetch_with_retry(
+        lambda: _normalize(yf.download(symbol, start=fetch_start, end=end, auto_adjust=False, progress=False, threads=False, timeout=YFINANCE_TIMEOUT))
+    )
+    if df is not None and not df.empty:
+        if disk_df is not None and not disk_df.empty:
+            df = _merge_and_store(symbol, pd.concat([disk_df, df]))
+        else:
+            _store_disk_prices(symbol, df)
+        _store_cached_prices(symbol, start, end, df)
+        return df
+
     # Period max fallback to dodge tz/metadata issues for dash/dot tickers
-    try:
-        tk = yf.Ticker(symbol)
-        df = tk.history(period="max", auto_adjust=True, timeout=YFINANCE_TIMEOUT)
-        df = _normalize(df)
-        if df is not None and not df.empty:
-            if disk_df is not None and not disk_df.empty:
-                df = _merge_and_store(symbol, pd.concat([disk_df, df]))
-            else:
-                _store_disk_prices(symbol, df)
-            _store_cached_prices(symbol, start, end, df)
-            return df
-    except Exception:
-        pass
-    try:
-        df = yf.download(symbol, period="max", auto_adjust=True, progress=False, threads=False, timeout=YFINANCE_TIMEOUT)
-        df = _normalize(df)
-        if df is not None and not df.empty:
-            if disk_df is not None and not disk_df.empty:
-                df = _merge_and_store(symbol, pd.concat([disk_df, df]))
-            else:
-                _store_disk_prices(symbol, df)
-            _store_cached_prices(symbol, start, end, df)
-            return df
-    except Exception:
-        pass
+    df = _try_fetch_with_retry(
+        lambda: _normalize(yf.Ticker(symbol).history(period="max", auto_adjust=True, timeout=YFINANCE_TIMEOUT)),
+        max_retries=3,
+        delay=1.0
+    )
+    if df is not None and not df.empty:
+        if disk_df is not None and not disk_df.empty:
+            df = _merge_and_store(symbol, pd.concat([disk_df, df]))
+        else:
+            _store_disk_prices(symbol, df)
+        _store_cached_prices(symbol, start, end, df)
+        return df
+
+    # Final fallback with yf.download period=max
+    df = _try_fetch_with_retry(
+        lambda: _normalize(yf.download(symbol, period="max", auto_adjust=True, progress=False, threads=False, timeout=YFINANCE_TIMEOUT)),
+        max_retries=2,
+        delay=1.0
+    )
+    if df is not None and not df.empty:
+        if disk_df is not None and not disk_df.empty:
+            df = _merge_and_store(symbol, pd.concat([disk_df, df]))
+        else:
+            _store_disk_prices(symbol, df)
+        _store_cached_prices(symbol, start, end, df)
+        return df
+
     return pd.DataFrame()
 
 
