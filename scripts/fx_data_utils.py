@@ -33,15 +33,18 @@ YAHOO_TICKER_OVERRIDES = {
     "VOYG.TO": "VOYG",
     "MTXDE": "MTX.DE",
     "GEV.OL": "GEV",
-    "KOZ1-DE": "KOZ1.DE",
+    "KOZ1-DE": "KOG.OL",
+    "KOZ1DE": "KOG.OL",
     "MTX-DE": "MTX.DE",
     "BAYN-DE": "BAYN.DE",
     "VOW3DE": "VOW3.DE",
+    'VOW3-DE': "VOW3.DE",
     "R3NK-DE": "R3NK.DE",
     "RHMDE": "RHM.DE",
     "HEIA-AS": "HEIA.AS",
     "TKA-DE": "TKA.DE",
     "THEON": "THEON.AS",
+    "THEON-AS": "THEON.AS",
     "EXA": "EXA.PA",
 }
 
@@ -68,7 +71,7 @@ PUNCTUATION_OVERRIDES = {
     "RHM-DE": "RHM.DE",
     "BMW3-DE": "BMW3.DE",
     "BAYN-DE": "BAYN.DE",
-    "KOZ1-DE": "KOZ1.DE",
+    "KOZ1-DE": "KOG.OL",
     "HEIAAS": "HEIA.AS",
     "SAFPA": "SAF.PA",
     "AIR-PA": "AIR.PA",
@@ -88,7 +91,7 @@ COUNTRY_SUFFIX_COMPLETIONS = {
     "RHM": "RHM.DE",
     "TKA": "TKA.DE",
     "R3NK": "R3NK.DE",
-    "KOZ1": "KOZ1.DE",
+    "KOZ1.DE": "KOG.OL",
     "HEIA": "HEIA.AS",
     "SAF": "SAF.PA",
     "SGLP": "SGLP.L",
@@ -119,14 +122,19 @@ PROXY_OVERRIDES = {
     "VOW3": "VOW3.DE",
     "RHM": "RHM.DE",
     "R3NK": "R3NK.DE",
-    "KOZ1": "KOZ1.DE",
+    "KOZ1": "KOG.OL",
     "XAGUSD": "SI=F",
+    "XAGUSD=X": "SI=F",
     "MANT": "CACI",
     "SAF": "SAF.PA",
     "AIR": "AIR.PA",
     "BTCUSD": "BTC-USD",
     "MAMET": "META",
     "SIFSKYH": "SIF",
+    "GLDW": "GLD",
+    "FACC": "FACC.VI",
+    "EXA": "EXA.PA",
+    "THEON": "THEON.AS",
 }
 
 
@@ -344,7 +352,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "BAC",    # Bank of America
     "BK",     # BNY Mellon
     "BLK",    # BlackRock
-    "BRK.B",  # Berkshire Hathaway (Class B)
+    "BRK-B",  # Berkshire Hathaway (Class B)
     "C",      # Citigroup
     "COF",    # Capital One
     "GS",     # Goldman Sachs
@@ -421,7 +429,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "GE",     # GE Aerospace
     "GPUS",   # Hyperscale Data Inc
     "HEI",    # HEICO Corporation
-    "HEIA",   # HEICO Corp. (Class A)
+    "HEIA.AS",   # HEICO Corp. (Class A)
     "HII",    # Huntington Ingalls Industries, Inc.
     "HOVR",   # New Horizon Aircraft Ltd
     "HWM",    # Howmet Aerospace Inc.
@@ -539,14 +547,14 @@ DEFAULT_ASSET_UNIVERSE = [
     # Additional requested tickers
     "SOUN",  # SoundHound AI Inc-A
     "SYM",   # Symbotic Inc
-    "THEON", # Theon International
+    "THEON.AS", # Theon International
     "TKA",   # Thyssen-Krupp AG
     "TSLD",  # IS Tesla Options
     "VOW3",  # Volkswagen AG-Pref
     "XAGUSD",# London Silver Commodity
     "PLTI",  # IS Palantir Options
     "QQQO",  # IS Nasdaq 100 Options
-    "R3NK",  # Renk Group AG
+    "R3NK.DE",  # Renk Group AG
     "REGN",  # Regeneron Pharmaceuticals
     "RHM",   # Rheinmetall AG
     "RKLB",  # Rocket Lab Corp
@@ -562,7 +570,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "NU",    # Nu Holdings Ltd
     "IONQ",  # IonQ Inc
     "IOT",   # Samsara Inc
-    "KOZ1",  # Kongsberg Gruppen ASA
+    "KOG.OL",  # Kongsberg Gruppen ASA
     "MAGD",  # IS Magnificent 7 Options
     "FACC",  # FACC AG
     "FINMY", # Leonardo SPA ADR
@@ -576,7 +584,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "BAYN",  # Bayer AG
     "BEAM",  # Beam Therapeutics Inc
     "BKSY",  # BlackSky Technology
-    "BMW3",  # Bayerische Motoren Werke AG
+    "BMW3.DE",  # Bayerische Motoren Werke AG
     "CELH",  # Celsius Holdings Inc
     "CRSP",  # CRISPR Therapeutics AG
     "CW",    # Curtiss-Wright Corp
@@ -699,12 +707,46 @@ DEFAULT_ASSET_UNIVERSE = [
 MAPPING = {
     # Prefer active, liquid proxies first to avoid Yahoo "possibly delisted" noise
     "GOOO": ["GOOG", "GOOGL", "GOOO"],
-    "GLDW": ["GLDM", "GLD", "GLDW"],
+    "GLDW": ["GLD", "GLDM", "GLDW"],
     "SGLP": ["SGLP.L", "SGLP", "SGLP.LON"],
     "GLDE": ["GLD", "IAU", "GLDE"],
     "FACC": ["FACC.VI", "FACC"],
     "SLVI": ["SLV", "SLVP", "SLVI"],
     "TKA": ["TKA.DE", "TKA"],
+    
+    # Silver spot and commodity proxies
+    "XAGUSD": ["SI=F", "SLV"],
+    "XAGUSD=X": ["SI=F", "SLV"],
+    
+    # German/European tickers that need suffix completion
+    "VOW3": ["VOW3.DE", "VOW3"],
+    "BMW3": ["BMW3.DE", "BMW3"],
+    "BAYN": ["BAYN.DE", "BAYN"],
+    "HAG": ["HAG.DE", "HAG"],
+    "R3NK": ["R3NK.DE", "R3NK"],
+    "KOZ1": ["KOG.OL", "KOZ1"],
+    "EXA": ["EXA.PA", "EXA"],
+    "THEON": ["THEON.AS", "THEON"],
+    
+    # YieldMax and structured product proxies (route to underlying)
+    "QQQO": ["QQQ"],
+    "MAGD": ["QQQ"],
+    "TSLD": ["TSLA"],
+    "METI": ["META"],
+    "MSFI": ["MSFT"],
+    "AVGI": ["AVGO"],
+    "BABI": ["BABA"],
+    "BABY": ["BABA"],
+    "AMDI": ["AMD"],
+    "DFNG": ["ITA"],
+    "GFA": ["ANGL"],
+    "TRET": ["VNQ"],
+
+    # Share class and punctuation variants (explicit mappings)
+    "BRK.B": ["BRK-B"],
+    "HEIA": ["HEI-A", "HEI.A", "HEI"],
+    "MOG.A": ["MOG-A"],
+    "MANT": ["CACI"],
 
     # Netflix and Novo Nordisk
     "NFLX": ["NFLX"],
@@ -761,7 +803,7 @@ MAPPING = {
 
     # Identity / alias candidates
     "RKLB": ["RKLB"],
-    "MTX": ["MTX.DE", "MTX"],
+    "MTX.DE": ["MTX.DE"],
     "IBKR": ["IBKR"],
     "HOOD": ["HOOD"],
 
@@ -840,7 +882,7 @@ MAPPING = {
     "BANK OF AMERICA": ["BAC"],
     "BNY MELLON": ["BK"],
     "BLACKROCK": ["BLK"],
-    "BERKSHIRE HATHAWAY": ["BRK.B"],
+    "BERKSHIRE HATHAWAY": ["BRK-B"],
     "CITIGROUP": ["C"],
     "CAPITAL ONE": ["COF"],
     "GOLDMAN SACHS": ["GS"],
@@ -1079,7 +1121,7 @@ SECTOR_MAP = {
         "CAT", "DE", "EMR", "FDX", "MMM", "UBER", "UNP", "UPS", "TKA", "TKA.DE", "MTX.DE"
     },
     "Defense & Aerospace": {
-        "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HEI.A", "HEI-A", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MOG-A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE", "R3NK", "R3NK.DE", "KOZ1", "SAABY", "SAF", "FINMY", "EXA", "EXA.PA", "BKSY", "ASTS", "THEON", "THEON.AS", "KOG", "KOG.OL",
+        "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HEI.A", "HEI-A", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MOG-A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE", "R3NK", "R3NK.DE", "KOG.OL", "SAABY", "SAF", "FINMY", "EXA", "EXA.PA", "BKSY", "ASTS", "THEON", "THEON.AS", "KOG", "KOG.OL",
         "SNT"
     },
     "Communication Services": {"CMCSA", "DIS", "T", "TMUS", "VZ"},
@@ -1574,16 +1616,21 @@ def _fetch_px_symbol(symbol: str, start: Optional[str], end: Optional[str]) -> p
     data = _download_prices(symbol, start, end)
     if data is None or data.empty:
         raise RuntimeError(f"No data for {symbol}")
+    px = None
     for col in ("Close", "Adj Close"):
         if isinstance(data, pd.DataFrame) and col in data.columns:
             px = data[col].dropna()
-            px.name = "px"
-            return px
-    if isinstance(data, pd.Series):
+            break
+    if px is None and isinstance(data, pd.Series):
         px = data.dropna()
-        px.name = "px"
-        return px
-    raise RuntimeError(f"No price column found for {symbol}")
+    if px is None or px.empty:
+        raise RuntimeError(f"No price column found for {symbol}")
+    # Coerce to numeric float - this is critical to avoid string multiplication errors
+    px = pd.to_numeric(px, errors="coerce").dropna()
+    if px.empty:
+        raise RuntimeError(f"No numeric price data for {symbol}")
+    px.name = "px"
+    return px
 
 
 def _load_fx_cache() -> Dict[str, dict]:
@@ -1662,9 +1709,16 @@ def _fetch_with_fallback(symbols: List[str], start: Optional[str], end: Optional
         # Try cached FX rates first to avoid extra network calls
         cached = _maybe_load_cached_series(sym, start, end)
         if cached is not None:
-            return cached, sym
+            # Ensure cached data is numeric
+            cached = pd.to_numeric(cached, errors="coerce").dropna()
+            if not cached.empty:
+                return cached, sym
         try:
             px = _fetch_px_symbol(sym, start, end)
+            # Ensure numeric dtype
+            px = pd.to_numeric(px, errors="coerce").dropna()
+            if px.empty:
+                raise RuntimeError(f"No numeric data for {sym}")
             _maybe_store_cached_series(sym, px)
             return px, sym
         except Exception as e:
@@ -1684,6 +1738,11 @@ def fetch_px(pair: str, start: Optional[str], end: Optional[str]) -> Tuple[pd.Se
     for sym in candidates:
         try:
             px = _fetch_px_symbol(sym, start, end)
+            # Ensure numeric dtype to prevent downstream multiplication errors
+            px = pd.to_numeric(px, errors="coerce").dropna()
+            if px.empty:
+                raise RuntimeError(f"No numeric data for {sym}")
+            px.name = "px"
             title = _resolve_display_name(sym)
             return px, title
         except Exception as e:
@@ -1804,22 +1863,26 @@ def _ensure_float_series(s: pd.Series) -> pd.Series:
     s = _as_series(s)
     if s.empty:
         return s
-    # Try fast astype to float
+    # Always use pd.to_numeric first - this handles strings and mixed types robustly
+    try:
+        s = pd.to_numeric(s, errors="coerce")
+    except Exception:
+        pass
+    # Then try astype to float for final conversion
     try:
         s = s.astype(float)
         return s
     except Exception:
         pass
-    # Fallback: to_numeric coercion
+    # Last resort: build from numpy values squeezed to 1-D
     try:
-        s = pd.to_numeric(s, errors="coerce")
-    except Exception:
-        # Last resort: build from numpy values squeezed to 1-D
         vals = np.asarray(s.values)
         if vals.ndim > 1:
             vals = vals.ravel()
         s = pd.Series(vals, index=s.index)
         s = pd.to_numeric(s, errors="coerce")
+    except Exception:
+        pass
     return s
 
 
@@ -1984,9 +2047,17 @@ def convert_price_series_to_pln(native_px: pd.Series, quote_ccy: str, start: Opt
     Returns (pln_series, units_suffix).
     """
     sfx = "(PLN)"
+    # Ensure native prices are numeric
+    native_px = pd.to_numeric(native_px, errors="coerce").dropna()
+    if native_px.empty:
+        raise RuntimeError("No numeric native price data for PLN conversion")
     native_px = _ensure_float_series(native_px)
     # Get FX leg over the native range (with padding)
     fx = convert_currency_to_pln(quote_ccy, start, end, native_index=native_px.index)
+    # Ensure FX series is numeric
+    fx = pd.to_numeric(fx, errors="coerce").dropna()
+    if fx.empty:
+        raise RuntimeError(f"No numeric FX data for {quote_ccy} to PLN conversion")
     # Try increasingly permissive alignments
     fx_al = _align_fx_asof(native_px, fx, max_gap_days=7)
     if fx_al.isna().all():
@@ -1996,44 +2067,36 @@ def convert_price_series_to_pln(native_px: pd.Series, quote_ccy: str, start: Opt
     # Fallback: strict calendar alignment with ffill/bfill
     if fx_al.isna().all():
         fx_al = fx.reindex(native_px.index).ffill().bfill()
+    fx_al = pd.to_numeric(fx_al, errors="coerce")
     fx_al = _ensure_float_series(fx_al)
+    if fx_al.isna().all() or fx_al.empty:
+        raise RuntimeError(f"No overlapping FX data for {quote_ccy} to PLN conversion")
     pln = (native_px * fx_al).dropna()
     pln.name = "px"
     return pln, sfx
 
 
 def _resolve_symbol_candidates(asset: str) -> List[str]:
+    """Resolve symbol candidates using explicit mappings only.
+    No automatic dot/dash variant generation to avoid hard-to-trace bugs.
+    """
     a = asset.strip()
     u = a.upper()
 
-    # Start from global mapping and layer in hotfixes for known problematic tickers
+    # Use global mapping for explicit symbol resolution
     mapping = dict(MAPPING)
-    mapping.update({
-        "BRK.B": ["BRK-B", "BRKB", "BRK.B"],
-        "HEIA": ["HEI-A", "HEI.A", "HEI", "HEIA.AS"],
-        "MOG.A": ["MOG-A", "MOG.A", "MOGA"],
-        "MANT": ["CACI", "MANT"],
-    })
 
-    # Generic normalization to handle dots/dashes/class suffixes
-    generic_candidates: List[str] = []
-    variants = {
-        a,
-        u,
-        a.replace('.', '-'),
-        a.replace('-', '.'),
-        a.replace('.', ''),
-        a.replace('-', ''),
-    }
-    for v in variants:
-        if v:
-            generic_candidates.append(v.upper())
-
+    # Get explicit mappings only - no automatic variant generation
     mapped = mapping.get(u, [])
-    candidates = mapped + [c for c in generic_candidates if c not in mapped]
+    
+    # Build candidate list: mapped first, then original symbol
+    candidates: List[str] = list(mapped)
+    if u not in candidates:
+        candidates.append(u)
     if a not in candidates:
         candidates.append(a)
 
+    # Deduplicate while preserving order
     seen = set()
     deduped: List[str] = []
     for c in candidates:

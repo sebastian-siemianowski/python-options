@@ -1200,7 +1200,7 @@ def tune_asset_q(
             df = _download_prices(asset, start_date, end_date)
             if df.empty:
                 raise RuntimeError(f"No data for {asset}")
-            px = df['Close']
+            px = pd.to_numeric(df['Close'], errors="coerce").dropna()
             title = asset
         
         # Allow very small histories; tune will still run cross-validation with short splits
