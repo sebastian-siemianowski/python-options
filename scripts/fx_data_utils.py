@@ -1506,6 +1506,7 @@ def _price_cache_path(symbol: str) -> pathlib.Path:
 
 # Standard column names for price data
 STANDARD_PRICE_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
+PRICE_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close"]  # Columns that must have data
 
 
 def _normalize_price_dataframe(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -1515,12 +1516,14 @@ def _normalize_price_dataframe(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     - Index: Date (datetime, timezone-naive)
     - Columns: Open, High, Low, Close, Adj Close, Volume, Ticker
     
+    Removes rows where all price columns are NaN (e.g., dates before company existed).
+    
     Args:
         df: Input DataFrame (may have various column formats from Yahoo Finance)
         symbol: Ticker symbol to add to Ticker column
         
     Returns:
-        Normalized DataFrame with standard columns
+        Normalized DataFrame with standard columns, empty rows removed
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=STANDARD_PRICE_COLUMNS)
@@ -1573,13 +1576,20 @@ def _normalize_price_dataframe(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     if result["Adj Close"].isna().all() and not result["Close"].isna().all():
         result["Adj Close"] = result["Close"]
     
-    # Add Ticker column
-    result["Ticker"] = symbol.upper()
-    
     # Ensure numeric types for price/volume columns
     for col in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
         if col in result.columns:
             result[col] = pd.to_numeric(result[col], errors="coerce")
+    
+    # Remove rows where ALL price columns are NaN (dates before company existed)
+    # Keep rows where at least one price column has data
+    price_cols = [c for c in PRICE_COLUMNS if c in result.columns]
+    if price_cols:
+        has_any_price = result[price_cols].notna().any(axis=1)
+        result = result[has_any_price]
+    
+    # Add Ticker column (after filtering to avoid issues)
+    result["Ticker"] = symbol.upper()
     
     # Normalize index
     result.index.name = "Date"
@@ -1591,6 +1601,7 @@ def _load_disk_prices(symbol: str) -> Optional[pd.DataFrame]:
     """Load price data from disk cache.
     
     Returns DataFrame with standard columns: Open, High, Low, Close, Adj Close, Volume, Ticker
+    Filters out rows where all price columns are NaN.
     """
     path = _price_cache_path(symbol)
     if not path.exists():
@@ -1609,6 +1620,12 @@ def _load_disk_prices(symbol: str) -> Optional[pd.DataFrame]:
         # Check if Ticker column exists; if not, normalize the dataframe
         if "Ticker" not in df.columns:
             df = _normalize_price_dataframe(df, symbol)
+        else:
+            # Filter out rows where all price columns are NaN (cleanup existing caches)
+            price_cols = [c for c in PRICE_COLUMNS if c in df.columns]
+            if price_cols:
+                has_any_price = df[price_cols].notna().any(axis=1)
+                df = df[has_any_price]
         
         return df
     except Exception:
@@ -1697,6 +1714,76 @@ def _merge_and_store(symbol: str, new_df: pd.DataFrame) -> pd.DataFrame:
     
     _store_disk_prices(symbol, combined)
     return combined
+
+
+def clean_price_cache(verbose: bool = True) -> Dict[str, int]:
+    """Clean all cached price files by removing empty rows.
+    
+    Removes rows where all price columns (Open, High, Low, Close, Adj Close) are NaN.
+    This cleans up data for companies that didn't exist in the requested date range.
+    
+    Args:
+        verbose: If True, print progress information
+        
+    Returns:
+        Dict mapping symbol to number of rows removed
+    """
+    results = {}
+    cache_files = list(PRICE_CACHE_DIR_PATH.glob("*.csv"))
+    
+    if verbose:
+        print(f"Cleaning {len(cache_files)} cached price files...")
+    
+    for path in cache_files:
+        symbol = path.stem
+        try:
+            # Read raw data
+            df = pd.read_csv(path, index_col=0)
+            original_rows = len(df)
+            
+            if original_rows == 0:
+                continue
+            
+            # Normalize index
+            df.index = pd.to_datetime(df.index, format="ISO8601", errors="coerce")
+            df = df[~df.index.isna()]
+            
+            # Filter out rows where all price columns are NaN
+            price_cols = [c for c in PRICE_COLUMNS if c in df.columns]
+            if price_cols:
+                has_any_price = df[price_cols].notna().any(axis=1)
+                df_clean = df[has_any_price]
+            else:
+                df_clean = df
+            
+            rows_removed = original_rows - len(df_clean)
+            
+            if rows_removed > 0:
+                # Save cleaned data
+                df_clean = df_clean[~df_clean.index.duplicated(keep="last")].sort_index()
+                df_clean.index.name = "Date"
+                
+                # Ensure Ticker column exists
+                if "Ticker" not in df_clean.columns:
+                    df_clean["Ticker"] = symbol.upper()
+                
+                tmp = path.with_suffix(".tmp")
+                df_clean.to_csv(tmp)
+                os.replace(tmp, path)
+                
+                results[symbol] = rows_removed
+                if verbose:
+                    print(f"  ✓ {symbol}: removed {rows_removed} empty rows ({len(df_clean)} remaining)")
+            
+        except Exception as e:
+            if verbose:
+                print(f"  ✗ {symbol}: error - {e}")
+    
+    total_removed = sum(results.values())
+    if verbose:
+        print(f"\nCleaned {len(results)} files, removed {total_removed} total empty rows")
+    
+    return results
 
 
 # ============================================================================

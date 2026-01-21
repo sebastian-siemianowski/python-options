@@ -1,6 +1,6 @@
 {
-  "updated": "2026-01-20T19:29:08.876940",
-  "count": 2,
+  "updated": "2026-01-21T00:29:15.153764",
+  "count": 3,
   "failures": {
     "FCX": {
       "display_name": "Freeport-McMoRan Inc.",
@@ -15,6 +15,13 @@
       "last_error": "No data for EXAI",
       "traceback": null,
       "timestamp": "2026-01-20T19:29:08.876939"
+    },
+    "MAGD": {
+      "display_name": "MAGD",
+      "attempts": 1,
+      "last_error": "No data for HO",
+      "traceback": null,
+      "timestamp": "2026-01-21T00:29:15.153737"
     }
   }
 }

@@ -184,6 +184,11 @@ setup:
 	@.venv/bin/python scripts/precache_data.py --workers 2 --batch-size 16 || true
 	@echo ""
 	@echo "============================================================"
+	@echo "STEP 3/4: Cleaning cached data (removing empty rows)..."
+	@echo "============================================================"
+	@.venv/bin/python scripts/clean_cache.py
+	@echo ""
+	@echo "============================================================"
 	@echo "STEP 4/4: Setup complete!"
 	@echo "============================================================"
 	@echo ""
@@ -192,4 +197,9 @@ setup:
 	@echo "  make tune         - Tune Kalman filter parameters"
 	@echo "  make failed       - List any assets that failed to download"
 	@echo "  make purge        - Purge cache for failed assets"
+	@echo "  make clean-cache  - Remove empty rows from cached data"
 	@echo ""
+
+# Clean cached price data by removing empty rows (dates before company existed)
+clean-cache: .venv/.deps_installed
+	@.venv/bin/python scripts/clean_cache.py
