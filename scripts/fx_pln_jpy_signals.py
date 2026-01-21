@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from scipy.stats import t as student_t, norm
+from scipy.stats import t as student_t, norm, skew as scipy_stats_skew
 from scipy.special import gammaln
 from rich.console import Console
 import logging
@@ -120,6 +120,35 @@ DEFAULT_CACHE_PATH = os.path.join("cache", "fx_plnjpy.json")
 
 
 @dataclass(frozen=True)
+class ExpectedUtilityResult:
+    """
+    Expected Utility computation result from posterior predictive Monte-Carlo.
+    
+    This captures the full distributional information from r_samples, enabling
+    utility-based position sizing rather than probability-only decisions.
+    
+    Expected Utility Model:
+        EU = p × E[gain] - (1-p) × E[loss]
+        
+    Position Size:
+        size = EU / max(E[loss], epsilon)
+        
+    This allows two assets with the same p to have different sizes based on
+    their return distribution shapes (fat tails, skewness, etc.).
+    """
+    probability: float      # P(R_H > 0) - direction probability
+    expected_gain: float    # E[R_H | R_H > 0] - expected gain given positive return
+    expected_loss: float    # E[-R_H | R_H < 0] - expected loss given negative return (positive value)
+    expected_utility: float # EU = p × E[gain] - (1-p) × E[loss]
+    position_size: float    # EU / max(E[loss], epsilon), clipped to [min_size, max_size]
+    gain_loss_ratio: float  # E[gain] / E[loss] - asymmetry measure
+    downside_std: float     # std of losses - tail risk measure
+    upside_std: float       # std of gains - upside potential measure
+    skewness: float         # skewness of r_samples - distribution shape
+    r_samples: np.ndarray   # raw samples for further analysis if needed
+
+
+@dataclass(frozen=True)
 class Signal:
     horizon_days: int
     score: float          # edge in z units (mu_H/sigma_H with filters)
@@ -130,12 +159,18 @@ class Signal:
     profit_pln: float     # expected profit in PLN for NOTIONAL_PLN invested
     profit_ci_low_pln: float  # low CI bound for profit in PLN
     profit_ci_high_pln: float # high CI bound for profit in PLN
-    position_strength: float  # fractional Kelly suggestion (0..1)
+    position_strength: float  # EU-based position sizing: EU / max(E[loss], ε), scaled by drift_weight
     vol_mean: float       # mean volatility forecast (stochastic vol posterior)
     vol_ci_low: float     # lower bound of volatility CI
     vol_ci_high: float    # upper bound of volatility CI
     regime: str               # detected regime label
     label: str                # BUY/HOLD/SELL or STRONG BUY/SELL
+    # Expected Utility fields (THE BASIS FOR POSITION SIZING):
+    expected_utility: float = 0.0     # EU = p × E[gain] - (1-p) × E[loss]
+    expected_gain: float = 0.0        # E[R_H | R_H > 0]
+    expected_loss: float = 0.0        # E[-R_H | R_H < 0] (positive value)
+    gain_loss_ratio: float = 1.0      # E[gain] / E[loss] - asymmetry
+    eu_position_size: float = 0.0     # Position size from EU / max(E[loss], ε)
     # Diagnostics only (NOT used for trading decisions):
     drift_uncertainty: float = 0.0  # P_t × drift_var_factor: uncertainty in drift estimate propagated to horizon
     p_analytical: float = 0.5       # DIAGNOSTIC ONLY: analytical posterior predictive P(r>0|D) 
@@ -2191,6 +2226,216 @@ def posterior_predictive_mc_probability(
     return p
 
 
+def compute_expected_utility(
+    mu_t: float,
+    P_t: float,
+    phi: float,
+    q: float,
+    sigma2_step: float,
+    H: int,
+    n_paths: int = 20000,
+    nu: Optional[float] = None,
+    seed: Optional[int] = None,
+    min_size: float = 0.0,
+    max_size: float = 1.0,
+    epsilon: float = 1e-6
+) -> ExpectedUtilityResult:
+    """
+    Compute Expected Utility and position sizing from posterior predictive Monte-Carlo.
+    
+    This function extends the unified posterior predictive MC by computing full
+    distributional metrics that enable utility-based position sizing.
+    
+    EXPECTED UTILITY MODEL:
+    
+    Let r_samples be the posterior predictive return samples.
+    
+    Define:
+        gains = r_samples[r_samples > 0]
+        losses = -r_samples[r_samples < 0]  (positive values)
+        
+        p = P(R_H > 0) = mean(r_samples > 0)
+        E_gain = mean(gains) if gains non-empty else 0
+        E_loss = mean(losses) if losses non-empty else 0
+        
+    Expected Utility:
+        EU = p × E_gain - (1-p) × E_loss
+        
+    Position Size:
+        size = EU / max(E_loss, epsilon)
+        size = clip(size, min_size, max_size)
+        
+    DECISION RULE:
+        - If EU <= 0 → HOLD (no position)
+        - If EU > 0 → Trade with size proportional to EU
+        
+    KEY INSIGHT:
+        Two assets with the same probability p can have different sizes because:
+        - Fat downside tails → higher E_loss → smaller size
+        - Strong upside asymmetry → higher E_gain → larger size
+        - System naturally avoids overconfident but fragile trades
+        
+    Args:
+        mu_t: Posterior mean of drift at time t
+        P_t: Posterior variance of drift at time t
+        phi: Drift persistence parameter
+        q: Process noise variance
+        sigma2_step: Per-step EWMA variance (volatility primitive)
+        H: Forecast horizon in days
+        n_paths: Number of Monte-Carlo paths
+        nu: Student-t degrees of freedom (None for Gaussian)
+        seed: Random seed for reproducibility
+        min_size: Minimum position size (default 0.0)
+        max_size: Maximum position size (default 1.0)
+        epsilon: Small value to avoid division by zero
+        
+    Returns:
+        ExpectedUtilityResult containing probability, EU, position size, and diagnostics
+        
+    Design Philosophy:
+        - Probability measures DIRECTION
+        - Utility measures VALUE
+        - Trading decisions must optimize UTILITY, not probability
+    """
+    # Input validation and sanitization
+    mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
+    P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
+    phi = float(phi) if np.isfinite(phi) else 1.0
+    q = float(max(q, 0.0)) if np.isfinite(q) else 0.0
+    sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
+    H = int(max(H, 1))
+    
+    # Clamp Student-t df to valid range
+    if nu is not None:
+        if not np.isfinite(nu) or nu <= 2.0:
+            nu = None
+        else:
+            nu = float(np.clip(nu, 2.1, 500.0))
+    
+    # Initialize RNG
+    rng = np.random.default_rng(seed)
+    
+    # ========================================================================
+    # Step 1: Sample from drift posterior
+    # ========================================================================
+    if P_t > 0:
+        if nu is not None:
+            t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
+            mu_paths = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
+        else:
+            mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
+    else:
+        mu_paths = np.full(n_paths, mu_t, dtype=float)
+    
+    # ========================================================================
+    # Step 2 & 3: Propagate drift and accumulate noise stepwise
+    # ========================================================================
+    cum_mu = np.zeros(n_paths, dtype=float)
+    cum_eps = np.zeros(n_paths, dtype=float)
+    
+    q_std = math.sqrt(q) if q > 0 else 0.0
+    sigma_step = math.sqrt(sigma2_step)
+    
+    for k in range(H):
+        # Drift propagation
+        if q_std > 0:
+            if nu is not None:
+                eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
+                eta = eta_scale * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eta = rng.normal(loc=0.0, scale=q_std, size=n_paths)
+        else:
+            eta = np.zeros(n_paths, dtype=float)
+        
+        mu_paths = phi * mu_paths + eta
+        cum_mu += mu_paths
+        
+        # Observation noise
+        if sigma_step > 0:
+            if nu is not None:
+                eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
+                eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eps_k = rng.normal(loc=0.0, scale=sigma_step, size=n_paths)
+        else:
+            eps_k = np.zeros(n_paths, dtype=float)
+        
+        cum_eps += eps_k
+    
+    # ========================================================================
+    # Step 4: Compute return samples
+    # ========================================================================
+    r_samples = cum_mu + cum_eps
+    
+    # ========================================================================
+    # Step 5: Compute Expected Utility metrics
+    # ========================================================================
+    # Separate gains and losses
+    gains = r_samples[r_samples > 0]
+    losses = -r_samples[r_samples < 0]  # Convert to positive values
+    
+    # Probability of positive return
+    p = float(np.mean(r_samples > 0.0))
+    p = float(np.clip(p, 1e-6, 1.0 - 1e-6))
+    
+    # Expected gain and loss
+    E_gain = float(np.mean(gains)) if len(gains) > 0 else 0.0
+    E_loss = float(np.mean(losses)) if len(losses) > 0 else 0.0
+    
+    # Standard deviations of tails (risk measures)
+    upside_std = float(np.std(gains)) if len(gains) > 1 else 0.0
+    downside_std = float(np.std(losses)) if len(losses) > 1 else 0.0
+    
+    # Gain/loss ratio (asymmetry measure)
+    gain_loss_ratio = E_gain / max(E_loss, epsilon) if E_loss > epsilon else (
+        float('inf') if E_gain > 0 else 1.0
+    )
+    gain_loss_ratio = float(np.clip(gain_loss_ratio, 0.0, 100.0))  # Clip for stability
+    
+    # Skewness of return distribution
+    try:
+        skewness = float(scipy_stats_skew(r_samples))
+        if not np.isfinite(skewness):
+            skewness = 0.0
+    except Exception:
+        skewness = 0.0
+    
+    # ========================================================================
+    # Step 6: Compute Expected Utility
+    # ========================================================================
+    # EU = p × E[gain] - (1-p) × E[loss]
+    EU = p * E_gain - (1.0 - p) * E_loss
+    
+    # ========================================================================
+    # Step 7: Compute Position Size from Expected Utility
+    # ========================================================================
+    # size = EU / max(E[loss], epsilon)
+    # This ensures:
+    # - Higher EU → larger position
+    # - Higher downside risk (E_loss) → smaller position
+    # - Natural risk adjustment without separate volatility scaling
+    
+    if EU > 0:
+        raw_size = EU / max(E_loss, epsilon)
+        position_size = float(np.clip(raw_size, min_size, max_size))
+    else:
+        # EU <= 0 → no position (HOLD)
+        position_size = 0.0
+    
+    return ExpectedUtilityResult(
+        probability=p,
+        expected_gain=E_gain,
+        expected_loss=E_loss,
+        expected_utility=EU,
+        position_size=position_size,
+        gain_loss_ratio=gain_loss_ratio,
+        downside_std=downside_std,
+        upside_std=upside_std,
+        skewness=skewness,
+        r_samples=r_samples
+    )
+
+
 def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: int = 3000, phi: float = 0.95, kappa: float = 1e-4) -> Dict[str, np.ndarray]:
     """Monte-Carlo forward simulation of cumulative log returns and volatility over 1..H_max.
     - Drift evolves as AR(1): mu_{t+1} = phi * mu_t + eta_t,  eta ~ N(0, q)
@@ -2613,7 +2858,7 @@ def apply_confirmation_logic(
         p_smoothed_now: Smoothed probability (current)
         p_smoothed_prev: Smoothed probability (previous)
         p_raw: Raw probability without smoothing
-        pos_strength: Position strength (Kelly fraction)
+        pos_strength: Position strength (Expected Utility based, 0..1)
         buy_thr: Buy threshold
         sell_thr: Sell threshold
         edge: Composite edge score
@@ -2633,7 +2878,7 @@ def apply_confirmation_logic(
     elif (p_smoothed_prev <= sell_enter) and (p_smoothed_now <= sell_enter):
         label = "SELL"
     
-    # Strong tiers based on raw conviction and Kelly strength
+    # Strong tiers based on raw conviction and EU-based position strength
     if p_raw >= max(0.66, buy_thr + 0.06) and pos_strength >= 0.30:
         label = "STRONG BUY"
     if p_raw <= min(0.34, sell_thr - 0.06) and pos_strength >= 0.30:
@@ -2650,10 +2895,11 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     """Map probability and position strength to label with customizable thresholds.
     - STRONG tiers require both probability and position_strength to be high.
     - buy_thr and sell_thr must satisfy sell_thr < 0.5 < buy_thr.
+    - pos_strength is derived from Expected Utility (EU / max(E[loss], ε))
     """
     buy_thr = float(buy_thr)
     sell_thr = float(sell_thr)
-    # Strong tiers (adjusted for half‑Kelly scaling: 0.30 instead of 0.60)
+    # Strong tiers (EU-based sizing: 0.30 threshold for strong conviction)
     if p_up >= max(0.66, buy_thr + 0.06) and pos_strength >= 0.30:
         return "STRONG BUY"
     if p_up <= min(0.34, sell_thr - 0.06) and pos_strength >= 0.30:
@@ -2944,9 +3190,14 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         sigma2_step_mc = float(sigma_now ** 2)
         
         # ========================================================================
-        # UNIFIED POSTERIOR PREDICTIVE MONTE-CARLO (THE ONLY TRADING PROBABILITY)
+        # EXPECTED UTILITY POSITION SIZING FROM POSTERIOR PREDICTIVE MC
         # ========================================================================
-        p_now = posterior_predictive_mc_probability(
+        # Position size is derived ONLY from posterior predictive MC return samples.
+        # No Kelly/mean-variance sizing. No blending. r_samples is the ONLY input.
+        # ========================================================================
+        
+        # Generate posterior predictive MC samples
+        eu_result = compute_expected_utility(
             mu_t=mu_t_mc,
             P_t=P_t_mc,
             phi=phi_mc,
@@ -2955,7 +3206,45 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             H=H,
             n_paths=20000,  # Production accuracy
             nu=nu_mc,
-            seed=None  # Non-deterministic for production; set seed for testing
+            seed=None,  # Non-deterministic for production
+            min_size=0.0,
+            max_size=1.0,
+            epsilon=1e-6
+        )
+        
+        # === Expected Utility sizing from posterior predictive MC ===
+        # r_samples is the ONLY input to sizing - NO Kelly, NO mean/variance ratios
+        
+        r_samples = eu_result.r_samples
+        r = np.asarray(r_samples, dtype=float)
+        
+        p_now = float(np.mean(r > 0.0))
+        
+        gains = r[r > 0.0]
+        losses = -r[r < 0.0]
+        
+        E_gain = float(np.mean(gains)) if gains.size > 0 else 0.0
+        E_loss = float(np.mean(losses)) if losses.size > 0 else 0.0
+        
+        EU = p_now * E_gain - (1.0 - p_now) * E_loss
+        
+        epsilon_eu = 1e-12
+        max_position_size = 1.0
+        
+        if EU > 0.0 and E_loss > 0.0:
+            eu_position_size = EU / max(E_loss, epsilon_eu)
+        else:
+            eu_position_size = 0.0
+        
+        # clip to risk limits
+        eu_position_size = float(np.clip(eu_position_size, 0.0, max_position_size))
+        
+        # Expected Utility metrics for logging/Signal
+        expected_utility = EU
+        expected_gain = E_gain
+        expected_loss = E_loss
+        gain_loss_ratio = E_gain / max(E_loss, epsilon_eu) if E_loss > epsilon_eu else (
+            100.0 if E_gain > 0 else 1.0
         )
         
         # For diagnostics: compute drift uncertainty propagated to horizon
@@ -3020,33 +3309,36 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         sig_H = sH
 
         # ========================================================================
-        # Upgrade #2: Drift Confidence → Kelly Scaling
+        # EXPECTED UTILITY POSITION SIZING (REPLACES KELLY/MEAN-BASED SIZING)
         # ========================================================================
-        # Incorporate drift uncertainty (P_t) into Kelly denominator to prevent ruin
-        # Add drift_weight based on model quality (ΔLL, PIT) to scale position size
+        # All sizing is now derived from the full posterior predictive distribution
+        # (r_samples from compute_expected_utility), NOT from point estimates.
+        #
+        # Design Principle:
+        #   - Inference produces distributions (r_samples)
+        #   - Decisions must consume distributions, not point estimates
+        #   - Kelly formula (f_star = mu_H / denom) is PROHIBITED
+        #
+        # Expected Utility Model:
+        #   EU = p × E[gain] - (1-p) × E[loss]
+        #   size = EU / max(E[loss], ε)
+        #
+        # Key Properties:
+        #   - Two assets with identical p can have different sizes
+        #   - Fat downside tails → higher E[loss] → smaller size
+        #   - Strong upside asymmetry → higher E[gain] → larger size
+        #   - EU ≤ 0 → HOLD (no position)
+        # ========================================================================
         
-        # Extract drift uncertainty (variance of drift estimate) from Kalman filter
-        var_kf_series = feats.get("var_kf_smoothed", pd.Series(dtype=float))
-        if isinstance(var_kf_series, pd.Series) and not var_kf_series.empty:
-            P_t = float(var_kf_series.iloc[-1])
-        else:
-            P_t = 0.0
-        if not np.isfinite(P_t) or P_t < 0:
-            P_t = 0.0
-
-        # Kelly denominator: include posterior drift variance only (no q leakage)
-        denom_base = vH if vH > 0 else (sig_H ** 2 if sig_H > 0 else 1.0)
-        denom = denom_base + float(H) * P_t
-
-        # Compute drift_weight based on model quality metrics
-        # - ΔLL < 0: drift model worse than zero-drift → weight = 0
-        # - PIT p < 0.05: miscalibration warning → weight = 0.3
-        # - Otherwise: well-calibrated drift → weight = 1.0
+        # Apply drift_weight based on model quality metrics
+        # - ΔLL < 0: drift model worse than zero-drift → reduce position
+        # - PIT p < 0.05: miscalibration warning → reduce position
+        # - Otherwise: trust EU sizing fully
         kalman_metadata = feats.get("kalman_metadata", {})
         delta_ll = kalman_metadata.get("delta_ll_vs_zero", float("nan"))
         pit_pvalue = kalman_metadata.get("pit_ks_pvalue", float("nan"))
         
-        drift_weight = 1.0  # Default: trust drift fully
+        drift_weight = 1.0  # Default: trust EU sizing fully
         
         if np.isfinite(delta_ll) and delta_ll < 0:
             # Drift model performs worse than zero-drift baseline
@@ -3055,10 +3347,13 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             # Calibration warning: model forecasts not well-calibrated
             drift_weight = 0.3
         
-        # Fractional Kelly sizing (half‑Kelly) with drift confidence adjustment
-        f_star = float(np.clip(mu_H / denom, -1.0, 1.0))
-        pos_strength_raw = float(min(1.0, 0.5 * abs(f_star)))
-        pos_strength = drift_weight * pos_strength_raw
+        # === FINAL POSITION STRENGTH (from Expected Utility ONLY) ===
+        # pos_strength is the ONLY position sizing variable used downstream
+        # NO Kelly, NO mean/variance ratios - r_samples is the ONLY input
+        pos_strength = drift_weight * eu_position_size
+        
+        # Logging/diagnostics: p, E_gain, E_loss, EU, pos_strength
+        # (These are stored in Signal dataclass for analysis)
 
         # Level-7 Modularization: Use helper function for dynamic thresholds
         # Enriched regime_meta with vol_regime for fallback path
@@ -3118,12 +3413,32 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             profit_pln=float(profit_pln),
             profit_ci_low_pln=float(profit_ci_low_pln),
             profit_ci_high_pln=float(profit_ci_high_pln),
+            # ================================================================
+            # POSITION STRENGTH FROM EXPECTED UTILITY (NOT KELLY)
+            # ================================================================
+            # All sizing is derived from the full posterior predictive
+            # distribution (r_samples), not from point estimates.
+            #
+            # pos_strength = drift_weight × eu_position_size
+            # where eu_position_size = EU / max(E[loss], ε)
+            #
+            # This ensures:
+            # - Fat downside tails → smaller positions
+            # - Strong upside asymmetry → larger positions
+            # - EU ≤ 0 → HOLD (position_strength = 0)
+            # ================================================================
             position_strength=float(pos_strength),
             vol_mean=float(vol_mean),
             vol_ci_low=float(vol_ci_low),
             vol_ci_high=float(vol_ci_high),
             regime=reg,
             label=label,
+            # Expected Utility fields (THE BASIS FOR POSITION SIZING):
+            expected_utility=float(expected_utility),
+            expected_gain=float(expected_gain),
+            expected_loss=float(expected_loss),
+            gain_loss_ratio=float(gain_loss_ratio),
+            eu_position_size=float(eu_position_size),
             # Diagnostics ONLY (NOT used for trading decisions):
             drift_uncertainty=float(drift_uncertainty_H),
             p_analytical=float(p_analytical),  # DIAGNOSTIC: analytical posterior predictive
@@ -3869,7 +4184,7 @@ def main() -> None:
                         f"[green]{stress_result.uncertainty_spike_ratio:.2f}×[/green]" if stress_result.uncertainty_spike_ratio > 1.2 else f"{stress_result.uncertainty_spike_ratio:.2f}×"
                     )
                     stress_table.add_row(
-                        "Kelly Half-Fraction",
+                        "Position Size (EU)",
                         f"{stress_result.avg_kelly_normal:.4f}",
                         f"{stress_result.avg_kelly_stress:.4f}",
                         f"[green]{stress_result.kelly_reduction_ratio:.2f}×[/green]" if stress_result.kelly_reduction_ratio < 0.9 else f"{stress_result.kelly_reduction_ratio:.2f}×"

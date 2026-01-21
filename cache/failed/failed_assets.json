@@ -1,5 +1,5 @@
 {
-  "updated": "2026-01-21T16:24:27.560029",
+  "updated": "2026-01-21T18:08:13.487995",
   "count": 7,
   "failures": {
     "FCX": {
@@ -49,7 +49,7 @@
       "attempts": 1,
       "last_error": "No data for HO",
       "traceback": null,
-      "timestamp": "2026-01-21T16:24:27.560020"
+      "timestamp": "2026-01-21T18:08:13.487986"
     }
   }
 }

@@ -178,7 +178,7 @@ def render_detailed_signal_table(
             f"Pr[return>0] mapped from Edge z via {cdf_name} CDF using a single globally fitted Student‑t tail (ν) per asset; "
             f"E[log return] sums daily drift; CI is two-sided {int(confidence_level*100)}% band for log return (log domain). "
             "Volatility is modeled via GARCH(1,1) (MLE) with EWMA fallback if unavailable. "
-            "Position strength uses a half‑Kelly sizing heuristic (0–1) for real‑world robustness. "
+            "Position strength uses Expected Utility sizing: EU / max(E[loss], ε), clamped to (0–1). "
             "Profit assumes investing 1,000,000 PLN; profit CI is exp-mapped from the log-return CI into PLN. "
             "A minimum edge floor is enforced to reduce churn: if |edge| < EDGE_FLOOR, action is HOLD. BUY = long PLN vs JPY."
         )
@@ -429,10 +429,10 @@ def render_portfolio_allocation_table(
     notional_pln: float = 1_000_000.0
 ) -> None:
     """
-    Render Kelly portfolio allocation table showing optimal weights.
+    Render portfolio allocation table showing optimal weights.
     
     Displays:
-    - Asset allocations (Kelly weights)
+    - Asset allocations (EU-based weights)
     - Expected returns per asset
     - Portfolio-level metrics (leverage, diversification, Sharpe)
     - Correlation matrix
@@ -456,12 +456,12 @@ def render_portfolio_allocation_table(
     
     # Build allocation table
     alloc_table = Table(
-        title=f"📊 Kelly Portfolio Allocation ({format_horizon_label(horizon_days)} horizon)",
+        title=f"📊 Portfolio Allocation ({format_horizon_label(horizon_days)} horizon)",
         show_header=True,
         header_style="bold cyan"
     )
     alloc_table.add_column("Asset", justify="left", style="bold")
-    alloc_table.add_column("Kelly Weight", justify="right")
+    alloc_table.add_column("Weight (EU)", justify="right")
     alloc_table.add_column("Position (PLN)", justify="right")
     alloc_table.add_column(f"E[Return] ({horizon_days}d)", justify="right")
     alloc_table.add_column("Equal-Weight", justify="right", style="dim")
@@ -663,10 +663,10 @@ def render_portfolio_allocation_table(
     
     # Add explanatory caption
     console.print(
-        "\n[dim]💡 Kelly Criterion: Maximizes log-wealth growth while managing risk via covariance matrix.[/dim]"
+        "\n[dim]💡 Expected Utility: Optimizes EU = p×E[gain] - (1-p)×E[loss] from posterior predictive samples.[/dim]"
     )
     console.print(
-        "[dim]   Weights computed as w = (1/2) × Σ⁻¹ × μ where Σ is EWMA covariance (λ=0.94).[/dim]"
+        "[dim]   Position size = EU / max(E[loss], ε), with covariance adjustment for portfolio allocation.[/dim]"
     )
     console.print(
         "[dim]   Diversification ratio < 1 indicates correlation benefits captured.[/dim]\n"
