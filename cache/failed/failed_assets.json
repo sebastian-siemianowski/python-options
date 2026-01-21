@@ -1,6 +1,6 @@
 {
-  "updated": "2026-01-21T00:29:15.153764",
-  "count": 3,
+  "updated": "2026-01-21T14:24:03.519114",
+  "count": 6,
   "failures": {
     "FCX": {
       "display_name": "Freeport-McMoRan Inc.",
@@ -21,7 +21,28 @@
       "attempts": 1,
       "last_error": "No data for HO",
       "traceback": null,
-      "timestamp": "2026-01-21T00:29:15.153737"
+      "timestamp": "2026-01-21T13:00:22.027986"
+    },
+    "GLDW": {
+      "display_name": "Roundhill Gold WeeklyPay ETF",
+      "attempts": 1,
+      "last_error": "No price column found for HO",
+      "traceback": null,
+      "timestamp": "2026-01-21T01:15:59.400354"
+    },
+    "FACC": {
+      "display_name": "FACC",
+      "attempts": 1,
+      "last_error": "No data for HO",
+      "traceback": null,
+      "timestamp": "2026-01-21T14:24:03.519104"
+    },
+    "GOOO": {
+      "display_name": "GOOO",
+      "attempts": 1,
+      "last_error": "No price column found for HO",
+      "traceback": null,
+      "timestamp": "2026-01-21T14:09:49.461069"
     }
   }
 }

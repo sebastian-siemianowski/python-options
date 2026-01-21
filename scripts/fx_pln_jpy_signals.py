@@ -121,7 +121,7 @@ DEFAULT_CACHE_PATH = os.path.join("cache", "fx_plnjpy.json")
 class Signal:
     horizon_days: int
     score: float          # edge in z units (mu_H/sigma_H with filters)
-    p_up: float           # P(return>0)
+    p_up: float           # P(return>0) - UNIFIED posterior predictive MC probability (THE ONLY TRADING PROBABILITY)
     exp_ret: float        # expected log return over horizon
     ci_low: float         # lower bound of expected log return CI
     ci_high: float        # upper bound of expected log return CI
@@ -134,6 +134,10 @@ class Signal:
     vol_ci_high: float    # upper bound of volatility CI
     regime: str               # detected regime label
     label: str                # BUY/HOLD/SELL or STRONG BUY/SELL
+    # Diagnostics only (NOT used for trading decisions):
+    drift_uncertainty: float = 0.0  # P_t × drift_var_factor: uncertainty in drift estimate propagated to horizon
+    p_analytical: float = 0.5       # DIAGNOSTIC ONLY: analytical posterior predictive P(r>0|D) 
+    p_empirical: float = 0.5        # DIAGNOSTIC ONLY: raw empirical MC probability P(r>0) from simulations
 
 
 
@@ -2003,6 +2007,153 @@ def edge_for_horizon(mu: float, vol: float, H: int) -> float:
     return float(mu_H / sig_H)
 
 
+def posterior_predictive_mc_probability(
+    mu_t: float,
+    P_t: float,
+    phi: float,
+    q: float,
+    vH: float,
+    H: int,
+    n_paths: int = 20000,
+    nu: Optional[float] = None,
+    seed: Optional[int] = None
+) -> float:
+    """
+    Unified posterior predictive Monte-Carlo probability P(r_H > 0 | D).
+    
+    This sampler marginalizes jointly over:
+    1. Drift posterior uncertainty (μ_t ~ N(μ̂_t, P_t) or t_ν)
+    2. Drift propagation dynamics (AR(1): μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q))
+    3. Observation noise (ε_H ~ N(0, v_H) or t_ν scaled)
+    
+    Mathematical Model:
+    - Drift posterior: μ_t ~ N(μ̂_t, P_t) [or Student-t if ν provided]
+    - Drift propagation: μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
+    - Return sampling: r_H = μ_{t+H} + ε_H, ε_H ~ N(0, v_H) [or Student-t]
+    - Posterior predictive: p = E[1{r_H > 0}] estimated as np.mean(r_samples > 0)
+    
+    This is the ONLY probability used for trading decisions.
+    No blending with analytical probabilities.
+    No heuristic weights.
+    
+    Args:
+        mu_t: Posterior mean of drift at time t (μ̂_t from Kalman filter)
+        P_t: Posterior variance of drift at time t (uncertainty in drift estimate)
+        phi: Drift persistence parameter (AR(1) coefficient, typically ~0.95-1.0)
+        q: Process noise variance for drift evolution
+        vH: Observation noise variance at horizon H (typically σ²·H for diffusion)
+        H: Forecast horizon in days
+        n_paths: Number of Monte-Carlo paths (default 20000 for production accuracy)
+        nu: Student-t degrees of freedom (if None, uses Gaussian noise)
+        seed: Random seed for reproducibility (if None, non-deterministic)
+        
+    Returns:
+        Posterior predictive probability P(r_H > 0 | D), a scalar in (0, 1)
+        
+    Design Philosophy:
+    - Probability geometry is internally consistent (single probability space)
+    - Drift uncertainty automatically collapses confidence toward 0.5
+    - Heavy tails emerge naturally when P_t or q is large
+    - Regime transitions are naturally penalized via drift uncertainty
+    """
+    # Input validation and sanitization
+    mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
+    P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
+    phi = float(phi) if np.isfinite(phi) else 1.0
+    q = float(max(q, 0.0)) if np.isfinite(q) else 0.0
+    vH = float(max(vH, 1e-12)) if np.isfinite(vH) else 1e-6
+    H = int(max(H, 1))
+    
+    # Clamp Student-t df to valid range
+    if nu is not None:
+        if not np.isfinite(nu) or nu <= 2.0:
+            nu = None  # Fall back to Gaussian
+        else:
+            nu = float(np.clip(nu, 2.1, 500.0))
+    
+    # Initialize RNG (deterministic under fixed seed)
+    rng = np.random.default_rng(seed)
+    
+    # ========================================================================
+    # Step 1: Sample from drift posterior μ_t ~ N(μ̂_t, P_t) or t_ν(μ̂_t, √P_t)
+    # ========================================================================
+    if P_t > 0:
+        if nu is not None:
+            # Student-t posterior for drift: heavier tails under uncertainty
+            # t_ν(μ̂_t, scale) has variance scale² · ν/(ν-2)
+            # We want Var(μ_t) = P_t, so scale = √(P_t · (ν-2)/ν)
+            t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
+            mu_samples = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
+        else:
+            # Gaussian posterior for drift
+            mu_samples = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
+    else:
+        # No drift uncertainty: point estimate
+        mu_samples = np.full(n_paths, mu_t, dtype=float)
+    
+    # ========================================================================
+    # Step 2: Propagate drift forward H steps via AR(1) dynamics
+    #         μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
+    # ========================================================================
+    # Vectorized propagation: for efficiency, compute cumulative effect
+    # After H steps: μ_{t+H} = φ^H · μ_t + Σ_{k=1}^H φ^{H-k} · η_k
+    # The second term is a sum of Gaussians with total variance:
+    #   Var(Σ) = q · Σ_{k=0}^{H-1} φ^{2k} = q · (1 - φ^{2H}) / (1 - φ²)  if |φ| < 1
+    #          = q · H  if φ = 1 (random walk)
+    
+    # Compute drift at horizon H
+    phi_H = phi ** H
+    mu_H_from_initial = phi_H * mu_samples
+    
+    if q > 0 and H > 0:
+        # Propagation noise variance
+        phi2 = phi ** 2
+        if abs(phi2 - 1.0) > 1e-10:
+            # Geometric series: Σ_{k=0}^{H-1} φ^{2k} = (1 - φ^{2H}) / (1 - φ²)
+            propagation_var = q * (1.0 - phi2 ** H) / (1.0 - phi2)
+        else:
+            # Random walk case: variance grows linearly
+            propagation_var = q * H
+        
+        propagation_var = max(propagation_var, 0.0)
+        
+        if nu is not None:
+            # Student-t propagation noise for heavier tails
+            prop_scale = math.sqrt(propagation_var * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(propagation_var)
+            propagation_noise = prop_scale * rng.standard_t(df=nu, size=n_paths)
+        else:
+            propagation_noise = rng.normal(loc=0.0, scale=math.sqrt(propagation_var), size=n_paths)
+    else:
+        propagation_noise = np.zeros(n_paths, dtype=float)
+    
+    # Drift at horizon: μ_{t+H}
+    mu_at_H = mu_H_from_initial + propagation_noise
+    
+    # ========================================================================
+    # Step 3: Sample observation noise and compute returns
+    #         r_H = μ_{t+H} + ε_H, ε_H ~ N(0, v_H) or t_ν(0, √v_H)
+    # ========================================================================
+    if nu is not None:
+        # Student-t observation noise: scale for unit variance = √(v_H · (ν-2)/ν)
+        obs_scale = math.sqrt(vH * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(vH)
+        epsilon_H = obs_scale * rng.standard_t(df=nu, size=n_paths)
+    else:
+        epsilon_H = rng.normal(loc=0.0, scale=math.sqrt(vH), size=n_paths)
+    
+    # Returns at horizon H
+    r_samples = mu_at_H + epsilon_H
+    
+    # ========================================================================
+    # Step 4: Compute posterior predictive probability
+    # ========================================================================
+    p = float(np.mean(r_samples > 0.0))
+    
+    # Clamp to avoid exact 0/1 (numerical stability for downstream log-odds)
+    p = float(np.clip(p, 1e-6, 1.0 - 1e-6))
+    
+    return p
+
+
 def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: int = 3000, phi: float = 0.95, kappa: float = 1e-4) -> Dict[str, np.ndarray]:
     """Monte-Carlo forward simulation of cumulative log returns and volatility over 1..H_max.
     - Drift evolves as AR(1): mu_{t+1} = phi * mu_t + eta_t,  eta ~ N(0, q)
@@ -2671,7 +2822,124 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         vH = float(np.var(sim_H, ddof=1)) if sim_H.size > 1 else 0.0
         sH = float(math.sqrt(max(vH, 1e-12)))
         z_stat = float(mH / sH) if sH > 0 else 0.0
-        p_now = float(np.mean(sim_H > 0.0))
+        
+        # ========================================================================
+        # Unified Posterior Predictive Monte-Carlo Probability
+        # ========================================================================
+        # Replaces blended analytical/MC posterior with unified posterior predictive
+        # Monte-Carlo over drift and noise.
+        #
+        # This sampler marginalizes jointly over:
+        # 1. Drift posterior uncertainty: μ_t ~ N(μ̂_t, P_t) or t_ν
+        # 2. Drift propagation dynamics: μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
+        # 3. Observation noise: ε_H ~ N(0, v_H) or t_ν
+        #
+        # This is the ONLY probability used for trading decisions.
+        # No blending. No heuristic averaging. No parallel analytical probability.
+        #
+        # Design Philosophy:
+        # - Probability geometry is internally consistent (single probability space)
+        # - Drift uncertainty automatically collapses confidence toward 0.5
+        # - Heavy tails emerge naturally when P_t or q is large
+        # - Regime transitions are naturally penalized via drift uncertainty
+        # ========================================================================
+        
+        # Extract drift posterior mean (μ̂_t) from Kalman filter or posterior drift
+        mu_post_series = feats.get("mu_post", feats.get("mu_kf", pd.Series(dtype=float)))
+        if isinstance(mu_post_series, pd.Series) and not mu_post_series.empty:
+            mu_t_mc = float(mu_post_series.iloc[-1])
+        else:
+            mu_t_mc = 0.0
+        if not np.isfinite(mu_t_mc):
+            mu_t_mc = 0.0
+        
+        # Extract drift posterior variance (P_t) from Kalman filter
+        var_kf_series_prob = feats.get("var_kf_smoothed", feats.get("var_kf", pd.Series(dtype=float)))
+        if isinstance(var_kf_series_prob, pd.Series) and not var_kf_series_prob.empty:
+            P_t_mc = float(var_kf_series_prob.iloc[-1])
+        else:
+            P_t_mc = 0.0
+        if not np.isfinite(P_t_mc) or P_t_mc < 0:
+            P_t_mc = 0.0
+        
+        # Extract φ (drift persistence) from Kalman metadata
+        phi_mc = feats.get("phi_used")
+        if phi_mc is None or not np.isfinite(phi_mc):
+            km_mc = feats.get("kalman_metadata", {}) or {}
+            phi_mc = km_mc.get("phi_used") or km_mc.get("kalman_phi")
+        if phi_mc is None or not np.isfinite(phi_mc):
+            phi_mc = 1.0
+        phi_mc = float(phi_mc)
+        
+        # Extract q (process noise variance) from Kalman metadata
+        km_mc = feats.get("kalman_metadata", {}) or {}
+        q_mc = km_mc.get("process_noise_var", 0.0)
+        if q_mc is None or not np.isfinite(q_mc) or q_mc < 0:
+            q_mc = 0.0
+        q_mc = float(q_mc)
+        
+        # Extract ν (Student-t degrees of freedom) if available
+        noise_model_mc = km_mc.get("kalman_noise_model", "gaussian")
+        nu_mc = km_mc.get("kalman_nu")
+        if noise_model_mc != "kalman_phi_student_t" or nu_mc is None or not np.isfinite(nu_mc):
+            nu_mc = None
+        
+        # Observation noise variance at horizon H: v_H ≈ σ² · H for diffusion
+        # Use current vol estimate scaled by horizon
+        vol_series_mc = feats.get("vol", pd.Series(dtype=float))
+        if isinstance(vol_series_mc, pd.Series) and not vol_series_mc.empty:
+            sigma_now = float(vol_series_mc.iloc[-1])
+        else:
+            sigma_now = sH / math.sqrt(H) if H > 0 and sH > 0 else 0.01
+        if not np.isfinite(sigma_now) or sigma_now <= 0:
+            sigma_now = 0.01
+        vH_mc = float(sigma_now ** 2 * H)
+        
+        # ========================================================================
+        # UNIFIED POSTERIOR PREDICTIVE MONTE-CARLO (THE ONLY TRADING PROBABILITY)
+        # ========================================================================
+        p_now = posterior_predictive_mc_probability(
+            mu_t=mu_t_mc,
+            P_t=P_t_mc,
+            phi=phi_mc,
+            q=q_mc,
+            vH=vH_mc,
+            H=H,
+            n_paths=20000,  # Production accuracy
+            nu=nu_mc,
+            seed=None  # Non-deterministic for production; set seed for testing
+        )
+        
+        # For diagnostics: compute drift uncertainty propagated to horizon
+        # (kept for Signal dataclass but NOT used for trading)
+        if phi_mc is not None and np.isfinite(phi_mc) and abs(phi_mc) < 0.999:
+            phi2_diag = phi_mc ** 2
+            if abs(1.0 - phi2_diag) > 1e-10:
+                drift_var_factor = (1.0 - phi2_diag ** H) / (1.0 - phi2_diag)
+            else:
+                drift_var_factor = float(H)
+        else:
+            drift_var_factor = float(H)
+        drift_uncertainty_H = drift_var_factor * P_t_mc
+        
+        # Diagnostic probabilities (NOT used for trading, kept for analysis only)
+        # These are stored in Signal for monitoring but p_now is the only trading probability
+        p_empirical = float(np.mean(sim_H > 0.0))  # Raw empirical from simulation
+        predictive_var_diag = vH + drift_uncertainty_H
+        predictive_std_diag = float(math.sqrt(max(predictive_var_diag, 1e-12)))
+        z_predictive_diag = float(mH / predictive_std_diag) if predictive_std_diag > 0 else 0.0
+        if noise_model_mc == "kalman_phi_student_t" and nu_mc is not None:
+            p_analytical = float(student_t.cdf(z_predictive_diag, df=float(nu_mc)))
+        else:
+            p_analytical = float(norm.cdf(z_predictive_diag))
+        p_analytical = float(np.clip(p_analytical, 0.001, 0.999))
+        p_posterior_predictive = p_analytical  # Alias for backward compatibility
+        
+        # Expected log return and CI from simulation (percentile CI)
+        # Define quantile bounds early for use in volatility CI as well
+        q = float(np.clip(ci, 1e-6, 0.999999))
+        lo_q = (1.0 - q) / 2.0
+        hi_q = 1.0 - lo_q
         
         # Stochastic volatility statistics (Level-7: full posterior uncertainty)
         vol_mean = float(np.mean(vol_H)) if vol_H.size > 0 else 0.0
@@ -2693,10 +2961,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         edge_prev = composite_edge(base_prev, trend_prev, moms_prev, vol_reg_prev, z5_prev)
         edge_now = composite_edge(base_now, trend_now, moms_now, vol_reg_now, z5_now)
 
-        # Expected log return and CI from simulation (percentile CI)
-        q = float(np.clip(ci, 1e-6, 0.999999))
-        lo_q = (1.0 - q) / 2.0
-        hi_q = 1.0 - lo_q
+        # Expected return CI from simulation (percentile CI) - lo_q, hi_q already defined above
         try:
             ci_low = float(np.quantile(sim_H, lo_q))
             ci_high = float(np.quantile(sim_H, hi_q))
@@ -2811,6 +3076,10 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             vol_ci_high=float(vol_ci_high),
             regime=reg,
             label=label,
+            # Diagnostics ONLY (NOT used for trading decisions):
+            drift_uncertainty=float(drift_uncertainty_H),
+            p_analytical=float(p_analytical),  # DIAGNOSTIC: analytical posterior predictive
+            p_empirical=float(p_empirical),    # DIAGNOSTIC: raw empirical MC probability
         ))
 
     return sigs, thresholds
