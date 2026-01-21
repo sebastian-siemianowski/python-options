@@ -1982,6 +1982,408 @@ def infer_current_regime(feats: Dict[str, pd.Series], hmm_result: Optional[Dict]
     }
 
 
+# =============================================================================
+# REGIME-CONDITIONAL BAYESIAN MODEL AVERAGING (RC-BMA)
+# =============================================================================
+# Implements: p(r_H | D) = Σ_r P(regime_r | D) · p(r_H | regime_r, D)
+# Regimes must match those in tune_q_mle.py
+# =============================================================================
+
+# Regime definitions (must match tune_q_mle.py)
+REGIME_LOW_VOL_TREND = 0
+REGIME_HIGH_VOL_TREND = 1
+REGIME_LOW_VOL_RANGE = 2
+REGIME_HIGH_VOL_RANGE = 3
+REGIME_CRISIS_JUMP = 4
+
+REGIME_NAMES = {
+    REGIME_LOW_VOL_TREND: "LOW_VOL_TREND",
+    REGIME_HIGH_VOL_TREND: "HIGH_VOL_TREND",
+    REGIME_LOW_VOL_RANGE: "LOW_VOL_RANGE",
+    REGIME_HIGH_VOL_RANGE: "HIGH_VOL_RANGE",
+    REGIME_CRISIS_JUMP: "CRISIS_JUMP",
+}
+
+
+def extract_regime_features(feats: Dict[str, pd.Series]) -> Dict[str, float]:
+    """
+    Extract features for regime likelihood computation.
+    
+    Features:
+    - vol_level: EWMA volatility (normalized)
+    - drift_strength: |μ| (absolute drift)
+    - drift_persistence: φ from Kalman
+    - return_autocorr: autocorrelation of returns
+    - tail_indicator: |return| / EWMA_σ (tail measure)
+    
+    Args:
+        feats: Feature dictionary from compute_features()
+        
+    Returns:
+        Dictionary of regime features
+    """
+    # Volatility level (normalized relative to median)
+    vol_series = feats.get("vol", pd.Series(dtype=float))
+    if isinstance(vol_series, pd.Series) and not vol_series.empty:
+        vol_now = float(vol_series.iloc[-1])
+        vol_median = float(vol_series.median())
+        vol_level = vol_now / vol_median if vol_median > 1e-12 else 1.0
+    else:
+        vol_level = 1.0
+    
+    # Drift strength (absolute value of filtered drift)
+    mu_series = feats.get("mu_post", feats.get("mu_kf", feats.get("mu", pd.Series(dtype=float))))
+    if isinstance(mu_series, pd.Series) and not mu_series.empty:
+        drift_strength = abs(float(mu_series.iloc[-1]))
+    else:
+        drift_strength = 0.0
+    
+    # Drift persistence (φ from Kalman metadata)
+    km = feats.get("kalman_metadata", {}) or {}
+    phi = km.get("phi_used") or km.get("kalman_phi")
+    if phi is None or not np.isfinite(phi):
+        phi = feats.get("phi_used")
+    drift_persistence = float(phi) if phi is not None and np.isfinite(phi) else 0.95
+    
+    # Return autocorrelation
+    ret_series = feats.get("ret", pd.Series(dtype=float))
+    if isinstance(ret_series, pd.Series) and len(ret_series) >= 21:
+        try:
+            return_autocorr = float(ret_series.autocorr(lag=1))
+            if not np.isfinite(return_autocorr):
+                return_autocorr = 0.0
+        except Exception:
+            return_autocorr = 0.0
+    else:
+        return_autocorr = 0.0
+    
+    # Tail indicator: |recent return| / σ
+    if isinstance(ret_series, pd.Series) and not ret_series.empty and vol_now > 1e-12:
+        recent_ret = abs(float(ret_series.iloc[-1]))
+        tail_indicator = recent_ret / vol_now
+    else:
+        tail_indicator = 0.0
+    
+    return {
+        "vol_level": float(np.clip(vol_level, 0.1, 10.0)),
+        "drift_strength": float(np.clip(drift_strength, 0.0, 0.01)),
+        "drift_persistence": float(np.clip(drift_persistence, -1.0, 1.0)),
+        "return_autocorr": float(np.clip(return_autocorr, -1.0, 1.0)),
+        "tail_indicator": float(np.clip(tail_indicator, 0.0, 10.0)),
+    }
+
+
+def compute_regime_log_likelihoods(features: Dict[str, float]) -> np.ndarray:
+    """
+    Compute log-likelihood scores for each regime given features.
+    
+    Uses Gaussian/logistic scoring based on regime characteristics:
+    
+    LOW_VOL_TREND (0): low vol, high drift_strength, high persistence
+    HIGH_VOL_TREND (1): high vol, high drift_strength, high persistence
+    LOW_VOL_RANGE (2): low vol, low drift_strength, low persistence
+    HIGH_VOL_RANGE (3): high vol, low drift_strength, low persistence
+    CRISIS_JUMP (4): extreme vol, high tail_indicator
+    
+    Args:
+        features: Dictionary from extract_regime_features()
+        
+    Returns:
+        Array of log-likelihoods for regimes 0-4
+    """
+    vol = features["vol_level"]
+    drift = features["drift_strength"]
+    persist = features["drift_persistence"]
+    autocorr = features["return_autocorr"]
+    tail = features["tail_indicator"]
+    
+    # Define regime scoring functions (Gaussian scoring)
+    # Higher score = more likely regime
+    
+    log_L = np.zeros(5)
+    
+    # Regime 0: LOW_VOL_TREND - low vol, high drift, high persistence
+    log_L[0] = (
+        -0.5 * ((vol - 0.7) / 0.3) ** 2      # vol centered at 0.7 (below median)
+        - 0.5 * ((drift - 0.002) / 0.001) ** 2  # strong drift
+        - 0.5 * ((persist - 0.98) / 0.02) ** 2  # high persistence
+    )
+    
+    # Regime 1: HIGH_VOL_TREND - high vol, high drift, high persistence
+    log_L[1] = (
+        -0.5 * ((vol - 1.5) / 0.4) ** 2      # vol above median
+        - 0.5 * ((drift - 0.003) / 0.002) ** 2  # strong drift
+        - 0.5 * ((persist - 0.95) / 0.03) ** 2  # high persistence
+    )
+    
+    # Regime 2: LOW_VOL_RANGE - low vol, low drift, mean reversion
+    log_L[2] = (
+        -0.5 * ((vol - 0.6) / 0.25) ** 2     # low vol
+        - 0.5 * ((drift - 0.0003) / 0.0005) ** 2  # near-zero drift
+        - 0.5 * ((persist - 0.85) / 0.1) ** 2   # moderate persistence (mean reversion)
+    )
+    
+    # Regime 3: HIGH_VOL_RANGE - high vol, low drift, choppy
+    log_L[3] = (
+        -0.5 * ((vol - 1.3) / 0.35) ** 2     # elevated vol
+        - 0.5 * ((drift - 0.0005) / 0.001) ** 2  # low drift
+        - 0.5 * ((persist - 0.80) / 0.15) ** 2  # low persistence (whipsaw)
+        - 0.5 * ((autocorr - (-0.1)) / 0.2) ** 2  # slight negative autocorr
+    )
+    
+    # Regime 4: CRISIS_JUMP - extreme vol, tail events
+    log_L[4] = (
+        -0.5 * ((vol - 2.5) / 0.5) ** 2      # extreme vol
+        - 0.5 * ((tail - 3.0) / 1.0) ** 2    # high tail indicator
+    )
+    
+    return log_L
+
+
+def compute_regime_probabilities(
+    features: Dict[str, float],
+    smoothing_alpha: float = 0.3,
+    prev_probs: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """
+    Compute regime probabilities via softmax of log-likelihoods.
+    
+    P_regimes = softmax(logL_r)
+    
+    With optional exponential smoothing over time.
+    
+    Args:
+        features: Dictionary from extract_regime_features()
+        smoothing_alpha: EMA smoothing factor (0=full smooth, 1=no smooth)
+        prev_probs: Previous regime probabilities for smoothing
+        
+    Returns:
+        Array of probabilities for regimes 0-4, summing to 1
+    """
+    log_L = compute_regime_log_likelihoods(features)
+    
+    # Softmax for probabilities
+    # Subtract max for numerical stability
+    log_L_shifted = log_L - np.max(log_L)
+    exp_L = np.exp(log_L_shifted)
+    probs = exp_L / np.sum(exp_L)
+    
+    # Exponential smoothing if previous probabilities available
+    if prev_probs is not None:
+        prev_probs = np.asarray(prev_probs)
+        if prev_probs.shape == probs.shape:
+            probs = smoothing_alpha * probs + (1.0 - smoothing_alpha) * prev_probs
+            # Renormalize after smoothing
+            probs = probs / np.sum(probs)
+    
+    return probs
+
+
+def run_regime_specific_mc(
+    regime: int,
+    mu_t: float,
+    P_t: float,
+    phi: float,
+    q: float,
+    sigma2_step: float,
+    H: int,
+    n_paths: int = 5000,
+    nu: Optional[float] = None,
+    seed: Optional[int] = None
+) -> np.ndarray:
+    """
+    Run posterior predictive MC for a specific regime.
+    
+    This is a lightweight wrapper that generates r_samples for one regime
+    using regime-specific parameters.
+    
+    Args:
+        regime: Regime index (0-4)
+        mu_t, P_t, phi, q, sigma2_step, H, n_paths, nu, seed: MC parameters
+        
+    Returns:
+        Array of return samples
+    """
+    # Input validation
+    mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
+    P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
+    phi = float(phi) if np.isfinite(phi) else 1.0
+    q = float(max(q, 0.0)) if np.isfinite(q) else 0.0
+    sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
+    H = int(max(H, 1))
+    
+    if nu is not None:
+        if not np.isfinite(nu) or nu <= 2.0:
+            nu = None
+        else:
+            nu = float(np.clip(nu, 2.1, 500.0))
+    
+    rng = np.random.default_rng(seed)
+    
+    # Sample drift posterior
+    if P_t > 0:
+        if nu is not None:
+            t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
+            mu_paths = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
+        else:
+            mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
+    else:
+        mu_paths = np.full(n_paths, mu_t, dtype=float)
+    
+    # Propagate drift and accumulate noise
+    cum_mu = np.zeros(n_paths, dtype=float)
+    cum_eps = np.zeros(n_paths, dtype=float)
+    
+    q_std = math.sqrt(q) if q > 0 else 0.0
+    sigma_step = math.sqrt(sigma2_step)
+    
+    for k in range(H):
+        if q_std > 0:
+            if nu is not None:
+                eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
+                eta = eta_scale * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eta = rng.normal(loc=0.0, scale=q_std, size=n_paths)
+        else:
+            eta = np.zeros(n_paths, dtype=float)
+        
+        mu_paths = phi * mu_paths + eta
+        cum_mu += mu_paths
+        
+        if sigma_step > 0:
+            if nu is not None:
+                eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
+                eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eps_k = rng.normal(loc=0.0, scale=sigma_step, size=n_paths)
+        else:
+            eps_k = np.zeros(n_paths, dtype=float)
+        
+        cum_eps += eps_k
+    
+    return cum_mu + cum_eps
+
+
+def bayesian_model_average_mc(
+    feats: Dict[str, pd.Series],
+    regime_params: Dict[int, Dict],
+    mu_t: float,
+    P_t: float,
+    sigma2_step: float,
+    H: int,
+    n_paths_per_regime: int = 5000,
+    use_regime_bma: bool = True,
+    smoothing_alpha: float = 0.3,
+    prev_regime_probs: Optional[np.ndarray] = None,
+    seed: Optional[int] = None
+) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    """
+    Perform Bayesian Model Averaging across regimes.
+    
+    Implements: p(r_H | D) = Σ_r P(regime_r | D) · p(r_H | regime_r, D)
+    
+    Args:
+        feats: Feature dictionary
+        regime_params: Dict mapping regime index to parameters {q, phi, nu, ...}
+        mu_t: Current drift estimate
+        P_t: Current drift variance
+        sigma2_step: Per-step volatility
+        H: Forecast horizon
+        n_paths_per_regime: MC paths per regime
+        use_regime_bma: If False, use only global/regime 0 parameters
+        smoothing_alpha: EMA factor for regime probabilities
+        prev_regime_probs: Previous regime probabilities for smoothing
+        seed: Random seed
+        
+    Returns:
+        Tuple of:
+        - r_samples: Weighted mixture of regime-specific samples
+        - regime_probs: Array of regime probabilities
+        - metadata: Diagnostic information
+    """
+    # If BMA disabled, use single model (regime 0 or global)
+    if not use_regime_bma:
+        params = regime_params.get(0, regime_params.get("global", {}))
+        phi = params.get("phi", 0.95)
+        q = params.get("q", 1e-6)
+        nu = params.get("nu")
+        
+        r_samples = run_regime_specific_mc(
+            regime=0, mu_t=mu_t, P_t=P_t, phi=phi, q=q,
+            sigma2_step=sigma2_step, H=H, n_paths=n_paths_per_regime * 5,
+            nu=nu, seed=seed
+        )
+        
+        return r_samples, np.array([1.0, 0.0, 0.0, 0.0, 0.0]), {"method": "single_model"}
+    
+    # Extract regime features and compute probabilities
+    features = extract_regime_features(feats)
+    regime_probs = compute_regime_probabilities(
+        features, smoothing_alpha=smoothing_alpha, prev_probs=prev_regime_probs
+    )
+    
+    # Generate samples for each regime, weighted by probability
+    all_samples = []
+    regime_details = {}
+    
+    rng = np.random.default_rng(seed)
+    
+    for regime in range(5):
+        prob = regime_probs[regime]
+        
+        # Skip regimes with negligible probability
+        if prob < 0.01:
+            continue
+        
+        # Get regime-specific parameters
+        params = regime_params.get(regime, regime_params.get(0, {}))
+        phi = params.get("phi", 0.95)
+        q = params.get("q", 1e-6)
+        nu = params.get("nu")
+        
+        # Number of samples proportional to probability
+        n_samples = max(100, int(prob * n_paths_per_regime * 5))
+        
+        # Generate regime-specific samples
+        r_regime = run_regime_specific_mc(
+            regime=regime, mu_t=mu_t, P_t=P_t, phi=phi, q=q,
+            sigma2_step=sigma2_step, H=H, n_paths=n_samples,
+            nu=nu, seed=rng.integers(0, 2**31) if seed is not None else None
+        )
+        
+        all_samples.append(r_regime)
+        regime_details[regime] = {
+            "prob": float(prob),
+            "n_samples": n_samples,
+            "phi": float(phi),
+            "q": float(q),
+            "nu": float(nu) if nu is not None else None,
+        }
+    
+    # Concatenate all weighted samples
+    if all_samples:
+        r_samples = np.concatenate(all_samples)
+    else:
+        # Fallback: generate samples from regime 0
+        params = regime_params.get(0, {})
+        r_samples = run_regime_specific_mc(
+            regime=0, mu_t=mu_t, P_t=P_t,
+            phi=params.get("phi", 0.95), q=params.get("q", 1e-6),
+            sigma2_step=sigma2_step, H=H, n_paths=n_paths_per_regime * 5,
+            nu=params.get("nu"), seed=seed
+        )
+    
+    metadata = {
+        "method": "bayesian_model_average",
+        "regime_probs": regime_probs.tolist(),
+        "regime_details": regime_details,
+        "features": features,
+        "n_total_samples": len(r_samples),
+    }
+    
+    return r_samples, regime_probs, metadata
+
+
 # -------------------------
 # Backtest-safe feature view (no look-ahead)
 # -------------------------
@@ -3194,29 +3596,66 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # ========================================================================
         # Position size is derived ONLY from posterior predictive MC return samples.
         # No Kelly/mean-variance sizing. No blending. r_samples is the ONLY input.
+        #
+        # REGIME-CONDITIONAL BAYESIAN MODEL AVERAGING (RC-BMA):
+        # Samples are drawn from the mixture:
+        #   p(r_H | D) = Σ_r P(regime_r | D) · p(r_H | regime_r, D)
+        #
+        # This mixture is the ONLY distribution passed to the EU layer.
+        # No regime logic inside EU - it only sees r_samples.
         # ========================================================================
         
-        # Generate posterior predictive MC samples
-        eu_result = compute_expected_utility(
+        # Build regime params dict from Kalman metadata
+        # If regime-specific params available in cache, use them; otherwise use global
+        regime_params = {}
+        km_regime = feats.get("kalman_metadata", {}) or {}
+        cached_regime_params = km_regime.get("regime_params", {})
+        
+        for regime_idx in range(5):
+            if regime_idx in cached_regime_params or str(regime_idx) in cached_regime_params:
+                # Use cached regime-specific params
+                rp = cached_regime_params.get(regime_idx, cached_regime_params.get(str(regime_idx), {}))
+                regime_params[regime_idx] = {
+                    "phi": rp.get("phi", phi_mc),
+                    "q": rp.get("q", q_mc),
+                    "nu": rp.get("nu", nu_mc),
+                }
+            else:
+                # Fall back to global params with regime-specific adjustments
+                regime_params[regime_idx] = {
+                    "phi": phi_mc,
+                    "q": q_mc,
+                    "nu": nu_mc,
+                }
+        
+        # Apply regime-specific adjustments if not loaded from cache
+        if not cached_regime_params:
+            # CRISIS_JUMP (4): higher q, lower phi for faster adaptation
+            regime_params[4]["phi"] = min(phi_mc, 0.90)
+            regime_params[4]["q"] = max(q_mc, 1e-5)
+            # HIGH_VOL regimes (1, 3): slightly higher q for faster adaptation
+            regime_params[1]["q"] = q_mc * 1.5
+            regime_params[3]["q"] = q_mc * 1.5
+        
+        # Use Bayesian Model Averaging across regimes
+        r_samples, regime_probs, bma_meta = bayesian_model_average_mc(
+            feats=feats,
+            regime_params=regime_params,
             mu_t=mu_t_mc,
             P_t=P_t_mc,
-            phi=phi_mc,
-            q=q_mc,
-            sigma2_step=sigma2_step_mc,  # Per-step EWMA variance (PRIMITIVE)
+            sigma2_step=sigma2_step_mc,
             H=H,
-            n_paths=20000,  # Production accuracy
-            nu=nu_mc,
-            seed=None,  # Non-deterministic for production
-            min_size=0.0,
-            max_size=1.0,
-            epsilon=1e-6
+            n_paths_per_regime=4000,
+            use_regime_bma=True,
+            smoothing_alpha=0.3,
+            prev_regime_probs=None,
+            seed=None
         )
+        r = np.asarray(r_samples, dtype=float)
         
         # === Expected Utility sizing from posterior predictive MC ===
         # r_samples is the ONLY input to sizing - NO Kelly, NO mean/variance ratios
-        
-        r_samples = eu_result.r_samples
-        r = np.asarray(r_samples, dtype=float)
+        # BMA mixture is the distribution, EU layer only sees r_samples
         
         p_now = float(np.mean(r > 0.0))
         

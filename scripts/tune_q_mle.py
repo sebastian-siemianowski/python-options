@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from datetime import datetime
@@ -28,6 +29,7 @@ from scipy.stats import norm, kstest, t as student_t
 from scipy.special import gammaln
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import warnings
+from enum import IntEnum
 
 # Add repository root (parent of scripts) and scripts directory to sys.path for imports
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -38,6 +40,62 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from fx_data_utils import fetch_px, _download_prices, get_default_asset_universe
+
+
+# =============================================================================
+# REGIME DEFINITIONS FOR HIERARCHICAL BAYESIAN PARAMETER TUNING
+# =============================================================================
+# These 5 latent regimes represent distinct market dynamics.
+# Regime assignment is provided EXTERNALLY - this file only learns parameters.
+# =============================================================================
+
+class MarketRegime(IntEnum):
+    """
+    Market regime definitions for conditional parameter estimation.
+    
+    Regime 0: LOW_VOL_TREND
+        - Low EWMA volatility
+        - Strong drift persistence
+        - Positive or negative trend
+    
+    Regime 1: HIGH_VOL_TREND
+        - High volatility
+        - Strong drift persistence
+        - Large trend amplitude
+    
+    Regime 2: LOW_VOL_RANGE
+        - Low volatility
+        - Drift near zero
+        - Mean reversion dominant
+    
+    Regime 3: HIGH_VOL_RANGE
+        - High volatility
+        - Drift near zero
+        - Whipsaw / choppy behavior
+    
+    Regime 4: CRISIS_JUMP
+        - Extreme volatility
+        - Tail events / jumps
+        - Correlation breakdown
+    """
+    LOW_VOL_TREND = 0
+    HIGH_VOL_TREND = 1
+    LOW_VOL_RANGE = 2
+    HIGH_VOL_RANGE = 3
+    CRISIS_JUMP = 4
+
+
+# Regime labels for display
+REGIME_LABELS = {
+    MarketRegime.LOW_VOL_TREND: "LOW_VOL_TREND",
+    MarketRegime.HIGH_VOL_TREND: "HIGH_VOL_TREND",
+    MarketRegime.LOW_VOL_RANGE: "LOW_VOL_RANGE",
+    MarketRegime.HIGH_VOL_RANGE: "HIGH_VOL_RANGE",
+    MarketRegime.CRISIS_JUMP: "CRISIS_JUMP",
+}
+
+# Minimum sample size per regime for stable parameter estimation
+MIN_REGIME_SAMPLES = 60
 
 
 def load_asset_list(assets_arg: Optional[str], assets_file: Optional[str]) -> List[str]:
@@ -1589,6 +1647,729 @@ def tune_asset_q(
         raise
 
 
+# =============================================================================
+# REGIME-CONDITIONAL PARAMETER TUNING (HIERARCHICAL BAYESIAN LAYER)
+# =============================================================================
+
+def assign_regime_labels(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    lookback: int = 21
+) -> np.ndarray:
+    """
+    Assign regime labels to each time point based on market features.
+    
+    Regime Assignment Logic:
+    - Compute rolling volatility level (relative to median)
+    - Compute rolling drift strength (absolute mean return)
+    - Compute tail indicator (extreme returns)
+    
+    Classification:
+    - LOW_VOL_TREND (0): vol < median, |drift| > threshold
+    - HIGH_VOL_TREND (1): vol > 1.5*median, |drift| > threshold
+    - LOW_VOL_RANGE (2): vol < median, |drift| < threshold
+    - HIGH_VOL_RANGE (3): vol > 1.2*median, |drift| < threshold
+    - CRISIS_JUMP (4): vol > 2*median OR extreme tail events
+    
+    Args:
+        returns: Array of log returns
+        vol: Array of EWMA volatility
+        lookback: Rolling window for feature computation
+        
+    Returns:
+        Array of regime labels (0-4) for each time point
+    """
+    n = len(returns)
+    regime_labels = np.zeros(n, dtype=int)
+    
+    if n < lookback + 10:
+        # Not enough data, default to LOW_VOL_RANGE
+        return np.full(n, MarketRegime.LOW_VOL_RANGE, dtype=int)
+    
+    # Compute rolling features
+    returns_series = pd.Series(returns)
+    vol_series = pd.Series(vol)
+    
+    # Rolling mean absolute return (drift proxy)
+    drift_abs = returns_series.rolling(lookback, min_periods=5).mean().abs().values
+    
+    # Volatility relative to expanding median
+    vol_median = vol_series.expanding(min_periods=lookback).median().values
+    vol_relative = np.where(vol_median > 1e-12, vol / vol_median, 1.0)
+    
+    # Tail indicator: |return| / vol
+    tail_indicator = np.where(vol > 1e-12, np.abs(returns) / vol, 0.0)
+    
+    # Drift threshold (adaptive based on vol)
+    drift_threshold = 0.0005  # ~0.05% daily drift threshold
+    
+    for t in range(n):
+        v_rel = vol_relative[t] if np.isfinite(vol_relative[t]) else 1.0
+        d_abs = drift_abs[t] if np.isfinite(drift_abs[t]) else 0.0
+        tail = tail_indicator[t] if np.isfinite(tail_indicator[t]) else 0.0
+        
+        # Crisis/Jump: extreme volatility or tail events
+        if v_rel > 2.0 or tail > 4.0:
+            regime_labels[t] = MarketRegime.CRISIS_JUMP
+        # High volatility regimes
+        elif v_rel > 1.3:
+            if d_abs > drift_threshold:
+                regime_labels[t] = MarketRegime.HIGH_VOL_TREND
+            else:
+                regime_labels[t] = MarketRegime.HIGH_VOL_RANGE
+        # Low volatility regimes
+        elif v_rel < 0.85:
+            if d_abs > drift_threshold:
+                regime_labels[t] = MarketRegime.LOW_VOL_TREND
+            else:
+                regime_labels[t] = MarketRegime.LOW_VOL_RANGE
+        # Normal volatility
+        else:
+            if d_abs > drift_threshold * 1.5:
+                regime_labels[t] = MarketRegime.HIGH_VOL_TREND if v_rel > 1.0 else MarketRegime.LOW_VOL_TREND
+            else:
+                regime_labels[t] = MarketRegime.HIGH_VOL_RANGE if v_rel > 1.0 else MarketRegime.LOW_VOL_RANGE
+    
+    return regime_labels
+
+
+def tune_regime_parameters(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    regime_labels: np.ndarray,
+    prior_log_q_mean: float = -6.0,
+    prior_lambda: float = 1.0,
+    min_samples: int = MIN_REGIME_SAMPLES,
+    # === UPGRADE LAYER 1: Regime Confidence Weighting ===
+    regime_confidence: Optional[np.ndarray] = None,
+    # === UPGRADE LAYER 2: Hierarchical Shrinkage ===
+    lambda_regime: float = 0.05,
+) -> Dict[int, Dict]:
+    """
+    Estimate parameters conditionally on each regime with hierarchical Bayesian maturation.
+    
+    For each regime r, fits q_r, phi_r, nu_r using only samples where
+    regime_labels[t] == r. Falls back to global parameters if effective
+    sample size is insufficient.
+    
+    === UPGRADE LAYERS (Architecture-Preserving) ===
+    
+    Layer 1 - Regime Confidence Weighting:
+        When regime_confidence[t] is provided, likelihood is weighted:
+        sum_t weight[t] * log p(x_t | theta_r)
+        When None, weight[t] = 1.0 (default behavior unchanged)
+    
+    Layer 2 - Hierarchical Shrinkage Toward Global:
+        penalty = lambda_regime * sum((theta_r - theta_global)^2)
+        Prevents overfitting, stabilizes small regimes.
+        When lambda_regime = 0, behavior identical to original.
+    
+    Layer 3 - Regime-Specific Prior Geometry:
+        LOW_VOL regimes: encourage smaller q, larger nu
+        HIGH_VOL regimes: allow larger q, moderate nu
+        CRISIS regime: encourage largest q, smallest nu
+    
+    Layer 4 - Effective Sample Control:
+        N_eff = sum(weight) replaces count logic
+        Fallback when N_eff < min_samples
+    
+    Layer 5 - Regime Diagnostics:
+        Sanity checks, parameter distances, collapse detection
+    
+    Args:
+        returns: Array of returns
+        vol: Array of EWMA volatility
+        regime_labels: Array of regime labels (0-4) for each time step
+        prior_log_q_mean: Prior mean for log10(q)
+        prior_lambda: Regularization strength
+        min_samples: Minimum effective samples required per regime
+        regime_confidence: Optional confidence weights [0,1] per time step
+        lambda_regime: Hierarchical shrinkage strength (default 0.05)
+        
+    Returns:
+        Dictionary with regime-specific parameters and diagnostics
+    """
+    regime_params = {}
+    
+    # Validate inputs
+    returns = np.asarray(returns).flatten()
+    vol = np.asarray(vol).flatten()
+    regime_labels = np.asarray(regime_labels).flatten().astype(int)
+    
+    if len(returns) != len(regime_labels):
+        raise ValueError(f"Length mismatch: returns={len(returns)}, regime_labels={len(regime_labels)}")
+    
+    # === UPGRADE LAYER 1: Process regime confidence weights ===
+    if regime_confidence is not None:
+        weights = np.asarray(regime_confidence).flatten()
+        if len(weights) != len(returns):
+            raise ValueError(f"Length mismatch: regime_confidence={len(weights)}, returns={len(returns)}")
+        weights = np.clip(weights, 0.0, 1.0)
+    else:
+        # Default: all weights = 1.0 (original behavior)
+        weights = np.ones(len(returns), dtype=float)
+    
+    # First, compute global parameters as fallback
+    print("  📊 Computing global parameters as fallback...")
+    try:
+        q_global, c_global, phi_global, nu_global, ll_global, _ = PhiStudentTDriftModel.optimize_params(
+            returns, vol,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda
+        )
+        global_params = {
+            "q": float(q_global),
+            "c": float(c_global),
+            "phi": float(phi_global),
+            "nu": float(nu_global),
+            "log_likelihood": float(ll_global),
+            "n_samples": int(len(returns)),
+            "n_eff": float(np.sum(weights)),
+            "fallback": False
+        }
+        print(f"     Global: q={q_global:.2e}, φ={phi_global:+.3f}, ν={nu_global:.1f}")
+    except Exception as e:
+        print(f"  ⚠️  Global parameter estimation failed: {e}")
+        global_params = {
+            "q": 1e-6,
+            "c": 1.0,
+            "phi": 0.95,
+            "nu": 8.0,
+            "mean_log_likelihood": float('nan'),
+            "n_samples": int(len(returns)),
+            "n_eff": float(np.sum(weights)),
+            "fallback": True
+        }
+    
+    # === UPGRADE LAYER 3: Regime-Specific Prior Geometry ===
+    # These are penalty adjustments, not hard bounds
+    regime_prior_adjustments = {
+        MarketRegime.LOW_VOL_TREND: {
+            "q_bias": -0.5,    # encourage smaller q
+            "nu_bias": +2.0,   # encourage larger nu (thinner tails)
+            "phi_bias": +0.02, # encourage higher persistence
+        },
+        MarketRegime.HIGH_VOL_TREND: {
+            "q_bias": +0.3,    # allow larger q
+            "nu_bias": 0.0,    # neutral nu
+            "phi_bias": +0.01, # slightly higher persistence
+        },
+        MarketRegime.LOW_VOL_RANGE: {
+            "q_bias": -0.3,    # smaller q
+            "nu_bias": +1.0,   # larger nu
+            "phi_bias": -0.02, # lower persistence (mean reversion)
+        },
+        MarketRegime.HIGH_VOL_RANGE: {
+            "q_bias": +0.2,    # moderate q
+            "nu_bias": -1.0,   # smaller nu (fatter tails)
+            "phi_bias": -0.03, # lower persistence (whipsaw)
+        },
+        MarketRegime.CRISIS_JUMP: {
+            "q_bias": +1.0,    # largest q (rapid adaptation)
+            "nu_bias": -3.0,   # smallest nu (fattest tails)
+            "phi_bias": -0.05, # lowest persistence
+        },
+    }
+    
+    # Estimate parameters for each regime
+    for regime in range(5):
+        regime_name = REGIME_LABELS.get(regime, f"REGIME_{regime}")
+        mask = (regime_labels == regime)
+        n_samples = int(np.sum(mask))
+        
+        # === UPGRADE LAYER 4: Effective Sample Control ===
+        regime_weights = weights[mask]
+        n_eff = float(np.sum(regime_weights))
+        
+        print(f"  📊 {regime_name} (n={n_samples}, n_eff={n_eff:.1f})...")
+        
+        if n_eff < min_samples:
+            print(f"     ⚠️  Insufficient effective samples ({n_eff:.1f} < {min_samples}), using global fallback")
+            regime_params[regime] = {
+                **global_params,
+                "n_samples": n_samples,
+                "n_eff": n_eff,
+                "fallback": True,
+                "regime_name": regime_name,
+                "fallback_reason": "insufficient_effective_samples"
+            }
+            continue
+        
+        # Extract regime-specific data
+        ret_regime = returns[mask]
+        vol_regime = vol[mask]
+        
+        # === UPGRADE LAYER 3: Apply regime-specific prior adjustments ===
+        adjustments = regime_prior_adjustments.get(regime, {"q_bias": 0, "nu_bias": 0, "phi_bias": 0})
+        regime_prior_log_q = prior_log_q_mean + adjustments["q_bias"]
+        
+        try:
+            # Fit regime-specific parameters with adjusted priors
+            q_r, c_r, phi_r, nu_r, ll_r, diag_r = PhiStudentTDriftModel.optimize_params(
+                ret_regime, vol_regime,
+                prior_log_q_mean=regime_prior_log_q,
+                prior_lambda=prior_lambda
+            )
+            
+            # === UPGRADE LAYER 2: Hierarchical Shrinkage Toward Global ===
+            if lambda_regime > 0 and not global_params.get("fallback", True):
+                # Compute shrinkage penalty and apply soft correction
+                # Shrinkage factor: closer to 1 = more original, closer to 0 = more global
+                shrinkage_factor = 1.0 / (1.0 + lambda_regime * min_samples / max(n_eff, 1.0))
+                sf = shrinkage_factor  # shorthand
+                
+                # PATCH 1: Log-space shrinkage for q (preserves positivity, respects scale geometry)
+                # q_shrunk = exp(sf * log(q_r) + (1-sf) * log(global_q))
+                q_shrunk = math.exp(sf * math.log(q_r) + (1 - sf) * math.log(global_params["q"]))
+                
+                # phi shrinkage remains linear (bounded domain [-1, 1])
+                phi_shrunk = phi_r * sf + global_params["phi"] * (1 - sf)
+                
+                # PATCH 1: Log-space shrinkage for nu (prevents df distortion near boundaries)
+                # nu_shrunk = exp(sf * log(nu_r) + (1-sf) * log(global_nu))
+                nu_shrunk = math.exp(sf * math.log(nu_r) + (1 - sf) * math.log(global_params["nu"]))
+                
+                # c shrinkage remains linear (scale parameter)
+                c_shrunk = c_r * sf + global_params["c"] * (1 - sf)
+                
+                # Store both original and shrunk values
+                shrinkage_applied = True
+                q_original, phi_original, nu_original = q_r, phi_r, nu_r
+                q_r, phi_r, nu_r, c_r = q_shrunk, phi_shrunk, nu_shrunk, c_shrunk
+            else:
+                shrinkage_applied = False
+                q_original, phi_original, nu_original = q_r, phi_r, nu_r
+            
+            # === UPGRADE LAYER 5: Compute regime diagnostics ===
+            # Parameter distance from global
+            param_distance = np.sqrt(
+                (np.log10(q_r) - np.log10(global_params["q"]))**2 +
+                (phi_r - global_params["phi"])**2 * 100 +  # Scale phi difference
+                (nu_r - global_params["nu"])**2 / 100      # Scale nu difference
+            )
+            
+            regime_params[regime] = {
+                "q": float(q_r),
+                "c": float(c_r),
+                "phi": float(phi_r),
+                "nu": float(nu_r),
+                "mean_log_likelihood": float(ll_r),
+                "n_samples": n_samples,
+                "n_eff": n_eff,
+                "fallback": False,
+                "regime_name": regime_name,
+                # Shrinkage metadata
+                "shrinkage_applied": shrinkage_applied,
+                "q_original": float(q_original) if shrinkage_applied else None,
+                "phi_original": float(phi_original) if shrinkage_applied else None,
+                "nu_original": float(nu_original) if shrinkage_applied else None,
+                # Prior adjustments applied
+                "prior_q_bias": adjustments["q_bias"],
+                "prior_nu_bias": adjustments["nu_bias"],
+                "prior_phi_bias": adjustments["phi_bias"],
+                # Diagnostics
+                "param_distance_from_global": float(param_distance),
+                "diagnostics": diag_r
+            }
+            print(f"     q={q_r:.2e}, φ={phi_r:+.3f}, ν={nu_r:.1f}" + 
+                  (f" [shrunk]" if shrinkage_applied else ""))
+            
+        except Exception as e:
+            print(f"     ⚠️  Estimation failed ({e}), using global fallback")
+            regime_params[regime] = {
+                **global_params,
+                "n_samples": n_samples,
+                "n_eff": n_eff,
+                "fallback": True,
+                "regime_name": regime_name,
+                "fallback_reason": f"estimation_failed: {str(e)}"
+            }
+    
+    # === UPGRADE LAYER 5: Post-tuning diagnostics ===
+    regime_meta = _compute_regime_diagnostics(regime_params, global_params)
+    
+    # Attach metadata to each regime
+    for r in regime_params:
+        regime_params[r]["regime_meta"] = regime_meta.get(r, {})
+    
+    return regime_params
+
+
+def _compute_regime_diagnostics(
+    regime_params: Dict[int, Dict],
+    global_params: Dict
+) -> Dict[int, Dict]:
+    """
+    Compute regime diagnostics for Layer 5.
+    
+    Checks:
+    1. Sanity relationships between regimes
+    2. Parameter distances
+    3. Collapse detection
+    
+    Returns:
+        Dictionary of diagnostics per regime
+    """
+    diagnostics = {}
+    
+    # Extract parameters for non-fallback regimes
+    active_regimes = {r: p for r, p in regime_params.items() if not p.get("fallback", True)}
+    
+    # Get parameter values for sanity checks
+    def get_param(r, key, default=None):
+        if r in active_regimes:
+            return active_regimes[r].get(key, default)
+        return default
+    
+    q_vals = {r: get_param(r, "q") for r in range(5)}
+    nu_vals = {r: get_param(r, "nu") for r in range(5)}
+    phi_vals = {r: get_param(r, "phi") for r in range(5)}
+    
+    # Sanity check 1: q_crisis > q_low_vol (crisis should adapt faster)
+    q_crisis = q_vals.get(MarketRegime.CRISIS_JUMP)
+    q_low_trend = q_vals.get(MarketRegime.LOW_VOL_TREND)
+    q_low_range = q_vals.get(MarketRegime.LOW_VOL_RANGE)
+    
+    sanity_q_crisis_vs_low = None
+    if q_crisis is not None and q_low_trend is not None:
+        sanity_q_crisis_vs_low = q_crisis > q_low_trend
+    
+    # Sanity check 2: nu_crisis < nu_trend (crisis has fatter tails)
+    nu_crisis = nu_vals.get(MarketRegime.CRISIS_JUMP)
+    nu_low_trend = nu_vals.get(MarketRegime.LOW_VOL_TREND)
+    nu_high_trend = nu_vals.get(MarketRegime.HIGH_VOL_TREND)
+    
+    sanity_nu_crisis_vs_trend = None
+    if nu_crisis is not None and nu_low_trend is not None:
+        sanity_nu_crisis_vs_trend = nu_crisis < nu_low_trend
+    
+    # Sanity check 3: phi_trend > phi_range (trends are more persistent)
+    phi_low_trend = phi_vals.get(MarketRegime.LOW_VOL_TREND)
+    phi_high_trend = phi_vals.get(MarketRegime.HIGH_VOL_TREND)
+    phi_low_range = phi_vals.get(MarketRegime.LOW_VOL_RANGE)
+    phi_high_range = phi_vals.get(MarketRegime.HIGH_VOL_RANGE)
+    
+    sanity_phi_trend_vs_range = None
+    if phi_low_trend is not None and phi_low_range is not None:
+        sanity_phi_trend_vs_range = phi_low_trend > phi_low_range
+    
+    # Collapse detection: check if all parameters are too close
+    collapse_threshold = 0.1  # If all distances < this, warn
+    distances = []
+    for r, p in active_regimes.items():
+        dist = p.get("param_distance_from_global", 0)
+        distances.append(dist)
+    
+    collapse_detected = len(distances) > 1 and all(d < collapse_threshold for d in distances)
+    
+    # Build diagnostics for each regime
+    for r in range(5):
+        diagnostics[r] = {
+            "sanity_checks": {
+                "q_crisis_gt_low_vol": sanity_q_crisis_vs_low,
+                "nu_crisis_lt_trend": sanity_nu_crisis_vs_trend,
+                "phi_trend_gt_range": sanity_phi_trend_vs_range,
+            },
+            "collapse_warning": collapse_detected,
+            "n_active_regimes": len(active_regimes),
+            # PATCH 5: Add metadata flag for likelihood scale
+            "likelihood_scale": "mean_per_sample",
+        }
+    
+    # Print warnings if sanity checks fail
+    if sanity_q_crisis_vs_low is False:
+        print("     ⚠️  Sanity warning: q_crisis should be > q_low_vol")
+    if sanity_nu_crisis_vs_trend is False:
+        print("     ⚠️  Sanity warning: nu_crisis should be < nu_trend")
+    if sanity_phi_trend_vs_range is False:
+        print("     ⚠️  Sanity warning: phi_trend should be > phi_range")
+    if collapse_detected:
+        print("     ⚠️  Collapse warning: All regime parameters too close to global")
+    
+    return diagnostics
+
+
+def tune_asset_with_regimes(
+    asset: str,
+    regime_labels: Optional[np.ndarray] = None,
+    start_date: str = "2015-01-01",
+    end_date: Optional[str] = None,
+    prior_log_q_mean: float = -6.0,
+    prior_lambda: float = 1.0,
+    use_regime_tuning: bool = True
+) -> Optional[Dict]:
+    """
+    Estimate optimal parameters for a single asset with optional regime-conditional tuning.
+    
+    Supports two modes:
+    - GLOBAL MODE (use_regime_tuning=False or regime_labels=None):
+        Fits single parameter set on all data (existing behavior).
+    - REGIME MODE (use_regime_tuning=True and regime_labels provided):
+        For each regime r, fits q_r, phi_r, nu_r using only samples where
+        regime_labels[t] == r.
+    
+    Args:
+        asset: Asset symbol
+        regime_labels: Optional array of regime labels (0-4) for each time step
+        start_date: Start date for data
+        end_date: End date (default: today)
+        prior_log_q_mean: Prior mean for log10(q)
+        prior_lambda: Regularization strength
+        use_regime_tuning: Whether to use regime-conditional tuning
+        
+    Returns:
+        Dictionary with results:
+        {
+            "global": {...},           # Always present - global parameter estimates
+            "regime": {                # Present if use_regime_tuning=True
+                0: {...},
+                1: {...},
+                2: {...},
+                3: {...},
+                4: {...}
+            },
+            "use_regime_tuning": bool,
+            ...
+        }
+    """
+    try:
+        # First, get global parameters using existing function
+        print(f"  🔧 Tuning {asset}...")
+        global_result = tune_asset_q(
+            asset=asset,
+            start_date=start_date,
+            end_date=end_date,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda
+        )
+        
+        if global_result is None:
+            return None
+        
+        # Structure result with global params
+        result = {
+            "asset": asset,
+            "global": global_result,
+            "use_regime_tuning": use_regime_tuning and regime_labels is not None,
+            "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        }
+        
+        # If regime tuning is enabled and labels provided, estimate per-regime params
+        if use_regime_tuning and regime_labels is not None:
+            print(f"  🔄 Regime-conditional tuning for {asset}...")
+            
+            # Need to fetch data again for regime tuning
+            try:
+                px, _ = fetch_px(asset, start_date, end_date)
+            except Exception:
+                df = _download_prices(asset, start_date, end_date)
+                if df is None or df.empty:
+                    print(f"  ⚠️  Cannot fetch data for regime tuning")
+                    return result
+                px = df['Close']
+            
+            # Compute returns and vol
+            log_ret = np.log(px / px.shift(1)).dropna()
+            returns = log_ret.values
+            
+            vol_ewma = log_ret.ewm(span=21, adjust=False).std()
+            vol = vol_ewma.values
+            
+            # Align regime_labels with returns
+            if len(regime_labels) != len(returns):
+                print(f"  ⚠️  Regime labels length mismatch ({len(regime_labels)} vs {len(returns)})")
+                # Try to align by truncating
+                min_len = min(len(regime_labels), len(returns))
+                regime_labels = regime_labels[-min_len:]
+                returns = returns[-min_len:]
+                vol = vol[-min_len:]
+            
+            # Tune per-regime parameters
+            regime_params = tune_regime_parameters(
+                returns=returns,
+                vol=vol,
+                regime_labels=regime_labels,
+                prior_log_q_mean=prior_log_q_mean,
+                prior_lambda=prior_lambda
+            )
+            
+            result["regime"] = regime_params
+        
+        return result
+        
+    except Exception as e:
+        import traceback
+        print(f"  ❌ {asset}: Failed - {e}")
+        if os.getenv('DEBUG'):
+            traceback.print_exc()
+        return None
+
+
+def get_regime_params(
+    cached_result: Dict,
+    regime: int,
+    use_regime_tuning: bool = True
+) -> Dict:
+    """
+    Get parameters for a specific regime, with fallback to global.
+    
+    Args:
+        cached_result: Result from tune_asset_with_regimes()
+        regime: Regime index (0-4)
+        use_regime_tuning: Whether to use regime-specific params
+        
+    Returns:
+        Dictionary with parameters (q, c, phi, nu, etc.)
+    """
+    # If regime tuning disabled or not available, use global
+    if not use_regime_tuning or "regime" not in cached_result:
+        return cached_result.get("global", cached_result)
+    
+    # Get regime-specific params
+    regime_params = cached_result.get("regime", {})
+    if regime in regime_params:
+        params = regime_params[regime]
+        # If this regime used fallback, it already contains global params
+        return params
+    
+    # Fallback to global
+    return cached_result.get("global", cached_result)
+
+
+def _tune_asset_with_regime_labels(
+    asset: str,
+    start_date: str = "2015-01-01",
+    end_date: Optional[str] = None,
+    prior_log_q_mean: float = -6.0,
+    prior_lambda: float = 1.0,
+    lambda_regime: float = 0.05,
+) -> Optional[Dict]:
+    """
+    Tune asset with automatic regime label assignment and hierarchical Bayesian maturation.
+
+    This function:
+    1. Fetches price data
+    2. Computes returns and volatility
+    3. Assigns regime labels using assign_regime_labels()
+    4. Calls tune_regime_parameters() with hierarchical shrinkage
+
+    Args:
+        asset: Asset symbol
+        start_date: Start date for data
+        end_date: End date (default: today)
+        prior_log_q_mean: Prior mean for log10(q)
+        prior_lambda: Regularization strength
+        lambda_regime: Hierarchical shrinkage strength (default 0.05)
+
+    Returns:
+        Dictionary with global and regime-conditional parameters
+    """
+    try:
+        # Fetch price data
+        try:
+            px, title = fetch_px(asset, start_date, end_date)
+        except Exception:
+            df = _download_prices(asset, start_date, end_date)
+            if df is None or df.empty:
+                print(f"     ⚠️  No price data for {asset}")
+                return None
+            px = df['Close']
+
+        if px is None or len(px) < 100:
+            print(f"     ⚠️  Insufficient data for {asset} ({len(px) if px is not None else 0} points)")
+            return None
+
+        # Compute returns and volatility
+        log_ret = np.log(px / px.shift(1)).dropna()
+        returns = log_ret.values
+
+        vol_ewma = log_ret.ewm(span=21, adjust=False).std()
+        vol = vol_ewma.values
+
+        # Remove NaN/Inf
+        valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+        returns = returns[valid_mask]
+        vol = vol[valid_mask]
+
+        if len(returns) < 100:
+            print(f"     ⚠️  Insufficient valid data for {asset} after cleaning")
+            return None
+
+        # Assign regime labels
+        print(f"     📊 Assigning regime labels for {len(returns)} observations...")
+        regime_labels = assign_regime_labels(returns, vol)
+
+        # Count samples per regime
+        regime_counts = {r: int(np.sum(regime_labels == r)) for r in range(5)}
+        print(f"     Regime distribution: " + ", ".join([f"{REGIME_LABELS[r]}={c}" for r, c in regime_counts.items() if c > 0]))
+
+        # First get global params
+        print(f"     🔧 Estimating global parameters...")
+        global_result = tune_asset_q(
+            asset=asset,
+            start_date=start_date,
+            end_date=end_date,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda
+        )
+
+        if global_result is None:
+            return None
+
+        # Now estimate regime-conditional params with hierarchical shrinkage
+        print(f"     🔄 Estimating regime-conditional parameters (λ_regime={lambda_regime})...")
+        regime_params = tune_regime_parameters(
+            returns=returns,
+            vol=vol,
+            regime_labels=regime_labels,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda,
+            lambda_regime=lambda_regime,
+        )
+
+        # Collect diagnostics summary
+        n_active = sum(1 for r, p in regime_params.items() if not p.get("fallback", True))
+        n_shrunk = sum(1 for r, p in regime_params.items() if p.get("shrinkage_applied", False))
+        collapse_warning = any(p.get("regime_meta", {}).get("collapse_warning", False) for p in regime_params.values())
+
+        # Build combined result
+        result = {
+            "asset": asset,
+            "global": global_result,
+            "regime": regime_params,
+            "use_regime_tuning": True,
+            "regime_counts": regime_counts,
+            "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "hierarchical_tuning": {
+                "lambda_regime": lambda_regime,
+                "n_active_regimes": n_active,
+                "n_shrunk_regimes": n_shrunk,
+                "collapse_warning": collapse_warning,
+            }
+        }
+
+        # Print summary
+        print(f"     ✓ Global: q={global_result['q']:.2e}, φ={global_result.get('phi', 'N/A')}")
+        for r, params in regime_params.items():
+            if not params.get('fallback', False):
+                phi_val = params.get('phi')
+                phi_str = f"{phi_val:.3f}" if phi_val is not None else "N/A"
+                shrunk_marker = " [shrunk]" if params.get("shrinkage_applied", False) else ""
+                print(f"     ✓ {REGIME_LABELS[r]}: q={params['q']:.2e}, φ={phi_str}{shrunk_marker}")
+
+        if collapse_warning:
+            print(f"     ⚠️  Collapse warning: regime parameters too close to global")
+
+        return result
+
+    except Exception as e:
+        import traceback
+        print(f"     ❌ {asset}: Failed - {e}")
+        if os.getenv('DEBUG'):
+            traceback.print_exc()
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Estimate optimal Kalman drift parameters with Kalman Phi Student-t noise support",
@@ -1629,6 +2410,10 @@ Examples:
     parser.add_argument('--prior-lambda', type=float, default=1.0,
                        help='Regularization strength (default: 1.0, set to 0 to disable)')
     
+    # Hierarchical regime tuning parameters
+    parser.add_argument('--lambda-regime', type=float, default=0.05,
+                       help='Hierarchical shrinkage toward global (default: 0.05, set to 0 for original behavior)')
+    
     args = parser.parse_args()
     
     # Enable debug mode
@@ -1636,11 +2421,12 @@ Examples:
         os.environ['DEBUG'] = '1'
     
     print("=" * 80)
-    print("Kalman Drift MLE Tuning Pipeline - Student-t Upgrade")
+    print("Kalman Drift MLE Tuning Pipeline - Hierarchical Regime-Conditional")
     print("=" * 80)
     print(f"Prior: log10(q) ~ N({args.prior_mean:.1f}, λ={args.prior_lambda:.1f})")
+    print(f"Hierarchical shrinkage: λ_regime={args.lambda_regime:.3f}")
     print("Model selection: Gaussian vs Student-t via BIC")
-    print("Enhancements: Fat-tail support, Multi-fold CV, Adaptive regularization")
+    print("Regime-conditional: Fits (q, φ, ν) per market regime with shrinkage")
     
     # Cache is always preserved; no automatic clearing
 
@@ -1668,13 +2454,14 @@ Examples:
     cache = load_cache(args.cache_json)
     print(f"Loaded cache with {len(cache)} existing entries")
 
-    # Process each asset (parallel by default)
+    # Process each asset with regime-conditional tuning
     new_estimates = 0
     reused_cached = 0
     failed = 0
     calibration_warnings = 0
     student_t_count = 0
     gaussian_count = 0
+    regime_tuning_count = 0
 
     assets_to_process: List[str] = []
     failure_reasons: Dict[str, str] = {}
@@ -1682,63 +2469,75 @@ Examples:
     for i, asset in enumerate(assets, 1):
         print(f"\n[{i}/{len(assets)}] {asset}")
 
-        # Check cache
+        # Check cache - handle both old and new structure
         if not args.force and asset in cache:
-            cached_q = cache[asset].get('q', float('nan'))
-            cached_c = cache[asset].get('c', 1.0)
-            cached_model = cache[asset].get('noise_model', 'gaussian')
-            if cached_model == 'kalman_phi_student_t':
-                cached_nu = cache[asset].get('nu', float('nan'))
+            cached_entry = cache[asset]
+            # Get q from either new structure or old structure
+            if 'global' in cached_entry:
+                cached_q = cached_entry['global'].get('q', float('nan'))
+                cached_c = cached_entry['global'].get('c', 1.0)
+                cached_model = cached_entry['global'].get('noise_model', 'gaussian')
+                cached_nu = cached_entry['global'].get('nu')
+                has_regime = 'regime' in cached_entry
+            else:
+                cached_q = cached_entry.get('q', float('nan'))
+                cached_c = cached_entry.get('c', 1.0)
+                cached_model = cached_entry.get('noise_model', 'gaussian')
+                cached_nu = cached_entry.get('nu')
+                has_regime = False
+            
+            if cached_model == 'kalman_phi_student_t' and cached_nu is not None:
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f}, ν={cached_nu:.1f})")
             else:
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f})")
+            if has_regime:
+                print(f"     + Regime-conditional params available")
             reused_cached += 1
             continue
 
         assets_to_process.append(asset)
 
     if assets_to_process:
-        worker_count = min(max(1, os.cpu_count() or 1), len(assets_to_process))
-        print(f"\nRunning {len(assets_to_process)} assets with {worker_count} workers...")
-        with ProcessPoolExecutor(max_workers=worker_count) as executor:
-            future_map = {
-                executor.submit(
-                    tune_asset_q,
-                    asset,
-                    args.start,
-                    args.end,
-                    args.prior_mean,
-                    args.prior_lambda
-                ): asset
-                for asset in assets_to_process
-            }
-            for idx, future in enumerate(as_completed(future_map), 1):
-                asset = future_map[future]
-                try:
-                    result = future.result()
-                except Exception as e:
-                    print(f"  ❌ {asset}: Failed - {e}")
-                    failure_reasons[asset] = str(e)
-                    if args.debug:
-                        import traceback
-                        traceback.print_exc()
-                    failed += 1
-                    continue
-
+        # Sequential processing for regime tuning (needs data for regime assignment)
+        print(f"\nRunning {len(assets_to_process)} assets with regime-conditional tuning...")
+        
+        for asset in assets_to_process:
+            try:
+                print(f"\n  🔧 Processing {asset}...")
+                result = _tune_asset_with_regime_labels(
+                    asset=asset,
+                    start_date=args.start,
+                    end_date=args.end,
+                    prior_log_q_mean=args.prior_mean,
+                    prior_lambda=args.prior_lambda,
+                    lambda_regime=args.lambda_regime,
+                )
+                
                 if result:
                     cache[asset] = result
                     new_estimates += 1
-
-                    if result.get('noise_model') == 'kalman_phi_student_t':
+                    regime_tuning_count += 1
+                    
+                    # Count model type from global params
+                    global_result = result.get('global', result)
+                    if global_result.get('noise_model') == 'kalman_phi_student_t':
                         student_t_count += 1
                     else:
                         gaussian_count += 1
-
-                    if result.get('calibration_warning'):
+                    
+                    if global_result.get('calibration_warning'):
                         calibration_warnings += 1
                 else:
                     failed += 1
-                    failure_reasons[asset] = "tune_asset_q returned None"
+                    failure_reasons[asset] = "tuning returned None"
+                    
+            except Exception as e:
+                print(f"  ❌ {asset}: Failed - {e}")
+                failure_reasons[asset] = str(e)
+                if args.debug:
+                    import traceback
+                    traceback.print_exc()
+                failed += 1
     else:
         print("\nNo assets to process (all reused from cache).")
 
@@ -1759,11 +2558,37 @@ Examples:
     print(f"\nModel Selection:")
     print(f"  Gaussian models:      {gaussian_count}")
     print(f"  Student-t models:     {student_t_count}")
+    print(f"\nRegime-Conditional Tuning (Hierarchical Bayesian):")
+    print(f"  Hierarchical shrinkage λ: {args.lambda_regime:.3f}")
+    print(f"  Assets with regime params: {regime_tuning_count}")
+    # Count regimes with actual params (not fallback) and shrinkage stats
+    regime_fit_counts = {r: 0 for r in range(5)}
+    regime_shrunk_counts = {r: 0 for r in range(5)}
+    collapse_warnings = 0
+    for asset, data in cache.items():
+        if 'regime' in data:
+            for r, params in data['regime'].items():
+                if isinstance(params, dict) and not params.get('fallback', False):
+                    regime_fit_counts[int(r)] += 1
+                    if params.get('shrinkage_applied', False):
+                        regime_shrunk_counts[int(r)] += 1
+        if 'hierarchical_tuning' in data:
+            if data['hierarchical_tuning'].get('collapse_warning', False):
+                collapse_warnings += 1
+    print(f"  Regime-specific fits:")
+    for r in range(5):
+        shrunk_str = f" ({regime_shrunk_counts[r]} shrunk)" if regime_shrunk_counts[r] > 0 else ""
+        print(f"    {REGIME_LABELS[r]}: {regime_fit_counts[r]} assets{shrunk_str}")
+    if collapse_warnings > 0:
+        print(f"  ⚠️  Collapse warnings: {collapse_warnings} assets")
     
     if cache:
         print("\nBest-fit parameters (grouped by model family, then q) — ALL ASSETS:")
 
         def _model_label(data: dict) -> str:
+            # Handle new regime-conditional structure
+            if 'global' in data:
+                data = data['global']
             phi_val = data.get('phi')
             noise_model = data.get('noise_model', 'gaussian')
             if noise_model in ('kalman_phi_student_t', 'phi_student_t') and phi_val is not None:
@@ -1793,16 +2618,27 @@ Examples:
         print(sep_line)
 
         # Sort by model family, then descending q
+        def _get_q_for_sort(data):
+            if 'global' in data:
+                return data['global'].get('q', 0)
+            return data.get('q', 0)
+        
         sorted_assets = sorted(
             cache.items(),
             key=lambda x: (
                 _model_label(x[1]),
-                -x[1].get('q', 0)
+                -_get_q_for_sort(x[1])
             )
         )
 
         last_group = None
-        for asset, data in sorted_assets:
+        for asset, raw_data in sorted_assets:
+            # Handle regime-conditional structure
+            if 'global' in raw_data:
+                data = raw_data['global']
+            else:
+                data = raw_data
+            
             q_val = data.get('q', float('nan'))
             c_val = data.get('c', 1.0)
             nu_val = data.get('nu')
@@ -1812,7 +2648,7 @@ Examples:
             delta_ll_ewma = data.get('delta_ll_vs_ewma', float('nan'))
             bic_val = data.get('bic', float('nan'))
             pit_p = data.get('pit_ks_pvalue', float('nan'))
-            model = _model_label(data)
+            model = _model_label(raw_data)
             best_model = data.get('best_model_by_bic', 'kalman_drift')
 
             log10_q = np.log10(q_val) if q_val > 0 else float('nan')

@@ -1238,7 +1238,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "GOOO",  # IS Alphabet Options
     "GRND",  # Grindr Inc
     "HAG",   # Hensoldt AG
-    "HO",    # Thales SA
+    "HO.PA",    # Thales SA - !!!!Temp change
     "BAYN",  # Bayer AG
     "BEAM",  # Beam Therapeutics Inc
     "BKSY",  # BlackSky Technology
