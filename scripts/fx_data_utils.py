@@ -397,6 +397,546 @@ def normalize_yahoo_ticker(symbol: str, perform_lookup: bool = True) -> Tuple[st
 # Asset Universe Configuration
 # -------------------------
 
+# -------------------------
+# Company/Asset Display Names Dictionary
+# -------------------------
+# Internal dictionary to avoid external API calls for company names.
+# This is used by _resolve_display_name() before falling back to Yahoo Finance API.
+COMPANY_NAMES: Dict[str, str] = {
+    # FX Pairs
+    "PLNJPY=X": "Polish Zloty / Japanese Yen",
+    "USDPLN=X": "US Dollar / Polish Zloty",
+    "EURPLN=X": "Euro / Polish Zloty",
+    "GBPPLN=X": "British Pound / Polish Zloty",
+    "CHFPLN=X": "Swiss Franc / Polish Zloty",
+    "JPYPLN=X": "Japanese Yen / Polish Zloty",
+    "EURUSD=X": "Euro / US Dollar",
+    "GBPUSD=X": "British Pound / US Dollar",
+    "USDJPY=X": "US Dollar / Japanese Yen",
+    
+    # Commodities & Futures
+    "GC=F": "Gold Futures (COMEX)",
+    "SI=F": "Silver Futures (COMEX)",
+    "PL=F": "Platinum Futures (NYMEX)",
+    "PA=F": "Palladium Futures (NYMEX)",
+    "CL=F": "Crude Oil Futures (WTI)",
+    "NG=F": "Natural Gas Futures",
+    "XAUUSD=X": "Gold Spot (XAU/USD)",
+    "XAGUSD=X": "Silver Spot (XAG/USD)",
+    
+    # Cryptocurrency
+    "BTC-USD": "Bitcoin (BTC/USD)",
+    "ETH-USD": "Ethereum (ETH/USD)",
+    "SOL-USD": "Solana (SOL/USD)",
+    
+    # Major ETFs
+    "SPY": "SPDR S&P 500 ETF Trust",
+    "VOO": "Vanguard S&P 500 ETF",
+    "QQQ": "Invesco QQQ Trust (Nasdaq-100)",
+    "IWM": "iShares Russell 2000 ETF",
+    "DIA": "SPDR Dow Jones Industrial Average ETF",
+    "GLD": "SPDR Gold Shares ETF",
+    "SLV": "iShares Silver Trust ETF",
+    "SMH": "VanEck Semiconductor ETF",
+    "XLF": "Financial Select Sector SPDR Fund",
+    "XLK": "Technology Select Sector SPDR Fund",
+    "XLE": "Energy Select Sector SPDR Fund",
+    "XLV": "Health Care Select Sector SPDR Fund",
+    "XLI": "Industrial Select Sector SPDR Fund",
+    "XLP": "Consumer Staples Select Sector SPDR Fund",
+    "XLY": "Consumer Discretionary Select Sector SPDR Fund",
+    "XLU": "Utilities Select Sector SPDR Fund",
+    "XLB": "Materials Select Sector SPDR Fund",
+    "XLRE": "Real Estate Select Sector SPDR Fund",
+    
+    # VanEck ETFs
+    "AFK": "VanEck Africa Index ETF",
+    "ANGL": "VanEck Fallen Angel High Yield Bond ETF",
+    "CNXT": "VanEck ChiNext ETF",
+    "DURA": "VanEck Morningstar Durable Dividend ETF",
+    "EGPT": "VanEck Egypt Index ETF",
+    "FLTR": "VanEck Investment Grade Floating Rate ETF",
+    "GDX": "VanEck Gold Miners ETF",
+    "GDXJ": "VanEck Junior Gold Miners ETF",
+    "GLIN": "VanEck India Growth Leaders ETF",
+    "MOTG": "VanEck Morningstar Global Wide Moat ETF",
+    "IDX": "VanEck Indonesia Index ETF",
+    "DFNG": "VanEck Defense ETF",
+    
+    # Information Technology
+    "AAPL": "Apple Inc.",
+    "ACN": "Accenture plc",
+    "ADBE": "Adobe Inc.",
+    "AMD": "Advanced Micro Devices, Inc.",
+    "AVGO": "Broadcom Inc.",
+    "CRM": "Salesforce, Inc.",
+    "CSCO": "Cisco Systems, Inc.",
+    "IBM": "International Business Machines Corporation",
+    "INTC": "Intel Corporation",
+    "INTU": "Intuit Inc.",
+    "MSFT": "Microsoft Corporation",
+    "NOW": "ServiceNow, Inc.",
+    "NVDA": "NVIDIA Corporation",
+    "ORCL": "Oracle Corporation",
+    "PLTR": "Palantir Technologies Inc.",
+    "QCOM": "QUALCOMM Incorporated",
+    "TXN": "Texas Instruments Incorporated",
+    "GOOG": "Alphabet Inc. (Class C)",
+    "GOOGL": "Alphabet Inc. (Class A)",
+    "META": "Meta Platforms, Inc.",
+    "NFLX": "Netflix, Inc.",
+    "MSTR": "MicroStrategy Incorporated",
+    "IONQ": "IonQ, Inc.",
+    "IOT": "Samsara Inc.",
+    "SOUN": "SoundHound AI, Inc.",
+    "SYM": "Symbotic Inc.",
+    
+    # Health Care
+    "ABBV": "AbbVie Inc.",
+    "ABT": "Abbott Laboratories",
+    "AMGN": "Amgen Inc.",
+    "BMY": "Bristol-Myers Squibb Company",
+    "CVS": "CVS Health Corporation",
+    "DHR": "Danaher Corporation",
+    "GILD": "Gilead Sciences, Inc.",
+    "ISRG": "Intuitive Surgical, Inc.",
+    "JNJ": "Johnson & Johnson",
+    "LLY": "Eli Lilly and Company",
+    "MDT": "Medtronic plc",
+    "MRK": "Merck & Co., Inc.",
+    "NVO": "Novo Nordisk A/S",
+    "PFE": "Pfizer Inc.",
+    "TMO": "Thermo Fisher Scientific Inc.",
+    "UNH": "UnitedHealth Group Incorporated",
+    "REGN": "Regeneron Pharmaceuticals, Inc.",
+    "BEAM": "Beam Therapeutics Inc.",
+    "CRSP": "CRISPR Therapeutics AG",
+    "CELH": "Celsius Holdings, Inc.",
+    
+    # Financials
+    "AIG": "American International Group, Inc.",
+    "AXP": "American Express Company",
+    "BAC": "Bank of America Corporation",
+    "BK": "The Bank of New York Mellon Corporation",
+    "BLK": "BlackRock, Inc.",
+    "BRK-B": "Berkshire Hathaway Inc. (Class B)",
+    "BRK.B": "Berkshire Hathaway Inc. (Class B)",
+    "C": "Citigroup Inc.",
+    "COF": "Capital One Financial Corporation",
+    "GS": "The Goldman Sachs Group, Inc.",
+    "IBKR": "Interactive Brokers Group, Inc.",
+    "JPM": "JPMorgan Chase & Co.",
+    "MA": "Mastercard Incorporated",
+    "MET": "MetLife, Inc.",
+    "MS": "Morgan Stanley",
+    "PYPL": "PayPal Holdings, Inc.",
+    "SCHW": "The Charles Schwab Corporation",
+    "USB": "U.S. Bancorp",
+    "V": "Visa Inc.",
+    "WFC": "Wells Fargo & Company",
+    "HOOD": "Robinhood Markets, Inc.",
+    "PNC": "PNC Financial Services Group, Inc.",
+    "TFC": "Truist Financial Corporation",
+    "NU": "Nu Holdings Ltd.",
+    
+    # Consumer Discretionary
+    "AMZN": "Amazon.com, Inc.",
+    "BKNG": "Booking Holdings Inc.",
+    "GM": "General Motors Company",
+    "HD": "The Home Depot, Inc.",
+    "LOW": "Lowe's Companies, Inc.",
+    "MCD": "McDonald's Corporation",
+    "NKE": "NIKE, Inc.",
+    "SBUX": "Starbucks Corporation",
+    "TGT": "Target Corporation",
+    "TSLA": "Tesla, Inc.",
+    "GRND": "Grindr Inc.",
+    
+    # Industrials
+    "CAT": "Caterpillar Inc.",
+    "DE": "Deere & Company",
+    "EMR": "Emerson Electric Co.",
+    "FDX": "FedEx Corporation",
+    "MMM": "3M Company",
+    "UBER": "Uber Technologies, Inc.",
+    "UNP": "Union Pacific Corporation",
+    "UPS": "United Parcel Service, Inc.",
+    "HON": "Honeywell International Inc.",
+    
+    # Defense & Aerospace (US)
+    "ACHR": "Archer Aviation Inc.",
+    "AIR": "AAR Corp.",
+    "AIRI": "Air Industries Group",
+    "AIRO": "AIRO Group Holdings Inc.",
+    "AOUT": "American Outdoor Brands, Inc.",
+    "ASTC": "Astrotech Corporation",
+    "ATI": "ATI Inc.",
+    "ATRO": "Astronics Corporation",
+    "AVAV": "AeroVironment, Inc.",
+    "AXON": "Axon Enterprise, Inc.",
+    "AZ": "A2Z Cust2Mate Solutions Corp.",
+    "BA": "The Boeing Company",
+    "BAH": "Booz Allen Hamilton Holding Corporation",
+    "BETA": "Beta Technologies Inc.",
+    "BWXT": "BWX Technologies, Inc.",
+    "BYRN": "Byrna Technologies Inc.",
+    "CACI": "CACI International Inc.",
+    "CAE": "CAE Inc.",
+    "CDRE": "Cadre Holdings, Inc.",
+    "CODA": "Coda Octopus Group, Inc.",
+    "CVU": "CPI Aerostructures, Inc.",
+    "CW": "Curtiss-Wright Corporation",
+    "DCO": "Ducommun Incorporated",
+    "DFSC": "Defsec Technologies Inc.",
+    "DPRO": "Draganfly Inc.",
+    "DRS": "Leonardo DRS, Inc.",
+    "EH": "EHang Holdings Limited",
+    "EMBJ": "Embraer S.A.",
+    "ESLT": "Elbit Systems Ltd.",
+    "EVEX": "Eve Holding, Inc.",
+    "EVTL": "Vertical Aerospace Ltd.",
+    "FJET": "Starfighters Space Inc.",
+    "FLY": "Firefly Aerospace Inc.",
+    "FTAI": "FTAI Aviation Ltd.",
+    "GD": "General Dynamics Corporation",
+    "GE": "GE Aerospace",
+    "GPUS": "Hyperscale Data Inc.",
+    "HEI": "HEICO Corporation",
+    "HII": "Huntington Ingalls Industries, Inc.",
+    "HOVR": "New Horizon Aircraft Ltd.",
+    "HWM": "Howmet Aerospace Inc.",
+    "HXL": "Hexcel Corporation",
+    "ISSC": "Innovative Solutions & Support, Inc.",
+    "JOBY": "Joby Aviation, Inc.",
+    "KITT": "Nauticus Robotics, Inc.",
+    "KRMN": "Karman Holdings Inc.",
+    "KTOS": "Kratos Defense & Security Solutions, Inc.",
+    "LDOS": "Leidos Holdings, Inc.",
+    "LHX": "L3Harris Technologies, Inc.",
+    "LMT": "Lockheed Martin Corporation",
+    "LOAR": "Loar Holdings Inc.",
+    "LUNR": "Intuitive Machines, Inc.",
+    "MANT": "ManTech International Corporation",
+    "MNTS": "Momentus Inc.",
+    "MOG.A": "Moog Inc. (Class A)",
+    "MOG-A": "Moog Inc. (Class A)",
+    "MRCY": "Mercury Systems, Inc.",
+    "MSA": "MSA Safety Incorporated",
+    "NOC": "Northrop Grumman Corporation",
+    "NPK": "National Presto Industries, Inc.",
+    "OPXS": "Optex Systems Holdings, Inc.",
+    "OSK": "Oshkosh Corporation",
+    "PEW": "Grabagun Digital Holdings Inc.",
+    "PKE": "Park Aerospace Corp.",
+    "PL": "Planet Labs PBC",
+    "POWW": "AMMO, Inc.",
+    "PRZO": "ParaZero Technologies Ltd.",
+    "RCAT": "Red Cat Holdings, Inc.",
+    "RDW": "Redwire Corporation",
+    "RGR": "Sturm, Ruger & Company, Inc.",
+    "RKLB": "Rocket Lab USA, Inc.",
+    "RTX": "RTX Corporation",
+    "SAIC": "Science Applications International Corporation",
+    "SARO": "StandardAero, Inc.",
+    "SATL": "Satellogic Inc.",
+    "SIDU": "Sidus Space, Inc.",
+    "SIF": "SIFCO Industries, Inc.",
+    "SKYH": "Sky Harbour Group Corporation",
+    "SPAI": "Safe Pro Group Inc.",
+    "SPCE": "Virgin Galactic Holdings, Inc.",
+    "SPR": "Spirit AeroSystems Holdings, Inc.",
+    "SWBI": "Smith & Wesson Brands, Inc.",
+    "TATT": "TAT Technologies Ltd.",
+    "TDG": "TransDigm Group Incorporated",
+    "TDY": "Teledyne Technologies Incorporated",
+    "TXT": "Textron Inc.",
+    "VSAT": "ViaSat, Inc.",
+    "VSEC": "VSE Corporation",
+    "VTSI": "VirTra, Inc.",
+    "VVX": "V2X, Inc.",
+    "VWAV": "Visionwave Holdings Inc.",
+    "VOYG": "Voyager Technologies Inc.",
+    "WWD": "Woodward, Inc.",
+    "ASTS": "AST SpaceMobile, Inc.",
+    "BKSY": "BlackSky Technology Inc.",
+    
+    # Defense & Aerospace (European)
+    "RHM.DE": "Rheinmetall AG",
+    "RHM": "Rheinmetall AG",
+    "AIR.PA": "Airbus SE",
+    "HO.PA": "Thales S.A.",
+    "HO": "Thales S.A.",
+    "HAG.DE": "Hensoldt AG",
+    "HAG": "Hensoldt AG",
+    "BA.L": "BAE Systems plc",
+    "FACC.VI": "FACC AG",
+    "FACC": "FACC AG",
+    "MTX.DE": "MTU Aero Engines AG",
+    "SAF.PA": "Safran SA",
+    "SAF": "Safran SA",
+    "HEIA.AS": "HEICO Corporation (Class A)",
+    "THEON.AS": "Theon International PLC",
+    "THEON": "Theon International PLC",
+    "KOG.OL": "Kongsberg Gruppen ASA",
+    "R3NK.DE": "Renk Group AG",
+    "AM": "Dassault Aviation SA",
+    "EXA.PA": "Exail Technologies",
+    "EXA": "Exail Technologies",
+    "FINMY": "Leonardo S.p.A. (ADR)",
+    "SAABY": "Saab AB (ADR)",
+    
+    # Communication Services
+    "CMCSA": "Comcast Corporation",
+    "DIS": "The Walt Disney Company",
+    "T": "AT&T Inc.",
+    "TMUS": "T-Mobile US, Inc.",
+    "VZ": "Verizon Communications Inc.",
+    
+    # Consumer Staples
+    "CL": "Colgate-Palmolive Company",
+    "COST": "Costco Wholesale Corporation",
+    "KO": "The Coca-Cola Company",
+    "MDLZ": "Mondelēz International, Inc.",
+    "MO": "Altria Group, Inc.",
+    "PEP": "PepsiCo, Inc.",
+    "PG": "The Procter & Gamble Company",
+    "PM": "Philip Morris International Inc.",
+    "WMT": "Walmart Inc.",
+    
+    # Energy
+    "COP": "ConocoPhillips",
+    "CVX": "Chevron Corporation",
+    "XOM": "Exxon Mobil Corporation",
+    
+    # Utilities
+    "NEE": "NextEra Energy, Inc.",
+    "SO": "The Southern Company",
+    "DUK": "Duke Energy Corporation",
+    
+    # Real Estate
+    "SPG": "Simon Property Group, Inc.",
+    "AMT": "American Tower Corporation",
+    
+    # Materials
+    "LIN": "Linde plc",
+    "NEM": "Newmont Corporation",
+    "AEM": "Agnico Eagle Mines Limited",
+    "B": "Barnes Group Inc.",
+    
+    # Asian Tech & Manufacturing
+    "005930.KS": "Samsung Electronics Co., Ltd.",
+    
+    # German Companies
+    "TKA.DE": "thyssenkrupp AG",
+    "TKA": "thyssenkrupp AG",
+    "VOW3.DE": "Volkswagen AG (Preferred)",
+    "VOW3": "Volkswagen AG (Preferred)",
+    "BMW3.DE": "Bayerische Motoren Werke AG (Preferred)",
+    "BAYN.DE": "Bayer AG",
+    "BAYN": "Bayer AG",
+    
+    # Polish Companies
+    "ACP": "Asseco Poland S.A.",
+    "SNT": "Synektik S.A.",
+    
+    # Options/Structured Products
+    "TSLD": "iShares Tesla Options ETF",
+    "PLTI": "iShares Palantir Options ETF",
+    "QQQO": "iShares Nasdaq 100 Options ETF",
+    "METI": "iShares Meta Options ETF",
+    "MSFI": "iShares Microsoft Options ETF",
+    "MSTP": "YieldMax MSTR Option Income Strategy ETF",
+    "MAGD": "iShares Magnificent 7 Options ETF",
+    "GOOO": "iShares Alphabet Options ETF",
+    "AMDI": "iShares AMD Options ETF",
+    "AMZD": "iShares Amazon Options ETF",
+    "AVGI": "iShares Broadcom Options ETF",
+    "BABI": "iShares Alibaba Options ETF",
+    "BABY": "iShares Alibaba Options ETF",
+    "AAPI": "iShares Apple Options ETF",
+    "GLDE": "iShares Gold Yield Options ETF",
+    "SLVI": "iShares Silver Yield Options ETF",
+    
+    # Gold/Precious Metals
+    "SGLP": "Invesco Physical Gold ETC",
+    "GLDW": "WisdomTree Core Physical Gold",
+    
+    # E-commerce & Fintech
+    "GLBE": "Global-E Online Ltd.",
+    "AFRM": "Affirm Holdings, Inc.",
+    "COIN": "Coinbase Global, Inc.",
+    "HUBS": "HubSpot, Inc.",
+    
+    # VanEck ETFs (additional)
+    "MLN": "VanEck Long Muni ETF",
+    "MOAT": "VanEck Morningstar Wide Moat ETF",
+    "MOO": "VanEck Agribusiness ETF",
+    "MOTI": "VanEck Morningstar International Moat ETF",
+    "NLR": "VanEck Uranium+Nuclear Energy ETF",
+    "OIH": "VanEck Oil Services ETF",
+    "PPH": "VanEck Pharmaceutical ETF",
+    "REMX": "VanEck Rare Earth/Strategic Metals ETF",
+    "ESPO": "VanEck Video Gaming and eSports ETF",
+    "GFA": "VanEck Global Fallen Angel High Yield Bond ETF",
+    "TRET": "VanEck Global Real Estate ETF",
+    
+    # Nuclear & Energy
+    "OKLO": "Oklo Inc.",
+    "CCJ": "Cameco Corporation",
+    "UUUU": "Energy Fuels Inc.",
+    "GEV": "GE Vernova Inc.",
+    "LEU": "Centrus Energy Corp.",
+    "SMR": "NuScale Power Corporation",
+    
+    # Critical Materials & Mining
+    "MP": "MP Materials Corp.",
+    "CRML": "Critical Metals PLC",
+    "IDR": "Idaho Strategic Resources, Inc.",
+    "FCX": "Freeport-McMoRan Inc.",
+    "UAMY": "United States Antimony Corporation",
+    
+    # Drones & Robotics
+    "ONDS": "Ondas Holdings Inc.",
+    "UMAC": "Unusual Machines, Inc.",
+    
+    # AI Infrastructure & Data Centers
+    "IREN": "Iris Energy Limited",
+    "NBIS": "Nebius Group N.V.",
+    "CIFR": "Cipher Mining Inc.",
+    "CRWV": "CoreWeave, Inc.",
+    "GLXY": "Galaxy Digital Holdings Ltd.",
+    
+    # Growth Screen Stocks
+    "NUTX": "Nutex Health, Inc.",
+    "MU": "Micron Technology, Inc.",
+    "SANM": "Sanmina Corporation",
+    "SEZL": "Sezzle Inc.",
+    "AMCR": "Amcor plc",
+    "PSIX": "Power Solutions International, Inc.",
+    "DLO": "DLocal Limited",
+    "COMM": "CommScope Holding Company, Inc.",
+    "PGY": "Pagaya Technologies Ltd.",
+    "FOUR": "Shift4 Payments, Inc.",
+    
+    # AI Infrastructure & Semiconductor Equipment
+    "ASML": "ASML Holding N.V.",
+    "LRCX": "Lam Research Corporation",
+    "AMAT": "Applied Materials, Inc.",
+    "TSM": "Taiwan Semiconductor Manufacturing Company Limited",
+    "ARM": "Arm Holdings plc",
+    "SMCI": "Super Micro Computer, Inc.",
+    "ANET": "Arista Networks, Inc.",
+    "SNPS": "Synopsys, Inc.",
+    "CDNS": "Cadence Design Systems, Inc.",
+    
+    # Cloud & Cybersecurity Infrastructure
+    "CRWD": "CrowdStrike Holdings, Inc.",
+    "ZS": "Zscaler, Inc.",
+    "DDOG": "Datadog, Inc.",
+    "SNOW": "Snowflake Inc.",
+    "MDB": "MongoDB, Inc.",
+    
+    # AI Power & Semiconductor Choke Points
+    "NVTS": "Navitas Semiconductor Corporation",
+    "WOLF": "Wolfspeed, Inc.",
+    "AEHR": "Aehr Test Systems",
+    "ALAB": "Astera Labs, Inc.",
+    "CRDO": "Credo Technology Group Holding Ltd.",
+    
+    # Batteries & Energy Tech
+    "ENVX": "Enovix Corporation",
+    "QS": "QuantumScape Corporation",
+    
+    # TechBio / AI-Drug Discovery
+    "RXRX": "Recursion Pharmaceuticals, Inc.",
+    "SDGR": "Schrödinger, Inc.",
+    "ABCL": "AbCellera Biologics Inc.",
+    "NTLA": "Intellia Therapeutics, Inc.",
+    "TEM": "Tempus AI, Inc.",
+    
+    # Quantum Computing
+    "QBTS": "D-Wave Quantum Inc.",
+    "ARQQ": "Arqit Quantum Inc.",
+    "RGTI": "Rigetti Computing, Inc.",
+    "QUBT": "Quantum Computing Inc.",
+    
+    # Space & Satellite
+    "SPIR": "Spire Global, Inc.",
+    "GSAT": "Globalstar, Inc.",
+    "IRDM": "Iridium Communications Inc.",
+    "MDA.TO": "MDA Space Ltd.",
+    "MDALF": "MDA Space Ltd. (ADR)",
+    
+    # AI Software & Data
+    "CFLT": "Confluent, Inc.",
+    "ESTC": "Elastic N.V.",
+    "PATH": "UiPath Inc.",
+    
+    # AI Hardware & Edge Compute
+    "MRVL": "Marvell Technology, Inc.",
+    "NXPI": "NXP Semiconductors N.V.",
+    "ADI": "Analog Devices, Inc.",
+    "ON": "ON Semiconductor Corporation",
+    
+    # Industrial & Infrastructure
+    "PWR": "Quanta Services, Inc.",
+    "VRT": "Vertiv Holdings Co.",
+    "JCI": "Johnson Controls International plc",
+    
+    # Advanced Materials & Manufacturing
+    "CRS": "Carpenter Technology Corporation",
+    "KMT": "Kennametal Inc.",
+    
+    # Biotech Platforms
+    "VRTX": "Vertex Pharmaceuticals Incorporated",
+    "ILMN": "Illumina, Inc.",
+    "PACB": "Pacific Biosciences of California, Inc.",
+    
+    # Energy Transition & Storage
+    "FLNC": "Fluence Energy, Inc.",
+    "ENPH": "Enphase Energy, Inc.",
+    "BE": "Bloom Energy Corporation",
+    
+    # Additional XAGUSD variant
+    "XAGUSD": "Silver Spot (XAG/USD)",
+}
+
+
+def get_company_name(symbol: str) -> Optional[str]:
+    """
+    Get the display name for a symbol from the internal dictionary.
+    
+    This function provides a fast, offline lookup for company/asset names
+    without making external API calls.
+    
+    Args:
+        symbol: The ticker symbol (e.g., "AAPL", "GC=F")
+        
+    Returns:
+        The company/asset display name if found, None otherwise.
+        
+    Example:
+        >>> get_company_name("AAPL")
+        'Apple Inc.'
+        >>> get_company_name("UNKNOWN")
+        None
+    """
+    if not symbol:
+        return None
+    sym = symbol.strip().upper()
+    
+    # Direct lookup
+    if sym in COMPANY_NAMES:
+        return COMPANY_NAMES[sym]
+    
+    # Try without exchange suffix
+    base_sym = sym.split(".")[0].split("=")[0].split("-")[0]
+    if base_sym in COMPANY_NAMES:
+        return COMPANY_NAMES[base_sym]
+    
+    return None
+
+
 # Default asset universe: comprehensive list of FX pairs, commodities, stocks, and ETFs
 # This centralized constant is used by fx_pln_jpy_signals.py and tuning/tune_q_mle.py
 # Individual scripts can override via command-line arguments
@@ -1408,8 +1948,208 @@ def get_sector(symbol: str) -> str:
 
 # FX rate cache (JSON on disk) to avoid repeated network calls
 FX_RATE_CACHE_PATH = os.path.join("cache", "fx_rates.json")
-FX_RATE_CACHE_MAX_AGE_DAYS = 1
+FX_RATE_CACHE_MAX_AGE_DAYS = 3  # Cache FX rates for 3 days to reduce rate limiting
 _FX_RATE_CACHE: Optional[Dict[str, dict]] = None
+
+# Static mapping of known symbols to their quote currencies
+# This avoids API calls for commonly used assets
+KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
+    # =========================================================================
+    # US Stocks (USD) - Major companies
+    # =========================================================================
+    "AAPL": "USD", "MSFT": "USD", "GOOGL": "USD", "GOOG": "USD", "AMZN": "USD",
+    "NVDA": "USD", "META": "USD", "TSLA": "USD", "BRK-B": "USD", "BRK.B": "USD",
+    "JPM": "USD", "V": "USD", "MA": "USD", "UNH": "USD", "JNJ": "USD",
+    "HD": "USD", "PG": "USD", "XOM": "USD", "CVX": "USD", "BAC": "USD",
+    "ABBV": "USD", "MRK": "USD", "PFE": "USD", "COST": "USD", "KO": "USD",
+    "PEP": "USD", "AVGO": "USD", "LLY": "USD", "WMT": "USD", "MCD": "USD",
+    "CSCO": "USD", "ABT": "USD", "TMO": "USD", "DHR": "USD", "ACN": "USD",
+    "ADBE": "USD", "AMD": "USD", "CRM": "USD", "INTC": "USD", "INTU": "USD",
+    "NFLX": "USD", "ORCL": "USD", "QCOM": "USD", "TXN": "USD", "NOW": "USD",
+    "IBM": "USD", "PLTR": "USD", "MSTR": "USD", "COIN": "USD", "HOOD": "USD",
+    "PYPL": "USD", "GS": "USD", "MS": "USD", "C": "USD", "WFC": "USD",
+    "USB": "USD", "PNC": "USD", "TFC": "USD", "BK": "USD", "SCHW": "USD",
+    "BLK": "USD", "AXP": "USD", "COF": "USD", "MET": "USD", "AIG": "USD",
+    "IBKR": "USD", "NU": "USD", "AFRM": "USD", "HUBS": "USD",
+    
+    # Health Care (USD)
+    "AMGN": "USD", "BMY": "USD", "CVS": "USD", "GILD": "USD", "ISRG": "USD",
+    "MDT": "USD", "NVO": "USD", "REGN": "USD", "BEAM": "USD", "CRSP": "USD",
+    "CELH": "USD", "VRTX": "USD", "ILMN": "USD", "PACB": "USD", "RXRX": "USD",
+    "SDGR": "USD", "ABCL": "USD", "NTLA": "USD", "TEM": "USD",
+    
+    # Consumer (USD)
+    "GM": "USD", "LOW": "USD", "NKE": "USD", "SBUX": "USD", "TGT": "USD",
+    "BKNG": "USD", "GRND": "USD",
+    
+    # Industrial (USD)
+    "CAT": "USD", "DE": "USD", "EMR": "USD", "FDX": "USD", "MMM": "USD",
+    "UBER": "USD", "UNP": "USD", "UPS": "USD", "HON": "USD",
+    
+    # Communication (USD)
+    "CMCSA": "USD", "DIS": "USD", "T": "USD", "TMUS": "USD", "VZ": "USD",
+    
+    # Consumer Staples (USD)
+    "CL": "USD", "MDLZ": "USD", "MO": "USD", "PM": "USD",
+    
+    # Energy (USD)
+    "COP": "USD",
+    
+    # Utilities (USD)
+    "NEE": "USD", "SO": "USD", "DUK": "USD",
+    
+    # Real Estate (USD)
+    "SPG": "USD", "AMT": "USD",
+    
+    # Materials (USD)
+    "LIN": "USD", "NEM": "USD", "AEM": "USD", "B": "USD", "FCX": "USD",
+    
+    # =========================================================================
+    # Defense & Aerospace (US - USD)
+    # =========================================================================
+    "BA": "USD", "LMT": "USD", "RTX": "USD", "NOC": "USD", "GD": "USD",
+    "GE": "USD", "HII": "USD", "LHX": "USD", "LDOS": "USD", "KTOS": "USD",
+    "AVAV": "USD", "RKLB": "USD", "JOBY": "USD", "AXON": "USD",
+    "ACHR": "USD", "AIR": "USD", "AIRI": "USD", "AIRO": "USD", "AOUT": "USD",
+    "ASTC": "USD", "ATI": "USD", "ATRO": "USD", "AZ": "USD", "BAH": "USD",
+    "BETA": "USD", "BWXT": "USD", "BYRN": "USD", "CACI": "USD", "CAE": "USD",
+    "CDRE": "USD", "CODA": "USD", "CVU": "USD", "CW": "USD", "DCO": "USD",
+    "DFSC": "USD", "DPRO": "USD", "DRS": "USD", "EH": "USD", "EMBJ": "USD",
+    "EVEX": "USD", "EVTL": "USD", "FJET": "USD", "FLY": "USD", "FTAI": "USD",
+    "GPUS": "USD", "HEI": "USD", "HOVR": "USD", "HWM": "USD", "HXL": "USD",
+    "ISSC": "USD", "KITT": "USD", "KRMN": "USD", "LOAR": "USD", "LUNR": "USD",
+    "MANT": "USD", "MNTS": "USD", "MOG.A": "USD", "MOG-A": "USD", "MRCY": "USD",
+    "MSA": "USD", "NPK": "USD", "OPXS": "USD", "OSK": "USD", "PEW": "USD",
+    "PKE": "USD", "PL": "USD", "POWW": "USD", "PRZO": "USD", "RCAT": "USD",
+    "RDW": "USD", "RGR": "USD", "SAIC": "USD", "SARO": "USD", "SATL": "USD",
+    "SIDU": "USD", "SIF": "USD", "SKYH": "USD", "SPAI": "USD", "SPCE": "USD",
+    "SPR": "USD", "SWBI": "USD", "TATT": "USD", "TDG": "USD", "TDY": "USD",
+    "TXT": "USD", "VSAT": "USD", "VSEC": "USD", "VTSI": "USD", "VVX": "USD",
+    "VWAV": "USD", "VOYG": "USD", "WWD": "USD", "ASTS": "USD", "BKSY": "USD",
+    
+    # =========================================================================
+    # AI & Semiconductors (USD)
+    # =========================================================================
+    "ASML": "USD", "LRCX": "USD", "AMAT": "USD", "TSM": "USD", "ARM": "USD",
+    "SMCI": "USD", "ANET": "USD", "SNPS": "USD", "CDNS": "USD", "MRVL": "USD",
+    "NXPI": "USD", "ADI": "USD", "ON": "USD", "NVTS": "USD", "WOLF": "USD",
+    "AEHR": "USD", "ALAB": "USD", "CRDO": "USD", "MU": "USD",
+    
+    # Cloud & Cybersecurity (USD)
+    "CRWD": "USD", "ZS": "USD", "DDOG": "USD", "SNOW": "USD", "MDB": "USD",
+    "CFLT": "USD", "ESTC": "USD", "PATH": "USD",
+    
+    # Quantum (USD)
+    "IONQ": "USD", "QBTS": "USD", "ARQQ": "USD", "RGTI": "USD", "QUBT": "USD",
+    
+    # Space (USD)
+    "SPIR": "USD", "GSAT": "USD", "IRDM": "USD",
+    
+    # Fintech (USD)
+    "SOUN": "USD", "SYM": "USD", "IOT": "USD", "GLBE": "USD",
+    
+    # Nuclear & Energy (USD)
+    "OKLO": "USD", "CCJ": "USD", "UUUU": "USD", "GEV": "USD", "LEU": "USD",
+    "SMR": "USD", "ENVX": "USD", "QS": "USD", "FLNC": "USD", "ENPH": "USD", "BE": "USD",
+    
+    # Infrastructure (USD)
+    "PWR": "USD", "VRT": "USD", "JCI": "USD", "CRS": "USD", "KMT": "USD",
+    
+    # Growth Screen (USD)
+    "NUTX": "USD", "SANM": "USD", "SEZL": "USD", "AMCR": "USD", "PSIX": "USD",
+    "DLO": "USD", "COMM": "USD", "PGY": "USD", "FOUR": "USD",
+    
+    # Drones (USD)
+    "ONDS": "USD", "UMAC": "USD",
+    
+    # AI Infrastructure (USD)
+    "IREN": "USD", "NBIS": "USD", "CIFR": "USD", "CRWV": "USD", "GLXY": "USD",
+    
+    # Critical Materials (USD)
+    "MP": "USD", "CRML": "USD", "IDR": "USD", "UAMY": "USD",
+    
+    # =========================================================================
+    # ETFs (USD)
+    # =========================================================================
+    "SPY": "USD", "VOO": "USD", "QQQ": "USD", "IWM": "USD", "DIA": "USD",
+    "GLD": "USD", "SLV": "USD", "SMH": "USD", "XLF": "USD", "XLK": "USD",
+    "XLE": "USD", "XLV": "USD", "XLI": "USD", "XLP": "USD", "XLY": "USD",
+    "XLU": "USD", "XLB": "USD", "XLRE": "USD",
+    "GDX": "USD", "GDXJ": "USD", "ARKK": "USD", "ARKG": "USD",
+    # VanEck ETFs
+    "AFK": "USD", "ANGL": "USD", "CNXT": "USD", "DURA": "USD", "EGPT": "USD",
+    "FLTR": "USD", "GLIN": "USD", "MOTG": "USD", "IDX": "USD", "DFNG": "USD",
+    "MLN": "USD", "MOAT": "USD", "MOO": "USD", "MOTI": "USD", "NLR": "USD",
+    "OIH": "USD", "PPH": "USD", "REMX": "USD", "ESPO": "USD", "GFA": "USD", "TRET": "USD",
+    # Options ETFs
+    "TSLD": "USD", "PLTI": "USD", "QQQO": "USD", "METI": "USD", "MSFI": "USD",
+    "MSTP": "USD", "MAGD": "USD", "GOOO": "USD", "AMDI": "USD", "AMZD": "USD",
+    "AVGI": "USD", "BABI": "USD", "BABY": "USD", "AAPI": "USD", "GLDE": "USD",
+    "SLVI": "USD", "SGLP": "USD", "GLDW": "USD",
+    
+    # =========================================================================
+    # Commodities/Futures (USD)
+    # =========================================================================
+    "GC=F": "USD", "SI=F": "USD", "CL=F": "USD", "NG=F": "USD",
+    "PL=F": "USD", "PA=F": "USD",
+    
+    # =========================================================================
+    # Crypto (USD)
+    # =========================================================================
+    "BTC-USD": "USD", "ETH-USD": "USD", "SOL-USD": "USD",
+    
+    # =========================================================================
+    # European Stocks
+    # =========================================================================
+    # German (EUR)
+    "RHM.DE": "EUR", "MTX.DE": "EUR", "HAG.DE": "EUR", "TKA.DE": "EUR",
+    "VOW3.DE": "EUR", "BMW3.DE": "EUR", "BAYN.DE": "EUR", "R3NK.DE": "EUR",
+    "RHM": "EUR", "HAG": "EUR", "TKA": "EUR", "VOW3": "EUR", "BAYN": "EUR",
+    # French (EUR)
+    "AIR.PA": "EUR", "SAF.PA": "EUR", "HO.PA": "EUR", "EXA.PA": "EUR",
+    "SAF": "EUR", "HO": "EUR", "EXA": "EUR", "AM": "EUR",
+    # Dutch (EUR)
+    "ASML": "EUR", "HEIA.AS": "EUR", "THEON.AS": "EUR", "THEON": "EUR",
+    # Austrian (EUR)
+    "FACC.VI": "EUR", "FACC": "EUR",
+    # UK (GBX = pence)
+    "BA.L": "GBX",
+    # Norwegian (NOK)
+    "KOG.OL": "NOK",
+    # Israeli (USD - listed on US exchanges)
+    "ESLT": "USD",
+    # ADRs (USD)
+    "FINMY": "USD", "SAABY": "USD", "MDALF": "USD",
+    
+    # =========================================================================
+    # Asian Stocks
+    # =========================================================================
+    # Korean (KRW)
+    "005930.KS": "KRW",
+    # Canadian (CAD)
+    "MDA.TO": "CAD",
+    
+    # =========================================================================
+    # Polish Stocks (PLN)
+    # =========================================================================
+    "ACP": "PLN", "SNT": "PLN",
+    
+    # =========================================================================
+    # FX Pairs
+    # =========================================================================
+    "PLNJPY=X": "JPY", "USDPLN=X": "PLN", "EURPLN=X": "PLN",
+    "GBPPLN=X": "PLN", "EURUSD=X": "USD", "USDJPY=X": "JPY",
+    "EURJPY=X": "JPY", "GBPUSD=X": "USD", "USDCHF=X": "CHF",
+    "AUDUSD=X": "USD", "USDCAD=X": "CAD", "NZDUSD=X": "USD",
+    "CHFPLN=X": "PLN", "CADPLN=X": "PLN", "AUDPLN=X": "PLN",
+    "JPYPLN=X": "PLN", "SEKPLN=X": "PLN", "NOKPLN=X": "PLN",
+    "DKKPLN=X": "PLN", "HKDPLN=X": "PLN",
+    "EURSEK=X": "SEK", "EURNOK=X": "NOK", "EURDKK=X": "DKK",
+    "USDHKD=X": "HKD", "USDKRW=X": "KRW",
+}
+
+# Cache for detected currencies to avoid repeated API calls
+_CURRENCY_DETECTION_CACHE: Dict[str, str] = {}
 
 
 def get_default_asset_universe() -> List[str]:
@@ -2265,16 +3005,57 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
 # Display-name cache for full asset names (e.g., company longName)
 _DISPLAY_NAME_CACHE: Dict[str, str] = {}
 
-def _resolve_display_name(symbol: str) -> str:
+def _resolve_display_name(symbol: str, use_api_fallback: bool = True) -> str:
     """Return a human-friendly display name for a Yahoo symbol.
-    Tries yfinance fast_info/info longName/shortName; falls back to the symbol itself.
+    
+    First checks the internal COMPANY_NAMES dictionary for fast, offline lookup.
+    If not found and use_api_fallback is True, tries yfinance fast_info/info 
+    longName/shortName; falls back to the symbol itself.
+    
     Caches results for repeated use.
+    
+    Args:
+        symbol: The ticker symbol (e.g., "AAPL", "GC=F")
+        use_api_fallback: If True, will query Yahoo Finance API when not found
+                         in internal dictionary. Set to False for offline-only mode.
+    
+    Returns:
+        Human-friendly display name for the symbol.
+        
+    Example:
+        >>> _resolve_display_name("AAPL")
+        'Apple Inc.'
+        >>> _resolve_display_name("UNKNOWN_TICKER", use_api_fallback=False)
+        'UNKNOWN_TICKER'
     """
     sym = (symbol or "").strip()
     if not sym:
         return symbol
+    
+    # Check cache first
     if sym in _DISPLAY_NAME_CACHE:
         return _DISPLAY_NAME_CACHE[sym]
+    
+    # Check internal dictionary (fast, no API call)
+    internal_name = get_company_name(sym)
+    if internal_name:
+        _DISPLAY_NAME_CACHE[sym] = internal_name
+        return internal_name
+    
+    # Also try uppercase version
+    sym_upper = sym.upper()
+    if sym_upper != sym:
+        internal_name = get_company_name(sym_upper)
+        if internal_name:
+            _DISPLAY_NAME_CACHE[sym] = internal_name
+            return internal_name
+    
+    # If API fallback is disabled, return the symbol itself
+    if not use_api_fallback:
+        _DISPLAY_NAME_CACHE[sym] = sym
+        return sym
+    
+    # Fallback to Yahoo Finance API (slower, requires network)
     name: Optional[str] = None
     try:
         tk = yf.Ticker(sym)
@@ -2294,6 +3075,7 @@ def _resolve_display_name(symbol: str) -> str:
                     name = getattr(fi, "shortName", None) or getattr(fi, "longName", None)
     except Exception:
         name = None
+    
     disp = str(name).strip() if name else sym
     _DISPLAY_NAME_CACHE[sym] = disp
     return disp
@@ -2521,11 +3303,79 @@ def fetch_usd_to_pln_exchange_rate(start: Optional[str], end: Optional[str]) -> 
 def detect_quote_currency(symbol: str) -> str:
     """Try to detect the quote currency for a Yahoo symbol.
     Returns uppercase ISO code like 'USD','EUR','GBP','GBp','JPY', or '' if unknown.
+    
+    Uses a three-tier approach to minimize API calls:
+    1. Check static KNOWN_SYMBOL_CURRENCIES dictionary
+    2. Check in-memory cache of previously detected currencies
+    3. Use suffix-based heuristics (no API call)
+    4. Only call Yahoo Finance API as last resort
     """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return "USD"
+    
+    # Tier 1: Check static dictionary (instant, no API)
+    if sym in KNOWN_SYMBOL_CURRENCIES:
+        return KNOWN_SYMBOL_CURRENCIES[sym]
+    
+    # Also check without suffix for common patterns
+    base_sym = sym.split(".")[0].split("=")[0].split("-")[0]
+    if base_sym in KNOWN_SYMBOL_CURRENCIES:
+        return KNOWN_SYMBOL_CURRENCIES[base_sym]
+    
+    # Tier 2: Check in-memory cache
+    if sym in _CURRENCY_DETECTION_CACHE:
+        return _CURRENCY_DETECTION_CACHE[sym]
+    
+    # Tier 3: Suffix-based heuristics (no API call)
+    s = sym.upper()
+    suffix_currency = None
+    if s.endswith(".DE") or s.endswith(".F") or s.endswith(".BE") or s.endswith(".XETRA"):
+        suffix_currency = "EUR"
+    elif s.endswith(".PA"):
+        suffix_currency = "EUR"
+    elif s.endswith(".L") or s.endswith(".LON"):
+        suffix_currency = "GBX"  # London often in pence
+    elif s.endswith(".VI"):
+        suffix_currency = "EUR"
+    elif s.endswith(".AS"):  # Amsterdam
+        suffix_currency = "EUR"
+    elif s.endswith(".CO"):
+        suffix_currency = "DKK"
+    elif s.endswith(".OL"):
+        suffix_currency = "NOK"
+    elif s.endswith(".ST"):
+        suffix_currency = "SEK"
+    elif s.endswith(".TO") or s.endswith(".TSX"):
+        suffix_currency = "CAD"
+    elif s.endswith(".SZ") or s.endswith(".SS"):
+        suffix_currency = "CNY"
+    elif s.endswith(".KS") or s.endswith(".KQ"):
+        suffix_currency = "KRW"
+    elif s.endswith(".HK"):
+        suffix_currency = "HKD"
+    elif s.endswith(".T"):  # Tokyo
+        suffix_currency = "JPY"
+    elif "=X" in s:
+        # FX pair - currency is complex, default to USD
+        suffix_currency = "USD"
+    elif "=F" in s:
+        # Futures - typically USD
+        suffix_currency = "USD"
+    elif "-USD" in s:
+        # Crypto pairs
+        suffix_currency = "USD"
+    
+    if suffix_currency:
+        _CURRENCY_DETECTION_CACHE[sym] = suffix_currency
+        return suffix_currency
+    
+    # Tier 4: Yahoo Finance API (last resort, may cause rate limiting)
+    # Only call API if we truly don't know the currency
     try:
         tk = yf.Ticker(symbol)
-        # fast_info first
         cur = None
+        # Try fast_info first (less likely to rate limit)
         try:
             fi = getattr(tk, "fast_info", None)
             if fi is not None:
@@ -2533,32 +3383,21 @@ def detect_quote_currency(symbol: str) -> str:
         except Exception:
             cur = None
         if not cur:
-            info = tk.info or {}
-            cur = info.get("currency")
+            # Try info (more likely to rate limit)
+            try:
+                info = tk.info or {}
+                cur = info.get("currency")
+            except Exception:
+                cur = None
         if cur:
-            return str(cur).upper()
+            detected = str(cur).upper()
+            _CURRENCY_DETECTION_CACHE[sym] = detected
+            return detected
     except Exception:
         pass
-    # Heuristics from suffix
-    s = symbol.upper()
-    if s.endswith(".DE") or s.endswith(".F") or s.endswith(".BE") or s.endswith(".XETRA"):
-        return "EUR"
-    if s.endswith(".PA"):
-        return "EUR"
-    if s.endswith(".L") or s.endswith(".LON"):
-        # London often in GBX (pence)
-        return "GBX"
-    if s.endswith(".VI"):
-        return "EUR"
-    if s.endswith(".CO"):
-        return "DKK"
-    if s.endswith(".TO") or s.endswith(".TSX"):
-        return "CAD"
-    if s.endswith(".SZ") or s.endswith(".SS"):
-        return "CNY"
-    if s.endswith(".KS") or s.endswith(".KQ"):
-        return "KRW"
-    # Default to USD
+    
+    # Default to USD for US-like symbols
+    _CURRENCY_DETECTION_CACHE[sym] = "USD"
     return "USD"
 
 

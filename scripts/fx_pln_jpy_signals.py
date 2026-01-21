@@ -74,6 +74,8 @@ from fx_data_utils import (
     _resolve_symbol_candidates,
     DEFAULT_ASSET_UNIVERSE,
     get_default_asset_universe,
+    COMPANY_NAMES,
+    get_company_name,
     SECTOR_MAP,
     get_sector,
     download_prices_bulk,
@@ -2019,18 +2021,26 @@ def posterior_predictive_mc_probability(
     seed: Optional[int] = None
 ) -> float:
     """
-    Unified posterior predictive Monte-Carlo probability P(r_H > 0 | D).
+    Unified posterior predictive Monte-Carlo probability P(R_H > 0 | D).
     
     This sampler marginalizes jointly over:
     1. Drift posterior uncertainty (μ_t ~ N(μ̂_t, P_t) or t_ν)
     2. Drift propagation dynamics (AR(1): μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q))
-    3. Observation noise (ε_H ~ N(0, v_H) or t_ν scaled)
+    3. Observation noise (ε ~ N(0, v_H) or t_ν scaled)
+    
+    CRITICAL: Horizon return is the ACCUMULATED drift plus observation noise:
+    
+        R_H = Σ_{k=1}^{H} μ_{t+k} + ε
+    
+    NOT the terminal drift μ_{t+H}. Using only terminal drift causes the mean to
+    collapse toward zero for φ<1, forcing all probabilities toward 0.5.
     
     Mathematical Model:
     - Drift posterior: μ_t ~ N(μ̂_t, P_t) [or Student-t if ν provided]
     - Drift propagation: μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
-    - Return sampling: r_H = μ_{t+H} + ε_H, ε_H ~ N(0, v_H) [or Student-t]
-    - Posterior predictive: p = E[1{r_H > 0}] estimated as np.mean(r_samples > 0)
+    - Accumulated drift: cum_μ = Σ_{k=1}^{H} μ_{t+k}
+    - Return: R_H = cum_μ + ε, ε ~ N(0, v_H) [or Student-t]
+    - Posterior predictive: p = E[1{R_H > 0}] estimated as np.mean(r_samples > 0)
     
     This is the ONLY probability used for trading decisions.
     No blending with analytical probabilities.
@@ -2048,13 +2058,14 @@ def posterior_predictive_mc_probability(
         seed: Random seed for reproducibility (if None, non-deterministic)
         
     Returns:
-        Posterior predictive probability P(r_H > 0 | D), a scalar in (0, 1)
+        Posterior predictive probability P(R_H > 0 | D), a scalar in (0, 1)
         
     Design Philosophy:
     - Probability geometry is internally consistent (single probability space)
     - Drift uncertainty automatically collapses confidence toward 0.5
     - Heavy tails emerge naturally when P_t or q is large
     - Regime transitions are naturally penalized via drift uncertainty
+    - Accumulated drift preserves signal strength for persistent drift (φ≈1)
     """
     # Input validation and sanitization
     mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
@@ -2083,69 +2094,62 @@ def posterior_predictive_mc_probability(
             # t_ν(μ̂_t, scale) has variance scale² · ν/(ν-2)
             # We want Var(μ_t) = P_t, so scale = √(P_t · (ν-2)/ν)
             t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
-            mu_samples = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
+            mu_paths = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
         else:
             # Gaussian posterior for drift
-            mu_samples = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
+            mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
     else:
         # No drift uncertainty: point estimate
-        mu_samples = np.full(n_paths, mu_t, dtype=float)
+        mu_paths = np.full(n_paths, mu_t, dtype=float)
     
     # ========================================================================
-    # Step 2: Propagate drift forward H steps via AR(1) dynamics
+    # Step 2: Propagate drift forward H steps and ACCUMULATE
     #         μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
+    #         cum_μ = Σ_{k=1}^{H} μ_{t+k}
     # ========================================================================
-    # Vectorized propagation: for efficiency, compute cumulative effect
-    # After H steps: μ_{t+H} = φ^H · μ_t + Σ_{k=1}^H φ^{H-k} · η_k
-    # The second term is a sum of Gaussians with total variance:
-    #   Var(Σ) = q · Σ_{k=0}^{H-1} φ^{2k} = q · (1 - φ^{2H}) / (1 - φ²)  if |φ| < 1
-    #          = q · H  if φ = 1 (random walk)
+    # CRITICAL: We accumulate drift over the horizon, not just use terminal drift.
+    # The horizon return R_H = Σ_{k=1}^H r_k where each r_k ≈ μ_{t+k} + noise.
+    # The drift component is Σ_{k=1}^H μ_{t+k}.
     
-    # Compute drift at horizon H
-    phi_H = phi ** H
-    mu_H_from_initial = phi_H * mu_samples
+    cum_mu = np.zeros(n_paths, dtype=float)
+    q_std = math.sqrt(q) if q > 0 else 0.0
     
-    if q > 0 and H > 0:
-        # Propagation noise variance
-        phi2 = phi ** 2
-        if abs(phi2 - 1.0) > 1e-10:
-            # Geometric series: Σ_{k=0}^{H-1} φ^{2k} = (1 - φ^{2H}) / (1 - φ²)
-            propagation_var = q * (1.0 - phi2 ** H) / (1.0 - phi2)
+    for k in range(H):
+        # Propagate drift: μ_{t+k+1} = φ·μ_{t+k} + η_{k+1}
+        if q_std > 0:
+            if nu is not None:
+                # Student-t process noise for heavier tails
+                eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
+                eta = eta_scale * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eta = rng.normal(loc=0.0, scale=q_std, size=n_paths)
         else:
-            # Random walk case: variance grows linearly
-            propagation_var = q * H
+            eta = np.zeros(n_paths, dtype=float)
         
-        propagation_var = max(propagation_var, 0.0)
+        mu_paths = phi * mu_paths + eta
         
-        if nu is not None:
-            # Student-t propagation noise for heavier tails
-            prop_scale = math.sqrt(propagation_var * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(propagation_var)
-            propagation_noise = prop_scale * rng.standard_t(df=nu, size=n_paths)
-        else:
-            propagation_noise = rng.normal(loc=0.0, scale=math.sqrt(propagation_var), size=n_paths)
-    else:
-        propagation_noise = np.zeros(n_paths, dtype=float)
-    
-    # Drift at horizon: μ_{t+H}
-    mu_at_H = mu_H_from_initial + propagation_noise
+        # Accumulate drift contribution at this step
+        cum_mu += mu_paths
     
     # ========================================================================
-    # Step 3: Sample observation noise and compute returns
-    #         r_H = μ_{t+H} + ε_H, ε_H ~ N(0, v_H) or t_ν(0, √v_H)
+    # Step 3: Sample observation noise
+    #         ε ~ N(0, v_H) or t_ν(0, √v_H)
     # ========================================================================
+    # vH is the total observation noise variance over horizon H
+    # (typically σ²·H for a diffusion process)
     if nu is not None:
-        # Student-t observation noise: scale for unit variance = √(v_H · (ν-2)/ν)
+        # Student-t observation noise: scale for target variance
         obs_scale = math.sqrt(vH * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(vH)
-        epsilon_H = obs_scale * rng.standard_t(df=nu, size=n_paths)
+        epsilon = obs_scale * rng.standard_t(df=nu, size=n_paths)
     else:
-        epsilon_H = rng.normal(loc=0.0, scale=math.sqrt(vH), size=n_paths)
-    
-    # Returns at horizon H
-    r_samples = mu_at_H + epsilon_H
+        epsilon = rng.normal(loc=0.0, scale=math.sqrt(vH), size=n_paths)
     
     # ========================================================================
-    # Step 4: Compute posterior predictive probability
+    # Step 4: Compute horizon returns and posterior predictive probability
+    #         R_H = cum_μ + ε
     # ========================================================================
+    r_samples = cum_mu + epsilon
+    
     p = float(np.mean(r_samples > 0.0))
     
     # Clamp to avoid exact 0/1 (numerical stability for downstream log-odds)

@@ -1,5 +1,5 @@
 {
-  "updated": "2026-01-21T14:24:03.519114",
+  "updated": "2026-01-21T15:49:33.607325",
   "count": 6,
   "failures": {
     "FCX": {
@@ -17,11 +17,11 @@
       "timestamp": "2026-01-20T19:29:08.876939"
     },
     "MAGD": {
-      "display_name": "MAGD",
+      "display_name": "iShares Magnificent 7 Options ETF",
       "attempts": 1,
-      "last_error": "No data for HO",
+      "last_error": "No price column found for HO",
       "traceback": null,
-      "timestamp": "2026-01-21T13:00:22.027986"
+      "timestamp": "2026-01-21T15:49:33.607317"
     },
     "GLDW": {
       "display_name": "Roundhill Gold WeeklyPay ETF",
