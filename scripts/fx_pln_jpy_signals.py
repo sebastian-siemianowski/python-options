@@ -2014,7 +2014,7 @@ def posterior_predictive_mc_probability(
     P_t: float,
     phi: float,
     q: float,
-    vH: float,
+    sigma2_step: float,
     H: int,
     n_paths: int = 20000,
     nu: Optional[float] = None,
@@ -2026,7 +2026,7 @@ def posterior_predictive_mc_probability(
     This sampler marginalizes jointly over:
     1. Drift posterior uncertainty (μ_t ~ N(μ̂_t, P_t) or t_ν)
     2. Drift propagation dynamics (AR(1): μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q))
-    3. Observation noise ACCUMULATED STEPWISE (ε_k ~ N(0, v_step) for k=1..H)
+    3. Observation noise ACCUMULATED STEPWISE (ε_k ~ N(0, √σ²_step) for k=1..H)
     
     CRITICAL: Horizon return is ACCUMULATED drift plus ACCUMULATED noise:
     
@@ -2035,12 +2035,22 @@ def posterior_predictive_mc_probability(
     Both drift AND noise must be accumulated stepwise over the horizon.
     This ensures signal-to-noise ratio scales correctly with horizon.
     
+    VOLATILITY GEOMETRY:
+    - sigma2_step is the PRIMITIVE per-step EWMA variance
+    - Horizon variance vH = H × sigma2_step (DERIVED, not passed)
+    - Per-step noise: ε_k ~ N(0, √sigma2_step)
+    - Accumulated noise: cum_ε = Σ_{k=1}^{H} ε_k has Var[cum_ε] = H × sigma2_step
+    
+    This architecture ensures:
+    - Volatility is defined at one temporal scale only (per-step)
+    - Horizon variance is derived, not treated as primitive
+    - No double-rescaling of noise (no vH/H computation)
+    
     Mathematical Model:
     - Drift posterior: μ_t ~ N(μ̂_t, P_t) [or Student-t if ν provided]
     - Drift propagation: μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
     - Accumulated drift: cum_μ = Σ_{k=1}^{H} μ_{t+k}
-    - Accumulated noise: cum_ε = Σ_{k=1}^{H} ε_k, ε_k ~ N(0, v_step)
-    - Per-step noise variance: v_step = vH / H
+    - Accumulated noise: cum_ε = Σ_{k=1}^{H} ε_k, ε_k ~ N(0, √sigma2_step)
     - Return: R_H = cum_μ + cum_ε
     - Posterior predictive: p = E[1{R_H > 0}] estimated as np.mean(r_samples > 0)
     
@@ -2053,7 +2063,7 @@ def posterior_predictive_mc_probability(
         P_t: Posterior variance of drift at time t (uncertainty in drift estimate)
         phi: Drift persistence parameter (AR(1) coefficient, typically ~0.95-1.0)
         q: Process noise variance for drift evolution
-        vH: Observation noise variance at horizon H (typically σ²·H for diffusion)
+        sigma2_step: Per-step EWMA variance (σ²) - THE VOLATILITY PRIMITIVE
         H: Forecast horizon in days
         n_paths: Number of Monte-Carlo paths (default 20000 for production accuracy)
         nu: Student-t degrees of freedom (if None, uses Gaussian noise)
@@ -2064,6 +2074,7 @@ def posterior_predictive_mc_probability(
         
     Design Philosophy:
     - Probability geometry is internally consistent (single probability space)
+    - Volatility geometry: sigma2_step is primitive, vH = H × sigma2_step is derived
     - Drift AND noise are both accumulated stepwise (symmetric treatment)
     - Signal-to-noise ratio scales correctly with horizon
     - Drift uncertainty automatically collapses confidence toward 0.5
@@ -2076,7 +2087,7 @@ def posterior_predictive_mc_probability(
     P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
     phi = float(phi) if np.isfinite(phi) else 1.0
     q = float(max(q, 0.0)) if np.isfinite(q) else 0.0
-    vH = float(max(vH, 1e-12)) if np.isfinite(vH) else 1e-6
+    sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
     H = int(max(H, 1))
     
     # Clamp Student-t df to valid range
@@ -2109,27 +2120,31 @@ def posterior_predictive_mc_probability(
     # ========================================================================
     # Step 2 & 3: Propagate drift AND accumulate observation noise STEPWISE
     #
+    # VOLATILITY GEOMETRY:
+    #   - sigma2_step is the PRIMITIVE per-step EWMA variance
+    #   - Horizon variance vH = H × sigma2_step (DERIVED)
+    #   - Per-step noise std: sigma_step = √sigma2_step
+    #
     #   For each step k = 1..H:
     #     - Drift: μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
-    #     - Noise: ε_k ~ N(0, v_step), where v_step = vH / H
+    #     - Noise: ε_k ~ N(0, sigma_step)
     #
     #   Accumulated return: R_H = Σ_{k=1}^{H} (μ_{t+k} + ε_k)
-    #                          = Σ_{k=1}^{H} μ_{t+k} + Σ_{k=1}^{H} ε_k
     #                          = cum_mu + cum_eps
     #
-    # This symmetric treatment ensures:
+    # This ensures:
     #   - Signal (drift) accumulates: E[cum_mu] ∝ H for φ≈1
-    #   - Noise accumulates: Var[cum_eps] = H · v_step = vH
+    #   - Noise accumulates: Var[cum_eps] = H × sigma2_step = vH
     #   - SNR scales correctly: grows with √H for persistent drift
+    #   - No double-rescaling (we use sigma2_step directly, not vH/H)
     # ========================================================================
     
     cum_mu = np.zeros(n_paths, dtype=float)
     cum_eps = np.zeros(n_paths, dtype=float)
     
-    # Per-step variances
+    # Per-step standard deviations (sigma2_step is the PRIMITIVE)
     q_std = math.sqrt(q) if q > 0 else 0.0
-    v_step = vH / H  # Per-step observation noise variance
-    v_step_std = math.sqrt(v_step) if v_step > 0 else 0.0
+    sigma_step = math.sqrt(sigma2_step)  # Per-step observation noise std
     
     for k in range(H):
         # --- Drift propagation: μ_{t+k+1} = φ·μ_{t+k} + η_{k+1} ---
@@ -2146,14 +2161,15 @@ def posterior_predictive_mc_probability(
         mu_paths = phi * mu_paths + eta
         cum_mu += mu_paths
         
-        # --- Observation noise: ε_k ~ N(0, v_step) or t_ν ---
-        if v_step_std > 0:
+        # --- Observation noise: ε_k ~ N(0, sigma_step) or t_ν ---
+        # sigma_step = √sigma2_step is the PRIMITIVE per-step noise std
+        if sigma_step > 0:
             if nu is not None:
                 # Student-t observation noise: scale for target variance
-                eps_scale = v_step_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else v_step_std
+                eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
                 eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
             else:
-                eps_k = rng.normal(loc=0.0, scale=v_step_std, size=n_paths)
+                eps_k = rng.normal(loc=0.0, scale=sigma_step, size=n_paths)
         else:
             eps_k = np.zeros(n_paths, dtype=float)
         
@@ -2162,6 +2178,8 @@ def posterior_predictive_mc_probability(
     # ========================================================================
     # Step 4: Compute horizon returns and posterior predictive probability
     #         R_H = cum_μ + cum_ε
+    #
+    # Note: Var[cum_eps] = H × sigma2_step = vH (horizon variance, DERIVED)
     # ========================================================================
     r_samples = cum_mu + cum_eps
     
@@ -2903,8 +2921,17 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         if noise_model_mc != "kalman_phi_student_t" or nu_mc is None or not np.isfinite(nu_mc):
             nu_mc = None
         
-        # Observation noise variance at horizon H: v_H ≈ σ² · H for diffusion
-        # Use current vol estimate scaled by horizon
+        # ========================================================================
+        # VOLATILITY GEOMETRY: sigma2_step is the PRIMITIVE
+        # ========================================================================
+        # Extract per-step EWMA variance (σ²) - this is the volatility primitive.
+        # Horizon variance vH = H × sigma2_step is DERIVED, not passed.
+        #
+        # This ensures:
+        # - Volatility is defined at one temporal scale only (per-step)
+        # - No double-rescaling (no vH/H computation in MC function)
+        # - Noise accumulation uses sigma2_step directly
+        # ========================================================================
         vol_series_mc = feats.get("vol", pd.Series(dtype=float))
         if isinstance(vol_series_mc, pd.Series) and not vol_series_mc.empty:
             sigma_now = float(vol_series_mc.iloc[-1])
@@ -2912,7 +2939,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             sigma_now = sH / math.sqrt(H) if H > 0 and sH > 0 else 0.01
         if not np.isfinite(sigma_now) or sigma_now <= 0:
             sigma_now = 0.01
-        vH_mc = float(sigma_now ** 2 * H)
+        
+        # sigma2_step is the PRIMITIVE per-step EWMA variance
+        sigma2_step_mc = float(sigma_now ** 2)
         
         # ========================================================================
         # UNIFIED POSTERIOR PREDICTIVE MONTE-CARLO (THE ONLY TRADING PROBABILITY)
@@ -2922,7 +2951,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             P_t=P_t_mc,
             phi=phi_mc,
             q=q_mc,
-            vH=vH_mc,
+            sigma2_step=sigma2_step_mc,  # Per-step EWMA variance (PRIMITIVE)
             H=H,
             n_paths=20000,  # Production accuracy
             nu=nu_mc,
