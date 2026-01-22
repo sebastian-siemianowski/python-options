@@ -2327,25 +2327,20 @@ def fit_regime_model_posterior(
                     }
                 }
             else:
-                # No global available - use uniform prior (last resort)
-                # This should rarely happen if tune_regime_model_averaging is used
-                uniform_posterior = {
-                    "kalman_gaussian": 1.0 / 3.0,
-                    "kalman_phi_gaussian": 1.0 / 3.0,
-                    "kalman_phi_student_t": 1.0 / 3.0,
-                }
-                regime_results[regime] = {
-                    "model_posterior": uniform_posterior,
-                    "models": {},
-                    "regime_meta": {
-                        "temporal_alpha": temporal_alpha,
-                        "n_samples": n_samples,
-                        "regime_name": regime_name,
-                        "fallback": True,
-                        "borrowed_from_global": False,
-                        "fallback_reason": "insufficient_samples_no_global_available",
-                    }
-                }
+                # =====================================================================
+                # CRITICAL: No global available - this should NOT happen in normal flow
+                # =====================================================================
+                # tune_regime_model_averaging() always computes global first.
+                # If we reach here, it's a programming error or corrupt state.
+                #
+                # DO NOT synthesize fake models. That violates Bayesian integrity.
+                # Instead: skip this regime and let it be handled upstream.
+                #
+                # The correct response to missing evidence is ignorance, not invention.
+                # =====================================================================
+                print(f"     ⚠️  CRITICAL: No global models for regime {regime} fallback - skipping")
+                # Skip this regime - it will be missing from regime_results
+                # Downstream must handle missing regimes by using global directly
             continue
         
         # Extract regime-specific data
