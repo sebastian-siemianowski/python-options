@@ -2400,11 +2400,16 @@ def run_regime_specific_mc(
     # Sample drift posterior
     if P_t > 0:
         if nu is not None:
+            # Student-t posterior for drift: heavier tails under uncertainty
+            # t_ν(μ̂_t, scale) has variance scale² · ν/(ν-2)
+            # We want Var(μ_t) = P_t, so scale = √(P_t · (ν-2)/ν)
             t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
             mu_paths = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
         else:
+            # Gaussian posterior for drift
             mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
     else:
+        # No drift uncertainty: point estimate
         mu_paths = np.full(n_paths, mu_t, dtype=float)
     
     # Propagate drift and accumulate noise
@@ -2415,6 +2420,7 @@ def run_regime_specific_mc(
     sigma_step = math.sqrt(sigma2_step)
     
     for k in range(H):
+        # --- Drift propagation: μ_{t+k+1} = φ·μ_{t+k} + η_{k+1} ---
         if q_std > 0:
             if nu is not None:
                 eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
@@ -2427,8 +2433,11 @@ def run_regime_specific_mc(
         mu_paths = phi * mu_paths + eta
         cum_mu += mu_paths
         
+        # --- Observation noise: ε_k ~ N(0, sigma_step) or t_ν ---
+        # sigma_step = √sigma2_step is the PRIMITIVE per-step noise std
         if sigma_step > 0:
             if nu is not None:
+                # Student-t observation noise: scale for target variance
                 eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
                 eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
             else:
@@ -2468,9 +2477,9 @@ def bayesian_model_average_mc(
         H: Forecast horizon
         n_paths_per_regime: MC paths per regime
         use_regime_bma: If False, use only global/regime 0 parameters
-        smoothing_alpha: EMA factor for regime probabilities
+        smoothing_alpha: EMA smoothing factor for regime probabilities
         prev_regime_probs: Previous regime probabilities for smoothing
-        seed: Random seed
+        seed: Random seed for reproducibility
         
     Returns:
         Tuple of:
@@ -2681,7 +2690,7 @@ def posterior_predictive_mc_probability(
         H: Forecast horizon in days
         n_paths: Number of Monte-Carlo paths (default 20000 for production accuracy)
         nu: Student-t degrees of freedom (if None, uses Gaussian noise)
-        seed: Random seed for reproducibility (if None, non-deterministic)
+        seed: Random seed for reproducibility
         
     Returns:
         Posterior predictive probability P(R_H > 0 | D), a scalar in (0, 1)
@@ -2907,7 +2916,7 @@ def compute_expected_utility(
         mu_paths = np.full(n_paths, mu_t, dtype=float)
     
     # ========================================================================
-    # Step 2 & 3: Propagate drift and accumulate noise stepwise
+    # Step 2 & 3: Propagate drift AND accumulate noise stepwise
     # ========================================================================
     cum_mu = np.zeros(n_paths, dtype=float)
     cum_eps = np.zeros(n_paths, dtype=float)
@@ -2988,7 +2997,7 @@ def compute_expected_utility(
     # ========================================================================
     # Step 7: Compute Position Size from Expected Utility
     # ========================================================================
-    # size = EU / max(E[loss], epsilon)
+    # size = EU / max(E[loss], ε)
     # This ensures:
     # - Higher EU → larger position
     # - Higher downside risk (E_loss) → smaller position
@@ -3709,6 +3718,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # - Drift uncertainty automatically collapses confidence toward 0.5
         # - Heavy tails emerge naturally when P_t or q is large
         # - Regime transitions are naturally penalized via drift uncertainty
+        # - Accumulated drift preserves signal strength for persistent drift (φ≈1)
         # ========================================================================
         
         # Extract drift posterior mean (μ̂_t) from Kalman filter or posterior drift
