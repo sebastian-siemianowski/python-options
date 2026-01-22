@@ -1,90 +1,138 @@
 #!/usr/bin/env python3
 """
 ===============================================================================
-SYSTEM DNA — TUNING LAYER
+SYSTEM DNA — TUNING LAYER (Bayesian Model Averaging Edition)
 ===============================================================================
 
-This file implements the *evolutionary tuning layer* of the quant system.
+This file implements the *epistemic core* of the quant system:
+regime-conditional Bayesian model averaging with temporal smoothing.
 
 The system is governed by the following probabilistic law:
 
-    p(r_{t+H} | r_t)
-        = ∑_m  p(r_{t+H} | r_t, m, θ_{r,m}) · p(m | r_t)
+    p(r_{t+H} | r)
+        = Σ_m  p(r_{t+H} | r, m, θ_{r,m}) · p(m | r)
 
 Where:
 
-    r_t        = current return / state
-    r_{t+H}    = future return at horizon H
-    r          = regime label inferred from market state
-    m          = model class (e.g. kalman_gaussian, kalman_phi_student_t, etc.)
+    r          = regime label (LOW_VOL_TREND, HIGH_VOL_TREND, LOW_VOL_RANGE,
+                              HIGH_VOL_RANGE, CRISIS_JUMP)
+    m          = model class (kalman_gaussian, kalman_phi_gaussian,
+                              kalman_phi_student_t)
     θ_{r,m}    = parameters of model m in regime r
     p(m | r)   = posterior probability of model m in regime r
 
-This file is responsible ONLY for:
+-------------------------------------------------------------------------------
+WHAT THIS FILE DOES
 
-    • Learning θ_{r,m}  (parameters per regime per model)
-    • Computing p(m|r)  (model posterior per regime)
-    • Providing diagnostic likelihood metrics
-    • Applying hierarchical shrinkage and priors
-    • Never making trading decisions
+For EACH regime r:
 
-It does NOT:
+    1. Fits ALL candidate model classes m independently:
+       - kalman_gaussian:       q, c           (2 params)
+       - kalman_phi_gaussian:   q, c, φ        (3 params)
+       - kalman_phi_student_t:  q, c, φ, ν     (4 params)
 
-    • Generate signals
-    • Allocate capital
-    • Perform Monte Carlo forecasting
-    • Compute expected utility
+    2. Computes for each (r, m):
+       - mean_log_likelihood
+       - BIC, AIC
+       - PIT calibration diagnostics
+
+    3. Converts BIC into posterior weights:
+       w_raw(m|r) = exp(-0.5 * (BIC_{m,r} - BIC_min_r))
+
+    4. Applies temporal smoothing:
+       w_smooth(m|r) = (prev_p(m|r))^α * w_raw(m|r)
+       (Uses uniform prior if no previous posterior exists)
+
+    5. Normalizes to get p(m|r)
+
+    6. Applies hierarchical shrinkage toward global (optional)
+
+-------------------------------------------------------------------------------
+HIERARCHICAL FALLBACK
+
+When regime r has insufficient samples:
+
+    p(m|r) = p(m|global)
+    θ_{r,m} = θ_{global,m}
+
+This is correct hierarchical Bayesian shrinkage.
+The regime block is marked: borrowed_from_global = True
+Never returns empty models.
+
+-------------------------------------------------------------------------------
+OUTPUT FORMAT
+
+For each regime r:
+
+    "regime": {
+        "r": {
+            "model_posterior": { m: p(m|r) },
+            "models": {
+                m: {
+                    "q", "phi", "nu", "c",
+                    "mean_log_likelihood",
+                    "bic", "aic",
+                    "ks_statistic", "pit_ks_pvalue",
+                    "fit_success", ...
+                }
+            },
+            "regime_meta": {
+                "temporal_alpha": α,
+                "n_samples": N,
+                "regime_name": str,
+                "fallback": bool,
+                "borrowed_from_global": bool,
+                "shrinkage_applied": bool
+            }
+        }
+    }
+
+Global block remains available as fallback and for backward compatibility.
+
+-------------------------------------------------------------------------------
+CONTRACT WITH SIGNAL LAYER
+
+The signal layer consumes this structure WITHOUT reinterpretation:
+
+    regime_models = regime["models"]
+    model_posterior = regime["model_posterior"]
+
+Fallback is transparent. No special-case logic needed downstream.
+
+-------------------------------------------------------------------------------
+CRITICAL RULES
+
+    • Never select a single best model per regime
+    • Never discard models
+    • Never force weights to zero
+    • Never return empty models for a regime
+    • Never mix tuning with signal logic
+    • Preserve all priors, shrinkage, diagnostics
+    • Preserve Bayesian coherence
 
 -------------------------------------------------------------------------------
 PHILOSOPHY
 
 The system does NOT assume a single true market physics.
 
-It maintains a *population of competing model laws* inside each regime.
+It maintains a *population of competing physics models* inside each regime.
+Those models evolve in probability over time via temporal smoothing.
 
 Regimes are ontological contexts.
 Models are hypotheses about physics inside those contexts.
-
--------------------------------------------------------------------------------
-CONTRACT WITH SIGNAL LAYER
-
-This file must output, for each regime r:
-
-    {
-        "model_posterior": { m: p(m|r) },
-        "models": {
-            m: {
-                "q", "phi", "nu", "c",
-                "mean_log_likelihood",
-                "bic", "aic",
-                ...
-            }
-        }
-    }
-
-The signal layer will consume this structure *without reinterpretation*.
-
--------------------------------------------------------------------------------
-EVOLUTION RULE
-
-Any future change MUST preserve:
-
-    • Bayesian coherence
-    • Regime-conditional model uncertainty
-    • Separation of inference from decision
-
 This file defines the epistemology of the system.
 
 ===============================================================================
 
 tune_q_mle.py
 
-Automatic per-asset Kalman drift process-noise parameter (q) estimation via MLE.
+Automatic per-asset Kalman drift parameter estimation via MLE with:
+- Bayesian Model Averaging across model classes
+- Regime-conditional parameter tuning
+- Temporal smoothing of model posteriors
+- Hierarchical shrinkage toward global
 
-Optimizes q by maximizing out-of-sample log-likelihood of returns under the
-Gaussian state-space drift model, using EWMA volatility as observation variance.
-
-Caches results persistently (JSON only) for reuse across runs.
+Caches results persistently (JSON) for reuse across runs.
 
 IMPORTANT AI AGENT INSTRUCTIONS: DO NOT REPLACE ELSE STATEMENTS WITH TERNARY : EXPRESSIONS
 """
