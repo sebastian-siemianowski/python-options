@@ -9,14 +9,31 @@ This file implements the *decision intelligence layer* of the quant system.
 It consumes the probabilistic structure produced by tune_q_mle.py and applies
 posterior predictive Monte Carlo with Bayesian Model Averaging:
 
-    p(x | r) = Σ_m p(x | r, m, θ_{r,m}) · p(m | r)
+    p(x | r_t) = Σ_m p(x | r_t, m, θ_{r_t,m}) · p(m | r_t)
 
 Where:
-    r        = regime
+    r_t      = current regime (deterministically assigned, same logic as tune)
     m        = model class (kalman_gaussian, kalman_phi_gaussian, kalman_phi_student_t)
     θ_{r,m}  = parameters from tuning layer
     p(m|r)   = posterior model probability from tuning layer
     x        = return at horizon H
+
+-------------------------------------------------------------------------------
+REGIME ASSIGNMENT — DETERMINISTIC, CONSISTENT WITH TUNE
+-------------------------------------------------------------------------------
+
+Current regime r_t is determined using SAME logic as tune_q_mle.py's
+assign_regime_labels() function:
+
+    Regimes:
+        0 = LOW_VOL_TREND:  vol < 0.85*median, |drift| > threshold
+        1 = HIGH_VOL_TREND: vol > 1.3*median, |drift| > threshold  
+        2 = LOW_VOL_RANGE:  vol < 0.85*median, |drift| <= threshold
+        3 = HIGH_VOL_RANGE: vol > 1.3*median, |drift| <= threshold
+        4 = CRISIS_JUMP:    vol > 2*median OR tail_indicator > 4
+
+This ensures perfect consistency between tuning and inference.
+NO soft regime probabilities - hard assignment to single regime.
 
 -------------------------------------------------------------------------------
 CONTRACT WITH tune_q_mle.py — NEW BMA ARCHITECTURE ONLY
@@ -36,10 +53,10 @@ tune_q_mle.py outputs:
         "meta": {...}
     }
 
-This file receives from tuning, for each regime r:
+This file receives from tuning, for current regime r_t:
 
-    regime_models = data["regime"][r]["models"]
-    model_posterior = data["regime"][r]["model_posterior"]
+    regime_models = data["regime"][r_t]["models"]
+    model_posterior = data["regime"][r_t]["model_posterior"]
 
 Tune GUARANTEES:
     - Every regime contains valid model_posterior and models
@@ -55,19 +72,6 @@ This file must NOT:
     - Implement fallback logic (tune handles this)
     - Support old flat schema (NO BACKWARD COMPATIBILITY)
     - SYNTHESIZE fake models with invented parameters
-
--------------------------------------------------------------------------------
-EPISTEMIC ARCHITECTURE — GOVERNING LAW
--------------------------------------------------------------------------------
-
-The system never collapses to a single-model posterior.
-
-When regime data is insufficient, it falls back to the global Bayesian
-model posterior and global model parameters.
-
-Structural uncertainty is always preserved.
-
-There is no legacy or degenerate single-model inference path in this system.
 
 -------------------------------------------------------------------------------
 BAYESIAN INTEGRITY POLICY
@@ -87,8 +91,6 @@ Explicitly FORBIDDEN:
     - Inventing parameter values that were not fit to data
     - Creating uniform posteriors from fabricated structure
 
-These violate Bayesian integrity and must not exist in this system.
-
 The only valid fallback is hierarchical: p(m|r, weak data) → p(m|global)
 
 -------------------------------------------------------------------------------
@@ -97,27 +99,27 @@ ARCHITECTURAL INVARIANTS
 
     - There is exactly one inference philosophy: Regime-conditional Bayesian 
       model averaging
-    - No code path constructs p(m) = [1,0,0,0,0] (one-hot posterior)
+    - Regime assignment is DETERMINISTIC (same as tune_q_mle.py)
+    - No code path constructs p(m) = [1,0,0,0,0] (one-hot model posterior)
     - When evidence is insufficient, we use global BMA, not single-model certainty
-    - Structural uncertainty is never allowed to collapse unless mathematically 
-      forced by evidence (which almost never happens)
     - Old flat cache schema is REJECTED - must regenerate with tune_q_mle.py
     - No synthesized/invented models - only inferred beliefs
-
-This is exactly how institutional Bayesian engines behave.
 
 -------------------------------------------------------------------------------
 POSTERIOR PREDICTIVE MONTE CARLO
 
-For each regime r, we compute:
+For current regime r_t, we compute:
 
-    r_samples = zeros(n_paths)
+    r_samples = []
     for m, w in model_posterior.items():
         theta = regime_models[m]
-        samples_m = posterior_predictive_mc(m, theta)
-        r_samples += w * samples_m  (weighted mixture of Monte-Carlo distributions)
+        n_m = w * n_total_samples  # proportional to model weight
+        samples_m = posterior_predictive_mc(m, theta, n_paths=n_m)
+        r_samples.append(samples_m)
+    
+    r_samples = concatenate(r_samples)
 
-r_samples now represents: p(x | r) = Σ_m p(x | r,m) p(m|r)
+r_samples now represents: p(x | r_t) = Σ_m p(x | r_t, m) · p(m | r_t)
 
 -------------------------------------------------------------------------------
 EXPECTED UTILITY PRINCIPLE
@@ -2424,6 +2426,87 @@ REGIME_NAMES = {
 }
 
 
+def assign_current_regime(feats: Dict[str, pd.Series], lookback: int = 21) -> int:
+    """
+    Assign current regime using SAME logic as tune_q_mle.py's assign_regime_labels.
+    
+    This ensures regime assignment is deterministic and consistent between tuning
+    and inference. Uses only past data (no look-ahead).
+    
+    Classification Logic (matches tune_q_mle.py):
+    - CRISIS_JUMP (4): vol_relative > 2.0 OR tail_indicator > 4.0
+    - HIGH_VOL_TREND (1): vol_relative > 1.3 AND drift_abs > threshold
+    - HIGH_VOL_RANGE (3): vol_relative > 1.3 AND drift_abs <= threshold
+    - LOW_VOL_TREND (0): vol_relative < 0.85 AND drift_abs > threshold
+    - LOW_VOL_RANGE (2): vol_relative < 0.85 AND drift_abs <= threshold
+    - Normal vol: based on drift threshold
+    
+    Args:
+        feats: Feature dictionary with 'ret' and 'vol' series
+        lookback: Rolling window for feature computation (default 21 days)
+        
+    Returns:
+        Integer regime index (0-4)
+    """
+    # Extract returns and volatility
+    ret_series = feats.get("ret", pd.Series(dtype=float))
+    vol_series = feats.get("vol", pd.Series(dtype=float))
+    
+    if not isinstance(ret_series, pd.Series) or ret_series.empty:
+        return REGIME_LOW_VOL_RANGE  # Default
+    if not isinstance(vol_series, pd.Series) or vol_series.empty:
+        return REGIME_LOW_VOL_RANGE  # Default
+    
+    # Current values
+    vol_now = float(vol_series.iloc[-1]) if len(vol_series) > 0 else 0.0
+    ret_now = float(ret_series.iloc[-1]) if len(ret_series) > 0 else 0.0
+    
+    # Rolling mean absolute return (drift proxy)
+    if len(ret_series) >= lookback:
+        drift_abs = abs(float(ret_series.tail(lookback).mean()))
+    else:
+        drift_abs = abs(float(ret_series.mean()))
+    
+    # Volatility relative to expanding median
+    if len(vol_series) >= lookback:
+        vol_median = float(vol_series.expanding(min_periods=min(lookback, len(vol_series))).median().iloc[-1])
+    else:
+        vol_median = float(vol_series.median())
+    
+    vol_relative = vol_now / vol_median if vol_median > 1e-12 else 1.0
+    
+    # Tail indicator: |return| / vol
+    tail_indicator = abs(ret_now) / vol_now if vol_now > 1e-12 else 0.0
+    
+    # Drift threshold (same as tune_q_mle.py)
+    drift_threshold = 0.0005  # ~0.05% daily drift threshold
+    
+    # Classification logic (MUST match tune_q_mle.py assign_regime_labels)
+    # Crisis/Jump: extreme volatility or tail events
+    if vol_relative > 2.0 or tail_indicator > 4.0:
+        return REGIME_CRISIS_JUMP
+    
+    # High volatility regimes
+    if vol_relative > 1.3:
+        if drift_abs > drift_threshold:
+            return REGIME_HIGH_VOL_TREND
+        else:
+            return REGIME_HIGH_VOL_RANGE
+    
+    # Low volatility regimes
+    if vol_relative < 0.85:
+        if drift_abs > drift_threshold:
+            return REGIME_LOW_VOL_TREND
+        else:
+            return REGIME_LOW_VOL_RANGE
+    
+    # Normal volatility (between 0.85 and 1.3)
+    if drift_abs > drift_threshold * 1.5:
+        return REGIME_HIGH_VOL_TREND if vol_relative > 1.0 else REGIME_LOW_VOL_TREND
+    else:
+        return REGIME_HIGH_VOL_RANGE if vol_relative > 1.0 else REGIME_LOW_VOL_RANGE
+
+
 def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = None) -> int:
     """
     Map a regime label (string) to a regime index (0-4) matching tune_q_mle.py definitions.
@@ -2775,52 +2858,52 @@ def bayesian_model_average_mc(
     P_t: float,
     sigma2_step: float,
     H: int,
-    n_paths_per_regime: int = 5000,
-    use_regime_bma: bool = True,
-    smoothing_alpha: float = 0.3,
-    prev_regime_probs: Optional[np.ndarray] = None,
+    n_paths: int = 10000,
     seed: Optional[int] = None,
     tuned_params: Optional[Dict] = None,
 ) -> Tuple[np.ndarray, np.ndarray, Dict]:
     """
-    Perform Bayesian Model Averaging across regimes AND model classes.
+    Perform Bayesian Model Averaging using CURRENT REGIME's model posterior.
     
-    Implements the full posterior predictive:
+    Implements the posterior predictive for current regime r_t:
     
-        p(x | D) = Σ_r P(r | D) · Σ_m p(x | r, m, θ_{r,m}) · p(m | r)
+        p(x | D, r_t) = Σ_m p(x | r_t, m, θ_{r_t,m}) · p(m | r_t)
+    
+    KEY DESIGN:
+    - Determines CURRENT regime using same logic as tune_q_mle.py (deterministic)
+    - Uses that regime's model_posterior and models from tuning
+    - Does NOT blend across regimes - uses single regime's BMA
+    - Falls back to global if regime data unavailable
     
     CONTRACT WITH tune_q_mle.py:
+    - Regime assignment uses SAME logic as assign_regime_labels()
     - Every regime contains model_posterior and models (even fallbacks)
-    - Tune guarantees non-empty outputs via hierarchical borrowing
-    - This function does NOT implement fallback logic
-    - Temporal smoothing of model posteriors already applied by tune
+    - Model posteriors are already temporally smoothed by tune
+    - This function does NOT perform tuning, BIC/AIC, or temporal smoothing
     
     CRITICAL RULES:
     - Do NOT perform tuning here
     - Do NOT recompute likelihoods
     - Do NOT renormalize model weights (already normalized by tune)
     - Do NOT apply temporal smoothing to model posteriors
-    - Do NOT select best model - use full mixture
+    - Do NOT select best model - use full BMA mixture
+    - Do NOT synthesize fake models - use hierarchical fallback to global
     
     Args:
-        feats: Feature dictionary
-        regime_params: Dict mapping regime index to parameters {q, phi, nu, ...}
-                      (backward compatible - used if tuned_params not provided)
+        feats: Feature dictionary with 'ret', 'vol', etc.
+        regime_params: (Legacy - ignored if tuned_params provided)
         mu_t: Current drift estimate
         P_t: Current drift variance
         sigma2_step: Per-step volatility
         H: Forecast horizon
-        n_paths_per_regime: MC paths per regime
-        use_regime_bma: If False, use only global/regime 0 parameters
-        smoothing_alpha: EMA smoothing factor for regime probabilities (NOT model posteriors)
-        prev_regime_probs: Previous regime probabilities for smoothing
+        n_paths: Total MC paths to generate
         seed: Random seed for reproducibility
-        tuned_params: Full tuned params from _load_tuned_kalman_params (new BMA structure)
+        tuned_params: Full tuned params from _load_tuned_kalman_params (BMA structure)
         
     Returns:
         Tuple of:
-        - r_samples: Weighted mixture of regime and model-specific samples
-        - regime_probs: Array of regime probabilities
+        - r_samples: Samples from posterior predictive p(x | D, r_t)
+        - regime_probs: One-hot array indicating current regime
         - metadata: Diagnostic information
     """
     rng = np.random.default_rng(seed)
@@ -2828,29 +2911,8 @@ def bayesian_model_average_mc(
     # Check if we have new BMA structure with model posteriors
     has_bma = tuned_params is not None and tuned_params.get('has_bma', False)
     
-    # ========================================================================
-    # ARCHITECTURAL INVARIANT: Structural uncertainty is never collapsed
-    # ========================================================================
-    # When regime data is insufficient or BMA disabled, we fall back to the
-    # global Bayesian model posterior and global model parameters.
-    #
-    # The system NEVER constructs a one-hot posterior p(m) = [1,0,0,0,0].
-    # Single-model certainty violates Bayesian integrity.
-    #
-    # CRITICAL: We do NOT synthesize fake models with invented parameters.
-    # That violates: "Act only on beliefs that were actually learned."
-    # ========================================================================
-    
     # If no BMA structure available, this is old cache format - REJECT
     if not has_bma:
-        # ====================================================================
-        # OLD CACHE FORMAT - CANNOT PROCEED
-        # ====================================================================
-        # DO NOT synthesize fake models. That violates Bayesian integrity.
-        # The correct response to missing evidence is ignorance, not invention.
-        #
-        # Return empty samples to signal failure - caller must handle this.
-        # ====================================================================
         return np.array([0.0]), np.array([0.2, 0.2, 0.2, 0.2, 0.2]), {
             "method": "REJECTED",
             "reason": "no_bma_structure_old_cache_format",
@@ -2858,246 +2920,141 @@ def bayesian_model_average_mc(
         }
     
     # ========================================================================
-    # BAYESIAN MODEL AVERAGING: Full mixture over regimes AND model classes
+    # DETERMINE CURRENT REGIME (DETERMINISTIC - SAME AS TUNE)
     # ========================================================================
-    # p(x | D) = Σ_r P(r | D) · Σ_m p(x | r, m, θ_{r,m}) · p(m | r)
-    #
-    # For each regime r:
-    #   1. Get model_posterior = p(m | r) from tune (already normalized)
-    #   2. Get models = {m: θ_{r,m}} from tune
-    #   3. For each model m with w = p(m|r):
-    #      - Draw w * n_samples from p(x | r, m, θ_{r,m})
-    #   4. Combine samples weighted by regime probability P(r | D)
+    # Use exact same logic as tune_q_mle.py assign_regime_labels()
+    # This ensures consistency between tuning and inference
     # ========================================================================
+    current_regime = assign_current_regime(feats)
+    regime_name = REGIME_NAMES.get(current_regime, f"REGIME_{current_regime}")
+    
+    # Build one-hot regime indicator (for compatibility with callers)
+    regime_probs = np.zeros(5)
+    regime_probs[current_regime] = 1.0
     
     # ========================================================================
-    # MINIMUM SAMPLE GUARANTEES
+    # GET REGIME-SPECIFIC BMA DATA
     # ========================================================================
-    # Architectural invariant: Never force weights to zero.
-    # Even tiny probabilities get minimum representation to preserve tail awareness.
-    # ========================================================================
-    MIN_REGIME_SAMPLES = 50   # Minimum samples per regime (even if prob << 1%)
-    MIN_MODEL_SAMPLES = 20    # Minimum samples per model (even if weight << 1%)
-    
-    # Extract regime features and compute regime probabilities P(r | D)
-    features = extract_regime_features(feats)
-    regime_probs = compute_regime_probabilities(
-        features, smoothing_alpha=smoothing_alpha, prev_probs=prev_regime_probs
-    )
-    
-    # ========================================================================
-    # NEW BMA ARCHITECTURE ONLY
-    # ========================================================================
-    # tuned_params structure from _load_tuned_kalman_params:
-    #   {
-    #     "global": { "model_posterior": {...}, "models": {...} },
-    #     "regime": { "0": {...}, "1": {...}, ... },
-    #     "has_bma": True
-    #   }
-    #
-    # No backward compatibility with old flat schema.
-    # ========================================================================
-    
     global_data = tuned_params.get('global', {})
     regime_data = tuned_params.get('regime', {})
     
     global_model_posterior = global_data.get('model_posterior', {})
     global_models = global_data.get('models', {})
     
-    all_samples = []
-    regime_details = {}
+    # Get current regime's model_posterior and models
+    regime_key = str(current_regime)  # JSON keys are strings
+    r_data = regime_data.get(regime_key) or regime_data.get(current_regime)
     
-    for regime in range(5):
-        regime_prob = regime_probs[regime]
-        
-        # ARCHITECTURAL INVARIANT: Never skip regimes entirely
-        # Even tiny probabilities get minimum sample representation
-        # This preserves tail awareness in extreme regimes
-        
-        # Get regime-specific BMA data (model_posterior and models)
-        regime_key = str(regime)  # JSON keys are strings
-        r_data = regime_data.get(regime_key) or regime_data.get(regime)
-        
-        if r_data is not None and isinstance(r_data, dict):
-            model_posterior = r_data.get('model_posterior', {})
-            models = r_data.get('models', {})
-            regime_meta = r_data.get('regime_meta', {})
-            is_fallback = regime_meta.get('fallback', False)
-            borrowed = regime_meta.get('borrowed_from_global', False)
-        else:
-            # Use global as fallback if regime data missing entirely
-            model_posterior = global_model_posterior
-            models = global_models
-            is_fallback = True
-            borrowed = True
-            regime_meta = {}
-        
-        # If models empty, use global BMA fallback (preserves structural uncertainty)
-        if not models or not model_posterior:
-            # Use global BMA parameters - never collapse to single-model certainty
-            model_posterior = global_model_posterior if global_model_posterior else {}
-            models = global_models if global_models else {}
-            is_fallback = True
-            borrowed = True
-            
-            # If still empty after trying global, skip this regime
-            # DO NOT synthesize fake models - that violates Bayesian integrity
-            if not models or not model_posterior:
-                # This should not happen if tune_q_mle.py ran correctly
-                # Skip regime - the correct response to missing evidence is ignorance
-                regime_details[regime] = {
-                    "prob": float(regime_prob),
-                    "n_samples": 0,
-                    "method": "SKIPPED",
-                    "is_fallback": True,
-                    "warning": "no_models_available_regime_skipped",
-                }
-                continue
-        
-        # ====================================================================
-        # MODEL-CLASS AVERAGING within regime r
-        # p(x | r) = Σ_m p(x | r, m, θ_{r,m}) · p(m | r)
-        # ====================================================================
-        model_details = {}
-        regime_samples = []
-        
-        # Total samples for this regime: proportional to probability but with minimum guarantee
-        n_total_regime = max(MIN_REGIME_SAMPLES, int(regime_prob * n_paths_per_regime * 5))
-        
-        for model_name, model_weight in model_posterior.items():
-            # ARCHITECTURAL INVARIANT: Never skip models entirely
-            # Even tiny weights get minimum sample representation
-            # This preserves rare-tail model components
-            
-            model_params = models.get(model_name, {})
-            if not model_params.get('fit_success', True):
-                continue  # Only skip genuinely failed fits
-            
-            # Extract model-specific parameters
-            # Fallback: try global models, then safe defaults (never use old flat schema)
-            global_m = global_models.get(model_name, {})
-            q_m = model_params.get('q') or global_m.get('q', 1e-6)
-            phi_m = model_params.get('phi')  # May be None for kalman_gaussian
-            nu_m = model_params.get('nu')     # May be None for non-Student-t
-            c_m = model_params.get('c') or global_m.get('c', 1.0)
-            
-            # Default phi for models without it
-            if phi_m is None or not np.isfinite(phi_m):
-                phi_m = 0.95 if 'phi' in model_name else 1.0
-            
-            # Validate nu
-            if nu_m is not None and (not np.isfinite(nu_m) or nu_m <= 2.0):
-                nu_m = None
-            
-            # Number of samples: proportional to weight but with minimum guarantee
-            n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_total_regime))
-            
-            # Generate samples from p(x | r, m, θ_{r,m})
-            model_samples = run_regime_specific_mc(
-                regime=regime,
-                mu_t=mu_t,
-                P_t=P_t,
-                phi=phi_m,
-                q=q_m,
-                sigma2_step=sigma2_step * c_m,  # Scale volatility by c
-                H=H,
-                n_paths=n_model_samples,
-                nu=nu_m,
-                seed=rng.integers(0, 2**31) if seed is not None else None
-            )
-            
-            regime_samples.append(model_samples)
-            model_details[model_name] = {
-                "weight": float(model_weight),
-                "n_samples": n_model_samples,
-                "q": float(q_m),
-                "phi": float(phi_m) if phi_m is not None else None,
-                "nu": float(nu_m) if nu_m is not None else None,
-                "c": float(c_m),
-            }
-        
-        # Combine model samples for this regime
-        if regime_samples:
-            regime_combined = np.concatenate(regime_samples)
-            all_samples.append(regime_combined)
-        
-        regime_details[regime] = {
-            "prob": float(regime_prob),
-            "n_samples": sum(len(s) for s in regime_samples) if regime_samples else 0,
-            "method": "model_class_averaging",
-            "is_fallback": is_fallback,
-            "borrowed_from_global": borrowed,
-            "model_posterior": {m: float(w) for m, w in model_posterior.items()},
-            "model_details": model_details,
+    if r_data is not None and isinstance(r_data, dict):
+        model_posterior = r_data.get('model_posterior', {})
+        models = r_data.get('models', {})
+        regime_meta = r_data.get('regime_meta', {})
+        is_fallback = regime_meta.get('fallback', False) or regime_meta.get('borrowed_from_global', False)
+    else:
+        # Use global as fallback if regime data missing
+        model_posterior = global_model_posterior
+        models = global_models
+        is_fallback = True
+        regime_meta = {}
+    
+    # If models still empty, use global
+    if not models or not model_posterior:
+        model_posterior = global_model_posterior
+        models = global_models
+        is_fallback = True
+    
+    # If still empty after global fallback - cannot proceed
+    if not models or not model_posterior:
+        return np.array([0.0]), regime_probs, {
+            "method": "FAILED",
+            "reason": "no_models_available",
+            "error": "No model posterior or models available for inference",
+            "current_regime": current_regime,
+            "regime_name": regime_name,
         }
     
-    # Concatenate all samples across regimes
+    # ========================================================================
+    # BAYESIAN MODEL AVERAGING: Draw samples from mixture over models
+    # ========================================================================
+    # p(x | D, r_t) = Σ_m p(x | r_t, m, θ_m) · p(m | r_t)
+    #
+    # Implementation:
+    #   For each model m with weight w = p(m | r_t):
+    #     - Draw floor(w * n_paths) samples from p(x | r_t, m, θ_m)
+    #     - Ensure minimum representation (MIN_MODEL_SAMPLES)
+    # ========================================================================
+    MIN_MODEL_SAMPLES = 20  # Minimum samples per model to preserve tail awareness
+    
+    all_samples = []
+    model_details = {}
+    
+    for model_name, model_weight in model_posterior.items():
+        model_params = models.get(model_name, {})
+        
+        # Skip failed model fits
+        if not model_params.get('fit_success', True):
+            continue
+        
+        # Extract model-specific parameters
+        q_m = model_params.get('q', 1e-6)
+        phi_m = model_params.get('phi')
+        nu_m = model_params.get('nu')
+        c_m = model_params.get('c', 1.0)
+        
+        # Default phi for models without it
+        if phi_m is None or not np.isfinite(phi_m):
+            phi_m = 0.95 if 'phi' in model_name else 1.0
+        
+        # Validate nu
+        if nu_m is not None and (not np.isfinite(nu_m) or nu_m <= 2.0):
+            nu_m = None
+        
+        # Number of samples: proportional to weight but with minimum guarantee
+        n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_paths))
+        
+        # Generate samples from p(x | r_t, m, θ_m)
+        model_samples = run_regime_specific_mc(
+            regime=current_regime,
+            mu_t=mu_t,
+            P_t=P_t,
+            phi=phi_m,
+            q=q_m,
+            sigma2_step=sigma2_step * c_m,  # Scale volatility by c
+            H=H,
+            n_paths=n_model_samples,
+            nu=nu_m,
+            seed=rng.integers(0, 2**31) if seed is not None else None
+        )
+        
+        all_samples.append(model_samples)
+        model_details[model_name] = {
+            "weight": float(model_weight),
+            "n_samples": len(model_samples),
+            "q": float(q_m),
+            "phi": float(phi_m) if phi_m is not None else None,
+            "nu": float(nu_m) if nu_m is not None else None,
+            "c": float(c_m),
+        }
+    
+    # Concatenate all model samples
     if all_samples:
         r_samples = np.concatenate(all_samples)
     else:
-        # ====================================================================
-        # ULTIMATE FALLBACK: Use global models directly
-        # ====================================================================
-        # All regimes failed to produce samples. This is rare but possible if:
-        # - All regimes had missing data
-        # - All model fits failed
-        #
-        # Use global models directly if available.
-        # DO NOT synthesize fake uniform models - that violates Bayesian integrity.
-        # ====================================================================
-        
-        if global_models and global_model_posterior:
-            # Use global BMA directly
-            fallback_samples = []
-            n_total = n_paths_per_regime * 5
-            
-            for model_name, model_weight in global_model_posterior.items():
-                model_params = global_models.get(model_name, {})
-                if not model_params.get('fit_success', True):
-                    continue
-                
-                q_m = model_params.get('q', 1e-6)
-                phi_m = model_params.get('phi')
-                nu_m = model_params.get('nu')
-                c_m = model_params.get('c', 1.0)
-                
-                if phi_m is None or not np.isfinite(phi_m):
-                    phi_m = 0.95 if 'phi' in model_name else 1.0
-                
-                n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_total))
-                
-                m_samples = run_regime_specific_mc(
-                    regime=0, mu_t=mu_t, P_t=P_t,
-                    phi=phi_m, q=q_m,
-                    sigma2_step=sigma2_step * c_m,
-                    H=H, n_paths=n_model_samples, nu=nu_m,
-                    seed=rng.integers(0, 2**31) if seed is not None else None
-                )
-                fallback_samples.append(m_samples)
-            
-            if fallback_samples:
-                r_samples = np.concatenate(fallback_samples)
-            else:
-                # No valid global models - return failure
-                return np.array([0.0]), regime_probs, {
-                    "method": "FAILED",
-                    "reason": "no_valid_models_available",
-                    "error": "All model fits failed - cannot generate samples"
-                }
-        else:
-            # No global models available - return failure
-            return np.array([0.0]), regime_probs, {
-                "method": "FAILED",
-                "reason": "no_global_models_available",
-                "error": "No BMA structure available - cache must be regenerated"
-            }
+        return np.array([0.0]), regime_probs, {
+            "method": "FAILED",
+            "reason": "no_valid_model_samples",
+            "current_regime": current_regime,
+            "regime_name": regime_name,
+        }
     
     metadata = {
-        "method": "bayesian_model_averaging_full",
+        "method": "bayesian_model_averaging",
         "has_bma": True,
-        "regime_probs": regime_probs.tolist(),
-        "regime_details": regime_details,
-        "features": features,
+        "current_regime": current_regime,
+        "regime_name": regime_name,
+        "is_fallback": is_fallback,
+        "model_posterior": {m: float(w) for m, w in model_posterior.items()},
+        "model_details": model_details,
         "n_total_samples": len(r_samples),
     }
     
@@ -4009,12 +3966,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             P_t=P_t_mc,
             sigma2_step=sigma2_step_mc,
             H=H,
-            n_paths_per_regime=4000,
-            use_regime_bma=True,
-            smoothing_alpha=0.3,
-            prev_regime_probs=None,
+            n_paths=10000,
             seed=None,
-            tuned_params=tuned_params,  # Pass BMA structure from tune_q_mle.py
+            tuned_params=tuned_params,  # BMA structure from tune_q_mle.py
         )
         r = np.asarray(r_samples, dtype=float)
         
