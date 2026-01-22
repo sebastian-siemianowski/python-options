@@ -278,33 +278,9 @@ EDGE_FLOOR = float(np.clip(EDGE_FLOOR, 0.0, 1.5))
 DEFAULT_CACHE_PATH = os.path.join("cache", "fx_plnjpy.json")
 
 
-@dataclass(frozen=True)
-class ExpectedUtilityResult:
-    """
-    Expected Utility computation result from posterior predictive Monte-Carlo.
-    
-    This captures the full distributional information from r_samples, enabling
-    utility-based position sizing rather than probability-only decisions.
-    
-    Expected Utility Model:
-        EU = p × E[gain] - (1-p) × E[loss]
-        
-    Position Size:
-        size = EU / max(E[loss], epsilon)
-        
-    This allows two assets with the same p to have different sizes based on
-    their return distribution shapes (fat tails, skewness, etc.).
-    """
-    probability: float      # P(R_H > 0) - direction probability
-    expected_gain: float    # E[R_H | R_H > 0] - expected gain given positive return
-    expected_loss: float    # E[-R_H | R_H < 0] - expected loss given negative return (positive value)
-    expected_utility: float # EU = p × E[gain] - (1-p) × E[loss]
-    position_size: float    # EU / max(E[loss], epsilon), clipped to [min_size, max_size]
-    gain_loss_ratio: float  # E[gain] / E[loss] - asymmetry measure
-    downside_std: float     # std of losses - tail risk measure
-    upside_std: float       # std of gains - upside potential measure
-    skewness: float         # skewness of r_samples - distribution shape
-    r_samples: np.ndarray   # raw samples for further analysis if needed
+# NOTE: ExpectedUtilityResult dataclass removed - was only used by the legacy
+# compute_expected_utility() function. EU computation is now done inline in
+# latest_signals() from BMA r_samples.
 
 
 @dataclass(frozen=True)
@@ -1511,12 +1487,23 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         BOLD = '\033[1m'
         RESET = '\033[0m'
         
-        print(f"\n{CYAN}{'─'*60}{RESET}")
-        print(f"{BOLD}📊 {asset_symbol} — Bayesian Model Averaging{RESET}")
-        print(f"{CYAN}{'─'*60}{RESET}")
+        # Get company name and sector
+        company_name = get_company_name(asset_symbol) or asset_symbol
+        sector = get_sector(asset_symbol) or ""
+        
+        # Build output as single string to avoid multiprocess interleaving
+        lines = []
+        lines.append(f"\n{CYAN}{'─'*65}{RESET}")
+        # Header with company name, ticker, and sector
+        if sector:
+            lines.append(f"{BOLD}📊 {company_name} ({asset_symbol}) — {sector}{RESET}")
+        else:
+            lines.append(f"{BOLD}📊 {company_name} ({asset_symbol}){RESET}")
+        lines.append(f"{DIM}   Bayesian Model Averaging{RESET}")
+        lines.append(f"{CYAN}{'─'*65}{RESET}")
         
         # Model posteriors with colored bars
-        print(f"\n{BOLD}Model Weights{RESET} {DIM}p(m|D){RESET}")
+        lines.append(f"\n{BOLD}Model Weights{RESET} {DIM}p(m|D){RESET}")
         model_short = {
             'kalman_gaussian': 'Gaussian',
             'kalman_phi_gaussian': 'φ-Gaussian', 
@@ -1528,12 +1515,71 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             bar = '█' * bar_len + '░' * (30 - bar_len)
             short_name = model_short.get(model_name, model_name)
             if model_name == best_model:
-                print(f"  {GREEN}{short_name:12s}{RESET} {p:5.1%} {GREEN}{bar}{RESET} ◀")
+                lines.append(f"  {GREEN}{short_name:12s}{RESET} {p:5.1%} {GREEN}{bar}{RESET} ◀")
             else:
-                print(f"  {short_name:12s} {p:5.1%} {DIM}{bar}{RESET}")
+                lines.append(f"  {short_name:12s} {p:5.1%} {DIM}{bar}{RESET}")
         
-        # Compact parameter table
-        print(f"\n{BOLD}Parameters{RESET}")
+        # Helper functions to describe parameters in human terms
+        def describe_drift_speed(q_val):
+            """Convert q to human-readable drift speed description."""
+            if q_val is None or not np.isfinite(q_val):
+                return "unknown"
+            if q_val < 1e-9:
+                return "frozen"
+            elif q_val < 1e-8:
+                return "slow"
+            elif q_val < 1e-7:
+                return "moderate"
+            elif q_val < 1e-6:
+                return "fast"
+            else:
+                return "rapid"
+        
+        def describe_vol_scale(c_val):
+            """Convert c (observation scale) to human-readable description."""
+            if c_val is None or not np.isfinite(c_val):
+                return "normal"
+            if c_val < 0.7:
+                return "muted"
+            elif c_val < 0.9:
+                return "reduced"
+            elif c_val < 1.1:
+                return "normal"
+            elif c_val < 1.3:
+                return "elevated"
+            else:
+                return "amplified"
+        
+        def describe_persistence(phi_val):
+            """Convert φ to human-readable persistence description."""
+            if phi_val is None or not np.isfinite(phi_val):
+                return "n/a"
+            if phi_val < 0.5:
+                return "weak"
+            elif phi_val < 0.8:
+                return "moderate"
+            elif phi_val < 0.95:
+                return "strong"
+            elif phi_val < 0.99:
+                return "very strong"
+            else:
+                return "near-unit"
+        
+        def describe_tail_weight(nu_val):
+            """Convert ν (degrees of freedom) to human-readable tail description."""
+            if nu_val is None or not np.isfinite(nu_val):
+                return "normal"
+            if nu_val < 5:
+                return "very heavy"
+            elif nu_val < 10:
+                return "heavy"
+            elif nu_val < 30:
+                return "moderate"
+            else:
+                return "light"
+        
+        # Compact parameter table with human-readable descriptions and symbols
+        lines.append(f"\n{BOLD}Parameters{RESET}")
         for model_name in ['kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']:
             m_params = global_models.get(model_name, {})
             if m_params.get('fit_success', False):
@@ -1543,16 +1589,23 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 nu = m_params.get('nu')
                 short_name = model_short.get(model_name, model_name)
                 
-                parts = [f"q={q:.1e}", f"c={c:.2f}"]
+                # Human-readable with symbols in parentheses
+                parts = [
+                    f"drift(q)={describe_drift_speed(q)}",
+                    f"vol(c)={describe_vol_scale(c)}"
+                ]
                 if phi is not None:
-                    parts.append(f"φ={phi:.2f}")
+                    parts.append(f"persist(φ)={describe_persistence(phi)}")
                 if nu is not None:
-                    parts.append(f"ν={nu:.0f}")
+                    parts.append(f"tails(ν)={describe_tail_weight(nu)}")
                 
                 color = GREEN if model_name == best_model else DIM
-                print(f"  {color}{short_name:12s}{RESET} {', '.join(parts)}")
+                lines.append(f"  {color}{short_name:12s}{RESET} {', '.join(parts)}")
         
-        print(f"{CYAN}{'─'*60}{RESET}\n")
+        lines.append(f"{CYAN}{'─'*65}{RESET}\n")
+        
+        # Single atomic print to avoid multiprocess interleaving
+        print('\n'.join(lines))
     elif asset_symbol and tuned_params:
         # Old cache format warning
         print(f"\n\033[93m⚠️  {asset_symbol}: Old cache format — run tune_q_mle.py\033[0m\n")
@@ -3102,409 +3155,22 @@ def make_features_views(feats: Dict[str, pd.Series]) -> Dict[str, Dict[str, pd.S
         "bt": shift_features(feats, lag=1),
     }
 
-# -------------------------
-# Scoring
-# -------------------------
 
-def edge_for_horizon(mu: float, vol: float, H: int) -> float:
-    # edge = mu_H / sigma_H in z units (analytic approximation)
-    if not np.isfinite(mu) or not np.isfinite(vol) or vol <= 0:
-        return 0.0
-    mu_H = mu * H
-    sig_H = vol * math.sqrt(H)
-    return float(mu_H / sig_H)
-
-
-def posterior_predictive_mc_probability(
-    mu_t: float,
-    P_t: float,
-    phi: float,
-    q: float,
-    sigma2_step: float,
-    H: int,
-    n_paths: int = 20000,
-    nu: Optional[float] = None,
-    seed: Optional[int] = None
-) -> float:
-    """
-    Unified posterior predictive Monte-Carlo probability P(R_H > 0 | D).
-    
-    This sampler marginalizes jointly over:
-    1. Drift posterior uncertainty (μ_t ~ N(μ̂_t, P_t) or t_ν)
-    2. Drift propagation dynamics (AR(1): μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q))
-    3. Observation noise ACCUMULATED STEPWISE (ε_k ~ N(0, √σ²_step) for k=1..H)
-    
-    CRITICAL: Horizon return is ACCUMULATED drift plus ACCUMULATED noise:
-    
-        R_H = Σ_{k=1}^{H} μ_{t+k} + Σ_{k=1}^{H} ε_k
-    
-    Both drift AND noise must be accumulated stepwise over the horizon.
-    This ensures signal-to-noise ratio scales correctly with horizon.
-    
-    VOLATILITY GEOMETRY:
-    - sigma2_step is the PRIMITIVE per-step EWMA variance
-    - Horizon variance vH = H × sigma2_step (DERIVED, not passed)
-    - Per-step noise: ε_k ~ N(0, √sigma2_step)
-    - Accumulated noise: cum_ε = Σ_{k=1}^{H} ε_k has Var[cum_ε] = H × sigma2_step
-    
-    This architecture ensures:
-    - Volatility is defined at one temporal scale only (per-step)
-    - Horizon variance is derived, not treated as primitive
-    - No double-rescaling of noise (no vH/H computation)
-    
-    Mathematical Model:
-    - Drift posterior: μ_t ~ N(μ̂_t, P_t) [or Student-t if ν provided]
-    - Drift propagation: μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
-    - Accumulated drift: cum_μ = Σ_{k=1}^{H} μ_{t+k}
-    - Accumulated noise: cum_ε = Σ_{k=1}^{H} ε_k, ε_k ~ N(0, √sigma2_step)
-    - Return: R_H = cum_μ + cum_ε
-    - Posterior predictive: p = E[1{R_H > 0}] estimated as np.mean(r_samples > 0)
-    
-    This is the ONLY probability used for trading decisions.
-    No blending with analytical probabilities.
-    No heuristic weights.
-    
-    Args:
-        mu_t: Posterior mean of drift at time t (μ̂_t from Kalman filter)
-        P_t: Posterior variance of drift at time t (uncertainty in drift estimate)
-        phi: Drift persistence parameter (AR(1) coefficient, typically ~0.95-1.0)
-        q: Process noise variance for drift evolution
-        sigma2_step: Per-step EWMA variance (σ²) - THE VOLATILITY PRIMITIVE
-        H: Forecast horizon in days
-        n_paths: Number of Monte-Carlo paths (default 20000 for production accuracy)
-        nu: Student-t degrees of freedom (if None, uses Gaussian noise)
-        seed: Random seed for reproducibility
-        
-    Returns:
-        Posterior predictive probability P(R_H > 0 | D), a scalar in (0, 1)
-        
-    Design Philosophy:
-    - Probability geometry is internally consistent (single probability space)
-    - Volatility geometry: sigma2_step is primitive, vH = H × sigma2_step is derived
-    - Drift AND noise are both accumulated stepwise (symmetric treatment)
-    - Signal-to-noise ratio scales correctly with horizon
-    - Drift uncertainty automatically collapses confidence toward 0.5
-    - Heavy tails emerge naturally when P_t or q is large
-    - Regime transitions are naturally penalized via drift uncertainty
-    - Accumulated drift preserves signal strength for persistent drift (φ≈1)
-    """
-    # Input validation and sanitization
-    mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
-    P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
-    phi = float(phi) if np.isfinite(phi) else 1.0
-    q = float(max(q, 0.0)) if np.isfinite(q) else 0.0
-    sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
-    H = int(max(H, 1))
-    
-    # Clamp Student-t df to valid range
-    if nu is not None:
-        if not np.isfinite(nu) or nu <= 2.0:
-            nu = None  # Fall back to Gaussian
-        else:
-            nu = float(np.clip(nu, 2.1, 500.0))
-    
-    # Initialize RNG (deterministic under fixed seed)
-    rng = np.random.default_rng(seed)
-    
-    # ========================================================================
-    # Step 1: Sample from drift posterior μ_t ~ N(μ̂_t, P_t) or t_ν(μ̂_t, √P_t)
-    # ========================================================================
-    if P_t > 0:
-        if nu is not None:
-            # Student-t posterior for drift: heavier tails under uncertainty
-            # t_ν(μ̂_t, scale) has variance scale² · ν/(ν-2)
-            # We want Var(μ_t) = P_t, so scale = √(P_t · (ν-2)/ν)
-            t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
-            mu_paths = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
-        else:
-            # Gaussian posterior for drift
-            mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
-    else:
-        # No drift uncertainty: point estimate
-        mu_paths = np.full(n_paths, mu_t, dtype=float)
-    
-    # ========================================================================
-    # Step 2 & 3: Propagate drift AND accumulate observation noise STEPWISE
-    #
-    # VOLATILITY GEOMETRY:
-    #   - sigma2_step is the PRIMITIVE per-step EWMA variance
-    #   - Horizon variance vH = H × sigma2_step (DERIVED)
-    #   - Per-step noise std: sigma_step = √sigma2_step
-    #
-    #   For each step k = 1..H:
-    #     - Drift: μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
-    #     - Noise: ε_k ~ N(0, sigma_step)
-    #
-    #   Accumulated return: R_H = Σ_{k=1}^{H} (μ_{t+k} + ε_k)
-    #                          = cum_mu + cum_eps
-    #
-    # This ensures:
-    #   - Signal (drift) accumulates: E[cum_mu] ∝ H for φ≈1
-    #   - Noise accumulates: Var[cum_eps] = H × sigma2_step = vH
-    #   - SNR scales correctly: grows with √H for persistent drift
-    #   - No double-rescaling (we use sigma2_step directly, not vH/H)
-    # ========================================================================
-    
-    cum_mu = np.zeros(n_paths, dtype=float)
-    cum_eps = np.zeros(n_paths, dtype=float)
-    
-    # Per-step standard deviations (sigma2_step is the PRIMITIVE)
-    q_std = math.sqrt(q) if q > 0 else 0.0
-    sigma_step = math.sqrt(sigma2_step)  # Per-step observation noise std
-    
-    for k in range(H):
-        # --- Drift propagation: μ_{t+k+1} = φ·μ_{t+k} + η_{k+1} ---
-        if q_std > 0:
-            if nu is not None:
-                # Student-t process noise for heavier tails
-                eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
-                eta = eta_scale * rng.standard_t(df=nu, size=n_paths)
-            else:
-                eta = rng.normal(loc=0.0, scale=q_std, size=n_paths)
-        else:
-            eta = np.zeros(n_paths, dtype=float)
-        
-        mu_paths = phi * mu_paths + eta
-        cum_mu += mu_paths
-        
-        # --- Observation noise: ε_k ~ N(0, sigma_step) or t_ν ---
-        # sigma_step = √sigma2_step is the PRIMITIVE per-step noise std
-        if sigma_step > 0:
-            if nu is not None:
-                # Student-t observation noise: scale for target variance
-                eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
-                eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
-            else:
-                eps_k = rng.normal(loc=0.0, scale=sigma_step, size=n_paths)
-        else:
-            eps_k = np.zeros(n_paths, dtype=float)
-        
-        cum_eps += eps_k
-    
-    # ========================================================================
-    # Step 4: Compute horizon returns and posterior predictive probability
-    #         R_H = cum_μ + cum_ε
-    #
-    # Note: Var[cum_eps] = H × sigma2_step = vH (horizon variance, DERIVED)
-    # ========================================================================
-    r_samples = cum_mu + cum_eps
-    
-    p = float(np.mean(r_samples > 0.0))
-    
-    # Clamp to avoid exact 0/1 (numerical stability for downstream log-odds)
-    p = float(np.clip(p, 1e-6, 1.0 - 1e-6))
-    
-    return p
-
-
-def compute_expected_utility(
-    mu_t: float,
-    P_t: float,
-    phi: float,
-    q: float,
-    sigma2_step: float,
-    H: int,
-    n_paths: int = 20000,
-    nu: Optional[float] = None,
-    seed: Optional[int] = None,
-    min_size: float = 0.0,
-    max_size: float = 1.0,
-    epsilon: float = 1e-6
-) -> ExpectedUtilityResult:
-    """
-    Compute Expected Utility and position sizing from posterior predictive Monte-Carlo.
-    
-    This function extends the unified posterior predictive MC by computing full
-    distributional metrics that enable utility-based position sizing.
-    
-    EXPECTED UTILITY MODEL:
-    
-    Let r_samples be the posterior predictive return samples.
-    
-    Define:
-        gains = r_samples[r_samples > 0]
-        losses = -r_samples[r_samples < 0]  (positive values)
-        
-        p = P(R_H > 0) = mean(r_samples > 0)
-        E_gain = mean(gains) if gains non-empty else 0
-        E_loss = mean(losses) if losses non-empty else 0
-        
-    Expected Utility:
-        EU = p × E_gain - (1-p) × E_loss
-        
-    Position Size:
-        size = EU / max(E_loss, epsilon)
-        size = clip(size, min_size, max_size)
-        
-    DECISION RULE:
-        - If EU <= 0 → HOLD (no position)
-        - If EU > 0 → Trade with size proportional to EU
-        
-    KEY INSIGHT:
-        Two assets with the same probability p can have different sizes because:
-        - Fat downside tails → higher E_loss → smaller size
-        - Strong upside asymmetry → higher E_gain → larger size
-        - System naturally avoids overconfident but fragile trades
-        
-    Args:
-        mu_t: Posterior mean of drift at time t
-        P_t: Posterior variance of drift at time t
-        phi: Drift persistence parameter
-        q: Process noise variance
-        sigma2_step: Per-step EWMA variance (volatility primitive)
-        H: Forecast horizon in days
-        n_paths: Number of Monte-Carlo paths
-        nu: Student-t degrees of freedom (None for Gaussian)
-        seed: Random seed for reproducibility
-        min_size: Minimum position size (default 0.0)
-        max_size: Maximum position size (default 1.0)
-        epsilon: Small value to avoid division by zero
-        
-    Returns:
-        ExpectedUtilityResult containing probability, EU, position size, and diagnostics
-        
-    Design Philosophy:
-        - Probability measures DIRECTION
-        - Utility measures VALUE
-        - Trading decisions must optimize UTILITY, not probability
-    """
-    # Input validation and sanitization
-    mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
-    P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
-    phi = float(phi) if np.isfinite(phi) else 1.0
-    q = float(max(q, 0.0)) if np.isfinite(q) else 0.0
-    sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
-    H = int(max(H, 1))
-    
-    # Clamp Student-t df to valid range
-    if nu is not None:
-        if not np.isfinite(nu) or nu <= 2.0:
-            nu = None
-        else:
-            nu = float(np.clip(nu, 2.1, 500.0))
-    
-    # Initialize RNG
-    rng = np.random.default_rng(seed)
-    
-    # ========================================================================
-    # Step 1: Sample from drift posterior
-    # ========================================================================
-    if P_t > 0:
-        if nu is not None:
-            t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
-            mu_paths = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
-        else:
-            mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
-    else:
-        mu_paths = np.full(n_paths, mu_t, dtype=float)
-    
-    # ========================================================================
-    # Step 2 & 3: Propagate drift AND accumulate noise stepwise
-    # ========================================================================
-    cum_mu = np.zeros(n_paths, dtype=float)
-    cum_eps = np.zeros(n_paths, dtype=float)
-    
-    q_std = math.sqrt(q) if q > 0 else 0.0
-    sigma_step = math.sqrt(sigma2_step)
-    
-    for k in range(H):
-        # Drift propagation
-        if q_std > 0:
-            if nu is not None:
-                eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
-                eta = eta_scale * rng.standard_t(df=nu, size=n_paths)
-            else:
-                eta = rng.normal(loc=0.0, scale=q_std, size=n_paths)
-        else:
-            eta = np.zeros(n_paths, dtype=float)
-        
-        mu_paths = phi * mu_paths + eta
-        cum_mu += mu_paths
-        
-        # Observation noise
-        if sigma_step > 0:
-            if nu is not None:
-                eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
-                eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
-            else:
-                eps_k = rng.normal(loc=0.0, scale=sigma_step, size=n_paths)
-        else:
-            eps_k = np.zeros(n_paths, dtype=float)
-        
-        cum_eps += eps_k
-    
-    # ========================================================================
-    # Step 4: Compute return samples
-    # ========================================================================
-    r_samples = cum_mu + cum_eps
-    
-    # ========================================================================
-    # Step 5: Compute Expected Utility metrics
-    # ========================================================================
-    # Separate gains and losses
-    gains = r_samples[r_samples > 0]
-    losses = -r_samples[r_samples < 0]  # Convert to positive values
-    
-    # Probability of positive return
-    p = float(np.mean(r_samples > 0.0))
-    p = float(np.clip(p, 1e-6, 1.0 - 1e-6))
-    
-    # Expected gain and loss
-    E_gain = float(np.mean(gains)) if len(gains) > 0 else 0.0
-    E_loss = float(np.mean(losses)) if len(losses) > 0 else 0.0
-    
-    # Standard deviations of tails (risk measures)
-    upside_std = float(np.std(gains)) if len(gains) > 1 else 0.0
-    downside_std = float(np.std(losses)) if len(losses) > 1 else 0.0
-    
-    # Gain/loss ratio (asymmetry measure)
-    gain_loss_ratio = E_gain / max(E_loss, epsilon) if E_loss > epsilon else (
-        float('inf') if E_gain > 0 else 1.0
-    )
-    gain_loss_ratio = float(np.clip(gain_loss_ratio, 0.0, 100.0))  # Clip for stability
-    
-    # Skewness of return distribution
-    try:
-        skewness = float(scipy_stats_skew(r_samples))
-        if not np.isfinite(skewness):
-            skewness = 0.0
-    except Exception:
-        skewness = 0.0
-    
-    # ========================================================================
-    # Step 6: Compute Expected Utility
-    # ========================================================================
-    # EU = p × E[gain] - (1-p) × E[loss]
-    EU = p * E_gain - (1.0 - p) * E_loss
-    
-    # ========================================================================
-    # Step 7: Compute Position Size from Expected Utility
-    # ========================================================================
-    # size = EU / max(E[loss], ε)
-    # This ensures:
-    # - Higher EU → larger position
-    # - Higher downside risk (E_loss) → smaller position
-    # - Natural risk adjustment without separate volatility scaling
-    
-    if EU > 0:
-        raw_size = EU / max(E_loss, epsilon)
-        position_size = float(np.clip(raw_size, min_size, max_size))
-    else:
-        # EU <= 0 → no position (HOLD)
-        position_size = 0.0
-    
-    return ExpectedUtilityResult(
-        probability=p,
-        expected_gain=E_gain,
-        expected_loss=E_loss,
-        expected_utility=EU,
-        position_size=position_size,
-        gain_loss_ratio=gain_loss_ratio,
-        downside_std=downside_std,
-        upside_std=upside_std,
-        skewness=skewness,
-        r_samples=r_samples
-    )
+# =============================================================================
+# NOTE: Legacy single-model MC functions removed
+# =============================================================================
+# The following functions were removed as they assume flat parameters (q, phi, nu)
+# and are not compatible with the new BMA architecture:
+#
+#   - edge_for_horizon() - analytic z-score approximation (not used)
+#   - posterior_predictive_mc_probability() - single-model MC (replaced by BMA)
+#   - compute_expected_utility() - single-model EU (EU now computed inline from BMA samples)
+#
+# The BMA path uses:
+#   - run_regime_specific_mc() - per-regime MC with model-specific params
+#   - bayesian_model_average_mc() - full BMA mixture over regimes and models
+#   - Inline EU computation in latest_signals() from r_samples
+# =============================================================================
 
 
 def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: int = 3000, phi: float = 0.95, kappa: float = 1e-4) -> Dict[str, np.ndarray]:
@@ -4450,7 +4116,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # EXPECTED UTILITY POSITION SIZING (REPLACES KELLY/MEAN-BASED SIZING)
         # ========================================================================
         # All sizing is now derived from the full posterior predictive distribution
-        # (r_samples from compute_expected_utility), NOT from point estimates.
+        # (r_samples from BMA), NOT from point estimates.
         #
         # Design Principle:
         #   - Inference produces distributions (r_samples)
