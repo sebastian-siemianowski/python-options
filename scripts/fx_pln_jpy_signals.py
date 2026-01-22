@@ -40,6 +40,29 @@ This file must NOT:
     - Implement fallback logic (tune handles this)
 
 -------------------------------------------------------------------------------
+EPISTEMIC ARCHITECTURE — GOVERNING LAW
+-------------------------------------------------------------------------------
+
+The system never collapses to a single-model posterior.
+
+When regime data is insufficient, it falls back to the global Bayesian
+model posterior and global model parameters.
+
+Structural uncertainty is always preserved.
+
+There is no legacy or degenerate single-model inference path in this system.
+
+This means:
+    - There is exactly one inference philosophy: Regime-conditional Bayesian 
+      model averaging
+    - No code path constructs p(m) = [1,0,0,0,0] (one-hot posterior)
+    - When evidence is insufficient, we use global BMA, not single-model certainty
+    - Structural uncertainty is never allowed to collapse unless mathematically 
+      forced by evidence (which almost never happens)
+
+This is exactly how institutional Bayesian engines behave.
+
+-------------------------------------------------------------------------------
 POSTERIOR PREDICTIVE MONTE CARLO
 
 For each regime r, we compute:
@@ -84,7 +107,9 @@ CRITICAL RULES
     • Do NOT apply temporal smoothing to model posteriors
     • Do NOT select best model - use full mixture
     • Do NOT modify EU logic
+    • Do NOT construct one-hot posteriors
     • Preserve distributional integrity
+    • Preserve structural uncertainty
 
 This file defines agency, not epistemology.
 It must act on beliefs, not create them.
@@ -2665,21 +2690,94 @@ def bayesian_model_average_mc(
     # Check if we have new BMA structure with model posteriors
     has_bma = tuned_params is not None and tuned_params.get('has_bma', False)
     
-    # If BMA disabled or no BMA structure, use legacy single-model path
-    if not use_regime_bma or not has_bma:
-        # Legacy path: single model per regime (backward compatible)
+    # ========================================================================
+    # ARCHITECTURAL INVARIANT: Structural uncertainty is never collapsed
+    # ========================================================================
+    # When regime data is insufficient or BMA disabled, we fall back to the
+    # global Bayesian model posterior and global model parameters.
+    #
+    # The system NEVER constructs a one-hot posterior p(m) = [1,0,0,0,0].
+    # Single-model certainty violates:
+    #   - Structural uncertainty
+    #   - Distributional integrity  
+    #   - Decision invariance under uncertainty
+    #   - Institutional epistemology
+    #
+    # Even when BMA structure is unavailable, we maintain model averaging
+    # with uniform priors across model classes.
+    # ========================================================================
+    
+    # If no BMA structure available, construct uniform model averaging fallback
+    if not has_bma:
+        # ====================================================================
+        # UNIFORM MODEL AVERAGING FALLBACK
+        # ====================================================================
+        # When BMA structure is unavailable, we use uniform model posteriors
+        # to preserve structural uncertainty:
+        #   p(m) = 1/3 for m ∈ {kalman_gaussian, kalman_phi_gaussian, kalman_phi_student_t}
+        #
+        # This is the only epistemically valid fallback - never single-model.
+        # ====================================================================
+        
         params = regime_params.get(0, regime_params.get("global", {}))
-        phi = params.get("phi", 0.95)
-        q = params.get("q", 1e-6)
-        nu = params.get("nu")
+        q_base = params.get("q", 1e-6)
+        c_base = params.get("c", 1.0)
         
-        r_samples = run_regime_specific_mc(
-            regime=0, mu_t=mu_t, P_t=P_t, phi=phi, q=q,
-            sigma2_step=sigma2_step, H=H, n_paths=n_paths_per_regime * 5,
-            nu=nu, seed=seed
-        )
+        # Define model classes with uniform posterior weights
+        uniform_models = {
+            "kalman_gaussian": {
+                "phi": 1.0,       # Random walk (no mean reversion)
+                "q": q_base,
+                "nu": None,       # Gaussian noise
+                "c": c_base,
+                "weight": 1.0 / 3.0,
+            },
+            "kalman_phi_gaussian": {
+                "phi": 0.95,      # Mean-reverting drift
+                "q": q_base,
+                "nu": None,       # Gaussian noise
+                "c": c_base,
+                "weight": 1.0 / 3.0,
+            },
+            "kalman_phi_student_t": {
+                "phi": 0.95,      # Mean-reverting drift
+                "q": q_base,
+                "nu": 5.0,        # Moderate fat tails (default prior)
+                "c": c_base,
+                "weight": 1.0 / 3.0,
+            },
+        }
         
-        return r_samples, np.array([1.0, 0.0, 0.0, 0.0, 0.0]), {"method": "single_model_legacy"}
+        all_samples = []
+        n_total = n_paths_per_regime * 5
+        
+        for model_name, model_spec in uniform_models.items():
+            n_model_samples = max(100, int(model_spec["weight"] * n_total))
+            model_samples = run_regime_specific_mc(
+                regime=0,
+                mu_t=mu_t,
+                P_t=P_t,
+                phi=model_spec["phi"],
+                q=model_spec["q"],
+                sigma2_step=sigma2_step * model_spec["c"],
+                H=H,
+                n_paths=n_model_samples,
+                nu=model_spec["nu"],
+                seed=rng.integers(0, 2**31) if seed is not None else None
+            )
+            all_samples.append(model_samples)
+        
+        r_samples = np.concatenate(all_samples)
+        
+        # Uniform regime probs (regime uncertainty also preserved)
+        uniform_regime_probs = np.array([0.2, 0.2, 0.2, 0.2, 0.2])
+        
+        return r_samples, uniform_regime_probs, {
+            "method": "uniform_model_averaging_fallback",
+            "reason": "no_bma_structure",
+            "model_posterior": {m: spec["weight"] for m, spec in uniform_models.items()},
+            "note": "Structural uncertainty preserved via uniform model priors"
+        }
     
     # ========================================================================
     # BAYESIAN MODEL AVERAGING: Full mixture over regimes AND model classes
@@ -2732,28 +2830,52 @@ def bayesian_model_average_mc(
             borrowed = True
             regime_meta = {}
         
-        # If models empty (shouldn't happen with proper tune), use legacy params
+        # If models empty, use global BMA fallback (preserves structural uncertainty)
         if not models or not model_posterior:
-            # Legacy fallback: use regime_params
-            params = regime_params.get(regime, regime_params.get(0, {}))
-            phi = params.get("phi", 0.95)
-            q = params.get("q", 1e-6)
-            nu = params.get("nu")
+            # Use global BMA parameters - never collapse to single-model certainty
+            model_posterior = global_model_posterior if global_model_posterior else {}
+            models = global_models if global_models else {}
+            is_fallback = True
+            borrowed = True
             
-            n_samples = max(100, int(regime_prob * n_paths_per_regime * 5))
-            r_regime = run_regime_specific_mc(
-                regime=regime, mu_t=mu_t, P_t=P_t, phi=phi, q=q,
-                sigma2_step=sigma2_step, H=H, n_paths=n_samples,
-                nu=nu, seed=rng.integers(0, 2**31) if seed is not None else None
-            )
-            all_samples.append(r_regime)
-            regime_details[regime] = {
-                "prob": float(regime_prob),
-                "n_samples": n_samples,
-                "method": "legacy_single_model",
-                "is_fallback": True,
-            }
-            continue
+            # If still empty (shouldn't happen with proper tune), use uniform BMA
+            # NEVER collapse to single-model certainty
+            if not models or not model_posterior:
+                # Construct uniform model posterior to preserve structural uncertainty
+                params = regime_params.get(regime, regime_params.get(0, {}))
+                q_base = params.get("q", 1e-6)
+                c_base = params.get("c", 1.0)
+                
+                uniform_models = {
+                    "kalman_gaussian": {"phi": 1.0, "q": q_base, "nu": None, "c": c_base},
+                    "kalman_phi_gaussian": {"phi": 0.95, "q": q_base, "nu": None, "c": c_base},
+                    "kalman_phi_student_t": {"phi": 0.95, "q": q_base, "nu": 5.0, "c": c_base},
+                }
+                
+                n_total = max(100, int(regime_prob * n_paths_per_regime * 5))
+                regime_samples_fallback = []
+                
+                for m_name, m_spec in uniform_models.items():
+                    n_m = max(30, n_total // 3)
+                    m_samples = run_regime_specific_mc(
+                        regime=regime, mu_t=mu_t, P_t=P_t,
+                        phi=m_spec["phi"], q=m_spec["q"],
+                        sigma2_step=sigma2_step * m_spec["c"],
+                        H=H, n_paths=n_m, nu=m_spec["nu"],
+                        seed=rng.integers(0, 2**31) if seed is not None else None
+                    )
+                    regime_samples_fallback.append(m_samples)
+                
+                all_samples.append(np.concatenate(regime_samples_fallback))
+                regime_details[regime] = {
+                    "prob": float(regime_prob),
+                    "n_samples": n_total,
+                    "method": "uniform_model_averaging_fallback",
+                    "is_fallback": True,
+                    "model_posterior": {m: 1/3 for m in uniform_models},
+                    "warning": "no_bma_structure_available_used_uniform_priors",
+                }
+                continue
         
         # ====================================================================
         # MODEL-CLASS AVERAGING within regime r
@@ -2856,128 +2978,6 @@ def bayesian_model_average_mc(
     return r_samples, regime_probs, metadata
 
 
-def bayesian_model_average_mc_legacy(
-    feats: Dict[str, pd.Series],
-    regime_params: Dict[int, Dict],
-    mu_t: float,
-    P_t: float,
-    sigma2_step: float,
-    H: int,
-    n_paths_per_regime: int = 5000,
-    use_regime_bma: bool = True,
-    smoothing_alpha: float = 0.3,
-    prev_regime_probs: Optional[np.ndarray] = None,
-    seed: Optional[int] = None
-) -> Tuple[np.ndarray, np.ndarray, Dict]:
-    """
-    LEGACY: Perform Bayesian Model Averaging across regimes only (single model per regime).
-    
-    This is the backward-compatible version that averages over regimes but uses
-    a single model class per regime. For the full BMA implementation with model-class
-    averaging, use bayesian_model_average_mc() with tuned_params.
-    
-    Implements: p(r_H | D) = Σ_r P(regime_r | D) · p(r_H | regime_r, D)
-    
-    Args:
-        feats: Feature dictionary
-        regime_params: Dict mapping regime index to parameters {q, phi, nu, ...}
-        mu_t: Current drift estimate
-        P_t: Current drift variance
-        sigma2_step: Per-step volatility
-        H: Forecast horizon
-        n_paths_per_regime: MC paths per regime
-        use_regime_bma: If False, use only global/regime 0 parameters
-        smoothing_alpha: EMA smoothing factor for regime probabilities
-        prev_regime_probs: Previous regime probabilities for smoothing
-        seed: Random seed for reproducibility
-        
-    Returns:
-        Tuple of:
-        - r_samples: Weighted mixture of regime-specific samples
-        - regime_probs: Array of regime probabilities
-        - metadata: Diagnostic information
-    """
-    # If BMA disabled, use single model (regime 0 or global)
-    if not use_regime_bma:
-        params = regime_params.get(0, regime_params.get("global", {}))
-        phi = params.get("phi", 0.95)
-        q = params.get("q", 1e-6)
-        nu = params.get("nu")
-        
-        r_samples = run_regime_specific_mc(
-            regime=0, mu_t=mu_t, P_t=P_t, phi=phi, q=q,
-            sigma2_step=sigma2_step, H=H, n_paths=n_paths_per_regime * 5,
-            nu=nu, seed=seed
-        )
-        
-        return r_samples, np.array([1.0, 0.0, 0.0, 0.0, 0.0]), {"method": "single_model"}
-    
-    # Extract regime features and compute probabilities
-    features = extract_regime_features(feats)
-    regime_probs = compute_regime_probabilities(
-        features, smoothing_alpha=smoothing_alpha, prev_probs=prev_regime_probs
-    )
-    
-    # Generate samples for each regime, weighted by probability
-    all_samples = []
-    regime_details = {}
-    
-    rng = np.random.default_rng(seed)
-    
-    for regime in range(5):
-        prob = regime_probs[regime]
-        
-        # Skip regimes with negligible probability
-        if prob < 0.01:
-            continue
-        
-        # Get regime-specific parameters
-        params = regime_params.get(regime, regime_params.get(0, {}))
-        phi = params.get("phi", 0.95)
-        q = params.get("q", 1e-6)
-        nu = params.get("nu")
-        
-        # Number of samples proportional to probability
-        n_samples = max(100, int(prob * n_paths_per_regime * 5))
-        
-        # Generate regime-specific samples
-        r_regime = run_regime_specific_mc(
-            regime=regime, mu_t=mu_t, P_t=P_t, phi=phi, q=q,
-            sigma2_step=sigma2_step, H=H, n_paths=n_samples,
-            nu=nu, seed=rng.integers(0, 2**31) if seed is not None else None
-        )
-        
-        all_samples.append(r_regime)
-        regime_details[regime] = {
-            "prob": float(prob),
-            "n_samples": n_samples,
-            "phi": float(phi),
-            "q": float(q),
-            "nu": float(nu) if nu is not None else None,
-        }
-    
-    # Concatenate all weighted samples
-    if all_samples:
-        r_samples = np.concatenate(all_samples)
-    else:
-        # Fallback: generate samples from regime 0
-        params = regime_params.get(0, {})
-        r_samples = run_regime_specific_mc(
-            regime=0, mu_t=mu_t, P_t=P_t,
-            phi=params.get("phi", 0.95), q=params.get("q", 1e-6),
-            sigma2_step=sigma2_step, H=H, n_paths=n_paths_per_regime * 5,
-            nu=params.get("nu"), seed=seed
-        )
-    
-    metadata = {
-        "method": "bayesian_model_average",
-        "regime_probs": regime_probs.tolist(),
-        "regime_details": regime_details,
-        "features": features,
-        "n_total_samples": len(r_samples),
-    }
-    
-    return r_samples, regime_probs, metadata
 
 
 # -------------------------
