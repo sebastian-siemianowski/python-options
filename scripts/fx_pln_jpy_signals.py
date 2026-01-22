@@ -1,5 +1,78 @@
 #!/usr/bin/env python3
 """
+===============================================================================
+SYSTEM DNA — SIGNAL / DECISION LAYER
+===============================================================================
+
+This file implements the *decision intelligence layer* of the quant system.
+
+It consumes the probabilistic structure produced by tune_q_mle.py and applies:
+
+    p(r_{t+H} | r_t)
+        = ∑_m  p(r_{t+H} | r_t, m, θ_{r,m}) · p(m | r_t)
+
+via posterior predictive Monte Carlo simulation.
+
+-------------------------------------------------------------------------------
+VARIABLE MEANINGS
+
+    r_t        = current return / state
+    r_{t+H}    = future return at horizon H
+    r          = current regime
+    m          = model class
+    θ_{r,m}    = tuned parameters for regime r and model m
+    p(m|r)     = model posterior from tuning layer
+
+-------------------------------------------------------------------------------
+RESPONSIBILITIES
+
+This file is responsible ONLY for:
+
+    • Selecting regime r
+    • Performing posterior predictive Monte Carlo
+    • Averaging predictions across model classes using p(m|r)
+    • Computing Expected Utility from r_samples
+    • Producing BUY / HOLD / SELL decisions
+
+It does NOT:
+
+    • Tune parameters
+    • Select models via BIC directly
+    • Override tuning epistemology
+
+-------------------------------------------------------------------------------
+EXPECTED UTILITY PRINCIPLE
+
+Decisions are made from distributions, not point estimates:
+
+    EU = p · E[gain] − (1−p) · E[loss]
+
+Position sizing derives from Expected Utility geometry,
+not from Kelly, not from variance, not from heuristics.
+
+-------------------------------------------------------------------------------
+ARCHITECTURAL LAW
+
+Inference → Distribution → Utility → Decision
+
+No shortcut is allowed.
+
+-------------------------------------------------------------------------------
+EVOLUTION RULE
+
+Any future change MUST preserve:
+
+    • Distribution-first reasoning
+    • Regime-conditioned inference
+    • Model-averaged physics
+    • Decision based only on posterior predictive samples
+
+This file defines the agency of the system.
+
+===============================================================================
+"""
+
+"""
 fx_pln_jpy_signals_v3.py
 
 Quant upgrades:

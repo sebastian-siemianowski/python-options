@@ -1,5 +1,84 @@
 #!/usr/bin/env python3
 """
+===============================================================================
+SYSTEM DNA — TUNING LAYER
+===============================================================================
+
+This file implements the *evolutionary tuning layer* of the quant system.
+
+The system is governed by the following probabilistic law:
+
+    p(r_{t+H} | r_t)
+        = ∑_m  p(r_{t+H} | r_t, m, θ_{r,m}) · p(m | r_t)
+
+Where:
+
+    r_t        = current return / state
+    r_{t+H}    = future return at horizon H
+    r          = regime label inferred from market state
+    m          = model class (e.g. kalman_gaussian, kalman_phi_student_t, etc.)
+    θ_{r,m}    = parameters of model m in regime r
+    p(m | r)   = posterior probability of model m in regime r
+
+This file is responsible ONLY for:
+
+    • Learning θ_{r,m}  (parameters per regime per model)
+    • Computing p(m|r)  (model posterior per regime)
+    • Providing diagnostic likelihood metrics
+    • Applying hierarchical shrinkage and priors
+    • Never making trading decisions
+
+It does NOT:
+
+    • Generate signals
+    • Allocate capital
+    • Perform Monte Carlo forecasting
+    • Compute expected utility
+
+-------------------------------------------------------------------------------
+PHILOSOPHY
+
+The system does NOT assume a single true market physics.
+
+It maintains a *population of competing model laws* inside each regime.
+
+Regimes are ontological contexts.
+Models are hypotheses about physics inside those contexts.
+
+-------------------------------------------------------------------------------
+CONTRACT WITH SIGNAL LAYER
+
+This file must output, for each regime r:
+
+    {
+        "model_posterior": { m: p(m|r) },
+        "models": {
+            m: {
+                "q", "phi", "nu", "c",
+                "mean_log_likelihood",
+                "bic", "aic",
+                ...
+            }
+        }
+    }
+
+The signal layer will consume this structure *without reinterpretation*.
+
+-------------------------------------------------------------------------------
+EVOLUTION RULE
+
+Any future change MUST preserve:
+
+    • Bayesian coherence
+    • Regime-conditional model uncertainty
+    • Separation of inference from decision
+
+This file defines the epistemology of the system.
+
+===============================================================================
+"""
+
+"""
 tune_q_mle.py
 
 Automatic per-asset Kalman drift process-noise parameter (q) estimation via MLE.
