@@ -1580,7 +1580,7 @@ def tune_asset_q(
 
             # Likelihood and model comparison
             # NOTE: log_likelihood here is TOTAL (sum over all observations) from full filter run
-            # This differs from regime["mean_log_likelihood"] which is per-observation average from CV
+            # This differs from regime["cv_penalized_ll"] which is penalized mean LL from CV
             'log_likelihood': float(ll_full),
             'delta_ll_vs_zero': float(delta_ll_vs_zero),
             'delta_ll_vs_const': float(delta_ll_vs_const),
@@ -1824,7 +1824,7 @@ def tune_regime_parameters(
             "c": float(c_global),
             "phi": float(phi_global),
             "nu": float(nu_global),
-            "mean_log_likelihood": float(ll_global),  # Average LL per observation from CV
+            "cv_penalized_ll": float(ll_global),  # Penalized mean LL from CV (includes priors)
             "n_samples": int(len(returns)),
             "n_eff": float(np.sum(weights)),
             "fallback": False
@@ -1837,7 +1837,7 @@ def tune_regime_parameters(
             "c": 1.0,
             "phi": 0.95,
             "nu": 8.0,
-            "mean_log_likelihood": float('nan'),  # Average LL per observation (unavailable)
+            "cv_penalized_ll": float('nan'),  # Penalized mean LL from CV (unavailable)
             "n_samples": int(len(returns)),
             "n_eff": float(np.sum(weights)),
             "fallback": True
@@ -1955,7 +1955,7 @@ def tune_regime_parameters(
                 "c": float(c_r),
                 "phi": float(phi_r),
                 "nu": float(nu_r),
-                "mean_log_likelihood": float(ll_r),
+                "cv_penalized_ll": float(ll_r),  # Penalized mean LL from CV (includes priors)
                 "n_samples": n_samples,
                 "n_eff": n_eff,
                 "fallback": False,
@@ -2074,8 +2074,8 @@ def _compute_regime_diagnostics(
             },
             "collapse_warning": collapse_detected,
             "n_active_regimes": len(active_regimes),
-            # PATCH 5: Add metadata flag for likelihood scale
-            "likelihood_scale": "mean_per_sample",
+            # PATCH 5: Add metadata flag for likelihood type
+            "ll_type": "cv_penalized_mean",  # Penalized mean LL from CV (includes priors + calibration penalty)
         }
     
     # Print warnings if sanity checks fail
