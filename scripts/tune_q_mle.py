@@ -2264,6 +2264,10 @@ def _tune_asset_with_regime_labels(
     Returns:
         Dictionary with global and regime-conditional parameters
     """
+    # Minimum data thresholds
+    MIN_DATA_FOR_REGIME = 100  # Need at least 100 points for reliable regime estimation
+    MIN_DATA_FOR_GLOBAL = 20   # Can do basic tuning with fewer points
+    
     try:
         # Fetch price data
         try:
@@ -2275,9 +2279,41 @@ def _tune_asset_with_regime_labels(
                 return None
             px = df['Close']
 
-        if px is None or len(px) < 100:
-            print(f"     ⚠️  Insufficient data for {asset} ({len(px) if px is not None else 0} points)")
+        n_points = len(px) if px is not None else 0
+        
+        # For very small datasets, fall back directly to global-only tuning
+        if n_points < MIN_DATA_FOR_GLOBAL:
+            print(f"     ⚠️  Insufficient data for {asset} ({n_points} points) - need at least {MIN_DATA_FOR_GLOBAL}")
             return None
+        
+        # For small-to-medium datasets (20-100 points), skip regime tuning but do global
+        if n_points < MIN_DATA_FOR_REGIME:
+            print(f"     ⚠️  Insufficient data for {asset} ({n_points} points) for regime tuning")
+            print(f"     ↩️  Falling back to global-only model tuning...")
+            
+            # Do global tuning only
+            global_result = tune_asset_q(
+                asset=asset,
+                start_date=start_date,
+                end_date=end_date,
+                prior_log_q_mean=prior_log_q_mean,
+                prior_lambda=prior_lambda
+            )
+            
+            if global_result is None:
+                print(f"     ⚠️  Global tuning also failed for {asset}")
+                return None
+            
+            # Return result with explicit markers that regime tuning was skipped
+            return {
+                "asset": asset,
+                "global": global_result,
+                "regime": None,  # Explicitly None - no regime params available
+                "use_regime_tuning": False,
+                "regime_fallback": True,
+                "regime_fallback_reason": f"insufficient_data_{n_points}_points",
+                "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
 
         # Compute returns and volatility
         log_ret = np.log(px / px.shift(1)).dropna()
@@ -2291,9 +2327,37 @@ def _tune_asset_with_regime_labels(
         returns = returns[valid_mask]
         vol = vol[valid_mask]
 
-        if len(returns) < 100:
-            print(f"     ⚠️  Insufficient valid data for {asset} after cleaning")
-            return None
+        # After cleaning, check if we still have enough data for regime tuning
+        if len(returns) < MIN_DATA_FOR_REGIME:
+            if len(returns) < MIN_DATA_FOR_GLOBAL:
+                print(f"     ⚠️  Insufficient valid data for {asset} after cleaning ({len(returns)} returns)")
+                return None
+            
+            print(f"     ⚠️  Insufficient data for {asset} after cleaning ({len(returns)} returns) for regime tuning")
+            print(f"     ↩️  Falling back to global-only model tuning...")
+            
+            # Do global tuning only
+            global_result = tune_asset_q(
+                asset=asset,
+                start_date=start_date,
+                end_date=end_date,
+                prior_log_q_mean=prior_log_q_mean,
+                prior_lambda=prior_lambda
+            )
+            
+            if global_result is None:
+                print(f"     ⚠️  Global tuning also failed for {asset}")
+                return None
+            
+            return {
+                "asset": asset,
+                "global": global_result,
+                "regime": None,
+                "use_regime_tuning": False,
+                "regime_fallback": True,
+                "regime_fallback_reason": f"insufficient_data_after_cleaning_{len(returns)}_returns",
+                "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
 
         # Assign regime labels
         print(f"     📊 Assigning regime labels for {len(returns)} observations...")
@@ -2627,8 +2691,9 @@ Examples:
     regime_shrunk_counts = {r: 0 for r in range(5)}
     collapse_warnings = 0
     for asset, data in cache.items():
-        if 'regime' in data and data['regime'] is not None:
-            for r, params in data['regime'].items():
+        regime_data = data.get('regime')
+        if regime_data is not None and isinstance(regime_data, dict):
+            for r, params in regime_data.items():
                 if isinstance(params, dict) and not params.get('fallback', False):
                     regime_fit_counts[int(r)] += 1
                     if params.get('shrinkage_applied', False):
