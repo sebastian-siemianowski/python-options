@@ -159,7 +159,7 @@ class ModelClass(IntEnum):
 # Model class labels for display
 MODEL_CLASS_LABELS = {
     ModelClass.KALMAN_GAUSSIAN: "kalman_gaussian",
-    ModelClass.PHI_GAUSSIAN: "phi_gaussian",
+    ModelClass.PHI_GAUSSIAN: "kalman_phi_gaussian",
     ModelClass.PHI_STUDENT_T: "kalman_phi_student_t",
 }
 
@@ -2077,7 +2077,7 @@ def fit_all_models_for_regime(
         bic_phi = compute_bic(ll_full_phi, n_params_phi, n_obs)
         mean_ll_phi = ll_full_phi / max(n_obs, 1)
         
-        models["phi_gaussian"] = {
+        models["kalman_phi_gaussian"] = {
             "q": float(q_phi),
             "c": float(c_phi),
             "phi": float(phi_opt),
@@ -2094,7 +2094,7 @@ def fit_all_models_for_regime(
             "diagnostics": diag_phi,
         }
     except Exception as e:
-        models["phi_gaussian"] = {
+        models["kalman_phi_gaussian"] = {
             "fit_success": False,
             "error": str(e),
             "bic": float('inf'),
@@ -2241,7 +2241,7 @@ def fit_regime_model_posterior(
             # Use uniform prior with no model parameters
             uniform_posterior = {
                 "kalman_gaussian": 1.0 / 3.0,
-                "phi_gaussian": 1.0 / 3.0,
+                "kalman_phi_gaussian": 1.0 / 3.0,
                 "kalman_phi_student_t": 1.0 / 3.0,
             }
             regime_results[regime] = {
@@ -2657,7 +2657,7 @@ def get_model_params_for_regime(
     Args:
         bma_result: Result from tune_asset_with_bma()
         regime: Regime index (0-4)
-        model: Model name ("kalman_gaussian", "phi_gaussian", "kalman_phi_student_t")
+        model: Model name ("kalman_gaussian", "kalman_phi_gaussian", "kalman_phi_student_t")
         
     Returns:
         Model parameters dict or None if not available
@@ -2706,7 +2706,7 @@ def get_model_posterior_for_regime(
     # Ultimate fallback: uniform
     return {
         "kalman_gaussian": 1.0 / 3.0,
-        "phi_gaussian": 1.0 / 3.0,
+        "kalman_phi_gaussian": 1.0 / 3.0,
         "kalman_phi_student_t": 1.0 / 3.0,
     }
 
@@ -3221,15 +3221,16 @@ def _tune_asset_with_regime_labels(
     prior_log_q_mean: float = -6.0,
     prior_lambda: float = 1.0,
     lambda_regime: float = 0.05,
+    previous_posteriors: Optional[Dict[int, Dict[str, float]]] = None,
 ) -> Optional[Dict]:
     """
-    Tune asset with automatic regime label assignment and hierarchical Bayesian maturation.
+    Tune asset with automatic regime label assignment and Bayesian Model Averaging.
 
     This function:
     1. Fetches price data
     2. Computes returns and volatility
     3. Assigns regime labels using assign_regime_labels()
-    4. Calls tune_regime_parameters() with hierarchical shrinkage
+    4. Calls tune_regime_model_averaging() for full BMA with temporal smoothing
 
     Args:
         asset: Asset symbol
@@ -3238,9 +3239,10 @@ def _tune_asset_with_regime_labels(
         prior_log_q_mean: Prior mean for log10(q)
         prior_lambda: Regularization strength
         lambda_regime: Hierarchical shrinkage strength (default 0.05)
+        previous_posteriors: Previous model posteriors per regime for temporal smoothing
 
     Returns:
-        Dictionary with global and regime-conditional parameters
+        Dictionary with global and regime-conditional model posteriors and parameters
     """
     # Minimum data thresholds
     MIN_DATA_FOR_REGIME = 100  # Need at least 100 points for reliable regime estimation
@@ -3365,6 +3367,8 @@ def _tune_asset_with_regime_labels(
         #     p(r_{t+H} | r) = Σ_m p(r_{t+H} | r, m, θ_{r,m}) · p(m | r)
         # =================================================================
         print(f"     🔄 Bayesian Model Averaging (λ_regime={lambda_regime})...")
+        if previous_posteriors is not None:
+            print(f"        ↪ Using previous posteriors for temporal smoothing (α={DEFAULT_TEMPORAL_ALPHA})")
         bma_result = tune_regime_model_averaging(
             returns=returns,
             vol=vol,
@@ -3373,7 +3377,7 @@ def _tune_asset_with_regime_labels(
             prior_lambda=prior_lambda,
             min_samples=MIN_REGIME_SAMPLES,
             temporal_alpha=DEFAULT_TEMPORAL_ALPHA,
-            previous_posteriors=None,  # No previous posteriors for first run
+            previous_posteriors=previous_posteriors,  # Use provided previous posteriors
             lambda_regime=lambda_regime,
         )
 
@@ -3439,20 +3443,20 @@ def _tune_asset_with_regime_labels(
         return None
 
 
-def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float]) -> Tuple[str, Optional[Dict], Optional[str]]:
+def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float, Optional[Dict]]) -> Tuple[str, Optional[Dict], Optional[str]]:
     """
     Worker function for parallel asset tuning.
     Must be defined at module level for ProcessPoolExecutor pickling.
     
     Args:
-        args_tuple: (asset, start_date, end_date, prior_log_q_mean, prior_lambda, lambda_regime)
+        args_tuple: (asset, start_date, end_date, prior_log_q_mean, prior_lambda, lambda_regime, previous_posteriors)
         
     Returns:
         Tuple of (asset, result_dict, error_message)
         - If success: (asset, result, None)
         - If failure: (asset, None, error_string)
     """
-    asset, start_date, end_date, prior_log_q_mean, prior_lambda, lambda_regime = args_tuple
+    asset, start_date, end_date, prior_log_q_mean, prior_lambda, lambda_regime, previous_posteriors = args_tuple
     
     try:
         result = _tune_asset_with_regime_labels(
@@ -3462,6 +3466,7 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float]
             prior_log_q_mean=prior_log_q_mean,
             prior_lambda=prior_lambda,
             lambda_regime=lambda_regime,
+            previous_posteriors=previous_posteriors,
         )
         
         if result:
@@ -3489,6 +3494,42 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float]
 
     except Exception as e:
         return (asset, None, str(e))
+
+
+def _extract_previous_posteriors(cached_entry: Optional[Dict]) -> Optional[Dict[int, Dict[str, float]]]:
+    """
+    Extract previous model posteriors from a cached entry for temporal smoothing.
+    
+    Args:
+        cached_entry: Cached result for an asset (may be old or new structure)
+        
+    Returns:
+        Dictionary mapping regime index to model posteriors, or None if not available
+    """
+    if cached_entry is None:
+        return None
+    
+    regime_data = cached_entry.get("regime")
+    if regime_data is None or not isinstance(regime_data, dict):
+        return None
+    
+    previous_posteriors = {}
+    for r_str, r_data in regime_data.items():
+        try:
+            r = int(r_str)
+            model_posterior = r_data.get("model_posterior")
+            if model_posterior is not None and isinstance(model_posterior, dict):
+                # Validate it has expected model keys
+                if any(k in model_posterior for k in ["kalman_gaussian", "kalman_phi_gaussian", "kalman_phi_student_t"]):
+                    previous_posteriors[r] = model_posterior
+        except (ValueError, TypeError):
+            continue
+    
+    # Return None if no valid posteriors found
+    if not previous_posteriors:
+        return None
+    
+    return previous_posteriors
 
 
 def main():
@@ -3624,11 +3665,14 @@ Examples:
         n_workers = multiprocessing.cpu_count()
         print(f"\n🚀 Running {len(assets_to_process)} assets with parallel regime-conditional tuning ({n_workers} workers)...")
 
-        # Prepare arguments for workers
-        worker_args = [
-            (asset, args.start, args.end, args.prior_mean, args.prior_lambda, args.lambda_regime)
-            for asset in assets_to_process
-        ]
+        # Prepare arguments for workers, extracting previous posteriors from cache for temporal smoothing
+        worker_args = []
+        for asset in assets_to_process:
+            # Extract previous posteriors from cache if available (for temporal smoothing)
+            prev_posteriors = _extract_previous_posteriors(cache.get(asset))
+            worker_args.append(
+                (asset, args.start, args.end, args.prior_mean, args.prior_lambda, args.lambda_regime, prev_posteriors)
+            )
 
         # Process in parallel using all CPU cores
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
@@ -3699,10 +3743,15 @@ Examples:
         regime_data = data.get('regime')
         if regime_data is not None and isinstance(regime_data, dict):
             for r, params in regime_data.items():
-                if isinstance(params, dict) and not params.get('fallback', False):
-                    regime_fit_counts[int(r)] += 1
-                    if params.get('shrinkage_applied', False):
-                        regime_shrunk_counts[int(r)] += 1
+                if isinstance(params, dict):
+                    # Handle both old structure (fallback at top level) and new BMA structure (in regime_meta)
+                    is_fallback = params.get('fallback', False) or params.get('regime_meta', {}).get('fallback', False)
+                    if not is_fallback:
+                        regime_fit_counts[int(r)] += 1
+                        # Check for shrinkage in both old and new structures
+                        is_shrunk = params.get('shrinkage_applied', False) or params.get('regime_meta', {}).get('shrinkage_applied', False)
+                        if is_shrunk:
+                            regime_shrunk_counts[int(r)] += 1
         if 'hierarchical_tuning' in data:
             if data['hierarchical_tuning'].get('collapse_warning', False):
                 collapse_warnings += 1
