@@ -2798,9 +2798,39 @@ def bayesian_model_average_mc(
         features, smoothing_alpha=smoothing_alpha, prev_probs=prev_regime_probs
     )
     
+    # ========================================================================
+    # SCHEMA COMPATIBILITY:
+    # ========================================================================
+    # tuned_params may come from two sources with different structures:
+    #
+    # 1. Direct from tune_q_mle.py cache (nested):
+    #    {
+    #      "global": { "model_posterior": {...}, "models": {...} },
+    #      "regime": { "0": {...}, ... }
+    #    }
+    #
+    # 2. Via _load_tuned_kalman_params (flattened):
+    #    {
+    #      "global_model_posterior": {...},
+    #      "global_models": {...},
+    #      "regime": { "0": {...}, ... }
+    #    }
+    #
+    # We handle both by checking for nested structure first.
+    # ========================================================================
+    
     regime_data = tuned_params.get('regime', {})
-    global_model_posterior = tuned_params.get('global_model_posterior', {})
-    global_models = tuned_params.get('global_models', {})
+    
+    # Extract global BMA data - handle both nested and flattened schemas
+    if 'global' in tuned_params and isinstance(tuned_params['global'], dict):
+        # Nested structure (direct from tune_q_mle.py)
+        global_data = tuned_params['global']
+        global_model_posterior = global_data.get('model_posterior', {})
+        global_models = global_data.get('models', {})
+    else:
+        # Flattened structure (from _load_tuned_kalman_params)
+        global_model_posterior = tuned_params.get('global_model_posterior', {})
+        global_models = tuned_params.get('global_models', {})
     
     all_samples = []
     regime_details = {}
@@ -2896,10 +2926,12 @@ def bayesian_model_average_mc(
                 continue  # Skip failed model fits
             
             # Extract model-specific parameters
-            q_m = model_params.get('q', tuned_params.get('q', 1e-6))
+            # Fallback: try global models, then safe defaults (never use old flat schema)
+            global_m = global_models.get(model_name, {})
+            q_m = model_params.get('q') or global_m.get('q', 1e-6)
             phi_m = model_params.get('phi')  # May be None for kalman_gaussian
             nu_m = model_params.get('nu')     # May be None for non-Student-t
-            c_m = model_params.get('c', tuned_params.get('c', 1.0))
+            c_m = model_params.get('c') or global_m.get('c', 1.0)
             
             # Default phi for models without it
             if phi_m is None or not np.isfinite(phi_m):
@@ -2955,16 +2987,49 @@ def bayesian_model_average_mc(
     if all_samples:
         r_samples = np.concatenate(all_samples)
     else:
-        # Ultimate fallback: generate samples from global parameters
-        r_samples = run_regime_specific_mc(
-            regime=0, mu_t=mu_t, P_t=P_t,
-            phi=tuned_params.get('phi', 0.95),
-            q=tuned_params.get('q', 1e-6),
-            sigma2_step=sigma2_step,
-            H=H, n_paths=n_paths_per_regime * 5,
-            nu=tuned_params.get('nu'),
-            seed=seed
-        )
+        # ====================================================================
+        # ULTIMATE FALLBACK: Uniform BMA when all regime paths failed
+        # ====================================================================
+        # This path should be extremely rare (only if ALL regimes have
+        # negligible probability or all model fits failed).
+        #
+        # We use uniform model averaging to preserve structural uncertainty.
+        # NEVER use single-model flat params (they don't exist in new schema).
+        # ====================================================================
+        
+        # Try to extract q from global models if available
+        q_fallback = 1e-6
+        c_fallback = 1.0
+        if global_models:
+            # Get q from first available model
+            for m_name, m_params in global_models.items():
+                if isinstance(m_params, dict) and m_params.get('fit_success', True):
+                    q_fallback = m_params.get('q', 1e-6)
+                    c_fallback = m_params.get('c', 1.0)
+                    break
+        
+        # Uniform BMA over model classes
+        uniform_models = {
+            "kalman_gaussian": {"phi": 1.0, "q": q_fallback, "nu": None, "c": c_fallback},
+            "kalman_phi_gaussian": {"phi": 0.95, "q": q_fallback, "nu": None, "c": c_fallback},
+            "kalman_phi_student_t": {"phi": 0.95, "q": q_fallback, "nu": 5.0, "c": c_fallback},
+        }
+        
+        fallback_samples = []
+        n_total = n_paths_per_regime * 5
+        
+        for m_name, m_spec in uniform_models.items():
+            n_m = max(100, n_total // 3)
+            m_samples = run_regime_specific_mc(
+                regime=0, mu_t=mu_t, P_t=P_t,
+                phi=m_spec["phi"], q=m_spec["q"],
+                sigma2_step=sigma2_step * m_spec["c"],
+                H=H, n_paths=n_m, nu=m_spec["nu"],
+                seed=rng.integers(0, 2**31) if seed is not None else None
+            )
+            fallback_samples.append(m_samples)
+        
+        r_samples = np.concatenate(fallback_samples)
     
     metadata = {
         "method": "bayesian_model_averaging_full",
