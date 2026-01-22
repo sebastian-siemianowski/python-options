@@ -958,13 +958,41 @@ def _select_regime_params(
     # Handle both int keys and string keys (JSON converts to strings)
     regime_params = regime_data.get(current_regime) or regime_data.get(str(current_regime))
     
+    # Helper to safely convert to float with fallback for None values
+    def _safe_float(val, default):
+        if val is None:
+            return float(default)
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return float(default)
+    
     if regime_params is not None and not regime_params.get('fallback', False):
         # Use regime-specific params
+        # Handle None values explicitly - .get() returns None if key exists with None value
+        q_val = regime_params.get('q')
+        if q_val is None:
+            q_val = tuned_params.get('q')
+        if q_val is None:
+            q_val = 1e-6
+            
+        phi_val = regime_params.get('phi')
+        if phi_val is None:
+            phi_val = tuned_params.get('phi')
+        if phi_val is None:
+            phi_val = 0.95
+            
+        c_val = regime_params.get('c')
+        if c_val is None:
+            c_val = tuned_params.get('c')
+        if c_val is None:
+            c_val = 1.0
+        
         theta = {
-            'q': float(regime_params.get('q', tuned_params.get('q', 1e-6))),
-            'phi': float(regime_params.get('phi', tuned_params.get('phi', 0.95))),
+            'q': _safe_float(q_val, 1e-6),
+            'phi': _safe_float(phi_val, 0.95),
             'nu': regime_params.get('nu'),
-            'c': float(regime_params.get('c', tuned_params.get('c', 1.0))),
+            'c': _safe_float(c_val, 1.0),
             'fallback': False,
             'source': 'regime_tuned',
             'regime_used': current_regime,
@@ -978,11 +1006,15 @@ def _select_regime_params(
         return theta
     else:
         # Fallback to global params
+        q_global = tuned_params.get('q')
+        phi_global = tuned_params.get('phi')
+        c_global = tuned_params.get('c')
+        
         return {
-            'q': float(tuned_params.get('q', 1e-6)),
-            'phi': float(tuned_params.get('phi', 0.95)),
+            'q': _safe_float(q_global, 1e-6),
+            'phi': _safe_float(phi_global, 0.95),
             'nu': tuned_params.get('nu'),
-            'c': float(tuned_params.get('c', 1.0)),
+            'c': _safe_float(c_global, 1.0),
             'fallback': True,
             'source': 'global',
             'regime_used': current_regime,
