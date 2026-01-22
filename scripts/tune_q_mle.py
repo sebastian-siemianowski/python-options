@@ -1579,6 +1579,8 @@ def tune_asset_q(
             'phi': float(phi_selected) if phi_selected is not None else None,
 
             # Likelihood and model comparison
+            # NOTE: log_likelihood here is TOTAL (sum over all observations) from full filter run
+            # This differs from regime["mean_log_likelihood"] which is per-observation average from CV
             'log_likelihood': float(ll_full),
             'delta_ll_vs_zero': float(delta_ll_vs_zero),
             'delta_ll_vs_const': float(delta_ll_vs_const),
@@ -1822,7 +1824,7 @@ def tune_regime_parameters(
             "c": float(c_global),
             "phi": float(phi_global),
             "nu": float(nu_global),
-            "log_likelihood": float(ll_global),
+            "mean_log_likelihood": float(ll_global),  # Average LL per observation from CV
             "n_samples": int(len(returns)),
             "n_eff": float(np.sum(weights)),
             "fallback": False
@@ -1835,7 +1837,7 @@ def tune_regime_parameters(
             "c": 1.0,
             "phi": 0.95,
             "nu": 8.0,
-            "mean_log_likelihood": float('nan'),
+            "mean_log_likelihood": float('nan'),  # Average LL per observation (unavailable)
             "n_samples": int(len(returns)),
             "n_eff": float(np.sum(weights)),
             "fallback": True
