@@ -19,7 +19,22 @@ Where:
     x        = return at horizon H
 
 -------------------------------------------------------------------------------
-CONTRACT WITH tune_q_mle.py
+CONTRACT WITH tune_q_mle.py — NEW BMA ARCHITECTURE ONLY
+-------------------------------------------------------------------------------
+
+tune_q_mle.py outputs:
+    {
+        "global": {
+            "model_posterior": { "kalman_gaussian": p, "kalman_phi_gaussian": p, ... },
+            "models": { "kalman_gaussian": {q, c, ...}, ... }
+        },
+        "regime": {
+            "0": { "model_posterior": {...}, "models": {...}, "regime_meta": {...} },
+            "1": { ... },
+            ...
+        },
+        "meta": {...}
+    }
 
 This file receives from tuning, for each regime r:
 
@@ -38,6 +53,7 @@ This file must NOT:
     - Apply temporal smoothing to model posteriors
     - Select a single best model
     - Implement fallback logic (tune handles this)
+    - Support old flat schema (NO BACKWARD COMPATIBILITY)
 
 -------------------------------------------------------------------------------
 EPISTEMIC ARCHITECTURE — GOVERNING LAW
@@ -59,6 +75,7 @@ This means:
     - When evidence is insufficient, we use global BMA, not single-model certainty
     - Structural uncertainty is never allowed to collapse unless mathematically 
       forced by evidence (which almost never happens)
+    - Old flat cache schema is REJECTED - must regenerate with tune_q_mle.py
 
 This is exactly how institutional Bayesian engines behave.
 
@@ -972,19 +989,21 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
     }
     
     CONTRACT WITH tune_q_mle.py:
+    - Cache structure is ALWAYS: {"global": {...}, "regime": {...}}
     - Every regime block contains model_posterior and models
     - Fallback regimes have borrowed_from_global=True but still contain valid models
     - This function does NOT perform fallback logic - tune guarantees non-empty outputs
+    - NO backward compatibility with old flat schema - new BMA architecture only
     
     Args:
         asset_symbol: Asset symbol (e.g., "PLNJPY=X", "SPY")
         cache_path: Path to the tuned parameters cache file
         
     Returns:
-        Dictionary with parameters if found, None otherwise. Contains:
-        - 'global': {model_posterior, models, ...backward-compatible fields}
+        Dictionary with BMA structure if found, None otherwise. Contains:
+        - 'global': {model_posterior, models}
         - 'regime': {r: {model_posterior, models, regime_meta}}
-        - 'has_bma': True if new BMA structure detected
+        - 'has_bma': True (always for valid entries)
     """
     try:
         if not os.path.exists(cache_path):
@@ -995,70 +1014,114 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
             return None
         raw_data = cache[asset_symbol]
         
-        # Detect BMA structure: presence of model_posterior in global or regime
-        has_bma = False
-        if 'global' in raw_data:
-            global_data = raw_data['global']
-            has_bma = 'model_posterior' in global_data or 'models' in global_data
+        # ====================================================================
+        # NEW BMA ARCHITECTURE ONLY - NO BACKWARD COMPATIBILITY
+        # ====================================================================
+        # tune_q_mle.py outputs:
+        #   {
+        #     "global": { "model_posterior": {...}, "models": {...} },
+        #     "regime": { "0": {...}, "1": {...}, ... },
+        #     "meta": {...}
+        #   }
+        #
+        # Old flat schema is NOT supported. If cache doesn't have 'global' key,
+        # it's from old architecture and must be regenerated.
+        # ====================================================================
         
-        # Handle new BMA structure
-        if 'global' in raw_data:
-            data = raw_data['global']
-            regime_data = raw_data.get('regime', {})
+        if 'global' not in raw_data:
+            # Old flat schema - not supported
+            if os.getenv('DEBUG'):
+                print(f"Warning: {asset_symbol} has old flat schema - regenerate with tune_q_mle.py")
+            return None
+        
+        global_data = raw_data['global']
+        regime_data = raw_data.get('regime', {})
+        
+        # Validate BMA structure
+        model_posterior = global_data.get('model_posterior', {})
+        models = global_data.get('models', {})
+        
+        if not models:
+            # Invalid BMA structure - no models
+            if os.getenv('DEBUG'):
+                print(f"Warning: {asset_symbol} has no models in global - invalid BMA structure")
+            return None
+        
+        # Extract representative params from highest-posterior model for Kalman filter
+        # (The BMA path uses full model averaging, but Kalman filter needs single params)
+        if model_posterior:
+            best_model = max(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0))
         else:
-            # Old flat structure for backward compatibility
-            data = raw_data
-            regime_data = {}
+            # Fallback order: phi_student_t > phi_gaussian > gaussian
+            for candidate in ['kalman_phi_student_t', 'kalman_phi_gaussian', 'kalman_gaussian']:
+                if candidate in models:
+                    best_model = candidate
+                    break
+            else:
+                best_model = next(iter(models), None)
         
-        # Extract backward-compatible global parameters
-        q_val = data.get('q')
-        c_val = data.get('c', 1.0)
-        phi_val = data.get('phi')
-        nu_val = data.get('nu')
-        noise_model_raw = data.get('noise_model', 'gaussian')
+        if not best_model or best_model not in models:
+            return None
         
-        # Normalize/validate supported models (backward compatible)
-        supported_models = {'gaussian', 'phi_gaussian', 'kalman_phi_student_t', 'kalman_phi_gaussian'}
-        noise_model = noise_model_raw if noise_model_raw in supported_models else 'gaussian'
-        requires_phi = 'phi' in noise_model
-        requires_nu = noise_model == 'kalman_phi_student_t'
+        best_params = models[best_model]
         
-        # Basic parameter validation
+        # Extract params from best model
+        q_val = best_params.get('q')
+        c_val = best_params.get('c', 1.0)
+        phi_val = best_params.get('phi')
+        nu_val = best_params.get('nu')
+        
+        # Derive noise_model from best model name
+        if 'student_t' in best_model:
+            noise_model = 'kalman_phi_student_t'
+        elif 'phi' in best_model:
+            noise_model = 'kalman_phi_gaussian'
+        else:
+            noise_model = 'gaussian'
+        
+        # Validate required params
         if q_val is None or not np.isfinite(q_val) or q_val <= 0:
             return None
         if c_val is None or not np.isfinite(c_val) or c_val <= 0:
             return None
-        if requires_phi and (phi_val is None or not np.isfinite(phi_val)):
-            return None
-        if requires_nu and (nu_val is None or not np.isfinite(nu_val)):
-            return None
         
         result = {
-            # Backward-compatible global scalar parameters
+            # Full BMA structure from tune_q_mle.py
+            'global': global_data,
+            'regime': regime_data,
+            'has_bma': True,
+            
+            # Representative params from best model (for Kalman filter compatibility)
             'q': float(q_val),
             'c': float(c_val),
-            'noise_model': noise_model,
-            'nu': float(nu_val) if nu_val is not None and np.isfinite(nu_val) else None,
             'phi': float(phi_val) if phi_val is not None and np.isfinite(phi_val) else None,
-            'best_model_by_bic': data.get('best_model_by_bic', 'kalman_gaussian'),
-            'source': 'tuned_cache',
-            'timestamp': data.get('timestamp') or raw_data.get('timestamp'),
-            'delta_ll_vs_zero': data.get('delta_ll_vs_zero'),
-            'pit_ks_pvalue': data.get('pit_ks_pvalue'),
-            'bic': data.get('bic'),
-            'aic': data.get('aic'),
-            'model_comparison': data.get('model_comparison', {}),
-            'delta_ll_vs_const': data.get('delta_ll_vs_const'),
-            'delta_ll_vs_ewma': data.get('delta_ll_vs_ewma'),
+            'nu': float(nu_val) if nu_val is not None and np.isfinite(nu_val) else None,
+            'noise_model': noise_model,
+            'best_model': best_model,
             
-            # BMA structure: model posteriors and models from global
-            'global_model_posterior': data.get('model_posterior', {}),
-            'global_models': data.get('models', {}),
+            # Diagnostics from best model (for display compatibility)
+            'bic': best_params.get('bic'),
+            'aic': best_params.get('aic'),
+            'log_likelihood': best_params.get('log_likelihood'),
+            'pit_ks_pvalue': best_params.get('pit_ks_pvalue'),
+            'ks_statistic': best_params.get('ks_statistic'),
             
-            # Regime-conditional BMA structure
-            'regime': regime_data,
-            'has_regime_params': bool(regime_data),
-            'has_bma': has_bma,
+            # Model comparison: build from all models
+            'model_comparison': {
+                m: {
+                    'bic': m_params.get('bic'),
+                    'aic': m_params.get('aic'),
+                    'll': m_params.get('log_likelihood'),
+                    'n_params': m_params.get('n_params'),
+                }
+                for m, m_params in models.items()
+                if isinstance(m_params, dict) and m_params.get('fit_success', False)
+            },
+            
+            # Metadata
+            'source': 'tuned_cache_bma',
+            'timestamp': raw_data.get('timestamp') or raw_data.get('meta', {}).get('timestamp'),
+            'model_posterior': model_posterior,
         }
         return result
     except Exception as e:
@@ -1101,10 +1164,11 @@ def _select_regime_params(
         }
     
     regime_data = tuned_params.get('regime', {})
+    global_data = tuned_params.get('global', {})
     
     # Try to get regime-specific params
     # Handle both int keys and string keys (JSON converts to strings)
-    regime_params = regime_data.get(current_regime) or regime_data.get(str(current_regime))
+    regime_block = regime_data.get(current_regime) or regime_data.get(str(current_regime))
     
     # Helper to safely convert to float with fallback for None values
     def _safe_float(val, default):
@@ -1115,60 +1179,79 @@ def _select_regime_params(
         except (TypeError, ValueError):
             return float(default)
     
-    if regime_params is not None and not regime_params.get('fallback', False):
-        # Use regime-specific params
-        # Handle None values explicitly - .get() returns None if key exists with None value
-        q_val = regime_params.get('q')
-        if q_val is None:
-            q_val = tuned_params.get('q')
-        if q_val is None:
-            q_val = 1e-6
-            
-        phi_val = regime_params.get('phi')
-        if phi_val is None:
-            phi_val = tuned_params.get('phi')
-        if phi_val is None:
-            phi_val = 0.95
-            
-        c_val = regime_params.get('c')
-        if c_val is None:
-            c_val = tuned_params.get('c')
-        if c_val is None:
-            c_val = 1.0
+    def _extract_best_model_params(model_posterior: Dict, models: Dict) -> Dict:
+        """Extract params from highest-posterior model."""
+        if not models:
+            return {}
+        if model_posterior:
+            best_model = max(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0))
+        else:
+            # Fallback order
+            for candidate in ['kalman_phi_student_t', 'kalman_phi_gaussian', 'kalman_gaussian']:
+                if candidate in models:
+                    best_model = candidate
+                    break
+            else:
+                best_model = next(iter(models), None)
+        
+        if best_model and best_model in models:
+            return models[best_model]
+        return {}
+    
+    # Check if regime has non-fallback data
+    regime_meta = {}
+    is_fallback = True
+    if regime_block is not None and isinstance(regime_block, dict):
+        regime_meta = regime_block.get('regime_meta', {})
+        is_fallback = regime_meta.get('fallback', False) or regime_meta.get('borrowed_from_global', False)
+    
+    if regime_block is not None and not is_fallback:
+        # Use regime-specific BMA params
+        model_posterior = regime_block.get('model_posterior', {})
+        models = regime_block.get('models', {})
+        best_params = _extract_best_model_params(model_posterior, models)
+        
+        # Fallback to global if regime models empty
+        if not best_params:
+            global_model_posterior = global_data.get('model_posterior', {})
+            global_models = global_data.get('models', {})
+            best_params = _extract_best_model_params(global_model_posterior, global_models)
         
         theta = {
-            'q': _safe_float(q_val, 1e-6),
-            'phi': _safe_float(phi_val, 0.95),
-            'nu': regime_params.get('nu'),
-            'c': _safe_float(c_val, 1.0),
+            'q': _safe_float(best_params.get('q'), 1e-6),
+            'phi': _safe_float(best_params.get('phi'), 0.95) if best_params.get('phi') is not None else 0.95,
+            'nu': best_params.get('nu'),
+            'c': _safe_float(best_params.get('c'), 1.0),
             'fallback': False,
-            'source': 'regime_tuned',
+            'source': 'regime_bma',
             'regime_used': current_regime,
-            'regime_name': regime_params.get('regime_name', f'REGIME_{current_regime}'),
-            'regime_meta': regime_params.get('regime_meta', {}),
-            'collapse_warning': regime_params.get('regime_meta', {}).get('collapse_warning', False),
+            'regime_name': regime_meta.get('regime_name', f'REGIME_{current_regime}'),
+            'regime_meta': regime_meta,
+            'collapse_warning': regime_meta.get('collapse_warning', False),
+            'model_posterior': model_posterior,
         }
         # Validate nu
         if theta['nu'] is not None and (not np.isfinite(theta['nu']) or theta['nu'] <= 2.0):
             theta['nu'] = None
         return theta
     else:
-        # Fallback to global params
-        q_global = tuned_params.get('q')
-        phi_global = tuned_params.get('phi')
-        c_global = tuned_params.get('c')
+        # Fallback to global BMA params
+        global_model_posterior = global_data.get('model_posterior', {})
+        global_models = global_data.get('models', {})
+        best_params = _extract_best_model_params(global_model_posterior, global_models)
         
         return {
-            'q': _safe_float(q_global, 1e-6),
-            'phi': _safe_float(phi_global, 0.95),
-            'nu': tuned_params.get('nu'),
-            'c': _safe_float(c_global, 1.0),
+            'q': _safe_float(best_params.get('q'), 1e-6),
+            'phi': _safe_float(best_params.get('phi'), 0.95) if best_params.get('phi') is not None else 0.95,
+            'nu': best_params.get('nu'),
+            'c': _safe_float(best_params.get('c'), 1.0),
             'fallback': True,
-            'source': 'global',
+            'source': 'global_bma',
             'regime_used': current_regime,
             'regime_name': 'GLOBAL_FALLBACK',
             'regime_meta': {},
             'collapse_warning': False,
+            'model_posterior': global_model_posterior,
         }
 
 
@@ -1383,105 +1466,84 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     if asset_symbol is not None:
         tuned_params = _load_tuned_kalman_params(asset_symbol)
         if tuned_params:
-            best_model = tuned_params.get('best_model_by_bic', 'kalman_gaussian')
+            best_model = tuned_params.get('best_model', 'kalman_gaussian')
             tuned_noise_model = tuned_params.get('noise_model', 'gaussian')
             tuned_nu = tuned_params.get('nu') if tuned_noise_model == 'kalman_phi_student_t' else None
-    # Print model selection information for user transparency
-    if asset_symbol and tuned_params:
+    
+    # Print BMA model information for user transparency
+    if asset_symbol and tuned_params and tuned_params.get('has_bma'):
+        model_posterior = tuned_params.get('model_posterior', {})
         model_comparison = tuned_params.get('model_comparison', {})
-        print(f"\n{'='*80}")
-        print(f"📊 Model Selection for {asset_symbol}")
-        print(f"{'='*80}")
-        print(f"Selected Model: {best_model.upper().replace('_', ' ')}")
+        global_data = tuned_params.get('global', {})
+        global_models = global_data.get('models', {})
         
+        print(f"\n{'='*80}")
+        print(f"🎲 Bayesian Model Averaging for {asset_symbol}")
+        print(f"{'='*80}")
+        
+        # Show model posteriors (the core of BMA)
+        print(f"\nModel Posterior Probabilities p(m|D):")
+        for model_name in ['kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']:
+            p = model_posterior.get(model_name, 0.0)
+            bar_len = int(p * 40)
+            bar = '█' * bar_len + '░' * (40 - bar_len)
+            marker = " ← highest" if model_name == best_model else ""
+            print(f"  {model_name:24s}: {p:5.1%} |{bar}|{marker}")
+        
+        # Show BIC comparison (informative, but posteriors are what matter)
         if model_comparison:
             print(f"\nBIC Comparison (lower is better):")
-            for model_name, metrics in sorted(model_comparison.items(), key=lambda x: x[1].get('bic', float('inf'))):
-                bic = metrics.get('bic', float('nan'))
-                ll = metrics.get('ll', float('nan'))
+            for model_name, metrics in sorted(model_comparison.items(), key=lambda x: x[1].get('bic', float('inf')) if x[1].get('bic') else float('inf')):
+                bic = metrics.get('bic')
+                ll = metrics.get('ll')
                 n_params = metrics.get('n_params', 0)
-                marker = " ← SELECTED" if model_name == best_model else ""
-                print(f"  {model_name:20s}: BIC={bic:10.1f}, LL={ll:10.1f}, params={n_params}{marker}")
+                if bic is not None:
+                    print(f"  {model_name:24s}: BIC={bic:10.1f}, LL={ll:10.1f}, params={n_params}")
         
-        # Show delta LL comparisons
-        delta_ll_zero = tuned_params.get('delta_ll_vs_zero', float('nan'))
-        delta_ll_const = tuned_params.get('delta_ll_vs_const', float('nan'))
-        delta_ll_ewma = tuned_params.get('delta_ll_vs_ewma', float('nan'))
+        # Show parameters from each model
+        print(f"\nModel Parameters (from tuning):")
+        for model_name in ['kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']:
+            m_params = global_models.get(model_name, {})
+            if m_params.get('fit_success', False):
+                q = m_params.get('q', float('nan'))
+                c = m_params.get('c', float('nan'))
+                phi = m_params.get('phi')
+                nu = m_params.get('nu')
+                
+                param_str = f"q={q:.2e}, c={c:.3f}"
+                if phi is not None:
+                    param_str += f", φ={phi:.3f}"
+                if nu is not None:
+                    param_str += f", ν={nu:.1f}"
+                print(f"  {model_name:24s}: {param_str}")
         
-        print(f"\nLog-Likelihood Improvements (vs baselines):")
-        print(f"  vs Zero-drift:     ΔLL = {delta_ll_zero:+7.2f}")
-        print(f"  vs Constant-drift: ΔLL = {delta_ll_const:+7.2f}")
-        print(f"  vs EWMA-drift:     ΔLL = {delta_ll_ewma:+7.2f}")
+        # Explain BMA philosophy
+        print(f"\nBayesian Model Averaging Philosophy:")
+        print(f"  • Predictions are weighted mixtures over ALL models")
+        print(f"  • Structural uncertainty is preserved (no single-model collapse)")
+        print(f"  • Posterior predictive: p(x|D) = Σₘ p(x|m,D) × p(m|D)")
         
-        # Explain the selection
-        print(f"\nRationale:")
-        if best_model == 'zero_drift':
-            print(f"  • No predictable drift detected (μ = 0 is best fit)")
-            print(f"  • Complex drift models do not improve fit enough to justify added parameters")
-        elif best_model == 'constant_drift':
-            print(f"  • Drift exists but is constant over time (μ = {ret.mean():.6f})")
-            print(f"  • Time-varying drift models do not justify additional complexity")
-        elif best_model == 'ewma_drift':
-            print(f"  • Drift varies over time following recent return patterns")
-            print(f"  • EWMA provides better fit than constant or Kalman state-space models")
-        else:  # kalman_drift
-            print(f"  • Drift evolves stochastically (state-space model justified)")
-            print(f"  • Kalman filter provides best balance of fit and parsimony")
-            
-            # Show Kalman parameters if available
-            noise_model = tuned_params.get('noise_model', 'gaussian')
-            q_val = tuned_params.get('q', float('nan'))
-            c_val = tuned_params.get('c', float('nan'))
-            nu_val = tuned_params.get('nu')
-            
-            print(f"\n  Kalman Parameters:")
-            print(f"    Noise Model: {noise_model}")
-            print(f"    Process Noise (q): {q_val:.2e}")
-            print(f"    Observation Scale (c): {c_val:.3f}")
-            if nu_val is not None:
-                print(f"    Student-t df (ν): {nu_val:.1f}")
+        # Show representative params (used for Kalman filter)
+        print(f"\nRepresentative Parameters (highest-posterior model: {best_model}):")
+        print(f"  Process Noise (q): {tuned_params.get('q', float('nan')):.2e}")
+        print(f"  Observation Scale (c): {tuned_params.get('c', float('nan')):.3f}")
+        if tuned_params.get('phi') is not None:
+            print(f"  Persistence (φ): {tuned_params.get('phi'):.3f}")
+        if tuned_params.get('nu') is not None:
+            print(f"  Student-t df (ν): {tuned_params.get('nu'):.1f}")
         
+        print(f"{'='*80}\n")
+    elif asset_symbol and tuned_params:
+        # Fallback display if BMA not available (shouldn't happen with new architecture)
+        print(f"\n{'='*80}")
+        print(f"⚠️  Warning: Old cache format detected for {asset_symbol}")
+        print(f"    Please regenerate cache with tune_q_mle.py for BMA support")
         print(f"{'='*80}\n")
     
     # Apply drift estimation based on best model selection
-    if best_model == 'zero_drift':
-        # Zero-drift model: assume no predictable drift (μ = 0)
-        mu_kf = pd.Series(0.0, index=ret.index, name="mu_zero")
-        var_kf = pd.Series(0.0, index=ret.index)
-        kalman_available = False
-        kalman_metadata = {
-            "model_selected": "zero_drift",
-            "reason": "BIC comparison favored zero-drift baseline",
-            "delta_ll_vs_zero": tuned_params.get('delta_ll_vs_zero', float('nan')) if tuned_params else float('nan')
-        }
-    
-    elif best_model == 'constant_drift':
-        # Constant-drift model: μ = mean(returns) for all t
-        const_drift = float(ret.mean())
-        mu_kf = pd.Series(const_drift, index=ret.index, name="mu_const")
-        var_kf = pd.Series(0.0, index=ret.index)
-        kalman_available = False
-        kalman_metadata = {
-            "model_selected": "constant_drift",
-            "constant_drift_value": const_drift,
-            "reason": "BIC comparison favored constant-drift baseline",
-            "delta_ll_vs_const": tuned_params.get('delta_ll_vs_const', float('nan')) if tuned_params else float('nan')
-        }
-    
-    elif best_model == 'ewma_drift':
-        # EWMA-drift model: μ = EWMA of past returns
-        mu_ewma = ret.ewm(span=21, adjust=False).mean()
-        mu_kf = mu_ewma.rename("mu_ewma")
-        var_kf = pd.Series(0.0, index=ret.index)
-        kalman_available = False
-        kalman_metadata = {
-            "model_selected": "ewma_drift",
-            "ewma_span": 21,
-            "reason": "BIC comparison favored EWMA-drift baseline",
-            "delta_ll_vs_ewma": tuned_params.get('delta_ll_vs_ewma', float('nan')) if tuned_params else float('nan')
-        }
-    
-    elif best_model in kalman_keys:
+    # NOTE: In BMA architecture, "best_model" is used for Kalman filter params,
+    # but actual predictions use weighted mixture over all models
+    if best_model in kalman_keys:
         kf_result = _kalman_filter_drift(ret, vol, q=None, asset_symbol=asset_symbol)
 
         # Extract Kalman-filtered drift estimates
@@ -1521,10 +1583,16 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 "phi_used": kf_result.get("phi_used"),
                 # Regime-conditional parameters from tune_q_mle.py hierarchical cache
                 "regime_params": tuned_params.get("regime", {}) if tuned_params else {},
-                "has_regime_params": tuned_params.get("has_regime_params", False) if tuned_params else False,
+                "has_regime_params": bool(tuned_params.get("regime")) if tuned_params else False,
                 # Noise model for Student-t support
                 "kalman_noise_model": tuned_params.get("noise_model", "gaussian") if tuned_params else "gaussian",
                 "kalman_nu": tuned_params.get("nu") if tuned_params else None,
+                # BMA diagnostics from best model (for drift quality assessment)
+                "pit_ks_pvalue": tuned_params.get("pit_ks_pvalue") if tuned_params else None,
+                "ks_statistic": tuned_params.get("ks_statistic") if tuned_params else None,
+                "bic": tuned_params.get("bic") if tuned_params else None,
+                "model_posterior": tuned_params.get("model_posterior", {}) if tuned_params else {},
+                "best_model": tuned_params.get("best_model") if tuned_params else best_model,
             }
         else:
             # Fallback: use EWMA blend if Kalman fails
@@ -2799,38 +2867,23 @@ def bayesian_model_average_mc(
     )
     
     # ========================================================================
-    # SCHEMA COMPATIBILITY:
+    # NEW BMA ARCHITECTURE ONLY
     # ========================================================================
-    # tuned_params may come from two sources with different structures:
+    # tuned_params structure from _load_tuned_kalman_params:
+    #   {
+    #     "global": { "model_posterior": {...}, "models": {...} },
+    #     "regime": { "0": {...}, "1": {...}, ... },
+    #     "has_bma": True
+    #   }
     #
-    # 1. Direct from tune_q_mle.py cache (nested):
-    #    {
-    #      "global": { "model_posterior": {...}, "models": {...} },
-    #      "regime": { "0": {...}, ... }
-    #    }
-    #
-    # 2. Via _load_tuned_kalman_params (flattened):
-    #    {
-    #      "global_model_posterior": {...},
-    #      "global_models": {...},
-    #      "regime": { "0": {...}, ... }
-    #    }
-    #
-    # We handle both by checking for nested structure first.
+    # No backward compatibility with old flat schema.
     # ========================================================================
     
+    global_data = tuned_params.get('global', {})
     regime_data = tuned_params.get('regime', {})
     
-    # Extract global BMA data - handle both nested and flattened schemas
-    if 'global' in tuned_params and isinstance(tuned_params['global'], dict):
-        # Nested structure (direct from tune_q_mle.py)
-        global_data = tuned_params['global']
-        global_model_posterior = global_data.get('model_posterior', {})
-        global_models = global_data.get('models', {})
-    else:
-        # Flattened structure (from _load_tuned_kalman_params)
-        global_model_posterior = tuned_params.get('global_model_posterior', {})
-        global_models = tuned_params.get('global_models', {})
+    global_model_posterior = global_data.get('model_posterior', {})
+    global_models = global_data.get('models', {})
     
     all_samples = []
     regime_details = {}
@@ -4461,19 +4514,15 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # ========================================================================
         
         # Apply drift_weight based on model quality metrics
-        # - ΔLL < 0: drift model worse than zero-drift → reduce position
+        # In BMA architecture, we use PIT calibration p-value as quality check
         # - PIT p < 0.05: miscalibration warning → reduce position
         # - Otherwise: trust EU sizing fully
         kalman_metadata = feats.get("kalman_metadata", {})
-        delta_ll = kalman_metadata.get("delta_ll_vs_zero", float("nan"))
-        pit_pvalue = kalman_metadata.get("pit_ks_pvalue", float("nan"))
+        pit_pvalue = kalman_metadata.get("pit_ks_pvalue")
         
         drift_weight = 1.0  # Default: trust EU sizing fully
         
-        if np.isfinite(delta_ll) and delta_ll < 0:
-            # Drift model performs worse than zero-drift baseline
-            drift_weight = 0.0
-        elif np.isfinite(pit_pvalue) and pit_pvalue < 0.05:
+        if pit_pvalue is not None and np.isfinite(pit_pvalue) and pit_pvalue < 0.05:
             # Calibration warning: model forecasts not well-calibrated
             drift_weight = 0.3
         
