@@ -784,6 +784,9 @@ COMPANY_NAMES: Dict[str, str] = {
     "OKLO": "Oklo Inc.",
     "CCJ": "Cameco Corporation",
     "UUUU": "Energy Fuels Inc.",
+    "NXE": "NexGen Energy Ltd.",
+    "DNN": "Denison Mines Corp.",
+    "UEC": "Uranium Energy Corp.",
     "GEV": "GE Vernova Inc.",
     "LEU": "Centrus Energy Corp.",
     "SMR": "NuScale Power Corporation",
@@ -1317,12 +1320,15 @@ DEFAULT_ASSET_UNIVERSE = [
     # -------------------------
     # Thematic additions
     # -------------------------
-    # Nuclear
-    "OKLO",
-    "CCJ",
-    "UUUU",
-    "GEV",
-    "LEU",
+    # Nuclear / Uranium
+    "OKLO",   # Oklo Inc (nuclear reactors)
+    "CCJ",    # Cameco Corporation (uranium mining)
+    "UUUU",   # Energy Fuels Inc (uranium/rare earth)
+    "NXE",    # NexGen Energy Ltd (uranium exploration)
+    "DNN",    # Denison Mines Corp (uranium mining)
+    "UEC",    # Uranium Energy Corp (uranium mining)
+    "GEV",    # GE Vernova (power generation)
+    "LEU",    # Centrus Energy Corp (uranium enrichment)
     # Critical materials
     "MP",
     "CRML",

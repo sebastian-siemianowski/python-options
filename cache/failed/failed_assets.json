@@ -1,6 +1,6 @@
 {
-  "updated": "2026-01-21T18:08:13.487995",
-  "count": 7,
+  "updated": "2026-01-22T01:32:33.413151",
+  "count": 31,
   "failures": {
     "FCX": {
       "display_name": "Freeport-McMoRan Inc.",
@@ -50,6 +50,174 @@
       "last_error": "No data for HO",
       "traceback": null,
       "timestamp": "2026-01-21T18:08:13.487986"
+    },
+    "AIRO": {
+      "display_name": "AIRO Group Holdings Inc.",
+      "attempts": 2,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413091"
+    },
+    "BETA": {
+      "display_name": "Beta Technologies Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413111"
+    },
+    "BWXT": {
+      "display_name": "BWX Technologies, Inc.",
+      "attempts": 2,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413113"
+    },
+    "CODA": {
+      "display_name": "Coda Octopus Group, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3753, in latest_signals\n    theta = _select_regime_params(tuned_params_full, current_regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413115"
+    },
+    "CVU": {
+      "display_name": "CPI Aerostructures, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413116"
+    },
+    "EVTL": {
+      "display_name": "Vertical Aerospace Ltd.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413117"
+    },
+    "LOAR": {
+      "display_name": "Loar Holdings Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413119"
+    },
+    "LUNR": {
+      "display_name": "Intuitive Machines, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413120"
+    },
+    "RKLB": {
+      "display_name": "Rocket Lab USA, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413126"
+    },
+    "AM": {
+      "display_name": "Dassault Aviation SA",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3753, in latest_signals\n    theta = _select_regime_params(tuned_params_full, current_regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413127"
+    },
+    "NLR": {
+      "display_name": "VanEck Uranium+Nuclear Energy ETF",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413129"
+    },
+    "OKLO": {
+      "display_name": "Oklo Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413130"
+    },
+    "NUTX": {
+      "display_name": "Nutex Health, Inc.",
+      "attempts": 2,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413131"
+    },
+    "MU": {
+      "display_name": "Micron Technology, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413133"
+    },
+    "SMCI": {
+      "display_name": "Super Micro Computer, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413134"
+    },
+    "SNPS": {
+      "display_name": "Synopsys, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413136"
+    },
+    "AFRM": {
+      "display_name": "Affirm Holdings, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413137"
+    },
+    "COIN": {
+      "display_name": "Coinbase Global, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413142"
+    },
+    "SDGR": {
+      "display_name": "Schr\u00f6dinger, Inc.",
+      "attempts": 2,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413144"
+    },
+    "TEM": {
+      "display_name": "Tempus AI, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413145"
+    },
+    "QUBT": {
+      "display_name": "Quantum Computing Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413147"
+    },
+    "GSAT": {
+      "display_name": "Globalstar, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413148"
+    },
+    "CFLT": {
+      "display_name": "Confluent, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413149"
+    },
+    "ILMN": {
+      "display_name": "Illumina, Inc.",
+      "attempts": 1,
+      "last_error": "float() argument must be a string or a real number, not 'NoneType' @ File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 4145, in process_single_asset\n    sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)\n                       ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 3821, in latest_signals\n    regime_theta = _select_regime_params(tuned_params_full, regime_idx)\n  File \"/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts/fx_pln_jpy_signals.py\", line 985, in _select_regime_params\n    'c': float(tuned_params.get('c', 1.0)),\n         ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: float() argument must be a string or a real number, not 'NoneType'\n",
+      "timestamp": "2026-01-22T01:32:33.413150"
     }
   }
 }

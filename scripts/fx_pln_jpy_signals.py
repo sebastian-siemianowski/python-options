@@ -175,6 +175,10 @@ class Signal:
     drift_uncertainty: float = 0.0  # P_t × drift_var_factor: uncertainty in drift estimate propagated to horizon
     p_analytical: float = 0.5       # DIAGNOSTIC ONLY: analytical posterior predictive P(r>0|D) 
     p_empirical: float = 0.5        # DIAGNOSTIC ONLY: raw empirical MC probability P(r>0) from simulations
+    # STEP 7: Regime audit trace - tracks which regime params were used
+    regime_used: Optional[int] = None        # Integer regime index (0-4) used for parameter selection
+    regime_source: str = "global"            # "regime_tuned" or "global" - source of parameters
+    regime_collapse_warning: bool = False    # True if regime params collapsed to global
 
 
 
@@ -831,6 +835,10 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
     - kalman_gaussian (q, c)
     - kalman_phi_gaussian (q, c, phi)
     - kalman_phi_student_t (q, c, phi, nu)
+    
+    Handles both old flat structure and new hierarchical regime-conditional structure:
+    - Old: {q, c, phi, nu, noise_model, ...}
+    - New: {global: {...}, regime: {0: {...}, 1: {...}, ...}, ...}
 
     Args:
         asset_symbol: Asset symbol (e.g., "PLNJPY=X", "SPY")
@@ -838,12 +846,13 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
         
     Returns:
         Dictionary with parameters if found, None otherwise. Contains:
-        - 'q': Process noise variance
-        - 'c': Observation variance scale
+        - 'q': Process noise variance (from global params)
+        - 'c': Observation variance scale (from global params)
         - 'noise_model': "gaussian", "phi_gaussian", or "kalman_phi_student_t"
         - 'nu': Student-t degrees of freedom (if Student-t model)
         - 'phi': Drift persistence (if φ model)
         - 'best_model_by_bic': Selected model key from tuning
+        - 'regime': Dict of regime-specific params {0: {q, phi, nu, c, ...}, ...}
         - Plus diagnostic metadata
     """
     try:
@@ -853,7 +862,17 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
             cache = json.load(f)
         if asset_symbol not in cache:
             return None
-        data = cache[asset_symbol]
+        raw_data = cache[asset_symbol]
+        
+        # Handle new hierarchical structure: {global: {...}, regime: {...}}
+        if 'global' in raw_data:
+            data = raw_data['global']
+            regime_data = raw_data.get('regime', {})
+        else:
+            # Old flat structure for backward compatibility
+            data = raw_data
+            regime_data = {}
+        
         q_val = data.get('q')
         c_val = data.get('c', 1.0)
         phi_val = data.get('phi')
@@ -881,20 +900,96 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
             'phi': float(phi_val) if phi_val is not None and np.isfinite(phi_val) else None,
             'best_model_by_bic': data.get('best_model_by_bic', 'kalman_gaussian'),
             'source': 'tuned_cache',
-            'timestamp': data.get('timestamp'),
+            'timestamp': data.get('timestamp') or raw_data.get('timestamp'),
             'delta_ll_vs_zero': data.get('delta_ll_vs_zero'),
             'pit_ks_pvalue': data.get('pit_ks_pvalue'),
             'bic': data.get('bic'),
             'aic': data.get('aic'),
             'model_comparison': data.get('model_comparison', {}),
             'delta_ll_vs_const': data.get('delta_ll_vs_const'),
-            'delta_ll_vs_ewma': data.get('delta_ll_vs_ewma')
+            'delta_ll_vs_ewma': data.get('delta_ll_vs_ewma'),
+            # Regime-conditional parameters (new hierarchical structure)
+            'regime': regime_data,
+            'has_regime_params': bool(regime_data),
         }
         return result
     except Exception as e:
         if os.getenv('DEBUG'):
             print(f"Warning: Failed to load tuned params for {asset_symbol}: {e}")
         return None
+
+
+def _select_regime_params(
+    tuned_params: Dict,
+    current_regime: int,
+) -> Dict:
+    """
+    Select parameters using regime-first logic with global fallback.
+    
+    REGIME-FIRST PARAMETER ROUTING:
+    
+    1. If current_regime has tuned params AND not fallback → use regime params
+    2. Otherwise → use global params
+    
+    This is parameter routing ONLY. No epistemology changes.
+    
+    Args:
+        tuned_params: Full tuned params dict from _load_tuned_kalman_params()
+        current_regime: Current regime index (0-4)
+        
+    Returns:
+        Dict with selected params {q, phi, nu, c, fallback, regime_meta, ...}
+    """
+    if tuned_params is None:
+        # No tuned params available - return minimal defaults
+        return {
+            'q': 1e-6,
+            'phi': 0.95,
+            'nu': None,
+            'c': 1.0,
+            'fallback': True,
+            'source': 'defaults',
+            'regime_used': None,
+        }
+    
+    regime_data = tuned_params.get('regime', {})
+    
+    # Try to get regime-specific params
+    # Handle both int keys and string keys (JSON converts to strings)
+    regime_params = regime_data.get(current_regime) or regime_data.get(str(current_regime))
+    
+    if regime_params is not None and not regime_params.get('fallback', False):
+        # Use regime-specific params
+        theta = {
+            'q': float(regime_params.get('q', tuned_params.get('q', 1e-6))),
+            'phi': float(regime_params.get('phi', tuned_params.get('phi', 0.95))),
+            'nu': regime_params.get('nu'),
+            'c': float(regime_params.get('c', tuned_params.get('c', 1.0))),
+            'fallback': False,
+            'source': 'regime_tuned',
+            'regime_used': current_regime,
+            'regime_name': regime_params.get('regime_name', f'REGIME_{current_regime}'),
+            'regime_meta': regime_params.get('regime_meta', {}),
+            'collapse_warning': regime_params.get('regime_meta', {}).get('collapse_warning', False),
+        }
+        # Validate nu
+        if theta['nu'] is not None and (not np.isfinite(theta['nu']) or theta['nu'] <= 2.0):
+            theta['nu'] = None
+        return theta
+    else:
+        # Fallback to global params
+        return {
+            'q': float(tuned_params.get('q', 1e-6)),
+            'phi': float(tuned_params.get('phi', 0.95)),
+            'nu': tuned_params.get('nu'),
+            'c': float(tuned_params.get('c', 1.0)),
+            'fallback': True,
+            'source': 'global',
+            'regime_used': current_regime,
+            'regime_name': 'GLOBAL_FALLBACK',
+            'regime_meta': {},
+            'collapse_warning': False,
+        }
 
 
 def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = None, optimize_q: bool = True, asset_symbol: Optional[str] = None) -> Dict[str, pd.Series]:
@@ -1244,6 +1339,12 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 # φ persistence (from tuned cache or filter)
                 "kalman_phi": tuned_params.get("phi") if tuned_params else kf_result.get("phi_used"),
                 "phi_used": kf_result.get("phi_used"),
+                # Regime-conditional parameters from tune_q_mle.py hierarchical cache
+                "regime_params": tuned_params.get("regime", {}) if tuned_params else {},
+                "has_regime_params": tuned_params.get("has_regime_params", False) if tuned_params else False,
+                # Noise model for Student-t support
+                "kalman_noise_model": tuned_params.get("noise_model", "gaussian") if tuned_params else "gaussian",
+                "kalman_nu": tuned_params.get("nu") if tuned_params else None,
             }
         else:
             # Fallback: use EWMA blend if Kalman fails
@@ -2003,6 +2104,82 @@ REGIME_NAMES = {
     REGIME_HIGH_VOL_RANGE: "HIGH_VOL_RANGE",
     REGIME_CRISIS_JUMP: "CRISIS_JUMP",
 }
+
+
+def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = None) -> int:
+    """
+    Map a regime label (string) to a regime index (0-4) matching tune_q_mle.py definitions.
+    
+    Maps from infer_current_regime() output to tune_q_mle.py regime indices.
+    
+    Mapping logic:
+    - "crisis" / "High-vol*" → CRISIS_JUMP (4) if vol_regime > 2.0 else HIGH_VOL_RANGE (3)
+    - "trending" → HIGH_VOL_TREND (1) or LOW_VOL_TREND (0) based on vol_regime
+    - "calm" / "Calm*" → LOW_VOL_RANGE (2) or LOW_VOL_TREND (0) based on drift
+    - "Normal" → LOW_VOL_RANGE (2)
+    
+    Args:
+        regime_label: String regime label from infer_current_regime()
+        regime_meta: Optional regime metadata dict with vol_regime, trend_z, etc.
+        
+    Returns:
+        Integer regime index (0-4)
+    """
+    label_lower = regime_label.lower() if regime_label else ""
+    
+    # Extract vol_regime from metadata if available
+    vol_regime = None
+    trend_z = None
+    if regime_meta is not None:
+        vol_regime = regime_meta.get("vol_regime")
+        trend_z = regime_meta.get("trend_z")
+        # Also check probabilities from HMM
+        probs = regime_meta.get("probabilities", {})
+    
+    # Crisis detection (highest priority)
+    if "crisis" in label_lower:
+        return REGIME_CRISIS_JUMP
+    
+    # High volatility regimes
+    if "high-vol" in label_lower or "high_vol" in label_lower:
+        # Check if extreme crisis or just high vol trend/range
+        if vol_regime is not None and vol_regime > 2.0:
+            return REGIME_CRISIS_JUMP
+        elif trend_z is not None and abs(trend_z) > 0.5:
+            return REGIME_HIGH_VOL_TREND
+        else:
+            return REGIME_HIGH_VOL_RANGE
+    
+    # Trending detection
+    if "trending" in label_lower or "trend" in label_lower:
+        # Determine if low or high vol based on metadata
+        if vol_regime is not None and vol_regime > 1.3:
+            return REGIME_HIGH_VOL_TREND
+        else:
+            return REGIME_LOW_VOL_TREND
+    
+    # Calm/Low volatility regimes
+    if "calm" in label_lower or "low" in label_lower:
+        # Check if trending or ranging
+        if trend_z is not None and abs(trend_z) > 0.5:
+            return REGIME_LOW_VOL_TREND
+        else:
+            return REGIME_LOW_VOL_RANGE
+    
+    # Normal / default
+    if "normal" in label_lower:
+        return REGIME_LOW_VOL_RANGE
+    
+    # HMM-specific labels
+    if label_lower in ("calm", "0"):
+        return REGIME_LOW_VOL_RANGE
+    elif label_lower in ("trending", "1"):
+        return REGIME_LOW_VOL_TREND
+    elif label_lower in ("crisis", "2"):
+        return REGIME_CRISIS_JUMP
+    
+    # Default fallback
+    return REGIME_LOW_VOL_RANGE
 
 
 def extract_regime_features(feats: Dict[str, pd.Series]) -> Dict[str, float]:
@@ -3522,6 +3699,11 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # This is the ONLY probability used for trading decisions.
         # No blending. No heuristic averaging. No parallel analytical probability.
         #
+        # REGIME-FIRST PARAMETER ROUTING:
+        # Parameters (q, phi, nu, c) are selected using regime-first logic:
+        # - If current_regime has tuned params AND not fallback → use regime params
+        # - Otherwise → use global params
+        #
         # Design Philosophy:
         # - Probability geometry is internally consistent (single probability space)
         # - Drift uncertainty automatically collapses confidence toward 0.5
@@ -3547,27 +3729,46 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         if not np.isfinite(P_t_mc) or P_t_mc < 0:
             P_t_mc = 0.0
         
-        # Extract φ (drift persistence) from Kalman metadata
-        phi_mc = feats.get("phi_used")
-        if phi_mc is None or not np.isfinite(phi_mc):
-            km_mc = feats.get("kalman_metadata", {}) or {}
-            phi_mc = km_mc.get("phi_used") or km_mc.get("kalman_phi")
-        if phi_mc is None or not np.isfinite(phi_mc):
-            phi_mc = 1.0
-        phi_mc = float(phi_mc)
+        # ========================================================================
+        # REGIME-FIRST PARAMETER ROUTING (STEP 1 & 2)
+        # ========================================================================
+        # Map current regime label to index and select parameters
+        current_regime_idx = map_regime_label_to_index(reg, regime_meta)
         
-        # Extract q (process noise variance) from Kalman metadata
+        # Get Kalman metadata which contains regime params
         km_mc = feats.get("kalman_metadata", {}) or {}
-        q_mc = km_mc.get("process_noise_var", 0.0)
-        if q_mc is None or not np.isfinite(q_mc) or q_mc < 0:
-            q_mc = 0.0
-        q_mc = float(q_mc)
         
-        # Extract ν (Student-t degrees of freedom) if available
+        # Build tuned_params structure for _select_regime_params
+        tuned_params_full = {
+            'q': km_mc.get("process_noise_var", 1e-6),
+            'phi': km_mc.get("phi_used") or km_mc.get("kalman_phi") or 0.95,
+            'nu': km_mc.get("kalman_nu"),
+            'c': km_mc.get("kalman_c_optimal", 1.0),
+            'noise_model': km_mc.get("kalman_noise_model", "gaussian"),
+            'regime': km_mc.get("regime_params", {}),
+            'has_regime_params': km_mc.get("has_regime_params", False),
+        }
+        
+        # STEP 2: Select parameters using regime-first logic
+        theta = _select_regime_params(tuned_params_full, current_regime_idx)
+        
+        # STEP 3: Bind parameters ONLY from theta (no other access to params)
+        q_mc = float(theta.get("q", 1e-6))
+        phi_mc = float(theta.get("phi", 0.95))
+        nu_mc = theta.get("nu")
+        c_mc = float(theta.get("c", 1.0))
+        
+        # STEP 6: Diagnostics pass-through (collapse warning annotation)
+        collapse_warning = theta.get("collapse_warning", False)
+        regime_source = theta.get("source", "unknown")
+        regime_used = theta.get("regime_used", current_regime_idx)
+        
+        # Validate nu and determine noise model for diagnostics
         noise_model_mc = km_mc.get("kalman_noise_model", "gaussian")
-        nu_mc = km_mc.get("kalman_nu")
-        if noise_model_mc != "kalman_phi_student_t" or nu_mc is None or not np.isfinite(nu_mc):
+        if nu_mc is not None and (not np.isfinite(nu_mc) or nu_mc <= 2.0):
             nu_mc = None
+        if noise_model_mc != "kalman_phi_student_t" or nu_mc is None:
+            noise_model_mc = "gaussian"  # Fallback for diagnostics
         
         # ========================================================================
         # VOLATILITY GEOMETRY: sigma2_step is the PRIMITIVE
@@ -3605,37 +3806,26 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # No regime logic inside EU - it only sees r_samples.
         # ========================================================================
         
-        # Build regime params dict from Kalman metadata
-        # If regime-specific params available in cache, use them; otherwise use global
+        # ========================================================================
+        # BUILD REGIME PARAMS FOR BAYESIAN MODEL AVERAGING
+        # ========================================================================
+        # Build regime params dict using regime-first routing.
+        # For each regime, if tuned params exist and not fallback → use them
+        # Otherwise → use global params (q_mc, phi_mc, nu_mc already selected above)
+        # ========================================================================
         regime_params = {}
-        km_regime = feats.get("kalman_metadata", {}) or {}
-        cached_regime_params = km_regime.get("regime_params", {})
+        cached_regime_params = km_mc.get("regime_params", {})
         
         for regime_idx in range(5):
-            if regime_idx in cached_regime_params or str(regime_idx) in cached_regime_params:
-                # Use cached regime-specific params
-                rp = cached_regime_params.get(regime_idx, cached_regime_params.get(str(regime_idx), {}))
-                regime_params[regime_idx] = {
-                    "phi": rp.get("phi", phi_mc),
-                    "q": rp.get("q", q_mc),
-                    "nu": rp.get("nu", nu_mc),
-                }
-            else:
-                # Fall back to global params with regime-specific adjustments
-                regime_params[regime_idx] = {
-                    "phi": phi_mc,
-                    "q": q_mc,
-                    "nu": nu_mc,
-                }
-        
-        # Apply regime-specific adjustments if not loaded from cache
-        if not cached_regime_params:
-            # CRISIS_JUMP (4): higher q, lower phi for faster adaptation
-            regime_params[4]["phi"] = min(phi_mc, 0.90)
-            regime_params[4]["q"] = max(q_mc, 1e-5)
-            # HIGH_VOL regimes (1, 3): slightly higher q for faster adaptation
-            regime_params[1]["q"] = q_mc * 1.5
-            regime_params[3]["q"] = q_mc * 1.5
+            # Use _select_regime_params for each regime (consistent routing logic)
+            regime_theta = _select_regime_params(tuned_params_full, regime_idx)
+            regime_params[regime_idx] = {
+                "phi": regime_theta.get("phi", phi_mc),
+                "q": regime_theta.get("q", q_mc),
+                "nu": regime_theta.get("nu", nu_mc),
+                "c": regime_theta.get("c", c_mc),
+                "fallback": regime_theta.get("fallback", True),
+            }
         
         # Use Bayesian Model Averaging across regimes
         r_samples, regime_probs, bma_meta = bayesian_model_average_mc(
@@ -3882,6 +4072,10 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             drift_uncertainty=float(drift_uncertainty_H),
             p_analytical=float(p_analytical),  # DIAGNOSTIC: analytical posterior predictive
             p_empirical=float(p_empirical),    # DIAGNOSTIC: raw empirical MC probability
+            # STEP 7: Regime audit trace - tracks which regime params were used
+            regime_used=int(regime_used) if regime_used is not None else None,
+            regime_source=str(regime_source),
+            regime_collapse_warning=bool(collapse_warning),
         ))
 
     return sigs, thresholds
