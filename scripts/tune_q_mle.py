@@ -2370,6 +2370,40 @@ def _tune_asset_with_regime_labels(
         return None
 
 
+def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float]) -> Tuple[str, Optional[Dict], Optional[str]]:
+    """
+    Worker function for parallel asset tuning.
+    Must be defined at module level for ProcessPoolExecutor pickling.
+    
+    Args:
+        args_tuple: (asset, start_date, end_date, prior_log_q_mean, prior_lambda, lambda_regime)
+        
+    Returns:
+        Tuple of (asset, result_dict, error_message)
+        - If success: (asset, result, None)
+        - If failure: (asset, None, error_string)
+    """
+    asset, start_date, end_date, prior_log_q_mean, prior_lambda, lambda_regime = args_tuple
+    
+    try:
+        result = _tune_asset_with_regime_labels(
+            asset=asset,
+            start_date=start_date,
+            end_date=end_date,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda,
+            lambda_regime=lambda_regime,
+        )
+        
+        if result:
+            return (asset, result, None)
+        else:
+            return (asset, None, "tuning returned None")
+            
+    except Exception as e:
+        return (asset, None, str(e))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Estimate optimal Kalman drift parameters with Kalman Phi Student-t noise support",
@@ -2498,46 +2532,55 @@ Examples:
         assets_to_process.append(asset)
 
     if assets_to_process:
-        # Sequential processing for regime tuning (needs data for regime assignment)
-        print(f"\nRunning {len(assets_to_process)} assets with regime-conditional tuning...")
-        
-        for asset in assets_to_process:
-            try:
-                print(f"\n  🔧 Processing {asset}...")
-                result = _tune_asset_with_regime_labels(
-                    asset=asset,
-                    start_date=args.start,
-                    end_date=args.end,
-                    prior_log_q_mean=args.prior_mean,
-                    prior_lambda=args.prior_lambda,
-                    lambda_regime=args.lambda_regime,
-                )
-                
-                if result:
-                    cache[asset] = result
-                    new_estimates += 1
-                    regime_tuning_count += 1
-                    
-                    # Count model type from global params
-                    global_result = result.get('global', result)
-                    if global_result.get('noise_model') == 'kalman_phi_student_t':
-                        student_t_count += 1
+        # Parallel processing using all available CPU cores
+        import multiprocessing
+        n_workers = multiprocessing.cpu_count()
+        print(f"\n🚀 Running {len(assets_to_process)} assets with parallel regime-conditional tuning ({n_workers} workers)...")
+
+        # Prepare arguments for workers
+        worker_args = [
+            (asset, args.start, args.end, args.prior_mean, args.prior_lambda, args.lambda_regime)
+            for asset in assets_to_process
+        ]
+
+        # Process in parallel using all CPU cores
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_tune_worker, arg): arg[0] for arg in worker_args}
+
+            for future in as_completed(futures):
+                asset = futures[future]
+                try:
+                    asset_name, result, error = future.result()
+
+                    if result:
+                        cache[asset_name] = result
+                        new_estimates += 1
+                        regime_tuning_count += 1
+
+                        # Count model type from global params
+                        global_result = result.get('global', result)
+                        if global_result.get('noise_model') == 'kalman_phi_student_t':
+                            student_t_count += 1
+                        else:
+                            gaussian_count += 1
+
+                        if global_result.get('calibration_warning'):
+                            calibration_warnings += 1
+
+                        # Print success summary
+                        q_val = global_result.get('q', float('nan'))
+                        phi_val = global_result.get('phi')
+                        phi_str = f", φ={phi_val:.3f}" if phi_val is not None else ""
+                        print(f"  ✓ {asset_name}: q={q_val:.2e}{phi_str}")
                     else:
-                        gaussian_count += 1
-                    
-                    if global_result.get('calibration_warning'):
-                        calibration_warnings += 1
-                else:
+                        failed += 1
+                        failure_reasons[asset_name] = error or "tuning returned None"
+                        print(f"  ❌ {asset_name}: {error or 'tuning returned None'}")
+
+                except Exception as e:
                     failed += 1
-                    failure_reasons[asset] = "tuning returned None"
-                    
-            except Exception as e:
-                print(f"  ❌ {asset}: Failed - {e}")
-                failure_reasons[asset] = str(e)
-                if args.debug:
-                    import traceback
-                    traceback.print_exc()
-                failed += 1
+                    failure_reasons[asset] = str(e)
+                    print(f"  ❌ {asset}: {e}")
     else:
         print("\nNo assets to process (all reused from cache).")
 
@@ -2545,7 +2588,7 @@ Examples:
     if new_estimates > 0:
         save_cache_json(cache, args.cache_json)
         print(f"\n✓ Cache updated: {args.cache_json}")
-    
+
     # Summary report
     print("\n" + "=" * 80)
     print("Kalman Drift MLE Tuning Summary")
