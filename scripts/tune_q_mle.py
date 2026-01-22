@@ -2002,7 +2002,7 @@ def fit_all_models_for_regime(
         Dictionary with fitted models:
         {
             "kalman_gaussian": {...},
-            "phi_gaussian": {...},
+            "kalman_phi_gaussian": {...},
             "kalman_phi_student_t": {...}
         }
     """
@@ -2159,6 +2159,8 @@ def fit_regime_model_posterior(
     min_samples: int = MIN_REGIME_SAMPLES,
     temporal_alpha: float = DEFAULT_TEMPORAL_ALPHA,
     previous_posteriors: Optional[Dict[int, Dict[str, float]]] = None,
+    global_models: Optional[Dict[str, Dict]] = None,
+    global_posterior: Optional[Dict[str, float]] = None,
 ) -> Dict[int, Dict]:
     """
     Compute regime-conditional Bayesian model averaging with temporal smoothing.
@@ -2174,10 +2176,21 @@ def fit_regime_model_posterior(
     4. Apply temporal smoothing: w_smooth = prev_p^alpha * w_raw
     5. Normalize to get p(m|r)
     
+    HIERARCHICAL FALLBACK:
+    When a regime r has insufficient samples:
+    - Use global_models as the regime's models (hierarchical borrowing)
+    - Use global_posterior as the regime's model_posterior
+    - Mark as fallback with borrowed_from_global=True
+    
+    This is correct hierarchical Bayesian shrinkage:
+        p(m|r) = p(m|global) when data is insufficient
+        θ_{r,m} = θ_{global,m} when data is insufficient
+    
     CRITICAL RULES:
     - Never select a single best model per regime
     - Never discard models
     - Never force weights to zero
+    - Never return empty models - use hierarchical fallback
     - Preserve all priors, shrinkage, diagnostics
     
     Args:
@@ -2189,6 +2202,8 @@ def fit_regime_model_posterior(
         min_samples: Minimum samples required per regime
         temporal_alpha: Smoothing exponent for model posterior evolution
         previous_posteriors: Previous model posteriors per regime (for smoothing)
+        global_models: Global model fits (for hierarchical fallback)
+        global_posterior: Global model posterior (for hierarchical fallback)
         
     Returns:
         Dictionary with regime-conditional model posteriors and parameters:
@@ -2206,7 +2221,8 @@ def fit_regime_model_posterior(
                 "regime_meta": {
                     "temporal_alpha": alpha,
                     "n_samples": n,
-                    "regime_name": str
+                    "regime_name": str,
+                    "borrowed_from_global": bool  # True if fallback used
                 }
             }
         }
@@ -2237,24 +2253,51 @@ def fit_regime_model_posterior(
         
         # Check if we have enough samples
         if n_samples < min_samples:
-            print(f"     ⚠️  Insufficient samples ({n_samples} < {min_samples})")
-            # Use uniform prior with no model parameters
-            uniform_posterior = {
-                "kalman_gaussian": 1.0 / 3.0,
-                "kalman_phi_gaussian": 1.0 / 3.0,
-                "kalman_phi_student_t": 1.0 / 3.0,
-            }
-            regime_results[regime] = {
-                "model_posterior": uniform_posterior,
-                "models": {},
-                "regime_meta": {
-                    "temporal_alpha": temporal_alpha,
-                    "n_samples": n_samples,
-                    "regime_name": regime_name,
-                    "fallback": True,
-                    "fallback_reason": "insufficient_samples",
+            print(f"     ⚠️  Insufficient samples ({n_samples} < {min_samples}), using hierarchical fallback from global")
+            # =========================================================================
+            # HIERARCHICAL BAYESIAN FALLBACK
+            # =========================================================================
+            # When regime r has insufficient samples, we borrow from global:
+            #   p(m|r) = p(m|global)
+            #   θ_{r,m} = θ_{global,m}
+            #
+            # This is correct hierarchical Bayesian shrinkage, not parameter invention.
+            # Never return empty models - always provide usable fallback.
+            # =========================================================================
+            if global_models is not None and global_posterior is not None:
+                # Use global as hierarchical fallback
+                regime_results[regime] = {
+                    "model_posterior": global_posterior.copy(),
+                    "models": global_models.copy(),
+                    "regime_meta": {
+                        "temporal_alpha": temporal_alpha,
+                        "n_samples": n_samples,
+                        "regime_name": regime_name,
+                        "fallback": True,
+                        "borrowed_from_global": True,
+                        "fallback_reason": f"insufficient_samples_{n_samples}_lt_{min_samples}",
+                    }
                 }
-            }
+            else:
+                # No global available - use uniform prior (last resort)
+                # This should rarely happen if tune_regime_model_averaging is used
+                uniform_posterior = {
+                    "kalman_gaussian": 1.0 / 3.0,
+                    "kalman_phi_gaussian": 1.0 / 3.0,
+                    "kalman_phi_student_t": 1.0 / 3.0,
+                }
+                regime_results[regime] = {
+                    "model_posterior": uniform_posterior,
+                    "models": {},
+                    "regime_meta": {
+                        "temporal_alpha": temporal_alpha,
+                        "n_samples": n_samples,
+                        "regime_name": regime_name,
+                        "fallback": True,
+                        "borrowed_from_global": False,
+                        "fallback_reason": "insufficient_samples_no_global_available",
+                    }
+                }
             continue
         
         # Extract regime-specific data
@@ -2314,6 +2357,7 @@ def fit_regime_model_posterior(
                 "n_samples": n_samples,
                 "regime_name": regime_name,
                 "fallback": False,
+                "borrowed_from_global": False,
                 "bic_min": float(min(b for b in bic_values.values() if np.isfinite(b))) if any(np.isfinite(b) for b in bic_values.values()) else None,
                 "smoothing_applied": prev_posterior is not None and temporal_alpha > 0,
             }
@@ -2408,6 +2452,8 @@ def tune_regime_model_averaging(
         min_samples=min_samples,
         temporal_alpha=temporal_alpha,
         previous_posteriors=previous_posteriors,
+        global_models=global_models,
+        global_posterior=global_posterior,
     )
     
     # =========================================================================
