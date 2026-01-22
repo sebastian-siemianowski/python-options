@@ -2397,9 +2397,27 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float]
         
         if result:
             return (asset, result, None)
+
+        # Fallback to standard tuning when regime tuning fails (insufficient data for regime estimation)
+        print(f"  ↩️  {asset}: Falling back to standard model tuning...")
+        fallback_result = tune_asset_q(
+            asset=asset,
+            start_date=start_date,
+            end_date=end_date,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda
+        )
+
+        if fallback_result:
+            # Mark as fallback so downstream knows regime params are not available
+            fallback_result['use_regime_tuning'] = False
+            fallback_result['regime_fallback'] = True
+            fallback_result['regime'] = None
+            fallback_result['regime_counts'] = None
+            return (asset, fallback_result, None)
         else:
-            return (asset, None, "tuning returned None")
-            
+            return (asset, None, "both regime and standard tuning failed")
+
     except Exception as e:
         return (asset, None, str(e))
 
@@ -2426,7 +2444,7 @@ Examples:
                        help='Start date for data fetching')
     parser.add_argument('--end', type=str, default=None,
                        help='End date for data fetching (default: today)')
-    
+
     # CLI enhancements
     parser.add_argument('--max-assets', type=int, default=None,
                        help='Maximum number of assets to process (useful for testing)')
@@ -2437,23 +2455,23 @@ Examples:
     # Cache is always preserved; legacy flag kept for compatibility
     parser.add_argument('--no-clear-cache', action='store_true',
                        help='Deprecated: cache is always preserved; flag is ignored')
-    
+
     # Bayesian regularization parameters
     parser.add_argument('--prior-mean', type=float, default=-6.0,
                        help='Prior mean for log10(q) (default: -6.0)')
     parser.add_argument('--prior-lambda', type=float, default=1.0,
                        help='Regularization strength (default: 1.0, set to 0 to disable)')
-    
+
     # Hierarchical regime tuning parameters
     parser.add_argument('--lambda-regime', type=float, default=0.05,
                        help='Hierarchical shrinkage toward global (default: 0.05, set to 0 for original behavior)')
-    
+
     args = parser.parse_args()
-    
+
     # Enable debug mode
     if args.debug:
         os.environ['DEBUG'] = '1'
-    
+
     print("=" * 80)
     print("Kalman Drift MLE Tuning Pipeline - Hierarchical Regime-Conditional")
     print("=" * 80)
@@ -2461,19 +2479,19 @@ Examples:
     print(f"Hierarchical shrinkage: λ_regime={args.lambda_regime:.3f}")
     print("Model selection: Gaussian vs Student-t via BIC")
     print("Regime-conditional: Fits (q, φ, ν) per market regime with shrinkage")
-    
+
     # Cache is always preserved; no automatic clearing
 
     # Load asset list
     assets = load_asset_list(args.assets, args.assets_file)
-    
+
     # Apply max-assets limit
     if args.max_assets:
         assets = assets[:args.max_assets]
         print(f"\nLimited to first {args.max_assets} assets")
-    
+
     print(f"Assets to process: {len(assets)}")
-    
+
     # Dry-run mode
     if args.dry_run:
         print("\n[DRY RUN MODE - No actual processing]")
@@ -2483,7 +2501,7 @@ Examples:
         if len(assets) > 10:
             print(f"  ... and {len(assets) - 10} more")
         return
-    
+
     # Load existing cache
     cache = load_cache(args.cache_json)
     print(f"Loaded cache with {len(cache)} existing entries")
@@ -2519,7 +2537,7 @@ Examples:
                 cached_model = cached_entry.get('noise_model', 'gaussian')
                 cached_nu = cached_entry.get('nu')
                 has_regime = False
-            
+
             if cached_model == 'kalman_phi_student_t' and cached_nu is not None:
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f}, ν={cached_nu:.1f})")
             else:
@@ -2609,7 +2627,7 @@ Examples:
     regime_shrunk_counts = {r: 0 for r in range(5)}
     collapse_warnings = 0
     for asset, data in cache.items():
-        if 'regime' in data:
+        if 'regime' in data and data['regime'] is not None:
             for r, params in data['regime'].items():
                 if isinstance(params, dict) and not params.get('fallback', False):
                     regime_fit_counts[int(r)] += 1
