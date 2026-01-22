@@ -76,9 +76,7 @@ Any future change MUST preserve:
 This file defines the epistemology of the system.
 
 ===============================================================================
-"""
 
-"""
 tune_q_mle.py
 
 Automatic per-asset Kalman drift process-noise parameter (q) estimation via MLE.
@@ -90,7 +88,6 @@ Caches results persistently (JSON only) for reuse across runs.
 
 IMPORTANT AI AGENT INSTRUCTIONS: DO NOT REPLACE ELSE STATEMENTS WITH TERNARY : EXPRESSIONS
 """
-
 from __future__ import annotations
 
 import argparse
@@ -128,30 +125,79 @@ from fx_data_utils import fetch_px, _download_prices, get_default_asset_universe
 # Regime assignment is provided EXTERNALLY - this file only learns parameters.
 # =============================================================================
 
+# =============================================================================
+# MODEL CLASS DEFINITIONS FOR BAYESIAN MODEL AVERAGING
+# =============================================================================
+# These model classes represent competing physical hypotheses about market dynamics.
+# Model averaging preserves uncertainty across physics rather than selecting one.
+# =============================================================================
+
+class ModelClass(IntEnum):
+    """
+    Model class definitions for Bayesian model averaging within each regime.
+
+    Model 0: KALMAN_GAUSSIAN
+        - Standard Kalman filter with Gaussian observation noise
+        - Parameters: q, c
+        - Best for stable, well-behaved markets
+
+    Model 1: PHI_GAUSSIAN
+        - Kalman filter with AR(1) drift persistence
+        - Parameters: q, c, phi
+        - Best for trending markets
+
+    Model 2: PHI_STUDENT_T
+        - Kalman filter with AR(1) drift and Student-t tails
+        - Parameters: q, c, phi, nu
+        - Best for fat-tailed, trending markets
+    """
+    KALMAN_GAUSSIAN = 0
+    PHI_GAUSSIAN = 1
+    PHI_STUDENT_T = 2
+
+
+# Model class labels for display
+MODEL_CLASS_LABELS = {
+    ModelClass.KALMAN_GAUSSIAN: "kalman_gaussian",
+    ModelClass.PHI_GAUSSIAN: "phi_gaussian",
+    ModelClass.PHI_STUDENT_T: "kalman_phi_student_t",
+}
+
+# Model class parameter counts for BIC/AIC computation
+MODEL_CLASS_N_PARAMS = {
+    ModelClass.KALMAN_GAUSSIAN: 2,   # q, c
+    ModelClass.PHI_GAUSSIAN: 3,      # q, c, phi
+    ModelClass.PHI_STUDENT_T: 4,     # q, c, phi, nu
+}
+
+# Default temporal smoothing alpha for model posterior evolution
+DEFAULT_TEMPORAL_ALPHA = 0.3
+
+
 class MarketRegime(IntEnum):
     """
     Market regime definitions for conditional parameter estimation.
-    
+
     Regime 0: LOW_VOL_TREND
         - Low EWMA volatility
         - Strong drift persistence
         - Positive or negative trend
-    
+
     Regime 1: HIGH_VOL_TREND
         - High volatility
         - Strong drift persistence
         - Large trend amplitude
-    
+
     Regime 2: LOW_VOL_RANGE
         - Low volatility
         - Drift near zero
         - Mean reversion dominant
-    
+
     Regime 3: HIGH_VOL_RANGE
         - High volatility
         - Drift near zero
         - Whipsaw / choppy behavior
-    
+
     Regime 4: CRISIS_JUMP
         - Extreme volatility
         - Tail events / jumps
@@ -1814,6 +1860,857 @@ def assign_regime_labels(
     return regime_labels
 
 
+# =============================================================================
+# BAYESIAN MODEL AVERAGING WITH TEMPORAL SMOOTHING
+# =============================================================================
+# This section implements the core epistemic engine:
+#
+#     p(r_{t+H} | r) = Σ_m p(r_{t+H} | r, m, θ_{r,m}) · p(m | r)
+#
+# For each regime r, we:
+# 1. Fit ALL candidate model classes independently
+# 2. Compute BIC-based posterior weights with temporal smoothing
+# 3. Return the full model posterior — never selecting a single model
+# =============================================================================
+
+
+def compute_bic_model_weights(
+    bic_values: Dict[str, float],
+    epsilon: float = 1e-10
+) -> Dict[str, float]:
+    """
+    Convert BIC values to unnormalized posterior weights.
+    
+    Implements:
+        w_raw(m|r) = exp(-0.5 * (BIC_{m,r} - BIC_min_r))
+    
+    Args:
+        bic_values: Dictionary mapping model name to BIC value
+        epsilon: Small constant to prevent zero weights
+        
+    Returns:
+        Dictionary of unnormalized weights (not yet normalized)
+    """
+    # Find minimum BIC
+    finite_bics = [b for b in bic_values.values() if np.isfinite(b)]
+    if not finite_bics:
+        # All BICs are infinite — return uniform weights
+        n_models = len(bic_values)
+        return {m: 1.0 / max(n_models, 1) for m in bic_values}
+    
+    bic_min = min(finite_bics)
+    
+    # Compute raw weights
+    weights = {}
+    for model_name, bic in bic_values.items():
+        if np.isfinite(bic):
+            # BIC-based weight: exp(-0.5 * ΔBIC)
+            delta_bic = bic - bic_min
+            w = np.exp(-0.5 * delta_bic)
+            weights[model_name] = max(w, epsilon)
+        else:
+            # Infinite BIC gets minimal weight
+            weights[model_name] = epsilon
+    
+    return weights
+
+
+def apply_temporal_smoothing(
+    current_weights: Dict[str, float],
+    previous_posterior: Optional[Dict[str, float]],
+    alpha: float = DEFAULT_TEMPORAL_ALPHA
+) -> Dict[str, float]:
+    """
+    Apply temporal smoothing to model weights.
+    
+    Implements:
+        w_smooth(m|r) = (prev_p(m|r_prev))^alpha * w_raw(m|r)
+    
+    If no previous posterior exists, assumes uniform prior.
+    
+    Args:
+        current_weights: Unnormalized BIC-based weights
+        previous_posterior: Previous normalized posterior (or None)
+        alpha: Temporal smoothing exponent (0 = no smoothing, 1 = full persistence)
+        
+    Returns:
+        Smoothed unnormalized weights
+    """
+    if previous_posterior is None or alpha <= 0:
+        # No smoothing — return current weights unchanged
+        return current_weights.copy()
+    
+    # Apply temporal weighting
+    smoothed = {}
+    n_models = len(current_weights)
+    uniform_weight = 1.0 / max(n_models, 1)
+    
+    for model_name, w_raw in current_weights.items():
+        # Get previous posterior, defaulting to uniform
+        prev_p = previous_posterior.get(model_name, uniform_weight)
+        # Ensure previous posterior is positive
+        prev_p = max(prev_p, 1e-10)
+        
+        # Apply smoothing: w_smooth = prev_p^alpha * w_raw
+        w_smooth = (prev_p ** alpha) * w_raw
+        smoothed[model_name] = w_smooth
+    
+    return smoothed
+
+
+def normalize_weights(weights: Dict[str, float]) -> Dict[str, float]:
+    """
+    Normalize weights to sum to 1.
+    
+    Args:
+        weights: Unnormalized weights
+        
+    Returns:
+        Normalized weights (posterior probabilities)
+    """
+    total = sum(weights.values())
+    if total <= 0:
+        # Fallback to uniform
+        n = len(weights)
+        return {m: 1.0 / max(n, 1) for m in weights}
+    
+    return {m: w / total for m, w in weights.items()}
+
+
+def fit_all_models_for_regime(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    prior_log_q_mean: float = -6.0,
+    prior_lambda: float = 1.0,
+) -> Dict[str, Dict]:
+    """
+    Fit ALL candidate model classes for a single regime's data.
+    
+    For each model m, computes:
+        - Tuned parameters θ_{r,m}
+        - Full log-likelihood
+        - BIC, AIC
+        - PIT calibration diagnostics
+    
+    Args:
+        returns: Regime-specific returns
+        vol: Regime-specific volatility
+        prior_log_q_mean: Prior mean for log10(q)
+        prior_lambda: Regularization strength
+        
+    Returns:
+        Dictionary with fitted models:
+        {
+            "kalman_gaussian": {...},
+            "phi_gaussian": {...},
+            "kalman_phi_student_t": {...}
+        }
+    """
+    n_obs = len(returns)
+    models = {}
+    
+    # =========================================================================
+    # Model 0: Kalman Gaussian (q, c)
+    # =========================================================================
+    try:
+        q_gauss, c_gauss, ll_cv_gauss, diag_gauss = GaussianDriftModel.optimize_params(
+            returns, vol,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda
+        )
+        
+        # Run full filter
+        mu_gauss, P_gauss, ll_full_gauss = GaussianDriftModel.filter(returns, vol, q_gauss, c_gauss)
+        
+        # Compute PIT calibration
+        ks_gauss, pit_p_gauss = GaussianDriftModel.pit_ks(returns, mu_gauss, vol, P_gauss, c_gauss)
+        
+        # Compute information criteria
+        n_params_gauss = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN]
+        aic_gauss = compute_aic(ll_full_gauss, n_params_gauss)
+        bic_gauss = compute_bic(ll_full_gauss, n_params_gauss, n_obs)
+        mean_ll_gauss = ll_full_gauss / max(n_obs, 1)
+        
+        models["kalman_gaussian"] = {
+            "q": float(q_gauss),
+            "c": float(c_gauss),
+            "phi": None,
+            "nu": None,
+            "log_likelihood": float(ll_full_gauss),
+            "mean_log_likelihood": float(mean_ll_gauss),
+            "cv_penalized_ll": float(ll_cv_gauss),
+            "bic": float(bic_gauss),
+            "aic": float(aic_gauss),
+            "n_params": int(n_params_gauss),
+            "ks_statistic": float(ks_gauss),
+            "pit_ks_pvalue": float(pit_p_gauss),
+            "fit_success": True,
+            "diagnostics": diag_gauss,
+        }
+    except Exception as e:
+        models["kalman_gaussian"] = {
+            "fit_success": False,
+            "error": str(e),
+            "bic": float('inf'),
+            "aic": float('inf'),
+        }
+    
+    # =========================================================================
+    # Model 1: Phi-Gaussian (q, c, phi)
+    # =========================================================================
+    try:
+        q_phi, c_phi, phi_opt, ll_cv_phi, diag_phi = PhiGaussianDriftModel.optimize_params(
+            returns, vol,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda
+        )
+        
+        # Run full filter
+        mu_phi, P_phi, ll_full_phi = GaussianDriftModel.filter_phi(returns, vol, q_phi, c_phi, phi_opt)
+        
+        # Compute PIT calibration
+        ks_phi, pit_p_phi = GaussianDriftModel.pit_ks(returns, mu_phi, vol, P_phi, c_phi)
+        
+        # Compute information criteria
+        n_params_phi = MODEL_CLASS_N_PARAMS[ModelClass.PHI_GAUSSIAN]
+        aic_phi = compute_aic(ll_full_phi, n_params_phi)
+        bic_phi = compute_bic(ll_full_phi, n_params_phi, n_obs)
+        mean_ll_phi = ll_full_phi / max(n_obs, 1)
+        
+        models["phi_gaussian"] = {
+            "q": float(q_phi),
+            "c": float(c_phi),
+            "phi": float(phi_opt),
+            "nu": None,
+            "log_likelihood": float(ll_full_phi),
+            "mean_log_likelihood": float(mean_ll_phi),
+            "cv_penalized_ll": float(ll_cv_phi),
+            "bic": float(bic_phi),
+            "aic": float(aic_phi),
+            "n_params": int(n_params_phi),
+            "ks_statistic": float(ks_phi),
+            "pit_ks_pvalue": float(pit_p_phi),
+            "fit_success": True,
+            "diagnostics": diag_phi,
+        }
+    except Exception as e:
+        models["phi_gaussian"] = {
+            "fit_success": False,
+            "error": str(e),
+            "bic": float('inf'),
+            "aic": float('inf'),
+        }
+    
+    # =========================================================================
+    # Model 2: Phi-Student-t (q, c, phi, nu)
+    # =========================================================================
+    try:
+        q_st, c_st, phi_st, nu_st, ll_cv_st, diag_st = PhiStudentTDriftModel.optimize_params(
+            returns, vol,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda
+        )
+        
+        # Run full filter
+        mu_st, P_st, ll_full_st = PhiStudentTDriftModel.filter_phi(returns, vol, q_st, c_st, phi_st, nu_st)
+        
+        # Compute PIT calibration
+        ks_st, pit_p_st = PhiStudentTDriftModel.pit_ks(returns, mu_st, vol, P_st, c_st, nu_st)
+        
+        # Compute information criteria
+        n_params_st = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T]
+        aic_st = compute_aic(ll_full_st, n_params_st)
+        bic_st = compute_bic(ll_full_st, n_params_st, n_obs)
+        mean_ll_st = ll_full_st / max(n_obs, 1)
+        
+        models["kalman_phi_student_t"] = {
+            "q": float(q_st),
+            "c": float(c_st),
+            "phi": float(phi_st),
+            "nu": float(nu_st),
+            "log_likelihood": float(ll_full_st),
+            "mean_log_likelihood": float(mean_ll_st),
+            "cv_penalized_ll": float(ll_cv_st),
+            "bic": float(bic_st),
+            "aic": float(aic_st),
+            "n_params": int(n_params_st),
+            "ks_statistic": float(ks_st),
+            "pit_ks_pvalue": float(pit_p_st),
+            "fit_success": True,
+            "diagnostics": diag_st,
+        }
+    except Exception as e:
+        models["kalman_phi_student_t"] = {
+            "fit_success": False,
+            "error": str(e),
+            "bic": float('inf'),
+            "aic": float('inf'),
+        }
+    
+    return models
+
+
+def fit_regime_model_posterior(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    regime_labels: np.ndarray,
+    prior_log_q_mean: float = -6.0,
+    prior_lambda: float = 1.0,
+    min_samples: int = MIN_REGIME_SAMPLES,
+    temporal_alpha: float = DEFAULT_TEMPORAL_ALPHA,
+    previous_posteriors: Optional[Dict[int, Dict[str, float]]] = None,
+) -> Dict[int, Dict]:
+    """
+    Compute regime-conditional Bayesian model averaging with temporal smoothing.
+    
+    This function implements the core epistemic law:
+    
+        p(r_{t+H} | r) = Σ_m p(r_{t+H} | r, m, θ_{r,m}) · p(m | r)
+    
+    For EACH regime r:
+    1. Fit EACH candidate model class m independently
+    2. Compute mean_log_likelihood, BIC, AIC for each (r, m)
+    3. Convert BIC to posterior weights: w_raw(m|r) = exp(-0.5 * ΔBIC)
+    4. Apply temporal smoothing: w_smooth = prev_p^alpha * w_raw
+    5. Normalize to get p(m|r)
+    
+    CRITICAL RULES:
+    - Never select a single best model per regime
+    - Never discard models
+    - Never force weights to zero
+    - Preserve all priors, shrinkage, diagnostics
+    
+    Args:
+        returns: Array of returns
+        vol: Array of EWMA volatility  
+        regime_labels: Array of regime labels (0-4) for each time step
+        prior_log_q_mean: Prior mean for log10(q)
+        prior_lambda: Regularization strength
+        min_samples: Minimum samples required per regime
+        temporal_alpha: Smoothing exponent for model posterior evolution
+        previous_posteriors: Previous model posteriors per regime (for smoothing)
+        
+    Returns:
+        Dictionary with regime-conditional model posteriors and parameters:
+        {
+            r: {
+                "model_posterior": { m: p(m|r) },
+                "models": {
+                    m: {
+                        "q", "phi", "nu", "c",
+                        "mean_log_likelihood",
+                        "bic", "aic",
+                        diagnostics...
+                    }
+                },
+                "regime_meta": {
+                    "temporal_alpha": alpha,
+                    "n_samples": n,
+                    "regime_name": str
+                }
+            }
+        }
+    """
+    # Validate inputs
+    returns = np.asarray(returns).flatten()
+    vol = np.asarray(vol).flatten()
+    regime_labels = np.asarray(regime_labels).flatten().astype(int)
+    
+    if len(returns) != len(regime_labels):
+        raise ValueError(f"Length mismatch: returns={len(returns)}, regime_labels={len(regime_labels)}")
+    
+    # Initialize result structure
+    regime_results = {}
+    
+    # Process each regime
+    for regime in range(5):
+        regime_name = REGIME_LABELS.get(regime, f"REGIME_{regime}")
+        mask = (regime_labels == regime)
+        n_samples = int(np.sum(mask))
+        
+        print(f"  📊 Fitting all models for {regime_name} (n={n_samples})...")
+        
+        # Get previous posterior for this regime (for temporal smoothing)
+        prev_posterior = None
+        if previous_posteriors is not None and regime in previous_posteriors:
+            prev_posterior = previous_posteriors[regime]
+        
+        # Check if we have enough samples
+        if n_samples < min_samples:
+            print(f"     ⚠️  Insufficient samples ({n_samples} < {min_samples})")
+            # Use uniform prior with no model parameters
+            uniform_posterior = {
+                "kalman_gaussian": 1.0 / 3.0,
+                "phi_gaussian": 1.0 / 3.0,
+                "kalman_phi_student_t": 1.0 / 3.0,
+            }
+            regime_results[regime] = {
+                "model_posterior": uniform_posterior,
+                "models": {},
+                "regime_meta": {
+                    "temporal_alpha": temporal_alpha,
+                    "n_samples": n_samples,
+                    "regime_name": regime_name,
+                    "fallback": True,
+                    "fallback_reason": "insufficient_samples",
+                }
+            }
+            continue
+        
+        # Extract regime-specific data
+        ret_regime = returns[mask]
+        vol_regime = vol[mask]
+        
+        # =====================================================================
+        # Step 1: Fit ALL models for this regime
+        # =====================================================================
+        models = fit_all_models_for_regime(
+            ret_regime, vol_regime,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda,
+        )
+        
+        # =====================================================================
+        # Step 2: Extract BIC values
+        # =====================================================================
+        bic_values = {m: models[m].get("bic", float('inf')) for m in models}
+        
+        # Print model fits
+        for m, info in models.items():
+            if info.get("fit_success", False):
+                bic_val = info.get("bic", float('nan'))
+                mean_ll = info.get("mean_log_likelihood", float('nan'))
+                print(f"     {m}: BIC={bic_val:.1f}, mean_LL={mean_ll:.4f}")
+            else:
+                print(f"     {m}: FAILED - {info.get('error', 'unknown')}")
+        
+        # =====================================================================
+        # Step 3: Compute BIC-based raw weights
+        # =====================================================================
+        raw_weights = compute_bic_model_weights(bic_values)
+        
+        # =====================================================================
+        # Step 4: Apply temporal smoothing
+        # =====================================================================
+        smoothed_weights = apply_temporal_smoothing(raw_weights, prev_posterior, temporal_alpha)
+        
+        # =====================================================================
+        # Step 5: Normalize to get posterior p(m|r)
+        # =====================================================================
+        model_posterior = normalize_weights(smoothed_weights)
+        
+        # Print posterior
+        posterior_str = ", ".join([f"{m}={p:.3f}" for m, p in model_posterior.items()])
+        print(f"     → Posterior: {posterior_str}")
+        
+        # =====================================================================
+        # Build regime result
+        # =====================================================================
+        regime_results[regime] = {
+            "model_posterior": model_posterior,
+            "models": models,
+            "regime_meta": {
+                "temporal_alpha": temporal_alpha,
+                "n_samples": n_samples,
+                "regime_name": regime_name,
+                "fallback": False,
+                "bic_min": float(min(b for b in bic_values.values() if np.isfinite(b))) if any(np.isfinite(b) for b in bic_values.values()) else None,
+                "smoothing_applied": prev_posterior is not None and temporal_alpha > 0,
+            }
+        }
+    
+    return regime_results
+
+
+def tune_regime_model_averaging(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    regime_labels: np.ndarray,
+    prior_log_q_mean: float = -6.0,
+    prior_lambda: float = 1.0,
+    min_samples: int = MIN_REGIME_SAMPLES,
+    temporal_alpha: float = DEFAULT_TEMPORAL_ALPHA,
+    previous_posteriors: Optional[Dict[int, Dict[str, float]]] = None,
+    lambda_regime: float = 0.05,
+) -> Dict:
+    """
+    Full regime-conditional Bayesian model averaging pipeline.
+    
+    This is the main entry point for the upgraded tuning system.
+    It combines:
+    1. Global model fitting (fallback)
+    2. Regime-conditional model fitting with BMA
+    3. Temporal smoothing of model posteriors
+    4. Hierarchical shrinkage toward global
+    
+    Args:
+        returns: Array of returns
+        vol: Array of EWMA volatility
+        regime_labels: Array of regime labels (0-4)
+        prior_log_q_mean: Prior mean for log10(q)
+        prior_lambda: Regularization strength
+        min_samples: Minimum samples per regime
+        temporal_alpha: Smoothing exponent for model posteriors
+        previous_posteriors: Previous posteriors for smoothing
+        lambda_regime: Hierarchical shrinkage strength
+        
+    Returns:
+        Dictionary with:
+        {
+            "global": { global model fits },
+            "regime": {
+                r: {
+                    "model_posterior": { m: p(m|r) },
+                    "models": { m: {...} },
+                    "regime_meta": {...}
+                }
+            },
+            "meta": {
+                "temporal_alpha": ...,
+                "lambda_regime": ...,
+                ...
+            }
+        }
+    """
+    # Validate inputs
+    returns = np.asarray(returns).flatten()
+    vol = np.asarray(vol).flatten()
+    regime_labels = np.asarray(regime_labels).flatten().astype(int)
+    
+    n_obs = len(returns)
+    print(f"  📊 Bayesian Model Averaging: {n_obs} observations, α={temporal_alpha:.2f}")
+    
+    # =========================================================================
+    # Step 1: Fit global models (fallback)
+    # =========================================================================
+    print(f"  🔧 Fitting global models...")
+    global_models = fit_all_models_for_regime(
+        returns, vol,
+        prior_log_q_mean=prior_log_q_mean,
+        prior_lambda=prior_lambda,
+    )
+    
+    # Compute global model posterior
+    global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models}
+    global_raw_weights = compute_bic_model_weights(global_bic)
+    global_posterior = normalize_weights(global_raw_weights)
+    
+    print(f"     Global posterior: " + ", ".join([f"{m}={p:.3f}" for m, p in global_posterior.items()]))
+    
+    # =========================================================================
+    # Step 2: Fit regime-conditional models with BMA
+    # =========================================================================
+    print(f"  🔄 Fitting regime-conditional models...")
+    regime_results = fit_regime_model_posterior(
+        returns, vol, regime_labels,
+        prior_log_q_mean=prior_log_q_mean,
+        prior_lambda=prior_lambda,
+        min_samples=min_samples,
+        temporal_alpha=temporal_alpha,
+        previous_posteriors=previous_posteriors,
+    )
+    
+    # =========================================================================
+    # Step 3: Apply hierarchical shrinkage to regime posteriors (optional)
+    # =========================================================================
+    if lambda_regime > 0:
+        print(f"  📐 Applying hierarchical shrinkage (λ={lambda_regime:.3f})...")
+        for r, r_result in regime_results.items():
+            if r_result.get("regime_meta", {}).get("fallback", False):
+                continue
+            
+            n_samples = r_result.get("regime_meta", {}).get("n_samples", 0)
+            if n_samples < min_samples:
+                continue
+            
+            # Shrinkage factor
+            sf = 1.0 / (1.0 + lambda_regime * min_samples / max(n_samples, 1.0))
+            
+            # Shrink model posteriors toward global
+            shrunk_posterior = {}
+            for m in r_result["model_posterior"]:
+                p_regime = r_result["model_posterior"][m]
+                p_global = global_posterior.get(m, 1.0 / 3.0)
+                p_shrunk = sf * p_regime + (1 - sf) * p_global
+                shrunk_posterior[m] = p_shrunk
+            
+            # Renormalize
+            shrunk_posterior = normalize_weights(shrunk_posterior)
+            r_result["model_posterior_unshrunk"] = r_result["model_posterior"]
+            r_result["model_posterior"] = shrunk_posterior
+            r_result["regime_meta"]["shrinkage_applied"] = True
+            r_result["regime_meta"]["shrinkage_factor"] = float(sf)
+    
+    # =========================================================================
+    # Build final result
+    # =========================================================================
+    result = {
+        "global": {
+            "model_posterior": global_posterior,
+            "models": global_models,
+        },
+        "regime": regime_results,
+        "meta": {
+            "temporal_alpha": temporal_alpha,
+            "lambda_regime": lambda_regime,
+            "n_obs": n_obs,
+            "min_samples": min_samples,
+            "n_regimes_active": sum(1 for r in regime_results.values() 
+                                    if not r.get("regime_meta", {}).get("fallback", False)),
+        }
+    }
+    
+    return result
+
+
+def tune_asset_with_bma(
+    asset: str,
+    start_date: str = "2015-01-01",
+    end_date: Optional[str] = None,
+    prior_log_q_mean: float = -6.0,
+    prior_lambda: float = 1.0,
+    lambda_regime: float = 0.05,
+    temporal_alpha: float = DEFAULT_TEMPORAL_ALPHA,
+    previous_posteriors: Optional[Dict[int, Dict[str, float]]] = None,
+) -> Optional[Dict]:
+    """
+    Tune asset parameters using full Bayesian Model Averaging.
+    
+    This is the upgraded entry point that implements:
+    
+        p(r_{t+H} | r) = Σ_m p(r_{t+H} | r, m, θ_{r,m}) · p(m | r)
+    
+    For EACH regime r:
+    - Fits ALL candidate model classes independently
+    - Computes BIC-based model posteriors with temporal smoothing
+    - Preserves full uncertainty across models
+    
+    NEVER selects a single best model — maintains full posterior.
+    
+    Args:
+        asset: Asset symbol
+        start_date: Start date for data
+        end_date: End date (default: today)
+        prior_log_q_mean: Prior mean for log10(q)
+        prior_lambda: Regularization strength
+        lambda_regime: Hierarchical shrinkage strength
+        temporal_alpha: Smoothing exponent for model posteriors
+        previous_posteriors: Previous posteriors for temporal smoothing
+        
+    Returns:
+        Dictionary with structure:
+        {
+            "asset": str,
+            "global": {
+                "model_posterior": { m: p(m) },
+                "models": { m: {...} }
+            },
+            "regime": {
+                r: {
+                    "model_posterior": { m: p(m|r) },
+                    "models": { m: {...} },
+                    "regime_meta": {...}
+                }
+            },
+            "regime_counts": {...},
+            "meta": {...},
+            "timestamp": str
+        }
+    """
+    # Minimum data thresholds
+    MIN_DATA_FOR_REGIME = 100
+    MIN_DATA_FOR_GLOBAL = 20
+    
+    try:
+        # Fetch price data
+        try:
+            px, title = fetch_px(asset, start_date, end_date)
+        except Exception:
+            df = _download_prices(asset, start_date, end_date)
+            if df is None or df.empty:
+                print(f"     ⚠️  No price data for {asset}")
+                return None
+            px = df['Close']
+        
+        n_points = len(px) if px is not None else 0
+        
+        # Check minimum data requirements
+        if n_points < MIN_DATA_FOR_GLOBAL:
+            print(f"     ⚠️  Insufficient data for {asset} ({n_points} points)")
+            return None
+        
+        # Compute returns and volatility
+        log_ret = np.log(px / px.shift(1)).dropna()
+        returns = log_ret.values
+        
+        vol_ewma = log_ret.ewm(span=21, adjust=False).std()
+        vol = vol_ewma.values
+        
+        # Remove NaN/Inf
+        valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+        returns = returns[valid_mask]
+        vol = vol[valid_mask]
+        
+        if len(returns) < MIN_DATA_FOR_GLOBAL:
+            print(f"     ⚠️  Insufficient valid data for {asset} ({len(returns)} returns)")
+            return None
+        
+        # Check if we have enough data for full regime BMA
+        use_regime_bma = len(returns) >= MIN_DATA_FOR_REGIME
+        
+        if not use_regime_bma:
+            print(f"     ⚠️  Insufficient data for regime BMA ({len(returns)} < {MIN_DATA_FOR_REGIME})")
+            print(f"     ↩️  Using global-only BMA...")
+            
+            # Fit global models only
+            global_models = fit_all_models_for_regime(
+                returns, vol,
+                prior_log_q_mean=prior_log_q_mean,
+                prior_lambda=prior_lambda,
+            )
+            
+            # Compute global posterior
+            global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models}
+            global_raw_weights = compute_bic_model_weights(global_bic)
+            global_posterior = normalize_weights(global_raw_weights)
+            
+            return {
+                "asset": asset,
+                "global": {
+                    "model_posterior": global_posterior,
+                    "models": global_models,
+                },
+                "regime": None,
+                "regime_counts": None,
+                "use_regime_bma": False,
+                "meta": {
+                    "temporal_alpha": temporal_alpha,
+                    "lambda_regime": lambda_regime,
+                    "n_obs": len(returns),
+                    "fallback_reason": "insufficient_data_for_regime_bma",
+                },
+                "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        
+        # Assign regime labels
+        print(f"     📊 Assigning regime labels for {len(returns)} observations...")
+        regime_labels = assign_regime_labels(returns, vol)
+        
+        # Count samples per regime
+        regime_counts = {r: int(np.sum(regime_labels == r)) for r in range(5)}
+        print(f"     Regime distribution: " + ", ".join([
+            f"{REGIME_LABELS[r]}={c}" for r, c in regime_counts.items() if c > 0
+        ]))
+        
+        # Run full Bayesian Model Averaging
+        print(f"     🔧 Running Bayesian Model Averaging (α={temporal_alpha:.2f}, λ={lambda_regime:.3f})...")
+        bma_result = tune_regime_model_averaging(
+            returns, vol, regime_labels,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda,
+            min_samples=MIN_REGIME_SAMPLES,
+            temporal_alpha=temporal_alpha,
+            previous_posteriors=previous_posteriors,
+            lambda_regime=lambda_regime,
+        )
+        
+        # Build final result
+        result = {
+            "asset": asset,
+            "global": bma_result["global"],
+            "regime": bma_result["regime"],
+            "regime_counts": regime_counts,
+            "use_regime_bma": True,
+            "meta": bma_result["meta"],
+            "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        
+        # Print summary
+        print(f"     ✓ Global: " + ", ".join([
+            f"{m}={p:.3f}" for m, p in result["global"]["model_posterior"].items()
+        ]))
+        for r, r_data in result["regime"].items():
+            if not r_data.get("regime_meta", {}).get("fallback", False):
+                posterior_str = ", ".join([
+                    f"{m}={p:.3f}" for m, p in r_data["model_posterior"].items()
+                ])
+                print(f"     ✓ {REGIME_LABELS[r]}: {posterior_str}")
+        
+        return result
+        
+    except Exception as e:
+        import traceback
+        print(f"     ❌ {asset}: Failed - {e}")
+        if os.getenv('DEBUG'):
+            traceback.print_exc()
+        return None
+
+
+def get_model_params_for_regime(
+    bma_result: Dict,
+    regime: int,
+    model: str,
+) -> Optional[Dict]:
+    """
+    Get parameters for a specific model in a specific regime.
+    
+    Args:
+        bma_result: Result from tune_asset_with_bma()
+        regime: Regime index (0-4)
+        model: Model name ("kalman_gaussian", "phi_gaussian", "kalman_phi_student_t")
+        
+    Returns:
+        Model parameters dict or None if not available
+    """
+    # Try regime-specific first
+    if bma_result.get("regime") is not None and regime in bma_result["regime"]:
+        regime_data = bma_result["regime"][regime]
+        if not regime_data.get("regime_meta", {}).get("fallback", False):
+            models = regime_data.get("models", {})
+            if model in models and models[model].get("fit_success", False):
+                return models[model]
+    
+    # Fallback to global
+    if "global" in bma_result and "models" in bma_result["global"]:
+        models = bma_result["global"]["models"]
+        if model in models and models[model].get("fit_success", False):
+            return models[model]
+    
+    return None
+
+
+def get_model_posterior_for_regime(
+    bma_result: Dict,
+    regime: int,
+) -> Dict[str, float]:
+    """
+    Get the model posterior p(m|r) for a specific regime.
+    
+    Args:
+        bma_result: Result from tune_asset_with_bma()
+        regime: Regime index (0-4)
+        
+    Returns:
+        Dictionary mapping model names to posterior probabilities
+    """
+    # Try regime-specific first
+    if bma_result.get("regime") is not None and regime in bma_result["regime"]:
+        regime_data = bma_result["regime"][regime]
+        if "model_posterior" in regime_data:
+            return regime_data["model_posterior"]
+    
+    # Fallback to global
+    if "global" in bma_result and "model_posterior" in bma_result["global"]:
+        return bma_result["global"]["model_posterior"]
+    
+    # Ultimate fallback: uniform
+    return {
+        "kalman_gaussian": 1.0 / 3.0,
+        "phi_gaussian": 1.0 / 3.0,
+        "kalman_phi_student_t": 1.0 / 3.0,
+    }
+
+
 def tune_regime_parameters(
     returns: np.ndarray,
     vol: np.ndarray,
@@ -2448,7 +3345,7 @@ def _tune_asset_with_regime_labels(
         regime_counts = {r: int(np.sum(regime_labels == r)) for r in range(5)}
         print(f"     Regime distribution: " + ", ".join([f"{REGIME_LABELS[r]}={c}" for r, c in regime_counts.items() if c > 0]))
 
-        # First get global params
+        # First get global params (for backward compatibility)
         print(f"     🔧 Estimating global parameters...")
         global_result = tune_asset_q(
             asset=asset,
@@ -2461,46 +3358,73 @@ def _tune_asset_with_regime_labels(
         if global_result is None:
             return None
 
-        # Now estimate regime-conditional params with hierarchical shrinkage
-        print(f"     🔄 Estimating regime-conditional parameters (λ_regime={lambda_regime})...")
-        regime_params = tune_regime_parameters(
+        # =================================================================
+        # BAYESIAN MODEL AVERAGING: Fit ALL models for each regime
+        # =================================================================
+        # This implements the governing law:
+        #     p(r_{t+H} | r) = Σ_m p(r_{t+H} | r, m, θ_{r,m}) · p(m | r)
+        # =================================================================
+        print(f"     🔄 Bayesian Model Averaging (λ_regime={lambda_regime})...")
+        bma_result = tune_regime_model_averaging(
             returns=returns,
             vol=vol,
             regime_labels=regime_labels,
             prior_log_q_mean=prior_log_q_mean,
             prior_lambda=prior_lambda,
+            min_samples=MIN_REGIME_SAMPLES,
+            temporal_alpha=DEFAULT_TEMPORAL_ALPHA,
+            previous_posteriors=None,  # No previous posteriors for first run
             lambda_regime=lambda_regime,
         )
 
         # Collect diagnostics summary
-        n_active = sum(1 for r, p in regime_params.items() if not p.get("fallback", True))
-        n_shrunk = sum(1 for r, p in regime_params.items() if p.get("shrinkage_applied", False))
-        collapse_warning = any(p.get("regime_meta", {}).get("collapse_warning", False) for p in regime_params.values())
+        regime_results = bma_result.get("regime", {})
+        n_active = sum(1 for r, p in regime_results.items() 
+                       if not p.get("regime_meta", {}).get("fallback", False))
+        n_shrunk = sum(1 for r, p in regime_results.items() 
+                       if p.get("regime_meta", {}).get("shrinkage_applied", False))
+        collapse_warning = any(p.get("regime_meta", {}).get("collapse_warning", False) 
+                              for p in regime_results.values())
 
-        # Build combined result
+        # Build combined result with BMA structure
         result = {
             "asset": asset,
-            "global": global_result,
-            "regime": regime_params,
+            "global": {
+                # Keep backward-compatible global result
+                **global_result,
+                # Add BMA global model posterior
+                "model_posterior": bma_result.get("global", {}).get("model_posterior", {}),
+                "models": bma_result.get("global", {}).get("models", {}),
+            },
+            "regime": regime_results,  # Now contains model_posterior and models per regime
             "use_regime_tuning": True,
             "regime_counts": regime_counts,
             "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
             "hierarchical_tuning": {
                 "lambda_regime": lambda_regime,
+                "temporal_alpha": DEFAULT_TEMPORAL_ALPHA,
                 "n_active_regimes": n_active,
                 "n_shrunk_regimes": n_shrunk,
                 "collapse_warning": collapse_warning,
-            }
+            },
+            "meta": bma_result.get("meta", {}),
         }
 
         # Print summary
-        print(f"     ✓ Global: q={global_result['q']:.2e}, φ={global_result.get('phi', 'N/A')}")
-        for r, params in regime_params.items():
-            if not params.get('fallback', False):
-                phi_val = params.get('phi')
-                phi_str = f"{phi_val:.3f}" if phi_val is not None else "N/A"
-                shrunk_marker = " [shrunk]" if params.get("shrinkage_applied", False) else ""
-                print(f"     ✓ {REGIME_LABELS[r]}: q={params['q']:.2e}, φ={phi_str}{shrunk_marker}")
+        global_posterior = result["global"].get("model_posterior", {})
+        if global_posterior:
+            posterior_str = ", ".join([f"{m}={p:.3f}" for m, p in global_posterior.items()])
+            print(f"     ✓ Global model posterior: {posterior_str}")
+        else:
+            print(f"     ✓ Global: q={global_result['q']:.2e}, φ={global_result.get('phi', 'N/A')}")
+        
+        for r, r_data in regime_results.items():
+            regime_meta = r_data.get("regime_meta", {})
+            if not regime_meta.get("fallback", False):
+                model_posterior = r_data.get("model_posterior", {})
+                posterior_str = ", ".join([f"{m}={p:.3f}" for m, p in model_posterior.items()])
+                shrunk_marker = " [shrunk]" if regime_meta.get("shrinkage_applied", False) else ""
+                print(f"     ✓ {REGIME_LABELS[int(r)]}: {posterior_str}{shrunk_marker}")
 
         if collapse_warning:
             print(f"     ⚠️  Collapse warning: regime parameters too close to global")
