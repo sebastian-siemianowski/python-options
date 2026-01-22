@@ -54,6 +54,7 @@ This file must NOT:
     - Select a single best model
     - Implement fallback logic (tune handles this)
     - Support old flat schema (NO BACKWARD COMPATIBILITY)
+    - SYNTHESIZE fake models with invented parameters
 
 -------------------------------------------------------------------------------
 EPISTEMIC ARCHITECTURE — GOVERNING LAW
@@ -68,7 +69,32 @@ Structural uncertainty is always preserved.
 
 There is no legacy or degenerate single-model inference path in this system.
 
-This means:
+-------------------------------------------------------------------------------
+BAYESIAN INTEGRITY POLICY
+-------------------------------------------------------------------------------
+
+"Act only on beliefs that were actually learned."
+
+This system is a belief evolution engine, not a rule engine.
+
+When evidence is weak:
+    - The system becomes more ignorant, not more confident
+    - Ignorance is represented by reverting to a higher-level posterior (global)
+    - NEVER by inventing beliefs
+
+Explicitly FORBIDDEN:
+    - Synthesizing "minimal models with conservative defaults"
+    - Inventing parameter values that were not fit to data
+    - Creating uniform posteriors from fabricated structure
+
+These violate Bayesian integrity and must not exist in this system.
+
+The only valid fallback is hierarchical: p(m|r, weak data) → p(m|global)
+
+-------------------------------------------------------------------------------
+ARCHITECTURAL INVARIANTS
+-------------------------------------------------------------------------------
+
     - There is exactly one inference philosophy: Regime-conditional Bayesian 
       model averaging
     - No code path constructs p(m) = [1,0,0,0,0] (one-hot posterior)
@@ -76,6 +102,7 @@ This means:
     - Structural uncertainty is never allowed to collapse unless mathematically 
       forced by evidence (which almost never happens)
     - Old flat cache schema is REJECTED - must regenerate with tune_q_mle.py
+    - No synthesized/invented models - only inferred beliefs
 
 This is exactly how institutional Bayesian engines behave.
 
@@ -1470,38 +1497,43 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             tuned_noise_model = tuned_params.get('noise_model', 'gaussian')
             tuned_nu = tuned_params.get('nu') if tuned_noise_model == 'kalman_phi_student_t' else None
     
-    # Print BMA model information for user transparency
+    # Print BMA model information
     if asset_symbol and tuned_params and tuned_params.get('has_bma'):
         model_posterior = tuned_params.get('model_posterior', {})
-        model_comparison = tuned_params.get('model_comparison', {})
         global_data = tuned_params.get('global', {})
         global_models = global_data.get('models', {})
         
-        print(f"\n{'='*80}")
-        print(f"🎲 Bayesian Model Averaging for {asset_symbol}")
-        print(f"{'='*80}")
+        # ANSI color codes
+        CYAN = '\033[96m'
+        GREEN = '\033[92m'
+        YELLOW = '\033[93m'
+        DIM = '\033[2m'
+        BOLD = '\033[1m'
+        RESET = '\033[0m'
         
-        # Show model posteriors (the core of BMA)
-        print(f"\nModel Posterior Probabilities p(m|D):")
+        print(f"\n{CYAN}{'─'*60}{RESET}")
+        print(f"{BOLD}📊 {asset_symbol} — Bayesian Model Averaging{RESET}")
+        print(f"{CYAN}{'─'*60}{RESET}")
+        
+        # Model posteriors with colored bars
+        print(f"\n{BOLD}Model Weights{RESET} {DIM}p(m|D){RESET}")
+        model_short = {
+            'kalman_gaussian': 'Gaussian',
+            'kalman_phi_gaussian': 'φ-Gaussian', 
+            'kalman_phi_student_t': 'φ-Student-t'
+        }
         for model_name in ['kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']:
             p = model_posterior.get(model_name, 0.0)
-            bar_len = int(p * 40)
-            bar = '█' * bar_len + '░' * (40 - bar_len)
-            marker = " ← highest" if model_name == best_model else ""
-            print(f"  {model_name:24s}: {p:5.1%} |{bar}|{marker}")
+            bar_len = int(p * 30)
+            bar = '█' * bar_len + '░' * (30 - bar_len)
+            short_name = model_short.get(model_name, model_name)
+            if model_name == best_model:
+                print(f"  {GREEN}{short_name:12s}{RESET} {p:5.1%} {GREEN}{bar}{RESET} ◀")
+            else:
+                print(f"  {short_name:12s} {p:5.1%} {DIM}{bar}{RESET}")
         
-        # Show BIC comparison (informative, but posteriors are what matter)
-        if model_comparison:
-            print(f"\nBIC Comparison (lower is better):")
-            for model_name, metrics in sorted(model_comparison.items(), key=lambda x: x[1].get('bic', float('inf')) if x[1].get('bic') else float('inf')):
-                bic = metrics.get('bic')
-                ll = metrics.get('ll')
-                n_params = metrics.get('n_params', 0)
-                if bic is not None:
-                    print(f"  {model_name:24s}: BIC={bic:10.1f}, LL={ll:10.1f}, params={n_params}")
-        
-        # Show parameters from each model
-        print(f"\nModel Parameters (from tuning):")
+        # Compact parameter table
+        print(f"\n{BOLD}Parameters{RESET}")
         for model_name in ['kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']:
             m_params = global_models.get(model_name, {})
             if m_params.get('fit_success', False):
@@ -1509,36 +1541,21 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 c = m_params.get('c', float('nan'))
                 phi = m_params.get('phi')
                 nu = m_params.get('nu')
+                short_name = model_short.get(model_name, model_name)
                 
-                param_str = f"q={q:.2e}, c={c:.3f}"
+                parts = [f"q={q:.1e}", f"c={c:.2f}"]
                 if phi is not None:
-                    param_str += f", φ={phi:.3f}"
+                    parts.append(f"φ={phi:.2f}")
                 if nu is not None:
-                    param_str += f", ν={nu:.1f}"
-                print(f"  {model_name:24s}: {param_str}")
+                    parts.append(f"ν={nu:.0f}")
+                
+                color = GREEN if model_name == best_model else DIM
+                print(f"  {color}{short_name:12s}{RESET} {', '.join(parts)}")
         
-        # Explain BMA philosophy
-        print(f"\nBayesian Model Averaging Philosophy:")
-        print(f"  • Predictions are weighted mixtures over ALL models")
-        print(f"  • Structural uncertainty is preserved (no single-model collapse)")
-        print(f"  • Posterior predictive: p(x|D) = Σₘ p(x|m,D) × p(m|D)")
-        
-        # Show representative params (used for Kalman filter)
-        print(f"\nRepresentative Parameters (highest-posterior model: {best_model}):")
-        print(f"  Process Noise (q): {tuned_params.get('q', float('nan')):.2e}")
-        print(f"  Observation Scale (c): {tuned_params.get('c', float('nan')):.3f}")
-        if tuned_params.get('phi') is not None:
-            print(f"  Persistence (φ): {tuned_params.get('phi'):.3f}")
-        if tuned_params.get('nu') is not None:
-            print(f"  Student-t df (ν): {tuned_params.get('nu'):.1f}")
-        
-        print(f"{'='*80}\n")
+        print(f"{CYAN}{'─'*60}{RESET}\n")
     elif asset_symbol and tuned_params:
-        # Fallback display if BMA not available (shouldn't happen with new architecture)
-        print(f"\n{'='*80}")
-        print(f"⚠️  Warning: Old cache format detected for {asset_symbol}")
-        print(f"    Please regenerate cache with tune_q_mle.py for BMA support")
-        print(f"{'='*80}\n")
+        # Old cache format warning
+        print(f"\n\033[93m⚠️  {asset_symbol}: Old cache format — run tune_q_mle.py\033[0m\n")
     
     # Apply drift estimation based on best model selection
     # NOTE: In BMA architecture, "best_model" is used for Kalman filter params,
@@ -2765,86 +2782,26 @@ def bayesian_model_average_mc(
     # global Bayesian model posterior and global model parameters.
     #
     # The system NEVER constructs a one-hot posterior p(m) = [1,0,0,0,0].
-    # Single-model certainty violates:
-    #   - Structural uncertainty
-    #   - Distributional integrity  
-    #   - Decision invariance under uncertainty
-    #   - Institutional epistemology
+    # Single-model certainty violates Bayesian integrity.
     #
-    # Even when BMA structure is unavailable, we maintain model averaging
-    # with uniform priors across model classes.
+    # CRITICAL: We do NOT synthesize fake models with invented parameters.
+    # That violates: "Act only on beliefs that were actually learned."
     # ========================================================================
     
-    # If no BMA structure available, construct uniform model averaging fallback
+    # If no BMA structure available, this is old cache format - REJECT
     if not has_bma:
         # ====================================================================
-        # UNIFORM MODEL AVERAGING FALLBACK
+        # OLD CACHE FORMAT - CANNOT PROCEED
         # ====================================================================
-        # When BMA structure is unavailable, we use uniform model posteriors
-        # to preserve structural uncertainty:
-        #   p(m) = 1/3 for m ∈ {kalman_gaussian, kalman_phi_gaussian, kalman_phi_student_t}
+        # DO NOT synthesize fake models. That violates Bayesian integrity.
+        # The correct response to missing evidence is ignorance, not invention.
         #
-        # This is the only epistemically valid fallback - never single-model.
+        # Return empty samples to signal failure - caller must handle this.
         # ====================================================================
-        
-        params = regime_params.get(0, regime_params.get("global", {}))
-        q_base = params.get("q", 1e-6)
-        c_base = params.get("c", 1.0)
-        
-        # Define model classes with uniform posterior weights
-        uniform_models = {
-            "kalman_gaussian": {
-                "phi": 1.0,       # Random walk (no mean reversion)
-                "q": q_base,
-                "nu": None,       # Gaussian noise
-                "c": c_base,
-                "weight": 1.0 / 3.0,
-            },
-            "kalman_phi_gaussian": {
-                "phi": 0.95,      # Mean-reverting drift
-                "q": q_base,
-                "nu": None,       # Gaussian noise
-                "c": c_base,
-                "weight": 1.0 / 3.0,
-            },
-            "kalman_phi_student_t": {
-                "phi": 0.95,      # Mean-reverting drift
-                "q": q_base,
-                "nu": 5.0,        # Moderate fat tails (default prior)
-                "c": c_base,
-                "weight": 1.0 / 3.0,
-            },
-        }
-        
-        all_samples = []
-        n_total = n_paths_per_regime * 5
-        
-        for model_name, model_spec in uniform_models.items():
-            n_model_samples = max(100, int(model_spec["weight"] * n_total))
-            model_samples = run_regime_specific_mc(
-                regime=0,
-                mu_t=mu_t,
-                P_t=P_t,
-                phi=model_spec["phi"],
-                q=model_spec["q"],
-                sigma2_step=sigma2_step * model_spec["c"],
-                H=H,
-                n_paths=n_model_samples,
-                nu=model_spec["nu"],
-                seed=rng.integers(0, 2**31) if seed is not None else None
-            )
-            all_samples.append(model_samples)
-        
-        r_samples = np.concatenate(all_samples)
-        
-        # Uniform regime probs (regime uncertainty also preserved)
-        uniform_regime_probs = np.array([0.2, 0.2, 0.2, 0.2, 0.2])
-        
-        return r_samples, uniform_regime_probs, {
-            "method": "uniform_model_averaging_fallback",
-            "reason": "no_bma_structure",
-            "model_posterior": {m: spec["weight"] for m, spec in uniform_models.items()},
-            "note": "Structural uncertainty preserved via uniform model priors"
+        return np.array([0.0]), np.array([0.2, 0.2, 0.2, 0.2, 0.2]), {
+            "method": "REJECTED",
+            "reason": "no_bma_structure_old_cache_format",
+            "error": "Cache must be regenerated with tune_q_mle.py for BMA support",
         }
     
     # ========================================================================
@@ -2859,6 +2816,15 @@ def bayesian_model_average_mc(
     #      - Draw w * n_samples from p(x | r, m, θ_{r,m})
     #   4. Combine samples weighted by regime probability P(r | D)
     # ========================================================================
+    
+    # ========================================================================
+    # MINIMUM SAMPLE GUARANTEES
+    # ========================================================================
+    # Architectural invariant: Never force weights to zero.
+    # Even tiny probabilities get minimum representation to preserve tail awareness.
+    # ========================================================================
+    MIN_REGIME_SAMPLES = 50   # Minimum samples per regime (even if prob << 1%)
+    MIN_MODEL_SAMPLES = 20    # Minimum samples per model (even if weight << 1%)
     
     # Extract regime features and compute regime probabilities P(r | D)
     features = extract_regime_features(feats)
@@ -2891,9 +2857,9 @@ def bayesian_model_average_mc(
     for regime in range(5):
         regime_prob = regime_probs[regime]
         
-        # Skip regimes with negligible probability
-        if regime_prob < 0.01:
-            continue
+        # ARCHITECTURAL INVARIANT: Never skip regimes entirely
+        # Even tiny probabilities get minimum sample representation
+        # This preserves tail awareness in extreme regimes
         
         # Get regime-specific BMA data (model_posterior and models)
         regime_key = str(regime)  # JSON keys are strings
@@ -2921,42 +2887,17 @@ def bayesian_model_average_mc(
             is_fallback = True
             borrowed = True
             
-            # If still empty (shouldn't happen with proper tune), use uniform BMA
-            # NEVER collapse to single-model certainty
+            # If still empty after trying global, skip this regime
+            # DO NOT synthesize fake models - that violates Bayesian integrity
             if not models or not model_posterior:
-                # Construct uniform model posterior to preserve structural uncertainty
-                params = regime_params.get(regime, regime_params.get(0, {}))
-                q_base = params.get("q", 1e-6)
-                c_base = params.get("c", 1.0)
-                
-                uniform_models = {
-                    "kalman_gaussian": {"phi": 1.0, "q": q_base, "nu": None, "c": c_base},
-                    "kalman_phi_gaussian": {"phi": 0.95, "q": q_base, "nu": None, "c": c_base},
-                    "kalman_phi_student_t": {"phi": 0.95, "q": q_base, "nu": 5.0, "c": c_base},
-                }
-                
-                n_total = max(100, int(regime_prob * n_paths_per_regime * 5))
-                regime_samples_fallback = []
-                
-                for m_name, m_spec in uniform_models.items():
-                    n_m = max(30, n_total // 3)
-                    m_samples = run_regime_specific_mc(
-                        regime=regime, mu_t=mu_t, P_t=P_t,
-                        phi=m_spec["phi"], q=m_spec["q"],
-                        sigma2_step=sigma2_step * m_spec["c"],
-                        H=H, n_paths=n_m, nu=m_spec["nu"],
-                        seed=rng.integers(0, 2**31) if seed is not None else None
-                    )
-                    regime_samples_fallback.append(m_samples)
-                
-                all_samples.append(np.concatenate(regime_samples_fallback))
+                # This should not happen if tune_q_mle.py ran correctly
+                # Skip regime - the correct response to missing evidence is ignorance
                 regime_details[regime] = {
                     "prob": float(regime_prob),
-                    "n_samples": n_total,
-                    "method": "uniform_model_averaging_fallback",
+                    "n_samples": 0,
+                    "method": "SKIPPED",
                     "is_fallback": True,
-                    "model_posterior": {m: 1/3 for m in uniform_models},
-                    "warning": "no_bma_structure_available_used_uniform_priors",
+                    "warning": "no_models_available_regime_skipped",
                 }
                 continue
         
@@ -2967,16 +2908,17 @@ def bayesian_model_average_mc(
         model_details = {}
         regime_samples = []
         
-        # Total samples for this regime (proportional to regime probability)
-        n_total_regime = max(500, int(regime_prob * n_paths_per_regime * 5))
+        # Total samples for this regime: proportional to probability but with minimum guarantee
+        n_total_regime = max(MIN_REGIME_SAMPLES, int(regime_prob * n_paths_per_regime * 5))
         
         for model_name, model_weight in model_posterior.items():
-            if model_weight < 0.01:
-                continue  # Skip negligible model weights
+            # ARCHITECTURAL INVARIANT: Never skip models entirely
+            # Even tiny weights get minimum sample representation
+            # This preserves rare-tail model components
             
             model_params = models.get(model_name, {})
             if not model_params.get('fit_success', True):
-                continue  # Skip failed model fits
+                continue  # Only skip genuinely failed fits
             
             # Extract model-specific parameters
             # Fallback: try global models, then safe defaults (never use old flat schema)
@@ -2994,8 +2936,8 @@ def bayesian_model_average_mc(
             if nu_m is not None and (not np.isfinite(nu_m) or nu_m <= 2.0):
                 nu_m = None
             
-            # Number of samples proportional to model weight
-            n_model_samples = max(50, int(model_weight * n_total_regime))
+            # Number of samples: proportional to weight but with minimum guarantee
+            n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_total_regime))
             
             # Generate samples from p(x | r, m, θ_{r,m})
             model_samples = run_regime_specific_mc(
@@ -3041,48 +2983,61 @@ def bayesian_model_average_mc(
         r_samples = np.concatenate(all_samples)
     else:
         # ====================================================================
-        # ULTIMATE FALLBACK: Uniform BMA when all regime paths failed
+        # ULTIMATE FALLBACK: Use global models directly
         # ====================================================================
-        # This path should be extremely rare (only if ALL regimes have
-        # negligible probability or all model fits failed).
+        # All regimes failed to produce samples. This is rare but possible if:
+        # - All regimes had missing data
+        # - All model fits failed
         #
-        # We use uniform model averaging to preserve structural uncertainty.
-        # NEVER use single-model flat params (they don't exist in new schema).
+        # Use global models directly if available.
+        # DO NOT synthesize fake uniform models - that violates Bayesian integrity.
         # ====================================================================
         
-        # Try to extract q from global models if available
-        q_fallback = 1e-6
-        c_fallback = 1.0
-        if global_models:
-            # Get q from first available model
-            for m_name, m_params in global_models.items():
-                if isinstance(m_params, dict) and m_params.get('fit_success', True):
-                    q_fallback = m_params.get('q', 1e-6)
-                    c_fallback = m_params.get('c', 1.0)
-                    break
-        
-        # Uniform BMA over model classes
-        uniform_models = {
-            "kalman_gaussian": {"phi": 1.0, "q": q_fallback, "nu": None, "c": c_fallback},
-            "kalman_phi_gaussian": {"phi": 0.95, "q": q_fallback, "nu": None, "c": c_fallback},
-            "kalman_phi_student_t": {"phi": 0.95, "q": q_fallback, "nu": 5.0, "c": c_fallback},
-        }
-        
-        fallback_samples = []
-        n_total = n_paths_per_regime * 5
-        
-        for m_name, m_spec in uniform_models.items():
-            n_m = max(100, n_total // 3)
-            m_samples = run_regime_specific_mc(
-                regime=0, mu_t=mu_t, P_t=P_t,
-                phi=m_spec["phi"], q=m_spec["q"],
-                sigma2_step=sigma2_step * m_spec["c"],
-                H=H, n_paths=n_m, nu=m_spec["nu"],
-                seed=rng.integers(0, 2**31) if seed is not None else None
-            )
-            fallback_samples.append(m_samples)
-        
-        r_samples = np.concatenate(fallback_samples)
+        if global_models and global_model_posterior:
+            # Use global BMA directly
+            fallback_samples = []
+            n_total = n_paths_per_regime * 5
+            
+            for model_name, model_weight in global_model_posterior.items():
+                model_params = global_models.get(model_name, {})
+                if not model_params.get('fit_success', True):
+                    continue
+                
+                q_m = model_params.get('q', 1e-6)
+                phi_m = model_params.get('phi')
+                nu_m = model_params.get('nu')
+                c_m = model_params.get('c', 1.0)
+                
+                if phi_m is None or not np.isfinite(phi_m):
+                    phi_m = 0.95 if 'phi' in model_name else 1.0
+                
+                n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_total))
+                
+                m_samples = run_regime_specific_mc(
+                    regime=0, mu_t=mu_t, P_t=P_t,
+                    phi=phi_m, q=q_m,
+                    sigma2_step=sigma2_step * c_m,
+                    H=H, n_paths=n_model_samples, nu=nu_m,
+                    seed=rng.integers(0, 2**31) if seed is not None else None
+                )
+                fallback_samples.append(m_samples)
+            
+            if fallback_samples:
+                r_samples = np.concatenate(fallback_samples)
+            else:
+                # No valid global models - return failure
+                return np.array([0.0]), regime_probs, {
+                    "method": "FAILED",
+                    "reason": "no_valid_models_available",
+                    "error": "All model fits failed - cannot generate samples"
+                }
+        else:
+            # No global models available - return failure
+            return np.array([0.0]), regime_probs, {
+                "method": "FAILED",
+                "reason": "no_global_models_available",
+                "error": "No BMA structure available - cache must be regenerated"
+            }
     
     metadata = {
         "method": "bayesian_model_averaging_full",
