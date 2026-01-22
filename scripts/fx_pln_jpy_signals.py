@@ -1,5 +1,121 @@
 #!/usr/bin/env python3
 """
+===============================================================================
+SYSTEM DNA — SIGNAL / DECISION LAYER (Bayesian Model Averaging Edition)
+===============================================================================
+
+This file implements the *decision intelligence layer* of the quant system.
+
+It consumes the probabilistic structure produced by tune_q_mle.py and applies
+posterior predictive Monte Carlo with Bayesian Model Averaging:
+
+    p(x | r) = Σ_m p(x | r, m, θ_{r,m}) · p(m | r)
+
+Where:
+    r        = regime
+    m        = model class (kalman_gaussian, kalman_phi_gaussian, kalman_phi_student_t)
+    θ_{r,m}  = parameters from tuning layer
+    p(m|r)   = posterior model probability from tuning layer
+    x        = return at horizon H
+
+-------------------------------------------------------------------------------
+CONTRACT WITH tune_q_mle.py
+
+This file receives from tuning, for each regime r:
+
+    regime_models = data["regime"][r]["models"]
+    model_posterior = data["regime"][r]["model_posterior"]
+
+Tune GUARANTEES:
+    - Every regime contains valid model_posterior and models
+    - Fallback regimes use hierarchical borrowing (borrowed_from_global=True)
+    - Model posteriors are already normalized and temporally smoothed
+
+This file must NOT:
+    - Perform tuning
+    - Recompute likelihoods
+    - Renormalize model weights
+    - Apply temporal smoothing to model posteriors
+    - Select a single best model
+    - Implement fallback logic (tune handles this)
+
+-------------------------------------------------------------------------------
+EPISTEMIC ARCHITECTURE — GOVERNING LAW
+-------------------------------------------------------------------------------
+
+The system never collapses to a single-model posterior.
+
+When regime data is insufficient, it falls back to the global Bayesian
+model posterior and global model parameters.
+
+Structural uncertainty is always preserved.
+
+There is no legacy or degenerate single-model inference path in this system.
+
+This means:
+    - There is exactly one inference philosophy: Regime-conditional Bayesian 
+      model averaging
+    - No code path constructs p(m) = [1,0,0,0,0] (one-hot posterior)
+    - When evidence is insufficient, we use global BMA, not single-model certainty
+    - Structural uncertainty is never allowed to collapse unless mathematically 
+      forced by evidence (which almost never happens)
+
+This is exactly how institutional Bayesian engines behave.
+
+-------------------------------------------------------------------------------
+POSTERIOR PREDICTIVE MONTE CARLO
+
+For each regime r, we compute:
+
+    r_samples = zeros(n_paths)
+    for m, w in model_posterior.items():
+        theta = regime_models[m]
+        samples_m = posterior_predictive_mc(m, theta)
+        r_samples += w * samples_m  (weighted mixture of Monte-Carlo distributions)
+
+r_samples now represents: p(x | r) = Σ_m p(x | r,m) p(m|r)
+
+-------------------------------------------------------------------------------
+EXPECTED UTILITY PRINCIPLE
+
+Decisions are made from distributions, not point estimates:
+
+    EU = p · E[gain] − (1−p) · E[loss]
+
+Position sizing derives from Expected Utility geometry.
+The decision layer is NOT aware that model averaging occurred.
+It only sees r_samples.
+
+-------------------------------------------------------------------------------
+ARCHITECTURAL LAW
+
+    tune_q_mle.py → model_posterior, models
+                         ↓
+    fx_pln_jpy_signals.py → r_samples (mixture)
+                         ↓
+                    EU → Decision
+
+No shortcut is allowed.
+Inference → Distribution → Utility → Decision.
+
+-------------------------------------------------------------------------------
+CRITICAL RULES
+
+    • Do NOT perform tuning here
+    • Do NOT recompute likelihoods
+    • Do NOT renormalize model weights
+    • Do NOT apply temporal smoothing to model posteriors
+    • Do NOT select best model - use full mixture
+    • Do NOT modify EU logic
+    • Do NOT construct one-hot posteriors
+    • Preserve distributional integrity
+    • Preserve structural uncertainty
+
+This file defines agency, not epistemology.
+It must act on beliefs, not create them.
+
+===============================================================================
+
 fx_pln_jpy_signals_v3.py
 
 Quant upgrades:
@@ -13,7 +129,6 @@ Quant upgrades:
 Notes:
 - PLNJPY=X is JPY per PLN. BUY => long PLN vs JPY.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -22,11 +137,13 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from multiprocessing import Pool, cpu_count
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from scipy.stats import t as student_t, norm
+from scipy.stats import t as student_t, norm, skew as scipy_stats_skew
+from scipy.special import gammaln
 from rich.console import Console
 import logging
 import os
@@ -72,58 +189,37 @@ from fx_data_utils import (
     _resolve_symbol_candidates,
     DEFAULT_ASSET_UNIVERSE,
     get_default_asset_universe,
+    COMPANY_NAMES,
+    get_company_name,
+    SECTOR_MAP,
+    get_sector,
+    download_prices_bulk,
+    save_failed_assets,
+    get_price_series,
+    STANDARD_PRICE_COLUMNS,
 )
 
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
 logging.getLogger("yfinance").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
+
+class StudentTDriftModel:
+    """Minimal Student-t helper used for Kalman log-likelihood and mapping."""
+
+    @staticmethod
+    def logpdf(x: float, nu: float, mu: float, scale: float) -> float:
+        if scale <= 0 or nu <= 0:
+            return -1e12
+        z = (x - mu) / scale
+        log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
+        log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
+        return float(log_norm + log_kernel)
+
+
 PAIR = "PLNJPY=X"
 DEFAULT_HORIZONS = [1, 3, 7, 21, 63, 126, 252]
 NOTIONAL_PLN = 1_000_000  # for profit column
-
-# Sector mapping for summary grouping
-SECTOR_MAP = {
-    "FX / Commodities / Crypto": {
-        "PLNJPY=X", "GC=F", "SI=F", "BTC-USD", "BTCUSD=X", "MSTR", "XAGUSD", "SGLP", "GLDE", "GLDW", "SLVI"
-    },
-    "Indices / Broad ETFs": {
-        "SPY", "VOO", "GLD", "SLV", "SMH", "SOXX"
-    },
-    "Information Technology": {
-        "AAPL", "ACN", "ADBE", "AMD", "AVGO", "CRM", "CSCO", "IBM", "INTC", "INTU", "MSFT", "NOW", "NVDA", "ORCL", "PLTR", "QCOM", "TXN", "GOOG", "GOOGL", "META", "NFLX", "AMZN",
-        "SOUN", "SYM", "IONQ", "IOT", "GLBE", "GRND"
-    },
-    "Health Care": {
-        "ABBV", "ABT", "AMGN", "BMY", "CVS", "DHR", "GILD", "ISRG", "JNJ", "LLY", "MDT", "MRK", "NVO", "PFE", "TMO", "UNH", "REGN", "CRSP", "BEAM", "BAYN"
-    },
-    "Financials": {
-        "AIG", "AXP", "BLK", "BRK.B", "COF", "IBKR", "MA", "MET", "PYPL", "SCHW", "V", "HOOD", "NU"
-    },
-    "Banks": {
-        "JPM", "BAC", "WFC", "C", "USB", "PNC", "TFC", "GS", "MS", "BK"
-    },
-    "Consumer Discretionary": {
-        "BKNG", "GM", "HD", "LOW", "MCD", "NKE", "SBUX", "TGT", "TSLA", "VOW3", "BMW3", "CELH"
-    },
-    "Industrials": {
-        "CAT", "DE", "EMR", "FDX", "MMM", "UBER", "UNP", "UPS", "TKA", "MTX.DE"
-    },
-    "Defense & Aerospace": {
-        "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE", "R3NK", "R3NK.DE", "RHM", "KOZ1", "SAABY", "SAF", "FINMY", "EXA", "BKSY", "ASTS", "THEON"
-    },
-    "Communication Services": {"CMCSA", "DIS", "T", "TMUS", "VZ"},
-    "Consumer Staples": {"CL", "COST", "KO", "MDLZ", "MO", "PEP", "PG", "PM", "WMT"},
-    "Energy": {"COP", "CVX", "XOM"},
-    "Utilities": {"NEE", "SO"},
-    "Real Estate": {"SPG"},
-    "Materials": {"LIN", "NEM", "B", "AEM"},
-    "Asian Tech & Manufacturing": {"005930.KS"},
-    "VanEck ETFs": {"AFK", "ANGL", "CNXT", "EGPT", "FLTR", "GLIN", "MOTG", "IDX", "MLN", "NLR"},
-    "Options / Structured Products": {
-        "TSLD", "PLTI", "QQQO", "METI", "MSFI", "MAGD", "AMDI", "AMZD", "GOOO", "BABI", "BABY", "AAPI", "AVGI", "MSTP"
-    }
-}
 
 # Transaction-cost/slippage hurdle: minimum absolute edge required to act
 # Can be overridden via environment variable EDGE_FLOOR (e.g., 0.10)
@@ -137,31 +233,71 @@ EDGE_FLOOR = float(np.clip(EDGE_FLOOR, 0.0, 1.5))
 
 DEFAULT_CACHE_PATH = os.path.join("cache", "fx_plnjpy.json")
 
-def get_sector(symbol: str) -> str:
-    s = symbol.upper().strip()
-    for sector, tickers in SECTOR_MAP.items():
-        if s in tickers:
-            return sector
-    return "Unspecified"
+
+@dataclass(frozen=True)
+class ExpectedUtilityResult:
+    """
+    Expected Utility computation result from posterior predictive Monte-Carlo.
+    
+    This captures the full distributional information from r_samples, enabling
+    utility-based position sizing rather than probability-only decisions.
+    
+    Expected Utility Model:
+        EU = p × E[gain] - (1-p) × E[loss]
+        
+    Position Size:
+        size = EU / max(E[loss], epsilon)
+        
+    This allows two assets with the same p to have different sizes based on
+    their return distribution shapes (fat tails, skewness, etc.).
+    """
+    probability: float      # P(R_H > 0) - direction probability
+    expected_gain: float    # E[R_H | R_H > 0] - expected gain given positive return
+    expected_loss: float    # E[-R_H | R_H < 0] - expected loss given negative return (positive value)
+    expected_utility: float # EU = p × E[gain] - (1-p) × E[loss]
+    position_size: float    # EU / max(E[loss], epsilon), clipped to [min_size, max_size]
+    gain_loss_ratio: float  # E[gain] / E[loss] - asymmetry measure
+    downside_std: float     # std of losses - tail risk measure
+    upside_std: float       # std of gains - upside potential measure
+    skewness: float         # skewness of r_samples - distribution shape
+    r_samples: np.ndarray   # raw samples for further analysis if needed
 
 
 @dataclass(frozen=True)
 class Signal:
     horizon_days: int
     score: float          # edge in z units (mu_H/sigma_H with filters)
-    p_up: float           # P(return>0)
+    p_up: float           # P(return>0) - UNIFIED posterior predictive MC probability (THE ONLY TRADING PROBABILITY)
     exp_ret: float        # expected log return over horizon
     ci_low: float         # lower bound of expected log return CI
     ci_high: float        # upper bound of expected log return CI
     profit_pln: float     # expected profit in PLN for NOTIONAL_PLN invested
     profit_ci_low_pln: float  # low CI bound for profit in PLN
     profit_ci_high_pln: float # high CI bound for profit in PLN
-    position_strength: float  # fractional Kelly suggestion (0..1)
+    position_strength: float  # EU-based position sizing: EU / max(E[loss], ε), scaled by drift_weight
     vol_mean: float       # mean volatility forecast (stochastic vol posterior)
     vol_ci_low: float     # lower bound of volatility CI
     vol_ci_high: float    # upper bound of volatility CI
     regime: str               # detected regime label
     label: str                # BUY/HOLD/SELL or STRONG BUY/SELL
+    # Expected Utility fields (THE BASIS FOR POSITION SIZING):
+    expected_utility: float = 0.0     # EU = p × E[gain] - (1-p) × E[loss]
+    expected_gain: float = 0.0        # E[R_H | R_H > 0]
+    expected_loss: float = 0.0        # E[-R_H | R_H < 0] (positive value)
+    gain_loss_ratio: float = 1.0      # E[gain] / E[loss] - asymmetry
+    eu_position_size: float = 0.0     # Position size from EU / max(E[loss], ε)
+    # Diagnostics only (NOT used for trading decisions):
+    drift_uncertainty: float = 0.0  # P_t × drift_var_factor: uncertainty in drift estimate propagated to horizon
+    p_analytical: float = 0.5       # DIAGNOSTIC ONLY: analytical posterior predictive P(r>0|D) 
+    p_empirical: float = 0.5        # DIAGNOSTIC ONLY: raw empirical MC probability P(r>0) from simulations
+    # STEP 7: Regime audit trace - tracks which regime params were used
+    regime_used: Optional[int] = None        # Integer regime index (0-4) used for parameter selection
+    regime_source: str = "global"            # "regime_tuned" or "global" - source of parameters
+    regime_collapse_warning: bool = False    # True if regime params collapsed to global
+    # STEP 8: Bayesian Model Averaging audit trace
+    bma_method: str = "legacy"               # "bayesian_model_averaging_full" or "legacy"
+    bma_has_model_posterior: bool = False    # True if BMA with model posteriors was used
+    bma_borrowed_from_global: bool = False   # True if regime used hierarchical fallback
 
 
 
@@ -521,7 +657,7 @@ def _fit_student_nu_mle(z: pd.Series, min_n: int = 200, bounds: Tuple[float, flo
         nll_minus = nll(nu_hat - eps)
         
         # Second derivative: (f(x+h) - 2f(x) + f(x-h)) / h²
-        d2_nll = (nll_plus - 2.0 * nll_0 + nll_minus) / (eps ** 2)
+        d2_nll = (nll_plus - 2.0 * nll_0 + nll_minus) / (eps ** 2);
         
         # Standard error: sqrt(1 / observed_information)
         # observed_information = d²(-LL)/dν² = d²NLL/dν²
@@ -639,7 +775,7 @@ def _test_innovation_whiteness(innovations: np.ndarray, innovation_vars: np.ndar
         }
 
 
-def _compute_kalman_log_likelihood(y: np.ndarray, sigma: np.ndarray, q: float) -> float:
+def _compute_kalman_log_likelihood(y: np.ndarray, sigma: np.ndarray, q: float, c: float = 1.0) -> float:
     """
     Compute log-likelihood for Kalman filter with given process noise q.
     Used for q optimization via marginal likelihood maximization.
@@ -667,7 +803,7 @@ def _compute_kalman_log_likelihood(y: np.ndarray, sigma: np.ndarray, q: float) -
         P_pred = P_t + q
         
         # Observation variance
-        R_t = float(max(sigma[t] ** 2, 1e-12))
+        R_t = float(max(c * (sigma[t] ** 2), 1e-12))
         
         # Innovation
         innov = y[t] - mu_pred
@@ -714,7 +850,7 @@ def _compute_kalman_log_likelihood_heteroskedastic(y: np.ndarray, sigma: np.ndar
     
     for t in range(T):
         # Heteroskedastic process noise: q_t = c * σ_t²
-        R_t = float(max(sigma[t] ** 2, 1e-12))
+        R_t = float(max(c * (sigma[t] ** 2), 1e-12))
         q_t = float(max(c * R_t, 1e-12))
         
         # Prediction
@@ -813,8 +949,32 @@ def _estimate_regime_drift_priors(ret: pd.Series, vol: pd.Series) -> Optional[Di
 def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman_q_cache.json") -> Optional[Dict]:
     """
     Load pre-tuned Kalman parameters from cache generated by tune_q_mle.py.
+
+    Supports the Bayesian Model Averaging (BMA) structure from tune_q_mle.py:
     
-    Supports both Gaussian (q, c) and Student-t (q, c, ν) models with backwards compatibility.
+    {
+        "global": {
+            "model_posterior": { m: p(m) },
+            "models": { m: {q, phi, nu, c, ...} },
+            ...backward-compatible fields...
+        },
+        "regime": {
+            "r": {
+                "model_posterior": { m: p(m|r) },
+                "models": { m: {q, phi, nu, c, ...} },
+                "regime_meta": {
+                    "fallback": bool,
+                    "borrowed_from_global": bool,
+                    ...
+                }
+            }
+        }
+    }
+    
+    CONTRACT WITH tune_q_mle.py:
+    - Every regime block contains model_posterior and models
+    - Fallback regimes have borrowed_from_global=True but still contain valid models
+    - This function does NOT perform fallback logic - tune guarantees non-empty outputs
     
     Args:
         asset_symbol: Asset symbol (e.g., "PLNJPY=X", "SPY")
@@ -822,451 +982,311 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "cache/kalman
         
     Returns:
         Dictionary with parameters if found, None otherwise. Contains:
-        - 'q': Process noise variance
-        - 'c': Observation variance scale
-        - 'noise_model': "gaussian" or "student_t"
-        - 'nu': Student-t degrees of freedom (if Student-t model)
-        - Plus diagnostic metadata
+        - 'global': {model_posterior, models, ...backward-compatible fields}
+        - 'regime': {r: {model_posterior, models, regime_meta}}
+        - 'has_bma': True if new BMA structure detected
     """
     try:
         if not os.path.exists(cache_path):
             return None
-        
         with open(cache_path, 'r') as f:
             cache = json.load(f)
+        if asset_symbol not in cache:
+            return None
+        raw_data = cache[asset_symbol]
         
-        # Direct lookup
-        if asset_symbol in cache:
-            data = cache[asset_symbol]
-            q_val = data.get('q')
-            c_val = data.get('c', 1.0)
+        # Detect BMA structure: presence of model_posterior in global or regime
+        has_bma = False
+        if 'global' in raw_data:
+            global_data = raw_data['global']
+            has_bma = 'model_posterior' in global_data or 'models' in global_data
+        
+        # Handle new BMA structure
+        if 'global' in raw_data:
+            data = raw_data['global']
+            regime_data = raw_data.get('regime', {})
+        else:
+            # Old flat structure for backward compatibility
+            data = raw_data
+            regime_data = {}
+        
+        # Extract backward-compatible global parameters
+        q_val = data.get('q')
+        c_val = data.get('c', 1.0)
+        phi_val = data.get('phi')
+        nu_val = data.get('nu')
+        noise_model_raw = data.get('noise_model', 'gaussian')
+        
+        # Normalize/validate supported models (backward compatible)
+        supported_models = {'gaussian', 'phi_gaussian', 'kalman_phi_student_t', 'kalman_phi_gaussian'}
+        noise_model = noise_model_raw if noise_model_raw in supported_models else 'gaussian'
+        requires_phi = 'phi' in noise_model
+        requires_nu = noise_model == 'kalman_phi_student_t'
+        
+        # Basic parameter validation
+        if q_val is None or not np.isfinite(q_val) or q_val <= 0:
+            return None
+        if c_val is None or not np.isfinite(c_val) or c_val <= 0:
+            return None
+        if requires_phi and (phi_val is None or not np.isfinite(phi_val)):
+            return None
+        if requires_nu and (nu_val is None or not np.isfinite(nu_val)):
+            return None
+        
+        result = {
+            # Backward-compatible global scalar parameters
+            'q': float(q_val),
+            'c': float(c_val),
+            'noise_model': noise_model,
+            'nu': float(nu_val) if nu_val is not None and np.isfinite(nu_val) else None,
+            'phi': float(phi_val) if phi_val is not None and np.isfinite(phi_val) else None,
+            'best_model_by_bic': data.get('best_model_by_bic', 'kalman_gaussian'),
+            'source': 'tuned_cache',
+            'timestamp': data.get('timestamp') or raw_data.get('timestamp'),
+            'delta_ll_vs_zero': data.get('delta_ll_vs_zero'),
+            'pit_ks_pvalue': data.get('pit_ks_pvalue'),
+            'bic': data.get('bic'),
+            'aic': data.get('aic'),
+            'model_comparison': data.get('model_comparison', {}),
+            'delta_ll_vs_const': data.get('delta_ll_vs_const'),
+            'delta_ll_vs_ewma': data.get('delta_ll_vs_ewma'),
             
-            # Validate basic parameters
-            if q_val is not None and q_val > 0 and c_val > 0:
-                # Load noise model (default to Gaussian for backwards compatibility)
-                noise_model = data.get('noise_model', 'gaussian')
-                nu_val = data.get('nu')
-                
-                result = {
-                    'q': float(q_val),
-                    'c': float(c_val),
-                    'noise_model': noise_model,
-                    'nu': float(nu_val) if nu_val is not None else None,
-                    'source': 'tuned_cache',
-                    'timestamp': data.get('timestamp'),
-                    'delta_ll_vs_zero': data.get('delta_ll_vs_zero'),
-                    'pit_ks_pvalue': data.get('pit_ks_pvalue'),
-                    'bic': data.get('bic'),
-                    'aic': data.get('aic'),
-                    'best_model_by_bic': data.get('best_model_by_bic', 'kalman_drift'),
-                    'model_comparison': data.get('model_comparison', {}),
-                    'delta_ll_vs_const': data.get('delta_ll_vs_const'),
-                    'delta_ll_vs_ewma': data.get('delta_ll_vs_ewma')
-                }
-                
-                return result
-        
-        return None
-        
+            # BMA structure: model posteriors and models from global
+            'global_model_posterior': data.get('model_posterior', {}),
+            'global_models': data.get('models', {}),
+            
+            # Regime-conditional BMA structure
+            'regime': regime_data,
+            'has_regime_params': bool(regime_data),
+            'has_bma': has_bma,
+        }
+        return result
     except Exception as e:
         if os.getenv('DEBUG'):
             print(f"Warning: Failed to load tuned params for {asset_symbol}: {e}")
         return None
 
 
-def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = None, optimize_q: bool = True, asset_symbol: Optional[str] = None) -> Dict[str, pd.Series]:
+def _select_regime_params(
+    tuned_params: Dict,
+    current_regime: int,
+) -> Dict:
     """
-    Kalman filter for time-varying drift estimation with optional q optimization.
+    Select parameters using regime-first logic with global fallback.
     
-    State-space model:
-        r_t = μ_t + ε_t,  ε_t ~ N(0, σ_t²) or t(ν, σ_t²)  (observation equation)
-        μ_t = μ_{t-1} + η_t,  η_t ~ N(0, q_t)  (state transition, random walk)
+    REGIME-FIRST PARAMETER ROUTING:
     
-    Level-7+ robust filtering: Student-t innovations option for heavy-tailed observations.
-    When KALMAN_ROBUST_T=true, observation noise uses Student-t distribution with
-    degrees of freedom ν, providing robustness to outliers and extreme market events.
+    1. If current_regime has tuned params AND not fallback → use regime params
+    2. Otherwise → use global params
     
-    Where:
-        r_t: observed return at time t
-        μ_t: latent drift (hidden state)
-        σ_t: conditional volatility from GARCH/EWMA
-        q_t: drift evolution variance (process noise, possibly time-varying)
-        ν: Student-t degrees of freedom (if robust mode enabled)
+    This is parameter routing ONLY. No epistemology changes.
     
     Args:
-        ret: Returns series
-        vol: Conditional volatility series (from GARCH or EWMA)
-        q: Process noise variance. If None, estimated via heuristic or optimization.
-        optimize_q: If True and q is None, optimize q via marginal likelihood maximization.
+        tuned_params: Full tuned params dict from _load_tuned_kalman_params()
+        current_regime: Current regime index (0-4)
         
     Returns:
-        Dictionary with:
-            - mu_kf_filtered: Forward-pass filtered drift estimates
-            - mu_kf_smoothed: Backward-pass smoothed drift estimates (preferred)
-            - var_kf_filtered: Forward-pass filtered drift variance
-            - var_kf_smoothed: Backward-pass smoothed drift variance
-            - kalman_gain: Kalman gain series (diagnostic)
-            - log_likelihood: Total log-likelihood of observations
-            - innovations: Prediction errors (diagnostic)
-            - q_optimal: Optimized or heuristic q value used
-            - q_heuristic: Baseline heuristic q for comparison
-            - q_optimization_attempted: Whether q optimization was attempted
-            - robust_t_mode: Whether Student-t innovations were used
-            - nu_robust: Degrees of freedom for Student-t (if robust mode)
+        Dict with selected params {q, phi, nu, c, fallback, regime_meta, ...}
+    """
+    if tuned_params is None:
+        # No tuned params available - return minimal defaults
+        return {
+            'q': 1e-6,
+            'phi': 0.95,
+            'nu': None,
+            'c': 1.0,
+            'fallback': True,
+            'source': 'defaults',
+            'regime_used': None,
+        }
+    
+    regime_data = tuned_params.get('regime', {})
+    
+    # Try to get regime-specific params
+    # Handle both int keys and string keys (JSON converts to strings)
+    regime_params = regime_data.get(current_regime) or regime_data.get(str(current_regime))
+    
+    # Helper to safely convert to float with fallback for None values
+    def _safe_float(val, default):
+        if val is None:
+            return float(default)
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return float(default)
+    
+    if regime_params is not None and not regime_params.get('fallback', False):
+        # Use regime-specific params
+        # Handle None values explicitly - .get() returns None if key exists with None value
+        q_val = regime_params.get('q')
+        if q_val is None:
+            q_val = tuned_params.get('q')
+        if q_val is None:
+            q_val = 1e-6
+            
+        phi_val = regime_params.get('phi')
+        if phi_val is None:
+            phi_val = tuned_params.get('phi')
+        if phi_val is None:
+            phi_val = 0.95
+            
+        c_val = regime_params.get('c')
+        if c_val is None:
+            c_val = tuned_params.get('c')
+        if c_val is None:
+            c_val = 1.0
+        
+        theta = {
+            'q': _safe_float(q_val, 1e-6),
+            'phi': _safe_float(phi_val, 0.95),
+            'nu': regime_params.get('nu'),
+            'c': _safe_float(c_val, 1.0),
+            'fallback': False,
+            'source': 'regime_tuned',
+            'regime_used': current_regime,
+            'regime_name': regime_params.get('regime_name', f'REGIME_{current_regime}'),
+            'regime_meta': regime_params.get('regime_meta', {}),
+            'collapse_warning': regime_params.get('regime_meta', {}).get('collapse_warning', False),
+        }
+        # Validate nu
+        if theta['nu'] is not None and (not np.isfinite(theta['nu']) or theta['nu'] <= 2.0):
+            theta['nu'] = None
+        return theta
+    else:
+        # Fallback to global params
+        q_global = tuned_params.get('q')
+        phi_global = tuned_params.get('phi')
+        c_global = tuned_params.get('c')
+        
+        return {
+            'q': _safe_float(q_global, 1e-6),
+            'phi': _safe_float(phi_global, 0.95),
+            'nu': tuned_params.get('nu'),
+            'c': _safe_float(c_global, 1.0),
+            'fallback': True,
+            'source': 'global',
+            'regime_used': current_regime,
+            'regime_name': 'GLOBAL_FALLBACK',
+            'regime_meta': {},
+            'collapse_warning': False,
+        }
+
+
+def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = None, optimize_q: bool = True, asset_symbol: Optional[str] = None) -> Dict[str, pd.Series]:
+    """
+    Kalman filter for time-varying drift estimation using pre-tuned parameters only.
+    All parameters (q, c, phi, nu, noise_model) must come from tuning/cache or explicit args.
+    No internal optimization, heuristics, or robustness overlays are performed here.
     """
     ret_clean = _ensure_float_series(ret).dropna()
     vol_clean = _ensure_float_series(vol).reindex(ret_clean.index).dropna()
-    
-    # Align series
     df = pd.concat([ret_clean, vol_clean], axis=1, join='inner').dropna()
     if len(df) < 50:
-        # Not enough data for stable Kalman filtering
         return {}
-    
     df.columns = ['ret', 'vol']
-    y = df['ret'].values.astype(float)  # observations
-    sigma = df['vol'].values.astype(float)  # observation noise std
-    T = len(y)
+    y = df['ret'].values.astype(float)
+    sigma = df['vol'].values.astype(float)
     idx = df.index
-    
-    # Compute heuristic baseline q
-    med_var = float(np.nanmedian(sigma ** 2))
-    q_heuristic = 0.01 * med_var  # 1% of typical observation variance
-    q_heuristic = float(max(q_heuristic, 1e-10))
-    
-    # Determine whether to use heteroskedastic process noise (Level-7 refinement)
-    # q_t = c * σ_t² makes drift uncertainty adaptive to market stress
-    use_heteroskedastic = os.getenv("KALMAN_HETEROSKEDASTIC", "true").strip().lower() == "true"
-    
-    # Determine q or c to use
-    q_optimization_attempted = False
-    c_optimal = None
-    q_t_series = None  # Will store time-varying q_t if heteroskedastic
-    tuned_params_source = None
-    
-    # Priority 1: Try to load pre-tuned parameters from cache (if asset_symbol provided)
-    if q is None and asset_symbol is not None:
+
+    tuned_params = None
+    if asset_symbol is not None:
         tuned_params = _load_tuned_kalman_params(asset_symbol)
-        if tuned_params is not None:
-            q = tuned_params['q']
-            c_optimal = tuned_params['c']
-            tuned_params_source = 'cache'
-            
-            # For heteroskedastic mode, use cached c to build q_t series
-            if use_heteroskedastic and c_optimal is not None:
-                q_t_series = c_optimal * (sigma ** 2)
-                q = float(np.mean(q_t_series))  # mean for reporting
-            
-            # Log cache usage for diagnostics
-            if os.getenv('DEBUG'):
-                print(f"  Using tuned params from cache: q={q:.2e}, c={c_optimal:.3f}")
-    
-    # Priority 2: Optimize if not provided and cache miss
-    if q is None and optimize_q and T >= 252:
-        q_optimization_attempted = True
-        from scipy.optimize import minimize_scalar
-        
-        if use_heteroskedastic:
-            # Optimize c for heteroskedastic process noise: q_t = c * σ_t²
-            # c represents the ratio of drift uncertainty to observation uncertainty
-            
-            # Heuristic c: same as q_heuristic / med_var = 0.01
-            c_heuristic = 0.01
-            
-            # Define negative log-likelihood as function of log(c)
-            def neg_ll_log_c(log_c_val: float) -> float:
-                c_trial = float(np.exp(log_c_val))
-                try:
-                    ll = _compute_kalman_log_likelihood_heteroskedastic(y, sigma, c_trial)
-                    if not np.isfinite(ll):
-                        return 1e12
-                    return float(-ll)
-                except Exception:
-                    return 1e12
-            
-            # Search bounds in log-space: c in [0.0001, 1.0]
-            log_c_min = np.log(0.0001)
-            log_c_max = np.log(1.0)
-            
-            try:
-                # Brent method (1D optimization without derivatives)
-                result = minimize_scalar(
-                    neg_ll_log_c,
-                    bounds=(log_c_min, log_c_max),
-                    method='bounded',
-                    options={'xatol': 1e-6}
-                )
-                if result.success and np.isfinite(result.x):
-                    c_optimal = float(np.exp(result.x))
-                else:
-                    c_optimal = c_heuristic
-            except Exception:
-                c_optimal = c_heuristic
-            
-            # Build time-varying q_t series
-            q_t_series = c_optimal * (sigma ** 2)
-            q = float(np.mean(q_t_series))  # mean for reporting
-            
-        else:
-            # Optimize constant q via marginal likelihood maximization
-            # Use Brent method in log-space for robust optimization over several orders of magnitude
-            
-            # Define negative log-likelihood as function of log(q) for numerical stability
-            def neg_ll_log_q(log_q_val: float) -> float:
-                q_trial = float(np.exp(log_q_val))
-                try:
-                    ll = _compute_kalman_log_likelihood(y, sigma, q_trial)
-                    if not np.isfinite(ll):
-                        return 1e12
-                    return float(-ll)
-                except Exception:
-                    return 1e12
-            
-            # Search bounds in log-space: q in [0.0001*med_var, 1.0*med_var]
-            log_q_min = np.log(max(0.0001 * med_var, 1e-12))
-            log_q_max = np.log(max(1.0 * med_var, 1e-6))
-            
-            try:
-                # Brent method (1D optimization without derivatives)
-                result = minimize_scalar(
-                    neg_ll_log_q,
-                    bounds=(log_q_min, log_q_max),
-                    method='bounded',
-                    options={'xatol': 1e-6}
-                )
-                if result.success and np.isfinite(result.x):
-                    q = float(np.exp(result.x))
-                else:
-                    q = q_heuristic
-            except Exception:
-                q = q_heuristic
-                
-    elif q is None:
-        # Use heuristic if optimization disabled or insufficient data
-        if use_heteroskedastic:
-            c_optimal = 0.01
-            q_t_series = c_optimal * (sigma ** 2)
-            q = float(np.mean(q_t_series))
-        else:
-            q = q_heuristic
+    noise_model = (tuned_params or {}).get('noise_model', 'gaussian')
+    requires_phi = 'phi' in noise_model
+    is_student_t = noise_model == 'kalman_phi_student_t'
+
+    # φ is structural: only from tuned cache; required when model has φ
+    phi_used = (tuned_params or {}).get('phi')
+    if requires_phi:
+        if phi_used is None or not np.isfinite(phi_used):
+            raise ValueError("phi required by selected model but missing from tuning cache")
+        phi_used = float(phi_used)
     else:
-        q = float(max(q, 1e-10))
-    
-    # Level-7+ Robust Kalman filtering with Student-t innovations
-    # When enabled, uses t-distribution for observation noise to handle outliers
-    use_robust_t = os.getenv("KALMAN_ROBUST_T", "false").strip().lower() == "true"
-    nu_robust = None
-    
-    if use_robust_t:
-        # Estimate degrees of freedom for Student-t from standardized residuals
-        # Use simple variance-based estimator: higher variance => lower nu (heavier tails)
-        try:
-            std_resid = y / np.maximum(sigma, 1e-12)
-            std_resid = std_resid[np.isfinite(std_resid)]
-            if len(std_resid) >= 100:
-                # Robust estimation via method of moments
-                # For Student-t: Var(X) = ν/(ν-2) for ν > 2
-                # Sample excess variance relative to unit normal suggests tail heaviness
-                sample_var = float(np.var(std_resid))
-                if sample_var > 1.5:
-                    # Heavier tails than normal: solve ν/(ν-2) = sample_var
-                    # => ν = 2*sample_var / (sample_var - 1)
-                    nu_est = 2.0 * sample_var / max(sample_var - 1.0, 0.1)
-                    nu_robust = float(np.clip(nu_est, 4.5, 50.0))
-                else:
-                    # Light tails: use high nu (near-normal)
-                    nu_robust = 30.0
-            else:
-                # Insufficient data: default to moderate heavy tails
-                nu_robust = 10.0
-        except Exception:
-            nu_robust = 10.0
-    
-    # Initialize state and covariance
-    # Prior: μ_0 ~ N(0, large variance) to represent initial uncertainty
-    # Level-7+ Regime-aware prior: use regime-specific drift expectation if available
-    mu_prior = 0.0
-    P_prior = 1.0  # initial uncertainty
-    regime_prior_info = None
-    
-    # Check if regime-aware initialization is enabled
-    use_regime_prior = os.getenv("KALMAN_REGIME_PRIOR", "false").strip().lower() == "true"
-    
-    if use_regime_prior:
-        # Estimate regime-specific drift priors from historical data
-        regime_prior_info = _estimate_regime_drift_priors(ret_clean, vol_clean)
-        if regime_prior_info is not None:
-            # Use regime-conditional drift as prior mean
-            mu_prior = regime_prior_info.get("current_drift_prior", 0.0)
-            # Keep prior variance at 1.0 to allow filter to adapt quickly
-    
-    # Storage for forward pass
+        phi_used = 1.0
+
+    q_used = q if q is not None else (tuned_params or {}).get('q')
+    c_used = (tuned_params or {}).get('c')
+    nu_used = (tuned_params or {}).get('nu') if is_student_t else None
+
+    if q_used is None or not np.isfinite(q_used) or q_used <= 0:
+        return {}
+    if c_used is None or not np.isfinite(c_used) or c_used <= 0:
+        raise ValueError("Observation scale c required by tuned model but missing/invalid")
+    if is_student_t and (nu_used is None or not np.isfinite(nu_used)):
+        raise ValueError("Student-t model selected but ν missing from tuning cache")
+
+    obs_scale = float(c_used)
+    q_scalar = float(q_used)
+
+    T = len(y)
     mu_filtered = np.zeros(T, dtype=float)
     P_filtered = np.zeros(T, dtype=float)
     K_gain = np.zeros(T, dtype=float)
     innovations = np.zeros(T, dtype=float)
     innovation_vars = np.zeros(T, dtype=float)
-    
-    # Forward pass (Kalman filter)
-    mu_t = mu_prior
-    P_t = P_prior
+
+    mu_t = 0.0
+    P_t = 1.0
     log_likelihood = 0.0
-    
+
     for t in range(T):
-        # Prediction step: project state forward
-        # μ_{t|t-1} = μ_{t-1|t-1}  (random walk has no drift term in transition)
-        # P_{t|t-1} = P_{t-1|t-1} + q_t
-        # Use time-varying q_t if heteroskedastic, else constant q
-        q_t = float(q_t_series[t]) if q_t_series is not None else q
-        mu_pred = mu_t
-        P_pred = P_t + q_t
-        
-        # Observation noise variance at time t
-        R_t = sigma[t] ** 2
-        R_t = float(max(R_t, 1e-12))  # floor
-        
-        # Innovation (prediction error)
+        mu_pred = phi_used * mu_t
+        P_pred = (phi_used ** 2) * P_t + q_scalar
+        R_t = float(max(obs_scale * (sigma[t] ** 2), 1e-12))
         innov = y[t] - mu_pred
-        
-        # Innovation variance: S_t = H P_{t|t-1} H^T + R_t
-        # With H=1 (observation matrix), S_t = P_pred + R_t
-        S_t = P_pred + R_t
-        S_t = float(max(S_t, 1e-12))
-        
-        # Kalman gain: K_t = P_{t|t-1} H^T S_t^{-1}
-        # With H=1, K_t = P_pred / S_t
-        K_t_base = P_pred / S_t
-        
-        # Robust Kalman: adaptive gain based on Student-t likelihood
-        # Downweight outliers by adjusting gain based on innovation magnitude
-        if use_robust_t and nu_robust is not None:
-            # Robust weight: w_t = (ν + 1) / (ν + z_t²)
-            # where z_t = innov / sqrt(S_t) is standardized innovation
-            z_t_sq = (innov ** 2) / S_t
-            w_t = (nu_robust + 1.0) / (nu_robust + z_t_sq)
-            w_t = float(np.clip(w_t, 0.01, 1.0))  # bounded weight
-            K_t = w_t * K_t_base  # adaptive gain
+        S_t = float(max(P_pred + R_t, 1e-12))
+
+        if is_student_t:
+            nu_adj = min(nu_used / (nu_used + 3.0), 1.0)
+            K_t = nu_adj * P_pred / S_t
         else:
-            K_t = K_t_base  # standard Kalman gain
-        
-        # Update step: refine state estimate with observation
-        # μ_{t|t} = μ_{t|t-1} + K_t (y_t - μ_{t|t-1})
+            K_t = P_pred / S_t
+
         mu_t = mu_pred + K_t * innov
-        
-        # Update covariance: P_{t|t} = (1 - K_t H) P_{t|t-1}
-        # With H=1, P_{t|t} = (1 - K_t) P_pred
-        # For robust case, use Joseph form for numerical stability
-        if use_robust_t:
-            # Joseph form: P_{t|t} = (I - K_t H)P_{t|t-1}(I - K_t H)^T + K_t R_t K_t^T
-            # With H=1: P_{t|t} = (1-K_t)²P_pred + K_t²R_t
-            P_t = (1.0 - K_t) ** 2 * P_pred + K_t ** 2 * R_t
-        else:
-            P_t = (1.0 - K_t) * P_pred
-        P_t = float(max(P_t, 1e-12))  # ensure positive
-        
-        # Store filtered estimates
+        P_t = float(max((1.0 - K_t) * P_pred, 1e-12))
+
         mu_filtered[t] = mu_t
         P_filtered[t] = P_t
         K_gain[t] = K_t
         innovations[t] = innov
         innovation_vars[t] = S_t
-        
-        # Accumulate log-likelihood: ln p(y_t | y_{1:t-1})
-        if use_robust_t and nu_robust is not None:
-            # Student-t log-likelihood
+
+        if is_student_t:
             try:
-                # Standardized innovation
-                z_t = innov / np.sqrt(S_t)
-                # Log-likelihood: log Γ((ν+1)/2) - log Γ(ν/2) - 0.5*log(πνS_t) - ((ν+1)/2)*log(1 + z_t²/ν)
-                from scipy.special import gammaln
-                ll_t = (
-                    gammaln((nu_robust + 1.0) / 2.0)
-                    - gammaln(nu_robust / 2.0)
-                    - 0.5 * np.log(np.pi * nu_robust * S_t)
-                    - ((nu_robust + 1.0) / 2.0) * np.log(1.0 + (z_t ** 2) / nu_robust)
-                )
+                ll_t = StudentTDriftModel.logpdf(innov, nu_used, 0.0, math.sqrt(S_t))
                 if np.isfinite(ll_t):
-                    log_likelihood += float(ll_t)
+                    log_likelihood += ll_t
             except Exception:
                 pass
         else:
-            # Gaussian log-likelihood
             try:
                 ll_t = -0.5 * (np.log(2.0 * np.pi * S_t) + (innov ** 2) / S_t)
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
             except Exception:
                 pass
-    
-    # Backward pass (Rauch-Tung-Striebel smoother)
-    # Smoothing uses all data (past and future) for refined estimates
-    mu_smoothed = np.zeros(T, dtype=float)
-    P_smoothed = np.zeros(T, dtype=float)
-    
-    # Initialize backward pass with last filtered estimate
-    mu_smoothed[T-1] = mu_filtered[T-1]
-    P_smoothed[T-1] = P_filtered[T-1]
-    
-    for t in range(T-2, -1, -1):
-        # Smoother gain: C_t = P_{t|t} / P_{t+1|t}
-        # Where P_{t+1|t} = P_filtered[t] + q_t (predicted covariance for next step)
-        # Use time-varying q_t if heteroskedastic, else constant q
-        q_t = float(q_t_series[t]) if q_t_series is not None else q
-        P_pred_next = P_filtered[t] + q_t
-        P_pred_next = float(max(P_pred_next, 1e-12))
-        
-        C_t = P_filtered[t] / P_pred_next
-        
-        # Smoothed state: μ_{t|T} = μ_{t|t} + C_t (μ_{t+1|T} - μ_{t+1|t})
-        mu_pred_next = mu_filtered[t]  # prediction for t+1 from t (random walk)
-        mu_smoothed[t] = mu_filtered[t] + C_t * (mu_smoothed[t+1] - mu_pred_next)
-        
-        # Smoothed covariance: P_{t|T} = P_{t|t} + C_t (P_{t+1|T} - P_{t+1|t}) C_t
-        P_smoothed[t] = P_filtered[t] + C_t * (P_smoothed[t+1] - P_pred_next) * C_t
-        P_smoothed[t] = float(max(P_smoothed[t], 1e-12))
-    
-    # Compute Kalman gain statistics for situational awareness
+
     kalman_gain_mean = float(np.mean(K_gain))
-    kalman_gain_recent = float(K_gain[-1]) if len(K_gain) > 0 else float("nan")
-    
-    # Refinement 3: Innovation whiteness test (Ljung-Box)
-    # Test if standardized innovations are white noise (model adequacy)
-    innovation_whiteness = _test_innovation_whiteness(innovations, innovation_vars, lags=min(20, T // 5))
-    
-    # Build output series aligned with original index
+    kalman_gain_recent = float(K_gain[-1]) if len(K_gain) > 0 else float('nan')
+
     return {
         "mu_kf_filtered": pd.Series(mu_filtered, index=idx, name="mu_kf_filtered"),
-        "mu_kf_smoothed": pd.Series(mu_smoothed, index=idx, name="mu_kf_smoothed"),
+        "mu_kf_smoothed": pd.Series(mu_filtered, index=idx, name="mu_kf_smoothed"),  # no RTS smoothing here
         "var_kf_filtered": pd.Series(P_filtered, index=idx, name="var_kf_filtered"),
-        "var_kf_smoothed": pd.Series(P_smoothed, index=idx, name="var_kf_smoothed"),
+        "var_kf_smoothed": pd.Series(P_filtered, index=idx, name="var_kf_smoothed"),
         "kalman_gain": pd.Series(K_gain, index=idx, name="kalman_gain"),
         "innovations": pd.Series(innovations, index=idx, name="innovations"),
         "innovation_vars": pd.Series(innovation_vars, index=idx, name="innovation_vars"),
         "log_likelihood": float(log_likelihood),
-        "process_noise_var": float(q),
+        "process_noise_var": float(q_scalar),
         "n_obs": int(T),
-        # Refinement 1: q optimization metadata
-        "q_optimal": float(q),
-        "q_heuristic": float(q_heuristic),
-        "q_optimization_attempted": bool(q_optimization_attempted),
-        # Refinement 2: Kalman gain statistics (situational awareness)
         "kalman_gain_mean": kalman_gain_mean,
         "kalman_gain_recent": kalman_gain_recent,
-        # Refinement 3: Innovation whiteness test (model adequacy)
-        "innovation_whiteness": innovation_whiteness,
-        # Level-7 Refinement: Heteroskedastic process noise (q_t = c * σ_t²)
-        "kalman_heteroskedastic_mode": bool(use_heteroskedastic),
-        "kalman_c_optimal": float(c_optimal) if c_optimal is not None else None,
-        "kalman_q_t_mean": float(np.mean(q_t_series)) if q_t_series is not None else None,
-        "kalman_q_t_std": float(np.std(q_t_series)) if q_t_series is not None else None,
-        "kalman_q_t_min": float(np.min(q_t_series)) if q_t_series is not None else None,
-        "kalman_q_t_max": float(np.max(q_t_series)) if q_t_series is not None else None,
-        # Level-7+ Refinement: Robust Kalman filtering with Student-t innovations
-        "kalman_robust_t_mode": bool(use_robust_t),
-        "kalman_nu_robust": float(nu_robust) if nu_robust is not None else None,
-        # Level-7+ Refinement: Regime-dependent drift priors
-        "kalman_regime_prior_used": bool(use_regime_prior and regime_prior_info is not None),
-        "kalman_regime_info": regime_prior_info if regime_prior_info is not None else {},
+        "kalman_heteroskedastic_mode": False,
+        "kalman_c_optimal": obs_scale,
+        "phi_used": float(phi_used) if phi_used is not None and np.isfinite(phi_used) else None,
+        "kalman_noise_model": noise_model,
+        "kalman_nu": float(nu_used) if nu_used is not None else None,
     }
 
 
@@ -1356,11 +1376,16 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     
     # Load tuned parameters and model selection results
     tuned_params = None
+    best_model = 'kalman_gaussian'
+    kalman_keys = {'kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t'}
+    tuned_noise_model = 'gaussian'
+    tuned_nu = None
     if asset_symbol is not None:
         tuned_params = _load_tuned_kalman_params(asset_symbol)
-    
-    best_model = tuned_params.get('best_model_by_bic', 'kalman_drift') if tuned_params else 'kalman_drift'
-    
+        if tuned_params:
+            best_model = tuned_params.get('best_model_by_bic', 'kalman_gaussian')
+            tuned_noise_model = tuned_params.get('noise_model', 'gaussian')
+            tuned_nu = tuned_params.get('nu') if tuned_noise_model == 'kalman_phi_student_t' else None
     # Print model selection information for user transparency
     if asset_symbol and tuned_params:
         model_comparison = tuned_params.get('model_comparison', {})
@@ -1456,12 +1481,9 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             "delta_ll_vs_ewma": tuned_params.get('delta_ll_vs_ewma', float('nan')) if tuned_params else float('nan')
         }
     
-    else:
-        # Kalman-drift model (default): full state-space estimation
-        # Run Kalman filter on returns with GARCH/EWMA volatility
-        # Uses pre-tuned parameters from cache if available, otherwise auto-estimates
+    elif best_model in kalman_keys:
         kf_result = _kalman_filter_drift(ret, vol, q=None, asset_symbol=asset_symbol)
-        
+
         # Extract Kalman-filtered drift estimates
         if kf_result and "mu_kf_smoothed" in kf_result:
             # Use backward-smoothed estimates (uses all data, statistically optimal)
@@ -1481,7 +1503,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 "kalman_gain_recent": kf_result.get("kalman_gain_recent", float("nan")),
                 # Refinement 3: Innovation whiteness test (model adequacy)
                 "innovation_whiteness": kf_result.get("innovation_whiteness", {}),
-                # Level-7 Refinement: Heteroskedastic process noise
+                # Level-7 Refinement: Heteroskedastic process noise (q_t = c * σ_t²)
                 "kalman_heteroskedastic_mode": kf_result.get("heteroskedastic_mode", False),
                 "kalman_c_optimal": kf_result.get("c_optimal"),
                 "kalman_q_t_mean": kf_result.get("q_t_mean"),
@@ -1494,6 +1516,15 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 # Level-7+ Refinement: Regime-dependent drift priors
                 "kalman_regime_prior_used": kf_result.get("regime_prior_used", False),
                 "kalman_regime_info": kf_result.get("regime_prior_info", {}),
+                # φ persistence (from tuned cache or filter)
+                "kalman_phi": tuned_params.get("phi") if tuned_params else kf_result.get("phi_used"),
+                "phi_used": kf_result.get("phi_used"),
+                # Regime-conditional parameters from tune_q_mle.py hierarchical cache
+                "regime_params": tuned_params.get("regime", {}) if tuned_params else {},
+                "has_regime_params": tuned_params.get("has_regime_params", False) if tuned_params else False,
+                # Noise model for Student-t support
+                "kalman_noise_model": tuned_params.get("noise_model", "gaussian") if tuned_params else "gaussian",
+                "kalman_nu": tuned_params.get("nu") if tuned_params else None,
             }
         else:
             # Fallback: use EWMA blend if Kalman fails
@@ -1501,8 +1532,21 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             mu_kf = mu_blend
             var_kf = pd.Series(0.0, index=mu_kf.index)  # no uncertainty quantified
             kalman_available = False
-            kalman_metadata = {}
-    
+            kalman_metadata = {
+                "model_selected": str(best_model),
+                "reason": "Unrecognized model key; defaulting to EWMA blend"
+            }
+    else:
+        # Unknown model key: fallback to EWMA blend
+        mu_blend = 0.5 * mu_fast + 0.5 * mu_slow
+        mu_kf = mu_blend
+        var_kf = pd.Series(0.0, index=mu_kf.index)
+        kalman_available = False
+        kalman_metadata = {
+            "model_selected": str(best_model),
+            "reason": "Unrecognized model key; defaulting to EWMA blend"
+        }
+
     # Trend filter (200D z-distance) - kept for diagnostics
     sma200 = px.rolling(200).mean()
     trend_z = (px - sma200) / px.rolling(200).std()
@@ -1580,19 +1624,24 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     # Clip degrees of freedom to a stable range to prevent extreme tail chaos in flash crashes
     nu = nu.clip(lower=4.5, upper=500.0)
 
-    # Fit global Student-t tail parameter once via MLE on standardized residuals (Level-7 rule)
-    try:
-        # Residuals using posterior drift (more conservative) and current per-day vol
-        mu_post_aligned = pd.Series(mu_post, index=ret.index).astype(float)
-        vol_aligned = pd.Series(vol, index=ret.index).astype(float)
-        resid = (ret - mu_post_aligned).replace([np.inf, -np.inf], np.nan)
-        z_std = resid / vol_aligned.replace(0.0, np.nan)
-        z_std = z_std.replace([np.inf, -np.inf], np.nan).dropna()
-        nu_info = _fit_student_nu_mle(z_std, min_n=200, bounds=(4.5, 500.0))
-        nu_hat = float(nu_info.get("nu_hat", 50.0))
-    except Exception:
-        nu_info = {"nu_hat": 50.0, "ll": float("nan"), "n": 0, "converged": False}
-        nu_hat = 50.0
+    # Tail parameter: prefer tuned ν from cache for Student-t world; otherwise keep legacy estimate
+    if tuned_noise_model == 'kalman_phi_student_t' and tuned_nu is not None and np.isfinite(tuned_nu):
+        # Level-7 rule: ν is fixed from tuning cache in Student-t world
+        nu_hat = float(tuned_nu)
+        nu_info = {"nu_hat": nu_hat, "source": "tuned_cache"}
+    else:
+        # Non-Student-t worlds may estimate ν diagnostically; Student-t world never refits
+        try:
+            mu_post_aligned = pd.Series(mu_post, index=ret.index).astype(float)
+            vol_aligned = pd.Series(vol, index=ret.index).astype(float)
+            resid = (ret - mu_post_aligned).replace([np.inf, -np.inf], np.nan)
+            z_std = resid / vol_aligned.replace(0.0, np.nan)
+            z_std = z_std.replace([np.inf, -np.inf], np.nan).dropna()
+            nu_info = _fit_student_nu_mle(z_std, min_n=200, bounds=(4.5, 500.0))
+            nu_hat = float(nu_info.get("nu_hat", 50.0))
+        except Exception:
+            nu_info = {"nu_hat": 50.0, "ll": float("nan"), "n": 0, "converged": False}
+            nu_hat = 50.0
 
     # t-stat style momentum: cum return / realized vol over window
     def mom_t(days: int) -> pd.Series:
@@ -1635,9 +1684,10 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         # Pillar 1: Kalman filter drift estimation
         "mu_kf": mu_kf if kalman_available else mu_blend,  # Kalman-filtered drift
         "var_kf": var_kf if kalman_available else pd.Series(0.0, index=ret.index),  # drift variance
-        "mu_final": mu_final,  # final drift after regime adjustment
+        "mu_final": mu_final,  # shorthand
         "kalman_available": kalman_available,  # flag for diagnostics
         "kalman_metadata": kalman_metadata,  # log-likelihood, process noise, etc.
+        "phi_used": kalman_metadata.get("phi_used", tuned_params.get("phi") if tuned_params else None),
     }
 
 
@@ -1648,39 +1698,39 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
 def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed: int = 42) -> Optional[Dict]:
     """
     Fit a Hidden Markov Model with Gaussian emissions to detect market regimes.
-    
+
     Each regime (state) has:
     - Its own μ (drift) dynamics captured by emission mean
     - Its own σ (volatility) dynamics captured by emission covariance
     - Persistence captured by transition matrix
-    
+
     Args:
         feats: Feature dictionary from compute_features()
         n_states: Number of hidden states (default 3: calm, trending, crisis)
         random_seed: Random seed for reproducibility
-        
+
     Returns:
         Dictionary with HMM model, state sequence, and regime metadata, or None on failure
     """
     if not HMM_AVAILABLE:
         return None
-        
+
     try:
         # Extract returns and volatility as observations
         ret = feats.get("ret", pd.Series(dtype=float))
         vol = feats.get("vol", pd.Series(dtype=float))
-        
+
         if ret.empty or vol.empty:
             return None
-            
+
         # Align and clean data
         df = pd.concat([ret, vol], axis=1, join='inner').dropna()
         if len(df) < 300:  # Need sufficient history for stable HMM
             return None
-            
+
         df.columns = ["ret", "vol"]
         X = df.values  # Shape (T, 2): returns and volatility as features
-        
+
         # Fit Gaussian HMM with full covariance (allows each state its own μ and σ)
         model = hmm.GaussianHMM(
             n_components=n_states,
@@ -1689,44 +1739,44 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
             random_state=random_seed,
             verbose=False
         )
-        
+
         model.fit(X)
-        
+
         # Infer hidden state sequence (Viterbi for most likely path)
         states = model.predict(X)
-        
+
         # Posterior probabilities for each state at each time
         posteriors = model.predict_proba(X)
-        
+
         # Identify regime characteristics from emission parameters
         means = model.means_  # Shape (n_states, 2): [drift, vol] per state
         covars = model.covars_  # Shape (n_states, 2, 2)
         transmat = model.transmat_  # Shape (n_states, n_states)
-        
+
         # Label states by volatility level: calm < normal < crisis
         vol_means = means[:, 1]  # volatility component
         sorted_indices = np.argsort(vol_means)
-        
+
         regime_names = {
             sorted_indices[0]: "calm",
             sorted_indices[1]: "trending" if n_states == 3 else "normal",
             sorted_indices[2]: "crisis" if n_states == 3 else "volatile"
         }
-        
+
         # Build regime series aligned with returns index
         regime_series = pd.Series(
             [regime_names.get(s, f"state_{s}") for s in states],
             index=df.index,
             name="regime"
         )
-        
+
         # Posterior probability series (one per state)
         posterior_df = pd.DataFrame(
             posteriors,
             index=df.index,
             columns=[regime_names.get(i, f"state_{i}") for i in range(n_states)]
         )
-        
+
         # Compute log-likelihood and information criteria for model diagnostics
         try:
             log_likelihood = float(model.score(X))
@@ -1743,7 +1793,7 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
             n_params = 0
             aic = float("nan")
             bic = float("nan")
-        
+
         return {
             "model": model,
             "regime_series": regime_series,
@@ -1760,7 +1810,7 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
             "aic": aic,
             "bic": bic,
         }
-        
+
     except Exception as e:
         # Silent fallback on HMM failure
         return None
@@ -1769,38 +1819,38 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
 def track_parameter_stability(ret: pd.Series, window_days: int = 252, step_days: int = 63) -> Dict[str, pd.DataFrame]:
     """
     Track GARCH parameter stability over time using rolling window estimation.
-    
+
     Fits GARCH(1,1) on expanding windows to detect parameter drift.
     Returns time series of parameters, standard errors, and log-likelihoods.
-    
+
     Args:
         ret: Returns series
         window_days: Minimum window size for initial fit
         step_days: Days between refits (trades off compute vs resolution)
-        
+
     Returns:
         Dictionary with DataFrames tracking parameters over time
     """
     ret_clean = _ensure_float_series(ret).dropna()
     if len(ret_clean) < max(300, window_days):
         return {}
-    
+
     # Time points to evaluate (start at window_days, step forward)
     dates = ret_clean.index
     eval_dates = []
     for i in range(window_days, len(dates), step_days):
         eval_dates.append(dates[i])
-    
+
     if not eval_dates:
         return {}
-    
+
     # Storage for parameter evolution
     records = []
-    
+
     for eval_date in eval_dates:
         # Use expanding window up to eval_date
         window_ret = ret_clean.loc[:eval_date]
-        
+
         # Try to fit GARCH
         try:
             _, params = _garch11_mle(window_ret)
@@ -1822,16 +1872,16 @@ def track_parameter_stability(ret: pd.Series, window_days: int = 252, step_days:
         except Exception:
             # Skip windows where GARCH fails
             continue
-    
+
     if not records:
         return {}
-    
+
     df = pd.DataFrame(records).set_index("date")
-    
+
     # Compute parameter drift statistics (rolling z-score of parameter changes)
     param_cols = ["omega", "alpha", "beta"]
     drift_stats = {}
-    
+
     for col in param_cols:
         if col in df.columns:
             changes = df[col].diff()
@@ -1840,9 +1890,9 @@ def track_parameter_stability(ret: pd.Series, window_days: int = 252, step_days:
                 # Normalized change (z-score): change / standard error
                 z_change = changes / df[se_col].replace(0, np.nan)
                 drift_stats[f"{col}_drift_z"] = z_change
-    
+
     drift_df = pd.DataFrame(drift_stats, index=df.index)
-    
+
     return {
         "param_evolution": df,
         "param_drift": drift_df,
@@ -1852,36 +1902,36 @@ def track_parameter_stability(ret: pd.Series, window_days: int = 252, step_days:
 def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int = 21, horizons: List[int] = [1, 21, 63]) -> Dict[str, pd.DataFrame]:
     """
     Perform walk-forward out-of-sample testing to validate predictive power.
-    
+
     Splits data into non-overlapping train/test windows, fits model on train,
     predicts on test, and tracks hit rates and prediction errors.
-    
+
     Args:
         px: Price series
         train_days: Training window size (days)
         test_days: Test window size (days)
         horizons: Forecast horizons to test
-        
+
     Returns:
         Dictionary with out-of-sample performance metrics
     """
     px_clean = _ensure_float_series(px).dropna()
     if len(px_clean) < train_days + test_days + max(horizons):
         return {}
-    
+
     log_px = np.log(px_clean)
     dates = px_clean.index
-    
+
     # Define walk-forward windows
     windows = []
     start_idx = 0
     while start_idx + train_days + test_days <= len(dates):
         train_end_idx = start_idx + train_days
         test_end_idx = min(train_end_idx + test_days, len(dates))
-        
+
         train_dates = dates[start_idx:train_end_idx]
         test_dates = dates[train_end_idx:test_end_idx]
-        
+
         if len(test_dates) > 0:
             windows.append({
                 "train_start": train_dates[0],
@@ -1889,41 +1939,41 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
                 "test_start": test_dates[0],
                 "test_end": test_dates[-1],
             })
-        
+
         # Move forward by test_days (non-overlapping)
         start_idx = test_end_idx
-    
+
     if not windows:
         return {}
-    
+
     # Track predictions and outcomes for each horizon
     results = {h: [] for h in horizons}
-    
+
     for window in windows:
         # Fit features on training data
         train_px = px_clean.loc[window["train_start"]:window["train_end"]]
-        
+
         try:
             train_feats = compute_features(train_px)
-            
+
             # Get predictions at end of training window
             mu_now = safe_last(train_feats.get("mu_post", pd.Series([0.0])))
             vol_now = safe_last(train_feats.get("vol", pd.Series([1.0])))
-            
+
             if not np.isfinite(mu_now):
                 mu_now = 0.0
             if not np.isfinite(vol_now) or vol_now <= 0:
                 vol_now = 1.0
-            
+
             # For each horizon, predict and measure actual outcome
             test_log_px = log_px.loc[window["test_start"]:window["test_end"]]
             train_end_log_px = float(log_px.loc[window["train_end"]])
-            
+
             for H in horizons:
                 # Predicted return over H days
                 pred_ret_H = mu_now * H
                 pred_sign = np.sign(pred_ret_H) if pred_ret_H != 0 else 0
-                
+
                 # Actual return H days forward from train_end
                 try:
                     forward_idx = dates.get_loc(window["train_end"]) + H
@@ -1932,13 +1982,13 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
                         actual_log_px = float(log_px.loc[forward_date])
                         actual_ret_H = actual_log_px - train_end_log_px
                         actual_sign = np.sign(actual_ret_H) if actual_ret_H != 0 else 0
-                        
+
                         # Prediction error
                         pred_error = actual_ret_H - pred_ret_H
-                        
+
                         # Direction hit (1 if signs match, 0 otherwise)
                         hit = 1 if (pred_sign * actual_sign > 0) else 0
-                        
+
                         results[H].append({
                             "train_end": window["train_end"],
                             "forecast_date": forward_date,
@@ -1949,21 +1999,21 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
                         })
                 except Exception:
                     continue
-                    
+
         except Exception:
             continue
-    
+
     # Aggregate results into DataFrames
     oos_metrics = {}
     for H in horizons:
         if results[H]:
             df = pd.DataFrame(results[H]).set_index("train_end")
-            
+
             # Compute cumulative statistics
             hit_rate = df["direction_hit"].mean() if len(df) > 0 else float("nan")
             mean_error = df["prediction_error"].mean() if len(df) > 0 else float("nan")
             rmse = np.sqrt((df["prediction_error"] ** 2).mean()) if len(df) > 0 else float("nan")
-            
+
             oos_metrics[f"H{H}"] = {
                 "predictions": df,
                 "hit_rate": float(hit_rate),
@@ -1971,7 +2021,7 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
                 "rmse": float(rmse),
                 "n_forecasts": len(df),
             }
-    
+
     return oos_metrics
 
 
@@ -2010,10 +2060,10 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         diagnostics["kalman_q_optimal"] = kalman_metadata.get("q_optimal", float("nan"))
         diagnostics["kalman_q_heuristic"] = kalman_metadata.get("q_heuristic", float("nan"))
         diagnostics["kalman_q_optimization_attempted"] = kalman_metadata.get("q_optimization_attempted", False)
-        # Refinement 2: Kalman gain (situational awareness)
+        # Refinement 2: Kalman gain statistics (situational awareness)
         diagnostics["kalman_gain_mean"] = kalman_metadata.get("kalman_gain_mean", float("nan"))
         diagnostics["kalman_gain_recent"] = kalman_metadata.get("kalman_gain_recent", float("nan"))
-        # Refinement 3: Innovation whiteness (model adequacy)
+        # Refinement 3: Innovation whiteness test (model adequacy)
         innovation_whiteness = kalman_metadata.get("innovation_whiteness", {})
         if isinstance(innovation_whiteness, dict):
             diagnostics["innovation_ljung_box_statistic"] = innovation_whiteness.get("ljung_box_statistic", float("nan"))
@@ -2032,11 +2082,11 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         diagnostics["kalman_nu_robust"] = kalman_metadata.get("nu_robust")
         # Level-7+ Refinement: Regime-dependent drift priors
         diagnostics["kalman_regime_prior_used"] = kalman_metadata.get("regime_prior_used", False)
-        regime_prior_info = kalman_metadata.get("regime_prior_info", {})
-        if isinstance(regime_prior_info, dict) and regime_prior_info:
-            diagnostics["kalman_regime_current"] = regime_prior_info.get("current_regime", "")
-            diagnostics["kalman_regime_drift_prior"] = regime_prior_info.get("current_drift_prior", float("nan"))
-    
+        diagnostics["kalman_regime_info"] = kalman_metadata.get("regime_prior_info", {})
+        # φ persistence (from tuned cache or filter)
+        diagnostics["kalman_phi"] = tuned_params.get("phi") if tuned_params else kalman_metadata.get("phi_used")
+        diagnostics["phi_used"] = kalman_metadata.get("phi_used")
+
     hmm_result = feats.get("hmm_result")
     if hmm_result is not None and isinstance(hmm_result, dict):
         diagnostics["hmm_log_likelihood"] = hmm_result.get("log_likelihood", float("nan"))
@@ -2213,6 +2263,788 @@ def infer_current_regime(feats: Dict[str, pd.Series], hmm_result: Optional[Dict]
     }
 
 
+# =============================================================================
+# REGIME-CONDITIONAL BAYESIAN MODEL AVERAGING (RC-BMA)
+# =============================================================================
+# Implements: p(r_H | D) = Σ_r P(regime_r | D) · p(r_H | regime_r, D)
+# Regimes must match those in tune_q_mle.py
+# =============================================================================
+
+# Regime definitions (must match tune_q_mle.py)
+REGIME_LOW_VOL_TREND = 0
+REGIME_HIGH_VOL_TREND = 1
+REGIME_LOW_VOL_RANGE = 2
+REGIME_HIGH_VOL_RANGE = 3
+REGIME_CRISIS_JUMP = 4
+
+REGIME_NAMES = {
+    REGIME_LOW_VOL_TREND: "LOW_VOL_TREND",
+    REGIME_HIGH_VOL_TREND: "HIGH_VOL_TREND",
+    REGIME_LOW_VOL_RANGE: "LOW_VOL_RANGE",
+    REGIME_HIGH_VOL_RANGE: "HIGH_VOL_RANGE",
+    REGIME_CRISIS_JUMP: "CRISIS_JUMP",
+}
+
+
+def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = None) -> int:
+    """
+    Map a regime label (string) to a regime index (0-4) matching tune_q_mle.py definitions.
+    
+    Maps from infer_current_regime() output to tune_q_mle.py regime indices.
+    
+    Mapping logic:
+    - "crisis" / "High-vol*" → CRISIS_JUMP (4) if vol_regime > 2.0 else HIGH_VOL_RANGE (3)
+    - "trending" → HIGH_VOL_TREND (1) or LOW_VOL_TREND (0) based on vol_regime
+    - "calm" / "Calm*" → LOW_VOL_RANGE (2) or LOW_VOL_TREND (0) based on drift
+    - "Normal" → LOW_VOL_RANGE (2)
+    
+    Args:
+        regime_label: String regime label from infer_current_regime()
+        regime_meta: Optional regime metadata dict with vol_regime, trend_z, etc.
+        
+    Returns:
+        Integer regime index (0-4)
+    """
+    label_lower = regime_label.lower() if regime_label else ""
+    
+    # Extract vol_regime from metadata if available
+    vol_regime = None
+    trend_z = None
+    if regime_meta is not None:
+        vol_regime = regime_meta.get("vol_regime")
+        trend_z = regime_meta.get("trend_z")
+        # Also check probabilities from HMM
+        probs = regime_meta.get("probabilities", {})
+    
+    # Crisis detection (highest priority)
+    if "crisis" in label_lower:
+        return REGIME_CRISIS_JUMP
+    
+    # High volatility regimes
+    if "high-vol" in label_lower or "high_vol" in label_lower:
+        # Check if extreme crisis or just high vol trend/range
+        if vol_regime is not None and vol_regime > 2.0:
+            return REGIME_CRISIS_JUMP
+        elif trend_z is not None and abs(trend_z) > 0.5:
+            return REGIME_HIGH_VOL_TREND
+        else:
+            return REGIME_HIGH_VOL_RANGE
+    
+    # Trending detection
+    if "trending" in label_lower or "trend" in label_lower:
+        # Determine if low or high vol based on metadata
+        if vol_regime is not None and vol_regime > 1.3:
+            return REGIME_HIGH_VOL_TREND
+        else:
+            return REGIME_LOW_VOL_TREND
+    
+    # Calm/Low volatility regimes
+    if "calm" in label_lower or "low" in label_lower:
+        # Check if trending or ranging
+        if trend_z is not None and abs(trend_z) > 0.5:
+            return REGIME_LOW_VOL_TREND
+        else:
+            return REGIME_LOW_VOL_RANGE
+    
+    # Normal / default
+    if "normal" in label_lower:
+        return REGIME_LOW_VOL_RANGE
+    
+    # HMM-specific labels
+    if label_lower in ("calm", "0"):
+        return REGIME_LOW_VOL_RANGE
+    elif label_lower in ("trending", "1"):
+        return REGIME_LOW_VOL_TREND
+    elif label_lower in ("crisis", "2"):
+        return REGIME_CRISIS_JUMP
+    
+    # Default fallback
+    return REGIME_LOW_VOL_RANGE
+
+
+def extract_regime_features(feats: Dict[str, pd.Series]) -> Dict[str, float]:
+    """
+    Extract features for regime likelihood computation.
+    
+    Features:
+    - vol_level: EWMA volatility (normalized)
+    - drift_strength: |μ| (absolute drift)
+    - drift_persistence: φ from Kalman
+    - return_autocorr: autocorrelation of returns
+    - tail_indicator: |return| / EWMA_σ (tail measure)
+    
+    Args:
+        feats: Feature dictionary from compute_features()
+        
+    Returns:
+        Dictionary of regime features
+    """
+    # Volatility level (normalized relative to median)
+    vol_series = feats.get("vol", pd.Series(dtype=float))
+    if isinstance(vol_series, pd.Series) and not vol_series.empty:
+        vol_now = float(vol_series.iloc[-1])
+        vol_median = float(vol_series.median())
+        vol_level = vol_now / vol_median if vol_median > 1e-12 else 1.0
+    else:
+        vol_level = 1.0
+    
+    # Drift strength (absolute value of filtered drift)
+    mu_series = feats.get("mu_post", feats.get("mu_kf", feats.get("mu", pd.Series(dtype=float))))
+    if isinstance(mu_series, pd.Series) and not mu_series.empty:
+        drift_strength = abs(float(mu_series.iloc[-1]))
+    else:
+        drift_strength = 0.0
+    
+    # Drift persistence (φ from Kalman metadata)
+    km = feats.get("kalman_metadata", {}) or {}
+    phi = km.get("phi_used") or km.get("kalman_phi")
+    if phi is None or not np.isfinite(phi):
+        phi = feats.get("phi_used")
+    drift_persistence = float(phi) if phi is not None and np.isfinite(phi) else 0.95
+    
+    # Return autocorrelation
+    ret_series = feats.get("ret", pd.Series(dtype=float))
+    if isinstance(ret_series, pd.Series) and len(ret_series) >= 21:
+        try:
+            return_autocorr = float(ret_series.autocorr(lag=1))
+            if not np.isfinite(return_autocorr):
+                return_autocorr = 0.0
+        except Exception:
+            return_autocorr = 0.0
+    else:
+        return_autocorr = 0.0
+    
+    # Tail indicator: |recent return| / σ
+    if isinstance(ret_series, pd.Series) and not ret_series.empty and vol_now > 1e-12:
+        recent_ret = abs(float(ret_series.iloc[-1]))
+        tail_indicator = recent_ret / vol_now
+    else:
+        tail_indicator = 0.0
+    
+    return {
+        "vol_level": float(np.clip(vol_level, 0.1, 10.0)),
+        "drift_strength": float(np.clip(drift_strength, 0.0, 0.01)),
+        "drift_persistence": float(np.clip(drift_persistence, -1.0, 1.0)),
+        "return_autocorr": float(np.clip(return_autocorr, -1.0, 1.0)),
+        "tail_indicator": float(np.clip(tail_indicator, 0.0, 10.0)),
+    }
+
+
+def compute_regime_log_likelihoods(features: Dict[str, float]) -> np.ndarray:
+    """
+    Compute log-likelihood scores for each regime given features.
+    
+    Uses Gaussian/logistic scoring based on regime characteristics:
+    
+    LOW_VOL_TREND (0): low vol, high drift_strength, high persistence
+    HIGH_VOL_TREND (1): high vol, high drift_strength, high persistence
+    LOW_VOL_RANGE (2): low vol, low drift_strength, low persistence
+    HIGH_VOL_RANGE (3): high vol, low drift_strength, low persistence
+    CRISIS_JUMP (4): extreme vol, high tail_indicator
+    
+    Args:
+        features: Dictionary from extract_regime_features()
+        
+    Returns:
+        Array of log-likelihoods for regimes 0-4
+    """
+    vol = features["vol_level"]
+    drift = features["drift_strength"]
+    persist = features["drift_persistence"]
+    autocorr = features["return_autocorr"]
+    tail = features["tail_indicator"]
+    
+    # Define regime scoring functions (Gaussian scoring)
+    # Higher score = more likely regime
+    
+    log_L = np.zeros(5)
+    
+    # Regime 0: LOW_VOL_TREND - low vol, high drift, high persistence
+    log_L[0] = (
+        -0.5 * ((vol - 0.7) / 0.3) ** 2      # vol centered at 0.7 (below median)
+        - 0.5 * ((drift - 0.002) / 0.001) ** 2  # strong drift
+        - 0.5 * ((persist - 0.98) / 0.02) ** 2  # high persistence
+    )
+    
+    # Regime 1: HIGH_VOL_TREND - high vol, high drift, high persistence
+    log_L[1] = (
+        -0.5 * ((vol - 1.5) / 0.4) ** 2      # vol above median
+        - 0.5 * ((drift - 0.003) / 0.002) ** 2  # strong drift
+        - 0.5 * ((persist - 0.95) / 0.03) ** 2  # high persistence
+    )
+    
+    # Regime 2: LOW_VOL_RANGE - low vol, low drift, mean reversion
+    log_L[2] = (
+        -0.5 * ((vol - 0.6) / 0.25) ** 2     # low vol
+        - 0.5 * ((drift - 0.0003) / 0.0005) ** 2  # near-zero drift
+        - 0.5 * ((persist - 0.85) / 0.1) ** 2   # moderate persistence (mean reversion)
+    )
+    
+    # Regime 3: HIGH_VOL_RANGE - high vol, low drift, choppy
+    log_L[3] = (
+        -0.5 * ((vol - 1.3) / 0.35) ** 2     # elevated vol
+        - 0.5 * ((drift - 0.0005) / 0.001) ** 2  # low drift
+        - 0.5 * ((persist - 0.80) / 0.15) ** 2  # low persistence (whipsaw)
+        - 0.5 * ((autocorr - (-0.1)) / 0.2) ** 2  # slight negative autocorr
+    )
+    
+    # Regime 4: CRISIS_JUMP - extreme vol, tail events
+    log_L[4] = (
+        -0.5 * ((vol - 2.5) / 0.5) ** 2      # extreme vol
+        - 0.5 * ((tail - 3.0) / 1.0) ** 2    # high tail indicator
+    )
+    
+    return log_L
+
+
+def compute_regime_probabilities(
+    features: Dict[str, float],
+    smoothing_alpha: float = 0.3,
+    prev_probs: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """
+    Compute regime probabilities via softmax of log-likelihoods.
+    
+    P_regimes = softmax(logL_r)
+    
+    With optional exponential smoothing over time.
+    
+    Args:
+        features: Dictionary from extract_regime_features()
+        smoothing_alpha: EMA smoothing factor (0=full smooth, 1=no smooth)
+        prev_probs: Previous regime probabilities for smoothing
+        
+    Returns:
+        Array of probabilities for regimes 0-4, summing to 1
+    """
+    log_L = compute_regime_log_likelihoods(features)
+    
+    # Softmax for probabilities
+    # Subtract max for numerical stability
+    log_L_shifted = log_L - np.max(log_L)
+    exp_L = np.exp(log_L_shifted)
+    probs = exp_L / np.sum(exp_L)
+    
+    # Exponential smoothing if previous probabilities available
+    if prev_probs is not None:
+        prev_probs = np.asarray(prev_probs)
+        if prev_probs.shape == probs.shape:
+            probs = smoothing_alpha * probs + (1.0 - smoothing_alpha) * prev_probs
+            # Renormalize after smoothing
+            probs = probs / np.sum(probs)
+    
+    return probs
+
+
+def run_regime_specific_mc(
+    regime: int,
+    mu_t: float,
+    P_t: float,
+    phi: float,
+    q: float,
+    sigma2_step: float,
+    H: int,
+    n_paths: int = 5000,
+    nu: Optional[float] = None,
+    seed: Optional[int] = None
+) -> np.ndarray:
+    """
+    Run posterior predictive MC for a specific regime.
+    
+    This is a lightweight wrapper that generates r_samples for one regime
+    using regime-specific parameters.
+    
+    Args:
+        regime: Regime index (0-4)
+        mu_t, P_t, phi, q, sigma2_step, H, n_paths, nu, seed: MC parameters
+        
+    Returns:
+        Array of return samples
+    """
+    # Input validation
+    mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
+    P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
+    phi = float(phi) if np.isfinite(phi) else 1.0
+    q = float(max(q, 0.0)) if np.isfinite(q) else 0.0
+    sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
+    H = int(max(H, 1))
+    
+    if nu is not None:
+        if not np.isfinite(nu) or nu <= 2.0:
+            nu = None
+        else:
+            nu = float(np.clip(nu, 2.1, 500.0))
+    
+    rng = np.random.default_rng(seed)
+    
+    # Sample drift posterior
+    if P_t > 0:
+        if nu is not None:
+            # Student-t posterior for drift: heavier tails under uncertainty
+            # t_ν(μ̂_t, scale) has variance scale² · ν/(ν-2)
+            # We want Var(μ_t) = P_t, so scale = √(P_t · (ν-2)/ν)
+            t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
+            mu_paths = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
+        else:
+            # Gaussian posterior for drift
+            mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
+    else:
+        # No drift uncertainty: point estimate
+        mu_paths = np.full(n_paths, mu_t, dtype=float)
+    
+    # Propagate drift and accumulate noise
+    cum_mu = np.zeros(n_paths, dtype=float)
+    cum_eps = np.zeros(n_paths, dtype=float)
+    
+    q_std = math.sqrt(q) if q > 0 else 0.0
+    sigma_step = math.sqrt(sigma2_step)
+    
+    for k in range(H):
+        # --- Drift propagation: μ_{t+k+1} = φ·μ_{t+k} + η_{k+1} ---
+        if q_std > 0:
+            if nu is not None:
+                eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
+                eta = eta_scale * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eta = rng.normal(loc=0.0, scale=q_std, size=n_paths)
+        else:
+            eta = np.zeros(n_paths, dtype=float)
+        
+        mu_paths = phi * mu_paths + eta
+        cum_mu += mu_paths
+        
+        # --- Observation noise: ε_k ~ N(0, sigma_step) or t_ν ---
+        # sigma_step = √sigma2_step is the PRIMITIVE per-step noise std
+        if sigma_step > 0:
+            if nu is not None:
+                # Student-t observation noise: scale for target variance
+                eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
+                eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eps_k = rng.normal(loc=0.0, scale=sigma_step, size=n_paths)
+        else:
+            eps_k = np.zeros(n_paths, dtype=float)
+        
+        cum_eps += eps_k
+    
+    return cum_mu + cum_eps
+
+
+def bayesian_model_average_mc(
+    feats: Dict[str, pd.Series],
+    regime_params: Dict[int, Dict],
+    mu_t: float,
+    P_t: float,
+    sigma2_step: float,
+    H: int,
+    n_paths_per_regime: int = 5000,
+    use_regime_bma: bool = True,
+    smoothing_alpha: float = 0.3,
+    prev_regime_probs: Optional[np.ndarray] = None,
+    seed: Optional[int] = None,
+    tuned_params: Optional[Dict] = None,
+) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    """
+    Perform Bayesian Model Averaging across regimes AND model classes.
+    
+    Implements the full posterior predictive:
+    
+        p(x | D) = Σ_r P(r | D) · Σ_m p(x | r, m, θ_{r,m}) · p(m | r)
+    
+    CONTRACT WITH tune_q_mle.py:
+    - Every regime contains model_posterior and models (even fallbacks)
+    - Tune guarantees non-empty outputs via hierarchical borrowing
+    - This function does NOT implement fallback logic
+    - Temporal smoothing of model posteriors already applied by tune
+    
+    CRITICAL RULES:
+    - Do NOT perform tuning here
+    - Do NOT recompute likelihoods
+    - Do NOT renormalize model weights (already normalized by tune)
+    - Do NOT apply temporal smoothing to model posteriors
+    - Do NOT select best model - use full mixture
+    
+    Args:
+        feats: Feature dictionary
+        regime_params: Dict mapping regime index to parameters {q, phi, nu, ...}
+                      (backward compatible - used if tuned_params not provided)
+        mu_t: Current drift estimate
+        P_t: Current drift variance
+        sigma2_step: Per-step volatility
+        H: Forecast horizon
+        n_paths_per_regime: MC paths per regime
+        use_regime_bma: If False, use only global/regime 0 parameters
+        smoothing_alpha: EMA smoothing factor for regime probabilities (NOT model posteriors)
+        prev_regime_probs: Previous regime probabilities for smoothing
+        seed: Random seed for reproducibility
+        tuned_params: Full tuned params from _load_tuned_kalman_params (new BMA structure)
+        
+    Returns:
+        Tuple of:
+        - r_samples: Weighted mixture of regime and model-specific samples
+        - regime_probs: Array of regime probabilities
+        - metadata: Diagnostic information
+    """
+    rng = np.random.default_rng(seed)
+    
+    # Check if we have new BMA structure with model posteriors
+    has_bma = tuned_params is not None and tuned_params.get('has_bma', False)
+    
+    # ========================================================================
+    # ARCHITECTURAL INVARIANT: Structural uncertainty is never collapsed
+    # ========================================================================
+    # When regime data is insufficient or BMA disabled, we fall back to the
+    # global Bayesian model posterior and global model parameters.
+    #
+    # The system NEVER constructs a one-hot posterior p(m) = [1,0,0,0,0].
+    # Single-model certainty violates:
+    #   - Structural uncertainty
+    #   - Distributional integrity  
+    #   - Decision invariance under uncertainty
+    #   - Institutional epistemology
+    #
+    # Even when BMA structure is unavailable, we maintain model averaging
+    # with uniform priors across model classes.
+    # ========================================================================
+    
+    # If no BMA structure available, construct uniform model averaging fallback
+    if not has_bma:
+        # ====================================================================
+        # UNIFORM MODEL AVERAGING FALLBACK
+        # ====================================================================
+        # When BMA structure is unavailable, we use uniform model posteriors
+        # to preserve structural uncertainty:
+        #   p(m) = 1/3 for m ∈ {kalman_gaussian, kalman_phi_gaussian, kalman_phi_student_t}
+        #
+        # This is the only epistemically valid fallback - never single-model.
+        # ====================================================================
+        
+        params = regime_params.get(0, regime_params.get("global", {}))
+        q_base = params.get("q", 1e-6)
+        c_base = params.get("c", 1.0)
+        
+        # Define model classes with uniform posterior weights
+        uniform_models = {
+            "kalman_gaussian": {
+                "phi": 1.0,       # Random walk (no mean reversion)
+                "q": q_base,
+                "nu": None,       # Gaussian noise
+                "c": c_base,
+                "weight": 1.0 / 3.0,
+            },
+            "kalman_phi_gaussian": {
+                "phi": 0.95,      # Mean-reverting drift
+                "q": q_base,
+                "nu": None,       # Gaussian noise
+                "c": c_base,
+                "weight": 1.0 / 3.0,
+            },
+            "kalman_phi_student_t": {
+                "phi": 0.95,      # Mean-reverting drift
+                "q": q_base,
+                "nu": 5.0,        # Moderate fat tails (default prior)
+                "c": c_base,
+                "weight": 1.0 / 3.0,
+            },
+        }
+        
+        all_samples = []
+        n_total = n_paths_per_regime * 5
+        
+        for model_name, model_spec in uniform_models.items():
+            n_model_samples = max(100, int(model_spec["weight"] * n_total))
+            model_samples = run_regime_specific_mc(
+                regime=0,
+                mu_t=mu_t,
+                P_t=P_t,
+                phi=model_spec["phi"],
+                q=model_spec["q"],
+                sigma2_step=sigma2_step * model_spec["c"],
+                H=H,
+                n_paths=n_model_samples,
+                nu=model_spec["nu"],
+                seed=rng.integers(0, 2**31) if seed is not None else None
+            )
+            all_samples.append(model_samples)
+        
+        r_samples = np.concatenate(all_samples)
+        
+        # Uniform regime probs (regime uncertainty also preserved)
+        uniform_regime_probs = np.array([0.2, 0.2, 0.2, 0.2, 0.2])
+        
+        return r_samples, uniform_regime_probs, {
+            "method": "uniform_model_averaging_fallback",
+            "reason": "no_bma_structure",
+            "model_posterior": {m: spec["weight"] for m, spec in uniform_models.items()},
+            "note": "Structural uncertainty preserved via uniform model priors"
+        }
+    
+    # ========================================================================
+    # BAYESIAN MODEL AVERAGING: Full mixture over regimes AND model classes
+    # ========================================================================
+    # p(x | D) = Σ_r P(r | D) · Σ_m p(x | r, m, θ_{r,m}) · p(m | r)
+    #
+    # For each regime r:
+    #   1. Get model_posterior = p(m | r) from tune (already normalized)
+    #   2. Get models = {m: θ_{r,m}} from tune
+    #   3. For each model m with w = p(m|r):
+    #      - Draw w * n_samples from p(x | r, m, θ_{r,m})
+    #   4. Combine samples weighted by regime probability P(r | D)
+    # ========================================================================
+    
+    # Extract regime features and compute regime probabilities P(r | D)
+    features = extract_regime_features(feats)
+    regime_probs = compute_regime_probabilities(
+        features, smoothing_alpha=smoothing_alpha, prev_probs=prev_regime_probs
+    )
+    
+    # ========================================================================
+    # SCHEMA COMPATIBILITY:
+    # ========================================================================
+    # tuned_params may come from two sources with different structures:
+    #
+    # 1. Direct from tune_q_mle.py cache (nested):
+    #    {
+    #      "global": { "model_posterior": {...}, "models": {...} },
+    #      "regime": { "0": {...}, ... }
+    #    }
+    #
+    # 2. Via _load_tuned_kalman_params (flattened):
+    #    {
+    #      "global_model_posterior": {...},
+    #      "global_models": {...},
+    #      "regime": { "0": {...}, ... }
+    #    }
+    #
+    # We handle both by checking for nested structure first.
+    # ========================================================================
+    
+    regime_data = tuned_params.get('regime', {})
+    
+    # Extract global BMA data - handle both nested and flattened schemas
+    if 'global' in tuned_params and isinstance(tuned_params['global'], dict):
+        # Nested structure (direct from tune_q_mle.py)
+        global_data = tuned_params['global']
+        global_model_posterior = global_data.get('model_posterior', {})
+        global_models = global_data.get('models', {})
+    else:
+        # Flattened structure (from _load_tuned_kalman_params)
+        global_model_posterior = tuned_params.get('global_model_posterior', {})
+        global_models = tuned_params.get('global_models', {})
+    
+    all_samples = []
+    regime_details = {}
+    
+    for regime in range(5):
+        regime_prob = regime_probs[regime]
+        
+        # Skip regimes with negligible probability
+        if regime_prob < 0.01:
+            continue
+        
+        # Get regime-specific BMA data (model_posterior and models)
+        regime_key = str(regime)  # JSON keys are strings
+        r_data = regime_data.get(regime_key) or regime_data.get(regime)
+        
+        if r_data is not None and isinstance(r_data, dict):
+            model_posterior = r_data.get('model_posterior', {})
+            models = r_data.get('models', {})
+            regime_meta = r_data.get('regime_meta', {})
+            is_fallback = regime_meta.get('fallback', False)
+            borrowed = regime_meta.get('borrowed_from_global', False)
+        else:
+            # Use global as fallback if regime data missing entirely
+            model_posterior = global_model_posterior
+            models = global_models
+            is_fallback = True
+            borrowed = True
+            regime_meta = {}
+        
+        # If models empty, use global BMA fallback (preserves structural uncertainty)
+        if not models or not model_posterior:
+            # Use global BMA parameters - never collapse to single-model certainty
+            model_posterior = global_model_posterior if global_model_posterior else {}
+            models = global_models if global_models else {}
+            is_fallback = True
+            borrowed = True
+            
+            # If still empty (shouldn't happen with proper tune), use uniform BMA
+            # NEVER collapse to single-model certainty
+            if not models or not model_posterior:
+                # Construct uniform model posterior to preserve structural uncertainty
+                params = regime_params.get(regime, regime_params.get(0, {}))
+                q_base = params.get("q", 1e-6)
+                c_base = params.get("c", 1.0)
+                
+                uniform_models = {
+                    "kalman_gaussian": {"phi": 1.0, "q": q_base, "nu": None, "c": c_base},
+                    "kalman_phi_gaussian": {"phi": 0.95, "q": q_base, "nu": None, "c": c_base},
+                    "kalman_phi_student_t": {"phi": 0.95, "q": q_base, "nu": 5.0, "c": c_base},
+                }
+                
+                n_total = max(100, int(regime_prob * n_paths_per_regime * 5))
+                regime_samples_fallback = []
+                
+                for m_name, m_spec in uniform_models.items():
+                    n_m = max(30, n_total // 3)
+                    m_samples = run_regime_specific_mc(
+                        regime=regime, mu_t=mu_t, P_t=P_t,
+                        phi=m_spec["phi"], q=m_spec["q"],
+                        sigma2_step=sigma2_step * m_spec["c"],
+                        H=H, n_paths=n_m, nu=m_spec["nu"],
+                        seed=rng.integers(0, 2**31) if seed is not None else None
+                    )
+                    regime_samples_fallback.append(m_samples)
+                
+                all_samples.append(np.concatenate(regime_samples_fallback))
+                regime_details[regime] = {
+                    "prob": float(regime_prob),
+                    "n_samples": n_total,
+                    "method": "uniform_model_averaging_fallback",
+                    "is_fallback": True,
+                    "model_posterior": {m: 1/3 for m in uniform_models},
+                    "warning": "no_bma_structure_available_used_uniform_priors",
+                }
+                continue
+        
+        # ====================================================================
+        # MODEL-CLASS AVERAGING within regime r
+        # p(x | r) = Σ_m p(x | r, m, θ_{r,m}) · p(m | r)
+        # ====================================================================
+        model_details = {}
+        regime_samples = []
+        
+        # Total samples for this regime (proportional to regime probability)
+        n_total_regime = max(500, int(regime_prob * n_paths_per_regime * 5))
+        
+        for model_name, model_weight in model_posterior.items():
+            if model_weight < 0.01:
+                continue  # Skip negligible model weights
+            
+            model_params = models.get(model_name, {})
+            if not model_params.get('fit_success', True):
+                continue  # Skip failed model fits
+            
+            # Extract model-specific parameters
+            # Fallback: try global models, then safe defaults (never use old flat schema)
+            global_m = global_models.get(model_name, {})
+            q_m = model_params.get('q') or global_m.get('q', 1e-6)
+            phi_m = model_params.get('phi')  # May be None for kalman_gaussian
+            nu_m = model_params.get('nu')     # May be None for non-Student-t
+            c_m = model_params.get('c') or global_m.get('c', 1.0)
+            
+            # Default phi for models without it
+            if phi_m is None or not np.isfinite(phi_m):
+                phi_m = 0.95 if 'phi' in model_name else 1.0
+            
+            # Validate nu
+            if nu_m is not None and (not np.isfinite(nu_m) or nu_m <= 2.0):
+                nu_m = None
+            
+            # Number of samples proportional to model weight
+            n_model_samples = max(50, int(model_weight * n_total_regime))
+            
+            # Generate samples from p(x | r, m, θ_{r,m})
+            model_samples = run_regime_specific_mc(
+                regime=regime,
+                mu_t=mu_t,
+                P_t=P_t,
+                phi=phi_m,
+                q=q_m,
+                sigma2_step=sigma2_step * c_m,  # Scale volatility by c
+                H=H,
+                n_paths=n_model_samples,
+                nu=nu_m,
+                seed=rng.integers(0, 2**31) if seed is not None else None
+            )
+            
+            regime_samples.append(model_samples)
+            model_details[model_name] = {
+                "weight": float(model_weight),
+                "n_samples": n_model_samples,
+                "q": float(q_m),
+                "phi": float(phi_m) if phi_m is not None else None,
+                "nu": float(nu_m) if nu_m is not None else None,
+                "c": float(c_m),
+            }
+        
+        # Combine model samples for this regime
+        if regime_samples:
+            regime_combined = np.concatenate(regime_samples)
+            all_samples.append(regime_combined)
+        
+        regime_details[regime] = {
+            "prob": float(regime_prob),
+            "n_samples": sum(len(s) for s in regime_samples) if regime_samples else 0,
+            "method": "model_class_averaging",
+            "is_fallback": is_fallback,
+            "borrowed_from_global": borrowed,
+            "model_posterior": {m: float(w) for m, w in model_posterior.items()},
+            "model_details": model_details,
+        }
+    
+    # Concatenate all samples across regimes
+    if all_samples:
+        r_samples = np.concatenate(all_samples)
+    else:
+        # ====================================================================
+        # ULTIMATE FALLBACK: Uniform BMA when all regime paths failed
+        # ====================================================================
+        # This path should be extremely rare (only if ALL regimes have
+        # negligible probability or all model fits failed).
+        #
+        # We use uniform model averaging to preserve structural uncertainty.
+        # NEVER use single-model flat params (they don't exist in new schema).
+        # ====================================================================
+        
+        # Try to extract q from global models if available
+        q_fallback = 1e-6
+        c_fallback = 1.0
+        if global_models:
+            # Get q from first available model
+            for m_name, m_params in global_models.items():
+                if isinstance(m_params, dict) and m_params.get('fit_success', True):
+                    q_fallback = m_params.get('q', 1e-6)
+                    c_fallback = m_params.get('c', 1.0)
+                    break
+        
+        # Uniform BMA over model classes
+        uniform_models = {
+            "kalman_gaussian": {"phi": 1.0, "q": q_fallback, "nu": None, "c": c_fallback},
+            "kalman_phi_gaussian": {"phi": 0.95, "q": q_fallback, "nu": None, "c": c_fallback},
+            "kalman_phi_student_t": {"phi": 0.95, "q": q_fallback, "nu": 5.0, "c": c_fallback},
+        }
+        
+        fallback_samples = []
+        n_total = n_paths_per_regime * 5
+        
+        for m_name, m_spec in uniform_models.items():
+            n_m = max(100, n_total // 3)
+            m_samples = run_regime_specific_mc(
+                regime=0, mu_t=mu_t, P_t=P_t,
+                phi=m_spec["phi"], q=m_spec["q"],
+                sigma2_step=sigma2_step * m_spec["c"],
+                H=H, n_paths=n_m, nu=m_spec["nu"],
+                seed=rng.integers(0, 2**31) if seed is not None else None
+            )
+            fallback_samples.append(m_samples)
+        
+        r_samples = np.concatenate(fallback_samples)
+    
+    metadata = {
+        "method": "bayesian_model_averaging_full",
+        "has_bma": True,
+        "regime_probs": regime_probs.tolist(),
+        "regime_details": regime_details,
+        "features": features,
+        "n_total_samples": len(r_samples),
+    }
+    
+    return r_samples, regime_probs, metadata
+
+
+
+
 # -------------------------
 # Backtest-safe feature view (no look-ahead)
 # -------------------------
@@ -2275,6 +3107,398 @@ def edge_for_horizon(mu: float, vol: float, H: int) -> float:
     return float(mu_H / sig_H)
 
 
+def posterior_predictive_mc_probability(
+    mu_t: float,
+    P_t: float,
+    phi: float,
+    q: float,
+    sigma2_step: float,
+    H: int,
+    n_paths: int = 20000,
+    nu: Optional[float] = None,
+    seed: Optional[int] = None
+) -> float:
+    """
+    Unified posterior predictive Monte-Carlo probability P(R_H > 0 | D).
+    
+    This sampler marginalizes jointly over:
+    1. Drift posterior uncertainty (μ_t ~ N(μ̂_t, P_t) or t_ν)
+    2. Drift propagation dynamics (AR(1): μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q))
+    3. Observation noise ACCUMULATED STEPWISE (ε_k ~ N(0, √σ²_step) for k=1..H)
+    
+    CRITICAL: Horizon return is ACCUMULATED drift plus ACCUMULATED noise:
+    
+        R_H = Σ_{k=1}^{H} μ_{t+k} + Σ_{k=1}^{H} ε_k
+    
+    Both drift AND noise must be accumulated stepwise over the horizon.
+    This ensures signal-to-noise ratio scales correctly with horizon.
+    
+    VOLATILITY GEOMETRY:
+    - sigma2_step is the PRIMITIVE per-step EWMA variance
+    - Horizon variance vH = H × sigma2_step (DERIVED, not passed)
+    - Per-step noise: ε_k ~ N(0, √sigma2_step)
+    - Accumulated noise: cum_ε = Σ_{k=1}^{H} ε_k has Var[cum_ε] = H × sigma2_step
+    
+    This architecture ensures:
+    - Volatility is defined at one temporal scale only (per-step)
+    - Horizon variance is derived, not treated as primitive
+    - No double-rescaling of noise (no vH/H computation)
+    
+    Mathematical Model:
+    - Drift posterior: μ_t ~ N(μ̂_t, P_t) [or Student-t if ν provided]
+    - Drift propagation: μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
+    - Accumulated drift: cum_μ = Σ_{k=1}^{H} μ_{t+k}
+    - Accumulated noise: cum_ε = Σ_{k=1}^{H} ε_k, ε_k ~ N(0, √sigma2_step)
+    - Return: R_H = cum_μ + cum_ε
+    - Posterior predictive: p = E[1{R_H > 0}] estimated as np.mean(r_samples > 0)
+    
+    This is the ONLY probability used for trading decisions.
+    No blending with analytical probabilities.
+    No heuristic weights.
+    
+    Args:
+        mu_t: Posterior mean of drift at time t (μ̂_t from Kalman filter)
+        P_t: Posterior variance of drift at time t (uncertainty in drift estimate)
+        phi: Drift persistence parameter (AR(1) coefficient, typically ~0.95-1.0)
+        q: Process noise variance for drift evolution
+        sigma2_step: Per-step EWMA variance (σ²) - THE VOLATILITY PRIMITIVE
+        H: Forecast horizon in days
+        n_paths: Number of Monte-Carlo paths (default 20000 for production accuracy)
+        nu: Student-t degrees of freedom (if None, uses Gaussian noise)
+        seed: Random seed for reproducibility
+        
+    Returns:
+        Posterior predictive probability P(R_H > 0 | D), a scalar in (0, 1)
+        
+    Design Philosophy:
+    - Probability geometry is internally consistent (single probability space)
+    - Volatility geometry: sigma2_step is primitive, vH = H × sigma2_step is derived
+    - Drift AND noise are both accumulated stepwise (symmetric treatment)
+    - Signal-to-noise ratio scales correctly with horizon
+    - Drift uncertainty automatically collapses confidence toward 0.5
+    - Heavy tails emerge naturally when P_t or q is large
+    - Regime transitions are naturally penalized via drift uncertainty
+    - Accumulated drift preserves signal strength for persistent drift (φ≈1)
+    """
+    # Input validation and sanitization
+    mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
+    P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
+    phi = float(phi) if np.isfinite(phi) else 1.0
+    q = float(max(q, 0.0)) if np.isfinite(q) else 0.0
+    sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
+    H = int(max(H, 1))
+    
+    # Clamp Student-t df to valid range
+    if nu is not None:
+        if not np.isfinite(nu) or nu <= 2.0:
+            nu = None  # Fall back to Gaussian
+        else:
+            nu = float(np.clip(nu, 2.1, 500.0))
+    
+    # Initialize RNG (deterministic under fixed seed)
+    rng = np.random.default_rng(seed)
+    
+    # ========================================================================
+    # Step 1: Sample from drift posterior μ_t ~ N(μ̂_t, P_t) or t_ν(μ̂_t, √P_t)
+    # ========================================================================
+    if P_t > 0:
+        if nu is not None:
+            # Student-t posterior for drift: heavier tails under uncertainty
+            # t_ν(μ̂_t, scale) has variance scale² · ν/(ν-2)
+            # We want Var(μ_t) = P_t, so scale = √(P_t · (ν-2)/ν)
+            t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
+            mu_paths = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
+        else:
+            # Gaussian posterior for drift
+            mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
+    else:
+        # No drift uncertainty: point estimate
+        mu_paths = np.full(n_paths, mu_t, dtype=float)
+    
+    # ========================================================================
+    # Step 2 & 3: Propagate drift AND accumulate observation noise STEPWISE
+    #
+    # VOLATILITY GEOMETRY:
+    #   - sigma2_step is the PRIMITIVE per-step EWMA variance
+    #   - Horizon variance vH = H × sigma2_step (DERIVED)
+    #   - Per-step noise std: sigma_step = √sigma2_step
+    #
+    #   For each step k = 1..H:
+    #     - Drift: μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
+    #     - Noise: ε_k ~ N(0, sigma_step)
+    #
+    #   Accumulated return: R_H = Σ_{k=1}^{H} (μ_{t+k} + ε_k)
+    #                          = cum_mu + cum_eps
+    #
+    # This ensures:
+    #   - Signal (drift) accumulates: E[cum_mu] ∝ H for φ≈1
+    #   - Noise accumulates: Var[cum_eps] = H × sigma2_step = vH
+    #   - SNR scales correctly: grows with √H for persistent drift
+    #   - No double-rescaling (we use sigma2_step directly, not vH/H)
+    # ========================================================================
+    
+    cum_mu = np.zeros(n_paths, dtype=float)
+    cum_eps = np.zeros(n_paths, dtype=float)
+    
+    # Per-step standard deviations (sigma2_step is the PRIMITIVE)
+    q_std = math.sqrt(q) if q > 0 else 0.0
+    sigma_step = math.sqrt(sigma2_step)  # Per-step observation noise std
+    
+    for k in range(H):
+        # --- Drift propagation: μ_{t+k+1} = φ·μ_{t+k} + η_{k+1} ---
+        if q_std > 0:
+            if nu is not None:
+                # Student-t process noise for heavier tails
+                eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
+                eta = eta_scale * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eta = rng.normal(loc=0.0, scale=q_std, size=n_paths)
+        else:
+            eta = np.zeros(n_paths, dtype=float)
+        
+        mu_paths = phi * mu_paths + eta
+        cum_mu += mu_paths
+        
+        # --- Observation noise: ε_k ~ N(0, sigma_step) or t_ν ---
+        # sigma_step = √sigma2_step is the PRIMITIVE per-step noise std
+        if sigma_step > 0:
+            if nu is not None:
+                # Student-t observation noise: scale for target variance
+                eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
+                eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eps_k = rng.normal(loc=0.0, scale=sigma_step, size=n_paths)
+        else:
+            eps_k = np.zeros(n_paths, dtype=float)
+        
+        cum_eps += eps_k
+    
+    # ========================================================================
+    # Step 4: Compute horizon returns and posterior predictive probability
+    #         R_H = cum_μ + cum_ε
+    #
+    # Note: Var[cum_eps] = H × sigma2_step = vH (horizon variance, DERIVED)
+    # ========================================================================
+    r_samples = cum_mu + cum_eps
+    
+    p = float(np.mean(r_samples > 0.0))
+    
+    # Clamp to avoid exact 0/1 (numerical stability for downstream log-odds)
+    p = float(np.clip(p, 1e-6, 1.0 - 1e-6))
+    
+    return p
+
+
+def compute_expected_utility(
+    mu_t: float,
+    P_t: float,
+    phi: float,
+    q: float,
+    sigma2_step: float,
+    H: int,
+    n_paths: int = 20000,
+    nu: Optional[float] = None,
+    seed: Optional[int] = None,
+    min_size: float = 0.0,
+    max_size: float = 1.0,
+    epsilon: float = 1e-6
+) -> ExpectedUtilityResult:
+    """
+    Compute Expected Utility and position sizing from posterior predictive Monte-Carlo.
+    
+    This function extends the unified posterior predictive MC by computing full
+    distributional metrics that enable utility-based position sizing.
+    
+    EXPECTED UTILITY MODEL:
+    
+    Let r_samples be the posterior predictive return samples.
+    
+    Define:
+        gains = r_samples[r_samples > 0]
+        losses = -r_samples[r_samples < 0]  (positive values)
+        
+        p = P(R_H > 0) = mean(r_samples > 0)
+        E_gain = mean(gains) if gains non-empty else 0
+        E_loss = mean(losses) if losses non-empty else 0
+        
+    Expected Utility:
+        EU = p × E_gain - (1-p) × E_loss
+        
+    Position Size:
+        size = EU / max(E_loss, epsilon)
+        size = clip(size, min_size, max_size)
+        
+    DECISION RULE:
+        - If EU <= 0 → HOLD (no position)
+        - If EU > 0 → Trade with size proportional to EU
+        
+    KEY INSIGHT:
+        Two assets with the same probability p can have different sizes because:
+        - Fat downside tails → higher E_loss → smaller size
+        - Strong upside asymmetry → higher E_gain → larger size
+        - System naturally avoids overconfident but fragile trades
+        
+    Args:
+        mu_t: Posterior mean of drift at time t
+        P_t: Posterior variance of drift at time t
+        phi: Drift persistence parameter
+        q: Process noise variance
+        sigma2_step: Per-step EWMA variance (volatility primitive)
+        H: Forecast horizon in days
+        n_paths: Number of Monte-Carlo paths
+        nu: Student-t degrees of freedom (None for Gaussian)
+        seed: Random seed for reproducibility
+        min_size: Minimum position size (default 0.0)
+        max_size: Maximum position size (default 1.0)
+        epsilon: Small value to avoid division by zero
+        
+    Returns:
+        ExpectedUtilityResult containing probability, EU, position size, and diagnostics
+        
+    Design Philosophy:
+        - Probability measures DIRECTION
+        - Utility measures VALUE
+        - Trading decisions must optimize UTILITY, not probability
+    """
+    # Input validation and sanitization
+    mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
+    P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
+    phi = float(phi) if np.isfinite(phi) else 1.0
+    q = float(max(q, 0.0)) if np.isfinite(q) else 0.0
+    sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
+    H = int(max(H, 1))
+    
+    # Clamp Student-t df to valid range
+    if nu is not None:
+        if not np.isfinite(nu) or nu <= 2.0:
+            nu = None
+        else:
+            nu = float(np.clip(nu, 2.1, 500.0))
+    
+    # Initialize RNG
+    rng = np.random.default_rng(seed)
+    
+    # ========================================================================
+    # Step 1: Sample from drift posterior
+    # ========================================================================
+    if P_t > 0:
+        if nu is not None:
+            t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
+            mu_paths = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
+        else:
+            mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
+    else:
+        mu_paths = np.full(n_paths, mu_t, dtype=float)
+    
+    # ========================================================================
+    # Step 2 & 3: Propagate drift AND accumulate noise stepwise
+    # ========================================================================
+    cum_mu = np.zeros(n_paths, dtype=float)
+    cum_eps = np.zeros(n_paths, dtype=float)
+    
+    q_std = math.sqrt(q) if q > 0 else 0.0
+    sigma_step = math.sqrt(sigma2_step)
+    
+    for k in range(H):
+        # Drift propagation
+        if q_std > 0:
+            if nu is not None:
+                eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
+                eta = eta_scale * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eta = rng.normal(loc=0.0, scale=q_std, size=n_paths)
+        else:
+            eta = np.zeros(n_paths, dtype=float)
+        
+        mu_paths = phi * mu_paths + eta
+        cum_mu += mu_paths
+        
+        # Observation noise
+        if sigma_step > 0:
+            if nu is not None:
+                eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
+                eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eps_k = rng.normal(loc=0.0, scale=sigma_step, size=n_paths)
+        else:
+            eps_k = np.zeros(n_paths, dtype=float)
+        
+        cum_eps += eps_k
+    
+    # ========================================================================
+    # Step 4: Compute return samples
+    # ========================================================================
+    r_samples = cum_mu + cum_eps
+    
+    # ========================================================================
+    # Step 5: Compute Expected Utility metrics
+    # ========================================================================
+    # Separate gains and losses
+    gains = r_samples[r_samples > 0]
+    losses = -r_samples[r_samples < 0]  # Convert to positive values
+    
+    # Probability of positive return
+    p = float(np.mean(r_samples > 0.0))
+    p = float(np.clip(p, 1e-6, 1.0 - 1e-6))
+    
+    # Expected gain and loss
+    E_gain = float(np.mean(gains)) if len(gains) > 0 else 0.0
+    E_loss = float(np.mean(losses)) if len(losses) > 0 else 0.0
+    
+    # Standard deviations of tails (risk measures)
+    upside_std = float(np.std(gains)) if len(gains) > 1 else 0.0
+    downside_std = float(np.std(losses)) if len(losses) > 1 else 0.0
+    
+    # Gain/loss ratio (asymmetry measure)
+    gain_loss_ratio = E_gain / max(E_loss, epsilon) if E_loss > epsilon else (
+        float('inf') if E_gain > 0 else 1.0
+    )
+    gain_loss_ratio = float(np.clip(gain_loss_ratio, 0.0, 100.0))  # Clip for stability
+    
+    # Skewness of return distribution
+    try:
+        skewness = float(scipy_stats_skew(r_samples))
+        if not np.isfinite(skewness):
+            skewness = 0.0
+    except Exception:
+        skewness = 0.0
+    
+    # ========================================================================
+    # Step 6: Compute Expected Utility
+    # ========================================================================
+    # EU = p × E[gain] - (1-p) × E[loss]
+    EU = p * E_gain - (1.0 - p) * E_loss
+    
+    # ========================================================================
+    # Step 7: Compute Position Size from Expected Utility
+    # ========================================================================
+    # size = EU / max(E[loss], ε)
+    # This ensures:
+    # - Higher EU → larger position
+    # - Higher downside risk (E_loss) → smaller position
+    # - Natural risk adjustment without separate volatility scaling
+    
+    if EU > 0:
+        raw_size = EU / max(E_loss, epsilon)
+        position_size = float(np.clip(raw_size, min_size, max_size))
+    else:
+        # EU <= 0 → no position (HOLD)
+        position_size = 0.0
+    
+    return ExpectedUtilityResult(
+        probability=p,
+        expected_gain=E_gain,
+        expected_loss=E_loss,
+        expected_utility=EU,
+        position_size=position_size,
+        gain_loss_ratio=gain_loss_ratio,
+        downside_std=downside_std,
+        upside_std=upside_std,
+        skewness=skewness,
+        r_samples=r_samples
+    )
+
+
 def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: int = 3000, phi: float = 0.95, kappa: float = 1e-4) -> Dict[str, np.ndarray]:
     """Monte-Carlo forward simulation of cumulative log returns and volatility over 1..H_max.
     - Drift evolves as AR(1): mu_{t+1} = phi * mu_t + eta_t,  eta ~ N(0, q)
@@ -2332,7 +3556,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         var_kf_now = float(var_kf_series.iloc[-1])
         var_kf_now = float(max(var_kf_now, 0.0))
     else:
-        var_kf_now = 0.0  # fallback if Kalman not available
+        var_kf_now = 0.0
 
     # Tail parameter (global nu) with posterior uncertainty
     nu_hat_series = feats.get("nu_hat")
@@ -2341,11 +3565,9 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     if isinstance(nu_hat_series, pd.Series) and not nu_hat_series.empty:
         nu_hat = float(nu_hat_series.iloc[-1])
     else:
-        # fallback to last rolling nu
         nu_hat, _ = _tail2("nu", 50.0)
         if not np.isfinite(nu_hat):
             nu_hat = 50.0
-    # Clip to safe range
     nu_hat = float(np.clip(nu_hat, 4.5, 500.0))
     
     # Extract standard error for ν (Tier 2: posterior parameter variance)
@@ -2433,19 +3655,13 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         alpha_paths = np.zeros(n_paths, dtype=float)
         beta_paths  = np.zeros(n_paths, dtype=float)
 
-    # Drift process noise variance q (relative to current variance)
-    # Pillar 1: Incorporate Kalman drift uncertainty into process noise
-    # This properly propagates drift estimation uncertainty into forecast confidence intervals
+    # Drift uncertainty: propagate posterior P only (no external q leakage)
+    drift_unc_now = max(var_kf_now, 1e-10)
+
     h0 = vol_now ** 2
-    q_baseline = kappa * h0  # baseline AR(1) process noise
-    q_kalman = var_kf_now  # additional uncertainty from drift estimation
-    
-    # Combined process noise: baseline evolution + current drift uncertainty
-    # When Kalman drift is uncertain, forecast intervals widen appropriately
-    q = float(max(q_baseline + q_kalman, 1e-10))
 
     # Level-7 Jump-Diffusion: Calibrate jump parameters from historical returns
-    # Detect large moves (>3σ outliers) as empirical jumps to estimate:
+    # Detect large moves (>3σ) as empirical jumps to estimate:
     #   - λ (jump intensity): frequency of jumps per day
     #   - μ_J (jump mean): average jump size
     #   - σ_J (jump std): volatility of jump sizes
@@ -2509,7 +3725,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
 
     for t in range(H_max):
         # Student-t shocks standardized to unit variance (continuous component)
-        # Tier 2: Use path-specific ν samples for proper tail parameter uncertainty propagation
+        # Tier 2: Use path-specific ν samples for proper tail parameter uncertainty
         # Draw Student-t per path with its own degrees of freedom
         z = np.zeros(n_paths, dtype=float)
         for path_idx in range(n_paths):
@@ -2559,8 +3775,8 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         if use_garch:
             h_t = omega_paths + alpha_paths * (e_t ** 2) + beta_paths * h_t
             h_t = np.clip(h_t, 1e-12, 1e4)
-        # Evolve drift via AR(1)
-        eta = rng.normal(loc=0.0, scale=math.sqrt(q), size=n_paths)
+        # Evolve drift via AR(1) using posterior drift uncertainty only
+        eta = rng.normal(loc=0.0, scale=math.sqrt(drift_unc_now), size=n_paths)
         mu_t = phi * mu_t + eta
 
     return {
@@ -2705,7 +3921,7 @@ def apply_confirmation_logic(
         p_smoothed_now: Smoothed probability (current)
         p_smoothed_prev: Smoothed probability (previous)
         p_raw: Raw probability without smoothing
-        pos_strength: Position strength (Kelly fraction)
+        pos_strength: Position strength (Expected Utility based, 0..1)
         buy_thr: Buy threshold
         sell_thr: Sell threshold
         edge: Composite edge score
@@ -2725,7 +3941,7 @@ def apply_confirmation_logic(
     elif (p_smoothed_prev <= sell_enter) and (p_smoothed_now <= sell_enter):
         label = "SELL"
     
-    # Strong tiers based on raw conviction and Kelly strength
+    # Strong tiers based on raw conviction and EU-based position strength
     if p_raw >= max(0.66, buy_thr + 0.06) and pos_strength >= 0.30:
         label = "STRONG BUY"
     if p_raw <= min(0.34, sell_thr - 0.06) and pos_strength >= 0.30:
@@ -2742,10 +3958,11 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     """Map probability and position strength to label with customizable thresholds.
     - STRONG tiers require both probability and position_strength to be high.
     - buy_thr and sell_thr must satisfy sell_thr < 0.5 < buy_thr.
+    - pos_strength is derived from Expected Utility (EU / max(E[loss], ε))
     """
     buy_thr = float(buy_thr)
     sell_thr = float(sell_thr)
-    # Strong tiers (adjusted for half‑Kelly scaling: 0.30 instead of 0.60)
+    # Strong tiers (EU-based sizing: 0.30 threshold for strong conviction)
     if p_up >= max(0.66, buy_thr + 0.06) and pos_strength >= 0.30:
         return "STRONG BUY"
     if p_up <= min(0.34, sell_thr - 0.06) and pos_strength >= 0.30:
@@ -2758,9 +3975,24 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     return "HOLD"
 
 
-def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]: 
+def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68, tuned_params: Optional[Dict] = None) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]: 
     """Compute signals using regime‑aware priors, tail‑aware probability mapping, and
     anti‑snap logic (two‑day confirmation + hysteresis + smoothing) without extra flags.
+    
+    Uses Bayesian Model Averaging when tuned_params with BMA structure is provided.
+    
+    CONTRACT WITH tune_q_mle.py:
+    - tuned_params contains model_posterior and models for each regime
+    - Tune guarantees non-empty outputs via hierarchical borrowing
+    - This function does NOT implement tuning or fallback logic
+    
+    Args:
+        feats: Feature dictionary from compute_features()
+        horizons: List of forecast horizons in days
+        last_close: Last close price
+        t_map: Whether to use Student-t probability mapping
+        ci: Confidence interval for bands
+        tuned_params: Full tuned params from _load_tuned_kalman_params() with BMA structure
     
     We build last‑two‑days estimates to avoid look‑ahead while adding stability.
     """
@@ -2791,16 +4023,14 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     vol_reg_now, vol_reg_prev = _tail2("vol_regime", 1.0)
     trend_now, trend_prev = _tail2("trend_z", 0.0)
     z5_now, z5_prev = _tail2("z5", 0.0)
-    # Use globally-fitted nu_hat (Level-7); fall back to rolling nu if missing
+    # Use globally-fitted nu_hat (Level-7); fall back to rolling nu if missing/invalid
     nu_hat_series = feats.get("nu_hat")
     if isinstance(nu_hat_series, pd.Series) and not nu_hat_series.empty:
         nu_glob = float(nu_hat_series.iloc[-1])
     else:
-        # fallback to last rolling nu
         nu_glob, _ = _tail2("nu", 50.0)
         if not np.isfinite(nu_glob):
             nu_glob = 50.0
-    # Clip to safe range
     nu_glob = float(np.clip(nu_glob, 4.5, 500.0))
     # Prefer smoothed skew if available; fallback to raw skew; default neutral 0.0
     skew_now, skew_prev = _tail2("skew_s", np.nan)
@@ -2825,18 +4055,27 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     ]
 
     # Mapping function that accepts per‑day skew/nu
+    km_prob = (feats.get("kalman_metadata") or {})
+    noise_model = km_prob.get("kalman_noise_model")
+    tuned_nu_meta = km_prob.get("kalman_nu")
+    is_student_world = noise_model == 'kalman_phi_student_t'
+    if is_student_world and (tuned_nu_meta is None or not np.isfinite(tuned_nu_meta)):
+        raise ValueError("Student-t model selected but ν missing from tuning cache")
+    nu_prob = float(tuned_nu_meta) if is_student_world else nu_glob
+
+    # Mapping function that accepts per‑day skew/nu
     def map_prob(edge: float, nu_val: float, skew_val: float) -> float:
         if not np.isfinite(edge):
             return 0.5
         z = float(edge)
-        # Base symmetric mapping (Student‑t preferred)
-        if t_map and np.isfinite(nu_val) and 2.0 < nu_val < 1e9:
-            try:
-                base_p = float(student_t.cdf(z, df=float(nu_val)))
-            except Exception:
-                base_p = float(norm.cdf(z))
+        nu_eff = nu_prob if is_student_world else nu_val
+        # Base symmetric mapping dictated solely by model identity
+        if is_student_world:
+            base_p = float(student_t.cdf(z, df=nu_eff))
         else:
             base_p = float(norm.cdf(z))
+        if not np.isfinite(base_p):
+            return 0.5
         # Edgeworth asymmetry using realized skew and (optional) kurt proxy from nu
         g1 = float(np.clip(skew_val if np.isfinite(skew_val) else 0.0, -1.5, 1.5))
         if np.isfinite(nu_val) and nu_val > 4.5 and nu_val < 1e9:
@@ -2865,11 +4104,8 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     # CI quantile based on 'now'
     alpha = np.clip(ci, 1e-6, 0.999999)
     tail = 0.5 * (1 + alpha)
-    if t_map and np.isfinite(nu_glob) and nu_glob > 2.0 and nu_glob < 1e9:
-        try:
-            z_star = float(student_t.ppf(tail, df=float(nu_glob)))
-        except Exception:
-            z_star = float(norm.ppf(tail))
+    if is_student_world:
+        z_star = float(student_t.ppf(tail, df=float(nu_prob)))
     else:
         z_star = float(norm.ppf(tail))
 
@@ -2908,7 +4144,19 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
 
     # Monte‑Carlo forward simulation to capture evolving drift/vol over horizons
     H_max = int(max(horizons) if horizons else 0)
-    sim_result = _simulate_forward_paths(feats, H_max=H_max, n_paths=3000)
+    phi_sim = None
+    km = feats.get("kalman_metadata", {}) or {}
+    if isinstance(km, dict):
+        phi_sim = km.get("phi_used") or km.get("kalman_phi")
+    if phi_sim is None:
+        phi_sim = feats.get("phi_used")
+    if isinstance(km, dict) and km.get("kalman_noise_model", "").startswith("kalman_phi"):
+        if phi_sim is None or not np.isfinite(phi_sim):
+            raise ValueError("phi required by model but missing for simulation")
+        phi_sim = float(phi_sim)
+    else:
+        phi_sim = 1.0
+    sim_result = _simulate_forward_paths(feats, H_max=H_max, n_paths=3000, phi=phi_sim)
     sims = sim_result['returns']
     vol_sims = sim_result['volatility']
 
@@ -2935,7 +4183,230 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         vH = float(np.var(sim_H, ddof=1)) if sim_H.size > 1 else 0.0
         sH = float(math.sqrt(max(vH, 1e-12)))
         z_stat = float(mH / sH) if sH > 0 else 0.0
-        p_now = float(np.mean(sim_H > 0.0))
+        
+        # ========================================================================
+        # Unified Posterior Predictive Monte-Carlo Probability
+        # ========================================================================
+        # Replaces blended analytical/MC posterior with unified posterior predictive
+        # Monte-Carlo over drift and noise.
+        #
+        # This sampler marginalizes jointly over:
+        # 1. Drift posterior uncertainty: μ_t ~ N(μ̂_t, P_t) or t_ν
+        # 2. Drift propagation dynamics: μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
+        # 3. Observation noise: ε_H ~ N(0, v_H) or t_ν
+        #
+        # This is the ONLY probability used for trading decisions.
+        # No blending. No heuristic averaging. No parallel analytical probability.
+        #
+        # REGIME-FIRST PARAMETER ROUTING:
+        # Parameters (q, phi, nu, c) are selected using regime-first logic:
+        # - If current_regime has tuned params AND not fallback → use regime params
+        # - Otherwise → use global params
+        #
+        # Design Philosophy:
+        # - Probability geometry is internally consistent (single probability space)
+        # - Drift uncertainty automatically collapses confidence toward 0.5
+        # - Heavy tails emerge naturally when P_t or q is large
+        # - Regime transitions are naturally penalized via drift uncertainty
+        # - Accumulated drift preserves signal strength for persistent drift (φ≈1)
+        # ========================================================================
+        
+        # Extract drift posterior mean (μ̂_t) from Kalman filter or posterior drift
+        mu_post_series = feats.get("mu_post", feats.get("mu_kf", pd.Series(dtype=float)))
+        if isinstance(mu_post_series, pd.Series) and not mu_post_series.empty:
+            mu_t_mc = float(mu_post_series.iloc[-1])
+        else:
+            mu_t_mc = 0.0
+        if not np.isfinite(mu_t_mc):
+            mu_t_mc = 0.0
+        
+        # Extract drift posterior variance (P_t) from Kalman filter
+        var_kf_series_prob = feats.get("var_kf_smoothed", feats.get("var_kf", pd.Series(dtype=float)))
+        if isinstance(var_kf_series_prob, pd.Series) and not var_kf_series_prob.empty:
+            P_t_mc = float(var_kf_series_prob.iloc[-1])
+        else:
+            P_t_mc = 0.0
+        if not np.isfinite(P_t_mc) or P_t_mc < 0:
+            P_t_mc = 0.0
+        
+        # ========================================================================
+        # REGIME-FIRST PARAMETER ROUTING (STEP 1 & 2)
+        # ========================================================================
+        # Map current regime label to index and select parameters
+        current_regime_idx = map_regime_label_to_index(reg, regime_meta)
+        
+        # Get Kalman metadata which contains regime params
+        km_mc = feats.get("kalman_metadata", {}) or {}
+        
+        # Build tuned_params structure for _select_regime_params
+        tuned_params_full = {
+            'q': km_mc.get("process_noise_var", 1e-6),
+            'phi': km_mc.get("phi_used") or km_mc.get("kalman_phi") or 0.95,
+            'nu': km_mc.get("kalman_nu"),
+            'c': km_mc.get("kalman_c_optimal", 1.0),
+            'noise_model': km_mc.get("kalman_noise_model", "gaussian"),
+            'regime': km_mc.get("regime_params", {}),
+            'has_regime_params': km_mc.get("has_regime_params", False),
+        }
+        
+        # STEP 2: Select parameters using regime-first logic
+        theta = _select_regime_params(tuned_params_full, current_regime_idx)
+        
+        # STEP 3: Bind parameters ONLY from theta (no other access to params)
+        q_mc = float(theta.get("q", 1e-6))
+        phi_mc = float(theta.get("phi", 0.95))
+        nu_mc = theta.get("nu")
+        c_mc = float(theta.get("c", 1.0))
+        
+        # STEP 6: Diagnostics pass-through (collapse warning annotation)
+        collapse_warning = theta.get("collapse_warning", False)
+        regime_source = theta.get("source", "unknown")
+        regime_used = theta.get("regime_used", current_regime_idx)
+        
+        # Validate nu and determine noise model for diagnostics
+        noise_model_mc = km_mc.get("kalman_noise_model", "gaussian")
+        if nu_mc is not None and (not np.isfinite(nu_mc) or nu_mc <= 2.0):
+            nu_mc = None
+        if noise_model_mc != "kalman_phi_student_t" or nu_mc is None:
+            noise_model_mc = "gaussian"  # Fallback for diagnostics
+        
+        # ========================================================================
+        # VOLATILITY GEOMETRY: sigma2_step is the PRIMITIVE
+        # ========================================================================
+        # Extract per-step EWMA variance (σ²) - this is the volatility primitive.
+        # Horizon variance vH = H × sigma2_step is DERIVED, not passed.
+        #
+        # This ensures:
+        # - Volatility is defined at one temporal scale only (per-step)
+        # - No double-rescaling (no vH/H computation in MC function)
+        # - Noise accumulation uses sigma2_step directly
+        # ========================================================================
+        vol_series_mc = feats.get("vol", pd.Series(dtype=float))
+        if isinstance(vol_series_mc, pd.Series) and not vol_series_mc.empty:
+            sigma_now = float(vol_series_mc.iloc[-1])
+        else:
+            sigma_now = sH / math.sqrt(H) if H > 0 and sH > 0 else 0.01
+        if not np.isfinite(sigma_now) or sigma_now <= 0:
+            sigma_now = 0.01
+        
+        # sigma2_step is the PRIMITIVE per-step EWMA variance
+        sigma2_step_mc = float(sigma_now ** 2)
+        
+        # ========================================================================
+        # EXPECTED UTILITY POSITION SIZING FROM POSTERIOR PREDICTIVE MC
+        # ========================================================================
+        # Position size is derived ONLY from posterior predictive MC return samples.
+        # No Kelly/mean-variance sizing. No blending. r_samples is the ONLY input.
+        #
+        # REGIME-CONDITIONAL BAYESIAN MODEL AVERAGING (RC-BMA):
+        # Samples are drawn from the mixture:
+        #   p(r_H | D) = Σ_r P(regime_r | D) · p(r_H | regime_r, D)
+        #
+        # This mixture is the ONLY distribution passed to the EU layer.
+        # No regime logic inside EU - it only sees r_samples.
+        # ========================================================================
+        
+        # ========================================================================
+        # BUILD REGIME PARAMS FOR BAYESIAN MODEL AVERAGING
+        # ========================================================================
+        # Build regime params dict using regime-first routing.
+        # For each regime, if tuned params exist and not fallback → use them
+        # Otherwise → use global params (q_mc, phi_mc, nu_mc already selected above)
+        # ========================================================================
+        regime_params = {}
+        cached_regime_params = km_mc.get("regime_params", {})
+        
+        for regime_idx in range(5):
+            # Use _select_regime_params for each regime (consistent routing logic)
+            regime_theta = _select_regime_params(tuned_params_full, regime_idx)
+            regime_params[regime_idx] = {
+                "phi": regime_theta.get("phi", phi_mc),
+                "q": regime_theta.get("q", q_mc),
+                "nu": regime_theta.get("nu", nu_mc),
+                "c": regime_theta.get("c", c_mc),
+                "fallback": regime_theta.get("fallback", True),
+            }
+        
+        # Use Bayesian Model Averaging across regimes AND model classes
+        r_samples, regime_probs, bma_meta = bayesian_model_average_mc(
+            feats=feats,
+            regime_params=regime_params,
+            mu_t=mu_t_mc,
+            P_t=P_t_mc,
+            sigma2_step=sigma2_step_mc,
+            H=H,
+            n_paths_per_regime=4000,
+            use_regime_bma=True,
+            smoothing_alpha=0.3,
+            prev_regime_probs=None,
+            seed=None,
+            tuned_params=tuned_params,  # Pass BMA structure from tune_q_mle.py
+        )
+        r = np.asarray(r_samples, dtype=float)
+        
+        # === Expected Utility sizing from posterior predictive MC ===
+        # r_samples is the ONLY input to sizing - NO Kelly, NO mean/variance ratios
+        # BMA mixture is the distribution, EU layer only sees r_samples
+        
+        p_now = float(np.mean(r > 0.0))
+        
+        gains = r[r > 0.0]
+        losses = -r[r < 0.0]
+        
+        E_gain = float(np.mean(gains)) if gains.size > 0 else 0.0
+        E_loss = float(np.mean(losses)) if losses.size > 0 else 0.0
+        
+        EU = p_now * E_gain - (1.0 - p_now) * E_loss
+        
+        epsilon_eu = 1e-12
+        max_position_size = 1.0
+        
+        if EU > 0.0 and E_loss > 0.0:
+            eu_position_size = EU / max(E_loss, epsilon_eu)
+        else:
+            eu_position_size = 0.0
+        
+        # clip to risk limits
+        eu_position_size = float(np.clip(eu_position_size, 0.0, max_position_size))
+        
+        # Expected Utility metrics for logging/Signal
+        expected_utility = EU
+        expected_gain = E_gain
+        expected_loss = E_loss
+        gain_loss_ratio = E_gain / max(E_loss, epsilon_eu) if E_loss > epsilon_eu else (
+            100.0 if E_gain > 0 else 1.0
+        )
+        
+        # For diagnostics: compute drift uncertainty propagated to horizon
+        # (kept for Signal dataclass but NOT used for trading)
+        if phi_mc is not None and np.isfinite(phi_mc) and abs(phi_mc) < 0.999:
+            phi2_diag = phi_mc ** 2
+            if abs(1.0 - phi2_diag) > 1e-10:
+                drift_var_factor = (1.0 - phi2_diag ** H) / (1.0 - phi2_diag)
+            else:
+                drift_var_factor = float(H)
+        else:
+            drift_var_factor = float(H)
+        drift_uncertainty_H = drift_var_factor * P_t_mc
+        
+        # Diagnostic probabilities (NOT used for trading, kept for analysis only)
+        # These are stored in Signal for monitoring but p_now is the only trading probability
+        p_empirical = float(np.mean(sim_H > 0.0))  # Raw empirical from simulation
+        predictive_var_diag = vH + drift_uncertainty_H
+        predictive_std_diag = float(math.sqrt(max(predictive_var_diag, 1e-12)))
+        z_predictive_diag = float(mH / predictive_std_diag) if predictive_std_diag > 0 else 0.0
+        if noise_model_mc == "kalman_phi_student_t" and nu_mc is not None:
+            p_analytical = float(student_t.cdf(z_predictive_diag, df=float(nu_mc)))
+        else:
+            p_analytical = float(norm.cdf(z_predictive_diag))
+        p_analytical = float(np.clip(p_analytical, 0.001, 0.999))
+        p_posterior_predictive = p_analytical  # Alias for backward compatibility
+        
+        # Expected log return and CI from simulation (percentile CI)
+        # Define quantile bounds early for use in volatility CI as well
+        q = float(np.clip(ci, 1e-6, 0.999999))
+        lo_q = (1.0 - q) / 2.0
+        hi_q = 1.0 - lo_q
         
         # Stochastic volatility statistics (Level-7: full posterior uncertainty)
         vol_mean = float(np.mean(vol_H)) if vol_H.size > 0 else 0.0
@@ -2957,10 +4428,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         edge_prev = composite_edge(base_prev, trend_prev, moms_prev, vol_reg_prev, z5_prev)
         edge_now = composite_edge(base_now, trend_now, moms_now, vol_reg_now, z5_now)
 
-        # Expected log return and CI from simulation (percentile CI)
-        q = float(np.clip(ci, 1e-6, 0.999999))
-        lo_q = (1.0 - q) / 2.0
-        hi_q = 1.0 - lo_q
+        # Expected return CI from simulation (percentile CI) - lo_q, hi_q already defined above
         try:
             ci_low = float(np.quantile(sim_H, lo_q))
             ci_high = float(np.quantile(sim_H, hi_q))
@@ -2971,37 +4439,36 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         sig_H = sH
 
         # ========================================================================
-        # Upgrade #2: Drift Confidence → Kelly Scaling
+        # EXPECTED UTILITY POSITION SIZING (REPLACES KELLY/MEAN-BASED SIZING)
         # ========================================================================
-        # Incorporate drift uncertainty (P_t) into Kelly denominator to prevent ruin
-        # Add drift_weight based on model quality (ΔLL, PIT) to scale position size
+        # All sizing is now derived from the full posterior predictive distribution
+        # (r_samples from compute_expected_utility), NOT from point estimates.
+        #
+        # Design Principle:
+        #   - Inference produces distributions (r_samples)
+        #   - Decisions must consume distributions, not point estimates
+        #   - Kelly formula (f_star = mu_H / denom) is PROHIBITED
+        #
+        # Expected Utility Model:
+        #   EU = p × E[gain] - (1-p) × E[loss]
+        #   size = EU / max(E[loss], ε)
+        #
+        # Key Properties:
+        #   - Two assets with identical p can have different sizes
+        #   - Fat downside tails → higher E[loss] → smaller size
+        #   - Strong upside asymmetry → higher E[gain] → larger size
+        #   - EU ≤ 0 → HOLD (no position)
+        # ========================================================================
         
-        # Extract drift uncertainty (variance of drift estimate) from Kalman filter
-        var_kf_series = feats.get("var_kf_smoothed", pd.Series(dtype=float))
-        if isinstance(var_kf_series, pd.Series) and not var_kf_series.empty:
-            P_t = float(var_kf_series.iloc[-1])  # Latest drift variance
-        else:
-            P_t = 0.0  # No drift uncertainty if Kalman not available
-        
-        # Ensure P_t is valid
-        if not np.isfinite(P_t) or P_t < 0:
-            P_t = 0.0
-        
-        # Kelly denominator: total variance = observation variance + drift uncertainty scaled by horizon
-        # Original: denom = vH (observation variance over horizon H)
-        # Upgraded: denom = vH + H * P_t (adds drift parameter uncertainty)
-        denom_base = vH if vH > 0 else (sig_H ** 2 if sig_H > 0 else 1.0)
-        denom = denom_base + float(H) * P_t
-        
-        # Compute drift_weight based on model quality metrics
-        # - ΔLL < 0: drift model worse than zero-drift → weight = 0
-        # - PIT p < 0.05: miscalibration warning → weight = 0.3
-        # - Otherwise: well-calibrated drift → weight = 1.0
+        # Apply drift_weight based on model quality metrics
+        # - ΔLL < 0: drift model worse than zero-drift → reduce position
+        # - PIT p < 0.05: miscalibration warning → reduce position
+        # - Otherwise: trust EU sizing fully
         kalman_metadata = feats.get("kalman_metadata", {})
         delta_ll = kalman_metadata.get("delta_ll_vs_zero", float("nan"))
         pit_pvalue = kalman_metadata.get("pit_ks_pvalue", float("nan"))
         
-        drift_weight = 1.0  # Default: trust drift fully
+        drift_weight = 1.0  # Default: trust EU sizing fully
         
         if np.isfinite(delta_ll) and delta_ll < 0:
             # Drift model performs worse than zero-drift baseline
@@ -3010,10 +4477,13 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             # Calibration warning: model forecasts not well-calibrated
             drift_weight = 0.3
         
-        # Fractional Kelly sizing (half‑Kelly) with drift confidence adjustment
-        f_star = float(np.clip(mu_H / denom, -1.0, 1.0))
-        pos_strength_raw = float(min(1.0, 0.5 * abs(f_star)))
-        pos_strength = drift_weight * pos_strength_raw
+        # === FINAL POSITION STRENGTH (from Expected Utility ONLY) ===
+        # pos_strength is the ONLY position sizing variable used downstream
+        # NO Kelly, NO mean/variance ratios - r_samples is the ONLY input
+        pos_strength = drift_weight * eu_position_size
+        
+        # Logging/diagnostics: p, E_gain, E_loss, EU, pos_strength
+        # (These are stored in Signal dataclass for analysis)
 
         # Level-7 Modularization: Use helper function for dynamic thresholds
         # Enriched regime_meta with vol_regime for fallback path
@@ -3073,12 +4543,44 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             profit_pln=float(profit_pln),
             profit_ci_low_pln=float(profit_ci_low_pln),
             profit_ci_high_pln=float(profit_ci_high_pln),
+            # ================================================================
+            # POSITION STRENGTH FROM EXPECTED UTILITY (NOT KELLY)
+            # ================================================================
+            # All sizing is derived from the full posterior predictive
+            # distribution (r_samples), not from point estimates.
+            #
+            # pos_strength = drift_weight × eu_position_size
+            # where eu_position_size = EU / max(E[loss], ε)
+            #
+            # This ensures:
+            # - Fat downside tails → smaller positions
+            # - Strong upside asymmetry → larger positions
+            # - EU ≤ 0 → HOLD (position_strength = 0)
+            # ================================================================
             position_strength=float(pos_strength),
             vol_mean=float(vol_mean),
             vol_ci_low=float(vol_ci_low),
             vol_ci_high=float(vol_ci_high),
             regime=reg,
             label=label,
+            # Expected Utility fields (THE BASIS FOR POSITION SIZING):
+            expected_utility=float(expected_utility),
+            expected_gain=float(expected_gain),
+            expected_loss=float(expected_loss),
+            gain_loss_ratio=float(gain_loss_ratio),
+            eu_position_size=float(eu_position_size),
+            # Diagnostics ONLY (NOT used for trading decisions):
+            drift_uncertainty=float(drift_uncertainty_H),
+            p_analytical=float(p_analytical),  # DIAGNOSTIC: analytical posterior predictive
+            p_empirical=float(p_empirical),    # DIAGNOSTIC: raw empirical MC probability
+            # STEP 7: Regime audit trace - tracks which regime params were used
+            regime_used=int(regime_used) if regime_used is not None else None,
+            regime_source=str(regime_source),
+            regime_collapse_warning=bool(collapse_warning),
+            # STEP 8: BMA audit trace - tracks model averaging method
+            bma_method=str(bma_meta.get("method", "legacy")),
+            bma_has_model_posterior=bool(bma_meta.get("has_bma", False)),
+            bma_borrowed_from_global=bool(bma_meta.get("regime_details", {}).get(regime_used, {}).get("borrowed_from_global", False)) if regime_used is not None else False,
         ))
 
     return sigs, thresholds
@@ -3145,7 +4647,11 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         # Compute features and signals
         feats = compute_features(px, asset_symbol=asset)
         last_close = _to_float(px.iloc[-1])
-        sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci)
+        
+        # Load tuned params with BMA structure for model averaging
+        tuned_params = _load_tuned_kalman_params(asset)
+        
+        sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci, tuned_params=tuned_params)
         
         # Compute diagnostics if requested
         diagnostics = {}
@@ -3178,9 +4684,11 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         }
 
 
-def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, horizons: List[int], max_retries: int = 3):
+def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, horizons: List[int], max_retries: int = 3, use_bulk: bool = True):
     """Run asset processing with bounded retries and collect failures.
     Retries only the assets that failed on prior attempts.
+    When use_bulk is True, prefetches prices in batches to reduce Yahoo rate limits
+    and processes sequentially to reuse the shared in-memory cache.
     """
     console = Console()
     pending = list(dict.fromkeys(a.strip() for a in assets if a and a.strip()))
@@ -3194,20 +4702,49 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
         console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} workers...[/cyan]")
         work_items = [(asset, args, horizons) for asset in pending]
 
-        with Pool(processes=n_workers) as pool:
-            results = pool.map(process_single_asset, work_items)
+        if use_bulk and attempt == 1 and pending:
+            try:
+                console.print(f"[cyan]Prefetching {len(pending)} assets in bulk to reduce rate limits...[/cyan]")
+                download_prices_bulk(pending, start=args.start, end=args.end)
+            except Exception as e:
+                console.print(f"[yellow]Warning:[/yellow] Bulk prefetch failed: {e}. Falling back to standard fetch.")
+
+        if use_bulk:
+            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets in parallel with shared cache...[/cyan]")
+            results = []
+            with ThreadPoolExecutor(max_workers=n_workers) as ex:
+                future_map = {ex.submit(process_single_asset, item): item for item in work_items}
+                for fut in as_completed(future_map):
+                    try:
+                        results.append(fut.result())
+                    except Exception as exc:
+                        asset = future_map[fut][0]
+                        results.append({"status": "error", "asset": asset, "error": str(exc)})
+        else:
+            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} worker process(es)...[/cyan]")
+            with Pool(processes=n_workers) as pool:
+                results = pool.map(process_single_asset, work_items)
 
         next_pending: List[str] = []
         for asset, result in zip(pending, results):
             if not result or result.get("status") != "success":
                 err = (result or {}).get("error", "unknown")
+                tb = (result or {}).get("traceback")
+                if tb:
+                    tb_lines = [line.strip() for line in str(tb).splitlines() if line.strip()]
+                    loc_lines = [ln for ln in tb_lines if ln.startswith("File ")]
+                    loc_line = loc_lines[-1] if loc_lines else None
+                    if loc_line:
+                        err = f"{err} @ {loc_line}"
                 try:
                     disp = _resolve_display_name(asset.strip().upper())
                 except Exception:
                     disp = asset
-                entry = failures.get(asset, {"attempts": 0, "last_error": None, "display_name": disp})
+                entry = failures.get(asset, {"attempts": 0, "last_error": None, "display_name": disp, "traceback": None})
                 entry["attempts"] = int(entry.get("attempts", 0)) + 1
                 entry["last_error"] = err
+                if tb:
+                    entry["traceback"] = tb
                 entry["display_name"] = entry.get("display_name") or disp
                 failures[asset] = entry
                 next_pending.append(asset)
@@ -3302,7 +4839,7 @@ def main() -> None:
             
         if result.get("status") == "error":
             asset = result.get("asset", "unknown")
-            error = result.get("error", "unknown error")
+            error = result.get("error", "unknown")
             console.print(f"[red]Warning:[/red] Failed to process {asset}: {error}")
             if os.getenv('DEBUG'):
                 traceback_info = result.get("traceback", "")
@@ -3538,7 +5075,7 @@ def main() -> None:
                     comp_table = Table(title=f"📊 Model Comparison: {category_title} — {asset}")
                     comp_table.add_column("Model", justify="left", style="cyan")
                     comp_table.add_column("Params", justify="right")
-                    comp_table.add_column("Log-Lik", justify="right")
+                    comp_table.add_column("Log-Likelihood", justify="right")
                     comp_table.add_column("AIC", justify="right")
                     comp_table.add_column("BIC", justify="right")
                     comp_table.add_column("Δ AIC", justify="right")
@@ -3789,7 +5326,7 @@ def main() -> None:
                         f"[green]{stress_result.uncertainty_spike_ratio:.2f}×[/green]" if stress_result.uncertainty_spike_ratio > 1.2 else f"{stress_result.uncertainty_spike_ratio:.2f}×"
                     )
                     stress_table.add_row(
-                        "Kelly Half-Fraction",
+                        "Position Size (EU)",
                         f"{stress_result.avg_kelly_normal:.4f}",
                         f"{stress_result.avg_kelly_stress:.4f}",
                         f"[green]{stress_result.kelly_reduction_ratio:.2f}×[/green]" if stress_result.kelly_reduction_ratio < 0.9 else f"{stress_result.kelly_reduction_ratio:.2f}×"
@@ -3933,7 +5470,8 @@ def main() -> None:
             "asset": asset,
             "display_name": info.get("display_name", asset),
             "attempts": info.get("attempts", 0),
-            "last_error": info.get("last_error", "")
+            "last_error": info.get("last_error", ""),
+            "traceback": info.get("traceback", ""),
         }
         for asset, info in failures.items()
     ]
@@ -3949,6 +5487,14 @@ def main() -> None:
         for asset, info in failures.items():
             fail_table.add_row(asset, str(info.get("display_name", asset)), str(info.get("attempts", "")), str(info.get("last_error", "")))
         Console().print(fail_table)
+        
+        # Save failed assets to cache/failed/ for later purging
+        try:
+            saved_path = save_failed_assets(failures, append=True)
+            Console().print(f"[dim]Failed assets saved to: {saved_path}[/dim]")
+            Console().print(f"[dim]Run 'make purge' to purge cached data for failed assets[/dim]")
+        except Exception as e:
+            Console().print(f"[yellow]Warning:[/yellow] Could not save failed assets: {e}")
 
     # Exports
     cache_path = args.cache_json or DEFAULT_CACHE_PATH

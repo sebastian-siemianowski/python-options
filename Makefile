@@ -1,7 +1,8 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20
+.PHONY: run backtest doctor clear top50 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20 data four purge failed setup
 # Usage:
+#   make setup                         # full setup: install deps + download all data (runs 3x for reliability)
 #   make run                           # runs with defaults (screener + backtest)
 #   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
 #   make backtest                      # runs backtest-only convenience wrapper
@@ -24,6 +25,10 @@ SHELL := /bin/bash
 #   make show-q                        # display cached q parameter estimates
 #   make clear-q                       # clear q parameter cache
 #   make tests                         # runs all tests in the tests/ directory
+#   make data                          # precaches securities data for faster screening/backtesting
+#   make failed                        # list assets that failed processing
+#   make purge                          # purge cached data for failed assets
+#   make purge ARGS="--all"             # purge cache AND clear the failed assets list
 
 # Ensure virtual environment exists before running commands
 .venv/bin/python:
@@ -126,7 +131,75 @@ report: .venv/.deps_installed
 	@.venv/bin/python scripts/fx_pln_jpy_signals.py --from-cache --cache-json cache/fx_plnjpy.json
 
 # Quick smoke: run only the first 20 assets
- top20: .venv/.deps_installed
+top20: .venv/.deps_installed
 	@ASSETS=$$(PYTHONPATH=$(CURDIR) ./.venv/bin/python -c "import importlib.util, pathlib; fx=pathlib.Path('scripts/fx_data_utils.py'); spec=importlib.util.spec_from_file_location('fx_data_utils', fx); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); assets=sorted(list(getattr(mod,'DEFAULT_ASSET_UNIVERSE'))); print(','.join(assets[:20]))"); \
 	if [ -z "$$ASSETS" ]; then echo 'No assets resolved'; exit 1; fi; \
 	$(MAKE) fx-plnjpy ARGS="--assets $$ASSETS"
+
+# Precache securities data (full history). Slow down concurrency to avoid 401s.
+data: .venv/.deps_installed
+	@.venv/bin/python scripts/precache_data.py --workers 2 --batch-size 16
+
+four:
+	@if [ ! -f cache/kalman_q_cache.json ]; then \
+		echo "cache/kalman_q_cache.json not found"; exit 1; \
+	fi
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -c "from scripts.fx_data_utils import drop_first_k_from_kalman_cache; removed = drop_first_k_from_kalman_cache(4, 'cache/kalman_q_cache.json'); print(f'Removed {len(removed)} entries: {', '.join(removed)}')"
+
+# List failed assets
+failed: .venv/.deps_installed
+	@.venv/bin/python scripts/purge_failed.py --list
+
+# Purge cached data for failed assets
+purge: .venv/.deps_installed
+	@.venv/bin/python scripts/purge_failed.py $(ARGS)
+
+# Full setup: create venv, install dependencies, and download all data (runs 3x for reliability)
+setup:
+	@echo "============================================================"
+	@echo "STEP 1/4: Setting up Python virtual environment..."
+	@echo "============================================================"
+	@bash ./setup_venv.sh
+	@echo ""
+	@echo "============================================================"
+	@echo "STEP 2/4: Installing Python dependencies..."
+	@echo "============================================================"
+	@.venv/bin/python -m pip install --upgrade pip
+	@.venv/bin/python -m pip install -r requirements.txt
+	@touch .venv/.deps_installed
+	@echo ""
+	@echo "============================================================"
+	@echo "STEP 3/4: Downloading price data (Pass 1 of 3)..."
+	@echo "============================================================"
+	@.venv/bin/python scripts/precache_data.py --workers 2 --batch-size 16 || true
+	@echo ""
+	@echo "============================================================"
+	@echo "STEP 3/4: Downloading price data (Pass 2 of 3)..."
+	@echo "============================================================"
+	@.venv/bin/python scripts/precache_data.py --workers 2 --batch-size 16 || true
+	@echo ""
+	@echo "============================================================"
+	@echo "STEP 3/4: Downloading price data (Pass 3 of 3)..."
+	@echo "============================================================"
+	@.venv/bin/python scripts/precache_data.py --workers 2 --batch-size 16 || true
+	@echo ""
+	@echo "============================================================"
+	@echo "STEP 3/4: Cleaning cached data (removing empty rows)..."
+	@echo "============================================================"
+	@.venv/bin/python scripts/clean_cache.py
+	@echo ""
+	@echo "============================================================"
+	@echo "STEP 4/4: Setup complete!"
+	@echo "============================================================"
+	@echo ""
+	@echo "You can now run:"
+	@echo "  make fx-plnjpy    - Generate FX/asset signals"
+	@echo "  make tune         - Tune Kalman filter parameters"
+	@echo "  make failed       - List any assets that failed to download"
+	@echo "  make purge        - Purge cache for failed assets"
+	@echo "  make clean-cache  - Remove empty rows from cached data"
+	@echo ""
+
+# Clean cached price data by removing empty rows (dates before company existed)
+clean-cache: .venv/.deps_installed
+	@.venv/bin/python scripts/clean_cache.py
