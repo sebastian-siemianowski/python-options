@@ -78,41 +78,46 @@ def build_asset_display_label(asset_symbol: str, full_title: str) -> str:
     return name_part
 
 
-def format_profit_with_signal(signal_label: str, profit_pln: float) -> str:
-    """Format signal label with profit in PLN, applying color based on profit sign.
+def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln: float = 1_000_000) -> str:
+    """Format signal label with percentage and profit - GREEN, GREY, RED colors.
     
-    Args:
-        signal_label: BUY/HOLD/SELL or STRONG BUY/SELL
-        profit_pln: Expected profit in PLN
-        
-    Returns:
-        Rich-formatted string like "BUY (+12,345)" with appropriate colors
+    BUY/SELL: entire line in green/red
+    HOLD: grey label, percentages beyond ±1% colored green/red
     """
-    profit_txt = f"{profit_pln:+,.0f}"
+    # Calculate percentage return
+    pct_return = (profit_pln / notional_pln * 100) if notional_pln > 0 else 0.0
     
-    # Color by profit sign
-    if np.isfinite(profit_pln) and profit_pln > 0:
-        profit_txt = f"[green]{profit_txt}[/green]"
-    elif np.isfinite(profit_pln) and profit_pln < 0:
-        profit_txt = f"[red]{profit_txt}[/red]"
+    # Compact profit display with k/M suffix
+    abs_profit = abs(profit_pln)
+    if abs_profit >= 1_000_000:
+        profit_compact = f"{profit_pln/1_000_000:+.0f}M"
+    elif abs_profit >= 1_000:
+        profit_compact = f"{profit_pln/1_000:+.0f}k"
+    else:
+        profit_compact = f"{profit_pln:+.0f}"
     
-    # Colorize labels for clarity
     if isinstance(signal_label, str):
         label_upper = signal_label.upper()
+        # BUY/SELL: whole line in one color
         if label_upper.startswith("STRONG BUY"):
-            label = f"[bold green]{signal_label}[/bold green]"
+            return f"[bold bright_green]↑BUY {pct_return:+.1f}% ({profit_compact})[/bold bright_green]"
         elif label_upper.startswith("STRONG SELL"):
-            label = f"[bold red]{signal_label}[/bold red]"
+            return f"[bold bright_red]↓SELL {pct_return:+.1f}% ({profit_compact})[/bold bright_red]"
         elif "SELL" in label_upper:
-            label = f"[red]{signal_label}[/red]"
+            return f"[bright_red]SELL {pct_return:+.1f}% ({profit_compact})[/bright_red]"
         elif "BUY" in label_upper:
-            label = f"[green]{signal_label}[/green]"
+            return f"[bright_green]BUY {pct_return:+.1f}% ({profit_compact})[/bright_green]"
         else:
-            label = signal_label
-    else:
-        label = signal_label
-
-    return f"{label} ({profit_txt})"
+            # HOLD - grey label, percentage colored if beyond ±1%
+            if pct_return > 1.0:
+                pct_color = "bright_green"
+            elif pct_return < -1.0:
+                pct_color = "bright_red"
+            else:
+                pct_color = "grey70"
+            return f"[grey70]HOLD[/grey70] [{pct_color}]{pct_return:+.1f}% ({profit_compact})[/{pct_color}]"
+    
+    return f"{signal_label} {pct_return:+.1f}% ({profit_compact})"
 
 
 def extract_symbol_from_title(title: str) -> str:
@@ -184,6 +189,15 @@ def render_detailed_signal_table(
         )
 
     for signal in signals:
+        # Calculate percentage return for display
+        notional = 1_000_000
+        pct_return = signal.profit_pln / notional * 100
+        pct_ci_low = signal.profit_ci_low_pln / notional * 100
+        pct_ci_high = signal.profit_ci_high_pln / notional * 100
+        
+        # Format profit with percentage in parentheses
+        profit_display = f"{signal.profit_pln:+,.0f} ({pct_return:+.2f}%) [ {signal.profit_ci_low_pln:+,.0f} ({pct_ci_low:+.2f}%) .. {signal.profit_ci_high_pln:+,.0f} ({pct_ci_high:+.2f}%) ]"
+        
         table.add_row(
             str(signal.horizon_days),
             f"{signal.score:+.2f}",
@@ -192,7 +206,7 @@ def render_detailed_signal_table(
             f"[{signal.ci_low:+.4f}, {signal.ci_high:+.4f}]",
             f"{signal.position_strength:.2f}",
             signal.regime,
-            f"{signal.profit_pln:,.0f} [ {signal.profit_ci_low_pln:,.0f} .. {signal.profit_ci_high_pln:,.0f} ]",
+            profit_display,
             signal.label,
         )
 
@@ -306,12 +320,18 @@ def render_simplified_signal_table(
     last_close = convert_to_float(price_series.iloc[-1])
     trend_desc, momentum_desc, volatility_desc = extract_market_context(features)
 
-    table = Table(title=f"{asset_symbol} — {title} — Last price {last_close:.4f} on {price_series.index[-1].date()}")
-    table.add_column("Timeframe", justify="left")
-    table.add_column("Chance it goes up", justify="right")
-    table.add_column("Recommendation", justify="center")
-    table.add_column("Why (plain English)", justify="left")
-    table.caption = "Simple view: chance is based on our model today. BUY means we expect the price to rise over the timeframe."
+    table = Table(
+        title=f"[bold]{asset_symbol}[/bold] — {title}\n[dim]Last: {last_close:,.4f} on {price_series.index[-1].date()}[/dim]",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="dim",
+        row_styles=["", "dim"],
+    )
+    table.add_column("Timeframe", justify="left", width=12)
+    table.add_column("Chance ↑", justify="right", width=10)
+    table.add_column("Signal", justify="center", width=15)
+    table.add_column("Summary", justify="left")
+    table.caption = "[dim]BUY = expect price to rise · SELL = expect price to fall · HOLD = uncertain[/dim]"
 
     explanations: List[str] = []
     for signal in signals:
@@ -319,51 +339,63 @@ def render_simplified_signal_table(
             signal.score, signal.p_up, trend_desc, momentum_desc, volatility_desc
         )
         explanations.append(explanation)
+        
+        # Format probability with color
+        p_val = signal.p_up * 100
+        if p_val >= 60:
+            p_cell = f"[green]{p_val:.0f}%[/green]"
+        elif p_val <= 40:
+            p_cell = f"[red]{p_val:.0f}%[/red]"
+        else:
+            p_cell = f"[dim]{p_val:.0f}%[/dim]"
+        
+        # Format signal label with styling
+        label_upper = signal.label.upper() if isinstance(signal.label, str) else ""
+        if "STRONG" in label_upper and "BUY" in label_upper:
+            label_cell = f"[bold green]⬆ BUY[/bold green]"
+        elif "STRONG" in label_upper and "SELL" in label_upper:
+            label_cell = f"[bold red]⬇ SELL[/bold red]"
+        elif "BUY" in label_upper:
+            label_cell = f"[green]BUY[/green]"
+        elif "SELL" in label_upper:
+            label_cell = f"[red]SELL[/red]"
+        else:
+            label_cell = f"[dim]HOLD[/dim]"
+        
         table.add_row(
             format_horizon_label(signal.horizon_days),
-            f"{signal.p_up*100:5.1f}%",
-            signal.label,
-            explanation,
+            p_cell,
+            label_cell,
+            f"[dim]{explanation}[/dim]",
         )
 
     console.print(table)
+    console.print()
     return explanations
 
 
 def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[int], title_override: str = None, asset_col_width: int = None) -> None:
-    """Render compact summary table comparing signals across multiple assets.
-    
-    Columns: "Ticker (name)", then one column per trading-day horizon.
-    Each cell shows "Signal (±Profit)" for a 1,000,000 PLN notional.
-    Sorted so SELL assets come first, then HOLD, then BUY, then STRONG BUY.
-    
-    Args:
-        summary_rows: List of dictionaries containing asset summaries
-        horizons: List of horizon days to display as columns
-        title_override: Optional custom title for the table
-    """
+    """Render compact summary table comparing signals across multiple assets."""
     if not summary_rows:
         return
 
-    # Define sort priority: SELL first, then HOLD, then BUY, then STRONG BUY
+    # Sort: SELL first, then HOLD, then BUY, then STRONG BUY
     def signal_sort_key(row: Dict) -> int:
-        """Lower number = appears first in table."""
         nearest_label = row.get("nearest_label", "HOLD")
         label_upper = str(nearest_label).upper()
         if "SELL" in label_upper:
-            return 0  # SELL comes first
+            return 0
         elif "HOLD" in label_upper:
             return 1
         elif "STRONG" in label_upper and "BUY" in label_upper:
-            return 3  # STRONG BUY comes last
+            return 3
         elif "BUY" in label_upper:
             return 2
-        else:
-            return 1  # default to HOLD priority
+        return 1
 
     sorted_rows = sorted(summary_rows, key=signal_sort_key)
 
-    # Determine fixed asset column width from longest label (strip rich markup)
+    # Compact asset column width
     import re
     def _plain_len(text: str) -> int:
         if not isinstance(text, str):
@@ -371,14 +403,26 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         return len(re.sub(r"\[/?[^\]]+\]", "", text))
     if asset_col_width is None:
         longest_asset = max((_plain_len(r.get("asset_label", "")) for r in sorted_rows), default=0)
-        asset_col_width = max(15, int((longest_asset + 2) * 0.75))
+        asset_col_width = max(28, min(40, longest_asset + 2))
 
     console = Console()
-    table = Table(title=title_override or "Multi-Asset Signal Summary (1,000,000 PLN notional)")
-    table.add_column("Asset", justify="left", style="bold", min_width=asset_col_width, max_width=asset_col_width)
     
+    # Table with readable columns
+    table = Table(
+        title=title_override or "[bold]Signal Summary[/bold]",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="blue",
+        padding=(0, 1),
+    )
+    # Asset column - allow wrap to second line for full name visibility
+    table.add_column("Asset", justify="left", style="bold", width=asset_col_width, no_wrap=False)
+    
+    # Short horizon labels - slightly wider columns
+    horizon_labels = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
     for horizon in horizons:
-        table.add_column(format_horizon_label(horizon), justify="center", min_width=18, max_width=18, overflow="fold")
+        label = horizon_labels.get(horizon, f"{horizon}d")
+        table.add_column(label, justify="center", width=19)
 
     for row in sorted_rows:
         asset_label = row.get("asset_label", "Unknown")
@@ -386,7 +430,7 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         
         cells = []
         for horizon in horizons:
-            signal_data = horizon_signals.get(horizon, {})
+            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
             label = signal_data.get("label", "HOLD")
             profit_pln = signal_data.get("profit_pln", 0.0)
             cells.append(format_profit_with_signal(label, profit_pln))
@@ -394,6 +438,7 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         table.add_row(asset_label, *cells)
 
     console.print(table)
+    console.print()
 
 
 def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) -> None:
@@ -414,11 +459,11 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
             return 0
         return len(re.sub(r"\[/?[^\]]+\]", "", text))
     longest_asset = max((_plain_len(r.get("asset_label", "")) for r in summary_rows), default=0)
-    asset_col_width = max(15, int((longest_asset + 2) * 0.75))
+    asset_col_width = max(28, min(40, longest_asset + 2))
 
     for sector, rows in sorted(buckets.items()):
         console = Console()
-        header = f"[bold cyan]{sector}[/bold cyan] — Multi-Asset Signal Summary (1,000,000 PLN notional)"
+        header = f"[bold cyan]{sector}[/bold cyan]"
         console.print("")
         render_multi_asset_summary_table(rows, horizons, title_override=header, asset_col_width=asset_col_width)
 

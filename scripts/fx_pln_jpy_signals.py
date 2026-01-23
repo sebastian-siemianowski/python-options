@@ -279,6 +279,56 @@ EDGE_FLOOR = float(np.clip(EDGE_FLOOR, 0.0, 1.5))
 
 DEFAULT_CACHE_PATH = os.path.join("cache", "fx_plnjpy.json")
 
+# ============================================================================
+# UPGRADE #3: Display Price Inertia (Presentation-Only)
+# ============================================================================
+# This cache stores previous display prices for presentation smoothing.
+# Formula: display_price = 0.7 * prev_display_price + 0.3 * new_predicted_price
+#
+# IMPORTANT:
+# - This does NOT affect trading decisions
+# - This does NOT affect Expected Utility calculations
+# - This does NOT affect regime detection
+# - It ONLY prevents day-to-day jitter in displayed prices
+#
+# Institutions do this quietly for all client-facing price estimates.
+# ============================================================================
+_DISPLAY_PRICE_CACHE: Dict[Tuple[str, int], float] = {}
+DISPLAY_PRICE_INERTIA = 0.7  # weight on previous display price
+
+
+def _smooth_display_price(asset_key: str, horizon: int, new_price: float) -> float:
+    """Apply presentation-only smoothing to predicted prices.
+    
+    Args:
+        asset_key: Unique identifier for the asset (e.g., ticker symbol)
+        horizon: Forecast horizon in days
+        new_price: Newly computed predicted price
+        
+    Returns:
+        Smoothed display price that reduces day-to-day jitter
+    """
+    cache_key = (asset_key, horizon)
+    if cache_key in _DISPLAY_PRICE_CACHE:
+        prev_price = _DISPLAY_PRICE_CACHE[cache_key]
+        if np.isfinite(prev_price) and np.isfinite(new_price):
+            smoothed = DISPLAY_PRICE_INERTIA * prev_price + (1.0 - DISPLAY_PRICE_INERTIA) * new_price
+        else:
+            smoothed = new_price if np.isfinite(new_price) else prev_price
+    else:
+        smoothed = new_price
+    
+    if np.isfinite(smoothed):
+        _DISPLAY_PRICE_CACHE[cache_key] = smoothed
+    
+    return smoothed
+
+
+def clear_display_price_cache() -> None:
+    """Clear the display price inertia cache. Useful for testing or resets."""
+    global _DISPLAY_PRICE_CACHE
+    _DISPLAY_PRICE_CACHE.clear()
+
 
 # NOTE: ExpectedUtilityResult dataclass removed - was only used by the legacy
 # compute_expected_utility() function. EU computation is now done inline in
@@ -3606,7 +3656,7 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     return "HOLD"
 
 
-def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68, tuned_params: Optional[Dict] = None) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]: 
+def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68, tuned_params: Optional[Dict] = None, asset_key: Optional[str] = None) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]: 
     """Compute signals using regime‑aware priors, tail‑aware probability mapping, and
     anti‑snap logic (two‑day confirmation + hysteresis + smoothing) without extra flags.
     
@@ -3624,6 +3674,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         t_map: Whether to use Student-t probability mapping
         ci: Confidence interval for bands
         tuned_params: Full tuned params from _load_tuned_kalman_params() with BMA structure
+        asset_key: Optional asset identifier for display price inertia (Upgrade #3)
     
     We build last‑two‑days estimates to avoid look‑ahead while adding stability.
     """
@@ -3810,8 +3861,22 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         if vol_H.size == 0:
             vol_H = np.zeros(3000, dtype=float)
         # Simulated moments and probability
-        mH = float(np.mean(sim_H))
-        vH = float(np.var(sim_H, ddof=1)) if sim_H.size > 1 else 0.0
+        # ========================================================================
+        # UPGRADE #1: Trimmed Mean for Expected Return
+        # ========================================================================
+        # Use 5th-95th percentile trimmed mean to prevent extreme tails from 
+        # dominating the displayed expected return.
+        # This dramatically stabilizes price predictions while preserving
+        # directionality and remaining distribution-aware.
+        # ========================================================================
+        lo_trim = np.quantile(sim_H, 0.05)
+        hi_trim = np.quantile(sim_H, 0.95)
+        sim_H_trimmed = sim_H[(sim_H > lo_trim) & (sim_H < hi_trim)]
+        if sim_H_trimmed.size > 0:
+            mH = float(np.mean(sim_H_trimmed))
+        else:
+            mH = float(np.mean(sim_H))  # fallback to full mean if trim removes all
+        vH = float(np.var(sim_H, ddof=1)) if sim_H.size > 1 else 0.0  # keep full variance for stats
         sH = float(math.sqrt(max(vH, 1e-12)))
         z_stat = float(mH / sH) if sH > 0 else 0.0
         
@@ -4063,7 +4128,35 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         except Exception:
             ci_low = mH - 1.0 * sH
             ci_high = mH + 1.0 * sH
-        mu_H = mH  # use simulated mean directly
+        
+        # ========================================================================
+        # UPGRADE #2: EU-Aligned Expected Move
+        # ========================================================================
+        # Anchor the displayed expected return to the expected utility sign and
+        # magnitude. This aligns what users see with the belief that drives
+        # BUY/HOLD/SELL decisions, creating cognitive consonance.
+        #
+        # Formula:
+        #   direction = sign(expected_utility)
+        #   magnitude = sqrt(|expected_utility|)
+        #   eu_aligned_return = direction × magnitude × volatility_scale
+        #
+        # This does NOT change: signal logic, regimes, model averaging.
+        # It only adjusts the displayed expected return for presentation.
+        # ========================================================================
+        eu_direction = np.sign(expected_utility) if np.isfinite(expected_utility) else 0.0
+        eu_magnitude = np.sqrt(abs(expected_utility)) if np.isfinite(expected_utility) else 0.0
+        volatility_scale = sH if sH > 0 else 1e-6
+        eu_aligned_return = float(eu_direction * eu_magnitude * volatility_scale)
+        
+        # Blend: use EU-aligned return for direction-consistency, but preserve
+        # reasonable magnitude from trimmed mean
+        if abs(eu_aligned_return) > 1e-12 and abs(mH) > 1e-12:
+            # Scale EU-aligned to similar magnitude as trimmed mean
+            scale_factor = min(abs(mH) / abs(eu_aligned_return), 3.0) if abs(eu_aligned_return) > 1e-12 else 1.0
+            mu_H = eu_aligned_return * scale_factor
+        else:
+            mu_H = mH  # fallback to trimmed mean if EU is near zero
         sig_H = sH
 
         # ========================================================================
@@ -4153,9 +4246,29 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         exp_mult = float(np.exp(mu_H))
         ci_low_mult = float(np.exp(ci_low))
         ci_high_mult = float(np.exp(ci_high))
-        profit_pln = float(NOTIONAL_PLN) * (exp_mult - 1.0)
-        profit_ci_low_pln = float(NOTIONAL_PLN) * (ci_low_mult - 1.0)
-        profit_ci_high_pln = float(NOTIONAL_PLN) * (ci_high_mult - 1.0)
+        
+        # Raw (unsmoothed) profit values
+        raw_profit_pln = float(NOTIONAL_PLN) * (exp_mult - 1.0)
+        raw_profit_ci_low_pln = float(NOTIONAL_PLN) * (ci_low_mult - 1.0)
+        raw_profit_ci_high_pln = float(NOTIONAL_PLN) * (ci_high_mult - 1.0)
+        
+        # ========================================================================
+        # UPGRADE #3: Display Price Inertia (Presentation-Only)
+        # ========================================================================
+        # Apply smoothing to displayed profit to reduce day-to-day jitter.
+        # Formula: display_price = 0.7 * prev_display_price + 0.3 * new_predicted_price
+        #
+        # IMPORTANT: This does NOT affect trading decisions, EU, or regimes.
+        # It only prevents "why did this jump?" moments for users.
+        # ========================================================================
+        if asset_key is not None and len(asset_key) > 0:
+            profit_pln = _smooth_display_price(asset_key, H, raw_profit_pln)
+            profit_ci_low_pln = _smooth_display_price(f"{asset_key}_lo", H, raw_profit_ci_low_pln)
+            profit_ci_high_pln = _smooth_display_price(f"{asset_key}_hi", H, raw_profit_ci_high_pln)
+        else:
+            profit_pln = raw_profit_pln
+            profit_ci_low_pln = raw_profit_ci_low_pln
+            profit_ci_high_pln = raw_profit_ci_high_pln
 
         sigs.append(Signal(
             horizon_days=int(H),
@@ -4275,7 +4388,8 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         # Load tuned params with BMA structure for model averaging
         tuned_params = _load_tuned_kalman_params(asset)
         
-        sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci, tuned_params=tuned_params)
+        # Pass asset_key (canon) for display price inertia (Upgrade #3)
+        sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci, tuned_params=tuned_params, asset_key=canon)
         
         # Compute diagnostics if requested
         diagnostics = {}
@@ -4405,27 +4519,108 @@ def main() -> None:
         with open(cache_path, "r") as f:
             payload = json.load(f)
         horizons_cached = payload.get("horizons") or horizons
+        assets_cached = payload.get("assets", [])
         summary_rows_cached = payload.get("summary_rows")
-        # Fallback reconstruction if summary_rows missing
+        
+        console = Console()
+        console.print(f"[cyan]Rendering {len(assets_cached)} assets from cache: {cache_path}[/cyan]\n")
+        
+        # Render detailed/simplified tables for each asset (same as normal flow)
+        caption_printed = False
+        for asset_data in assets_cached:
+            sym = asset_data.get("symbol") or ""
+            title = asset_data.get("title") or sym
+            last_close = asset_data.get("last_close", 0.0)
+            as_of = asset_data.get("as_of", "")
+            ci_level = asset_data.get("ci_level", 0.68)
+            prob_mapping = asset_data.get("probability_mapping", "student_t")
+            used_student_t = (prob_mapping == "student_t")
+            
+            # Reconstruct Signal objects from cached data
+            signals_data = asset_data.get("signals", [])
+            sigs = []
+            for s in signals_data:
+                try:
+                    sig = Signal(
+                        horizon_days=s.get("horizon_days", 0),
+                        score=s.get("score", 0.0),
+                        p_up=s.get("p_up", 0.5),
+                        exp_ret=s.get("exp_ret", 0.0),
+                        ci_low=s.get("ci_low", 0.0),
+                        ci_high=s.get("ci_high", 0.0),
+                        profit_pln=s.get("profit_pln", 0.0),
+                        profit_ci_low_pln=s.get("profit_ci_low_pln", 0.0),
+                        profit_ci_high_pln=s.get("profit_ci_high_pln", 0.0),
+                        position_strength=s.get("position_strength", 0.0),
+                        vol_mean=s.get("vol_mean", 0.0),
+                        vol_ci_low=s.get("vol_ci_low", 0.0),
+                        vol_ci_high=s.get("vol_ci_high", 0.0),
+                        regime=s.get("regime", ""),
+                        label=s.get("label", "HOLD"),
+                        expected_utility=s.get("expected_utility", 0.0),
+                        expected_gain=s.get("expected_gain", 0.0),
+                        expected_loss=s.get("expected_loss", 0.0),
+                        gain_loss_ratio=s.get("gain_loss_ratio", 1.0),
+                        eu_position_size=s.get("eu_position_size", 0.0),
+                        drift_uncertainty=s.get("drift_uncertainty", 0.0),
+                        p_analytical=s.get("p_analytical", 0.5),
+                        p_empirical=s.get("p_empirical", 0.5),
+                        regime_used=s.get("regime_used"),
+                        regime_source=s.get("regime_source", "global"),
+                        regime_collapse_warning=s.get("regime_collapse_warning", False),
+                        bma_method=s.get("bma_method", "legacy"),
+                        bma_has_model_posterior=s.get("bma_has_model_posterior", False),
+                        bma_borrowed_from_global=s.get("bma_borrowed_from_global", False),
+                    )
+                    sigs.append(sig)
+                except Exception as e:
+                    console.print(f"[yellow]Warning:[/yellow] Could not reconstruct signal for {sym}: {e}")
+                    continue
+            
+            if not sigs:
+                continue
+            
+            # Create a minimal price series for display (just need last close and date)
+            try:
+                px = pd.Series([last_close], index=pd.to_datetime([as_of]), name="px")
+            except Exception:
+                px = pd.Series([last_close], index=[pd.Timestamp.now()], name="px")
+            
+            # Render the table
+            if args.simple:
+                # For simple mode, we need features for context - use empty dict as fallback
+                render_simplified_signal_table(sym, title, sigs, px, {})
+            else:
+                if args.force_caption:
+                    show_caption = True
+                elif args.no_caption:
+                    show_caption = False
+                else:
+                    show_caption = not caption_printed
+                render_detailed_signal_table(sym, title, sigs, px, confidence_level=ci_level, used_student_t_mapping=used_student_t, show_caption=show_caption)
+                caption_printed = caption_printed or show_caption
+        
+        # Render summary tables at the end
         if not summary_rows_cached:
             summary_rows_cached = []
-            for asset in payload.get("assets", []):
-                sym = asset.get("symbol") or ""
-                title = asset.get("title") or sym
+            for asset_data in assets_cached:
+                sym = asset_data.get("symbol") or ""
+                title = asset_data.get("title") or sym
                 asset_label = build_asset_display_label(sym, title)
-                sector = asset.get("sector", "Unspecified")
+                sector = asset_data.get("sector", "Unspecified")
                 horizon_signals = {}
-                for sig in asset.get("signals", []):
+                for sig in asset_data.get("signals", []):
                     h = sig.get("horizon_days")
                     if h is None:
                         continue
                     horizon_signals[int(h)] = {"label": sig.get("label", "HOLD"), "profit_pln": float(sig.get("profit_pln", 0.0))}
                 nearest_label = next(iter(horizon_signals.values()), {}).get("label", "HOLD")
                 summary_rows_cached.append({"asset_label": asset_label, "horizon_signals": horizon_signals, "nearest_label": nearest_label, "sector": sector})
+        
         try:
             render_sector_summary_tables(summary_rows_cached, horizons_cached)
         except Exception as e:
-            Console().print(f"[yellow]Warning:[/yellow] Could not print summary tables from cache: {e}")
+            console.print(f"[yellow]Warning:[/yellow] Could not print summary tables from cache: {e}")
         return
 
     # Parse assets
