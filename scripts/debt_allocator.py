@@ -43,7 +43,7 @@ ARCHITECTURAL CONSTRAINTS:
     - Deletable with zero side effects
 
 Author: Research-Grade Debt Allocation Engine
-Version: 3.0.0
+Version: 3.1.0
 
 UPGRADES (v3.0.0):
     1. Endogenous state transitions: P(S_t|S_{t-1}, Y_{t-1})
@@ -52,6 +52,10 @@ UPGRADES (v3.0.0):
     4. Meta-uncertainty with model averaging: P(S_t|Y) = Σ P(S_t|M_k,Y)P(M_k|Y)
     5. Dynamic decision boundary: α(t) = f(convexity, leverage, carry)
     6. Explicit "do nothing" dominance check: E[Loss_stay] - E[Loss_switch]
+
+UPGRADES (v3.1.0):
+    7. Stress-accelerated transition pressure: Φ(Y) bounded scalar for P(S_t|S_{t-1}, Φ(Y_{t-1}))
+    8. Risk-adaptive decision boundary: α(t) = α₀ − g(ΔC(t)) with bounded monotone g(·)
 """
 
 from __future__ import annotations
@@ -162,6 +166,7 @@ class ObservationVector:
     
     Components:
         C: Convex loss functional E[max(ΔX, 0)^p]
+        ΔC: Convex loss acceleration C(t) - C(t-1) (v3.1.0)
         P: Tail mass P(ΔX > 0)
         D: Epistemic disagreement (normalized)
         dD: Disagreement momentum
@@ -170,6 +175,7 @@ class ObservationVector:
         skew_momentum: Change in skew (v3.0.0)
     """
     convex_loss: float      # C(t)
+    convex_loss_acceleration: float  # ΔC(t) = C(t) - C(t-1) (v3.1.0)
     tail_mass: float        # P(t) = P(ΔX > 0)
     disagreement: float     # D(t)
     disagreement_momentum: float  # dD(t)
@@ -188,11 +194,13 @@ class ObservationVector:
             self.vol_ratio,
             self.skew,
             self.skew_momentum,
+            self.convex_loss_acceleration,  # v3.1.0
         ])
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "convex_loss": self.convex_loss,
+            "convex_loss_acceleration": self.convex_loss_acceleration,  # v3.1.0
             "tail_mass": self.tail_mass,
             "disagreement": self.disagreement,
             "disagreement_momentum": self.disagreement_momentum,
@@ -691,17 +699,20 @@ def _construct_observation_vector(
     log_returns: pd.Series,
     prev_disagreement: Optional[float] = None,
     prev_skew: Optional[float] = None,
+    prev_convex_loss: Optional[float] = None,  # v3.1.0
     timestamp: Optional[str] = None
 ) -> ObservationVector:
     """
     Construct the full observation vector Y_t.
     
     v3.0.0: Added skew and skew_momentum for directional asymmetry tracking.
+    v3.1.0: Added convex_loss_acceleration (ΔC) for transition pressure.
     
     Args:
         log_returns: Historical log returns up to time t
         prev_disagreement: Previous disagreement for momentum calculation
         prev_skew: Previous skew for momentum calculation (v3.0.0)
+        prev_convex_loss: Previous convex loss for acceleration calculation (v3.1.0)
         timestamp: Timestamp for the observation
         
     Returns:
@@ -716,22 +727,28 @@ def _construct_observation_vector(
     # 1) Convex Loss Functional
     convex_loss = _compute_convex_loss(samples_21d)
     
-    # 2) Tail Mass
+    # 2) Convex Loss Acceleration (v3.1.0): ΔC(t) = C(t) - C(t-1)
+    if prev_convex_loss is not None and np.isfinite(prev_convex_loss) and np.isfinite(convex_loss):
+        convex_loss_acceleration = convex_loss - prev_convex_loss
+    else:
+        convex_loss_acceleration = 0.0
+    
+    # 3) Tail Mass
     tail_mass = _compute_tail_mass(samples_21d)
     
-    # 3) Epistemic Disagreement
+    # 4) Epistemic Disagreement
     disagreement, _, _ = _compute_epistemic_disagreement(log_returns)
     
-    # 4) Disagreement Momentum
+    # 5) Disagreement Momentum
     if prev_disagreement is not None and np.isfinite(prev_disagreement) and np.isfinite(disagreement):
         disagreement_momentum = disagreement - prev_disagreement
     else:
         disagreement_momentum = 0.0
     
-    # 5) Volatility Ratio
+    # 6) Volatility Ratio
     vol_ratio = _compute_volatility_ratio(log_returns)
     
-    # 6) Skew Dynamics (v3.0.0 - Improvement 3)
+    # 7) Skew Dynamics (v3.0.0 - Improvement 3)
     skew, skew_momentum = _compute_skew_momentum(log_returns)
     
     # Override skew momentum if we have explicit previous skew
@@ -740,6 +757,7 @@ def _construct_observation_vector(
     
     return ObservationVector(
         convex_loss=convex_loss,
+        convex_loss_acceleration=convex_loss_acceleration,  # v3.1.0
         tail_mass=tail_mass,
         disagreement=disagreement,
         disagreement_momentum=disagreement_momentum,
@@ -799,23 +817,118 @@ def _build_base_transition_matrix(persistence: float = TRANSITION_PERSISTENCE) -
     return A
 
 
+def _compute_transition_pressure(
+    observation: np.ndarray,
+    historical_quantiles: Dict[str, float]
+) -> float:
+    """
+    Compute bounded transition-pressure scalar Φ(Y).
+    
+    v3.1.0 - Issue 1 Fix: Stress-accelerated latent process
+    
+    Φ(Y) is constructed from:
+    - Convex loss acceleration: ΔC(t) = C(t) − C(t−1)
+    - Epistemic momentum: dD(t) = D(t) − D(t−1)
+    - Volatility compression indicator
+    
+    Properties:
+    - Φ(Y) ≥ 0 (always non-negative)
+    - Φ(Y) increases monotonically with stress acceleration
+    - Φ(Y) saturates (bounded, no runaway probabilities)
+    
+    Args:
+        observation: Current observation vector Y_t
+        historical_quantiles: Dict with quantile arrays for each metric
+        
+    Returns:
+        Bounded transition pressure scalar Φ(Y) ∈ [0, 1]
+    """
+    # Extract observation components
+    # Array layout: [convex_loss, tail_mass, disagreement, disag_momentum, vol_ratio, skew, skew_momentum, convex_accel]
+    obs_convex = observation[0]  # C(t)
+    obs_disag_momentum = observation[3]  # dD(t)
+    obs_vol = observation[4]  # V(t)
+    obs_convex_accel = observation[7] if len(observation) > 7 else 0.0  # ΔC(t) (v3.1.0)
+    
+    # Get historical quantiles for normalization
+    convex_q75 = historical_quantiles.get('convex_q75', 0.0006)
+    convex_q90 = historical_quantiles.get('convex_q90', 0.001)
+    disag_q75 = historical_quantiles.get('disag_q75', 0.30)
+    vol_q25 = historical_quantiles.get('vol_q25', 0.85)
+    
+    # Normalization scale for convex loss acceleration
+    # Typical ΔC range is ±0.0003, extreme is ±0.001
+    convex_accel_scale = convex_q90 - convex_q75 + 1e-8
+    
+    # Component 1: Convex loss acceleration contribution
+    # Uses tanh for bounded, saturating, monotonic transformation
+    if np.isfinite(obs_convex_accel):
+        # Normalize and apply tanh for saturation
+        # Positive acceleration → higher pressure
+        normalized_accel = obs_convex_accel / convex_accel_scale
+        phi_convex = max(0.0, np.tanh(normalized_accel * 2.0))  # [0, 1)
+    else:
+        phi_convex = 0.0
+    
+    # Component 2: Epistemic momentum contribution
+    # Rising disagreement → higher pressure
+    if np.isfinite(obs_disag_momentum):
+        # Normalize by typical disagreement range
+        normalized_momentum = obs_disag_momentum / (disag_q75 + 1e-8)
+        phi_disag = max(0.0, np.tanh(normalized_momentum * 3.0))  # [0, 1)
+    else:
+        phi_disag = 0.0
+    
+    # Component 3: Volatility compression indicator
+    # Low vol ratio (compression) → higher pressure
+    if np.isfinite(obs_vol):
+        # Compression occurs when V(t) < vol_q25
+        if obs_vol < vol_q25:
+            # More compressed → higher pressure
+            compression_ratio = (vol_q25 - obs_vol) / vol_q25
+            phi_vol = np.tanh(compression_ratio * 4.0)  # [0, 1)
+        else:
+            phi_vol = 0.0
+    else:
+        phi_vol = 0.0
+    
+    # Combine components with weighted sum
+    # Weights reflect relative importance of each stress signal
+    w_convex = 0.50  # Convex acceleration is primary signal
+    w_disag = 0.30   # Epistemic momentum is secondary
+    w_vol = 0.20     # Volatility compression is tertiary
+    
+    phi_raw = w_convex * phi_convex + w_disag * phi_disag + w_vol * phi_vol
+    
+    # Final saturation to ensure Φ(Y) ∈ [0, 1]
+    # Apply sigmoid for smooth saturation
+    phi = 1.0 / (1.0 + np.exp(-4.0 * (phi_raw - 0.3)))  # Shifted sigmoid
+    
+    # Ensure non-negative and bounded
+    phi = max(0.0, min(phi, 1.0))
+    
+    return phi
+
+
 def _compute_endogenous_transition_matrix(
     base_matrix: np.ndarray,
     observation: np.ndarray,
-    historical_quantiles: Dict[str, np.ndarray]
+    historical_quantiles: Dict[str, float]
 ) -> np.ndarray:
     """
     Compute observation-dependent transition matrix.
     
-    v3.0.0 - Improvement 1: Endogenize state transitions
+    v3.1.0 - Issue 1 Fix: Endogenous transitions using bounded Φ(Y)
     
-    P(S_t = s_j | S_{t-1} = s_i, Y_{t-1})
+    P(S_t | S_{t−1}) → P(S_t | S_{t−1}, Φ(Y_{t−1}))
     
-    Key insight: Policy stress does not accumulate at a constant rate.
-    When fragility accelerates, transition to PRE_POLICY becomes more likely.
-    When volatility compresses, POLICY becomes more likely.
+    Transition effects of Φ(Y):
+    - Increase probability of advancing to next state
+    - Never allow backward transitions (monotone constraint)
+    - Preserve probability mass normalization
     
-    This turns the model into a controlled latent process, not a passive one.
+    This creates a stress-accelerated latent process without
+    introducing new states or loss of identifiability.
     
     Args:
         base_matrix: Base transition matrix (without observation conditioning)
@@ -828,70 +941,43 @@ def _compute_endogenous_transition_matrix(
     n_states = LatentState.n_states()
     A = base_matrix.copy()
     
-    # Extract observation components
-    obs_convex = observation[0]  # Convex loss
-    obs_tail = observation[1]    # Tail mass
-    obs_disag = observation[2]   # Disagreement
-    obs_vol = observation[4]     # Volatility ratio
-    obs_skew = observation[5] if len(observation) > 5 else 0.0  # Skew
-    obs_skew_mom = observation[6] if len(observation) > 6 else 0.0  # Skew momentum
+    # Compute transition pressure scalar Φ(Y) (v3.1.0)
+    phi = _compute_transition_pressure(observation, historical_quantiles)
     
-    # Get quantiles
-    convex_q75 = historical_quantiles.get('convex_q75', 0.0006)
-    convex_q90 = historical_quantiles.get('convex_q90', 0.001)
-    tail_q75 = historical_quantiles.get('tail_q75', 0.52)
-    disag_q75 = historical_quantiles.get('disag_q75', 0.30)
-    vol_q25 = historical_quantiles.get('vol_q25', 0.85)
-    
-    # Compute stress acceleration factor
-    # Higher values = faster transition to stressed states
-    stress_factor = 1.0
-    
-    # Convex loss elevation increases forward transition probability
-    if np.isfinite(obs_convex) and obs_convex > convex_q75:
-        stress_factor += 0.5 * min((obs_convex - convex_q75) / (convex_q90 - convex_q75 + 1e-6), 2.0)
-    
-    # High tail mass increases stress
-    if np.isfinite(obs_tail) and obs_tail > tail_q75:
-        stress_factor += 0.3
-    
-    # Elevated disagreement increases uncertainty → faster transitions
-    if np.isfinite(obs_disag) and obs_disag > disag_q75:
-        stress_factor += 0.4
-    
-    # Volatility compression is a warning sign
-    if np.isfinite(obs_vol) and obs_vol < vol_q25:
-        stress_factor += 0.5
-    
-    # Rapid skew sign change is an early warning (v3.0.0)
-    if np.isfinite(obs_skew_mom) and abs(obs_skew_mom) > 0.5:
-        stress_factor += 0.6
-    
-    # Negative skew with momentum toward more negative = dangerous JPY strength
-    if np.isfinite(obs_skew) and np.isfinite(obs_skew_mom):
-        if obs_skew < -0.5 and obs_skew_mom < -0.1:
-            stress_factor += 0.4
-    
-    # Clamp stress factor
-    stress_factor = max(0.5, min(stress_factor, 3.0))
-    
-    # Modify transition probabilities based on stress factor
+    # Modify transition probabilities based on Φ(Y)
+    # Higher Φ → lower persistence → faster forward transitions
     for i in range(n_states - 1):  # Don't modify POLICY (absorbing)
-        # Reduce persistence when stress is high
-        adjusted_persistence = A[i, i] ** (1.0 / stress_factor)
+        # Current persistence (diagonal element)
+        base_persistence = A[i, i]
         
-        # Redistribute to forward states
-        remaining = 1.0 - adjusted_persistence
-        current_remaining = 1.0 - A[i, i]
+        # Reduce persistence proportionally to Φ(Y)
+        # Formula: p'(i,i) = p(i,i) * (1 - φ * reduction_factor)
+        # where reduction_factor controls how much Φ can reduce persistence
+        reduction_factor = 0.4  # Max 40% reduction at Φ=1
+        adjusted_persistence = base_persistence * (1.0 - phi * reduction_factor)
         
-        if current_remaining > 1e-6:
-            scale = remaining / current_remaining
-            for j in range(i + 1, n_states):
-                A[i, j] = A[i, j] * scale
+        # Ensure persistence stays reasonable (at least 50% of base)
+        adjusted_persistence = max(adjusted_persistence, base_persistence * 0.5)
+        
+        # Redistribute removed probability mass to forward states only
+        # (backward transitions remain forbidden)
+        removed_mass = base_persistence - adjusted_persistence
+        
+        if removed_mass > 1e-10:
+            # Get current forward transition probabilities
+            forward_probs = A[i, i+1:].copy()
+            forward_sum = forward_probs.sum()
+            
+            if forward_sum > 1e-10:
+                # Distribute removed mass proportionally to existing forward probs
+                A[i, i+1:] = forward_probs + removed_mass * (forward_probs / forward_sum)
+            else:
+                # No existing forward probs: put all mass on next state
+                A[i, i+1] = removed_mass
         
         A[i, i] = adjusted_persistence
     
-    # Normalize rows
+    # Normalize rows to ensure valid probability distribution
     for i in range(n_states):
         row_sum = A[i, :].sum()
         if row_sum > 0:
@@ -1482,85 +1568,110 @@ def _compute_model_averaged_posterior(
 
 
 # =============================================================================
-# DYNAMIC DECISION BOUNDARY (v3.0.0 - Improvement 5)
+# DYNAMIC DECISION BOUNDARY (v3.1.0 - Issue 2 Fix)
 # =============================================================================
+
+def _g_convexity_adjustment(delta_c: float, scale: float = 0.0005) -> float:
+    """
+    Bounded, monotone increasing function g(·) for decision boundary adjustment.
+    
+    v3.1.0 - Issue 2 Fix: Risk-adaptive decision boundary
+    
+    g(ΔC) is used in: α(t) = α₀ − g(ΔC(t))
+    
+    Properties:
+    - g(0) = 0 (no adjustment when convexity is flat)
+    - g(ΔC) > 0 for ΔC > 0 (reduce threshold when convexity accelerates)
+    - g(·) is monotonically increasing
+    - g(·) is bounded (saturates to prevent extreme thresholds)
+    
+    Uses tanh for smooth saturation.
+    
+    Args:
+        delta_c: Convex loss acceleration ΔC(t) = C(t) - C(t-1)
+        scale: Normalization scale for typical ΔC values
+        
+    Returns:
+        Bounded adjustment g(ΔC) ∈ [0, max_adjustment]
+    """
+    if not np.isfinite(delta_c):
+        return 0.0
+    
+    # Only reduce threshold for positive acceleration (increasing convexity)
+    if delta_c <= 0:
+        return 0.0
+    
+    # Normalize by typical scale
+    normalized = delta_c / scale
+    
+    # Apply tanh for bounded, monotonic, saturating behavior
+    # tanh(x) ∈ [-1, 1], we use only positive part
+    raw_g = np.tanh(normalized)
+    
+    # Maximum adjustment to α is 0.20 (from 0.60 base to 0.40 minimum)
+    max_adjustment = 0.20
+    
+    return max_adjustment * raw_g
+
 
 def _compute_dynamic_alpha(
     observation: ObservationVector,
     base_alpha: float = PRE_POLICY_THRESHOLD
 ) -> float:
     """
-    Compute dynamic decision boundary α(t) based on context.
+    Compute risk-adaptive decision boundary α(t).
     
-    v3.0.0 - Improvement 5: Decision boundary as a function, not a constant
+    v3.1.0 - Issue 2 Fix: Static α replaced with dynamic α(t)
     
-    α(t) = f(convexity, leverage, carry)
+    Formula:
+        α(t) = α₀ − g(ΔC(t))
     
-    Meaning:
-    - When convexity is extreme → lower α (trigger earlier)
-    - When carry benefit is large → higher α (more conservative)
+    Where:
+    - α₀ is the baseline confidence threshold (base_alpha)
+    - g(·) is a bounded, monotone increasing function
+    - ΔC(t) = C(t) - C(t-1) is convex loss acceleration
     
-    This is dynamic regret minimization, not static.
+    Interpretation:
+    - When convexity is flat (ΔC ≈ 0) → require high certainty (α ≈ α₀)
+    - When convexity accelerates (ΔC > 0) → act earlier with less certainty
+    
+    This implements risk-sensitive Bayesian decision theory.
     
     Args:
         observation: Current observation vector
-        base_alpha: Base threshold (default PRE_POLICY_THRESHOLD)
+        base_alpha: Baseline threshold α₀ (default PRE_POLICY_THRESHOLD)
         
     Returns:
-        Dynamic threshold α(t)
+        Dynamic threshold α(t) ∈ (0, 1)
     """
+    # Start with base threshold
     alpha = base_alpha
     
-    # Convexity adjustment
-    # Higher convex loss → lower threshold (more aggressive)
-    if np.isfinite(observation.convex_loss):
-        # Typical convex loss range is 0.0001 to 0.002
-        convex_normalized = min(observation.convex_loss / 0.001, 3.0)
-        if convex_normalized > 1.0:
-            # Reduce threshold when convexity is elevated
-            alpha -= 0.05 * (convex_normalized - 1.0)
+    # Primary adjustment: g(ΔC(t)) (v3.1.0 - Issue 2 Fix)
+    # This is the mathematically correct formulation
+    if np.isfinite(observation.convex_loss_acceleration):
+        g_adjustment = _g_convexity_adjustment(observation.convex_loss_acceleration)
+        alpha -= g_adjustment
     
-    # Volatility adjustment
-    # Compressed volatility (pre-explosion) → lower threshold
+    # Secondary adjustments (preserved from v3.0.0 for robustness)
+    # These provide additional context but are secondary to the ΔC-based adjustment
+    
+    # Volatility compression: additional signal of danger
     if np.isfinite(observation.vol_ratio):
         if observation.vol_ratio < 0.7:
-            # Severe compression - be more aggressive
-            alpha -= 0.10
+            # Severe compression - modest additional reduction
+            alpha -= 0.05
         elif observation.vol_ratio < 0.85:
             # Moderate compression
-            alpha -= 0.05
-        elif observation.vol_ratio > 1.3:
-            # Already expanding - might be too late, but also less "quiet danger"
-            alpha += 0.05
+            alpha -= 0.02
     
-    # Disagreement adjustment
-    # High disagreement → more uncertainty → lower threshold
-    if np.isfinite(observation.disagreement):
-        if observation.disagreement > 0.5:
-            alpha -= 0.08
-        elif observation.disagreement > 0.35:
-            alpha -= 0.04
-    
-    # Skew adjustment (v3.0.0)
-    # Strong negative skew → lower threshold (danger signal)
-    if np.isfinite(observation.skew):
-        if observation.skew < -1.0:
-            alpha -= 0.10
-        elif observation.skew < -0.5:
-            alpha -= 0.05
-    
-    # Rapid skew change → lower threshold
-    if np.isfinite(observation.skew_momentum):
-        if abs(observation.skew_momentum) > 0.5:
-            alpha -= 0.07
-    
-    # Momentum adjustment
-    # Rising disagreement → lower threshold
+    # Disagreement momentum: rising uncertainty is concerning
     if np.isfinite(observation.disagreement_momentum):
         if observation.disagreement_momentum > 0.05:
-            alpha -= 0.05
+            alpha -= 0.03
     
-    # Clamp to reasonable range
+    # Enforce strict bounds: α(t) ∈ (0, 1)
+    # Practical bounds: [0.35, 0.80] to prevent extreme behavior
     alpha = max(0.35, min(alpha, 0.80))
     
     return alpha
@@ -1688,6 +1799,7 @@ def _run_inference(
     obs_arrays = []
     prev_disagreement = None
     prev_skew = None  # v3.0.0: Track skew momentum
+    prev_convex_loss = None  # v3.1.0: Track convex loss acceleration
     
     for t in range(start_idx, n_obs):
         # Use data up to time t
@@ -1697,6 +1809,7 @@ def _run_inference(
             returns_to_t, 
             prev_disagreement=prev_disagreement,
             prev_skew=prev_skew,
+            prev_convex_loss=prev_convex_loss,  # v3.1.0
             timestamp=str(log_returns.index[t])
         )
         observations.append(obs)
@@ -1705,6 +1818,7 @@ def _run_inference(
         # Update for next iteration
         prev_disagreement = obs.disagreement
         prev_skew = obs.skew  # v3.0.0
+        prev_convex_loss = obs.convex_loss  # v3.1.0
     
     if len(observations) == 0:
         raise ValueError("No observations constructed")
@@ -1921,6 +2035,7 @@ def _load_persisted_decision(
         obs_data = data['observation']
         observation = ObservationVector(
             convex_loss=obs_data['convex_loss'],
+            convex_loss_acceleration=obs_data.get('convex_loss_acceleration', 0.0),  # v3.1.0
             tail_mass=obs_data['tail_mass'],
             disagreement=obs_data['disagreement'],
             disagreement_momentum=obs_data['disagreement_momentum'],
@@ -2116,7 +2231,7 @@ def render_debt_switch_decision(
     # Header
     console.print()
     console.print("=" * 60)
-    console.print("[bold cyan]DEBT ALLOCATION — EURJPY (RESEARCH v3.0.0)[/bold cyan]", justify="center")
+    console.print("[bold cyan]DEBT ALLOCATION — EURJPY (RESEARCH v3.1.0)[/bold cyan]", justify="center")
     console.print("=" * 60)
     console.print()
     
@@ -2275,7 +2390,18 @@ def render_debt_switch_decision(
     else:
         skew_mom_str = "[dim]N/A[/dim]"
     
+    # Convex loss acceleration (v3.1.0)
+    if np.isfinite(obs.convex_loss_acceleration):
+        accel_str = f"{obs.convex_loss_acceleration:+.6f}"
+        if obs.convex_loss_acceleration > 0.0002:
+            accel_str = f"[yellow]{accel_str}[/yellow] (accelerating)"
+        elif obs.convex_loss_acceleration < -0.0002:
+            accel_str = f"[green]{accel_str}[/green] (decelerating)"
+    else:
+        accel_str = "[dim]N/A[/dim]"
+    
     metrics_table.add_row("Convex Loss C(t)", convex_str)
+    metrics_table.add_row("Convex Accel ΔC(t)", accel_str)  # v3.1.0
     metrics_table.add_row("Tail Mass P(ΔX > 0)", tail_str)
     metrics_table.add_row("Disagreement D(t)", disag_str)
     metrics_table.add_row("Momentum dD(t)", mom_str)
@@ -2319,7 +2445,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Research-Grade FX Debt Allocation Engine (EURJPY) v3.0.0"
+        description="Research-Grade FX Debt Allocation Engine (EURJPY) v3.1.0"
     )
     parser.add_argument(
         '--data-path',
@@ -2384,19 +2510,21 @@ def main():
         console.print(Panel(
             "[bold cyan]Research-Grade FX Debt Allocation Engine[/bold cyan]\n"
             "[dim]EURJPY Latent Policy-Stress Inference[/dim]\n"
-            "[bold green]Version 3.0.0[/bold green]",
+            "[bold green]Version 3.1.0[/bold green]",
             border_style="cyan",
         ))
         console.print()
         console.print(f"[dim]Cache directory: {DEBT_CACHE_DIR}[/dim]")
         console.print(f"[dim]Data file: {args.data_path}[/dim]")
         
-        # Show v3.0.0 feature status
+        # Show v3.1.0 feature status
         console.print()
-        console.print("[bold]v3.0.0 Features:[/bold]")
-        console.print(f"  Model Averaging:    {'[green]ON[/green]' if use_model_averaging else '[yellow]OFF[/yellow]'}")
-        console.print(f"  Dynamic α(t):       {'[green]ON[/green]' if use_dynamic_alpha else '[yellow]OFF[/yellow]'}")
-        console.print(f"  Dominance Check:    {'[green]ON[/green]' if use_dominance_check else '[yellow]OFF[/yellow]'}")
+        console.print("[bold]v3.1.0 Features:[/bold]")
+        console.print(f"  Model Averaging:        {'[green]ON[/green]' if use_model_averaging else '[yellow]OFF[/yellow]'}")
+        console.print(f"  Dynamic α(t):           {'[green]ON[/green]' if use_dynamic_alpha else '[yellow]OFF[/yellow]'}")
+        console.print(f"  Dominance Check:        {'[green]ON[/green]' if use_dominance_check else '[yellow]OFF[/yellow]'}")
+        console.print(f"  Transition Pressure Φ:  [green]ON[/green]")
+        console.print(f"  Risk-Adaptive α(ΔC):    [green]ON[/green]")
         console.print()
     
     # Run engine
