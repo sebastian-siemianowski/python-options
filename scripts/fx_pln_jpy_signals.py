@@ -201,6 +201,27 @@ try:
 except ImportError:
     HMM_AVAILABLE = False
 
+# Context manager to suppress noisy HMM convergence messages
+import contextlib
+import io
+import warnings
+
+@contextlib.contextmanager  
+def suppress_stdout():
+    """Temporarily suppress stdout/stderr to hide noisy library messages like HMM convergence warnings."""
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    try:
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            yield
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        sys.stderr = old_stderr
+
 # Import presentation layer for display logic
 from fx_signals_presentation import (
     render_detailed_signal_table,
@@ -975,9 +996,10 @@ def _estimate_regime_drift_priors(ret: pd.Series, vol: pd.Series) -> Optional[Di
         df.columns = ["ret", "vol"]
         X = df.values
         
-        # Fit 3-state HMM
+        # Fit 3-state HMM (suppress noisy convergence messages)
         model = hmm.GaussianHMM(n_components=3, covariance_type="full", n_iter=50, random_state=42, verbose=False)
-        model.fit(X)
+        with suppress_stdout():
+            model.fit(X)
         
         # Predict states
         states = model.predict(X)
@@ -1531,133 +1553,187 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         global_data = tuned_params.get('global', {})
         global_models = global_data.get('models', {})
         
-        # ANSI color codes
-        CYAN = '\033[96m'
-        GREEN = '\033[92m'
-        YELLOW = '\033[93m'
-        DIM = '\033[2m'
-        BOLD = '\033[1m'
-        RESET = '\033[0m'
+        # Use Rich for world-class presentation
+        from rich.table import Table
+        from rich.panel import Panel
+        from rich.text import Text
+        from rich.columns import Columns
+        from rich.console import Group
+        
+        console = Console(force_terminal=True)
         
         # Get company name and sector
         company_name = get_company_name(asset_symbol) or asset_symbol
         sector = get_sector(asset_symbol) or ""
         
-        # Build output as single string to avoid multiprocess interleaving
-        lines = []
-        lines.append(f"\n{CYAN}{'─'*65}{RESET}")
-        # Header with company name, ticker, and sector
-        if sector:
-            lines.append(f"{BOLD}📊 {company_name} ({asset_symbol}) — {sector}{RESET}")
-        else:
-            lines.append(f"{BOLD}📊 {company_name} ({asset_symbol}){RESET}")
-        lines.append(f"{DIM}   Bayesian Model Averaging{RESET}")
-        lines.append(f"{CYAN}{'─'*65}{RESET}")
-        
-        # Model posteriors with colored bars
-        lines.append(f"\n{BOLD}Model Weights{RESET} {DIM}p(m|D){RESET}")
-        model_short = {
-            'kalman_gaussian': 'Gaussian',
-            'kalman_phi_gaussian': 'φ-Gaussian', 
-            'kalman_phi_student_t': 'φ-Student-t'
+        # Model short names and descriptions
+        model_info = {
+            'kalman_gaussian': {'short': 'Gaussian', 'icon': '📈', 'desc': 'Standard Kalman filter'},
+            'kalman_phi_gaussian': {'short': 'φ-Gaussian', 'icon': '🔄', 'desc': 'Autoregressive drift'}, 
+            'kalman_phi_student_t': {'short': 'φ-Student-t', 'icon': '📊', 'desc': 'Heavy-tailed robust'}
         }
-        for model_name in ['kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']:
-            p = model_posterior.get(model_name, 0.0)
-            bar_len = int(p * 30)
-            bar = '█' * bar_len + '░' * (30 - bar_len)
-            short_name = model_short.get(model_name, model_name)
-            if model_name == best_model:
-                lines.append(f"  {GREEN}{short_name:12s}{RESET} {p:5.1%} {GREEN}{bar}{RESET} ◀")
-            else:
-                lines.append(f"  {short_name:12s} {p:5.1%} {DIM}{bar}{RESET}")
         
         # Helper functions to describe parameters in human terms
         def describe_drift_speed(q_val):
-            """Convert q to human-readable drift speed description."""
             if q_val is None or not np.isfinite(q_val):
-                return "unknown"
+                return ("unknown", "white")
             if q_val < 1e-9:
-                return "frozen"
+                return ("frozen", "blue")
             elif q_val < 1e-8:
-                return "slow"
+                return ("slow", "cyan")
             elif q_val < 1e-7:
-                return "moderate"
+                return ("moderate", "green")
             elif q_val < 1e-6:
-                return "fast"
+                return ("fast", "yellow")
             else:
-                return "rapid"
+                return ("rapid", "red")
         
         def describe_vol_scale(c_val):
-            """Convert c (observation scale) to human-readable description."""
             if c_val is None or not np.isfinite(c_val):
-                return "normal"
+                return ("normal", "white")
             if c_val < 0.7:
-                return "muted"
+                return ("muted", "blue")
             elif c_val < 0.9:
-                return "reduced"
+                return ("reduced", "cyan")
             elif c_val < 1.1:
-                return "normal"
+                return ("normal", "green")
             elif c_val < 1.3:
-                return "elevated"
+                return ("elevated", "yellow")
             else:
-                return "amplified"
+                return ("amplified", "red")
         
         def describe_persistence(phi_val):
-            """Convert φ to human-readable persistence description."""
             if phi_val is None or not np.isfinite(phi_val):
-                return "n/a"
+                return ("n/a", "dim")
             if phi_val < 0.5:
-                return "weak"
+                return ("weak", "red")
             elif phi_val < 0.8:
-                return "moderate"
+                return ("moderate", "yellow")
             elif phi_val < 0.95:
-                return "strong"
+                return ("strong", "green")
             elif phi_val < 0.99:
-                return "very strong"
+                return ("very strong", "cyan")
             else:
-                return "near-unit"
+                return ("near-unit", "blue")
         
         def describe_tail_weight(nu_val):
-            """Convert ν (degrees of freedom) to human-readable tail description."""
             if nu_val is None or not np.isfinite(nu_val):
-                return "normal"
+                return ("normal", "white")
             if nu_val < 5:
-                return "very heavy"
+                return ("very heavy", "red")
             elif nu_val < 10:
-                return "heavy"
+                return ("heavy", "yellow")
             elif nu_val < 30:
-                return "moderate"
+                return ("moderate", "green")
             else:
-                return "light"
+                return ("light", "cyan")
         
-        # Compact parameter table with human-readable descriptions and symbols
-        lines.append(f"\n{BOLD}Parameters{RESET}")
+        # Build model weights table
+        weights_table = Table(
+            show_header=True,
+            header_style="bold white",
+            border_style="cyan",
+            padding=(0, 1),
+            expand=False,
+        )
+        weights_table.add_column("Model", style="bold", width=12)
+        weights_table.add_column("Weight", justify="right", width=8)
+        weights_table.add_column("Confidence", width=25)
+        weights_table.add_column("", width=3)
+        
+        for model_name in ['kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']:
+            p = model_posterior.get(model_name, 0.0)
+            bar_len = int(p * 20)
+            bar_filled = '█' * bar_len
+            bar_empty = '░' * (20 - bar_len)
+            info = model_info.get(model_name, {'short': model_name, 'icon': '•'})
+            
+            is_best = model_name == best_model
+            if is_best:
+                weights_table.add_row(
+                    f"[bold #00d700]{info['short']}[/bold #00d700]",
+                    f"[bold #00d700]{p:.1%}[/bold #00d700]",
+                    f"[#00d700]{bar_filled}[/#00d700][dim]{bar_empty}[/dim]",
+                    "[bold #00d700]◀[/bold #00d700]"
+                )
+            else:
+                weights_table.add_row(
+                    info['short'],
+                    f"{p:.1%}",
+                    f"[cyan]{bar_filled}[/cyan][dim]{bar_empty}[/dim]",
+                    ""
+                )
+        
+        # Build parameters table
+        params_table = Table(
+            show_header=True,
+            header_style="bold white",
+            border_style="cyan",
+            padding=(0, 1),
+            expand=False,
+        )
+        params_table.add_column("Model", style="bold", width=12)
+        params_table.add_column("Drift (q)", justify="center", width=12)
+        params_table.add_column("Vol (c)", justify="center", width=12)
+        params_table.add_column("Persist (φ)", justify="center", width=12)
+        params_table.add_column("Tails (ν)", justify="center", width=12)
+        
         for model_name in ['kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']:
             m_params = global_models.get(model_name, {})
+            info = model_info.get(model_name, {'short': model_name})
+            is_best = model_name == best_model
+            
             if m_params.get('fit_success', False):
                 q = m_params.get('q', float('nan'))
                 c = m_params.get('c', float('nan'))
                 phi = m_params.get('phi')
                 nu = m_params.get('nu')
-                short_name = model_short.get(model_name, model_name)
                 
-                # Human-readable with symbols in parentheses
-                parts = [
-                    f"drift(q)={describe_drift_speed(q)}",
-                    f"vol(c)={describe_vol_scale(c)}"
-                ]
-                if phi is not None:
-                    parts.append(f"persist(φ)={describe_persistence(phi)}")
-                if nu is not None:
-                    parts.append(f"tails(ν)={describe_tail_weight(nu)}")
+                drift_desc, drift_color = describe_drift_speed(q)
+                vol_desc, vol_color = describe_vol_scale(c)
+                persist_desc, persist_color = describe_persistence(phi)
+                tail_desc, tail_color = describe_tail_weight(nu)
                 
-                color = GREEN if model_name == best_model else DIM
-                lines.append(f"  {color}{short_name:12s}{RESET} {', '.join(parts)}")
+                model_style = "bold green" if is_best else "white"
+                
+                params_table.add_row(
+                    f"[{model_style}]{info['short']}[/{model_style}]",
+                    f"[{drift_color}]{drift_desc}[/{drift_color}]",
+                    f"[{vol_color}]{vol_desc}[/{vol_color}]",
+                    f"[{persist_color}]{persist_desc}[/{persist_color}]" if phi is not None else "[dim]—[/dim]",
+                    f"[{tail_color}]{tail_desc}[/{tail_color}]" if nu is not None else "[dim]—[/dim]",
+                )
+            else:
+                params_table.add_row(
+                    info['short'],
+                    "[dim]failed[/dim]",
+                    "[dim]—[/dim]",
+                    "[dim]—[/dim]",
+                    "[dim]—[/dim]",
+                )
         
-        lines.append(f"{CYAN}{'─'*65}{RESET}\n")
+        # Create header
+        if sector:
+            title = f"[bold cyan]📊 {company_name}[/bold cyan] [dim]({asset_symbol})[/dim] — [white]{sector}[/white]"
+        else:
+            title = f"[bold cyan]📊 {company_name}[/bold cyan] [dim]({asset_symbol})[/dim]"
         
-        # Single atomic print to avoid multiprocess interleaving
-        print('\n'.join(lines))
+        # Print with elegant layout
+        console.print()
+        console.print(Panel(
+            Group(
+                Text("Model Weights", style="bold white"),
+                weights_table,
+                Text(""),
+                Text("Parameter Estimates", style="bold white"),
+                params_table,
+            ),
+            title=title,
+            subtitle="[dim]Bayesian Model Averaging[/dim]",
+            border_style="cyan",
+            padding=(1, 2),
+        ))
+        console.print()
     elif asset_symbol and tuned_params:
         # Old cache format warning
         print(f"\n\033[93m⚠️  {asset_symbol}: Old cache format — run tune_q_mle.py\033[0m\n")
@@ -1922,6 +1998,7 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
         X = df.values  # Shape (T, 2): returns and volatility as features
 
         # Fit Gaussian HMM with full covariance (allows each state its own μ and σ)
+        # Suppress stdout to hide noisy convergence messages from hmmlearn
         model = hmm.GaussianHMM(
             n_components=n_states,
             covariance_type="full",
@@ -1930,7 +2007,8 @@ def fit_hmm_regimes(feats: Dict[str, pd.Series], n_states: int = 3, random_seed:
             verbose=False
         )
 
-        model.fit(X)
+        with suppress_stdout():
+            model.fit(X)
 
         # Infer hidden state sequence (Viterbi for most likely path)
         states = model.predict(X)
@@ -4510,11 +4588,11 @@ def main() -> None:
     args = parse_args()
     horizons = sorted({int(x.strip()) for x in args.horizons.split(",") if x.strip()})
 
-    # Fast path: render from cache only
+    # Fast path: render from cache only (SUMMARY ONLY - no detailed tables)
     if args.from_cache:
         cache_path = args.cache_json or DEFAULT_CACHE_PATH
         if not os.path.exists(cache_path):
-            Console().print(f"[red]Cache not found:[/red] {cache_path}")
+            Console().print(f"[indian_red1]Cache not found:[/indian_red1] {cache_path}")
             return
         with open(cache_path, "r") as f:
             payload = json.load(f)
@@ -4523,91 +4601,16 @@ def main() -> None:
         summary_rows_cached = payload.get("summary_rows")
         
         console = Console()
-        console.print(f"[cyan]Rendering {len(assets_cached)} assets from cache: {cache_path}[/cyan]\n")
         
-        # Render detailed/simplified tables for each asset (same as normal flow)
-        caption_printed = False
-        for asset_data in assets_cached:
-            sym = asset_data.get("symbol") or ""
-            title = asset_data.get("title") or sym
-            last_close = asset_data.get("last_close", 0.0)
-            as_of = asset_data.get("as_of", "")
-            ci_level = asset_data.get("ci_level", 0.68)
-            prob_mapping = asset_data.get("probability_mapping", "student_t")
-            used_student_t = (prob_mapping == "student_t")
-            
-            # Reconstruct Signal objects from cached data
-            signals_data = asset_data.get("signals", [])
-            sigs = []
-            for s in signals_data:
-                try:
-                    sig = Signal(
-                        horizon_days=s.get("horizon_days", 0),
-                        score=s.get("score", 0.0),
-                        p_up=s.get("p_up", 0.5),
-                        exp_ret=s.get("exp_ret", 0.0),
-                        ci_low=s.get("ci_low", 0.0),
-                        ci_high=s.get("ci_high", 0.0),
-                        profit_pln=s.get("profit_pln", 0.0),
-                        profit_ci_low_pln=s.get("profit_ci_low_pln", 0.0),
-                        profit_ci_high_pln=s.get("profit_ci_high_pln", 0.0),
-                        position_strength=s.get("position_strength", 0.0),
-                        vol_mean=s.get("vol_mean", 0.0),
-                        vol_ci_low=s.get("vol_ci_low", 0.0),
-                        vol_ci_high=s.get("vol_ci_high", 0.0),
-                        regime=s.get("regime", ""),
-                        label=s.get("label", "HOLD"),
-                        expected_utility=s.get("expected_utility", 0.0),
-                        expected_gain=s.get("expected_gain", 0.0),
-                        expected_loss=s.get("expected_loss", 0.0),
-                        gain_loss_ratio=s.get("gain_loss_ratio", 1.0),
-                        eu_position_size=s.get("eu_position_size", 0.0),
-                        drift_uncertainty=s.get("drift_uncertainty", 0.0),
-                        p_analytical=s.get("p_analytical", 0.5),
-                        p_empirical=s.get("p_empirical", 0.5),
-                        regime_used=s.get("regime_used"),
-                        regime_source=s.get("regime_source", "global"),
-                        regime_collapse_warning=s.get("regime_collapse_warning", False),
-                        bma_method=s.get("bma_method", "legacy"),
-                        bma_has_model_posterior=s.get("bma_has_model_posterior", False),
-                        bma_borrowed_from_global=s.get("bma_borrowed_from_global", False),
-                    )
-                    sigs.append(sig)
-                except Exception as e:
-                    console.print(f"[yellow]Warning:[/yellow] Could not reconstruct signal for {sym}: {e}")
-                    continue
-            
-            if not sigs:
-                continue
-            
-            # Create a minimal price series for display (just need last close and date)
-            try:
-                px = pd.Series([last_close], index=pd.to_datetime([as_of]), name="px")
-            except Exception:
-                px = pd.Series([last_close], index=[pd.Timestamp.now()], name="px")
-            
-            # Render the table
-            if args.simple:
-                # For simple mode, we need features for context - use empty dict as fallback
-                render_simplified_signal_table(sym, title, sigs, px, {})
-            else:
-                if args.force_caption:
-                    show_caption = True
-                elif args.no_caption:
-                    show_caption = False
-                else:
-                    show_caption = not caption_printed
-                render_detailed_signal_table(sym, title, sigs, px, confidence_level=ci_level, used_student_t_mapping=used_student_t, show_caption=show_caption)
-                caption_printed = caption_printed or show_caption
-        
-        # Render summary tables at the end
+        # Build summary rows from cache (skip detailed tables for compact display)
         if not summary_rows_cached:
             summary_rows_cached = []
             for asset_data in assets_cached:
                 sym = asset_data.get("symbol") or ""
                 title = asset_data.get("title") or sym
                 asset_label = build_asset_display_label(sym, title)
-                sector = asset_data.get("sector", "Unspecified")
+                # Use get_sector() to properly look up sector from SECTOR_MAP
+                sector = asset_data.get("sector") or get_sector(sym) or "Other"
                 horizon_signals = {}
                 for sig in asset_data.get("signals", []):
                     h = sig.get("horizon_days")
@@ -4616,6 +4619,20 @@ def main() -> None:
                     horizon_signals[int(h)] = {"label": sig.get("label", "HOLD"), "profit_pln": float(sig.get("profit_pln", 0.0))}
                 nearest_label = next(iter(horizon_signals.values()), {}).get("label", "HOLD")
                 summary_rows_cached.append({"asset_label": asset_label, "horizon_signals": horizon_signals, "nearest_label": nearest_label, "sector": sector})
+        else:
+            # Ensure existing summary_rows have proper sectors
+            for row in summary_rows_cached:
+                if not row.get("sector"):
+                    # Try to extract symbol from asset_label and look up sector
+                    label = row.get("asset_label", "")
+                    # Extract symbol from "Name (SYM)" format
+                    import re
+                    match = re.search(r'\(([A-Z0-9.-]+)\)', label)
+                    if match:
+                        sym = match.group(1)
+                        row["sector"] = get_sector(sym) or "Other"
+                    else:
+                        row["sector"] = "Other"
         
         try:
             render_sector_summary_tables(summary_rows_cached, horizons_cached)
@@ -4643,7 +4660,7 @@ def main() -> None:
     # RETRYING PARALLEL PROCESSING: Compute features/signals with bounded retries
     # =========================================================================
     success_results, failures = _process_assets_with_retries(assets, args, horizons, max_retries=3)
-    console.print(f"[green]✓ Parallel computation attempts complete. Now displaying results...[/green]\n")
+    console.print(f"[#00d700]✓ Parallel computation attempts complete. Now displaying results...[/#00d700]\n")
 
     # =========================================================================
     # SEQUENTIAL DISPLAY & AGGREGATION: Process results in order with console output
@@ -4659,7 +4676,7 @@ def main() -> None:
         if result.get("status") == "error":
             asset = result.get("asset", "unknown")
             error = result.get("error", "unknown")
-            console.print(f"[red]Warning:[/red] Failed to process {asset}: {error}")
+            console.print(f"[indian_red1]Warning:[/indian_red1] Failed to process {asset}: {error}")
             if os.getenv('DEBUG'):
                 traceback_info = result.get("traceback", "")
                 if traceback_info:
@@ -4830,7 +4847,7 @@ def main() -> None:
             diag_table.add_row("[bold cyan]Tier 2: Posterior Parameter Variance[/bold cyan]", "[bold]Status[/bold]")
             for param, status in param_unc_active.items():
                 if "✓" in status:
-                    diag_table.add_row(f"  {param}", f"[green]{status}[/green]")
+                    diag_table.add_row(f"  {param}", f"[#00d700]{status}[/#00d700]")
                 elif "✗" in status:
                     diag_table.add_row(f"  {param}", f"[yellow]{status}[/yellow]")
                 else:
@@ -4906,7 +4923,7 @@ def main() -> None:
                         
                         # Highlight winners
                         if name == result.winner_aic and name == result.winner_bic:
-                            name = f"[bold green]{name}[/bold green] ⭐"
+                            name = f"[bold #00d700]{name}[/bold #00d700] ⭐"
                         elif name == result.winner_aic:
                             name = f"[bold yellow]{name}[/bold yellow] (AIC)"
                         elif name == result.winner_bic:
@@ -4919,21 +4936,21 @@ def main() -> None:
                         # Color code deltas (lower is better)
                         if np.isfinite(delta_aic):
                             if delta_aic < 2.0:
-                                delta_aic_str = f"[green]{delta_aic:+.1f}[/green]"
+                                delta_aic_str = f"[#00d700]{delta_aic:+.1f}[/#00d700]"
                             elif delta_aic < 7.0:
                                 delta_aic_str = f"[yellow]{delta_aic:+.1f}[/yellow]"
                             else:
-                                delta_aic_str = f"[red]{delta_aic:+.1f}[/red]"
+                                delta_aic_str = f"[indian_red1]{delta_aic:+.1f}[/indian_red1]"
                         else:
                             delta_aic_str = "—"
                         
                         if np.isfinite(delta_bic):
                             if delta_bic < 2.0:
-                                delta_bic_str = f"[green]{delta_bic:+.1f}[/green]"
+                                delta_bic_str = f"[#00d700]{delta_bic:+.1f}[/#00d700]"
                             elif delta_bic < 10.0:
                                 delta_bic_str = f"[yellow]{delta_bic:+.1f}[/yellow]"
                             else:
-                                delta_bic_str = f"[red]{delta_bic:+.1f}[/red]"
+                                delta_bic_str = f"[indian_red1]{delta_bic:+.1f}[/indian_red1]"
                         else:
                             delta_bic_str = "—"
                         
@@ -5061,17 +5078,17 @@ def main() -> None:
                     ll_table.add_row(
                         "Zero Drift (μ=0)",
                         f"{ll_result.ll_zero_drift:.2f}",
-                        f"[green]{ll_result.delta_ll_vs_zero:+.2f}[/green]" if ll_result.delta_ll_vs_zero > 0 else f"[red]{ll_result.delta_ll_vs_zero:+.2f}[/red]"
+                        f"[#00d700]{ll_result.delta_ll_vs_zero:+.2f}[/#00d700]" if ll_result.delta_ll_vs_zero > 0 else f"[indian_red1]{ll_result.delta_ll_vs_zero:+.2f}[/indian_red1]"
                     )
                     ll_table.add_row(
                         "EWMA Drift",
                         f"{ll_result.ll_ewma_drift:.2f}",
-                        f"[green]{ll_result.delta_ll_vs_ewma:+.2f}[/green]" if ll_result.delta_ll_vs_ewma > 0 else f"[red]{ll_result.delta_ll_vs_ewma:+.2f}[/red]"
+                        f"[#00d700]{ll_result.delta_ll_vs_ewma:+.2f}[/#00d700]" if ll_result.delta_ll_vs_ewma > 0 else f"[indian_red1]{ll_result.delta_ll_vs_ewma:+.2f}[/indian_red1]"
                     )
                     ll_table.add_row(
                         "Constant Drift",
                         f"{ll_result.ll_constant_drift:.2f}",
-                        f"[green]{ll_result.delta_ll_vs_constant:+.2f}[/green]" if ll_result.delta_ll_vs_constant > 0 else f"[red]{ll_result.delta_ll_vs_constant:+.2f}[/red]"
+                        f"[#00d700]{ll_result.delta_ll_vs_constant:+.2f}[/#00d700]" if ll_result.delta_ll_vs_constant > 0 else f"[indian_red1]{ll_result.delta_ll_vs_constant:+.2f}[/indian_red1]"
                     )
                     
                     console.print(ll_table)
@@ -5142,13 +5159,13 @@ def main() -> None:
                         "Drift Uncertainty σ(μ̂)",
                         f"{stress_result.avg_uncertainty_normal:.6f}",
                         f"{stress_result.avg_uncertainty_stress:.6f}",
-                        f"[green]{stress_result.uncertainty_spike_ratio:.2f}×[/green]" if stress_result.uncertainty_spike_ratio > 1.2 else f"{stress_result.uncertainty_spike_ratio:.2f}×"
+                        f"[#00d700]{stress_result.uncertainty_spike_ratio:.2f}×[/#00d700]" if stress_result.uncertainty_spike_ratio > 1.2 else f"{stress_result.uncertainty_spike_ratio:.2f}×"
                     )
                     stress_table.add_row(
                         "Position Size (EU)",
                         f"{stress_result.avg_kelly_normal:.4f}",
                         f"{stress_result.avg_kelly_stress:.4f}",
-                        f"[green]{stress_result.kelly_reduction_ratio:.2f}×[/green]" if stress_result.kelly_reduction_ratio < 0.9 else f"{stress_result.kelly_reduction_ratio:.2f}×"
+                        f"[#00d700]{stress_result.kelly_reduction_ratio:.2f}×[/#00d700]" if stress_result.kelly_reduction_ratio < 0.9 else f"{stress_result.kelly_reduction_ratio:.2f}×"
                     )
                     
                     console.print(stress_table)
@@ -5172,7 +5189,7 @@ def main() -> None:
                     
                     if all_passed:
                         console.print(Panel.fit(
-                            "[bold green]✅ ALL VALIDATION CHECKS PASSED[/bold green]\n"
+                            "[bold #00d700]✅ ALL VALIDATION CHECKS PASSED[/bold #00d700]\n"
                             "[dim]Model demonstrates structural realism and statistical rigor.[/dim]",
                             border_style="green"
                         ))
@@ -5183,10 +5200,10 @@ def main() -> None:
                             border_style="yellow"
                         ))
                 else:
-                    console.print("[red]⚠️ Kalman filter data not available for validation[/red]")
+                    console.print("[indian_red1]⚠️ Kalman filter data not available for validation[/indian_red1]")
                     
             except Exception as e:
-                console.print(f"[red]⚠️ Validation failed: {e}[/red]")
+                console.print(f"[indian_red1]⚠️ Validation failed: {e}[/indian_red1]")
                 import traceback
                 console.print(f"[dim]{traceback.format_exc()}[/dim]")
 

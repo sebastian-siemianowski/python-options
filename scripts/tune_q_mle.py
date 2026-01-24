@@ -165,6 +165,40 @@ if SCRIPT_DIR not in sys.path:
 
 from fx_data_utils import fetch_px, _download_prices, get_default_asset_universe
 
+# Import presentation layer for world-class UX output
+from fx_signals_presentation import (
+    create_tuning_console,
+    render_tuning_header,
+    render_tuning_progress_start,
+    render_tuning_summary,
+    render_parameter_table,
+    render_failed_assets,
+    render_dry_run_preview,
+    render_cache_status,
+    render_cache_update,
+    TuningProgressTracker,
+    TUNING_REGIME_LABELS,
+)
+
+
+# =============================================================================
+# VERBOSE OUTPUT CONTROL
+# =============================================================================
+# When running through tune_pretty.py with Rich progress display, we suppress
+# verbose print statements to avoid cluttering the animated progress bar.
+# Set TUNING_QUIET=1 environment variable to suppress detailed tuning messages.
+# =============================================================================
+
+def _is_quiet() -> bool:
+    """Check if verbose output should be suppressed."""
+    return os.environ.get('TUNING_QUIET', '').lower() in ('1', 'true', 'yes')
+
+
+def _log(msg: str) -> None:
+    """Print message only if not in quiet mode."""
+    if not _is_quiet():
+        print(msg)
+
 
 # =============================================================================
 # REGIME DEFINITIONS FOR HIERARCHICAL BAYESIAN PARAMETER TUNING
@@ -1470,7 +1504,7 @@ def tune_asset_q(
         # =================================================================
         # STEP 1: Fit Gaussian Model (q, c)
         # =================================================================
-        print(f"  🔧 Fitting Gaussian model...")
+        _log(f"  🔧 Fitting Gaussian model...")
         q_gauss, c_gauss, ll_gauss_cv, opt_diag_gauss = optimize_q_mle(
             returns_arr, vol_arr,
             prior_log_q_mean=prior_log_q_mean,
@@ -1487,12 +1521,12 @@ def tune_asset_q(
         aic_gauss = compute_aic(ll_gauss_full, n_params=2)
         bic_gauss = compute_bic(ll_gauss_full, n_params=2, n_obs=n_obs)
         
-        print(f"     Gaussian: q={q_gauss:.2e}, c={c_gauss:.3f}, LL={ll_gauss_full:.1f}, BIC={bic_gauss:.1f}, PIT p={pit_p_gauss:.4f}")
+        _log(f"     Gaussian: q={q_gauss:.2e}, c={c_gauss:.3f}, LL={ll_gauss_full:.1f}, BIC={bic_gauss:.1f}, PIT p={pit_p_gauss:.4f}")
         
         # =================================================================
         # STEP 1.5: Fit φ-Kalman Model (q, c, φ)
         # =================================================================
-        print(f"  🔧 Fitting φ-Gaussian-Kalman model...")
+        _log(f"  🔧 Fitting φ-Gaussian-Kalman model...")
         q_phi, c_phi, phi_opt, ll_phi_cv, opt_diag_phi = optimize_q_c_phi_mle(
             returns_arr, vol_arr,
             prior_log_q_mean=prior_log_q_mean,
@@ -1502,12 +1536,12 @@ def tune_asset_q(
         ks_phi, pit_p_phi = compute_pit_ks_pvalue(returns_arr, mu_phi, vol_arr, P_phi, c_phi)
         aic_phi = compute_aic(ll_phi_full, n_params=3)
         bic_phi = compute_bic(ll_phi_full, n_params=3, n_obs=n_obs)
-        print(f"     φ-Gaussian-Kalman: q={q_phi:.2e}, c={c_phi:.3f}, φ={phi_opt:+.3f}, LL={ll_phi_full:.1f}, BIC={bic_phi:.1f}, PIT p={pit_p_phi:.4f}")
+        _log(f"     φ-Gaussian-Kalman: q={q_phi:.2e}, c={c_phi:.3f}, φ={phi_opt:+.3f}, LL={ll_phi_full:.1f}, BIC={bic_phi:.1f}, PIT p={pit_p_phi:.4f}")
         
         # =================================================================
         # STEP 2: Fit Kalman φ-Student-t Model (q, c, φ, ν)
         # =================================================================
-        print(f"  🔧 Fitting Kalman φ-Student-t model...")
+        _log(f"  🔧 Fitting Kalman φ-Student-t model...")
         try:
             q_student, c_student, phi_student, nu_student, ll_student_cv, opt_diag_student = PhiStudentTDriftModel.optimize_params(
                 returns_arr, vol_arr,
@@ -1529,12 +1563,12 @@ def tune_asset_q(
             aic_student = compute_aic(ll_student_full, n_params=4)
             bic_student = compute_bic(ll_student_full, n_params=4, n_obs=n_obs)
 
-            print(f"    Kalman φ-Student-t: q={q_student:.2e}, c={c_student:.3f}, φ={phi_student:+.3f}, ν={nu_student:.1f}, LL={ll_student_full:.1f}, BIC={bic_student:.1f}, PIT p={pit_p_student:.4f}")
+            _log(f"    Kalman φ-Student-t: q={q_student:.2e}, c={c_student:.3f}, φ={phi_student:+.3f}, ν={nu_student:.1f}, LL={ll_student_full:.1f}, BIC={bic_student:.1f}, PIT p={pit_p_student:.4f}")
 
             student_t_fit_success = True
 
         except Exception as e:
-            print(f"  ⚠️  φ-Student-t optimization failed: {e}")
+            _log(f"  ⚠️  φ-Student-t optimization failed: {e}")
             student_t_fit_success = False
             q_student = None
             c_student = None
@@ -1566,14 +1600,14 @@ def tune_asset_q(
         elif noise_model == "phi_gaussian":
             phi_selected = extra_param
 
-        print(f"  ✓ Selected {noise_model} (BIC={bic_final:.1f})")
+        _log(f"  ✓ Selected {noise_model} (BIC={bic_final:.1f})")
         if noise_model == 'kalman_phi_student_t':
-            print(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_student:+.1f}, ΔBIC vs φ-Gaussian Kalman = {bic_phi - bic_student:+.1f})")
+            _log(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_student:+.1f}, ΔBIC vs φ-Gaussian Kalman = {bic_phi - bic_student:+.1f})")
         elif noise_model == "phi_gaussian":
-            print(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_phi:+.1f})")
+            _log(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_phi:+.1f})")
         else:
-            print(f"    (ΔBIC vs φ-Gaussian Kalman = {bic_phi - bic_gauss:+.1f})")
-            print(f"")
+            _log(f"    (ΔBIC vs φ-Gaussian Kalman = {bic_phi - bic_gauss:+.1f})")
+            _log(f"")
         # =================================================================
         # Upgrade #4: Model Comparison - Baseline Models
         # =================================================================
@@ -1663,34 +1697,34 @@ def tune_asset_q(
         # =================================================================
         # Compute all baseline models for formal model comparison
         # =================================================================
-        print(f"  🔬 Model comparison:")
+        _log(f"  🔬 Model comparison:")
         
         # Baseline 1: Zero-drift (0 parameters: just uses c from Kalman)
         ll_zero = compute_zero_drift_ll(returns_arr, vol_arr, c_optimal)
         aic_zero = compute_aic(ll_zero, n_params=0)  # c is shared, not counted
         bic_zero = compute_bic(ll_zero, n_params=0, n_obs=n_obs)
-        print(f"     Zero-drift:     LL={ll_zero:.1f}, AIC={aic_zero:.1f}, BIC={bic_zero:.1f}")
+        _log(f"     Zero-drift:     LL={ll_zero:.1f}, AIC={aic_zero:.1f}, BIC={bic_zero:.1f}")
         
         # Baseline 2: Constant-drift (1 parameter: mu_const, c is shared)
         ll_const, mu_const = compute_constant_drift_ll(returns_arr, vol_arr, c_optimal)
         aic_const = compute_aic(ll_const, n_params=1)
         bic_const = compute_bic(ll_const, n_params=1, n_obs=n_obs)
-        print(f"     Constant-drift: LL={ll_const:.1f}, AIC={aic_const:.1f}, BIC={bic_const:.1f}, μ={mu_const:.6f}")
+        _log(f"     Constant-drift: LL={ll_const:.1f}, AIC={aic_const:.1f}, BIC={bic_const:.1f}, μ={mu_const:.6f}")
         
         # Baseline 3: EWMA-drift (1 parameter: span is fixed, c is shared)
         ll_ewma = compute_ewma_drift_ll(returns_arr, vol_arr, c_optimal, span=21)
         aic_ewma = compute_aic(ll_ewma, n_params=1)
         bic_ewma = compute_bic(ll_ewma, n_params=1, n_obs=n_obs)
-        print(f"     EWMA-drift:     LL={ll_ewma:.1f}, AIC={aic_ewma:.1f}, BIC={bic_ewma:.1f}")
+        _log(f"     EWMA-drift:     LL={ll_ewma:.1f}, AIC={aic_ewma:.1f}, BIC={bic_ewma:.1f}")
         
         # Kalman variants printed separately
-        print(f"     Kalman-Gaussian: LL={ll_gauss_full:.1f}, AIC={aic_gauss:.1f}, BIC={bic_gauss:.1f}")
-        print(f"     Kalman-φ-Gaussian: LL={ll_phi_full:.1f}, AIC={aic_phi:.1f}, BIC={bic_phi:.1f}, φ={phi_opt:+.3f}")
+        _log(f"     Kalman-Gaussian: LL={ll_gauss_full:.1f}, AIC={aic_gauss:.1f}, BIC={bic_gauss:.1f}")
+        _log(f"     Kalman-φ-Gaussian: LL={ll_phi_full:.1f}, AIC={aic_phi:.1f}, BIC={bic_phi:.1f}, φ={phi_opt:+.3f}")
         if student_t_fit_success:
-            print(f"     Kalman-φ-Student-t: LL={ll_student_full:.1f}, AIC={aic_student:.1f}, BIC={bic_student:.1f}, φ={phi_opt:+.3f}, ν={nu_student:.1f}")
+            _log(f"     Kalman-φ-Student-t: LL={ll_student_full:.1f}, AIC={aic_student:.1f}, BIC={bic_student:.1f}, φ={phi_opt:+.3f}, ν={nu_student:.1f}")
         
         # Selected model summary (already chosen above)
-        print(f"     Selected:        LL={ll_full:.1f}, AIC={aic_final:.1f}, BIC={bic_final:.1f} ({noise_model})")
+        _log(f"     Selected:        LL={ll_full:.1f}, AIC={aic_final:.1f}, BIC={bic_final:.1f} ({noise_model})")
         
         # ΔLL against baselines using the selected model's LL
         delta_ll_vs_zero = float(ll_full - ll_zero)
@@ -1700,10 +1734,10 @@ def tune_asset_q(
         # Aggregate model comparison metrics for diagnostics and cache
         model_comparison = {
             'zero_drift': {'ll': ll_zero, 'aic': aic_zero, 'bic': bic_zero, 'n_params': 0},
-            'constant_drift': {'ll': ll_const, 'aic': aic_const, 'bic': bic_const, 'n_params': 1},
+            'constant_drift': {'ll': ll_const, 'aic': aic_const, 'bic': bic_const, 'n_params': 1, 'mu': float(mu_const)},
             'ewma_drift': {'ll': ll_ewma, 'aic': aic_ewma, 'bic': bic_ewma, 'n_params': 1},
             'kalman_gaussian': {'ll': ll_gauss_full, 'aic': aic_gauss, 'bic': bic_gauss, 'n_params': 2},
-            'kalman_phi_gaussian': {'ll': ll_phi_full, 'aic': aic_phi, 'bic': bic_phi, 'n_params': 3},
+            'kalman_phi_gaussian': {'ll': ll_phi_full, 'aic': aic_phi, 'bic': bic_phi, 'n_params': 3, 'phi': float(phi_opt)},
         }
         if student_t_fit_success:
             model_comparison['kalman_phi_student_t'] = {
@@ -1711,7 +1745,7 @@ def tune_asset_q(
                 'aic': aic_student,
                 'bic': bic_student,
                 'n_params': 4,
-                'phi': float(phi_opt),
+                'phi': float(phi_student),
                 'nu': float(nu_student)
             }
         
@@ -1733,9 +1767,9 @@ def tune_asset_q(
         # Print calibration status
         if calibration_warning:
             if ks_pvalue < 0.01:
-                print(f"  ⚠️  Severe miscalibration (PIT p={ks_pvalue:.4f})")
+                _log(f"  ⚠️  Severe miscalibration (PIT p={ks_pvalue:.4f})")
             else:
-                print(f"  ⚠️  Calibration warning (PIT p={ks_pvalue:.4f})")
+                _log(f"  ⚠️  Calibration warning (PIT p={ks_pvalue:.4f})")
 
         # Build result dictionary with extended schema
         result = {
@@ -2292,7 +2326,7 @@ def fit_regime_model_posterior(
         mask = (regime_labels == regime)
         n_samples = int(np.sum(mask))
         
-        print(f"  📊 Fitting all models for {regime_name} (n={n_samples})...")
+        _log(f"  📊 Fitting all models for {regime_name} (n={n_samples})...")
         
         # Get previous posterior for this regime (for temporal smoothing)
         prev_posterior = None
@@ -2301,7 +2335,7 @@ def fit_regime_model_posterior(
         
         # Check if we have enough samples
         if n_samples < min_samples:
-            print(f"     ⚠️  Insufficient samples ({n_samples} < {min_samples}), using hierarchical fallback from global")
+            _log(f"     ⚠️  Insufficient samples ({n_samples} < {min_samples}), using hierarchical fallback from global")
             # =========================================================================
             # HIERARCHICAL BAYESIAN FALLBACK
             # =========================================================================
@@ -2338,7 +2372,7 @@ def fit_regime_model_posterior(
                 #
                 # The correct response to missing evidence is ignorance, not invention.
                 # =====================================================================
-                print(f"     ⚠️  CRITICAL: No global models for regime {regime} fallback - skipping")
+                _log(f"     ⚠️  CRITICAL: No global models for regime {regime} fallback - skipping")
                 # Skip this regime - it will be missing from regime_results
                 # Downstream must handle missing regimes by using global directly
             continue
@@ -2366,9 +2400,9 @@ def fit_regime_model_posterior(
             if info.get("fit_success", False):
                 bic_val = info.get("bic", float('nan'))
                 mean_ll = info.get("mean_log_likelihood", float('nan'))
-                print(f"     {m}: BIC={bic_val:.1f}, mean_LL={mean_ll:.4f}")
+                _log(f"     {m}: BIC={bic_val:.1f}, mean_LL={mean_ll:.4f}")
             else:
-                print(f"     {m}: FAILED - {info.get('error', 'unknown')}")
+                _log(f"     {m}: FAILED - {info.get('error', 'unknown')}")
         
         # =====================================================================
         # Step 3: Compute BIC-based raw weights
@@ -2387,7 +2421,7 @@ def fit_regime_model_posterior(
         
         # Print posterior
         posterior_str = ", ".join([f"{m}={p:.3f}" for m, p in model_posterior.items()])
-        print(f"     → Posterior: {posterior_str}")
+        _log(f"     → Posterior: {posterior_str}")
         
         # =====================================================================
         # Build regime result
@@ -2465,12 +2499,12 @@ def tune_regime_model_averaging(
     regime_labels = np.asarray(regime_labels).flatten().astype(int)
     
     n_obs = len(returns)
-    print(f"  📊 Bayesian Model Averaging: {n_obs} observations, α={temporal_alpha:.2f}")
+    _log(f"  📊 Bayesian Model Averaging: {n_obs} observations, α={temporal_alpha:.2f}")
     
     # =========================================================================
     # Step 1: Fit global models (fallback)
     # =========================================================================
-    print(f"  🔧 Fitting global models...")
+    _log(f"  🔧 Fitting global models...")
     global_models = fit_all_models_for_regime(
         returns, vol,
         prior_log_q_mean=prior_log_q_mean,
@@ -2482,12 +2516,12 @@ def tune_regime_model_averaging(
     global_raw_weights = compute_bic_model_weights(global_bic)
     global_posterior = normalize_weights(global_raw_weights)
     
-    print(f"     Global posterior: " + ", ".join([f"{m}={p:.3f}" for m, p in global_posterior.items()]))
+    _log(f"     Global posterior: " + ", ".join([f"{m}={p:.3f}" for m, p in global_posterior.items()]))
     
     # =========================================================================
     # Step 2: Fit regime-conditional models with BMA
     # =========================================================================
-    print(f"  🔄 Fitting regime-conditional models...")
+    _log(f"  🔄 Fitting regime-conditional models...")
     regime_results = fit_regime_model_posterior(
         returns, vol, regime_labels,
         prior_log_q_mean=prior_log_q_mean,
@@ -2503,7 +2537,7 @@ def tune_regime_model_averaging(
     # Step 3: Apply hierarchical shrinkage to regime posteriors (optional)
     # =========================================================================
     if lambda_regime > 0:
-        print(f"  📐 Applying hierarchical shrinkage (λ={lambda_regime:.3f})...")
+        _log(f"  📐 Applying hierarchical shrinkage (λ={lambda_regime:.3f})...")
         for r, r_result in regime_results.items():
             if r_result.get("regime_meta", {}).get("fallback", False):
                 continue
@@ -2617,7 +2651,7 @@ def tune_asset_with_bma(
         except Exception:
             df = _download_prices(asset, start_date, end_date)
             if df is None or df.empty:
-                print(f"     ⚠️  No price data for {asset}")
+                _log(f"     ⚠️  No price data for {asset}")
                 return None
             px = df['Close']
         
@@ -2625,7 +2659,7 @@ def tune_asset_with_bma(
         
         # Check minimum data requirements
         if n_points < MIN_DATA_FOR_GLOBAL:
-            print(f"     ⚠️  Insufficient data for {asset} ({n_points} points)")
+            _log(f"     ⚠️  Insufficient data for {asset} ({n_points} points)")
             return None
         
         # Compute returns and volatility
@@ -2648,8 +2682,8 @@ def tune_asset_with_bma(
         use_regime_bma = len(returns) >= MIN_DATA_FOR_REGIME
         
         if not use_regime_bma:
-            print(f"     ⚠️  Insufficient data for regime BMA ({len(returns)} < {MIN_DATA_FOR_REGIME})")
-            print(f"     ↩️  Using global-only BMA...")
+            _log(f"     ⚠️  Insufficient data for regime BMA ({len(returns)} < {MIN_DATA_FOR_REGIME})")
+            _log(f"     ↩️  Using global-only BMA...")
             
             # Fit global models only
             global_models = fit_all_models_for_regime(
@@ -2682,17 +2716,17 @@ def tune_asset_with_bma(
             }
         
         # Assign regime labels
-        print(f"     📊 Assigning regime labels for {len(returns)} observations...")
+        _log(f"     📊 Assigning regime labels for {len(returns)} observations...")
         regime_labels = assign_regime_labels(returns, vol)
         
         # Count samples per regime
         regime_counts = {r: int(np.sum(regime_labels == r)) for r in range(5)}
-        print(f"     Regime distribution: " + ", ".join([
+        _log(f"     Regime distribution: " + ", ".join([
             f"{REGIME_LABELS[r]}={c}" for r, c in regime_counts.items() if c > 0
         ]))
         
         # Run full Bayesian Model Averaging
-        print(f"     🔧 Running Bayesian Model Averaging (α={temporal_alpha:.2f}, λ={lambda_regime:.3f})...")
+        _log(f"     🔧 Running Bayesian Model Averaging (α={temporal_alpha:.2f}, λ={lambda_regime:.3f})...")
         bma_result = tune_regime_model_averaging(
             returns, vol, regime_labels,
             prior_log_q_mean=prior_log_q_mean,
@@ -2715,7 +2749,7 @@ def tune_asset_with_bma(
         }
         
         # Print summary
-        print(f"     ✓ Global: " + ", ".join([
+        _log(f"     ✓ Global: " + ", ".join([
             f"{m}={p:.3f}" for m, p in result["global"]["model_posterior"].items()
         ]))
         for r, r_data in result["regime"].items():
@@ -2723,13 +2757,13 @@ def tune_asset_with_bma(
                 posterior_str = ", ".join([
                     f"{m}={p:.3f}" for m, p in r_data["model_posterior"].items()
                 ])
-                print(f"     ✓ {REGIME_LABELS[r]}: {posterior_str}")
+                _log(f"     ✓ {REGIME_LABELS[r]}: {posterior_str}")
         
         return result
         
     except Exception as e:
         import traceback
-        print(f"     ❌ {asset}: Failed - {e}")
+        _log(f"     ❌ {asset}: Failed - {e}")
         if os.getenv('DEBUG'):
             traceback.print_exc()
         return None
@@ -2894,9 +2928,9 @@ def tune_regime_parameters(
             "n_eff": float(np.sum(weights)),
             "fallback": False
         }
-        print(f"     Global: q={q_global:.2e}, φ={phi_global:+.3f}, ν={nu_global:.1f}")
+        _log(f"     Global: q={q_global:.2e}, φ={phi_global:+.3f}, ν={nu_global:.1f}")
     except Exception as e:
-        print(f"  ⚠️  Global parameter estimation failed: {e}")
+        _log(f"  ⚠️  Global parameter estimation failed: {e}")
         global_params = {
             "q": 1e-6,
             "c": 1.0,
@@ -2948,10 +2982,10 @@ def tune_regime_parameters(
         regime_weights = weights[mask]
         n_eff = float(np.sum(regime_weights))
         
-        print(f"  📊 {regime_name} (n={n_samples}, n_eff={n_eff:.1f})...")
+        _log(f"  📊 {regime_name} (n={n_samples}, n_eff={n_eff:.1f})...")
         
         if n_eff < min_samples:
-            print(f"     ⚠️  Insufficient effective samples ({n_eff:.1f} < {min_samples}), using global fallback")
+            _log(f"     ⚠️  Insufficient effective samples ({n_eff:.1f} < {min_samples}), using global fallback")
             regime_params[regime] = {
                 **global_params,
                 "n_samples": n_samples,
@@ -3038,11 +3072,11 @@ def tune_regime_parameters(
                 "param_distance_from_global": float(param_distance),
                 "diagnostics": diag_r
             }
-            print(f"     q={q_r:.2e}, φ={phi_r:+.3f}, ν={nu_r:.1f}" + 
+            _log(f"     q={q_r:.2e}, φ={phi_r:+.3f}, ν={nu_r:.1f}" + 
                   (f" [shrunk]" if shrinkage_applied else ""))
             
         except Exception as e:
-            print(f"     ⚠️  Estimation failed ({e}), using global fallback")
+            _log(f"     ⚠️  Estimation failed ({e}), using global fallback")
             regime_params[regime] = {
                 **global_params,
                 "n_samples": n_samples,
@@ -3145,13 +3179,13 @@ def _compute_regime_diagnostics(
     
     # Print warnings if sanity checks fail
     if sanity_q_crisis_vs_low is False:
-        print("     ⚠️  Sanity warning: q_crisis should be > q_low_vol")
+        _log("     ⚠️  Sanity warning: q_crisis should be > q_low_vol")
     if sanity_nu_crisis_vs_trend is False:
-        print("     ⚠️  Sanity warning: nu_crisis should be < nu_trend")
+        _log("     ⚠️  Sanity warning: nu_crisis should be < nu_trend")
     if sanity_phi_trend_vs_range is False:
-        print("     ⚠️  Sanity warning: phi_trend should be > phi_range")
+        _log("     ⚠️  Sanity warning: phi_trend should be > phi_range")
     if collapse_detected:
-        print("     ⚠️  Collapse warning: All regime parameters too close to global")
+        _log("     ⚠️  Collapse warning: All regime parameters too close to global")
     
     return diagnostics
 
@@ -3344,7 +3378,7 @@ def _tune_asset_with_regime_labels(
         except Exception:
             df = _download_prices(asset, start_date, end_date)
             if df is None or df.empty:
-                print(f"     ⚠️  No price data for {asset}")
+                _log(f"     ⚠️  No price data for {asset}")
                 return None
             px = df['Close']
 
@@ -3352,13 +3386,13 @@ def _tune_asset_with_regime_labels(
         
         # For very small datasets, fall back directly to global-only tuning
         if n_points < MIN_DATA_FOR_GLOBAL:
-            print(f"     ⚠️  Insufficient data for {asset} ({n_points} points) - need at least {MIN_DATA_FOR_GLOBAL}")
+            _log(f"     ⚠️  Insufficient data for {asset} ({n_points} points) - need at least {MIN_DATA_FOR_GLOBAL}")
             return None
         
         # For small-to-medium datasets (20-100 points), skip regime tuning but do global
         if n_points < MIN_DATA_FOR_REGIME:
-            print(f"     ⚠️  Insufficient data for {asset} ({n_points} points) for regime tuning")
-            print(f"     ↩️  Falling back to global-only model tuning...")
+            _log(f"     ⚠️  Insufficient data for {asset} ({n_points} points) for regime tuning")
+            _log(f"     ↩️  Falling back to global-only model tuning...")
             
             # Do global tuning only
             global_result = tune_asset_q(
@@ -3370,7 +3404,7 @@ def _tune_asset_with_regime_labels(
             )
             
             if global_result is None:
-                print(f"     ⚠️  Global tuning also failed for {asset}")
+                _log(f"     ⚠️  Global tuning also failed for {asset}")
                 return None
             
             # Return result with explicit markers that regime tuning was skipped
@@ -3399,11 +3433,11 @@ def _tune_asset_with_regime_labels(
         # After cleaning, check if we still have enough data for regime tuning
         if len(returns) < MIN_DATA_FOR_REGIME:
             if len(returns) < MIN_DATA_FOR_GLOBAL:
-                print(f"     ⚠️  Insufficient valid data for {asset} after cleaning ({len(returns)} returns)")
+                _log(f"     ⚠️  Insufficient valid data for {asset} after cleaning ({len(returns)} returns)")
                 return None
             
-            print(f"     ⚠️  Insufficient data for {asset} after cleaning ({len(returns)} returns) for regime tuning")
-            print(f"     ↩️  Falling back to global-only model tuning...")
+            _log(f"     ⚠️  Insufficient data for {asset} after cleaning ({len(returns)} returns) for regime tuning")
+            _log(f"     ↩️  Falling back to global-only model tuning...")
             
             # Do global tuning only
             global_result = tune_asset_q(
@@ -3415,7 +3449,7 @@ def _tune_asset_with_regime_labels(
             )
             
             if global_result is None:
-                print(f"     ⚠️  Global tuning also failed for {asset}")
+                _log(f"     ⚠️  Global tuning also failed for {asset}")
                 return None
             
             return {
@@ -3429,15 +3463,15 @@ def _tune_asset_with_regime_labels(
             }
 
         # Assign regime labels
-        print(f"     📊 Assigning regime labels for {len(returns)} observations...")
+        _log(f"     📊 Assigning regime labels for {len(returns)} observations...")
         regime_labels = assign_regime_labels(returns, vol)
 
         # Count samples per regime
         regime_counts = {r: int(np.sum(regime_labels == r)) for r in range(5)}
-        print(f"     Regime distribution: " + ", ".join([f"{REGIME_LABELS[r]}={c}" for r, c in regime_counts.items() if c > 0]))
+        _log(f"     Regime distribution: " + ", ".join([f"{REGIME_LABELS[r]}={c}" for r, c in regime_counts.items() if c > 0]))
 
         # First get global params (for backward compatibility)
-        print(f"     🔧 Estimating global parameters...")
+        _log(f"     🔧 Estimating global parameters...")
         global_result = tune_asset_q(
             asset=asset,
             start_date=start_date,
@@ -3455,9 +3489,9 @@ def _tune_asset_with_regime_labels(
         # This implements the governing law:
         #     p(r_{t+H} | r) = Σ_m p(r_{t+H} | r, m, θ_{r,m}) · p(m | r)
         # =================================================================
-        print(f"     🔄 Bayesian Model Averaging (λ_regime={lambda_regime})...")
+        _log(f"     🔄 Bayesian Model Averaging (λ_regime={lambda_regime})...")
         if previous_posteriors is not None:
-            print(f"        ↪ Using previous posteriors for temporal smoothing (α={DEFAULT_TEMPORAL_ALPHA})")
+            _log(f"        ↪ Using previous posteriors for temporal smoothing (α={DEFAULT_TEMPORAL_ALPHA})")
         bma_result = tune_regime_model_averaging(
             returns=returns,
             vol=vol,
@@ -3507,9 +3541,9 @@ def _tune_asset_with_regime_labels(
         global_posterior = result["global"].get("model_posterior", {})
         if global_posterior:
             posterior_str = ", ".join([f"{m}={p:.3f}" for m, p in global_posterior.items()])
-            print(f"     ✓ Global model posterior: {posterior_str}")
+            _log(f"     ✓ Global model posterior: {posterior_str}")
         else:
-            print(f"     ✓ Global: q={global_result['q']:.2e}, φ={global_result.get('phi', 'N/A')}")
+            _log(f"     ✓ Global: q={global_result['q']:.2e}, φ={global_result.get('phi', 'N/A')}")
         
         for r, r_data in regime_results.items():
             regime_meta = r_data.get("regime_meta", {})
@@ -3517,22 +3551,22 @@ def _tune_asset_with_regime_labels(
                 model_posterior = r_data.get("model_posterior", {})
                 posterior_str = ", ".join([f"{m}={p:.3f}" for m, p in model_posterior.items()])
                 shrunk_marker = " [shrunk]" if regime_meta.get("shrinkage_applied", False) else ""
-                print(f"     ✓ {REGIME_LABELS[int(r)]}: {posterior_str}{shrunk_marker}")
+                _log(f"     ✓ {REGIME_LABELS[int(r)]}: {posterior_str}{shrunk_marker}")
 
         if collapse_warning:
-            print(f"     ⚠️  Collapse warning: regime parameters too close to global")
+            _log(f"     ⚠️  Collapse warning: regime parameters too close to global")
 
         return result
 
     except Exception as e:
         import traceback
         print(f"     ❌ {asset}: Failed - {e}")
-        if os.getenv('DEBUG'):
-            traceback.print_exc()
-        return None
+        # Always print full traceback - don't swallow exceptions
+        traceback.print_exc()
+        raise  # Re-raise so caller can handle it
 
 
-def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float, Optional[Dict]]) -> Tuple[str, Optional[Dict], Optional[str]]:
+def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float, Optional[Dict]]) -> Tuple[str, Optional[Dict], Optional[str], Optional[str]]:
     """
     Worker function for parallel asset tuning.
     Must be defined at module level for ProcessPoolExecutor pickling.
@@ -3541,9 +3575,9 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float,
         args_tuple: (asset, start_date, end_date, prior_log_q_mean, prior_lambda, lambda_regime, previous_posteriors)
         
     Returns:
-        Tuple of (asset, result_dict, error_message)
-        - If success: (asset, result, None)
-        - If failure: (asset, None, error_string)
+        Tuple of (asset, result_dict, error_message, traceback_str)
+        - If success: (asset, result, None, None)
+        - If failure: (asset, None, error_string, traceback_string)
     """
     asset, start_date, end_date, prior_log_q_mean, prior_lambda, lambda_regime, previous_posteriors = args_tuple
     
@@ -3559,10 +3593,10 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float,
         )
         
         if result:
-            return (asset, result, None)
+            return (asset, result, None, None)
 
         # Fallback to standard tuning when regime tuning fails (insufficient data for regime estimation)
-        print(f"  ↩️  {asset}: Falling back to standard model tuning...")
+        _log(f"  ↩️  {asset}: Falling back to standard model tuning...")
         fallback_result = tune_asset_q(
             asset=asset,
             start_date=start_date,
@@ -3577,12 +3611,14 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float,
             fallback_result['regime_fallback'] = True
             fallback_result['regime'] = None
             fallback_result['regime_counts'] = None
-            return (asset, fallback_result, None)
+            return (asset, fallback_result, None, None)
         else:
-            return (asset, None, "both regime and standard tuning failed")
+            return (asset, None, "both regime and standard tuning failed", None)
 
     except Exception as e:
-        return (asset, None, str(e))
+        import traceback
+        tb_str = traceback.format_exc()
+        return (asset, None, str(e), tb_str)
 
 
 def _extract_previous_posteriors(cached_entry: Optional[Dict]) -> Optional[Dict[int, Dict[str, float]]]:
@@ -3716,6 +3752,10 @@ Examples:
 
     assets_to_process: List[str] = []
     failure_reasons: Dict[str, str] = {}
+    failure_tracebacks: Dict[str, str] = {}  # Full tracebacks for failed assets
+    regime_distributions: Dict[str, Dict[int, int]] = {}  # Per-asset regime counts
+    processing_warnings: List[str] = []  # Collect all warnings
+    model_comparisons: Dict[str, Dict] = {}  # Per-asset model comparison results
 
     for i, asset in enumerate(assets, 1):
         print(f"\n[{i}/{len(assets)}] {asset}")
@@ -3770,15 +3810,34 @@ Examples:
             for future in as_completed(futures):
                 asset = futures[future]
                 try:
-                    asset_name, result, error = future.result()
+                    asset_name, result, error, traceback_str = future.result()
 
                     if result:
                         cache[asset_name] = result
                         new_estimates += 1
                         regime_tuning_count += 1
 
-                        # Count model type from global params
+                        # Collect regime distribution if available
+                        if result.get('regime_counts'):
+                            regime_distributions[asset_name] = result['regime_counts']
+
+                        # Collect model comparison data if available
                         global_result = result.get('global', result)
+                        if global_result.get('model_comparison'):
+                            model_comparisons[asset_name] = {
+                                'model_comparison': global_result['model_comparison'],
+                                'selected_model': global_result.get('noise_model', 'unknown'),
+                                'best_model_by_bic': global_result.get('best_model_by_bic', 'unknown'),
+                                'q': global_result.get('q'),
+                                'c': global_result.get('c'),
+                                'phi': global_result.get('phi'),
+                                'nu': global_result.get('nu'),
+                                'bic': global_result.get('bic'),
+                                'aic': global_result.get('aic'),
+                                'log_likelihood': global_result.get('log_likelihood'),
+                            }
+
+                        # Count model type from global params
                         if global_result.get('noise_model') == 'kalman_phi_student_t':
                             student_t_count += 1
                         else:
@@ -3786,6 +3845,11 @@ Examples:
 
                         if global_result.get('calibration_warning'):
                             calibration_warnings += 1
+                            processing_warnings.append(f"{asset_name}: calibration warning")
+
+                        # Collect collapse warnings
+                        if result.get('hierarchical_tuning', {}).get('collapse_warning', False):
+                            processing_warnings.append(f"{asset_name}: regime collapse warning (params too close to global)")
 
                         # Print success summary
                         q_val = global_result.get('q', float('nan'))
@@ -3795,11 +3859,15 @@ Examples:
                     else:
                         failed += 1
                         failure_reasons[asset_name] = error or "tuning returned None"
+                        if traceback_str:
+                            failure_tracebacks[asset_name] = traceback_str
                         print(f"  ❌ {asset_name}: {error or 'tuning returned None'}")
 
                 except Exception as e:
+                    import traceback
                     failed += 1
                     failure_reasons[asset] = str(e)
+                    failure_tracebacks[asset] = traceback.format_exc()
                     print(f"  ❌ {asset}: {e}")
     else:
         print("\nNo assets to process (all reused from cache).")
@@ -3978,6 +4046,101 @@ Examples:
             print(f"  {a}: {msg}")
     
     print("=" * 80)
+
+    # ==========================================================================
+    # END-OF-RUN SUMMARY: Regime Distributions, Warnings, and Errors
+    # ==========================================================================
+    print("\n" + "=" * 80)
+    print("END-OF-RUN SUMMARY")
+    print("=" * 80)
+
+    # Model Comparison Summary (per asset)
+    if model_comparisons:
+        print("\n🔬 MODEL COMPARISON RESULTS (per asset):")
+        print("-" * 80)
+        for asset_name in sorted(model_comparisons.keys()):
+            mc = model_comparisons[asset_name]
+            model_comp = mc.get('model_comparison', {})
+            selected = mc.get('selected_model', 'unknown')
+            best_bic = mc.get('best_model_by_bic', 'unknown')
+            
+            print(f"\n  {asset_name}:")
+            
+            # Print each baseline/model
+            if 'zero_drift' in model_comp:
+                m = model_comp['zero_drift']
+                print(f"     Zero-drift:     LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}")
+            
+            if 'constant_drift' in model_comp:
+                m = model_comp['constant_drift']
+                mu_str = f", μ={m.get('mu', 0):.6f}" if 'mu' in m else ""
+                print(f"     Constant-drift: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{mu_str}")
+            
+            if 'ewma_drift' in model_comp:
+                m = model_comp['ewma_drift']
+                print(f"     EWMA-drift:     LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}")
+            
+            if 'kalman_gaussian' in model_comp:
+                m = model_comp['kalman_gaussian']
+                print(f"     Kalman-Gaussian: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}")
+            
+            if 'kalman_phi_gaussian' in model_comp:
+                m = model_comp['kalman_phi_gaussian']
+                phi_str = f", φ={m.get('phi', 0):+.3f}" if 'phi' in m else ""
+                print(f"     Kalman-φ-Gaussian: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}")
+            
+            if 'kalman_phi_student_t' in model_comp:
+                m = model_comp['kalman_phi_student_t']
+                phi_str = f", φ={m.get('phi', 0):+.3f}" if 'phi' in m else ""
+                nu_str = f", ν={m.get('nu', 0):.1f}" if 'nu' in m else ""
+                print(f"     Kalman-φ-Student-t: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}{nu_str}")
+            
+            # Selected model
+            ll_sel = mc.get('log_likelihood', float('nan'))
+            aic_sel = mc.get('aic', float('nan'))
+            bic_sel = mc.get('bic', float('nan'))
+            print(f"     Selected:        LL={ll_sel:.1f}, AIC={aic_sel:.1f}, BIC={bic_sel:.1f} ({selected})")
+
+    # Regime Distributions Summary
+    if regime_distributions:
+        print("\n📊 REGIME DISTRIBUTIONS (per asset):")
+        print("-" * 80)
+        for asset_name in sorted(regime_distributions.keys()):
+            counts = regime_distributions[asset_name]
+            total = sum(counts.values())
+            dist_str = ", ".join([f"{REGIME_LABELS[r]}={c}" for r, c in sorted(counts.items()) if c > 0])
+            print(f"  {asset_name} ({total} obs): {dist_str}")
+        
+        # Aggregate statistics
+        print("\n  Aggregate regime counts across all processed assets:")
+        aggregate = {r: 0 for r in range(5)}
+        for counts in regime_distributions.values():
+            for r, c in counts.items():
+                aggregate[r] += c
+        total_obs = sum(aggregate.values())
+        for r in range(5):
+            pct = 100.0 * aggregate[r] / total_obs if total_obs > 0 else 0
+            print(f"    {REGIME_LABELS[r]}: {aggregate[r]:,} ({pct:.1f}%)")
+
+    # Warnings Summary
+    if processing_warnings:
+        print("\n⚠️  PROCESSING WARNINGS:")
+        print("-" * 80)
+        for warning in processing_warnings:
+            print(f"  ⚠️  {warning}")
+
+    # Failures Summary with Full Tracebacks
+    if failure_reasons:
+        print("\n❌ FAILED TICKERS AND REASONS:")
+        print("-" * 80)
+        for asset_name, msg in sorted(failure_reasons.items()):
+            print(f"\n  {asset_name}: {msg}")
+            if asset_name in failure_tracebacks:
+                print("  Full traceback:")
+                for line in failure_tracebacks[asset_name].split('\n'):
+                    print(f"    {line}")
+    
+    print("\n" + "=" * 80)
 
 
 if __name__ == '__main__':

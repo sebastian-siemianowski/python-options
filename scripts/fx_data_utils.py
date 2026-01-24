@@ -23,6 +23,16 @@ import functools
 from threading import Lock
 import requests
 
+# Rich for beautiful table output
+try:
+    from rich.console import Console
+    from rich.table import Table
+    _HAS_RICH = True
+except ImportError:
+    _HAS_RICH = False
+    Console = None
+    Table = None
+
 # Configure yfinance with longer timeout (default is 10 seconds, which is too short for bulk downloads)
 YFINANCE_TIMEOUT = 60  # seconds
 
@@ -228,6 +238,54 @@ def _human_reason(meta: Dict) -> str:
     return mapping.get(r, r or "Normalized")
 
 
+# Rich-based symbol mapping table (world-class UX)
+_SYMBOL_MAP_TABLE = None
+_SYMBOL_FAIL_TABLE = None
+_RICH_CONSOLE = None
+
+
+def _get_rich_console():
+    global _RICH_CONSOLE
+    if _RICH_CONSOLE is None and _HAS_RICH:
+        _RICH_CONSOLE = Console(force_terminal=True)
+    return _RICH_CONSOLE
+
+
+def _init_symbol_map_table():
+    """Create a beautiful Rich table for symbol mappings."""
+    table = Table(
+        title="[bold cyan]Symbol Mappings[/bold cyan]",
+        show_header=True,
+        header_style="bold white",
+        border_style="cyan",
+        title_style="bold cyan",
+        padding=(0, 1),
+        collapse_padding=True,
+    )
+    table.add_column("Original", style="cyan", justify="left", width=14)
+    table.add_column("Normalized", style="white", justify="left", width=14)
+    table.add_column("Action", style="green", justify="left", width=24)
+    table.add_column("Reason", style="white", justify="left", width=30)
+    return table
+
+
+def _init_symbol_fail_table():
+    """Create a beautiful Rich table for symbol failures."""
+    table = Table(
+        title="[bold red]Symbol Failures[/bold red]",
+        show_header=True,
+        header_style="bold white",
+        border_style="red",
+        title_style="bold red",
+        padding=(0, 1),
+        collapse_padding=True,
+    )
+    table.add_column("Original", style="yellow", justify="left", width=14)
+    table.add_column("Status", style="red", justify="left", width=24)
+    table.add_column("Reason", style="white", justify="left", width=35)
+    return table
+
+
 def _map_border() -> str:
     return f"+{'-'*(_COL_W_ORIG+2)}+{'-'*(_COL_W_NORM+2)}+{'-'*(_COL_W_ACT+2)}+{'-'*(_COL_W_WHY+2)}+"
 
@@ -237,24 +295,30 @@ def _fail_border() -> str:
 
 
 def _print_symbol_map_header():
-    global _SYMBOL_MAP_HEADER_PRINTED
+    global _SYMBOL_MAP_HEADER_PRINTED, _SYMBOL_MAP_TABLE
     if _SYMBOL_MAP_HEADER_PRINTED:
         return
-    print("\n" + _c("Symbol mappings", "cyan"))
-    print(_map_border())
-    print(f"| {'Original':<{_COL_W_ORIG}} | {'Normalized':<{_COL_W_NORM}} | {'Action':<{_COL_W_ACT}} | {'Why':<{_COL_W_WHY}} |")
-    print(_map_border())
+    if _HAS_RICH:
+        _SYMBOL_MAP_TABLE = _init_symbol_map_table()
+    else:
+        print("\n" + _c("Symbol mappings", "cyan"))
+        print(_map_border())
+        print(f"| {'Original':<{_COL_W_ORIG}} | {'Normalized':<{_COL_W_NORM}} | {'Action':<{_COL_W_ACT}} | {'Why':<{_COL_W_WHY}} |")
+        print(_map_border())
     _SYMBOL_MAP_HEADER_PRINTED = True
 
 
 def _print_symbol_fail_header():
-    global _SYMBOL_FAIL_HEADER_PRINTED
+    global _SYMBOL_FAIL_HEADER_PRINTED, _SYMBOL_FAIL_TABLE
     if _SYMBOL_FAIL_HEADER_PRINTED:
         return
-    print("\n" + _c("Symbol failures", "red"))
-    print(_fail_border())
-    print(f"| {'Original':<{_COL_W_ORIG}} | {'Status':<{_COL_W_ACT}} | {'Reason':<{_COL_W_WHY}} |")
-    print(_fail_border())
+    if _HAS_RICH:
+        _SYMBOL_FAIL_TABLE = _init_symbol_fail_table()
+    else:
+        print("\n" + _c("Symbol failures", "red"))
+        print(_fail_border())
+        print(f"| {'Original':<{_COL_W_ORIG}} | {'Status':<{_COL_W_ACT}} | {'Reason':<{_COL_W_WHY}} |")
+        print(_fail_border())
     _SYMBOL_FAIL_HEADER_PRINTED = True
 
 
@@ -262,18 +326,65 @@ def _log_symbol_map(original: str, normalized: str, meta: Dict) -> None:
     _print_symbol_map_header()
     action = _human_action(meta)
     why = _human_reason(meta)
-    icon = "✔" if _USE_COLOR else "*"
-    orig_disp = _c(original, "cyan")
-    action_disp = _c(icon + " " + action, "green")
-    print(f"| {orig_disp:<{_COL_W_ORIG}} | {normalized:<{_COL_W_NORM}} | {action_disp:<{_COL_W_ACT}} | {why:<{_COL_W_WHY}} |")
+    
+    if _HAS_RICH and _SYMBOL_MAP_TABLE is not None:
+        _SYMBOL_MAP_TABLE.add_row(
+            original,
+            f"[bold]{normalized}[/bold]",
+            f"[green]✔ {action}[/green]",
+            why
+        )
+    else:
+        icon = "✔" if _USE_COLOR else "*"
+        orig_disp = _c(original, "cyan")
+        action_disp = _c(icon + " " + action, "green")
+        print(f"| {orig_disp:<{_COL_W_ORIG}} | {normalized:<{_COL_W_NORM}} | {action_disp:<{_COL_W_ACT}} | {why:<{_COL_W_WHY}} |")
 
 
 def _log_symbol_fail(original: str, status: str, reason: Optional[str] = None) -> None:
     _print_symbol_fail_header()
     r = reason or ""
-    icon = "✖" if _USE_COLOR else "!"
-    status_disp = _c(icon + " " + status, "red")
-    print(f"| {original:<{_COL_W_ORIG}} | {status_disp:<{_COL_W_ACT}} | {r:<{_COL_W_WHY}} |")
+    
+    if _HAS_RICH and _SYMBOL_FAIL_TABLE is not None:
+        _SYMBOL_FAIL_TABLE.add_row(
+            original,
+            f"[red]✖ {status}[/red]",
+            r
+        )
+    else:
+        icon = "✖" if _USE_COLOR else "!"
+        status_disp = _c(icon + " " + status, "red")
+        print(f"| {original:<{_COL_W_ORIG}} | {status_disp:<{_COL_W_ACT}} | {r:<{_COL_W_WHY}} |")
+
+
+def print_symbol_tables() -> None:
+    """Print the accumulated symbol mapping and failure tables.
+    Call this after all symbols have been processed."""
+    global _SYMBOL_MAP_TABLE, _SYMBOL_FAIL_TABLE, _SYMBOL_MAP_HEADER_PRINTED, _SYMBOL_FAIL_HEADER_PRINTED
+    
+    if _HAS_RICH:
+        console = _get_rich_console()
+        if _SYMBOL_MAP_TABLE is not None and _SYMBOL_MAP_TABLE.row_count > 0:
+            console.print()
+            console.print(_SYMBOL_MAP_TABLE)
+        if _SYMBOL_FAIL_TABLE is not None and _SYMBOL_FAIL_TABLE.row_count > 0:
+            console.print()
+            console.print(_SYMBOL_FAIL_TABLE)
+    else:
+        # For non-Rich output, tables were printed incrementally
+        if _SYMBOL_MAP_HEADER_PRINTED:
+            print(_map_border())
+        if _SYMBOL_FAIL_HEADER_PRINTED:
+            print(_fail_border())
+
+
+def reset_symbol_tables() -> None:
+    """Reset the symbol tables for a fresh run."""
+    global _SYMBOL_MAP_TABLE, _SYMBOL_FAIL_TABLE, _SYMBOL_MAP_HEADER_PRINTED, _SYMBOL_FAIL_HEADER_PRINTED
+    _SYMBOL_MAP_TABLE = None
+    _SYMBOL_FAIL_TABLE = None
+    _SYMBOL_MAP_HEADER_PRINTED = False
+    _SYMBOL_FAIL_HEADER_PRINTED = False
 
 
 def _safe_lookup(container, key: str) -> Optional[str]:
@@ -2850,11 +2961,14 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     return pd.DataFrame()
 
 
-def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None) -> Dict[str, pd.Series]:
+def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False) -> Dict[str, pd.Series]:
     """Download multiple symbols in chunks to reduce rate limiting.
     Uses yf.download with list input; falls back to per-symbol for failures.
     Populates the local price cache so subsequent single fetches reuse data.
     Returns mapping symbol -> close price Series. Progress logging is on by default.
+    
+    Args:
+        skip_individual_fallback: If True, skip individual download fallback (for multi-pass bulk downloads)
     """
     log = log_fn if log_fn is not None else (print if progress else None)
     cleaned = [s.strip() for s in symbols if s and s.strip()]
@@ -2978,6 +3092,13 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                 log(f"    ✓ Cached {done}/{total_need} ({pct:.1f}%) so far")
 
     missing_after_bulk = [p for p in remaining_primaries if p not in satisfied_primaries]
+    
+    # Skip individual fallback if requested (for multi-pass bulk downloads)
+    if skip_individual_fallback:
+        if log and missing_after_bulk:
+            log(f"  Skipping individual fallback for {len(missing_after_bulk)} symbol(s) (bulk-only mode)")
+        return result
+    
     if log and missing_after_bulk:
         log(f"  Falling back to individual fetch for {len(missing_after_bulk)} symbol(s)…")
 
@@ -3005,6 +3126,10 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                     result[orig] = ser
                 # Data already stored by _download_prices via _store_disk_prices
                 satisfied_primaries.add(primary)
+    
+    # Print accumulated symbol mapping tables (world-class Rich output)
+    print_symbol_tables()
+    
     return result
 
 
