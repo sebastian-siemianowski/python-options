@@ -901,8 +901,10 @@ def _compute_transition_pressure(
     phi_raw = w_convex * phi_convex + w_disag * phi_disag + w_vol * phi_vol
     
     # Final saturation to ensure Φ(Y) ∈ [0, 1]
-    # Apply sigmoid for smooth saturation
-    phi = 1.0 / (1.0 + np.exp(-4.0 * (phi_raw - 0.3)))  # Shifted sigmoid
+    # v3.1.0 Fix: Use tanh for bounded saturation that equals 0 at baseline
+    # tanh(0) = 0, so Φ = 0 when all stress components are 0
+    # This satisfies the requirement: "equals 0 under baseline conditions"
+    phi = np.tanh(phi_raw * 2.0)  # Scale factor controls saturation rate
     
     # Ensure non-negative and bounded
     phi = max(0.0, min(phi, 1.0))
@@ -1636,6 +1638,7 @@ def _compute_dynamic_alpha(
     - When convexity accelerates (ΔC > 0) → act earlier with less certainty
     
     This implements risk-sensitive Bayesian decision theory.
+    No discretionary logic is permitted.
     
     Args:
         observation: Current observation vector
@@ -1644,35 +1647,18 @@ def _compute_dynamic_alpha(
     Returns:
         Dynamic threshold α(t) ∈ (0, 1)
     """
-    # Start with base threshold
+    # v3.1.0 - Issue 2 Fix: α(t) = α₀ − g(ΔC(t))
+    # This is the ONLY adjustment - no discretionary logic
     alpha = base_alpha
     
-    # Primary adjustment: g(ΔC(t)) (v3.1.0 - Issue 2 Fix)
-    # This is the mathematically correct formulation
     if np.isfinite(observation.convex_loss_acceleration):
         g_adjustment = _g_convexity_adjustment(observation.convex_loss_acceleration)
         alpha -= g_adjustment
     
-    # Secondary adjustments (preserved from v3.0.0 for robustness)
-    # These provide additional context but are secondary to the ΔC-based adjustment
-    
-    # Volatility compression: additional signal of danger
-    if np.isfinite(observation.vol_ratio):
-        if observation.vol_ratio < 0.7:
-            # Severe compression - modest additional reduction
-            alpha -= 0.05
-        elif observation.vol_ratio < 0.85:
-            # Moderate compression
-            alpha -= 0.02
-    
-    # Disagreement momentum: rising uncertainty is concerning
-    if np.isfinite(observation.disagreement_momentum):
-        if observation.disagreement_momentum > 0.05:
-            alpha -= 0.03
-    
     # Enforce strict bounds: α(t) ∈ (0, 1)
-    # Practical bounds: [0.35, 0.80] to prevent extreme behavior
-    alpha = max(0.35, min(alpha, 0.80))
+    # Lower bound prevents extreme threshold reduction
+    # Upper bound is the base_alpha
+    alpha = max(0.40, min(alpha, base_alpha))
     
     return alpha
 
@@ -1936,37 +1922,32 @@ def _make_decision(
     Returns:
         DebtSwitchDecision
     """
-    # v3.0.0 - Improvement 5: Dynamic threshold
+    # v3.1.0 - Issue 2 Fix: Dynamic threshold α(t)
     if use_dynamic_alpha:
         dynamic_alpha = _compute_dynamic_alpha(observation, threshold)
     else:
         dynamic_alpha = threshold
     
-    # Initial trigger check
-    # PRE_POLICY_B is the "unstable compression" state - most regret happens here
-    # We trigger on PRE_POLICY_B crossing threshold, not PRE_POLICY_A
-    prob_pre_policy_b = posterior.p_pre_policy_b
+    # Combined PRE_POLICY probability (A + B)
+    # As specified: P(S_t = PRE_POLICY | Y_1:t)
+    prob_pre_policy = posterior.p_pre_policy  # Already combines A + B
     prob_policy = posterior.p_policy
-    prob_stress = posterior.p_pre_policy + posterior.p_policy  # Combined stress
     
     # Trigger conditions
     triggered = False
     decision_basis = ""
     
-    # Primary trigger: PRE_POLICY_B exceeds threshold
-    if prob_pre_policy_b > dynamic_alpha:
+    # Primary trigger: P(PRE_POLICY) > α(t)
+    # As specified: "Trigger EUR debt switch on the FIRST day t such that
+    # P(S_t = PRE_POLICY | Y_1:t) > α(t)"
+    if prob_pre_policy > dynamic_alpha:
         triggered = True
-        decision_basis = f"PRE_POLICY_B threshold exceeded (P={prob_pre_policy_b:.2%} > α={dynamic_alpha:.0%})"
+        decision_basis = f"PRE_POLICY threshold exceeded (P={prob_pre_policy:.2%} > α={dynamic_alpha:.0%})"
     
-    # Belt and suspenders: POLICY state is dominant
+    # Belt and suspenders: POLICY state is dominant (already past PRE_POLICY)
     elif posterior.dominant_state == LatentState.POLICY:
         triggered = True
         decision_basis = f"POLICY state dominant (P={prob_policy:.2%})"
-    
-    # Combined stress check (PRE_POLICY_A + B + POLICY)
-    elif prob_stress > 0.75:
-        triggered = True
-        decision_basis = f"Combined stress high (P_stress={prob_stress:.2%} > 75%)"
     
     # v3.0.0 - Improvement 6: Dominance check
     expected_loss_delta = None
@@ -1991,8 +1972,7 @@ def _make_decision(
     # If not triggered, provide status
     if not triggered and not decision_basis:
         decision_basis = (
-            f"Below threshold: P(PRE_POLICY_B)={prob_pre_policy_b:.2%} ≤ α={dynamic_alpha:.0%}, "
-            f"P(stress)={prob_stress:.2%}"
+            f"Below threshold: P(PRE_POLICY)={prob_pre_policy:.2%} ≤ α={dynamic_alpha:.0%}"
         )
     
     effective_date = observation.timestamp.split('T')[0] if triggered else None
