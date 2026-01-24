@@ -84,11 +84,10 @@ fx-validate-kalman-plots: .venv/.deps_installed
 	@mkdir -p plots/kalman_validation
 	@.venv/bin/python scripts/fx_pln_jpy_signals.py --validate-kalman --validation-plots $(ARGS)
 
-# Kalman q parameter tuning via MLE
+# Kalman q parameter tuning via MLE (with world-class UX)
 tune: .venv/.deps_installed
-	@echo "Estimating optimal Kalman drift q parameters via MLE..."
 	@mkdir -p cache
-	@.venv/bin/python scripts/tune_q_mle.py $(ARGS)
+	@.venv/bin/python scripts/tune_pretty.py $(ARGS)
 
 show-q:
 	@if [ -f cache/kalman_q_cache.json ]; then \
@@ -136,9 +135,15 @@ top20: .venv/.deps_installed
 	if [ -z "$$ASSETS" ]; then echo 'No assets resolved'; exit 1; fi; \
 	$(MAKE) fx-plnjpy ARGS="--assets $$ASSETS"
 
-# Precache securities data (full history). Slow down concurrency to avoid 401s.
+# Precache securities data (full history) - runs 5 download passes for reliability
 data: .venv/.deps_installed
-	@.venv/bin/python scripts/precache_data.py --workers 2 --batch-size 16
+	@echo "Downloading price data (5 passes for reliability)..."
+	@.venv/bin/python scripts/refresh_data.py --skip-trim --retries 5 --workers 2 --batch-size 16 $(ARGS)
+
+# Refresh data: delete last 5 days from cache, then bulk re-download 5 times
+refresh: .venv/.deps_installed
+	@echo "Refreshing price data (trim last 5 days, then 5 download passes)..."
+	@.venv/bin/python scripts/refresh_data.py --days 5 --retries 5 --workers 2 --batch-size 16 $(ARGS)
 
 four:
 	@if [ ! -f cache/kalman_q_cache.json ]; then \
@@ -203,3 +208,7 @@ setup:
 # Clean cached price data by removing empty rows (dates before company existed)
 clean-cache: .venv/.deps_installed
 	@.venv/bin/python scripts/clean_cache.py
+
+colors: .venv/.deps_installed
+	@.venv/bin/python scripts/show_colors.py
+
