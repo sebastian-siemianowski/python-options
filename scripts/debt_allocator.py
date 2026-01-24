@@ -2,17 +2,13 @@
 """
 debt_allocator.py
 
-Research-Grade FX Debt Allocation Engine (EURJPY)
-=================================================
+FX Debt Allocation Engine (EURJPY)
+==================================
 
 PURPOSE:
     Determines a single, precise, irreversible calendar day on which 
     JPY-denominated debt must be switched to EUR-denominated debt,
     based exclusively on EURJPY dynamics.
-
-    This system approximates the theoretical upper bound of decision accuracy
-    under policy-driven FX discontinuities, latent stress accumulation, and
-    asymmetric convex loss.
 
 THIS IS:
     ❌ NOT a trade signal
@@ -34,6 +30,20 @@ LATENT STATE MODEL:
     S_t ∈ {NORMAL, COMPRESSED, PRE_POLICY, POLICY}
     States are partially ordered with forbidden backward transitions.
 
+OBSERVATION VECTOR:
+    Y_t = (C, P, D, dD, V)
+    - C: Convex loss functional
+    - P: Tail mass
+    - D: Epistemic disagreement
+    - dD: Disagreement momentum
+    - V: Volatility compression ratio
+    
+    Note: ΔC(t) = C(t) - C(t-1) is computed from C for transition pressure.
+
+FINAL FIXES:
+    1. Endogenous transition pressure: Φ(Y) accelerates forward transitions
+    2. Risk-adaptive decision boundary: α(t) = α₀ − g(ΔC(t))
+
 ARCHITECTURAL CONSTRAINTS:
     - Everything lives in this single file
     - No reuse of existing methods
@@ -42,20 +52,7 @@ ARCHITECTURAL CONSTRAINTS:
     - No shared mutable state
     - Deletable with zero side effects
 
-Author: Research-Grade Debt Allocation Engine
-Version: 3.1.0
-
-UPGRADES (v3.0.0):
-    1. Endogenous state transitions: P(S_t|S_{t-1}, Y_{t-1})
-    2. PRE_POLICY split into A (silent stress) and B (unstable compression)
-    3. Explicit tail skew dynamics: Skew(t) = E[(ΔX-μ)³]/σ³
-    4. Meta-uncertainty with model averaging: P(S_t|Y) = Σ P(S_t|M_k,Y)P(M_k|Y)
-    5. Dynamic decision boundary: α(t) = f(convexity, leverage, carry)
-    6. Explicit "do nothing" dominance check: E[Loss_stay] - E[Loss_switch]
-
-UPGRADES (v3.1.0):
-    7. Stress-accelerated transition pressure: Φ(Y) bounded scalar for P(S_t|S_{t-1}, Φ(Y_{t-1}))
-    8. Risk-adaptive decision boundary: α(t) = α₀ − g(ΔC(t)) with bounded monotone g(·)
+Version: 4.0.0
 """
 
 from __future__ import annotations
@@ -132,19 +129,14 @@ class LatentState(IntEnum):
     """
     Latent policy-stress states.
     
-    Partially ordered: NORMAL → COMPRESSED → PRE_POLICY_A → PRE_POLICY_B → POLICY
-    
-    PRE_POLICY split (v3.0.0):
-        - PRE_POLICY_A: Silent stress accumulation (carry still works)
-        - PRE_POLICY_B: Unstable compression (carry looks safe but isn't)
+    Partially ordered: NORMAL → COMPRESSED → PRE_POLICY → POLICY
     
     Backward transitions are forbidden except via explicit reset.
     """
     NORMAL = 0
     COMPRESSED = 1
-    PRE_POLICY_A = 2  # Silent stress accumulation
-    PRE_POLICY_B = 3  # Unstable compression
-    POLICY = 4
+    PRE_POLICY = 2
+    POLICY = 3
     
     @classmethod
     def names(cls) -> List[str]:
@@ -164,49 +156,47 @@ class ObservationVector:
     """
     Price-derived observation vector Y_t.
     
-    Components:
+    Contract-specified components (C, P, D, dD, V):
         C: Convex loss functional E[max(ΔX, 0)^p]
-        ΔC: Convex loss acceleration C(t) - C(t-1) (v3.1.0)
         P: Tail mass P(ΔX > 0)
         D: Epistemic disagreement (normalized)
         dD: Disagreement momentum
         V: Volatility compression/expansion ratio
-        skew: Directional skew dynamics (v3.0.0) - E[(ΔX-μ)³]/σ³
-        skew_momentum: Change in skew (v3.0.0)
+    
+    Derived metric (computed from C):
+        ΔC: Convex loss acceleration C(t) - C(t-1)
     """
     convex_loss: float      # C(t)
-    convex_loss_acceleration: float  # ΔC(t) = C(t) - C(t-1) (v3.1.0)
+    convex_loss_acceleration: float  # ΔC(t) = C(t) - C(t-1), derived from C
     tail_mass: float        # P(t) = P(ΔX > 0)
     disagreement: float     # D(t)
     disagreement_momentum: float  # dD(t)
     vol_ratio: float        # V(t) = σ_short / σ_long
-    skew: float             # Skew(t) = E[(ΔX-μ)³]/σ³ (v3.0.0)
-    skew_momentum: float    # dSkew(t) (v3.0.0)
     timestamp: str
     
     def to_array(self) -> np.ndarray:
-        """Convert to numpy array for HMM processing."""
+        """Convert to numpy array for HMM processing.
+        
+        Array layout: [C, P, D, dD, V, ΔC]
+        Core observation is [C, P, D, dD, V], ΔC is derived.
+        """
         return np.array([
             self.convex_loss,
             self.tail_mass,
             self.disagreement,
             self.disagreement_momentum,
             self.vol_ratio,
-            self.skew,
-            self.skew_momentum,
-            self.convex_loss_acceleration,  # v3.1.0
+            self.convex_loss_acceleration,
         ])
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "convex_loss": self.convex_loss,
-            "convex_loss_acceleration": self.convex_loss_acceleration,  # v3.1.0
+            "convex_loss_acceleration": self.convex_loss_acceleration,
             "tail_mass": self.tail_mass,
             "disagreement": self.disagreement,
             "disagreement_momentum": self.disagreement_momentum,
             "vol_ratio": self.vol_ratio,
-            "skew": self.skew,
-            "skew_momentum": self.skew_momentum,
             "timestamp": self.timestamp,
         }
 
@@ -215,29 +205,22 @@ class ObservationVector:
 class StatePosterior:
     """
     Posterior state probabilities P(S_t | Y_1:t).
-    
-    v3.0.0: Includes model-averaged posterior and model weights for meta-uncertainty.
     """
-    probabilities: Tuple[float, float, float, float, float]  # One per state (5 states)
+    probabilities: Tuple[float, float, float, float]  # One per state (4 states)
     dominant_state: LatentState
     timestamp: str
-    model_weights: Optional[Tuple[float, ...]] = None  # P(M_k | Y_1:t) (v3.0.0)
     
     def to_dict(self) -> Dict[str, Any]:
-        result = {
+        return {
             "probabilities": {
                 LatentState.NORMAL.name: self.probabilities[0],
                 LatentState.COMPRESSED.name: self.probabilities[1],
-                LatentState.PRE_POLICY_A.name: self.probabilities[2],
-                LatentState.PRE_POLICY_B.name: self.probabilities[3],
-                LatentState.POLICY.name: self.probabilities[4],
+                LatentState.PRE_POLICY.name: self.probabilities[2],
+                LatentState.POLICY.name: self.probabilities[3],
             },
             "dominant_state": self.dominant_state.name,
             "timestamp": self.timestamp,
         }
-        if self.model_weights is not None:
-            result["model_weights"] = list(self.model_weights)
-        return result
     
     @property
     def p_normal(self) -> float:
@@ -248,17 +231,8 @@ class StatePosterior:
         return self.probabilities[LatentState.COMPRESSED]
     
     @property
-    def p_pre_policy_a(self) -> float:
-        return self.probabilities[LatentState.PRE_POLICY_A]
-    
-    @property
-    def p_pre_policy_b(self) -> float:
-        return self.probabilities[LatentState.PRE_POLICY_B]
-    
-    @property
     def p_pre_policy(self) -> float:
-        """Combined PRE_POLICY probability (A + B)."""
-        return self.p_pre_policy_a + self.p_pre_policy_b
+        return self.probabilities[LatentState.PRE_POLICY]
     
     @property
     def p_policy(self) -> float:
@@ -269,11 +243,6 @@ class StatePosterior:
 class DebtSwitchDecision:
     """
     Immutable record of debt switch decision.
-    
-    v3.0.0 additions:
-        - dynamic_alpha: Computed decision threshold α(t) based on context
-        - expected_loss_delta: E[Loss_stay] - E[Loss_switch] (dominance check)
-        - dominance_margin: Minimum required margin for switching
     """
     triggered: bool
     effective_date: Optional[str]
@@ -281,9 +250,7 @@ class DebtSwitchDecision:
     state_posterior: StatePosterior
     decision_basis: str
     signature: str
-    dynamic_alpha: float = 0.60  # v3.0.0: Dynamic threshold
-    expected_loss_delta: Optional[float] = None  # v3.0.0: E[Loss_stay] - E[Loss_switch]
-    dominance_margin: float = 0.0  # v3.0.0: Required margin for dominance
+    dynamic_alpha: float = 0.60  # Dynamic threshold α(t)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -294,8 +261,6 @@ class DebtSwitchDecision:
             "decision_basis": self.decision_basis,
             "signature": self.signature,
             "dynamic_alpha": self.dynamic_alpha,
-            "expected_loss_delta": self.expected_loss_delta,
-            "dominance_margin": self.dominance_margin,
         }
 
 
@@ -612,83 +577,84 @@ def _compute_volatility_ratio(
 
 
 # =============================================================================
-# OBSERVATION MODEL: SKEW DYNAMICS (v3.0.0 - Improvement 3)
+# OBSERVATION MODEL: SKEW DYNAMICS
+# removed to satisfy allocator contract - observation vector limited to C, P, D, dD, V
 # =============================================================================
 
-def _compute_skew(
-    log_returns: pd.Series,
-    window: int = VOL_LOOKBACK_SHORT
-) -> float:
-    """
-    Compute directional skew dynamics.
-    
-    Skew(t) = E[(ΔX - μ)³] / σ³
-    
-    Why this matters (v3.0.0):
-    - JPY stress events show rapid skew sign changes
-    - This often precedes volatility expansion
-    - Helps discriminate between "good JPY strength" and "dangerous JPY strength"
-    
-    Args:
-        log_returns: Historical log returns
-        window: Lookback window for skew calculation
-        
-    Returns:
-        Standardized skewness
-    """
-    if len(log_returns) < window:
-        return float('nan')
-    
-    recent = log_returns.iloc[-window:].values
-    
-    if len(recent) < 10:
-        return float('nan')
-    
-    mu = np.mean(recent)
-    sigma = np.std(recent)
-    
-    if sigma <= 1e-10:
-        return float('nan')
-    
-    # Compute standardized third moment
-    centered = recent - mu
-    skew = np.mean(centered ** 3) / (sigma ** 3)
-    
-    return float(skew)
+# def _compute_skew(
+#     log_returns: pd.Series,
+#     window: int = VOL_LOOKBACK_SHORT
+# ) -> float:
+#     """
+#     Compute directional skew dynamics.
+#     
+#     Skew(t) = E[(ΔX - μ)³] / σ³
+#     
+#     Why this matters (v3.0.0):
+#     - JPY stress events show rapid skew sign changes
+#     - This often precedes volatility expansion
+#     - Helps discriminate between "good JPY strength" and "dangerous JPY strength"
+#     
+#     Args:
+#         log_returns: Historical log returns
+#         window: Lookback window for skew calculation
+#         
+#     Returns:
+#         Standardized skewness
+#     """
+#     if len(log_returns) < window:
+#         return float('nan')
+#     
+#     recent = log_returns.iloc[-window:].values
+#     
+#     if len(recent) < 10:
+#         return float('nan')
+#     
+#     mu = np.mean(recent)
+#     sigma = np.std(recent)
+#     
+#     if sigma <= 1e-10:
+#         return float('nan')
+#     
+#     # Compute standardized third moment
+#     centered = recent - mu
+#     skew = np.mean(centered ** 3) / (sigma ** 3)
+#     
+#     return float(skew)
 
 
-def _compute_skew_momentum(
-    log_returns: pd.Series,
-    window: int = VOL_LOOKBACK_SHORT,
-    lag: int = 5
-) -> Tuple[float, float]:
-    """
-    Compute skew and its momentum (rate of change).
-    
-    v3.0.0: Tracks how rapidly skew is changing, which is a key
-    early warning signal for stress events.
-    
-    Args:
-        log_returns: Historical log returns
-        window: Lookback window for skew calculation
-        lag: Days to look back for momentum calculation
-        
-    Returns:
-        Tuple of (current_skew, skew_momentum)
-    """
-    if len(log_returns) < window + lag:
-        current_skew = _compute_skew(log_returns, window)
-        return (current_skew, 0.0)
-    
-    current_skew = _compute_skew(log_returns, window)
-    lagged_skew = _compute_skew(log_returns.iloc[:-lag], window)
-    
-    if np.isfinite(current_skew) and np.isfinite(lagged_skew):
-        skew_momentum = current_skew - lagged_skew
-    else:
-        skew_momentum = 0.0
-    
-    return (current_skew, skew_momentum)
+# def _compute_skew_momentum(
+#     log_returns: pd.Series,
+#     window: int = VOL_LOOKBACK_SHORT,
+#     lag: int = 5
+# ) -> Tuple[float, float]:
+#     """
+#     Compute skew and its momentum (rate of change).
+#     
+#     v3.0.0: Tracks how rapidly skew is changing, which is a key
+#     early warning signal for stress events.
+#     
+#     Args:
+#         log_returns: Historical log returns
+#         window: Lookback window for skew calculation
+#         lag: Days to look back for momentum calculation
+#         
+#     Returns:
+#         Tuple of (current_skew, skew_momentum)
+#     """
+#     if len(log_returns) < window + lag:
+#         current_skew = _compute_skew(log_returns, window)
+#         return (current_skew, 0.0)
+#     
+#     current_skew = _compute_skew(log_returns, window)
+#     lagged_skew = _compute_skew(log_returns.iloc[:-lag], window)
+#     
+#     if np.isfinite(current_skew) and np.isfinite(lagged_skew):
+#         skew_momentum = current_skew - lagged_skew
+#     else:
+#         skew_momentum = 0.0
+#     
+#     return (current_skew, skew_momentum)
 
 
 # =============================================================================
@@ -698,21 +664,16 @@ def _compute_skew_momentum(
 def _construct_observation_vector(
     log_returns: pd.Series,
     prev_disagreement: Optional[float] = None,
-    prev_skew: Optional[float] = None,
-    prev_convex_loss: Optional[float] = None,  # v3.1.0
+    prev_convex_loss: Optional[float] = None,
     timestamp: Optional[str] = None
 ) -> ObservationVector:
     """
     Construct the full observation vector Y_t.
     
-    v3.0.0: Added skew and skew_momentum for directional asymmetry tracking.
-    v3.1.0: Added convex_loss_acceleration (ΔC) for transition pressure.
-    
     Args:
         log_returns: Historical log returns up to time t
         prev_disagreement: Previous disagreement for momentum calculation
-        prev_skew: Previous skew for momentum calculation (v3.0.0)
-        prev_convex_loss: Previous convex loss for acceleration calculation (v3.1.0)
+        prev_convex_loss: Previous convex loss for acceleration calculation
         timestamp: Timestamp for the observation
         
     Returns:
@@ -727,7 +688,7 @@ def _construct_observation_vector(
     # 1) Convex Loss Functional
     convex_loss = _compute_convex_loss(samples_21d)
     
-    # 2) Convex Loss Acceleration (v3.1.0): ΔC(t) = C(t) - C(t-1)
+    # 2) Convex Loss Acceleration: ΔC(t) = C(t) - C(t-1)
     if prev_convex_loss is not None and np.isfinite(prev_convex_loss) and np.isfinite(convex_loss):
         convex_loss_acceleration = convex_loss - prev_convex_loss
     else:
@@ -748,44 +709,33 @@ def _construct_observation_vector(
     # 6) Volatility Ratio
     vol_ratio = _compute_volatility_ratio(log_returns)
     
-    # 7) Skew Dynamics (v3.0.0 - Improvement 3)
-    skew, skew_momentum = _compute_skew_momentum(log_returns)
-    
-    # Override skew momentum if we have explicit previous skew
-    if prev_skew is not None and np.isfinite(prev_skew) and np.isfinite(skew):
-        skew_momentum = skew - prev_skew
-    
     return ObservationVector(
         convex_loss=convex_loss,
-        convex_loss_acceleration=convex_loss_acceleration,  # v3.1.0
+        convex_loss_acceleration=convex_loss_acceleration,
         tail_mass=tail_mass,
         disagreement=disagreement,
         disagreement_momentum=disagreement_momentum,
         vol_ratio=vol_ratio,
-        skew=skew,
-        skew_momentum=skew_momentum,
         timestamp=timestamp,
     )
 
 
 # =============================================================================
-# HIDDEN MARKOV MODEL: TRANSITION MATRIX (v3.0.0 - Endogenous)
+# HIDDEN MARKOV MODEL: TRANSITION MATRIX
 # =============================================================================
 
 def _build_base_transition_matrix(persistence: float = TRANSITION_PERSISTENCE) -> np.ndarray:
     """
     Build base monotone transition matrix respecting partial ordering.
     
-    States: NORMAL → COMPRESSED → PRE_POLICY_A → PRE_POLICY_B → POLICY
+    States: NORMAL → COMPRESSED → PRE_POLICY → POLICY
     Backward transitions are forbidden (set to 0).
-    
-    v3.0.0: Extended to 5 states with PRE_POLICY split.
     
     Args:
         persistence: Diagonal dominance (probability of staying in same state)
         
     Returns:
-        5x5 transition matrix
+        4x4 transition matrix
     """
     n_states = LatentState.n_states()
     A = np.zeros((n_states, n_states))
@@ -824,8 +774,6 @@ def _compute_transition_pressure(
     """
     Compute bounded transition-pressure scalar Φ(Y).
     
-    v3.1.0 - Issue 1 Fix: Stress-accelerated latent process
-    
     Φ(Y) is constructed from:
     - Convex loss acceleration: ΔC(t) = C(t) − C(t−1)
     - Epistemic momentum: dD(t) = D(t) − D(t−1)
@@ -844,11 +792,10 @@ def _compute_transition_pressure(
         Bounded transition pressure scalar Φ(Y) ∈ [0, 1]
     """
     # Extract observation components
-    # Array layout: [convex_loss, tail_mass, disagreement, disag_momentum, vol_ratio, skew, skew_momentum, convex_accel]
-    obs_convex = observation[0]  # C(t)
+    # Array layout: [convex_loss, tail_mass, disagreement, disag_momentum, vol_ratio, convex_accel]
     obs_disag_momentum = observation[3]  # dD(t)
     obs_vol = observation[4]  # V(t)
-    obs_convex_accel = observation[7] if len(observation) > 7 else 0.0  # ΔC(t) (v3.1.0)
+    obs_convex_accel = observation[5] if len(observation) > 5 else 0.0  # ΔC(t)
     
     # Get historical quantiles for normalization
     convex_q75 = historical_quantiles.get('convex_q75', 0.0006)
@@ -938,7 +885,7 @@ def _compute_endogenous_transition_matrix(
         historical_quantiles: Dict with quantile arrays for each metric
         
     Returns:
-        Observation-conditioned 5x5 transition matrix
+        Observation-conditioned 4x4 transition matrix
     """
     n_states = LatentState.n_states()
     A = base_matrix.copy()
@@ -992,16 +939,14 @@ def _build_transition_matrix(persistence: float = TRANSITION_PERSISTENCE) -> np.
     """
     Build monotone transition matrix respecting partial ordering.
     
-    States: NORMAL → COMPRESSED → PRE_POLICY_A → PRE_POLICY_B → POLICY
+    States: NORMAL → COMPRESSED → PRE_POLICY → POLICY
     Backward transitions are forbidden (set to 0).
-    
-    v3.0.0: Extended to 5 states with PRE_POLICY split.
     
     Args:
         persistence: Diagonal dominance (probability of staying in same state)
         
     Returns:
-        5x5 transition matrix
+        4x4 transition matrix
     """
     return _build_base_transition_matrix(persistence)
 
@@ -1020,8 +965,6 @@ def _estimate_emission_likelihood(
     
     Non-Gaussian, empirical estimation based on historical data quantiles.
     
-    v3.0.0: Extended to 5 states with PRE_POLICY_A/B split and skew dynamics.
-    
     Args:
         observation: Current observation vector
         state: Latent state
@@ -1035,27 +978,24 @@ def _estimate_emission_likelihood(
         return 0.0
     
     # Extract observation components
+    # Array layout: [convex_loss, tail_mass, disagreement, disag_momentum, vol_ratio, convex_accel]
     obs_convex = observation[0]  # Convex loss
     obs_tail = observation[1]    # Tail mass
     obs_disag = observation[2]   # Disagreement
     obs_momentum = observation[3]  # Disagreement momentum
     obs_vol = observation[4]     # Volatility ratio
-    obs_skew = observation[5] if len(observation) > 5 else 0.0  # Skew (v3.0.0)
-    obs_skew_mom = observation[6] if len(observation) > 6 else 0.0  # Skew momentum (v3.0.0)
     
     # Compute historical quantiles for calibration
     hist_convex = historical_observations[:, 0]
     hist_tail = historical_observations[:, 1]
     hist_disag = historical_observations[:, 2]
     hist_vol = historical_observations[:, 4]
-    hist_skew = historical_observations[:, 5] if historical_observations.shape[1] > 5 else np.zeros(len(historical_observations))
     
     # Filter valid values
     hist_convex = hist_convex[np.isfinite(hist_convex)]
     hist_tail = hist_tail[np.isfinite(hist_tail)]
     hist_disag = hist_disag[np.isfinite(hist_disag)]
     hist_vol = hist_vol[np.isfinite(hist_vol)]
-    hist_skew = hist_skew[np.isfinite(hist_skew)]
     
     # Compute quantiles for each metric
     if len(hist_convex) > 10:
@@ -1078,12 +1018,6 @@ def _estimate_emission_likelihood(
     else:
         vol_q10, vol_q25, vol_q50, vol_q75, vol_q90 = 0.7, 0.85, 1.0, 1.15, 1.3
     
-    # Skew quantiles (v3.0.0)
-    if len(hist_skew) > 10:
-        skew_q10, skew_q25, skew_q75, skew_q90 = np.percentile(hist_skew, [10, 25, 75, 90])
-    else:
-        skew_q10, skew_q25, skew_q75, skew_q90 = -0.5, -0.2, 0.2, 0.5
-    
     # Log-likelihood accumulator
     log_lik = 0.0
     
@@ -1092,7 +1026,6 @@ def _estimate_emission_likelihood(
     
     if state == LatentState.NORMAL:
         # NORMAL: Default state - strongly favored for typical observations
-        # Metrics near or below median
         if obs_convex < convex_q75:
             log_lik += 1.0
         else:
@@ -1111,13 +1044,8 @@ def _estimate_emission_likelihood(
         if 0.8 <= obs_vol <= 1.2:
             log_lik += 0.5
         
-        # Skew near zero in NORMAL state (v3.0.0)
-        if np.isfinite(obs_skew) and skew_q25 < obs_skew < skew_q75:
-            log_lik += 0.3
-        
     elif state == LatentState.COMPRESSED:
         # COMPRESSED: low vol ratio (compression) is key signal
-        # Moderate other metrics
         if obs_vol < vol_q25:
             log_lik += 1.5  # Strong signal: volatility compression
         elif obs_vol < vol_q50:
@@ -1128,54 +1056,16 @@ def _estimate_emission_likelihood(
         if obs_convex < convex_q75:
             log_lik += 0.3
             
-    elif state == LatentState.PRE_POLICY_A:
-        # PRE_POLICY_A (v3.0.0): Silent stress accumulation
-        # Carry still appears to work, but subtle signs of stress
+    elif state == LatentState.PRE_POLICY:
+        # PRE_POLICY: Elevated stress metrics
         elevated_count = 0
         
-        # Moderately elevated convex loss
-        if convex_q50 < obs_convex <= convex_q75:
-            log_lik += 0.6
-            elevated_count += 1
-        elif obs_convex > convex_q75:
-            log_lik += 0.3  # Too elevated for A
-        else:
-            log_lik -= 0.3
-            
-        # Tail mass starting to rise
-        if tail_q50 < obs_tail <= tail_q75:
-            log_lik += 0.5
-            elevated_count += 1
-        else:
-            log_lik -= 0.2
-            
-        # Disagreement beginning to build
-        if disag_q50 < obs_disag <= disag_q75:
-            log_lik += 0.4
-            elevated_count += 1
-            
-        # Vol ratio still moderate (not yet compressed/expanding)
-        if vol_q25 < obs_vol < vol_q75:
-            log_lik += 0.3
-        
-        # Skew starting to become negative (v3.0.0)
-        if np.isfinite(obs_skew) and obs_skew < skew_q25:
-            log_lik += 0.5
-            elevated_count += 1
-            
-        # Require at least 2 subtle signals
-        if elevated_count < 2:
-            log_lik -= 1.5
-            
-    elif state == LatentState.PRE_POLICY_B:
-        # PRE_POLICY_B (v3.0.0): Unstable compression
-        # Carry looks safe but isn't - most regret happens here
-        elevated_count = 0
-        
-        # Clearly elevated convex loss
+        # Elevated convex loss
         if obs_convex > convex_q75:
             log_lik += 0.7
             elevated_count += 1
+        elif obs_convex > convex_q50:
+            log_lik += 0.3
         else:
             log_lik -= 0.5
             
@@ -1183,6 +1073,8 @@ def _estimate_emission_likelihood(
         if obs_tail > tail_q75:
             log_lik += 0.6
             elevated_count += 1
+        elif obs_tail > tail_q50:
+            log_lik += 0.2
         else:
             log_lik -= 0.4
             
@@ -1190,6 +1082,8 @@ def _estimate_emission_likelihood(
         if obs_disag > disag_q75:
             log_lik += 0.5
             elevated_count += 1
+        elif obs_disag > disag_q50:
+            log_lik += 0.2
         else:
             log_lik -= 0.3
             
@@ -1197,18 +1091,10 @@ def _estimate_emission_likelihood(
         if np.isfinite(obs_momentum) and obs_momentum > 0.02:
             log_lik += 0.6
             elevated_count += 1
-        
-        # Strongly negative skew OR rapid skew change (v3.0.0)
-        if np.isfinite(obs_skew) and obs_skew < skew_q10:
-            log_lik += 0.7
-            elevated_count += 1
-        if np.isfinite(obs_skew_mom) and abs(obs_skew_mom) > 0.3:
-            log_lik += 0.5
-            elevated_count += 1
             
-        # Require at least 3 elevated metrics for B state
-        if elevated_count < 3:
-            log_lik -= 2.0
+        # Require at least 2 elevated metrics
+        if elevated_count < 2:
+            log_lik -= 1.5
         
     elif state == LatentState.POLICY:
         # POLICY: requires EXTREME metrics - very rare state
@@ -1237,11 +1123,6 @@ def _estimate_emission_likelihood(
             extreme_count += 1
         else:
             log_lik -= 0.5
-        
-        # Extreme skew (either direction) in POLICY (v3.0.0)
-        if np.isfinite(obs_skew) and (obs_skew < skew_q10 or obs_skew > skew_q90):
-            log_lik += 0.8
-            extreme_count += 1
             
         # Require at least 3 extreme metrics
         if extreme_count < 3:
@@ -1383,201 +1264,12 @@ def _forward_algorithm(
 
 
 # =============================================================================
-# META-MODEL UNCERTAINTY (v3.0.0 - Improvement 4)
-# =============================================================================
-
-@dataclass
-class ModelSpecification:
-    """
-    Specification for an alternative latent stress model.
-    
-    v3.0.0: Used for Bayesian model averaging to prevent false certainty.
-    """
-    name: str
-    persistence: float  # Transition persistence parameter
-    convex_weight: float  # Weight for convex loss in emissions
-    vol_weight: float  # Weight for volatility ratio in emissions
-    skew_weight: float  # Weight for skew in emissions
-    
-    
-def _get_model_specifications() -> List[ModelSpecification]:
-    """
-    Define alternative latent stress models for meta-uncertainty.
-    
-    v3.0.0 - Improvement 4: These represent different hypotheses about
-    how stress accumulates and manifests in observations.
-    """
-    return [
-        ModelSpecification(
-            name="baseline",
-            persistence=0.85,
-            convex_weight=1.0,
-            vol_weight=1.0,
-            skew_weight=1.0,
-        ),
-        ModelSpecification(
-            name="sticky",
-            persistence=0.92,  # Higher persistence - slower transitions
-            convex_weight=1.0,
-            vol_weight=1.0,
-            skew_weight=0.8,
-        ),
-        ModelSpecification(
-            name="volatile",
-            persistence=0.75,  # Lower persistence - faster transitions
-            convex_weight=1.2,
-            vol_weight=1.0,
-            skew_weight=1.2,
-        ),
-        ModelSpecification(
-            name="vol_driven",
-            persistence=0.85,
-            convex_weight=0.8,
-            vol_weight=1.5,  # Emphasize volatility
-            skew_weight=1.0,
-        ),
-        ModelSpecification(
-            name="skew_driven",
-            persistence=0.85,
-            convex_weight=0.9,
-            vol_weight=0.9,
-            skew_weight=1.5,  # Emphasize skew
-        ),
-    ]
-
-
-def _run_model_inference(
-    observations: List[np.ndarray],
-    historical_obs_array: np.ndarray,
-    model_spec: ModelSpecification,
-    initial_distribution: np.ndarray
-) -> Tuple[List[np.ndarray], float]:
-    """
-    Run inference for a specific model specification.
-    
-    Returns:
-        Tuple of (posteriors, marginal_likelihood)
-    """
-    # Build transition matrix with model's persistence
-    A = _build_base_transition_matrix(model_spec.persistence)
-    
-    n_states = LatentState.n_states()
-    n_obs = len(observations)
-    
-    if n_obs == 0:
-        return [], 0.0
-    
-    posteriors = []
-    marginal_log_lik = 0.0
-    
-    hist_quantiles = _compute_historical_quantiles(historical_obs_array)
-    alpha = np.log(initial_distribution + 1e-10)
-    
-    for t, obs in enumerate(observations):
-        # Weight observations according to model spec
-        weighted_obs = obs.copy()
-        weighted_obs[0] *= model_spec.convex_weight  # Convex loss
-        weighted_obs[4] *= model_spec.vol_weight     # Vol ratio
-        if len(weighted_obs) > 5:
-            weighted_obs[5] *= model_spec.skew_weight  # Skew
-        
-        log_emissions = np.array([
-            _estimate_emission_likelihood(weighted_obs, LatentState(s), historical_obs_array)
-            for s in range(n_states)
-        ])
-        
-        if t == 0:
-            log_alpha = alpha + log_emissions
-        else:
-            A_t = _compute_endogenous_transition_matrix(
-                A, observations[t-1], hist_quantiles
-            )
-            
-            log_alpha_new = np.zeros(n_states)
-            for j in range(n_states):
-                log_transitions = np.log(A_t[:, j] + 1e-10)
-                log_alpha_new[j] = logsumexp(alpha + log_transitions) + log_emissions[j]
-            log_alpha = log_alpha_new
-        
-        # Accumulate marginal likelihood
-        marginal_log_lik += logsumexp(log_alpha)
-        
-        # Normalize
-        log_posterior = log_alpha - logsumexp(log_alpha)
-        posterior = np.exp(log_posterior)
-        posterior = posterior / posterior.sum()
-        posteriors.append(posterior)
-        
-        alpha = log_alpha
-    
-    return posteriors, marginal_log_lik
-
-
-def _compute_model_averaged_posterior(
-    observations: List[np.ndarray],
-    historical_obs_array: np.ndarray,
-    initial_distribution: np.ndarray
-) -> Tuple[np.ndarray, Tuple[float, ...]]:
-    """
-    Compute model-averaged posterior using Bayesian model averaging.
-    
-    v3.0.0 - Improvement 4: Meta-uncertainty over the latent model
-    
-    P(S_t | Y_{1:t}) = Σ_k P(S_t | M_k, Y_{1:t}) P(M_k | Y_{1:t})
-    
-    This prevents false certainty when the world changes.
-    
-    Args:
-        observations: List of observation vectors
-        historical_obs_array: Historical observations for calibration
-        initial_distribution: Initial state distribution
-        
-    Returns:
-        Tuple of (model_averaged_posterior, model_weights)
-    """
-    models = _get_model_specifications()
-    n_models = len(models)
-    n_states = LatentState.n_states()
-    
-    # Uniform prior over models
-    log_model_prior = -np.log(n_models)
-    
-    # Run inference for each model
-    model_posteriors = []
-    model_marginal_liks = []
-    
-    for spec in models:
-        posteriors, marginal_lik = _run_model_inference(
-            observations, historical_obs_array, spec, initial_distribution
-        )
-        model_posteriors.append(posteriors[-1] if posteriors else np.ones(n_states) / n_states)
-        model_marginal_liks.append(marginal_lik)
-    
-    # Compute model posterior weights P(M_k | Y_{1:t})
-    log_model_posteriors = np.array(model_marginal_liks) + log_model_prior
-    log_normalizer = logsumexp(log_model_posteriors)
-    model_weights = np.exp(log_model_posteriors - log_normalizer)
-    
-    # Compute model-averaged state posterior
-    averaged_posterior = np.zeros(n_states)
-    for k in range(n_models):
-        averaged_posterior += model_weights[k] * model_posteriors[k]
-    
-    # Ensure normalization
-    averaged_posterior = averaged_posterior / averaged_posterior.sum()
-    
-    return averaged_posterior, tuple(model_weights.tolist())
-
-
-# =============================================================================
-# DYNAMIC DECISION BOUNDARY (v3.1.0 - Issue 2 Fix)
+# DYNAMIC DECISION BOUNDARY
 # =============================================================================
 
 def _g_convexity_adjustment(delta_c: float, scale: float = 0.0005) -> float:
     """
     Bounded, monotone increasing function g(·) for decision boundary adjustment.
-    
-    v3.1.0 - Issue 2 Fix: Risk-adaptive decision boundary
     
     g(ΔC) is used in: α(t) = α₀ − g(ΔC(t))
     
@@ -1664,107 +1356,19 @@ def _compute_dynamic_alpha(
 
 
 # =============================================================================
-# DOMINANCE CHECK (v3.0.0 - Improvement 6)
-# =============================================================================
-
-def _compute_expected_loss_delta(
-    observation: ObservationVector,
-    posterior: StatePosterior,
-    log_returns: pd.Series,
-    n_samples: int = 5000
-) -> Tuple[float, float]:
-    """
-    Compute E[Loss_stay] - E[Loss_switch] for dominance check.
-    
-    v3.0.0 - Improvement 6: Explicit "do nothing" dominance check
-    
-    Before switching, compute:
-        E[Loss_stay] - E[Loss_switch]
-    
-    If this difference is not strictly positive with margin, do nothing.
-    
-    Why:
-    - Prevents switching on knife-edge probabilities
-    - Adds robustness under noisy inference
-    - Reduces false positives significantly
-    
-    Args:
-        observation: Current observation
-        posterior: Current state posterior
-        log_returns: Historical log returns for Monte Carlo
-        n_samples: Number of samples for expected loss computation
-        
-    Returns:
-        Tuple of (loss_delta, required_margin)
-    """
-    # Generate forward samples
-    samples_21d = _generate_posterior_samples(log_returns, 21, n_samples)
-    
-    if len(samples_21d) < MIN_POSTERIOR_SAMPLES:
-        return (0.0, 0.0)
-    
-    # Expected loss if staying in JPY debt (funding loss when EUR/JPY rises)
-    # Loss occurs when ΔX > 0 (EUR strengthens against JPY)
-    positive_returns = samples_21d[samples_21d > 0]
-    if len(positive_returns) > 0:
-        # Convex loss: E[max(ΔX, 0)^p]
-        expected_loss_stay = float(np.mean(positive_returns ** CONVEX_LOSS_EXPONENT))
-    else:
-        expected_loss_stay = 0.0
-    
-    # Expected loss if switching to EUR debt
-    # Loss occurs when ΔX < 0 (JPY strengthens against EUR)
-    # If we switch and JPY continues to strengthen, we "missed" the opportunity
-    # But there's also switching cost (transaction, spread, etc.)
-    switching_cost = 0.001  # Approximate transaction cost (10 bps)
-    
-    negative_returns = samples_21d[samples_21d < 0]
-    if len(negative_returns) > 0:
-        # Opportunity cost of switching too early
-        expected_opportunity_cost = float(np.mean(np.abs(negative_returns)))
-    else:
-        expected_opportunity_cost = 0.0
-    
-    expected_loss_switch = switching_cost + 0.3 * expected_opportunity_cost
-    
-    # Scale by stress probability to weight by how likely stress is
-    p_stress = posterior.p_pre_policy + posterior.p_policy
-    
-    # Loss delta: positive means staying is worse than switching
-    loss_delta = expected_loss_stay * p_stress - expected_loss_switch * (1 - p_stress)
-    
-    # Required margin depends on posterior uncertainty
-    # Higher uncertainty (flatter posterior) → higher required margin
-    posterior_entropy = -np.sum([
-        p * np.log(p + 1e-10) for p in posterior.probabilities
-    ])
-    max_entropy = np.log(LatentState.n_states())
-    
-    # Higher entropy → higher required margin
-    uncertainty_ratio = posterior_entropy / max_entropy
-    required_margin = 0.0001 * (1 + 2 * uncertainty_ratio)  # Base margin + uncertainty adjustment
-    
-    return (loss_delta, required_margin)
-
-
-# =============================================================================
-# INFERENCE ENGINE (v3.0.0 - Enhanced with Model Averaging)
+# INFERENCE ENGINE
 # =============================================================================
 
 def _run_inference(
     log_returns: pd.Series,
-    lookback_days: int = 252,
-    use_model_averaging: bool = True
+    lookback_days: int = 252
 ) -> Tuple[ObservationVector, StatePosterior, List[ObservationVector]]:
     """
     Run latent state inference on the full history.
     
-    v3.0.0: Enhanced with model averaging for meta-uncertainty.
-    
     Args:
         log_returns: Historical log returns
         lookback_days: Number of days for inference window
-        use_model_averaging: Whether to use Bayesian model averaging (v3.0.0)
         
     Returns:
         Tuple of (current_observation, current_posterior, observation_history)
@@ -1784,8 +1388,7 @@ def _run_inference(
     observations = []
     obs_arrays = []
     prev_disagreement = None
-    prev_skew = None  # v3.0.0: Track skew momentum
-    prev_convex_loss = None  # v3.1.0: Track convex loss acceleration
+    prev_convex_loss = None
     
     for t in range(start_idx, n_obs):
         # Use data up to time t
@@ -1794,8 +1397,7 @@ def _run_inference(
         obs = _construct_observation_vector(
             returns_to_t, 
             prev_disagreement=prev_disagreement,
-            prev_skew=prev_skew,
-            prev_convex_loss=prev_convex_loss,  # v3.1.0
+            prev_convex_loss=prev_convex_loss,
             timestamp=str(log_returns.index[t])
         )
         observations.append(obs)
@@ -1803,8 +1405,7 @@ def _run_inference(
         
         # Update for next iteration
         prev_disagreement = obs.disagreement
-        prev_skew = obs.skew  # v3.0.0
-        prev_convex_loss = obs.convex_loss  # v3.1.0
+        prev_convex_loss = obs.convex_loss
     
     if len(observations) == 0:
         raise ValueError("No observations constructed")
@@ -1817,31 +1418,18 @@ def _run_inference(
     # Build transition matrix
     A = _build_transition_matrix()
     
-    # Initial distribution (start in NORMAL with very high probability)
-    # v3.0.0: Extended to 5 states
-    pi = np.array([0.80, 0.12, 0.05, 0.02, 0.01])
+    # Initial distribution (start in NORMAL with high probability)
+    pi = np.array([0.85, 0.10, 0.04, 0.01])
     
-    # Run inference
+    # Run forward inference
     print("[debt_allocator] Running forward inference...")
-    
-    model_weights = None
-    if use_model_averaging:
-        # v3.0.0: Use Bayesian model averaging
-        print("[debt_allocator] Using model averaging (v3.0.0)...")
-        current_posterior_probs, model_weights = _compute_model_averaged_posterior(
-            [obs.to_array() for obs in observations],
-            historical_obs_array,
-            pi
-        )
-    else:
-        # Standard forward algorithm
-        posteriors = _forward_algorithm(
-            [obs.to_array() for obs in observations],
-            A,
-            pi,
-            historical_obs_array
-        )
-        current_posterior_probs = posteriors[-1]
+    posteriors = _forward_algorithm(
+        [obs.to_array() for obs in observations],
+        A,
+        pi,
+        historical_obs_array
+    )
+    current_posterior_probs = posteriors[-1]
     
     # Get current (final) observation and posterior
     current_obs = observations[-1]
@@ -1853,14 +1441,13 @@ def _run_inference(
         probabilities=tuple(current_posterior_probs.tolist()),
         dominant_state=dominant_state,
         timestamp=current_obs.timestamp,
-        model_weights=model_weights,  # v3.0.0
     )
     
     return current_obs, current_posterior, observations
 
 
 # =============================================================================
-# DECISION RULE (v3.0.0 - Enhanced with Dynamic α and Dominance Check)
+# DECISION RULE
 # =============================================================================
 
 def _compute_decision_signature(
@@ -1868,13 +1455,10 @@ def _compute_decision_signature(
     posterior: StatePosterior,
     triggered: bool,
     effective_date: Optional[str],
-    dynamic_alpha: float = PRE_POLICY_THRESHOLD,
-    expected_loss_delta: Optional[float] = None
+    dynamic_alpha: float = PRE_POLICY_THRESHOLD
 ) -> str:
     """
     Compute cryptographic signature for decision audit trail.
-    
-    v3.0.0: Includes dynamic_alpha and expected_loss_delta in signature.
     """
     payload = {
         "observation": observation.to_dict(),
@@ -1882,8 +1466,7 @@ def _compute_decision_signature(
         "triggered": triggered,
         "effective_date": effective_date,
         "dynamic_alpha": dynamic_alpha,
-        "expected_loss_delta": expected_loss_delta,
-        "signature_version": "3.0.0",
+        "signature_version": "4.0.0",
     }
     
     payload_str = json.dumps(payload, sort_keys=True, default=str)
@@ -1893,44 +1476,32 @@ def _compute_decision_signature(
 def _make_decision(
     observation: ObservationVector,
     posterior: StatePosterior,
-    log_returns: pd.Series,
     threshold: float = PRE_POLICY_THRESHOLD,
-    use_dynamic_alpha: bool = True,
-    use_dominance_check: bool = True
+    use_dynamic_alpha: bool = True
 ) -> DebtSwitchDecision:
     """
     Make the debt switch decision based on latent state inference.
     
-    v3.0.0 Enhancements:
-    - Dynamic decision boundary α(t) (Improvement 5)
-    - Explicit dominance check (Improvement 6)
-    - PRE_POLICY_A/B discrimination
-    
     Trigger logic:
     1. Compute dynamic α(t) based on observation context
-    2. Check if P(PRE_POLICY_B) > α(t) OR P(POLICY) dominant
-    3. Verify dominance: E[Loss_stay] - E[Loss_switch] > margin
+    2. Check if P(PRE_POLICY) > α(t) OR P(POLICY) dominant
     
     Args:
         observation: Current observation vector
         posterior: Current state posterior
-        log_returns: Historical log returns for dominance check
         threshold: Base decision threshold α
-        use_dynamic_alpha: Whether to use dynamic threshold (v3.0.0)
-        use_dominance_check: Whether to use dominance check (v3.0.0)
+        use_dynamic_alpha: Whether to use dynamic threshold
         
     Returns:
         DebtSwitchDecision
     """
-    # v3.1.0 - Issue 2 Fix: Dynamic threshold α(t)
+    # Dynamic threshold α(t)
     if use_dynamic_alpha:
         dynamic_alpha = _compute_dynamic_alpha(observation, threshold)
     else:
         dynamic_alpha = threshold
     
-    # Combined PRE_POLICY probability (A + B)
-    # As specified: P(S_t = PRE_POLICY | Y_1:t)
-    prob_pre_policy = posterior.p_pre_policy  # Already combines A + B
+    prob_pre_policy = posterior.p_pre_policy
     prob_policy = posterior.p_policy
     
     # Trigger conditions
@@ -1938,36 +1509,14 @@ def _make_decision(
     decision_basis = ""
     
     # Primary trigger: P(PRE_POLICY) > α(t)
-    # As specified: "Trigger EUR debt switch on the FIRST day t such that
-    # P(S_t = PRE_POLICY | Y_1:t) > α(t)"
     if prob_pre_policy > dynamic_alpha:
         triggered = True
         decision_basis = f"PRE_POLICY threshold exceeded (P={prob_pre_policy:.2%} > α={dynamic_alpha:.0%})"
     
-    # Belt and suspenders: POLICY state is dominant (already past PRE_POLICY)
+    # Belt and suspenders: POLICY state is dominant
     elif posterior.dominant_state == LatentState.POLICY:
         triggered = True
         decision_basis = f"POLICY state dominant (P={prob_policy:.2%})"
-    
-    # v3.0.0 - Improvement 6: Dominance check
-    expected_loss_delta = None
-    dominance_margin = 0.0
-    
-    if triggered and use_dominance_check:
-        loss_delta, required_margin = _compute_expected_loss_delta(
-            observation, posterior, log_returns
-        )
-        expected_loss_delta = loss_delta
-        dominance_margin = required_margin
-        
-        # Verify dominance: switching should be strictly better with margin
-        if loss_delta < required_margin:
-            # Loss delta not positive enough - do not trigger
-            triggered = False
-            decision_basis = (
-                f"Dominance check failed: "
-                f"E[Loss_stay]-E[Loss_switch]={loss_delta:.6f} < margin={required_margin:.6f}"
-            )
     
     # If not triggered, provide status
     if not triggered and not decision_basis:
@@ -1978,8 +1527,7 @@ def _make_decision(
     effective_date = observation.timestamp.split('T')[0] if triggered else None
     
     signature = _compute_decision_signature(
-        observation, posterior, triggered, effective_date, 
-        dynamic_alpha, expected_loss_delta
+        observation, posterior, triggered, effective_date, dynamic_alpha
     )
     
     return DebtSwitchDecision(
@@ -1990,8 +1538,6 @@ def _make_decision(
         decision_basis=decision_basis,
         signature=signature,
         dynamic_alpha=dynamic_alpha,
-        expected_loss_delta=expected_loss_delta,
-        dominance_margin=dominance_margin,
     )
 
 
@@ -2015,49 +1561,45 @@ def _load_persisted_decision(
         obs_data = data['observation']
         observation = ObservationVector(
             convex_loss=obs_data['convex_loss'],
-            convex_loss_acceleration=obs_data.get('convex_loss_acceleration', 0.0),  # v3.1.0
+            convex_loss_acceleration=obs_data.get('convex_loss_acceleration', 0.0),
             tail_mass=obs_data['tail_mass'],
             disagreement=obs_data['disagreement'],
             disagreement_momentum=obs_data['disagreement_momentum'],
             vol_ratio=obs_data['vol_ratio'],
-            skew=obs_data.get('skew', 0.0),  # v3.0.0
-            skew_momentum=obs_data.get('skew_momentum', 0.0),  # v3.0.0
             timestamp=obs_data['timestamp'],
         )
         
         post_data = data['state_posterior']
         probs = post_data['probabilities']
         
-        # Handle both v2 (4 states) and v3 (5 states) formats
+        # Handle legacy formats - convert to 4-state model
         if 'PRE_POLICY_A' in probs:
-            # v3.0.0 format
+            # Old v3.0.0 format with split PRE_POLICY
+            pre_policy_total = probs['PRE_POLICY_A'] + probs['PRE_POLICY_B']
             posterior = StatePosterior(
                 probabilities=(
                     probs['NORMAL'],
                     probs['COMPRESSED'],
-                    probs['PRE_POLICY_A'],
-                    probs['PRE_POLICY_B'],
-                    probs['POLICY'],
-                ),
-                dominant_state=LatentState[post_data['dominant_state']],
-                timestamp=post_data['timestamp'],
-                model_weights=tuple(post_data['model_weights']) if 'model_weights' in post_data else None,
-            )
-        else:
-            # v2.0.0 format - convert to v3
-            pre_policy_total = probs.get('PRE_POLICY', 0.0)
-            posterior = StatePosterior(
-                probabilities=(
-                    probs['NORMAL'],
-                    probs['COMPRESSED'],
-                    pre_policy_total * 0.4,  # Approximate split: A gets 40%
-                    pre_policy_total * 0.6,  # B gets 60%
+                    pre_policy_total,
                     probs['POLICY'],
                 ),
                 dominant_state=LatentState.NORMAL,  # Safe default
                 timestamp=post_data['timestamp'],
-                model_weights=None,
             )
+        elif 'PRE_POLICY' in probs:
+            # Standard 4-state format
+            posterior = StatePosterior(
+                probabilities=(
+                    probs['NORMAL'],
+                    probs['COMPRESSED'],
+                    probs['PRE_POLICY'],
+                    probs['POLICY'],
+                ),
+                dominant_state=LatentState[post_data['dominant_state']],
+                timestamp=post_data['timestamp'],
+            )
+        else:
+            return None
         
         return DebtSwitchDecision(
             triggered=data['triggered'],
@@ -2066,9 +1608,7 @@ def _load_persisted_decision(
             state_posterior=posterior,
             decision_basis=data['decision_basis'],
             signature=data['signature'],
-            dynamic_alpha=data.get('dynamic_alpha', PRE_POLICY_THRESHOLD),  # v3.0.0
-            expected_loss_delta=data.get('expected_loss_delta'),  # v3.0.0
-            dominance_margin=data.get('dominance_margin', 0.0),  # v3.0.0
+            dynamic_alpha=data.get('dynamic_alpha', PRE_POLICY_THRESHOLD),
         )
         
     except Exception as e:
@@ -2104,26 +1644,17 @@ def run_debt_allocation_engine(
     persistence_path: str = DECISION_PERSISTENCE_FILE,
     force_reevaluate: bool = False,
     force_refresh_data: bool = True,
-    use_model_averaging: bool = True,
     use_dynamic_alpha: bool = True,
-    use_dominance_check: bool = True,
 ) -> Optional[DebtSwitchDecision]:
     """
-    Run the research-grade debt allocation engine.
-    
-    v3.0.0 Enhancements:
-    - Model averaging for meta-uncertainty (Improvement 4)
-    - Dynamic decision boundary (Improvement 5)
-    - Dominance check (Improvement 6)
+    Run the debt allocation engine.
     
     Args:
         data_path: Path to EURJPY data
         persistence_path: Path to decision persistence file
         force_reevaluate: If True, ignore persisted decision
         force_refresh_data: If True, download fresh data
-        use_model_averaging: Use Bayesian model averaging (v3.0.0)
-        use_dynamic_alpha: Use dynamic threshold α(t) (v3.0.0)
-        use_dominance_check: Use expected loss dominance check (v3.0.0)
+        use_dynamic_alpha: Use dynamic threshold α(t)
         
     Returns:
         DebtSwitchDecision or None if engine cannot run
@@ -2148,23 +1679,18 @@ def run_debt_allocation_engine(
     
     # RUN INFERENCE
     try:
-        observation, posterior, _ = _run_inference(
-            log_returns, 
-            use_model_averaging=use_model_averaging
-        )
+        observation, posterior, _ = _run_inference(log_returns)
     except Exception as e:
         print(f"[debt_allocator] Inference failed: {e}")
         import traceback
         traceback.print_exc()
         return None
     
-    # MAKE DECISION (v3.0.0: with dynamic alpha and dominance check)
+    # MAKE DECISION
     decision = _make_decision(
         observation, 
         posterior, 
-        log_returns,
         use_dynamic_alpha=use_dynamic_alpha,
-        use_dominance_check=use_dominance_check,
     )
     
     # PERSIST IF TRIGGERED
@@ -2184,16 +1710,14 @@ def _get_status_display(decision: DebtSwitchDecision) -> Tuple[str, str, str]:
     if decision.triggered:
         if decision.state_posterior.dominant_state == LatentState.POLICY:
             return "🔴", "SWITCH TRIGGERED (POLICY)", "red"
-        elif decision.state_posterior.dominant_state == LatentState.PRE_POLICY_B:
-            return "🔴", "SWITCH TRIGGERED (PRE-POLICY-B)", "red"
+        elif decision.state_posterior.dominant_state == LatentState.PRE_POLICY:
+            return "🔴", "SWITCH TRIGGERED (PRE-POLICY)", "red"
         else:
             return "🔴", "SWITCH TRIGGERED", "red"
     
     dominant = decision.state_posterior.dominant_state
-    if dominant == LatentState.PRE_POLICY_B:
-        return "🟡", "MONITORING (PRE-POLICY-B: UNSTABLE)", "yellow"
-    elif dominant == LatentState.PRE_POLICY_A:
-        return "🟡", "MONITORING (PRE-POLICY-A: SILENT STRESS)", "yellow"
+    if dominant == LatentState.PRE_POLICY:
+        return "🟡", "MONITORING (PRE-POLICY)", "yellow"
     elif dominant == LatentState.COMPRESSED:
         return "🟡", "MONITORING (COMPRESSED)", "yellow"
     else:
@@ -2211,7 +1735,7 @@ def render_debt_switch_decision(
     # Header
     console.print()
     console.print("=" * 60)
-    console.print("[bold cyan]DEBT ALLOCATION — EURJPY (RESEARCH v3.1.0)[/bold cyan]", justify="center")
+    console.print("[bold cyan]DEBT ALLOCATION — EURJPY (v4.0.0)[/bold cyan]", justify="center")
     console.print("=" * 60)
     console.print()
     
@@ -2252,7 +1776,7 @@ def render_debt_switch_decision(
     
     console.print()
     
-    # Latent State Probabilities (v3.0.0: 5 states)
+    # Latent State Probabilities (4 states)
     console.print("[bold cyan]Latent State Probabilities:[/bold cyan]")
     
     state_table = Table(
@@ -2269,8 +1793,7 @@ def render_debt_switch_decision(
     probs = [
         ("NORMAL", post.p_normal),
         ("COMPRESSED", post.p_compressed),
-        ("PRE_POLICY_A", post.p_pre_policy_a),
-        ("PRE_POLICY_B", post.p_pre_policy_b),
+        ("PRE_POLICY", post.p_pre_policy),
         ("POLICY", post.p_policy),
     ]
     
@@ -2283,7 +1806,7 @@ def render_debt_switch_decision(
         if state_name == post.dominant_state.name:
             prob_str = f"[bold cyan]{prob:.1%}[/bold cyan]"
             bar_str = f"[cyan]{bar}[/cyan]"
-        elif state_name in ("PRE_POLICY_A", "PRE_POLICY_B", "POLICY") and prob > 0.2:
+        elif state_name in ("PRE_POLICY", "POLICY") and prob > 0.2:
             prob_str = f"[yellow]{prob:.1%}[/yellow]"
             bar_str = f"[yellow]{bar}[/yellow]"
         else:
@@ -2295,17 +1818,7 @@ def render_debt_switch_decision(
     console.print(state_table)
     console.print()
     
-    # Model weights (v3.0.0)
-    if post.model_weights is not None:
-        console.print("[bold cyan]Model Weights (Meta-Uncertainty):[/bold cyan]")
-        model_names = ["baseline", "sticky", "volatile", "vol_driven", "skew_driven"]
-        for name, weight in zip(model_names, post.model_weights):
-            bar_len = int(weight * 20)
-            bar = "▓" * bar_len + "░" * (20 - bar_len)
-            console.print(f"  {name:12s}: {weight:.1%} {bar}")
-        console.print()
-    
-    # Observation Metrics (v3.0.0: including skew)
+    # Observation Metrics
     obs = decision.observation
     
     metrics_table = Table(
@@ -2353,24 +1866,7 @@ def render_debt_switch_decision(
     else:
         vol_str = "[dim]N/A[/dim]"
     
-    # Skew metrics (v3.0.0)
-    if np.isfinite(obs.skew):
-        skew_str = f"{obs.skew:+.3f}"
-        if obs.skew < -0.5:
-            skew_str = f"[yellow]{skew_str}[/yellow] (negative)"
-        elif obs.skew > 0.5:
-            skew_str = f"[yellow]{skew_str}[/yellow] (positive)"
-    else:
-        skew_str = "[dim]N/A[/dim]"
-    
-    if np.isfinite(obs.skew_momentum):
-        skew_mom_str = f"{obs.skew_momentum:+.4f}"
-        if abs(obs.skew_momentum) > 0.3:
-            skew_mom_str = f"[yellow]{skew_mom_str}[/yellow] (rapid change)"
-    else:
-        skew_mom_str = "[dim]N/A[/dim]"
-    
-    # Convex loss acceleration (v3.1.0)
+    # Convex loss acceleration
     if np.isfinite(obs.convex_loss_acceleration):
         accel_str = f"{obs.convex_loss_acceleration:+.6f}"
         if obs.convex_loss_acceleration > 0.0002:
@@ -2381,31 +1877,14 @@ def render_debt_switch_decision(
         accel_str = "[dim]N/A[/dim]"
     
     metrics_table.add_row("Convex Loss C(t)", convex_str)
-    metrics_table.add_row("Convex Accel ΔC(t)", accel_str)  # v3.1.0
+    metrics_table.add_row("Convex Accel ΔC(t)", accel_str)
     metrics_table.add_row("Tail Mass P(ΔX > 0)", tail_str)
     metrics_table.add_row("Disagreement D(t)", disag_str)
     metrics_table.add_row("Momentum dD(t)", mom_str)
     metrics_table.add_row("Vol Ratio V(t)", vol_str)
-    metrics_table.add_row("Skew(t)", skew_str)
-    metrics_table.add_row("Skew Momentum dSkew(t)", skew_mom_str)
     
     console.print(metrics_table)
     console.print()
-    
-    # Dominance check info (v3.0.0)
-    if decision.expected_loss_delta is not None:
-        console.print("[bold cyan]Dominance Check (v3.0.0):[/bold cyan]")
-        delta_str = f"{decision.expected_loss_delta:.6f}"
-        margin_str = f"{decision.dominance_margin:.6f}"
-        if decision.expected_loss_delta > decision.dominance_margin:
-            console.print(f"  E[Loss_stay] - E[Loss_switch]: [green]{delta_str}[/green]")
-            console.print(f"  Required margin: {margin_str}")
-            console.print("  [green]✓ Switching dominates[/green]")
-        else:
-            console.print(f"  E[Loss_stay] - E[Loss_switch]: [yellow]{delta_str}[/yellow]")
-            console.print(f"  Required margin: {margin_str}")
-            console.print("  [yellow]✗ Switching does not dominate[/yellow]")
-        console.print()
     
     # Decision Basis
     console.print(f"[bold]Decision Basis:[/bold] {decision.decision_basis}")
@@ -2417,7 +1896,7 @@ def render_debt_switch_decision(
 
 
 # =============================================================================
-# CLI ENTRY POINT (v3.0.0 - Enhanced)
+# CLI ENTRY POINT
 # =============================================================================
 
 def main():
@@ -2425,7 +1904,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Research-Grade FX Debt Allocation Engine (EURJPY) v3.1.0"
+        description="FX Debt Allocation Engine (EURJPY)"
     )
     parser.add_argument(
         '--data-path',
@@ -2448,63 +1927,36 @@ def main():
         action='store_true',
         help='Output as JSON instead of Rich formatting'
     )
-    # v3.0.0 options
-    parser.add_argument(
-        '--no-model-averaging',
-        action='store_true',
-        help='Disable Bayesian model averaging (v3.0.0)'
-    )
     parser.add_argument(
         '--no-dynamic-alpha',
         action='store_true',
-        help='Use fixed threshold instead of dynamic α(t) (v3.0.0)'
-    )
-    parser.add_argument(
-        '--no-dominance-check',
-        action='store_true',
-        help='Disable expected loss dominance check (v3.0.0)'
-    )
-    parser.add_argument(
-        '--v2-mode',
-        action='store_true',
-        help='Run in v2.0.0 compatibility mode (disables all v3.0.0 features)'
+        help='Use fixed threshold instead of dynamic α(t)'
     )
     
     args = parser.parse_args()
     
     console = Console()
     
-    # Determine v3.0.0 feature flags
-    if args.v2_mode:
-        use_model_averaging = False
-        use_dynamic_alpha = False
-        use_dominance_check = False
-    else:
-        use_model_averaging = not args.no_model_averaging
-        use_dynamic_alpha = not args.no_dynamic_alpha
-        use_dominance_check = not args.no_dominance_check
+    use_dynamic_alpha = not args.no_dynamic_alpha
     
     # Show header
     if not args.json:
         console.print()
         console.print(Panel(
-            "[bold cyan]Research-Grade FX Debt Allocation Engine[/bold cyan]\n"
+            "[bold cyan]FX Debt Allocation Engine[/bold cyan]\n"
             "[dim]EURJPY Latent Policy-Stress Inference[/dim]\n"
-            "[bold green]Version 3.1.0[/bold green]",
+            "[bold green]Version 4.0.0[/bold green]",
             border_style="cyan",
         ))
         console.print()
         console.print(f"[dim]Cache directory: {DEBT_CACHE_DIR}[/dim]")
         console.print(f"[dim]Data file: {args.data_path}[/dim]")
         
-        # Show v3.1.0 feature status
+        # Show feature status
         console.print()
-        console.print("[bold]v3.1.0 Features:[/bold]")
-        console.print(f"  Model Averaging:        {'[green]ON[/green]' if use_model_averaging else '[yellow]OFF[/yellow]'}")
+        console.print("[bold]Features:[/bold]")
         console.print(f"  Dynamic α(t):           {'[green]ON[/green]' if use_dynamic_alpha else '[yellow]OFF[/yellow]'}")
-        console.print(f"  Dominance Check:        {'[green]ON[/green]' if use_dominance_check else '[yellow]OFF[/yellow]'}")
         console.print(f"  Transition Pressure Φ:  [green]ON[/green]")
-        console.print(f"  Risk-Adaptive α(ΔC):    [green]ON[/green]")
         console.print()
     
     # Run engine
@@ -2512,9 +1964,7 @@ def main():
         data_path=args.data_path,
         force_reevaluate=args.force,
         force_refresh_data=not args.no_refresh,
-        use_model_averaging=use_model_averaging,
         use_dynamic_alpha=use_dynamic_alpha,
-        use_dominance_check=use_dominance_check,
     )
     
     if args.json:
