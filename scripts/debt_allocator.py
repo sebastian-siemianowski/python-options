@@ -1572,34 +1572,22 @@ def _load_persisted_decision(
         post_data = data['state_posterior']
         probs = post_data['probabilities']
         
-        # Handle legacy formats - convert to 4-state model
-        if 'PRE_POLICY_A' in probs:
-            # Old v3.0.0 format with split PRE_POLICY
-            pre_policy_total = probs['PRE_POLICY_A'] + probs['PRE_POLICY_B']
-            posterior = StatePosterior(
-                probabilities=(
-                    probs['NORMAL'],
-                    probs['COMPRESSED'],
-                    pre_policy_total,
-                    probs['POLICY'],
-                ),
-                dominant_state=LatentState.NORMAL,  # Safe default
-                timestamp=post_data['timestamp'],
-            )
-        elif 'PRE_POLICY' in probs:
-            # Standard 4-state format
-            posterior = StatePosterior(
-                probabilities=(
-                    probs['NORMAL'],
-                    probs['COMPRESSED'],
-                    probs['PRE_POLICY'],
-                    probs['POLICY'],
-                ),
-                dominant_state=LatentState[post_data['dominant_state']],
-                timestamp=post_data['timestamp'],
-            )
-        else:
+        # Contract requires exactly 4 states: NORMAL, COMPRESSED, PRE_POLICY, POLICY
+        if 'PRE_POLICY' not in probs:
+            # Legacy format not supported - discard and re-evaluate
+            print("[debt_allocator] Legacy persistence format detected - discarding")
             return None
+        
+        posterior = StatePosterior(
+            probabilities=(
+                probs['NORMAL'],
+                probs['COMPRESSED'],
+                probs['PRE_POLICY'],
+                probs['POLICY'],
+            ),
+            dominant_state=LatentState[post_data['dominant_state']],
+            timestamp=post_data['timestamp'],
+        )
         
         return DebtSwitchDecision(
             triggered=data['triggered'],
