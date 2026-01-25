@@ -73,7 +73,8 @@ import warnings
 import numpy as np
 import pandas as pd
 from scipy import stats
-from scipy.special import logsumexp
+from scipy.special import logsumexp, digamma, gammaln
+from scipy.stats import dirichlet, entropy
 
 # =============================================================================
 # PRESENTATION IMPORTS (RICH ONLY)
@@ -383,6 +384,1268 @@ class DebtSwitchDecision:
             "decision_basis": self.decision_basis,
             "signature": self.signature,
             "dynamic_alpha": self.dynamic_alpha,
+        }
+
+
+# =============================================================================
+# BAYESIAN MODEL AVERAGING WITH DIRICHLET PRIOR
+# =============================================================================
+
+class BayesianTransitionModel:
+    """
+    Dirichlet-Multinomial conjugate prior for transition probabilities.
+    Maintains posterior distribution over transition matrices for uncertainty quantification.
+    
+    Mathematical Foundation:
+    - Prior: P(A_i) ~ Dirichlet(α_prior)
+    - Likelihood: counts ~ Multinomial(A_i)
+    - Posterior: P(A_i | counts) ~ Dirichlet(α_prior + counts)
+    
+    Includes exponential forgetting to handle non-stationary markets:
+    - α_posterior *= decay before each update
+    - This gives more weight to recent transitions
+    """
+
+    def __init__(
+        self, 
+        n_states: int = 4, 
+        prior_concentration: float = 1.0,
+        decay_factor: float = 0.995,
+        belief_threshold: float = 0.01
+    ):
+        """
+        Initialize with uninformative Dirichlet prior.
+        
+        Args:
+            n_states: Number of hidden states
+            prior_concentration: Dirichlet concentration parameter (α)
+                                 Higher values = stronger prior toward uniform
+            decay_factor: Exponential forgetting factor (0.99-0.999 typical)
+                         Lower = faster forgetting, more reactive to regime changes
+            belief_threshold: Minimum belief probability to consider in efficient prediction
+        """
+        self.n_states = n_states
+        self.decay_factor = decay_factor
+        self.belief_threshold = belief_threshold
+        self.alpha_prior = np.ones((n_states, n_states)) * prior_concentration
+        self.alpha_posterior = self.alpha_prior.copy()
+        self._transition_counts = np.zeros((n_states, n_states))
+        self._update_count = 0
+
+    def update(self, state_from: int, state_to: int, count: float = 1.0):
+        """
+        Update posterior with observed transition.
+        Applies exponential decay to handle non-stationary markets.
+        """
+        # Apply decay to all counts (forgetting factor)
+        # This ensures recent transitions have more influence
+        self._transition_counts *= self.decay_factor
+        
+        # Add new observation
+        self._transition_counts[state_from, state_to] += count
+        
+        # Recompute posterior
+        self.alpha_posterior = self.alpha_prior + self._transition_counts
+        self._update_count += 1
+
+    def update_from_posteriors(
+        self, 
+        state_posteriors: List[np.ndarray],
+        apply_batch_decay: bool = True
+    ):
+        """
+        Update from soft state assignments (posterior probabilities).
+        Uses expected counts: E[n_ij] = Σ_t P(S_t=i) P(S_{t+1}=j)
+        
+        Args:
+            state_posteriors: List of posterior distributions
+            apply_batch_decay: If True, apply decay once before batch update
+        """
+        if apply_batch_decay and len(state_posteriors) > 1:
+            # Apply cumulative decay for batch size
+            batch_decay = self.decay_factor ** len(state_posteriors)
+            self._transition_counts *= batch_decay
+        
+        # Vectorized soft count computation (O(T*K²) but in numpy)
+        posteriors_array = np.array(state_posteriors)
+        for t in range(len(state_posteriors) - 1):
+            # Outer product gives transition probabilities
+            soft_counts = np.outer(posteriors_array[t], posteriors_array[t + 1])
+            self._transition_counts += soft_counts
+        
+        # Recompute posterior
+        self.alpha_posterior = self.alpha_prior + self._transition_counts
+        self._update_count += len(state_posteriors)
+
+    def expected_transition_matrix(self) -> np.ndarray:
+        """
+        E[P_ij] = α_ij / Σ_k α_ik (posterior mean).
+        """
+        row_sums = self.alpha_posterior.sum(axis=1, keepdims=True)
+        return self.alpha_posterior / (row_sums + 1e-10)
+
+    def sample_transition_matrix(self, n_samples: int = 100) -> np.ndarray:
+        """
+        Monte Carlo samples from posterior for model averaging.
+        Returns:
+            Array of shape (n_samples, n_states, n_states)
+        """
+        samples = np.zeros((n_samples, self.n_states, self.n_states))
+        for i in range(self.n_states):
+            samples[:, i, :] = dirichlet.rvs(
+                self.alpha_posterior[i], size=n_samples
+            )
+        return samples
+
+    def sample_transition_row(self, state: int, n_samples: int = 100) -> np.ndarray:
+        """
+        Efficient sampling of single transition row (O(K) instead of O(K²)).
+        Use this when you only need transitions from a specific state.
+        
+        Args:
+            state: Source state index
+            n_samples: Number of MC samples
+            
+        Returns:
+            Array of shape (n_samples, n_states)
+        """
+        return dirichlet.rvs(self.alpha_posterior[state], size=n_samples)
+
+    def predictive_state_distribution_efficient(
+        self,
+        current_belief: np.ndarray,
+        n_samples: int = 100
+    ) -> Dict[str, np.ndarray]:
+        """
+        Efficient Bayesian prediction using only rows with non-zero belief.
+        
+        This is O(K' * K) where K' is number of states with p > threshold,
+        instead of O(K² * n_samples) for full matrix sampling.
+        
+        Args:
+            current_belief: Current state probability distribution P(S_t)
+            n_samples: Number of MC samples
+            
+        Returns:
+            Dictionary with mean prediction and credible intervals
+        """
+        predictions = np.zeros((n_samples, self.n_states))
+        
+        # Only sample rows where belief is non-negligible
+        for state in range(self.n_states):
+            if current_belief[state] > self.belief_threshold:
+                # Sample transitions from this state
+                row_samples = self.sample_transition_row(state, n_samples)
+                # Weight by belief probability
+                predictions += current_belief[state] * row_samples
+        
+        # Renormalize predictions (handle numerical issues)
+        row_sums = predictions.sum(axis=1, keepdims=True)
+        predictions = predictions / (row_sums + 1e-10)
+        
+        return {
+            'mean': predictions.mean(axis=0),
+            'std': predictions.std(axis=0),
+            'ci_lower': np.percentile(predictions, 2.5, axis=0),
+            'ci_upper': np.percentile(predictions, 97.5, axis=0),
+        }
+
+    def predictive_state_distribution(
+        self, 
+        current_belief: np.ndarray, 
+        n_samples: int = 100
+    ) -> Dict[str, np.ndarray]:
+        """
+        Bayesian model-averaged prediction with uncertainty quantification.
+        
+        Args:
+            current_belief: Current state probability distribution P(S_t)
+            n_samples: Number of MC samples
+            
+        Returns:
+            Dictionary with mean prediction and credible intervals
+        """
+        samples = self.sample_transition_matrix(n_samples)
+        predictions = np.array([
+            current_belief @ T for T in samples
+        ])
+        
+        return {
+            'mean': predictions.mean(axis=0),
+            'std': predictions.std(axis=0),
+            'ci_lower': np.percentile(predictions, 2.5, axis=0),
+            'ci_upper': np.percentile(predictions, 97.5, axis=0),
+        }
+
+    def posterior_entropy(self) -> float:
+        """
+        Entropy of the posterior Dirichlet distribution.
+        Higher entropy = more uncertainty about transition probabilities.
+        """
+        total_entropy = 0.0
+        for i in range(self.n_states):
+            alpha_row = self.alpha_posterior[i]
+            alpha_0 = alpha_row.sum()
+            # Dirichlet entropy formula
+            entropy_i = (
+                gammaln(alpha_row).sum() - gammaln(alpha_0) +
+                (alpha_0 - self.n_states) * digamma(alpha_0) -
+                ((alpha_row - 1) * digamma(alpha_row)).sum()
+            )
+            total_entropy += entropy_i
+        return total_entropy
+
+    def transition_uncertainty(self) -> np.ndarray:
+        """
+        Variance of each transition probability.
+        Var[P_ij] = α_ij(α_0 - α_ij) / (α_0²(α_0 + 1))
+        """
+        variance = np.zeros((self.n_states, self.n_states))
+        for i in range(self.n_states):
+            alpha_row = self.alpha_posterior[i]
+            alpha_0 = alpha_row.sum()
+            for j in range(self.n_states):
+                variance[i, j] = (
+                    alpha_row[j] * (alpha_0 - alpha_row[j]) /
+                    (alpha_0**2 * (alpha_0 + 1) + 1e-10)
+                )
+        return variance
+
+
+# =============================================================================
+# WASSERSTEIN REGIME DETECTOR (OPTIMAL TRANSPORT)
+# =============================================================================
+
+class WassersteinRegimeDetector:
+    """
+    Detects regime changes via Wasserstein distance between
+    sliding window empirical distributions.
+    
+    Uses Sliced Wasserstein distance for efficient multivariate computation:
+    SW_2(P, Q) = (∫_{S^{d-1}} W_2(proj_θ P, proj_θ Q)² dθ)^{1/2}
+    
+    Mathematical Foundation:
+    - Wasserstein distance measures the "cost" of transforming one distribution into another
+    - High distance between consecutive windows indicates regime change
+    - Sliced approximation makes it tractable for multivariate data
+    """
+
+    def __init__(
+        self, 
+        window_size: int = 50, 
+        n_projections: int = 50,
+        threshold_percentile: float = 90.0
+    ):
+        """
+        Args:
+            window_size: Size of sliding windows for comparison
+            n_projections: Number of random projections for sliced Wasserstein
+            threshold_percentile: Percentile for regime change detection threshold
+        """
+        self.window_size = window_size
+        self.n_projections = n_projections
+        self.threshold_percentile = threshold_percentile
+        self.scores_ = None
+        self.threshold_ = None
+
+    def _wasserstein_1d_quantile(self, x: np.ndarray, y: np.ndarray) -> float:
+        """
+        1D Wasserstein-2 distance via quantile matching.
+        W_2² = ∫_0^1 (F_X^{-1}(u) - F_Y^{-1}(u))² du
+        
+        Approximated by matching sorted samples (empirical quantiles).
+        """
+        n = min(len(x), len(y))
+        if n == 0:
+            return 0.0
+            
+        # Match quantiles via sorting
+        x_sorted = np.sort(x)
+        y_sorted = np.sort(y)
+        
+        # Interpolate to same size if needed
+        if len(x_sorted) != len(y_sorted):
+            quantiles = np.linspace(0, 1, n)
+            x_interp = np.percentile(x_sorted, quantiles * 100)
+            y_interp = np.percentile(y_sorted, quantiles * 100)
+        else:
+            x_interp, y_interp = x_sorted, y_sorted
+        
+        return np.sqrt(np.mean((x_interp - y_interp)**2))
+
+    def _sliced_wasserstein(
+        self, 
+        X: np.ndarray, 
+        Y: np.ndarray,
+        random_state: int = 42
+    ) -> float:
+        """
+        Sliced Wasserstein-2 distance for multivariate data.
+        
+        Projects data onto random 1D directions and averages 1D Wasserstein distances.
+        """
+        if len(X) == 0 or len(Y) == 0:
+            return 0.0
+            
+        # Handle 1D case
+        if X.ndim == 1:
+            X = X.reshape(-1, 1)
+        if Y.ndim == 1:
+            Y = Y.reshape(-1, 1)
+            
+        d = X.shape[1]
+        rng = np.random.RandomState(random_state)
+        
+        distances_squared = []
+        for _ in range(self.n_projections):
+            # Random unit vector on sphere
+            theta = rng.randn(d)
+            theta /= (np.linalg.norm(theta) + 1e-10)
+            
+            # Project data
+            proj_X = X @ theta
+            proj_Y = Y @ theta
+            
+            # 1D Wasserstein
+            w = self._wasserstein_1d_quantile(proj_X, proj_Y)
+            distances_squared.append(w**2)
+        
+        return np.sqrt(np.mean(distances_squared))
+
+    def compute_regime_change_scores(
+        self, 
+        observations: np.ndarray,
+        random_state: int = 42
+    ) -> np.ndarray:
+        """
+        Compute sliding window Wasserstein distance for regime change detection.
+        
+        Args:
+            observations: Array of shape (T, n_features)
+            random_state: Random seed for reproducibility
+            
+        Returns:
+            Array of regime change scores (higher = more likely regime change)
+        """
+        if observations.ndim == 1:
+            observations = observations.reshape(-1, 1)
+            
+        T = len(observations)
+        scores = np.zeros(T)
+        
+        # Need at least 2 full windows
+        if T < 2 * self.window_size:
+            self.scores_ = scores
+            self.threshold_ = 0.5
+            return scores
+        
+        for t in range(self.window_size, T - self.window_size):
+            window_past = observations[t - self.window_size:t]
+            window_future = observations[t:t + self.window_size]
+            
+            scores[t] = self._sliced_wasserstein(
+                window_past, window_future, 
+                random_state=random_state + t
+            )
+        
+        # Normalize to [0, 1]
+        score_range = scores.max() - scores.min()
+        if score_range > 1e-10:
+            scores = (scores - scores.min()) / score_range
+        
+        self.scores_ = scores
+        nonzero_scores = scores[scores > 0]
+        if len(nonzero_scores) > 0:
+            self.threshold_ = np.percentile(nonzero_scores, self.threshold_percentile)
+        else:
+            self.threshold_ = 0.5
+        
+        return scores
+
+    def detect_regime_changes(self, observations: np.ndarray = None) -> np.ndarray:
+        """
+        Detect regime change points based on Wasserstein scores.
+        
+        Returns:
+            Boolean array indicating detected regime changes
+        """
+        if self.scores_ is None:
+            if observations is None:
+                raise ValueError("No scores computed. Provide observations.")
+            self.compute_regime_change_scores(observations)
+        
+        return self.scores_ > self.threshold_
+
+    def get_regime_segments(self, observations: np.ndarray = None) -> List[Tuple[int, int]]:
+        """
+        Segment time series into regime periods.
+        
+        Returns:
+            List of (start_idx, end_idx) tuples for each regime segment
+        """
+        if self.scores_ is None:
+            if observations is None:
+                raise ValueError("No scores computed. Provide observations.")
+            self.compute_regime_change_scores(observations)
+            
+        changes = self.scores_ > self.threshold_
+        change_points = np.where(changes)[0]
+        
+        segments = []
+        start = 0
+        for cp in change_points:
+            if cp > start:
+                segments.append((start, cp))
+            start = cp
+        
+        # Add final segment
+        T = len(self.scores_)
+        if start < T:
+            segments.append((start, T))
+        
+        return segments
+
+    def regime_stability_score(self) -> float:
+        """
+        Overall stability score: inverse of average regime change intensity.
+        Higher = more stable regime structure.
+        """
+        if self.scores_ is None:
+            return 1.0
+        
+        nonzero_scores = self.scores_[self.scores_ > 0]
+        if len(nonzero_scores) == 0:
+            return 1.0
+        
+        return 1.0 / (1.0 + np.mean(nonzero_scores))
+
+
+# =============================================================================
+# INFORMATION-THEORETIC STATE DISCRIMINATION (MI + KL)
+# =============================================================================
+
+class InformationTheoreticWeighting:
+    """
+    Weight observations by their mutual information with the latent state.
+    
+    I(Y_i; S) = H(Y_i) - H(Y_i | S)
+    
+    Mathematical Foundation:
+    - High MI observations are more discriminative for state classification
+    - Uses these weights in emission probability computation
+    - KL divergence measures state separability
+    
+    Uses kNN entropy estimation (Kraskov-Stögbauer-Grassberger) for robustness:
+    - More sample-efficient than histograms
+    - Less sensitive to bin count
+    - Better tail behavior
+    """
+
+    def __init__(self, n_states: int = 4, n_neighbors: int = 5):
+        """
+        Args:
+            n_states: Number of hidden states
+            n_neighbors: k for kNN entropy estimation (3-7 typical)
+        """
+        self.n_states = n_states
+        self.n_neighbors = n_neighbors
+        self.observation_weights_ = None
+        self.mi_scores_ = None
+        self.feature_names_ = None
+        # Emission parameters learned from data
+        self.emission_means_ = None
+        self.emission_stds_ = None
+
+    def _knn_entropy(self, x: np.ndarray) -> float:
+        """
+        Estimate entropy using k-nearest neighbors (KSG estimator).
+        
+        H(X) ≈ ψ(N) - ψ(k) + log(c_d) + (d/N) Σ_i log(ε_i)
+        
+        Where:
+        - ψ is the digamma function
+        - c_d is the volume of unit ball in d dimensions
+        - ε_i is the distance to k-th nearest neighbor
+        
+        For 1D: c_1 = 2, so log(c_1) = log(2)
+        
+        This is more robust than histogram estimation:
+        - Sample-efficient
+        - No bin count sensitivity
+        - Better tail behavior
+        """
+        x_clean = x[~np.isnan(x) & ~np.isinf(x)]
+        n = len(x_clean)
+        
+        # Strict bounds check: need at least k+1 points for k neighbors
+        k_requested = self.n_neighbors
+        if n < k_requested + 1:
+            return 0.0
+        
+        # Ensure k doesn't exceed available neighbors
+        k_actual = min(k_requested, n - 1)
+        if k_actual < 1:
+            return 0.0
+        
+        # Reshape for distance computation
+        x_reshaped = x_clean.reshape(-1, 1)
+        
+        # Compute pairwise distances
+        # For 1D, this is just |x_i - x_j|
+        diffs = x_reshaped - x_reshaped.T
+        distances = np.abs(diffs)
+        
+        # Set diagonal to inf to exclude self-distances
+        np.fill_diagonal(distances, np.inf)
+        
+        # Find k-th nearest neighbor distance for each point
+        # np.partition(arr, idx) places the (idx+1)-th smallest at index idx
+        # For k_actual neighbors, we want the k_actual-th smallest (1-indexed)
+        # In 0-indexed: partition at (k_actual-1), take index (k_actual-1)
+        # Example: k_actual=5 → partition(4) → index 4 = 5th smallest ✓
+        k_idx = k_actual - 1  # Convert to 0-based index
+        knn_distances = np.partition(distances, k_idx, axis=1)[:, k_idx]
+        
+        # Avoid log(0) - use small epsilon
+        knn_distances = np.maximum(knn_distances, 1e-10)
+        
+        # KSG entropy estimator for 1D
+        # H ≈ ψ(N) - ψ(k) + log(2) + mean(log(2 * ε))
+        h = digamma(n) - digamma(k_actual) + np.log(2) + np.mean(np.log(2 * knn_distances))
+        
+        return max(0.0, h)  # Entropy is non-negative
+
+    def _estimate_entropy(self, x: np.ndarray) -> float:
+        """
+        Estimate H(X) using kNN method (primary) with histogram fallback.
+        """
+        x_clean = x[~np.isnan(x) & ~np.isinf(x)]
+        if len(x_clean) < 10:
+            return 0.0
+        
+        # Primary: kNN entropy (more robust)
+        return self._knn_entropy(x_clean)
+
+    def _estimate_conditional_entropy(
+        self, 
+        x: np.ndarray, 
+        states: np.ndarray
+    ) -> float:
+        """
+        H(X | S) = Σ_s P(S=s) H(X | S=s)
+        """
+        h_conditional = 0.0
+        for s in range(self.n_states):
+            mask = states == s
+            if mask.sum() < self.n_neighbors + 1:  # Need enough samples for kNN
+                continue
+            p_s = mask.mean()
+            h_x_given_s = self._estimate_entropy(x[mask])
+            h_conditional += p_s * h_x_given_s
+        return h_conditional
+
+    def fit(
+        self, 
+        observations: np.ndarray, 
+        state_labels: np.ndarray,
+        feature_names: List[str] = None
+    ):
+        """
+        Compute mutual information for each observation dimension.
+        Also learns emission parameters (means, stds) per state.
+        
+        Args:
+            observations: Array of shape (T, n_features)
+            state_labels: Array of state assignments
+            feature_names: Optional list of feature names
+        """
+        if observations.ndim == 1:
+            observations = observations.reshape(-1, 1)
+            
+        n_features = observations.shape[1]
+        mi_scores = np.zeros(n_features)
+        
+        for i in range(n_features):
+            h_y = self._estimate_entropy(observations[:, i])
+            h_y_given_s = self._estimate_conditional_entropy(
+                observations[:, i], state_labels
+            )
+            mi_scores[i] = max(0, h_y - h_y_given_s)  # MI ≥ 0
+        
+        self.mi_scores_ = mi_scores
+        
+        # Normalize to sum to 1 (importance weights)
+        total_mi = mi_scores.sum()
+        if total_mi > 1e-10:
+            self.observation_weights_ = mi_scores / total_mi
+        else:
+            # Uniform weights if no discriminative power
+            self.observation_weights_ = np.ones(n_features) / n_features
+        
+        self.feature_names_ = feature_names or [f"feature_{i}" for i in range(n_features)]
+        
+        # Learn emission parameters
+        self.emission_means_ = np.zeros((self.n_states, n_features))
+        self.emission_stds_ = np.zeros((self.n_states, n_features))
+        
+        for s in range(self.n_states):
+            mask = state_labels == s
+            if mask.sum() > 1:
+                self.emission_means_[s] = np.nanmean(observations[mask], axis=0)
+                self.emission_stds_[s] = np.nanstd(observations[mask], axis=0) + 1e-6
+            else:
+                self.emission_means_[s] = np.nanmean(observations, axis=0)
+                self.emission_stds_[s] = np.nanstd(observations, axis=0) + 1e-6
+        
+        return self
+
+    def weighted_log_likelihood(
+        self,
+        observation: np.ndarray,
+        state: int
+    ) -> float:
+        """
+        Compute MI-weighted log-likelihood:
+        log P(Y | S) ≈ Σ_i w_i · log N(y_i | μ_{s,i}, σ_{s,i})
+        
+        Higher weight on more discriminative features.
+        """
+        if self.observation_weights_ is None:
+            raise ValueError("Call fit() first")
+        
+        if self.emission_means_ is None or self.emission_stds_ is None:
+            raise ValueError("Emission parameters not learned. Call fit() first")
+        
+        log_prob = 0.0
+        for i, (y, w) in enumerate(zip(observation, self.observation_weights_)):
+            if not np.isfinite(y):
+                continue
+                
+            mu = self.emission_means_[state, i]
+            sigma = max(self.emission_stds_[state, i], 1e-6)
+            
+            # Log Gaussian PDF
+            log_p = (
+                -0.5 * np.log(2 * np.pi) - 
+                np.log(sigma) - 
+                0.5 * ((y - mu) / sigma)**2
+            )
+            
+            log_prob += w * log_p
+        
+        return log_prob
+
+    def compute_kl_divergence_matrix(self) -> np.ndarray:
+        """
+        KL divergence between state emission distributions.
+        D_KL(P_i || P_j) measures how distinguishable states i and j are.
+        
+        For Gaussians:
+        D_KL(N_0 || N_1) = log(σ_1/σ_0) + (σ_0² + (μ_0-μ_1)²)/(2σ_1²) - 1/2
+        """
+        if self.emission_means_ is None or self.emission_stds_ is None:
+            raise ValueError("Emission parameters not learned. Call fit() first")
+            
+        n_states, n_features = self.emission_means_.shape
+        kl_matrix = np.zeros((n_states, n_states))
+        
+        for i in range(n_states):
+            for j in range(n_states):
+                if i == j:
+                    continue
+                
+                kl = 0.0
+                for f in range(n_features):
+                    mu_i = self.emission_means_[i, f]
+                    sigma_i = max(self.emission_stds_[i, f], 1e-6)
+                    mu_j = self.emission_means_[j, f]
+                    sigma_j = max(self.emission_stds_[j, f], 1e-6)
+                    
+                    kl += (
+                        np.log(sigma_j / sigma_i) +
+                        (sigma_i**2 + (mu_i - mu_j)**2) / (2 * sigma_j**2) -
+                        0.5
+                    )
+                
+                kl_matrix[i, j] = max(0, kl)  # KL ≥ 0
+        
+        return kl_matrix
+
+    def compute_symmetric_kl_matrix(self) -> np.ndarray:
+        """
+        Symmetric KL divergence (Jensen-Shannon style):
+        D_sym(i, j) = 0.5 * (D_KL(i||j) + D_KL(j||i))
+        """
+        kl = self.compute_kl_divergence_matrix()
+        return 0.5 * (kl + kl.T)
+
+    def state_discriminability_scores(self) -> np.ndarray:
+        """
+        How well each state can be distinguished from others.
+        Higher = more discriminable state.
+        """
+        kl_sym = self.compute_symmetric_kl_matrix()
+        n_states = len(kl_sym)
+        scores = np.zeros(n_states)
+        for i in range(n_states):
+            other_kls = [kl_sym[i, j] for j in range(n_states) if i != j]
+            scores[i] = np.mean(other_kls) if other_kls else 0.0
+        return scores
+
+    def get_feature_importance_report(self) -> Dict[str, Any]:
+        """
+        Get detailed report on feature importance.
+        """
+        if self.observation_weights_ is None:
+            raise ValueError("Call fit() first")
+        
+        sorted_idx = np.argsort(self.mi_scores_)[::-1]
+        
+        return {
+            'feature_names': [self.feature_names_[i] for i in sorted_idx],
+            'mi_scores': self.mi_scores_[sorted_idx].tolist(),
+            'weights': self.observation_weights_[sorted_idx].tolist(),
+            'cumulative_weight': np.cumsum(self.observation_weights_[sorted_idx]).tolist(),
+        }
+
+
+# =============================================================================
+# ENHANCED HMM INTEGRATION (CAUSAL PIPELINE)
+# =============================================================================
+
+class EnhancedHMMInference:
+    """
+    Integrates Bayesian transition model, Wasserstein regime detection,
+    and information-theoretic weighting into a unified CAUSAL inference pipeline.
+    
+    CAUSAL PIPELINE ORDER (strictly enforced):
+    
+    1. Wasserstein Distribution Shift Detection
+       - Detects if we're in a regime change region
+       - Uses PAST windows only (t-W:t vs t-2W:t-W)
+       
+    2. Bayesian Transition Belief Update
+       - Updates transition probability posterior with decay
+       - Conditions on detected regime stability
+       
+    3. Information-Weighted Emission Confidence
+       - Weights observation components by discriminative power
+       - Adjusts emission likelihood based on MI weights
+       
+    4. Switch Decision with Uncertainty Gate
+       - Only acts when uncertainty is below threshold
+       - Combines all components into final posterior
+    
+    This ordering prevents:
+    - Double counting
+    - Confidence inflation
+    - Regime echoing (using future info)
+    """
+    
+    def __init__(
+        self, 
+        n_states: int = 4,
+        decay_factor: float = 0.995,
+        uncertainty_gate_threshold: float = 0.3
+    ):
+        """
+        Args:
+            n_states: Number of hidden states
+            decay_factor: Forgetting factor for Bayesian updates
+            uncertainty_gate_threshold: Max uncertainty to allow decision
+        """
+        self.n_states = n_states
+        self.uncertainty_gate_threshold = uncertainty_gate_threshold
+        
+        # Initialize components
+        self.bayesian_transition = BayesianTransitionModel(
+            n_states=n_states, 
+            decay_factor=decay_factor
+        )
+        self.wasserstein_detector = None
+        self.info_weighting = InformationTheoreticWeighting(n_states=n_states)
+        
+        # Pipeline state
+        self.is_fitted = False
+        self._last_regime_change_score = 0.0
+        self._last_uncertainty = 1.0
+    
+    def fit(
+        self,
+        observations: np.ndarray,
+        state_posteriors: List[np.ndarray],
+        feature_names: List[str] = None
+    ):
+        """
+        Fit all enhanced components from inference results.
+        
+        IMPORTANT: This uses historical data only - no lookahead.
+        
+        Args:
+            observations: Observation matrix (T, n_features)
+            state_posteriors: List of posterior distributions from forward algorithm
+            feature_names: Optional feature names
+        """
+        if len(observations) == 0 or len(state_posteriors) == 0:
+            return self
+        
+        # Convert posteriors to hard assignments for MI computation
+        state_labels = np.array([np.argmax(p) for p in state_posteriors])
+        
+        # Step 1: Wasserstein regime change detection (CAUSAL)
+        window_size = min(50, len(observations) // 10)
+        if window_size < 5:
+            window_size = 5
+        self.wasserstein_detector = WassersteinRegimeDetector(window_size=window_size)
+        self.wasserstein_detector.compute_regime_change_scores(observations)
+        
+        # Step 2: Bayesian transition update with decay
+        # Use soft counts to update, respecting temporal order
+        self.bayesian_transition.update_from_posteriors(
+            state_posteriors, 
+            apply_batch_decay=True
+        )
+        
+        # Step 3: Information-theoretic weighting
+        self.info_weighting.fit(observations, state_labels, feature_names)
+        
+        self.is_fitted = True
+        return self
+    
+    def get_enhanced_posterior(
+        self,
+        base_posterior: np.ndarray,
+        observation: np.ndarray,
+        t: int
+    ) -> np.ndarray:
+        """
+        Enhance base posterior following the CAUSAL PIPELINE.
+        
+        Pipeline:
+        1. Wasserstein → detect distribution shift
+        2. Bayesian → get transition uncertainty
+        3. MI weights → adjust emission confidence
+        4. Uncertainty gate → decide if adjustment is trustworthy
+        
+        Args:
+            base_posterior: Posterior from standard forward algorithm
+            observation: Current observation vector
+            t: Time index
+            
+        Returns:
+            Enhanced posterior distribution
+        """
+        if not self.is_fitted:
+            return base_posterior
+        
+        enhanced = base_posterior.copy()
+        
+        # =================================================================
+        # STEP 1: Wasserstein Distribution Shift Detection
+        # =================================================================
+        regime_change_score = 0.0
+        if self.wasserstein_detector is not None and self.wasserstein_detector.scores_ is not None:
+            if t < len(self.wasserstein_detector.scores_):
+                regime_change_score = self.wasserstein_detector.scores_[t]
+        self._last_regime_change_score = regime_change_score
+        
+        # =================================================================
+        # STEP 2: Bayesian Transition Uncertainty
+        # =================================================================
+        transition_uncertainty = self.bayesian_transition.transition_uncertainty()
+        mean_uncertainty = float(transition_uncertainty.mean())
+        self._last_uncertainty = mean_uncertainty
+        
+        # If in high regime-change region, increase forward transition boost
+        # This is CONDITIONAL on Wasserstein signal (no double-counting)
+        regime_adjustment = 1.0
+        if regime_change_score > 0.5:
+            # Scale boost by inverse uncertainty (more certain = larger boost)
+            certainty_factor = max(0.1, 1.0 - mean_uncertainty * 10)
+            regime_adjustment = 1.0 + 0.3 * regime_change_score * certainty_factor
+        
+        # =================================================================
+        # STEP 3: Information-Weighted Emission Adjustment
+        # =================================================================
+        if self.info_weighting.observation_weights_ is not None:
+            # Compute MI-weighted log-likelihood ratios
+            log_lik_ratios = np.zeros(self.n_states)
+            for s in range(self.n_states):
+                log_lik_ratios[s] = self.info_weighting.weighted_log_likelihood(
+                    observation, s
+                )
+            
+            # Normalize log-likelihoods to prevent overflow
+            log_lik_ratios -= np.max(log_lik_ratios)
+            
+            # Soft adjustment factor (conservative: 0.1 weight)
+            # Only apply if we have reasonable MI scores
+            if self.info_weighting.mi_scores_ is not None:
+                total_mi = self.info_weighting.mi_scores_.sum()
+                if total_mi > 0.1:  # Meaningful discrimination
+                    mi_adjustment = np.exp(0.1 * log_lik_ratios)
+                    enhanced *= mi_adjustment
+        
+        # =================================================================
+        # STEP 4: Apply Regime Change Boost (if warranted)
+        # =================================================================
+        if regime_adjustment > 1.0:
+            # Boost forward states proportionally
+            enhanced[LatentState.PRE_POLICY] *= regime_adjustment
+            enhanced[LatentState.POLICY] *= regime_adjustment ** 0.5  # Smaller boost for extreme state
+        
+        # =================================================================
+        # STEP 5: Uncertainty Gate
+        # =================================================================
+        # If uncertainty is too high, blend back toward base posterior
+        if mean_uncertainty > self.uncertainty_gate_threshold:
+            blend_factor = min(1.0, mean_uncertainty / self.uncertainty_gate_threshold - 1.0)
+            enhanced = (1 - blend_factor) * enhanced + blend_factor * base_posterior
+        
+        # Renormalize
+        enhanced = enhanced / (enhanced.sum() + 1e-10)
+        
+        return enhanced
+    
+    def get_switch_confidence(self, enhanced_posterior: np.ndarray) -> Dict[str, float]:
+        """
+        Compute calibrated switch confidence with uncertainty quantification.
+        
+        Returns:
+            Dictionary with:
+            - switch_probability: P(PRE_POLICY) + P(POLICY)
+            - confidence: How certain we are (inverse of uncertainty)
+            - regime_change_score: Latest Wasserstein score
+            - should_gate: Whether uncertainty gate is active
+        """
+        switch_prob = float(
+            enhanced_posterior[LatentState.PRE_POLICY] + 
+            enhanced_posterior[LatentState.POLICY]
+        )
+        
+        # Confidence is inverse of uncertainty, normalized to [0, 1]
+        # Using sigmoid-style transformation for smooth behavior
+        # confidence = 1 / (1 + exp(k * (uncertainty - threshold)))
+        # Simplified: use linear scaling with proper clamping
+        uncertainty = self._last_uncertainty
+        
+        # Scale uncertainty relative to threshold
+        # If uncertainty < threshold: confidence is high
+        # If uncertainty > threshold: confidence drops
+        if uncertainty <= 0:
+            confidence = 1.0
+        elif uncertainty >= self.uncertainty_gate_threshold * 2:
+            confidence = 0.0
+        else:
+            # Linear interpolation: full confidence at 0, zero at 2*threshold
+            confidence = 1.0 - (uncertainty / (self.uncertainty_gate_threshold * 2))
+        
+        confidence = float(np.clip(confidence, 0.0, 1.0))
+        should_gate = uncertainty > self.uncertainty_gate_threshold
+        
+        # Gated probability: only non-zero if gate is open AND we're confident
+        if should_gate:
+            gated_prob = 0.0
+        else:
+            # Weight switch probability by confidence
+            gated_prob = switch_prob * confidence
+        
+        return {
+            'switch_probability': switch_prob,
+            'confidence': confidence,
+            'regime_change_score': float(self._last_regime_change_score),
+            'uncertainty': float(uncertainty),
+            'should_gate': should_gate,
+            'gated_switch_probability': float(gated_prob),
+        }
+    
+    def get_transition_matrix_with_uncertainty(self) -> Dict[str, np.ndarray]:
+        """
+        Get expected transition matrix with uncertainty estimates.
+        """
+        return {
+            'expected': self.bayesian_transition.expected_transition_matrix(),
+            'variance': self.bayesian_transition.transition_uncertainty(),
+            'entropy': self.bayesian_transition.posterior_entropy(),
+        }
+    
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """
+        Get comprehensive diagnostics from all components.
+        """
+        diagnostics = {
+            'is_fitted': self.is_fitted,
+            'pipeline_order': [
+                '1. Wasserstein Distribution Shift',
+                '2. Bayesian Transition Update', 
+                '3. MI-Weighted Emission',
+                '4. Uncertainty Gate'
+            ],
+        }
+        
+        if self.is_fitted:
+            # Bayesian transition diagnostics
+            diagnostics['transition_entropy'] = self.bayesian_transition.posterior_entropy()
+            diagnostics['transition_uncertainty_mean'] = float(
+                self.bayesian_transition.transition_uncertainty().mean()
+            )
+            diagnostics['bayesian_update_count'] = self.bayesian_transition._update_count
+            
+            # Wasserstein diagnostics
+            if self.wasserstein_detector is not None:
+                diagnostics['regime_stability'] = self.wasserstein_detector.regime_stability_score()
+                diagnostics['n_regime_changes'] = int(
+                    (self.wasserstein_detector.scores_ > self.wasserstein_detector.threshold_).sum()
+                )
+                diagnostics['wasserstein_threshold'] = float(self.wasserstein_detector.threshold_)
+            
+            # Information-theoretic diagnostics
+            if self.info_weighting.mi_scores_ is not None:
+                diagnostics['feature_importance'] = self.info_weighting.get_feature_importance_report()
+                diagnostics['state_discriminability'] = (
+                    self.info_weighting.state_discriminability_scores().tolist()
+                )
+                diagnostics['total_mi'] = float(self.info_weighting.mi_scores_.sum())
+        
+        return diagnostics
+
+
+# =============================================================================
+# UNIFIED DECISION GATE (SINGLE SCALAR OUTPUT)
+# =============================================================================
+
+class UnifiedDecisionGate:
+    """
+    One dominant signal, one belief updater, one decision gate.
+    Everything else is subordinate.
+    
+    Architecture:
+    - Wasserstein = PRIMARY SENSOR (decides if world changed)
+    - Bayesian transitions = BELIEF UPDATER (slow, with decay)
+    - MI/KL = AMPLIFIERS ONLY (boost confidence, never trigger)
+    - Single scalar output: switch_confidence ∈ [0, 1]
+    
+    This eliminates:
+    - Confidence inflation from multiple voices
+    - Delayed switches from competing signals
+    - Regime echo from circular dependencies
+    """
+    
+    def __init__(
+        self,
+        n_states: int = 4,
+        wasserstein_threshold: float = 0.15,
+        belief_decay: float = 0.95,
+        confidence_ema_alpha: float = 0.3,
+        switch_threshold: float = 0.6,
+    ):
+        """
+        Args:
+            n_states: Number of hidden states
+            wasserstein_threshold: Primary sensor threshold for regime change
+            belief_decay: Bayesian decay per step (pulls toward uniform)
+            confidence_ema_alpha: EMA smoothing for confidence (higher = more responsive)
+            switch_threshold: Confidence threshold for switch decision
+        """
+        self.n_states = n_states
+        self.wasserstein_threshold = wasserstein_threshold
+        self.belief_decay = belief_decay
+        self.confidence_ema_alpha = confidence_ema_alpha
+        self.switch_threshold = switch_threshold
+        
+        # State
+        self.belief = np.ones(n_states) / n_states
+        self.switch_confidence = 0.0
+        self._last_wasserstein = 0.0
+        self._last_mi_ratio = 1.0
+        self._last_kl_divergence = 0.0
+        self._confidence_ema = 0.0
+        self._primary_signal = 0.0
+        self._amplifier = 1.0
+        
+    def compute_switch_confidence(
+        self,
+        wasserstein_distance: float,
+        mi_ratio: Optional[float] = None,
+        kl_divergence: Optional[float] = None,
+    ) -> float:
+        """
+        Single scalar output: switch_confidence ∈ [0, 1]
+        
+        Hierarchy (STRICTLY ENFORCED):
+        1. Wasserstein = PRIMARY SENSOR (decides if world changed)
+        2. MI/KL = AMPLIFIERS ONLY (boost confidence, never trigger)
+        3. Everything else = SUBORDINATE
+        
+        Args:
+            wasserstein_distance: Primary sensor signal (distribution shift)
+            mi_ratio: Optional MI discriminability ratio (amplifier only)
+            kl_divergence: Optional KL divergence between states (amplifier only)
+            
+        Returns:
+            switch_confidence ∈ [0, 1]
+        """
+        self._last_wasserstein = wasserstein_distance
+        
+        # =================================================================
+        # PRIMARY SIGNAL: Wasserstein (ONLY thing that can trigger)
+        # =================================================================
+        # Normalize relative to threshold
+        w_normalized = wasserstein_distance / (self.wasserstein_threshold + 1e-10)
+        
+        # Sharp sigmoid centered at threshold
+        # Below threshold: signal → 0
+        # Above threshold: signal → 1
+        # Sharpness = 5 gives reasonable transition width
+        self._primary_signal = 1.0 / (1.0 + np.exp(-5.0 * (w_normalized - 1.0)))
+        
+        # =================================================================
+        # AMPLIFIERS: MI and KL (can ONLY boost, never trigger)
+        # =================================================================
+        self._amplifier = 1.0
+        
+        # MI ratio amplifier
+        if mi_ratio is not None and np.isfinite(mi_ratio):
+            self._last_mi_ratio = mi_ratio
+            # MI ratio > 1 means states are becoming more distinguishable
+            # Amplify confidence by up to 30%, or reduce by up to 20%
+            mi_factor = np.clip(mi_ratio, 0.8, 1.3)
+            self._amplifier *= mi_factor
+        
+        # KL divergence amplifier
+        if kl_divergence is not None and np.isfinite(kl_divergence):
+            self._last_kl_divergence = kl_divergence
+            # High KL = distributions diverging = more confidence in change
+            # Logarithmic scaling to prevent explosion
+            kl_factor = 1.0 + 0.1 * np.log1p(kl_divergence)
+            kl_factor = np.clip(kl_factor, 0.9, 1.2)
+            self._amplifier *= kl_factor
+        
+        # =================================================================
+        # COMBINE: Primary * Amplifier
+        # =================================================================
+        raw_confidence = self._primary_signal * self._amplifier
+        raw_confidence = np.clip(raw_confidence, 0.0, 1.0)
+        
+        # =================================================================
+        # EMA SMOOTHING: Prevents jitter while maintaining responsiveness
+        # =================================================================
+        self._confidence_ema = (
+            self.confidence_ema_alpha * raw_confidence +
+            (1.0 - self.confidence_ema_alpha) * self._confidence_ema
+        )
+        
+        self.switch_confidence = float(self._confidence_ema)
+        return self.switch_confidence
+    
+    def update_belief(
+        self,
+        transition_matrix: np.ndarray,
+        observation_likelihood: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """
+        Bayesian belief update with mandatory decay.
+        
+        Decay pulls belief toward uniform uncertainty.
+        This prevents overconfidence in stale beliefs.
+        
+        Args:
+            transition_matrix: State transition probabilities
+            observation_likelihood: Optional P(Y|S) for each state
+            
+        Returns:
+            Updated belief distribution
+        """
+        # Apply decay (always pulls toward uniform)
+        uniform = np.ones(self.n_states) / self.n_states
+        self.belief = self.belief_decay * self.belief + (1.0 - self.belief_decay) * uniform
+        
+        # Transition update: P(S_t | S_{t-1})
+        self.belief = transition_matrix.T @ self.belief
+        
+        # Observation update (if available): P(S_t | Y_t)
+        if observation_likelihood is not None:
+            obs_lik = np.asarray(observation_likelihood)
+            if obs_lik.shape == self.belief.shape:
+                self.belief *= obs_lik
+        
+        # Normalize
+        belief_sum = self.belief.sum()
+        if belief_sum > 1e-10:
+            self.belief = self.belief / belief_sum
+        else:
+            self.belief = uniform.copy()
+        
+        return self.belief
+    
+    def should_switch(self) -> Tuple[bool, float, str]:
+        """
+        Final decision: switch or not.
+        
+        Returns:
+            Tuple of (decision, confidence, reason)
+        """
+        decision = self.switch_confidence > self.switch_threshold
+        
+        if decision:
+            reason = f"Confidence {self.switch_confidence:.1%} > threshold {self.switch_threshold:.1%}"
+        else:
+            reason = f"Confidence {self.switch_confidence:.1%} ≤ threshold {self.switch_threshold:.1%}"
+        
+        return decision, self.switch_confidence, reason
+    
+    def get_dominant_state(self) -> int:
+        """Most likely state from belief."""
+        return int(np.argmax(self.belief))
+    
+    def get_state_probability(self, state: int) -> float:
+        """Get probability of specific state."""
+        if 0 <= state < self.n_states:
+            return float(self.belief[state])
+        return 0.0
+    
+    def get_forward_state_probability(self) -> float:
+        """
+        Get probability of being in forward states (PRE_POLICY or POLICY).
+        This is the key metric for switch decisions.
+        """
+        if self.n_states >= 4:
+            return float(self.belief[2] + self.belief[3])  # PRE_POLICY + POLICY
+        return float(self.belief[-1])
+    
+    def reset(self):
+        """Reset to initial state."""
+        self.belief = np.ones(self.n_states) / self.n_states
+        self.switch_confidence = 0.0
+        self._confidence_ema = 0.0
+        self._primary_signal = 0.0
+        self._amplifier = 1.0
+    
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """
+        Get detailed diagnostics for debugging and monitoring.
+        """
+        return {
+            'switch_confidence': self.switch_confidence,
+            'should_switch': self.switch_confidence > self.switch_threshold,
+            'threshold': self.switch_threshold,
+            'belief': self.belief.tolist(),
+            'dominant_state': self.get_dominant_state(),
+            'forward_state_probability': self.get_forward_state_probability(),
+            'primary_signal': {
+                'wasserstein': self._last_wasserstein,
+                'normalized_signal': self._primary_signal,
+                'threshold': self.wasserstein_threshold,
+            },
+            'amplifiers': {
+                'combined': self._amplifier,
+                'mi_ratio': self._last_mi_ratio,
+                'kl_divergence': self._last_kl_divergence,
+            },
+            'smoothing': {
+                'ema_alpha': self.confidence_ema_alpha,
+                'ema_value': self._confidence_ema,
+            },
         }
 
 
@@ -1511,7 +2774,92 @@ def _run_inference(
         pi,
         historical_obs_array
     )
+    
+    # ==========================================================================
+    # ENHANCED HMM: Bayesian Model Averaging + Wasserstein + Information Theory
+    # ==========================================================================
+    print("[debt_allocator] Running enhanced inference (Bayesian + Wasserstein + MI)...")
+    
+    feature_names = ['convex_loss', 'tail_mass', 'disagreement', 
+                     'disag_momentum', 'vol_ratio', 'convex_accel']
+    
+    enhanced_hmm = EnhancedHMMInference(n_states=LatentState.n_states())
+    enhanced_hmm.fit(
+        observations=historical_obs_array,
+        state_posteriors=posteriors,
+        feature_names=feature_names
+    )
+    
+    # ==========================================================================
+    # UNIFIED DECISION GATE: Single scalar output architecture
+    # ==========================================================================
+    print("[debt_allocator] Running unified decision gate...")
+    
+    decision_gate = UnifiedDecisionGate(
+        n_states=LatentState.n_states(),
+        wasserstein_threshold=0.15,
+        belief_decay=0.95,
+        confidence_ema_alpha=0.3,
+        switch_threshold=0.6,
+    )
+    
+    # Get enhanced posterior for final observation
     current_posterior_probs = posteriors[-1]
+    
+    if enhanced_hmm.is_fitted:
+        # Get Wasserstein score (PRIMARY SIGNAL)
+        wasserstein_score = 0.0
+        if enhanced_hmm.wasserstein_detector is not None:
+            if enhanced_hmm.wasserstein_detector.scores_ is not None:
+                wasserstein_score = enhanced_hmm.wasserstein_detector.scores_[-1]
+        
+        # Get MI ratio (AMPLIFIER ONLY)
+        mi_ratio = None
+        if enhanced_hmm.info_weighting.mi_scores_ is not None:
+            total_mi = enhanced_hmm.info_weighting.mi_scores_.sum()
+            if total_mi > 0:
+                mi_ratio = total_mi / 1.0  # Normalize to baseline of 1.0
+        
+        # Get KL divergence (AMPLIFIER ONLY)
+        kl_divergence = None
+        if enhanced_hmm.info_weighting.emission_means_ is not None:
+            kl_matrix = enhanced_hmm.info_weighting.compute_kl_divergence_matrix()
+            kl_divergence = np.mean(kl_matrix[kl_matrix > 0]) if np.any(kl_matrix > 0) else 0.0
+        
+        # UNIFIED DECISION: Compute single scalar switch confidence
+        switch_confidence_scalar = decision_gate.compute_switch_confidence(
+            wasserstein_distance=wasserstein_score,
+            mi_ratio=mi_ratio,
+            kl_divergence=kl_divergence,
+        )
+        
+        # Update belief using Bayesian transition with decay
+        transition_matrix = enhanced_hmm.bayesian_transition.expected_transition_matrix()
+        decision_gate.belief = current_posterior_probs.copy()
+        decision_gate.update_belief(transition_matrix)
+        
+        # Get final decision
+        should_switch, final_confidence, decision_reason = decision_gate.should_switch()
+        
+        # Log unified gate diagnostics
+        gate_diag = decision_gate.get_diagnostics()
+        print(f"[debt_allocator] Unified Decision Gate:")
+        print(f"  - Primary Signal (Wasserstein): {gate_diag['primary_signal']['wasserstein']:.4f}")
+        print(f"  - Normalized Signal: {gate_diag['primary_signal']['normalized_signal']:.4f}")
+        print(f"  - Amplifier (combined): {gate_diag['amplifiers']['combined']:.3f}")
+        print(f"  - Switch Confidence: {gate_diag['switch_confidence']:.2%}")
+        print(f"  - Decision: {'SWITCH' if should_switch else 'HOLD'} ({decision_reason})")
+        print(f"  - Forward State P(PRE_POLICY+POLICY): {gate_diag['forward_state_probability']:.2%}")
+        
+        # Also log legacy diagnostics for comparison
+        diagnostics = enhanced_hmm.get_diagnostics()
+        print(f"[debt_allocator] Supporting diagnostics:")
+        print(f"  - Regime stability: {diagnostics.get('regime_stability', 'N/A'):.3f}")
+        print(f"  - Transition uncertainty: {diagnostics.get('transition_uncertainty_mean', 'N/A'):.4f}")
+        print(f"  - Regime changes detected: {diagnostics.get('n_regime_changes', 'N/A')}")
+        
+        # Use the unified gate's belief as the final posterior
+        current_posterior_probs = decision_gate.belief
     
     # Get current (final) observation and posterior
     current_obs = observations[-1]
