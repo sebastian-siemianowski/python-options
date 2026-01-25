@@ -202,6 +202,127 @@ class ObservationVector:
         }
 
 
+# =============================================================================
+# OBSERVATION VALIDATION / OUTLIER HANDLING
+# =============================================================================
+
+# Observation bounds for numerical stability and outlier rejection
+OBSERVATION_BOUNDS = {
+    'convex_loss': (1e-8, 0.5),           # C(t) must be positive, cap extreme values
+    'convex_loss_acceleration': (-0.1, 0.1),  # ΔC(t) bounded acceleration
+    'tail_mass': (0.01, 0.99),            # P(t) ∈ (0, 1), avoid boundaries
+    'disagreement': (0.0, 1.0),           # D(t) normalized to [0, 1]
+    'disagreement_momentum': (-0.5, 0.5), # dD(t) bounded momentum
+    'vol_ratio': (0.1, 10.0),             # V(t) reasonable vol ratio range
+}
+
+
+def _validate_observation(obs: ObservationVector) -> ObservationVector:
+    """
+    Validate and clip observation values to prevent numerical issues.
+    
+    Handles:
+    - NaN/Inf values → replaced with safe defaults
+    - Extreme outliers → clipped to reasonable bounds
+    - Boundary values → pulled away from exact 0 or 1
+    
+    Args:
+        obs: Raw observation vector
+        
+    Returns:
+        Validated ObservationVector with all values in safe ranges
+    """
+    def _safe_clip(value: float, bounds: Tuple[float, float], default: float) -> float:
+        """Clip value to bounds, replacing NaN/Inf with default."""
+        if not np.isfinite(value):
+            return default
+        return float(np.clip(value, bounds[0], bounds[1]))
+    
+    # Validate each component with appropriate defaults
+    convex_loss = _safe_clip(
+        obs.convex_loss, 
+        OBSERVATION_BOUNDS['convex_loss'], 
+        default=0.0003  # Typical median value
+    )
+    
+    convex_loss_acceleration = _safe_clip(
+        obs.convex_loss_acceleration,
+        OBSERVATION_BOUNDS['convex_loss_acceleration'],
+        default=0.0  # No acceleration by default
+    )
+    
+    tail_mass = _safe_clip(
+        obs.tail_mass,
+        OBSERVATION_BOUNDS['tail_mass'],
+        default=0.5  # Neutral tail mass
+    )
+    
+    disagreement = _safe_clip(
+        obs.disagreement,
+        OBSERVATION_BOUNDS['disagreement'],
+        default=0.2  # Typical disagreement
+    )
+    
+    disagreement_momentum = _safe_clip(
+        obs.disagreement_momentum,
+        OBSERVATION_BOUNDS['disagreement_momentum'],
+        default=0.0  # No momentum by default
+    )
+    
+    vol_ratio = _safe_clip(
+        obs.vol_ratio,
+        OBSERVATION_BOUNDS['vol_ratio'],
+        default=1.0  # Neutral vol ratio
+    )
+    
+    return ObservationVector(
+        convex_loss=convex_loss,
+        convex_loss_acceleration=convex_loss_acceleration,
+        tail_mass=tail_mass,
+        disagreement=disagreement,
+        disagreement_momentum=disagreement_momentum,
+        vol_ratio=vol_ratio,
+        timestamp=obs.timestamp,
+    )
+
+
+def _validate_observation_array(obs_array: np.ndarray) -> np.ndarray:
+    """
+    Validate observation array for HMM processing.
+    
+    Array layout: [C, P, D, dD, V, ΔC]
+    
+    Args:
+        obs_array: Raw observation array
+        
+    Returns:
+        Validated array with all values in safe ranges
+    """
+    validated = obs_array.copy()
+    
+    # Map array indices to bounds
+    bounds_map = [
+        ('convex_loss', 0),
+        ('tail_mass', 1),
+        ('disagreement', 2),
+        ('disagreement_momentum', 3),
+        ('vol_ratio', 4),
+        ('convex_loss_acceleration', 5),
+    ]
+    
+    defaults = [0.0003, 0.5, 0.2, 0.0, 1.0, 0.0]
+    
+    for (key, idx), default in zip(bounds_map, defaults):
+        if idx < len(validated):
+            if not np.isfinite(validated[idx]):
+                validated[idx] = default
+            else:
+                bounds = OBSERVATION_BOUNDS[key]
+                validated[idx] = np.clip(validated[idx], bounds[0], bounds[1])
+    
+    return validated
+
+
 @dataclass(frozen=True)
 class StatePosterior:
     """
@@ -629,7 +750,8 @@ def _construct_observation_vector(
     # 6) Volatility Ratio
     vol_ratio = _compute_volatility_ratio(log_returns)
     
-    return ObservationVector(
+    # Construct raw observation
+    raw_obs = ObservationVector(
         convex_loss=convex_loss,
         convex_loss_acceleration=convex_loss_acceleration,
         tail_mass=tail_mass,
@@ -638,6 +760,9 @@ def _construct_observation_vector(
         vol_ratio=vol_ratio,
         timestamp=timestamp,
     )
+    
+    # Validate and return (handles NaN/Inf and outliers)
+    return _validate_observation(raw_obs)
 
 
 # =============================================================================
@@ -872,8 +997,61 @@ def _build_transition_matrix(persistence: float = TRANSITION_PERSISTENCE) -> np.
 
 
 # =============================================================================
-# HIDDEN MARKOV MODEL: EMISSION PROBABILITIES
+# HIDDEN MARKOV MODEL: EMISSION PROBABILITIES (LOG-SPACE)
 # =============================================================================
+
+def _log_gaussian_pdf(x: float, mu: float, sigma: float) -> float:
+    """
+    Compute log of Gaussian PDF for numerical stability.
+    
+    log N(x | μ, σ) = -0.5 * log(2π) - log(σ) - 0.5 * ((x - μ) / σ)²
+    
+    Args:
+        x: Observation value
+        mu: Mean
+        sigma: Standard deviation (must be > 0)
+        
+    Returns:
+        Log probability density
+    """
+    if sigma <= 0:
+        sigma = 1e-6  # Minimum sigma for numerical stability
+    
+    z = (x - mu) / sigma
+    return -0.5 * np.log(2 * np.pi) - np.log(sigma) - 0.5 * z * z
+
+
+def _log_soft_indicator(x: float, threshold: float, direction: str = 'above', 
+                        sharpness: float = 10.0) -> float:
+    """
+    Soft indicator function in log-space using sigmoid.
+    
+    Provides smooth transition around threshold for numerical stability.
+    
+    Args:
+        x: Observation value
+        threshold: Threshold value
+        direction: 'above' or 'below' threshold
+        sharpness: Controls steepness of transition
+        
+    Returns:
+        Log probability (negative value)
+    """
+    if direction == 'above':
+        z = sharpness * (x - threshold)
+    else:
+        z = sharpness * (threshold - x)
+    
+    # Numerically stable log-sigmoid: log(1 / (1 + exp(-z))) = -log(1 + exp(-z))
+    # For large positive z: ≈ 0
+    # For large negative z: ≈ z
+    if z > 20:
+        return 0.0
+    elif z < -20:
+        return z
+    else:
+        return -np.log1p(np.exp(-z))
+
 
 def _estimate_emission_likelihood(
     observation: np.ndarray,
@@ -881,31 +1059,35 @@ def _estimate_emission_likelihood(
     historical_observations: np.ndarray
 ) -> float:
     """
-    Estimate emission likelihood P(Y_t | S_t) using empirical calibration.
+    Estimate log emission likelihood log P(Y_t | S_t) using empirical calibration.
     
-    Non-Gaussian, empirical estimation based on historical data quantiles.
+    Uses log-space computation throughout for numerical stability.
+    Validates observation values before processing.
     
     Args:
-        observation: Current observation vector
+        observation: Current observation vector (will be validated)
         state: Latent state
         historical_observations: Historical observations for calibration
         
     Returns:
         Log-likelihood of observation given state
     """
+    # Validate observation array
+    obs = _validate_observation_array(observation)
+    
     if len(historical_observations) < 50:
-        # Insufficient data - use uniform likelihood
+        # Insufficient data - use uniform likelihood (log(1) = 0)
         return 0.0
     
-    # Extract observation components
+    # Extract validated observation components
     # Array layout: [convex_loss, tail_mass, disagreement, disag_momentum, vol_ratio, convex_accel]
-    obs_convex = observation[0]  # Convex loss
-    obs_tail = observation[1]    # Tail mass
-    obs_disag = observation[2]   # Disagreement
-    obs_momentum = observation[3]  # Disagreement momentum
-    obs_vol = observation[4]     # Volatility ratio
+    obs_convex = obs[0]    # C(t) # Convex loss
+    obs_tail = obs[1]      # P(t) # Tail mass
+    obs_disag = obs[2]     # D(t) # Disagreement
+    obs_momentum = obs[3]  # dD(t)  # Disagreement momentum
+    obs_vol = obs[4]       # V(t) # Volatility ratio
     
-    # Compute historical quantiles for calibration
+    # Compute historical statistics for calibration
     hist_convex = historical_observations[:, 0]
     hist_tail = historical_observations[:, 1]
     hist_disag = historical_observations[:, 2]
@@ -917,136 +1099,110 @@ def _estimate_emission_likelihood(
     hist_disag = hist_disag[np.isfinite(hist_disag)]
     hist_vol = hist_vol[np.isfinite(hist_vol)]
     
-    # Compute quantiles for each metric
+    # Compute quantiles and statistics for each metric
     if len(hist_convex) > 10:
         convex_q25, convex_q50, convex_q75, convex_q90 = np.percentile(hist_convex, [25, 50, 75, 90])
+        convex_std = np.std(hist_convex) + 1e-8
     else:
         convex_q25, convex_q50, convex_q75, convex_q90 = 0.0001, 0.0003, 0.0006, 0.001
+        convex_std = 0.0003
     
     if len(hist_tail) > 10:
         tail_q25, tail_q50, tail_q75, tail_q90 = np.percentile(hist_tail, [25, 50, 75, 90])
+        tail_std = np.std(hist_tail) + 1e-8
     else:
         tail_q25, tail_q50, tail_q75, tail_q90 = 0.48, 0.50, 0.52, 0.55
+        tail_std = 0.02
     
     if len(hist_disag) > 10:
         disag_q25, disag_q50, disag_q75, disag_q90 = np.percentile(hist_disag, [25, 50, 75, 90])
+        disag_std = np.std(hist_disag) + 1e-8
     else:
         disag_q25, disag_q50, disag_q75, disag_q90 = 0.15, 0.20, 0.30, 0.45
+        disag_std = 0.1
     
     if len(hist_vol) > 10:
         vol_q10, vol_q25, vol_q50, vol_q75, vol_q90 = np.percentile(hist_vol, [10, 25, 50, 75, 90])
+        vol_std = np.std(hist_vol) + 1e-8
     else:
         vol_q10, vol_q25, vol_q50, vol_q75, vol_q90 = 0.7, 0.85, 1.0, 1.15, 1.3
+        vol_std = 0.15
     
-    # Log-likelihood accumulator
+    # Log-likelihood accumulator (all operations in log-space)
     log_lik = 0.0
     
-    # State-specific likelihood based on where observation falls in historical distribution
-    # CRITICAL: NORMAL should be the default state - only elevated states on clear evidence
+    # State-specific emission model using log-space soft indicators and Gaussians
+    # Each state has characteristic observation patterns
     
     if state == LatentState.NORMAL:
-        # NORMAL: Default state - strongly favored for typical observations
-        if obs_convex < convex_q75:
-            log_lik += 1.0
-        else:
-            log_lik -= 0.5 * (obs_convex - convex_q75) / (convex_q90 - convex_q75 + 0.0001)
-            
-        if obs_tail < tail_q75:
-            log_lik += 0.8
-        else:
-            log_lik -= 0.3 * (obs_tail - tail_q75) / (tail_q90 - tail_q75 + 0.001)
-            
-        if obs_disag < disag_q75:
-            log_lik += 0.6
-        else:
-            log_lik -= 0.2
-            
-        if 0.8 <= obs_vol <= 1.2:
-            log_lik += 0.5
+        # NORMAL: Low stress metrics, vol ratio near 1.0
+        # Favors observations below 75th percentile
+        
+        # Convex loss should be low
+        log_lik += _log_gaussian_pdf(obs_convex, convex_q50, convex_std)
+        log_lik += _log_soft_indicator(obs_convex, convex_q75, 'below', sharpness=5.0)
+        
+        # Tail mass should be moderate
+        log_lik += _log_gaussian_pdf(obs_tail, tail_q50, tail_std)
+        
+        # Disagreement should be low
+        log_lik += _log_soft_indicator(obs_disag, disag_q75, 'below', sharpness=5.0)
+        
+        # Vol ratio near 1.0
+        log_lik += _log_gaussian_pdf(obs_vol, 1.0, 0.15)
         
     elif state == LatentState.COMPRESSED:
-        # COMPRESSED: low vol ratio (compression) is key signal
-        if obs_vol < vol_q25:
-            log_lik += 1.5  # Strong signal: volatility compression
-        elif obs_vol < vol_q50:
-            log_lik += 0.5
-        else:
-            log_lik -= 1.0  # Not compressed
-            
-        if obs_convex < convex_q75:
-            log_lik += 0.3
-            
+        # COMPRESSED: Key signal is low volatility ratio (compression)
+        
+        # Vol ratio should be LOW (compression)
+        log_lik += _log_gaussian_pdf(obs_vol, vol_q25, vol_std * 0.5)
+        log_lik += _log_soft_indicator(obs_vol, vol_q50, 'below', sharpness=8.0)
+        
+        # Convex loss still moderate
+        log_lik += _log_soft_indicator(obs_convex, convex_q75, 'below', sharpness=3.0)
+        
+        # Mild penalty for high disagreement
+        log_lik += _log_soft_indicator(obs_disag, disag_q90, 'below', sharpness=2.0)
+        
     elif state == LatentState.PRE_POLICY:
         # PRE_POLICY: Elevated stress metrics
-        elevated_count = 0
+        # Multiple metrics above 75th percentile
         
-        # Elevated convex loss
-        if obs_convex > convex_q75:
-            log_lik += 0.7
-            elevated_count += 1
-        elif obs_convex > convex_q50:
-            log_lik += 0.3
+        # Convex loss should be elevated
+        log_lik += _log_soft_indicator(obs_convex, convex_q50, 'above', sharpness=5.0)
+        log_lik += _log_gaussian_pdf(obs_convex, convex_q75, convex_std)
+        
+        # Tail mass elevated
+        log_lik += _log_soft_indicator(obs_tail, tail_q50, 'above', sharpness=5.0)
+        
+        # Disagreement elevated
+        log_lik += _log_soft_indicator(obs_disag, disag_q50, 'above', sharpness=5.0)
+        
+        # Positive momentum (worsening conditions)
+        if obs_momentum > 0.02:
+            log_lik += _log_gaussian_pdf(obs_momentum, 0.05, 0.03)
         else:
-            log_lik -= 0.5
-            
-        # High tail mass
-        if obs_tail > tail_q75:
-            log_lik += 0.6
-            elevated_count += 1
-        elif obs_tail > tail_q50:
-            log_lik += 0.2
-        else:
-            log_lik -= 0.4
-            
-        # Elevated disagreement
-        if obs_disag > disag_q75:
-            log_lik += 0.5
-            elevated_count += 1
-        elif obs_disag > disag_q50:
-            log_lik += 0.2
-        else:
-            log_lik -= 0.3
-            
-        # Positive momentum - things getting worse
-        if np.isfinite(obs_momentum) and obs_momentum > 0.02:
-            log_lik += 0.6
-            elevated_count += 1
-            
-        # Require at least 2 elevated metrics
-        if elevated_count < 2:
-            log_lik -= 1.5
+            log_lik += -1.0  # Penalty for non-positive momentum
         
     elif state == LatentState.POLICY:
-        # POLICY: requires EXTREME metrics - very rare state
-        extreme_count = 0
+        # POLICY: Extreme metrics - very rare state
+        # Requires metrics above 90th percentile
         
-        if obs_convex > convex_q90:
-            log_lik += 1.0
-            extreme_count += 1
-        else:
-            log_lik -= 1.5
-            
-        if obs_tail > tail_q90:
-            log_lik += 1.0
-            extreme_count += 1
-        else:
-            log_lik -= 1.0
-            
-        if obs_disag > disag_q90:
-            log_lik += 0.8
-            extreme_count += 1
-        else:
-            log_lik -= 0.5
-            
-        if obs_vol > vol_q90:
-            log_lik += 1.0  # Volatility expansion
-            extreme_count += 1
-        else:
-            log_lik -= 0.5
-            
-        # Require at least 3 extreme metrics
-        if extreme_count < 3:
-            log_lik -= 3.0
+        # Extreme convex loss
+        log_lik += _log_soft_indicator(obs_convex, convex_q90, 'above', sharpness=10.0)
+        log_lik += _log_gaussian_pdf(obs_convex, convex_q90 * 1.2, convex_std * 0.5)
+        
+        # Extreme tail mass
+        log_lik += _log_soft_indicator(obs_tail, tail_q90, 'above', sharpness=10.0)
+        
+        # Extreme disagreement
+        log_lik += _log_soft_indicator(obs_disag, disag_q90, 'above', sharpness=10.0)
+        
+        # Vol ratio typically expands in crisis
+        log_lik += _log_soft_indicator(obs_vol, vol_q75, 'above', sharpness=5.0)
+    
+    # Clamp to prevent extreme values
+    log_lik = np.clip(log_lik, -50.0, 10.0)
     
     return log_lik
 
