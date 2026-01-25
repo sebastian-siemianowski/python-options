@@ -242,6 +242,9 @@ def _human_reason(meta: Dict) -> str:
 _SYMBOL_MAP_TABLE = None
 _SYMBOL_FAIL_TABLE = None
 _RICH_CONSOLE = None
+# Track logged symbols to prevent duplicates
+_LOGGED_SYMBOL_MAPPINGS: set = set()
+_LOGGED_SYMBOL_FAILURES: set = set()
 
 
 def _get_rich_console():
@@ -323,6 +326,13 @@ def _print_symbol_fail_header():
 
 
 def _log_symbol_map(original: str, normalized: str, meta: Dict) -> None:
+    global _LOGGED_SYMBOL_MAPPINGS
+    # Deduplicate - only log each (original, normalized) pair once
+    key = (original, normalized)
+    if key in _LOGGED_SYMBOL_MAPPINGS:
+        return
+    _LOGGED_SYMBOL_MAPPINGS.add(key)
+    
     _print_symbol_map_header()
     action = _human_action(meta)
     why = _human_reason(meta)
@@ -1328,7 +1338,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "QQQO",  # IS Nasdaq 100 Options
     "R3NK.DE",  # Renk Group AG
     "REGN",  # Regeneron Pharmaceuticals
-    "RHM",   # Rheinmetall AG
+    "RHM.DE",   # Rheinmetall AG
     "RKLB",  # Rocket Lab Corp
     "SAABY", # Saab AB Unsponsored ADR
     "SAF",   # Safran SA
@@ -2064,7 +2074,7 @@ def get_sector(symbol: str) -> str:
     return "Unspecified"
 
 # FX rate cache (JSON on disk) to avoid repeated network calls
-FX_RATE_CACHE_PATH = os.path.join("cache", "fx_rates.json")
+FX_RATE_CACHE_PATH = os.path.join("scripts", "quant", "cache", "fx_rates.json")
 FX_RATE_CACHE_MAX_AGE_DAYS = 3  # Cache FX rates for 3 days to reduce rate limiting
 _FX_RATE_CACHE: Optional[Dict[str, dict]] = None
 
@@ -2703,7 +2713,7 @@ def save_failed_assets(failures: Dict[str, Dict], append: bool = True) -> str:
 
 
 def load_failed_assets() -> Dict[str, Dict]:
-    """Load failed assets from cache/failed/failed_assets.json.
+    """Load failed assets from scripts/quant/cache/failed/failed_assets.json.
     
     Returns:
         Dict mapping asset symbol to failure info
@@ -2743,7 +2753,7 @@ def purge_failed_assets_from_cache(verbose: bool = True) -> Dict[str, bool]:
     failures = load_failed_assets()
     if not failures:
         if verbose:
-            print("No failed assets found in cache/failed/failed_assets.json")
+            print("No failed assets found in scripts/quant/cache/failed/failed_assets.json")
         return {}
     
     results = {}
@@ -2961,7 +2971,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     return pd.DataFrame()
 
 
-def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False) -> Dict[str, pd.Series]:
+def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False, max_workers: int = 12) -> Dict[str, pd.Series]:
     """Download multiple symbols in chunks to reduce rate limiting.
     Uses yf.download with list input; falls back to per-symbol for failures.
     Populates the local price cache so subsequent single fetches reuse data.
@@ -3007,18 +3017,39 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         primary_to_originals.setdefault(primary, []).append(orig)
 
     # Try cached first for all primaries
+    # Check if cached data covers the requested date range (especially the end date)
     satisfied_primaries: Set[str] = set()
+    
+    # Determine the target end date for staleness check
+    if end:
+        target_end = pd.to_datetime(end).date()
+    else:
+        target_end = datetime.now().date()
+    
     for primary, orig_list in list(primary_to_originals.items()):
-        cached = _get_cached_prices(primary, start, end)
-        if cached is not None and not cached.empty:
-            # Use standardized price extraction
-            ser = get_price_series(cached, "Close")
-            if not ser.empty:
-                ser.name = "px"
-                for orig in orig_list:
-                    result[orig] = ser
-                cached_hits += 1
-                satisfied_primaries.add(primary)
+        disk = _load_disk_prices(primary)
+        if disk is not None and not disk.empty:
+            # Check if cache is stale (doesn't extend close enough to the target end date)
+            cache_max_date = pd.to_datetime(disk.index.max()).date()
+            # Allow 3 days buffer for weekends/holidays, but require recent data
+            if (target_end - cache_max_date).days > 3:
+                # Cache is stale - need to re-download
+                continue
+            
+            # Filter to requested date range
+            if start:
+                disk = disk[disk.index >= pd.to_datetime(start)]
+            if end:
+                disk = disk[disk.index <= pd.to_datetime(end)]
+            if not disk.empty:
+                # Use standardized price extraction
+                ser = get_price_series(disk, "Close")
+                if not ser.empty:
+                    ser.name = "px"
+                    for orig in orig_list:
+                        result[orig] = ser
+                    cached_hits += 1
+                    satisfied_primaries.add(primary)
 
     remaining_primaries = [p for p in primary_to_originals if p not in satisfied_primaries]
 
@@ -3064,9 +3095,9 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
 
     chunks = [remaining_primaries[i:i + chunk_size] for i in range(0, len(remaining_primaries), chunk_size) if remaining_primaries[i:i + chunk_size]]
     if log and chunks:
-        log(f"  Launching {len(chunks)} chunk(s) in parallel…")
+        log(f"  Launching {len(chunks)} chunk(s) with {min(max_workers, len(chunks))} workers…")
 
-    with ThreadPoolExecutor(max_workers=min(12, max(1, len(chunks)))) as ex:
+    with ThreadPoolExecutor(max_workers=min(max_workers, max(1, len(chunks)))) as ex:
         future_map = {ex.submit(_download_chunk, c): c for c in chunks}
         for fut in as_completed(future_map):
             chunk_syms = future_map[fut]
