@@ -89,6 +89,11 @@ tune: .venv/.deps_installed
 	@mkdir -p cache
 	@.venv/bin/python scripts/tune_pretty.py $(ARGS)
 
+# FX Debt Allocation Engine - EURJPY balance sheet convexity control
+debt: .venv/.deps_installed
+	@mkdir -p scripts/quant/cache/debt
+	@.venv/bin/python scripts/debt_allocator.py $(ARGS)
+
 show-q:
 	@if [ -f cache/kalman_q_cache.json ]; then \
 		echo "=== Cached Kalman q Parameters (JSON) ==="; \
