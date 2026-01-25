@@ -71,7 +71,7 @@ Examples:
     )
     parser.add_argument('--assets', type=str, help='Comma-separated list of asset symbols')
     parser.add_argument('--assets-file', type=str, help='Path to file with asset list (one per line)')
-    parser.add_argument('--cache-json', type=str, default='cache/kalman_q_cache.json',
+    parser.add_argument('--cache-json', type=str, default='scripts/quant/cache/kalman_q_cache.json',
                        help='Path to JSON cache file')
     parser.add_argument('--force', action='store_true',
                        help='Force re-estimation even if cached values exist')

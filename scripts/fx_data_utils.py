@@ -2703,7 +2703,7 @@ def save_failed_assets(failures: Dict[str, Dict], append: bool = True) -> str:
 
 
 def load_failed_assets() -> Dict[str, Dict]:
-    """Load failed assets from cache/failed/failed_assets.json.
+    """Load failed assets from scripts/quant/cache/failed/failed_assets.json.
     
     Returns:
         Dict mapping asset symbol to failure info
@@ -2743,7 +2743,7 @@ def purge_failed_assets_from_cache(verbose: bool = True) -> Dict[str, bool]:
     failures = load_failed_assets()
     if not failures:
         if verbose:
-            print("No failed assets found in cache/failed/failed_assets.json")
+            print("No failed assets found in scripts/quant/cache/failed/failed_assets.json")
         return {}
     
     results = {}

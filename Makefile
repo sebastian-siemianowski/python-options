@@ -95,16 +95,16 @@ debt: .venv/.deps_installed
 	@.venv/bin/python scripts/debt_allocator.py $(ARGS)
 
 show-q:
-	@if [ -f cache/kalman_q_cache.json ]; then \
+	@if [ -f scripts/quant/cache/kalman_q_cache.json ]; then \
 		echo "=== Cached Kalman q Parameters (JSON) ==="; \
-		cat cache/kalman_q_cache.json; \
+		cat scripts/quant/cache/kalman_q_cache.json; \
 	else \
 		echo "No cache file found. Run 'make tune' first."; \
 	fi
 
 clear-q:
 	@echo "Clearing Kalman q parameter cache..."
-	@rm -f cache/kalman_q_cache.json
+	@rm -f scripts/quant/cache/kalman_q_cache.json
 	@echo "Cache cleared."
 
 tests: .venv/.deps_installed
@@ -128,11 +128,14 @@ clear:
 	@rm -f data/*.backup
 	@echo "Data cache cleared successfully!"
 
-stocks: fx-plnjpy
+stocks: .venv/.deps_installed
+	@echo "Downloading price data (5 passes for reliability)..."
+	@.venv/bin/python scripts/refresh_data.py --skip-trim --retries 5 --workers 2 --batch-size 16 $(ARGS)
+	@$(MAKE) fx-plnjpy
 
 # Render from cached results only (no network/compute)
 report: .venv/.deps_installed
-	@.venv/bin/python scripts/fx_pln_jpy_signals.py --from-cache --cache-json cache/fx_plnjpy.json
+	@.venv/bin/python scripts/fx_pln_jpy_signals.py --from-cache --cache-json scripts/quant/cache/fx_plnjpy.json
 
 # Quick smoke: run only the first 20 assets
 top20: .venv/.deps_installed
@@ -151,10 +154,10 @@ refresh: .venv/.deps_installed
 	@.venv/bin/python scripts/refresh_data.py --days 5 --retries 5 --workers 2 --batch-size 16 $(ARGS)
 
 four:
-	@if [ ! -f cache/kalman_q_cache.json ]; then \
-		echo "cache/kalman_q_cache.json not found"; exit 1; \
+	@if [ ! -f scripts/quant/cache/kalman_q_cache.json ]; then \
+		echo "scripts/quant/cache/kalman_q_cache.json not found"; exit 1; \
 	fi
-	@PYTHONPATH=$(CURDIR) .venv/bin/python -c "from scripts.fx_data_utils import drop_first_k_from_kalman_cache; removed = drop_first_k_from_kalman_cache(4, 'cache/kalman_q_cache.json'); print(f'Removed {len(removed)} entries: {', '.join(removed)}')"
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -c "from scripts.fx_data_utils import drop_first_k_from_kalman_cache; removed = drop_first_k_from_kalman_cache(4, 'scripts/quant/cache/kalman_q_cache.json'); print(f'Removed {len(removed)} entries: {', '.join(removed)}')"
 
 # List failed assets
 failed: .venv/.deps_installed

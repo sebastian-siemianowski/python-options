@@ -19,7 +19,7 @@ def test_load_tuned_params():
     print("Testing Model Selection Integration")
     print("=" * 80)
     
-    cache_path = "cache/kalman_q_cache.json"
+    cache_path = "scripts/quant/cache/kalman_q_cache.json"
     
     if not os.path.exists(cache_path):
         print(f"❌ Cache file not found: {cache_path}")
