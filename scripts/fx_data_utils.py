@@ -242,6 +242,9 @@ def _human_reason(meta: Dict) -> str:
 _SYMBOL_MAP_TABLE = None
 _SYMBOL_FAIL_TABLE = None
 _RICH_CONSOLE = None
+# Track logged symbols to prevent duplicates
+_LOGGED_SYMBOL_MAPPINGS: set = set()
+_LOGGED_SYMBOL_FAILURES: set = set()
 
 
 def _get_rich_console():
@@ -323,6 +326,13 @@ def _print_symbol_fail_header():
 
 
 def _log_symbol_map(original: str, normalized: str, meta: Dict) -> None:
+    global _LOGGED_SYMBOL_MAPPINGS
+    # Deduplicate - only log each (original, normalized) pair once
+    key = (original, normalized)
+    if key in _LOGGED_SYMBOL_MAPPINGS:
+        return
+    _LOGGED_SYMBOL_MAPPINGS.add(key)
+    
     _print_symbol_map_header()
     action = _human_action(meta)
     why = _human_reason(meta)
@@ -2064,7 +2074,7 @@ def get_sector(symbol: str) -> str:
     return "Unspecified"
 
 # FX rate cache (JSON on disk) to avoid repeated network calls
-FX_RATE_CACHE_PATH = os.path.join("cache", "fx_rates.json")
+FX_RATE_CACHE_PATH = os.path.join("scripts", "quant", "cache", "fx_rates.json")
 FX_RATE_CACHE_MAX_AGE_DAYS = 3  # Cache FX rates for 3 days to reduce rate limiting
 _FX_RATE_CACHE: Optional[Dict[str, dict]] = None
 

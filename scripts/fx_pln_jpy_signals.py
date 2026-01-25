@@ -298,7 +298,7 @@ except Exception:
 # Clamp to a reasonable range to avoid misuse
 EDGE_FLOOR = float(np.clip(EDGE_FLOOR, 0.0, 1.5))
 
-DEFAULT_CACHE_PATH = os.path.join("cache", "fx_plnjpy.json")
+DEFAULT_CACHE_PATH = os.path.join("scripts", "quant", "cache", "fx_plnjpy.json")
 
 # ============================================================================
 # UPGRADE #3: Display Price Inertia (Presentation-Only)
@@ -4059,7 +4059,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--assets", type=str, default=",".join(DEFAULT_ASSET_UNIVERSE), help="Comma-separated Yahoo symbols or friendly names. Metals, FX and USD/EUR/GBP/JPY/CAD/DKK/KRW assets are converted to PLN.")
     p.add_argument("--json", type=str, default=None)
     p.add_argument("--csv", type=str, default=None)
-    p.add_argument("--cache-json", type=str, default=DEFAULT_CACHE_PATH, help="Path to auto-write cache JSON (default cache/fx_plnjpy.json)")
+    p.add_argument("--cache-json", type=str, default=DEFAULT_CACHE_PATH, help="Path to auto-write cache JSON (default scripts/quant/cache/fx_plnjpy.json)")
     p.add_argument("--from-cache", action="store_true", help="Render tables from cache JSON and skip computation")
     p.add_argument("--simple", action="store_true", help="Print an easy-to-read summary with simple explanations.")
     p.add_argument("--t_map", action="store_true", help="Use Student-t mapping based on realized kurtosis for probabilities (default on).")

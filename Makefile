@@ -56,7 +56,7 @@ bagger50: .venv/.deps_installed
 	@.venv/bin/python top50_revenue_growth.py --sort_by bagger $(ARGS)
 
 fx-plnjpy: .venv/.deps_installed
-	@.venv/bin/python scripts/fx_pln_jpy_signals.py $(ARGS) --cache-json cache/fx_plnjpy.json
+	@.venv/bin/python scripts/fx_pln_jpy_signals.py $(ARGS) --cache-json scripts/quant/cache/fx_plnjpy.json
 
 # Diagnostics and validation convenience targets for FX signals
 fx-diagnostics: .venv/.deps_installed

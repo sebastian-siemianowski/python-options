@@ -42,6 +42,7 @@ from scripts.fx_data_utils import (
     DEFAULT_ASSET_UNIVERSE,
     download_prices_bulk,
     PRICE_CACHE_DIR_PATH,
+    reset_symbol_tables,
 )
 
 # Global console for rich output
@@ -252,6 +253,9 @@ def bulk_download_n_times(
     Individual fallback only happens on the final pass for any remaining symbols.
     Each pass downloads ALL symbols to ensure reliability.
     """
+    # Reset symbol tables to prevent duplicates from previous runs
+    reset_symbol_tables()
+    
     if not symbols:
         if not quiet:
             console.print("[yellow]No symbols to download.[/yellow]")
