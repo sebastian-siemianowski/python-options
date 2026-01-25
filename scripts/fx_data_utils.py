@@ -1338,7 +1338,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "QQQO",  # IS Nasdaq 100 Options
     "R3NK.DE",  # Renk Group AG
     "REGN",  # Regeneron Pharmaceuticals
-    "RHM",   # Rheinmetall AG
+    "RHM.DE",   # Rheinmetall AG
     "RKLB",  # Rocket Lab Corp
     "SAABY", # Saab AB Unsponsored ADR
     "SAF",   # Safran SA
