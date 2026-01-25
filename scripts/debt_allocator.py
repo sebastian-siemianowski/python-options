@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from enum import IntEnum
@@ -1280,7 +1281,8 @@ def _compute_dynamic_alpha(
 
 def _run_inference(
     log_returns: pd.Series,
-    lookback_days: int = 252
+    lookback_days: int = 252,
+    random_seed: int = 42
 ) -> Tuple[ObservationVector, StatePosterior, List[ObservationVector]]:
     """
     Run latent state inference on the full history.
@@ -1288,10 +1290,15 @@ def _run_inference(
     Args:
         log_returns: Historical log returns
         lookback_days: Number of days for inference window
+        random_seed: Random seed for reproducibility (default: 42)
         
     Returns:
         Tuple of (current_observation, current_posterior, observation_history)
     """
+    # Freeze randomness for reproducibility
+    np.random.seed(random_seed)
+    random.seed(random_seed)
+    
     n_obs = len(log_returns)
     
     if n_obs < MIN_HISTORY_DAYS:
