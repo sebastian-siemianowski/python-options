@@ -21,9 +21,19 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
+
+# Rich imports for beautiful UX
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, MofNCompleteColumn
+from rich.table import Table
+from rich.text import Text
+from rich.live import Live
+from rich.layout import Layout
+from rich import box
 
 # Ensure parent directory is in path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,43 +44,94 @@ from scripts.fx_data_utils import (
     PRICE_CACHE_DIR_PATH,
 )
 
+# Global console for rich output
+console = Console()
+
+
+def create_header_panel(days: int, retries: int, batch_size: int, workers: int) -> Panel:
+    """Create a beautiful header panel with configuration info."""
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Key", style="cyan")
+    table.add_column("Value", style="white")
+    
+    table.add_row("📁 Cache", str(PRICE_CACHE_DIR_PATH))
+    table.add_row("📅 Days to trim", str(days))
+    table.add_row("🔄 Download passes", f"{retries} (always runs all)")
+    table.add_row("📦 Batch size", str(batch_size))
+    table.add_row("👷 Workers", str(workers))
+    
+    return Panel(
+        table,
+        title="[bold cyan]📊 Price Data Refresh[/bold cyan]",
+        border_style="cyan",
+        padding=(1, 2),
+    )
+
 
 def trim_last_n_days(days: int = 5, quiet: bool = False) -> int:
     """Remove the last N days of data from all cached CSV files."""
     if not PRICE_CACHE_DIR_PATH.exists():
         if not quiet:
-            print(f"Cache directory does not exist: {PRICE_CACHE_DIR_PATH}")
+            console.print(f"[yellow]Cache directory does not exist:[/yellow] {PRICE_CACHE_DIR_PATH}")
         return 0
     
     cutoff_date = datetime.now().date() - timedelta(days=days)
     files_modified = 0
     
     csv_files = list(PRICE_CACHE_DIR_PATH.glob("*.csv"))
-    if not quiet:
-        print(f"Trimming last {days} days (before {cutoff_date}) from {len(csv_files)} cache files...")
     
-    for csv_path in csv_files:
-        try:
-            df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-            if df.empty:
-                continue
+    if not quiet:
+        console.print()
+        console.print(f"[bold]Step 1:[/bold] Trimming last [cyan]{days}[/cyan] days from [cyan]{len(csv_files)}[/cyan] cache files...")
+        console.print(f"[dim]Cutoff date: {cutoff_date}[/dim]")
+    
+    if not quiet and csv_files:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=40),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("[cyan]Trimming files...", total=len(csv_files))
             
-            original_len = len(df)
-            df_trimmed = df[df.index.date < cutoff_date]
-            
-            if len(df_trimmed) < original_len:
-                df_trimmed.to_csv(csv_path)
-                files_modified += 1
-                if not quiet:
-                    removed = original_len - len(df_trimmed)
-                    print(f"  {csv_path.stem}: removed {removed} rows")
+            for csv_path in csv_files:
+                try:
+                    df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+                    if df.empty:
+                        progress.advance(task)
+                        continue
                     
-        except Exception as e:
-            if not quiet:
-                print(f"  Warning: Could not process {csv_path.name}: {e}")
-    
-    if not quiet:
-        print(f"Modified {files_modified} files")
+                    original_len = len(df)
+                    df_trimmed = df[df.index.date < cutoff_date]
+                    
+                    if len(df_trimmed) < original_len:
+                        df_trimmed.to_csv(csv_path)
+                        files_modified += 1
+                        
+                except Exception:
+                    pass
+                
+                progress.advance(task)
+        
+        console.print(f"  [green]✓[/green] Modified [bold]{files_modified}[/bold] files")
+    else:
+        for csv_path in csv_files:
+            try:
+                df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+                if df.empty:
+                    continue
+                
+                original_len = len(df)
+                df_trimmed = df[df.index.date < cutoff_date]
+                
+                if len(df_trimmed) < original_len:
+                    df_trimmed.to_csv(csv_path)
+                    files_modified += 1
+                    
+            except Exception:
+                pass
     
     return files_modified
 
@@ -89,6 +150,95 @@ def get_all_symbols() -> List[str]:
     return list(dict.fromkeys(all_symbols + fx_pairs))
 
 
+class DownloadProgressTracker:
+    """Track download progress for Rich live display."""
+    
+    def __init__(self, total_symbols: int, num_passes: int):
+        self.total_symbols = total_symbols
+        self.num_passes = num_passes
+        self.current_pass = 0
+        self.cached_count = 0
+        self.total_need = 0
+        self.fetched_count = 0
+        self.from_cache = 0
+        self.chunks_total = 0
+        self.last_successful = 0
+        self.last_failed = 0
+        self.pass_results: List[tuple] = []  # (successful, failed) per pass
+        
+    def start_pass(self, pass_num: int):
+        self.current_pass = pass_num
+        self.fetched_count = 0
+        
+    def update_bulk_info(self, uncached: int, from_cache: int, chunks: int):
+        self.total_need = uncached
+        self.from_cache = from_cache
+        self.chunks_total = chunks
+        
+    def update_progress(self, fetched: int):
+        self.fetched_count = fetched
+        
+    def end_pass(self, successful: int, failed: int):
+        self.last_successful = successful
+        self.last_failed = failed
+        self.pass_results.append((successful, failed))
+        
+    def create_display(self) -> Panel:
+        """Create a rich panel showing current progress."""
+        # Main progress table
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("", width=25)
+        table.add_column("", width=50)
+        
+        # Pass progress bar
+        pass_pct = (self.current_pass / self.num_passes) * 100 if self.num_passes > 0 else 0
+        pass_bar = self._make_bar(pass_pct, 30, "cyan")
+        table.add_row(
+            f"[bold]Pass Progress[/bold]",
+            f"{pass_bar} [cyan]{self.current_pass}/{self.num_passes}[/cyan]"
+        )
+        
+        # Download progress bar (within current pass)
+        if self.total_need > 0:
+            dl_pct = (self.fetched_count / self.total_need) * 100
+            dl_bar = self._make_bar(dl_pct, 30, "green")
+            table.add_row(
+                f"[bold]Download Progress[/bold]",
+                f"{dl_bar} [green]{self.fetched_count}/{self.total_need}[/green]"
+            )
+        
+        # Stats
+        table.add_row("", "")
+        table.add_row("[dim]From cache:[/dim]", f"[yellow]{self.from_cache}[/yellow]")
+        table.add_row("[dim]Chunks:[/dim]", f"[yellow]{self.chunks_total}[/yellow]")
+        
+        # Pass history
+        if self.pass_results:
+            table.add_row("", "")
+            history_parts = []
+            for i, (s, f) in enumerate(self.pass_results, 1):
+                if f == 0:
+                    history_parts.append(f"[green]P{i}:✓{s}[/green]")
+                else:
+                    history_parts.append(f"[yellow]P{i}:{s}✓/{f}✗[/yellow]")
+            table.add_row("[dim]History:[/dim]", " ".join(history_parts))
+        
+        is_final = self.current_pass == self.num_passes
+        title_suffix = " [yellow](final - with fallback)[/yellow]" if is_final else ""
+        
+        return Panel(
+            table,
+            title=f"[bold cyan]🔄 Pass {self.current_pass}/{self.num_passes}[/bold cyan]{title_suffix}",
+            border_style="cyan",
+        )
+    
+    def _make_bar(self, pct: float, width: int, color: str) -> str:
+        """Create a text-based progress bar."""
+        filled = int((pct / 100) * width)
+        empty = width - filled
+        return f"[{color}]{'█' * filled}[/{color}][dim]{'░' * empty}[/dim]"
+
+
 def bulk_download_n_times(
     symbols: List[str],
     num_passes: int = 5,
@@ -104,7 +254,7 @@ def bulk_download_n_times(
     """
     if not symbols:
         if not quiet:
-            print("No symbols to download.")
+            console.print("[yellow]No symbols to download.[/yellow]")
         return 0
     
     end_date = datetime.now().date()
@@ -116,19 +266,65 @@ def bulk_download_n_times(
     last_failed_count = len(all_symbols)
     last_failed_symbols = all_symbols.copy()
     
+    # Create progress tracker
+    tracker = DownloadProgressTracker(len(all_symbols), num_passes)
+    
+    # Custom log function that updates tracker
+    def rich_log(msg: str):
+        # Parse the log message to extract progress info
+        if "Bulk download:" in msg:
+            # Parse: "Bulk download: X uncached, Y from cache, Z chunk(s)"
+            try:
+                parts = msg.split(",")
+                uncached = int(parts[0].split(":")[1].strip().split()[0])
+                from_cache = int(parts[1].strip().split()[0])
+                chunks = int(parts[2].strip().split()[0])
+                tracker.update_bulk_info(uncached, from_cache, chunks)
+            except Exception:
+                pass
+        elif "Cached" in msg and "/" in msg:
+            # Parse: "✓ Cached X/Y (Z%) so far"
+            try:
+                # Extract X from "Cached X/Y"
+                cached_part = msg.split("Cached")[1].strip()
+                fetched = int(cached_part.split("/")[0])
+                tracker.update_progress(fetched)
+                # Update progress bar
+                if progress_ctx and progress_task is not None:
+                    progress_ctx.update(progress_task, completed=fetched)
+            except Exception:
+                pass
+    
     # Run num_passes bulk-only passes (no individual fallback)
     for pass_num in range(1, num_passes + 1):
         is_final_pass = (pass_num == num_passes)
+        tracker.start_pass(pass_num)
         
         if not quiet:
-            print(f"\n{'='*60}")
-            print(f"Bulk download pass {pass_num}/{num_passes}" + (" (final - with individual fallback)" if is_final_pass else " (bulk only)"))
-            print(f"Downloading {len(all_symbols)} symbols...")
-            print(f"{'='*60}")
-        
-        log_fn = None if quiet else print
+            console.print()
+            is_final_str = " [yellow](final - with individual fallback)[/yellow]" if is_final_pass else " [dim](bulk only)[/dim]"
+            console.print(Panel(
+                f"Downloading [cyan]{len(all_symbols)}[/cyan] symbols...",
+                title=f"[bold]🔄 Pass {pass_num}/{num_passes}[/bold]{is_final_str}",
+                border_style="blue",
+            ))
         
         try:
+            # Create progress bar for this pass
+            if not quiet:
+                progress_ctx = Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(bar_width=40),
+                    TextColumn("[green]{task.completed}/{task.total}[/green]"),
+                    TextColumn("[cyan]({task.percentage:>5.1f}%)[/cyan]"),
+                    TimeElapsedColumn(),
+                    console=console,
+                    transient=False,
+                )
+                progress_ctx.start()
+                progress_task = progress_ctx.add_task("[cyan]Initializing...[/cyan]", total=len(all_symbols))
+            
             # Skip individual fallback on all passes except the last one
             results = download_prices_bulk(
                 symbols=all_symbols,
@@ -136,9 +332,12 @@ def bulk_download_n_times(
                 end=end_str,
                 chunk_size=batch_size,
                 progress=not quiet,
-                log_fn=log_fn,
-                skip_individual_fallback=not is_final_pass,  # Only allow individual fallback on final pass
+                log_fn=rich_log if not quiet else None,
+                skip_individual_fallback=not is_final_pass,
             )
+            
+            if not quiet and progress_ctx:
+                progress_ctx.stop()
             
             failed_symbols = []
             for sym in all_symbols:
@@ -149,36 +348,89 @@ def bulk_download_n_times(
             last_failed_count = len(failed_symbols)
             last_failed_symbols = failed_symbols
             
-            if not quiet:
-                print(f"\nPass {pass_num} results: {successful}/{len(all_symbols)} successful, {last_failed_count} failed")
+            tracker.end_pass(successful, last_failed_count)
             
-            # Wait 5 seconds between passes to avoid rate limiting
+            if not quiet:
+                console.print()  # Line break after progress bar
+                # Show pass results
+                if last_failed_count == 0:
+                    console.print(f"  [green]✓[/green] Pass {pass_num}: [green]{successful}/{len(all_symbols)} successful[/green] — [bold green]All complete![/bold green]")
+                else:
+                    console.print(f"  [yellow]⚡[/yellow] Pass {pass_num}: [green]{successful}[/green] successful, [yellow]{last_failed_count}[/yellow] pending")
+            
+            # Wait between passes (with countdown)
             if pass_num < num_passes:
                 if not quiet:
-                    print(f"Waiting 5 seconds before next pass...")
-                time.sleep(5)
+                    wait_time = 5
+                    with Progress(
+                        SpinnerColumn(),
+                        TextColumn("[dim]Waiting before next pass...[/dim]"),
+                        BarColumn(bar_width=20),
+                        TextColumn("[cyan]{task.completed}s/{task.total}s[/cyan]"),
+                        console=console,
+                        transient=True,
+                    ) as progress:
+                        task = progress.add_task("", total=wait_time)
+                        for i in range(wait_time):
+                            time.sleep(1)
+                            progress.update(task, completed=i + 1)
+                else:
+                    time.sleep(5)
                 
         except Exception as e:
+            # Stop progress bar on error
+            if not quiet and progress_ctx:
+                try:
+                    progress_ctx.stop()
+                except Exception:
+                    pass
             if not quiet:
-                print(f"Error during bulk download pass {pass_num}: {e}")
-            # Still wait before next pass even on error
+                console.print(f"[red]Error during bulk download pass {pass_num}:[/red] {e}")
+            tracker.end_pass(0, len(all_symbols))
             if pass_num < num_passes:
-                if not quiet:
-                    print(f"Waiting 5 seconds before next pass...")
                 time.sleep(5)
     
+    # Final summary
     if not quiet:
-        print(f"\n{'='*60}")
-        print(f"Completed {num_passes} download passes")
-        print(f"{'='*60}")
-        if last_failed_count == 0:
-            print(f"All {len(all_symbols)} symbols have data!")
-        else:
-            print(f"{last_failed_count} symbols may still have issues")
-            if last_failed_symbols:
-                print(f"Potentially incomplete: {', '.join(last_failed_symbols[:20])}")
-                if len(last_failed_symbols) > 20:
-                    print(f"  ... and {len(last_failed_symbols) - 20} more")
+        console.print()
+        
+        # Create summary table
+        summary_table = Table(
+            title="📊 Download Summary",
+            box=box.ROUNDED,
+            show_header=True,
+            header_style="bold cyan",
+        )
+        summary_table.add_column("Pass", justify="center", width=8)
+        summary_table.add_column("Successful", justify="right", style="green", width=12)
+        summary_table.add_column("Failed", justify="right", style="yellow", width=12)
+        summary_table.add_column("Status", justify="center", width=15)
+        
+        for i, (s, f) in enumerate(tracker.pass_results, 1):
+            status = "[green]✓ Complete[/green]" if f == 0 else f"[yellow]{f} pending[/yellow]"
+            summary_table.add_row(f"Pass {i}", str(s), str(f), status)
+        
+        # Add total row
+        total_successful = tracker.pass_results[-1][0] if tracker.pass_results else 0
+        total_failed = tracker.pass_results[-1][0] if tracker.pass_results else len(all_symbols)
+        summary_table.add_row(
+            "[bold]Final[/bold]",
+            f"[bold]{total_successful}[/bold]",
+            f"[bold]{last_failed_count}[/bold]",
+            "[bold green]✓ Done[/bold green]" if last_failed_count == 0 else f"[bold yellow]{last_failed_count} issues[/bold yellow]",
+            style="bold",
+        )
+        
+        console.print(summary_table)
+        
+        if last_failed_count > 0 and last_failed_symbols:
+            console.print()
+            console.print(f"[yellow]⚠️  {last_failed_count} symbols may have issues:[/yellow]")
+            # Show first 10 in a compact format
+            shown = last_failed_symbols[:10]
+            console.print(f"  [dim]{', '.join(shown)}[/dim]")
+            if len(last_failed_symbols) > 10:
+                console.print(f"  [dim]... and {len(last_failed_symbols) - 10} more[/dim]")
     
     return last_failed_count
 
@@ -198,33 +450,27 @@ def main():
     args = parser.parse_args()
 
     if not args.quiet:
-        print(f"{'='*60}")
-        print(f"Price Data Refresh")
-        print(f"{'='*60}")
-        print(f"Cache directory: {PRICE_CACHE_DIR_PATH}")
-        print(f"Days to trim: {args.days}")
-        print(f"Download passes: {args.retries} (always runs all)")
-        print(f"Batch size: {args.batch_size}")
-        print(f"Workers: {args.workers}")
-        print(f"{'='*60}")
+        console.print()
+        console.print(create_header_panel(args.days, args.retries, args.batch_size, args.workers))
 
     # Step 1: Trim last N days from cache
     if not args.skip_trim:
-        if not args.quiet:
-            print("\nStep 1: Trimming recent data from cache...")
         trim_last_n_days(days=args.days, quiet=args.quiet)
     else:
         if not args.quiet:
-            print("\nStep 1: Skipping trim (--skip-trim)")
+            console.print()
+            console.print(f"[bold]Step 1:[/bold] [dim]Skipping trim (--skip-trim)[/dim]")
 
     # Step 2: Get all symbols
     all_symbols = get_all_symbols()
     if not args.quiet:
-        print(f"\nStep 2: Found {len(all_symbols)} symbols to download")
+        console.print()
+        console.print(f"[bold]Step 2:[/bold] Found [cyan]{len(all_symbols)}[/cyan] symbols to download")
 
     # Step 3: Bulk download N times (always runs all passes)
     if not args.quiet:
-        print(f"\nStep 3: Running {args.retries} bulk download passes...")
+        console.print()
+        console.print(f"[bold]Step 3:[/bold] Running [cyan]{args.retries}[/cyan] bulk download passes...")
     
     failed_count = bulk_download_n_times(
         symbols=all_symbols,
@@ -236,9 +482,20 @@ def main():
     )
 
     if not args.quiet:
-        print(f"\n{'='*60}")
-        print(f"Refresh Complete - ran {args.retries} passes for {len(all_symbols)} symbols")
-        print(f"{'='*60}")
+        console.print()
+        if failed_count == 0:
+            console.print(Panel(
+                f"[green]All [bold]{len(all_symbols)}[/bold] symbols downloaded successfully![/green]",
+                title="[bold green]✅ Refresh Complete[/bold green]",
+                border_style="green",
+            ))
+        else:
+            console.print(Panel(
+                f"Completed {args.retries} passes for {len(all_symbols)} symbols\n"
+                f"[yellow]{failed_count} symbols may have issues[/yellow]",
+                title="[bold yellow]⚠️  Refresh Complete (with warnings)[/bold yellow]",
+                border_style="yellow",
+            ))
 
     sys.exit(0 if failed_count == 0 else 1)
 
