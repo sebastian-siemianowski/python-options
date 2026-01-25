@@ -129,8 +129,7 @@ clear:
 	@echo "Data cache cleared successfully!"
 
 stocks: .venv/.deps_installed
-	@echo "Downloading price data (5 passes for reliability)..."
-	@.venv/bin/python scripts/refresh_data.py --skip-trim --retries 5 --workers 2 --batch-size 16 $(ARGS)
+	@.venv/bin/python scripts/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
 	@$(MAKE) fx-plnjpy
 
 # Render from cached results only (no network/compute)
@@ -145,13 +144,11 @@ top20: .venv/.deps_installed
 
 # Precache securities data (full history) - runs 5 download passes for reliability
 data: .venv/.deps_installed
-	@echo "Downloading price data (5 passes for reliability)..."
-	@.venv/bin/python scripts/refresh_data.py --skip-trim --retries 5 --workers 2 --batch-size 16 $(ARGS)
+	@.venv/bin/python scripts/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
 
 # Refresh data: delete last 5 days from cache, then bulk re-download 5 times
 refresh: .venv/.deps_installed
-	@echo "Refreshing price data (trim last 5 days, then 5 download passes)..."
-	@.venv/bin/python scripts/refresh_data.py --days 5 --retries 5 --workers 2 --batch-size 16 $(ARGS)
+	@.venv/bin/python scripts/refresh_data.py --days 5 --retries 5 --workers 12 --batch-size 16 $(ARGS)
 
 four:
 	@if [ ! -f scripts/quant/cache/kalman_q_cache.json ]; then \

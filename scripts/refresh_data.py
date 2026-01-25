@@ -243,7 +243,7 @@ def bulk_download_n_times(
     symbols: List[str],
     num_passes: int = 5,
     batch_size: int = 16,
-    workers: int = 2,
+    workers: int = 12,
     years: int = 10,
     quiet: bool = False,
 ) -> int:
@@ -269,8 +269,13 @@ def bulk_download_n_times(
     # Create progress tracker
     tracker = DownloadProgressTracker(len(all_symbols), num_passes)
     
-    # Custom log function that updates tracker
+    # For live progress display - declared here so rich_log can access them
+    progress_ctx: Optional[Progress] = None
+    progress_task = None
+    
+    # Custom log function that updates progress bar
     def rich_log(msg: str):
+        nonlocal progress_ctx, progress_task
         # Parse the log message to extract progress info
         if "Bulk download:" in msg:
             # Parse: "Bulk download: X uncached, Y from cache, Z chunk(s)"
@@ -280,6 +285,14 @@ def bulk_download_n_times(
                 from_cache = int(parts[1].strip().split()[0])
                 chunks = int(parts[2].strip().split()[0])
                 tracker.update_bulk_info(uncached, from_cache, chunks)
+                # Update progress bar description and total
+                if progress_ctx is not None and progress_task is not None:
+                    if uncached > 0:
+                        progress_ctx.update(progress_task, total=uncached, completed=0,
+                                           description=f"[cyan]Downloading ({from_cache} cached, {chunks} chunks, {workers} workers)...[/cyan]")
+                    else:
+                        progress_ctx.update(progress_task, total=from_cache, completed=from_cache,
+                                           description=f"[green]All {from_cache} symbols from cache![/green]")
             except Exception:
                 pass
         elif "Cached" in msg and "/" in msg:
@@ -290,7 +303,7 @@ def bulk_download_n_times(
                 fetched = int(cached_part.split("/")[0])
                 tracker.update_progress(fetched)
                 # Update progress bar
-                if progress_ctx and progress_task is not None:
+                if progress_ctx is not None and progress_task is not None:
                     progress_ctx.update(progress_task, completed=fetched)
             except Exception:
                 pass
@@ -304,7 +317,7 @@ def bulk_download_n_times(
             console.print()
             is_final_str = " [yellow](final - with individual fallback)[/yellow]" if is_final_pass else " [dim](bulk only)[/dim]"
             console.print(Panel(
-                f"Downloading [cyan]{len(all_symbols)}[/cyan] symbols...",
+                f"Processing [cyan]{len(all_symbols)}[/cyan] symbols (cached will be skipped)...",
                 title=f"[bold]🔄 Pass {pass_num}/{num_passes}[/bold]{is_final_str}",
                 border_style="blue",
             ))
@@ -323,7 +336,7 @@ def bulk_download_n_times(
                     transient=False,
                 )
                 progress_ctx.start()
-                progress_task = progress_ctx.add_task("[cyan]Initializing...[/cyan]", total=len(all_symbols))
+                progress_task = progress_ctx.add_task("[cyan]Checking cache...[/cyan]", total=len(all_symbols))
             
             # Skip individual fallback on all passes except the last one
             results = download_prices_bulk(
@@ -334,9 +347,10 @@ def bulk_download_n_times(
                 progress=not quiet,
                 log_fn=rich_log if not quiet else None,
                 skip_individual_fallback=not is_final_pass,
+                max_workers=workers,
             )
             
-            if not quiet and progress_ctx:
+            if not quiet and progress_ctx is not None:
                 progress_ctx.stop()
             
             failed_symbols = []

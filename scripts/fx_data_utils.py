@@ -2961,7 +2961,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     return pd.DataFrame()
 
 
-def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False) -> Dict[str, pd.Series]:
+def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False, max_workers: int = 12) -> Dict[str, pd.Series]:
     """Download multiple symbols in chunks to reduce rate limiting.
     Uses yf.download with list input; falls back to per-symbol for failures.
     Populates the local price cache so subsequent single fetches reuse data.
@@ -3007,18 +3007,26 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         primary_to_originals.setdefault(primary, []).append(orig)
 
     # Try cached first for all primaries
+    # Use _load_disk_prices directly to bypass staleness checks - we just want to know
+    # if we have data for this symbol at all (from previous pass or existing cache)
     satisfied_primaries: Set[str] = set()
     for primary, orig_list in list(primary_to_originals.items()):
-        cached = _get_cached_prices(primary, start, end)
-        if cached is not None and not cached.empty:
-            # Use standardized price extraction
-            ser = get_price_series(cached, "Close")
-            if not ser.empty:
-                ser.name = "px"
-                for orig in orig_list:
-                    result[orig] = ser
-                cached_hits += 1
-                satisfied_primaries.add(primary)
+        disk = _load_disk_prices(primary)
+        if disk is not None and not disk.empty:
+            # Filter to requested date range
+            if start:
+                disk = disk[disk.index >= pd.to_datetime(start)]
+            if end:
+                disk = disk[disk.index <= pd.to_datetime(end)]
+            if not disk.empty:
+                # Use standardized price extraction
+                ser = get_price_series(disk, "Close")
+                if not ser.empty:
+                    ser.name = "px"
+                    for orig in orig_list:
+                        result[orig] = ser
+                    cached_hits += 1
+                    satisfied_primaries.add(primary)
 
     remaining_primaries = [p for p in primary_to_originals if p not in satisfied_primaries]
 
@@ -3064,9 +3072,9 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
 
     chunks = [remaining_primaries[i:i + chunk_size] for i in range(0, len(remaining_primaries), chunk_size) if remaining_primaries[i:i + chunk_size]]
     if log and chunks:
-        log(f"  Launching {len(chunks)} chunk(s) in parallel…")
+        log(f"  Launching {len(chunks)} chunk(s) with {min(max_workers, len(chunks))} workers…")
 
-    with ThreadPoolExecutor(max_workers=min(12, max(1, len(chunks)))) as ex:
+    with ThreadPoolExecutor(max_workers=min(max_workers, max(1, len(chunks)))) as ex:
         future_map = {ex.submit(_download_chunk, c): c for c in chunks}
         for fut in as_completed(future_map):
             chunk_syms = future_map[fut]
