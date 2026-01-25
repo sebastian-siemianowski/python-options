@@ -3017,12 +3017,25 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         primary_to_originals.setdefault(primary, []).append(orig)
 
     # Try cached first for all primaries
-    # Use _load_disk_prices directly to bypass staleness checks - we just want to know
-    # if we have data for this symbol at all (from previous pass or existing cache)
+    # Check if cached data covers the requested date range (especially the end date)
     satisfied_primaries: Set[str] = set()
+    
+    # Determine the target end date for staleness check
+    if end:
+        target_end = pd.to_datetime(end).date()
+    else:
+        target_end = datetime.now().date()
+    
     for primary, orig_list in list(primary_to_originals.items()):
         disk = _load_disk_prices(primary)
         if disk is not None and not disk.empty:
+            # Check if cache is stale (doesn't extend close enough to the target end date)
+            cache_max_date = pd.to_datetime(disk.index.max()).date()
+            # Allow 3 days buffer for weekends/holidays, but require recent data
+            if (target_end - cache_max_date).days > 3:
+                # Cache is stale - need to re-download
+                continue
+            
             # Filter to requested date range
             if start:
                 disk = disk[disk.index >= pd.to_datetime(start)]
