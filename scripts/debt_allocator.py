@@ -290,7 +290,7 @@ def _load_eurjpy_prices(data_path: str = EURJPY_DATA_FILE, force_refresh: bool =
             print(f"[debt_allocator] Downloading fresh EURJPY data...")
             
             ticker = yf.Ticker("EURJPY=X")
-            df = ticker.history(period="10y")
+            df = ticker.history(period="max")  # Get maximum available history (>10 years)
             
             if df is not None and not df.empty and 'Close' in df.columns:
                 df_save = df.reset_index()
