@@ -315,6 +315,12 @@ MIN_HYVARINEN_SAMPLES = 100
 # 0.05 provides good balance between stability and discrimination
 DEFAULT_ENTROPY_LAMBDA = 0.05
 
+# Minimum weight fraction for entropy floor (prevents belief collapse)
+# Total mass allocated uniformly across all models as a floor
+# 0.01 = 1% total mass to uniform, each model gets at least 0.01/n_models weight
+# This prevents overconfident allocations during regime transitions
+DEFAULT_MIN_WEIGHT_FRACTION = 0.01
+
 
 def load_asset_list(assets_arg: Optional[str], assets_file: Optional[str]) -> List[str]:
     """Load list of assets from command-line argument or file."""
@@ -2247,18 +2253,24 @@ def robust_standardize_scores(
     This ensures BIC and Hyvärinen can be meaningfully combined without
     one dominating due to raw scale differences.
     
+    The MAD is scaled by 1.4826 to be consistent with standard deviation
+    for Gaussian data: MAD * 1.4826 ≈ σ for N(μ, σ²).
+    
     Why median/MAD:
     - Robust to Hyvärinen spikes
     - Stable in low-n regimes
-    - No Gaussian assumptions
+    - No Gaussian assumptions (but calibrated to be consistent with σ)
     
     Args:
         scores: Dictionary mapping model name to raw score
         eps: Small constant to prevent division by zero
         
     Returns:
-        Dictionary of standardized scores (zero median, unit MAD)
+        Dictionary of standardized scores (zero median, unit scale)
     """
+    # Gaussian consistency factor: MAD * 1.4826 ≈ σ for normal distributions
+    MAD_CONSISTENCY_FACTOR = 1.4826
+    
     # Extract finite values only
     finite_items = [(k, v) for k, v in scores.items() if np.isfinite(v)]
     
@@ -2276,8 +2288,9 @@ def robust_standardize_scores(
     median = np.median(values)
     mad = np.median(np.abs(values - median))
     
-    # Ensure non-zero scale
-    scale = mad if mad > eps else eps
+    # Scale MAD to be consistent with standard deviation
+    # This ensures proper weighting when combining BIC (O(n)) with Hyvärinen (O(1))
+    scale = mad * MAD_CONSISTENCY_FACTOR if mad > eps else eps
     
     # Standardize all scores
     standardized = {}
@@ -2293,21 +2306,30 @@ def robust_standardize_scores(
 def entropy_regularized_weights(
     standardized_scores: Dict[str, float],
     lambda_entropy: float = DEFAULT_ENTROPY_LAMBDA,
+    min_weight_fraction: float = DEFAULT_MIN_WEIGHT_FRACTION,
     eps: float = 1e-10
 ) -> Dict[str, float]:
     """
-    Compute entropy-regularized model weights via softmax.
+    Compute entropy-regularized model weights via softmax with entropy floor.
     
     Solves the optimization problem:
         min_w Σ_m w_m * S̃_m + λ Σ_m w_m * log(w_m)
-        s.t. Σ_m w_m = 1
+        s.t. Σ_m w_m = 1, w_m ≥ min_weight
     
-    The closed-form solution is softmax with temperature = λ:
+    The closed-form solution (without floor) is softmax with temperature = λ:
         w_m ∝ exp(-S̃_m / λ)
+    
+    We then apply an entropy floor to prevent belief collapse:
+        w_m = max(w_m, min_weight_fraction / n_models)
+    
+    This ensures that even dominated models retain some probability mass,
+    preventing overconfident allocations during regime transitions or
+    when models happen to agree.
     
     Benefits:
     - Prevents premature posterior collapse in low-evidence regimes
     - Smooth weight transitions as evidence accumulates
+    - Entropy floor prevents overconfident allocations
     - Convex, stable, deterministic
     
     Args:
@@ -2315,6 +2337,8 @@ def entropy_regularized_weights(
         lambda_entropy: Entropy regularization strength (0.05 = balanced)
                        Higher = more uniform weights
                        Lower = sharper weights
+        min_weight_fraction: Minimum total mass allocated to uniform (0.01 = 1%)
+                            Each model gets at least min_weight_fraction / n_models
         eps: Small constant to prevent zero weights
         
     Returns:
@@ -2330,6 +2354,7 @@ def entropy_regularized_weights(
     
     keys = [k for k, _ in finite_items]
     scores = np.array([v for _, v in finite_items], dtype=float)
+    n_models = len(keys)
     
     # Softmax with entropy temperature
     # Lower score = better, so we negate scores in the softmax
@@ -2343,6 +2368,21 @@ def entropy_regularized_weights(
     weights = np.exp(logits)
     weights = np.maximum(weights, eps)  # Prevent exact zeros
     weights = weights / weights.sum()  # Normalize
+    
+    # =========================================================================
+    # ENTROPY FLOOR: Prevent belief collapse
+    # =========================================================================
+    # Ensure each model has at least min_weight_fraction / n_models weight.
+    # This prevents overconfident allocations when score differences are large.
+    # 
+    # Example: with min_weight_fraction=0.01 and 3 models:
+    #   - Each model gets at least 0.33% weight
+    #   - Total "floor mass" is 1%
+    #   - Remaining 99% is distributed according to softmax
+    # =========================================================================
+    min_weight_per_model = min_weight_fraction / max(n_models, 1)
+    weights = np.maximum(weights, min_weight_per_model)
+    weights = weights / weights.sum()  # Re-normalize after floor
     
     # Build result dict
     result = dict(zip(keys, weights))

@@ -3090,10 +3090,11 @@ def run_regime_specific_mc(
 def compute_model_posteriors_from_combined_score(
     models: Dict[str, Dict],
     temperature: float = 1.0,
+    min_weight_fraction: float = 0.01,
     epsilon: float = 1e-10,
 ) -> Tuple[Dict[str, float], Dict]:
     """
-    Convert combined scores into normalized posterior weights.
+    Convert combined scores into normalized posterior weights with entropy floor.
     
     This is the EPISTEMIC WEIGHTING step that ensures Hyvärinen scores
     directly influence signal generation.
@@ -3106,10 +3107,17 @@ def compute_model_posteriors_from_combined_score(
     To get normalized posteriors we use softmax over NEGATED scores:
         p(m) = exp(-combined_score_m / T) / Σ_k exp(-combined_score_k / T)
     
+    An entropy floor is applied to prevent belief collapse:
+        w_m = max(w_m, min_weight_fraction / n_models)
+    
+    This ensures dominated models retain some probability mass, preventing
+    overconfident allocations during regime transitions.
+    
     Args:
         models: Dictionary mapping model_name -> model_params dict
                 Each model_params must have 'combined_score'
         temperature: Softmax temperature (1.0 = standard, <1 = sharper, >1 = smoother)
+        min_weight_fraction: Minimum total mass to uniform (0.01 = 1%)
         epsilon: Small constant to prevent zero weights
         
     Returns:
@@ -3120,6 +3128,7 @@ def compute_model_posteriors_from_combined_score(
     metadata = {
         "method": "combined",
         "temperature": temperature,
+        "min_weight_fraction": min_weight_fraction,
     }
     
     # Extract valid models with combined scores
@@ -3140,6 +3149,7 @@ def compute_model_posteriors_from_combined_score(
     # Convert to arrays for softmax
     model_names = list(valid_models.keys())
     scores = np.array([valid_models[m] for m in model_names])
+    n_models = len(model_names)
     
     # Softmax over NEGATED scores (lower score = better = higher weight)
     # With numerical stabilization
@@ -3149,6 +3159,17 @@ def compute_model_posteriors_from_combined_score(
     weights = np.exp(neg_scores)
     weights = np.maximum(weights, epsilon)
     weights = weights / weights.sum()
+    
+    # =========================================================================
+    # ENTROPY FLOOR: Prevent belief collapse
+    # =========================================================================
+    # Ensure each model has at least min_weight_fraction / n_models weight.
+    # This prevents overconfident allocations during regime transitions or
+    # when models happen to agree on similar scores.
+    # =========================================================================
+    min_weight_per_model = min_weight_fraction / max(n_models, 1)
+    weights = np.maximum(weights, min_weight_per_model)
+    weights = weights / weights.sum()  # Re-normalize after floor
     
     return dict(zip(model_names, weights)), metadata
 
