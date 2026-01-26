@@ -55,6 +55,28 @@ For EACH regime r:
     6. Applies hierarchical shrinkage toward global (optional)
 
 -------------------------------------------------------------------------------
+φ SHRINKAGE PRIOR (AR(1) COEFFICIENT REGULARIZATION)
+
+Models with autoregressive drift (Phi-Gaussian, Phi-Student-t) include an
+explicit Gaussian shrinkage prior on φ:
+
+    φ_r ~ N(φ_global, τ²)
+    
+    log p(φ_r) = -0.5 * (φ_r - φ_global)² / τ²
+
+Where:
+    φ_global = 0 (shrinkage toward full mean reversion)
+    τ = 1/√(2λ_effective)  where λ_effective = 0.05 * prior_scale
+
+This prior:
+    - Prevents unit-root instability (φ → 1)
+    - Stabilizes small-sample estimation
+    - Is numerically equivalent to legacy implicit regularization
+    - Is explicitly auditable via phi_prior_logp diagnostics
+
+See PHI_SHRINKAGE_* constants and phi_shrinkage_log_prior() for implementation.
+
+-------------------------------------------------------------------------------
 HIERARCHICAL FALLBACK
 
 When regime r has insufficient samples:
@@ -274,6 +296,183 @@ MODEL_CLASS_N_PARAMS = {
 # =============================================================================
 
 STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
+
+# =============================================================================
+# φ SHRINKAGE PRIOR — EXPLICIT GAUSSIAN PRIOR FOR AR(1) COEFFICIENT
+# =============================================================================
+# φ (phi) is the AR(1) mean-reversion parameter in Phi-Gaussian and Phi-Student-t
+# models. It controls drift persistence: φ=1 is unit root (random walk), φ=0 is
+# full mean reversion.
+#
+# PROBLEM: φ is weakly identified in small samples and highly unstable near unit
+# root. Unconstrained MLE leads to spurious mean reversion or explosive estimates.
+#
+# SOLUTION: Gaussian shrinkage prior toward φ_global (typically 0):
+#
+#     φ_r ~ N(φ_global, τ²)
+#
+#     log p(φ_r) = -0.5 * (φ_r - φ_global)² / τ²
+#
+# The prior is added to the log-likelihood in the optimization objective.
+#
+# MAPPING FROM LEGACY λ TO τ:
+#     The legacy regularization used: λ * (φ_r - φ_global)²
+#     This is equivalent to the Gaussian prior when: τ = 1 / √(2λ)
+#
+# NUMERICAL SAFETY:
+#     - τ must be bounded below to prevent division instability
+#     - φ_global must be finite
+#     - φ bounds in optimizer remain unchanged (safety net)
+#
+# AUDITABILITY:
+#     - Prior contribution is logged separately in diagnostics
+#     - Enables future contributors to understand and modify shrinkage
+#     - Prevents accidental removal of regularization
+#
+# CONTRACT:
+#     - _select_regime_params() remains unchanged
+#     - bayesian_model_average_mc() unchanged
+#     - Signal dataclasses receive phi_used exactly as before
+#     - This change is purely epistemic (refactor, not behavioral change)
+# =============================================================================
+
+# Minimum τ to prevent numerical instability (division by τ²)
+PHI_SHRINKAGE_TAU_MIN = 1e-3
+
+# Default φ_global: center of shrinkage prior (0 = full mean reversion)
+PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
+
+# Default prior strength: τ corresponds to legacy λ=0.05 via τ = 1/√(2λ)
+# λ=0.05 → τ = 1/√(0.1) ≈ 3.16 (very weak prior, barely constrains φ)
+# We use the scaled version: λ_effective = 0.05 * prior_scale
+PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
+
+
+def phi_shrinkage_log_prior(
+    phi_r: float,
+    phi_global: float,
+    tau: float,
+    tau_min: float = PHI_SHRINKAGE_TAU_MIN
+) -> float:
+    """
+    Compute Gaussian shrinkage log-prior for φ (AR(1) coefficient).
+    
+    Implements:
+        log p(φ_r) = -0.5 * (φ_r - φ_global)² / τ²
+    
+    This prior shrinks regime-specific φ_r toward a global φ_global,
+    preventing unit-root instability and small-sample hallucinations.
+    
+    Args:
+        phi_r: Regime-specific AR(1) coefficient being evaluated
+        phi_global: Center of shrinkage prior (typically 0)
+        tau: Prior standard deviation (larger = weaker shrinkage)
+        tau_min: Minimum τ for numerical stability
+        
+    Returns:
+        Log-prior contribution (negative, to be ADDED to log-likelihood)
+        
+    Mathematical note:
+        If legacy code used λ*(φ-φ_g)², then τ = 1/√(2λ) gives equivalence.
+        
+    Safety:
+        - τ is clamped to tau_min to prevent division by zero
+        - Returns -inf if phi_global is not finite (should never happen)
+    """
+    # Safety: ensure τ is bounded below
+    tau_safe = max(tau, tau_min)
+    
+    # Safety: ensure phi_global is finite
+    if not np.isfinite(phi_global):
+        return float('-inf')
+    
+    # Gaussian log-prior (up to constant)
+    deviation = phi_r - phi_global
+    log_prior = -0.5 * (deviation ** 2) / (tau_safe ** 2)
+    
+    return log_prior
+
+
+def lambda_to_tau(lam: float, lam_min: float = 1e-12) -> float:
+    """
+    Convert legacy penalty weight λ to Gaussian prior std τ.
+    
+    Mapping derivation:
+        Legacy: penalty = λ * (φ - φ_g)²
+        Prior:  log p(φ) = -0.5 * (φ - φ_g)² / τ²
+        
+        Matching: λ = 0.5 / τ²  →  τ = 1 / √(2λ)
+    
+    Args:
+        lam: Legacy penalty weight λ
+        lam_min: Minimum λ to prevent division by zero
+        
+    Returns:
+        Equivalent Gaussian prior std τ
+    """
+    lam_safe = max(lam, lam_min)
+    return 1.0 / math.sqrt(2.0 * lam_safe)
+
+
+def tau_to_lambda(tau: float, tau_min: float = PHI_SHRINKAGE_TAU_MIN) -> float:
+    """
+    Convert Gaussian prior std τ to legacy penalty weight λ.
+    
+    Inverse of lambda_to_tau().
+    
+    Args:
+        tau: Gaussian prior std τ
+        tau_min: Minimum τ for numerical stability
+        
+    Returns:
+        Equivalent legacy penalty weight λ
+    """
+    tau_safe = max(tau, tau_min)
+    return 0.5 / (tau_safe ** 2)
+
+
+def compute_phi_prior_diagnostics(
+    phi_r: float,
+    phi_global: float,
+    tau: float,
+    log_likelihood: float
+) -> dict:
+    """
+    Compute diagnostic information for φ shrinkage prior.
+    
+    Args:
+        phi_r: Optimized regime-specific φ
+        phi_global: Center of shrinkage prior
+        tau: Prior standard deviation
+        log_likelihood: Log-likelihood contribution (without prior)
+        
+    Returns:
+        Dictionary with diagnostic fields:
+        - phi_prior_logp: Log-prior contribution
+        - phi_likelihood_logp: Log-likelihood (passed through)
+        - phi_prior_likelihood_ratio: |prior| / |likelihood| (if computable)
+        - phi_deviation_from_global: φ_r - φ_global
+        - phi_tau_used: τ value used
+    """
+    log_prior = phi_shrinkage_log_prior(phi_r, phi_global, tau)
+    
+    # Compute ratio if both are finite and non-zero
+    ratio = None
+    if np.isfinite(log_prior) and np.isfinite(log_likelihood):
+        abs_prior = abs(log_prior)
+        abs_ll = abs(log_likelihood)
+        if abs_ll > 1e-12:
+            ratio = abs_prior / abs_ll
+    
+    return {
+        'phi_prior_logp': float(log_prior) if np.isfinite(log_prior) else None,
+        'phi_likelihood_logp': float(log_likelihood) if np.isfinite(log_likelihood) else None,
+        'phi_prior_likelihood_ratio': float(ratio) if ratio is not None else None,
+        'phi_deviation_from_global': float(phi_r - phi_global),
+        'phi_tau_used': float(tau),
+        'phi_global_used': float(phi_global),
+    }
+
 
 # Default temporal smoothing alpha for model posterior evolution
 DEFAULT_TEMPORAL_ALPHA = 0.3
@@ -925,7 +1124,25 @@ class PhiGaussianDriftModel:
             log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
             log_c_target = np.log10(0.9)
             log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
-            log_prior_phi = -0.05 * prior_scale * (phi_clip ** 2)
+            
+            # =================================================================
+            # EXPLICIT φ SHRINKAGE PRIOR (Gaussian)
+            # =================================================================
+            # φ_r ~ N(φ_global, τ²) where φ_global = 0 (full mean reversion)
+            #
+            # Legacy form: -λ_φ * prior_scale * φ² where λ_φ = 0.05
+            # Explicit form: -0.5 * (φ - φ_global)² / τ²
+            #
+            # Mapping: τ = 1/√(2 * λ_φ * prior_scale)
+            # This maintains numerical equivalence with legacy behavior.
+            # =================================================================
+            phi_lambda_effective = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale
+            phi_tau = lambda_to_tau(phi_lambda_effective)
+            log_prior_phi = phi_shrinkage_log_prior(
+                phi_r=phi_clip,
+                phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+                tau=phi_tau
+            )
 
             penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty
             return -penalized_ll if np.isfinite(penalized_ll) else 1e12
@@ -1003,6 +1220,19 @@ class PhiGaussianDriftModel:
             phi_optimal = grid_best_phi
             ll_optimal = -best_neg_ll
 
+        # Compute φ shrinkage prior diagnostics for auditability
+        # Use same prior_scale as in optimization (based on typical n_obs)
+        n_obs_approx = len(returns)
+        prior_scale_diag = 1.0 / max(n_obs_approx, 100)
+        phi_lambda_eff_diag = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale_diag
+        phi_tau_diag = lambda_to_tau(phi_lambda_eff_diag)
+        phi_prior_diag = compute_phi_prior_diagnostics(
+            phi_r=phi_optimal,
+            phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+            tau=phi_tau_diag,
+            log_likelihood=ll_optimal
+        )
+
         diagnostics = {
             'grid_best_q': float(grid_best_q),
             'grid_best_c': float(grid_best_c),
@@ -1014,7 +1244,9 @@ class PhiGaussianDriftModel:
             'vol_cv': float(vol_cv),
             'rv_ratio': float(rv_ratio),
             'n_folds': int(len(fold_splits)),
-            'optimization_successful': best_result is not None and (best_result.success if best_result else False)
+            'optimization_successful': best_result is not None and (best_result.success if best_result else False),
+            # φ shrinkage prior diagnostics (auditability)
+            **phi_prior_diag,
         }
 
         return q_optimal, c_optimal, phi_optimal, ll_optimal, diagnostics
@@ -1333,7 +1565,20 @@ class PhiStudentTDriftModel:
             log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
             log_c_target = np.log10(0.9)
             log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
-            log_prior_phi = -0.05 * prior_scale * (phi_clip ** 2)
+            
+            # =================================================================
+            # EXPLICIT φ SHRINKAGE PRIOR (Gaussian)
+            # =================================================================
+            # φ_r ~ N(φ_global, τ²) where φ_global = 0 (full mean reversion)
+            # See documentation at PHI_SHRINKAGE_* constants for derivation.
+            # =================================================================
+            phi_lambda_effective = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale
+            phi_tau = lambda_to_tau(phi_lambda_effective)
+            log_prior_phi = phi_shrinkage_log_prior(
+                phi_r=phi_clip,
+                phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+                tau=phi_tau
+            )
             log_prior_nu = -0.05 * prior_scale * (log_nu - np.log10(6.0)) ** 2
 
             penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + log_prior_nu + calibration_penalty
@@ -1384,6 +1629,18 @@ class PhiStudentTDriftModel:
             nu_opt = 10 ** ln_opt
             ll_opt = -best_neg
 
+        # Compute φ shrinkage prior diagnostics for auditability
+        n_obs_approx = len(returns)
+        prior_scale_diag = 1.0 / max(n_obs_approx, 100)
+        phi_lambda_eff_diag = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale_diag
+        phi_tau_diag = lambda_to_tau(phi_lambda_eff_diag)
+        phi_prior_diag = compute_phi_prior_diagnostics(
+            phi_r=phi_opt,
+            phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+            tau=phi_tau_diag,
+            log_likelihood=ll_opt
+        )
+
         diagnostics = {
             'grid_best_q': float(10 ** grid_best[0]),
             'grid_best_c': float(10 ** grid_best[1]),
@@ -1399,7 +1656,9 @@ class PhiStudentTDriftModel:
             'vol_cv': float(vol_cv),
             'rv_ratio': float(rv_ratio),
             'n_folds': int(len(fold_splits)),
-            'optimization_successful': best_res is not None and (best_res.success if best_res else False)
+            'optimization_successful': best_res is not None and (best_res.success if best_res else False),
+            # φ shrinkage prior diagnostics (auditability)
+            **phi_prior_diag,
         }
 
         return q_opt, c_opt, phi_opt, nu_opt, ll_opt, diagnostics
@@ -1568,7 +1827,20 @@ class PhiStudentTDriftModel:
             log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
             log_c_target = np.log10(0.9)
             log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
-            log_prior_phi = -0.05 * prior_scale * (phi_clip ** 2)
+            
+            # =================================================================
+            # EXPLICIT φ SHRINKAGE PRIOR (Gaussian)
+            # =================================================================
+            # φ_r ~ N(φ_global, τ²) where φ_global = 0 (full mean reversion)
+            # See documentation at PHI_SHRINKAGE_* constants for derivation.
+            # =================================================================
+            phi_lambda_effective = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale
+            phi_tau = lambda_to_tau(phi_lambda_effective)
+            log_prior_phi = phi_shrinkage_log_prior(
+                phi_r=phi_clip,
+                phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+                tau=phi_tau
+            )
 
             penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty
             return -penalized_ll if np.isfinite(penalized_ll) else 1e12
@@ -1623,6 +1895,18 @@ class PhiStudentTDriftModel:
             phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
             ll_opt = -best_neg
 
+        # Compute φ shrinkage prior diagnostics for auditability
+        n_obs_approx = len(returns)
+        prior_scale_diag = 1.0 / max(n_obs_approx, 100)
+        phi_lambda_eff_diag = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale_diag
+        phi_tau_diag = lambda_to_tau(phi_lambda_eff_diag)
+        phi_prior_diag = compute_phi_prior_diagnostics(
+            phi_r=phi_opt,
+            phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+            tau=phi_tau_diag,
+            log_likelihood=ll_opt
+        )
+
         diagnostics = {
             'nu_fixed': float(nu_fixed),
             'grid_best_q': float(10 ** grid_best[0]),
@@ -1637,7 +1921,9 @@ class PhiStudentTDriftModel:
             'vol_cv': float(vol_cv),
             'rv_ratio': float(rv_ratio),
             'n_folds': int(len(fold_splits)),
-            'optimization_successful': best_res is not None and (best_res.success if best_res else False)
+            'optimization_successful': best_res is not None and (best_res.success if best_res else False),
+            # φ shrinkage prior diagnostics (auditability)
+            **phi_prior_diag,
         }
 
         return q_opt, c_opt, phi_opt, ll_opt, diagnostics
@@ -4991,12 +5277,14 @@ Examples:
         os.environ['DEBUG'] = '1'
 
     print("=" * 80)
-    print("Kalman Drift MLE Tuning Pipeline - Hierarchical Regime-Conditional")
+    print("Kalman Drift MLE Tuning Pipeline - Hierarchical Regime-Conditional BMA")
     print("=" * 80)
-    print(f"Prior: log10(q) ~ N({args.prior_mean:.1f}, λ={args.prior_lambda:.1f})")
+    print(f"Prior on q: log10(q) ~ N({args.prior_mean:.1f}, λ={args.prior_lambda:.1f})")
+    print(f"Prior on φ: φ ~ N(0, τ) with λ_φ=0.05 (explicit Gaussian shrinkage)")
     print(f"Hierarchical shrinkage: λ_regime={args.lambda_regime:.3f}")
-    print("Model selection: Gaussian vs Student-t via BIC")
-    print("Regime-conditional: Fits (q, φ, ν) per market regime with shrinkage")
+    print("Models: Gaussian, φ-Gaussian, φ-Student-t (ν ∈ {4, 6, 8, 12, 20})")
+    print("Selection: BIC + Hyvärinen combined scoring")
+    print("Regime-conditional: Fits (q, c, φ) per regime; ν is discrete grid (not optimized)")
 
     # Cache is always preserved; no automatic clearing
 

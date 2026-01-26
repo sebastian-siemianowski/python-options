@@ -952,10 +952,12 @@ def render_tuning_header(
         Text.from_markup(
             f"[bold white]Kalman Drift MLE Tuning Pipeline[/bold white]\n"
             f"[dim]Hierarchical Regime-Conditional Bayesian Model Averaging[/dim]\n\n"
-            f"[cyan]Prior:[/cyan] log₁₀(q) ~ N({prior_mean:.1f}, λ={prior_lambda:.1f})\n"
+            f"[cyan]Prior on q:[/cyan] log₁₀(q) ~ N({prior_mean:.1f}, λ={prior_lambda:.1f})\n"
+            f"[cyan]Prior on φ:[/cyan] φ ~ N(0, τ) with λ_φ=0.05 (explicit shrinkage)\n"
             f"[cyan]Hierarchical shrinkage:[/cyan] λ_regime = {lambda_regime:.3f}\n"
-            f"[cyan]Model selection:[/cyan] Gaussian vs Student-t via BIC\n"
-            f"[cyan]Regime-conditional:[/cyan] Fits (q, φ, ν) per market regime"
+            f"[cyan]Models:[/cyan] Gaussian, φ-Gaussian, φ-Student-t (ν∈{{4,6,8,12,20}})\n"
+            f"[cyan]Selection:[/cyan] BIC + Hyvärinen combined scoring\n"
+            f"[cyan]Regime-conditional:[/cyan] Fits (q, c, φ) per regime; ν discrete grid"
         ),
         title="[bold blue]🔧 KALMAN TUNING[/bold blue]",
         border_style="blue",
