@@ -2882,10 +2882,29 @@ def tune_regime_model_averaging(
     # =========================================================================
     # Build final result
     # =========================================================================
+    # Compute global Hyvärinen max for metadata
+    global_hyvarinen_scores = [
+        global_models[m].get("hyvarinen_score", float('-inf')) 
+        for m in global_models 
+        if global_models[m].get("fit_success", False)
+    ]
+    global_hyvarinen_max = max(global_hyvarinen_scores) if global_hyvarinen_scores else None
+    
+    global_bic_scores = [
+        global_models[m].get("bic", float('inf')) 
+        for m in global_models 
+        if global_models[m].get("fit_success", False)
+    ]
+    global_bic_min = min(global_bic_scores) if global_bic_scores else None
+    
     result = {
         "global": {
             "model_posterior": global_posterior,
             "models": global_models,
+            "hyvarinen_max": float(global_hyvarinen_max) if global_hyvarinen_max is not None and np.isfinite(global_hyvarinen_max) else None,
+            "bic_min": float(global_bic_min) if global_bic_min is not None and np.isfinite(global_bic_min) else None,
+            "model_selection_method": model_selection_method,
+            "bic_weight": bic_weight if model_selection_method == 'combined' else None,
         },
         "regime": regime_results,
         "meta": {

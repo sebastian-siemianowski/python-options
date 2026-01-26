@@ -43,15 +43,31 @@ tune_q_mle.py outputs:
     {
         "global": {
             "model_posterior": { "kalman_gaussian": p, "kalman_phi_gaussian": p, ... },
-            "models": { "kalman_gaussian": {q, c, ...}, ... }
+            "models": { "kalman_gaussian": {q, c, hyvarinen_score, bic, ...}, ... }
         },
         "regime": {
             "0": { "model_posterior": {...}, "models": {...}, "regime_meta": {...} },
             "1": { ... },
             ...
         },
-        "meta": {...}
+        "meta": {
+            "model_selection_method": "combined",  # 'bic', 'hyvarinen', or 'combined'
+            "bic_weight": 0.5,  # Weight for BIC in combined method
+            ...
+        }
     }
+
+MODEL SELECTION METHODS:
+    - 'bic': Traditional BIC-only (consistent but not robust to misspecification)
+    - 'hyvarinen': Hyvärinen score only (Fisher-consistent under misspecification)
+    - 'combined': Geometric mean of BIC and Hyvärinen weights (default)
+
+The Hyvärinen score is a proper scoring rule that:
+    - Is Fisher-consistent under model misspecification
+    - Does not require normalizing constants
+    - Naturally rewards tail accuracy for Student-t models
+
+Combined method: w_combined(m) = w_bic(m)^α * w_hyvarinen(m)^(1-α)
 
 This file receives from tuning, for current regime r_t:
 
@@ -1179,21 +1195,31 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
             # Diagnostics from best model (for display compatibility)
             'bic': best_params.get('bic'),
             'aic': best_params.get('aic'),
+            'hyvarinen_score': best_params.get('hyvarinen_score'),
             'log_likelihood': best_params.get('log_likelihood'),
             'pit_ks_pvalue': best_params.get('pit_ks_pvalue'),
             'ks_statistic': best_params.get('ks_statistic'),
             
-            # Model comparison: build from all models
+            # Model comparison: build from all models (includes Hyvärinen scores)
             'model_comparison': {
                 m: {
                     'bic': m_params.get('bic'),
                     'aic': m_params.get('aic'),
+                    'hyvarinen_score': m_params.get('hyvarinen_score'),
                     'll': m_params.get('log_likelihood'),
                     'n_params': m_params.get('n_params'),
                 }
                 for m, m_params in models.items()
                 if isinstance(m_params, dict) and m_params.get('fit_success', False)
             },
+            
+            # Model selection metadata from tune_q_mle.py
+            'model_selection_method': raw_data.get('meta', {}).get('model_selection_method', 'combined'),
+            'bic_weight': raw_data.get('meta', {}).get('bic_weight', 0.5),
+            
+            # Global-level aggregates (from global block or computed)
+            'hyvarinen_max': global_data.get('hyvarinen_max'),
+            'bic_min': global_data.get('bic_min'),
             
             # Metadata
             'source': 'tuned_cache_bma',
@@ -1306,6 +1332,14 @@ def _select_regime_params(
             'regime_meta': regime_meta,
             'collapse_warning': regime_meta.get('collapse_warning', False),
             'model_posterior': model_posterior,
+            # Model selection diagnostics (best model)
+            'hyvarinen_score': best_params.get('hyvarinen_score'),
+            'bic': best_params.get('bic'),
+            # Regime-level aggregates from regime_meta
+            'hyvarinen_max': regime_meta.get('hyvarinen_max'),
+            'bic_min': regime_meta.get('bic_min'),
+            'model_selection_method': regime_meta.get('model_selection_method', 'combined'),
+            'bic_weight': regime_meta.get('bic_weight', 0.5),
         }
         # Validate nu
         if theta['nu'] is not None and (not np.isfinite(theta['nu']) or theta['nu'] <= 2.0):
@@ -1329,6 +1363,14 @@ def _select_regime_params(
             'regime_meta': {},
             'collapse_warning': False,
             'model_posterior': global_model_posterior,
+            # Model selection diagnostics (best model)
+            'hyvarinen_score': best_params.get('hyvarinen_score'),
+            'bic': best_params.get('bic'),
+            # Global-level aggregates
+            'hyvarinen_max': global_data.get('hyvarinen_max'),
+            'bic_min': global_data.get('bic_min'),
+            'model_selection_method': global_data.get('model_selection_method', 'combined'),
+            'bic_weight': global_data.get('bic_weight', 0.5),
         }
 
 
@@ -1553,6 +1595,10 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         global_data = tuned_params.get('global', {})
         global_models = global_data.get('models', {})
         
+        # Get model selection method from cache metadata
+        model_selection_method = tuned_params.get('model_selection_method', 'combined')
+        bic_weight = tuned_params.get('bic_weight', 0.5)
+        
         # Use Rich for world-class presentation
         from rich.table import Table
         from rich.panel import Panel
@@ -1572,6 +1618,17 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             'kalman_phi_gaussian': {'short': 'φ-Gaussian', 'icon': '🔄', 'desc': 'Autoregressive drift'}, 
             'kalman_phi_student_t': {'short': 'φ-Student-t', 'icon': '📊', 'desc': 'Heavy-tailed robust'}
         }
+        
+        # Model selection method description
+        selection_method_info = {
+            'bic': ('BIC-only', 'Traditional Bayesian Information Criterion'),
+            'hyvarinen': ('Hyvärinen-only', 'Robust scoring under misspecification'),
+            'combined': (f'Combined (α={bic_weight:.1f})', 'BIC + Hyvärinen geometric mean'),
+        }
+        method_short, method_desc = selection_method_info.get(
+            model_selection_method, 
+            ('Unknown', 'Model selection method')
+        )
         
         # Helper functions to describe parameters in human terms
         def describe_drift_speed(q_val):
@@ -1628,7 +1685,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             else:
                 return ("light", "cyan")
         
-        # Build model weights table
+        # Build model weights table with BIC and Hyvärinen scores
         weights_table = Table(
             show_header=True,
             header_style="bold white",
@@ -1638,21 +1695,34 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         )
         weights_table.add_column("Model", style="bold", width=12)
         weights_table.add_column("Weight", justify="right", width=8)
-        weights_table.add_column("Confidence", width=25)
+        weights_table.add_column("BIC", justify="right", width=10)
+        weights_table.add_column("Hyvärinen", justify="right", width=10)
+        weights_table.add_column("Confidence", width=20)
         weights_table.add_column("", width=3)
         
         for model_name in ['kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']:
             p = model_posterior.get(model_name, 0.0)
-            bar_len = int(p * 20)
+            bar_len = int(p * 15)
             bar_filled = '█' * bar_len
-            bar_empty = '░' * (20 - bar_len)
+            bar_empty = '░' * (15 - bar_len)
             info = model_info.get(model_name, {'short': model_name, 'icon': '•'})
+            
+            # Get BIC and Hyvärinen scores from model params
+            m_params = global_models.get(model_name, {})
+            bic_val = m_params.get('bic')
+            hyv_val = m_params.get('hyvarinen_score')
+            
+            # Format scores
+            bic_str = f"{bic_val:.1f}" if bic_val is not None and np.isfinite(bic_val) else "—"
+            hyv_str = f"{hyv_val:.1f}" if hyv_val is not None and np.isfinite(hyv_val) else "—"
             
             is_best = model_name == best_model
             if is_best:
                 weights_table.add_row(
                     f"[bold #00d700]{info['short']}[/bold #00d700]",
                     f"[bold #00d700]{p:.1%}[/bold #00d700]",
+                    f"[#00d700]{bic_str}[/#00d700]",
+                    f"[#00d700]{hyv_str}[/#00d700]",
                     f"[#00d700]{bar_filled}[/#00d700][dim]{bar_empty}[/dim]",
                     "[bold #00d700]◀[/bold #00d700]"
                 )
@@ -1660,6 +1730,8 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 weights_table.add_row(
                     info['short'],
                     f"{p:.1%}",
+                    bic_str,
+                    hyv_str,
                     f"[cyan]{bar_filled}[/cyan][dim]{bar_empty}[/dim]",
                     ""
                 )
@@ -1718,18 +1790,33 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         else:
             title = f"[bold cyan]📊 {company_name}[/bold cyan] [dim]({asset_symbol})[/dim]"
         
+        # Get global-level aggregate scores
+        global_hyv_max = tuned_params.get('hyvarinen_max')
+        global_bic_min = tuned_params.get('bic_min')
+        
+        # Build summary text
+        summary_parts = []
+        if global_bic_min is not None and np.isfinite(global_bic_min):
+            summary_parts.append(f"BIC↓ {global_bic_min:.1f}")
+        if global_hyv_max is not None and np.isfinite(global_hyv_max):
+            summary_parts.append(f"Hyvärinen↑ {global_hyv_max:.1f}")
+        summary_text = " • ".join(summary_parts) if summary_parts else ""
+        
         # Print with elegant layout
         console.print()
         console.print(Panel(
             Group(
-                Text("Model Weights", style="bold white"),
+                Text(f"Model Weights — Selection: {method_short}", style="bold white"),
+                Text(f"[dim]{method_desc}[/dim]"),
                 weights_table,
                 Text(""),
                 Text("Parameter Estimates", style="bold white"),
                 params_table,
+                Text(""),
+                Text(f"[dim]Best scores: {summary_text}[/dim]") if summary_text else Text(""),
             ),
             title=title,
-            subtitle="[dim]Bayesian Model Averaging[/dim]",
+            subtitle=f"[dim]Bayesian Model Averaging • {method_short}[/dim]",
             border_style="cyan",
             padding=(1, 2),
         ))
@@ -1789,6 +1876,12 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 "pit_ks_pvalue": tuned_params.get("pit_ks_pvalue") if tuned_params else None,
                 "ks_statistic": tuned_params.get("ks_statistic") if tuned_params else None,
                 "bic": tuned_params.get("bic") if tuned_params else None,
+                "hyvarinen_score": tuned_params.get("hyvarinen_score") if tuned_params else None,
+                # Global-level aggregates for model selection
+                "hyvarinen_max": tuned_params.get("hyvarinen_max") if tuned_params else None,
+                "bic_min": tuned_params.get("bic_min") if tuned_params else None,
+                "model_selection_method": tuned_params.get("model_selection_method", "combined") if tuned_params else "combined",
+                "bic_weight": tuned_params.get("bic_weight", 0.5) if tuned_params else 0.5,
                 "model_posterior": tuned_params.get("model_posterior", {}) if tuned_params else {},
                 "best_model": tuned_params.get("best_model") if tuned_params else best_model,
             }
@@ -3182,6 +3275,11 @@ def bayesian_model_average_mc(
         "model_posterior": {m: float(w) for m, w in model_posterior.items()},
         "model_details": model_details,
         "n_total_samples": len(r_samples),
+        # Model selection diagnostics
+        "model_selection_method": regime_meta.get('model_selection_method', 'combined'),
+        "bic_weight": regime_meta.get('bic_weight', 0.5),
+        "hyvarinen_max": regime_meta.get('hyvarinen_max'),
+        "bic_min": regime_meta.get('bic_min'),
     }
     
     return r_samples, regime_probs, metadata
