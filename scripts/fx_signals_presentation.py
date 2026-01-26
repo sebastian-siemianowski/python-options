@@ -1290,6 +1290,7 @@ def render_parameter_table(
         table.add_column("ΔLLe", justify="right", width=7)
         table.add_column("BIC", justify="right", width=9)
         table.add_column("Hyv", justify="right", width=8)
+        table.add_column("Comb", justify="right", width=6)
         table.add_column("Sel", justify="center", width=5)
         table.add_column("PIT p", justify="right", width=8)
         
@@ -1310,6 +1311,7 @@ def render_parameter_table(
             bic_val = data.get('bic', float('nan'))
             pit_p = data.get('pit_ks_pvalue', float('nan'))
             hyv_val = data.get('hyvarinen_score', float('nan'))
+            combined_score = data.get('combined_score', float('nan'))
             model_sel_method = data.get('model_selection_method', '')
             
             log10_q = np.log10(q_val) if q_val > 0 else float('nan')
@@ -1361,6 +1363,24 @@ def render_parameter_table(
             }
             sel_str = method_abbrev.get(model_sel_method, '[dim]-[/dim]')
             
+            # Format combined score (log of weight, higher = better)
+            try:
+                comb_val_float = float(combined_score) if combined_score is not None else float('nan')
+                if np.isfinite(comb_val_float):
+                    # Combined score is log weight, 0 = best possible, negative = worse
+                    if comb_val_float > -0.1:
+                        comb_str = f"[bold #00d700]{comb_val_float:.1f}[/bold #00d700]"
+                    elif comb_val_float > -1:
+                        comb_str = f"[#00d700]{comb_val_float:.1f}[/#00d700]"
+                    elif comb_val_float > -5:
+                        comb_str = f"[cyan]{comb_val_float:.1f}[/cyan]"
+                    else:
+                        comb_str = f"[dim]{comb_val_float:.1f}[/dim]"
+                else:
+                    comb_str = "[dim]-[/dim]"
+            except (TypeError, ValueError):
+                comb_str = "[dim]-[/dim]"
+            
             # Color code PIT p-value
             if np.isfinite(pit_p):
                 if pit_p < 0.01:
@@ -1387,6 +1407,7 @@ def render_parameter_table(
                 _format_delta_ll(delta_ll_ewma),
                 bic_str,
                 hyv_str,
+                comb_str,
                 sel_str,
                 pit_str,
             )
@@ -1405,6 +1426,7 @@ def render_parameter_table(
         "[white]ΔLLe[/white] — Improvement vs EWMA-drift baseline\n"
         "[white]BIC[/white] — Bayesian Information Criterion (lower = better)\n"
         "[white]Hyv[/white] — Hyvärinen score (higher = better density fit)\n"
+        "[white]Comb[/white] — Combined BIC+Hyvärinen score (log weight, 0 = best)\n"
         "[white]Sel[/white] — Model selection: [magenta]C[/magenta]=Combined, [cyan]B[/cyan]=BIC, [yellow]H[/yellow]=Hyvärinen\n"
         "[white]PIT p[/white] — PIT KS p-value (≥0.05 = well-calibrated)"
     )

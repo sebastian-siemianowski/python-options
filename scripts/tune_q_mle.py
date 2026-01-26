@@ -1732,7 +1732,26 @@ def tune_asset_q(
         delta_ll_vs_ewma = float(ll_full - ll_ewma)
 
         # Aggregate model comparison metrics for diagnostics and cache
-        # Compute Hyvärinen scores for Kalman models
+        # Compute Hyvärinen scores for ALL models including baselines
+        
+        # Baseline models: use c_optimal for observation noise (they don't have state uncertainty)
+        # For zero_drift: mu = 0 for all t, sigma = sqrt(c * vol^2)
+        forecast_std_zero = np.sqrt(c_optimal * (vol_arr ** 2))
+        mu_zero = np.zeros_like(returns_arr)
+        hyv_zero = compute_hyvarinen_score_gaussian(returns_arr, mu_zero, forecast_std_zero)
+        
+        # For constant_drift: mu = mu_const for all t, sigma = sqrt(c * vol^2)
+        mu_const_arr = np.full_like(returns_arr, mu_const)
+        hyv_const = compute_hyvarinen_score_gaussian(returns_arr, mu_const_arr, forecast_std_zero)
+        
+        # For ewma_drift: mu = ewma of past returns, sigma = sqrt(c * vol^2)
+        ret_series = pd.Series(returns_arr)
+        mu_ewma_arr = ret_series.ewm(span=21, adjust=False).mean().values
+        # First observation uses zero drift
+        mu_ewma_arr_lagged = np.concatenate([[0.0], mu_ewma_arr[:-1]])
+        hyv_ewma = compute_hyvarinen_score_gaussian(returns_arr, mu_ewma_arr_lagged, forecast_std_zero)
+        
+        # Kalman models: include state uncertainty in forecast
         forecast_std_gauss = np.sqrt(c_gauss * (vol_arr ** 2) + P_gauss)
         hyv_gauss = compute_hyvarinen_score_gaussian(returns_arr, mu_gauss, forecast_std_gauss)
         
@@ -1740,9 +1759,9 @@ def tune_asset_q(
         hyv_phi = compute_hyvarinen_score_gaussian(returns_arr, mu_phi, forecast_std_phi)
         
         model_comparison = {
-            'zero_drift': {'ll': ll_zero, 'aic': aic_zero, 'bic': bic_zero, 'n_params': 0, 'hyvarinen_score': None},
-            'constant_drift': {'ll': ll_const, 'aic': aic_const, 'bic': bic_const, 'n_params': 1, 'mu': float(mu_const), 'hyvarinen_score': None},
-            'ewma_drift': {'ll': ll_ewma, 'aic': aic_ewma, 'bic': bic_ewma, 'n_params': 1, 'hyvarinen_score': None},
+            'zero_drift': {'ll': ll_zero, 'aic': aic_zero, 'bic': bic_zero, 'n_params': 0, 'hyvarinen_score': float(hyv_zero)},
+            'constant_drift': {'ll': ll_const, 'aic': aic_const, 'bic': bic_const, 'n_params': 1, 'mu': float(mu_const), 'hyvarinen_score': float(hyv_const)},
+            'ewma_drift': {'ll': ll_ewma, 'aic': aic_ewma, 'bic': bic_ewma, 'n_params': 1, 'hyvarinen_score': float(hyv_ewma)},
             'kalman_gaussian': {'ll': ll_gauss_full, 'aic': aic_gauss, 'bic': bic_gauss, 'n_params': 2, 'hyvarinen_score': float(hyv_gauss)},
             'kalman_phi_gaussian': {'ll': ll_phi_full, 'aic': aic_phi, 'bic': bic_phi, 'n_params': 3, 'phi': float(phi_opt), 'hyvarinen_score': float(hyv_phi)},
         }
@@ -1759,8 +1778,21 @@ def tune_asset_q(
                 'hyvarinen_score': float(hyv_student)
             }
         
+        # Compute combined scores for all models
+        bic_values = {m: info['bic'] for m, info in model_comparison.items()}
+        hyvarinen_scores = {m: info['hyvarinen_score'] for m, info in model_comparison.items()}
+        combined_weights = compute_combined_model_weights(bic_values, hyvarinen_scores, bic_weight=DEFAULT_BIC_WEIGHT)
+        
+        # Store combined_score in each model (log of unnormalized weight, higher = better)
+        for m in model_comparison:
+            w = combined_weights.get(m, 1e-10)
+            model_comparison[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
+        
         # Best model across baselines and Kalman variants by BIC
         best_model_name = min(model_comparison.items(), key=lambda kv: kv[1]['bic'])[0]
+        
+        # Best model by combined score (highest combined_score)
+        best_model_by_combined = max(model_comparison.items(), key=lambda kv: kv[1].get('combined_score', float('-inf')))[0]
 
         # Compute drift diagnostics
         mean_drift_var = float(np.mean(mu_filtered ** 2))
@@ -1782,10 +1814,14 @@ def tune_asset_q(
                 _log(f"  ⚠️  Calibration warning (PIT p={ks_pvalue:.4f})")
 
         # Build result dictionary with extended schema
-        # Get hyvarinen score for the selected model
+        # Get hyvarinen score and combined score for the selected model
         selected_hyvarinen = model_comparison.get(noise_model, {}).get('hyvarinen_score')
         if selected_hyvarinen is None and noise_model == 'kalman_phi_student_t':
             selected_hyvarinen = model_comparison.get('kalman_phi_student_t', {}).get('hyvarinen_score')
+        
+        selected_combined_score = model_comparison.get(noise_model, {}).get('combined_score')
+        if selected_combined_score is None and noise_model == 'kalman_phi_student_t':
+            selected_combined_score = model_comparison.get('kalman_phi_student_t', {}).get('combined_score')
         
         result = {
             # Asset identifier
@@ -1811,10 +1847,12 @@ def tune_asset_q(
             'aic': float(aic_final),
             'bic': float(bic_final),
             'hyvarinen_score': float(selected_hyvarinen) if selected_hyvarinen is not None else None,
+            'combined_score': float(selected_combined_score) if selected_combined_score is not None else None,
 
             # Upgrade #4: Model comparison results
             'model_comparison': model_comparison,
             'best_model_by_bic': best_model_name,
+            'best_model_by_combined': best_model_by_combined,
 
             # Calibration diagnostics
             'ks_statistic': float(ks_statistic),
@@ -2716,6 +2754,11 @@ def fit_regime_model_posterior(
             )
             _log(f"     → Using combined BIC+Hyvärinen selection (α={bic_weight:.2f})")
         
+        # Store combined_score in each model (log of unnormalized weight, higher = better)
+        for m in models:
+            w = raw_weights.get(m, 1e-10)
+            models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
+        
         # =====================================================================
         # Step 4: Apply temporal smoothing
         # =====================================================================
@@ -2736,6 +2779,10 @@ def fit_regime_model_posterior(
         # Compute best scores for metadata
         finite_bics = [b for b in bic_values.values() if np.isfinite(b)]
         finite_hyvs = [h for h in hyvarinen_scores.values() if np.isfinite(h)]
+        finite_combined = [models[m].get('combined_score', float('-inf')) for m in models if np.isfinite(models[m].get('combined_score', float('-inf')))]
+        
+        # Best model by combined score
+        best_model_by_combined = max(models.items(), key=lambda kv: kv[1].get('combined_score', float('-inf')))[0] if models else None
         
         regime_results[regime] = {
             "model_posterior": model_posterior,
@@ -2748,6 +2795,8 @@ def fit_regime_model_posterior(
                 "borrowed_from_global": False,
                 "bic_min": float(min(finite_bics)) if finite_bics else None,
                 "hyvarinen_max": float(max(finite_hyvs)) if finite_hyvs else None,
+                "combined_score_max": float(max(finite_combined)) if finite_combined else None,
+                "best_model_by_combined": best_model_by_combined,
                 "model_selection_method": model_selection_method,
                 "bic_weight": bic_weight if model_selection_method == 'combined' else None,
                 "smoothing_applied": prev_posterior is not None and temporal_alpha > 0,
