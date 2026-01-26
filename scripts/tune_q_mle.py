@@ -144,7 +144,7 @@ import math
 import os
 import sys
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -308,6 +308,12 @@ MIN_REGIME_SAMPLES = 60
 # Below this threshold, Hyvärinen is DISABLED to prevent illusory smoothness
 # from small-n Student-t fits creating artificially good scores
 MIN_HYVARINEN_SAMPLES = 100
+
+# Entropy regularization lambda for model weights
+# Higher = more uniform weights, prevents premature posterior collapse
+# Lower = sharper weights, stronger model discrimination
+# 0.05 provides good balance between stability and discrimination
+DEFAULT_ENTROPY_LAMBDA = 0.05
 
 
 def load_asset_list(assets_arg: Optional[str], assets_file: Optional[str]) -> List[str]:
@@ -1786,18 +1792,25 @@ def tune_asset_q(
         # Compute combined scores for all models
         bic_values = {m: info['bic'] for m, info in model_comparison.items()}
         hyvarinen_scores = {m: info['hyvarinen_score'] for m, info in model_comparison.items()}
-        combined_weights = compute_combined_model_weights(bic_values, hyvarinen_scores, bic_weight=DEFAULT_BIC_WEIGHT)
+        combined_weights, weight_metadata = compute_combined_model_weights(
+            bic_values, hyvarinen_scores, bic_weight=DEFAULT_BIC_WEIGHT
+        )
         
-        # Store combined_score in each model (log of unnormalized weight, higher = better)
+        # Store combined_score and standardized scores in each model
+        # combined_score is now the standardized combined score (lower = better)
+        # model_weight_entropy is the entropy-regularized weight
         for m in model_comparison:
             w = combined_weights.get(m, 1e-10)
-            model_comparison[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
+            model_comparison[m]['combined_score'] = float(weight_metadata['combined_scores_standardized'].get(m, 0.0))
+            model_comparison[m]['model_weight_entropy'] = float(w)
+            model_comparison[m]['standardized_bic'] = float(weight_metadata['bic_standardized'].get(m, 0.0)) if weight_metadata['bic_standardized'].get(m) is not None else None
+            model_comparison[m]['standardized_hyvarinen'] = float(weight_metadata['hyvarinen_standardized'].get(m, 0.0)) if weight_metadata['hyvarinen_standardized'].get(m) is not None else None
         
         # Best model across baselines and Kalman variants by BIC
         best_model_name = min(model_comparison.items(), key=lambda kv: kv[1]['bic'])[0]
         
-        # Best model by combined score (highest combined_score)
-        best_model_by_combined = max(model_comparison.items(), key=lambda kv: kv[1].get('combined_score', float('-inf')))[0]
+        # Best model by combined score (lowest standardized combined score = best)
+        best_model_by_combined = min(model_comparison.items(), key=lambda kv: kv[1].get('combined_score', float('inf')))[0]
 
         # Compute drift diagnostics
         mean_drift_var = float(np.mean(mu_filtered ** 2))
@@ -2212,72 +2225,290 @@ def compute_hyvarinen_model_weights(
     return weights
 
 
+# =============================================================================
+# ROBUST SCORE STANDARDIZATION & ENTROPY-REGULARIZED WEIGHTS
+# =============================================================================
+# These functions stabilize model selection and Bayesian model averaging by:
+# 1. Robustly standardizing heterogeneous scores (BIC + Hyvärinen)
+# 2. Preventing premature posterior collapse via entropy regularization
+# 3. Improving low-sample regime behavior
+#
+# This is an epistemology-only upgrade. Signals consume posteriors unchanged.
+# =============================================================================
+
+def robust_standardize_scores(
+    scores: Dict[str, float],
+    eps: float = 1e-8
+) -> Dict[str, float]:
+    """
+    Robust cross-model standardization using median and MAD.
+    
+    Preserves ordering while normalizing heterogeneous score scales.
+    This ensures BIC and Hyvärinen can be meaningfully combined without
+    one dominating due to raw scale differences.
+    
+    Why median/MAD:
+    - Robust to Hyvärinen spikes
+    - Stable in low-n regimes
+    - No Gaussian assumptions
+    
+    Args:
+        scores: Dictionary mapping model name to raw score
+        eps: Small constant to prevent division by zero
+        
+    Returns:
+        Dictionary of standardized scores (zero median, unit MAD)
+    """
+    # Extract finite values only
+    finite_items = [(k, v) for k, v in scores.items() if np.isfinite(v)]
+    
+    if len(finite_items) < 2:
+        # Not enough values to standardize meaningfully
+        # Return zeros for finite, keep non-finite as-is
+        return {
+            k: 0.0 if np.isfinite(v) else v
+            for k, v in scores.items()
+        }
+    
+    values = np.array([v for _, v in finite_items], dtype=float)
+    
+    # Robust location and scale
+    median = np.median(values)
+    mad = np.median(np.abs(values - median))
+    
+    # Ensure non-zero scale
+    scale = mad if mad > eps else eps
+    
+    # Standardize all scores
+    standardized = {}
+    for k, v in scores.items():
+        if np.isfinite(v):
+            standardized[k] = (v - median) / scale
+        else:
+            standardized[k] = v  # Keep non-finite as-is (inf, nan)
+    
+    return standardized
+
+
+def entropy_regularized_weights(
+    standardized_scores: Dict[str, float],
+    lambda_entropy: float = DEFAULT_ENTROPY_LAMBDA,
+    eps: float = 1e-10
+) -> Dict[str, float]:
+    """
+    Compute entropy-regularized model weights via softmax.
+    
+    Solves the optimization problem:
+        min_w Σ_m w_m * S̃_m + λ Σ_m w_m * log(w_m)
+        s.t. Σ_m w_m = 1
+    
+    The closed-form solution is softmax with temperature = λ:
+        w_m ∝ exp(-S̃_m / λ)
+    
+    Benefits:
+    - Prevents premature posterior collapse in low-evidence regimes
+    - Smooth weight transitions as evidence accumulates
+    - Convex, stable, deterministic
+    
+    Args:
+        standardized_scores: Dictionary of standardized scores (lower = better)
+        lambda_entropy: Entropy regularization strength (0.05 = balanced)
+                       Higher = more uniform weights
+                       Lower = sharper weights
+        eps: Small constant to prevent zero weights
+        
+    Returns:
+        Dictionary of normalized model weights (sum to 1)
+    """
+    # Extract finite scores only
+    finite_items = [(k, v) for k, v in standardized_scores.items() if np.isfinite(v)]
+    
+    if not finite_items:
+        # No valid scores, return uniform
+        n = len(standardized_scores)
+        return {k: 1.0 / max(n, 1) for k in standardized_scores}
+    
+    keys = [k for k, _ in finite_items]
+    scores = np.array([v for _, v in finite_items], dtype=float)
+    
+    # Softmax with entropy temperature
+    # Lower score = better, so we negate scores in the softmax
+    temperature = max(lambda_entropy, 1e-8)
+    logits = -scores / temperature
+    
+    # Numerical stability: subtract max
+    logits = logits - logits.max()
+    
+    # Compute weights
+    weights = np.exp(logits)
+    weights = np.maximum(weights, eps)  # Prevent exact zeros
+    weights = weights / weights.sum()  # Normalize
+    
+    # Build result dict
+    result = dict(zip(keys, weights))
+    
+    # Add epsilon weight for non-finite scores
+    for k, v in standardized_scores.items():
+        if not np.isfinite(v):
+            result[k] = eps
+    
+    # Re-normalize if we added non-finite entries
+    total = sum(result.values())
+    if total > 0:
+        result = {k: w / total for k, w in result.items()}
+    
+    return result
+
+
+def compute_combined_standardized_score(
+    bic: float,
+    hyvarinen: float,
+    bic_weight: float = 0.5
+) -> float:
+    """
+    Compute combined score from already-standardized BIC and Hyvärinen.
+    
+    For BIC: lower is better → we use +BIC in combined score
+    For Hyvärinen: higher is better → we use -Hyvärinen in combined score
+    
+    Combined: S = w_bic * BIC_std - (1 - w_bic) * Hyv_std
+    Lower combined score = better model
+    
+    Args:
+        bic: Standardized BIC score
+        hyvarinen: Standardized Hyvärinen score
+        bic_weight: Weight for BIC (0.5 = equal weighting)
+        
+    Returns:
+        Combined standardized score (lower = better)
+    """
+    if not np.isfinite(bic):
+        bic = 0.0
+    if not np.isfinite(hyvarinen):
+        hyvarinen = 0.0
+    
+    # BIC: lower is better, so positive contribution
+    # Hyvärinen: higher is better, so negative contribution
+    return bic_weight * bic - (1.0 - bic_weight) * hyvarinen
+
+
 def compute_combined_model_weights(
+    bic_values: Dict[str, float],
+    hyvarinen_scores: Dict[str, float],
+    bic_weight: float = 0.5,
+    lambda_entropy: float = DEFAULT_ENTROPY_LAMBDA,
+    epsilon: float = 1e-10
+) -> Tuple[Dict[str, float], Dict[str, Any]]:
+    """
+    Combine BIC and Hyvärinen scores for robust model selection.
+    
+    Uses entropy-regularized optimization with robust standardization:
+    
+    1. Robust standardization: Median/MAD normalization of each score type
+       - Handles heterogeneous scales between BIC and Hyvärinen
+       - Robust to outliers and spikes
+       
+    2. Combined score: S̃_m = w_bic * BIC̃_m - (1 - w_bic) * Hyṽ_m
+       - Lower combined score = better model
+       
+    3. Entropy-regularized weights via softmax:
+       - Solves: min_w Σ_m w_m * S̃_m + λ Σ_m w_m * log(w_m)
+       - Prevents premature posterior collapse
+       - Smooth weight transitions
+    
+    This provides:
+    - BIC consistency (selects true model as n → ∞)
+    - Hyvärinen robustness (proper scoring under misspecification)
+    - Scale invariance (neither metric dominates due to scale differences)
+    - Stability in low-sample regimes (entropy regularization)
+    
+    Args:
+        bic_values: Dictionary mapping model name to BIC value
+        hyvarinen_scores: Dictionary mapping model name to Hyvärinen score
+        bic_weight: Weight for BIC in combined score (0.5 = equal)
+        lambda_entropy: Entropy regularization strength (higher = more uniform)
+        epsilon: Small constant to prevent zero weights
+        
+    Returns:
+        Tuple of:
+        - Dictionary of normalized model weights (sum to 1)
+        - Metadata dict with standardization details
+    """
+    # =========================================================================
+    # STEP 1: ROBUST STANDARDIZATION (per-metric, cross-model)
+    # =========================================================================
+    # Standardization is cross-model, per regime
+    # Do NOT standardize across regimes
+    # Do NOT mix raw and standardized scores
+    # =========================================================================
+    
+    bic_standardized = robust_standardize_scores(bic_values)
+    hyv_standardized = robust_standardize_scores(hyvarinen_scores)
+    
+    # =========================================================================
+    # STEP 2: COMPUTE COMBINED STANDARDIZED SCORES
+    # =========================================================================
+    # Combined: S = w_bic * BIC_std - (1 - w_bic) * Hyv_std
+    # Lower combined score = better model
+    # =========================================================================
+    
+    combined_scores = {}
+    for model_name in bic_values.keys():
+        bic_std = bic_standardized.get(model_name, 0.0)
+        hyv_std = hyv_standardized.get(model_name, 0.0)
+        combined_scores[model_name] = compute_combined_standardized_score(
+            bic_std, hyv_std, bic_weight
+        )
+    
+    # =========================================================================
+    # STEP 3: ENTROPY-REGULARIZED WEIGHTS
+    # =========================================================================
+    # Softmax with entropy temperature prevents collapse
+    # =========================================================================
+    
+    weights = entropy_regularized_weights(
+        combined_scores,
+        lambda_entropy=lambda_entropy,
+        eps=epsilon
+    )
+    
+    # Build metadata for caching and diagnostics
+    metadata = {
+        "bic_standardized": {k: float(v) if np.isfinite(v) else None for k, v in bic_standardized.items()},
+        "hyvarinen_standardized": {k: float(v) if np.isfinite(v) else None for k, v in hyv_standardized.items()},
+        "combined_scores_standardized": {k: float(v) if np.isfinite(v) else None for k, v in combined_scores.items()},
+        "bic_weight": bic_weight,
+        "lambda_entropy": lambda_entropy,
+        "entropy_regularized": True,
+    }
+    
+    return weights, metadata
+
+
+def compute_combined_model_weights_legacy(
     bic_values: Dict[str, float],
     hyvarinen_scores: Dict[str, float],
     bic_weight: float = 0.5,
     epsilon: float = 1e-10
 ) -> Dict[str, float]:
     """
-    Combine BIC and Hyvärinen scores for robust model selection.
+    LEGACY: Original combined weights using geometric mean.
     
-    Uses geometric mean of BIC-based and Hyvärinen-based weights:
-        w_combined(m) = w_bic(m)^bic_weight * w_hyvarinen(m)^(1-bic_weight)
-    
-    IMPORTANT: Before combination, scores are standardized using MAD (Median Absolute
-    Deviation) to ensure scale-invariance:
-        B̃ = (B - median(B)) / MAD(B)
-        H̃ = (H - median(H)) / MAD(H)
-    
-    This prevents Hyvärinen from dominating in low-volatility/short-window regimes
-    where its raw magnitude may differ substantially from BIC.
-    
-    This provides:
-    - BIC consistency (selects true model as n → ∞)
-    - Hyvärinen robustness (proper scoring under misspecification)
-    - Scale invariance (neither metric dominates due to scale differences)
+    Kept for backward compatibility. Use compute_combined_model_weights for
+    the improved entropy-regularized version.
     
     Args:
         bic_values: Dictionary mapping model name to BIC value
-        hyvarinen_scores: Dictionary mapping model name to (negated) Hyvärinen score
+        hyvarinen_scores: Dictionary mapping model name to Hyvärinen score
         bic_weight: Weight for BIC (0 = pure Hyvärinen, 1 = pure BIC)
         epsilon: Small constant to prevent zero weights
         
     Returns:
         Dictionary of unnormalized combined weights
     """
-    # =========================================================================
-    # SCALE-INVARIANT STANDARDIZATION (MAD-based)
-    # =========================================================================
-    # BIC and Hyvärinen live on fundamentally different scales.
-    # Raw combination is not invariant - this fixes that.
-    # =========================================================================
-    
-    def mad_standardize(values: Dict[str, float]) -> Dict[str, float]:
-        """Standardize scores using Median Absolute Deviation."""
-        finite_vals = [v for v in values.values() if np.isfinite(v)]
-        if len(finite_vals) < 2:
-            # Not enough values to standardize, return as-is
-            return values
-        
-        median_val = np.median(finite_vals)
-        mad = np.median(np.abs(np.array(finite_vals) - median_val))
-        
-        # Avoid division by zero
-        if mad < 1e-10:
-            mad = 1.0
-        
-        standardized = {}
-        for k, v in values.items():
-            if np.isfinite(v):
-                standardized[k] = (v - median_val) / mad
-            else:
-                standardized[k] = v  # Keep non-finite as-is
-        return standardized
-    
     # Standardize both score types
-    bic_standardized = mad_standardize(bic_values)
-    hyv_standardized = mad_standardize(hyvarinen_scores)
+    bic_standardized = robust_standardize_scores(bic_values)
+    hyv_standardized = robust_standardize_scores(hyvarinen_scores)
     
     # Get BIC-based weights (from standardized scores)
     # Note: For BIC, lower is better, so we negate for weight computation
@@ -2285,7 +2516,7 @@ def compute_combined_model_weights(
     bic_weights = compute_bic_model_weights_from_scores(bic_for_weights, epsilon)
     
     # Get Hyvärinen-based weights (from standardized scores)
-    # Note: For Hyvärinen (negated), higher is better
+    # Note: For Hyvärinen, higher is better
     hyvarinen_weights = compute_hyvarinen_model_weights(hyv_standardized, epsilon)
     
     # Combine via geometric mean
@@ -2827,7 +3058,7 @@ def fit_regime_model_posterior(
         # Model selection methods:
         #   'bic'       - Traditional BIC-based weights (consistent but not robust)
         #   'hyvarinen' - Hyvärinen score weights (robust under misspecification)
-        #   'combined'  - Geometric mean of BIC and Hyvärinen (best of both)
+        #   'combined'  - Entropy-regularized weights from BIC and Hyvärinen
         #
         # HARD GATE: Disable Hyvärinen for small-sample regimes
         # Small-n Student-t fits can produce illusory smoothness → artificially 
@@ -2835,6 +3066,7 @@ def fit_regime_model_posterior(
         # =====================================================================
         hyvarinen_disabled = n_samples < MIN_HYVARINEN_SAMPLES
         effective_method = model_selection_method
+        weight_metadata = None
         
         if hyvarinen_disabled and model_selection_method in ('hyvarinen', 'combined'):
             effective_method = 'bic'
@@ -2847,16 +3079,26 @@ def fit_regime_model_posterior(
             raw_weights = compute_hyvarinen_model_weights(hyvarinen_scores)
             _log(f"     → Using Hyvärinen-only model selection (robust)")
         else:
-            # Default: combined method
-            raw_weights = compute_combined_model_weights(
-                bic_values, hyvarinen_scores, bic_weight=bic_weight
+            # Default: combined method with entropy regularization
+            raw_weights, weight_metadata = compute_combined_model_weights(
+                bic_values, hyvarinen_scores, bic_weight=bic_weight,
+                lambda_entropy=DEFAULT_ENTROPY_LAMBDA
             )
-            _log(f"     → Using combined BIC+Hyvärinen selection (α={bic_weight:.2f})")
+            _log(f"     → Using entropy-regularized BIC+Hyvärinen selection (α={bic_weight:.2f}, λ={DEFAULT_ENTROPY_LAMBDA:.3f})")
         
-        # Store combined_score in each model (log of unnormalized weight, higher = better)
+        # Store combined_score and entropy-regularized weights in each model
         for m in models:
             w = raw_weights.get(m, 1e-10)
-            models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
+            if weight_metadata is not None:
+                # Use standardized combined score (lower = better)
+                models[m]['combined_score'] = float(weight_metadata['combined_scores_standardized'].get(m, 0.0))
+                models[m]['model_weight_entropy'] = float(w)
+                models[m]['standardized_bic'] = float(weight_metadata['bic_standardized'].get(m, 0.0)) if weight_metadata['bic_standardized'].get(m) is not None else None
+                models[m]['standardized_hyvarinen'] = float(weight_metadata['hyvarinen_standardized'].get(m, 0.0)) if weight_metadata['hyvarinen_standardized'].get(m) is not None else None
+                models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
+            else:
+                # Legacy: log of weight
+                models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
         
         # =====================================================================
         # Step 4: Apply temporal smoothing
@@ -2878,10 +3120,10 @@ def fit_regime_model_posterior(
         # Compute best scores for metadata
         finite_bics = [b for b in bic_values.values() if np.isfinite(b)]
         finite_hyvs = [h for h in hyvarinen_scores.values() if np.isfinite(h)]
-        finite_combined = [models[m].get('combined_score', float('-inf')) for m in models if np.isfinite(models[m].get('combined_score', float('-inf')))]
+        finite_combined = [models[m].get('combined_score', float('inf')) for m in models if np.isfinite(models[m].get('combined_score', float('inf')))]
         
-        # Best model by combined score
-        best_model_by_combined = max(models.items(), key=lambda kv: kv[1].get('combined_score', float('-inf')))[0] if models else None
+        # Best model by combined score (lowest = best for standardized scores)
+        best_model_by_combined = min(models.items(), key=lambda kv: kv[1].get('combined_score', float('inf')))[0] if models else None
         
         regime_results[regime] = {
             "model_posterior": model_posterior,
@@ -2894,7 +3136,10 @@ def fit_regime_model_posterior(
                 "borrowed_from_global": False,
                 "bic_min": float(min(finite_bics)) if finite_bics else None,
                 "hyvarinen_max": float(max(finite_hyvs)) if finite_hyvs else None,
-                "combined_score_max": float(max(finite_combined)) if finite_combined else None,
+                # For standardized scores, lower = better, so we store min
+                "combined_score_min": float(min(finite_combined)) if finite_combined else None,
+                # Keep combined_score_max for backward compatibility (set to min)
+                "combined_score_max": float(min(finite_combined)) if finite_combined else None,
                 "best_model_by_combined": best_model_by_combined,
                 "model_selection_method": model_selection_method,
                 "effective_selection_method": effective_method,  # Actual method used (may differ due to hard gate)
@@ -2985,19 +3230,30 @@ def tune_regime_model_averaging(
     # Compute global model posterior using specified method
     global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models}
     global_hyvarinen = {m: global_models[m].get("hyvarinen_score", float('-inf')) for m in global_models}
+    global_weight_metadata = None
     
     if model_selection_method == 'bic':
         global_raw_weights = compute_bic_model_weights(global_bic)
     elif model_selection_method == 'hyvarinen':
         global_raw_weights = compute_hyvarinen_model_weights(global_hyvarinen)
     else:
-        # Default: combined
-        global_raw_weights = compute_combined_model_weights(global_bic, global_hyvarinen, bic_weight=bic_weight)
+        # Default: combined with entropy regularization
+        global_raw_weights, global_weight_metadata = compute_combined_model_weights(
+            global_bic, global_hyvarinen, bic_weight=bic_weight,
+            lambda_entropy=DEFAULT_ENTROPY_LAMBDA
+        )
     
-    # Store combined_score in each global model (log of unnormalized weight, higher = better)
+    # Store combined_score and entropy-regularized weights in each global model
     for m in global_models:
         w = global_raw_weights.get(m, 1e-10)
-        global_models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
+        if global_weight_metadata is not None:
+            global_models[m]['combined_score'] = float(global_weight_metadata['combined_scores_standardized'].get(m, 0.0))
+            global_models[m]['model_weight_entropy'] = float(w)
+            global_models[m]['standardized_bic'] = float(global_weight_metadata['bic_standardized'].get(m, 0.0)) if global_weight_metadata['bic_standardized'].get(m) is not None else None
+            global_models[m]['standardized_hyvarinen'] = float(global_weight_metadata['hyvarinen_standardized'].get(m, 0.0)) if global_weight_metadata['hyvarinen_standardized'].get(m) is not None else None
+            global_models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
+        else:
+            global_models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
     
     global_posterior = normalize_weights(global_raw_weights)
     
@@ -3217,18 +3473,29 @@ def tune_asset_with_bma(
             # Compute global posterior using specified method
             global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models}
             global_hyvarinen = {m: global_models[m].get("hyvarinen_score", float('-inf')) for m in global_models}
+            fallback_weight_metadata = None
             
             if model_selection_method == 'bic':
                 global_raw_weights = compute_bic_model_weights(global_bic)
             elif model_selection_method == 'hyvarinen':
                 global_raw_weights = compute_hyvarinen_model_weights(global_hyvarinen)
             else:
-                global_raw_weights = compute_combined_model_weights(global_bic, global_hyvarinen, bic_weight=bic_weight)
+                global_raw_weights, fallback_weight_metadata = compute_combined_model_weights(
+                    global_bic, global_hyvarinen, bic_weight=bic_weight,
+                    lambda_entropy=DEFAULT_ENTROPY_LAMBDA
+                )
             
-            # Store combined_score in each global model (log of unnormalized weight, higher = better)
+            # Store combined_score and entropy-regularized weights in each global model
             for m in global_models:
                 w = global_raw_weights.get(m, 1e-10)
-                global_models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
+                if fallback_weight_metadata is not None:
+                    global_models[m]['combined_score'] = float(fallback_weight_metadata['combined_scores_standardized'].get(m, 0.0))
+                    global_models[m]['model_weight_entropy'] = float(w)
+                    global_models[m]['standardized_bic'] = float(fallback_weight_metadata['bic_standardized'].get(m, 0.0)) if fallback_weight_metadata['bic_standardized'].get(m) is not None else None
+                    global_models[m]['standardized_hyvarinen'] = float(fallback_weight_metadata['hyvarinen_standardized'].get(m, 0.0)) if fallback_weight_metadata['hyvarinen_standardized'].get(m) is not None else None
+                    global_models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
+                else:
+                    global_models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
             
             global_posterior = normalize_weights(global_raw_weights)
             
@@ -3247,12 +3514,13 @@ def tune_asset_with_bma(
             ]
             global_bic_min = min(global_bic_scores) if global_bic_scores else None
             
+            # For standardized scores, best is lowest (closest to zero or most negative)
             global_combined_scores = [
-                global_models[m].get("combined_score", float('-inf')) 
+                global_models[m].get("combined_score", float('inf')) 
                 for m in global_models 
-                if global_models[m].get("fit_success", False) and np.isfinite(global_models[m].get("combined_score", float('-inf')))
+                if global_models[m].get("fit_success", False) and np.isfinite(global_models[m].get("combined_score", float('inf')))
             ]
-            global_combined_score_max = max(global_combined_scores) if global_combined_scores else None
+            global_combined_score_min = min(global_combined_scores) if global_combined_scores else None
             
             return {
                 "asset": asset,
@@ -3260,10 +3528,14 @@ def tune_asset_with_bma(
                     "model_posterior": global_posterior,
                     "models": global_models,
                     "hyvarinen_max": float(global_hyvarinen_max) if global_hyvarinen_max is not None and np.isfinite(global_hyvarinen_max) else None,
-                    "combined_score_max": float(global_combined_score_max) if global_combined_score_max is not None and np.isfinite(global_combined_score_max) else None,
+                    # For standardized scores, lower = better, so we store min
+                    "combined_score_min": float(global_combined_score_min) if global_combined_score_min is not None and np.isfinite(global_combined_score_min) else None,
+                    # Keep combined_score_max for backward compatibility (set to min for standardized)
+                    "combined_score_max": float(global_combined_score_min) if global_combined_score_min is not None and np.isfinite(global_combined_score_min) else None,
                     "bic_min": float(global_bic_min) if global_bic_min is not None and np.isfinite(global_bic_min) else None,
                     "model_selection_method": model_selection_method,
                     "bic_weight": bic_weight if model_selection_method == 'combined' else None,
+                    "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
                 },
                 "regime": None,
                 "regime_counts": None,
