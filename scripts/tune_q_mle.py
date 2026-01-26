@@ -2485,53 +2485,6 @@ def compute_combined_model_weights(
     return weights, metadata
 
 
-def compute_combined_model_weights_legacy(
-    bic_values: Dict[str, float],
-    hyvarinen_scores: Dict[str, float],
-    bic_weight: float = 0.5,
-    epsilon: float = 1e-10
-) -> Dict[str, float]:
-    """
-    LEGACY: Original combined weights using geometric mean.
-    
-    Kept for backward compatibility. Use compute_combined_model_weights for
-    the improved entropy-regularized version.
-    
-    Args:
-        bic_values: Dictionary mapping model name to BIC value
-        hyvarinen_scores: Dictionary mapping model name to Hyvärinen score
-        bic_weight: Weight for BIC (0 = pure Hyvärinen, 1 = pure BIC)
-        epsilon: Small constant to prevent zero weights
-        
-    Returns:
-        Dictionary of unnormalized combined weights
-    """
-    # Standardize both score types
-    bic_standardized = robust_standardize_scores(bic_values)
-    hyv_standardized = robust_standardize_scores(hyvarinen_scores)
-    
-    # Get BIC-based weights (from standardized scores)
-    # Note: For BIC, lower is better, so we negate for weight computation
-    bic_for_weights = {m: -v for m, v in bic_standardized.items()}
-    bic_weights = compute_bic_model_weights_from_scores(bic_for_weights, epsilon)
-    
-    # Get Hyvärinen-based weights (from standardized scores)
-    # Note: For Hyvärinen, higher is better
-    hyvarinen_weights = compute_hyvarinen_model_weights(hyv_standardized, epsilon)
-    
-    # Combine via geometric mean
-    combined = {}
-    for model_name in bic_weights:
-        w_bic = bic_weights.get(model_name, epsilon)
-        w_hyv = hyvarinen_weights.get(model_name, epsilon)
-        
-        # Geometric combination: w_bic^α * w_hyv^(1-α)
-        w_combined = (w_bic ** bic_weight) * (w_hyv ** (1.0 - bic_weight))
-        combined[model_name] = max(w_combined, epsilon)
-    
-    return combined
-
-
 def compute_bic_model_weights_from_scores(
     scores: Dict[str, float],
     epsilon: float = 1e-10
@@ -3136,15 +3089,13 @@ def fit_regime_model_posterior(
                 "borrowed_from_global": False,
                 "bic_min": float(min(finite_bics)) if finite_bics else None,
                 "hyvarinen_max": float(max(finite_hyvs)) if finite_hyvs else None,
-                # For standardized scores, lower = better, so we store min
                 "combined_score_min": float(min(finite_combined)) if finite_combined else None,
-                # Keep combined_score_max for backward compatibility (set to min)
-                "combined_score_max": float(min(finite_combined)) if finite_combined else None,
                 "best_model_by_combined": best_model_by_combined,
                 "model_selection_method": model_selection_method,
-                "effective_selection_method": effective_method,  # Actual method used (may differ due to hard gate)
-                "hyvarinen_disabled": hyvarinen_disabled,  # True if Hyvärinen was disabled due to small sample size
+                "effective_selection_method": effective_method,
+                "hyvarinen_disabled": hyvarinen_disabled,
                 "bic_weight": bic_weight if model_selection_method == 'combined' else None,
+                "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
                 "smoothing_applied": prev_posterior is not None and temporal_alpha > 0,
             }
         }
@@ -3325,23 +3276,24 @@ def tune_regime_model_averaging(
     ]
     global_bic_min = min(global_bic_scores) if global_bic_scores else None
     
-    # Compute global combined_score_max for metadata
+    # Compute global combined_score_min for metadata (lower = better for standardized scores)
     global_combined_scores = [
-        global_models[m].get("combined_score", float('-inf')) 
+        global_models[m].get("combined_score", float('inf')) 
         for m in global_models 
-        if global_models[m].get("fit_success", False) and np.isfinite(global_models[m].get("combined_score", float('-inf')))
+        if global_models[m].get("fit_success", False) and np.isfinite(global_models[m].get("combined_score", float('inf')))
     ]
-    global_combined_score_max = max(global_combined_scores) if global_combined_scores else None
+    global_combined_score_min = min(global_combined_scores) if global_combined_scores else None
     
     result = {
         "global": {
             "model_posterior": global_posterior,
             "models": global_models,
             "hyvarinen_max": float(global_hyvarinen_max) if global_hyvarinen_max is not None and np.isfinite(global_hyvarinen_max) else None,
-            "combined_score_max": float(global_combined_score_max) if global_combined_score_max is not None and np.isfinite(global_combined_score_max) else None,
+            "combined_score_min": float(global_combined_score_min) if global_combined_score_min is not None and np.isfinite(global_combined_score_min) else None,
             "bic_min": float(global_bic_min) if global_bic_min is not None and np.isfinite(global_bic_min) else None,
             "model_selection_method": model_selection_method,
             "bic_weight": bic_weight if model_selection_method == 'combined' else None,
+            "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
         },
         "regime": regime_results,
         "meta": {
@@ -3528,10 +3480,7 @@ def tune_asset_with_bma(
                     "model_posterior": global_posterior,
                     "models": global_models,
                     "hyvarinen_max": float(global_hyvarinen_max) if global_hyvarinen_max is not None and np.isfinite(global_hyvarinen_max) else None,
-                    # For standardized scores, lower = better, so we store min
                     "combined_score_min": float(global_combined_score_min) if global_combined_score_min is not None and np.isfinite(global_combined_score_min) else None,
-                    # Keep combined_score_max for backward compatibility (set to min for standardized)
-                    "combined_score_max": float(global_combined_score_min) if global_combined_score_min is not None and np.isfinite(global_combined_score_min) else None,
                     "bic_min": float(global_bic_min) if global_bic_min is not None and np.isfinite(global_bic_min) else None,
                     "model_selection_method": model_selection_method,
                     "bic_weight": bic_weight if model_selection_method == 'combined' else None,
@@ -3546,6 +3495,7 @@ def tune_asset_with_bma(
                     "n_obs": len(returns),
                     "model_selection_method": model_selection_method,
                     "bic_weight": bic_weight if model_selection_method == 'combined' else None,
+                    "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
                     "fallback_reason": "insufficient_data_for_regime_bma",
                 },
                 "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),

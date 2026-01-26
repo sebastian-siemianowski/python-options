@@ -1218,10 +1218,11 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
             # Model selection metadata from tune_q_mle.py
             'model_selection_method': raw_data.get('meta', {}).get('model_selection_method', 'combined'),
             'bic_weight': raw_data.get('meta', {}).get('bic_weight', 0.5),
+            'entropy_lambda': raw_data.get('meta', {}).get('entropy_lambda', 0.05),
             
             # Global-level aggregates (from global block or computed)
             'hyvarinen_max': global_data.get('hyvarinen_max'),
-            'combined_score_max': global_data.get('combined_score_max'),
+            'combined_score_min': global_data.get('combined_score_min'),
             'bic_min': global_data.get('bic_min'),
             
             # Metadata
@@ -1341,10 +1342,11 @@ def _select_regime_params(
             'bic': best_params.get('bic'),
             # Regime-level aggregates from regime_meta
             'hyvarinen_max': regime_meta.get('hyvarinen_max'),
-            'combined_score_max': regime_meta.get('combined_score_max'),
+            'combined_score_min': regime_meta.get('combined_score_min'),
             'bic_min': regime_meta.get('bic_min'),
             'model_selection_method': regime_meta.get('model_selection_method', 'combined'),
             'bic_weight': regime_meta.get('bic_weight', 0.5),
+            'entropy_lambda': regime_meta.get('entropy_lambda', 0.05),
         }
         # Validate nu
         if theta['nu'] is not None and (not np.isfinite(theta['nu']) or theta['nu'] <= 2.0):
@@ -1374,10 +1376,11 @@ def _select_regime_params(
             'bic': best_params.get('bic'),
             # Global-level aggregates
             'hyvarinen_max': global_data.get('hyvarinen_max'),
-            'combined_score_max': global_data.get('combined_score_max'),
+            'combined_score_min': global_data.get('combined_score_min'),
             'bic_min': global_data.get('bic_min'),
             'model_selection_method': global_data.get('model_selection_method', 'combined'),
             'bic_weight': global_data.get('bic_weight', 0.5),
+            'entropy_lambda': global_data.get('entropy_lambda', 0.05),
         }
 
 
@@ -1800,7 +1803,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         # Get global-level aggregate scores
         global_hyv_max = tuned_params.get('hyvarinen_max')
         global_bic_min = tuned_params.get('bic_min')
-        global_comb_max = tuned_params.get('combined_score_max')
+        global_comb_min = tuned_params.get('combined_score_min')
         
         # Build summary text
         summary_parts = []
@@ -1808,8 +1811,9 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             summary_parts.append(f"BIC↓ {global_bic_min:.1f}")
         if global_hyv_max is not None and np.isfinite(global_hyv_max):
             summary_parts.append(f"Hyvärinen↑ {global_hyv_max:.1f}")
-        if global_comb_max is not None and np.isfinite(global_comb_max):
-            summary_parts.append(f"Combined↑ {global_comb_max:.2f}")
+        if global_comb_min is not None and np.isfinite(global_comb_min):
+            summary_parts.append(f"Combined↓ {global_comb_min:.2f}")
+        summary_text = " • ".join(summary_parts) if summary_parts else ""
         summary_text = " • ".join(summary_parts) if summary_parts else ""
         
         # Print with elegant layout
@@ -1890,10 +1894,11 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 "combined_score": tuned_params.get("combined_score") if tuned_params else None,
                 # Global-level aggregates for model selection
                 "hyvarinen_max": tuned_params.get("hyvarinen_max") if tuned_params else None,
-                "combined_score_max": tuned_params.get("combined_score_max") if tuned_params else None,
+                "combined_score_min": tuned_params.get("combined_score_min") if tuned_params else None,
                 "bic_min": tuned_params.get("bic_min") if tuned_params else None,
                 "model_selection_method": tuned_params.get("model_selection_method", "combined") if tuned_params else "combined",
                 "bic_weight": tuned_params.get("bic_weight", 0.5) if tuned_params else 0.5,
+                "entropy_lambda": tuned_params.get("entropy_lambda", 0.05) if tuned_params else 0.05,
                 "model_posterior": tuned_params.get("model_posterior", {}) if tuned_params else {},
                 "best_model": tuned_params.get("best_model") if tuned_params else best_model,
             }
@@ -3486,8 +3491,9 @@ def bayesian_model_average_mc(
         "effective_selection_method": epistemic_meta.get('method', 'combined') if not epistemic_meta.get('fallback_to_bic') else 'bic',
         "hyvarinen_disabled": regime_meta.get('hyvarinen_disabled', False) or epistemic_meta.get('fallback_to_bic', False),
         "bic_weight": regime_meta.get('bic_weight', 0.5),
+        "entropy_lambda": regime_meta.get('entropy_lambda', 0.05),
         "hyvarinen_max": regime_meta.get('hyvarinen_max'),
-        "combined_score_max": regime_meta.get('combined_score_max'),
+        "combined_score_min": regime_meta.get('combined_score_min'),
         "bic_min": regime_meta.get('bic_min'),
     }
     
