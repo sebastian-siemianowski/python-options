@@ -1732,21 +1732,31 @@ def tune_asset_q(
         delta_ll_vs_ewma = float(ll_full - ll_ewma)
 
         # Aggregate model comparison metrics for diagnostics and cache
+        # Compute Hyvärinen scores for Kalman models
+        forecast_std_gauss = np.sqrt(c_gauss * (vol_arr ** 2) + P_gauss)
+        hyv_gauss = compute_hyvarinen_score_gaussian(returns_arr, mu_gauss, forecast_std_gauss)
+        
+        forecast_std_phi = np.sqrt(c_phi * (vol_arr ** 2) + P_phi)
+        hyv_phi = compute_hyvarinen_score_gaussian(returns_arr, mu_phi, forecast_std_phi)
+        
         model_comparison = {
-            'zero_drift': {'ll': ll_zero, 'aic': aic_zero, 'bic': bic_zero, 'n_params': 0},
-            'constant_drift': {'ll': ll_const, 'aic': aic_const, 'bic': bic_const, 'n_params': 1, 'mu': float(mu_const)},
-            'ewma_drift': {'ll': ll_ewma, 'aic': aic_ewma, 'bic': bic_ewma, 'n_params': 1},
-            'kalman_gaussian': {'ll': ll_gauss_full, 'aic': aic_gauss, 'bic': bic_gauss, 'n_params': 2},
-            'kalman_phi_gaussian': {'ll': ll_phi_full, 'aic': aic_phi, 'bic': bic_phi, 'n_params': 3, 'phi': float(phi_opt)},
+            'zero_drift': {'ll': ll_zero, 'aic': aic_zero, 'bic': bic_zero, 'n_params': 0, 'hyvarinen_score': None},
+            'constant_drift': {'ll': ll_const, 'aic': aic_const, 'bic': bic_const, 'n_params': 1, 'mu': float(mu_const), 'hyvarinen_score': None},
+            'ewma_drift': {'ll': ll_ewma, 'aic': aic_ewma, 'bic': bic_ewma, 'n_params': 1, 'hyvarinen_score': None},
+            'kalman_gaussian': {'ll': ll_gauss_full, 'aic': aic_gauss, 'bic': bic_gauss, 'n_params': 2, 'hyvarinen_score': float(hyv_gauss)},
+            'kalman_phi_gaussian': {'ll': ll_phi_full, 'aic': aic_phi, 'bic': bic_phi, 'n_params': 3, 'phi': float(phi_opt), 'hyvarinen_score': float(hyv_phi)},
         }
-        if student_t_fit_success:
+        if student_t_fit_success and c_student is not None:
+            forecast_std_student = np.sqrt(c_student * (vol_arr ** 2) + P_student)
+            hyv_student = compute_hyvarinen_score_student_t(returns_arr, mu_student, forecast_std_student, nu_student)
             model_comparison['kalman_phi_student_t'] = {
                 'll': ll_student_full,
                 'aic': aic_student,
                 'bic': bic_student,
                 'n_params': 4,
                 'phi': float(phi_student),
-                'nu': float(nu_student)
+                'nu': float(nu_student),
+                'hyvarinen_score': float(hyv_student)
             }
         
         # Best model across baselines and Kalman variants by BIC
@@ -1772,12 +1782,18 @@ def tune_asset_q(
                 _log(f"  ⚠️  Calibration warning (PIT p={ks_pvalue:.4f})")
 
         # Build result dictionary with extended schema
+        # Get hyvarinen score for the selected model
+        selected_hyvarinen = model_comparison.get(noise_model, {}).get('hyvarinen_score')
+        if selected_hyvarinen is None and noise_model == 'kalman_phi_student_t':
+            selected_hyvarinen = model_comparison.get('kalman_phi_student_t', {}).get('hyvarinen_score')
+        
         result = {
             # Asset identifier
             'asset': asset,
 
             # Model selection
             'noise_model': noise_model,  # "gaussian", "phi_gaussian", or "kalman_phi_student_t"
+            'model_selection_method': 'combined',  # Always use combined for consistency
 
             # Parameters
             'q': float(q_optimal),
@@ -1794,6 +1810,7 @@ def tune_asset_q(
             'delta_ll_vs_ewma': float(delta_ll_vs_ewma),
             'aic': float(aic_final),
             'bic': float(bic_final),
+            'hyvarinen_score': float(selected_hyvarinen) if selected_hyvarinen is not None else None,
 
             # Upgrade #4: Model comparison results
             'model_comparison': model_comparison,
@@ -4418,10 +4435,11 @@ Examples:
             model_comp = mc.get('model_comparison', {})
             selected = mc.get('selected_model', 'unknown')
             best_bic = mc.get('best_model_by_bic', 'unknown')
+            model_sel_method = mc.get('model_selection_method', 'combined')
             
-            print(f"\n  {asset_name}:")
+            print(f"\n  {asset_name} (selection: {model_sel_method}):")
             
-            # Print each baseline/model
+            # Print each baseline/model with Hyvärinen score where available
             if 'zero_drift' in model_comp:
                 m = model_comp['zero_drift']
                 print(f"     Zero-drift:     LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}")
@@ -4437,24 +4455,28 @@ Examples:
             
             if 'kalman_gaussian' in model_comp:
                 m = model_comp['kalman_gaussian']
-                print(f"     Kalman-Gaussian: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}")
+                hyv_str = f", H={m['hyvarinen_score']:.1f}" if m.get('hyvarinen_score') is not None else ""
+                print(f"     Kalman-Gaussian: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{hyv_str}")
             
             if 'kalman_phi_gaussian' in model_comp:
                 m = model_comp['kalman_phi_gaussian']
                 phi_str = f", φ={m.get('phi', 0):+.3f}" if 'phi' in m else ""
-                print(f"     Kalman-φ-Gaussian: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}")
+                hyv_str = f", H={m['hyvarinen_score']:.1f}" if m.get('hyvarinen_score') is not None else ""
+                print(f"     Kalman-φ-Gaussian: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}{hyv_str}")
             
             if 'kalman_phi_student_t' in model_comp:
                 m = model_comp['kalman_phi_student_t']
                 phi_str = f", φ={m.get('phi', 0):+.3f}" if 'phi' in m else ""
                 nu_str = f", ν={m.get('nu', 0):.1f}" if 'nu' in m else ""
-                print(f"     Kalman-φ-Student-t: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}{nu_str}")
+                hyv_str = f", H={m['hyvarinen_score']:.1f}" if m.get('hyvarinen_score') is not None else ""
+                print(f"     Kalman-φ-Student-t: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}{nu_str}{hyv_str}")
             
-            # Selected model
+            # Selected model with Hyvärinen score
             ll_sel = mc.get('log_likelihood', float('nan'))
-            aic_sel = mc.get('aic', float('nan'))
             bic_sel = mc.get('bic', float('nan'))
-            print(f"     Selected:        LL={ll_sel:.1f}, AIC={aic_sel:.1f}, BIC={bic_sel:.1f} ({selected})")
+            hyv_sel = mc.get('hyvarinen_score')
+            hyv_summary = f", H={hyv_sel:.1f}" if hyv_sel is not None else ""
+            print(f"     Selected:        LL={ll_sel:.1f}, BIC={bic_sel:.1f}{hyv_summary} ({selected})")
 
     # Regime Distributions Summary
     if regime_distributions:
