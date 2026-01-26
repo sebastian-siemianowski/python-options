@@ -3091,7 +3091,6 @@ def compute_model_posteriors_from_combined_score(
     models: Dict[str, Dict],
     temperature: float = 1.0,
     epsilon: float = 1e-10,
-    require_complete_hyvarinen: bool = True
 ) -> Tuple[Dict[str, float], Dict]:
     """
     Convert combined scores into normalized posterior weights.
@@ -3099,153 +3098,59 @@ def compute_model_posteriors_from_combined_score(
     This is the EPISTEMIC WEIGHTING step that ensures Hyvärinen scores
     directly influence signal generation.
     
-    The combined_score is log(w_combined) where:
-        w_combined = w_bic^α * w_hyvarinen^(1-α)
+    The combined_score is the entropy-regularized standardized score where:
+        combined_score = w_bic * BIC_std - (1-w_bic) * Hyv_std
     
-    So to get normalized posteriors:
-        p(m) = exp(combined_score_m) / Σ_k exp(combined_score_k)
+    Lower combined_score = better model.
     
-    This is equivalent to softmax over combined_score.
-    
-    EPISTEMIC INTEGRITY (Issue #3 Fix):
-    When combined selection is requested but some models lack Hyvärinen scores,
-    we must NOT silently include them with partial scoring. Options:
-    1. Drop models without complete scores (require_complete_hyvarinen=True)
-    2. Fall back to BIC-only for ALL models (explicit degradation)
-    
-    Silence here = epistemic leak. We make the fallback EXPLICIT in metadata.
+    To get normalized posteriors we use softmax over NEGATED scores:
+        p(m) = exp(-combined_score_m / T) / Σ_k exp(-combined_score_k / T)
     
     Args:
         models: Dictionary mapping model_name -> model_params dict
-                Each model_params should have 'combined_score' and 'hyvarinen_score'
+                Each model_params must have 'combined_score'
         temperature: Softmax temperature (1.0 = standard, <1 = sharper, >1 = smoother)
         epsilon: Small constant to prevent zero weights
-        require_complete_hyvarinen: If True, models without hyvarinen_score are excluded
-                                   If False, fall back to BIC-only for the entire set
         
     Returns:
         Tuple of:
         - Dictionary mapping model_name -> posterior weight p(m)
-        - Metadata dict with fallback information
+        - Metadata dict
     """
     metadata = {
         "method": "combined",
-        "fallback_to_bic": False,
-        "models_excluded_missing_hyvarinen": [],
-        "hyvarinen_coverage": 0.0,
+        "temperature": temperature,
     }
     
-    # =========================================================================
-    # CHECK HYVARINEN COVERAGE (Issue #3 - Silent Bias Path)
-    # =========================================================================
-    # A model without Hyvärinen score should NOT win via BIC alone when
-    # "combined" selection is requested. That breaks the meaning of "combined".
-    # =========================================================================
-    
+    # Extract valid models with combined scores
     valid_models = {}
-    models_missing_hyvarinen = []
-    
     for model_name, model_params in models.items():
         if not isinstance(model_params, dict):
             continue
         if not model_params.get('fit_success', True):
             continue
         
-        hyv = model_params.get('hyvarinen_score')
-        has_valid_hyvarinen = hyv is not None and np.isfinite(hyv)
-        
-        if has_valid_hyvarinen:
-            valid_models[model_name] = model_params
-        else:
-            models_missing_hyvarinen.append(model_name)
-    
-    n_total = len(valid_models) + len(models_missing_hyvarinen)
-    hyvarinen_coverage = len(valid_models) / max(n_total, 1)
-    metadata["hyvarinen_coverage"] = hyvarinen_coverage
-    metadata["models_excluded_missing_hyvarinen"] = models_missing_hyvarinen
-    
-    # Decide how to handle incomplete Hyvärinen coverage
-    if models_missing_hyvarinen:
-        if require_complete_hyvarinen:
-            # Option 1: Exclude models without Hyvärinen (only use complete ones)
-            if not valid_models:
-                # ALL models missing Hyvärinen → must fall back to BIC
-                metadata["fallback_to_bic"] = True
-                metadata["fallback_reason"] = "all_models_missing_hyvarinen"
-                valid_models = {
-                    m: p for m, p in models.items()
-                    if isinstance(p, dict) and p.get('fit_success', True)
-                }
-        else:
-            # Option 2: Fall back to BIC-only for entire set (explicit degradation)
-            metadata["fallback_to_bic"] = True
-            metadata["fallback_reason"] = f"incomplete_hyvarinen_coverage_{len(models_missing_hyvarinen)}_models"
-            valid_models = {
-                m: p for m, p in models.items()
-                if isinstance(p, dict) and p.get('fit_success', True)
-            }
+        combined_score = model_params.get('combined_score')
+        if combined_score is not None and np.isfinite(combined_score):
+            valid_models[model_name] = combined_score
     
     if not valid_models:
         return {}, metadata
     
-    # =========================================================================
-    # COMPUTE POSTERIORS
-    # =========================================================================
+    # Convert to arrays for softmax
+    model_names = list(valid_models.keys())
+    scores = np.array([valid_models[m] for m in model_names])
     
-    if metadata["fallback_to_bic"]:
-        # BIC-only fallback: use -0.5 * BIC as score
-        scores = {}
-        for model_name, model_params in valid_models.items():
-            bic = model_params.get('bic', float('inf'))
-            if np.isfinite(bic):
-                scores[model_name] = -0.5 * bic
-            else:
-                scores[model_name] = float('-inf')
-    else:
-        # Combined scores available
-        scores = {}
-        for model_name, model_params in valid_models.items():
-            combined_score = model_params.get('combined_score')
-            
-            if combined_score is not None and np.isfinite(combined_score):
-                scores[model_name] = combined_score
-            else:
-                # This shouldn't happen if valid_models only has complete ones
-                # But handle gracefully: use -0.5 * BIC as fallback
-                bic = model_params.get('bic', float('inf'))
-                if np.isfinite(bic):
-                    scores[model_name] = -0.5 * bic
-                else:
-                    scores[model_name] = float('-inf')
+    # Softmax over NEGATED scores (lower score = better = higher weight)
+    # With numerical stabilization
+    neg_scores = -scores / temperature
+    neg_scores = neg_scores - neg_scores.max()  # Numerical stability
     
-    if not scores:
-        return {}, metadata
+    weights = np.exp(neg_scores)
+    weights = np.maximum(weights, epsilon)
+    weights = weights / weights.sum()
     
-    # Numerical stabilization: subtract max to prevent overflow
-    max_score = max(scores.values())
-    if not np.isfinite(max_score):
-        # All scores are -inf, return uniform
-        n_models = len(scores)
-        return {m: 1.0 / n_models for m in scores}, metadata
-    
-    # Compute softmax with temperature
-    weights = {}
-    total = 0.0
-    for model_name, score in scores.items():
-        if np.isfinite(score):
-            w = np.exp((score - max_score) / temperature)
-            weights[model_name] = max(w, epsilon)
-            total += weights[model_name]
-        else:
-            weights[model_name] = epsilon
-            total += epsilon
-    
-    # Normalize
-    if total > 0:
-        for m in weights:
-            weights[m] /= total
-    
-    return weights, metadata
+    return dict(zip(model_names, weights)), metadata
 
 
 def bayesian_model_average_mc(
@@ -3382,22 +3287,25 @@ def bayesian_model_average_mc(
     #
     # This is the "epistemic weighting" step from the architecture.
     #
-    # EPISTEMIC INTEGRITY (Issue #3 Fix):
-    # If combined selection is requested but models lack Hyvärinen scores,
-    # we explicitly fall back to BIC-only rather than silently mixing.
+    # ========================================================================
+    # EPISTEMIC WEIGHTING: Recompute posteriors from combined scores
     # ========================================================================
     recomputed_posterior, epistemic_meta = compute_model_posteriors_from_combined_score(models)
     
-    if recomputed_posterior:
-        # Use recomputed posteriors if available
-        cached_posterior = model_posterior  # Keep for diagnostics
-        model_posterior = recomputed_posterior
-        posteriors_recomputed = True
-    else:
-        # Fall back to cached posteriors
-        cached_posterior = model_posterior
-        posteriors_recomputed = False
-        epistemic_meta = {"method": "cached", "fallback_to_bic": False}
+    if not recomputed_posterior:
+        # Cache is invalid - models are missing combined_score
+        # This indicates the cache was generated with an old version and must be regenerated
+        model_names = list(models.keys())
+        missing_scores = [m for m in model_names if not models.get(m, {}).get('combined_score')]
+        raise ValueError(
+            f"Invalid cache: models missing combined_score: {missing_scores}. "
+            f"Cache must be regenerated with 'make tune --force' to include "
+            f"entropy-regularized BIC+Hyvärinen combined scores."
+        )
+    
+    cached_posterior = model_posterior
+    model_posterior = recomputed_posterior
+    posteriors_recomputed = True
     
     # ========================================================================
     # BAYESIAN MODEL AVERAGING: Draw samples from mixture over models
@@ -3482,14 +3390,14 @@ def bayesian_model_average_mc(
         "model_posterior": {m: float(w) for m, w in model_posterior.items()},
         "model_details": model_details,
         "n_total_samples": len(r_samples),
-        # Epistemic weighting diagnostics (Issue #3 fix)
+        # Epistemic weighting diagnostics
         "posteriors_recomputed": posteriors_recomputed,
         "cached_posterior": {m: float(w) for m, w in cached_posterior.items()} if posteriors_recomputed else None,
-        "epistemic_weighting": epistemic_meta,  # Contains fallback_to_bic, hyvarinen_coverage, etc.
+        "epistemic_weighting": epistemic_meta,
         # Model selection diagnostics
         "model_selection_method": regime_meta.get('model_selection_method', 'combined'),
-        "effective_selection_method": epistemic_meta.get('method', 'combined') if not epistemic_meta.get('fallback_to_bic') else 'bic',
-        "hyvarinen_disabled": regime_meta.get('hyvarinen_disabled', False) or epistemic_meta.get('fallback_to_bic', False),
+        "effective_selection_method": epistemic_meta.get('method', 'combined'),
+        "hyvarinen_disabled": regime_meta.get('hyvarinen_disabled', False),
         "bic_weight": regime_meta.get('bic_weight', 0.5),
         "entropy_lambda": regime_meta.get('entropy_lambda', 0.05),
         "hyvarinen_max": regime_meta.get('hyvarinen_max'),
