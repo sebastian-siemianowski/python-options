@@ -3082,6 +3082,87 @@ def run_regime_specific_mc(
     return cum_mu + cum_eps
 
 
+def compute_model_posteriors_from_combined_score(
+    models: Dict[str, Dict],
+    temperature: float = 1.0,
+    epsilon: float = 1e-10
+) -> Dict[str, float]:
+    """
+    Convert combined scores into normalized posterior weights.
+    
+    This is the EPISTEMIC WEIGHTING step that ensures Hyvärinen scores
+    directly influence signal generation.
+    
+    The combined_score is log(w_combined) where:
+        w_combined = w_bic^α * w_hyvarinen^(1-α)
+    
+    So to get normalized posteriors:
+        p(m) = exp(combined_score_m) / Σ_k exp(combined_score_k)
+    
+    This is equivalent to softmax over combined_score.
+    
+    Args:
+        models: Dictionary mapping model_name -> model_params dict
+                Each model_params must have 'combined_score' (or fallback to BIC)
+        temperature: Softmax temperature (1.0 = standard, <1 = sharper, >1 = smoother)
+        epsilon: Small constant to prevent zero weights
+        
+    Returns:
+        Dictionary mapping model_name -> posterior weight p(m)
+    """
+    # Extract combined scores for each model
+    scores = {}
+    for model_name, model_params in models.items():
+        if not isinstance(model_params, dict):
+            continue
+        if not model_params.get('fit_success', True):
+            continue
+        
+        # Prefer combined_score, fall back to computing from BIC
+        combined_score = model_params.get('combined_score')
+        
+        if combined_score is None or not np.isfinite(combined_score):
+            # Fallback: use -0.5 * BIC as log weight (standard BIC-based weighting)
+            bic = model_params.get('bic', float('inf'))
+            if np.isfinite(bic):
+                # BIC weight: exp(-0.5 * (BIC - BIC_min))
+                # For now just use -0.5 * BIC, will normalize later
+                combined_score = -0.5 * bic
+            else:
+                combined_score = float('-inf')
+        
+        scores[model_name] = combined_score
+    
+    if not scores:
+        return {}
+    
+    # Numerical stabilization: subtract max to prevent overflow
+    max_score = max(scores.values())
+    if not np.isfinite(max_score):
+        # All scores are -inf, return uniform
+        n_models = len(scores)
+        return {m: 1.0 / n_models for m in scores}
+    
+    # Compute softmax with temperature
+    weights = {}
+    total = 0.0
+    for model_name, score in scores.items():
+        if np.isfinite(score):
+            w = np.exp((score - max_score) / temperature)
+            weights[model_name] = max(w, epsilon)
+            total += weights[model_name]
+        else:
+            weights[model_name] = epsilon
+            total += epsilon
+    
+    # Normalize
+    if total > 0:
+        for m in weights:
+            weights[m] /= total
+    
+    return weights
+
+
 def bayesian_model_average_mc(
     feats: Dict[str, pd.Series],
     regime_params: Dict[int, Dict],
@@ -3205,6 +3286,30 @@ def bayesian_model_average_mc(
         }
     
     # ========================================================================
+    # EPISTEMIC WEIGHTING: Recompute posteriors from combined_score
+    # ========================================================================
+    # This ensures Hyvärinen scores directly influence signal generation.
+    # Even if cache has old posteriors, we recompute from combined_score.
+    # 
+    # The combined_score integrates both:
+    #   - BIC (model complexity penalty, consistency)
+    #   - Hyvärinen score (proper scoring, robustness under misspecification)
+    #
+    # This is the "epistemic weighting" step from the architecture.
+    # ========================================================================
+    recomputed_posterior = compute_model_posteriors_from_combined_score(models)
+    
+    if recomputed_posterior:
+        # Use recomputed posteriors if available
+        cached_posterior = model_posterior  # Keep for diagnostics
+        model_posterior = recomputed_posterior
+        posteriors_recomputed = True
+    else:
+        # Fall back to cached posteriors
+        cached_posterior = model_posterior
+        posteriors_recomputed = False
+    
+    # ========================================================================
     # BAYESIAN MODEL AVERAGING: Draw samples from mixture over models
     # ========================================================================
     # p(x | D, r_t) = Σ_m p(x | r_t, m, θ_m) · p(m | r_t)
@@ -3287,6 +3392,9 @@ def bayesian_model_average_mc(
         "model_posterior": {m: float(w) for m, w in model_posterior.items()},
         "model_details": model_details,
         "n_total_samples": len(r_samples),
+        # Epistemic weighting diagnostics
+        "posteriors_recomputed": posteriors_recomputed,
+        "cached_posterior": {m: float(w) for m, w in cached_posterior.items()} if posteriors_recomputed else None,
         # Model selection diagnostics
         "model_selection_method": regime_meta.get('model_selection_method', 'combined'),
         "bic_weight": regime_meta.get('bic_weight', 0.5),
