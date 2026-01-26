@@ -304,6 +304,11 @@ REGIME_LABELS = {
 # Minimum sample size per regime for stable parameter estimation
 MIN_REGIME_SAMPLES = 60
 
+# Minimum sample size for reliable Hyvärinen score computation
+# Below this threshold, Hyvärinen is DISABLED to prevent illusory smoothness
+# from small-n Student-t fits creating artificially good scores
+MIN_HYVARINEN_SAMPLES = 100
+
 
 def load_asset_list(assets_arg: Optional[str], assets_file: Optional[str]) -> List[str]:
     """Load list of assets from command-line argument or file."""
@@ -2216,9 +2221,18 @@ def compute_combined_model_weights(
     Uses geometric mean of BIC-based and Hyvärinen-based weights:
         w_combined(m) = w_bic(m)^bic_weight * w_hyvarinen(m)^(1-bic_weight)
     
+    IMPORTANT: Before combination, scores are standardized using MAD (Median Absolute
+    Deviation) to ensure scale-invariance:
+        B̃ = (B - median(B)) / MAD(B)
+        H̃ = (H - median(H)) / MAD(H)
+    
+    This prevents Hyvärinen from dominating in low-volatility/short-window regimes
+    where its raw magnitude may differ substantially from BIC.
+    
     This provides:
     - BIC consistency (selects true model as n → ∞)
     - Hyvärinen robustness (proper scoring under misspecification)
+    - Scale invariance (neither metric dominates due to scale differences)
     
     Args:
         bic_values: Dictionary mapping model name to BIC value
@@ -2229,11 +2243,47 @@ def compute_combined_model_weights(
     Returns:
         Dictionary of unnormalized combined weights
     """
-    # Get BIC-based weights
-    bic_weights = compute_bic_model_weights(bic_values, epsilon)
+    # =========================================================================
+    # SCALE-INVARIANT STANDARDIZATION (MAD-based)
+    # =========================================================================
+    # BIC and Hyvärinen live on fundamentally different scales.
+    # Raw combination is not invariant - this fixes that.
+    # =========================================================================
     
-    # Get Hyvärinen-based weights
-    hyvarinen_weights = compute_hyvarinen_model_weights(hyvarinen_scores, epsilon)
+    def mad_standardize(values: Dict[str, float]) -> Dict[str, float]:
+        """Standardize scores using Median Absolute Deviation."""
+        finite_vals = [v for v in values.values() if np.isfinite(v)]
+        if len(finite_vals) < 2:
+            # Not enough values to standardize, return as-is
+            return values
+        
+        median_val = np.median(finite_vals)
+        mad = np.median(np.abs(np.array(finite_vals) - median_val))
+        
+        # Avoid division by zero
+        if mad < 1e-10:
+            mad = 1.0
+        
+        standardized = {}
+        for k, v in values.items():
+            if np.isfinite(v):
+                standardized[k] = (v - median_val) / mad
+            else:
+                standardized[k] = v  # Keep non-finite as-is
+        return standardized
+    
+    # Standardize both score types
+    bic_standardized = mad_standardize(bic_values)
+    hyv_standardized = mad_standardize(hyvarinen_scores)
+    
+    # Get BIC-based weights (from standardized scores)
+    # Note: For BIC, lower is better, so we negate for weight computation
+    bic_for_weights = {m: -v for m, v in bic_standardized.items()}
+    bic_weights = compute_bic_model_weights_from_scores(bic_for_weights, epsilon)
+    
+    # Get Hyvärinen-based weights (from standardized scores)
+    # Note: For Hyvärinen (negated), higher is better
+    hyvarinen_weights = compute_hyvarinen_model_weights(hyv_standardized, epsilon)
     
     # Combine via geometric mean
     combined = {}
@@ -2246,6 +2296,41 @@ def compute_combined_model_weights(
         combined[model_name] = max(w_combined, epsilon)
     
     return combined
+
+
+def compute_bic_model_weights_from_scores(
+    scores: Dict[str, float],
+    epsilon: float = 1e-10
+) -> Dict[str, float]:
+    """
+    Convert scores to weights using softmax (higher score = higher weight).
+    
+    This is used internally after MAD standardization.
+    
+    Args:
+        scores: Dictionary mapping model name to score (higher = better)
+        epsilon: Small constant to prevent zero weights
+        
+    Returns:
+        Dictionary of unnormalized weights
+    """
+    finite_scores = [s for s in scores.values() if np.isfinite(s)]
+    if not finite_scores:
+        n_models = len(scores)
+        return {m: 1.0 / max(n_models, 1) for m in scores}
+    
+    score_max = max(finite_scores)
+    
+    weights = {}
+    for model_name, score in scores.items():
+        if np.isfinite(score):
+            delta = score - score_max
+            w = np.exp(delta)
+            weights[model_name] = max(w, epsilon)
+        else:
+            weights[model_name] = epsilon
+    
+    return weights
 
 
 # Default model selection method: 'bic', 'hyvarinen', or 'combined'
@@ -2740,11 +2825,22 @@ def fit_regime_model_posterior(
         #   'bic'       - Traditional BIC-based weights (consistent but not robust)
         #   'hyvarinen' - Hyvärinen score weights (robust under misspecification)
         #   'combined'  - Geometric mean of BIC and Hyvärinen (best of both)
+        #
+        # HARD GATE: Disable Hyvärinen for small-sample regimes
+        # Small-n Student-t fits can produce illusory smoothness → artificially 
+        # good Hyvärinen scores. This is epistemically incorrect.
         # =====================================================================
-        if model_selection_method == 'bic':
+        hyvarinen_disabled = n_samples < MIN_HYVARINEN_SAMPLES
+        effective_method = model_selection_method
+        
+        if hyvarinen_disabled and model_selection_method in ('hyvarinen', 'combined'):
+            effective_method = 'bic'
+            _log(f"     ⚠️  Hyvärinen disabled for regime {regime} (n={n_samples} < {MIN_HYVARINEN_SAMPLES}) → using BIC-only")
+        
+        if effective_method == 'bic':
             raw_weights = compute_bic_model_weights(bic_values)
             _log(f"     → Using BIC-only model selection")
-        elif model_selection_method == 'hyvarinen':
+        elif effective_method == 'hyvarinen':
             raw_weights = compute_hyvarinen_model_weights(hyvarinen_scores)
             _log(f"     → Using Hyvärinen-only model selection (robust)")
         else:
@@ -2798,6 +2894,8 @@ def fit_regime_model_posterior(
                 "combined_score_max": float(max(finite_combined)) if finite_combined else None,
                 "best_model_by_combined": best_model_by_combined,
                 "model_selection_method": model_selection_method,
+                "effective_selection_method": effective_method,  # Actual method used (may differ due to hard gate)
+                "hyvarinen_disabled": hyvarinen_disabled,  # True if Hyvärinen was disabled due to small sample size
                 "bic_weight": bic_weight if model_selection_method == 'combined' else None,
                 "smoothing_applied": prev_posterior is not None and temporal_alpha > 0,
             }
