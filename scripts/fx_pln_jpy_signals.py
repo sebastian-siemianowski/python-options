@@ -1196,6 +1196,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
             'bic': best_params.get('bic'),
             'aic': best_params.get('aic'),
             'hyvarinen_score': best_params.get('hyvarinen_score'),
+            'combined_score': best_params.get('combined_score'),
             'log_likelihood': best_params.get('log_likelihood'),
             'pit_ks_pvalue': best_params.get('pit_ks_pvalue'),
             'ks_statistic': best_params.get('ks_statistic'),
@@ -1206,6 +1207,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
                     'bic': m_params.get('bic'),
                     'aic': m_params.get('aic'),
                     'hyvarinen_score': m_params.get('hyvarinen_score'),
+                    'combined_score': m_params.get('combined_score'),
                     'll': m_params.get('log_likelihood'),
                     'n_params': m_params.get('n_params'),
                 }
@@ -1219,6 +1221,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
             
             # Global-level aggregates (from global block or computed)
             'hyvarinen_max': global_data.get('hyvarinen_max'),
+            'combined_score_max': global_data.get('combined_score_max'),
             'bic_min': global_data.get('bic_min'),
             
             # Metadata
@@ -1334,9 +1337,11 @@ def _select_regime_params(
             'model_posterior': model_posterior,
             # Model selection diagnostics (best model)
             'hyvarinen_score': best_params.get('hyvarinen_score'),
+            'combined_score': best_params.get('combined_score'),
             'bic': best_params.get('bic'),
             # Regime-level aggregates from regime_meta
             'hyvarinen_max': regime_meta.get('hyvarinen_max'),
+            'combined_score_max': regime_meta.get('combined_score_max'),
             'bic_min': regime_meta.get('bic_min'),
             'model_selection_method': regime_meta.get('model_selection_method', 'combined'),
             'bic_weight': regime_meta.get('bic_weight', 0.5),
@@ -1365,9 +1370,11 @@ def _select_regime_params(
             'model_posterior': global_model_posterior,
             # Model selection diagnostics (best model)
             'hyvarinen_score': best_params.get('hyvarinen_score'),
+            'combined_score': best_params.get('combined_score'),
             'bic': best_params.get('bic'),
             # Global-level aggregates
             'hyvarinen_max': global_data.get('hyvarinen_max'),
+            'combined_score_max': global_data.get('combined_score_max'),
             'bic_min': global_data.get('bic_min'),
             'model_selection_method': global_data.get('model_selection_method', 'combined'),
             'bic_weight': global_data.get('bic_weight', 0.5),
@@ -1793,6 +1800,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         # Get global-level aggregate scores
         global_hyv_max = tuned_params.get('hyvarinen_max')
         global_bic_min = tuned_params.get('bic_min')
+        global_comb_max = tuned_params.get('combined_score_max')
         
         # Build summary text
         summary_parts = []
@@ -1800,6 +1808,8 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             summary_parts.append(f"BIC↓ {global_bic_min:.1f}")
         if global_hyv_max is not None and np.isfinite(global_hyv_max):
             summary_parts.append(f"Hyvärinen↑ {global_hyv_max:.1f}")
+        if global_comb_max is not None and np.isfinite(global_comb_max):
+            summary_parts.append(f"Combined↑ {global_comb_max:.2f}")
         summary_text = " • ".join(summary_parts) if summary_parts else ""
         
         # Print with elegant layout
@@ -1877,8 +1887,10 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 "ks_statistic": tuned_params.get("ks_statistic") if tuned_params else None,
                 "bic": tuned_params.get("bic") if tuned_params else None,
                 "hyvarinen_score": tuned_params.get("hyvarinen_score") if tuned_params else None,
+                "combined_score": tuned_params.get("combined_score") if tuned_params else None,
                 # Global-level aggregates for model selection
                 "hyvarinen_max": tuned_params.get("hyvarinen_max") if tuned_params else None,
+                "combined_score_max": tuned_params.get("combined_score_max") if tuned_params else None,
                 "bic_min": tuned_params.get("bic_min") if tuned_params else None,
                 "model_selection_method": tuned_params.get("model_selection_method", "combined") if tuned_params else "combined",
                 "bic_weight": tuned_params.get("bic_weight", 0.5) if tuned_params else 0.5,
@@ -3279,6 +3291,7 @@ def bayesian_model_average_mc(
         "model_selection_method": regime_meta.get('model_selection_method', 'combined'),
         "bic_weight": regime_meta.get('bic_weight', 0.5),
         "hyvarinen_max": regime_meta.get('hyvarinen_max'),
+        "combined_score_max": regime_meta.get('combined_score_max'),
         "bic_min": regime_meta.get('bic_min'),
     }
     

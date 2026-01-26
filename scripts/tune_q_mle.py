@@ -2893,6 +2893,11 @@ def tune_regime_model_averaging(
         # Default: combined
         global_raw_weights = compute_combined_model_weights(global_bic, global_hyvarinen, bic_weight=bic_weight)
     
+    # Store combined_score in each global model (log of unnormalized weight, higher = better)
+    for m in global_models:
+        w = global_raw_weights.get(m, 1e-10)
+        global_models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
+    
     global_posterior = normalize_weights(global_raw_weights)
     
     _log(f"     Global posterior: " + ", ".join([f"{m}={p:.3f}" for m, p in global_posterior.items()]))
@@ -2963,11 +2968,20 @@ def tune_regime_model_averaging(
     ]
     global_bic_min = min(global_bic_scores) if global_bic_scores else None
     
+    # Compute global combined_score_max for metadata
+    global_combined_scores = [
+        global_models[m].get("combined_score", float('-inf')) 
+        for m in global_models 
+        if global_models[m].get("fit_success", False) and np.isfinite(global_models[m].get("combined_score", float('-inf')))
+    ]
+    global_combined_score_max = max(global_combined_scores) if global_combined_scores else None
+    
     result = {
         "global": {
             "model_posterior": global_posterior,
             "models": global_models,
             "hyvarinen_max": float(global_hyvarinen_max) if global_hyvarinen_max is not None and np.isfinite(global_hyvarinen_max) else None,
+            "combined_score_max": float(global_combined_score_max) if global_combined_score_max is not None and np.isfinite(global_combined_score_max) else None,
             "bic_min": float(global_bic_min) if global_bic_min is not None and np.isfinite(global_bic_min) else None,
             "model_selection_method": model_selection_method,
             "bic_weight": bic_weight if model_selection_method == 'combined' else None,
@@ -3110,13 +3124,45 @@ def tune_asset_with_bma(
             else:
                 global_raw_weights = compute_combined_model_weights(global_bic, global_hyvarinen, bic_weight=bic_weight)
             
+            # Store combined_score in each global model (log of unnormalized weight, higher = better)
+            for m in global_models:
+                w = global_raw_weights.get(m, 1e-10)
+                global_models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
+            
             global_posterior = normalize_weights(global_raw_weights)
+            
+            # Compute global aggregate scores
+            global_hyvarinen_scores = [
+                global_models[m].get("hyvarinen_score", float('-inf')) 
+                for m in global_models 
+                if global_models[m].get("fit_success", False)
+            ]
+            global_hyvarinen_max = max(global_hyvarinen_scores) if global_hyvarinen_scores else None
+            
+            global_bic_scores = [
+                global_models[m].get("bic", float('inf')) 
+                for m in global_models 
+                if global_models[m].get("fit_success", False)
+            ]
+            global_bic_min = min(global_bic_scores) if global_bic_scores else None
+            
+            global_combined_scores = [
+                global_models[m].get("combined_score", float('-inf')) 
+                for m in global_models 
+                if global_models[m].get("fit_success", False) and np.isfinite(global_models[m].get("combined_score", float('-inf')))
+            ]
+            global_combined_score_max = max(global_combined_scores) if global_combined_scores else None
             
             return {
                 "asset": asset,
                 "global": {
                     "model_posterior": global_posterior,
                     "models": global_models,
+                    "hyvarinen_max": float(global_hyvarinen_max) if global_hyvarinen_max is not None and np.isfinite(global_hyvarinen_max) else None,
+                    "combined_score_max": float(global_combined_score_max) if global_combined_score_max is not None and np.isfinite(global_combined_score_max) else None,
+                    "bic_min": float(global_bic_min) if global_bic_min is not None and np.isfinite(global_bic_min) else None,
+                    "model_selection_method": model_selection_method,
+                    "bic_weight": bic_weight if model_selection_method == 'combined' else None,
                 },
                 "regime": None,
                 "regime_counts": None,
