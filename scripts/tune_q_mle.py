@@ -1951,9 +1951,252 @@ def assign_regime_labels(
 #
 # For each regime r, we:
 # 1. Fit ALL candidate model classes independently
-# 2. Compute BIC-based posterior weights with temporal smoothing
+# 2. Compute BIC-based or Hyvärinen-score-based posterior weights with temporal smoothing
 # 3. Return the full model posterior — never selecting a single model
 # =============================================================================
+
+
+# =============================================================================
+# HYVÄRINEN SCORE FOR ROBUST MODEL SELECTION
+# =============================================================================
+# The Hyvärinen score is a proper scoring rule that is:
+#   - Fisher-consistent under model misspecification
+#   - Independent of normalizing constants
+#   - Naturally rewards tail accuracy
+#
+# For a predictive density p(r|μ,σ), the Hyvärinen score is:
+#
+#   H = (1/n) Σ_t [ (1/2)(∂log p / ∂r)² + (∂²log p / ∂r²) ]
+#
+# Lower score = better fit. Negated for consistency with likelihood (higher = better).
+# =============================================================================
+
+
+def compute_hyvarinen_score_gaussian(
+    returns: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    min_sigma: float = 1e-8
+) -> float:
+    """
+    Compute Hyvärinen score for Gaussian predictive density.
+    
+    For Gaussian p(r) = N(μ, σ²):
+        ∂log p / ∂r = -(r - μ) / σ²
+        ∂²log p / ∂r² = -1 / σ²
+    
+    Therefore:
+        H = (1/n) Σ_t [ (r_t - μ_t)² / (2σ_t⁴) - 1/σ_t² ]
+    
+    Args:
+        returns: Observed returns
+        mu: Predicted means
+        sigma: Predicted standard deviations (NOT variance)
+        min_sigma: Minimum sigma for numerical stability
+        
+    Returns:
+        Hyvärinen score (lower is better, but we return negated for consistency)
+    """
+    returns = np.asarray(returns).flatten()
+    mu = np.asarray(mu).flatten()
+    sigma = np.asarray(sigma).flatten()
+    
+    # Numerical stability: floor sigma
+    sigma = np.maximum(sigma, min_sigma)
+    sigma_sq = sigma ** 2
+    sigma_4 = sigma ** 4
+    
+    # Innovations
+    innovation = returns - mu
+    innovation_sq = innovation ** 2
+    
+    # Hyvärinen score components:
+    # Term 1: (1/2) * (∂log p / ∂r)² = (r - μ)² / (2σ⁴)
+    # Term 2: ∂²log p / ∂r² = -1/σ²
+    term1 = innovation_sq / (2.0 * sigma_4)
+    term2 = -1.0 / sigma_sq
+    
+    # Per-observation score
+    h_scores = term1 + term2
+    
+    # Filter out non-finite values
+    valid = np.isfinite(h_scores)
+    if not np.any(valid):
+        return -1e12  # Return very bad score
+    
+    h_mean = float(np.mean(h_scores[valid]))
+    
+    # Return negated score (higher = better, for consistency with log-likelihood)
+    return -h_mean
+
+
+def compute_hyvarinen_score_student_t(
+    returns: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    nu: float,
+    min_sigma: float = 1e-8,
+    min_nu: float = 2.1
+) -> float:
+    """
+    Compute Hyvärinen score for Student-t predictive density.
+    
+    For Student-t p(r) with location μ, scale σ, and degrees of freedom ν:
+    
+    Let z = (r - μ) / σ
+    
+        log p(r) = const - ((ν+1)/2) * log(1 + z²/ν) - log(σ)
+        
+        ∂log p / ∂r = -((ν+1)/ν) * z / (σ * (1 + z²/ν))
+                    = -((ν+1) * (r-μ)) / (σ² * (ν + z²))
+        
+        ∂²log p / ∂r² = -((ν+1)/σ²) * (ν - z²) / (ν + z²)²
+    
+    Therefore:
+        H = (1/n) Σ_t [ (1/2)(∂log p/∂r)² + ∂²log p/∂r² ]
+    
+    Args:
+        returns: Observed returns
+        mu: Predicted locations
+        sigma: Predicted scales (NOT variance)
+        nu: Degrees of freedom
+        min_sigma: Minimum sigma for numerical stability
+        min_nu: Minimum nu for numerical stability
+        
+    Returns:
+        Hyvärinen score (negated so higher = better)
+    """
+    returns = np.asarray(returns).flatten()
+    mu = np.asarray(mu).flatten()
+    sigma = np.asarray(sigma).flatten()
+    
+    # Numerical stability
+    sigma = np.maximum(sigma, min_sigma)
+    nu = max(float(nu), min_nu)
+    
+    sigma_sq = sigma ** 2
+    
+    # Standardized residuals
+    z = (returns - mu) / sigma
+    z_sq = z ** 2
+    
+    # Common denominator: ν + z²
+    denom = nu + z_sq
+    
+    # First derivative: ∂log p / ∂r = -((ν+1) * (r-μ)) / (σ² * (ν + z²))
+    # Squared: ((ν+1)² * (r-μ)²) / (σ⁴ * (ν + z²)²)
+    #        = ((ν+1)² * z²) / (σ² * (ν + z²)²)
+    d1_sq = ((nu + 1.0) ** 2 * z_sq) / (sigma_sq * denom ** 2)
+    
+    # Second derivative: ∂²log p / ∂r² = -((ν+1)/σ²) * (ν - z²) / (ν + z²)²
+    d2 = -((nu + 1.0) / sigma_sq) * (nu - z_sq) / (denom ** 2)
+    
+    # Hyvärinen score: (1/2) * (∂log p/∂r)² + ∂²log p/∂r²
+    h_scores = 0.5 * d1_sq + d2
+    
+    # Filter out non-finite values
+    valid = np.isfinite(h_scores)
+    if not np.any(valid):
+        return -1e12  # Return very bad score
+    
+    h_mean = float(np.mean(h_scores[valid]))
+    
+    # Return negated score (higher = better)
+    return -h_mean
+
+
+def compute_hyvarinen_model_weights(
+    hyvarinen_scores: Dict[str, float],
+    epsilon: float = 1e-10,
+    temperature: float = 1.0
+) -> Dict[str, float]:
+    """
+    Convert Hyvärinen scores to unnormalized posterior weights.
+    
+    Since Hyvärinen scores are negated (higher = better), we use:
+        w_raw(m|r) = exp(temperature * (H_m - H_min))
+    
+    This mirrors the BIC weight formula but uses Hyvärinen instead.
+    
+    Args:
+        hyvarinen_scores: Dictionary mapping model name to (negated) Hyvärinen score
+        epsilon: Small constant to prevent zero weights
+        temperature: Scaling factor (higher = more concentrated on best model)
+        
+    Returns:
+        Dictionary of unnormalized weights
+    """
+    # Find maximum score (best model, since higher = better)
+    finite_scores = [s for s in hyvarinen_scores.values() if np.isfinite(s)]
+    if not finite_scores:
+        n_models = len(hyvarinen_scores)
+        return {m: 1.0 / max(n_models, 1) for m in hyvarinen_scores}
+    
+    score_max = max(finite_scores)
+    
+    # Compute raw weights
+    weights = {}
+    for model_name, score in hyvarinen_scores.items():
+        if np.isfinite(score):
+            # Higher score = better, so exp(temp * (score - max)) gives relative weight
+            # When score == max, weight = 1; when score < max, weight < 1
+            delta = score - score_max
+            w = np.exp(temperature * delta)
+            weights[model_name] = max(w, epsilon)
+        else:
+            weights[model_name] = epsilon
+    
+    return weights
+
+
+def compute_combined_model_weights(
+    bic_values: Dict[str, float],
+    hyvarinen_scores: Dict[str, float],
+    bic_weight: float = 0.5,
+    epsilon: float = 1e-10
+) -> Dict[str, float]:
+    """
+    Combine BIC and Hyvärinen scores for robust model selection.
+    
+    Uses geometric mean of BIC-based and Hyvärinen-based weights:
+        w_combined(m) = w_bic(m)^bic_weight * w_hyvarinen(m)^(1-bic_weight)
+    
+    This provides:
+    - BIC consistency (selects true model as n → ∞)
+    - Hyvärinen robustness (proper scoring under misspecification)
+    
+    Args:
+        bic_values: Dictionary mapping model name to BIC value
+        hyvarinen_scores: Dictionary mapping model name to (negated) Hyvärinen score
+        bic_weight: Weight for BIC (0 = pure Hyvärinen, 1 = pure BIC)
+        epsilon: Small constant to prevent zero weights
+        
+    Returns:
+        Dictionary of unnormalized combined weights
+    """
+    # Get BIC-based weights
+    bic_weights = compute_bic_model_weights(bic_values, epsilon)
+    
+    # Get Hyvärinen-based weights
+    hyvarinen_weights = compute_hyvarinen_model_weights(hyvarinen_scores, epsilon)
+    
+    # Combine via geometric mean
+    combined = {}
+    for model_name in bic_weights:
+        w_bic = bic_weights.get(model_name, epsilon)
+        w_hyv = hyvarinen_weights.get(model_name, epsilon)
+        
+        # Geometric combination: w_bic^α * w_hyv^(1-α)
+        w_combined = (w_bic ** bic_weight) * (w_hyv ** (1.0 - bic_weight))
+        combined[model_name] = max(w_combined, epsilon)
+    
+    return combined
+
+
+# Default model selection method: 'bic', 'hyvarinen', or 'combined'
+DEFAULT_MODEL_SELECTION_METHOD = 'combined'
+# Default BIC weight when using combined method (0.5 = equal weighting)
+DEFAULT_BIC_WEIGHT = 0.5
 
 
 def compute_bic_model_weights(
@@ -2113,6 +2356,11 @@ def fit_all_models_for_regime(
         bic_gauss = compute_bic(ll_full_gauss, n_params_gauss, n_obs)
         mean_ll_gauss = ll_full_gauss / max(n_obs, 1)
         
+        # Compute Hyvärinen score for robust model selection
+        # Forecast std = sqrt(c * vol^2 + P) includes both observation and state uncertainty
+        forecast_std_gauss = np.sqrt(c_gauss * (vol ** 2) + P_gauss)
+        hyvarinen_gauss = compute_hyvarinen_score_gaussian(returns, mu_gauss, forecast_std_gauss)
+        
         models["kalman_gaussian"] = {
             "q": float(q_gauss),
             "c": float(c_gauss),
@@ -2123,6 +2371,7 @@ def fit_all_models_for_regime(
             "cv_penalized_ll": float(ll_cv_gauss),
             "bic": float(bic_gauss),
             "aic": float(aic_gauss),
+            "hyvarinen_score": float(hyvarinen_gauss),
             "n_params": int(n_params_gauss),
             "ks_statistic": float(ks_gauss),
             "pit_ks_pvalue": float(pit_p_gauss),
@@ -2135,6 +2384,7 @@ def fit_all_models_for_regime(
             "error": str(e),
             "bic": float('inf'),
             "aic": float('inf'),
+            "hyvarinen_score": float('-inf'),
         }
     
     # =========================================================================
@@ -2159,6 +2409,10 @@ def fit_all_models_for_regime(
         bic_phi = compute_bic(ll_full_phi, n_params_phi, n_obs)
         mean_ll_phi = ll_full_phi / max(n_obs, 1)
         
+        # Compute Hyvärinen score for robust model selection
+        forecast_std_phi = np.sqrt(c_phi * (vol ** 2) + P_phi)
+        hyvarinen_phi = compute_hyvarinen_score_gaussian(returns, mu_phi, forecast_std_phi)
+        
         models["kalman_phi_gaussian"] = {
             "q": float(q_phi),
             "c": float(c_phi),
@@ -2169,6 +2423,7 @@ def fit_all_models_for_regime(
             "cv_penalized_ll": float(ll_cv_phi),
             "bic": float(bic_phi),
             "aic": float(aic_phi),
+            "hyvarinen_score": float(hyvarinen_phi),
             "n_params": int(n_params_phi),
             "ks_statistic": float(ks_phi),
             "pit_ks_pvalue": float(pit_p_phi),
@@ -2181,6 +2436,7 @@ def fit_all_models_for_regime(
             "error": str(e),
             "bic": float('inf'),
             "aic": float('inf'),
+            "hyvarinen_score": float('-inf'),
         }
     
     # =========================================================================
@@ -2205,6 +2461,10 @@ def fit_all_models_for_regime(
         bic_st = compute_bic(ll_full_st, n_params_st, n_obs)
         mean_ll_st = ll_full_st / max(n_obs, 1)
         
+        # Compute Hyvärinen score for robust model selection (Student-t)
+        forecast_scale_st = np.sqrt(c_st * (vol ** 2) + P_st)
+        hyvarinen_st = compute_hyvarinen_score_student_t(returns, mu_st, forecast_scale_st, nu_st)
+        
         models["kalman_phi_student_t"] = {
             "q": float(q_st),
             "c": float(c_st),
@@ -2215,6 +2475,7 @@ def fit_all_models_for_regime(
             "cv_penalized_ll": float(ll_cv_st),
             "bic": float(bic_st),
             "aic": float(aic_st),
+            "hyvarinen_score": float(hyvarinen_st),
             "n_params": int(n_params_st),
             "ks_statistic": float(ks_st),
             "pit_ks_pvalue": float(pit_p_st),
@@ -2227,6 +2488,7 @@ def fit_all_models_for_regime(
             "error": str(e),
             "bic": float('inf'),
             "aic": float('inf'),
+            "hyvarinen_score": float('-inf'),
         }
     
     return models
@@ -2243,6 +2505,8 @@ def fit_regime_model_posterior(
     previous_posteriors: Optional[Dict[int, Dict[str, float]]] = None,
     global_models: Optional[Dict[str, Dict]] = None,
     global_posterior: Optional[Dict[str, float]] = None,
+    model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
+    bic_weight: float = DEFAULT_BIC_WEIGHT,
 ) -> Dict[int, Dict]:
     """
     Compute regime-conditional Bayesian model averaging with temporal smoothing.
@@ -2253,8 +2517,11 @@ def fit_regime_model_posterior(
     
     For EACH regime r:
     1. Fit EACH candidate model class m independently
-    2. Compute mean_log_likelihood, BIC, AIC for each (r, m)
-    3. Convert BIC to posterior weights: w_raw(m|r) = exp(-0.5 * ΔBIC)
+    2. Compute mean_log_likelihood, BIC, AIC, Hyvärinen score for each (r, m)
+    3. Convert scores to posterior weights using specified method:
+       - 'bic': w_raw(m|r) = exp(-0.5 * ΔBIC)
+       - 'hyvarinen': w_raw(m|r) = exp(ΔH) where H is negated Hyvärinen score
+       - 'combined': geometric mean of BIC and Hyvärinen weights
     4. Apply temporal smoothing: w_smooth = prev_p^alpha * w_raw
     5. Normalize to get p(m|r)
     
@@ -2286,6 +2553,11 @@ def fit_regime_model_posterior(
         previous_posteriors: Previous model posteriors per regime (for smoothing)
         global_models: Global model fits (for hierarchical fallback)
         global_posterior: Global model posterior (for hierarchical fallback)
+        model_selection_method: Method for computing model weights:
+            - 'bic': Use BIC only (traditional)
+            - 'hyvarinen': Use Hyvärinen score only (robust to misspecification)
+            - 'combined': Geometric mean of BIC and Hyvärinen weights (default)
+        bic_weight: Weight for BIC when using 'combined' method (0-1)
         
     Returns:
         Dictionary with regime-conditional model posteriors and parameters:
@@ -2391,23 +2663,41 @@ def fit_regime_model_posterior(
         )
         
         # =====================================================================
-        # Step 2: Extract BIC values
+        # Step 2: Extract BIC and Hyvärinen scores
         # =====================================================================
         bic_values = {m: models[m].get("bic", float('inf')) for m in models}
+        hyvarinen_scores = {m: models[m].get("hyvarinen_score", float('-inf')) for m in models}
         
         # Print model fits
         for m, info in models.items():
             if info.get("fit_success", False):
                 bic_val = info.get("bic", float('nan'))
+                hyv_val = info.get("hyvarinen_score", float('nan'))
                 mean_ll = info.get("mean_log_likelihood", float('nan'))
-                _log(f"     {m}: BIC={bic_val:.1f}, mean_LL={mean_ll:.4f}")
+                _log(f"     {m}: BIC={bic_val:.1f}, H={hyv_val:.4f}, mean_LL={mean_ll:.4f}")
             else:
                 _log(f"     {m}: FAILED - {info.get('error', 'unknown')}")
         
         # =====================================================================
-        # Step 3: Compute BIC-based raw weights
+        # Step 3: Compute raw weights using specified method
         # =====================================================================
-        raw_weights = compute_bic_model_weights(bic_values)
+        # Model selection methods:
+        #   'bic'       - Traditional BIC-based weights (consistent but not robust)
+        #   'hyvarinen' - Hyvärinen score weights (robust under misspecification)
+        #   'combined'  - Geometric mean of BIC and Hyvärinen (best of both)
+        # =====================================================================
+        if model_selection_method == 'bic':
+            raw_weights = compute_bic_model_weights(bic_values)
+            _log(f"     → Using BIC-only model selection")
+        elif model_selection_method == 'hyvarinen':
+            raw_weights = compute_hyvarinen_model_weights(hyvarinen_scores)
+            _log(f"     → Using Hyvärinen-only model selection (robust)")
+        else:
+            # Default: combined method
+            raw_weights = compute_combined_model_weights(
+                bic_values, hyvarinen_scores, bic_weight=bic_weight
+            )
+            _log(f"     → Using combined BIC+Hyvärinen selection (α={bic_weight:.2f})")
         
         # =====================================================================
         # Step 4: Apply temporal smoothing
@@ -2426,6 +2716,10 @@ def fit_regime_model_posterior(
         # =====================================================================
         # Build regime result
         # =====================================================================
+        # Compute best scores for metadata
+        finite_bics = [b for b in bic_values.values() if np.isfinite(b)]
+        finite_hyvs = [h for h in hyvarinen_scores.values() if np.isfinite(h)]
+        
         regime_results[regime] = {
             "model_posterior": model_posterior,
             "models": models,
@@ -2435,7 +2729,10 @@ def fit_regime_model_posterior(
                 "regime_name": regime_name,
                 "fallback": False,
                 "borrowed_from_global": False,
-                "bic_min": float(min(b for b in bic_values.values() if np.isfinite(b))) if any(np.isfinite(b) for b in bic_values.values()) else None,
+                "bic_min": float(min(finite_bics)) if finite_bics else None,
+                "hyvarinen_max": float(max(finite_hyvs)) if finite_hyvs else None,
+                "model_selection_method": model_selection_method,
+                "bic_weight": bic_weight if model_selection_method == 'combined' else None,
                 "smoothing_applied": prev_posterior is not None and temporal_alpha > 0,
             }
         }
@@ -2453,6 +2750,8 @@ def tune_regime_model_averaging(
     temporal_alpha: float = DEFAULT_TEMPORAL_ALPHA,
     previous_posteriors: Optional[Dict[int, Dict[str, float]]] = None,
     lambda_regime: float = 0.05,
+    model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
+    bic_weight: float = DEFAULT_BIC_WEIGHT,
 ) -> Dict:
     """
     Full regime-conditional Bayesian model averaging pipeline.
@@ -2463,6 +2762,7 @@ def tune_regime_model_averaging(
     2. Regime-conditional model fitting with BMA
     3. Temporal smoothing of model posteriors
     4. Hierarchical shrinkage toward global
+    5. Robust model selection via Hyvärinen score (optional)
     
     Args:
         returns: Array of returns
@@ -2474,6 +2774,8 @@ def tune_regime_model_averaging(
         temporal_alpha: Smoothing exponent for model posteriors
         previous_posteriors: Previous posteriors for smoothing
         lambda_regime: Hierarchical shrinkage strength
+        model_selection_method: 'bic', 'hyvarinen', or 'combined' (default)
+        bic_weight: Weight for BIC in combined method (0-1, default 0.5)
         
     Returns:
         Dictionary with:
@@ -2500,6 +2802,8 @@ def tune_regime_model_averaging(
     
     n_obs = len(returns)
     _log(f"  📊 Bayesian Model Averaging: {n_obs} observations, α={temporal_alpha:.2f}")
+    _log(f"  📊 Model selection method: {model_selection_method}" + 
+         (f" (BIC weight={bic_weight:.2f})" if model_selection_method == 'combined' else ""))
     
     # =========================================================================
     # Step 1: Fit global models (fallback)
@@ -2511,9 +2815,18 @@ def tune_regime_model_averaging(
         prior_lambda=prior_lambda,
     )
     
-    # Compute global model posterior
+    # Compute global model posterior using specified method
     global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models}
-    global_raw_weights = compute_bic_model_weights(global_bic)
+    global_hyvarinen = {m: global_models[m].get("hyvarinen_score", float('-inf')) for m in global_models}
+    
+    if model_selection_method == 'bic':
+        global_raw_weights = compute_bic_model_weights(global_bic)
+    elif model_selection_method == 'hyvarinen':
+        global_raw_weights = compute_hyvarinen_model_weights(global_hyvarinen)
+    else:
+        # Default: combined
+        global_raw_weights = compute_combined_model_weights(global_bic, global_hyvarinen, bic_weight=bic_weight)
+    
     global_posterior = normalize_weights(global_raw_weights)
     
     _log(f"     Global posterior: " + ", ".join([f"{m}={p:.3f}" for m, p in global_posterior.items()]))
@@ -2531,6 +2844,8 @@ def tune_regime_model_averaging(
         previous_posteriors=previous_posteriors,
         global_models=global_models,
         global_posterior=global_posterior,
+        model_selection_method=model_selection_method,
+        bic_weight=bic_weight,
     )
     
     # =========================================================================
@@ -2578,6 +2893,8 @@ def tune_regime_model_averaging(
             "lambda_regime": lambda_regime,
             "n_obs": n_obs,
             "min_samples": min_samples,
+            "model_selection_method": model_selection_method,
+            "bic_weight": bic_weight if model_selection_method == 'combined' else None,
             "n_regimes_active": sum(1 for r in regime_results.values() 
                                     if not r.get("regime_meta", {}).get("fallback", False)),
         }
@@ -2595,6 +2912,8 @@ def tune_asset_with_bma(
     lambda_regime: float = 0.05,
     temporal_alpha: float = DEFAULT_TEMPORAL_ALPHA,
     previous_posteriors: Optional[Dict[int, Dict[str, float]]] = None,
+    model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
+    bic_weight: float = DEFAULT_BIC_WEIGHT,
 ) -> Optional[Dict]:
     """
     Tune asset parameters using full Bayesian Model Averaging.
@@ -2605,7 +2924,8 @@ def tune_asset_with_bma(
     
     For EACH regime r:
     - Fits ALL candidate model classes independently
-    - Computes BIC-based model posteriors with temporal smoothing
+    - Computes model posteriors with temporal smoothing
+    - Uses robust Hyvärinen score for model selection (optional)
     - Preserves full uncertainty across models
     
     NEVER selects a single best model — maintains full posterior.
@@ -2619,6 +2939,8 @@ def tune_asset_with_bma(
         lambda_regime: Hierarchical shrinkage strength
         temporal_alpha: Smoothing exponent for model posteriors
         previous_posteriors: Previous posteriors for temporal smoothing
+        model_selection_method: 'bic', 'hyvarinen', or 'combined' (default)
+        bic_weight: Weight for BIC in combined method (0-1, default 0.5)
         
     Returns:
         Dictionary with structure:
@@ -2692,9 +3014,17 @@ def tune_asset_with_bma(
                 prior_lambda=prior_lambda,
             )
             
-            # Compute global posterior
+            # Compute global posterior using specified method
             global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models}
-            global_raw_weights = compute_bic_model_weights(global_bic)
+            global_hyvarinen = {m: global_models[m].get("hyvarinen_score", float('-inf')) for m in global_models}
+            
+            if model_selection_method == 'bic':
+                global_raw_weights = compute_bic_model_weights(global_bic)
+            elif model_selection_method == 'hyvarinen':
+                global_raw_weights = compute_hyvarinen_model_weights(global_hyvarinen)
+            else:
+                global_raw_weights = compute_combined_model_weights(global_bic, global_hyvarinen, bic_weight=bic_weight)
+            
             global_posterior = normalize_weights(global_raw_weights)
             
             return {
@@ -2710,6 +3040,8 @@ def tune_asset_with_bma(
                     "temporal_alpha": temporal_alpha,
                     "lambda_regime": lambda_regime,
                     "n_obs": len(returns),
+                    "model_selection_method": model_selection_method,
+                    "bic_weight": bic_weight if model_selection_method == 'combined' else None,
                     "fallback_reason": "insufficient_data_for_regime_bma",
                 },
                 "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -2727,6 +3059,8 @@ def tune_asset_with_bma(
         
         # Run full Bayesian Model Averaging
         _log(f"     🔧 Running Bayesian Model Averaging (α={temporal_alpha:.2f}, λ={lambda_regime:.3f})...")
+        _log(f"     📊 Model selection: {model_selection_method}" + 
+             (f" (BIC weight={bic_weight:.2f})" if model_selection_method == 'combined' else ""))
         bma_result = tune_regime_model_averaging(
             returns, vol, regime_labels,
             prior_log_q_mean=prior_log_q_mean,
@@ -2735,6 +3069,8 @@ def tune_asset_with_bma(
             temporal_alpha=temporal_alpha,
             previous_posteriors=previous_posteriors,
             lambda_regime=lambda_regime,
+            model_selection_method=model_selection_method,
+            bic_weight=bic_weight,
         )
         
         # Build final result
