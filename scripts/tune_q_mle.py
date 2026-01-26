@@ -17,7 +17,7 @@ Where:
     r          = regime label (LOW_VOL_TREND, HIGH_VOL_TREND, LOW_VOL_RANGE,
                               HIGH_VOL_RANGE, CRISIS_JUMP)
     m          = model class (kalman_gaussian, kalman_phi_gaussian,
-                              kalman_phi_student_t)
+                              phi_student_t_nu_{4,6,8,12,20})
     θ_{r,m}    = parameters of model m in regime r
     p(m | r)   = posterior probability of model m in regime r
 
@@ -29,7 +29,14 @@ For EACH regime r:
     1. Fits ALL candidate model classes m independently:
        - kalman_gaussian:       q, c           (2 params)
        - kalman_phi_gaussian:   q, c, φ        (3 params)
-       - kalman_phi_student_t:  q, c, φ, ν     (4 params)
+       - phi_student_t_nu_4:    q, c, φ        (3 params, ν=4 FIXED)
+       - phi_student_t_nu_6:    q, c, φ        (3 params, ν=6 FIXED)
+       - phi_student_t_nu_8:    q, c, φ        (3 params, ν=8 FIXED)
+       - phi_student_t_nu_12:   q, c, φ        (3 params, ν=12 FIXED)
+       - phi_student_t_nu_20:   q, c, φ        (3 params, ν=20 FIXED)
+
+    NOTE: Student-t uses DISCRETE ν GRID (not continuous optimization).
+    Each ν is treated as a separate sub-model in BMA.
 
     2. Computes for each (r, m):
        - mean_log_likelihood
@@ -249,8 +256,24 @@ MODEL_CLASS_LABELS = {
 MODEL_CLASS_N_PARAMS = {
     ModelClass.KALMAN_GAUSSIAN: 2,   # q, c
     ModelClass.PHI_GAUSSIAN: 3,      # q, c, phi
-    ModelClass.PHI_STUDENT_T: 4,     # q, c, phi, nu
+    ModelClass.PHI_STUDENT_T: 3,     # q, c, phi (nu is FIXED per sub-model, not estimated)
 }
+
+# =============================================================================
+# DISCRETE ν GRID FOR STUDENT-T MODELS
+# =============================================================================
+# CRITICAL: Eliminates ν-σ identifiability failures and tail-driven weight collapse
+#
+# Instead of continuously optimizing ν (which is unstable), we:
+#   1. Fix a discrete grid of ν values
+#   2. Treat each ν as a separate sub-model in BMA
+#   3. Let BMA handle the weighting across ν values
+#
+# This is standard practice in Bayesian model selection for discrete hyperparameters.
+# Grid values chosen to span light tails (ν=20, near Gaussian) to heavy tails (ν=4).
+# =============================================================================
+
+STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
 
 # Default temporal smoothing alpha for model posterior evolution
 DEFAULT_TEMPORAL_ALPHA = 0.3
@@ -1381,6 +1404,244 @@ class PhiStudentTDriftModel:
 
         return q_opt, c_opt, phi_opt, nu_opt, ll_opt, diagnostics
 
+    @staticmethod
+    def optimize_params_fixed_nu(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        nu: float,
+        train_frac: float = 0.7,
+        q_min: float = 1e-10,
+        q_max: float = 1e-1,
+        c_min: float = 0.3,
+        c_max: float = 3.0,
+        phi_min: float = -0.999,
+        phi_max: float = 0.999,
+        prior_log_q_mean: float = -6.0,
+        prior_lambda: float = 1.0
+    ) -> Tuple[float, float, float, float, Dict]:
+        """
+        Optimize (q, c, φ) for the φ-Student-t drift model with FIXED ν.
+        
+        This method is part of the discrete ν grid approach:
+        - ν is held fixed (passed as argument, not optimized)
+        - Only q, c, φ are optimized via CV MLE
+        - Each ν value becomes a separate sub-model in BMA
+        
+        This eliminates:
+        - ν-σ identifiability failures
+        - Pathological likelihood spikes from continuous ν optimization
+        - Tail-driven weight collapse
+        
+        Args:
+            returns: Array of returns
+            vol: Array of EWMA volatility
+            nu: FIXED degrees of freedom (from STUDENT_T_NU_GRID)
+            train_frac: Fraction for train/test split
+            q_min, q_max: Bounds for drift variance q
+            c_min, c_max: Bounds for observation scale c
+            phi_min, phi_max: Bounds for AR(1) coefficient φ
+            prior_log_q_mean: Prior mean for log10(q)
+            prior_lambda: Regularization strength
+            
+        Returns:
+            Tuple of (q_opt, c_opt, phi_opt, ll_opt, diagnostics)
+            Note: nu is NOT returned (it was fixed, not estimated)
+        """
+        n = len(returns)
+        ret_p005 = np.percentile(returns, 0.5)
+        ret_p995 = np.percentile(returns, 99.5)
+        returns_robust = np.clip(returns, ret_p005, ret_p995)
+
+        vol_mean = float(np.mean(vol))
+        vol_std = float(np.std(vol))
+        vol_cv = vol_std / vol_mean if vol_mean > 0 else 0.0
+        ret_std = float(np.std(returns_robust))
+        ret_mean = float(np.mean(returns_robust))
+        rv_ratio = abs(ret_mean) / ret_std if ret_std > 0 else 0.0
+
+        # Adaptive prior adjustment
+        if vol_cv > 0.5 or rv_ratio > 0.15:
+            adaptive_prior_mean = prior_log_q_mean + 0.5
+            adaptive_lambda = prior_lambda * 0.5
+        elif vol_cv < 0.2 and rv_ratio < 0.05:
+            adaptive_prior_mean = prior_log_q_mean - 0.3
+            adaptive_lambda = prior_lambda * 1.5
+        else:
+            adaptive_prior_mean = prior_log_q_mean
+            adaptive_lambda = prior_lambda
+
+        # Build fold splits for CV
+        min_train = min(max(60, int(n * 0.4)), max(n - 5, 1))
+        test_window = min(max(20, int(n * 0.1)), max(n - min_train, 5))
+        fold_splits = []
+        train_end = min_train
+        while train_end + test_window <= n:
+            test_end = min(train_end + test_window, n)
+            if test_end - train_end >= 20:
+                fold_splits.append((0, train_end, train_end, test_end))
+            train_end += test_window
+        if not fold_splits:
+            split_idx = int(n * train_frac)
+            fold_splits = [(0, split_idx, split_idx, n)]
+
+        # Fixed nu value (from grid, NOT optimized)
+        nu_fixed = float(nu)
+
+        def neg_pen_ll(params: np.ndarray) -> float:
+            """Negative penalized log-likelihood with fixed nu."""
+            log_q, log_c, phi = params
+            q = 10 ** log_q
+            c = 10 ** log_c
+            phi_clip = float(np.clip(phi, phi_min, phi_max))
+            
+            if q <= 0 or c <= 0 or not np.isfinite(q) or not np.isfinite(c):
+                return 1e12
+            
+            total_ll_oos = 0.0
+            total_obs = 0
+            all_standardized = []
+            
+            for tr_start, tr_end, te_start, te_end in fold_splits:
+                try:
+                    ret_train = returns_robust[tr_start:tr_end]
+                    vol_train = vol[tr_start:tr_end]
+                    if len(ret_train) < 3:
+                        continue
+                    
+                    mu_filt_train, P_filt_train, _ = PhiStudentTDriftModel.filter_phi(
+                        ret_train, vol_train, q, c, phi_clip, nu_fixed
+                    )
+                    mu_pred = float(mu_filt_train[-1])
+                    P_pred = float(P_filt_train[-1])
+                    ll_fold = 0.0
+                    
+                    for t in range(te_start, te_end):
+                        mu_pred = phi_clip * mu_pred
+                        P_pred = (phi_clip ** 2) * P_pred + q
+                        ret_t = float(returns_robust[t]) if np.ndim(returns_robust[t]) == 0 else float(returns_robust[t].item())
+                        vol_t = float(vol[t]) if np.ndim(vol[t]) == 0 else float(vol[t].item())
+                        R = c * (vol_t ** 2)
+                        innovation = ret_t - mu_pred
+                        forecast_var = P_pred + R
+
+                        if forecast_var > 1e-12:
+                            forecast_std = np.sqrt(forecast_var)
+                            ll_contrib = PhiStudentTDriftModel.logpdf(ret_t, nu_fixed, mu_pred, forecast_std)
+                            ll_fold += ll_contrib
+                            if len(all_standardized) < 1000:
+                                all_standardized.append(float(innovation / forecast_std))
+
+                        nu_adjust = min(nu_fixed / (nu_fixed + 3.0), 1.0)
+                        K = nu_adjust * P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
+                        mu_pred = mu_pred + K * innovation
+                        P_pred = (1.0 - K) * P_pred
+
+                    total_ll_oos += ll_fold
+                    total_obs += (te_end - te_start)
+
+                except Exception:
+                    continue
+            
+            if total_obs == 0:
+                return 1e12
+            
+            avg_ll = total_ll_oos / max(total_obs, 1)
+            
+            # Calibration penalty
+            calibration_penalty = 0.0
+            if len(all_standardized) >= 30:
+                try:
+                    pit_values = student_t.cdf(all_standardized, df=nu_fixed)
+                    ks_result = kstest(pit_values, 'uniform')
+                    ks_stat = float(ks_result.statistic)
+                    if ks_stat > 0.05:
+                        calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
+                        if ks_stat > 0.10:
+                            calibration_penalty -= 100.0 * (ks_stat - 0.10)
+                        if ks_stat > 0.15:
+                            calibration_penalty -= 200.0 * (ks_stat - 0.15)
+                except Exception:
+                    pass
+            
+            # Priors on q, c, phi (NO prior on nu since it's fixed)
+            prior_scale = 1.0 / max(total_obs, 100)
+            log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
+            log_c_target = np.log10(0.9)
+            log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
+            log_prior_phi = -0.05 * prior_scale * (phi_clip ** 2)
+
+            penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty
+            return -penalized_ll if np.isfinite(penalized_ll) else 1e12
+
+        # Parameter bounds (3 parameters: q, c, phi)
+        log_q_min = np.log10(q_min)
+        log_q_max = np.log10(q_max)
+        log_c_min = np.log10(c_min)
+        log_c_max = np.log10(c_max)
+
+        # Grid search for initialization
+        grid_best = (adaptive_prior_mean, np.log10(0.9), 0.0)
+        best_neg = float('inf')
+        for lq in np.linspace(log_q_min, log_q_max, 4):
+            for lc in np.linspace(log_c_min, log_c_max, 3):
+                for lp in np.linspace(phi_min, phi_max, 5):
+                    val = neg_pen_ll(np.array([lq, lc, lp]))
+                    if val < best_neg:
+                        best_neg = val
+                        grid_best = (lq, lc, lp)
+        
+        # L-BFGS-B optimization
+        bounds = [(log_q_min, log_q_max), (log_c_min, log_c_max), (phi_min, phi_max)]
+        start_points = [
+            np.array(grid_best),
+            np.array([adaptive_prior_mean, np.log10(0.9), 0.0])
+        ]
+        best_res = None
+        best_fun = float('inf')
+        for x0 in start_points:
+            try:
+                res = minimize(
+                    neg_pen_ll, x0=x0, method='L-BFGS-B',
+                    bounds=bounds, options={'maxiter': 120, 'ftol': 1e-6}
+                )
+                if res.fun < best_fun:
+                    best_fun = res.fun
+                    best_res = res
+            except Exception:
+                continue
+
+        if best_res is not None and best_res.success:
+            lq_opt, lc_opt, phi_opt = best_res.x
+            q_opt = 10 ** lq_opt
+            c_opt = 10 ** lc_opt
+            phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
+            ll_opt = -best_res.fun
+        else:
+            lq_opt, lc_opt, phi_opt = grid_best
+            q_opt = 10 ** lq_opt
+            c_opt = 10 ** lc_opt
+            phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
+            ll_opt = -best_neg
+
+        diagnostics = {
+            'nu_fixed': float(nu_fixed),
+            'grid_best_q': float(10 ** grid_best[0]),
+            'grid_best_c': float(10 ** grid_best[1]),
+            'grid_best_phi': float(grid_best[2]),
+            'refined_best_q': float(q_opt),
+            'refined_best_c': float(c_opt),
+            'refined_best_phi': float(phi_opt),
+            'prior_applied': adaptive_lambda > 0,
+            'prior_log_q_mean': float(adaptive_prior_mean),
+            'prior_lambda': float(adaptive_lambda),
+            'vol_cv': float(vol_cv),
+            'rv_ratio': float(rv_ratio),
+            'n_folds': int(len(fold_splits)),
+            'optimization_successful': best_res is not None and (best_res.success if best_res else False)
+        }
+
+        return q_opt, c_opt, phi_opt, ll_opt, diagnostics
+
 
 # Compatibility wrappers to preserve existing API surface
 
@@ -1640,37 +1901,64 @@ def tune_asset_q(
         _log(f"     φ-Gaussian-Kalman: q={q_phi:.2e}, c={c_phi:.3f}, φ={phi_opt:+.3f}, LL={ll_phi_full:.1f}, BIC={bic_phi:.1f}, PIT p={pit_p_phi:.4f}")
         
         # =================================================================
-        # STEP 2: Fit Kalman φ-Student-t Model (q, c, φ, ν)
+        # STEP 2: Fit Kalman φ-Student-t Models with DISCRETE ν GRID
         # =================================================================
-        _log(f"  🔧 Fitting Kalman φ-Student-t model...")
-        try:
-            q_student, c_student, phi_student, nu_student, ll_student_cv, opt_diag_student = PhiStudentTDriftModel.optimize_params(
-                returns_arr, vol_arr,
-                prior_log_q_mean=prior_log_q_mean,
-                prior_lambda=prior_lambda
-            )
-
-            # Run full φ-Student-t Kalman filter (persistent drift with heavy tails)
-            mu_student, P_student, ll_student_full = kalman_filter_drift_phi_student_t(
-                returns_arr, vol_arr, q_student, c_student, phi_student, nu_student
-            )
-
-            # Compute Student-t PIT calibration
-            ks_student, pit_p_student = compute_pit_ks_pvalue_student_t(
-                returns_arr, mu_student, vol_arr, P_student, c_student, nu_student
-            )
-
-            # φ-Student-t has 4 parameters: q, c, φ, ν
-            aic_student = compute_aic(ll_student_full, n_params=4)
-            bic_student = compute_bic(ll_student_full, n_params=4, n_obs=n_obs)
-
-            _log(f"    Kalman φ-Student-t: q={q_student:.2e}, c={c_student:.3f}, φ={phi_student:+.3f}, ν={nu_student:.1f}, LL={ll_student_full:.1f}, BIC={bic_student:.1f}, PIT p={pit_p_student:.4f}")
-
-            student_t_fit_success = True
-
-        except Exception as e:
-            _log(f"  ⚠️  φ-Student-t optimization failed: {e}")
-            student_t_fit_success = False
+        # Instead of continuous ν optimization (which is unstable), we fit
+        # separate sub-models for each ν in STUDENT_T_NU_GRID and select
+        # the best one by BIC.
+        # =================================================================
+        _log(f"  🔧 Fitting Kalman φ-Student-t models (discrete ν grid: {STUDENT_T_NU_GRID})...")
+        
+        student_t_results = []  # List of (model_name, bic, aic, ll, mu, P, ks, pit_p, q, c, phi, nu, diag)
+        
+        for nu_fixed in STUDENT_T_NU_GRID:
+            model_name = f"phi_student_t_nu_{nu_fixed}"
+            try:
+                # Optimize q, c, phi with FIXED nu
+                q_st, c_st, phi_st, ll_cv_st, diag_st = PhiStudentTDriftModel.optimize_params_fixed_nu(
+                    returns_arr, vol_arr,
+                    nu=nu_fixed,
+                    prior_log_q_mean=prior_log_q_mean,
+                    prior_lambda=prior_lambda
+                )
+                
+                # Run full φ-Student-t Kalman filter
+                mu_st, P_st, ll_full_st = kalman_filter_drift_phi_student_t(
+                    returns_arr, vol_arr, q_st, c_st, phi_st, nu_fixed
+                )
+                
+                # Compute Student-t PIT calibration
+                ks_st, pit_p_st = compute_pit_ks_pvalue_student_t(
+                    returns_arr, mu_st, vol_arr, P_st, c_st, nu_fixed
+                )
+                
+                # φ-Student-t has 3 estimated parameters: q, c, φ (ν is FIXED)
+                aic_st = compute_aic(ll_full_st, n_params=3)
+                bic_st = compute_bic(ll_full_st, n_params=3, n_obs=n_obs)
+                
+                _log(f"     {model_name}: q={q_st:.2e}, c={c_st:.3f}, φ={phi_st:+.3f}, LL={ll_full_st:.1f}, BIC={bic_st:.1f}, PIT p={pit_p_st:.4f}")
+                
+                student_t_results.append((
+                    model_name, bic_st, aic_st, ll_full_st,
+                    mu_st, P_st, ks_st, pit_p_st,
+                    q_st, c_st, phi_st, nu_fixed, diag_st
+                ))
+                
+            except Exception as e:
+                _log(f"     {model_name}: ⚠️ optimization failed: {e}")
+                continue
+        
+        # Find best Student-t model by BIC
+        student_t_fit_success = len(student_t_results) > 0
+        if student_t_fit_success:
+            best_student_t = min(student_t_results, key=lambda x: x[1])
+            (best_st_name, bic_student, aic_student, ll_student_full,
+             mu_student, P_student, ks_student, pit_p_student,
+             q_student, c_student, phi_student, nu_student, opt_diag_student) = best_student_t
+            _log(f"     Best Student-t: {best_st_name} (BIC={bic_student:.1f})")
+        else:
+            _log(f"  ⚠️  All φ-Student-t optimizations failed")
+            best_st_name = None
             q_student = None
             c_student = None
             phi_student = None
@@ -1679,16 +1967,18 @@ def tune_asset_q(
             bic_student = 1e12
             aic_student = 1e12
             pit_p_student = 0.0
+            opt_diag_student = {}
 
         # =================================================================
         # STEP 3: Model Selection via BIC
         # =================================================================
         # Lower BIC is better (penalizes complexity)
         candidate_models = []
-        candidate_models.append(("gaussian", bic_gauss, aic_gauss, ll_gauss_full, mu_gauss, P_gauss, ks_gauss, pit_p_gauss, q_gauss, c_gauss, None, opt_diag_gauss))
-        candidate_models.append(("phi_gaussian", bic_phi, aic_phi, ll_phi_full, mu_phi, P_phi, ks_phi, pit_p_phi, q_phi, c_phi, phi_opt, opt_diag_phi))
+        candidate_models.append(("kalman_gaussian", bic_gauss, aic_gauss, ll_gauss_full, mu_gauss, P_gauss, ks_gauss, pit_p_gauss, q_gauss, c_gauss, None, opt_diag_gauss))
+        candidate_models.append(("kalman_phi_gaussian", bic_phi, aic_phi, ll_phi_full, mu_phi, P_phi, ks_phi, pit_p_phi, q_phi, c_phi, phi_opt, opt_diag_phi))
         if student_t_fit_success:
-            candidate_models.append(('kalman_phi_student_t', bic_student, aic_student, ll_student_full, mu_student, P_student, ks_student, pit_p_student, q_student, c_student, (phi_student, nu_student), opt_diag_student))
+            # Use the best Student-t model name (e.g., "phi_student_t_nu_6")
+            candidate_models.append((best_st_name, bic_student, aic_student, ll_student_full, mu_student, P_student, ks_student, pit_p_student, q_student, c_student, (phi_student, nu_student), opt_diag_student))
 
         candidate_models = [m for m in candidate_models if np.isfinite(m[1])]
         best_entry = min(candidate_models, key=lambda x: x[1])
@@ -1696,15 +1986,15 @@ def tune_asset_q(
 
         nu_optimal = None
         phi_selected = None
-        if noise_model == 'kalman_phi_student_t':
+        if is_student_t_model(noise_model):
             phi_selected, nu_optimal = extra_param
-        elif noise_model == "phi_gaussian":
+        elif noise_model == "kalman_phi_gaussian":
             phi_selected = extra_param
 
         _log(f"  ✓ Selected {noise_model} (BIC={bic_final:.1f})")
-        if noise_model == 'kalman_phi_student_t':
-            _log(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_student:+.1f}, ΔBIC vs φ-Gaussian Kalman = {bic_phi - bic_student:+.1f})")
-        elif noise_model == "phi_gaussian":
+        if is_student_t_model(noise_model):
+            _log(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_student:+.1f}, ΔBIC vs φ-Gaussian = {bic_phi - bic_student:+.1f})")
+        elif noise_model == "kalman_phi_gaussian":
             _log(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_phi:+.1f})")
         else:
             _log(f"    (ΔBIC vs φ-Gaussian Kalman = {bic_phi - bic_gauss:+.1f})")
@@ -1866,17 +2156,22 @@ def tune_asset_q(
             'kalman_gaussian': {'ll': ll_gauss_full, 'aic': aic_gauss, 'bic': bic_gauss, 'n_params': 2, 'hyvarinen_score': float(hyv_gauss)},
             'kalman_phi_gaussian': {'ll': ll_phi_full, 'aic': aic_phi, 'bic': bic_phi, 'n_params': 3, 'phi': float(phi_opt), 'hyvarinen_score': float(hyv_phi)},
         }
-        if student_t_fit_success and c_student is not None:
-            forecast_std_student = np.sqrt(c_student * (vol_arr ** 2) + P_student)
-            hyv_student = compute_hyvarinen_score_student_t(returns_arr, mu_student, forecast_std_student, nu_student)
-            model_comparison['kalman_phi_student_t'] = {
-                'll': ll_student_full,
-                'aic': aic_student,
-                'bic': bic_student,
-                'n_params': 4,
-                'phi': float(phi_student),
-                'nu': float(nu_student),
-                'hyvarinen_score': float(hyv_student)
+        
+        # Add ALL Student-t sub-models from the discrete nu grid
+        for st_result in student_t_results:
+            (st_name, st_bic, st_aic, st_ll, st_mu, st_P, st_ks, st_pit_p,
+             st_q, st_c, st_phi, st_nu, st_diag) = st_result
+            forecast_std_st = np.sqrt(st_c * (vol_arr ** 2) + st_P)
+            hyv_st = compute_hyvarinen_score_student_t(returns_arr, st_mu, forecast_std_st, st_nu)
+            model_comparison[st_name] = {
+                'll': st_ll,
+                'aic': st_aic,
+                'bic': st_bic,
+                'n_params': 3,  # q, c, phi (nu is FIXED)
+                'phi': float(st_phi),
+                'nu': float(st_nu),
+                'nu_fixed': True,
+                'hyvarinen_score': float(hyv_st)
             }
         
         # Compute combined scores for all models
@@ -1924,11 +2219,14 @@ def tune_asset_q(
         # Build result dictionary with extended schema
         # Get hyvarinen score and combined score for the selected model
         # Map noise_model to model_comparison keys
+        # Note: Student-t models now use phi_student_t_nu_{nu} naming
         noise_model_to_key = {
             'gaussian': 'kalman_gaussian',
+            'kalman_gaussian': 'kalman_gaussian',
             'phi_gaussian': 'kalman_phi_gaussian',
-            'kalman_phi_student_t': 'kalman_phi_student_t',
+            'kalman_phi_gaussian': 'kalman_phi_gaussian',
         }
+        # For Student-t models, the noise_model IS the key (e.g., phi_student_t_nu_6)
         model_key = noise_model_to_key.get(noise_model, noise_model)
         
         selected_hyvarinen = model_comparison.get(model_key, {}).get('hyvarinen_score')
@@ -1939,7 +2237,7 @@ def tune_asset_q(
             'asset': asset,
 
             # Model selection
-            'noise_model': noise_model,  # "gaussian", "phi_gaussian", or "kalman_phi_student_t"
+            'noise_model': noise_model,  # e.g., "kalman_gaussian", "kalman_phi_gaussian", or "phi_student_t_nu_6"
             'model_selection_method': 'combined',  # Always use combined for consistency
 
             # Parameters
@@ -1997,16 +2295,15 @@ def tune_asset_q(
             'optimization_successful': opt_diagnostics.get('optimization_successful', False)
         }
 
-        # Add Kalman Phi Student-t specific diagnostics if applicable
-        if noise_model == 'kalman_phi_student_t':
-            result['grid_best_nu'] = opt_diagnostics.get('grid_best_nu')
-            result['refined_best_nu'] = opt_diagnostics.get('refined_best_nu')
+        # Add Student-t specific diagnostics if applicable
+        if is_student_t_model(noise_model):
+            result['nu_fixed'] = True  # Always true now (discrete grid)
             result['refined_best_phi'] = float(phi_selected) if phi_selected is not None else None
-        if noise_model == "phi_gaussian":
+        if noise_model == "kalman_phi_gaussian":
             result['refined_best_phi'] = float(phi_selected)
 
-        # Add Gaussian comparison if Kalman Phi Student-t was selected
-        if noise_model == 'kalman_phi_student_t' and student_t_fit_success:
+        # Add Gaussian comparison if Student-t was selected
+        if is_student_t_model(noise_model) and student_t_fit_success:
             result['gaussian_bic'] = float(bic_gauss)
             result['gaussian_log_likelihood'] = float(ll_gauss_full)
             result['gaussian_pit_ks_pvalue'] = float(pit_p_gauss)
@@ -2768,6 +3065,10 @@ def fit_all_models_for_regime(
         - BIC, AIC
         - PIT calibration diagnostics
     
+    DISCRETE ν GRID FOR STUDENT-T:
+    Instead of a single "kalman_phi_student_t" model, we fit separate sub-models
+    for each ν in STUDENT_T_NU_GRID. Each participates independently in BMA.
+    
     Args:
         returns: Regime-specific returns
         vol: Regime-specific volatility
@@ -2779,7 +3080,11 @@ def fit_all_models_for_regime(
         {
             "kalman_gaussian": {...},
             "kalman_phi_gaussian": {...},
-            "kalman_phi_student_t": {...}
+            "phi_student_t_nu_4": {...},
+            "phi_student_t_nu_6": {...},
+            "phi_student_t_nu_8": {...},
+            "phi_student_t_nu_12": {...},
+            "phi_student_t_nu_20": {...},
         }
     """
     n_obs = len(returns)
@@ -2891,56 +3196,78 @@ def fit_all_models_for_regime(
         }
     
     # =========================================================================
-    # Model 2: Phi-Student-t (q, c, phi, nu)
+    # Model 2: Phi-Student-t with DISCRETE ν GRID
     # =========================================================================
-    try:
-        q_st, c_st, phi_st, nu_st, ll_cv_st, diag_st = PhiStudentTDriftModel.optimize_params(
-            returns, vol,
-            prior_log_q_mean=prior_log_q_mean,
-            prior_lambda=prior_lambda
-        )
+    # Instead of continuous ν optimization, we fit separate sub-models for
+    # each ν in STUDENT_T_NU_GRID. Each sub-model participates independently
+    # in BMA, eliminating ν-σ identifiability issues.
+    #
+    # Model naming: "phi_student_t_nu_{nu}" (e.g., "phi_student_t_nu_4")
+    # =========================================================================
+    
+    n_params_st = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T]  # 3 (q, c, phi)
+    
+    for nu_fixed in STUDENT_T_NU_GRID:
+        model_name = f"phi_student_t_nu_{nu_fixed}"
         
-        # Run full filter
-        mu_st, P_st, ll_full_st = PhiStudentTDriftModel.filter_phi(returns, vol, q_st, c_st, phi_st, nu_st)
-        
-        # Compute PIT calibration
-        ks_st, pit_p_st = PhiStudentTDriftModel.pit_ks(returns, mu_st, vol, P_st, c_st, nu_st)
-        
-        # Compute information criteria
-        n_params_st = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T]
-        aic_st = compute_aic(ll_full_st, n_params_st)
-        bic_st = compute_bic(ll_full_st, n_params_st, n_obs)
-        mean_ll_st = ll_full_st / max(n_obs, 1)
-        
-        # Compute Hyvärinen score for robust model selection (Student-t)
-        forecast_scale_st = np.sqrt(c_st * (vol ** 2) + P_st)
-        hyvarinen_st = compute_hyvarinen_score_student_t(returns, mu_st, forecast_scale_st, nu_st)
-        
-        models["kalman_phi_student_t"] = {
-            "q": float(q_st),
-            "c": float(c_st),
-            "phi": float(phi_st),
-            "nu": float(nu_st),
-            "log_likelihood": float(ll_full_st),
-            "mean_log_likelihood": float(mean_ll_st),
-            "cv_penalized_ll": float(ll_cv_st),
-            "bic": float(bic_st),
-            "aic": float(aic_st),
-            "hyvarinen_score": float(hyvarinen_st),
-            "n_params": int(n_params_st),
-            "ks_statistic": float(ks_st),
-            "pit_ks_pvalue": float(pit_p_st),
-            "fit_success": True,
-            "diagnostics": diag_st,
-        }
-    except Exception as e:
-        models["kalman_phi_student_t"] = {
-            "fit_success": False,
-            "error": str(e),
-            "bic": float('inf'),
-            "aic": float('inf'),
-            "hyvarinen_score": float('-inf'),
-        }
+        try:
+            # Optimize q, c, phi with FIXED nu
+            q_st, c_st, phi_st, ll_cv_st, diag_st = PhiStudentTDriftModel.optimize_params_fixed_nu(
+                returns, vol,
+                nu=nu_fixed,
+                prior_log_q_mean=prior_log_q_mean,
+                prior_lambda=prior_lambda
+            )
+            
+            # Run full filter with fixed nu
+            mu_st, P_st, ll_full_st = PhiStudentTDriftModel.filter_phi(
+                returns, vol, q_st, c_st, phi_st, nu_fixed
+            )
+            
+            # Compute PIT calibration
+            ks_st, pit_p_st = PhiStudentTDriftModel.pit_ks(
+                returns, mu_st, vol, P_st, c_st, nu_fixed
+            )
+            
+            # Compute information criteria
+            aic_st = compute_aic(ll_full_st, n_params_st)
+            bic_st = compute_bic(ll_full_st, n_params_st, n_obs)
+            mean_ll_st = ll_full_st / max(n_obs, 1)
+            
+            # Compute Hyvärinen score for robust model selection (Student-t)
+            forecast_scale_st = np.sqrt(c_st * (vol ** 2) + P_st)
+            hyvarinen_st = compute_hyvarinen_score_student_t(
+                returns, mu_st, forecast_scale_st, nu_fixed
+            )
+            
+            models[model_name] = {
+                "q": float(q_st),
+                "c": float(c_st),
+                "phi": float(phi_st),
+                "nu": float(nu_fixed),  # FIXED, not estimated
+                "log_likelihood": float(ll_full_st),
+                "mean_log_likelihood": float(mean_ll_st),
+                "cv_penalized_ll": float(ll_cv_st),
+                "bic": float(bic_st),
+                "aic": float(aic_st),
+                "hyvarinen_score": float(hyvarinen_st),
+                "n_params": int(n_params_st),
+                "ks_statistic": float(ks_st),
+                "pit_ks_pvalue": float(pit_p_st),
+                "fit_success": True,
+                "diagnostics": diag_st,
+                "nu_fixed": True,  # Flag indicating ν was fixed, not estimated
+            }
+        except Exception as e:
+            models[model_name] = {
+                "fit_success": False,
+                "error": str(e),
+                "bic": float('inf'),
+                "aic": float('inf'),
+                "hyvarinen_score": float('-inf'),
+                "nu": float(nu_fixed),
+                "nu_fixed": True,
+            }
     
     return models
 
@@ -3740,12 +4067,49 @@ def get_model_posterior_for_regime(
     if "global" in bma_result and "model_posterior" in bma_result["global"]:
         return bma_result["global"]["model_posterior"]
     
-    # Ultimate fallback: uniform
-    return {
-        "kalman_gaussian": 1.0 / 3.0,
-        "kalman_phi_gaussian": 1.0 / 3.0,
-        "kalman_phi_student_t": 1.0 / 3.0,
+    # Ultimate fallback: uniform over all model types including Student-t nu grid
+    return get_uniform_model_prior()
+
+
+def get_uniform_model_prior() -> Dict[str, float]:
+    """
+    Return a uniform prior over all candidate models.
+    
+    This includes:
+    - kalman_gaussian
+    - kalman_phi_gaussian
+    - phi_student_t_nu_{nu} for each nu in STUDENT_T_NU_GRID
+    
+    Returns:
+        Dictionary mapping model names to uniform probabilities (sum to 1)
+    """
+    n_student_t = len(STUDENT_T_NU_GRID)
+    n_total = 2 + n_student_t  # Gaussian, Phi-Gaussian, + nu grid
+    uniform_weight = 1.0 / n_total
+    
+    prior = {
+        "kalman_gaussian": uniform_weight,
+        "kalman_phi_gaussian": uniform_weight,
     }
+    for nu in STUDENT_T_NU_GRID:
+        prior[f"phi_student_t_nu_{nu}"] = uniform_weight
+    
+    return prior
+
+
+def is_student_t_model(model_name: str) -> bool:
+    """Check if a model name is a Student-t model (from the nu grid)."""
+    return model_name.startswith("phi_student_t_nu_")
+
+
+def get_student_t_nu(model_name: str) -> Optional[float]:
+    """Extract nu value from a Student-t model name, or None if not Student-t."""
+    if not is_student_t_model(model_name):
+        return None
+    try:
+        return float(model_name.split("_")[-1])
+    except (ValueError, IndexError):
+        return None
 
 
 def tune_regime_parameters(
@@ -4558,8 +4922,15 @@ def _extract_previous_posteriors(cached_entry: Optional[Dict]) -> Optional[Dict[
             r = int(r_str)
             model_posterior = r_data.get("model_posterior")
             if model_posterior is not None and isinstance(model_posterior, dict):
-                # Validate it has expected model keys
-                if any(k in model_posterior for k in ["kalman_gaussian", "kalman_phi_gaussian", "kalman_phi_student_t"]):
+                # Validate it has expected model keys (support both old and new naming)
+                # Old: kalman_phi_student_t (single model)
+                # New: phi_student_t_nu_{nu} (discrete nu grid)
+                has_gaussian = "kalman_gaussian" in model_posterior
+                has_phi_gaussian = "kalman_phi_gaussian" in model_posterior
+                has_old_student_t = "kalman_phi_student_t" in model_posterior
+                has_new_student_t = any(is_student_t_model(k) for k in model_posterior)
+                
+                if has_gaussian or has_phi_gaussian or has_old_student_t or has_new_student_t:
                     previous_posteriors[r] = model_posterior
         except (ValueError, TypeError):
             continue
@@ -4693,6 +5064,8 @@ Examples:
 
             if cached_model == 'kalman_phi_student_t' and cached_nu is not None:
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f}, ν={cached_nu:.1f})")
+            elif is_student_t_model(cached_model) and cached_nu is not None:
+                print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f}, ν={cached_nu:.1f})")
             else:
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f})")
             if has_regime:
@@ -4752,7 +5125,8 @@ Examples:
                             }
 
                         # Count model type from global params
-                        if global_result.get('noise_model') == 'kalman_phi_student_t':
+                        noise_model = global_result.get('noise_model', '')
+                        if noise_model == 'kalman_phi_student_t' or is_student_t_model(noise_model):
                             student_t_count += 1
                         else:
                             gaussian_count += 1
@@ -4842,9 +5216,14 @@ Examples:
                 data = data['global']
             phi_val = data.get('phi')
             noise_model = data.get('noise_model', 'gaussian')
-            if noise_model in ('kalman_phi_student_t', 'phi_student_t') and phi_val is not None:
+            # Support both old (kalman_phi_student_t) and new (phi_student_t_nu_*) naming
+            is_student_t = (
+                noise_model in ('kalman_phi_student_t', 'phi_student_t') or
+                is_student_t_model(noise_model)
+            )
+            if is_student_t and phi_val is not None:
                 return 'Phi-Student-t'
-            if noise_model in ('kalman_phi_student_t', 'phi_student_t'):
+            if is_student_t:
                 return 'Student-t'
             if noise_model == 'phi_gaussian' or phi_val is not None:
                 return 'Phi-Gaussian'
@@ -4914,7 +5293,11 @@ Examples:
                 'kalman_drift': 'Kalman',
                 'phi_kalman_drift': 'PhiKal',
                 'kalman_phi_student_t': 'PhiKal-t',
-            }.get(best_model, best_model[:8])
+            }
+            # Add entries for discrete nu grid models
+            for nu in STUDENT_T_NU_GRID:
+                best_model_abbr[f"phi_student_t_nu_{nu}"] = f'PhiT-ν{nu}'
+            best_model_abbr = best_model_abbr.get(best_model, best_model[:8])
 
             warn_marker = " ⚠️" if data.get('calibration_warning') else ""
 
@@ -5012,6 +5395,15 @@ Examples:
                 nu_str = f", ν={m.get('nu', 0):.1f}" if 'nu' in m else ""
                 hyv_str = f", H={m['hyvarinen_score']:.1f}" if m.get('hyvarinen_score') is not None else ""
                 print(f"     Kalman-φ-Student-t: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}{nu_str}{hyv_str}")
+            
+            # Display discrete nu grid Student-t models (new naming)
+            for nu_val in STUDENT_T_NU_GRID:
+                model_key = f"phi_student_t_nu_{nu_val}"
+                if model_key in model_comp:
+                    m = model_comp[model_key]
+                    phi_str = f", φ={m.get('phi', 0):+.3f}" if 'phi' in m else ""
+                    hyv_str = f", H={m['hyvarinen_score']:.1f}" if m.get('hyvarinen_score') is not None else ""
+                    print(f"     Phi-Student-t (ν={nu_val}): LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}{hyv_str}")
             
             # Selected model with Hyvärinen score
             ll_sel = mc.get('log_likelihood', float('nan'))

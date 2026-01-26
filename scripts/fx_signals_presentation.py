@@ -1229,9 +1229,14 @@ def render_parameter_table(
             data = data['global']
         phi_val = data.get('phi')
         noise_model = data.get('noise_model', 'gaussian')
-        if noise_model in ('kalman_phi_student_t', 'phi_student_t') and phi_val is not None:
+        # Support both old (kalman_phi_student_t) and new (phi_student_t_nu_*) naming
+        is_student_t = (
+            noise_model in ('kalman_phi_student_t', 'phi_student_t') or
+            (noise_model and noise_model.startswith('phi_student_t_nu_'))
+        )
+        if is_student_t and phi_val is not None:
             return 'Phi-Student-t'
-        if noise_model in ('kalman_phi_student_t', 'phi_student_t'):
+        if is_student_t:
             return 'Student-t'
         if noise_model == 'phi_gaussian' or phi_val is not None:
             return 'Phi-Gaussian'
@@ -1574,8 +1579,14 @@ def render_end_of_run_summary(
             table.add_column("Params", justify="left", width=20)
             
             # Add each model row
-            models_order = ['zero_drift', 'constant_drift', 'ewma_drift', 
-                           'kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']
+            # Build models_order dynamically to include new Student-t naming
+            base_models = ['zero_drift', 'constant_drift', 'ewma_drift', 
+                           'kalman_gaussian', 'kalman_phi_gaussian']
+            # Add Student-t models (both old and new naming)
+            student_t_models = [k for k in model_comp.keys() if 
+                               k == 'kalman_phi_student_t' or k.startswith('phi_student_t_nu_')]
+            models_order = base_models + sorted(student_t_models)
+            
             model_display_names = {
                 'zero_drift': 'Zero-drift',
                 'constant_drift': 'Constant-drift',
@@ -1584,6 +1595,22 @@ def render_end_of_run_summary(
                 'kalman_phi_gaussian': 'Kalman-φ-Gaussian',
                 'kalman_phi_student_t': 'Kalman-φ-Student-t',
             }
+            # Add display names for new Student-t models
+            for nu in [4, 6, 8, 12, 20]:
+                model_display_names[f'phi_student_t_nu_{nu}'] = f'φ-Student-t (ν={nu})'
+            
+            # Helper to check if model is selected
+            def _is_selected(model_key: str, selected_model: str) -> bool:
+                if model_key == selected_model:
+                    return True
+                if model_key == 'kalman_phi_gaussian' and selected_model == 'phi_gaussian':
+                    return True
+                if model_key == 'kalman_gaussian' and selected_model == 'gaussian':
+                    return True
+                # Both old and new Student-t naming
+                if model_key.startswith('phi_student_t_nu_') and selected_model.startswith('phi_student_t_nu_'):
+                    return model_key == selected_model
+                return False
             
             for model_key in models_order:
                 if model_key in model_comp:
@@ -1591,10 +1618,7 @@ def render_end_of_run_summary(
                     display_name = model_display_names.get(model_key, model_key)
                     
                     # Check if this is the selected model
-                    is_selected = (model_key == selected) or \
-                                  (model_key == 'kalman_phi_gaussian' and selected == 'phi_gaussian') or \
-                                  (model_key == 'kalman_gaussian' and selected == 'gaussian') or \
-                                  (model_key == 'kalman_phi_student_t' and selected == 'kalman_phi_student_t')
+                    is_selected = _is_selected(model_key, selected)
                     
                     # Build params string
                     params = []
