@@ -54,6 +54,23 @@ FAILED_CACHE_DIR_PATH = pathlib.Path(FAILED_CACHE_DIR)
 FAILED_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
 FAILED_ASSETS_FILE = FAILED_CACHE_DIR_PATH / "failed_assets.json"
 
+# ============================================================================
+# OFFLINE MODE - Use cached data only, don't try to download from Yahoo Finance
+# ============================================================================
+# Set via environment variable: OFFLINE_MODE=1
+# When enabled:
+# - Uses only cached price data from scripts/quant/cache/prices
+# - Skips all Yahoo Finance API calls
+# - Allows system to run without network connectivity
+# ============================================================================
+OFFLINE_MODE = os.environ.get("OFFLINE_MODE", "").lower() in ("1", "true", "yes", "on")
+
+# Symbols known to be problematic (delisted, frequently failing, etc.)
+# These will be skipped during bulk downloads to avoid noise
+KNOWN_PROBLEMATIC_SYMBOLS = {
+#     "PACB",   # Pacific Biosciences - frequently delisted warnings
+}
+
 _price_file_lock = Lock()
 
 # Deterministic overrides for Yahoo tickers that routinely fail or change format
@@ -3039,6 +3056,20 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     cached = _get_cached_prices(symbol, start, end)
     if cached is not None and not cached.empty:
         return cached
+    
+    # Load disk cache first - needed for both offline mode and incremental fetching
+    disk_df = _load_disk_prices(symbol)
+    
+    # =========================================================================
+    # OFFLINE MODE: Use cached data only, skip all Yahoo Finance API calls
+    # =========================================================================
+    if OFFLINE_MODE:
+        if disk_df is not None and not disk_df.empty:
+            _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
+            return disk_df
+        # No cached data available in offline mode
+        return pd.DataFrame()
+    
     def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         if df is not None and not df.empty:
             if hasattr(df.index, "tz") and df.index.tz is not None:
@@ -3046,7 +3077,6 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         return df if df is not None else pd.DataFrame()
 
     # Determine incremental fetch window based on disk cache
-    disk_df = _load_disk_prices(symbol)
     fetch_start = start
 
     # Determine the target end date
@@ -3147,18 +3177,40 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         _store_cached_prices(symbol, start, end, df)
         return df
 
+    # =========================================================================
+    # GRACEFUL FALLBACK: Return cached disk data when Yahoo Finance unavailable
+    # =========================================================================
+    # If all Yahoo Finance attempts failed but we have valid cached data on disk,
+    # return the cached data rather than failing. This allows the system to
+    # continue operating when network is unavailable or symbols are delisted.
+    # =========================================================================
+    if disk_df is not None and not disk_df.empty:
+        _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
+        return disk_df
+
     return pd.DataFrame()
 
 
-def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False, max_workers: int = 12) -> Dict[str, pd.Series]:
+def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False, max_workers: int = 12, force_online: bool = False) -> Dict[str, pd.Series]:
     """Download multiple symbols in chunks to reduce rate limiting.
     Uses yf.download with list input; falls back to per-symbol for failures.
     Populates the local price cache so subsequent single fetches reuse data.
     Returns mapping symbol -> close price Series. Progress logging is on by default.
     
     Args:
+        symbols: List of ticker symbols to download
+        start: Start date for data range
+        end: End date for data range
+        chunk_size: Number of symbols to download per chunk
+        progress: Whether to show progress output
+        log_fn: Optional logging function
         skip_individual_fallback: If True, skip individual download fallback (for multi-pass bulk downloads)
+        max_workers: Maximum number of parallel download workers
+        force_online: If True, ignore OFFLINE_MODE and always attempt downloads (for make data)
     """
+    # Determine if we should skip downloads (respect OFFLINE_MODE unless force_online)
+    skip_downloads = OFFLINE_MODE and not force_online
+    
     log = log_fn if log_fn is not None else (print if progress else None)
     cleaned = [s.strip() for s in symbols if s and s.strip()]
     dedup: List[str] = []
@@ -3231,6 +3283,15 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                     satisfied_primaries.add(primary)
 
     remaining_primaries = [p for p in primary_to_originals if p not in satisfied_primaries]
+
+    # =========================================================================
+    # OFFLINE MODE: Skip all downloads, return only cached data
+    # (unless force_online=True, which overrides for make data)
+    # =========================================================================
+    if skip_downloads:
+        if log:
+            log(f"OFFLINE MODE: Using {cached_hits} cached symbols, skipping {len(remaining_primaries)} unavailable symbols.")
+        return result
 
     total_need = len(remaining_primaries)
     if log and (cached_hits or total_need):

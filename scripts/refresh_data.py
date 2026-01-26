@@ -343,6 +343,7 @@ def bulk_download_n_times(
                 progress_task = progress_ctx.add_task("[cyan]Checking cache...[/cyan]", total=len(all_symbols))
             
             # Skip individual fallback on all passes except the last one
+            # force_online=True ensures OFFLINE_MODE is ignored for make data
             results = download_prices_bulk(
                 symbols=all_symbols,
                 start=start_str,
@@ -352,6 +353,7 @@ def bulk_download_n_times(
                 log_fn=rich_log if not quiet else None,
                 skip_individual_fallback=not is_final_pass,
                 max_workers=workers,
+                force_online=True,  # Always try to download for make data
             )
             
             if not quiet and progress_ctx is not None:
