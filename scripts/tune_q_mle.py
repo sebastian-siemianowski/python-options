@@ -245,11 +245,11 @@ class ModelClass(IntEnum):
     PHI_STUDENT_T = 2
 
 
-# Model class labels for display
+# Model class labels for display (base names - actual models use phi_student_t_nu_{nu})
 MODEL_CLASS_LABELS = {
     ModelClass.KALMAN_GAUSSIAN: "kalman_gaussian",
     ModelClass.PHI_GAUSSIAN: "kalman_phi_gaussian",
-    ModelClass.PHI_STUDENT_T: "kalman_phi_student_t",
+    ModelClass.PHI_STUDENT_T: "phi_student_t",  # Base name; actual models are phi_student_t_nu_{4,6,8,12,20}
 }
 
 # Model class parameter counts for BIC/AIC computation
@@ -3066,8 +3066,8 @@ def fit_all_models_for_regime(
         - PIT calibration diagnostics
     
     DISCRETE ν GRID FOR STUDENT-T:
-    Instead of a single "kalman_phi_student_t" model, we fit separate sub-models
-    for each ν in STUDENT_T_NU_GRID. Each participates independently in BMA.
+    We fit separate Student-t sub-models for each ν in STUDENT_T_NU_GRID.
+    Each participates independently in BMA, eliminating ν-σ identifiability issues.
     
     Args:
         returns: Regime-specific returns
@@ -4021,7 +4021,7 @@ def get_model_params_for_regime(
     Args:
         bma_result: Result from tune_asset_with_bma()
         regime: Regime index (0-4)
-        model: Model name ("kalman_gaussian", "kalman_phi_gaussian", "kalman_phi_student_t")
+        model: Model name ("kalman_gaussian", "kalman_phi_gaussian", or "phi_student_t_nu_{4,6,8,12,20}")
         
     Returns:
         Model parameters dict or None if not available
@@ -4922,15 +4922,13 @@ def _extract_previous_posteriors(cached_entry: Optional[Dict]) -> Optional[Dict[
             r = int(r_str)
             model_posterior = r_data.get("model_posterior")
             if model_posterior is not None and isinstance(model_posterior, dict):
-                # Validate it has expected model keys (support both old and new naming)
-                # Old: kalman_phi_student_t (single model)
-                # New: phi_student_t_nu_{nu} (discrete nu grid)
+                # Validate it has expected model keys
+                # Models: kalman_gaussian, kalman_phi_gaussian, phi_student_t_nu_{4,6,8,12,20}
                 has_gaussian = "kalman_gaussian" in model_posterior
                 has_phi_gaussian = "kalman_phi_gaussian" in model_posterior
-                has_old_student_t = "kalman_phi_student_t" in model_posterior
-                has_new_student_t = any(is_student_t_model(k) for k in model_posterior)
+                has_student_t = any(is_student_t_model(k) for k in model_posterior)
                 
-                if has_gaussian or has_phi_gaussian or has_old_student_t or has_new_student_t:
+                if has_gaussian or has_phi_gaussian or has_student_t:
                     previous_posteriors[r] = model_posterior
         except (ValueError, TypeError):
             continue
@@ -5062,9 +5060,7 @@ Examples:
                 cached_nu = cached_entry.get('nu')
                 has_regime = False
 
-            if cached_model == 'kalman_phi_student_t' and cached_nu is not None:
-                print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f}, ν={cached_nu:.1f})")
-            elif is_student_t_model(cached_model) and cached_nu is not None:
+            if is_student_t_model(cached_model) and cached_nu is not None:
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f}, ν={cached_nu:.1f})")
             else:
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f})")
@@ -5126,7 +5122,7 @@ Examples:
 
                         # Count model type from global params
                         noise_model = global_result.get('noise_model', '')
-                        if noise_model == 'kalman_phi_student_t' or is_student_t_model(noise_model):
+                        if is_student_t_model(noise_model):
                             student_t_count += 1
                         else:
                             gaussian_count += 1
@@ -5216,16 +5212,12 @@ Examples:
                 data = data['global']
             phi_val = data.get('phi')
             noise_model = data.get('noise_model', 'gaussian')
-            # Support both old (kalman_phi_student_t) and new (phi_student_t_nu_*) naming
-            is_student_t = (
-                noise_model in ('kalman_phi_student_t', 'phi_student_t') or
-                is_student_t_model(noise_model)
-            )
-            if is_student_t and phi_val is not None:
+            # Check for Student-t model (phi_student_t_nu_* naming)
+            if is_student_t_model(noise_model) and phi_val is not None:
                 return 'Phi-Student-t'
-            if is_student_t:
+            if is_student_t_model(noise_model):
                 return 'Student-t'
-            if noise_model == 'phi_gaussian' or phi_val is not None:
+            if noise_model == 'kalman_phi_gaussian' or phi_val is not None:
                 return 'Phi-Gaussian'
             return 'Gaussian'
         
@@ -5291,8 +5283,8 @@ Examples:
                 'constant_drift': 'Const',
                 'ewma_drift': 'EWMA',
                 'kalman_drift': 'Kalman',
-                'phi_kalman_drift': 'PhiKal',
-                'kalman_phi_student_t': 'PhiKal-t',
+                'kalman_gaussian': 'Gaussian',
+                'kalman_phi_gaussian': 'PhiGauss',
             }
             # Add entries for discrete nu grid models
             for nu in STUDENT_T_NU_GRID:
@@ -5389,14 +5381,7 @@ Examples:
                 hyv_str = f", H={m['hyvarinen_score']:.1f}" if m.get('hyvarinen_score') is not None else ""
                 print(f"     Kalman-φ-Gaussian: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}{hyv_str}")
             
-            if 'kalman_phi_student_t' in model_comp:
-                m = model_comp['kalman_phi_student_t']
-                phi_str = f", φ={m.get('phi', 0):+.3f}" if 'phi' in m else ""
-                nu_str = f", ν={m.get('nu', 0):.1f}" if 'nu' in m else ""
-                hyv_str = f", H={m['hyvarinen_score']:.1f}" if m.get('hyvarinen_score') is not None else ""
-                print(f"     Kalman-φ-Student-t: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}{nu_str}{hyv_str}")
-            
-            # Display discrete nu grid Student-t models (new naming)
+            # Display discrete nu grid Student-t models
             for nu_val in STUDENT_T_NU_GRID:
                 model_key = f"phi_student_t_nu_{nu_val}"
                 if model_key in model_comp:

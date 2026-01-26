@@ -13,7 +13,7 @@ posterior predictive Monte Carlo with Bayesian Model Averaging:
 
 Where:
     r_t      = current regime (deterministically assigned, same logic as tune)
-    m        = model class (kalman_gaussian, kalman_phi_gaussian, kalman_phi_student_t)
+    m        = model class (kalman_gaussian, kalman_phi_gaussian, phi_student_t_nu_{4,6,8,12,20})
     θ_{r,m}  = parameters from tuning layer
     p(m|r)   = posterior model probability from tuning layer
     x        = return at horizon H
@@ -1140,9 +1140,9 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
                 print(f"Warning: {asset_symbol} has no models in global - invalid BMA structure")
             return None
         
-        # Helper to check if model is Student-t (handles both old and new naming)
+        # Helper to check if model is Student-t (phi_student_t_nu_* naming)
         def _is_student_t(model_name: str) -> bool:
-            return model_name == 'kalman_phi_student_t' or model_name.startswith('phi_student_t_nu_')
+            return model_name.startswith('phi_student_t_nu_')
         
         # Extract representative params from highest-posterior model for Kalman filter
         # (The BMA path uses full model averaging, but Kalman filter needs single params)
@@ -1302,7 +1302,7 @@ def _select_regime_params(
         
         # Helper to check if model is Student-t
         def _is_st(m: str) -> bool:
-            return m == 'kalman_phi_student_t' or m.startswith('phi_student_t_nu_')
+            return m.startswith('phi_student_t_nu_')
         
         if model_posterior:
             best_model = max(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0))
@@ -1422,7 +1422,7 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
         tuned_params = _load_tuned_kalman_params(asset_symbol)
     noise_model = (tuned_params or {}).get('noise_model', 'gaussian')
     requires_phi = 'phi' in noise_model or noise_model.startswith('phi_student_t_nu_')
-    is_student_t = noise_model == 'kalman_phi_student_t' or noise_model.startswith('phi_student_t_nu_')
+    is_student_t = noise_model.startswith('phi_student_t_nu_')
 
     # φ is structural: only from tuned cache; required when model has φ
     phi_used = (tuned_params or {}).get('phi')
@@ -1606,9 +1606,8 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     # Load tuned parameters and model selection results
     tuned_params = None
     best_model = 'kalman_gaussian'
-    # Include both old naming and new discrete nu grid models
-    kalman_keys = {'kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t'}
-    # Add new Student-t model names
+    # Valid Kalman model names (discrete nu grid for Student-t)
+    kalman_keys = {'kalman_gaussian', 'kalman_phi_gaussian'}
     kalman_keys.update({f'phi_student_t_nu_{nu}' for nu in [4, 6, 8, 12, 20]})
     tuned_noise_model = 'gaussian'
     tuned_nu = None
@@ -1617,8 +1616,8 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         if tuned_params:
             best_model = tuned_params.get('best_model', 'kalman_gaussian')
             tuned_noise_model = tuned_params.get('noise_model', 'gaussian')
-            # Get nu for Student-t models (both old and new naming)
-            if tuned_noise_model == 'kalman_phi_student_t' or tuned_noise_model.startswith('phi_student_t_nu_'):
+            # Get nu for Student-t models (phi_student_t_nu_* naming)
+            if tuned_noise_model.startswith('phi_student_t_nu_'):
                 tuned_nu = tuned_params.get('nu')
     
     # Print BMA model information
@@ -1648,8 +1647,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         model_info = {
             'kalman_gaussian': {'short': 'Gaussian', 'icon': '📈', 'desc': 'Standard Kalman filter'},
             'kalman_phi_gaussian': {'short': 'φ-Gaussian', 'icon': '🔄', 'desc': 'Autoregressive drift'}, 
-            'kalman_phi_student_t': {'short': 'φ-Student-t', 'icon': '📊', 'desc': 'Heavy-tailed robust'},
-            # New discrete nu grid models
+            # Discrete nu grid Student-t models
             'phi_student_t_nu_4': {'short': 'φ-T(ν=4)', 'icon': '📊', 'desc': 'Heavy tails, ν=4'},
             'phi_student_t_nu_6': {'short': 'φ-T(ν=6)', 'icon': '📊', 'desc': 'Heavy tails, ν=6'},
             'phi_student_t_nu_8': {'short': 'φ-T(ν=8)', 'icon': '📊', 'desc': 'Moderate tails, ν=8'},
@@ -1739,7 +1737,6 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         weights_table.add_column("", width=3)
         
         # Get all models from posterior, sorted by weight descending
-        # This handles both old (kalman_phi_student_t) and new (phi_student_t_nu_*) naming
         all_models = sorted(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0), reverse=True)
         
         for model_name in all_models:
@@ -2034,7 +2031,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     nu = nu.clip(lower=4.5, upper=500.0)
 
     # Tail parameter: prefer tuned ν from cache for Student-t world; otherwise keep legacy estimate
-    is_student_t_world = tuned_noise_model == 'kalman_phi_student_t' or tuned_noise_model.startswith('phi_student_t_nu_')
+    is_student_t_world = tuned_noise_model.startswith('phi_student_t_nu_')
     if is_student_t_world and tuned_nu is not None and np.isfinite(tuned_nu):
         # Level-7 rule: ν is fixed from tuning cache in Student-t world
         nu_hat = float(tuned_nu)
@@ -4092,7 +4089,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     km_prob = (feats.get("kalman_metadata") or {})
     noise_model = km_prob.get("kalman_noise_model")
     tuned_nu_meta = km_prob.get("kalman_nu")
-    is_student_world = noise_model == 'kalman_phi_student_t' or (noise_model and noise_model.startswith('phi_student_t_nu_'))
+    is_student_world = noise_model and noise_model.startswith('phi_student_t_nu_')
     if is_student_world and (tuned_nu_meta is None or not np.isfinite(tuned_nu_meta)):
         raise ValueError("Student-t model selected but ν missing from tuning cache")
     nu_prob = float(tuned_nu_meta) if is_student_world else nu_glob
@@ -4316,8 +4313,8 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         noise_model_mc = km_mc.get("kalman_noise_model", "gaussian")
         if nu_mc is not None and (not np.isfinite(nu_mc) or nu_mc <= 2.0):
             nu_mc = None
-        # Check for Student-t model (both old and new naming)
-        is_student_t_mc = noise_model_mc == "kalman_phi_student_t" or (noise_model_mc and noise_model_mc.startswith('phi_student_t_nu_'))
+        # Check for Student-t model (phi_student_t_nu_* naming)
+        is_student_t_mc = noise_model_mc and noise_model_mc.startswith('phi_student_t_nu_')
         if not is_student_t_mc or nu_mc is None:
             noise_model_mc = "gaussian"  # Fallback for diagnostics
         
@@ -4442,8 +4439,8 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         predictive_var_diag = vH + drift_uncertainty_H
         predictive_std_diag = float(math.sqrt(max(predictive_var_diag, 1e-12)))
         z_predictive_diag = float(mH / predictive_std_diag) if predictive_std_diag > 0 else 0.0
-        # Check for Student-t model (both old and new naming)
-        is_student_t_diag = noise_model_mc == "kalman_phi_student_t" or (noise_model_mc and noise_model_mc.startswith('phi_student_t_nu_'))
+        # Check for Student-t model (phi_student_t_nu_* naming)
+        is_student_t_diag = noise_model_mc and noise_model_mc.startswith('phi_student_t_nu_')
         if is_student_t_diag and nu_mc is not None:
             p_analytical = float(student_t.cdf(z_predictive_diag, df=float(nu_mc)))
         else:
