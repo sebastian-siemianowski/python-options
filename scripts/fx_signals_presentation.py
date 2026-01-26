@@ -1576,7 +1576,12 @@ def render_end_of_run_summary(
             hyv_sel = mc.get('hyvarinen_score', float('nan'))
             model_sel_method = mc.get('model_selection_method', 'combined')
             
-            hyv_summary = f", H={hyv_sel:.1f}" if np.isfinite(hyv_sel) else ""
+            # Ensure hyv_sel is numeric before checking
+            try:
+                hyv_sel_float = float(hyv_sel) if hyv_sel is not None else float('nan')
+                hyv_summary = f", H={hyv_sel_float:.1f}" if np.isfinite(hyv_sel_float) else ""
+            except (TypeError, ValueError):
+                hyv_summary = ""
             method_label = {'bic': 'BIC', 'hyvarinen': 'Hyvärinen', 'combined': 'BIC+Hyvärinen'}.get(model_sel_method, model_sel_method)
             
             console.print(f"    [#00d700]Selected: {selected} (LL={ll_sel:.1f}, BIC={bic_sel:.1f}{hyv_summary}) via {method_label}[/#00d700]")
