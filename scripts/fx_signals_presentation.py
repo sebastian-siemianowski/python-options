@@ -1146,13 +1146,14 @@ def render_tuning_summary(
         student_bar = "█" * int(student_pct / 5) + "░" * (20 - int(student_pct / 5))
         
         model_text = (
-            f"Gaussian   {gaussian_count:>3}  [green]{gauss_bar}[/green] {gauss_pct:>3.0f}%\n"
-            f"Student-t  {student_t_count:>3}  [magenta]{student_bar}[/magenta] {student_pct:>3.0f}%"
+            f"Gaussian/φ-Gauss  {gaussian_count:>3}  [green]{gauss_bar}[/green] {gauss_pct:>3.0f}%\n"
+            f"φ-Student-t       {student_t_count:>3}  [magenta]{student_bar}[/magenta] {student_pct:>3.0f}%\n"
+            f"[dim]Student-t uses discrete ν ∈ {{4, 6, 8, 12, 20}}[/dim]"
         )
         
         console.print(Panel(
             model_text,
-            title="[bold magenta]🎯 Model Selection (BIC)[/bold magenta]",
+            title="[bold magenta]🎯 Model Selection (BIC + Hyvärinen)[/bold magenta]",
             border_style="magenta",
             expand=False,
             padding=(1, 2),
@@ -1200,7 +1201,7 @@ def render_tuning_summary(
         )
     
     console.print(regime_table)
-    console.print(f"[dim]  λ_regime = {lambda_regime:.3f}  •  Regime params: {regime_tuning_count}[/dim]")
+    console.print(f"[dim]  λ_regime = {lambda_regime:.3f}  •  φ prior: N(0, τ)  •  Regime params: {regime_tuning_count}[/dim]")
     if collapse_warnings > 0:
         console.print(f"[yellow]  ⚠ Collapse warnings: {collapse_warnings} assets[/yellow]")
     
@@ -1423,13 +1424,13 @@ def render_parameter_table(
     legend_text = (
         "[white]log₁₀(q)[/white] — Process noise variance (log scale)\n"
         "[white]c[/white] — Observation noise multiplier\n"
-        "[white]φ[/white] — Drift persistence (AR(1) coefficient)\n"
-        "[white]ν[/white] — Student-t degrees of freedom\n"
+        "[white]φ[/white] — Drift persistence (AR(1) coefficient, shrunk toward 0)\n"
+        "[white]ν[/white] — Student-t degrees of freedom (discrete: 4, 6, 8, 12, 20)\n"
         "[white]ΔLL₀[/white] — Improvement vs zero-drift baseline\n"
         "[white]ΔLLc[/white] — Improvement vs constant-drift baseline\n"
         "[white]ΔLLe[/white] — Improvement vs EWMA-drift baseline\n"
         "[white]BIC[/white] — Bayesian Information Criterion (lower = better)\n"
-        "[white]Hyv[/white] — Hyvärinen score (higher = better density fit)\n"
+        "[white]Hyv[/white] — Hyvärinen score (robust density scoring)\n"
         "[white]Comb[/white] — Combined BIC+Hyvärinen score (log weight, 0 = best)\n"
         "[white]Sel[/white] — Model selection: [magenta]C[/magenta]=Combined, [cyan]B[/cyan]=BIC, [yellow]H[/yellow]=Hyvärinen\n"
         "[white]PIT p[/white] — PIT KS p-value (≥0.05 = well-calibrated)"
@@ -1752,6 +1753,27 @@ def render_end_of_run_summary(
     if failure_reasons:
         console.print()
         render_failed_assets(failure_reasons, console=console)
+    
+    # ==========================================================================
+    # Section 5: System State Summary (What was used)
+    # ==========================================================================
+    console.print()
+    system_state_text = (
+        "[bold white]Current System Configuration:[/bold white]\n\n"
+        "[cyan]Models:[/cyan] Gaussian, φ-Gaussian, φ-Student-t\n"
+        "[cyan]ν grid:[/cyan] {4, 6, 8, 12, 20} — discrete, not optimized\n"
+        "[cyan]φ prior:[/cyan] N(0, τ) — explicit Gaussian shrinkage\n"
+        "[cyan]Scoring:[/cyan] BIC + Hyvärinen combined\n"
+        "[cyan]Per-regime:[/cyan] (q, c, φ) fit independently\n"
+        "[cyan]Temporal:[/cyan] Model posteriors smoothed across runs"
+    )
+    console.print(Panel(
+        system_state_text,
+        title="[bold blue]🧬 System DNA[/bold blue]",
+        border_style="blue",
+        expand=False,
+        padding=(1, 2),
+    ))
     
     # Final separator
     console.print()
