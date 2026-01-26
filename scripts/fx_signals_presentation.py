@@ -1289,6 +1289,8 @@ def render_parameter_table(
         table.add_column("ΔLLc", justify="right", width=7)
         table.add_column("ΔLLe", justify="right", width=7)
         table.add_column("BIC", justify="right", width=9)
+        table.add_column("Hyv", justify="right", width=8)
+        table.add_column("Sel", justify="center", width=5)
         table.add_column("PIT p", justify="right", width=8)
         
         for asset, raw_data in assets:
@@ -1307,6 +1309,8 @@ def render_parameter_table(
             delta_ll_ewma = data.get('delta_ll_vs_ewma', float('nan'))
             bic_val = data.get('bic', float('nan'))
             pit_p = data.get('pit_ks_pvalue', float('nan'))
+            hyv_val = data.get('hyvarinen_score', float('nan'))
+            model_sel_method = data.get('model_selection_method', '')
             
             log10_q = np.log10(q_val) if q_val > 0 else float('nan')
             
@@ -1330,6 +1334,32 @@ def render_parameter_table(
                     return f"[dim]{val:+.0f}[/dim]"
             
             bic_str = f"{bic_val:.0f}" if np.isfinite(bic_val) else "-"
+            
+            # Format Hyvärinen score - ensure it's numeric before checking
+            try:
+                hyv_val_float = float(hyv_val) if hyv_val is not None else float('nan')
+                if np.isfinite(hyv_val_float):
+                    # Color code: higher is better
+                    if hyv_val_float > 1000:
+                        hyv_str = f"[#00d700]{hyv_val_float:.0f}[/#00d700]"
+                    elif hyv_val_float > 100:
+                        hyv_str = f"[cyan]{hyv_val_float:.0f}[/cyan]"
+                    elif hyv_val_float < 0:
+                        hyv_str = f"[indian_red1]{hyv_val_float:.0f}[/indian_red1]"
+                    else:
+                        hyv_str = f"{hyv_val_float:.0f}"
+                else:
+                    hyv_str = "[dim]-[/dim]"
+            except (TypeError, ValueError):
+                hyv_str = "[dim]-[/dim]"
+            
+            # Format model selection method
+            method_abbrev = {
+                'combined': '[magenta]C[/magenta]',
+                'bic': '[cyan]B[/cyan]',
+                'hyvarinen': '[yellow]H[/yellow]',
+            }
+            sel_str = method_abbrev.get(model_sel_method, '[dim]-[/dim]')
             
             # Color code PIT p-value
             if np.isfinite(pit_p):
@@ -1356,6 +1386,8 @@ def render_parameter_table(
                 _format_delta_ll(delta_ll_const),
                 _format_delta_ll(delta_ll_ewma),
                 bic_str,
+                hyv_str,
+                sel_str,
                 pit_str,
             )
         
@@ -1372,6 +1404,8 @@ def render_parameter_table(
         "[white]ΔLLc[/white] — Improvement vs constant-drift baseline\n"
         "[white]ΔLLe[/white] — Improvement vs EWMA-drift baseline\n"
         "[white]BIC[/white] — Bayesian Information Criterion (lower = better)\n"
+        "[white]Hyv[/white] — Hyvärinen score (higher = better density fit)\n"
+        "[white]Sel[/white] — Model selection: [magenta]C[/magenta]=Combined, [cyan]B[/cyan]=BIC, [yellow]H[/yellow]=Hyvärinen\n"
         "[white]PIT p[/white] — PIT KS p-value (≥0.05 = well-calibrated)"
     )
     console.print(Panel(
