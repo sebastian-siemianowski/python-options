@@ -367,6 +367,132 @@ def clear_display_price_cache() -> None:
     _DISPLAY_PRICE_CACHE.clear()
 
 
+# ============================================================================
+# UNIFIED EXHAUSTION SCALAR (UES) — MODULE-LEVEL STATE
+# ============================================================================
+# UES measures trend fragility relative to the system's own beliefs.
+# State is keyed by (asset_key, horizon) and resets on regime change.
+# This ensures deterministic, replay-safe behavior.
+#
+# KEY INVARIANTS (Locked):
+# - UES location: latest_signals() only
+# - State: module-level cache
+# - Regime source: regime_used (from _get_regime_params_for_horizon)
+# - Alignment: signal direction (sign(mu_H)), not raw returns
+# - Scope: modulation only
+# - Feedback to tuning: FORBIDDEN
+# ============================================================================
+_ues_state: Dict[str, Dict[int, Dict[str, float]]] = {}
+# Structure: { asset_key: { horizon: {"cum_log": float, "cum_dir": float, "regime": int} } }
+
+
+def _update_ues_state(
+    asset_key: str,
+    horizon: int,
+    realized_log_ret: float,
+    regime_id: int,
+    signal_direction: float,
+) -> Tuple[float, float]:
+    """
+    Update UES state for an asset/horizon pair.
+    
+    Maintains cumulative log returns and directional alignment since regime entry.
+    Resets state on regime change to maintain path consistency.
+    
+    Args:
+        asset_key: Canonical asset identifier (e.g., ticker symbol)
+        horizon: Forecast horizon in days
+        realized_log_ret: Most recent realized log return observation
+        regime_id: Current regime ID (from regime_used in _get_regime_params_for_horizon)
+        signal_direction: Sign of mu_H (+1, -1, or 0) — the system's directional belief
+        
+    Returns:
+        Tuple of (cumulative_log_return, directional_cumulative_return) since regime entry
+    """
+    if not asset_key:
+        return 0.0, 0.0
+    
+    key = asset_key
+    state_by_h = _ues_state.setdefault(key, {})
+    state = state_by_h.get(horizon, {"cum_log": 0.0, "cum_dir": 0.0, "regime": None})
+
+    # Reset on regime change - path memory only valid within regime
+    if state["regime"] != regime_id:
+        state = {"cum_log": 0.0, "cum_dir": 0.0, "regime": regime_id}
+
+    # Accumulate realized returns
+    state["cum_log"] += realized_log_ret
+    # Directional alignment: positive when returns match signal direction
+    state["cum_dir"] += signal_direction * realized_log_ret
+
+    state_by_h[horizon] = state
+    return state["cum_log"], state["cum_dir"]
+
+
+def compute_ues(
+    realized_cum_log: float,
+    expected_cum_log: float,
+    expected_sigma: float,
+    directional_cum_log: float,
+    *,
+    w_D: float = 1.0,
+    w_L: float = 1.0,
+    lambda_0: float = 1.0,
+    alpha: float = 1.0,
+) -> float:
+    """
+    Compute Unified Exhaustion Scalar (UES).
+    
+    UES measures trend fragility via two components:
+    1. Deviation (D): How far realized returns deviate from expected (normalized)
+    2. Hazard (L): Exponentially increasing risk from prolonged directional moves
+    
+    Formula:
+        D = (realized_cum_log - expected_cum_log) / expected_sigma
+        hazard = lambda_0 * exp(alpha * |directional_cum_log|)
+        raw = w_D * |D| + w_L * log(1 + hazard)
+        UES = sigmoid(raw) ∈ (0, 1)
+    
+    Args:
+        realized_cum_log: Cumulative realized log return since regime start
+        expected_cum_log: Expected cumulative log return (mu_H * H)
+        expected_sigma: Expected volatility over horizon (sig_H * sqrt(H))
+        directional_cum_log: Cumulative return aligned with signal direction
+        w_D: Weight for deviation component (default 1.0)
+        w_L: Weight for hazard component (default 1.0)
+        lambda_0: Base hazard rate (default 1.0)
+        alpha: Hazard growth rate (default 1.0)
+        
+    Returns:
+        UES value in (0, 1), where higher = more fragile/exhausted
+        
+    Properties:
+        - UES increases during extended rallies
+        - UES resets on regime change
+        - UES is bounded, smooth, and interpretable
+        - UES never decides direction or triggers exits
+    """
+    eps = 1e-8
+    
+    # Deviation: standardized distance from expectation
+    D = (realized_cum_log - expected_cum_log) / max(expected_sigma, eps)
+    
+    # Hazard: exponentially increasing with directional extension
+    hazard = lambda_0 * np.exp(alpha * abs(directional_cum_log))
+    
+    # Combine components
+    raw = w_D * abs(D) + w_L * np.log1p(hazard)
+    
+    # Sigmoid to bound in (0, 1)
+    return float(1.0 / (1.0 + np.exp(-raw)))
+
+
+def clear_ues_state_cache() -> None:
+    """Clear the UES state cache. Useful for testing or resets."""
+    global _ues_state
+    _ues_state.clear()
+
+
 # NOTE: ExpectedUtilityResult dataclass removed - was only used by the legacy
 # compute_expected_utility() function. EU computation is now done inline in
 # latest_signals() from BMA r_samples.
@@ -407,6 +533,20 @@ class Signal:
     bma_method: str = "legacy"               # "bayesian_model_averaging_full" or "legacy"
     bma_has_model_posterior: bool = False    # True if BMA with model posteriors was used
     bma_borrowed_from_global: bool = False   # True if regime used hierarchical fallback
+    # ========================================================================
+    # UNIFIED EXHAUSTION SCALAR (UES) — Trend Fragility Measurement
+    # ========================================================================
+    # UES measures how fragile the current trend is relative to the system's
+    # own beliefs. High values imply asymmetric downside risk.
+    #
+    # Properties:
+    # - UES ∈ (0, 1) - bounded, smooth, interpretable
+    # - UES increases during extended rallies
+    # - UES resets on regime change
+    # - UES modulates position_strength, never flips direction
+    # - UES NEVER feeds back into tuning
+    # ========================================================================
+    ues: float = 0.0  # Unified Exhaustion Scalar - trend fragility in (0, 1)
 
 
 
@@ -4552,6 +4692,60 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # NO Kelly, NO mean/variance ratios - r_samples is the ONLY input
         pos_strength = drift_weight * eu_position_size
         
+        # ========================================================================
+        # UNIFIED EXHAUSTION SCALAR (UES) — Trend Fragility Measurement
+        # ========================================================================
+        # UES measures how fragile the current trend is relative to the system's
+        # own beliefs. High values imply asymmetric downside risk.
+        #
+        # Integration point: AFTER mu_H, sig_H, regime_used, pos_strength
+        # Modulation: soft scaling of position strength only
+        #
+        # KEY INVARIANTS:
+        # - UES is computed ONLY here (not in compute_features)
+        # - Uses regime_used from _select_regime_params (regime source consistency)
+        # - Aligns direction with sign(mu_H) (signal intent, not raw returns)
+        # - NEVER changes direction, NEVER triggers exits
+        # - NEVER feeds back into tuning
+        # ========================================================================
+        
+        # Get most recent realized return for state update
+        ret_series = feats.get("ret", pd.Series(dtype=float))
+        if isinstance(ret_series, pd.Series) and len(ret_series) > 0:
+            last_ret = float(ret_series.iloc[-1])
+            if not np.isfinite(last_ret):
+                last_ret = 0.0
+        else:
+            last_ret = 0.0
+        
+        # Signal direction from expected return (system's belief about direction)
+        signal_dir = float(np.sign(mu_H)) if abs(mu_H) > 1e-12 else 0.0
+        
+        # Update UES state (regime_used comes from _select_regime_params)
+        regime_for_ues = regime_used if regime_used is not None else 0
+        cum_log, cum_dir = _update_ues_state(
+            asset_key or "", H, last_ret, regime_for_ues, signal_dir
+        )
+        
+        # Compute expected cumulative statistics for comparison
+        expected_cum = mu_H * H  # Expected cumulative log return
+        expected_sigma = sig_H * np.sqrt(H) if sig_H > 0 else 1e-6  # Expected volatility over horizon
+        
+        # Compute UES
+        ues = compute_ues(cum_log, expected_cum, expected_sigma, cum_dir)
+        
+        # ========================================================================
+        # UES MODULATION (Soft Only)
+        # ========================================================================
+        # UES reduces position sizing when trend is exhausted.
+        # Does NOT change direction, does NOT trigger exits.
+        # ========================================================================
+        ues_modulation_factor = 1.0 - 0.5 * ues  # Range: [0.5, 1.0] at max exhaustion
+        pos_strength *= ues_modulation_factor
+        
+        # Store UES value for Signal dataclass
+        ues_value = float(ues)
+        
         # Logging/diagnostics: p, E_gain, E_loss, EU, pos_strength
         # (These are stored in Signal dataclass for analysis)
 
@@ -4671,6 +4865,15 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             bma_method=str(bma_meta.get("method", "legacy")),
             bma_has_model_posterior=bool(bma_meta.get("has_bma", False)),
             bma_borrowed_from_global=bool(bma_meta.get("regime_details", {}).get(regime_used, {}).get("borrowed_from_global", False)) if regime_used is not None else False,
+            # ================================================================
+            # UNIFIED EXHAUSTION SCALAR (UES)
+            # ================================================================
+            # UES measures trend fragility relative to system beliefs.
+            # - UES ∈ (0, 1) - higher = more fragile/exhausted
+            # - Modulates position_strength (already applied above)
+            # - NEVER changes direction or triggers exits
+            # ================================================================
+            ues=float(ues_value),
         ))
 
     return sigs, thresholds
@@ -4891,7 +5094,11 @@ def main() -> None:
                     h = sig.get("horizon_days")
                     if h is None:
                         continue
-                    horizon_signals[int(h)] = {"label": sig.get("label", "HOLD"), "profit_pln": float(sig.get("profit_pln", 0.0))}
+                    horizon_signals[int(h)] = {
+                        "label": sig.get("label", "HOLD"),
+                        "profit_pln": float(sig.get("profit_pln", 0.0)),
+                        "ues": float(sig.get("ues", 0.0)),  # Include UES from cache
+                    }
                 nearest_label = next(iter(horizon_signals.values()), {}).get("label", "HOLD")
                 summary_rows_cached.append({"asset_label": asset_label, "horizon_signals": horizon_signals, "nearest_label": nearest_label, "sector": sector})
         else:
@@ -5485,7 +5692,11 @@ def main() -> None:
         # Build summary row for this asset
         asset_label = build_asset_display_label(asset, title)
         horizon_signals = {
-            int(s.horizon_days): {"label": s.label, "profit_pln": float(s.profit_pln)}
+            int(s.horizon_days): {
+                "label": s.label,
+                "profit_pln": float(s.profit_pln),
+                "ues": float(getattr(s, 'ues', 0.0)),  # Include UES for summary
+            }
             for s in sigs
         }
         nearest_label = sigs[0].label if sigs else "HOLD"
