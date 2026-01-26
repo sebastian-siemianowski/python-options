@@ -444,15 +444,45 @@ class GaussianDriftModel:
 
     @staticmethod
     def pit_ks(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float = 1.0) -> Tuple[float, float]:
-        """PIT/KS for Gaussian forecasts including parameter uncertainty."""
+        """PIT/KS for Gaussian forecasts including parameter uncertainty.
+        
+        Computes the Probability Integral Transform (PIT) and performs a 
+        Kolmogorov-Smirnov test for uniformity. If the model is well-calibrated,
+        the PIT values should be uniformly distributed on [0, 1].
+        
+        Numerical stability: We enforce a minimum floor on forecast_std to prevent
+        division by zero. When forecast_std is effectively zero, the model has
+        collapsed to a degenerate distribution, which indicates calibration failure.
+        """
         returns_flat = np.asarray(returns).flatten()
         mu_flat = np.asarray(mu_filtered).flatten()
         vol_flat = np.asarray(vol).flatten()
         P_flat = np.asarray(P_filtered).flatten()
 
-        forecast_std = np.sqrt(c * (vol_flat ** 2) + P_flat)
+        # Compute forecast standard deviation with numerical floor
+        # The floor is set to 1e-10, which is small enough to not affect normal
+        # market data (typical daily vol ~0.01-0.05) but prevents division by zero
+        forecast_var = c * (vol_flat ** 2) + P_flat
+        forecast_std = np.sqrt(np.maximum(forecast_var, 1e-20))
+        
+        # Additional safety: ensure no zero values slip through
+        forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
+        
         standardized = (returns_flat - mu_flat) / forecast_std
-        pit_values = norm.cdf(standardized)
+        
+        # Handle any remaining NaN/Inf values that could arise from edge cases
+        valid_mask = np.isfinite(standardized)
+        if not np.any(valid_mask):
+            # All values invalid - return worst-case KS statistic
+            return 1.0, 0.0
+        
+        standardized_clean = standardized[valid_mask]
+        pit_values = norm.cdf(standardized_clean)
+        
+        # Need at least 2 points for KS test
+        if len(pit_values) < 2:
+            return 1.0, 0.0
+            
         ks_result = kstest(pit_values, 'uniform')
         return float(ks_result.statistic), float(ks_result.pvalue)
 
@@ -1086,29 +1116,77 @@ class PhiStudentTDriftModel:
 
     @staticmethod
     def pit_ks(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float, nu: float) -> Tuple[float, float]:
-        """PIT/KS for Student-t forecasts with parameter uncertainty included."""
+        """PIT/KS for Student-t forecasts with parameter uncertainty included.
+        
+        Uses the Student-t distribution CDF for the PIT transformation, which is
+        more appropriate for heavy-tailed return distributions.
+        
+        Numerical stability: Enforces minimum floor on forecast_scale to prevent
+        division by zero while preserving the statistical properties of the test.
+        """
         returns_flat = np.asarray(returns).flatten()
         mu_flat = np.asarray(mu_filtered).flatten()
         vol_flat = np.asarray(vol).flatten()
         P_flat = np.asarray(P_filtered).flatten()
 
-        forecast_scale = np.sqrt(c * (vol_flat ** 2) + P_flat)
+        # Compute forecast scale with numerical floor
+        forecast_var = c * (vol_flat ** 2) + P_flat
+        forecast_scale = np.sqrt(np.maximum(forecast_var, 1e-20))
+        
+        # Additional safety: ensure no zero values slip through
+        forecast_scale = np.where(forecast_scale < 1e-10, 1e-10, forecast_scale)
+        
         standardized = (returns_flat - mu_flat) / forecast_scale
-        pit_values = student_t.cdf(standardized, df=nu)
+        
+        # Handle any remaining NaN/Inf values
+        valid_mask = np.isfinite(standardized)
+        if not np.any(valid_mask):
+            return 1.0, 0.0
+        
+        standardized_clean = standardized[valid_mask]
+        
+        # Ensure nu is valid for Student-t (must be > 0)
+        nu_safe = max(nu, 2.01)
+        pit_values = student_t.cdf(standardized_clean, df=nu_safe)
+        
+        if len(pit_values) < 2:
+            return 1.0, 0.0
+            
         ks_result = kstest(pit_values, 'uniform')
         return float(ks_result.statistic), float(ks_result.pvalue)
 
     @staticmethod
     def compute_pit_ks_pvalue(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float = 1.0) -> Tuple[float, float]:
-        """PIT/KS for Gaussian forecasts including parameter uncertainty."""
+        """PIT/KS for Gaussian forecasts including parameter uncertainty.
+        
+        This is a Gaussian version used for comparison purposes within the
+        PhiStudentTDriftModel class.
+        
+        Numerical stability: Enforces minimum floor on forecast_std.
+        """
         returns_flat = np.asarray(returns).flatten()
         mu_flat = np.asarray(mu_filtered).flatten()
         vol_flat = np.asarray(vol).flatten()
         P_flat = np.asarray(P_filtered).flatten()
 
-        forecast_std = np.sqrt(c * (vol_flat ** 2) + P_flat)
+        # Compute forecast std with numerical floor
+        forecast_var = c * (vol_flat ** 2) + P_flat
+        forecast_std = np.sqrt(np.maximum(forecast_var, 1e-20))
+        forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
+        
         standardized = (returns_flat - mu_flat) / forecast_std
-        pit_values = norm.cdf(standardized)
+        
+        # Handle NaN/Inf
+        valid_mask = np.isfinite(standardized)
+        if not np.any(valid_mask):
+            return 1.0, 0.0
+        
+        standardized_clean = standardized[valid_mask]
+        pit_values = norm.cdf(standardized_clean)
+        
+        if len(pit_values) < 2:
+            return 1.0, 0.0
+            
         ks_result = kstest(pit_values, 'uniform')
         return float(ks_result.statistic), float(ks_result.pvalue)
 
@@ -1513,6 +1591,12 @@ def tune_asset_q(
 
         returns_arr = returns.values
         vol_arr = vol.values
+        
+        # Apply minimum volatility floor to prevent division by zero in PIT calculations
+        # A floor of 1e-8 is conservative: typical daily vol is 0.01-0.05 (1-5%)
+        # This handles edge cases like constant prices or numerical underflow
+        vol_arr = np.maximum(vol_arr, 1e-8)
+        
         n_obs = len(returns_arr)
 
         # Compute kurtosis to assess tail heaviness
