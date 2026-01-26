@@ -1820,13 +1820,16 @@ def tune_asset_q(
 
         # Build result dictionary with extended schema
         # Get hyvarinen score and combined score for the selected model
-        selected_hyvarinen = model_comparison.get(noise_model, {}).get('hyvarinen_score')
-        if selected_hyvarinen is None and noise_model == 'kalman_phi_student_t':
-            selected_hyvarinen = model_comparison.get('kalman_phi_student_t', {}).get('hyvarinen_score')
+        # Map noise_model to model_comparison keys
+        noise_model_to_key = {
+            'gaussian': 'kalman_gaussian',
+            'phi_gaussian': 'kalman_phi_gaussian',
+            'kalman_phi_student_t': 'kalman_phi_student_t',
+        }
+        model_key = noise_model_to_key.get(noise_model, noise_model)
         
-        selected_combined_score = model_comparison.get(noise_model, {}).get('combined_score')
-        if selected_combined_score is None and noise_model == 'kalman_phi_student_t':
-            selected_combined_score = model_comparison.get('kalman_phi_student_t', {}).get('combined_score')
+        selected_hyvarinen = model_comparison.get(model_key, {}).get('hyvarinen_score')
+        selected_combined_score = model_comparison.get(model_key, {}).get('combined_score')
         
         result = {
             # Asset identifier

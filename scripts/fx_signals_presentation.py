@@ -1551,23 +1551,27 @@ def render_end_of_run_summary(
             model_comp = mc.get('model_comparison', {})
             selected = mc.get('selected_model', 'unknown')
             n_obs = mc.get('n_obs', 0)
+            model_sel_method = mc.get('model_selection_method', 'combined')
             
             # Asset header
+            method_icon = {'bic': '📊', 'hyvarinen': '📐', 'combined': '⚖️'}.get(model_sel_method, '📊')
             console.print(f"  [bold white]{asset_name}[/bold white] [dim]({n_obs} obs)[/dim]")
             
             # Create a mini table for this asset's model comparison
             table = Table(
                 show_header=True,
-                header_style="dim",
-                box=box.SIMPLE,
+                header_style="bold dim",
+                box=box.SIMPLE_HEAVY,
                 padding=(0, 1),
                 expand=False,
             )
-            table.add_column("Model", style="dim", width=20)
+            table.add_column("Model", style="white", width=26)
             table.add_column("LL", justify="right", width=10)
             table.add_column("AIC", justify="right", width=10)
             table.add_column("BIC", justify="right", width=10)
-            table.add_column("Params", justify="left", width=15)
+            table.add_column("Hyv", justify="right", width=10)
+            table.add_column("Comb", justify="right", width=8)
+            table.add_column("Params", justify="left", width=20)
             
             # Add each model row
             models_order = ['zero_drift', 'constant_drift', 'ewma_drift', 
@@ -1589,10 +1593,8 @@ def render_end_of_run_summary(
                     # Check if this is the selected model
                     is_selected = (model_key == selected) or \
                                   (model_key == 'kalman_phi_gaussian' and selected == 'phi_gaussian') or \
-                                  (model_key == 'kalman_gaussian' and selected == 'gaussian')
-                    
-                    style = "[bold #00d700]" if is_selected else ""
-                    end_style = "[/bold #00d700]" if is_selected else ""
+                                  (model_key == 'kalman_gaussian' and selected == 'gaussian') or \
+                                  (model_key == 'kalman_phi_student_t' and selected == 'kalman_phi_student_t')
                     
                     # Build params string
                     params = []
@@ -1607,40 +1609,53 @@ def render_end_of_run_summary(
                     ll_val = m.get('ll', float('nan'))
                     aic_val = m.get('aic', float('nan'))
                     bic_val = m.get('bic', float('nan'))
-                    hyv_val = m.get('hyvarinen_score', float('nan'))
+                    hyv_val = m.get('hyvarinen_score')
+                    comb_val = m.get('combined_score')
                     
-                    # Format Hyvärinen score
-                    hyv_str = f"{hyv_val:.1f}" if np.isfinite(hyv_val) else "-"
+                    # Format values
+                    ll_str = f"{ll_val:.1f}" if np.isfinite(ll_val) else "-"
+                    aic_str = f"{aic_val:.1f}" if np.isfinite(aic_val) else "-"
+                    bic_str = f"{bic_val:.1f}" if np.isfinite(bic_val) else "-"
+                    hyv_str = f"{hyv_val:.1f}" if hyv_val is not None and np.isfinite(hyv_val) else "-"
+                    comb_str = f"{comb_val:.2f}" if comb_val is not None and np.isfinite(comb_val) else "-"
                     
                     if is_selected:
-                        display_name = f"→ {display_name}"
-                    
-                    table.add_row(
-                        f"{style}{display_name}{end_style}",
-                        f"{style}{ll_val:.1f}{end_style}",
-                        f"{style}{aic_val:.1f}{end_style}",
-                        f"{style}{bic_val:.1f}{end_style}",
-                        f"{style}{hyv_str}{end_style}",
-                        f"{style}{params_str}{end_style}",
-                    )
+                        # Selected model: highlight in green with arrow
+                        table.add_row(
+                            f"[bold #00d700]→ {display_name}[/bold #00d700]",
+                            f"[bold #00d700]{ll_str}[/bold #00d700]",
+                            f"[bold #00d700]{aic_str}[/bold #00d700]",
+                            f"[bold #00d700]{bic_str}[/bold #00d700]",
+                            f"[bold #00d700]{hyv_str}[/bold #00d700]",
+                            f"[bold #00d700]{comb_str}[/bold #00d700]",
+                            f"[bold #00d700]{params_str}[/bold #00d700]",
+                        )
+                    else:
+                        # Non-selected model: dim styling
+                        table.add_row(
+                            f"  {display_name}",
+                            ll_str,
+                            aic_str,
+                            bic_str,
+                            f"[dim]{hyv_str}[/dim]",
+                            f"[dim]{comb_str}[/dim]",
+                            f"[dim]{params_str}[/dim]",
+                        )
             
             console.print(table)
             
             # Show selected model summary with model selection method
             ll_sel = mc.get('log_likelihood', float('nan'))
             bic_sel = mc.get('bic', float('nan'))
-            hyv_sel = mc.get('hyvarinen_score', float('nan'))
-            model_sel_method = mc.get('model_selection_method', 'combined')
+            hyv_sel = mc.get('hyvarinen_score')
+            comb_sel = mc.get('combined_score')
             
-            # Ensure hyv_sel is numeric before checking
-            try:
-                hyv_sel_float = float(hyv_sel) if hyv_sel is not None else float('nan')
-                hyv_summary = f", H={hyv_sel_float:.1f}" if np.isfinite(hyv_sel_float) else ""
-            except (TypeError, ValueError):
-                hyv_summary = ""
+            # Format scores for summary
+            hyv_summary = f", Hyv={hyv_sel:.1f}" if hyv_sel is not None and np.isfinite(float(hyv_sel)) else ""
+            comb_summary = f", Comb={comb_sel:.2f}" if comb_sel is not None and np.isfinite(float(comb_sel)) else ""
             method_label = {'bic': 'BIC', 'hyvarinen': 'Hyvärinen', 'combined': 'BIC+Hyvärinen'}.get(model_sel_method, model_sel_method)
             
-            console.print(f"    [#00d700]Selected: {selected} (LL={ll_sel:.1f}, BIC={bic_sel:.1f}{hyv_summary}) via {method_label}[/#00d700]")
+            console.print(f"    [#00d700]Selected: {selected} (LL={ll_sel:.1f}, BIC={bic_sel:.1f}{hyv_summary}{comb_summary}) via {method_label}[/#00d700]")
             console.print()
     
     # ==========================================================================

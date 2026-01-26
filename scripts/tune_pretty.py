@@ -110,6 +110,8 @@ Examples:
     )
 
     # Load asset list
+    if args.assets:
+        console.print(f"\n[cyan]Filtering to specified assets: {args.assets}[/cyan]")
     assets = load_asset_list(args.assets, args.assets_file)
 
     # Apply max-assets limit
