@@ -1074,6 +1074,20 @@ COMPANY_NAMES: Dict[str, str] = {
     "NXPI": "NXP Semiconductors N.V.",
     "ADI": "Analog Devices, Inc.",
     "ON": "ON Semiconductor Corporation",
+    "ARM": "Arm Holdings plc",
+    "000660.KS": "SK Hynix Inc.",
+    "8035.T": "Tokyo Electron Limited",
+    "6723.T": "Renesas Electronics Corporation",
+    
+    # AI Power Semiconductors
+    "IFX.DE": "Infineon Technologies AG",
+    "STM": "STMicroelectronics N.V.",
+    "MPWR": "Monolithic Power Systems, Inc.",
+    "AOSL": "Alpha and Omega Semiconductor Limited",
+    "POWI": "Power Integrations, Inc.",
+    "VSH": "Vishay Intertechnology, Inc.",
+    "2308.TW": "Delta Electronics, Inc.",
+    "ETN": "Eaton Corporation plc",
     
     # Industrial & Infrastructure
     "PWR": "Quanta Services, Inc.",
@@ -1650,9 +1664,33 @@ DEFAULT_ASSET_UNIVERSE = [
     "ANET",   # Arista Networks — AI data-center networking spine
     "SNPS",   # Synopsys — Chip design software monopoly layer
     "CDNS",   # Cadence Design — Digital silicon design infrastructure
+    "000660.KS", # SK Hynix — Dominant in HBM3/HBM4, NVIDIA's memory supplier
+    "8035.T",    # Tokyo Electron — Japanese precision, leading-edge process control
 
     # -------------------------
-    # Cloud & Cybersecurity Infrastructure
+    # AI Hardware / Edge Compute
+    # -------------------------
+    "MRVL",   # Marvell Technology — Networking + storage + custom silicon
+    "NXPI",   # NXP Semiconductors — Edge AI + automotive brains
+    "ADI",    # Analog Devices — Sensor-to-AI interface layer
+    "ON",     # ON Semiconductor — EV + power + edge AI
+    "6723.T", # Renesas Electronics — Embedded + power control, industrial AI
+
+    # -------------------------
+    # AI Power Semiconductors
+    # -------------------------
+    "IFX.DE", # Infineon Technologies — World leader in power electronics, SiC
+    "STM",    # STMicroelectronics — Strong in SiC and industrial power
+    "TXN",    # Texas Instruments — Analog power, decades-long compounder
+    "MPWR",   # Monolithic Power Systems — Elite margins, AI server power
+    "AOSL",   # Alpha and Omega Semiconductor — High-voltage MOSFETs
+    "POWI",   # Power Integrations — Power efficiency specialists
+    "VSH",    # Vishay Intertechnology — Essential components
+    "2308.TW", # Delta Electronics — Power supplies for hyperscale data centers
+    "ETN",    # Eaton Corporation — Grid, UPS, power conditioning
+
+    # -------------------------
+    # Industrial / Infrastructure Transition
     # -------------------------
     "CRWD",   # CrowdStrike — AI-native cybersecurity platform
     "ZS",     # Zscaler — Zero-trust security backbone
@@ -1717,14 +1755,6 @@ DEFAULT_ASSET_UNIVERSE = [
     "CFLT",   # Confluent — Kafka data spine of real-time AI systems
     "ESTC",   # Elastic — Search + observability + AI substrate
     "PATH",   # UiPath — AI automation layer
-
-    # -------------------------
-    # AI Hardware / Edge Compute
-    # -------------------------
-    "MRVL",   # Marvell — AI networking silicon
-    "NXPI",   # NXP Semiconductors — Edge AI + automotive brains
-    "ADI",    # Analog Devices — Sensor-to-AI interface layer
-    "ON",     # ON Semiconductor — EV + power + edge AI
 
     # -------------------------
     # Industrial / Infrastructure Transition
@@ -2172,7 +2202,7 @@ SECTOR_MAP = {
         "JPM", "BAC", "WFC", "C", "USB", "PNC", "TFC", "GS", "MS", "BK"
     },
     "Consumer Discretionary": {
-        "BKNG", "GM", "HD", "LOW", "MCD", "NKE", "SBUX", "TGT", "TSLA", "VOW3", "VOW3.DE", "BMW", "BMW.DE", "CELH"
+        "BKNG", "GM", "HD", "LOW", "MCD", "NKE", "SBUX", "TGT", "TSLA", "VOW3", "VOW3.DE", "BMW", "BMW.DE", "BMW3.DE", "CELH"
     },
     "Industrials": {
         "CAT", "DE", "EMR", "FDX", "MMM", "UBER", "UNP", "UPS", "TKA", "TKA.DE", "MTX.DE"
@@ -2214,22 +2244,22 @@ SECTOR_MAP = {
     "Options / Structured Products": {
         "TSLD", "PLTI", "QQQO", "METI", "MSFI", "MAGD", "AMDI", "AMZD", "GOOO", "BABI", "BABY", "AAPI", "AVGI", "MSTP"
     },
-    "Nuclear": {"OKLO", "CCJ", "UUUU", "GEV", "LEU", "SMR"},
+    "Nuclear": {"OKLO", "CCJ", "UUUU", "GEV", "LEU", "SMR", "NXE", "UEC"},
     "Critical Materials": {"MP", "CRML", "IDR", "FCX", "UAMY"},
     "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR", "SPIR", "GSAT", "IRDM", "ASTR", "MDA.TO", "MDALF"},
     "Drones": {"ONDS", "UMAC", "AVAV", "KTOS", "DPRO"},
-    "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY", "SMCI", "ANET", "VRT"},
+    "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY", "SMCI", "ANET", "VRT", "2308.TW", "ETN"},
     "AI Software / Data Platforms": {"CFLT", "ESTC", "PATH", "DDOG", "SNOW", "MDB"},
-    "Semiconductor Equipment": {"ASML", "LRCX", "AMAT", "TSM", "ARM", "SNPS", "CDNS"},
-    "AI Power Semiconductors": {"NVTS", "WOLF", "AEHR", "ALAB", "CRDO"},
-    "AI Hardware / Edge Compute": {"MRVL", "NXPI", "ADI", "ON"},
+    "Semiconductor Equipment": {"ASML", "LRCX", "AMAT", "TSM", "ARM", "SNPS", "CDNS", "8035.T"},
+    "AI Power Semiconductors": {"NVTS", "WOLF", "AEHR", "ALAB", "CRDO", "IFX.DE", "STM", "MPWR", "AOSL", "POWI", "VSH"},
+    "AI Hardware / Edge Compute": {"MRVL", "NXPI", "ADI", "ON", "000660.KS", "6723.T"},
     "Cloud & Cybersecurity": {"CRWD", "ZS"},
     "Fintech": {"HUBS", "AFRM", "NU", "COIN", "PYPL"},
     "Batteries & Energy Tech": {"ENVX", "QS", "FLNC", "ENPH", "BE"},
     "TechBio / AI Drug Discovery": {"RXRX", "SDGR", "ABCL", "NTLA", "TEM"},
     "Biotech Platforms / Genomics": {"VRTX", "ILMN", "PACB", "EXAI"},
     "Quantum Computing": {"IONQ", "QBTS", "ARQQ", "RGTI", "QUBT"},
-    "Industrial Infrastructure": {"PWR", "JCI"},
+    "Industrial Infrastructure": {"PWR", "JCI", "ETN", "2308.TW"},
     "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"}
 }
 
@@ -2357,6 +2387,15 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     "SMCI": "USD", "ANET": "USD", "SNPS": "USD", "CDNS": "USD", "MRVL": "USD",
     "NXPI": "USD", "ADI": "USD", "ON": "USD", "NVTS": "USD", "WOLF": "USD",
     "AEHR": "USD", "ALAB": "USD", "CRDO": "USD", "MU": "USD",
+    # AI Power Semiconductors (USD)
+    "STM": "USD", "MPWR": "USD", "AOSL": "USD", "POWI": "USD", "VSH": "USD", "ETN": "USD",
+    
+    # AI & Semiconductors (International)
+    "000660.KS": "KRW",  # SK Hynix (Korean Won)
+    "8035.T": "JPY",     # Tokyo Electron (Japanese Yen)
+    "6723.T": "JPY",     # Renesas Electronics (Japanese Yen)
+    "IFX.DE": "EUR",     # Infineon (Euro)
+    "2308.TW": "TWD",    # Delta Electronics (Taiwan Dollar)
     
     # Cloud & Cybersecurity (USD)
     "CRWD": "USD", "ZS": "USD", "DDOG": "USD", "SNOW": "USD", "MDB": "USD",
