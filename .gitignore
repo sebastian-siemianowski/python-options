@@ -38,6 +38,7 @@ data/meta/
 # Quant script caches (prices and screener data)
 scripts/quant/cache/prices/
 scripts/quant/cache/top100/
+scripts/quant/cache/failed/
 
 # Distribution / packaging
 .Python
