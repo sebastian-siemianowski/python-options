@@ -199,7 +199,6 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from multiprocessing import Pool, cpu_count
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -368,129 +367,271 @@ def clear_display_price_cache() -> None:
 
 
 # ============================================================================
-# UNIFIED EXHAUSTION SCALAR (UES) — MODULE-LEVEL STATE
+# DUAL-SIDED TREND EXHAUSTION (UE↑ / UE↓)
 # ============================================================================
-# UES measures trend fragility relative to the system's own beliefs.
-# State is keyed by (asset_key, horizon) and resets on regime change.
-# This ensures deterministic, replay-safe behavior.
+# Measures market-space trend fragility in two independent directions:
+#   - Upside Exhaustion (UE↑): late-stage rally fragility, blow-off risk
+#   - Downside Exhaustion (UE↓): late-stage sell-off fragility, rebound risk
 #
-# KEY INVARIANTS (Locked):
-# - UES location: latest_signals() only
-# - State: module-level cache
-# - Regime source: regime_used (from _get_regime_params_for_horizon)
-# - Alignment: signal direction (sign(mu_H)), not raw returns
-# - Scope: modulation only
-# - Feedback to tuning: FORBIDDEN
+# KEY DESIGN PRINCIPLES:
+#   1. Exhaustion is directional in MARKET space, not position space
+#   2. UE↑ and UE↓ are mutually exclusive (only one can be active)
+#   3. Both bounded in (0, 1)
+#   4. Neither decides direction - only modulates risk/confidence
+#   5. No tuning feedback, no signal flips
+#
+# This removes the confusion of a single ambiguous "exhaustion" metric.
 # ============================================================================
-_ues_state: Dict[str, Dict[int, Dict[str, float]]] = {}
-# Structure: { asset_key: { horizon: {"cum_log": float, "cum_dir": float, "regime": int} } }
+
+# Module-level state for tracking cumulative returns per asset/horizon
+_exhaustion_state: Dict[str, Dict[int, Dict[str, float]]] = {}
+# Structure: { asset_key: { horizon: {"cum_log": float, "regime": int} } }
 
 
-def _update_ues_state(
+def _update_exhaustion_state(
     asset_key: str,
     horizon: int,
     realized_log_ret: float,
     regime_id: int,
-    signal_direction: float,
-) -> Tuple[float, float]:
+) -> Tuple[float, int]:
     """
-    Update UES state for an asset/horizon pair.
+    Update exhaustion state and return cumulative log return since regime entry.
     
-    Maintains cumulative log returns and directional alignment since regime entry.
-    Resets state on regime change to maintain path consistency.
+    DEPRECATED: This function is kept for backward compatibility but the new
+    exhaustion calculation uses price-based deviation from EMA, not cumulative returns.
     
     Args:
-        asset_key: Canonical asset identifier (e.g., ticker symbol)
+        asset_key: Unique identifier for the asset
         horizon: Forecast horizon in days
-        realized_log_ret: Most recent realized log return observation
-        regime_id: Current regime ID (from regime_used in _get_regime_params_for_horizon)
-        signal_direction: Sign of mu_H (+1, -1, or 0) — the system's directional belief
+        realized_log_ret: Most recent realized log return
+        regime_id: Current regime index
         
     Returns:
-        Tuple of (cumulative_log_return, directional_cumulative_return) since regime entry
+        Tuple of (cumulative_log_return, days_in_regime)
     """
-    if not asset_key:
-        return 0.0, 0.0
-    
     key = asset_key
-    state_by_h = _ues_state.setdefault(key, {})
-    state = state_by_h.get(horizon, {"cum_log": 0.0, "cum_dir": 0.0, "regime": None})
+    state_by_h = _exhaustion_state.setdefault(key, {})
+    state = state_by_h.get(horizon, {
+        "cum_log": 0.0,
+        "regime": None,
+        "days_in_regime": 0,
+    })
 
-    # Reset on regime change - path memory only valid within regime
-    if state["regime"] != regime_id:
-        state = {"cum_log": 0.0, "cum_dir": 0.0, "regime": regime_id}
-
-    # Accumulate realized returns
-    state["cum_log"] += realized_log_ret
-    # Directional alignment: positive when returns match signal direction
-    state["cum_dir"] += signal_direction * realized_log_ret
+    if state["regime"] is None:
+        state = {"cum_log": realized_log_ret, "regime": regime_id, "days_in_regime": 1}
+    elif state["regime"] == regime_id:
+        state["cum_log"] += realized_log_ret
+        state["days_in_regime"] += 1
+    else:
+        # Regime changed - reset
+        state = {"cum_log": realized_log_ret, "regime": regime_id, "days_in_regime": 1}
 
     state_by_h[horizon] = state
-    return state["cum_log"], state["cum_dir"]
+    return state["cum_log"], state["days_in_regime"]
 
 
-def compute_ues(
+def compute_directional_exhaustion_from_features(
+    feats: Dict[str, pd.Series],
+    lookback_short: int = 9,
+    lookback_long: int = 21,
+    vol_lookback: int = 21,
+) -> Dict[str, float]:
+    """
+    Compute dual-sided trend exhaustion using price-based technical analysis.
+
+    MATHEMATICAL FOUNDATION:
+    ========================
+    Exhaustion measures how far price has deviated from its trend equilibrium,
+    normalized by realized volatility. This is analogous to a Bollinger Band
+    z-score but with directional interpretation.
+
+    The key insight: exhaustion is about PRICE POSITION, not model predictions.
+
+    COMPUTATION:
+    ============
+    1. Compute EMA(short) and EMA(long) as trend references
+    2. Compute realized volatility σ over lookback window
+    3. Calculate z-score: z = (price - EMA) / σ
+    4. Apply smooth transformation to bound in (0, 1)
+
+    MUTUAL EXCLUSIVITY:
+    ===================
+    - If price > EMA: only UE↑ can be non-zero (upside exhaustion)
+    - If price < EMA: only UE↓ can be non-zero (downside exhaustion)
+    - If price ≈ EMA: both are near zero
+
+    This is GUARANTEED by construction - we check the sign of (price - EMA).
+
+    Args:
+        feats: Feature dictionary containing 'px' (prices) and 'vol' (volatility)
+        lookback_short: Short EMA period (default 9)
+        lookback_long: Long EMA period for trend confirmation (default 21)
+        vol_lookback: Volatility lookback for normalization (default 21)
+
+    Returns:
+        Dict with "ue_up", "ue_down", and diagnostic fields
+    """
+    # Extract price series
+    px_series = feats.get("px", pd.Series(dtype=float))
+    if px_series is None or len(px_series) < max(lookback_short, lookback_long, vol_lookback):
+        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+
+    # Current price
+    price = float(px_series.iloc[-1])
+    if not np.isfinite(price) or price <= 0:
+        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+
+    # Compute EMAs
+    ema_short = px_series.ewm(span=lookback_short, adjust=False).mean()
+    ema_long = px_series.ewm(span=lookback_long, adjust=False).mean()
+
+    ema_short_now = float(ema_short.iloc[-1])
+    ema_long_now = float(ema_long.iloc[-1])
+
+    if not np.isfinite(ema_short_now) or ema_short_now <= 0:
+        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+
+    # Use short EMA as the primary trend reference
+    ema_ref = ema_short_now
+
+    # Compute realized volatility (annualized, then convert to price terms)
+    ret_series = feats.get("ret", pd.Series(dtype=float))
+    if ret_series is not None and len(ret_series) >= vol_lookback:
+        recent_vol = float(ret_series.iloc[-vol_lookback:].std())
+        if not np.isfinite(recent_vol) or recent_vol <= 0:
+            recent_vol = 0.01  # Default 1% daily vol
+    else:
+        recent_vol = 0.01
+
+    # Convert return volatility to price volatility
+    price_vol = ema_ref * recent_vol
+
+    # =========================================================================
+    # CORE CALCULATION: Z-score of price deviation from EMA
+    # =========================================================================
+    # z = (price - EMA) / (EMA × σ_return)
+    #
+    # This measures how many "volatility units" price is away from trend
+    # =========================================================================
+
+    deviation = price - ema_ref
+    deviation_pct = deviation / ema_ref if ema_ref > 0 else 0.0
+
+    # Z-score: deviation normalized by price volatility
+    z_score = deviation / max(price_vol, 1e-10)
+
+    # =========================================================================
+    # EXHAUSTION TRANSFORMATION
+    # =========================================================================
+    # We want:
+    # - z = 0 → exhaustion = 0 (at equilibrium)
+    # - z = ±2 → exhaustion ≈ 50% (2 sigma move)
+    # - z = ±3 → exhaustion ≈ 75% (3 sigma move)
+    # - z = ±4+ → exhaustion → 90%+ (extreme)
+    #
+    # Use CDF of standard normal for smooth, interpretable mapping:
+    # exhaustion = 2 × |Φ(z) - 0.5|
+    #
+    # This gives:
+    # - z=0 → 0%
+    # - z=±1 → 34%
+    # - z=±2 → 68%
+    # - z=±3 → 87%
+    # - z=±4 → 97%
+    # =========================================================================
+
+    from scipy.stats import norm as scipy_norm
+
+    # Exhaustion magnitude based on z-score
+    cdf_val = scipy_norm.cdf(abs(z_score))
+    exhaustion_magnitude = 2.0 * (cdf_val - 0.5)  # Maps to (0, 1)
+
+    # =========================================================================
+    # TREND CONFIRMATION: Boost exhaustion when short EMA diverges from long EMA
+    # =========================================================================
+    # If short EMA is far from long EMA in the same direction as price deviation,
+    # the trend is extended and exhaustion should be higher.
+    # =========================================================================
+
+    ema_divergence = (ema_short_now - ema_long_now) / max(ema_long_now, 1e-10)
+
+    # Confirmation factor: boost if EMAs diverge in same direction as price
+    if deviation > 0 and ema_divergence > 0:
+        # Uptrend confirmed - boost upside exhaustion
+        confirmation = 1.0 + min(abs(ema_divergence) * 5, 0.3)  # Max 30% boost
+    elif deviation < 0 and ema_divergence < 0:
+        # Downtrend confirmed - boost downside exhaustion
+        confirmation = 1.0 + min(abs(ema_divergence) * 5, 0.3)
+    else:
+        # No confirmation or counter-trend
+        confirmation = 1.0
+
+    exhaustion_final = min(exhaustion_magnitude * confirmation, 0.99)
+
+    # =========================================================================
+    # MUTUAL EXCLUSIVITY: Only one side is active based on deviation sign
+    # =========================================================================
+
+    if deviation > 0:
+        # Price ABOVE EMA → upside exhaustion (blow-off risk)
+        ue_up = exhaustion_final
+        ue_down = 0.0
+    elif deviation < 0:
+        # Price BELOW EMA → downside exhaustion (rebound risk)
+        ue_up = 0.0
+        ue_down = exhaustion_final
+    else:
+        # Exactly at EMA (rare)
+        ue_up = 0.0
+        ue_down = 0.0
+
+    return {
+        "ue_up": float(ue_up),
+        "ue_down": float(ue_down),
+        "z_score": float(z_score),
+        "deviation_pct": float(deviation_pct * 100),  # As percentage
+        "ema_short": float(ema_short_now),
+        "ema_long": float(ema_long_now),
+        "price": float(price),
+        "confirmation": float(confirmation),
+    }
+
+
+def compute_directional_exhaustion(
     realized_cum_log: float,
     expected_cum_log: float,
     expected_sigma: float,
-    directional_cum_log: float,
+    cumulative_log_return: float,
     *,
+    days_in_regime: int = 1,
+    nu: Optional[float] = None,
     w_D: float = 1.0,
     w_L: float = 1.0,
     lambda_0: float = 1.0,
     alpha: float = 1.0,
-) -> float:
+) -> Dict[str, float]:
     """
-    Compute Unified Exhaustion Scalar (UES).
+    DEPRECATED: Old exhaustion calculation. Kept for backward compatibility.
     
-    UES measures trend fragility via two components:
-    1. Deviation (D): How far realized returns deviate from expected (normalized)
-    2. Hazard (L): Exponentially increasing risk from prolonged directional moves
-    
-    Formula:
-        D = (realized_cum_log - expected_cum_log) / expected_sigma
-        hazard = lambda_0 * exp(alpha * |directional_cum_log|)
-        raw = w_D * |D| + w_L * log(1 + hazard)
-        UES = sigmoid(raw) ∈ (0, 1)
-    
-    Args:
-        realized_cum_log: Cumulative realized log return since regime start
-        expected_cum_log: Expected cumulative log return (mu_H * H)
-        expected_sigma: Expected volatility over horizon (sig_H * sqrt(H))
-        directional_cum_log: Cumulative return aligned with signal direction
-        w_D: Weight for deviation component (default 1.0)
-        w_L: Weight for hazard component (default 1.0)
-        lambda_0: Base hazard rate (default 1.0)
-        alpha: Hazard growth rate (default 1.0)
-        
-    Returns:
-        UES value in (0, 1), where higher = more fragile/exhausted
-        
-    Properties:
-        - UES increases during extended rallies
-        - UES resets on regime change
-        - UES is bounded, smooth, and interpretable
-        - UES never decides direction or triggers exits
+    Use compute_directional_exhaustion_from_features() instead, which provides
+    mathematically sound price-based exhaustion measurement.
     """
-    eps = 1e-8
-    
-    # Deviation: standardized distance from expectation
-    D = (realized_cum_log - expected_cum_log) / max(expected_sigma, eps)
-    
-    # Hazard: exponentially increasing with directional extension
-    hazard = lambda_0 * np.exp(alpha * abs(directional_cum_log))
-    
-    # Combine components
-    raw = w_D * abs(D) + w_L * np.log1p(hazard)
-    
-    # Sigmoid to bound in (0, 1)
-    return float(1.0 / (1.0 + np.exp(-raw)))
+    # Return zeros - this function should not be used
+    return {
+        "ue_up": 0.0,
+        "ue_down": 0.0,
+        "D_raw": 0.0,
+        "D_time_adjusted": 0.0,
+        "time_factor": 1.0,
+        "tail_amplifier": 1.0,
+        "days_in_regime": int(days_in_regime),
+    }
 
 
-def clear_ues_state_cache() -> None:
-    """Clear the UES state cache. Useful for testing or resets."""
-    global _ues_state
-    _ues_state.clear()
+def clear_exhaustion_state_cache() -> None:
+    """Clear the exhaustion state cache. Useful for testing or resets."""
+    global _exhaustion_state
+    _exhaustion_state.clear()
 
 
 # NOTE: ExpectedUtilityResult dataclass removed - was only used by the legacy
@@ -533,20 +674,9 @@ class Signal:
     bma_method: str = "legacy"               # "bayesian_model_averaging_full" or "legacy"
     bma_has_model_posterior: bool = False    # True if BMA with model posteriors was used
     bma_borrowed_from_global: bool = False   # True if regime used hierarchical fallback
-    # ========================================================================
-    # UNIFIED EXHAUSTION SCALAR (UES) — Trend Fragility Measurement
-    # ========================================================================
-    # UES measures how fragile the current trend is relative to the system's
-    # own beliefs. High values imply asymmetric downside risk.
-    #
-    # Properties:
-    # - UES ∈ (0, 1) - bounded, smooth, interpretable
-    # - UES increases during extended rallies
-    # - UES resets on regime change
-    # - UES modulates position_strength, never flips direction
-    # - UES NEVER feeds back into tuning
-    # ========================================================================
-    ues: float = 0.0  # Unified Exhaustion Scalar - trend fragility in (0, 1)
+    # DUAL-SIDED TREND EXHAUSTION (market-space fragility indicators):
+    ue_up: float = 0.0    # Upside Exhaustion: late-stage rally fragility, blow-off risk (0-1)
+    ue_down: float = 0.0  # Downside Exhaustion: late-stage sell-off fragility, rebound risk (0-1)
 
 
 
@@ -4691,61 +4821,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # pos_strength is the ONLY position sizing variable used downstream
         # NO Kelly, NO mean/variance ratios - r_samples is the ONLY input
         pos_strength = drift_weight * eu_position_size
-        
-        # ========================================================================
-        # UNIFIED EXHAUSTION SCALAR (UES) — Trend Fragility Measurement
-        # ========================================================================
-        # UES measures how fragile the current trend is relative to the system's
-        # own beliefs. High values imply asymmetric downside risk.
-        #
-        # Integration point: AFTER mu_H, sig_H, regime_used, pos_strength
-        # Modulation: soft scaling of position strength only
-        #
-        # KEY INVARIANTS:
-        # - UES is computed ONLY here (not in compute_features)
-        # - Uses regime_used from _select_regime_params (regime source consistency)
-        # - Aligns direction with sign(mu_H) (signal intent, not raw returns)
-        # - NEVER changes direction, NEVER triggers exits
-        # - NEVER feeds back into tuning
-        # ========================================================================
-        
-        # Get most recent realized return for state update
-        ret_series = feats.get("ret", pd.Series(dtype=float))
-        if isinstance(ret_series, pd.Series) and len(ret_series) > 0:
-            last_ret = float(ret_series.iloc[-1])
-            if not np.isfinite(last_ret):
-                last_ret = 0.0
-        else:
-            last_ret = 0.0
-        
-        # Signal direction from expected return (system's belief about direction)
-        signal_dir = float(np.sign(mu_H)) if abs(mu_H) > 1e-12 else 0.0
-        
-        # Update UES state (regime_used comes from _select_regime_params)
-        regime_for_ues = regime_used if regime_used is not None else 0
-        cum_log, cum_dir = _update_ues_state(
-            asset_key or "", H, last_ret, regime_for_ues, signal_dir
-        )
-        
-        # Compute expected cumulative statistics for comparison
-        expected_cum = mu_H * H  # Expected cumulative log return
-        expected_sigma = sig_H * np.sqrt(H) if sig_H > 0 else 1e-6  # Expected volatility over horizon
-        
-        # Compute UES
-        ues = compute_ues(cum_log, expected_cum, expected_sigma, cum_dir)
-        
-        # ========================================================================
-        # UES MODULATION (Soft Only)
-        # ========================================================================
-        # UES reduces position sizing when trend is exhausted.
-        # Does NOT change direction, does NOT trigger exits.
-        # ========================================================================
-        ues_modulation_factor = 1.0 - 0.5 * ues  # Range: [0.5, 1.0] at max exhaustion
-        pos_strength *= ues_modulation_factor
-        
-        # Store UES value for Signal dataclass
-        ues_value = float(ues)
-        
+
         # Logging/diagnostics: p, E_gain, E_loss, EU, pos_strength
         # (These are stored in Signal dataclass for analysis)
 
@@ -4817,6 +4893,42 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             profit_ci_low_pln = raw_profit_ci_low_pln
             profit_ci_high_pln = raw_profit_ci_high_pln
 
+        # ========================================================================
+        # DUAL-SIDED TREND EXHAUSTION (UE↑ / UE↓) - PRICE-BASED
+        # ========================================================================
+        # Compute market-space directional exhaustion using price deviation from EMA.
+        #
+        # MATHEMATICAL FOUNDATION:
+        # - z = (price - EMA) / (EMA × σ_return)
+        # - Exhaustion = 2 × |Φ(z) - 0.5| where Φ is standard normal CDF
+        #
+        # KEY PROPERTIES:
+        # - Mutually exclusive: only UE↑ OR UE↓ can be non-zero (never both)
+        # - Price above EMA → UE↑ (blow-off risk)
+        # - Price below EMA → UE↓ (rebound risk)
+        # - Same value for all horizons (price-based, not model-based)
+        # ========================================================================
+
+        # Compute exhaustion from price features (same for all horizons)
+        exh_result = compute_directional_exhaustion_from_features(feats)
+
+        ue_up = exh_result["ue_up"]
+        ue_down = exh_result["ue_down"]
+
+        # ========================================================================
+        # EXHAUSTION-BASED RISK MODULATION (SOFT ONLY)
+        # ========================================================================
+        # Upside exhaustion reduces long conviction (blow-off risk)
+        # Downside exhaustion reduces short conviction (rebound risk)
+        # This does NOT flip signals - only modulates confidence
+        # ========================================================================
+        if ue_up > 0 and pos_strength > 0:
+            # Upside exhaustion: reduce long conviction
+            pos_strength *= (1.0 - 0.5 * ue_up)
+        if ue_down > 0 and pos_strength > 0:
+            # Downside exhaustion: reduce short conviction
+            pos_strength *= (1.0 - 0.5 * ue_down)
+
         sigs.append(Signal(
             horizon_days=int(H),
             score=float(edge_now),
@@ -4865,15 +4977,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             bma_method=str(bma_meta.get("method", "legacy")),
             bma_has_model_posterior=bool(bma_meta.get("has_bma", False)),
             bma_borrowed_from_global=bool(bma_meta.get("regime_details", {}).get(regime_used, {}).get("borrowed_from_global", False)) if regime_used is not None else False,
-            # ================================================================
-            # UNIFIED EXHAUSTION SCALAR (UES)
-            # ================================================================
-            # UES measures trend fragility relative to system beliefs.
-            # - UES ∈ (0, 1) - higher = more fragile/exhausted
-            # - Modulates position_strength (already applied above)
-            # - NEVER changes direction or triggers exits
-            # ================================================================
-            ues=float(ues_value),
+            # DUAL-SIDED TREND EXHAUSTION (market-space fragility):
+            ue_up=float(ue_up),
+            ue_down=float(ue_down),
         ))
 
     return sigs, thresholds
@@ -4978,11 +5084,10 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         }
 
 
-def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, horizons: List[int], max_retries: int = 3, use_bulk: bool = True):
+def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, horizons: List[int], max_retries: int = 3):
     """Run asset processing with bounded retries and collect failures.
     Retries only the assets that failed on prior attempts.
-    When use_bulk is True, prefetches prices in batches to reduce Yahoo rate limits
-    and processes sequentially to reuse the shared in-memory cache.
+    Uses multiprocessing.Pool for true multi-process parallelism (CPU-bound work).
     """
     console = Console()
     pending = list(dict.fromkeys(a.strip() for a in assets if a and a.strip()))
@@ -4993,31 +5098,20 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
     attempt = 1
     while attempt <= max_retries and pending:
         n_workers = min(cpu_count(), len(pending))
-        console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} workers...[/cyan]")
+        console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} worker process(es)...[/cyan]")
         work_items = [(asset, args, horizons) for asset in pending]
 
-        if use_bulk and attempt == 1 and pending:
+        # Prefetch prices in bulk on first attempt to reduce Yahoo rate limits
+        if attempt == 1 and pending:
             try:
                 console.print(f"[cyan]Prefetching {len(pending)} assets in bulk to reduce rate limits...[/cyan]")
                 download_prices_bulk(pending, start=args.start, end=args.end)
             except Exception as e:
                 console.print(f"[yellow]Warning:[/yellow] Bulk prefetch failed: {e}. Falling back to standard fetch.")
 
-        if use_bulk:
-            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets in parallel with shared cache...[/cyan]")
-            results = []
-            with ThreadPoolExecutor(max_workers=n_workers) as ex:
-                future_map = {ex.submit(process_single_asset, item): item for item in work_items}
-                for fut in as_completed(future_map):
-                    try:
-                        results.append(fut.result())
-                    except Exception as exc:
-                        asset = future_map[fut][0]
-                        results.append({"status": "error", "asset": asset, "error": str(exc)})
-        else:
-            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} worker process(es)...[/cyan]")
-            with Pool(processes=n_workers) as pool:
-                results = pool.map(process_single_asset, work_items)
+        # Always use multiprocessing.Pool for true multi-process parallelism
+        with Pool(processes=n_workers) as pool:
+            results = pool.map(process_single_asset, work_items)
 
         next_pending: List[str] = []
         for asset, result in zip(pending, results):
@@ -5055,6 +5149,12 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
                 failures.pop(asset, None)
 
         pending = list(dict.fromkeys(next_pending))
+
+        # Early exit: if all assets succeeded, skip remaining passes
+        if not pending:
+            console.print(f"[green]✓ Pass {attempt}: {len(successes)}/{len(successes)} successful — All complete![/green]")
+            break
+
         attempt += 1
 
     if pending:
@@ -5097,7 +5197,8 @@ def main() -> None:
                     horizon_signals[int(h)] = {
                         "label": sig.get("label", "HOLD"),
                         "profit_pln": float(sig.get("profit_pln", 0.0)),
-                        "ues": float(sig.get("ues", 0.0)),  # Include UES from cache
+                        "ue_up": float(sig.get("ue_up", 0.0)),
+                        "ue_down": float(sig.get("ue_down", 0.0)),
                     }
                 nearest_label = next(iter(horizon_signals.values()), {}).get("label", "HOLD")
                 summary_rows_cached.append({"asset_label": asset_label, "horizon_signals": horizon_signals, "nearest_label": nearest_label, "sector": sector})
@@ -5695,7 +5796,8 @@ def main() -> None:
             int(s.horizon_days): {
                 "label": s.label,
                 "profit_pln": float(s.profit_pln),
-                "ues": float(getattr(s, 'ues', 0.0)),  # Include UES for summary
+                "ue_up": float(s.ue_up),
+                "ue_down": float(s.ue_down),
             }
             for s in sigs
         }

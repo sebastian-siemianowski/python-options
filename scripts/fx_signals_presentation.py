@@ -86,7 +86,7 @@ def build_asset_display_label(asset_symbol: str, full_title: str) -> str:
     return name_part
 
 
-def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln: float = 1_000_000, ues: float = None) -> str:
+def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln: float = 1_000_000) -> str:
     """Format signal with ultra-compact, high-visibility styling.
     
     World-class UX: Clean, scannable, color-coded signals.
@@ -96,17 +96,9 @@ def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln
       - ↑↓ Arrows = Regular signals (BUY/SELL)
       - No symbol = Small moves
     Color coding: Green=positive, Red=negative, Light Blue=neutral small HOLD
-    
-    UES indicator (when provided):
-      - ⚡ = UES >= 60% (trend exhaustion warning)
     """
     pct_return = (profit_pln / notional_pln * 100) if notional_pln > 0 else 0.0
-    
-    # UES exhaustion warning indicator (only show when UES is high)
-    ues_indicator = ""
-    if ues is not None and ues >= 0.6:  # 60% threshold for exhaustion warning
-        ues_indicator = "[yellow]⚡[/yellow]"
-    
+
     # Ultra-compact profit display
     abs_profit = abs(profit_pln)
     if abs_profit >= 1_000_000:
@@ -121,33 +113,33 @@ def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln
         
         # Strong signals: double filled triangles ▲▲▼▼ (pleasant muted tones)
         if label_upper.startswith("STRONG BUY"):
-            return f"[bold #00d700]▲▲{pct_return:+.1f}% ({profit_compact})[/bold #00d700]{ues_indicator}"
+            return f"[bold #00d700]▲▲{pct_return:+.1f}% ({profit_compact})[/bold #00d700]"
         elif label_upper.startswith("STRONG SELL"):
-            return f"[bold indian_red1]▼▼{pct_return:+.1f}% ({profit_compact})[/bold indian_red1]{ues_indicator}"
+            return f"[bold indian_red1]▼▼{pct_return:+.1f}% ({profit_compact})[/bold indian_red1]"
         # Regular BUY/SELL: arrows ↑↓ (natural, pleasant colors)
         elif "SELL" in label_upper:
-            return f"[indian_red1]↓{pct_return:+.1f}% ({profit_compact})[/indian_red1]{ues_indicator}"
+            return f"[indian_red1]↓{pct_return:+.1f}% ({profit_compact})[/indian_red1]"
         elif "BUY" in label_upper:
-            return f"[#00d700]↑{pct_return:+.1f}% ({profit_compact})[/#00d700]{ues_indicator}"
+            return f"[#00d700]↑{pct_return:+.1f}% ({profit_compact})[/#00d700]"
         else:
             # HOLD: Notable moves use pleasant colors based on direction
             # Small moves use grey (neutral)
             if pct_return > 10.0:
-                return f"[bold #00d700]△{pct_return:+.1f}% ({profit_compact})[/bold #00d700]{ues_indicator}"
+                return f"[bold #00d700]△{pct_return:+.1f}% ({profit_compact})[/bold #00d700]"
             elif pct_return < -10.0:
-                return f"[bold indian_red1]▽{pct_return:+.1f}% ({profit_compact})[/bold indian_red1]{ues_indicator}"
+                return f"[bold indian_red1]▽{pct_return:+.1f}% ({profit_compact})[/bold indian_red1]"
             elif pct_return > 3.0:
-                return f"[#00d700]△{pct_return:+.1f}% ({profit_compact})[/#00d700]{ues_indicator}"
+                return f"[#00d700]△{pct_return:+.1f}% ({profit_compact})[/#00d700]"
             elif pct_return < -3.0:
-                return f"[indian_red1]▽{pct_return:+.1f}% ({profit_compact})[/indian_red1]{ues_indicator}"
+                return f"[indian_red1]▽{pct_return:+.1f}% ({profit_compact})[/indian_red1]"
             elif pct_return > 1.0:
-                return f"[#a8a8a8]{pct_return:+.1f}% ({profit_compact})[/#a8a8a8]{ues_indicator}"
+                return f"[#a8a8a8]{pct_return:+.1f}% ({profit_compact})[/#a8a8a8]"
             elif pct_return < -1.0:
-                return f"[#a8a8a8]{pct_return:+.1f}% ({profit_compact})[/#a8a8a8]{ues_indicator}"
+                return f"[#a8a8a8]{pct_return:+.1f}% ({profit_compact})[/#a8a8a8]"
             else:
-                return f"[#8a8a8a]{pct_return:+.1f}% ({profit_compact})[/#8a8a8a]{ues_indicator}"
+                return f"[#8a8a8a]{pct_return:+.1f}% ({profit_compact})[/#8a8a8a]"
     
-    return f"{pct_return:+.1f}% ({profit_compact}){ues_indicator}"
+    return f"{pct_return:+.1f}% ({profit_compact})"
 
 
 def extract_symbol_from_title(title: str) -> str:
@@ -209,7 +201,6 @@ def render_detailed_signal_table(
     table.add_column("E[ret]", justify="right", width=9)
     table.add_column(f"CI {int(confidence_level*100)}%", justify="center", width=18)
     table.add_column("Strength", justify="right", width=9)
-    table.add_column("Exhaust", justify="right", width=8)  # UES column
     table.add_column("Regime", justify="center", width=10)
     table.add_column("Profit (PLN)", justify="right", width=28)
     table.add_column("Signal", justify="center", width=12)
@@ -325,23 +316,7 @@ def render_detailed_signal_table(
             signal_str = f"[indian_red1]↓ SELL[/indian_red1]"
         else:
             signal_str = f"[#87afaf]HOLD[/#87afaf]"
-        
-        # ================================================================
-        # UNIFIED EXHAUSTION SCALAR (UES) - Trend Fragility Display
-        # ================================================================
-        # Format UES with color bands:
-        # - <30% → green (healthy trend)
-        # - 30-60% → amber (caution)
-        # - >60% → red (fragile/exhausted)
-        # ================================================================
-        ues_val = getattr(signal, 'ues', 0.0) * 100  # Convert to percentage
-        if ues_val < 30:
-            ues_str = f"[#00d700]{ues_val:.0f}%[/#00d700]"
-        elif ues_val < 60:
-            ues_str = f"[yellow]{ues_val:.0f}%[/yellow]"
-        else:
-            ues_str = f"[indian_red1]{ues_val:.0f}%[/indian_red1]"
-        
+
         table.add_row(
             horizon_label,
             edge_str,
@@ -349,7 +324,6 @@ def render_detailed_signal_table(
             ret_str,
             ci_str,
             strength_str,
-            ues_str,  # UES column
             regime_str,
             profit_str,
             signal_str,
@@ -373,8 +347,7 @@ def render_detailed_signal_table(
     if show_caption:
         cdf_name = "Student-t" if used_student_t_mapping else "Normal"
         console.print(f"[dim]  Edge = risk-adjusted z-score • Prob mapped via {cdf_name} CDF • Strength = EU-based position sizing[/dim]")
-        console.print(f"[dim]  Exhaust = trend fragility (high = asymmetric downside risk) • HOLD when |edge| < floor[/dim]")
-        console.print(f"[dim]  Profit on 1M PLN • CI = {int(confidence_level*100)}% confidence interval[/dim]")
+        console.print(f"[dim]  Profit on 1M PLN • CI = {int(confidence_level*100)}% confidence interval • HOLD when |edge| < floor[/dim]")
     console.print()
 
 
@@ -579,16 +552,16 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         show_header=True,
         header_style="bold cyan",
         border_style="blue",
-        padding=(0, 0),  # Reduced padding for tighter layout
-        collapse_padding=True,
-        pad_edge=False,
+        padding=(0, 1),
+        collapse_padding=False,
     )
     # Asset column - truncate long names with ellipsis
-    table.add_column(" Asset", justify="left", style="bold", width=asset_col_width + 1, no_wrap=True, overflow="ellipsis")
-    # UES indicator column (compact, shows exhaustion warning)
-    table.add_column("E", justify="center", width=3, no_wrap=True)  # E for Exhaustion
+    table.add_column(" Asset", justify="left", style="bold", width=asset_col_width, no_wrap=True, overflow="ellipsis")
+    # Dual-sided exhaustion columns as percentages (↑=upside blow-off risk, ↓=downside rebound risk)
+    table.add_column(" ↑% ", justify="center", width=4, no_wrap=True)  # Upside exhaustion percentage
+    table.add_column(" ↓% ", justify="center", width=4, no_wrap=True)  # Downside exhaustion percentage
     
-    # Compact horizon labels - tighter width for symmetry
+    # Compact horizon labels - all same width for alignment
     horizon_labels = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
     for horizon in horizons:
         label = horizon_labels.get(horizon, f"{horizon}d")
@@ -598,21 +571,39 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         asset_label = row.get("asset_label", "Unknown")
         horizon_signals = row.get("horizon_signals", {})
         
-        # Compute max UES across all horizons for this asset
-        max_ues = 0.0
+        # Compute max UE↑ and UE↓ across all horizons for this asset
+        max_ue_up = 0.0
+        max_ue_down = 0.0
         for horizon in horizons:
             signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
-            ues = signal_data.get("ues", 0.0) or 0.0
-            if ues > max_ues:
-                max_ues = ues
+            ue_up = signal_data.get("ue_up", 0.0) or 0.0
+            ue_down = signal_data.get("ue_down", 0.0) or 0.0
+            if ue_up > max_ue_up:
+                max_ue_up = ue_up
+            if ue_down > max_ue_down:
+                max_ue_down = ue_down
         
-        # Format UES indicator based on max exhaustion
-        if max_ues >= 0.6:
-            ues_indicator = "[indian_red1]![/indian_red1]"
-        elif max_ues >= 0.3:
-            ues_indicator = "[yellow]![/yellow]"
+        # Format UE↑ as percentage with color coding (upside exhaustion = blow-off risk)
+        ue_up_pct = int(max_ue_up * 100)
+        if ue_up_pct == 0:
+            ue_up_display = "[dim]·[/dim]"
+        elif max_ue_up >= 0.6:
+            ue_up_display = f"[indian_red1]{ue_up_pct}[/indian_red1]"
+        elif max_ue_up >= 0.3:
+            ue_up_display = f"[yellow]{ue_up_pct}[/yellow]"
         else:
-            ues_indicator = " "
+            ue_up_display = f"[dim]{ue_up_pct}[/dim]"
+
+        # Format UE↓ as percentage with color coding (downside exhaustion = rebound risk)
+        ue_down_pct = int(max_ue_down * 100)
+        if ue_down_pct == 0:
+            ue_down_display = "[dim]·[/dim]"
+        elif max_ue_down >= 0.6:
+            ue_down_display = f"[#00d700]{ue_down_pct}[/#00d700]"
+        elif max_ue_down >= 0.3:
+            ue_down_display = f"[cyan]{ue_down_pct}[/cyan]"
+        else:
+            ue_down_display = f"[dim]{ue_down_pct}[/dim]"
         
         cells = []
         for horizon in horizons:
@@ -621,7 +612,7 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
             profit_pln = signal_data.get("profit_pln", 0.0)
             cells.append(format_profit_with_signal(label, profit_pln))
         
-        table.add_row(asset_label, ues_indicator, *cells)
+        table.add_row(asset_label, ue_up_display, ue_down_display, *cells)
 
     console.print(table)
     console.print()
@@ -650,11 +641,11 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
     
     # Print header and legend with elegant styling (no background)
     console.print()
-    console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
-    console.print("[bold cyan]  SIGNAL DASHBOARD[/bold cyan]                                                    [white]Returns on 1M PLN investment[/white]")
+    console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
+    console.print("[bold cyan]  SIGNAL DASHBOARD[/bold cyan]                                                          [white]Returns on 1M PLN investment[/white]")
     console.print("[white]  ▲▲▼▼ Strong Signal   △▽ Notable [dim](HOLD w/ big return)[/dim]   ↑↓ Signal   [#00d700]Green[/#00d700]=Positive [indian_red1]Red[/indian_red1]=Negative[/white]")
-    console.print("[white]  E=[yellow]⚡[/yellow]Caution(30-60%) [indian_red1]⚡[/indian_red1]Exhausted(>60%) [dim]— trend fragility, asymmetric downside risk[/dim][/white]")
-    console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
+    console.print("[white]  ↑%=Price above EMA(9) [indian_red1](blow-off)[/indian_red1]   ↓%=Price below EMA(9) [#00d700](rebound)[/#00d700]   [dim]z-score normalized by volatility[/dim][/white]")
+    console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
     console.print()
 
     # Sort sectors alphabetically but put "Other" at the end
@@ -939,7 +930,6 @@ DETAILED_COLUMN_DESCRIPTIONS = {
     "profit_ci_low_pln": "Lower confidence bound for profit (PLN) on 1,000,000 PLN.",
     "profit_ci_high_pln": "Upper confidence bound for profit (PLN) on 1,000,000 PLN.",
     "signal": "Decision label based on prob_up: BUY (>=58%), HOLD (42–58%), SELL (<=42%).",
-    "ues": "Unified Exhaustion Scalar (0-100%): trend fragility relative to system beliefs. High values imply asymmetric downside risk.",
 }
 
 SIMPLIFIED_COLUMN_DESCRIPTIONS = {

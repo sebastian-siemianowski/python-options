@@ -375,9 +375,14 @@ def bulk_download_n_times(
                 # Show pass results
                 if last_failed_count == 0:
                     console.print(f"  [green]✓[/green] Pass {pass_num}: [green]{successful}/{len(all_symbols)} successful[/green] — [bold green]All complete![/bold green]")
+                    # Early exit: all symbols succeeded, skip remaining passes
+                    break
                 else:
                     console.print(f"  [yellow]⚡[/yellow] Pass {pass_num}: [green]{successful}[/green] successful, [yellow]{last_failed_count}[/yellow] pending")
-            
+            elif last_failed_count == 0:
+                # Early exit even in quiet mode
+                break
+
             # Wait between passes (with countdown)
             if pass_num < num_passes:
                 if not quiet:
