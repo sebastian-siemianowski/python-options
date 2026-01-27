@@ -1782,6 +1782,67 @@ DEFAULT_ASSET_UNIVERSE = [
     "FLNC",   # Fluence Energy — Grid-scale battery systems
     "ENPH",   # Enphase Energy — Solar + storage intelligence
     "BE",     # Bloom Energy — Solid oxide fuel cells
+
+    # =========================================================================
+    # SMALL-MID CAP SCREENER PICKS (Top 100 Revenue Growth Screener)
+    # =========================================================================
+
+    # -------------------------
+    # Small-Mid Cap — Finance (🟢 Institutional-Grade ≥70)
+    # -------------------------
+    "AGNC",   # AGNC Investment Corp. — Mortgage REIT, institutional dividend
+    "ABTC",   # AMERIBANCORP, Inc. — Regional banking, high growth
+    "AXG",    # Axos Financial, Inc. — Digital banking platform
+    "ASB",    # Associated Banc-Corp — Regional bank, Midwest footprint
+    "ANGX",   # Angel Oak Financial Strategies — Specialty finance
+
+    # -------------------------
+    # Small-Mid Cap — Biotech/Healthcare (🟢 Institutional-Grade ≥70)
+    # -------------------------
+    "ANNA",   # Annovis Bio, Inc. — Neurodegenerative disease therapeutics
+    "BBIO",   # BridgeBio Pharma, Inc. — Genetic disease platform
+    "ATAI",   # atai Life Sciences N.V. — Mental health biotech
+    "APLM",   # Apollomics, Inc. — Oncology-focused biotech
+
+    # -------------------------
+    # Small-Mid Cap — Technology/Space (🟢 Institutional-Grade ≥70)
+    # -------------------------
+    # "ASTS",  # AST SpaceMobile, Inc. — Already in universe (Space section)
+    "BZAI",   # Banzai International, Inc. — AI-powered engagement platform
+
+    # -------------------------
+    # Small-Mid Cap — Real Estate (🟢 Institutional-Grade ≥70)
+    # -------------------------
+    "AIRE",   # reAlpha Tech Corp. — AI-driven real estate platform
+
+    # -------------------------
+    # Small-Mid Cap — Finance (🟡 Tradeable 60-69)
+    # -------------------------
+    "BMHL",   # BM Technologies, Inc. — Digital banking fintech
+    "BNZI",   # Banzai International, Inc. — Engagement tech (alt ticker)
+    "BNKK",   # BNK Financial Group, Inc. — Korean financial services
+    "BTCS",   # BTCS Inc. — Blockchain infrastructure
+    "BCAL",   # California BanCorp — Regional California bank
+    "ARR",    # ARMOUR Residential REIT, Inc. — Mortgage REIT
+
+    # -------------------------
+    # Small-Mid Cap — Biotech/Healthcare (🟡 Tradeable 60-69)
+    # -------------------------
+    "ALNY",   # Alnylam Pharmaceuticals, Inc. — RNAi therapeutics leader
+    "APLS",   # Apellis Pharmaceuticals, Inc. — Complement pathway therapies
+    "APLT",   # Applied Therapeutics, Inc. — Rare disease treatments
+    "BETA",   # Beta Bionics, Inc. — Diabetes management tech
+
+    # -------------------------
+    # Small-Mid Cap — Technology/Industrial (🟡 Tradeable 60-69)
+    # -------------------------
+    "ASPI",   # ASP Isotopes Inc. — Isotope enrichment technology
+    "ABAT",   # American Battery Technology Company — Battery recycling
+    "ADUR",   # Aduro Clean Technologies — Chemical recycling tech
+    "APLD",   # Applied Digital Corporation — AI data center infrastructure
+    "ALMU",   # Aeluma, Inc. — Compound semiconductor materials
+    "AMZE",   # Amaze Holdings, Inc. — Technology solutions
+    "AIFF",   # Firefly Neuroscience, Inc. — AI neuroscience platform
 ]
 
 MAPPING = {
