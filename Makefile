@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20 data four purge failed setup
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20 data four purge failed setup
 # Usage:
 #   make setup                         # full setup: install deps + download all data (runs 3x for reliability)
 #   make run                           # runs with defaults (screener + backtest)
@@ -10,10 +10,11 @@ SHELL := /bin/bash
 #   make doctor                        # (re)installs requirements into the venv
 #   make top50                         # runs the revenue growth screener
 #   make top50 ARGS=""                 # extra args (reserved)
-#   make build-russell                 # builds data/russell2500_tickers.csv from public sources
+#   make build-russell                 # builds data/universes/russell2500_tickers.csv from public sources
+#   make russell5000                   # builds data/universes/russell5000_tickers.csv (5000 tickers, multiprocessing)
 #   make bagger50                      # ranks by highest 100× Bagger Score (adds 100× Score column)
 #   make bagger50 ARGS="--bagger_horizon 15"   # optional flags; also supports --top_n, --plain, --bagger_verbose
-#   make top100                        # runs the top100 screener
+#   make top100                        # runs the top100 screener (uses russell5000 universe)
 #   make fx-plnjpy                     # generate PLN/JPY FX signals (see README)
 #   make fx-diagnostics                # full diagnostics: log-likelihood, parameter stability, OOS tests (expensive)
 #   make fx-diagnostics-lite           # lightweight diagnostics: log-likelihood and parameter stability (no OOS)
@@ -49,6 +50,9 @@ backtest: .venv/.deps_installed
 
 build-russell: .venv/.deps_installed
 	@.venv/bin/python scripts/build_russell2500.py --out data/universes/russell2500_tickers.csv
+
+russell5000: .venv/.deps_installed
+	@.venv/bin/python scripts/build_russell5000.py --out data/universes/russell5000_tickers.csv $(ARGS)
 
 top50: .venv/.deps_installed
 	@.venv/bin/python top50_revenue_growth.py $(ARGS)
