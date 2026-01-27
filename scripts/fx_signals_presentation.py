@@ -579,30 +579,49 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         show_header=True,
         header_style="bold cyan",
         border_style="blue",
-        padding=(0, 1),
+        padding=(0, 0),  # Reduced padding for tighter layout
+        collapse_padding=True,
+        pad_edge=False,
     )
-    # Asset column
-    table.add_column("Asset", justify="left", style="bold", width=asset_col_width, no_wrap=False)
+    # Asset column - truncate long names with ellipsis
+    table.add_column(" Asset", justify="left", style="bold", width=asset_col_width + 1, no_wrap=True, overflow="ellipsis")
+    # UES indicator column (compact, shows exhaustion warning)
+    table.add_column("E", justify="center", width=3, no_wrap=True)  # E for Exhaustion
     
-    # Compact horizon labels
+    # Compact horizon labels - tighter width for symmetry
     horizon_labels = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
     for horizon in horizons:
         label = horizon_labels.get(horizon, f"{horizon}d")
-        table.add_column(label, justify="center", width=19)
+        table.add_column(label, justify="center", width=18, no_wrap=True)
 
     for row in sorted_rows:
         asset_label = row.get("asset_label", "Unknown")
         horizon_signals = row.get("horizon_signals", {})
+        
+        # Compute max UES across all horizons for this asset
+        max_ues = 0.0
+        for horizon in horizons:
+            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
+            ues = signal_data.get("ues", 0.0) or 0.0
+            if ues > max_ues:
+                max_ues = ues
+        
+        # Format UES indicator based on max exhaustion
+        if max_ues >= 0.6:
+            ues_indicator = "[indian_red1]![/indian_red1]"
+        elif max_ues >= 0.3:
+            ues_indicator = "[yellow]![/yellow]"
+        else:
+            ues_indicator = " "
         
         cells = []
         for horizon in horizons:
             signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
             label = signal_data.get("label", "HOLD")
             profit_pln = signal_data.get("profit_pln", 0.0)
-            ues = signal_data.get("ues")  # Extract UES if available
-            cells.append(format_profit_with_signal(label, profit_pln, ues=ues))
+            cells.append(format_profit_with_signal(label, profit_pln))
         
-        table.add_row(asset_label, *cells)
+        table.add_row(asset_label, ues_indicator, *cells)
 
     console.print(table)
     console.print()
@@ -633,8 +652,8 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
     console.print()
     console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
     console.print("[bold cyan]  SIGNAL DASHBOARD[/bold cyan]                                                    [white]Returns on 1M PLN investment[/white]")
-    console.print("[white]  ▲▲▼▼ Strong Signal   △▽ Notable [dim](HOLD w/ big return)[/dim]   ↑↓ Signal   [#00d700]Aqua[/#00d700]=Positive [indian_red1]Salmon[/indian_red1]=Negative[/white]")
-    console.print("[white]  [yellow]⚡[/yellow]=Exhausted [dim](trend fragility >60%, asymmetric downside risk)[/dim][/white]")
+    console.print("[white]  ▲▲▼▼ Strong Signal   △▽ Notable [dim](HOLD w/ big return)[/dim]   ↑↓ Signal   [#00d700]Green[/#00d700]=Positive [indian_red1]Red[/indian_red1]=Negative[/white]")
+    console.print("[white]  E=[yellow]⚡[/yellow]Caution(30-60%) [indian_red1]⚡[/indian_red1]Exhausted(>60%) [dim]— trend fragility, asymmetric downside risk[/dim][/white]")
     console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
     console.print()
 
