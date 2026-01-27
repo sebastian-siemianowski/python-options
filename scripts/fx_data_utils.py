@@ -54,6 +54,23 @@ FAILED_CACHE_DIR_PATH = pathlib.Path(FAILED_CACHE_DIR)
 FAILED_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
 FAILED_ASSETS_FILE = FAILED_CACHE_DIR_PATH / "failed_assets.json"
 
+# ============================================================================
+# OFFLINE MODE - Use cached data only, don't try to download from Yahoo Finance
+# ============================================================================
+# Set via environment variable: OFFLINE_MODE=1
+# When enabled:
+# - Uses only cached price data from scripts/quant/cache/prices
+# - Skips all Yahoo Finance API calls
+# - Allows system to run without network connectivity
+# ============================================================================
+OFFLINE_MODE = os.environ.get("OFFLINE_MODE", "").lower() in ("1", "true", "yes", "on")
+
+# Symbols known to be problematic (delisted, frequently failing, etc.)
+# These will be skipped during bulk downloads to avoid noise
+KNOWN_PROBLEMATIC_SYMBOLS = {
+#     "PACB",   # Pacific Biosciences - frequently delisted warnings
+}
+
 _price_file_lock = Lock()
 
 # Deterministic overrides for Yahoo tickers that routinely fail or change format
@@ -844,6 +861,62 @@ COMPANY_NAMES: Dict[str, str] = {
     "AEM": "Agnico Eagle Mines Limited",
     "B": "Barnes Group Inc.",
     
+    # Materials — Copper
+    "FCX": "Freeport-McMoRan Inc.",
+    "SCCO": "Southern Copper Corporation",
+    "TECK": "Teck Resources Limited",
+    "HBM": "Hudbay Minerals Inc.",
+    "IVN.TO": "Ivanhoe Mines Ltd.",
+    
+    # Materials — Rare Earths & Strategic Minerals
+    "MP": "MP Materials Corp.",
+    "LYSCF": "Lynas Rare Earths Limited",
+    "UUUU": "Energy Fuels Inc.",
+    "ILKAF": "Iluka Resources Limited",
+    
+    # Materials — Lithium
+    "ALB": "Albemarle Corporation",
+    "SQM": "Sociedad Química y Minera de Chile S.A.",
+    
+    # Materials — Specialty metals
+    "ATI": "ATI Inc.",
+    "MTRN": "Materion Corporation",
+    
+    # Materials — Uranium & nuclear
+    "CCJ": "Cameco Corporation",
+    "DNN": "Denison Mines Corp.",
+    
+    # Materials — Mining infrastructure
+    "ERMAY": "Eramet S.A.",
+    "GLNCY": "Glencore plc",
+    "RIO": "Rio Tinto Group",
+    
+    # Materials — Major Gold Producers
+    "NEM": "Newmont Corporation",
+    "GOLD": "Barrick Gold Corporation",
+    "AEM": "Agnico Eagle Mines Limited",
+    "KGC": "Kinross Gold Corporation",
+    "CDE": "Coeur Mining, Inc.",
+    "HL": "Hecla Mining Company",
+    "IAUX": "i-80 Gold Corp.",
+    "HYMC": "Hycroft Mining Holding Corporation",
+    
+    # Materials — Silver & Dual Gold/Silver Producers
+    "PAAS": "Pan American Silver Corp.",
+    "GORO": "Gold Resource Corporation",
+    "USAS": "Americas Gold and Silver Corporation",
+    
+    # Materials — Streaming & Royalty Companies
+    "WPM": "Wheaton Precious Metals Corp.",
+    "RGLD": "Royal Gold, Inc.",
+    "GROY": "Gold Royalty Corp.",
+    
+    # Materials — Juniors & Exploration
+    "SLVR": "Silver Tiger Metals Inc.",
+    "EXK": "Endeavour Silver Corp.",
+    "SVM": "Silvercorp Metals Inc.",
+    "AG": "First Majestic Silver Corp.",
+    
     # Asian Tech & Manufacturing
     "005930.KS": "Samsung Electronics Co., Ltd.",
     
@@ -1311,6 +1384,84 @@ DEFAULT_ASSET_UNIVERSE = [
     "LIN",    # Linde plc
     "NEM",    # Newmont Mining
 
+    # -------------------------
+    # Materials — Copper (AI + grids + EVs bottleneck)
+    # -------------------------
+    "FCX",    # Freeport-McMoRan — Largest copper torque in public markets
+    "SCCO",   # Southern Copper — Ultra-low cost curve, insane margins
+    "TECK",   # Teck Resources — Copper + metallurgical coal, becoming copper pure-play
+    "HBM",    # Hudbay Minerals — Mid-cap copper with asymmetric upside
+    "IVN.TO", # Ivanhoe Mines — Kamoa-Kakula, best copper discovery in decades (Toronto)
+
+    # -------------------------
+    # Materials — Rare Earths & Strategic Minerals (non-China exposure)
+    # -------------------------
+    "MP",     # MP Materials — Only meaningful US rare-earth supply chain
+    "LYSCF",  # Lynas Rare Earths — Cleanest ex-China REE operator
+    "UUUU",   # Energy Fuels — Rare earth processing + uranium = strategic leverage
+    "ILKAF",  # Iluka Resources — Critical mineral separation expertise
+
+    # -------------------------
+    # Materials — Lithium (survivors)
+    # -------------------------
+    "ALB",    # Albemarle — The Linde-like compounder of lithium
+    "SQM",    # SQM — Lowest cost lithium brines
+    # Note: ALTM (Arcadium Lithium) removed - ticker issues post Livent/Allkem merger
+
+    # -------------------------
+    # Materials — Specialty metals (defense, aerospace, AI hardware)
+    # -------------------------
+    "ATI",    # ATI Inc — Titanium + aerospace + defense
+    "MTRN",   # Materion — Beryllium for satellites, defense, AI hardware
+    # Note: TMST (TimkenSteel) removed - company went private in 2023
+
+    # -------------------------
+    # Materials — Uranium & nuclear materials (energy security)
+    # -------------------------
+    "CCJ",    # Cameco — The NVIDIA of uranium
+    "DNN",    # Denison Mines — In-situ recovery tech, asymmetric upside
+
+    # -------------------------
+    # Materials — Mining infrastructure & processing leverage
+    # -------------------------
+    "ERMAY",  # Eramet — Nickel + manganese for batteries
+    "GLNCY",  # Glencore — Physical control of supply chains
+    "RIO",    # Rio Tinto — Copper + aluminum + iron + future lithium
+
+    # -------------------------
+    # Materials — Major Gold Producers (Large Caps & Core Drivers)
+    # -------------------------
+    "NEM",    # Newmont Corporation — World's largest gold producer
+    "GOLD",   # Barrick Gold Corporation — Global mining, low cost curves
+    "AEM",    # Agnico Eagle Mines — Diversified, politically stable regions
+    "KGC",    # Kinross Gold Corporation — Mid-tier with exploration upside
+    "CDE",    # Coeur Mining — Gold + silver, Nevada/Alaska assets
+    "HL",     # Hecla Mining Company — Major silver with gold by-product
+    "IAUX",   # i-80 Gold Corp — U.S. focused gold + silver producer
+    "HYMC",   # Hycroft Mining Holding — Nevada project, high optionality
+
+    # -------------------------
+    # Materials — Silver & Dual Gold/Silver Producers
+    # -------------------------
+    "PAAS",   # Pan American Silver — Largest silver producer with gold by-product
+    "GORO",   # Gold Resource Corporation — Mixed gold + silver portfolio
+    "USAS",   # Americas Gold and Silver Corporation — Growth stage precious metals
+
+    # -------------------------
+    # Materials — Streaming & Royalty Companies (Higher Margin, Lower Capex Risk)
+    # -------------------------
+    "WPM",    # Wheaton Precious Metals — Streaming, gold + silver exposure
+    "RGLD",   # Royal Gold — High-quality precious metals royalty
+    "GROY",   # Gold Royalty Corp — Precious metals royalty with growth optionality
+
+    # -------------------------
+    # Materials — Juniors & Exploration / Optionality Plays
+    # -------------------------
+    "SLVR",   # Silver Tiger Metals — High-grade silver + gold exploration
+    "EXK",    # Endeavour Silver Corp — Producing silver miner, expansion catalysts
+    "SVM",    # Silvercorp Metals — China & North America silver/gold diversified
+    "AG",     # First Majestic Silver Corp — Silver producer, Mexico portfolio
+
     # Asian Tech & Manufacturing
     "005930.KS", # Samsung Electronics (Korean)
 
@@ -1631,6 +1782,8 @@ MAPPING = {
     "MDA": ["MDA.TO", "MDALF"],
     "MDA.TO": ["MDA.TO", "MDALF"],
     "MDALF": ["MDALF", "MDA.TO"],
+    "IVN": ["IVN.TO"],  # Ivanhoe Mines - Canadian
+    "IVN.TO": ["IVN.TO"],
 
     # YieldMax and structured product proxies (route to underlying)
     "QQQO": ["QQQ"],
@@ -2033,7 +2186,29 @@ SECTOR_MAP = {
     "Energy": {"COP", "CVX", "XOM", "AM", "OIH"},
     "Utilities": {"NEE", "SO"},
     "Real Estate": {"SPG", "VNQ"},
-    "Materials": {"LIN", "NEM", "B", "AEM", "GDX", "GDXJ", "REMX", "MOO", "CRS", "KMT"},
+    "Materials": {
+        "LIN", "NEM", "B", "AEM", "GDX", "GDXJ", "REMX", "MOO", "CRS", "KMT",
+        # Copper
+        "FCX", "SCCO", "TECK", "HBM", "IVN.TO",
+        # Rare Earths & Strategic Minerals
+        "MP", "LYSCF", "UUUU", "ILKAF",
+        # Lithium
+        "ALB", "SQM",
+        # Specialty metals
+        "ATI", "MTRN",
+        # Uranium & nuclear materials
+        "CCJ", "DNN",
+        # Mining infrastructure & processing
+        "ERMAY", "GLNCY", "RIO",
+        # Major Gold Producers
+        "GOLD", "KGC", "CDE", "HL", "IAUX", "HYMC",
+        # Silver & Dual Gold/Silver Producers
+        "PAAS", "GORO", "USAS",
+        # Streaming & Royalty Companies
+        "WPM", "RGLD", "GROY",
+        # Juniors & Exploration
+        "SLVR", "EXK", "SVM", "AG"
+    },
     "Asian Tech & Manufacturing": {"005930.KS"},
     "VanEck ETFs": {"AFK", "ANGL", "CNXT", "EGPT", "FLTR", "GLIN", "MOTG", "IDX", "MLN", "NLR", "DURA"},
     "Options / Structured Products": {
@@ -2130,6 +2305,27 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     
     # Materials (USD)
     "LIN": "USD", "NEM": "USD", "AEM": "USD", "B": "USD", "FCX": "USD",
+    # Materials — Copper
+    "SCCO": "USD", "TECK": "USD", "HBM": "USD",
+    "IVN.TO": "CAD",  # Ivanhoe Mines - Toronto Stock Exchange
+    # Materials — Rare Earths & Strategic Minerals
+    "MP": "USD", "LYSCF": "USD", "UUUU": "USD", "ILKAF": "USD",
+    # Materials — Lithium
+    "ALB": "USD", "SQM": "USD",
+    # Materials — Specialty metals
+    "ATI": "USD", "MTRN": "USD",
+    # Materials — Uranium
+    "CCJ": "USD", "DNN": "USD",
+    # Materials — Mining infrastructure (ADRs - USD)
+    "ERMAY": "USD", "GLNCY": "USD", "RIO": "USD",
+    # Materials — Major Gold Producers
+    "GOLD": "USD", "KGC": "USD", "CDE": "USD", "HL": "USD", "IAUX": "USD", "HYMC": "USD",
+    # Materials — Silver & Dual Gold/Silver Producers
+    "PAAS": "USD", "GORO": "USD", "USAS": "USD",
+    # Materials — Streaming & Royalty Companies
+    "WPM": "USD", "RGLD": "USD", "GROY": "USD",
+    # Materials — Juniors & Exploration
+    "SLVR": "USD", "EXK": "USD", "SVM": "USD", "AG": "USD",
     
     # =========================================================================
     # Defense & Aerospace (US - USD)
@@ -2860,6 +3056,20 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     cached = _get_cached_prices(symbol, start, end)
     if cached is not None and not cached.empty:
         return cached
+    
+    # Load disk cache first - needed for both offline mode and incremental fetching
+    disk_df = _load_disk_prices(symbol)
+    
+    # =========================================================================
+    # OFFLINE MODE: Use cached data only, skip all Yahoo Finance API calls
+    # =========================================================================
+    if OFFLINE_MODE:
+        if disk_df is not None and not disk_df.empty:
+            _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
+            return disk_df
+        # No cached data available in offline mode
+        return pd.DataFrame()
+    
     def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         if df is not None and not df.empty:
             if hasattr(df.index, "tz") and df.index.tz is not None:
@@ -2867,7 +3077,6 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         return df if df is not None else pd.DataFrame()
 
     # Determine incremental fetch window based on disk cache
-    disk_df = _load_disk_prices(symbol)
     fetch_start = start
 
     # Determine the target end date
@@ -2968,18 +3177,40 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         _store_cached_prices(symbol, start, end, df)
         return df
 
+    # =========================================================================
+    # GRACEFUL FALLBACK: Return cached disk data when Yahoo Finance unavailable
+    # =========================================================================
+    # If all Yahoo Finance attempts failed but we have valid cached data on disk,
+    # return the cached data rather than failing. This allows the system to
+    # continue operating when network is unavailable or symbols are delisted.
+    # =========================================================================
+    if disk_df is not None and not disk_df.empty:
+        _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
+        return disk_df
+
     return pd.DataFrame()
 
 
-def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False, max_workers: int = 12) -> Dict[str, pd.Series]:
+def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False, max_workers: int = 12, force_online: bool = False) -> Dict[str, pd.Series]:
     """Download multiple symbols in chunks to reduce rate limiting.
     Uses yf.download with list input; falls back to per-symbol for failures.
     Populates the local price cache so subsequent single fetches reuse data.
     Returns mapping symbol -> close price Series. Progress logging is on by default.
     
     Args:
+        symbols: List of ticker symbols to download
+        start: Start date for data range
+        end: End date for data range
+        chunk_size: Number of symbols to download per chunk
+        progress: Whether to show progress output
+        log_fn: Optional logging function
         skip_individual_fallback: If True, skip individual download fallback (for multi-pass bulk downloads)
+        max_workers: Maximum number of parallel download workers
+        force_online: If True, ignore OFFLINE_MODE and always attempt downloads (for make data)
     """
+    # Determine if we should skip downloads (respect OFFLINE_MODE unless force_online)
+    skip_downloads = OFFLINE_MODE and not force_online
+    
     log = log_fn if log_fn is not None else (print if progress else None)
     cleaned = [s.strip() for s in symbols if s and s.strip()]
     dedup: List[str] = []
@@ -3052,6 +3283,15 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                     satisfied_primaries.add(primary)
 
     remaining_primaries = [p for p in primary_to_originals if p not in satisfied_primaries]
+
+    # =========================================================================
+    # OFFLINE MODE: Skip all downloads, return only cached data
+    # (unless force_online=True, which overrides for make data)
+    # =========================================================================
+    if skip_downloads:
+        if log:
+            log(f"OFFLINE MODE: Using {cached_hits} cached symbols, skipping {len(remaining_primaries)} unavailable symbols.")
+        return result
 
     total_need = len(remaining_primaries)
     if log and (cached_hits or total_need):

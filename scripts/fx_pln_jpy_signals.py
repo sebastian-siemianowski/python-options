@@ -13,7 +13,7 @@ posterior predictive Monte Carlo with Bayesian Model Averaging:
 
 Where:
     r_t      = current regime (deterministically assigned, same logic as tune)
-    m        = model class (kalman_gaussian, kalman_phi_gaussian, kalman_phi_student_t)
+    m        = model class (kalman_gaussian, kalman_phi_gaussian, phi_student_t_nu_{4,6,8,12,20})
     θ_{r,m}  = parameters from tuning layer
     p(m|r)   = posterior model probability from tuning layer
     x        = return at horizon H
@@ -43,15 +43,31 @@ tune_q_mle.py outputs:
     {
         "global": {
             "model_posterior": { "kalman_gaussian": p, "kalman_phi_gaussian": p, ... },
-            "models": { "kalman_gaussian": {q, c, ...}, ... }
+            "models": { "kalman_gaussian": {q, c, hyvarinen_score, bic, ...}, ... }
         },
         "regime": {
             "0": { "model_posterior": {...}, "models": {...}, "regime_meta": {...} },
             "1": { ... },
             ...
         },
-        "meta": {...}
+        "meta": {
+            "model_selection_method": "combined",  # 'bic', 'hyvarinen', or 'combined'
+            "bic_weight": 0.5,  # Weight for BIC in combined method
+            ...
+        }
     }
+
+MODEL SELECTION METHODS:
+    - 'bic': Traditional BIC-only (consistent but not robust to misspecification)
+    - 'hyvarinen': Hyvärinen score only (Fisher-consistent under misspecification)
+    - 'combined': Geometric mean of BIC and Hyvärinen weights (default)
+
+The Hyvärinen score is a proper scoring rule that:
+    - Is Fisher-consistent under model misspecification
+    - Does not require normalizing constants
+    - Naturally rewards tail accuracy for Student-t models
+
+Combined method: w_combined(m) = w_bic(m)^α * w_hyvarinen(m)^(1-α)
 
 This file receives from tuning, for current regime r_t:
 
@@ -351,6 +367,132 @@ def clear_display_price_cache() -> None:
     _DISPLAY_PRICE_CACHE.clear()
 
 
+# ============================================================================
+# UNIFIED EXHAUSTION SCALAR (UES) — MODULE-LEVEL STATE
+# ============================================================================
+# UES measures trend fragility relative to the system's own beliefs.
+# State is keyed by (asset_key, horizon) and resets on regime change.
+# This ensures deterministic, replay-safe behavior.
+#
+# KEY INVARIANTS (Locked):
+# - UES location: latest_signals() only
+# - State: module-level cache
+# - Regime source: regime_used (from _get_regime_params_for_horizon)
+# - Alignment: signal direction (sign(mu_H)), not raw returns
+# - Scope: modulation only
+# - Feedback to tuning: FORBIDDEN
+# ============================================================================
+_ues_state: Dict[str, Dict[int, Dict[str, float]]] = {}
+# Structure: { asset_key: { horizon: {"cum_log": float, "cum_dir": float, "regime": int} } }
+
+
+def _update_ues_state(
+    asset_key: str,
+    horizon: int,
+    realized_log_ret: float,
+    regime_id: int,
+    signal_direction: float,
+) -> Tuple[float, float]:
+    """
+    Update UES state for an asset/horizon pair.
+    
+    Maintains cumulative log returns and directional alignment since regime entry.
+    Resets state on regime change to maintain path consistency.
+    
+    Args:
+        asset_key: Canonical asset identifier (e.g., ticker symbol)
+        horizon: Forecast horizon in days
+        realized_log_ret: Most recent realized log return observation
+        regime_id: Current regime ID (from regime_used in _get_regime_params_for_horizon)
+        signal_direction: Sign of mu_H (+1, -1, or 0) — the system's directional belief
+        
+    Returns:
+        Tuple of (cumulative_log_return, directional_cumulative_return) since regime entry
+    """
+    if not asset_key:
+        return 0.0, 0.0
+    
+    key = asset_key
+    state_by_h = _ues_state.setdefault(key, {})
+    state = state_by_h.get(horizon, {"cum_log": 0.0, "cum_dir": 0.0, "regime": None})
+
+    # Reset on regime change - path memory only valid within regime
+    if state["regime"] != regime_id:
+        state = {"cum_log": 0.0, "cum_dir": 0.0, "regime": regime_id}
+
+    # Accumulate realized returns
+    state["cum_log"] += realized_log_ret
+    # Directional alignment: positive when returns match signal direction
+    state["cum_dir"] += signal_direction * realized_log_ret
+
+    state_by_h[horizon] = state
+    return state["cum_log"], state["cum_dir"]
+
+
+def compute_ues(
+    realized_cum_log: float,
+    expected_cum_log: float,
+    expected_sigma: float,
+    directional_cum_log: float,
+    *,
+    w_D: float = 1.0,
+    w_L: float = 1.0,
+    lambda_0: float = 1.0,
+    alpha: float = 1.0,
+) -> float:
+    """
+    Compute Unified Exhaustion Scalar (UES).
+    
+    UES measures trend fragility via two components:
+    1. Deviation (D): How far realized returns deviate from expected (normalized)
+    2. Hazard (L): Exponentially increasing risk from prolonged directional moves
+    
+    Formula:
+        D = (realized_cum_log - expected_cum_log) / expected_sigma
+        hazard = lambda_0 * exp(alpha * |directional_cum_log|)
+        raw = w_D * |D| + w_L * log(1 + hazard)
+        UES = sigmoid(raw) ∈ (0, 1)
+    
+    Args:
+        realized_cum_log: Cumulative realized log return since regime start
+        expected_cum_log: Expected cumulative log return (mu_H * H)
+        expected_sigma: Expected volatility over horizon (sig_H * sqrt(H))
+        directional_cum_log: Cumulative return aligned with signal direction
+        w_D: Weight for deviation component (default 1.0)
+        w_L: Weight for hazard component (default 1.0)
+        lambda_0: Base hazard rate (default 1.0)
+        alpha: Hazard growth rate (default 1.0)
+        
+    Returns:
+        UES value in (0, 1), where higher = more fragile/exhausted
+        
+    Properties:
+        - UES increases during extended rallies
+        - UES resets on regime change
+        - UES is bounded, smooth, and interpretable
+        - UES never decides direction or triggers exits
+    """
+    eps = 1e-8
+    
+    # Deviation: standardized distance from expectation
+    D = (realized_cum_log - expected_cum_log) / max(expected_sigma, eps)
+    
+    # Hazard: exponentially increasing with directional extension
+    hazard = lambda_0 * np.exp(alpha * abs(directional_cum_log))
+    
+    # Combine components
+    raw = w_D * abs(D) + w_L * np.log1p(hazard)
+    
+    # Sigmoid to bound in (0, 1)
+    return float(1.0 / (1.0 + np.exp(-raw)))
+
+
+def clear_ues_state_cache() -> None:
+    """Clear the UES state cache. Useful for testing or resets."""
+    global _ues_state
+    _ues_state.clear()
+
+
 # NOTE: ExpectedUtilityResult dataclass removed - was only used by the legacy
 # compute_expected_utility() function. EU computation is now done inline in
 # latest_signals() from BMA r_samples.
@@ -391,6 +533,20 @@ class Signal:
     bma_method: str = "legacy"               # "bayesian_model_averaging_full" or "legacy"
     bma_has_model_posterior: bool = False    # True if BMA with model posteriors was used
     bma_borrowed_from_global: bool = False   # True if regime used hierarchical fallback
+    # ========================================================================
+    # UNIFIED EXHAUSTION SCALAR (UES) — Trend Fragility Measurement
+    # ========================================================================
+    # UES measures how fragile the current trend is relative to the system's
+    # own beliefs. High values imply asymmetric downside risk.
+    #
+    # Properties:
+    # - UES ∈ (0, 1) - bounded, smooth, interpretable
+    # - UES increases during extended rallies
+    # - UES resets on regime change
+    # - UES modulates position_strength, never flips direction
+    # - UES NEVER feeds back into tuning
+    # ========================================================================
+    ues: float = 0.0  # Unified Exhaustion Scalar - trend fragility in (0, 1)
 
 
 
@@ -1124,16 +1280,24 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
                 print(f"Warning: {asset_symbol} has no models in global - invalid BMA structure")
             return None
         
+        # Helper to check if model is Student-t (phi_student_t_nu_* naming)
+        def _is_student_t(model_name: str) -> bool:
+            return model_name.startswith('phi_student_t_nu_')
+        
         # Extract representative params from highest-posterior model for Kalman filter
         # (The BMA path uses full model averaging, but Kalman filter needs single params)
         if model_posterior:
             best_model = max(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0))
         else:
-            # Fallback order: phi_student_t > phi_gaussian > gaussian
-            for candidate in ['kalman_phi_student_t', 'kalman_phi_gaussian', 'kalman_gaussian']:
-                if candidate in models:
-                    best_model = candidate
-                    break
+            # Fallback order: any Student-t > phi_gaussian > gaussian
+            # First check for new naming (phi_student_t_nu_*)
+            student_t_models = [m for m in models if _is_student_t(m)]
+            if student_t_models:
+                best_model = student_t_models[0]  # Pick first available Student-t
+            elif 'kalman_phi_gaussian' in models:
+                best_model = 'kalman_phi_gaussian'
+            elif 'kalman_gaussian' in models:
+                best_model = 'kalman_gaussian'
             else:
                 best_model = next(iter(models), None)
         
@@ -1149,8 +1313,9 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
         nu_val = best_params.get('nu')
         
         # Derive noise_model from best model name
-        if 'student_t' in best_model:
-            noise_model = 'kalman_phi_student_t'
+        # Normalize to standard categories for downstream processing
+        if _is_student_t(best_model):
+            noise_model = best_model  # Keep actual model name (e.g., phi_student_t_nu_6)
         elif 'phi' in best_model:
             noise_model = 'kalman_phi_gaussian'
         else:
@@ -1179,21 +1344,35 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
             # Diagnostics from best model (for display compatibility)
             'bic': best_params.get('bic'),
             'aic': best_params.get('aic'),
+            'hyvarinen_score': best_params.get('hyvarinen_score'),
+            'combined_score': best_params.get('combined_score'),
             'log_likelihood': best_params.get('log_likelihood'),
             'pit_ks_pvalue': best_params.get('pit_ks_pvalue'),
             'ks_statistic': best_params.get('ks_statistic'),
             
-            # Model comparison: build from all models
+            # Model comparison: build from all models (includes Hyvärinen scores)
             'model_comparison': {
                 m: {
                     'bic': m_params.get('bic'),
                     'aic': m_params.get('aic'),
+                    'hyvarinen_score': m_params.get('hyvarinen_score'),
+                    'combined_score': m_params.get('combined_score'),
                     'll': m_params.get('log_likelihood'),
                     'n_params': m_params.get('n_params'),
                 }
                 for m, m_params in models.items()
                 if isinstance(m_params, dict) and m_params.get('fit_success', False)
             },
+            
+            # Model selection metadata from tune_q_mle.py
+            'model_selection_method': raw_data.get('meta', {}).get('model_selection_method', 'combined'),
+            'bic_weight': raw_data.get('meta', {}).get('bic_weight', 0.5),
+            'entropy_lambda': raw_data.get('meta', {}).get('entropy_lambda', 0.05),
+            
+            # Global-level aggregates (from global block or computed)
+            'hyvarinen_max': global_data.get('hyvarinen_max'),
+            'combined_score_min': global_data.get('combined_score_min'),
+            'bic_min': global_data.get('bic_min'),
             
             # Metadata
             'source': 'tuned_cache_bma',
@@ -1260,14 +1439,22 @@ def _select_regime_params(
         """Extract params from highest-posterior model."""
         if not models:
             return {}
+        
+        # Helper to check if model is Student-t
+        def _is_st(m: str) -> bool:
+            return m.startswith('phi_student_t_nu_')
+        
         if model_posterior:
             best_model = max(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0))
         else:
-            # Fallback order
-            for candidate in ['kalman_phi_student_t', 'kalman_phi_gaussian', 'kalman_gaussian']:
-                if candidate in models:
-                    best_model = candidate
-                    break
+            # Fallback order: any Student-t > phi_gaussian > gaussian
+            student_t_models = [m for m in models if _is_st(m)]
+            if student_t_models:
+                best_model = student_t_models[0]
+            elif 'kalman_phi_gaussian' in models:
+                best_model = 'kalman_phi_gaussian'
+            elif 'kalman_gaussian' in models:
+                best_model = 'kalman_gaussian'
             else:
                 best_model = next(iter(models), None)
         
@@ -1306,6 +1493,17 @@ def _select_regime_params(
             'regime_meta': regime_meta,
             'collapse_warning': regime_meta.get('collapse_warning', False),
             'model_posterior': model_posterior,
+            # Model selection diagnostics (best model)
+            'hyvarinen_score': best_params.get('hyvarinen_score'),
+            'combined_score': best_params.get('combined_score'),
+            'bic': best_params.get('bic'),
+            # Regime-level aggregates from regime_meta
+            'hyvarinen_max': regime_meta.get('hyvarinen_max'),
+            'combined_score_min': regime_meta.get('combined_score_min'),
+            'bic_min': regime_meta.get('bic_min'),
+            'model_selection_method': regime_meta.get('model_selection_method', 'combined'),
+            'bic_weight': regime_meta.get('bic_weight', 0.5),
+            'entropy_lambda': regime_meta.get('entropy_lambda', 0.05),
         }
         # Validate nu
         if theta['nu'] is not None and (not np.isfinite(theta['nu']) or theta['nu'] <= 2.0):
@@ -1329,6 +1527,17 @@ def _select_regime_params(
             'regime_meta': {},
             'collapse_warning': False,
             'model_posterior': global_model_posterior,
+            # Model selection diagnostics (best model)
+            'hyvarinen_score': best_params.get('hyvarinen_score'),
+            'combined_score': best_params.get('combined_score'),
+            'bic': best_params.get('bic'),
+            # Global-level aggregates
+            'hyvarinen_max': global_data.get('hyvarinen_max'),
+            'combined_score_min': global_data.get('combined_score_min'),
+            'bic_min': global_data.get('bic_min'),
+            'model_selection_method': global_data.get('model_selection_method', 'combined'),
+            'bic_weight': global_data.get('bic_weight', 0.5),
+            'entropy_lambda': global_data.get('entropy_lambda', 0.05),
         }
 
 
@@ -1352,8 +1561,8 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
     if asset_symbol is not None:
         tuned_params = _load_tuned_kalman_params(asset_symbol)
     noise_model = (tuned_params or {}).get('noise_model', 'gaussian')
-    requires_phi = 'phi' in noise_model
-    is_student_t = noise_model == 'kalman_phi_student_t'
+    requires_phi = 'phi' in noise_model or noise_model.startswith('phi_student_t_nu_')
+    is_student_t = noise_model.startswith('phi_student_t_nu_')
 
     # φ is structural: only from tuned cache; required when model has φ
     phi_used = (tuned_params or {}).get('phi')
@@ -1537,7 +1746,9 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     # Load tuned parameters and model selection results
     tuned_params = None
     best_model = 'kalman_gaussian'
-    kalman_keys = {'kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t'}
+    # Valid Kalman model names (discrete nu grid for Student-t)
+    kalman_keys = {'kalman_gaussian', 'kalman_phi_gaussian'}
+    kalman_keys.update({f'phi_student_t_nu_{nu}' for nu in [4, 6, 8, 12, 20]})
     tuned_noise_model = 'gaussian'
     tuned_nu = None
     if asset_symbol is not None:
@@ -1545,13 +1756,19 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         if tuned_params:
             best_model = tuned_params.get('best_model', 'kalman_gaussian')
             tuned_noise_model = tuned_params.get('noise_model', 'gaussian')
-            tuned_nu = tuned_params.get('nu') if tuned_noise_model == 'kalman_phi_student_t' else None
+            # Get nu for Student-t models (phi_student_t_nu_* naming)
+            if tuned_noise_model.startswith('phi_student_t_nu_'):
+                tuned_nu = tuned_params.get('nu')
     
     # Print BMA model information
     if asset_symbol and tuned_params and tuned_params.get('has_bma'):
         model_posterior = tuned_params.get('model_posterior', {})
         global_data = tuned_params.get('global', {})
         global_models = global_data.get('models', {})
+        
+        # Get model selection method from cache metadata
+        model_selection_method = tuned_params.get('model_selection_method', 'combined')
+        bic_weight = tuned_params.get('bic_weight', 0.5)
         
         # Use Rich for world-class presentation
         from rich.table import Table
@@ -1570,8 +1787,24 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         model_info = {
             'kalman_gaussian': {'short': 'Gaussian', 'icon': '📈', 'desc': 'Standard Kalman filter'},
             'kalman_phi_gaussian': {'short': 'φ-Gaussian', 'icon': '🔄', 'desc': 'Autoregressive drift'}, 
-            'kalman_phi_student_t': {'short': 'φ-Student-t', 'icon': '📊', 'desc': 'Heavy-tailed robust'}
+            # Discrete nu grid Student-t models
+            'phi_student_t_nu_4': {'short': 'φ-T(ν=4)', 'icon': '📊', 'desc': 'Heavy tails, ν=4'},
+            'phi_student_t_nu_6': {'short': 'φ-T(ν=6)', 'icon': '📊', 'desc': 'Heavy tails, ν=6'},
+            'phi_student_t_nu_8': {'short': 'φ-T(ν=8)', 'icon': '📊', 'desc': 'Moderate tails, ν=8'},
+            'phi_student_t_nu_12': {'short': 'φ-T(ν=12)', 'icon': '📊', 'desc': 'Light tails, ν=12'},
+            'phi_student_t_nu_20': {'short': 'φ-T(ν=20)', 'icon': '📊', 'desc': 'Near-Gaussian, ν=20'},
         }
+        
+        # Model selection method description
+        selection_method_info = {
+            'bic': ('BIC-only', 'Traditional Bayesian Information Criterion'),
+            'hyvarinen': ('Hyvärinen-only', 'Robust scoring under misspecification'),
+            'combined': (f'Combined (α={bic_weight:.1f})', 'BIC + Hyvärinen geometric mean'),
+        }
+        method_short, method_desc = selection_method_info.get(
+            model_selection_method, 
+            ('Unknown', 'Model selection method')
+        )
         
         # Helper functions to describe parameters in human terms
         def describe_drift_speed(q_val):
@@ -1628,7 +1861,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             else:
                 return ("light", "cyan")
         
-        # Build model weights table
+        # Build model weights table with BIC and Hyvärinen scores
         weights_table = Table(
             show_header=True,
             header_style="bold white",
@@ -1636,23 +1869,39 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             padding=(0, 1),
             expand=False,
         )
-        weights_table.add_column("Model", style="bold", width=12)
+        weights_table.add_column("Model", style="bold", width=14)
         weights_table.add_column("Weight", justify="right", width=8)
-        weights_table.add_column("Confidence", width=25)
+        weights_table.add_column("BIC", justify="right", width=10)
+        weights_table.add_column("Hyvärinen", justify="right", width=10)
+        weights_table.add_column("Confidence", width=20)
         weights_table.add_column("", width=3)
         
-        for model_name in ['kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']:
+        # Get all models from posterior, sorted by weight descending
+        all_models = sorted(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0), reverse=True)
+        
+        for model_name in all_models:
             p = model_posterior.get(model_name, 0.0)
-            bar_len = int(p * 20)
+            bar_len = int(p * 15)
             bar_filled = '█' * bar_len
-            bar_empty = '░' * (20 - bar_len)
-            info = model_info.get(model_name, {'short': model_name, 'icon': '•'})
+            bar_empty = '░' * (15 - bar_len)
+            info = model_info.get(model_name, {'short': model_name[:12], 'icon': '•'})
+            
+            # Get BIC and Hyvärinen scores from model params
+            m_params = global_models.get(model_name, {})
+            bic_val = m_params.get('bic')
+            hyv_val = m_params.get('hyvarinen_score')
+            
+            # Format scores
+            bic_str = f"{bic_val:.1f}" if bic_val is not None and np.isfinite(bic_val) else "—"
+            hyv_str = f"{hyv_val:.1f}" if hyv_val is not None and np.isfinite(hyv_val) else "—"
             
             is_best = model_name == best_model
             if is_best:
                 weights_table.add_row(
                     f"[bold #00d700]{info['short']}[/bold #00d700]",
                     f"[bold #00d700]{p:.1%}[/bold #00d700]",
+                    f"[#00d700]{bic_str}[/#00d700]",
+                    f"[#00d700]{hyv_str}[/#00d700]",
                     f"[#00d700]{bar_filled}[/#00d700][dim]{bar_empty}[/dim]",
                     "[bold #00d700]◀[/bold #00d700]"
                 )
@@ -1660,6 +1909,8 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 weights_table.add_row(
                     info['short'],
                     f"{p:.1%}",
+                    bic_str,
+                    hyv_str,
                     f"[cyan]{bar_filled}[/cyan][dim]{bar_empty}[/dim]",
                     ""
                 )
@@ -1672,15 +1923,16 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             padding=(0, 1),
             expand=False,
         )
-        params_table.add_column("Model", style="bold", width=12)
+        params_table.add_column("Model", style="bold", width=14)
         params_table.add_column("Drift (q)", justify="center", width=12)
         params_table.add_column("Vol (c)", justify="center", width=12)
         params_table.add_column("Persist (φ)", justify="center", width=12)
         params_table.add_column("Tails (ν)", justify="center", width=12)
         
-        for model_name in ['kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']:
+        # Iterate over all models from posterior (same order as weights table)
+        for model_name in all_models:
             m_params = global_models.get(model_name, {})
-            info = model_info.get(model_name, {'short': model_name})
+            info = model_info.get(model_name, {'short': model_name[:12]})
             is_best = model_name == best_model
             
             if m_params.get('fit_success', False):
@@ -1718,18 +1970,37 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         else:
             title = f"[bold cyan]📊 {company_name}[/bold cyan] [dim]({asset_symbol})[/dim]"
         
+        # Get global-level aggregate scores
+        global_hyv_max = tuned_params.get('hyvarinen_max')
+        global_bic_min = tuned_params.get('bic_min')
+        global_comb_min = tuned_params.get('combined_score_min')
+        
+        # Build summary text
+        summary_parts = []
+        if global_bic_min is not None and np.isfinite(global_bic_min):
+            summary_parts.append(f"BIC↓ {global_bic_min:.1f}")
+        if global_hyv_max is not None and np.isfinite(global_hyv_max):
+            summary_parts.append(f"Hyvärinen↑ {global_hyv_max:.1f}")
+        if global_comb_min is not None and np.isfinite(global_comb_min):
+            summary_parts.append(f"Combined↓ {global_comb_min:.2f}")
+        summary_text = " • ".join(summary_parts) if summary_parts else ""
+        summary_text = " • ".join(summary_parts) if summary_parts else ""
+        
         # Print with elegant layout
         console.print()
         console.print(Panel(
             Group(
-                Text("Model Weights", style="bold white"),
+                Text(f"Model Weights — Selection: {method_short}", style="bold white"),
+                Text(f"[dim]{method_desc}[/dim]"),
                 weights_table,
                 Text(""),
                 Text("Parameter Estimates", style="bold white"),
                 params_table,
+                Text(""),
+                Text(f"[dim]Best scores: {summary_text}[/dim]") if summary_text else Text(""),
             ),
             title=title,
-            subtitle="[dim]Bayesian Model Averaging[/dim]",
+            subtitle=f"[dim]Bayesian Model Averaging • {method_short}[/dim]",
             border_style="cyan",
             padding=(1, 2),
         ))
@@ -1789,6 +2060,15 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 "pit_ks_pvalue": tuned_params.get("pit_ks_pvalue") if tuned_params else None,
                 "ks_statistic": tuned_params.get("ks_statistic") if tuned_params else None,
                 "bic": tuned_params.get("bic") if tuned_params else None,
+                "hyvarinen_score": tuned_params.get("hyvarinen_score") if tuned_params else None,
+                "combined_score": tuned_params.get("combined_score") if tuned_params else None,
+                # Global-level aggregates for model selection
+                "hyvarinen_max": tuned_params.get("hyvarinen_max") if tuned_params else None,
+                "combined_score_min": tuned_params.get("combined_score_min") if tuned_params else None,
+                "bic_min": tuned_params.get("bic_min") if tuned_params else None,
+                "model_selection_method": tuned_params.get("model_selection_method", "combined") if tuned_params else "combined",
+                "bic_weight": tuned_params.get("bic_weight", 0.5) if tuned_params else 0.5,
+                "entropy_lambda": tuned_params.get("entropy_lambda", 0.05) if tuned_params else 0.05,
                 "model_posterior": tuned_params.get("model_posterior", {}) if tuned_params else {},
                 "best_model": tuned_params.get("best_model") if tuned_params else best_model,
             }
@@ -1891,7 +2171,8 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     nu = nu.clip(lower=4.5, upper=500.0)
 
     # Tail parameter: prefer tuned ν from cache for Student-t world; otherwise keep legacy estimate
-    if tuned_noise_model == 'kalman_phi_student_t' and tuned_nu is not None and np.isfinite(tuned_nu):
+    is_student_t_world = tuned_noise_model.startswith('phi_student_t_nu_')
+    if is_student_t_world and tuned_nu is not None and np.isfinite(tuned_nu):
         # Level-7 rule: ν is fixed from tuning cache in Student-t world
         nu_hat = float(tuned_nu)
         nu_info = {"nu_hat": nu_hat, "source": "tuned_cache"}
@@ -2977,6 +3258,93 @@ def run_regime_specific_mc(
     return cum_mu + cum_eps
 
 
+def compute_model_posteriors_from_combined_score(
+    models: Dict[str, Dict],
+    temperature: float = 1.0,
+    min_weight_fraction: float = 0.01,
+    epsilon: float = 1e-10,
+) -> Tuple[Dict[str, float], Dict]:
+    """
+    Convert combined scores into normalized posterior weights with entropy floor.
+    
+    This is the EPISTEMIC WEIGHTING step that ensures Hyvärinen scores
+    directly influence signal generation.
+    
+    The combined_score is the entropy-regularized standardized score where:
+        combined_score = w_bic * BIC_std - (1-w_bic) * Hyv_std
+    
+    Lower combined_score = better model.
+    
+    To get normalized posteriors we use softmax over NEGATED scores:
+        p(m) = exp(-combined_score_m / T) / Σ_k exp(-combined_score_k / T)
+    
+    An entropy floor is applied to prevent belief collapse:
+        w_m = max(w_m, min_weight_fraction / n_models)
+    
+    This ensures dominated models retain some probability mass, preventing
+    overconfident allocations during regime transitions.
+    
+    Args:
+        models: Dictionary mapping model_name -> model_params dict
+                Each model_params must have 'combined_score'
+        temperature: Softmax temperature (1.0 = standard, <1 = sharper, >1 = smoother)
+        min_weight_fraction: Minimum total mass to uniform (0.01 = 1%)
+        epsilon: Small constant to prevent zero weights
+        
+    Returns:
+        Tuple of:
+        - Dictionary mapping model_name -> posterior weight p(m)
+        - Metadata dict
+    """
+    metadata = {
+        "method": "combined",
+        "temperature": temperature,
+        "min_weight_fraction": min_weight_fraction,
+    }
+    
+    # Extract valid models with combined scores
+    valid_models = {}
+    for model_name, model_params in models.items():
+        if not isinstance(model_params, dict):
+            continue
+        if not model_params.get('fit_success', True):
+            continue
+        
+        combined_score = model_params.get('combined_score')
+        if combined_score is not None and np.isfinite(combined_score):
+            valid_models[model_name] = combined_score
+    
+    if not valid_models:
+        return {}, metadata
+    
+    # Convert to arrays for softmax
+    model_names = list(valid_models.keys())
+    scores = np.array([valid_models[m] for m in model_names])
+    n_models = len(model_names)
+    
+    # Softmax over NEGATED scores (lower score = better = higher weight)
+    # With numerical stabilization
+    neg_scores = -scores / temperature
+    neg_scores = neg_scores - neg_scores.max()  # Numerical stability
+    
+    weights = np.exp(neg_scores)
+    weights = np.maximum(weights, epsilon)
+    weights = weights / weights.sum()
+    
+    # =========================================================================
+    # ENTROPY FLOOR: Prevent belief collapse
+    # =========================================================================
+    # Ensure each model has at least min_weight_fraction / n_models weight.
+    # This prevents overconfident allocations during regime transitions or
+    # when models happen to agree on similar scores.
+    # =========================================================================
+    min_weight_per_model = min_weight_fraction / max(n_models, 1)
+    weights = np.maximum(weights, min_weight_per_model)
+    weights = weights / weights.sum()  # Re-normalize after floor
+    
+    return dict(zip(model_names, weights)), metadata
+
+
 def bayesian_model_average_mc(
     feats: Dict[str, pd.Series],
     regime_params: Dict[int, Dict],
@@ -3100,6 +3468,38 @@ def bayesian_model_average_mc(
         }
     
     # ========================================================================
+    # EPISTEMIC WEIGHTING: Recompute posteriors from combined_score
+    # ========================================================================
+    # This ensures Hyvärinen scores directly influence signal generation.
+    # Even if cache has old posteriors, we recompute from combined_score.
+    # 
+    # The combined_score integrates both:
+    #   - BIC (model complexity penalty, consistency)
+    #   - Hyvärinen score (proper scoring, robustness under misspecification)
+    #
+    # This is the "epistemic weighting" step from the architecture.
+    #
+    # ========================================================================
+    # EPISTEMIC WEIGHTING: Recompute posteriors from combined scores
+    # ========================================================================
+    recomputed_posterior, epistemic_meta = compute_model_posteriors_from_combined_score(models)
+    
+    if not recomputed_posterior:
+        # Cache is invalid - models are missing combined_score
+        # This indicates the cache was generated with an old version and must be regenerated
+        model_names = list(models.keys())
+        missing_scores = [m for m in model_names if not models.get(m, {}).get('combined_score')]
+        raise ValueError(
+            f"Invalid cache: models missing combined_score: {missing_scores}. "
+            f"Cache must be regenerated with 'make tune --force' to include "
+            f"entropy-regularized BIC+Hyvärinen combined scores."
+        )
+    
+    cached_posterior = model_posterior
+    model_posterior = recomputed_posterior
+    posteriors_recomputed = True
+    
+    # ========================================================================
     # BAYESIAN MODEL AVERAGING: Draw samples from mixture over models
     # ========================================================================
     # p(x | D, r_t) = Σ_m p(x | r_t, m, θ_m) · p(m | r_t)
@@ -3182,6 +3582,19 @@ def bayesian_model_average_mc(
         "model_posterior": {m: float(w) for m, w in model_posterior.items()},
         "model_details": model_details,
         "n_total_samples": len(r_samples),
+        # Epistemic weighting diagnostics
+        "posteriors_recomputed": posteriors_recomputed,
+        "cached_posterior": {m: float(w) for m, w in cached_posterior.items()} if posteriors_recomputed else None,
+        "epistemic_weighting": epistemic_meta,
+        # Model selection diagnostics
+        "model_selection_method": regime_meta.get('model_selection_method', 'combined'),
+        "effective_selection_method": epistemic_meta.get('method', 'combined'),
+        "hyvarinen_disabled": regime_meta.get('hyvarinen_disabled', False),
+        "bic_weight": regime_meta.get('bic_weight', 0.5),
+        "entropy_lambda": regime_meta.get('entropy_lambda', 0.05),
+        "hyvarinen_max": regime_meta.get('hyvarinen_max'),
+        "combined_score_min": regime_meta.get('combined_score_min'),
+        "bic_min": regime_meta.get('bic_min'),
     }
     
     return r_samples, regime_probs, metadata
@@ -3816,7 +4229,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     km_prob = (feats.get("kalman_metadata") or {})
     noise_model = km_prob.get("kalman_noise_model")
     tuned_nu_meta = km_prob.get("kalman_nu")
-    is_student_world = noise_model == 'kalman_phi_student_t'
+    is_student_world = noise_model and noise_model.startswith('phi_student_t_nu_')
     if is_student_world and (tuned_nu_meta is None or not np.isfinite(tuned_nu_meta)):
         raise ValueError("Student-t model selected but ν missing from tuning cache")
     nu_prob = float(tuned_nu_meta) if is_student_world else nu_glob
@@ -4040,7 +4453,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         noise_model_mc = km_mc.get("kalman_noise_model", "gaussian")
         if nu_mc is not None and (not np.isfinite(nu_mc) or nu_mc <= 2.0):
             nu_mc = None
-        if noise_model_mc != "kalman_phi_student_t" or nu_mc is None:
+        # Check for Student-t model (phi_student_t_nu_* naming)
+        is_student_t_mc = noise_model_mc and noise_model_mc.startswith('phi_student_t_nu_')
+        if not is_student_t_mc or nu_mc is None:
             noise_model_mc = "gaussian"  # Fallback for diagnostics
         
         # ========================================================================
@@ -4164,7 +4579,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         predictive_var_diag = vH + drift_uncertainty_H
         predictive_std_diag = float(math.sqrt(max(predictive_var_diag, 1e-12)))
         z_predictive_diag = float(mH / predictive_std_diag) if predictive_std_diag > 0 else 0.0
-        if noise_model_mc == "kalman_phi_student_t" and nu_mc is not None:
+        # Check for Student-t model (phi_student_t_nu_* naming)
+        is_student_t_diag = noise_model_mc and noise_model_mc.startswith('phi_student_t_nu_')
+        if is_student_t_diag and nu_mc is not None:
             p_analytical = float(student_t.cdf(z_predictive_diag, df=float(nu_mc)))
         else:
             p_analytical = float(norm.cdf(z_predictive_diag))
@@ -4274,6 +4691,60 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # pos_strength is the ONLY position sizing variable used downstream
         # NO Kelly, NO mean/variance ratios - r_samples is the ONLY input
         pos_strength = drift_weight * eu_position_size
+        
+        # ========================================================================
+        # UNIFIED EXHAUSTION SCALAR (UES) — Trend Fragility Measurement
+        # ========================================================================
+        # UES measures how fragile the current trend is relative to the system's
+        # own beliefs. High values imply asymmetric downside risk.
+        #
+        # Integration point: AFTER mu_H, sig_H, regime_used, pos_strength
+        # Modulation: soft scaling of position strength only
+        #
+        # KEY INVARIANTS:
+        # - UES is computed ONLY here (not in compute_features)
+        # - Uses regime_used from _select_regime_params (regime source consistency)
+        # - Aligns direction with sign(mu_H) (signal intent, not raw returns)
+        # - NEVER changes direction, NEVER triggers exits
+        # - NEVER feeds back into tuning
+        # ========================================================================
+        
+        # Get most recent realized return for state update
+        ret_series = feats.get("ret", pd.Series(dtype=float))
+        if isinstance(ret_series, pd.Series) and len(ret_series) > 0:
+            last_ret = float(ret_series.iloc[-1])
+            if not np.isfinite(last_ret):
+                last_ret = 0.0
+        else:
+            last_ret = 0.0
+        
+        # Signal direction from expected return (system's belief about direction)
+        signal_dir = float(np.sign(mu_H)) if abs(mu_H) > 1e-12 else 0.0
+        
+        # Update UES state (regime_used comes from _select_regime_params)
+        regime_for_ues = regime_used if regime_used is not None else 0
+        cum_log, cum_dir = _update_ues_state(
+            asset_key or "", H, last_ret, regime_for_ues, signal_dir
+        )
+        
+        # Compute expected cumulative statistics for comparison
+        expected_cum = mu_H * H  # Expected cumulative log return
+        expected_sigma = sig_H * np.sqrt(H) if sig_H > 0 else 1e-6  # Expected volatility over horizon
+        
+        # Compute UES
+        ues = compute_ues(cum_log, expected_cum, expected_sigma, cum_dir)
+        
+        # ========================================================================
+        # UES MODULATION (Soft Only)
+        # ========================================================================
+        # UES reduces position sizing when trend is exhausted.
+        # Does NOT change direction, does NOT trigger exits.
+        # ========================================================================
+        ues_modulation_factor = 1.0 - 0.5 * ues  # Range: [0.5, 1.0] at max exhaustion
+        pos_strength *= ues_modulation_factor
+        
+        # Store UES value for Signal dataclass
+        ues_value = float(ues)
         
         # Logging/diagnostics: p, E_gain, E_loss, EU, pos_strength
         # (These are stored in Signal dataclass for analysis)
@@ -4394,6 +4865,15 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             bma_method=str(bma_meta.get("method", "legacy")),
             bma_has_model_posterior=bool(bma_meta.get("has_bma", False)),
             bma_borrowed_from_global=bool(bma_meta.get("regime_details", {}).get(regime_used, {}).get("borrowed_from_global", False)) if regime_used is not None else False,
+            # ================================================================
+            # UNIFIED EXHAUSTION SCALAR (UES)
+            # ================================================================
+            # UES measures trend fragility relative to system beliefs.
+            # - UES ∈ (0, 1) - higher = more fragile/exhausted
+            # - Modulates position_strength (already applied above)
+            # - NEVER changes direction or triggers exits
+            # ================================================================
+            ues=float(ues_value),
         ))
 
     return sigs, thresholds
@@ -4614,7 +5094,11 @@ def main() -> None:
                     h = sig.get("horizon_days")
                     if h is None:
                         continue
-                    horizon_signals[int(h)] = {"label": sig.get("label", "HOLD"), "profit_pln": float(sig.get("profit_pln", 0.0))}
+                    horizon_signals[int(h)] = {
+                        "label": sig.get("label", "HOLD"),
+                        "profit_pln": float(sig.get("profit_pln", 0.0)),
+                        "ues": float(sig.get("ues", 0.0)),  # Include UES from cache
+                    }
                 nearest_label = next(iter(horizon_signals.values()), {}).get("label", "HOLD")
                 summary_rows_cached.append({"asset_label": asset_label, "horizon_signals": horizon_signals, "nearest_label": nearest_label, "sector": sector})
         else:
@@ -5208,7 +5692,11 @@ def main() -> None:
         # Build summary row for this asset
         asset_label = build_asset_display_label(asset, title)
         horizon_signals = {
-            int(s.horizon_days): {"label": s.label, "profit_pln": float(s.profit_pln)}
+            int(s.horizon_days): {
+                "label": s.label,
+                "profit_pln": float(s.profit_pln),
+                "ues": float(getattr(s, 'ues', 0.0)),  # Include UES for summary
+            }
             for s in sigs
         }
         nearest_label = sigs[0].label if sigs else "HOLD"

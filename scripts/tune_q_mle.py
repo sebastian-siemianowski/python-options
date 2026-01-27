@@ -17,7 +17,7 @@ Where:
     r          = regime label (LOW_VOL_TREND, HIGH_VOL_TREND, LOW_VOL_RANGE,
                               HIGH_VOL_RANGE, CRISIS_JUMP)
     m          = model class (kalman_gaussian, kalman_phi_gaussian,
-                              kalman_phi_student_t)
+                              phi_student_t_nu_{4,6,8,12,20})
     θ_{r,m}    = parameters of model m in regime r
     p(m | r)   = posterior probability of model m in regime r
 
@@ -29,7 +29,14 @@ For EACH regime r:
     1. Fits ALL candidate model classes m independently:
        - kalman_gaussian:       q, c           (2 params)
        - kalman_phi_gaussian:   q, c, φ        (3 params)
-       - kalman_phi_student_t:  q, c, φ, ν     (4 params)
+       - phi_student_t_nu_4:    q, c, φ        (3 params, ν=4 FIXED)
+       - phi_student_t_nu_6:    q, c, φ        (3 params, ν=6 FIXED)
+       - phi_student_t_nu_8:    q, c, φ        (3 params, ν=8 FIXED)
+       - phi_student_t_nu_12:   q, c, φ        (3 params, ν=12 FIXED)
+       - phi_student_t_nu_20:   q, c, φ        (3 params, ν=20 FIXED)
+
+    NOTE: Student-t uses DISCRETE ν GRID (not continuous optimization).
+    Each ν is treated as a separate sub-model in BMA.
 
     2. Computes for each (r, m):
        - mean_log_likelihood
@@ -46,6 +53,28 @@ For EACH regime r:
     5. Normalizes to get p(m|r)
 
     6. Applies hierarchical shrinkage toward global (optional)
+
+-------------------------------------------------------------------------------
+φ SHRINKAGE PRIOR (AR(1) COEFFICIENT REGULARIZATION)
+
+Models with autoregressive drift (Phi-Gaussian, Phi-Student-t) include an
+explicit Gaussian shrinkage prior on φ:
+
+    φ_r ~ N(φ_global, τ²)
+    
+    log p(φ_r) = -0.5 * (φ_r - φ_global)² / τ²
+
+Where:
+    φ_global = 0 (shrinkage toward full mean reversion)
+    τ = 1/√(2λ_effective)  where λ_effective = 0.05 * prior_scale
+
+This prior:
+    - Prevents unit-root instability (φ → 1)
+    - Stabilizes small-sample estimation
+    - Is numerically equivalent to legacy implicit regularization
+    - Is explicitly auditable via phi_prior_logp diagnostics
+
+See PHI_SHRINKAGE_* constants and phi_shrinkage_log_prior() for implementation.
 
 -------------------------------------------------------------------------------
 HIERARCHICAL FALLBACK
@@ -144,7 +173,7 @@ import math
 import os
 import sys
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -238,19 +267,212 @@ class ModelClass(IntEnum):
     PHI_STUDENT_T = 2
 
 
-# Model class labels for display
+# Model class labels for display (base names - actual models use phi_student_t_nu_{nu})
 MODEL_CLASS_LABELS = {
     ModelClass.KALMAN_GAUSSIAN: "kalman_gaussian",
     ModelClass.PHI_GAUSSIAN: "kalman_phi_gaussian",
-    ModelClass.PHI_STUDENT_T: "kalman_phi_student_t",
+    ModelClass.PHI_STUDENT_T: "phi_student_t",  # Base name; actual models are phi_student_t_nu_{4,6,8,12,20}
 }
 
 # Model class parameter counts for BIC/AIC computation
 MODEL_CLASS_N_PARAMS = {
     ModelClass.KALMAN_GAUSSIAN: 2,   # q, c
     ModelClass.PHI_GAUSSIAN: 3,      # q, c, phi
-    ModelClass.PHI_STUDENT_T: 4,     # q, c, phi, nu
+    ModelClass.PHI_STUDENT_T: 3,     # q, c, phi (nu is FIXED per sub-model, not estimated)
 }
+
+# =============================================================================
+# DISCRETE ν GRID FOR STUDENT-T MODELS
+# =============================================================================
+# CRITICAL: Eliminates ν-σ identifiability failures and tail-driven weight collapse
+#
+# Instead of continuously optimizing ν (which is unstable), we:
+#   1. Fix a discrete grid of ν values
+#   2. Treat each ν as a separate sub-model in BMA
+#   3. Let BMA handle the weighting across ν values
+#
+# This is standard practice in Bayesian model selection for discrete hyperparameters.
+# Grid values chosen to span light tails (ν=20, near Gaussian) to heavy tails (ν=4).
+# =============================================================================
+
+STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
+
+# =============================================================================
+# φ SHRINKAGE PRIOR — EXPLICIT GAUSSIAN PRIOR FOR AR(1) COEFFICIENT
+# =============================================================================
+# φ (phi) is the AR(1) mean-reversion parameter in Phi-Gaussian and Phi-Student-t
+# models. It controls drift persistence: φ=1 is unit root (random walk), φ=0 is
+# full mean reversion.
+#
+# PROBLEM: φ is weakly identified in small samples and highly unstable near unit
+# root. Unconstrained MLE leads to spurious mean reversion or explosive estimates.
+#
+# SOLUTION: Gaussian shrinkage prior toward φ_global (typically 0):
+#
+#     φ_r ~ N(φ_global, τ²)
+#
+#     log p(φ_r) = -0.5 * (φ_r - φ_global)² / τ²
+#
+# The prior is added to the log-likelihood in the optimization objective.
+#
+# MAPPING FROM LEGACY λ TO τ:
+#     The legacy regularization used: λ * (φ_r - φ_global)²
+#     This is equivalent to the Gaussian prior when: τ = 1 / √(2λ)
+#
+# NUMERICAL SAFETY:
+#     - τ must be bounded below to prevent division instability
+#     - φ_global must be finite
+#     - φ bounds in optimizer remain unchanged (safety net)
+#
+# AUDITABILITY:
+#     - Prior contribution is logged separately in diagnostics
+#     - Enables future contributors to understand and modify shrinkage
+#     - Prevents accidental removal of regularization
+#
+# CONTRACT:
+#     - _select_regime_params() remains unchanged
+#     - bayesian_model_average_mc() unchanged
+#     - Signal dataclasses receive phi_used exactly as before
+#     - This change is purely epistemic (refactor, not behavioral change)
+# =============================================================================
+
+# Minimum τ to prevent numerical instability (division by τ²)
+PHI_SHRINKAGE_TAU_MIN = 1e-3
+
+# Default φ_global: center of shrinkage prior (0 = full mean reversion)
+PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
+
+# Default prior strength: τ corresponds to legacy λ=0.05 via τ = 1/√(2λ)
+# λ=0.05 → τ = 1/√(0.1) ≈ 3.16 (very weak prior, barely constrains φ)
+# We use the scaled version: λ_effective = 0.05 * prior_scale
+PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
+
+
+def phi_shrinkage_log_prior(
+    phi_r: float,
+    phi_global: float,
+    tau: float,
+    tau_min: float = PHI_SHRINKAGE_TAU_MIN
+) -> float:
+    """
+    Compute Gaussian shrinkage log-prior for φ (AR(1) coefficient).
+    
+    Implements:
+        log p(φ_r) = -0.5 * (φ_r - φ_global)² / τ²
+    
+    This prior shrinks regime-specific φ_r toward a global φ_global,
+    preventing unit-root instability and small-sample hallucinations.
+    
+    Args:
+        phi_r: Regime-specific AR(1) coefficient being evaluated
+        phi_global: Center of shrinkage prior (typically 0)
+        tau: Prior standard deviation (larger = weaker shrinkage)
+        tau_min: Minimum τ for numerical stability
+        
+    Returns:
+        Log-prior contribution (negative, to be ADDED to log-likelihood)
+        
+    Mathematical note:
+        If legacy code used λ*(φ-φ_g)², then τ = 1/√(2λ) gives equivalence.
+        
+    Safety:
+        - τ is clamped to tau_min to prevent division by zero
+        - Returns -inf if phi_global is not finite (should never happen)
+    """
+    # Safety: ensure τ is bounded below
+    tau_safe = max(tau, tau_min)
+    
+    # Safety: ensure phi_global is finite
+    if not np.isfinite(phi_global):
+        return float('-inf')
+    
+    # Gaussian log-prior (up to constant)
+    deviation = phi_r - phi_global
+    log_prior = -0.5 * (deviation ** 2) / (tau_safe ** 2)
+    
+    return log_prior
+
+
+def lambda_to_tau(lam: float, lam_min: float = 1e-12) -> float:
+    """
+    Convert legacy penalty weight λ to Gaussian prior std τ.
+    
+    Mapping derivation:
+        Legacy: penalty = λ * (φ - φ_g)²
+        Prior:  log p(φ) = -0.5 * (φ - φ_g)² / τ²
+        
+        Matching: λ = 0.5 / τ²  →  τ = 1 / √(2λ)
+    
+    Args:
+        lam: Legacy penalty weight λ
+        lam_min: Minimum λ to prevent division by zero
+        
+    Returns:
+        Equivalent Gaussian prior std τ
+    """
+    lam_safe = max(lam, lam_min)
+    return 1.0 / math.sqrt(2.0 * lam_safe)
+
+
+def tau_to_lambda(tau: float, tau_min: float = PHI_SHRINKAGE_TAU_MIN) -> float:
+    """
+    Convert Gaussian prior std τ to legacy penalty weight λ.
+    
+    Inverse of lambda_to_tau().
+    
+    Args:
+        tau: Gaussian prior std τ
+        tau_min: Minimum τ for numerical stability
+        
+    Returns:
+        Equivalent legacy penalty weight λ
+    """
+    tau_safe = max(tau, tau_min)
+    return 0.5 / (tau_safe ** 2)
+
+
+def compute_phi_prior_diagnostics(
+    phi_r: float,
+    phi_global: float,
+    tau: float,
+    log_likelihood: float
+) -> dict:
+    """
+    Compute diagnostic information for φ shrinkage prior.
+    
+    Args:
+        phi_r: Optimized regime-specific φ
+        phi_global: Center of shrinkage prior
+        tau: Prior standard deviation
+        log_likelihood: Log-likelihood contribution (without prior)
+        
+    Returns:
+        Dictionary with diagnostic fields:
+        - phi_prior_logp: Log-prior contribution
+        - phi_likelihood_logp: Log-likelihood (passed through)
+        - phi_prior_likelihood_ratio: |prior| / |likelihood| (if computable)
+        - phi_deviation_from_global: φ_r - φ_global
+        - phi_tau_used: τ value used
+    """
+    log_prior = phi_shrinkage_log_prior(phi_r, phi_global, tau)
+    
+    # Compute ratio if both are finite and non-zero
+    ratio = None
+    if np.isfinite(log_prior) and np.isfinite(log_likelihood):
+        abs_prior = abs(log_prior)
+        abs_ll = abs(log_likelihood)
+        if abs_ll > 1e-12:
+            ratio = abs_prior / abs_ll
+    
+    return {
+        'phi_prior_logp': float(log_prior) if np.isfinite(log_prior) else None,
+        'phi_likelihood_logp': float(log_likelihood) if np.isfinite(log_likelihood) else None,
+        'phi_prior_likelihood_ratio': float(ratio) if ratio is not None else None,
+        'phi_deviation_from_global': float(phi_r - phi_global),
+        'phi_tau_used': float(tau),
+        'phi_global_used': float(phi_global),
+    }
+
 
 # Default temporal smoothing alpha for model posterior evolution
 DEFAULT_TEMPORAL_ALPHA = 0.3
@@ -303,6 +525,23 @@ REGIME_LABELS = {
 
 # Minimum sample size per regime for stable parameter estimation
 MIN_REGIME_SAMPLES = 60
+
+# Minimum sample size for reliable Hyvärinen score computation
+# Below this threshold, Hyvärinen is DISABLED to prevent illusory smoothness
+# from small-n Student-t fits creating artificially good scores
+MIN_HYVARINEN_SAMPLES = 100
+
+# Entropy regularization lambda for model weights
+# Higher = more uniform weights, prevents premature posterior collapse
+# Lower = sharper weights, stronger model discrimination
+# 0.05 provides good balance between stability and discrimination
+DEFAULT_ENTROPY_LAMBDA = 0.05
+
+# Minimum weight fraction for entropy floor (prevents belief collapse)
+# Total mass allocated uniformly across all models as a floor
+# 0.01 = 1% total mass to uniform, each model gets at least 0.01/n_models weight
+# This prevents overconfident allocations during regime transitions
+DEFAULT_MIN_WEIGHT_FRACTION = 0.01
 
 
 def load_asset_list(assets_arg: Optional[str], assets_file: Optional[str]) -> List[str]:
@@ -427,15 +666,45 @@ class GaussianDriftModel:
 
     @staticmethod
     def pit_ks(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float = 1.0) -> Tuple[float, float]:
-        """PIT/KS for Gaussian forecasts including parameter uncertainty."""
+        """PIT/KS for Gaussian forecasts including parameter uncertainty.
+        
+        Computes the Probability Integral Transform (PIT) and performs a 
+        Kolmogorov-Smirnov test for uniformity. If the model is well-calibrated,
+        the PIT values should be uniformly distributed on [0, 1].
+        
+        Numerical stability: We enforce a minimum floor on forecast_std to prevent
+        division by zero. When forecast_std is effectively zero, the model has
+        collapsed to a degenerate distribution, which indicates calibration failure.
+        """
         returns_flat = np.asarray(returns).flatten()
         mu_flat = np.asarray(mu_filtered).flatten()
         vol_flat = np.asarray(vol).flatten()
         P_flat = np.asarray(P_filtered).flatten()
 
-        forecast_std = np.sqrt(c * (vol_flat ** 2) + P_flat)
+        # Compute forecast standard deviation with numerical floor
+        # The floor is set to 1e-10, which is small enough to not affect normal
+        # market data (typical daily vol ~0.01-0.05) but prevents division by zero
+        forecast_var = c * (vol_flat ** 2) + P_flat
+        forecast_std = np.sqrt(np.maximum(forecast_var, 1e-20))
+        
+        # Additional safety: ensure no zero values slip through
+        forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
+        
         standardized = (returns_flat - mu_flat) / forecast_std
-        pit_values = norm.cdf(standardized)
+        
+        # Handle any remaining NaN/Inf values that could arise from edge cases
+        valid_mask = np.isfinite(standardized)
+        if not np.any(valid_mask):
+            # All values invalid - return worst-case KS statistic
+            return 1.0, 0.0
+        
+        standardized_clean = standardized[valid_mask]
+        pit_values = norm.cdf(standardized_clean)
+        
+        # Need at least 2 points for KS test
+        if len(pit_values) < 2:
+            return 1.0, 0.0
+            
         ks_result = kstest(pit_values, 'uniform')
         return float(ks_result.statistic), float(ks_result.pvalue)
 
@@ -855,7 +1124,25 @@ class PhiGaussianDriftModel:
             log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
             log_c_target = np.log10(0.9)
             log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
-            log_prior_phi = -0.05 * prior_scale * (phi_clip ** 2)
+            
+            # =================================================================
+            # EXPLICIT φ SHRINKAGE PRIOR (Gaussian)
+            # =================================================================
+            # φ_r ~ N(φ_global, τ²) where φ_global = 0 (full mean reversion)
+            #
+            # Legacy form: -λ_φ * prior_scale * φ² where λ_φ = 0.05
+            # Explicit form: -0.5 * (φ - φ_global)² / τ²
+            #
+            # Mapping: τ = 1/√(2 * λ_φ * prior_scale)
+            # This maintains numerical equivalence with legacy behavior.
+            # =================================================================
+            phi_lambda_effective = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale
+            phi_tau = lambda_to_tau(phi_lambda_effective)
+            log_prior_phi = phi_shrinkage_log_prior(
+                phi_r=phi_clip,
+                phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+                tau=phi_tau
+            )
 
             penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty
             return -penalized_ll if np.isfinite(penalized_ll) else 1e12
@@ -933,6 +1220,19 @@ class PhiGaussianDriftModel:
             phi_optimal = grid_best_phi
             ll_optimal = -best_neg_ll
 
+        # Compute φ shrinkage prior diagnostics for auditability
+        # Use same prior_scale as in optimization (based on typical n_obs)
+        n_obs_approx = len(returns)
+        prior_scale_diag = 1.0 / max(n_obs_approx, 100)
+        phi_lambda_eff_diag = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale_diag
+        phi_tau_diag = lambda_to_tau(phi_lambda_eff_diag)
+        phi_prior_diag = compute_phi_prior_diagnostics(
+            phi_r=phi_optimal,
+            phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+            tau=phi_tau_diag,
+            log_likelihood=ll_optimal
+        )
+
         diagnostics = {
             'grid_best_q': float(grid_best_q),
             'grid_best_c': float(grid_best_c),
@@ -944,7 +1244,9 @@ class PhiGaussianDriftModel:
             'vol_cv': float(vol_cv),
             'rv_ratio': float(rv_ratio),
             'n_folds': int(len(fold_splits)),
-            'optimization_successful': best_result is not None and (best_result.success if best_result else False)
+            'optimization_successful': best_result is not None and (best_result.success if best_result else False),
+            # φ shrinkage prior diagnostics (auditability)
+            **phi_prior_diag,
         }
 
         return q_optimal, c_optimal, phi_optimal, ll_optimal, diagnostics
@@ -1069,29 +1371,77 @@ class PhiStudentTDriftModel:
 
     @staticmethod
     def pit_ks(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float, nu: float) -> Tuple[float, float]:
-        """PIT/KS for Student-t forecasts with parameter uncertainty included."""
+        """PIT/KS for Student-t forecasts with parameter uncertainty included.
+        
+        Uses the Student-t distribution CDF for the PIT transformation, which is
+        more appropriate for heavy-tailed return distributions.
+        
+        Numerical stability: Enforces minimum floor on forecast_scale to prevent
+        division by zero while preserving the statistical properties of the test.
+        """
         returns_flat = np.asarray(returns).flatten()
         mu_flat = np.asarray(mu_filtered).flatten()
         vol_flat = np.asarray(vol).flatten()
         P_flat = np.asarray(P_filtered).flatten()
 
-        forecast_scale = np.sqrt(c * (vol_flat ** 2) + P_flat)
+        # Compute forecast scale with numerical floor
+        forecast_var = c * (vol_flat ** 2) + P_flat
+        forecast_scale = np.sqrt(np.maximum(forecast_var, 1e-20))
+        
+        # Additional safety: ensure no zero values slip through
+        forecast_scale = np.where(forecast_scale < 1e-10, 1e-10, forecast_scale)
+        
         standardized = (returns_flat - mu_flat) / forecast_scale
-        pit_values = student_t.cdf(standardized, df=nu)
+        
+        # Handle any remaining NaN/Inf values
+        valid_mask = np.isfinite(standardized)
+        if not np.any(valid_mask):
+            return 1.0, 0.0
+        
+        standardized_clean = standardized[valid_mask]
+        
+        # Ensure nu is valid for Student-t (must be > 0)
+        nu_safe = max(nu, 2.01)
+        pit_values = student_t.cdf(standardized_clean, df=nu_safe)
+        
+        if len(pit_values) < 2:
+            return 1.0, 0.0
+            
         ks_result = kstest(pit_values, 'uniform')
         return float(ks_result.statistic), float(ks_result.pvalue)
 
     @staticmethod
     def compute_pit_ks_pvalue(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float = 1.0) -> Tuple[float, float]:
-        """PIT/KS for Gaussian forecasts including parameter uncertainty."""
+        """PIT/KS for Gaussian forecasts including parameter uncertainty.
+        
+        This is a Gaussian version used for comparison purposes within the
+        PhiStudentTDriftModel class.
+        
+        Numerical stability: Enforces minimum floor on forecast_std.
+        """
         returns_flat = np.asarray(returns).flatten()
         mu_flat = np.asarray(mu_filtered).flatten()
         vol_flat = np.asarray(vol).flatten()
         P_flat = np.asarray(P_filtered).flatten()
 
-        forecast_std = np.sqrt(c * (vol_flat ** 2) + P_flat)
+        # Compute forecast std with numerical floor
+        forecast_var = c * (vol_flat ** 2) + P_flat
+        forecast_std = np.sqrt(np.maximum(forecast_var, 1e-20))
+        forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
+        
         standardized = (returns_flat - mu_flat) / forecast_std
-        pit_values = norm.cdf(standardized)
+        
+        # Handle NaN/Inf
+        valid_mask = np.isfinite(standardized)
+        if not np.any(valid_mask):
+            return 1.0, 0.0
+        
+        standardized_clean = standardized[valid_mask]
+        pit_values = norm.cdf(standardized_clean)
+        
+        if len(pit_values) < 2:
+            return 1.0, 0.0
+            
         ks_result = kstest(pit_values, 'uniform')
         return float(ks_result.statistic), float(ks_result.pvalue)
 
@@ -1215,7 +1565,20 @@ class PhiStudentTDriftModel:
             log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
             log_c_target = np.log10(0.9)
             log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
-            log_prior_phi = -0.05 * prior_scale * (phi_clip ** 2)
+            
+            # =================================================================
+            # EXPLICIT φ SHRINKAGE PRIOR (Gaussian)
+            # =================================================================
+            # φ_r ~ N(φ_global, τ²) where φ_global = 0 (full mean reversion)
+            # See documentation at PHI_SHRINKAGE_* constants for derivation.
+            # =================================================================
+            phi_lambda_effective = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale
+            phi_tau = lambda_to_tau(phi_lambda_effective)
+            log_prior_phi = phi_shrinkage_log_prior(
+                phi_r=phi_clip,
+                phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+                tau=phi_tau
+            )
             log_prior_nu = -0.05 * prior_scale * (log_nu - np.log10(6.0)) ** 2
 
             penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + log_prior_nu + calibration_penalty
@@ -1266,6 +1629,18 @@ class PhiStudentTDriftModel:
             nu_opt = 10 ** ln_opt
             ll_opt = -best_neg
 
+        # Compute φ shrinkage prior diagnostics for auditability
+        n_obs_approx = len(returns)
+        prior_scale_diag = 1.0 / max(n_obs_approx, 100)
+        phi_lambda_eff_diag = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale_diag
+        phi_tau_diag = lambda_to_tau(phi_lambda_eff_diag)
+        phi_prior_diag = compute_phi_prior_diagnostics(
+            phi_r=phi_opt,
+            phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+            tau=phi_tau_diag,
+            log_likelihood=ll_opt
+        )
+
         diagnostics = {
             'grid_best_q': float(10 ** grid_best[0]),
             'grid_best_c': float(10 ** grid_best[1]),
@@ -1281,10 +1656,277 @@ class PhiStudentTDriftModel:
             'vol_cv': float(vol_cv),
             'rv_ratio': float(rv_ratio),
             'n_folds': int(len(fold_splits)),
-            'optimization_successful': best_res is not None and (best_res.success if best_res else False)
+            'optimization_successful': best_res is not None and (best_res.success if best_res else False),
+            # φ shrinkage prior diagnostics (auditability)
+            **phi_prior_diag,
         }
 
         return q_opt, c_opt, phi_opt, nu_opt, ll_opt, diagnostics
+
+    @staticmethod
+    def optimize_params_fixed_nu(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        nu: float,
+        train_frac: float = 0.7,
+        q_min: float = 1e-10,
+        q_max: float = 1e-1,
+        c_min: float = 0.3,
+        c_max: float = 3.0,
+        phi_min: float = -0.999,
+        phi_max: float = 0.999,
+        prior_log_q_mean: float = -6.0,
+        prior_lambda: float = 1.0
+    ) -> Tuple[float, float, float, float, Dict]:
+        """
+        Optimize (q, c, φ) for the φ-Student-t drift model with FIXED ν.
+        
+        This method is part of the discrete ν grid approach:
+        - ν is held fixed (passed as argument, not optimized)
+        - Only q, c, φ are optimized via CV MLE
+        - Each ν value becomes a separate sub-model in BMA
+        
+        This eliminates:
+        - ν-σ identifiability failures
+        - Pathological likelihood spikes from continuous ν optimization
+        - Tail-driven weight collapse
+        
+        Args:
+            returns: Array of returns
+            vol: Array of EWMA volatility
+            nu: FIXED degrees of freedom (from STUDENT_T_NU_GRID)
+            train_frac: Fraction for train/test split
+            q_min, q_max: Bounds for drift variance q
+            c_min, c_max: Bounds for observation scale c
+            phi_min, phi_max: Bounds for AR(1) coefficient φ
+            prior_log_q_mean: Prior mean for log10(q)
+            prior_lambda: Regularization strength
+            
+        Returns:
+            Tuple of (q_opt, c_opt, phi_opt, ll_opt, diagnostics)
+            Note: nu is NOT returned (it was fixed, not estimated)
+        """
+        n = len(returns)
+        ret_p005 = np.percentile(returns, 0.5)
+        ret_p995 = np.percentile(returns, 99.5)
+        returns_robust = np.clip(returns, ret_p005, ret_p995)
+
+        vol_mean = float(np.mean(vol))
+        vol_std = float(np.std(vol))
+        vol_cv = vol_std / vol_mean if vol_mean > 0 else 0.0
+        ret_std = float(np.std(returns_robust))
+        ret_mean = float(np.mean(returns_robust))
+        rv_ratio = abs(ret_mean) / ret_std if ret_std > 0 else 0.0
+
+        # Adaptive prior adjustment
+        if vol_cv > 0.5 or rv_ratio > 0.15:
+            adaptive_prior_mean = prior_log_q_mean + 0.5
+            adaptive_lambda = prior_lambda * 0.5
+        elif vol_cv < 0.2 and rv_ratio < 0.05:
+            adaptive_prior_mean = prior_log_q_mean - 0.3
+            adaptive_lambda = prior_lambda * 1.5
+        else:
+            adaptive_prior_mean = prior_log_q_mean
+            adaptive_lambda = prior_lambda
+
+        # Build fold splits for CV
+        min_train = min(max(60, int(n * 0.4)), max(n - 5, 1))
+        test_window = min(max(20, int(n * 0.1)), max(n - min_train, 5))
+        fold_splits = []
+        train_end = min_train
+        while train_end + test_window <= n:
+            test_end = min(train_end + test_window, n)
+            if test_end - train_end >= 20:
+                fold_splits.append((0, train_end, train_end, test_end))
+            train_end += test_window
+        if not fold_splits:
+            split_idx = int(n * train_frac)
+            fold_splits = [(0, split_idx, split_idx, n)]
+
+        # Fixed nu value (from grid, NOT optimized)
+        nu_fixed = float(nu)
+
+        def neg_pen_ll(params: np.ndarray) -> float:
+            """Negative penalized log-likelihood with fixed nu."""
+            log_q, log_c, phi = params
+            q = 10 ** log_q
+            c = 10 ** log_c
+            phi_clip = float(np.clip(phi, phi_min, phi_max))
+            
+            if q <= 0 or c <= 0 or not np.isfinite(q) or not np.isfinite(c):
+                return 1e12
+            
+            total_ll_oos = 0.0
+            total_obs = 0
+            all_standardized = []
+            
+            for tr_start, tr_end, te_start, te_end in fold_splits:
+                try:
+                    ret_train = returns_robust[tr_start:tr_end]
+                    vol_train = vol[tr_start:tr_end]
+                    if len(ret_train) < 3:
+                        continue
+                    
+                    mu_filt_train, P_filt_train, _ = PhiStudentTDriftModel.filter_phi(
+                        ret_train, vol_train, q, c, phi_clip, nu_fixed
+                    )
+                    mu_pred = float(mu_filt_train[-1])
+                    P_pred = float(P_filt_train[-1])
+                    ll_fold = 0.0
+                    
+                    for t in range(te_start, te_end):
+                        mu_pred = phi_clip * mu_pred
+                        P_pred = (phi_clip ** 2) * P_pred + q
+                        ret_t = float(returns_robust[t]) if np.ndim(returns_robust[t]) == 0 else float(returns_robust[t].item())
+                        vol_t = float(vol[t]) if np.ndim(vol[t]) == 0 else float(vol[t].item())
+                        R = c * (vol_t ** 2)
+                        innovation = ret_t - mu_pred
+                        forecast_var = P_pred + R
+
+                        if forecast_var > 1e-12:
+                            forecast_std = np.sqrt(forecast_var)
+                            ll_contrib = PhiStudentTDriftModel.logpdf(ret_t, nu_fixed, mu_pred, forecast_std)
+                            ll_fold += ll_contrib
+                            if len(all_standardized) < 1000:
+                                all_standardized.append(float(innovation / forecast_std))
+
+                        nu_adjust = min(nu_fixed / (nu_fixed + 3.0), 1.0)
+                        K = nu_adjust * P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
+                        mu_pred = mu_pred + K * innovation
+                        P_pred = (1.0 - K) * P_pred
+
+                    total_ll_oos += ll_fold
+                    total_obs += (te_end - te_start)
+
+                except Exception:
+                    continue
+            
+            if total_obs == 0:
+                return 1e12
+            
+            avg_ll = total_ll_oos / max(total_obs, 1)
+            
+            # Calibration penalty
+            calibration_penalty = 0.0
+            if len(all_standardized) >= 30:
+                try:
+                    pit_values = student_t.cdf(all_standardized, df=nu_fixed)
+                    ks_result = kstest(pit_values, 'uniform')
+                    ks_stat = float(ks_result.statistic)
+                    if ks_stat > 0.05:
+                        calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
+                        if ks_stat > 0.10:
+                            calibration_penalty -= 100.0 * (ks_stat - 0.10)
+                        if ks_stat > 0.15:
+                            calibration_penalty -= 200.0 * (ks_stat - 0.15)
+                except Exception:
+                    pass
+            
+            # Priors on q, c, phi (NO prior on nu since it's fixed)
+            prior_scale = 1.0 / max(total_obs, 100)
+            log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
+            log_c_target = np.log10(0.9)
+            log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
+            
+            # =================================================================
+            # EXPLICIT φ SHRINKAGE PRIOR (Gaussian)
+            # =================================================================
+            # φ_r ~ N(φ_global, τ²) where φ_global = 0 (full mean reversion)
+            # See documentation at PHI_SHRINKAGE_* constants for derivation.
+            # =================================================================
+            phi_lambda_effective = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale
+            phi_tau = lambda_to_tau(phi_lambda_effective)
+            log_prior_phi = phi_shrinkage_log_prior(
+                phi_r=phi_clip,
+                phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+                tau=phi_tau
+            )
+
+            penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty
+            return -penalized_ll if np.isfinite(penalized_ll) else 1e12
+
+        # Parameter bounds (3 parameters: q, c, phi)
+        log_q_min = np.log10(q_min)
+        log_q_max = np.log10(q_max)
+        log_c_min = np.log10(c_min)
+        log_c_max = np.log10(c_max)
+
+        # Grid search for initialization
+        grid_best = (adaptive_prior_mean, np.log10(0.9), 0.0)
+        best_neg = float('inf')
+        for lq in np.linspace(log_q_min, log_q_max, 4):
+            for lc in np.linspace(log_c_min, log_c_max, 3):
+                for lp in np.linspace(phi_min, phi_max, 5):
+                    val = neg_pen_ll(np.array([lq, lc, lp]))
+                    if val < best_neg:
+                        best_neg = val
+                        grid_best = (lq, lc, lp)
+        
+        # L-BFGS-B optimization
+        bounds = [(log_q_min, log_q_max), (log_c_min, log_c_max), (phi_min, phi_max)]
+        start_points = [
+            np.array(grid_best),
+            np.array([adaptive_prior_mean, np.log10(0.9), 0.0])
+        ]
+        best_res = None
+        best_fun = float('inf')
+        for x0 in start_points:
+            try:
+                res = minimize(
+                    neg_pen_ll, x0=x0, method='L-BFGS-B',
+                    bounds=bounds, options={'maxiter': 120, 'ftol': 1e-6}
+                )
+                if res.fun < best_fun:
+                    best_fun = res.fun
+                    best_res = res
+            except Exception:
+                continue
+
+        if best_res is not None and best_res.success:
+            lq_opt, lc_opt, phi_opt = best_res.x
+            q_opt = 10 ** lq_opt
+            c_opt = 10 ** lc_opt
+            phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
+            ll_opt = -best_res.fun
+        else:
+            lq_opt, lc_opt, phi_opt = grid_best
+            q_opt = 10 ** lq_opt
+            c_opt = 10 ** lc_opt
+            phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
+            ll_opt = -best_neg
+
+        # Compute φ shrinkage prior diagnostics for auditability
+        n_obs_approx = len(returns)
+        prior_scale_diag = 1.0 / max(n_obs_approx, 100)
+        phi_lambda_eff_diag = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale_diag
+        phi_tau_diag = lambda_to_tau(phi_lambda_eff_diag)
+        phi_prior_diag = compute_phi_prior_diagnostics(
+            phi_r=phi_opt,
+            phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
+            tau=phi_tau_diag,
+            log_likelihood=ll_opt
+        )
+
+        diagnostics = {
+            'nu_fixed': float(nu_fixed),
+            'grid_best_q': float(10 ** grid_best[0]),
+            'grid_best_c': float(10 ** grid_best[1]),
+            'grid_best_phi': float(grid_best[2]),
+            'refined_best_q': float(q_opt),
+            'refined_best_c': float(c_opt),
+            'refined_best_phi': float(phi_opt),
+            'prior_applied': adaptive_lambda > 0,
+            'prior_log_q_mean': float(adaptive_prior_mean),
+            'prior_lambda': float(adaptive_lambda),
+            'vol_cv': float(vol_cv),
+            'rv_ratio': float(rv_ratio),
+            'n_folds': int(len(fold_splits)),
+            'optimization_successful': best_res is not None and (best_res.success if best_res else False),
+            # φ shrinkage prior diagnostics (auditability)
+            **phi_prior_diag,
+        }
+
+        return q_opt, c_opt, phi_opt, ll_opt, diagnostics
 
 
 # Compatibility wrappers to preserve existing API surface
@@ -1496,6 +2138,12 @@ def tune_asset_q(
 
         returns_arr = returns.values
         vol_arr = vol.values
+        
+        # Apply minimum volatility floor to prevent division by zero in PIT calculations
+        # A floor of 1e-8 is conservative: typical daily vol is 0.01-0.05 (1-5%)
+        # This handles edge cases like constant prices or numerical underflow
+        vol_arr = np.maximum(vol_arr, 1e-8)
+        
         n_obs = len(returns_arr)
 
         # Compute kurtosis to assess tail heaviness
@@ -1539,37 +2187,64 @@ def tune_asset_q(
         _log(f"     φ-Gaussian-Kalman: q={q_phi:.2e}, c={c_phi:.3f}, φ={phi_opt:+.3f}, LL={ll_phi_full:.1f}, BIC={bic_phi:.1f}, PIT p={pit_p_phi:.4f}")
         
         # =================================================================
-        # STEP 2: Fit Kalman φ-Student-t Model (q, c, φ, ν)
+        # STEP 2: Fit Kalman φ-Student-t Models with DISCRETE ν GRID
         # =================================================================
-        _log(f"  🔧 Fitting Kalman φ-Student-t model...")
-        try:
-            q_student, c_student, phi_student, nu_student, ll_student_cv, opt_diag_student = PhiStudentTDriftModel.optimize_params(
-                returns_arr, vol_arr,
-                prior_log_q_mean=prior_log_q_mean,
-                prior_lambda=prior_lambda
-            )
-
-            # Run full φ-Student-t Kalman filter (persistent drift with heavy tails)
-            mu_student, P_student, ll_student_full = kalman_filter_drift_phi_student_t(
-                returns_arr, vol_arr, q_student, c_student, phi_student, nu_student
-            )
-
-            # Compute Student-t PIT calibration
-            ks_student, pit_p_student = compute_pit_ks_pvalue_student_t(
-                returns_arr, mu_student, vol_arr, P_student, c_student, nu_student
-            )
-
-            # φ-Student-t has 4 parameters: q, c, φ, ν
-            aic_student = compute_aic(ll_student_full, n_params=4)
-            bic_student = compute_bic(ll_student_full, n_params=4, n_obs=n_obs)
-
-            _log(f"    Kalman φ-Student-t: q={q_student:.2e}, c={c_student:.3f}, φ={phi_student:+.3f}, ν={nu_student:.1f}, LL={ll_student_full:.1f}, BIC={bic_student:.1f}, PIT p={pit_p_student:.4f}")
-
-            student_t_fit_success = True
-
-        except Exception as e:
-            _log(f"  ⚠️  φ-Student-t optimization failed: {e}")
-            student_t_fit_success = False
+        # Instead of continuous ν optimization (which is unstable), we fit
+        # separate sub-models for each ν in STUDENT_T_NU_GRID and select
+        # the best one by BIC.
+        # =================================================================
+        _log(f"  🔧 Fitting Kalman φ-Student-t models (discrete ν grid: {STUDENT_T_NU_GRID})...")
+        
+        student_t_results = []  # List of (model_name, bic, aic, ll, mu, P, ks, pit_p, q, c, phi, nu, diag)
+        
+        for nu_fixed in STUDENT_T_NU_GRID:
+            model_name = f"phi_student_t_nu_{nu_fixed}"
+            try:
+                # Optimize q, c, phi with FIXED nu
+                q_st, c_st, phi_st, ll_cv_st, diag_st = PhiStudentTDriftModel.optimize_params_fixed_nu(
+                    returns_arr, vol_arr,
+                    nu=nu_fixed,
+                    prior_log_q_mean=prior_log_q_mean,
+                    prior_lambda=prior_lambda
+                )
+                
+                # Run full φ-Student-t Kalman filter
+                mu_st, P_st, ll_full_st = kalman_filter_drift_phi_student_t(
+                    returns_arr, vol_arr, q_st, c_st, phi_st, nu_fixed
+                )
+                
+                # Compute Student-t PIT calibration
+                ks_st, pit_p_st = compute_pit_ks_pvalue_student_t(
+                    returns_arr, mu_st, vol_arr, P_st, c_st, nu_fixed
+                )
+                
+                # φ-Student-t has 3 estimated parameters: q, c, φ (ν is FIXED)
+                aic_st = compute_aic(ll_full_st, n_params=3)
+                bic_st = compute_bic(ll_full_st, n_params=3, n_obs=n_obs)
+                
+                _log(f"     {model_name}: q={q_st:.2e}, c={c_st:.3f}, φ={phi_st:+.3f}, LL={ll_full_st:.1f}, BIC={bic_st:.1f}, PIT p={pit_p_st:.4f}")
+                
+                student_t_results.append((
+                    model_name, bic_st, aic_st, ll_full_st,
+                    mu_st, P_st, ks_st, pit_p_st,
+                    q_st, c_st, phi_st, nu_fixed, diag_st
+                ))
+                
+            except Exception as e:
+                _log(f"     {model_name}: ⚠️ optimization failed: {e}")
+                continue
+        
+        # Find best Student-t model by BIC
+        student_t_fit_success = len(student_t_results) > 0
+        if student_t_fit_success:
+            best_student_t = min(student_t_results, key=lambda x: x[1])
+            (best_st_name, bic_student, aic_student, ll_student_full,
+             mu_student, P_student, ks_student, pit_p_student,
+             q_student, c_student, phi_student, nu_student, opt_diag_student) = best_student_t
+            _log(f"     Best Student-t: {best_st_name} (BIC={bic_student:.1f})")
+        else:
+            _log(f"  ⚠️  All φ-Student-t optimizations failed")
+            best_st_name = None
             q_student = None
             c_student = None
             phi_student = None
@@ -1578,16 +2253,18 @@ def tune_asset_q(
             bic_student = 1e12
             aic_student = 1e12
             pit_p_student = 0.0
+            opt_diag_student = {}
 
         # =================================================================
         # STEP 3: Model Selection via BIC
         # =================================================================
         # Lower BIC is better (penalizes complexity)
         candidate_models = []
-        candidate_models.append(("gaussian", bic_gauss, aic_gauss, ll_gauss_full, mu_gauss, P_gauss, ks_gauss, pit_p_gauss, q_gauss, c_gauss, None, opt_diag_gauss))
-        candidate_models.append(("phi_gaussian", bic_phi, aic_phi, ll_phi_full, mu_phi, P_phi, ks_phi, pit_p_phi, q_phi, c_phi, phi_opt, opt_diag_phi))
+        candidate_models.append(("kalman_gaussian", bic_gauss, aic_gauss, ll_gauss_full, mu_gauss, P_gauss, ks_gauss, pit_p_gauss, q_gauss, c_gauss, None, opt_diag_gauss))
+        candidate_models.append(("kalman_phi_gaussian", bic_phi, aic_phi, ll_phi_full, mu_phi, P_phi, ks_phi, pit_p_phi, q_phi, c_phi, phi_opt, opt_diag_phi))
         if student_t_fit_success:
-            candidate_models.append(('kalman_phi_student_t', bic_student, aic_student, ll_student_full, mu_student, P_student, ks_student, pit_p_student, q_student, c_student, (phi_student, nu_student), opt_diag_student))
+            # Use the best Student-t model name (e.g., "phi_student_t_nu_6")
+            candidate_models.append((best_st_name, bic_student, aic_student, ll_student_full, mu_student, P_student, ks_student, pit_p_student, q_student, c_student, (phi_student, nu_student), opt_diag_student))
 
         candidate_models = [m for m in candidate_models if np.isfinite(m[1])]
         best_entry = min(candidate_models, key=lambda x: x[1])
@@ -1595,15 +2272,15 @@ def tune_asset_q(
 
         nu_optimal = None
         phi_selected = None
-        if noise_model == 'kalman_phi_student_t':
+        if is_student_t_model(noise_model):
             phi_selected, nu_optimal = extra_param
-        elif noise_model == "phi_gaussian":
+        elif noise_model == "kalman_phi_gaussian":
             phi_selected = extra_param
 
         _log(f"  ✓ Selected {noise_model} (BIC={bic_final:.1f})")
-        if noise_model == 'kalman_phi_student_t':
-            _log(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_student:+.1f}, ΔBIC vs φ-Gaussian Kalman = {bic_phi - bic_student:+.1f})")
-        elif noise_model == "phi_gaussian":
+        if is_student_t_model(noise_model):
+            _log(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_student:+.1f}, ΔBIC vs φ-Gaussian = {bic_phi - bic_student:+.1f})")
+        elif noise_model == "kalman_phi_gaussian":
             _log(f"    (ΔBIC vs Gaussian = {bic_gauss - bic_phi:+.1f})")
         else:
             _log(f"    (ΔBIC vs φ-Gaussian Kalman = {bic_phi - bic_gauss:+.1f})")
@@ -1732,25 +2409,79 @@ def tune_asset_q(
         delta_ll_vs_ewma = float(ll_full - ll_ewma)
 
         # Aggregate model comparison metrics for diagnostics and cache
+        # Compute Hyvärinen scores for ALL models including baselines
+        
+        # Baseline models: use c_optimal for observation noise (they don't have state uncertainty)
+        # For zero_drift: mu = 0 for all t, sigma = sqrt(c * vol^2)
+        forecast_std_zero = np.sqrt(c_optimal * (vol_arr ** 2))
+        mu_zero = np.zeros_like(returns_arr)
+        hyv_zero = compute_hyvarinen_score_gaussian(returns_arr, mu_zero, forecast_std_zero)
+        
+        # For constant_drift: mu = mu_const for all t, sigma = sqrt(c * vol^2)
+        mu_const_arr = np.full_like(returns_arr, mu_const)
+        hyv_const = compute_hyvarinen_score_gaussian(returns_arr, mu_const_arr, forecast_std_zero)
+        
+        # For ewma_drift: mu = ewma of past returns, sigma = sqrt(c * vol^2)
+        ret_series = pd.Series(returns_arr)
+        mu_ewma_arr = ret_series.ewm(span=21, adjust=False).mean().values
+        # First observation uses zero drift
+        mu_ewma_arr_lagged = np.concatenate([[0.0], mu_ewma_arr[:-1]])
+        hyv_ewma = compute_hyvarinen_score_gaussian(returns_arr, mu_ewma_arr_lagged, forecast_std_zero)
+        
+        # Kalman models: include state uncertainty in forecast
+        forecast_std_gauss = np.sqrt(c_gauss * (vol_arr ** 2) + P_gauss)
+        hyv_gauss = compute_hyvarinen_score_gaussian(returns_arr, mu_gauss, forecast_std_gauss)
+        
+        forecast_std_phi = np.sqrt(c_phi * (vol_arr ** 2) + P_phi)
+        hyv_phi = compute_hyvarinen_score_gaussian(returns_arr, mu_phi, forecast_std_phi)
+        
         model_comparison = {
-            'zero_drift': {'ll': ll_zero, 'aic': aic_zero, 'bic': bic_zero, 'n_params': 0},
-            'constant_drift': {'ll': ll_const, 'aic': aic_const, 'bic': bic_const, 'n_params': 1, 'mu': float(mu_const)},
-            'ewma_drift': {'ll': ll_ewma, 'aic': aic_ewma, 'bic': bic_ewma, 'n_params': 1},
-            'kalman_gaussian': {'ll': ll_gauss_full, 'aic': aic_gauss, 'bic': bic_gauss, 'n_params': 2},
-            'kalman_phi_gaussian': {'ll': ll_phi_full, 'aic': aic_phi, 'bic': bic_phi, 'n_params': 3, 'phi': float(phi_opt)},
+            'zero_drift': {'ll': ll_zero, 'aic': aic_zero, 'bic': bic_zero, 'n_params': 0, 'hyvarinen_score': float(hyv_zero)},
+            'constant_drift': {'ll': ll_const, 'aic': aic_const, 'bic': bic_const, 'n_params': 1, 'mu': float(mu_const), 'hyvarinen_score': float(hyv_const)},
+            'ewma_drift': {'ll': ll_ewma, 'aic': aic_ewma, 'bic': bic_ewma, 'n_params': 1, 'hyvarinen_score': float(hyv_ewma)},
+            'kalman_gaussian': {'ll': ll_gauss_full, 'aic': aic_gauss, 'bic': bic_gauss, 'n_params': 2, 'hyvarinen_score': float(hyv_gauss)},
+            'kalman_phi_gaussian': {'ll': ll_phi_full, 'aic': aic_phi, 'bic': bic_phi, 'n_params': 3, 'phi': float(phi_opt), 'hyvarinen_score': float(hyv_phi)},
         }
-        if student_t_fit_success:
-            model_comparison['kalman_phi_student_t'] = {
-                'll': ll_student_full,
-                'aic': aic_student,
-                'bic': bic_student,
-                'n_params': 4,
-                'phi': float(phi_student),
-                'nu': float(nu_student)
+        
+        # Add ALL Student-t sub-models from the discrete nu grid
+        for st_result in student_t_results:
+            (st_name, st_bic, st_aic, st_ll, st_mu, st_P, st_ks, st_pit_p,
+             st_q, st_c, st_phi, st_nu, st_diag) = st_result
+            forecast_std_st = np.sqrt(st_c * (vol_arr ** 2) + st_P)
+            hyv_st = compute_hyvarinen_score_student_t(returns_arr, st_mu, forecast_std_st, st_nu)
+            model_comparison[st_name] = {
+                'll': st_ll,
+                'aic': st_aic,
+                'bic': st_bic,
+                'n_params': 3,  # q, c, phi (nu is FIXED)
+                'phi': float(st_phi),
+                'nu': float(st_nu),
+                'nu_fixed': True,
+                'hyvarinen_score': float(hyv_st)
             }
+        
+        # Compute combined scores for all models
+        bic_values = {m: info['bic'] for m, info in model_comparison.items()}
+        hyvarinen_scores = {m: info['hyvarinen_score'] for m, info in model_comparison.items()}
+        combined_weights, weight_metadata = compute_combined_model_weights(
+            bic_values, hyvarinen_scores, bic_weight=DEFAULT_BIC_WEIGHT
+        )
+        
+        # Store combined_score and standardized scores in each model
+        # combined_score is now the standardized combined score (lower = better)
+        # model_weight_entropy is the entropy-regularized weight
+        for m in model_comparison:
+            w = combined_weights.get(m, 1e-10)
+            model_comparison[m]['combined_score'] = float(weight_metadata['combined_scores_standardized'].get(m, 0.0))
+            model_comparison[m]['model_weight_entropy'] = float(w)
+            model_comparison[m]['standardized_bic'] = float(weight_metadata['bic_standardized'].get(m, 0.0)) if weight_metadata['bic_standardized'].get(m) is not None else None
+            model_comparison[m]['standardized_hyvarinen'] = float(weight_metadata['hyvarinen_standardized'].get(m, 0.0)) if weight_metadata['hyvarinen_standardized'].get(m) is not None else None
         
         # Best model across baselines and Kalman variants by BIC
         best_model_name = min(model_comparison.items(), key=lambda kv: kv[1]['bic'])[0]
+        
+        # Best model by combined score (lowest standardized combined score = best)
+        best_model_by_combined = min(model_comparison.items(), key=lambda kv: kv[1].get('combined_score', float('inf')))[0]
 
         # Compute drift diagnostics
         mean_drift_var = float(np.mean(mu_filtered ** 2))
@@ -1772,12 +2503,28 @@ def tune_asset_q(
                 _log(f"  ⚠️  Calibration warning (PIT p={ks_pvalue:.4f})")
 
         # Build result dictionary with extended schema
+        # Get hyvarinen score and combined score for the selected model
+        # Map noise_model to model_comparison keys
+        # Note: Student-t models now use phi_student_t_nu_{nu} naming
+        noise_model_to_key = {
+            'gaussian': 'kalman_gaussian',
+            'kalman_gaussian': 'kalman_gaussian',
+            'phi_gaussian': 'kalman_phi_gaussian',
+            'kalman_phi_gaussian': 'kalman_phi_gaussian',
+        }
+        # For Student-t models, the noise_model IS the key (e.g., phi_student_t_nu_6)
+        model_key = noise_model_to_key.get(noise_model, noise_model)
+        
+        selected_hyvarinen = model_comparison.get(model_key, {}).get('hyvarinen_score')
+        selected_combined_score = model_comparison.get(model_key, {}).get('combined_score')
+        
         result = {
             # Asset identifier
             'asset': asset,
 
             # Model selection
-            'noise_model': noise_model,  # "gaussian", "phi_gaussian", or "kalman_phi_student_t"
+            'noise_model': noise_model,  # e.g., "kalman_gaussian", "kalman_phi_gaussian", or "phi_student_t_nu_6"
+            'model_selection_method': 'combined',  # Always use combined for consistency
 
             # Parameters
             'q': float(q_optimal),
@@ -1794,10 +2541,13 @@ def tune_asset_q(
             'delta_ll_vs_ewma': float(delta_ll_vs_ewma),
             'aic': float(aic_final),
             'bic': float(bic_final),
+            'hyvarinen_score': float(selected_hyvarinen) if selected_hyvarinen is not None else None,
+            'combined_score': float(selected_combined_score) if selected_combined_score is not None else None,
 
             # Upgrade #4: Model comparison results
             'model_comparison': model_comparison,
             'best_model_by_bic': best_model_name,
+            'best_model_by_combined': best_model_by_combined,
 
             # Calibration diagnostics
             'ks_statistic': float(ks_statistic),
@@ -1831,16 +2581,15 @@ def tune_asset_q(
             'optimization_successful': opt_diagnostics.get('optimization_successful', False)
         }
 
-        # Add Kalman Phi Student-t specific diagnostics if applicable
-        if noise_model == 'kalman_phi_student_t':
-            result['grid_best_nu'] = opt_diagnostics.get('grid_best_nu')
-            result['refined_best_nu'] = opt_diagnostics.get('refined_best_nu')
+        # Add Student-t specific diagnostics if applicable
+        if is_student_t_model(noise_model):
+            result['nu_fixed'] = True  # Always true now (discrete grid)
             result['refined_best_phi'] = float(phi_selected) if phi_selected is not None else None
-        if noise_model == "phi_gaussian":
+        if noise_model == "kalman_phi_gaussian":
             result['refined_best_phi'] = float(phi_selected)
 
-        # Add Gaussian comparison if Kalman Phi Student-t was selected
-        if noise_model == 'kalman_phi_student_t' and student_t_fit_success:
+        # Add Gaussian comparison if Student-t was selected
+        if is_student_t_model(noise_model) and student_t_fit_success:
             result['gaussian_bic'] = float(bic_gauss)
             result['gaussian_log_likelihood'] = float(ll_gauss_full)
             result['gaussian_pit_ks_pvalue'] = float(pit_p_gauss)
@@ -1951,9 +2700,537 @@ def assign_regime_labels(
 #
 # For each regime r, we:
 # 1. Fit ALL candidate model classes independently
-# 2. Compute BIC-based posterior weights with temporal smoothing
+# 2. Compute BIC-based or Hyvärinen-score-based posterior weights with temporal smoothing
 # 3. Return the full model posterior — never selecting a single model
 # =============================================================================
+
+
+# =============================================================================
+# HYVÄRINEN SCORE FOR ROBUST MODEL SELECTION
+# =============================================================================
+# The Hyvärinen score is a proper scoring rule that is:
+#   - Fisher-consistent under model misspecification
+#   - Independent of normalizing constants
+#   - Naturally rewards tail accuracy
+#
+# For a predictive density p(r|μ,σ), the Hyvärinen score is:
+#
+#   H = (1/n) Σ_t [ (1/2)(∂log p / ∂r)² + (∂²log p / ∂r²) ]
+#
+# Lower score = better fit. Negated for consistency with likelihood (higher = better).
+# =============================================================================
+
+
+def compute_hyvarinen_score_gaussian(
+    returns: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    min_sigma: float = 1e-8
+) -> float:
+    """
+    Compute Hyvärinen score for Gaussian predictive density.
+    
+    For Gaussian p(r) = N(μ, σ²):
+        ∂log p / ∂r = -(r - μ) / σ²
+        ∂²log p / ∂r² = -1 / σ²
+    
+    Therefore:
+        H = (1/n) Σ_t [ (r_t - μ_t)² / (2σ_t⁴) - 1/σ_t² ]
+    
+    Args:
+        returns: Observed returns
+        mu: Predicted means
+        sigma: Predicted standard deviations (NOT variance)
+        min_sigma: Minimum sigma for numerical stability
+        
+    Returns:
+        Hyvärinen score (lower is better, but we return negated for consistency)
+    """
+    returns = np.asarray(returns).flatten()
+    mu = np.asarray(mu).flatten()
+    sigma = np.asarray(sigma).flatten()
+    
+    # Numerical stability: floor sigma
+    sigma = np.maximum(sigma, min_sigma)
+    sigma_sq = sigma ** 2
+    sigma_4 = sigma ** 4
+    
+    # Innovations
+    innovation = returns - mu
+    innovation_sq = innovation ** 2
+    
+    # Hyvärinen score components:
+    # Term 1: (1/2) * (∂log p / ∂r)² = (r - μ)² / (2σ⁴)
+    # Term 2: ∂²log p / ∂r² = -1/σ²
+    term1 = innovation_sq / (2.0 * sigma_4)
+    term2 = -1.0 / sigma_sq
+    
+    # Per-observation score
+    h_scores = term1 + term2
+    
+    # Filter out non-finite values
+    valid = np.isfinite(h_scores)
+    if not np.any(valid):
+        return -1e12  # Return very bad score
+    
+    h_mean = float(np.mean(h_scores[valid]))
+    
+    # Return negated score (higher = better, for consistency with log-likelihood)
+    return -h_mean
+
+
+def compute_hyvarinen_score_student_t(
+    returns: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    nu: float,
+    min_sigma: float = 1e-8,
+    min_nu: float = 2.1
+) -> float:
+    """
+    Compute Hyvärinen score for Student-t predictive density.
+    
+    For Student-t p(r) with location μ, scale σ, and degrees of freedom ν:
+    
+    Let z = (r - μ) / σ
+    
+        log p(r) = const - ((ν+1)/2) * log(1 + z²/ν) - log(σ)
+        
+        ∂log p / ∂r = -((ν+1)/ν) * z / (σ * (1 + z²/ν))
+                    = -((ν+1) * (r-μ)) / (σ² * (ν + z²))
+        
+        ∂²log p / ∂r² = -((ν+1)/σ²) * (ν - z²) / (ν + z²)²
+    
+    Therefore:
+        H = (1/n) Σ_t [ (1/2)(∂log p/∂r)² + ∂²log p/∂r² ]
+    
+    Args:
+        returns: Observed returns
+        mu: Predicted locations
+        sigma: Predicted scales (NOT variance)
+        nu: Degrees of freedom
+        min_sigma: Minimum sigma for numerical stability
+        min_nu: Minimum nu for numerical stability
+        
+    Returns:
+        Hyvärinen score (negated so higher = better)
+    """
+    returns = np.asarray(returns).flatten()
+    mu = np.asarray(mu).flatten()
+    sigma = np.asarray(sigma).flatten()
+    
+    # Numerical stability
+    sigma = np.maximum(sigma, min_sigma)
+    nu = max(float(nu), min_nu)
+    
+    sigma_sq = sigma ** 2
+    
+    # Standardized residuals
+    z = (returns - mu) / sigma
+    z_sq = z ** 2
+    
+    # Common denominator: ν + z²
+    denom = nu + z_sq
+    
+    # First derivative: ∂log p / ∂r = -((ν+1) * (r-μ)) / (σ² * (ν + z²))
+    # Squared: ((ν+1)² * (r-μ)²) / (σ⁴ * (ν + z²)²)
+    #        = ((ν+1)² * z²) / (σ² * (ν + z²)²)
+    d1_sq = ((nu + 1.0) ** 2 * z_sq) / (sigma_sq * denom ** 2)
+    
+    # Second derivative: ∂²log p / ∂r² = -((ν+1)/σ²) * (ν - z²) / (ν + z²)²
+    d2 = -((nu + 1.0) / sigma_sq) * (nu - z_sq) / (denom ** 2)
+    
+    # Hyvärinen score: (1/2) * (∂log p/∂r)² + ∂²log p/∂r²
+    h_scores = 0.5 * d1_sq + d2
+    
+    # Filter out non-finite values
+    valid = np.isfinite(h_scores)
+    if not np.any(valid):
+        return -1e12  # Return very bad score
+    
+    h_mean = float(np.mean(h_scores[valid]))
+    
+    # Return negated score (higher = better)
+    return -h_mean
+
+
+def compute_hyvarinen_model_weights(
+    hyvarinen_scores: Dict[str, float],
+    epsilon: float = 1e-10,
+    temperature: float = 1.0
+) -> Dict[str, float]:
+    """
+    Convert Hyvärinen scores to unnormalized posterior weights.
+    
+    Since Hyvärinen scores are negated (higher = better), we use:
+        w_raw(m|r) = exp(temperature * (H_m - H_min))
+    
+    This mirrors the BIC weight formula but uses Hyvärinen instead.
+    
+    Args:
+        hyvarinen_scores: Dictionary mapping model name to (negated) Hyvärinen score
+        epsilon: Small constant to prevent zero weights
+        temperature: Scaling factor (higher = more concentrated on best model)
+        
+    Returns:
+        Dictionary of unnormalized weights
+    """
+    # Find maximum score (best model, since higher = better)
+    finite_scores = [s for s in hyvarinen_scores.values() if np.isfinite(s)]
+    if not finite_scores:
+        n_models = len(hyvarinen_scores)
+        return {m: 1.0 / max(n_models, 1) for m in hyvarinen_scores}
+    
+    score_max = max(finite_scores)
+    
+    # Compute raw weights
+    weights = {}
+    for model_name, score in hyvarinen_scores.items():
+        if np.isfinite(score):
+            # Higher score = better, so exp(temp * (score - max)) gives relative weight
+            # When score == max, weight = 1; when score < max, weight < 1
+            delta = score - score_max
+            w = np.exp(temperature * delta)
+            weights[model_name] = max(w, epsilon)
+        else:
+            weights[model_name] = epsilon
+    
+    return weights
+
+
+# =============================================================================
+# ROBUST SCORE STANDARDIZATION & ENTROPY-REGULARIZED WEIGHTS
+# =============================================================================
+# These functions stabilize model selection and Bayesian model averaging by:
+# 1. Robustly standardizing heterogeneous scores (BIC + Hyvärinen)
+# 2. Preventing premature posterior collapse via entropy regularization
+# 3. Improving low-sample regime behavior
+#
+# This is an epistemology-only upgrade. Signals consume posteriors unchanged.
+# =============================================================================
+
+def robust_standardize_scores(
+    scores: Dict[str, float],
+    eps: float = 1e-8
+) -> Dict[str, float]:
+    """
+    Robust cross-model standardization using median and MAD.
+    
+    Preserves ordering while normalizing heterogeneous score scales.
+    This ensures BIC and Hyvärinen can be meaningfully combined without
+    one dominating due to raw scale differences.
+    
+    The MAD is scaled by 1.4826 to be consistent with standard deviation
+    for Gaussian data: MAD * 1.4826 ≈ σ for N(μ, σ²).
+    
+    Why median/MAD:
+    - Robust to Hyvärinen spikes
+    - Stable in low-n regimes
+    - No Gaussian assumptions (but calibrated to be consistent with σ)
+    
+    Args:
+        scores: Dictionary mapping model name to raw score
+        eps: Small constant to prevent division by zero
+        
+    Returns:
+        Dictionary of standardized scores (zero median, unit scale)
+    """
+    # Gaussian consistency factor: MAD * 1.4826 ≈ σ for normal distributions
+    MAD_CONSISTENCY_FACTOR = 1.4826
+    
+    # Extract finite values only
+    finite_items = [(k, v) for k, v in scores.items() if np.isfinite(v)]
+    
+    if len(finite_items) < 2:
+        # Not enough values to standardize meaningfully
+        # Return zeros for finite, keep non-finite as-is
+        return {
+            k: 0.0 if np.isfinite(v) else v
+            for k, v in scores.items()
+        }
+    
+    values = np.array([v for _, v in finite_items], dtype=float)
+    
+    # Robust location and scale
+    median = np.median(values)
+    mad = np.median(np.abs(values - median))
+    
+    # Scale MAD to be consistent with standard deviation
+    # This ensures proper weighting when combining BIC (O(n)) with Hyvärinen (O(1))
+    scale = mad * MAD_CONSISTENCY_FACTOR if mad > eps else eps
+    
+    # Standardize all scores
+    standardized = {}
+    for k, v in scores.items():
+        if np.isfinite(v):
+            standardized[k] = (v - median) / scale
+        else:
+            standardized[k] = v  # Keep non-finite as-is (inf, nan)
+    
+    return standardized
+
+
+def entropy_regularized_weights(
+    standardized_scores: Dict[str, float],
+    lambda_entropy: float = DEFAULT_ENTROPY_LAMBDA,
+    min_weight_fraction: float = DEFAULT_MIN_WEIGHT_FRACTION,
+    eps: float = 1e-10
+) -> Dict[str, float]:
+    """
+    Compute entropy-regularized model weights via softmax with entropy floor.
+    
+    Solves the optimization problem:
+        min_w Σ_m w_m * S̃_m + λ Σ_m w_m * log(w_m)
+        s.t. Σ_m w_m = 1, w_m ≥ min_weight
+    
+    The closed-form solution (without floor) is softmax with temperature = λ:
+        w_m ∝ exp(-S̃_m / λ)
+    
+    We then apply an entropy floor to prevent belief collapse:
+        w_m = max(w_m, min_weight_fraction / n_models)
+    
+    This ensures that even dominated models retain some probability mass,
+    preventing overconfident allocations during regime transitions or
+    when models happen to agree.
+    
+    Benefits:
+    - Prevents premature posterior collapse in low-evidence regimes
+    - Smooth weight transitions as evidence accumulates
+    - Entropy floor prevents overconfident allocations
+    - Convex, stable, deterministic
+    
+    Args:
+        standardized_scores: Dictionary of standardized scores (lower = better)
+        lambda_entropy: Entropy regularization strength (0.05 = balanced)
+                       Higher = more uniform weights
+                       Lower = sharper weights
+        min_weight_fraction: Minimum total mass allocated to uniform (0.01 = 1%)
+                            Each model gets at least min_weight_fraction / n_models
+        eps: Small constant to prevent zero weights
+        
+    Returns:
+        Dictionary of normalized model weights (sum to 1)
+    """
+    # Extract finite scores only
+    finite_items = [(k, v) for k, v in standardized_scores.items() if np.isfinite(v)]
+    
+    if not finite_items:
+        # No valid scores, return uniform
+        n = len(standardized_scores)
+        return {k: 1.0 / max(n, 1) for k in standardized_scores}
+    
+    keys = [k for k, _ in finite_items]
+    scores = np.array([v for _, v in finite_items], dtype=float)
+    n_models = len(keys)
+    
+    # Softmax with entropy temperature
+    # Lower score = better, so we negate scores in the softmax
+    temperature = max(lambda_entropy, 1e-8)
+    logits = -scores / temperature
+    
+    # Numerical stability: subtract max
+    logits = logits - logits.max()
+    
+    # Compute weights
+    weights = np.exp(logits)
+    weights = np.maximum(weights, eps)  # Prevent exact zeros
+    weights = weights / weights.sum()  # Normalize
+    
+    # =========================================================================
+    # ENTROPY FLOOR: Prevent belief collapse
+    # =========================================================================
+    # Ensure each model has at least min_weight_fraction / n_models weight.
+    # This prevents overconfident allocations when score differences are large.
+    # 
+    # Example: with min_weight_fraction=0.01 and 3 models:
+    #   - Each model gets at least 0.33% weight
+    #   - Total "floor mass" is 1%
+    #   - Remaining 99% is distributed according to softmax
+    # =========================================================================
+    min_weight_per_model = min_weight_fraction / max(n_models, 1)
+    weights = np.maximum(weights, min_weight_per_model)
+    weights = weights / weights.sum()  # Re-normalize after floor
+    
+    # Build result dict
+    result = dict(zip(keys, weights))
+    
+    # Add epsilon weight for non-finite scores
+    for k, v in standardized_scores.items():
+        if not np.isfinite(v):
+            result[k] = eps
+    
+    # Re-normalize if we added non-finite entries
+    total = sum(result.values())
+    if total > 0:
+        result = {k: w / total for k, w in result.items()}
+    
+    return result
+
+
+def compute_combined_standardized_score(
+    bic: float,
+    hyvarinen: float,
+    bic_weight: float = 0.5
+) -> float:
+    """
+    Compute combined score from already-standardized BIC and Hyvärinen.
+    
+    For BIC: lower is better → we use +BIC in combined score
+    For Hyvärinen: higher is better → we use -Hyvärinen in combined score
+    
+    Combined: S = w_bic * BIC_std - (1 - w_bic) * Hyv_std
+    Lower combined score = better model
+    
+    Args:
+        bic: Standardized BIC score
+        hyvarinen: Standardized Hyvärinen score
+        bic_weight: Weight for BIC (0.5 = equal weighting)
+        
+    Returns:
+        Combined standardized score (lower = better)
+    """
+    if not np.isfinite(bic):
+        bic = 0.0
+    if not np.isfinite(hyvarinen):
+        hyvarinen = 0.0
+    
+    # BIC: lower is better, so positive contribution
+    # Hyvärinen: higher is better, so negative contribution
+    return bic_weight * bic - (1.0 - bic_weight) * hyvarinen
+
+
+def compute_combined_model_weights(
+    bic_values: Dict[str, float],
+    hyvarinen_scores: Dict[str, float],
+    bic_weight: float = 0.5,
+    lambda_entropy: float = DEFAULT_ENTROPY_LAMBDA,
+    epsilon: float = 1e-10
+) -> Tuple[Dict[str, float], Dict[str, Any]]:
+    """
+    Combine BIC and Hyvärinen scores for robust model selection.
+    
+    Uses entropy-regularized optimization with robust standardization:
+    
+    1. Robust standardization: Median/MAD normalization of each score type
+       - Handles heterogeneous scales between BIC and Hyvärinen
+       - Robust to outliers and spikes
+       
+    2. Combined score: S̃_m = w_bic * BIC̃_m - (1 - w_bic) * Hyṽ_m
+       - Lower combined score = better model
+       
+    3. Entropy-regularized weights via softmax:
+       - Solves: min_w Σ_m w_m * S̃_m + λ Σ_m w_m * log(w_m)
+       - Prevents premature posterior collapse
+       - Smooth weight transitions
+    
+    This provides:
+    - BIC consistency (selects true model as n → ∞)
+    - Hyvärinen robustness (proper scoring under misspecification)
+    - Scale invariance (neither metric dominates due to scale differences)
+    - Stability in low-sample regimes (entropy regularization)
+    
+    Args:
+        bic_values: Dictionary mapping model name to BIC value
+        hyvarinen_scores: Dictionary mapping model name to Hyvärinen score
+        bic_weight: Weight for BIC in combined score (0.5 = equal)
+        lambda_entropy: Entropy regularization strength (higher = more uniform)
+        epsilon: Small constant to prevent zero weights
+        
+    Returns:
+        Tuple of:
+        - Dictionary of normalized model weights (sum to 1)
+        - Metadata dict with standardization details
+    """
+    # =========================================================================
+    # STEP 1: ROBUST STANDARDIZATION (per-metric, cross-model)
+    # =========================================================================
+    # Standardization is cross-model, per regime
+    # Do NOT standardize across regimes
+    # Do NOT mix raw and standardized scores
+    # =========================================================================
+    
+    bic_standardized = robust_standardize_scores(bic_values)
+    hyv_standardized = robust_standardize_scores(hyvarinen_scores)
+    
+    # =========================================================================
+    # STEP 2: COMPUTE COMBINED STANDARDIZED SCORES
+    # =========================================================================
+    # Combined: S = w_bic * BIC_std - (1 - w_bic) * Hyv_std
+    # Lower combined score = better model
+    # =========================================================================
+    
+    combined_scores = {}
+    for model_name in bic_values.keys():
+        bic_std = bic_standardized.get(model_name, 0.0)
+        hyv_std = hyv_standardized.get(model_name, 0.0)
+        combined_scores[model_name] = compute_combined_standardized_score(
+            bic_std, hyv_std, bic_weight
+        )
+    
+    # =========================================================================
+    # STEP 3: ENTROPY-REGULARIZED WEIGHTS
+    # =========================================================================
+    # Softmax with entropy temperature prevents collapse
+    # =========================================================================
+    
+    weights = entropy_regularized_weights(
+        combined_scores,
+        lambda_entropy=lambda_entropy,
+        eps=epsilon
+    )
+    
+    # Build metadata for caching and diagnostics
+    metadata = {
+        "bic_standardized": {k: float(v) if np.isfinite(v) else None for k, v in bic_standardized.items()},
+        "hyvarinen_standardized": {k: float(v) if np.isfinite(v) else None for k, v in hyv_standardized.items()},
+        "combined_scores_standardized": {k: float(v) if np.isfinite(v) else None for k, v in combined_scores.items()},
+        "bic_weight": bic_weight,
+        "lambda_entropy": lambda_entropy,
+        "entropy_regularized": True,
+    }
+    
+    return weights, metadata
+
+
+def compute_bic_model_weights_from_scores(
+    scores: Dict[str, float],
+    epsilon: float = 1e-10
+) -> Dict[str, float]:
+    """
+    Convert scores to weights using softmax (higher score = higher weight).
+    
+    This is used internally after MAD standardization.
+    
+    Args:
+        scores: Dictionary mapping model name to score (higher = better)
+        epsilon: Small constant to prevent zero weights
+        
+    Returns:
+        Dictionary of unnormalized weights
+    """
+    finite_scores = [s for s in scores.values() if np.isfinite(s)]
+    if not finite_scores:
+        n_models = len(scores)
+        return {m: 1.0 / max(n_models, 1) for m in scores}
+    
+    score_max = max(finite_scores)
+    
+    weights = {}
+    for model_name, score in scores.items():
+        if np.isfinite(score):
+            delta = score - score_max
+            w = np.exp(delta)
+            weights[model_name] = max(w, epsilon)
+        else:
+            weights[model_name] = epsilon
+    
+    return weights
+
+
+# Default model selection method: 'bic', 'hyvarinen', or 'combined'
+DEFAULT_MODEL_SELECTION_METHOD = 'combined'
+# Default BIC weight when using combined method (0.5 = equal weighting)
+DEFAULT_BIC_WEIGHT = 0.5
 
 
 def compute_bic_model_weights(
@@ -2074,6 +3351,10 @@ def fit_all_models_for_regime(
         - BIC, AIC
         - PIT calibration diagnostics
     
+    DISCRETE ν GRID FOR STUDENT-T:
+    We fit separate Student-t sub-models for each ν in STUDENT_T_NU_GRID.
+    Each participates independently in BMA, eliminating ν-σ identifiability issues.
+    
     Args:
         returns: Regime-specific returns
         vol: Regime-specific volatility
@@ -2085,7 +3366,11 @@ def fit_all_models_for_regime(
         {
             "kalman_gaussian": {...},
             "kalman_phi_gaussian": {...},
-            "kalman_phi_student_t": {...}
+            "phi_student_t_nu_4": {...},
+            "phi_student_t_nu_6": {...},
+            "phi_student_t_nu_8": {...},
+            "phi_student_t_nu_12": {...},
+            "phi_student_t_nu_20": {...},
         }
     """
     n_obs = len(returns)
@@ -2113,6 +3398,11 @@ def fit_all_models_for_regime(
         bic_gauss = compute_bic(ll_full_gauss, n_params_gauss, n_obs)
         mean_ll_gauss = ll_full_gauss / max(n_obs, 1)
         
+        # Compute Hyvärinen score for robust model selection
+        # Forecast std = sqrt(c * vol^2 + P) includes both observation and state uncertainty
+        forecast_std_gauss = np.sqrt(c_gauss * (vol ** 2) + P_gauss)
+        hyvarinen_gauss = compute_hyvarinen_score_gaussian(returns, mu_gauss, forecast_std_gauss)
+        
         models["kalman_gaussian"] = {
             "q": float(q_gauss),
             "c": float(c_gauss),
@@ -2123,6 +3413,7 @@ def fit_all_models_for_regime(
             "cv_penalized_ll": float(ll_cv_gauss),
             "bic": float(bic_gauss),
             "aic": float(aic_gauss),
+            "hyvarinen_score": float(hyvarinen_gauss),
             "n_params": int(n_params_gauss),
             "ks_statistic": float(ks_gauss),
             "pit_ks_pvalue": float(pit_p_gauss),
@@ -2135,6 +3426,7 @@ def fit_all_models_for_regime(
             "error": str(e),
             "bic": float('inf'),
             "aic": float('inf'),
+            "hyvarinen_score": float('-inf'),
         }
     
     # =========================================================================
@@ -2159,6 +3451,10 @@ def fit_all_models_for_regime(
         bic_phi = compute_bic(ll_full_phi, n_params_phi, n_obs)
         mean_ll_phi = ll_full_phi / max(n_obs, 1)
         
+        # Compute Hyvärinen score for robust model selection
+        forecast_std_phi = np.sqrt(c_phi * (vol ** 2) + P_phi)
+        hyvarinen_phi = compute_hyvarinen_score_gaussian(returns, mu_phi, forecast_std_phi)
+        
         models["kalman_phi_gaussian"] = {
             "q": float(q_phi),
             "c": float(c_phi),
@@ -2169,6 +3465,7 @@ def fit_all_models_for_regime(
             "cv_penalized_ll": float(ll_cv_phi),
             "bic": float(bic_phi),
             "aic": float(aic_phi),
+            "hyvarinen_score": float(hyvarinen_phi),
             "n_params": int(n_params_phi),
             "ks_statistic": float(ks_phi),
             "pit_ks_pvalue": float(pit_p_phi),
@@ -2181,53 +3478,82 @@ def fit_all_models_for_regime(
             "error": str(e),
             "bic": float('inf'),
             "aic": float('inf'),
+            "hyvarinen_score": float('-inf'),
         }
     
     # =========================================================================
-    # Model 2: Phi-Student-t (q, c, phi, nu)
+    # Model 2: Phi-Student-t with DISCRETE ν GRID
     # =========================================================================
-    try:
-        q_st, c_st, phi_st, nu_st, ll_cv_st, diag_st = PhiStudentTDriftModel.optimize_params(
-            returns, vol,
-            prior_log_q_mean=prior_log_q_mean,
-            prior_lambda=prior_lambda
-        )
+    # Instead of continuous ν optimization, we fit separate sub-models for
+    # each ν in STUDENT_T_NU_GRID. Each sub-model participates independently
+    # in BMA, eliminating ν-σ identifiability issues.
+    #
+    # Model naming: "phi_student_t_nu_{nu}" (e.g., "phi_student_t_nu_4")
+    # =========================================================================
+    
+    n_params_st = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T]  # 3 (q, c, phi)
+    
+    for nu_fixed in STUDENT_T_NU_GRID:
+        model_name = f"phi_student_t_nu_{nu_fixed}"
         
-        # Run full filter
-        mu_st, P_st, ll_full_st = PhiStudentTDriftModel.filter_phi(returns, vol, q_st, c_st, phi_st, nu_st)
-        
-        # Compute PIT calibration
-        ks_st, pit_p_st = PhiStudentTDriftModel.pit_ks(returns, mu_st, vol, P_st, c_st, nu_st)
-        
-        # Compute information criteria
-        n_params_st = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T]
-        aic_st = compute_aic(ll_full_st, n_params_st)
-        bic_st = compute_bic(ll_full_st, n_params_st, n_obs)
-        mean_ll_st = ll_full_st / max(n_obs, 1)
-        
-        models["kalman_phi_student_t"] = {
-            "q": float(q_st),
-            "c": float(c_st),
-            "phi": float(phi_st),
-            "nu": float(nu_st),
-            "log_likelihood": float(ll_full_st),
-            "mean_log_likelihood": float(mean_ll_st),
-            "cv_penalized_ll": float(ll_cv_st),
-            "bic": float(bic_st),
-            "aic": float(aic_st),
-            "n_params": int(n_params_st),
-            "ks_statistic": float(ks_st),
-            "pit_ks_pvalue": float(pit_p_st),
-            "fit_success": True,
-            "diagnostics": diag_st,
-        }
-    except Exception as e:
-        models["kalman_phi_student_t"] = {
-            "fit_success": False,
-            "error": str(e),
-            "bic": float('inf'),
-            "aic": float('inf'),
-        }
+        try:
+            # Optimize q, c, phi with FIXED nu
+            q_st, c_st, phi_st, ll_cv_st, diag_st = PhiStudentTDriftModel.optimize_params_fixed_nu(
+                returns, vol,
+                nu=nu_fixed,
+                prior_log_q_mean=prior_log_q_mean,
+                prior_lambda=prior_lambda
+            )
+            
+            # Run full filter with fixed nu
+            mu_st, P_st, ll_full_st = PhiStudentTDriftModel.filter_phi(
+                returns, vol, q_st, c_st, phi_st, nu_fixed
+            )
+            
+            # Compute PIT calibration
+            ks_st, pit_p_st = PhiStudentTDriftModel.pit_ks(
+                returns, mu_st, vol, P_st, c_st, nu_fixed
+            )
+            
+            # Compute information criteria
+            aic_st = compute_aic(ll_full_st, n_params_st)
+            bic_st = compute_bic(ll_full_st, n_params_st, n_obs)
+            mean_ll_st = ll_full_st / max(n_obs, 1)
+            
+            # Compute Hyvärinen score for robust model selection (Student-t)
+            forecast_scale_st = np.sqrt(c_st * (vol ** 2) + P_st)
+            hyvarinen_st = compute_hyvarinen_score_student_t(
+                returns, mu_st, forecast_scale_st, nu_fixed
+            )
+            
+            models[model_name] = {
+                "q": float(q_st),
+                "c": float(c_st),
+                "phi": float(phi_st),
+                "nu": float(nu_fixed),  # FIXED, not estimated
+                "log_likelihood": float(ll_full_st),
+                "mean_log_likelihood": float(mean_ll_st),
+                "cv_penalized_ll": float(ll_cv_st),
+                "bic": float(bic_st),
+                "aic": float(aic_st),
+                "hyvarinen_score": float(hyvarinen_st),
+                "n_params": int(n_params_st),
+                "ks_statistic": float(ks_st),
+                "pit_ks_pvalue": float(pit_p_st),
+                "fit_success": True,
+                "diagnostics": diag_st,
+                "nu_fixed": True,  # Flag indicating ν was fixed, not estimated
+            }
+        except Exception as e:
+            models[model_name] = {
+                "fit_success": False,
+                "error": str(e),
+                "bic": float('inf'),
+                "aic": float('inf'),
+                "hyvarinen_score": float('-inf'),
+                "nu": float(nu_fixed),
+                "nu_fixed": True,
+            }
     
     return models
 
@@ -2243,6 +3569,8 @@ def fit_regime_model_posterior(
     previous_posteriors: Optional[Dict[int, Dict[str, float]]] = None,
     global_models: Optional[Dict[str, Dict]] = None,
     global_posterior: Optional[Dict[str, float]] = None,
+    model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
+    bic_weight: float = DEFAULT_BIC_WEIGHT,
 ) -> Dict[int, Dict]:
     """
     Compute regime-conditional Bayesian model averaging with temporal smoothing.
@@ -2253,8 +3581,11 @@ def fit_regime_model_posterior(
     
     For EACH regime r:
     1. Fit EACH candidate model class m independently
-    2. Compute mean_log_likelihood, BIC, AIC for each (r, m)
-    3. Convert BIC to posterior weights: w_raw(m|r) = exp(-0.5 * ΔBIC)
+    2. Compute mean_log_likelihood, BIC, AIC, Hyvärinen score for each (r, m)
+    3. Convert scores to posterior weights using specified method:
+       - 'bic': w_raw(m|r) = exp(-0.5 * ΔBIC)
+       - 'hyvarinen': w_raw(m|r) = exp(ΔH) where H is negated Hyvärinen score
+       - 'combined': geometric mean of BIC and Hyvärinen weights
     4. Apply temporal smoothing: w_smooth = prev_p^alpha * w_raw
     5. Normalize to get p(m|r)
     
@@ -2286,6 +3617,11 @@ def fit_regime_model_posterior(
         previous_posteriors: Previous model posteriors per regime (for smoothing)
         global_models: Global model fits (for hierarchical fallback)
         global_posterior: Global model posterior (for hierarchical fallback)
+        model_selection_method: Method for computing model weights:
+            - 'bic': Use BIC only (traditional)
+            - 'hyvarinen': Use Hyvärinen score only (robust to misspecification)
+            - 'combined': Geometric mean of BIC and Hyvärinen weights (default)
+        bic_weight: Weight for BIC when using 'combined' method (0-1)
         
     Returns:
         Dictionary with regime-conditional model posteriors and parameters:
@@ -2391,23 +3727,68 @@ def fit_regime_model_posterior(
         )
         
         # =====================================================================
-        # Step 2: Extract BIC values
+        # Step 2: Extract BIC and Hyvärinen scores
         # =====================================================================
         bic_values = {m: models[m].get("bic", float('inf')) for m in models}
+        hyvarinen_scores = {m: models[m].get("hyvarinen_score", float('-inf')) for m in models}
         
         # Print model fits
         for m, info in models.items():
             if info.get("fit_success", False):
                 bic_val = info.get("bic", float('nan'))
+                hyv_val = info.get("hyvarinen_score", float('nan'))
                 mean_ll = info.get("mean_log_likelihood", float('nan'))
-                _log(f"     {m}: BIC={bic_val:.1f}, mean_LL={mean_ll:.4f}")
+                _log(f"     {m}: BIC={bic_val:.1f}, H={hyv_val:.4f}, mean_LL={mean_ll:.4f}")
             else:
                 _log(f"     {m}: FAILED - {info.get('error', 'unknown')}")
         
         # =====================================================================
-        # Step 3: Compute BIC-based raw weights
+        # Step 3: Compute raw weights using specified method
         # =====================================================================
-        raw_weights = compute_bic_model_weights(bic_values)
+        # Model selection methods:
+        #   'bic'       - Traditional BIC-based weights (consistent but not robust)
+        #   'hyvarinen' - Hyvärinen score weights (robust under misspecification)
+        #   'combined'  - Entropy-regularized weights from BIC and Hyvärinen
+        #
+        # HARD GATE: Disable Hyvärinen for small-sample regimes
+        # Small-n Student-t fits can produce illusory smoothness → artificially 
+        # good Hyvärinen scores. This is epistemically incorrect.
+        # =====================================================================
+        hyvarinen_disabled = n_samples < MIN_HYVARINEN_SAMPLES
+        effective_method = model_selection_method
+        weight_metadata = None
+        
+        if hyvarinen_disabled and model_selection_method in ('hyvarinen', 'combined'):
+            effective_method = 'bic'
+            _log(f"     ⚠️  Hyvärinen disabled for regime {regime} (n={n_samples} < {MIN_HYVARINEN_SAMPLES}) → using BIC-only")
+        
+        if effective_method == 'bic':
+            raw_weights = compute_bic_model_weights(bic_values)
+            _log(f"     → Using BIC-only model selection")
+        elif effective_method == 'hyvarinen':
+            raw_weights = compute_hyvarinen_model_weights(hyvarinen_scores)
+            _log(f"     → Using Hyvärinen-only model selection (robust)")
+        else:
+            # Default: combined method with entropy regularization
+            raw_weights, weight_metadata = compute_combined_model_weights(
+                bic_values, hyvarinen_scores, bic_weight=bic_weight,
+                lambda_entropy=DEFAULT_ENTROPY_LAMBDA
+            )
+            _log(f"     → Using entropy-regularized BIC+Hyvärinen selection (α={bic_weight:.2f}, λ={DEFAULT_ENTROPY_LAMBDA:.3f})")
+        
+        # Store combined_score and entropy-regularized weights in each model
+        for m in models:
+            w = raw_weights.get(m, 1e-10)
+            if weight_metadata is not None:
+                # Use standardized combined score (lower = better)
+                models[m]['combined_score'] = float(weight_metadata['combined_scores_standardized'].get(m, 0.0))
+                models[m]['model_weight_entropy'] = float(w)
+                models[m]['standardized_bic'] = float(weight_metadata['bic_standardized'].get(m, 0.0)) if weight_metadata['bic_standardized'].get(m) is not None else None
+                models[m]['standardized_hyvarinen'] = float(weight_metadata['hyvarinen_standardized'].get(m, 0.0)) if weight_metadata['hyvarinen_standardized'].get(m) is not None else None
+                models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
+            else:
+                # Legacy: log of weight
+                models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
         
         # =====================================================================
         # Step 4: Apply temporal smoothing
@@ -2426,6 +3807,14 @@ def fit_regime_model_posterior(
         # =====================================================================
         # Build regime result
         # =====================================================================
+        # Compute best scores for metadata
+        finite_bics = [b for b in bic_values.values() if np.isfinite(b)]
+        finite_hyvs = [h for h in hyvarinen_scores.values() if np.isfinite(h)]
+        finite_combined = [models[m].get('combined_score', float('inf')) for m in models if np.isfinite(models[m].get('combined_score', float('inf')))]
+        
+        # Best model by combined score (lowest = best for standardized scores)
+        best_model_by_combined = min(models.items(), key=lambda kv: kv[1].get('combined_score', float('inf')))[0] if models else None
+        
         regime_results[regime] = {
             "model_posterior": model_posterior,
             "models": models,
@@ -2435,7 +3824,15 @@ def fit_regime_model_posterior(
                 "regime_name": regime_name,
                 "fallback": False,
                 "borrowed_from_global": False,
-                "bic_min": float(min(b for b in bic_values.values() if np.isfinite(b))) if any(np.isfinite(b) for b in bic_values.values()) else None,
+                "bic_min": float(min(finite_bics)) if finite_bics else None,
+                "hyvarinen_max": float(max(finite_hyvs)) if finite_hyvs else None,
+                "combined_score_min": float(min(finite_combined)) if finite_combined else None,
+                "best_model_by_combined": best_model_by_combined,
+                "model_selection_method": model_selection_method,
+                "effective_selection_method": effective_method,
+                "hyvarinen_disabled": hyvarinen_disabled,
+                "bic_weight": bic_weight if model_selection_method == 'combined' else None,
+                "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
                 "smoothing_applied": prev_posterior is not None and temporal_alpha > 0,
             }
         }
@@ -2453,6 +3850,8 @@ def tune_regime_model_averaging(
     temporal_alpha: float = DEFAULT_TEMPORAL_ALPHA,
     previous_posteriors: Optional[Dict[int, Dict[str, float]]] = None,
     lambda_regime: float = 0.05,
+    model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
+    bic_weight: float = DEFAULT_BIC_WEIGHT,
 ) -> Dict:
     """
     Full regime-conditional Bayesian model averaging pipeline.
@@ -2463,6 +3862,7 @@ def tune_regime_model_averaging(
     2. Regime-conditional model fitting with BMA
     3. Temporal smoothing of model posteriors
     4. Hierarchical shrinkage toward global
+    5. Robust model selection via Hyvärinen score (optional)
     
     Args:
         returns: Array of returns
@@ -2474,6 +3874,8 @@ def tune_regime_model_averaging(
         temporal_alpha: Smoothing exponent for model posteriors
         previous_posteriors: Previous posteriors for smoothing
         lambda_regime: Hierarchical shrinkage strength
+        model_selection_method: 'bic', 'hyvarinen', or 'combined' (default)
+        bic_weight: Weight for BIC in combined method (0-1, default 0.5)
         
     Returns:
         Dictionary with:
@@ -2500,6 +3902,8 @@ def tune_regime_model_averaging(
     
     n_obs = len(returns)
     _log(f"  📊 Bayesian Model Averaging: {n_obs} observations, α={temporal_alpha:.2f}")
+    _log(f"  📊 Model selection method: {model_selection_method}" + 
+         (f" (BIC weight={bic_weight:.2f})" if model_selection_method == 'combined' else ""))
     
     # =========================================================================
     # Step 1: Fit global models (fallback)
@@ -2511,9 +3915,34 @@ def tune_regime_model_averaging(
         prior_lambda=prior_lambda,
     )
     
-    # Compute global model posterior
+    # Compute global model posterior using specified method
     global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models}
-    global_raw_weights = compute_bic_model_weights(global_bic)
+    global_hyvarinen = {m: global_models[m].get("hyvarinen_score", float('-inf')) for m in global_models}
+    global_weight_metadata = None
+    
+    if model_selection_method == 'bic':
+        global_raw_weights = compute_bic_model_weights(global_bic)
+    elif model_selection_method == 'hyvarinen':
+        global_raw_weights = compute_hyvarinen_model_weights(global_hyvarinen)
+    else:
+        # Default: combined with entropy regularization
+        global_raw_weights, global_weight_metadata = compute_combined_model_weights(
+            global_bic, global_hyvarinen, bic_weight=bic_weight,
+            lambda_entropy=DEFAULT_ENTROPY_LAMBDA
+        )
+    
+    # Store combined_score and entropy-regularized weights in each global model
+    for m in global_models:
+        w = global_raw_weights.get(m, 1e-10)
+        if global_weight_metadata is not None:
+            global_models[m]['combined_score'] = float(global_weight_metadata['combined_scores_standardized'].get(m, 0.0))
+            global_models[m]['model_weight_entropy'] = float(w)
+            global_models[m]['standardized_bic'] = float(global_weight_metadata['bic_standardized'].get(m, 0.0)) if global_weight_metadata['bic_standardized'].get(m) is not None else None
+            global_models[m]['standardized_hyvarinen'] = float(global_weight_metadata['hyvarinen_standardized'].get(m, 0.0)) if global_weight_metadata['hyvarinen_standardized'].get(m) is not None else None
+            global_models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
+        else:
+            global_models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
+    
     global_posterior = normalize_weights(global_raw_weights)
     
     _log(f"     Global posterior: " + ", ".join([f"{m}={p:.3f}" for m, p in global_posterior.items()]))
@@ -2531,6 +3960,8 @@ def tune_regime_model_averaging(
         previous_posteriors=previous_posteriors,
         global_models=global_models,
         global_posterior=global_posterior,
+        model_selection_method=model_selection_method,
+        bic_weight=bic_weight,
     )
     
     # =========================================================================
@@ -2567,10 +3998,39 @@ def tune_regime_model_averaging(
     # =========================================================================
     # Build final result
     # =========================================================================
+    # Compute global Hyvärinen max for metadata
+    global_hyvarinen_scores = [
+        global_models[m].get("hyvarinen_score", float('-inf')) 
+        for m in global_models 
+        if global_models[m].get("fit_success", False)
+    ]
+    global_hyvarinen_max = max(global_hyvarinen_scores) if global_hyvarinen_scores else None
+    
+    global_bic_scores = [
+        global_models[m].get("bic", float('inf')) 
+        for m in global_models 
+        if global_models[m].get("fit_success", False)
+    ]
+    global_bic_min = min(global_bic_scores) if global_bic_scores else None
+    
+    # Compute global combined_score_min for metadata (lower = better for standardized scores)
+    global_combined_scores = [
+        global_models[m].get("combined_score", float('inf')) 
+        for m in global_models 
+        if global_models[m].get("fit_success", False) and np.isfinite(global_models[m].get("combined_score", float('inf')))
+    ]
+    global_combined_score_min = min(global_combined_scores) if global_combined_scores else None
+    
     result = {
         "global": {
             "model_posterior": global_posterior,
             "models": global_models,
+            "hyvarinen_max": float(global_hyvarinen_max) if global_hyvarinen_max is not None and np.isfinite(global_hyvarinen_max) else None,
+            "combined_score_min": float(global_combined_score_min) if global_combined_score_min is not None and np.isfinite(global_combined_score_min) else None,
+            "bic_min": float(global_bic_min) if global_bic_min is not None and np.isfinite(global_bic_min) else None,
+            "model_selection_method": model_selection_method,
+            "bic_weight": bic_weight if model_selection_method == 'combined' else None,
+            "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
         },
         "regime": regime_results,
         "meta": {
@@ -2578,6 +4038,8 @@ def tune_regime_model_averaging(
             "lambda_regime": lambda_regime,
             "n_obs": n_obs,
             "min_samples": min_samples,
+            "model_selection_method": model_selection_method,
+            "bic_weight": bic_weight if model_selection_method == 'combined' else None,
             "n_regimes_active": sum(1 for r in regime_results.values() 
                                     if not r.get("regime_meta", {}).get("fallback", False)),
         }
@@ -2595,6 +4057,8 @@ def tune_asset_with_bma(
     lambda_regime: float = 0.05,
     temporal_alpha: float = DEFAULT_TEMPORAL_ALPHA,
     previous_posteriors: Optional[Dict[int, Dict[str, float]]] = None,
+    model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
+    bic_weight: float = DEFAULT_BIC_WEIGHT,
 ) -> Optional[Dict]:
     """
     Tune asset parameters using full Bayesian Model Averaging.
@@ -2605,7 +4069,8 @@ def tune_asset_with_bma(
     
     For EACH regime r:
     - Fits ALL candidate model classes independently
-    - Computes BIC-based model posteriors with temporal smoothing
+    - Computes model posteriors with temporal smoothing
+    - Uses robust Hyvärinen score for model selection (optional)
     - Preserves full uncertainty across models
     
     NEVER selects a single best model — maintains full posterior.
@@ -2619,6 +4084,8 @@ def tune_asset_with_bma(
         lambda_regime: Hierarchical shrinkage strength
         temporal_alpha: Smoothing exponent for model posteriors
         previous_posteriors: Previous posteriors for temporal smoothing
+        model_selection_method: 'bic', 'hyvarinen', or 'combined' (default)
+        bic_weight: Weight for BIC in combined method (0-1, default 0.5)
         
     Returns:
         Dictionary with structure:
@@ -2692,16 +4159,69 @@ def tune_asset_with_bma(
                 prior_lambda=prior_lambda,
             )
             
-            # Compute global posterior
+            # Compute global posterior using specified method
             global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models}
-            global_raw_weights = compute_bic_model_weights(global_bic)
+            global_hyvarinen = {m: global_models[m].get("hyvarinen_score", float('-inf')) for m in global_models}
+            fallback_weight_metadata = None
+            
+            if model_selection_method == 'bic':
+                global_raw_weights = compute_bic_model_weights(global_bic)
+            elif model_selection_method == 'hyvarinen':
+                global_raw_weights = compute_hyvarinen_model_weights(global_hyvarinen)
+            else:
+                global_raw_weights, fallback_weight_metadata = compute_combined_model_weights(
+                    global_bic, global_hyvarinen, bic_weight=bic_weight,
+                    lambda_entropy=DEFAULT_ENTROPY_LAMBDA
+                )
+            
+            # Store combined_score and entropy-regularized weights in each global model
+            for m in global_models:
+                w = global_raw_weights.get(m, 1e-10)
+                if fallback_weight_metadata is not None:
+                    global_models[m]['combined_score'] = float(fallback_weight_metadata['combined_scores_standardized'].get(m, 0.0))
+                    global_models[m]['model_weight_entropy'] = float(w)
+                    global_models[m]['standardized_bic'] = float(fallback_weight_metadata['bic_standardized'].get(m, 0.0)) if fallback_weight_metadata['bic_standardized'].get(m) is not None else None
+                    global_models[m]['standardized_hyvarinen'] = float(fallback_weight_metadata['hyvarinen_standardized'].get(m, 0.0)) if fallback_weight_metadata['hyvarinen_standardized'].get(m) is not None else None
+                    global_models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
+                else:
+                    global_models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
+            
             global_posterior = normalize_weights(global_raw_weights)
+            
+            # Compute global aggregate scores
+            global_hyvarinen_scores = [
+                global_models[m].get("hyvarinen_score", float('-inf')) 
+                for m in global_models 
+                if global_models[m].get("fit_success", False)
+            ]
+            global_hyvarinen_max = max(global_hyvarinen_scores) if global_hyvarinen_scores else None
+            
+            global_bic_scores = [
+                global_models[m].get("bic", float('inf')) 
+                for m in global_models 
+                if global_models[m].get("fit_success", False)
+            ]
+            global_bic_min = min(global_bic_scores) if global_bic_scores else None
+            
+            # For standardized scores, best is lowest (closest to zero or most negative)
+            global_combined_scores = [
+                global_models[m].get("combined_score", float('inf')) 
+                for m in global_models 
+                if global_models[m].get("fit_success", False) and np.isfinite(global_models[m].get("combined_score", float('inf')))
+            ]
+            global_combined_score_min = min(global_combined_scores) if global_combined_scores else None
             
             return {
                 "asset": asset,
                 "global": {
                     "model_posterior": global_posterior,
                     "models": global_models,
+                    "hyvarinen_max": float(global_hyvarinen_max) if global_hyvarinen_max is not None and np.isfinite(global_hyvarinen_max) else None,
+                    "combined_score_min": float(global_combined_score_min) if global_combined_score_min is not None and np.isfinite(global_combined_score_min) else None,
+                    "bic_min": float(global_bic_min) if global_bic_min is not None and np.isfinite(global_bic_min) else None,
+                    "model_selection_method": model_selection_method,
+                    "bic_weight": bic_weight if model_selection_method == 'combined' else None,
+                    "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
                 },
                 "regime": None,
                 "regime_counts": None,
@@ -2710,6 +4230,9 @@ def tune_asset_with_bma(
                     "temporal_alpha": temporal_alpha,
                     "lambda_regime": lambda_regime,
                     "n_obs": len(returns),
+                    "model_selection_method": model_selection_method,
+                    "bic_weight": bic_weight if model_selection_method == 'combined' else None,
+                    "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
                     "fallback_reason": "insufficient_data_for_regime_bma",
                 },
                 "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -2727,6 +4250,8 @@ def tune_asset_with_bma(
         
         # Run full Bayesian Model Averaging
         _log(f"     🔧 Running Bayesian Model Averaging (α={temporal_alpha:.2f}, λ={lambda_regime:.3f})...")
+        _log(f"     📊 Model selection: {model_selection_method}" + 
+             (f" (BIC weight={bic_weight:.2f})" if model_selection_method == 'combined' else ""))
         bma_result = tune_regime_model_averaging(
             returns, vol, regime_labels,
             prior_log_q_mean=prior_log_q_mean,
@@ -2735,6 +4260,8 @@ def tune_asset_with_bma(
             temporal_alpha=temporal_alpha,
             previous_posteriors=previous_posteriors,
             lambda_regime=lambda_regime,
+            model_selection_method=model_selection_method,
+            bic_weight=bic_weight,
         )
         
         # Build final result
@@ -2780,7 +4307,7 @@ def get_model_params_for_regime(
     Args:
         bma_result: Result from tune_asset_with_bma()
         regime: Regime index (0-4)
-        model: Model name ("kalman_gaussian", "kalman_phi_gaussian", "kalman_phi_student_t")
+        model: Model name ("kalman_gaussian", "kalman_phi_gaussian", or "phi_student_t_nu_{4,6,8,12,20}")
         
     Returns:
         Model parameters dict or None if not available
@@ -2826,12 +4353,49 @@ def get_model_posterior_for_regime(
     if "global" in bma_result and "model_posterior" in bma_result["global"]:
         return bma_result["global"]["model_posterior"]
     
-    # Ultimate fallback: uniform
-    return {
-        "kalman_gaussian": 1.0 / 3.0,
-        "kalman_phi_gaussian": 1.0 / 3.0,
-        "kalman_phi_student_t": 1.0 / 3.0,
+    # Ultimate fallback: uniform over all model types including Student-t nu grid
+    return get_uniform_model_prior()
+
+
+def get_uniform_model_prior() -> Dict[str, float]:
+    """
+    Return a uniform prior over all candidate models.
+    
+    This includes:
+    - kalman_gaussian
+    - kalman_phi_gaussian
+    - phi_student_t_nu_{nu} for each nu in STUDENT_T_NU_GRID
+    
+    Returns:
+        Dictionary mapping model names to uniform probabilities (sum to 1)
+    """
+    n_student_t = len(STUDENT_T_NU_GRID)
+    n_total = 2 + n_student_t  # Gaussian, Phi-Gaussian, + nu grid
+    uniform_weight = 1.0 / n_total
+    
+    prior = {
+        "kalman_gaussian": uniform_weight,
+        "kalman_phi_gaussian": uniform_weight,
     }
+    for nu in STUDENT_T_NU_GRID:
+        prior[f"phi_student_t_nu_{nu}"] = uniform_weight
+    
+    return prior
+
+
+def is_student_t_model(model_name: str) -> bool:
+    """Check if a model name is a Student-t model (from the nu grid)."""
+    return model_name.startswith("phi_student_t_nu_")
+
+
+def get_student_t_nu(model_name: str) -> Optional[float]:
+    """Extract nu value from a Student-t model name, or None if not Student-t."""
+    if not is_student_t_model(model_name):
+        return None
+    try:
+        return float(model_name.split("_")[-1])
+    except (ValueError, IndexError):
+        return None
 
 
 def tune_regime_parameters(
@@ -3645,7 +5209,12 @@ def _extract_previous_posteriors(cached_entry: Optional[Dict]) -> Optional[Dict[
             model_posterior = r_data.get("model_posterior")
             if model_posterior is not None and isinstance(model_posterior, dict):
                 # Validate it has expected model keys
-                if any(k in model_posterior for k in ["kalman_gaussian", "kalman_phi_gaussian", "kalman_phi_student_t"]):
+                # Models: kalman_gaussian, kalman_phi_gaussian, phi_student_t_nu_{4,6,8,12,20}
+                has_gaussian = "kalman_gaussian" in model_posterior
+                has_phi_gaussian = "kalman_phi_gaussian" in model_posterior
+                has_student_t = any(is_student_t_model(k) for k in model_posterior)
+                
+                if has_gaussian or has_phi_gaussian or has_student_t:
                     previous_posteriors[r] = model_posterior
         except (ValueError, TypeError):
             continue
@@ -3708,12 +5277,14 @@ Examples:
         os.environ['DEBUG'] = '1'
 
     print("=" * 80)
-    print("Kalman Drift MLE Tuning Pipeline - Hierarchical Regime-Conditional")
+    print("Kalman Drift MLE Tuning Pipeline - Hierarchical Regime-Conditional BMA")
     print("=" * 80)
-    print(f"Prior: log10(q) ~ N({args.prior_mean:.1f}, λ={args.prior_lambda:.1f})")
+    print(f"Prior on q: log10(q) ~ N({args.prior_mean:.1f}, λ={args.prior_lambda:.1f})")
+    print(f"Prior on φ: φ ~ N(0, τ) with λ_φ=0.05 (explicit Gaussian shrinkage)")
     print(f"Hierarchical shrinkage: λ_regime={args.lambda_regime:.3f}")
-    print("Model selection: Gaussian vs Student-t via BIC")
-    print("Regime-conditional: Fits (q, φ, ν) per market regime with shrinkage")
+    print("Models: Gaussian, φ-Gaussian, φ-Student-t (ν ∈ {4, 6, 8, 12, 20})")
+    print("Selection: BIC + Hyvärinen combined scoring")
+    print("Regime-conditional: Fits (q, c, φ) per regime; ν is discrete grid (not optimized)")
 
     # Cache is always preserved; no automatic clearing
 
@@ -3777,7 +5348,7 @@ Examples:
                 cached_nu = cached_entry.get('nu')
                 has_regime = False
 
-            if cached_model == 'kalman_phi_student_t' and cached_nu is not None:
+            if is_student_t_model(cached_model) and cached_nu is not None:
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f}, ν={cached_nu:.1f})")
             else:
                 print(f"  ✓ Using cached estimate ({cached_model}: q={cached_q:.2e}, c={cached_c:.3f})")
@@ -3838,7 +5409,8 @@ Examples:
                             }
 
                         # Count model type from global params
-                        if global_result.get('noise_model') == 'kalman_phi_student_t':
+                        noise_model = global_result.get('noise_model', '')
+                        if is_student_t_model(noise_model):
                             student_t_count += 1
                         else:
                             gaussian_count += 1
@@ -3886,9 +5458,12 @@ Examples:
     print(f"Reused cached:          {reused_cached}")
     print(f"Failed:                 {failed}")
     print(f"Calibration warnings:   {calibration_warnings}")
-    print(f"\nModel Selection:")
-    print(f"  Gaussian models:      {gaussian_count}")
-    print(f"  Student-t models:     {student_t_count}")
+    print(f"\nModel Selection (BIC + Hyvärinen combined scoring):")
+    print(f"  Gaussian/φ-Gaussian:  {gaussian_count}")
+    print(f"  φ-Student-t:          {student_t_count} (discrete ν ∈ {{4, 6, 8, 12, 20}})")
+    print(f"\nPrior Configuration:")
+    print(f"  q prior:              log₁₀(q) ~ N({args.prior_mean:.1f}, λ={args.prior_lambda:.1f})")
+    print(f"  φ prior:              φ ~ N(0, τ) with λ_φ=0.05 (explicit shrinkage)")
     print(f"\nRegime-Conditional Tuning (Hierarchical Bayesian):")
     print(f"  Hierarchical shrinkage λ: {args.lambda_regime:.3f}")
     print(f"  Assets with regime params: {regime_tuning_count}")
@@ -3928,11 +5503,12 @@ Examples:
                 data = data['global']
             phi_val = data.get('phi')
             noise_model = data.get('noise_model', 'gaussian')
-            if noise_model in ('kalman_phi_student_t', 'phi_student_t') and phi_val is not None:
+            # Check for Student-t model (phi_student_t_nu_* naming)
+            if is_student_t_model(noise_model) and phi_val is not None:
                 return 'Phi-Student-t'
-            if noise_model in ('kalman_phi_student_t', 'phi_student_t'):
+            if is_student_t_model(noise_model):
                 return 'Student-t'
-            if noise_model == 'phi_gaussian' or phi_val is not None:
+            if noise_model == 'kalman_phi_gaussian' or phi_val is not None:
                 return 'Phi-Gaussian'
             return 'Gaussian'
         
@@ -3998,9 +5574,13 @@ Examples:
                 'constant_drift': 'Const',
                 'ewma_drift': 'EWMA',
                 'kalman_drift': 'Kalman',
-                'phi_kalman_drift': 'PhiKal',
-                'kalman_phi_student_t': 'PhiKal-t',
-            }.get(best_model, best_model[:8])
+                'kalman_gaussian': 'Gaussian',
+                'kalman_phi_gaussian': 'PhiGauss',
+            }
+            # Add entries for discrete nu grid models
+            for nu in STUDENT_T_NU_GRID:
+                best_model_abbr[f"phi_student_t_nu_{nu}"] = f'PhiT-ν{nu}'
+            best_model_abbr = best_model_abbr.get(best_model, best_model[:8])
 
             warn_marker = " ⚠️" if data.get('calibration_warning') else ""
 
@@ -4063,10 +5643,11 @@ Examples:
             model_comp = mc.get('model_comparison', {})
             selected = mc.get('selected_model', 'unknown')
             best_bic = mc.get('best_model_by_bic', 'unknown')
+            model_sel_method = mc.get('model_selection_method', 'combined')
             
-            print(f"\n  {asset_name}:")
+            print(f"\n  {asset_name} (selection: {model_sel_method}):")
             
-            # Print each baseline/model
+            # Print each baseline/model with Hyvärinen score where available
             if 'zero_drift' in model_comp:
                 m = model_comp['zero_drift']
                 print(f"     Zero-drift:     LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}")
@@ -4082,24 +5663,30 @@ Examples:
             
             if 'kalman_gaussian' in model_comp:
                 m = model_comp['kalman_gaussian']
-                print(f"     Kalman-Gaussian: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}")
+                hyv_str = f", H={m['hyvarinen_score']:.1f}" if m.get('hyvarinen_score') is not None else ""
+                print(f"     Kalman-Gaussian: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{hyv_str}")
             
             if 'kalman_phi_gaussian' in model_comp:
                 m = model_comp['kalman_phi_gaussian']
                 phi_str = f", φ={m.get('phi', 0):+.3f}" if 'phi' in m else ""
-                print(f"     Kalman-φ-Gaussian: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}")
+                hyv_str = f", H={m['hyvarinen_score']:.1f}" if m.get('hyvarinen_score') is not None else ""
+                print(f"     Kalman-φ-Gaussian: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}{hyv_str}")
             
-            if 'kalman_phi_student_t' in model_comp:
-                m = model_comp['kalman_phi_student_t']
-                phi_str = f", φ={m.get('phi', 0):+.3f}" if 'phi' in m else ""
-                nu_str = f", ν={m.get('nu', 0):.1f}" if 'nu' in m else ""
-                print(f"     Kalman-φ-Student-t: LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}{nu_str}")
+            # Display discrete nu grid Student-t models
+            for nu_val in STUDENT_T_NU_GRID:
+                model_key = f"phi_student_t_nu_{nu_val}"
+                if model_key in model_comp:
+                    m = model_comp[model_key]
+                    phi_str = f", φ={m.get('phi', 0):+.3f}" if 'phi' in m else ""
+                    hyv_str = f", H={m['hyvarinen_score']:.1f}" if m.get('hyvarinen_score') is not None else ""
+                    print(f"     Phi-Student-t (ν={nu_val}): LL={m['ll']:.1f}, AIC={m['aic']:.1f}, BIC={m['bic']:.1f}{phi_str}{hyv_str}")
             
-            # Selected model
+            # Selected model with Hyvärinen score
             ll_sel = mc.get('log_likelihood', float('nan'))
-            aic_sel = mc.get('aic', float('nan'))
             bic_sel = mc.get('bic', float('nan'))
-            print(f"     Selected:        LL={ll_sel:.1f}, AIC={aic_sel:.1f}, BIC={bic_sel:.1f} ({selected})")
+            hyv_sel = mc.get('hyvarinen_score')
+            hyv_summary = f", H={hyv_sel:.1f}" if hyv_sel is not None else ""
+            print(f"     Selected:        LL={ll_sel:.1f}, BIC={bic_sel:.1f}{hyv_summary} ({selected})")
 
     # Regime Distributions Summary
     if regime_distributions:

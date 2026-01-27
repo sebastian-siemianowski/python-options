@@ -110,6 +110,8 @@ Examples:
     )
 
     # Load asset list
+    if args.assets:
+        console.print(f"\n[cyan]Filtering to specified assets: {args.assets}[/cyan]")
     assets = load_asset_list(args.assets, args.assets_file)
 
     # Apply max-assets limit
@@ -192,7 +194,8 @@ Examples:
                         processed_assets[asset_name] = result
 
                         global_result = result.get('global', result)
-                        if global_result.get('noise_model') == 'kalman_phi_student_t':
+                        noise_model = global_result.get('noise_model', '')
+                        if noise_model.startswith('phi_student_t_nu_'):
                             student_t_count += 1
                         else:
                             gaussian_count += 1
@@ -229,7 +232,7 @@ Examples:
                         details = f"q={q_val:.2e}"
                         if phi_val is not None:
                             details += f", φ={phi_val:.3f}"
-                        if nu_val is not None and model_type == 'kalman_phi_student_t':
+                        if nu_val is not None and model_type.startswith('phi_student_t_nu_'):
                             details += f", ν={nu_val:.1f}"
                         
                         # Log this processing for end-of-run

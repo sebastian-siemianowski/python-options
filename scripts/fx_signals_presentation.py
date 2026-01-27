@@ -86,7 +86,7 @@ def build_asset_display_label(asset_symbol: str, full_title: str) -> str:
     return name_part
 
 
-def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln: float = 1_000_000) -> str:
+def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln: float = 1_000_000, ues: float = None) -> str:
     """Format signal with ultra-compact, high-visibility styling.
     
     World-class UX: Clean, scannable, color-coded signals.
@@ -96,8 +96,16 @@ def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln
       - ↑↓ Arrows = Regular signals (BUY/SELL)
       - No symbol = Small moves
     Color coding: Green=positive, Red=negative, Light Blue=neutral small HOLD
+    
+    UES indicator (when provided):
+      - ⚡ = UES >= 60% (trend exhaustion warning)
     """
     pct_return = (profit_pln / notional_pln * 100) if notional_pln > 0 else 0.0
+    
+    # UES exhaustion warning indicator (only show when UES is high)
+    ues_indicator = ""
+    if ues is not None and ues >= 0.6:  # 60% threshold for exhaustion warning
+        ues_indicator = "[yellow]⚡[/yellow]"
     
     # Ultra-compact profit display
     abs_profit = abs(profit_pln)
@@ -113,33 +121,33 @@ def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln
         
         # Strong signals: double filled triangles ▲▲▼▼ (pleasant muted tones)
         if label_upper.startswith("STRONG BUY"):
-            return f"[bold #00d700]▲▲{pct_return:+.1f}% ({profit_compact})[/bold #00d700]"
+            return f"[bold #00d700]▲▲{pct_return:+.1f}% ({profit_compact})[/bold #00d700]{ues_indicator}"
         elif label_upper.startswith("STRONG SELL"):
-            return f"[bold indian_red1]▼▼{pct_return:+.1f}% ({profit_compact})[/bold indian_red1]"
+            return f"[bold indian_red1]▼▼{pct_return:+.1f}% ({profit_compact})[/bold indian_red1]{ues_indicator}"
         # Regular BUY/SELL: arrows ↑↓ (natural, pleasant colors)
         elif "SELL" in label_upper:
-            return f"[indian_red1]↓{pct_return:+.1f}% ({profit_compact})[/indian_red1]"
+            return f"[indian_red1]↓{pct_return:+.1f}% ({profit_compact})[/indian_red1]{ues_indicator}"
         elif "BUY" in label_upper:
-            return f"[#00d700]↑{pct_return:+.1f}% ({profit_compact})[/#00d700]"
+            return f"[#00d700]↑{pct_return:+.1f}% ({profit_compact})[/#00d700]{ues_indicator}"
         else:
             # HOLD: Notable moves use pleasant colors based on direction
             # Small moves use grey (neutral)
             if pct_return > 10.0:
-                return f"[bold #00d700]△{pct_return:+.1f}% ({profit_compact})[/bold #00d700]"
+                return f"[bold #00d700]△{pct_return:+.1f}% ({profit_compact})[/bold #00d700]{ues_indicator}"
             elif pct_return < -10.0:
-                return f"[bold indian_red1]▽{pct_return:+.1f}% ({profit_compact})[/bold indian_red1]"
+                return f"[bold indian_red1]▽{pct_return:+.1f}% ({profit_compact})[/bold indian_red1]{ues_indicator}"
             elif pct_return > 3.0:
-                return f"[#00d700]△{pct_return:+.1f}% ({profit_compact})[/#00d700]"
+                return f"[#00d700]△{pct_return:+.1f}% ({profit_compact})[/#00d700]{ues_indicator}"
             elif pct_return < -3.0:
-                return f"[indian_red1]▽{pct_return:+.1f}% ({profit_compact})[/indian_red1]"
+                return f"[indian_red1]▽{pct_return:+.1f}% ({profit_compact})[/indian_red1]{ues_indicator}"
             elif pct_return > 1.0:
-                return f"[#a8a8a8]{pct_return:+.1f}% ({profit_compact})[/#a8a8a8]"
+                return f"[#a8a8a8]{pct_return:+.1f}% ({profit_compact})[/#a8a8a8]{ues_indicator}"
             elif pct_return < -1.0:
-                return f"[#a8a8a8]{pct_return:+.1f}% ({profit_compact})[/#a8a8a8]"
+                return f"[#a8a8a8]{pct_return:+.1f}% ({profit_compact})[/#a8a8a8]{ues_indicator}"
             else:
-                return f"[#8a8a8a]{pct_return:+.1f}% ({profit_compact})[/#8a8a8a]"
+                return f"[#8a8a8a]{pct_return:+.1f}% ({profit_compact})[/#8a8a8a]{ues_indicator}"
     
-    return f"{pct_return:+.1f}% ({profit_compact})"
+    return f"{pct_return:+.1f}% ({profit_compact}){ues_indicator}"
 
 
 def extract_symbol_from_title(title: str) -> str:
@@ -201,6 +209,7 @@ def render_detailed_signal_table(
     table.add_column("E[ret]", justify="right", width=9)
     table.add_column(f"CI {int(confidence_level*100)}%", justify="center", width=18)
     table.add_column("Strength", justify="right", width=9)
+    table.add_column("Exhaust", justify="right", width=8)  # UES column
     table.add_column("Regime", justify="center", width=10)
     table.add_column("Profit (PLN)", justify="right", width=28)
     table.add_column("Signal", justify="center", width=12)
@@ -317,6 +326,22 @@ def render_detailed_signal_table(
         else:
             signal_str = f"[#87afaf]HOLD[/#87afaf]"
         
+        # ================================================================
+        # UNIFIED EXHAUSTION SCALAR (UES) - Trend Fragility Display
+        # ================================================================
+        # Format UES with color bands:
+        # - <30% → green (healthy trend)
+        # - 30-60% → amber (caution)
+        # - >60% → red (fragile/exhausted)
+        # ================================================================
+        ues_val = getattr(signal, 'ues', 0.0) * 100  # Convert to percentage
+        if ues_val < 30:
+            ues_str = f"[#00d700]{ues_val:.0f}%[/#00d700]"
+        elif ues_val < 60:
+            ues_str = f"[yellow]{ues_val:.0f}%[/yellow]"
+        else:
+            ues_str = f"[indian_red1]{ues_val:.0f}%[/indian_red1]"
+        
         table.add_row(
             horizon_label,
             edge_str,
@@ -324,6 +349,7 @@ def render_detailed_signal_table(
             ret_str,
             ci_str,
             strength_str,
+            ues_str,  # UES column
             regime_str,
             profit_str,
             signal_str,
@@ -347,7 +373,8 @@ def render_detailed_signal_table(
     if show_caption:
         cdf_name = "Student-t" if used_student_t_mapping else "Normal"
         console.print(f"[dim]  Edge = risk-adjusted z-score • Prob mapped via {cdf_name} CDF • Strength = EU-based position sizing[/dim]")
-        console.print(f"[dim]  Profit on 1M PLN • CI = {int(confidence_level*100)}% confidence interval • HOLD when |edge| < floor[/dim]")
+        console.print(f"[dim]  Exhaust = trend fragility (high = asymmetric downside risk) • HOLD when |edge| < floor[/dim]")
+        console.print(f"[dim]  Profit on 1M PLN • CI = {int(confidence_level*100)}% confidence interval[/dim]")
     console.print()
 
 
@@ -552,20 +579,40 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         show_header=True,
         header_style="bold cyan",
         border_style="blue",
-        padding=(0, 1),
+        padding=(0, 0),  # Reduced padding for tighter layout
+        collapse_padding=True,
+        pad_edge=False,
     )
-    # Asset column
-    table.add_column("Asset", justify="left", style="bold", width=asset_col_width, no_wrap=False)
+    # Asset column - truncate long names with ellipsis
+    table.add_column(" Asset", justify="left", style="bold", width=asset_col_width + 1, no_wrap=True, overflow="ellipsis")
+    # UES indicator column (compact, shows exhaustion warning)
+    table.add_column("E", justify="center", width=3, no_wrap=True)  # E for Exhaustion
     
-    # Compact horizon labels
+    # Compact horizon labels - tighter width for symmetry
     horizon_labels = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
     for horizon in horizons:
         label = horizon_labels.get(horizon, f"{horizon}d")
-        table.add_column(label, justify="center", width=19)
+        table.add_column(label, justify="center", width=18, no_wrap=True)
 
     for row in sorted_rows:
         asset_label = row.get("asset_label", "Unknown")
         horizon_signals = row.get("horizon_signals", {})
+        
+        # Compute max UES across all horizons for this asset
+        max_ues = 0.0
+        for horizon in horizons:
+            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
+            ues = signal_data.get("ues", 0.0) or 0.0
+            if ues > max_ues:
+                max_ues = ues
+        
+        # Format UES indicator based on max exhaustion
+        if max_ues >= 0.6:
+            ues_indicator = "[indian_red1]![/indian_red1]"
+        elif max_ues >= 0.3:
+            ues_indicator = "[yellow]![/yellow]"
+        else:
+            ues_indicator = " "
         
         cells = []
         for horizon in horizons:
@@ -574,7 +621,7 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
             profit_pln = signal_data.get("profit_pln", 0.0)
             cells.append(format_profit_with_signal(label, profit_pln))
         
-        table.add_row(asset_label, *cells)
+        table.add_row(asset_label, ues_indicator, *cells)
 
     console.print(table)
     console.print()
@@ -605,7 +652,8 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
     console.print()
     console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
     console.print("[bold cyan]  SIGNAL DASHBOARD[/bold cyan]                                                    [white]Returns on 1M PLN investment[/white]")
-    console.print("[white]  ▲▲▼▼ Strong Signal   △▽ Notable [dim](HOLD w/ big return)[/dim]   ↑↓ Signal   [#00d700]Aqua[/#00d700]=Positive [indian_red1]Salmon[/indian_red1]=Negative[/white]")
+    console.print("[white]  ▲▲▼▼ Strong Signal   △▽ Notable [dim](HOLD w/ big return)[/dim]   ↑↓ Signal   [#00d700]Green[/#00d700]=Positive [indian_red1]Red[/indian_red1]=Negative[/white]")
+    console.print("[white]  E=[yellow]⚡[/yellow]Caution(30-60%) [indian_red1]⚡[/indian_red1]Exhausted(>60%) [dim]— trend fragility, asymmetric downside risk[/dim][/white]")
     console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
     console.print()
 
@@ -891,6 +939,7 @@ DETAILED_COLUMN_DESCRIPTIONS = {
     "profit_ci_low_pln": "Lower confidence bound for profit (PLN) on 1,000,000 PLN.",
     "profit_ci_high_pln": "Upper confidence bound for profit (PLN) on 1,000,000 PLN.",
     "signal": "Decision label based on prob_up: BUY (>=58%), HOLD (42–58%), SELL (<=42%).",
+    "ues": "Unified Exhaustion Scalar (0-100%): trend fragility relative to system beliefs. High values imply asymmetric downside risk.",
 }
 
 SIMPLIFIED_COLUMN_DESCRIPTIONS = {
@@ -952,10 +1001,12 @@ def render_tuning_header(
         Text.from_markup(
             f"[bold white]Kalman Drift MLE Tuning Pipeline[/bold white]\n"
             f"[dim]Hierarchical Regime-Conditional Bayesian Model Averaging[/dim]\n\n"
-            f"[cyan]Prior:[/cyan] log₁₀(q) ~ N({prior_mean:.1f}, λ={prior_lambda:.1f})\n"
+            f"[cyan]Prior on q:[/cyan] log₁₀(q) ~ N({prior_mean:.1f}, λ={prior_lambda:.1f})\n"
+            f"[cyan]Prior on φ:[/cyan] φ ~ N(0, τ) with λ_φ=0.05 (explicit shrinkage)\n"
             f"[cyan]Hierarchical shrinkage:[/cyan] λ_regime = {lambda_regime:.3f}\n"
-            f"[cyan]Model selection:[/cyan] Gaussian vs Student-t via BIC\n"
-            f"[cyan]Regime-conditional:[/cyan] Fits (q, φ, ν) per market regime"
+            f"[cyan]Models:[/cyan] Gaussian, φ-Gaussian, φ-Student-t (ν∈{{4,6,8,12,20}})\n"
+            f"[cyan]Selection:[/cyan] BIC + Hyvärinen combined scoring\n"
+            f"[cyan]Regime-conditional:[/cyan] Fits (q, c, φ) per regime; ν discrete grid"
         ),
         title="[bold blue]🔧 KALMAN TUNING[/bold blue]",
         border_style="blue",
@@ -1144,13 +1195,14 @@ def render_tuning_summary(
         student_bar = "█" * int(student_pct / 5) + "░" * (20 - int(student_pct / 5))
         
         model_text = (
-            f"Gaussian   {gaussian_count:>3}  [green]{gauss_bar}[/green] {gauss_pct:>3.0f}%\n"
-            f"Student-t  {student_t_count:>3}  [magenta]{student_bar}[/magenta] {student_pct:>3.0f}%"
+            f"Gaussian/φ-Gauss  {gaussian_count:>3}  [green]{gauss_bar}[/green] {gauss_pct:>3.0f}%\n"
+            f"φ-Student-t       {student_t_count:>3}  [magenta]{student_bar}[/magenta] {student_pct:>3.0f}%\n"
+            f"[dim]Student-t uses discrete ν ∈ {{4, 6, 8, 12, 20}}[/dim]"
         )
         
         console.print(Panel(
             model_text,
-            title="[bold magenta]🎯 Model Selection (BIC)[/bold magenta]",
+            title="[bold magenta]🎯 Model Selection (BIC + Hyvärinen)[/bold magenta]",
             border_style="magenta",
             expand=False,
             padding=(1, 2),
@@ -1198,7 +1250,7 @@ def render_tuning_summary(
         )
     
     console.print(regime_table)
-    console.print(f"[dim]  λ_regime = {lambda_regime:.3f}  •  Regime params: {regime_tuning_count}[/dim]")
+    console.print(f"[dim]  λ_regime = {lambda_regime:.3f}  •  φ prior: N(0, τ)  •  Regime params: {regime_tuning_count}[/dim]")
     if collapse_warnings > 0:
         console.print(f"[yellow]  ⚠ Collapse warnings: {collapse_warnings} assets[/yellow]")
     
@@ -1229,11 +1281,13 @@ def render_parameter_table(
             data = data['global']
         phi_val = data.get('phi')
         noise_model = data.get('noise_model', 'gaussian')
-        if noise_model in ('kalman_phi_student_t', 'phi_student_t') and phi_val is not None:
+        # Student-t models use phi_student_t_nu_* naming
+        is_student_t = noise_model and noise_model.startswith('phi_student_t_nu_')
+        if is_student_t and phi_val is not None:
             return 'Phi-Student-t'
-        if noise_model in ('kalman_phi_student_t', 'phi_student_t'):
+        if is_student_t:
             return 'Student-t'
-        if noise_model == 'phi_gaussian' or phi_val is not None:
+        if noise_model == 'kalman_phi_gaussian' or phi_val is not None:
             return 'Phi-Gaussian'
         return 'Gaussian'
     
@@ -1289,6 +1343,9 @@ def render_parameter_table(
         table.add_column("ΔLLc", justify="right", width=7)
         table.add_column("ΔLLe", justify="right", width=7)
         table.add_column("BIC", justify="right", width=9)
+        table.add_column("Hyv", justify="right", width=8)
+        table.add_column("Comb", justify="right", width=6)
+        table.add_column("Sel", justify="center", width=5)
         table.add_column("PIT p", justify="right", width=8)
         
         for asset, raw_data in assets:
@@ -1307,6 +1364,9 @@ def render_parameter_table(
             delta_ll_ewma = data.get('delta_ll_vs_ewma', float('nan'))
             bic_val = data.get('bic', float('nan'))
             pit_p = data.get('pit_ks_pvalue', float('nan'))
+            hyv_val = data.get('hyvarinen_score', float('nan'))
+            combined_score = data.get('combined_score', float('nan'))
+            model_sel_method = data.get('model_selection_method', '')
             
             log10_q = np.log10(q_val) if q_val > 0 else float('nan')
             
@@ -1330,6 +1390,50 @@ def render_parameter_table(
                     return f"[dim]{val:+.0f}[/dim]"
             
             bic_str = f"{bic_val:.0f}" if np.isfinite(bic_val) else "-"
+            
+            # Format Hyvärinen score - ensure it's numeric before checking
+            try:
+                hyv_val_float = float(hyv_val) if hyv_val is not None else float('nan')
+                if np.isfinite(hyv_val_float):
+                    # Color code: higher is better
+                    if hyv_val_float > 1000:
+                        hyv_str = f"[#00d700]{hyv_val_float:.0f}[/#00d700]"
+                    elif hyv_val_float > 100:
+                        hyv_str = f"[cyan]{hyv_val_float:.0f}[/cyan]"
+                    elif hyv_val_float < 0:
+                        hyv_str = f"[indian_red1]{hyv_val_float:.0f}[/indian_red1]"
+                    else:
+                        hyv_str = f"{hyv_val_float:.0f}"
+                else:
+                    hyv_str = "[dim]-[/dim]"
+            except (TypeError, ValueError):
+                hyv_str = "[dim]-[/dim]"
+            
+            # Format model selection method
+            method_abbrev = {
+                'combined': '[magenta]C[/magenta]',
+                'bic': '[cyan]B[/cyan]',
+                'hyvarinen': '[yellow]H[/yellow]',
+            }
+            sel_str = method_abbrev.get(model_sel_method, '[dim]-[/dim]')
+            
+            # Format combined score (log of weight, higher = better)
+            try:
+                comb_val_float = float(combined_score) if combined_score is not None else float('nan')
+                if np.isfinite(comb_val_float):
+                    # Combined score is log weight, 0 = best possible, negative = worse
+                    if comb_val_float > -0.1:
+                        comb_str = f"[bold #00d700]{comb_val_float:.1f}[/bold #00d700]"
+                    elif comb_val_float > -1:
+                        comb_str = f"[#00d700]{comb_val_float:.1f}[/#00d700]"
+                    elif comb_val_float > -5:
+                        comb_str = f"[cyan]{comb_val_float:.1f}[/cyan]"
+                    else:
+                        comb_str = f"[dim]{comb_val_float:.1f}[/dim]"
+                else:
+                    comb_str = "[dim]-[/dim]"
+            except (TypeError, ValueError):
+                comb_str = "[dim]-[/dim]"
             
             # Color code PIT p-value
             if np.isfinite(pit_p):
@@ -1356,6 +1460,9 @@ def render_parameter_table(
                 _format_delta_ll(delta_ll_const),
                 _format_delta_ll(delta_ll_ewma),
                 bic_str,
+                hyv_str,
+                comb_str,
+                sel_str,
                 pit_str,
             )
         
@@ -1366,12 +1473,15 @@ def render_parameter_table(
     legend_text = (
         "[white]log₁₀(q)[/white] — Process noise variance (log scale)\n"
         "[white]c[/white] — Observation noise multiplier\n"
-        "[white]φ[/white] — Drift persistence (AR(1) coefficient)\n"
-        "[white]ν[/white] — Student-t degrees of freedom\n"
+        "[white]φ[/white] — Drift persistence (AR(1) coefficient, shrunk toward 0)\n"
+        "[white]ν[/white] — Student-t degrees of freedom (discrete: 4, 6, 8, 12, 20)\n"
         "[white]ΔLL₀[/white] — Improvement vs zero-drift baseline\n"
         "[white]ΔLLc[/white] — Improvement vs constant-drift baseline\n"
         "[white]ΔLLe[/white] — Improvement vs EWMA-drift baseline\n"
         "[white]BIC[/white] — Bayesian Information Criterion (lower = better)\n"
+        "[white]Hyv[/white] — Hyvärinen score (robust density scoring)\n"
+        "[white]Comb[/white] — Combined BIC+Hyvärinen score (log weight, 0 = best)\n"
+        "[white]Sel[/white] — Model selection: [magenta]C[/magenta]=Combined, [cyan]B[/cyan]=BIC, [yellow]H[/yellow]=Hyvärinen\n"
         "[white]PIT p[/white] — PIT KS p-value (≥0.05 = well-calibrated)"
     )
     console.print(Panel(
@@ -1495,35 +1605,56 @@ def render_end_of_run_summary(
             model_comp = mc.get('model_comparison', {})
             selected = mc.get('selected_model', 'unknown')
             n_obs = mc.get('n_obs', 0)
+            model_sel_method = mc.get('model_selection_method', 'combined')
             
             # Asset header
+            method_icon = {'bic': '📊', 'hyvarinen': '📐', 'combined': '⚖️'}.get(model_sel_method, '📊')
             console.print(f"  [bold white]{asset_name}[/bold white] [dim]({n_obs} obs)[/dim]")
             
             # Create a mini table for this asset's model comparison
             table = Table(
                 show_header=True,
-                header_style="dim",
-                box=box.SIMPLE,
+                header_style="bold dim",
+                box=box.SIMPLE_HEAVY,
                 padding=(0, 1),
                 expand=False,
             )
-            table.add_column("Model", style="dim", width=20)
+            table.add_column("Model", style="white", width=26)
             table.add_column("LL", justify="right", width=10)
             table.add_column("AIC", justify="right", width=10)
             table.add_column("BIC", justify="right", width=10)
-            table.add_column("Params", justify="left", width=15)
+            table.add_column("Hyv", justify="right", width=10)
+            table.add_column("Comb", justify="right", width=8)
+            table.add_column("Params", justify="left", width=20)
             
             # Add each model row
-            models_order = ['zero_drift', 'constant_drift', 'ewma_drift', 
-                           'kalman_gaussian', 'kalman_phi_gaussian', 'kalman_phi_student_t']
+            # Build models_order dynamically to include new Student-t naming
+            base_models = ['zero_drift', 'constant_drift', 'ewma_drift', 
+                           'kalman_gaussian', 'kalman_phi_gaussian']
+            # Add Student-t models (phi_student_t_nu_* naming)
+            student_t_models = [k for k in model_comp.keys() if k.startswith('phi_student_t_nu_')]
+            models_order = base_models + sorted(student_t_models)
+            
             model_display_names = {
                 'zero_drift': 'Zero-drift',
                 'constant_drift': 'Constant-drift',
                 'ewma_drift': 'EWMA-drift',
                 'kalman_gaussian': 'Kalman-Gaussian',
                 'kalman_phi_gaussian': 'Kalman-φ-Gaussian',
-                'kalman_phi_student_t': 'Kalman-φ-Student-t',
             }
+            # Add display names for Student-t models
+            for nu in [4, 6, 8, 12, 20]:
+                model_display_names[f'phi_student_t_nu_{nu}'] = f'φ-Student-t (ν={nu})'
+            
+            # Helper to check if model is selected
+            def _is_selected(model_key: str, selected_model: str) -> bool:
+                if model_key == selected_model:
+                    return True
+                if model_key == 'kalman_phi_gaussian' and selected_model == 'phi_gaussian':
+                    return True
+                if model_key == 'kalman_gaussian' and selected_model == 'gaussian':
+                    return True
+                return False
             
             for model_key in models_order:
                 if model_key in model_comp:
@@ -1531,12 +1662,7 @@ def render_end_of_run_summary(
                     display_name = model_display_names.get(model_key, model_key)
                     
                     # Check if this is the selected model
-                    is_selected = (model_key == selected) or \
-                                  (model_key == 'kalman_phi_gaussian' and selected == 'phi_gaussian') or \
-                                  (model_key == 'kalman_gaussian' and selected == 'gaussian')
-                    
-                    style = "[bold #00d700]" if is_selected else ""
-                    end_style = "[/bold #00d700]" if is_selected else ""
+                    is_selected = _is_selected(model_key, selected)
                     
                     # Build params string
                     params = []
@@ -1551,25 +1677,53 @@ def render_end_of_run_summary(
                     ll_val = m.get('ll', float('nan'))
                     aic_val = m.get('aic', float('nan'))
                     bic_val = m.get('bic', float('nan'))
+                    hyv_val = m.get('hyvarinen_score')
+                    comb_val = m.get('combined_score')
+                    
+                    # Format values
+                    ll_str = f"{ll_val:.1f}" if np.isfinite(ll_val) else "-"
+                    aic_str = f"{aic_val:.1f}" if np.isfinite(aic_val) else "-"
+                    bic_str = f"{bic_val:.1f}" if np.isfinite(bic_val) else "-"
+                    hyv_str = f"{hyv_val:.1f}" if hyv_val is not None and np.isfinite(hyv_val) else "-"
+                    comb_str = f"{comb_val:.2f}" if comb_val is not None and np.isfinite(comb_val) else "-"
                     
                     if is_selected:
-                        display_name = f"→ {display_name}"
-                    
-                    table.add_row(
-                        f"{style}{display_name}{end_style}",
-                        f"{style}{ll_val:.1f}{end_style}",
-                        f"{style}{aic_val:.1f}{end_style}",
-                        f"{style}{bic_val:.1f}{end_style}",
-                        f"{style}{params_str}{end_style}",
-                    )
+                        # Selected model: highlight in green with arrow
+                        table.add_row(
+                            f"[bold #00d700]→ {display_name}[/bold #00d700]",
+                            f"[bold #00d700]{ll_str}[/bold #00d700]",
+                            f"[bold #00d700]{aic_str}[/bold #00d700]",
+                            f"[bold #00d700]{bic_str}[/bold #00d700]",
+                            f"[bold #00d700]{hyv_str}[/bold #00d700]",
+                            f"[bold #00d700]{comb_str}[/bold #00d700]",
+                            f"[bold #00d700]{params_str}[/bold #00d700]",
+                        )
+                    else:
+                        # Non-selected model: dim styling
+                        table.add_row(
+                            f"  {display_name}",
+                            ll_str,
+                            aic_str,
+                            bic_str,
+                            f"[dim]{hyv_str}[/dim]",
+                            f"[dim]{comb_str}[/dim]",
+                            f"[dim]{params_str}[/dim]",
+                        )
             
             console.print(table)
             
-            # Show selected model summary
+            # Show selected model summary with model selection method
             ll_sel = mc.get('log_likelihood', float('nan'))
-            aic_sel = mc.get('aic', float('nan'))
             bic_sel = mc.get('bic', float('nan'))
-            console.print(f"    [#00d700]Selected: {selected} (LL={ll_sel:.1f}, BIC={bic_sel:.1f})[/#00d700]")
+            hyv_sel = mc.get('hyvarinen_score')
+            comb_sel = mc.get('combined_score')
+            
+            # Format scores for summary
+            hyv_summary = f", Hyv={hyv_sel:.1f}" if hyv_sel is not None and np.isfinite(float(hyv_sel)) else ""
+            comb_summary = f", Comb={comb_sel:.2f}" if comb_sel is not None and np.isfinite(float(comb_sel)) else ""
+            method_label = {'bic': 'BIC', 'hyvarinen': 'Hyvärinen', 'combined': 'BIC+Hyvärinen'}.get(model_sel_method, model_sel_method)
+            
+            console.print(f"    [#00d700]Selected: {selected} (LL={ll_sel:.1f}, BIC={bic_sel:.1f}{hyv_summary}{comb_summary}) via {method_label}[/#00d700]")
             console.print()
     
     # ==========================================================================
@@ -1648,6 +1802,27 @@ def render_end_of_run_summary(
     if failure_reasons:
         console.print()
         render_failed_assets(failure_reasons, console=console)
+    
+    # ==========================================================================
+    # Section 5: System State Summary (What was used)
+    # ==========================================================================
+    console.print()
+    system_state_text = (
+        "[bold white]Current System Configuration:[/bold white]\n\n"
+        "[cyan]Models:[/cyan] Gaussian, φ-Gaussian, φ-Student-t\n"
+        "[cyan]ν grid:[/cyan] {4, 6, 8, 12, 20} — discrete, not optimized\n"
+        "[cyan]φ prior:[/cyan] N(0, τ) — explicit Gaussian shrinkage\n"
+        "[cyan]Scoring:[/cyan] BIC + Hyvärinen combined\n"
+        "[cyan]Per-regime:[/cyan] (q, c, φ) fit independently\n"
+        "[cyan]Temporal:[/cyan] Model posteriors smoothed across runs"
+    )
+    console.print(Panel(
+        system_state_text,
+        title="[bold blue]🧬 System DNA[/bold blue]",
+        border_style="blue",
+        expand=False,
+        padding=(1, 2),
+    ))
     
     # Final separator
     console.print()
