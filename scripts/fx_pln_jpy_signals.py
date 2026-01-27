@@ -437,151 +437,347 @@ def compute_directional_exhaustion_from_features(
     vol_lookback: int = 21,
 ) -> Dict[str, float]:
     """
-    Compute dual-sided trend exhaustion using price-based technical analysis.
+    Compute directional exhaustion as a 0-100% metric using multi-timeframe
+    EMA analysis with Student-t fat-tail corrections.
 
-    MATHEMATICAL FOUNDATION:
-    ========================
-    Exhaustion measures how far price has deviated from its trend equilibrium,
-    normalized by realized volatility. This is analogous to a Bollinger Band
-    z-score but with directional interpretation.
-
-    The key insight: exhaustion is about PRICE POSITION, not model predictions.
-
-    COMPUTATION:
-    ============
-    1. Compute EMA(short) and EMA(long) as trend references
-    2. Compute realized volatility σ over lookback window
-    3. Calculate z-score: z = (price - EMA) / σ
-    4. Apply smooth transformation to bound in (0, 1)
-
-    MUTUAL EXCLUSIVITY:
-    ===================
-    - If price > EMA: only UE↑ can be non-zero (upside exhaustion)
-    - If price < EMA: only UE↓ can be non-zero (downside exhaustion)
-    - If price ≈ EMA: both are near zero
-
-    This is GUARANTEED by construction - we check the sign of (price - EMA).
+    SENIOR QUANT PANEL METHODOLOGY:
+    ===============================
+    
+    1. MULTI-TIMEFRAME DEVIATION ANALYSIS
+       - Compute price deviation from 5 EMAs (9, 21, 50, 100, 200 days)
+       - Separate into short-term (9, 21) and long-term (50, 100, 200) groups
+       - Long-term deviation determines structural position
+       - Short-term deviation determines recent move direction
+    
+    2. MOMENTUM ALIGNMENT DETECTION
+       - Compare short-term vs long-term momentum (mom63 vs mom252)
+       - Divergence indicates regime transition
+       - Convergence indicates trend confirmation
+    
+    3. RECENT PEAK/TROUGH DETECTION
+       - Find rolling 63-day high and low
+       - Measure distance from recent extremes
+       - Rally-then-breakdown: near recent high but falling
+       - Capitulation-then-recovery: near recent low but rising
+    
+    4. FAT-TAIL PROBABILITY ADJUSTMENT
+       - Use Student-t CDF instead of Gaussian
+       - Heavy tails (low ν) → extreme moves more expected → lower exhaustion
+    
+    5. OUTPUT: 0-100% scale
+       - ue_up > 0: Price above long-term equilibrium
+       - ue_down > 0: Price below long-term equilibrium
+       - Mutual exclusivity enforced
 
     Args:
-        feats: Feature dictionary containing 'px' (prices) and 'vol' (volatility)
-        lookback_short: Short EMA period (default 9)
-        lookback_long: Long EMA period for trend confirmation (default 21)
-        vol_lookback: Volatility lookback for normalization (default 21)
+        feats: Feature dictionary
+        lookback_short, lookback_long, vol_lookback: Configuration params
 
     Returns:
-        Dict with "ue_up", "ue_down", and diagnostic fields
+        Dict with "ue_up" (0-1), "ue_down" (0-1), and diagnostics
     """
+    from scipy.stats import norm as scipy_norm, t as scipy_t
+    
     # Extract price series
     px_series = feats.get("px", pd.Series(dtype=float))
-    if px_series is None or len(px_series) < max(lookback_short, lookback_long, vol_lookback):
-        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+    if px_series is None or len(px_series) < 200:
+        return _compute_simple_exhaustion(feats, lookback_short, lookback_long, vol_lookback)
 
-    # Current price
     price = float(px_series.iloc[-1])
     if not np.isfinite(price) or price <= 0:
         return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
 
-    # Compute EMAs
-    ema_short = px_series.ewm(span=lookback_short, adjust=False).mean()
-    ema_long = px_series.ewm(span=lookback_long, adjust=False).mean()
-
-    ema_short_now = float(ema_short.iloc[-1])
-    ema_long_now = float(ema_long.iloc[-1])
-
-    if not np.isfinite(ema_short_now) or ema_short_now <= 0:
+    # =========================================================================
+    # STEP 1: MULTI-TIMEFRAME EMA DEVIATIONS (SHORT vs LONG)
+    # =========================================================================
+    ema_periods_short = [9, 21]
+    ema_periods_long = [50, 100, 200]
+    
+    ema_values = {}
+    short_deviations = []
+    long_deviations = []
+    
+    for period in ema_periods_short + ema_periods_long:
+        if len(px_series) >= period:
+            ema = px_series.ewm(span=period, adjust=False).mean()
+            ema_now = float(ema.iloc[-1])
+            if np.isfinite(ema_now) and ema_now > 0:
+                deviation_pct = (price - ema_now) / ema_now
+                ema_values[f"ema_{period}"] = ema_now
+                if period in ema_periods_short:
+                    short_deviations.append(deviation_pct)
+                else:
+                    long_deviations.append(deviation_pct)
+    
+    if not long_deviations:
         return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
-
-    # Use short EMA as the primary trend reference
-    ema_ref = ema_short_now
-
-    # Compute realized volatility (annualized, then convert to price terms)
+    
+    # Calculate group averages
+    short_dev_avg = np.mean(short_deviations) if short_deviations else 0.0
+    long_dev_avg = np.mean(long_deviations)
+    
+    # Structural deviation (long-term determines direction)
+    structural_deviation = long_dev_avg
+    
+    # =========================================================================
+    # STEP 2: MOMENTUM EXTRACTION AND ALIGNMENT
+    # =========================================================================
+    mom21 = feats.get("mom21", pd.Series(dtype=float))
+    mom63 = feats.get("mom63", pd.Series(dtype=float))
+    mom126 = feats.get("mom126", pd.Series(dtype=float))
+    mom252 = feats.get("mom252", pd.Series(dtype=float))
+    
+    def get_mom(m):
+        if m is not None and len(m) > 0:
+            v = float(m.iloc[-1])
+            return v if np.isfinite(v) else 0.0
+        return 0.0
+    
+    mom21_now = get_mom(mom21)
+    mom63_now = get_mom(mom63)
+    mom126_now = get_mom(mom126)
+    mom252_now = get_mom(mom252)
+    
+    # Short-term vs long-term momentum comparison
+    short_term_mom = (mom21_now + mom63_now) / 2
+    long_term_mom = (mom126_now + mom252_now) / 2
+    
+    # Momentum alignment: positive = aligned, negative = diverging
+    mom_alignment = short_term_mom * long_term_mom  # Same sign → positive product
+    
+    # =========================================================================
+    # STEP 3: RECENT PEAK/TROUGH DETECTION (63-day lookback)
+    # =========================================================================
+    lookback_extreme = 63
+    if len(px_series) >= lookback_extreme:
+        rolling_high = float(px_series.iloc[-lookback_extreme:].max())
+        rolling_low = float(px_series.iloc[-lookback_extreme:].min())
+        
+        # Distance from recent high (0 = at high, 1 = at low)
+        high_low_range = rolling_high - rolling_low
+        if high_low_range > 0:
+            position_in_range = (price - rolling_low) / high_low_range
+        else:
+            position_in_range = 0.5
+        
+        # Detect breakdown from recent high
+        distance_from_high_pct = (rolling_high - price) / rolling_high if rolling_high > 0 else 0
+        distance_from_low_pct = (price - rolling_low) / rolling_low if rolling_low > 0 else 0
+    else:
+        position_in_range = 0.5
+        distance_from_high_pct = 0.0
+        distance_from_low_pct = 0.0
+    
+    # =========================================================================
+    # STEP 4: VOLATILITY AND FAT-TAIL ADJUSTMENT
+    # =========================================================================
     ret_series = feats.get("ret", pd.Series(dtype=float))
     if ret_series is not None and len(ret_series) >= vol_lookback:
         recent_vol = float(ret_series.iloc[-vol_lookback:].std())
         if not np.isfinite(recent_vol) or recent_vol <= 0:
-            recent_vol = 0.01  # Default 1% daily vol
+            recent_vol = 0.02
     else:
-        recent_vol = 0.01
-
-    # Convert return volatility to price volatility
-    price_vol = ema_ref * recent_vol
-
+        recent_vol = 0.02
+    
+    # Z-score based on structural deviation
+    z_score = structural_deviation / max(recent_vol, 1e-10)
+    
+    # Get tail parameter
+    nu_hat_series = feats.get("nu_hat", None)
+    if nu_hat_series is not None and len(nu_hat_series) > 0:
+        nu = float(nu_hat_series.iloc[-1])
+        if not np.isfinite(nu) or nu <= 2:
+            nu = 30.0
+    else:
+        nu = 30.0
+    nu = max(4.0, min(nu, 100.0))
+    
+    # CDF transformation
+    if nu < 30:
+        cdf_val = scipy_t.cdf(abs(z_score), df=nu)
+    else:
+        cdf_val = scipy_norm.cdf(abs(z_score))
+    
+    exhaustion_base = 2.0 * (cdf_val - 0.5)  # Maps to (0, 1)
+    
     # =========================================================================
-    # CORE CALCULATION: Z-score of price deviation from EMA
+    # STEP 5: PATTERN DETECTION
     # =========================================================================
-    # z = (price - EMA) / (EMA × σ_return)
-    #
-    # This measures how many "volatility units" price is away from trend
+    
+    # EMA slope for trend direction
+    ema_9_series = px_series.ewm(span=9, adjust=False).mean()
+    if len(ema_9_series) >= 5:
+        ema_9_slope = (float(ema_9_series.iloc[-1]) - float(ema_9_series.iloc[-5])) / max(float(ema_9_series.iloc[-5]), 1e-10)
+    else:
+        ema_9_slope = 0.0
+    
+    # Pattern 1: RALLY THEN BREAKDOWN
+    # Long-term momentum strong positive, but short-term breaking down
+    is_rally_breakdown = (
+        long_term_mom > 1.0 and           # Strong long-term momentum
+        short_term_mom < long_term_mom and # Short-term weakening
+        ema_9_slope < -0.005 and          # 9-EMA turning down
+        distance_from_high_pct > 0.05      # At least 5% off recent high
+    )
+    
+    # Pattern 2: PARABOLIC RALLY (extreme)
+    is_parabolic = (
+        mom126_now > 2.0 and
+        structural_deviation > 0.10
+    )
+    
+    # Pattern 3: CAPITULATION
+    is_capitulation = (
+        mom63_now < -2.0 and
+        mom126_now < -1.5 and
+        structural_deviation < -0.15
+    )
+    
+    # Pattern 4: RECOVERY FROM CRASH
+    # Price recovering but still below long-term equilibrium
+    is_recovery = (
+        structural_deviation < 0 and       # Below long-term EMAs
+        short_dev_avg > long_dev_avg and  # Short-term above long-term (recovering)
+        ema_9_slope > 0.005               # Short-term trend up
+    )
+    
+    # Pattern 5: PULLBACK IN UPTREND
+    # Long-term trend up, short-term pullback
+    is_pullback_uptrend = (
+        long_term_mom > 0.5 and            # Long-term trend up
+        structural_deviation > -0.05 and   # Not too far below
+        short_dev_avg < 0 and              # Short-term below EMAs
+        ema_9_slope < 0                    # Pulling back
+    )
+    
     # =========================================================================
+    # STEP 6: FINAL CALCULATION WITH CONTEXT
+    # =========================================================================
+    
+    if structural_deviation > 0:
+        # PRICE ABOVE LONG-TERM EQUILIBRIUM → ue_up
+        ue_up_raw = exhaustion_base
+        
+        # Boost for parabolic moves
+        if is_parabolic:
+            ue_up_raw = min(ue_up_raw * 1.4 + 0.15, 0.99)
+        
+        # Momentum confirmation boost
+        if long_term_mom > 1.0:
+            ue_up_raw = min(ue_up_raw + 0.1, 0.99)
+        if mom252_now > 1.5:
+            ue_up_raw = min(ue_up_raw + 0.1, 0.99)
+        
+        ue_up = min(ue_up_raw, 0.99)
+        ue_down = 0.0
+        
+    elif structural_deviation < 0:
+        # PRICE BELOW LONG-TERM EQUILIBRIUM → consider ue_down
+        ue_down_raw = exhaustion_base
+        
+        # Rally-then-breakdown: this is MEAN REVERSION, not oversold
+        # Flip to showing ue_up based on long-term momentum strength
+        if is_rally_breakdown:
+            # Strong prior rally means this breakdown is healthy
+            if long_term_mom > 1.5:
+                # Still structurally extended - show ue_up
+                ue_up = min(0.25 + long_term_mom * 0.15, 0.70)
+                ue_down = 0.0
+                return {
+                    "ue_up": float(ue_up),
+                    "ue_down": 0.0,
+                    "z_score": float(z_score),
+                    "deviation_pct": float(structural_deviation * 100),
+                    **ema_values,
+                }
+            else:
+                # Moderate prior rally - reduce ue_down significantly
+                ue_down_raw *= 0.3
+        
+        # Recovery pattern: reduce ue_down (price improving)
+        if is_recovery:
+            recovery_factor = 1.0 - min(short_dev_avg - long_dev_avg, 0.1) * 5
+            ue_down_raw *= max(recovery_factor, 0.3)
+        
+        # Pullback in uptrend: show low ue_down (buying opportunity)
+        if is_pullback_uptrend:
+            ue_down_raw *= 0.4
+            
+        # Capitulation: boost ue_down
+        if is_capitulation:
+            ue_down_raw = min(ue_down_raw * 1.3 + 0.1, 0.99)
+        
+        # Momentum context penalty (positive long-term = less oversold)
+        if not is_capitulation:
+            if long_term_mom > 0.5:
+                ue_down_raw *= 0.7
+            if mom252_now > 1.0:
+                ue_down_raw *= 0.6
+        
+        ue_down = min(max(ue_down_raw, 0.0), 0.99)
+        ue_up = 0.0
+        
+    else:
+        ue_up = 0.0
+        ue_down = 0.0
+    
+    return {
+        "ue_up": float(ue_up),
+        "ue_down": float(ue_down),
+        "z_score": float(z_score),
+        "deviation_pct": float(structural_deviation * 100),
+        **ema_values,
+    }
 
-    deviation = price - ema_ref
-    deviation_pct = deviation / ema_ref if ema_ref > 0 else 0.0
 
-    # Z-score: deviation normalized by price volatility
+def _compute_simple_exhaustion(
+    feats: Dict[str, pd.Series],
+    lookback_short: int = 9,
+    lookback_long: int = 21,
+    vol_lookback: int = 21,
+) -> Dict[str, float]:
+    """
+    Fallback simple exhaustion calculation when not enough data for multi-timeframe.
+    """
+    from scipy.stats import norm as scipy_norm
+    
+    px_series = feats.get("px", pd.Series(dtype=float))
+    if px_series is None or len(px_series) < max(lookback_short, lookback_long, vol_lookback):
+        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+
+    price = float(px_series.iloc[-1])
+    if not np.isfinite(price) or price <= 0:
+        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+
+    ema_short = px_series.ewm(span=lookback_short, adjust=False).mean()
+    ema_short_now = float(ema_short.iloc[-1])
+
+    if not np.isfinite(ema_short_now) or ema_short_now <= 0:
+        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+
+    ret_series = feats.get("ret", pd.Series(dtype=float))
+    if ret_series is not None and len(ret_series) >= vol_lookback:
+        recent_vol = float(ret_series.iloc[-vol_lookback:].std())
+        if not np.isfinite(recent_vol) or recent_vol <= 0:
+            recent_vol = 0.02
+    else:
+        recent_vol = 0.02
+
+    deviation = price - ema_short_now
+    deviation_pct = deviation / ema_short_now
+    price_vol = ema_short_now * recent_vol
     z_score = deviation / max(price_vol, 1e-10)
 
-    # =========================================================================
-    # EXHAUSTION TRANSFORMATION
-    # =========================================================================
-    # We want:
-    # - z = 0 → exhaustion = 0 (at equilibrium)
-    # - z = ±2 → exhaustion ≈ 50% (2 sigma move)
-    # - z = ±3 → exhaustion ≈ 75% (3 sigma move)
-    # - z = ±4+ → exhaustion → 90%+ (extreme)
-    #
-    # Use CDF of standard normal for smooth, interpretable mapping:
-    # exhaustion = 2 × |Φ(z) - 0.5|
-    #
-    # This gives:
-    # - z=0 → 0%
-    # - z=±1 → 34%
-    # - z=±2 → 68%
-    # - z=±3 → 87%
-    # - z=±4 → 97%
-    # =========================================================================
-
-    from scipy.stats import norm as scipy_norm
-
-    # Exhaustion magnitude based on z-score
     cdf_val = scipy_norm.cdf(abs(z_score))
-    exhaustion_magnitude = 2.0 * (cdf_val - 0.5)  # Maps to (0, 1)
-
-    # =========================================================================
-    # TREND CONFIRMATION: Boost exhaustion when short EMA diverges from long EMA
-    # =========================================================================
-    # If short EMA is far from long EMA in the same direction as price deviation,
-    # the trend is extended and exhaustion should be higher.
-    # =========================================================================
-
-    ema_divergence = (ema_short_now - ema_long_now) / max(ema_long_now, 1e-10)
-
-    # Confirmation factor: boost if EMAs diverge in same direction as price
-    if deviation > 0 and ema_divergence > 0:
-        # Uptrend confirmed - boost upside exhaustion
-        confirmation = 1.0 + min(abs(ema_divergence) * 5, 0.3)  # Max 30% boost
-    elif deviation < 0 and ema_divergence < 0:
-        # Downtrend confirmed - boost downside exhaustion
-        confirmation = 1.0 + min(abs(ema_divergence) * 5, 0.3)
-    else:
-        # No confirmation or counter-trend
-        confirmation = 1.0
-
-    exhaustion_final = min(exhaustion_magnitude * confirmation, 0.99)
-
-    # =========================================================================
-    # MUTUAL EXCLUSIVITY: Only one side is active based on deviation sign
-    # =========================================================================
+    exhaustion_magnitude = 2.0 * (cdf_val - 0.5)
 
     if deviation > 0:
-        # Price ABOVE EMA → upside exhaustion (blow-off risk)
-        ue_up = exhaustion_final
+        ue_up = min(exhaustion_magnitude, 0.99)
         ue_down = 0.0
     elif deviation < 0:
-        # Price BELOW EMA → downside exhaustion (rebound risk)
         ue_up = 0.0
-        ue_down = exhaustion_final
+        ue_down = min(exhaustion_magnitude, 0.99)
     else:
-        # Exactly at EMA (rare)
         ue_up = 0.0
         ue_down = 0.0
 
@@ -589,11 +785,7 @@ def compute_directional_exhaustion_from_features(
         "ue_up": float(ue_up),
         "ue_down": float(ue_down),
         "z_score": float(z_score),
-        "deviation_pct": float(deviation_pct * 100),  # As percentage
-        "ema_short": float(ema_short_now),
-        "ema_long": float(ema_long_now),
-        "price": float(price),
-        "confirmation": float(confirmation),
+        "deviation_pct": float(deviation_pct * 100),
     }
 
 
@@ -674,9 +866,9 @@ class Signal:
     bma_method: str = "legacy"               # "bayesian_model_averaging_full" or "legacy"
     bma_has_model_posterior: bool = False    # True if BMA with model posteriors was used
     bma_borrowed_from_global: bool = False   # True if regime used hierarchical fallback
-    # DUAL-SIDED TREND EXHAUSTION (market-space fragility indicators):
-    ue_up: float = 0.0    # Upside Exhaustion: late-stage rally fragility, blow-off risk (0-1)
-    ue_down: float = 0.0  # Downside Exhaustion: late-stage sell-off fragility, rebound risk (0-1)
+    # DUAL-SIDED TREND EXHAUSTION (0-100% scale, multi-timeframe weighted EMA deviation):
+    ue_up: float = 0.0    # Price above weighted EMA equilibrium (0-1 scale)
+    ue_down: float = 0.0  # Price below weighted EMA equilibrium (0-1 scale)
 
 
 
@@ -4894,18 +5086,15 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             profit_ci_high_pln = raw_profit_ci_high_pln
 
         # ========================================================================
-        # DUAL-SIDED TREND EXHAUSTION (UE↑ / UE↓) - PRICE-BASED
+        # DUAL-SIDED TREND EXHAUSTION (UE↑ / UE↓) - MULTI-TIMEFRAME
         # ========================================================================
-        # Compute market-space directional exhaustion using price deviation from EMA.
+        # Compute directional exhaustion using weighted multi-timeframe EMA
+        # deviation with Student-t fat-tail corrections.
         #
-        # MATHEMATICAL FOUNDATION:
-        # - z = (price - EMA) / (EMA × σ_return)
-        # - Exhaustion = 2 × |Φ(z) - 0.5| where Φ is standard normal CDF
-        #
-        # KEY PROPERTIES:
-        # - Mutually exclusive: only UE↑ OR UE↓ can be non-zero (never both)
-        # - Price above EMA → UE↑ (blow-off risk)
-        # - Price below EMA → UE↓ (rebound risk)
+        # Output: 0-100% scale indicating how far price deviates from equilibrium
+        # - ue_up: Price above weighted EMA equilibrium (higher = more extended)
+        # - ue_down: Price below weighted EMA equilibrium (higher = more extended)
+        # - Mutual exclusivity: only one can be non-zero
         # - Same value for all horizons (price-based, not model-based)
         # ========================================================================
 
@@ -4918,15 +5107,15 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # ========================================================================
         # EXHAUSTION-BASED RISK MODULATION (SOFT ONLY)
         # ========================================================================
-        # Upside exhaustion reduces long conviction (blow-off risk)
-        # Downside exhaustion reduces short conviction (rebound risk)
+        # Higher ue_up → reduce long conviction (extended above equilibrium)
+        # Higher ue_down → reduce short conviction (extended below equilibrium)
         # This does NOT flip signals - only modulates confidence
         # ========================================================================
         if ue_up > 0 and pos_strength > 0:
-            # Upside exhaustion: reduce long conviction
+            # Extended above equilibrium: reduce long conviction
             pos_strength *= (1.0 - 0.5 * ue_up)
         if ue_down > 0 and pos_strength > 0:
-            # Downside exhaustion: reduce short conviction
+            # Extended below equilibrium: reduce short conviction
             pos_strength *= (1.0 - 0.5 * ue_down)
 
         sigs.append(Signal(

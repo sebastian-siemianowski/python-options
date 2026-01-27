@@ -557,9 +557,9 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
     )
     # Asset column - truncate long names with ellipsis
     table.add_column(" Asset", justify="left", style="bold", width=asset_col_width, no_wrap=True, overflow="ellipsis")
-    # Dual-sided exhaustion columns as percentages (↑=upside blow-off risk, ↓=downside rebound risk)
-    table.add_column(" ↑% ", justify="center", width=4, no_wrap=True)  # Upside exhaustion percentage
-    table.add_column(" ↓% ", justify="center", width=4, no_wrap=True)  # Downside exhaustion percentage
+    # Dual-sided exhaustion columns as percentages (0-100% scale)
+    table.add_column(" ↑% ", justify="center", width=4, no_wrap=True)  # Price above weighted EMA equilibrium
+    table.add_column(" ↓% ", justify="center", width=4, no_wrap=True)  # Price below weighted EMA equilibrium
     
     # Compact horizon labels - all same width for alignment
     horizon_labels = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
@@ -583,9 +583,10 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
             if ue_down > max_ue_down:
                 max_ue_down = ue_down
         
-        # Format UE↑ as percentage with color coding (upside exhaustion = blow-off risk)
+        # Format UE↑ as percentage (0-100%) with color coding
+        # Show dot if value is not meaningful (< 5%)
         ue_up_pct = int(max_ue_up * 100)
-        if ue_up_pct == 0:
+        if ue_up_pct < 5:
             ue_up_display = "[dim]·[/dim]"
         elif max_ue_up >= 0.6:
             ue_up_display = f"[indian_red1]{ue_up_pct}[/indian_red1]"
@@ -594,9 +595,10 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         else:
             ue_up_display = f"[dim]{ue_up_pct}[/dim]"
 
-        # Format UE↓ as percentage with color coding (downside exhaustion = rebound risk)
+        # Format UE↓ as percentage (0-100%) with color coding
+        # Show dot if value is not meaningful (< 5%)
         ue_down_pct = int(max_ue_down * 100)
-        if ue_down_pct == 0:
+        if ue_down_pct < 5:
             ue_down_display = "[dim]·[/dim]"
         elif max_ue_down >= 0.6:
             ue_down_display = f"[#00d700]{ue_down_pct}[/#00d700]"
@@ -644,7 +646,7 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
     console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
     console.print("[bold cyan]  SIGNAL DASHBOARD[/bold cyan]                                                          [white]Returns on 1M PLN investment[/white]")
     console.print("[white]  ▲▲▼▼ Strong Signal   △▽ Notable [dim](HOLD w/ big return)[/dim]   ↑↓ Signal   [#00d700]Green[/#00d700]=Positive [indian_red1]Red[/indian_red1]=Negative[/white]")
-    console.print("[white]  ↑%=Price above EMA(9) [indian_red1](blow-off)[/indian_red1]   ↓%=Price below EMA(9) [#00d700](rebound)[/#00d700]   [dim]z-score normalized by volatility[/dim][/white]")
+    console.print("[white]  ↑%=Above EMA equilibrium (0-100)   ↓%=Below EMA equilibrium (0-100)   [dim]Multi-TF weighted + Student-t[/dim][/white]")
     console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
     console.print()
 
