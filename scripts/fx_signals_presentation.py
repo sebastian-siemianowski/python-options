@@ -407,26 +407,47 @@ def render_detailed_signal_table(
             signal_badge = "[dim]— HOLD[/]"
 
         # ─────────────────────────────────────────────────────────────────────────
-        # STRENGTH BAR - Visual confidence indicator
+        # STRENGTH BAR - True signal strength indicator
+        # Based on: distance from neutral (50%) + expected return magnitude
+        # This reflects actual model confidence, not just probability
         # ─────────────────────────────────────────────────────────────────────────
+        
+        # Calculate true signal strength:
+        # - Base: distance from 50% (neutral)
+        # - Boost: magnitude of expected return
+        # - Result: 0-100% strength score
+        
+        distance_from_neutral = abs(p_val - 50)  # 0-50 scale
+        exp_ret_magnitude = abs(exp_ret_pct)  # expected return %
+        
+        # Combine: probability distance + return magnitude (capped)
+        # Weight: 70% probability distance, 30% return magnitude
+        strength_score = (distance_from_neutral * 0.7) + min(exp_ret_magnitude * 3, 15) * 0.3
+        
+        # Convert to 0-10 bar scale
+        # strength_score of 0 = 0 bars, 25+ = 10 bars
+        bars = min(10, max(0, int(strength_score / 2.5)))
+        
         if p_val >= 58:
-            # Bullish strength: scale 58-80% to 1-10 bars
-            bars = min(10, max(1, int((p_val - 50) / 3)))
+            # Bullish
             bar_char = "█" * bars + "░" * (10 - bars)
-            if p_val >= 70:
+            if p_val >= 70 or (p_val >= 65 and exp_ret_pct >= 3):
                 strength_bar = f"[bold bright_green]{bar_char}[/]"
-            else:
+            elif bars >= 3:
                 strength_bar = f"[green]{bar_char}[/]"
-        elif p_val <= 42:
-            # Bearish strength: scale 20-42% to 1-10 bars
-            bars = min(10, max(1, int((50 - p_val) / 3)))
-            bar_char = "█" * bars + "░" * (10 - bars)
-            if p_val <= 30:
-                strength_bar = f"[bold indian_red1]{bar_char}[/]"
             else:
+                strength_bar = f"[dim green]{bar_char}[/]"
+        elif p_val <= 42:
+            # Bearish
+            bar_char = "█" * bars + "░" * (10 - bars)
+            if p_val <= 30 or (p_val <= 35 and exp_ret_pct <= -3):
+                strength_bar = f"[bold indian_red1]{bar_char}[/]"
+            elif bars >= 3:
                 strength_bar = f"[red]{bar_char}[/]"
+            else:
+                strength_bar = f"[dim red]{bar_char}[/]"
         else:
-            # Neutral
+            # Neutral - show minimal strength
             strength_bar = f"[dim]{'─' * 10}[/]"
 
         # Add the row
@@ -887,6 +908,253 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
         padding=(0, 4),
     )
     console.print(Align.center(completion_panel, width=55))
+    console.print()
+
+
+def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] = None) -> None:
+    """Render high-conviction signal summary tables for short-term trading.
+    
+    Shows two tables:
+    1. STRONG BUY signals (P >= 62%) for next 7 days
+    2. STRONG SELL signals (P <= 38%) for next 7 days
+    
+    Design Philosophy:
+    - Focus on actionable short-term signals
+    - High conviction only (clear edge)
+    - Sorted by signal strength
+    
+    Args:
+        summary_rows: List of asset summary dictionaries from signal generation
+        horizons: Optional list of horizons to include (default: [1, 3, 7])
+    """
+    if not summary_rows:
+        return
+    
+    if horizons is None:
+        horizons = [1, 3, 7]  # Focus on short-term: 1d, 3d, 1w
+    
+    console = Console(force_terminal=True, width=140)
+    
+    # Thresholds for "high conviction"
+    BUY_THRESHOLD = 0.62   # P(r>0) >= 62% for strong buy
+    SELL_THRESHOLD = 0.38  # P(r>0) <= 38% for strong sell
+    
+    # Collect strong signals
+    strong_buys = []
+    strong_sells = []
+    
+    for row in summary_rows:
+        asset_label = row.get("asset_label", "Unknown")
+        horizon_signals = row.get("horizon_signals", {})
+        sector = row.get("sector", "Other")
+        
+        for horizon in horizons:
+            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
+            p_up = signal_data.get("p_up", 0.5)
+            exp_ret = signal_data.get("exp_ret", 0.0)
+            profit_pln = signal_data.get("profit_pln", 0.0)
+            label = signal_data.get("label", "HOLD")
+            
+            # Calculate strength score for sorting
+            distance_from_neutral = abs(p_up - 0.5)
+            strength = distance_from_neutral + abs(exp_ret) * 0.5
+            
+            if p_up >= BUY_THRESHOLD:
+                strong_buys.append({
+                    "asset": asset_label,
+                    "sector": sector,
+                    "horizon": horizon,
+                    "p_up": p_up,
+                    "exp_ret": exp_ret,
+                    "profit_pln": profit_pln,
+                    "strength": strength,
+                })
+            elif p_up <= SELL_THRESHOLD:
+                strong_sells.append({
+                    "asset": asset_label,
+                    "sector": sector,
+                    "horizon": horizon,
+                    "p_up": p_up,
+                    "exp_ret": exp_ret,
+                    "profit_pln": profit_pln,
+                    "strength": strength,
+                })
+    
+    # Sort by strength descending
+    strong_buys.sort(key=lambda x: x["strength"], reverse=True)
+    strong_sells.sort(key=lambda x: x["strength"], reverse=True)
+    
+    # Limit to top 20 each
+    strong_buys = strong_buys[:20]
+    strong_sells = strong_sells[:20]
+    
+    # Only render if we have signals
+    if not strong_buys and not strong_sells:
+        return
+    
+    console.print()
+    console.print()
+    console.print(Rule(style="bright_cyan", characters="═"))
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # HEADER
+    # ═══════════════════════════════════════════════════════════════════════════════
+    header_content = Text(justify="center")
+    header_content.append("\n", style="")
+    header_content.append("⚡ HIGH CONVICTION SIGNALS", style="bold bright_white")
+    header_content.append("\n", style="")
+    header_content.append("Short-term opportunities (next 7 trading days)", style="dim")
+    header_content.append("\n", style="")
+    
+    header_panel = Panel(
+        Align.center(header_content),
+        box=box.HEAVY,
+        border_style="bright_yellow",
+        padding=(0, 4),
+    )
+    console.print(Align.center(header_panel, width=60))
+    console.print()
+    
+    horizon_labels = {1: "1 day", 3: "3 days", 7: "1 week"}
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # STRONG BUY TABLE
+    # ═══════════════════════════════════════════════════════════════════════════════
+    if strong_buys:
+        console.print()
+        buy_header = Text()
+        buy_header.append("  ▲▲ ", style="bold bright_green")
+        buy_header.append("STRONG BUY SIGNALS", style="bold bright_green")
+        buy_header.append(f"  ({len(strong_buys)} opportunities)", style="dim")
+        console.print(buy_header)
+        console.print()
+        
+        buy_table = Table(
+            show_header=True,
+            header_style="bold white on green",
+            border_style="green",
+            box=box.ROUNDED,
+            padding=(0, 1),
+            row_styles=["", "on grey7"],
+        )
+        
+        buy_table.add_column("Asset", justify="left", width=40, no_wrap=True)
+        buy_table.add_column("Sector", justify="left", width=20, no_wrap=True, style="dim")
+        buy_table.add_column("Horizon", justify="center", width=10)
+        buy_table.add_column("P(r>0)", justify="right", width=8)
+        buy_table.add_column("E[return]", justify="right", width=10)
+        buy_table.add_column("Profit", justify="right", width=10)
+        buy_table.add_column("Strength", justify="left", width=12)
+        
+        for sig in strong_buys:
+            horizon_label = horizon_labels.get(sig["horizon"], f"{sig['horizon']}d")
+            p_pct = sig["p_up"] * 100
+            exp_ret_pct = sig["exp_ret"] * 100
+            
+            # Profit formatting
+            profit = sig["profit_pln"]
+            if abs(profit) >= 1_000_000:
+                profit_str = f"{profit/1_000_000:+.1f}M"
+            elif abs(profit) >= 1_000:
+                profit_str = f"{profit/1_000:+.0f}k"
+            else:
+                profit_str = f"{profit:+.0f}"
+            
+            # Strength bar
+            bars = min(10, max(1, int(sig["strength"] * 40)))
+            bar_str = "█" * bars + "░" * (10 - bars)
+            
+            buy_table.add_row(
+                sig["asset"],
+                sig["sector"][:18] if sig["sector"] else "",
+                horizon_label,
+                f"[bold bright_green]{p_pct:.1f}%[/]",
+                f"[bright_green]{exp_ret_pct:+.2f}%[/]",
+                f"[bright_green]{profit_str}[/]",
+                f"[green]{bar_str}[/]",
+            )
+        
+        console.print(buy_table)
+        console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # STRONG SELL TABLE
+    # ═══════════════════════════════════════════════════════════════════════════════
+    if strong_sells:
+        console.print()
+        sell_header = Text()
+        sell_header.append("  ▼▼ ", style="bold indian_red1")
+        sell_header.append("STRONG SELL SIGNALS", style="bold indian_red1")
+        sell_header.append(f"  ({len(strong_sells)} warnings)", style="dim")
+        console.print(sell_header)
+        console.print()
+        
+        sell_table = Table(
+            show_header=True,
+            header_style="bold white on red",
+            border_style="red",
+            box=box.ROUNDED,
+            padding=(0, 1),
+            row_styles=["", "on grey7"],
+        )
+        
+        sell_table.add_column("Asset", justify="left", width=40, no_wrap=True)
+        sell_table.add_column("Sector", justify="left", width=20, no_wrap=True, style="dim")
+        sell_table.add_column("Horizon", justify="center", width=10)
+        sell_table.add_column("P(r>0)", justify="right", width=8)
+        sell_table.add_column("E[return]", justify="right", width=10)
+        sell_table.add_column("Profit", justify="right", width=10)
+        sell_table.add_column("Strength", justify="left", width=12)
+        
+        for sig in strong_sells:
+            horizon_label = horizon_labels.get(sig["horizon"], f"{sig['horizon']}d")
+            p_pct = sig["p_up"] * 100
+            exp_ret_pct = sig["exp_ret"] * 100
+            
+            # Profit formatting
+            profit = sig["profit_pln"]
+            if abs(profit) >= 1_000_000:
+                profit_str = f"{profit/1_000_000:+.1f}M"
+            elif abs(profit) >= 1_000:
+                profit_str = f"{profit/1_000:+.0f}k"
+            else:
+                profit_str = f"{profit:+.0f}"
+            
+            # Strength bar
+            bars = min(10, max(1, int(sig["strength"] * 40)))
+            bar_str = "█" * bars + "░" * (10 - bars)
+            
+            sell_table.add_row(
+                sig["asset"],
+                sig["sector"][:18] if sig["sector"] else "",
+                horizon_label,
+                f"[bold indian_red1]{p_pct:.1f}%[/]",
+                f"[indian_red1]{exp_ret_pct:+.2f}%[/]",
+                f"[indian_red1]{profit_str}[/]",
+                f"[red]{bar_str}[/]",
+            )
+        
+        sell_table.add_row()
+        console.print(sell_table)
+        console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # FOOTER
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print()
+    footer = Text(justify="center")
+    footer.append("Thresholds: ", style="dim")
+    footer.append("BUY ", style="bright_green")
+    footer.append(f"P ≥ {BUY_THRESHOLD*100:.0f}%", style="dim")
+    footer.append("  ·  ", style="dim")
+    footer.append("SELL ", style="indian_red1")
+    footer.append(f"P ≤ {SELL_THRESHOLD*100:.0f}%", style="dim")
+    footer.append("  ·  ", style="dim")
+    footer.append("Sorted by signal strength", style="dim italic")
+    console.print(Align.center(footer))
+    console.print()
+    console.print(Rule(style="bright_cyan", characters="═"))
     console.print()
 
 
