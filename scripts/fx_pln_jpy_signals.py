@@ -206,6 +206,13 @@ import yfinance as yf
 from scipy.stats import t as student_t, norm, skew as scipy_stats_skew
 from scipy.special import gammaln
 from rich.console import Console
+from rich.padding import Padding
+from rich.text import Text
+from rich.panel import Panel
+from rich.table import Table
+from rich.rule import Rule
+from rich.align import Align
+from rich import box
 import logging
 import os
 
@@ -2183,76 +2190,146 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             else:
                 return ("light", "cyan")
         
-        # Build model weights table with BIC and Hyvärinen scores
-        weights_table = Table(
-            show_header=True,
-            header_style="bold white",
-            border_style="cyan",
-            padding=(0, 1),
-            expand=False,
-        )
-        weights_table.add_column("Model", style="bold", width=14)
-        weights_table.add_column("Weight", justify="right", width=8)
-        weights_table.add_column("BIC", justify="right", width=10)
-        weights_table.add_column("Hyvärinen", justify="right", width=10)
-        weights_table.add_column("Confidence", width=20)
-        weights_table.add_column("", width=3)
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # EXTRAORDINARY APPLE-QUALITY MODEL PANEL
+        # Design: Clean, premium, scannable, beautiful
+        # ═══════════════════════════════════════════════════════════════════════════════
+        
+        from rich.rule import Rule
+        from rich.align import Align
         
         # Get all models from posterior, sorted by weight descending
         all_models = sorted(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0), reverse=True)
         
-        for model_name in all_models:
+        # Get global-level aggregate scores
+        global_hyv_max = tuned_params.get('hyvarinen_max')
+        global_bic_min = tuned_params.get('bic_min')
+        
+        console.print()
+        console.print()
+        
+        # ─────────────────────────────────────────────────────────────────────────────
+        # ASSET HEADER - Cinematic, clean
+        # ─────────────────────────────────────────────────────────────────────────────
+        header_content = Text()
+        header_content.append("\n", style="")
+        header_content.append(asset_symbol, style="bold bright_white")
+        header_content.append("\n", style="")
+        header_content.append(company_name, style="dim")
+        if sector:
+            header_content.append(f"  ·  {sector}", style="dim italic")
+        header_content.append("\n", style="")
+        
+        header_panel = Panel(
+            Align.center(header_content),
+            box=box.ROUNDED,
+            border_style="bright_cyan",
+            padding=(0, 2),
+        )
+        console.print(Align.center(header_panel, width=50))
+        console.print()
+        
+        # ─────────────────────────────────────────────────────────────────────────────
+        # WINNING MODEL - Hero section
+        # ─────────────────────────────────────────────────────────────────────────────
+        best_info = model_info.get(best_model, {'short': best_model[:12] if best_model else '—'})
+        best_params = global_models.get(best_model, {})
+        best_weight = model_posterior.get(best_model, 0.0)
+        
+        # Get BIC/Hyvärinen from best model params (more reliable)
+        best_bic = best_params.get('bic')
+        best_hyv = best_params.get('hyvarinen_score')
+        
+        winner_grid = Table.grid(padding=(0, 4))
+        winner_grid.add_column(justify="center")
+        winner_grid.add_column(justify="center")
+        winner_grid.add_column(justify="center")
+        winner_grid.add_column(justify="center")
+        
+        def metric_text(value: str, label: str, color: str = "white") -> Text:
+            t = Text()
+            t.append(f"{value}\n", style=f"bold {color}")
+            t.append(label, style="dim")
+            return t
+        
+        bic_str = f"{best_bic:.0f}" if best_bic and np.isfinite(best_bic) else "—"
+        hyv_str = f"{best_hyv:.0f}" if best_hyv and np.isfinite(best_hyv) else "—"
+        
+        winner_grid.add_row(
+            metric_text(best_info['short'], "Model", "bright_green"),
+            metric_text(f"{best_weight:.0%}", "Weight", "bright_cyan"),
+            metric_text(bic_str, "BIC", "white"),
+            metric_text(hyv_str, "Hyv", "white"),
+        )
+        console.print(Align.center(winner_grid))
+        console.print()
+        
+        # ─────────────────────────────────────────────────────────────────────────────
+        # MODEL COMPARISON - Compact, scannable
+        # ─────────────────────────────────────────────────────────────────────────────
+        console.print(Rule(style="dim", characters="─"))
+        console.print()
+        
+        # Only show models with weight > 0.001% to reduce clutter
+        visible_models = [m for m in all_models if model_posterior.get(m, 0) >= 0.0001]
+        
+        for model_name in visible_models:
             p = model_posterior.get(model_name, 0.0)
-            bar_len = int(p * 15)
-            bar_filled = '█' * bar_len
-            bar_empty = '░' * (15 - bar_len)
-            info = model_info.get(model_name, {'short': model_name[:12], 'icon': '•'})
-            
-            # Get BIC and Hyvärinen scores from model params
             m_params = global_models.get(model_name, {})
+            info = model_info.get(model_name, {'short': model_name[:12]})
+            is_best = model_name == best_model
+            
             bic_val = m_params.get('bic')
             hyv_val = m_params.get('hyvarinen_score')
             
-            # Format scores
-            bic_str = f"{bic_val:.1f}" if bic_val is not None and np.isfinite(bic_val) else "—"
-            hyv_str = f"{hyv_val:.1f}" if hyv_val is not None and np.isfinite(hyv_val) else "—"
+            # Visual weight bar
+            bar_width = 20
+            filled = int(p * bar_width)
             
-            is_best = model_name == best_model
+            # Build row
+            row = Text()
+            row.append("    ", style="")
+            
             if is_best:
-                weights_table.add_row(
-                    f"[bold #00d700]{info['short']}[/bold #00d700]",
-                    f"[bold #00d700]{p:.1%}[/bold #00d700]",
-                    f"[#00d700]{bic_str}[/#00d700]",
-                    f"[#00d700]{hyv_str}[/#00d700]",
-                    f"[#00d700]{bar_filled}[/#00d700][dim]{bar_empty}[/dim]",
-                    "[bold #00d700]◀[/bold #00d700]"
-                )
+                row.append("● ", style="bold bright_green")
+                row.append(f"{info['short']:<14}", style="bold bright_green")
+                row.append(f"{p:>6.1%}  ", style="bold bright_green")
+                row.append("━" * filled, style="bright_green")
+                row.append("─" * (bar_width - filled), style="dim")
             else:
-                weights_table.add_row(
-                    info['short'],
-                    f"{p:.1%}",
-                    bic_str,
-                    hyv_str,
-                    f"[cyan]{bar_filled}[/cyan][dim]{bar_empty}[/dim]",
-                    ""
-                )
+                row.append("○ ", style="dim")
+                row.append(f"{info['short']:<14}", style="dim")
+                row.append(f"{p:>6.1%}  ", style="dim")
+                row.append("─" * bar_width, style="dim")
+            
+            console.print(row)
         
-        # Build parameters table
+        console.print()
+        
+        # ─────────────────────────────────────────────────────────────────────────────
+        # PARAMETER ESTIMATES TABLE - All models, Apple-quality
+        # ─────────────────────────────────────────────────────────────────────────────
+        params_header = Text()
+        params_header.append("    ▸ ", style="bright_cyan")
+        params_header.append("Parameter Estimates", style="bold white")
+        console.print(params_header)
+        console.print()
+        
         params_table = Table(
             show_header=True,
-            header_style="bold white",
-            border_style="cyan",
+            header_style="dim",
+            border_style="dim",
+            box=box.ROUNDED,
             padding=(0, 1),
             expand=False,
         )
-        params_table.add_column("Model", style="bold", width=14)
+        params_table.add_column("Model", style="white", width=14)
         params_table.add_column("Drift (q)", justify="center", width=12)
         params_table.add_column("Vol (c)", justify="center", width=12)
         params_table.add_column("Persist (φ)", justify="center", width=12)
         params_table.add_column("Tails (ν)", justify="center", width=12)
         
-        # Iterate over all models from posterior (same order as weights table)
-        for model_name in all_models:
+        for model_name in visible_models:
             m_params = global_models.get(model_name, {})
             info = model_info.get(model_name, {'short': model_name[:12]})
             is_best = model_name == best_model
@@ -2265,67 +2342,38 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 
                 drift_desc, drift_color = describe_drift_speed(q)
                 vol_desc, vol_color = describe_vol_scale(c)
-                persist_desc, persist_color = describe_persistence(phi)
-                tail_desc, tail_color = describe_tail_weight(nu)
+                persist_desc, persist_color = describe_persistence(phi) if phi else ("—", "dim")
+                tail_desc, tail_color = describe_tail_weight(nu) if nu else ("—", "dim")
                 
-                model_style = "bold green" if is_best else "white"
-                
-                params_table.add_row(
-                    f"[{model_style}]{info['short']}[/{model_style}]",
-                    f"[{drift_color}]{drift_desc}[/{drift_color}]",
-                    f"[{vol_color}]{vol_desc}[/{vol_color}]",
-                    f"[{persist_color}]{persist_desc}[/{persist_color}]" if phi is not None else "[dim]—[/dim]",
-                    f"[{tail_color}]{tail_desc}[/{tail_color}]" if nu is not None else "[dim]—[/dim]",
-                )
+                if is_best:
+                    params_table.add_row(
+                        f"[bold bright_green]{info['short']}[/bold bright_green]",
+                        f"[bold {drift_color}]{drift_desc}[/bold {drift_color}]",
+                        f"[bold {vol_color}]{vol_desc}[/bold {vol_color}]",
+                        f"[bold {persist_color}]{persist_desc}[/bold {persist_color}]",
+                        f"[bold {tail_color}]{tail_desc}[/bold {tail_color}]",
+                    )
+                else:
+                    params_table.add_row(
+                        f"[dim]{info['short']}[/dim]",
+                        f"[dim]{drift_desc}[/dim]",
+                        f"[dim]{vol_desc}[/dim]",
+                        f"[dim]{persist_desc}[/dim]",
+                        f"[dim]{tail_desc}[/dim]",
+                    )
             else:
                 params_table.add_row(
-                    info['short'],
-                    "[dim]failed[/dim]",
+                    f"[dim]{info['short']}[/dim]",
+                    "[dim]—[/dim]",
                     "[dim]—[/dim]",
                     "[dim]—[/dim]",
                     "[dim]—[/dim]",
                 )
         
-        # Create header
-        if sector:
-            title = f"[bold cyan]📊 {company_name}[/bold cyan] [dim]({asset_symbol})[/dim] — [white]{sector}[/white]"
-        else:
-            title = f"[bold cyan]📊 {company_name}[/bold cyan] [dim]({asset_symbol})[/dim]"
+        console.print(Padding(params_table, (0, 0, 0, 4)))
         
-        # Get global-level aggregate scores
-        global_hyv_max = tuned_params.get('hyvarinen_max')
-        global_bic_min = tuned_params.get('bic_min')
-        global_comb_min = tuned_params.get('combined_score_min')
-        
-        # Build summary text
-        summary_parts = []
-        if global_bic_min is not None and np.isfinite(global_bic_min):
-            summary_parts.append(f"BIC↓ {global_bic_min:.1f}")
-        if global_hyv_max is not None and np.isfinite(global_hyv_max):
-            summary_parts.append(f"Hyvärinen↑ {global_hyv_max:.1f}")
-        if global_comb_min is not None and np.isfinite(global_comb_min):
-            summary_parts.append(f"Combined↓ {global_comb_min:.2f}")
-        summary_text = " • ".join(summary_parts) if summary_parts else ""
-        summary_text = " • ".join(summary_parts) if summary_parts else ""
-        
-        # Print with elegant layout
         console.print()
-        console.print(Panel(
-            Group(
-                Text(f"Model Weights — Selection: {method_short}", style="bold white"),
-                Text(f"[dim]{method_desc}[/dim]"),
-                weights_table,
-                Text(""),
-                Text("Parameter Estimates", style="bold white"),
-                params_table,
-                Text(""),
-                Text(f"[dim]Best scores: {summary_text}[/dim]") if summary_text else Text(""),
-            ),
-            title=title,
-            subtitle=f"[dim]Bayesian Model Averaging • {method_short}[/dim]",
-            border_style="cyan",
-            padding=(1, 2),
-        ))
+        console.print(Rule(style="dim", characters="─"))
         console.print()
     elif asset_symbol and tuned_params:
         # Old cache format warning

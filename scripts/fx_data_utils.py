@@ -27,11 +27,19 @@ import requests
 try:
     from rich.console import Console
     from rich.table import Table
+    from rich import box
+    from rich.text import Text
+    from rich.panel import Panel
+    from rich.align import Align
     _HAS_RICH = True
 except ImportError:
     _HAS_RICH = False
     Console = None
     Table = None
+    box = None
+    Text = None
+    Panel = None
+    Align = None
 
 # Configure yfinance with longer timeout (default is 10 seconds, which is too short for bulk downloads)
 YFINANCE_TIMEOUT = 60  # seconds
@@ -280,37 +288,38 @@ def _get_rich_console():
 
 
 def _init_symbol_map_table():
-    """Create a beautiful Rich table for symbol mappings."""
+    """Create an extraordinary Apple-quality Rich table for symbol mappings."""
     table = Table(
-        title="[bold cyan]Symbol Mappings[/bold cyan]",
         show_header=True,
         header_style="bold white",
-        border_style="cyan",
-        title_style="bold cyan",
+        border_style="dim",
+        box=box.ROUNDED,
         padding=(0, 1),
         collapse_padding=True,
+        expand=False,
     )
-    table.add_column("Original", style="cyan", justify="left", width=14)
-    table.add_column("Normalized", style="white", justify="left", width=14)
-    table.add_column("Action", style="green", justify="left", width=24)
-    table.add_column("Reason", style="white", justify="left", width=30)
+    table.add_column("Original", style="white", justify="left", width=14)
+    table.add_column("→", style="dim", justify="center", width=2)
+    table.add_column("Resolved", style="bold cyan", justify="left", width=14)
+    table.add_column("Action", style="green", justify="left", width=22)
+    table.add_column("Reason", style="dim", justify="left", width=28)
     return table
 
 
 def _init_symbol_fail_table():
-    """Create a beautiful Rich table for symbol failures."""
+    """Create an extraordinary Apple-quality Rich table for symbol failures."""
     table = Table(
-        title="[bold red]Symbol Failures[/bold red]",
         show_header=True,
         header_style="bold white",
-        border_style="red",
-        title_style="bold red",
+        border_style="dim",
+        box=box.ROUNDED,
         padding=(0, 1),
         collapse_padding=True,
+        expand=False,
     )
-    table.add_column("Original", style="yellow", justify="left", width=14)
-    table.add_column("Status", style="red", justify="left", width=24)
-    table.add_column("Reason", style="white", justify="left", width=35)
+    table.add_column("Symbol", style="yellow", justify="left", width=14)
+    table.add_column("Status", style="indian_red1", justify="left", width=22)
+    table.add_column("Details", style="dim", justify="left", width=32)
     return table
 
 
@@ -370,9 +379,10 @@ def _log_symbol_map(original: str, normalized: str, meta: Dict) -> None:
     if _HAS_RICH and _SYMBOL_MAP_TABLE is not None:
         _SYMBOL_MAP_TABLE.add_row(
             original,
-            f"[bold]{normalized}[/bold]",
-            f"[green]✔ {action}[/green]",
-            why
+            "[dim]→[/dim]",
+            f"[bold cyan]{normalized}[/bold cyan]",
+            f"[green]✓ {action}[/green]",
+            f"[dim]{why}[/dim]"
         )
     else:
         icon = "✔" if _USE_COLOR else "*"
@@ -398,16 +408,35 @@ def _log_symbol_fail(original: str, status: str, reason: Optional[str] = None) -
 
 
 def print_symbol_tables() -> None:
-    """Print the accumulated symbol mapping and failure tables.
-    Call this after all symbols have been processed."""
+    """Print the accumulated symbol mapping and failure tables with Apple-quality UX."""
     global _SYMBOL_MAP_TABLE, _SYMBOL_FAIL_TABLE, _SYMBOL_MAP_HEADER_PRINTED, _SYMBOL_FAIL_HEADER_PRINTED
     
     if _HAS_RICH:
         console = _get_rich_console()
+        
+        # Print mappings table with elegant header
         if _SYMBOL_MAP_TABLE is not None and _SYMBOL_MAP_TABLE.row_count > 0:
             console.print()
+            
+            # Section header
+            header = Text()
+            header.append("▸ ", style="bright_cyan")
+            header.append("SYMBOL RESOLUTION", style="bold white")
+            header.append(f"   ({_SYMBOL_MAP_TABLE.row_count} mapped)", style="dim")
+            console.print(header)
+            console.print()
             console.print(_SYMBOL_MAP_TABLE)
+        
+        # Print failures table with warning styling
         if _SYMBOL_FAIL_TABLE is not None and _SYMBOL_FAIL_TABLE.row_count > 0:
+            console.print()
+            
+            # Section header
+            header = Text()
+            header.append("▸ ", style="indian_red1")
+            header.append("RESOLUTION FAILURES", style="bold indian_red1")
+            header.append(f"   ({_SYMBOL_FAIL_TABLE.row_count} failed)", style="dim")
+            console.print(header)
             console.print()
             console.print(_SYMBOL_FAIL_TABLE)
     else:
