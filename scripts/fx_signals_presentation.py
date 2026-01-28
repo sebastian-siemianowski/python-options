@@ -21,6 +21,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich.live import Live
 from rich.layout import Layout
 from rich.spinner import Spinner
+from rich.padding import Padding
 from contextlib import contextmanager
 
 
@@ -946,6 +947,7 @@ SIMPLIFIED_COLUMN_DESCRIPTIONS = {
 # TUNING OUTPUT PRESENTATION
 # =============================================================================
 # World-class UX for Kalman MLE tuning pipeline output
+# Apple Design Principles: Clarity, Deference, Depth
 # =============================================================================
 
 # Regime labels for display (imported from tune_q_mle or defined here for standalone use)
@@ -969,7 +971,16 @@ REGIME_COLORS = {
 
 def create_tuning_console() -> Console:
     """Create a console with optimal settings for tuning output."""
-    return Console(force_terminal=True, color_system="auto")
+    return Console(force_terminal=True, color_system="truecolor", width=140)
+
+
+def _human_number(n: int) -> str:
+    """Format number with K/M suffix."""
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.1f}K"
+    return str(n)
 
 
 def render_tuning_header(
@@ -978,55 +989,143 @@ def render_tuning_header(
     lambda_regime: float,
     console: Console = None
 ) -> None:
-    """Render beautiful header for tuning pipeline.
+    """Render extraordinary Apple-quality header for tuning pipeline.
     
-    Args:
-        prior_mean: Prior mean for log10(q)
-        prior_lambda: Regularization strength
-        lambda_regime: Hierarchical shrinkage parameter
-        console: Rich console instance
+    Apple Design Principles Applied:
+    1. Clarity - Clear visual hierarchy, no clutter
+    2. Deference - Content first, chrome minimal  
+    3. Depth - Layered information density
     """
     if console is None:
         console = create_tuning_console()
     
-    header_panel = Panel(
-        Text.from_markup(
-            f"[bold white]Kalman Drift MLE Tuning Pipeline[/bold white]\n"
-            f"[dim]Hierarchical Regime-Conditional Bayesian Model Averaging[/dim]\n\n"
-            f"[cyan]Prior on q:[/cyan] log₁₀(q) ~ N({prior_mean:.1f}, λ={prior_lambda:.1f})\n"
-            f"[cyan]Prior on φ:[/cyan] φ ~ N(0, τ) with λ_φ=0.05 (explicit shrinkage)\n"
-            f"[cyan]Hierarchical shrinkage:[/cyan] λ_regime = {lambda_regime:.3f}\n"
-            f"[cyan]Models:[/cyan] Gaussian, φ-Gaussian, φ-Student-t (ν∈{{4,6,8,12,20}})\n"
-            f"[cyan]Selection:[/cyan] BIC + Hyvärinen combined scoring\n"
-            f"[cyan]Regime-conditional:[/cyan] Fits (q, c, φ) per regime; ν discrete grid"
-        ),
-        title="[bold blue]🔧 KALMAN TUNING[/bold blue]",
-        border_style="blue",
-        padding=(1, 2),
-        expand=False,
+    from rich.align import Align
+    from datetime import datetime
+    import multiprocessing
+    
+    # Clear for immersive experience
+    console.clear()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # HERO TITLE - Cinematic, minimal
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print()
+    console.print()
+    
+    title = Text()
+    title.append("◆", style="bold bright_cyan")
+    title.append("  K A L M A N   T U N E R", style="bold bright_white")
+    console.print(Align.center(title))
+    
+    subtitle = Text("Hierarchical Regime-Conditional Maximum Likelihood", style="dim")
+    console.print(Align.center(subtitle))
+    
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # CONTEXT BAR - Time, cores, date - ultra minimal
+    # ═══════════════════════════════════════════════════════════════════════════════
+    now = datetime.now()
+    cores = multiprocessing.cpu_count()
+    
+    ctx = Text()
+    ctx.append(f"{now.strftime('%H:%M')}", style="bold white")
+    ctx.append("  ·  ", style="dim")
+    ctx.append(f"{cores} cores", style="dim")
+    ctx.append("  ·  ", style="dim")
+    ctx.append(f"{now.strftime('%b %d, %Y')}", style="dim")
+    console.print(Align.center(ctx))
+    
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # PRIORS CARD - Clean, scannable
+    # ═══════════════════════════════════════════════════════════════════════════════
+    priors = Table.grid(padding=(0, 4))
+    priors.add_column(justify="right")
+    priors.add_column(justify="left")
+    priors.add_column(justify="right")
+    priors.add_column(justify="left")
+    priors.add_column(justify="right")
+    priors.add_column(justify="left")
+    
+    priors.add_row(
+        "[dim]q prior[/dim]", f"[white]N({prior_mean:.1f}, {prior_lambda:.1f})[/white]",
+        "[dim]φ prior[/dim]", "[white]N(0, τ)[/white]",
+        "[dim]λ regime[/dim]", f"[white]{lambda_regime:.3f}[/white]",
     )
-    console.print(header_panel)
+    console.print(Align.center(priors))
+    
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # MODEL CHIPS - Elegant badges
+    # ═══════════════════════════════════════════════════════════════════════════════
+    chips = Text()
+    chips.append("  ○ ", style="green")
+    chips.append("Gaussian", style="green")
+    chips.append("    ○ ", style="cyan")
+    chips.append("φ-Gaussian", style="cyan")
+    chips.append("    ○ ", style="magenta")
+    chips.append("φ-Student-t", style="magenta")
+    chips.append(" ", style="dim")
+    chips.append("(ν ∈ {4, 6, 8, 12, 20})", style="dim")
+    console.print(Align.center(chips))
+    
+    console.print()
+    console.print()
 
 
 def render_tuning_progress_start(
     n_assets: int,
     n_workers: int,
+    n_cached: int,
+    cache_size: int,
+    cache_path: str,
     console: Console = None
 ) -> None:
-    """Render progress start message.
+    """Render extraordinary Apple-quality processing phase.
     
-    Args:
-        n_assets: Number of assets to process
-        n_workers: Number of parallel workers
-        console: Rich console instance
+    Design: Elegant integrated info card with visual hierarchy
     """
     if console is None:
         console = create_tuning_console()
     
-    console.print(
-        f"\n[bold cyan]🚀 Processing {n_assets} assets[/bold cyan] "
-        f"[dim]({n_workers} parallel workers)[/dim]"
-    )
+    from rich.align import Align
+    from rich.rule import Rule
+    from datetime import datetime
+    
+    console.print()
+    console.print(Rule(style="dim", characters="─"))
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # ESTIMATION PHASE - Clean, integrated
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    # Phase title
+    title = Text()
+    title.append("▸ ", style="bright_yellow")
+    title.append("ESTIMATION", style="bold white")
+    console.print(title)
+    console.print()
+    
+    # Stats in elegant horizontal layout
+    stats = Text()
+    stats.append("    ")
+    stats.append(f"{n_assets}", style="bold bright_yellow")
+    stats.append(" to process", style="dim")
+    stats.append("   ·   ", style="dim")
+    stats.append(f"{n_cached}", style="bold cyan")
+    stats.append(" cached", style="dim")
+    stats.append("   ·   ", style="dim")
+    stats.append(f"{n_workers}", style="bold white")
+    stats.append(" cores", style="dim")
+    stats.append("   ·   ", style="dim")
+    stats.append(f"{cache_size:,}", style="white")
+    stats.append(" in cache", style="dim")
+    console.print(stats)
+    console.print()
 
 
 def render_cache_status(
@@ -1034,34 +1133,23 @@ def render_cache_status(
     cache_path: str,
     console: Console = None
 ) -> None:
-    """Render cache status message.
-    
-    Args:
-        cache_size: Number of entries in cache
-        cache_path: Path to cache file
-        console: Rich console instance
-    """
+    """Render elegant cache status - one line, clean."""
     if console is None:
         console = create_tuning_console()
     
-    console.print(f"\n[dim]💾 Loaded cache with {cache_size} existing entries[/dim]")
-    console.print(f"[dim]   Path: {cache_path}[/dim]")
+    filename = cache_path.split('/')[-1]
+    console.print(f"  [dim]Cache:[/dim] [white]{cache_size:,}[/white] [dim]entries in[/dim] [white]{filename}[/white]")
 
 
 def render_cache_update(
     cache_path: str,
     console: Console = None
 ) -> None:
-    """Render cache update confirmation message.
-    
-    Args:
-        cache_path: Path to cache file
-        console: Rich console instance
-    """
+    """Render cache update confirmation - subtle."""
     if console is None:
         console = create_tuning_console()
     
-    console.print(f"\n[#00d700]✓ Cache updated: {cache_path}[/#00d700]")
+    console.print(f"  [green]✓[/green] [dim]Saved[/dim]")
 
 
 def render_asset_progress(
@@ -1072,52 +1160,31 @@ def render_asset_progress(
     details: Optional[str] = None,
     console: Console = None
 ) -> None:
-    """Render progress for a single asset.
-    
-    Args:
-        asset: Asset symbol
-        index: Current index (1-based)
-        total: Total assets
-        status: Status indicator ('success', 'cached', 'failed', 'warning')
-        details: Optional detail string
-        console: Rich console instance
-    """
+    """Render single asset progress - compact."""
     if console is None:
         console = create_tuning_console()
     
-    # Status icons and colors
-    status_styles = {
-        'success': ('[bold #00d700]✓[/bold #00d700]', '#00d700'),
-        'cached': ('[cyan]↻[/cyan]', 'cyan'),
-        'failed': ('[bold indian_red1]✗[/bold indian_red1]', 'indian_red1'),
-        'warning': ('[yellow]⚠[/yellow]', 'yellow'),
-        'processing': ('[blue]⟳[/blue]', 'blue'),
+    icons = {
+        'success': '[green]✓[/green]',
+        'cached': '[blue]○[/blue]',
+        'failed': '[red]✗[/red]',
+        'warning': '[yellow]![/yellow]',
     }
     
-    icon, color = status_styles.get(status, ('[white]•[/white]', 'white'))
-    progress_pct = index / total * 100
-    
-    msg = f"{icon} [{color}]{asset}[/{color}]"
-    if details:
-        msg += f" [dim]{details}[/dim]"
-    
-    # Add progress indicator
-    bar_width = 20
-    filled = int(progress_pct / 100 * bar_width)
-    bar = f"[cyan]{'█' * filled}{'░' * (bar_width - filled)}[/cyan]"
-    
-    console.print(f"  [{index:3d}/{total}] {bar} {msg}")
+    icon = icons.get(status, '·')
+    detail_str = f" [dim]{details}[/dim]" if details else ""
+    console.print(f"    {icon} [white]{asset}[/white]{detail_str}")
 
 
 def _get_status(fit_count: int, shrunk_count: int) -> str:
     """Get plain text status for regime row."""
     if fit_count == 0:
-        return "no fits"
+        return "—"
     elif shrunk_count > 0:
         pct = shrunk_count / fit_count * 100 if fit_count > 0 else 0
-        return f"{pct:.0f}% shrunk"
+        return f"{pct:.0f}%"
     else:
-        return "✓ estimated"
+        return "✓"
 
 
 def render_tuning_summary(
@@ -1134,153 +1201,225 @@ def render_tuning_summary(
     regime_shrunk_counts: Dict[int, int],
     collapse_warnings: int,
     cache_path: str,
+    regime_model_breakdown: Optional[Dict[int, Dict[str, int]]] = None,
     console: Console = None
 ) -> None:
-    """Render comprehensive tuning summary with beautiful formatting.
+    """Render extraordinary Apple-quality tuning summary.
     
-    Args:
-        total_assets: Total number of assets processed
-        new_estimates: Number of newly estimated assets
-        reused_cached: Number of assets reused from cache
-        failed: Number of failed assets
-        calibration_warnings: Number of calibration warnings
-        gaussian_count: Number of Gaussian models
-        student_t_count: Number of Student-t models
-        regime_tuning_count: Number of assets with regime params
-        lambda_regime: Hierarchical shrinkage parameter
-        regime_fit_counts: Dict mapping regime index to fit count
-        regime_shrunk_counts: Dict mapping regime index to shrunk count
-        collapse_warnings: Number of collapse warnings
-        cache_path: Path to cache file
-        console: Rich console instance
+    Design: Clean cards, clear hierarchy, breathing room
     """
     if console is None:
         console = create_tuning_console()
     
+    from rich.align import Align
+    from rich.rule import Rule
+    
+    console.print()
     console.print()
     
-    # Processing summary - Rich Panel with expand=False
-    summary_text = (
-        f"Assets processed     [bold white]{total_assets}[/bold white]\n"
-        f"New estimates        [#00d700]{new_estimates}[/#00d700]\n"
-        f"Reused cached        [cyan]{reused_cached}[/cyan]\n"
-        f"Failed               {'[indian_red1]' + str(failed) + '[/indian_red1]' if failed > 0 else '[dim]0[/dim]'}"
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # COMPLETION TITLE
+    # ═══════════════════════════════════════════════════════════════════════════════
+    title = Text()
+    title.append("◆", style="bold bright_green")
+    title.append("  C O M P L E T E", style="bold bright_white")
+    console.print(Align.center(title))
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # METRICS ROW - Ultra clean
+    # ═══════════════════════════════════════════════════════════════════════════════
+    metrics = Table.grid(padding=(0, 6))
+    metrics.add_column(justify="center")
+    metrics.add_column(justify="center")
+    metrics.add_column(justify="center")
+    metrics.add_column(justify="center")
+    
+    def metric_cell(value: int, label: str, color: str = "white") -> Text:
+        t = Text()
+        t.append(f"{value:,}", style=f"bold {color}")
+        t.append(f"\n{label}", style="dim")
+        return t
+    
+    failed_color = "red" if failed > 0 else "dim"
+    metrics.add_row(
+        metric_cell(total_assets, "TOTAL", "white"),
+        metric_cell(new_estimates, "NEW", "green"),
+        metric_cell(reused_cached, "CACHED", "cyan"),
+        metric_cell(failed, "FAILED", failed_color),
     )
-    if calibration_warnings > 0:
-        summary_text += f"\nCalibration warnings [yellow]⚠ {calibration_warnings}[/yellow]"
+    console.print(Align.center(metrics))
     
-    console.print(Panel(
-        summary_text,
-        title="[bold cyan]📊 Processing Summary[/bold cyan]",
-        border_style="cyan",
-        expand=False,
-        padding=(1, 2),
-    ))
+    console.print()
+    console.print()
     
-    # Model selection summary - Rich Panel with expand=False
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # MODEL SELECTION - Visual bars
+    # ═══════════════════════════════════════════════════════════════════════════════
     total_models = gaussian_count + student_t_count
     if total_models > 0:
+        section = Text()
+        section.append("▸ ", style="bright_cyan")
+        section.append("MODEL SELECTION", style="bold white")
+        console.print(section)
+        console.print()
+        
         gauss_pct = gaussian_count / total_models * 100
         student_pct = student_t_count / total_models * 100
         
-        gauss_bar = "█" * int(gauss_pct / 5) + "░" * (20 - int(gauss_pct / 5))
-        student_bar = "█" * int(student_pct / 5) + "░" * (20 - int(student_pct / 5))
+        # Gaussian bar
+        bar_width = 30
+        gauss_filled = int(gauss_pct / 100 * bar_width)
+        student_filled = int(student_pct / 100 * bar_width)
         
-        model_text = (
-            f"Gaussian/φ-Gauss  {gaussian_count:>3}  [green]{gauss_bar}[/green] {gauss_pct:>3.0f}%\n"
-            f"φ-Student-t       {student_t_count:>3}  [magenta]{student_bar}[/magenta] {student_pct:>3.0f}%\n"
-            f"[dim]Student-t uses discrete ν ∈ {{4, 6, 8, 12, 20}}[/dim]"
-        )
+        console.print(f"    [green]Gaussian[/green]     [green]{'█' * gauss_filled}[/green][dim]{'░' * (bar_width - gauss_filled)}[/dim]  [bold]{gaussian_count}[/bold] [dim]({gauss_pct:.0f}%)[/dim]")
+        console.print(f"    [magenta]Student-t[/magenta]    [magenta]{'█' * student_filled}[/magenta][dim]{'░' * (bar_width - student_filled)}[/dim]  [bold]{student_t_count}[/bold] [dim]({student_pct:.0f}%)[/dim]")
         
-        console.print(Panel(
-            model_text,
-            title="[bold magenta]🎯 Model Selection (BIC + Hyvärinen)[/bold magenta]",
-            border_style="magenta",
-            expand=False,
-            padding=(1, 2),
-        ))
+        console.print()
+        console.print()
     
-    # Regime-conditional summary - using Rich Table instead of Panel
-    console.print()
-    console.print("[bold yellow]🌡️ Regime-Conditional Tuning[/bold yellow]")
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # REGIME TABLE - With model breakdown
+    # ═══════════════════════════════════════════════════════════════════════════════
+    section = Text()
+    section.append("▸ ", style="bright_cyan")
+    section.append("REGIME COVERAGE", style="bold white")
+    console.print(section)
     console.print()
     
-    regime_table = Table(
-        show_header=True,
-        header_style="bold",
-        box=box.ROUNDED,
-        border_style="yellow",
-        padding=(0, 1),
-        expand=False,
-    )
-    regime_table.add_column("Regime", style="bold", width=16)
-    regime_table.add_column("Fits", justify="right", width=6)
-    regime_table.add_column("Shrunk", justify="right", width=6)
-    regime_table.add_column("Status", width=14)
+    # Regime names and colors
+    regime_names = ["LOW_VOL_TREND", "HIGH_VOL_TREND", "LOW_VOL_RANGE", "HIGH_VOL_RANGE", "CRISIS_JUMP"]
+    regime_short = ["LV Trend", "HV Trend", "LV Range", "HV Range", "Crisis"]
+    regime_colors_list = ["cyan", "yellow", "green", "orange1", "red"]
     
-    for r in range(5):
-        regime_name = TUNING_REGIME_LABELS.get(r, f"REGIME_{r}")
-        regime_color = REGIME_COLORS.get(regime_name, "white")
-        fit_count = regime_fit_counts.get(r, 0)
-        shrunk_count = regime_shrunk_counts.get(r, 0)
-        
-        if fit_count == 0:
-            status = "[dim]no fits[/dim]"
-        elif shrunk_count > 0:
-            pct_shrunk = shrunk_count / fit_count * 100 if fit_count > 0 else 0
-            status = f"[yellow]{pct_shrunk:.0f}% shrunk[/yellow]"
+    max_fits = max(regime_fit_counts.values()) if regime_fit_counts.values() else 1
+    
+    # Collect all model types across all regimes for consistent ordering
+    all_model_types = set()
+    if regime_model_breakdown:
+        for r_breakdown in regime_model_breakdown.values():
+            all_model_types.update(r_breakdown.keys())
+    
+    # Sort model types: Gaussian first, then φ-Gaussian, then Student-t variants by ν
+    def model_sort_key(m):
+        if m == "Gaussian":
+            return (0, 0)
+        elif m == "φ-Gaussian":
+            return (1, 0)
         else:
-            status = "[#00d700]✓ estimated[/#00d700]"
-        
-        shrunk_display = str(shrunk_count) if shrunk_count > 0 else "-"
-        
-        regime_table.add_row(
-            f"[{regime_color}]{regime_name}[/{regime_color}]",
-            str(fit_count),
-            shrunk_display,
-            status
-        )
+            # Extract ν value for sorting
+            import re
+            nu_match = re.search(r'ν=(\d+)', m)
+            nu = int(nu_match.group(1)) if nu_match else 0
+            return (2, nu)
     
-    console.print(regime_table)
-    console.print(f"[dim]  λ_regime = {lambda_regime:.3f}  •  φ prior: N(0, τ)  •  Regime params: {regime_tuning_count}[/dim]")
-    if collapse_warnings > 0:
-        console.print(f"[yellow]  ⚠ Collapse warnings: {collapse_warnings} assets[/yellow]")
+    sorted_models = sorted(all_model_types, key=model_sort_key)
     
-    # Cache info
-    console.print(f"\n[dim]💾 Cache: {cache_path}[/dim]")
+    # Create table with regime rows
+    table = Table(
+        show_header=True,
+        header_style="dim",
+        box=None,
+        padding=(0, 2),
+        collapse_padding=True,
+    )
+    table.add_column("Regime", width=10)
+    table.add_column("Total", justify="right", width=5)
+    table.add_column("", width=20)  # Visual bar
+    
+    # Add columns for each model type
+    for model in sorted_models:
+        if model == "Gaussian":
+            table.add_column("G", justify="right", width=4, style="green")
+        elif model == "φ-Gaussian":
+            table.add_column("φ-G", justify="right", width=4, style="cyan")
+        else:
+            # Extract ν for column header
+            import re
+            nu_match = re.search(r'ν=(\d+)', model)
+            nu = nu_match.group(1) if nu_match else "?"
+            table.add_column(f"t{nu}", justify="right", width=4, style="magenta")
+    
+    for i, (name, short, color) in enumerate(zip(regime_names, regime_short, regime_colors_list)):
+        fit_count = regime_fit_counts.get(i, 0)
+        
+        # Create visual bar
+        if fit_count == 0:
+            bar = "[dim]" + "─" * 20 + "[/dim]"
+        else:
+            filled = int(fit_count / max_fits * 20) if max_fits > 0 else 0
+            bar = f"[{color}]{'━' * filled}[/{color}][dim]{'─' * (20 - filled)}[/dim]"
+        
+        # Build row with model breakdown
+        row = [
+            f"[{color}]{short}[/{color}]",
+            f"[bold]{fit_count}[/bold]",
+            bar,
+        ]
+        
+        # Add counts for each model type
+        if regime_model_breakdown:
+            r_breakdown = regime_model_breakdown.get(i, {})
+            for model in sorted_models:
+                count = r_breakdown.get(model, 0)
+                if count > 0:
+                    row.append(str(count))
+                else:
+                    row.append("[dim]—[/dim]")
+        
+        table.add_row(*row)
+    
+    console.print(Padding(table, (0, 0, 0, 4)))
+    console.print()
+    
+    # Warnings
+    if collapse_warnings > 0 or calibration_warnings > 0:
+        console.print()
+        if collapse_warnings > 0:
+            console.print(f"    [yellow]⚠[/yellow] [dim]{collapse_warnings} collapse warnings[/dim]")
+        if calibration_warnings > 0:
+            console.print(f"    [yellow]⚠[/yellow] [dim]{calibration_warnings} calibration warnings[/dim]")
+    
+    console.print()
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # FOOTER - Subtle
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print(Rule(style="dim", characters="─"))
+    console.print()
+    
+    footer = Text()
+    footer.append("  Cache saved", style="dim")
+    footer.append("  ·  ", style="dim")
+    footer.append(f"{regime_tuning_count} regime params", style="dim")
+    footer.append("  ·  ", style="dim")
+    footer.append("Ready", style="green")
+    console.print(footer)
+    console.print()
 
 
 def render_parameter_table(
     cache: Dict[str, Dict],
     console: Console = None
 ) -> None:
-    """Render beautiful parameter table grouped by model family.
-    
-    Args:
-        cache: Cache dictionary with asset parameters
-        console: Rich console instance
-    """
+    """Render beautiful parameter table - clean, scannable."""
     if console is None:
         console = create_tuning_console()
     
     if not cache:
-        console.print("[dim]No parameters to display.[/dim]")
         return
     
+    import numpy as np
+    
     def _model_label(data: dict) -> str:
-        """Determine model label from cache entry."""
         if 'global' in data:
             data = data['global']
-        phi_val = data.get('phi')
         noise_model = data.get('noise_model', 'gaussian')
-        # Student-t models use phi_student_t_nu_* naming
-        is_student_t = noise_model and noise_model.startswith('phi_student_t_nu_')
-        if is_student_t and phi_val is not None:
-            return 'Phi-Student-t'
-        if is_student_t:
+        if noise_model and noise_model.startswith('phi_student_t_nu_'):
             return 'Student-t'
-        if noise_model == 'kalman_phi_gaussian' or phi_val is not None:
-            return 'Phi-Gaussian'
+        if noise_model == 'kalman_phi_gaussian' or data.get('phi') is not None:
+            return 'φ-Gaussian'
         return 'Gaussian'
     
     def _get_q_for_sort(data):
@@ -1288,60 +1427,56 @@ def render_parameter_table(
             return data['global'].get('q', 0)
         return data.get('q', 0)
     
-    # Sort by model family, then descending q
-    sorted_assets = sorted(
-        cache.items(),
-        key=lambda x: (_model_label(x[1]), -_get_q_for_sort(x[1]))
-    )
+    # Group by model
+    groups: Dict[str, List] = {}
+    for asset, data in cache.items():
+        model = _model_label(data)
+        if model not in groups:
+            groups[model] = []
+        groups[model].append((asset, data))
     
-    # Group by model family
-    model_groups: Dict[str, List] = {}
-    for asset, raw_data in sorted_assets:
-        model = _model_label(raw_data)
-        if model not in model_groups:
-            model_groups[model] = []
-        model_groups[model].append((asset, raw_data))
-    
-    # Model family colors
-    model_colors = {
-        'Gaussian': 'green',
-        'Phi-Gaussian': 'cyan',
-        'Student-t': 'yellow',
-        'Phi-Student-t': 'magenta',
-    }
+    # Sort each group
+    for model in groups:
+        groups[model].sort(key=lambda x: -_get_q_for_sort(x[1]))
     
     console.print()
-    console.print("[bold white]Best-fit Parameters by Model Family[/bold white]")
-    console.print("[dim]Sorted by log₁₀(q) within each group[/dim]")
+    section = Text()
+    section.append("▸ ", style="bright_cyan")
+    section.append("PARAMETERS", style="bold white")
+    console.print(section)
     console.print()
     
-    for model_name, assets in model_groups.items():
+    model_colors = {'Gaussian': 'green', 'φ-Gaussian': 'cyan', 'Student-t': 'magenta'}
+    
+    for model_name in ['Gaussian', 'φ-Gaussian', 'Student-t']:
+        if model_name not in groups:
+            continue
+        
+        assets = groups[model_name]
         color = model_colors.get(model_name, 'white')
         
-        table = Table(
-            title=f"[bold {color}]● {model_name}[/bold {color}] [dim]({len(assets)} assets)[/dim]",
-            show_header=True,
-            header_style="bold white",
-            box=box.ROUNDED,
-            padding=(0, 1),
-        )
+        # Model header
+        console.print(f"    [{color}]● {model_name}[/{color}] [dim]({len(assets)} assets)[/dim]")
+        console.print()
         
-        table.add_column("Asset", style="bold", width=14)
-        table.add_column("log₁₀(q)", justify="right", width=9)
+        # Create compact table
+        table = Table(
+            show_header=True,
+            header_style="dim",
+            box=None,
+            padding=(0, 2),
+            collapse_padding=True,
+        )
+        table.add_column("Asset", style="bold", width=12)
+        table.add_column("log₁₀(q)", justify="right", width=8)
         table.add_column("c", justify="right", width=6)
         table.add_column("φ", justify="right", width=7)
-        table.add_column("ν", justify="right", width=6)
-        table.add_column("ΔLL₀", justify="right", width=7)
-        table.add_column("ΔLLc", justify="right", width=7)
-        table.add_column("ΔLLe", justify="right", width=7)
-        table.add_column("BIC", justify="right", width=9)
-        table.add_column("Hyv", justify="right", width=8)
-        table.add_column("Comb", justify="right", width=6)
-        table.add_column("Sel", justify="center", width=5)
-        table.add_column("PIT p", justify="right", width=8)
+        table.add_column("ν", justify="right", width=5)
+        table.add_column("BIC", justify="right", width=8)
+        table.add_column("PIT p", justify="right", width=7)
         
+        # Show ALL assets (no truncation)
         for asset, raw_data in assets:
-            # Handle regime-conditional structure
             if 'global' in raw_data:
                 data = raw_data['global']
             else:
@@ -1349,190 +1484,91 @@ def render_parameter_table(
             
             q_val = data.get('q', float('nan'))
             c_val = data.get('c', 1.0)
-            nu_val = data.get('nu')
             phi_val = data.get('phi')
-            delta_ll_zero = data.get('delta_ll_vs_zero', float('nan'))
-            delta_ll_const = data.get('delta_ll_vs_const', float('nan'))
-            delta_ll_ewma = data.get('delta_ll_vs_ewma', float('nan'))
+            nu_val = data.get('nu')
             bic_val = data.get('bic', float('nan'))
             pit_p = data.get('pit_ks_pvalue', float('nan'))
-            hyv_val = data.get('hyvarinen_score', float('nan'))
-            combined_score = data.get('combined_score', float('nan'))
-            model_sel_method = data.get('model_selection_method', '')
             
             log10_q = np.log10(q_val) if q_val > 0 else float('nan')
             
-            # Format values with color coding
-            log_q_str = f"{log10_q:.2f}" if np.isfinite(log10_q) else "-"
+            # Format values
+            q_str = f"{log10_q:.2f}" if np.isfinite(log10_q) else "—"
             c_str = f"{c_val:.3f}"
-            phi_str = f"{phi_val:+.3f}" if phi_val is not None else "[dim]-[/dim]"
-            nu_str = f"{nu_val:.1f}" if nu_val is not None else "[dim]-[/dim]"
+            phi_str = f"{phi_val:+.2f}" if phi_val is not None else "[dim]—[/dim]"
+            nu_str = f"{nu_val:.0f}" if nu_val is not None else "[dim]—[/dim]"
+            bic_str = f"{bic_val:.0f}" if np.isfinite(bic_val) else "—"
             
-            # Color code delta LL (positive = better than baseline)
-            def _format_delta_ll(val):
-                if not np.isfinite(val):
-                    return "[dim]-[/dim]"
-                if val > 10:
-                    return f"[#00d700]{val:+.0f}[/#00d700]"
-                elif val > 0:
-                    return f"[cyan]{val:+.0f}[/cyan]"
-                elif val < -10:
-                    return f"[indian_red1]{val:+.0f}[/indian_red1]"
-                else:
-                    return f"[dim]{val:+.0f}[/dim]"
-            
-            bic_str = f"{bic_val:.0f}" if np.isfinite(bic_val) else "-"
-            
-            # Format Hyvärinen score - ensure it's numeric before checking
-            try:
-                hyv_val_float = float(hyv_val) if hyv_val is not None else float('nan')
-                if np.isfinite(hyv_val_float):
-                    # Color code: higher is better
-                    if hyv_val_float > 1000:
-                        hyv_str = f"[#00d700]{hyv_val_float:.0f}[/#00d700]"
-                    elif hyv_val_float > 100:
-                        hyv_str = f"[cyan]{hyv_val_float:.0f}[/cyan]"
-                    elif hyv_val_float < 0:
-                        hyv_str = f"[indian_red1]{hyv_val_float:.0f}[/indian_red1]"
-                    else:
-                        hyv_str = f"{hyv_val_float:.0f}"
-                else:
-                    hyv_str = "[dim]-[/dim]"
-            except (TypeError, ValueError):
-                hyv_str = "[dim]-[/dim]"
-            
-            # Format model selection method
-            method_abbrev = {
-                'combined': '[magenta]C[/magenta]',
-                'bic': '[cyan]B[/cyan]',
-                'hyvarinen': '[yellow]H[/yellow]',
-            }
-            sel_str = method_abbrev.get(model_sel_method, '[dim]-[/dim]')
-            
-            # Format combined score (log of weight, higher = better)
-            try:
-                comb_val_float = float(combined_score) if combined_score is not None else float('nan')
-                if np.isfinite(comb_val_float):
-                    # Combined score is log weight, 0 = best possible, negative = worse
-                    if comb_val_float > -0.1:
-                        comb_str = f"[bold #00d700]{comb_val_float:.1f}[/bold #00d700]"
-                    elif comb_val_float > -1:
-                        comb_str = f"[#00d700]{comb_val_float:.1f}[/#00d700]"
-                    elif comb_val_float > -5:
-                        comb_str = f"[cyan]{comb_val_float:.1f}[/cyan]"
-                    else:
-                        comb_str = f"[dim]{comb_val_float:.1f}[/dim]"
-                else:
-                    comb_str = "[dim]-[/dim]"
-            except (TypeError, ValueError):
-                comb_str = "[dim]-[/dim]"
-            
-            # Color code PIT p-value
+            # Color PIT p-value
             if np.isfinite(pit_p):
-                if pit_p < 0.01:
-                    pit_str = f"[indian_red1]{pit_p:.4f}[/indian_red1]"
-                elif pit_p < 0.05:
-                    pit_str = f"[yellow]{pit_p:.4f}[/yellow]"
+                if pit_p < 0.05:
+                    pit_str = f"[yellow]{pit_p:.3f}[/yellow]"
                 else:
-                    pit_str = f"[#00d700]{pit_p:.4f}[/#00d700]"
+                    pit_str = f"[green]{pit_p:.3f}[/green]"
             else:
-                pit_str = "[dim]-[/dim]"
+                pit_str = "[dim]—[/dim]"
             
-            # Add warning marker if calibration warning
-            if data.get('calibration_warning'):
-                pit_str += " [yellow]⚠[/yellow]"
-            
-            table.add_row(
-                asset,
-                log_q_str,
-                c_str,
-                phi_str,
-                nu_str,
-                _format_delta_ll(delta_ll_zero),
-                _format_delta_ll(delta_ll_const),
-                _format_delta_ll(delta_ll_ewma),
-                bic_str,
-                hyv_str,
-                comb_str,
-                sel_str,
-                pit_str,
-            )
+            table.add_row(asset, q_str, c_str, phi_str, nu_str, bic_str, pit_str)
         
         console.print(table)
         console.print()
-    
-    # Legend - Rich Panel with expand=False
-    legend_text = (
-        "[white]log₁₀(q)[/white] — Process noise variance (log scale)\n"
-        "[white]c[/white] — Observation noise multiplier\n"
-        "[white]φ[/white] — Drift persistence (AR(1) coefficient, shrunk toward 0)\n"
-        "[white]ν[/white] — Student-t degrees of freedom (discrete: 4, 6, 8, 12, 20)\n"
-        "[white]ΔLL₀[/white] — Improvement vs zero-drift baseline\n"
-        "[white]ΔLLc[/white] — Improvement vs constant-drift baseline\n"
-        "[white]ΔLLe[/white] — Improvement vs EWMA-drift baseline\n"
-        "[white]BIC[/white] — Bayesian Information Criterion (lower = better)\n"
-        "[white]Hyv[/white] — Hyvärinen score (robust density scoring)\n"
-        "[white]Comb[/white] — Combined BIC+Hyvärinen score (log weight, 0 = best)\n"
-        "[white]Sel[/white] — Model selection: [magenta]C[/magenta]=Combined, [cyan]B[/cyan]=BIC, [yellow]H[/yellow]=Hyvärinen\n"
-        "[white]PIT p[/white] — PIT KS p-value (≥0.05 = well-calibrated)"
-    )
-    console.print(Panel(
-        legend_text,
-        title="[dim]📖 Column Legend[/dim]",
-        border_style="dim",
-        expand=False,
-        padding=(1, 2),
-    ))
 
 
 def render_failed_assets(
     failure_reasons: Dict[str, str],
     console: Console = None
 ) -> None:
-    """Render failed assets with reasons and full tracebacks.
-    
-    Args:
-        failure_reasons: Dict mapping asset to failure reason (may include traceback)
-        console: Rich console instance
-    """
+    """Render failed assets - clean, actionable."""
     if console is None:
         console = create_tuning_console()
     
     if not failure_reasons:
         return
     
-    # First show a summary table with just the error messages
-    table = Table(
-        title="[bold indian_red1]❌ Failed Assets[/bold indian_red1]",
-        show_header=True,
-        header_style="bold white",
-        box=box.ROUNDED,
-    )
-    table.add_column("Asset", style="bold")
-    table.add_column("Reason", style="indian_red1")
-    
-    for asset, reason in failure_reasons.items():
-        # Extract just the first line (error message) for the table
-        first_line = reason.split('\n')[0] if reason else "Unknown error"
-        table.add_row(asset, first_line)
-    
-    console.print(table)
+    console.print()
+    section = Text()
+    section.append("▸ ", style="red")
+    section.append("FAILED", style="bold red")
+    console.print(section)
     console.print()
     
-    # Then show full tracebacks for each failed asset
-    has_tracebacks = any('\n' in reason for reason in failure_reasons.values())
-    if has_tracebacks:
-        console.print("[bold indian_red1]📋 Full Tracebacks:[/bold indian_red1]")
-        console.print()
-        for asset, reason in failure_reasons.items():
-            if '\n' in reason:
-                console.print(f"[bold]{asset}:[/bold]")
-                # Print the full traceback with proper formatting
-                lines = reason.split('\n')
-                for line in lines[1:]:  # Skip first line (already shown in table)
-                    if line.strip():
-                        console.print(f"  [dim]{line}[/dim]")
-                console.print()
+    for asset, reason in failure_reasons.items():
+        first_line = reason.split('\n')[0][:60] if reason else "Unknown"
+        console.print(f"    [red]✗[/red] [bold]{asset}[/bold]  [dim]{first_line}[/dim]")
+    
+    console.print()
+
+
+def render_dry_run_preview(
+    assets: List[str],
+    max_display: int = 20,
+    console: Console = None
+) -> None:
+    """Render dry run preview - clean list."""
+    if console is None:
+        console = create_tuning_console()
+    
+    from rich.align import Align
+    
+    console.print()
+    
+    # Warning badge
+    badge = Text()
+    badge.append("  DRY RUN  ", style="bold black on yellow")
+    badge.append("  No changes will be made", style="dim")
+    console.print(badge)
+    
+    console.print()
+    console.print(f"  Would process [bold]{len(assets)}[/bold] assets:")
+    console.print()
+    
+    # Show assets in columns
+    for i, asset in enumerate(assets[:max_display], 1):
+        console.print(f"    [dim]{i:3}.[/dim] {asset}")
+    
+    if len(assets) > max_display:
+        console.print(f"    [dim]    ... and {len(assets) - max_display} more[/dim]")
+    
+    console.print()
 
 
 def render_end_of_run_summary(
@@ -1543,673 +1579,250 @@ def render_end_of_run_summary(
     processing_log: List[str],
     console: Console = None
 ) -> None:
-    """Render comprehensive end-of-run summary with all collected data.
-    
-    This is the ultimate summary showing:
-    1. Processing log (what was processed)
-    2. Model comparison results per asset
-    3. Regime distributions per asset
-    4. Failed assets with full tracebacks
-    
-    Args:
-        processed_assets: Full results per asset
-        regime_distributions: Per-asset regime counts
-        model_comparisons: Per-asset model comparison results
-        failure_reasons: Failed assets with reasons/tracebacks
-        processing_log: Log of what was processed
-        console: Rich console instance
-    """
+    """Render end-of-run summary - optional verbose details."""
     if console is None:
         console = create_tuning_console()
     
-    console.print()
-    console.print(Panel(
-        "[bold white]END-OF-RUN SUMMARY[/bold white]",
-        border_style="bold cyan",
-        expand=False,
-    ))
-    
-    # ==========================================================================
-    # Section 1: Processing Log (what was processed)
-    # ==========================================================================
-    if processing_log:
-        console.print()
-        console.print("[bold cyan]📝 Processing Log[/bold cyan]")
-        console.print("-" * 60)
-        for log_entry in processing_log:
-            if log_entry.startswith("✓"):
-                console.print(f"  [#00d700]{log_entry}[/#00d700]")
-            elif log_entry.startswith("❌"):
-                console.print(f"  [indian_red1]{log_entry}[/indian_red1]")
-            else:
-                console.print(f"  {log_entry}")
-    
-    # ==========================================================================
-    # Section 2: Model Comparison Results (per asset)
-    # ==========================================================================
-    if model_comparisons:
-        console.print()
-        console.print("[bold magenta]🔬 Model Comparison Results[/bold magenta]")
-        console.print()
-        
-        for asset_name in sorted(model_comparisons.keys()):
-            mc = model_comparisons[asset_name]
-            model_comp = mc.get('model_comparison', {})
-            selected = mc.get('selected_model', 'unknown')
-            n_obs = mc.get('n_obs', 0)
-            model_sel_method = mc.get('model_selection_method', 'combined')
-            
-            # Asset header
-            method_icon = {'bic': '📊', 'hyvarinen': '📐', 'combined': '⚖️'}.get(model_sel_method, '📊')
-            console.print(f"  [bold white]{asset_name}[/bold white] [dim]({n_obs} obs)[/dim]")
-            
-            # Create a mini table for this asset's model comparison
-            table = Table(
-                show_header=True,
-                header_style="bold dim",
-                box=box.SIMPLE_HEAVY,
-                padding=(0, 1),
-                expand=False,
-            )
-            table.add_column("Model", style="white", width=26)
-            table.add_column("LL", justify="right", width=10)
-            table.add_column("AIC", justify="right", width=10)
-            table.add_column("BIC", justify="right", width=10)
-            table.add_column("Hyv", justify="right", width=10)
-            table.add_column("Comb", justify="right", width=8)
-            table.add_column("Params", justify="left", width=20)
-            
-            # Add each model row
-            # Build models_order dynamically to include new Student-t naming
-            base_models = ['zero_drift', 'constant_drift', 'ewma_drift', 
-                           'kalman_gaussian', 'kalman_phi_gaussian']
-            # Add Student-t models (phi_student_t_nu_* naming)
-            student_t_models = [k for k in model_comp.keys() if k.startswith('phi_student_t_nu_')]
-            models_order = base_models + sorted(student_t_models)
-            
-            model_display_names = {
-                'zero_drift': 'Zero-drift',
-                'constant_drift': 'Constant-drift',
-                'ewma_drift': 'EWMA-drift',
-                'kalman_gaussian': 'Kalman-Gaussian',
-                'kalman_phi_gaussian': 'Kalman-φ-Gaussian',
-            }
-            # Add display names for Student-t models
-            for nu in [4, 6, 8, 12, 20]:
-                model_display_names[f'phi_student_t_nu_{nu}'] = f'φ-Student-t (ν={nu})'
-            
-            # Helper to check if model is selected
-            def _is_selected(model_key: str, selected_model: str) -> bool:
-                if model_key == selected_model:
-                    return True
-                if model_key == 'kalman_phi_gaussian' and selected_model == 'phi_gaussian':
-                    return True
-                if model_key == 'kalman_gaussian' and selected_model == 'gaussian':
-                    return True
-                return False
-            
-            for model_key in models_order:
-                if model_key in model_comp:
-                    m = model_comp[model_key]
-                    display_name = model_display_names.get(model_key, model_key)
-                    
-                    # Check if this is the selected model
-                    is_selected = _is_selected(model_key, selected)
-                    
-                    # Build params string
-                    params = []
-                    if 'mu' in m:
-                        params.append(f"μ={m['mu']:.6f}")
-                    if 'phi' in m:
-                        params.append(f"φ={m['phi']:+.3f}")
-                    if 'nu' in m:
-                        params.append(f"ν={m['nu']:.1f}")
-                    params_str = ", ".join(params) if params else "-"
-                    
-                    ll_val = m.get('ll', float('nan'))
-                    aic_val = m.get('aic', float('nan'))
-                    bic_val = m.get('bic', float('nan'))
-                    hyv_val = m.get('hyvarinen_score')
-                    comb_val = m.get('combined_score')
-                    
-                    # Format values
-                    ll_str = f"{ll_val:.1f}" if np.isfinite(ll_val) else "-"
-                    aic_str = f"{aic_val:.1f}" if np.isfinite(aic_val) else "-"
-                    bic_str = f"{bic_val:.1f}" if np.isfinite(bic_val) else "-"
-                    hyv_str = f"{hyv_val:.1f}" if hyv_val is not None and np.isfinite(hyv_val) else "-"
-                    comb_str = f"{comb_val:.2f}" if comb_val is not None and np.isfinite(comb_val) else "-"
-                    
-                    if is_selected:
-                        # Selected model: highlight in green with arrow
-                        table.add_row(
-                            f"[bold #00d700]→ {display_name}[/bold #00d700]",
-                            f"[bold #00d700]{ll_str}[/bold #00d700]",
-                            f"[bold #00d700]{aic_str}[/bold #00d700]",
-                            f"[bold #00d700]{bic_str}[/bold #00d700]",
-                            f"[bold #00d700]{hyv_str}[/bold #00d700]",
-                            f"[bold #00d700]{comb_str}[/bold #00d700]",
-                            f"[bold #00d700]{params_str}[/bold #00d700]",
-                        )
-                    else:
-                        # Non-selected model: dim styling
-                        table.add_row(
-                            f"  {display_name}",
-                            ll_str,
-                            aic_str,
-                            bic_str,
-                            f"[dim]{hyv_str}[/dim]",
-                            f"[dim]{comb_str}[/dim]",
-                            f"[dim]{params_str}[/dim]",
-                        )
-            
-            console.print(table)
-            
-            # Show selected model summary with model selection method
-            ll_sel = mc.get('log_likelihood', float('nan'))
-            bic_sel = mc.get('bic', float('nan'))
-            hyv_sel = mc.get('hyvarinen_score')
-            comb_sel = mc.get('combined_score')
-            
-            # Format scores for summary
-            hyv_summary = f", Hyv={hyv_sel:.1f}" if hyv_sel is not None and np.isfinite(float(hyv_sel)) else ""
-            comb_summary = f", Comb={comb_sel:.2f}" if comb_sel is not None and np.isfinite(float(comb_sel)) else ""
-            method_label = {'bic': 'BIC', 'hyvarinen': 'Hyvärinen', 'combined': 'BIC+Hyvärinen'}.get(model_sel_method, model_sel_method)
-            
-            console.print(f"    [#00d700]Selected: {selected} (LL={ll_sel:.1f}, BIC={bic_sel:.1f}{hyv_summary}{comb_summary}) via {method_label}[/#00d700]")
-            console.print()
-    
-    # ==========================================================================
-    # Section 3: Regime Distributions (per asset)
-    # ==========================================================================
-    if regime_distributions:
-        console.print()
-        console.print("[bold yellow]📊 Regime Distributions[/bold yellow]")
-        console.print()
-        
-        # Create a table for regime distributions
-        regime_table = Table(
-            show_header=True,
-            header_style="bold",
-            box=box.ROUNDED,
-            border_style="yellow",
-            padding=(0, 1),
-            expand=False,
-        )
-        regime_table.add_column("Asset", style="bold", width=12)
-        regime_table.add_column("Total", justify="right", width=6)
-        regime_table.add_column("LOW_VOL_TREND", justify="right", width=14)
-        regime_table.add_column("HIGH_VOL_TREND", justify="right", width=15)
-        regime_table.add_column("LOW_VOL_RANGE", justify="right", width=14)
-        regime_table.add_column("HIGH_VOL_RANGE", justify="right", width=15)
-        regime_table.add_column("CRISIS_JUMP", justify="right", width=12)
-        
-        # Aggregate counts
-        aggregate = {r: 0 for r in range(5)}
-        
-        for asset_name in sorted(regime_distributions.keys()):
-            counts = regime_distributions[asset_name]
-            total = sum(counts.values())
-            
-            # Accumulate aggregate
-            for r, c in counts.items():
-                aggregate[r] += c
-            
-            # Format counts with percentages
-            def fmt_count(r):
-                c = counts.get(r, 0)
-                pct = 100.0 * c / total if total > 0 else 0
-                if c == 0:
-                    return "[dim]-[/dim]"
-                return f"{c} ({pct:.0f}%)"
-            
-            regime_table.add_row(
-                asset_name,
-                str(total),
-                fmt_count(0),
-                fmt_count(1),
-                fmt_count(2),
-                fmt_count(3),
-                fmt_count(4),
-            )
-        
-        console.print(regime_table)
-        
-        # Show aggregate
-        total_obs = sum(aggregate.values())
-        if total_obs > 0:
-            console.print()
-            console.print("[dim]  Aggregate across all processed assets:[/dim]")
-            regime_names = ['LOW_VOL_TREND', 'HIGH_VOL_TREND', 'LOW_VOL_RANGE', 'HIGH_VOL_RANGE', 'CRISIS_JUMP']
-            regime_colors = ['green', 'red', 'cyan', 'yellow', 'magenta']
-            for r in range(5):
-                c = aggregate[r]
-                pct = 100.0 * c / total_obs
-                bar_len = int(pct / 5)
-                bar = "█" * bar_len + "░" * (20 - bar_len)
-                console.print(f"    [{regime_colors[r]}]{regime_names[r]:<15}[/{regime_colors[r]}] {c:>6,} [{regime_colors[r]}]{bar}[/{regime_colors[r]}] {pct:>5.1f}%")
-    
-    # ==========================================================================
-    # Section 4: Failed Assets with Full Tracebacks
-    # ==========================================================================
+    # This is called for verbose output - keep it minimal unless user requests details
     if failure_reasons:
-        console.print()
         render_failed_assets(failure_reasons, console=console)
-    
-    # ==========================================================================
-    # Section 5: System State Summary (What was used)
-    # ==========================================================================
-    console.print()
-    system_state_text = (
-        "[bold white]Current System Configuration:[/bold white]\n\n"
-        "[cyan]Models:[/cyan] Gaussian, φ-Gaussian, φ-Student-t\n"
-        "[cyan]ν grid:[/cyan] {4, 6, 8, 12, 20} — discrete, not optimized\n"
-        "[cyan]φ prior:[/cyan] N(0, τ) — explicit Gaussian shrinkage\n"
-        "[cyan]Scoring:[/cyan] BIC + Hyvärinen combined\n"
-        "[cyan]Per-regime:[/cyan] (q, c, φ) fit independently\n"
-        "[cyan]Temporal:[/cyan] Model posteriors smoothed across runs"
-    )
-    console.print(Panel(
-        system_state_text,
-        title="[bold blue]🧬 System DNA[/bold blue]",
-        border_style="blue",
-        expand=False,
-        padding=(1, 2),
-    ))
-    
-    # Final separator
-    console.print()
-    console.print("=" * 80)
-    console.print()
-
-
-def render_dry_run_preview(
-    assets: List[str],
-    max_display: int = 15,
-    console: Console = None
-) -> None:
-    """Render dry run preview of assets to process.
-    
-    Args:
-        assets: List of asset symbols
-        max_display: Maximum assets to display
-        console: Rich console instance
-    """
-    if console is None:
-        console = create_tuning_console()
-    
-    console.print()
-    console.print(Panel(
-        Text.from_markup("[bold yellow]DRY RUN MODE[/bold yellow]\n[dim]No actual processing will occur[/dim]"),
-        border_style="yellow",
-    ))
-    
-    console.print(f"\n[bold]Would process {len(assets)} assets:[/bold]")
-    
-    for i, asset in enumerate(assets[:max_display], 1):
-        console.print(f"  [cyan]{i:3d}.[/cyan] {asset}")
-    
-    if len(assets) > max_display:
-        console.print(f"  [dim]... and {len(assets) - max_display} more[/dim]")
-    
-    console.print()
-
-
-def render_cache_status(
-    cache_size: int,
-    cache_path: str,
-    console: Console = None
-) -> None:
-    """Render cache status message.
-
-    Args:
-        cache_size: Number of entries in cache
-        cache_path: Path to cache file
-        console: Rich console instance
-    """
-    if console is None:
-        console = create_tuning_console()
-
-    console.print(f"[dim]💾 Loaded cache with {cache_size} existing entries[/dim]")
-    console.print(f"[dim]   Path: {cache_path}[/dim]")
-
-
-def render_cache_update(
-    cache_path: str,
-    console: Console = None
-) -> None:
-    """Render cache update confirmation.
-
-    Args:
-        cache_path: Path to cache file
-        console: Rich console instance
-    """
-    if console is None:
-        console = create_tuning_console()
-
-    console.print(f"\n[#00d700]✓ Cache updated:[/#00d700] {cache_path}")
 
 
 class TuningProgressTracker:
-    """
-    Animated progress tracker for parallel tuning using Rich Progress.
-
-    Provides a clean, animated progress bar with:
-    - Spinning indicator showing activity
-    - Progress bar with completion percentage
-    - Real-time elapsed time
-    - Recent asset completions
+    """Extraordinary Apple-quality progress tracker.
+    
+    Design: Clean separation between progress bar and completion log
     """
 
     def __init__(self, total_assets: int, console: Console = None):
         self.total = total_assets
-        self.current = 0
         self.console = console or create_tuning_console()
+        self.current = 0
         self.successes = 0
-        self.cached = 0
         self.failures = 0
-        self.recent_completions = []  # Last few completions to display
-        self.max_recent = 5
-
-        # Create animated progress bar
+        self.completed = []  # Store completed assets for final display
+        
+        # Show progress bar first
         self.progress = Progress(
-            SpinnerColumn(spinner_name="dots"),
-            TextColumn("[bold cyan]Tuning[/bold cyan]"),
-            BarColumn(bar_width=40, complete_style="green", finished_style="green"),
+            SpinnerColumn(spinner_name="dots", style="bright_yellow"),
+            BarColumn(
+                bar_width=40, 
+                complete_style="bright_green", 
+                finished_style="bright_green",
+            ),
             TaskProgressColumn(),
-            TextColumn("•"),
+            TextColumn("[dim]·[/dim]"),
+            MofNCompleteColumn(),
+            TextColumn("[dim]·[/dim]"),
             TimeElapsedColumn(),
             console=self.console,
-            transient=False,
-            refresh_per_second=10,
+            transient=True,  # Progress bar will be replaced
         )
-        self.task = None
         self.progress.start()
-        self.task = self.progress.add_task("Processing", total=total_assets)
+        self.task = self.progress.add_task("", total=total_assets)
+
+    def _model_badge(self, details: str) -> Text:
+        """Create elegant model badge."""
+        badge = Text()
+        if not details:
+            return badge
+        
+        details_lower = details.lower()
+        
+        if 'student' in details_lower:
+            import re
+            nu_match = re.search(r'ν=(\d+)', details)
+            badge.append("φ-t", style="magenta")
+            if nu_match:
+                badge.append(f"({nu_match.group(1)})", style="dim magenta")
+        elif 'φ' in details or 'phi' in details_lower:
+            badge.append("φ-G", style="cyan")
+        else:
+            badge.append("G", style="green")
+        
+        return badge
+
+    def _q_value(self, details: str) -> Text:
+        """Extract and format q value."""
+        result = Text()
+        if not details:
+            return result
+        
+        import re
+        q_match = re.search(r'q=([0-9.e+-]+)', details)
+        if q_match:
+            try:
+                q_val = float(q_match.group(1))
+                log_q = np.log10(q_val) if q_val > 0 else 0
+                result.append(f"{log_q:+.1f}", style="dim")
+            except:
+                pass
+        return result
 
     def update(self, asset: str, status: str, details: Optional[str] = None):
-        """Update progress for an asset with animated display."""
+        """Update progress - store completions for later display."""
         self.current += 1
-
+        
         if status == 'success':
             self.successes += 1
-            icon = "[#00d700]✓[/#00d700]"
-        elif status == 'cached':
-            self.cached += 1
-            icon = "[cyan]↻[/cyan]"
+            self.completed.append((asset, details, 'success'))
         elif status == 'failed':
             self.failures += 1
-            icon = "[indian_red1]✗[/indian_red1]"
-        else:
-            icon = "[white]•[/white]"
-
-        # Update the progress bar
+            error_msg = details.split('\n')[0][:35] if details else "Error"
+            self.completed.append((asset, error_msg, 'failed'))
+        
         self.progress.update(self.task, advance=1)
 
-        # Store recent completion
-        completion_str = f"{icon} {asset}"
-        if details:
-            completion_str += f" [dim]{details}[/dim]"
-        self.recent_completions.append(completion_str)
-        if len(self.recent_completions) > self.max_recent:
-            self.recent_completions.pop(0)
-
-        # Print completion below progress bar
-        self.console.print(f"  {completion_str}")
+    def _get_model_info(self, details: str) -> dict:
+        """Extract all parameters from details string.
+        
+        Details format: model|q=X|c=X|φ=X|ν=X|bic=X
+        """
+        import re
+        
+        info = {
+            'model': '—',
+            'q': '—',
+            'c': '—',
+            'phi': '—',
+            'nu': '—',
+            'bic': '—',
+        }
+        
+        if not details:
+            return info
+        
+        details_lower = details.lower()
+        
+        # Determine model type
+        if 'student' in details_lower:
+            info['model'] = 'φ-t'
+        elif 'φ-gaussian' in details_lower or 'phi' in details_lower:
+            info['model'] = 'φ-G'
+        else:
+            info['model'] = 'G'
+        
+        # Extract q value
+        q_match = re.search(r'q=([0-9.e+-]+)', details)
+        if q_match:
+            try:
+                q_val = float(q_match.group(1))
+                import math
+                log_q = math.log10(q_val) if q_val > 0 else 0
+                info['q'] = f"{log_q:.2f}"
+            except:
+                pass
+        
+        # Extract c value
+        c_match = re.search(r'c=([0-9.]+)', details)
+        if c_match:
+            info['c'] = c_match.group(1)
+        
+        # Extract φ value
+        phi_match = re.search(r'φ=([+-]?[0-9.]+)', details)
+        if phi_match:
+            info['phi'] = phi_match.group(1)
+        
+        # Extract ν value
+        nu_match = re.search(r'ν=(\d+)', details)
+        if nu_match:
+            info['nu'] = nu_match.group(1)
+        
+        # Extract BIC value
+        bic_match = re.search(r'bic=([+-]?[0-9.]+)', details)
+        if bic_match:
+            info['bic'] = bic_match.group(1)
+        
+        return info
 
     def finish(self):
-        """Finish the progress bar and render completion message."""
+        """Complete with elegant aligned summary showing all parameters."""
         self.progress.stop()
+        
+        # Now show completion log in its own section
         self.console.print()
-        self.console.print(
-            f"[bold #00d700]✓ Completed:[/bold #00d700] "
-            f"{self.successes} new, {self.cached} cached, {self.failures} failed"
+        
+        section = Text()
+        section.append("▸ ", style="bright_green")
+        section.append("COMPLETED", style="bold white")
+        self.console.print(section)
+        self.console.print()
+        
+        # Create a comprehensive parameter table
+        table = Table(
+            show_header=True,
+            header_style="dim",
+            box=None,
+            padding=(0, 2),
+            collapse_padding=True,
         )
-
-
-# =============================================================================
-# PARALLEL PROCESSING PROGRESS DISPLAY
-# =============================================================================
-
-class ParallelTuningProgress:
-    """
-    Rich-based progress display for parallel asset tuning.
-
-    Provides a clean, non-cluttered view of parallel processing with:
-    - Overall progress bar
-    - Live status updates for each worker
-    - Summary statistics
-    """
-
-    def __init__(self, total_assets: int, n_workers: int, console: Console = None):
-        self.total = total_assets
-        self.n_workers = n_workers
-        self.console = console or create_tuning_console()
-        self.completed = 0
-        self.successes = 0
-        self.failures = 0
-        self.current_assets = {}  # worker_id -> asset being processed
-
-    def create_progress(self) -> Progress:
-        """Create a Rich Progress instance."""
-        return Progress(
-            SpinnerColumn(),
-            TextColumn("[bold cyan]{task.description}[/bold cyan]"),
-            BarColumn(bar_width=40),
-            MofNCompleteColumn(),
-            TextColumn("•"),
-            TimeElapsedColumn(),
-            console=self.console,
-            transient=False,
-        )
-
-    def render_header(self):
-        """Render the processing header."""
-        self.console.print()
-        self.console.print(f"[bold cyan]🚀 Parallel Tuning[/bold cyan]  [dim]{self.total} assets × {self.n_workers} workers[/dim]")
-        self.console.print()
-
-    def render_completion(self, asset: str, success: bool, details: str = None):
-        """Render a single asset completion."""
-        if success:
-            self.successes += 1
-            icon = "[#00d700]✓[/#00d700]"
-            detail_str = f"[dim]{details}[/dim]" if details else ""
-        else:
-            self.failures += 1
-            icon = "[indian_red1]✗[/indian_red1]"
-            detail_str = f"[indian_red1]{details}[/indian_red1]" if details else ""
-
-        self.completed += 1
-        self.console.print(f"  {icon} [white]{asset:<12}[/white] {detail_str}")
-
-    def render_summary(self):
-        """Render final summary."""
-        self.console.print()
-        self.console.print(
-            f"[bold #00d700]✓ Completed:[/bold #00d700] "
-            f"[#00d700]{self.successes} succeeded[/#00d700], "
-            f"[indian_red1]{self.failures} failed[/indian_red1]"
-        )
-
-
-@contextmanager
-def parallel_tuning_progress(total_assets: int, n_workers: int, console: Console = None):
-    """
-    Context manager for parallel tuning with Rich progress display.
-
-    Usage:
-        with parallel_tuning_progress(100, 12) as progress:
-            for result in process_assets():
-                progress.update(result)
-    """
-    tracker = ParallelTuningProgress(total_assets, n_workers, console)
-    tracker.render_header()
-
-    with tracker.create_progress() as progress:
-        task = progress.add_task("Processing", total=total_assets)
-
-        class ProgressUpdater:
-            def __init__(self, tracker, progress, task):
-                self.tracker = tracker
-                self.progress = progress
-                self.task = task
-
-            def update(self, asset: str, success: bool, details: str = None):
-                self.tracker.render_completion(asset, success, details)
-                self.progress.advance(self.task)
-
-            def get_stats(self):
-                return {
-                    'completed': self.tracker.completed,
-                    'successes': self.tracker.successes,
-                    'failures': self.tracker.failures,
-                }
-
-        yield ProgressUpdater(tracker, progress, task)
-
-    tracker.render_summary()
-
-
-def render_parallel_start(n_assets: int, n_workers: int, console: Console = None) -> None:
-    """Render the start of parallel processing."""
-    if console is None:
-        console = create_tuning_console()
-
-    console.print()
-    console.print(Panel(
-        f"[bold white]Processing {n_assets} assets[/bold white]\n"
-        f"[dim]Using {n_workers} parallel workers[/dim]",
-        title="[bold cyan]🚀 Parallel Tuning[/bold cyan]",
-        border_style="cyan",
-        expand=False,
-        padding=(1, 2),
-    ))
-
-
-def render_worker_status(
-    asset: str,
-    stage: str,
-    details: str = None,
-    console: Console = None
-) -> None:
-    """
-    Render a worker status update (for verbose mode).
-
-    Args:
-        asset: Asset being processed
-        stage: Current processing stage
-        details: Optional details
-        console: Rich console
-    """
-    if console is None:
-        console = create_tuning_console()
-
-    stage_icons = {
-        'regime_labels': '📊',
-        'global_params': '🔧',
-        'gaussian': '🔧',
-        'phi_gaussian': '🔧',
-        'student_t': '🔧',
-        'bma': '🔄',
-        'complete': '✓',
-        'error': '✗',
-    }
-
-    icon = stage_icons.get(stage, '•')
-
-    if stage == 'complete':
-        console.print(f"  [#00d700]{icon}[/#00d700] [bold]{asset}[/bold] [dim]{details or ''}[/dim]")
-    elif stage == 'error':
-        console.print(f"  [indian_red1]{icon}[/indian_red1] [bold]{asset}[/bold] [indian_red1]{details or ''}[/indian_red1]")
-    else:
-        console.print(f"  [dim]{icon} {asset}: {stage}[/dim]" + (f" [dim]({details})[/dim]" if details else ""))
-
-
-class LiveTuningDisplay:
-    """
-    Live display for tuning progress with worker status.
-
-    Shows a compact live view of:
-    - Overall progress
-    - Currently active workers
-    - Recent completions
-    """
-
-    def __init__(self, total_assets: int, n_workers: int, console: Console = None):
-        self.total = total_assets
-        self.n_workers = n_workers
-        self.console = console or create_tuning_console()
-        self.completed = 0
-        self.successes = 0
-        self.failures = 0
-        self.active_workers = {}  # asset -> stage
-        self.recent_completions = []  # list of (asset, success, details)
-        self.max_recent = 5
-
-    def _build_display(self) -> Table:
-        """Build the live display table."""
-        # Main progress
-        pct = self.completed / self.total * 100 if self.total > 0 else 0
-        bar_filled = int(pct / 2.5)
-        bar = f"[cyan]{'█' * bar_filled}{'░' * (40 - bar_filled)}[/cyan]"
-
-        table = Table(box=None, show_header=False, padding=(0, 1), expand=False)
-        table.add_column("Content")
-
-        # Header row
-        table.add_row(f"[bold cyan]🚀 Parallel Tuning[/bold cyan]  {bar}  {self.completed}/{self.total} ({pct:.0f}%)")
-        table.add_row("")
-
-        # Active workers
-        if self.active_workers:
-            workers_str = "  ".join([
-                f"[yellow]⟳ {asset}[/yellow]"
-                for asset in list(self.active_workers.keys())[:self.n_workers]
-            ])
-            table.add_row(f"[dim]Active:[/dim] {workers_str}")
-
-        # Recent completions
-        for asset, success, details in self.recent_completions[-self.max_recent:]:
-            if success:
-                table.add_row(f"  [#00d700]✓[/#00d700] {asset} [dim]{details or ''}[/dim]")
+        table.add_column("", width=2)  # Icon
+        table.add_column("Asset", style="bold white", width=10)
+        table.add_column("Model", width=6)
+        table.add_column("log₁₀(q)", justify="right", width=8)
+        table.add_column("c", justify="right", width=6)
+        table.add_column("φ", justify="right", width=6)
+        table.add_column("ν", justify="right", width=4)
+        table.add_column("BIC", justify="right", width=8)
+        
+        for asset, details, status in self.completed:
+            if status == 'success':
+                info = self._get_model_info(details)
+                
+                # Color the model badge
+                model = info['model']
+                if model == 'φ-t':
+                    model_styled = f"[magenta]{model}[/magenta]"
+                elif model == 'φ-G':
+                    model_styled = f"[cyan]{model}[/cyan]"
+                else:
+                    model_styled = f"[green]{model}[/green]"
+                
+                # Format phi with color
+                phi_str = info['phi']
+                if phi_str != '—':
+                    phi_str = f"[white]{phi_str}[/white]"
+                else:
+                    phi_str = f"[dim]{phi_str}[/dim]"
+                
+                # Format nu
+                nu_str = info['nu']
+                if nu_str == '—':
+                    nu_str = f"[dim]{nu_str}[/dim]"
+                
+                table.add_row(
+                    "[green]✓[/green]",
+                    asset,
+                    model_styled,
+                    info['q'],
+                    info['c'],
+                    phi_str,
+                    nu_str,
+                    f"[dim]{info['bic']}[/dim]"
+                )
             else:
-                table.add_row(f"  [indian_red1]✗[/indian_red1] {asset} [indian_red1]{details or ''}[/indian_red1]")
-
-        return table
-
-    def start_asset(self, asset: str, stage: str = "starting"):
-        """Mark an asset as actively being processed."""
-        self.active_workers[asset] = stage
-
-    def update_asset(self, asset: str, stage: str):
-        """Update the stage of an active asset."""
-        if asset in self.active_workers:
-            self.active_workers[asset] = stage
-
-    def complete_asset(self, asset: str, success: bool, details: str = None):
-        """Mark an asset as completed."""
-        if asset in self.active_workers:
-            del self.active_workers[asset]
-
-        self.completed += 1
-        if success:
-            self.successes += 1
-        else:
-            self.failures += 1
-
-        self.recent_completions.append((asset, success, details))
-        if len(self.recent_completions) > self.max_recent * 2:
-            self.recent_completions = self.recent_completions[-self.max_recent:]
-
-    def render(self):
-        """Render the current state."""
-        self.console.print(self._build_display())
-
-    def render_final(self):
-        """Render final summary."""
+                table.add_row(
+                    "[red]✗[/red]",
+                    asset,
+                    f"[dim]Error[/dim]",
+                    "",
+                    "",
+                    "",
+                    "",
+                    f"[dim red]{details[:15]}[/dim red]"
+                )
+        
+        self.console.print(Padding(table, (0, 0, 0, 4)))
         self.console.print()
-        self.console.print(
-            f"[bold #00d700]✓ Completed:[/bold #00d700] "
-            f"[#00d700]{self.successes} succeeded[/#00d700], "
-            f"[indian_red1]{self.failures} failed[/indian_red1]"
-        )
+        
+        # Summary line
+        summary = Text()
+        summary.append("    ")
+        summary.append(f"{self.successes}", style="bold green")
+        summary.append(" estimated", style="dim")
+        if self.failures > 0:
+            summary.append("  ·  ", style="dim")
+            summary.append(f"{self.failures}", style="bold red")
+            summary.append(" failed", style="dim")
+        self.console.print(summary)
+        self.console.print()
