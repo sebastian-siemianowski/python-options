@@ -639,6 +639,7 @@ make backtest ARGS="--tickers AAPL --bt_years 5"
 ```
 
 **Key ARGS:**
+
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `--bt_years` | Years of history | 3 |
@@ -781,17 +782,26 @@ This section documents the mathematical foundations that govern each engine. The
 
 Before diving in, here's a complete reference of all mathematical symbols used:
 
+#### Prices & Returns
+
 | Symbol | Name | Meaning |
 |--------|------|---------|
-| **Prices & Returns** |||
 | Pₜ | Price at time t | The asset price at time step t |
 | rₜ | Return at time t | Log return: ln(Pₜ/Pₜ₋₁) |
 | h | Horizon | Forecast period in trading days |
-| **Volatility** |||
+
+#### Volatility
+
+| Symbol | Name | Meaning |
+|--------|------|---------|
 | σ | Sigma | Standard deviation (volatility) |
 | σₜ² | Sigma squared | Variance at time t |
 | λ | Lambda | Decay factor in EWMA (0.94-0.97) |
-| **Kalman Filter** |||
+
+#### Kalman Filter
+
+| Symbol | Name | Meaning |
+|--------|------|---------|
 | μₜ | Mu | Latent (hidden) drift at time t |
 | q | Process noise | How much drift can change per step |
 | ηₜ | Eta | Random shock to drift ~ N(0, q) |
@@ -799,24 +809,44 @@ Before diving in, here's a complete reference of all mathematical symbols used:
 | K | Kalman gain | Weight given to new observation (0-1) |
 | P | State variance | Uncertainty in drift estimate |
 | m | Posterior mean | Best estimate of drift after update |
-| **AR(1) Model** |||
+
+#### AR(1) Model
+
+| Symbol | Name | Meaning |
+|--------|------|---------|
 | φ | Phi | Mean-reversion coefficient (-1 to 1) |
 | τ | Tau | Prior standard deviation for φ |
-| **Student-t** |||
+
+#### Student-t Distribution
+
+| Symbol | Name | Meaning |
+|--------|------|---------|
 | ν | Nu | Degrees of freedom (tail thickness) |
 | t_ν | Student-t | t-distribution with ν degrees of freedom |
-| **Bayesian** |||
+
+#### Bayesian Inference
+
+| Symbol | Name | Meaning |
+|--------|------|---------|
 | p(·) | Probability | Probability or density function |
 | p(m\|r) | Model posterior | Probability of model m given regime r |
 | θ | Theta | Model parameters (q, φ, etc.) |
 | ℓ | Log-likelihood | Sum of log probabilities |
-| **Model Selection** |||
+
+#### Model Selection
+
+| Symbol | Name | Meaning |
+|--------|------|---------|
 | BIC | Bayesian Info Criterion | Penalized likelihood for model comparison |
 | k | Parameter count | Number of free parameters in model |
 | n | Sample size | Number of observations |
 | w | Weight | Unnormalized model weight |
 | α | Alpha | Smoothing/blending coefficient |
-| **Decision** |||
+
+#### Decision Theory
+
+| Symbol | Name | Meaning |
+|--------|------|---------|
 | E[·] | Expectation | Average value |
 | P(·) | Probability | Likelihood of event |
 | EU | Expected Utility | Risk-adjusted expected value |
@@ -1383,6 +1413,7 @@ S ∈ {NORMAL, COMPRESSED, PRE_POLICY, POLICY}
 **In plain English:** *"The market is always in one of 4 hidden stress states."*
 
 **What each state means:**
+
 | State | Meaning | Typical Duration |
 |-------|---------|------------------|
 | NORMAL | Business as usual | Months |
@@ -1407,9 +1438,6 @@ V  = Volatility compression ratio (current vol / recent vol)
 ```
 
 **In plain English:** *"We measure 5 things about the market that give clues about the hidden state."*
-dD = Disagreement momentum (rate of change)
-V  = Volatility compression ratio
-```
 
 **Transition Dynamics**
 
@@ -1418,6 +1446,8 @@ State transitions follow a constrained Markov process:
 ```
 P(Sₜ | Sₜ₋₁, Y) ∝ P(Y | Sₜ) · P(Sₜ | Sₜ₋₁)
 ```
+
+**In plain English:** *"The probability of being in a state depends on what we observe AND where we were before."*
 
 With diagonal dominance (persistence ≈ 0.85) and forward-only transitions.
 
@@ -1428,6 +1458,8 @@ Switch debt when:
 ```
 P(PRE_POLICY | Y) > α
 ```
+
+**In plain English:** *"If the probability of being in PRE_POLICY state exceeds our threshold, trigger the switch."*
 
 Default α = 0.60. The decision is **irreversible** (once triggered, done).
 
