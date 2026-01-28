@@ -1,786 +1,374 @@
-# python-options (macOS)
+<h1 align="center">Quantitative Signal Engine</h1>
+
+<p align="center">
+  <strong>Bayesian Model Averaging meets Kalman Filtering for multi-asset signal generation</strong>
+</p>
+
+<p align="center">
+  <a href="#the-system">The System</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#daily-workflow">Daily Workflow</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#command-reference">Commands</a>
+</p>
+
+<p align="center">
+  <sub>Built for practitioners who want rigorous probabilistic inference without the academic overhead.</sub>
+</p>
+
+---
+
+## The System
+
+This is a **belief evolution engine**, not a rule engine.
+
+At its core, the system maintains a population of competing models—each representing a different hypothesis about market dynamics. These models evolve in probability over time through Bayesian updating, and signals emerge from the full predictive distribution, not from point estimates.
+
+### Three Engines
+
+| Engine | Command | Purpose |
+|--------|---------|---------|
+| **Data Engine** | `make data` | Fetches and caches OHLCV for 50+ assets |
+| **Tuning Engine** | `make tune` | Calibrates Kalman parameters via MLE + BMA |
+| **Signal Engine** | `make stocks` | Generates Buy/Hold/Sell from posterior predictive |
+
+The engines form a pipeline: **Data → Tune → Signal**
+
+```
+Price Data (Yahoo Finance)
+       ↓
+   make data
+       ↓
+┌──────────────────────────────────────────┐
+│  TUNING ENGINE (make tune)               │
+│                                          │
+│  For each regime r ∈ {5 regimes}:        │
+│    For each model m ∈ {7 models}:        │
+│      • Fit θ_{r,m} via MLE               │
+│      • Compute BIC, Hyvärinen score      │
+│    → p(m|r) via BIC-weighted posterior   │
+│    → Apply temporal smoothing            │
+│    → Hierarchical shrinkage to global    │
+└──────────────────────────────────────────┘
+       ↓
+   kalman_q_cache.json
+       ↓
+┌──────────────────────────────────────────┐
+│  SIGNAL ENGINE (make stocks)             │
+│                                          │
+│  For current regime r_t:                 │
+│    p(x|r_t) = Σ_m p(x|r_t,m,θ) · p(m|r_t)│
+│                                          │
+│  → Posterior predictive Monte Carlo      │
+│  → Expected utility calculation          │
+│  → Position sizing via Kelly geometry    │
+└──────────────────────────────────────────┘
+       ↓
+   BUY / HOLD / SELL signals
+```
 
-This repo contains a simple options screener (options.py). These instructions are tailored for macOS.
+### Model Universe
 
-## 1) Install Python 3 (macOS)
+The Tuning Engine fits **7 model classes** per regime:
 
-You can either use the helper script or install via Homebrew directly.
+| Model | Parameters | Use Case |
+|-------|------------|----------|
+| `kalman_gaussian` | q, c | Baseline Gaussian innovations |
+| `kalman_phi_gaussian` | q, c, φ | AR(1) drift with Gaussian |
+| `phi_student_t_nu_4` | q, c, φ | Heavy tails (ν=4) |
+| `phi_student_t_nu_6` | q, c, φ | Moderate tails (ν=6) |
+| `phi_student_t_nu_8` | q, c, φ | Light tails (ν=8) |
+| `phi_student_t_nu_12` | q, c, φ | Near-Gaussian (ν=12) |
+| `phi_student_t_nu_20` | q, c, φ | Almost Gaussian (ν=20) |
 
-- Using the helper script (recommended):
+Student-t models use a **discrete ν grid** (not continuous optimization). Each ν is a separate sub-model in BMA, allowing the posterior to express uncertainty about tail thickness.
 
-  chmod +x install_python.sh
-  ./install_python.sh
+### Regime Classification
 
-- Or manually with Homebrew (https://brew.sh):
+Markets are classified into **5 regimes** based on volatility and drift:
 
-  brew install python
+| Regime | Condition |
+|--------|-----------|
+| `LOW_VOL_TREND` | vol < 0.85×median, \|drift\| > threshold |
+| `HIGH_VOL_TREND` | vol > 1.3×median, \|drift\| > threshold |
+| `LOW_VOL_RANGE` | vol < 0.85×median, \|drift\| ≤ threshold |
+| `HIGH_VOL_RANGE` | vol > 1.3×median, \|drift\| ≤ threshold |
+| `CRISIS_JUMP` | vol > 2×median OR tail_indicator > 4 |
 
-After installation, verify:
+Regime assignment is **deterministic and consistent** between tuning and inference.
+
+---
+
+## Quick Start
 
-  python3 --version
-  pip3 --version
+### Prerequisites
 
-## 2) Create and activate a virtual environment
+- macOS (Intel or Apple Silicon)
+- Python 3.7+
+- 10GB disk space for price cache
 
-From the project folder:
+### One-Command Setup
 
-  python3 -m venv .venv
-  source .venv/bin/activate
+```bash
+make setup
+```
 
-## 3) Install project dependencies
+This will:
+1. Create `.venv/` virtual environment
+2. Install dependencies from `requirements.txt`
+3. Download price data (3 passes for reliability)
+4. Clean cached data
 
-With the virtual environment active:
+**Time:** 5-15 minutes depending on network.
 
-  python3 -m pip install -r requirements.txt
+### First Run
 
-## 4) Run the screener
+After setup, generate your first signals:
 
-Example:
+```bash
+make stocks
+```
 
-  python options.py --tickers AAPL,MSFT,NVDA,SPY --min_oi 200 --min_vol 50
+You'll see a beautiful Rich console output with:
+- Per-asset signal tables (1d → 252d horizons)
+- Probability estimates with confidence intervals
+- Color-coded Buy/Hold/Sell recommendations
 
-Outputs:
-- screener_results.csv
-- screener_results_backtest.csv
-- plots/<TICKER>_support_resistance.png
+---
 
-## Quick start (one command)
+## Daily Workflow
 
-If you prefer automation, run:
+### Morning Routine
 
-  bash setup_venv.sh
+```bash
+# 1. Refresh price data (last 5 days)
+make refresh
+
+# 2. Generate signals
+make stocks
+```
+
+### Weekly Calibration
+
+```bash
+# Re-estimate Kalman parameters
+make tune
+
+# Then generate signals with fresh parameters
+make stocks
+```
+
+### When Parameters Feel Stale
+
+```bash
+# Force full re-estimation (ignore cache)
+make tune ARGS="--force"
+```
+
+---
+
+## Command Reference
+
+### Core Commands
 
-This will create a virtual environment and install requirements using `python -m pip`.
+| Command | Description |
+|---------|-------------|
+| `make setup` | Full setup: venv + deps + data (run once) |
+| `make data` | Download all price data (5 retries) |
+| `make refresh` | Refresh last 5 days of data |
+| `make tune` | Calibrate Kalman parameters |
+| `make stocks` | **Main command:** refresh + signals |
+| `make report` | Render signals from cache (offline) |
 
-## Troubleshooting (macOS)
+### Tuning Commands
 
-- zsh: command not found: python
-  - Use `python3` instead. Example: `python3 -m pip install -r requirements.txt`
-  - If `python3` is not found, install via `./install_python.sh` or `brew install python`.
-  - Optional (zsh): add an alias so `python` maps to `python3`:
-    - echo 'alias python=python3' >> ~/.zshrc && source ~/.zshrc
+| Command | Description |
+|---------|-------------|
+| `make tune` | Tune all assets (uses cache) |
+| `make tune ARGS="--force"` | Force re-estimation |
+| `make show-q` | Display cached parameters |
+| `make clear-q` | Clear parameter cache |
 
-- zsh: command not found: pip
-  - Use the module form: `python3 -m pip install -r requirements.txt`
-  - Ensure your virtual environment is activated: `source .venv/bin/activate`
-  - If you recently installed Homebrew/Python, open a new terminal so PATH updates, or run `hash -r` in zsh.
+### Diagnostic Commands
 
-- Apple Silicon build tools
-  - If you encounter build errors for scipy or numpy on Apple Silicon, ensure Command Line Tools are installed:
+| Command | Description |
+|---------|-------------|
+| `make fx-diagnostics` | Full diagnostics (expensive) |
+| `make fx-diagnostics-lite` | Lightweight diagnostics |
+| `make fx-calibration` | PIT calibration check |
+| `make fx-model-comparison` | AIC/BIC model comparison |
+| `make fx-validate-kalman` | Kalman filter validation |
+| `make tests` | Run unit tests |
 
-    xcode-select --install
+### Utility Commands
 
-Notes:
-- These instructions focus on macOS. Linux/Windows setup has been omitted intentionally to keep this README mac-specific.
+| Command | Description |
+|---------|-------------|
+| `make doctor` | Reinstall dependencies |
+| `make failed` | List failed assets |
+| `make purge` | Clear cache for failed assets |
+| `make clear` | Clear all caches |
+| `make clean-cache` | Remove empty rows |
+| `make top20` | Quick smoke test (20 assets) |
 
-# python-options (macOS)
+### Options & Backtesting
 
-This repo contains a simple options screener (options.py). These instructions are tailored for macOS.
+| Command | Description |
+|---------|-------------|
+| `make run` | Options screener (uses tickers.csv) |
+| `make backtest` | Run strategy backtest |
+| `make top50` | Rank by 3Y revenue CAGR |
+| `make bagger50` | Rank by 100× Bagger Score |
+| `make top100` | Top 100 screener |
 
-## 1) Install Python 3 (macOS)
+---
 
-You can either use the helper script or install via Homebrew directly.
+## Architecture
 
-- Using the helper script (recommended):
+```
+python-options/
+│
+├── Makefile                    # Command interface (start here)
+│
+├── scripts/
+│   ├── tune_q_mle.py           # TUNING ENGINE: MLE + BMA
+│   ├── tune_pretty.py          # Tuning UX wrapper
+│   ├── fx_pln_jpy_signals.py   # SIGNAL ENGINE: Posterior predictive
+│   ├── fx_signals_presentation.py  # Rich console output
+│   ├── refresh_data.py         # DATA ENGINE: Bulk download
+│   ├── fx_data_utils.py        # Data utilities + caching
+│   ├── debt_allocator.py       # Debt switch decision engine
+│   └── quant/
+│       └── cache/
+│           └── kalman_q_cache.json  # Tuned parameters
+│
+├── data/                       # Price cache (CSV per symbol)
+├── options.py                  # Options screener
+├── backtests/                  # Equity curves
+└── plots/                      # Generated charts
+```
 
-  chmod +x install_python.sh
-  ./install_python.sh
+### Design Principles
 
-- Or manually with Homebrew (https://brew.sh):
+1. **Separation of concerns**
+   - Tuning engine knows nothing about decisions
+   - Signal engine acts on beliefs, doesn't create them
+   - Presentation layer is fully decoupled
 
-  brew install python
+2. **Bayesian integrity**
+   - When evidence is weak, the system becomes more ignorant, not more confident
+   - Fallback is hierarchical: `p(m|r, weak data) → p(m|global)`
+   - Never synthesize beliefs that weren't learned
 
-After installation, verify:
+3. **Auditability**
+   - All parameters cached and versioned
+   - No hidden state mutations
+   - Deterministic regime assignment
 
-  python3 --version
-  pip3 --version
+---
 
-## 2) Create and activate a virtual environment
+## Scientific Foundation
 
-From the project folder:
+### Posterior Predictive Distribution
 
-  python3 -m venv .venv
-  source .venv/bin/activate
+For current regime r_t, the predictive distribution is:
 
-## 3) Install project dependencies
+```
+p(x | r_t) = Σ_m p(x | r_t, m, θ_{r_t,m}) · p(m | r_t)
+```
 
-With the virtual environment active:
+This is computed via **Monte Carlo**:
+1. Sample models proportional to posterior weights
+2. For each model, simulate forward paths
+3. Concatenate samples → full mixture distribution
 
-  python3 -m pip install -r requirements.txt
+### Model Selection
 
-## 4) Run the screener
+Weights are computed from **BIC** with optional **Hyvärinen score** blending:
 
-Example:
+```
+w_raw(m|r) = exp(-0.5 × (BIC_{m,r} - BIC_min))
+w_combined(m) = w_bic(m)^α × w_hyvarinen(m)^(1-α)
+```
 
-  python options.py --tickers AAPL,MSFT,NVDA,SPY --min_oi 200 --min_vol 50
+Hyvärinen score is Fisher-consistent under misspecification and naturally rewards tail accuracy.
 
-Outputs:
-- screener_results.csv
-- screener_results_backtest.csv
-- plots/<TICKER>_support_resistance.png
+### Temporal Smoothing
 
-## Quick start (one command)
+Model posteriors evolve smoothly over time:
 
-If you prefer automation, run:
+```
+w_smooth(m|r) = w_prev(m|r)^α × w_raw(m|r)
+```
 
-  bash setup_venv.sh
+This prevents erratic model switching while allowing adaptation.
 
-This will create a virtual environment and install requirements using `python -m pip`.
+### Hierarchical Shrinkage
 
-## Troubleshooting (macOS)
+When regime r has insufficient samples:
 
-- zsh: command not found: python
-  - Use `python3` instead. Example: `python3 -m pip install -r requirements.txt`
-  - If `python3` is not found, install via `./install_python.sh` or `brew install python`.
-  - Optional (zsh): add an alias so `python` maps to `python3`:
-    - echo 'alias python=python3' >> ~/.zshrc && source ~/.zshrc
+```
+p(m|r) → p(m|global)
+θ_{r,m} → θ_{global,m}
+```
 
-- zsh: command not found: pip
-  - Use the module form: `python3 -m pip install -r requirements.txt`
-  - Ensure your virtual environment is activated: `source .venv/bin/activate`
-  - If you recently installed Homebrew/Python, open a new terminal so PATH updates, or run `hash -r` in zsh.
+Marked as `borrowed_from_global = True` for transparency.
 
-- Apple Silicon build tools
-  - If you encounter build errors for scipy or numpy on Apple Silicon, ensure Command Line Tools are installed:
+---
 
-    xcode-select --install
+## Troubleshooting
 
-Notes:
-- These instructions focus on macOS. Linux/Windows setup has been omitted intentionally to keep this README mac-specific.
+### Common Issues
 
-## Run command shortcuts
+**`zsh: command not found: python`**
+```bash
+echo 'alias python=python3' >> ~/.zshrc && source ~/.zshrc
+```
 
-After setting up the environment (see steps above), you can run the screener with a simple command:
+**Build errors on Apple Silicon**
+```bash
+xcode-select --install
+```
 
-- Using the helper script:
+**Assets failing to download**
+```bash
+make failed    # See which assets failed
+make purge     # Clear their cache
+make data      # Re-download
+```
 
-  chmod +x run.sh
-  ./run.sh   # no parameters needed; uses tickers.csv if present or built-in defaults
+**Stale parameters**
+```bash
+make clear-q   # Clear parameter cache
+make tune      # Re-estimate
+make stocks    # Fresh signals
+```
 
-- Or using Make (pass extra args via ARGS):
+### Environment Variables
 
-  make run   # runs with defaults
-  make run ARGS="--tickers_csv tickers.csv --min_oi 200 --min_vol 50"
+| Variable | Description |
+|----------|-------------|
+| `PRICE_DATA_DIR` | Override data cache location |
+| `NO_COLOR=1` | Disable colored output |
+| `PYTHON` | Force specific interpreter |
 
-### Backtest-only shortcut (quick way to see profitability)
+---
 
-If you only want to run the multi-year strategy backtest (skip the options screener) and print the total profitability and the average per-ticker profitability in the console, use:
+## Philosophy
 
-- Using the helper script:
+> "Act only on beliefs that were actually learned."
 
-  chmod +x backtest.sh
-  ./backtest.sh            # uses tickers.csv if present, otherwise built-in defaults
-  ./backtest.sh --tickers AAPL,MSFT --bt_years 3 --bt_dte 7
+This system is a **belief evolution engine**. It maintains competing hypotheses about market dynamics and lets Bayesian inference arbitrate between them.
 
-- Or using Make:
+When evidence is weak:
+- The system becomes more ignorant, not more confident
+- It reverts to higher-level posteriors, not point estimates
+- It never invents beliefs
 
-  make backtest
-  make backtest ARGS="--tickers AAPL,MSFT --bt_years 3"
+The goal is **calibrated uncertainty**, not false precision.
 
-What you’ll see in the console at the end (now with world‑class formatting):
-- A colored banner and a table of Top Option Candidates (if any)
-- A rich, colored Strategy Backtest Summary table (per ticker)
-- "Combined total profitability of all strategy trades: ...% (equal stake per trade)" in green/red depending on performance
-- "Average per-ticker total trade profitability: ...%" in green/red
+---
 
-Notes:
-- Pretty console output uses the Rich library and our scripts now force colors even when running under `make` or other non‑TTY contexts.
-- To disable colors, set NO_COLOR=1 (e.g., `NO_COLOR=1 make backtest`).
-
-Additional outputs remain the same:
-- backtests/<TICKER>_equity.csv
-- screener_results_backtest.csv (contains per-ticker strategy metrics)
-
-
-## Using a CSV for tickers
-
-You can now provide tickers via a CSV file. By default, the script looks for a file named `tickers.csv` in the project root.
-
-- CSV format: one ticker per line is recommended. A header like `ticker` is supported. Comma/space/semicolon-separated values are also accepted.
-
-Examples:
-
-  # default (uses tickers.csv if it exists; otherwise built-in defaults)
-  ./run.sh
-
-  # explicit CSV path and optional thresholds
-  ./run.sh --tickers_csv tickers.csv --min_oi 200 --min_vol 50
-
-Backward compatibility: you can still pass a comma-separated list via `--tickers`, which is used if a CSV isn’t provided/found.
-
-
-
-## Improved backtesting (multi-year strategy simulation)
-
-The screener now includes a more realistic multi-year backtest that simulates buying short-dated calls on breakout signals.
-It prices options via Black–Scholes using historical realized volatility and supports take-profit/stop-loss exits. Outputs include
-per-ticker equity curves under backtests/ and an aggregate summary in screener_results_backtest.csv.
-
-Key CLI flags:
-- --bt_years N          # years of underlying history to load for backtesting (default: 3)
-- --bt_dte D            # option DTE in days for simulated trades (default: 7)
-- --bt_moneyness PCT    # OTM percent for strike; K = S * (1 + PCT), e.g., 0.05 = 5% OTM (default: 0.05)
-- --bt_tp_x X           # optional take-profit multiple of entry premium, e.g., 3.0 for +200%
-- --bt_sl_x X           # optional stop-loss multiple of entry premium, e.g., 0.5 for -50%
-- --bt_alloc_frac F     # fraction of equity per trade, 0..1 (default: 0.1)
-- --bt_trend_filter T   # true/false; require uptrend (default: true)
-- --bt_vol_filter V     # true/false; require rv5<rv21<rv63 (default: true)
-- --bt_time_stop_frac Q # fraction of DTE for time-based check (default: 0.5)
-- --bt_time_stop_mult M # min multiple at time stop to remain (default: 1.2)
-- --bt_use_target_delta B # true/false; use target delta for strike (default: false)
-- --bt_target_delta D   # target delta value when enabled (default: 0.25)
-- --bt_trail_start_mult X # start trailing when option >= X * entry (default: 1.5)
-- --bt_trail_back B     # trailing drawback from peak fraction (default: 0.5)
-- --bt_protect_mult P   # protective floor vs entry (default: 0.7)
-- --bt_cooldown_days N  # cooldown days after losing trade (default: 0)
-- --bt_entry_weekdays W # comma-separated weekdays 0=Mon..6=Sun to allow entries (e.g., 0,1,2)
-- --bt_skip_earnings E  # true/false; skip entries near earnings (auto-fetched from yfinance)
-- --bt_use_underlying_atr_exits B # true/false; use ATR-based exits on underlying (default: true)
-- --bt_tp_atr_mult X   # underlying ATR take-profit multiple (default: 2.0)
-- --bt_sl_atr_mult X   # underlying ATR stop-loss multiple (default: 1.0)
-
-Examples:
-
-  # Run with defaults (uses tickers.csv if present)
-  ./run.sh
-
-  # 5-year backtest, 7DTE, 5% OTM, with TP=3x and SL=0.5x
-  ./run.sh --bt_years 5 --bt_dte 7 --bt_moneyness 0.05 --bt_tp_x 3 --bt_sl_x 0.5
-
-Outputs (in addition to the existing CSVs and plots):
-- backtests/<TICKER>_equity.csv   # per-ticker equity curve over time
-- screener_results_backtest.csv   # now includes strategy metrics (CAGR, Sharpe, max drawdown, win rate)
-
-
-## Diagnose and fix missing Python libraries (Environment Doctor)
-
-If you suspect the wrong or missing libraries, use the built-in doctor:
-
-- Quick check:
-
-      make doctor
-
-- Auto-fix (installs/repairs packages from requirements.txt):
-
-      make doctor ARGS="--fix"
-
-You can also run the script directly:
-
-    chmod +x doctor.sh
-    ./doctor.sh           # check only
-    ./doctor.sh --fix     # attempt to install requirements automatically
-
-Tips:
-- It prefers the project virtualenv at .venv if present; otherwise it uses your system python3.
-- If no virtualenv is active, consider creating one first:
-
-      python3 -m venv .venv && source .venv/bin/activate
-
-- On macOS/Apple Silicon, ensure you have Command Line Tools installed if you hit build errors:
-
-      xcode-select --install
-
-
-## Price data cache
-
-To avoid re-downloading historical prices every run, the script caches daily OHLCV per ticker in CSV files.
-- Default cache directory: data/
-- Cache file naming: data/<TICKER>_1d.csv
-- On each run, the cache is incrementally updated by fetching only missing dates. If any required columns are missing for existing rows, those rows are re-fetched and filled.
-
-Controls:
-- --data_dir PATH       Use a custom directory for the cache (defaults to data or env PRICE_DATA_DIR)
-- --cache_refresh       Force refresh for the requested window (re-downloads and overwrites cache for that range)
-- Environment: set PRICE_DATA_DIR to override the default cache directory
-
-# python-options (macOS)
-
-This repo contains a simple options screener (options.py). These instructions are tailored for macOS.
-
-## 1) Install Python 3 (macOS)
-
-You can either use the helper script or install via Homebrew directly.
-
-- Using the helper script (recommended):
-
-  chmod +x install_python.sh
-  ./install_python.sh
-
-- Or manually with Homebrew (https://brew.sh):
-
-  brew install python
-
-After installation, verify:
-
-  python3 --version
-  pip3 --version
-
-## 2) Create and activate a virtual environment
-
-From the project folder:
-
-  python3 -m venv .venv
-  source .venv/bin/activate
-
-## 3) Install project dependencies
-
-With the virtual environment active:
-
-  python3 -m pip install -r requirements.txt
-
-## 4) Run the screener
-
-Example:
-
-  python options.py --tickers AAPL,MSFT,NVDA,SPY --min_oi 200 --min_vol 50
-
-Outputs:
-- screener_results.csv
-- screener_results_backtest.csv
-- plots/<TICKER>_support_resistance.png
-
-## Quick start (one command)
-
-If you prefer automation, run:
-
-  bash setup_venv.sh
-
-This will create a virtual environment and install requirements using `python -m pip`.
-
-## Troubleshooting (macOS)
-
-- zsh: command not found: python
-  - Use `python3` instead. Example: `python3 -m pip install -r requirements.txt`
-  - If `python3` is not found, install via `./install_python.sh` or `brew install python`.
-  - Optional (zsh): add an alias so `python` maps to `python3`:
-    - echo 'alias python=python3' >> ~/.zshrc && source ~/.zshrc
-
-- zsh: command not found: pip
-  - Use the module form: `python3 -m pip install -r requirements.txt`
-  - Ensure your virtual environment is activated: `source .venv/bin/activate`
-  - If you recently installed Homebrew/Python, open a new terminal so PATH updates, or run `hash -r` in zsh.
-
-- Apple Silicon build tools
-  - If you encounter build errors for scipy or numpy on Apple Silicon, ensure Command Line Tools are installed:
-
-    xcode-select --install
-
-Notes:
-- These instructions focus on macOS. Linux/Windows setup has been omitted intentionally to keep this README mac-specific.
-
-# python-options (macOS)
-
-This repo contains a simple options screener (options.py). These instructions are tailored for macOS.
-
-## 1) Install Python 3 (macOS)
-
-You can either use the helper script or install via Homebrew directly.
-
-- Using the helper script (recommended):
-
-  chmod +x install_python.sh
-  ./install_python.sh
-
-- Or manually with Homebrew (https://brew.sh):
-
-  brew install python
-
-After installation, verify:
-
-  python3 --version
-  pip3 --version
-
-## 2) Create and activate a virtual environment
-
-From the project folder:
-
-  python3 -m venv .venv
-  source .venv/bin/activate
-
-## 3) Install project dependencies
-
-With the virtual environment active:
-
-  python3 -m pip install -r requirements.txt
-
-## 4) Run the screener
-
-Example:
-
-  python options.py --tickers AAPL,MSFT,NVDA,SPY --min_oi 200 --min_vol 50
-
-Outputs:
-- screener_results.csv
-- screener_results_backtest.csv
-- plots/<TICKER>_support_resistance.png
-
-## Quick start (one command)
-
-If you prefer automation, run:
-
-  bash setup_venv.sh
-
-This will create a virtual environment and install requirements using `python -m pip`.
-
-## Troubleshooting (macOS)
-
-- zsh: command not found: python
-  - Use `python3` instead. Example: `python3 -m pip install -r requirements.txt`
-  - If `python3` is not found, install via `./install_python.sh` or `brew install python`.
-  - Optional (zsh): add an alias so `python` maps to `python3`:
-    - echo 'alias python=python3' >> ~/.zshrc && source ~/.zshrc
-
-- zsh: command not found: pip
-  - Use the module form: `python3 -m pip install -r requirements.txt`
-  - Ensure your virtual environment is activated: `source .venv/bin/activate`
-  - If you recently installed Homebrew/Python, open a new terminal so PATH updates, or run `hash -r` in zsh.
-
-- Apple Silicon build tools
-  - If you encounter build errors for scipy or numpy on Apple Silicon, ensure Command Line Tools are installed:
-
-    xcode-select --install
-
-Notes:
-- These instructions focus on macOS. Linux/Windows setup has been omitted intentionally to keep this README mac-specific.
-
-## Run command shortcuts
-
-After setting up the environment (see steps above), you can run the screener with a simple command:
-
-- Using the helper script:
-
-  chmod +x run.sh
-  ./run.sh   # no parameters needed; uses tickers.csv if present or built-in defaults
-
-- Or using Make (pass extra args via ARGS):
-
-  make run   # runs with defaults
-  make run ARGS="--tickers_csv tickers.csv --min_oi 200 --min_vol 50"
-
-### Backtest-only shortcut (quick way to see profitability)
-
-If you only want to run the multi-year strategy backtest (skip the options screener) and print the total profitability and the average per-ticker profitability in the console, use:
-
-- Using the helper script:
-
-  chmod +x backtest.sh
-  ./backtest.sh            # uses tickers.csv if present, otherwise built-in defaults
-  ./backtest.sh --tickers AAPL,MSFT --bt_years 3 --bt_dte 7
-
-- Or using Make:
-
-  make backtest
-  make backtest ARGS="--tickers AAPL,MSFT --bt_years 3"
-
-What you’ll see in the console at the end (now with world‑class formatting):
-- A colored banner and a table of Top Option Candidates (if any)
-- A rich, colored Strategy Backtest Summary table (per ticker)
-- "Combined total profitability of all strategy trades: ...% (equal stake per trade)" in green/red depending on performance
-- "Average per-ticker total trade profitability: ...%" in green/red
-
-Notes:
-- Pretty console output uses the Rich library and our scripts now force colors even when running under `make` or other non‑TTY contexts.
-- To disable colors, set NO_COLOR=1 (e.g., `NO_COLOR=1 make backtest`).
-
-Additional outputs remain the same:
-- backtests/<TICKER>_equity.csv
-- screener_results_backtest.csv (contains per-ticker strategy metrics)
-
-
-## Using a CSV for tickers
-
-You can now provide tickers via a CSV file. By default, the script looks for a file named `tickers.csv` in the project root.
-
-- CSV format: one ticker per line is recommended. A header like `ticker` is supported. Comma/space/semicolon-separated values are also accepted.
-
-Examples:
-
-  # default (uses tickers.csv if it exists; otherwise built-in defaults)
-  ./run.sh
-
-  # explicit CSV path and optional thresholds
-  ./run.sh --tickers_csv tickers.csv --min_oi 200 --min_vol 50
-
-Backward compatibility: you can still pass a comma-separated list via `--tickers`, which is used if a CSV isn’t provided/found.
-
-
-
-## Improved backtesting (multi-year strategy simulation)
-
-The screener now includes a more realistic multi-year backtest that simulates buying short-dated calls on breakout signals.
-It prices options via Black–Scholes using historical realized volatility and supports take-profit/stop-loss exits. Outputs include
-per-ticker equity curves under backtests/ and an aggregate summary in screener_results_backtest.csv.
-
-Key CLI flags:
-- --bt_years N          # years of underlying history to load for backtesting (default: 3)
-- --bt_dte D            # option DTE in days for simulated trades (default: 7)
-- --bt_moneyness PCT    # OTM percent for strike; K = S * (1 + PCT), e.g., 0.05 = 5% OTM (default: 0.05)
-- --bt_tp_x X           # optional take-profit multiple of entry premium, e.g., 3.0 for +200%
-- --bt_sl_x X           # optional stop-loss multiple of entry premium, e.g., 0.5 for -50%
-- --bt_alloc_frac F     # fraction of equity per trade, 0..1 (default: 0.1)
-- --bt_trend_filter T   # true/false; require uptrend (default: true)
-- --bt_vol_filter V     # true/false; require rv5<rv21<rv63 (default: true)
-- --bt_time_stop_frac Q # fraction of DTE for time-based check (default: 0.5)
-- --bt_time_stop_mult M # min multiple at time stop to remain (default: 1.2)
-- --bt_use_target_delta B # true/false; use target delta for strike (default: false)
-- --bt_target_delta D   # target delta value when enabled (default: 0.25)
-- --bt_trail_start_mult X # start trailing when option >= X * entry (default: 1.5)
-- --bt_trail_back B     # trailing drawback from peak fraction (default: 0.5)
-- --bt_protect_mult P   # protective floor vs entry (default: 0.7)
-- --bt_cooldown_days N  # cooldown days after losing trade (default: 0)
-- --bt_entry_weekdays W # comma-separated weekdays 0=Mon..6=Sun to allow entries (e.g., 0,1,2)
-- --bt_skip_earnings E  # true/false; skip entries near earnings (auto-fetched from yfinance)
-- --bt_use_underlying_atr_exits B # true/false; use ATR-based exits on underlying (default: true)
-- --bt_tp_atr_mult X   # underlying ATR take-profit multiple (default: 2.0)
-- --bt_sl_atr_mult X   # underlying ATR stop-loss multiple (default: 1.0)
-
-Examples:
-
-  # Run with defaults (uses tickers.csv if present)
-  ./run.sh
-
-  # 5-year backtest, 7DTE, 5% OTM, with TP=3x and SL=0.5x
-  ./run.sh --bt_years 5 --bt_dte 7 --bt_moneyness 0.05 --bt_tp_x 3 --bt_sl_x 0.5
-
-Outputs (in addition to the existing CSVs and plots):
-- backtests/<TICKER>_equity.csv   # per-ticker equity curve over time
-- screener_results_backtest.csv   # now includes strategy metrics (CAGR, Sharpe, max drawdown, win rate)
-
-
-## Price data cache
-
-To avoid re-downloading historical prices every run, the script caches daily OHLCV per ticker in CSV files.
-- Default cache directory: data/
-- Cache file naming: data/<TICKER>_1d.csv
-- On each run, the cache is incrementally updated by fetching only missing dates. If any required columns are missing for existing rows, those rows are re-fetched and filled.
-
-Controls:
-- --data_dir PATH       Use a custom directory for the cache (defaults to data or env PRICE_DATA_DIR)
-- --cache_refresh       Force refresh of cached price data for requested window (re-downloads and overwrites cache for that range)
-- Environment: set PRICE_DATA_DIR to override the default cache directory
-
-### Additional caches (to avoid re-fetching options metadata)
-
-Besides price history, the following are cached automatically under data/ to reduce repeated downloads:
-- Expiration dates list (yfinance Ticker.options) → data/meta/<TICKER>_meta.json (TTL ~ 12 hours)
-- Earnings dates (get_earnings_dates / calendar fallback) → data/meta/<TICKER>_meta.json (TTL ~ 3 days)
-- Option chains (calls) per expiry (Ticker.option_chain) → data/options/<TICKER>/<EXPIRY>_calls.csv (TTL ~ 60 minutes)
-- Option chains (puts) per expiry (Ticker.option_chain) → data/options/<TICKER>/<EXPIRY>_puts.csv (TTL ~ 60 minutes)
-- Ticker info/fast_info snapshot → data/meta/<TICKER>_meta.json (TTL ~ 1 day)
-- Dividends series → data/meta/<TICKER>_dividends.csv (TTL ~ 7 days)
-- Splits series → data/meta/<TICKER>_splits.csv (TTL ~ 30 days)
-
-You can override TTLs via environment variables:
-- EXPIRATIONS_TTL_HOURS (default 12)
-- EARNINGS_TTL_DAYS (default 3)
-- OPTION_CHAIN_TTL_MIN (default 60)
-- INFO_TTL_DAYS (default 1)
-- DIVIDENDS_TTL_DAYS (default 7)
-- SPLITS_TTL_DAYS (default 30)
-
-Notes:
-- On cache read errors or stale TTL, the script transparently re-fetches and overwrites the cache.
-- To force a clean refresh, delete specific cache files in data/meta or data/options for the affected ticker/expiry.
-
-
-
-## Revenue Growth Screener (Top 50)
-
-This project includes a script to rank small/mid caps by 3-year revenue CAGR using yfinance.
-
-How to run (uses the project virtualenv via Make):
-
-  make top50
-
-Defaults:
-- Universe source: CSV
-- CSV path: data/universes/russell2500_tickers.csv
-- Output: top50_small_mid_revenue_cagr.csv
-
-Providing the universe:
-- Place a file at data/universes/russell2500_tickers.csv with a header `ticker` and one symbol per row.
-- Example:
-
-  ticker
-  AAPL
-  MSFT
-
-Overriding defaults:
-
-  make top50 ARGS="--csv path/to/your_list.csv --min_mkt_cap 1e8 --max_mkt_cap 2e10 --top_n 100"
-
-Notes:
-- The script attempts multiple sources in yfinance to construct at least 4 annual revenue values. Some tickers may be skipped if data is missing.
-- Market cap filter is read from yfinance fast_info/info and used to restrict to small/mid caps.
-
-### Top 50 by 100× Bagger Score
-
-In addition to sorting by 3Y revenue CAGR, you can rank the universe by the modelled 100× Bagger Score (0–100) that estimates the probability-like chance of a stock becoming a 100× over a chosen horizon.
-
-How to run (uses the project virtualenv via Make):
-
-  make bagger50
-
-Output:
-- Same CSV: top50_small_mid_revenue_cagr.csv (sorted by the 100× score when invoked via `bagger50`).
-- Console table columns include: `#`, `Ticker`, `Mkt Cap`, `100× Score`, `Rev CAGR 3Y`, `Rev 3Y Ago`, `Rev Recent`.
-
-Optional flags (pass via ARGS):
-
-  make bagger50 ARGS="--bagger_horizon 15"     # change 100× horizon (years)
-  make bagger50 ARGS="--top_n 50"               # number of rows (default 50)
-  make bagger50 ARGS="--plain"                  # plain (non-rich) console output
-  make bagger50 ARGS="--bagger_verbose"         # show sub-score breakdown
-
-Tip:
-- If your universe file is missing, build it first:
-
-  make build-russell
-
-This will generate `data/universes/russell2500_tickers.csv` which is used by both `top50` and `bagger50` by default.
-
-
-
-### 100× Bagger Score: Ideation Funnel and Current Improvement
-
-New: Breakout-aware scoring (conservative)
-- The bagger model now adds a modest, risk-aware breakout component to avoid names with poor technical context and to prefer those showing a constructive upside breakout consistent with trend-following literature.
-- Ingredients: 55-day Donchian upper-band breakout, 20-day return filter, 100/200-day SMA alignment, and volume confirmation (20-day z-score). The effect is kept small by default and gated by risk, regime, and fundamental growth quality.
-- Configure:
-  - --no_breakout                      Disable the breakout component entirely
-  - --bagger_breakout_weight 0.0..1.0  Weight added to the composite S (default 0.1)
-- Outputs: When --export_subscores is used, the CSV includes columns 'breakout' and 'regime' for transparency.
-
-This project’s 100× Bagger Score has an ongoing improvement roadmap guided by an ideation funnel.
-
-- Funnel (100 → 25 → 5 → 1):
-  - Generated 100 candidate improvements across data robustness, feature engineering, normalization/mapping, guardrails/priors, calibration, performance/caching, and UX/debuggability.
-  - Shortlisted the top 25 based on impact × feasibility × robustness × runtime.
-  - Narrowed to 5 finalists:
-    1) Blend LTM revenue momentum with 3Y CAGR (adds timeliness)
-    2) Sector‑aware valuation normalization (EV/S within sector percentiles)
-    3) Statement/price caches with TTL (stability + speed)
-    4) Growth stability upgrade (blend 5Y CAGR; add LTM vs prior‑LTM momentum trend)
-    5) Risk regime filter (200d SMA + outlier‑robust volatility mapping)
-  - Implemented the following improvements in code with minimal footprint and no new dependencies:
-  1) Blend LTM revenue momentum with 3Y CAGR (adds timeliness)
-  2) Sector‑aware valuation normalization (EV/S within sector percentiles)
-  3) Price caches with TTL via existing data_cache (stability + speed)
-  4) Growth stability upgrade (blend 5Y CAGR; add LTM vs prior‑LTM momentum trend)
-  5) Risk regime filter (200d SMA + outlier‑robust volatility mapping)
-
-What’s implemented now
-- LTM revenue momentum signal from quarterly income statements:
-  - ltm_momentum = (sum of last 4 quarters / prior 4 quarters) − 1
-- Growth sub‑score now blends:
-  - 50% weight to 3‑year revenue CAGR vs the horizon‑implied 100× CAGR threshold r*
-  - 20% weight to 5‑year revenue CAGR when available
-  - 30% weight to LTM revenue momentum vs a softer target (0.5·r*) plus a small bonus for rising momentum trend
-- Valuation now includes a sector‑aware normalization:
-  - EV/S or P/S is converted to a sector percentile, mapped to a [0,1] score, and blended with the global valuation score.
-- Risk uses winsorized realized volatility and incorporates a 200‑day SMA regime penalty.
-- Guardrails remain in place (tiny‑base revenue cap, negative margin caps, drawdown caps, etc.).
-
-How to run and inspect
-- Top 50 by 100× score:
-
-  make bagger50
-
-- Audit distributions quickly (first 100 tickers):
-
-  make bagger50 ARGS="--debug_bagger 100 --export_subscores --plain"
-
-- Relevant CLI flags:
-  - --bagger_horizon 5|10|15|20|25|30    # target 100× years (default: 5)
-  - --fast_bagger                       # skip heavier calcs (faster)
-  - --export_subscores                  # include subscores/diagnostics in CSV
-
-Rationale
-- 3Y CAGR can lag inflections; LTM momentum adds responsiveness using available quarterly data.
-- Conservative mapping and modest blending (30%) prevent runaway effects while increasing timeliness.
-
-Next candidates (not yet implemented)
-- Sector‑aware valuation normalization
-- Statement/price caches with TTL
-- Risk regime filter and robust volatility mapping
-
-
-## PLN/JPY FX Signals
-
-Generate scientifically grounded Buy/Hold/Sell signals for Polish zloty vs Japanese yen across multiple horizons (1d, 3d, 7d, ~1m, ~3m, ~6m, ~12m) using volatility-adjusted expected returns, multi-window momentum, and a 200-day trend filter.
-
-Quick start:
-
-  make fx-plnjpy
-
-Options:
-
-  make fx-plnjpy ARGS="--start 2010-01-01 --horizons 1,3,7,21,63,126,252 --json fx_signals.json --csv fx_signals.csv"
-  
-Easy mode (plain English):
-
-  make fx-plnjpy ARGS="--simple"
-
-- --simple prints a friendly table with:
-  - Timeframe (e.g., 1 day, 1 week, 3 months)
-  - Chance PLN goes up (percent)
-  - Recommendation (BUY/HOLD/SELL)
-  - Why (one‑line explanation of trend, momentum, and volatility)
-- When exporting with --simple, CSV/JSON include the simple fields (and JSON still includes the detailed signals for compatibility).
-
-What it does:
-- Downloads PLNJPY=X daily prices (JPY per PLN) from Yahoo Finance.
-- Computes EWM drift and volatility (63d), 200-day trend, and 21/63/126/252-day momentum.
-- For each horizon H, forms a normalized score z combining (mu/vol)*sqrt(H) with momentum/trend tilts and volatility-regime dampening.
-- Maps scores to BUY/HOLD/SELL with horizon-aware thresholds and prints a table; optionally writes JSON/CSV.
-
-Note: A BUY indicates long PLN vs JPY (expect PLN to appreciate vs JPY).
-
-Columns (console/exports):
-- Horizon (trading days): Number of trading days in the forecast horizon.
-- Edge z (risk-adjusted): Risk-adjusted edge combining drift/vol with momentum/trend filters.
-- Pr[return>0] (prob_up in CSV/JSON): Estimated probability the horizon return is positive, mapped via the Normal CDF of Edge z.
-- E[log return] (expected_log_return): Expected cumulative log return over the horizon from the daily drift estimate.
-- Signal: Decision based on prob_up: BUY (>=58%), HOLD (42–58%), SELL (<=42%).
-
-Exports:
-- CSV columns are named: horizon_trading_days, edge_z_risk_adjusted, prob_up, expected_log_return, signal.
-- JSON includes the above signals and a "column_descriptions" block documenting each field.
-
-
-
-## Upgraded PLN/JPY FX Signals (methodology and flags)
-
-What’s new (world‑class, research‑grounded upgrades):
-- Context‑aware scoring while keeping the scientifically sound Sharpe‑style core z = (mu/vol)·sqrt(H)
-- Risk features:
-  - Volatility percentile vs own 3‑year history (dampen in top‑vol regimes)
-  - Downside volatility (semi‑std) penalty, realized skewness (252d) guardrail
-  - Trend‑slope proxies (100d/200d) in addition to 200d z‑distance
-- Macro and cross‑asset tilts (optional):
-  - VIX 63d z‑score and 5‑day change dampen conviction in stress (JPY safe‑haven)
-  - USDJPY 63d momentum (JPY weakness supports PLNJPY up)
-  - EURPLN 63d momentum (EURPLN down implies PLN strength; supportive)
-- Diagnostics: optional context table and JSON context block
-
-CLI (examples):
-- Default run:
-
-  make fx-plnjpy
-
-- Diagnostics and disable context tilts:
-
-  make fx-plnjpy ARGS="--diag --no_macro --no_cross"
-
-- Custom horizons and export:
-
-  make fx-plnjpy ARGS="--start 2010-01-01 --horizons 1,3,7,21,63,126,252 --json fx_signals.json --csv fx_signals.csv"
-
-New flags:
-- --no_macro          Disable macro (VIX) tilt
-- --no_cross          Disable cross‑asset (USDJPY/EURPLN) tilt
-- --diag              Print a context diagnostics table under the signals
-
-Notes:
-- A BUY indicates long PLN vs JPY (expect PLN to appreciate vs JPY). Tilts are modest and risk‑aware; the base z‑score remains the dominant driver.
-- Data source: Yahoo Finance (yfinance). No new dependencies beyond SciPy (already in requirements.txt).
+<p align="center">
+  <sub>Built with scientific rigor and engineering craftsmanship.</sub>
+</p>
