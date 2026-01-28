@@ -1934,7 +1934,8 @@ def _compute_epistemic_disagreement(
 def _compute_volatility_ratio(
     log_returns: pd.Series,
     short_window: int = VOL_LOOKBACK_SHORT,
-    long_window: int = VOL_LOOKBACK_LONG
+    long_window: int = VOL_LOOKBACK_LONG,
+    adaptive: bool = True
 ) -> float:
     """
     Compute volatility compression/expansion ratio.
@@ -1949,20 +1950,44 @@ def _compute_volatility_ratio(
         log_returns: Historical log returns
         short_window: Short-term volatility window
         long_window: Long-term volatility window
+        adaptive: If True (default), use available data when insufficient for long_window
+                 (but only if data is at least 60% of required)
         
     Returns:
         Volatility ratio
     """
-    if len(log_returns) < long_window:
+    n = len(log_returns)
+    
+    # Minimum requirement: need at least short_window * 2 for any comparison
+    if n < short_window * 2:
         return float('nan')
     
+    # Check if we have enough data for requested long_window
+    if n < long_window:
+        if adaptive:
+            # Only adapt if we have at least 60% of requested data
+            # This prevents using very limited data that could be misleading
+            min_required = int(long_window * 0.6)
+            if n < min_required:
+                return float('nan')
+            # Adaptive mode - use all available data
+            effective_long_window = n
+            # Ensure meaningful separation from short window
+            if effective_long_window <= short_window:
+                return float('nan')
+        else:
+            # Strict mode - return NaN if not enough data
+            return float('nan')
+    else:
+        effective_long_window = long_window
+    
     recent = log_returns.iloc[-short_window:]
-    historical = log_returns.iloc[-long_window:]
+    historical = log_returns.iloc[-effective_long_window:]
     
     vol_short = float(recent.std())
     vol_long = float(historical.std())
     
-    if vol_long <= 0:
+    if vol_long <= 0 or not np.isfinite(vol_long):
         return float('nan')
     
     return vol_short / vol_long
@@ -2017,8 +2042,8 @@ def _construct_observation_vector(
     else:
         disagreement_momentum = 0.0
     
-    # 6) Volatility Ratio
-    vol_ratio = _compute_volatility_ratio(log_returns)
+    # 6) Volatility Ratio (adaptive mode for robustness with limited data)
+    vol_ratio = _compute_volatility_ratio(log_returns, adaptive=True)
     
     # Construct raw observation
     raw_obs = ObservationVector(

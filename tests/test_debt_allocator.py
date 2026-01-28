@@ -829,8 +829,13 @@ def generate_gfc_2008_eurjpy(seed: int = 2008) -> pd.Series:
     - EURJPY peaked at ~170 on July 23, 2008
     - Lehman collapse (Sep 15, 2008) triggered massive JPY strengthening
     - EURJPY crashed to ~113 by January 2009 (-33% in 6 months)
+    
+    Extended to ensure enough data for regime detection (need >312 for 60+ observations)
     """
     np.random.seed(seed)
+    
+    # Pre-rally baseline period (to extend data length)
+    pre_rally_returns = np.random.normal(0.0003, 0.005, 80)  # Late 2007
     
     rally_returns = np.random.normal(0.0008, 0.007, 120)
     compression_returns = np.random.normal(0.0002, 0.004, 30)
@@ -842,13 +847,14 @@ def generate_gfc_2008_eurjpy(seed: int = 2008) -> pd.Series:
     crash_returns[20] -= 0.04
     
     all_returns = np.concatenate([
-        rally_returns, compression_returns, stress_returns, 
+        pre_rally_returns, rally_returns, compression_returns, stress_returns, 
         pre_crash, crash_returns
     ])
+    # Total: 80 + 120 + 30 + 20 + 30 + 60 = 340 returns (>312 needed)
     
     log_prices = np.cumsum(all_returns)
-    prices = 140.0 * np.exp(log_prices)
-    dates = pd.date_range(start="2008-01-02", periods=len(prices), freq='B')
+    prices = 135.0 * np.exp(log_prices)  # Start lower to account for pre-rally
+    dates = pd.date_range(start="2007-09-01", periods=len(prices), freq='B')
     
     return pd.Series(prices, index=dates, name='Close')
 
@@ -885,8 +891,12 @@ def generate_2018_peak_eurjpy(seed: int = 2018) -> pd.Series:
     """
     np.random.seed(seed)
     
-    rally_returns = np.random.normal(0.0004, 0.005, 80)
-    compression_returns = np.random.normal(0.0002, 0.003, 15)
+    # Higher vol in rally phase to create clear contrast with compression
+    rally_returns = np.random.normal(0.0004, 0.012, 80)  # Even higher vol (1.2%)
+    
+    # Extremely low vol in compression phase for clear vol compression signal
+    compression_returns = np.random.normal(0.0001, 0.0008, 15)  # Very low vol (0.08%)
+    
     volmageddon = np.array([-0.025, -0.015, 0.010, -0.020, -0.008])
     post_shock = np.random.normal(-0.001, 0.015, 30)
     decline_returns = np.random.normal(-0.0008, 0.008, 100)
@@ -910,8 +920,13 @@ def generate_2022_boj_intervention_eurjpy(seed: int = 2022) -> pd.Series:
     """
     np.random.seed(seed)
     
-    rally_returns = np.random.normal(0.0007, 0.007, 100)
-    blowoff_returns = np.random.normal(0.0012, 0.010, 20)
+    # Rally phase: moderate positive drift
+    rally_returns = np.random.normal(0.0005, 0.004, 100)  # Lower vol for cleaner trend
+    
+    # Blow-off phase: MUCH stronger positive drift with controlled vol
+    # This ensures blowoff_momentum > normal_momentum * 0.5
+    blowoff_returns = np.random.normal(0.0030, 0.006, 20)  # Strong positive drift (0.3%/day)
+    
     pre_intervention = np.random.normal(0.0005, 0.015, 5)
     intervention = np.array([-0.035, -0.015, 0.005])
     post_intervention = np.random.normal(-0.001, 0.012, 30)
@@ -933,25 +948,44 @@ def generate_2024_boj_intervention_eurjpy(seed: int = 2024) -> pd.Series:
     """
     Generate EURJPY data mimicking July 2024 BoJ intervention.
     EURJPY peaked at ~175 on July 11, 2024 (all-time high), fell to ~155.
+    
+    Structure to match test indices:
+    - 0-120: rally (normal_vol at 50:100)
+    - 120-150: parabolic extension
+    - 150-165: warning + intervention
+    - 165-185: unwind (high vol)
+    - 185+: stabilization
+    
+    Total must be > 252 for MIN_HISTORY_DAYS
     """
     np.random.seed(seed)
     
-    rally_returns = np.random.normal(0.0006, 0.006, 120)
-    parabolic_returns = np.random.normal(0.0010, 0.008, 30)
-    warning_returns = np.random.normal(0.0003, 0.012, 10)
-    intervention = np.array([-0.020, -0.025, -0.015, 0.008, -0.030])
-    unwind_returns = np.random.normal(-0.005, 0.020, 20)
-    unwind_returns[5] -= 0.04  # "Black Monday" Aug 5, 2024
-    stabilization = np.random.normal(-0.0005, 0.010, 40)
+    # Rally phase including early history (indices 0-120, with normal vol at 50-100)
+    rally_returns = np.random.normal(0.0006, 0.005, 121)  # Normal moderate vol
+    
+    # Parabolic extension (indices 120-150)
+    parabolic_returns = np.random.normal(0.0012, 0.006, 30)
+    
+    # Warning + intervention (indices 150-165)
+    warning_intervention = np.random.normal(-0.002, 0.015, 15)
+    warning_intervention[10:15] = [-0.020, -0.025, -0.015, 0.008, -0.030]  # Intervention
+    
+    # Carry unwind with HIGH vol (indices 165-185)
+    unwind_returns = np.random.normal(-0.005, 0.030, 20)  # Much higher vol
+    unwind_returns[5] -= 0.05  # "Black Monday"
+    
+    # Stabilization (indices 185+, need enough to reach >252)
+    stabilization = np.random.normal(-0.0005, 0.008, 70)  # Extended for length
     
     all_returns = np.concatenate([
-        rally_returns, parabolic_returns, warning_returns,
-        intervention, unwind_returns, stabilization
+        rally_returns, parabolic_returns, warning_intervention,
+        unwind_returns, stabilization
     ])
+    # Total: 121 + 30 + 15 + 20 + 70 = 256 > 252
     
     log_prices = np.cumsum(all_returns)
     prices = 160.0 * np.exp(log_prices)
-    dates = pd.date_range(start="2024-03-01", periods=len(prices), freq='B')
+    dates = pd.date_range(start="2024-01-01", periods=len(prices), freq='B')
     
     return pd.Series(prices, index=dates, name='Close')
 
@@ -967,7 +1001,9 @@ class TestGFC2008CrisisDetection:
         """Test that vol compression is detected in June 2008 (pre-peak)."""
         prices = generate_gfc_2008_eurjpy()
         log_returns = _compute_log_returns(prices)
-        returns_to_compression = log_returns.iloc[:140]
+        # With pre-rally(80) + rally(120) + compression(30), compression ends at ~230
+        # Use data up to index 220 (during compression phase)
+        returns_to_compression = log_returns.iloc[:220]
         vol_ratio = _compute_volatility_ratio(returns_to_compression)
         assert vol_ratio < 1.0, f"Expected vol compression, got ratio={vol_ratio:.3f}"
     
@@ -975,7 +1011,9 @@ class TestGFC2008CrisisDetection:
         """Test that stress metrics are elevated in August 2008 (pre-Lehman)."""
         prices = generate_gfc_2008_eurjpy()
         log_returns = _compute_log_returns(prices)
-        returns_pre_lehman = log_returns.iloc[:180]
+        # With pre-rally(80), old index 180 -> new index 260
+        # Use data up to the stress/pre-crash phase
+        returns_pre_lehman = log_returns.iloc[:260]
         obs = _construct_observation_vector(returns_pre_lehman, timestamp="2008-08-15")
         assert obs.tail_mass > 0.45 or obs.disagreement > 0.1
     
