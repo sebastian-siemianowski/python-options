@@ -1,786 +1,2411 @@
-# python-options (macOS)
+<h1 align="center">Quantitative Signal Engine</h1>
+
+<p align="center">
+  <strong>Where Bayesian Model Averaging meets Kalman Filtering</strong><br>
+  <sub>Multi-asset signal generation with calibrated uncertainty</sub>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.7+-blue.svg" alt="Python 3.7+">
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="macOS">
+  <img src="https://img.shields.io/badge/assets-100+-green.svg" alt="100+ Assets">
+  <img src="https://img.shields.io/badge/models-7_per_regime-orange.svg" alt="7 Models">
+</p>
+
+<p align="center">
+  <a href="#the-system">The System</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#daily-workflow">Daily Workflow</a> •
+  <a href="#command-reference">Commands</a> •
+  <a href="#the-mathematics">Mathematics</a> •
+  <a href="#architecture">Architecture</a>
+</p>
+
+---
+
+## Why This System Exists
+
+Most trading systems choose a single model and pretend it's correct. This system doesn't.
+
+Instead, it maintains **7 competing models** across **5 market regimes**, letting Bayesian inference continuously update which models are most credible given recent data. Signals emerge from the **full posterior predictive distribution**—not from any single "best guess."
+
+The result: **calibrated uncertainty**. When the system says "62% probability of positive return," it means that historically, 62% of such predictions were correct.
+
+> *"The goal is not to be right. The goal is to know how confident you should be."*
+
+---
+
+## The System
+
+This is a **belief evolution engine**, not a rule engine.
+
+At its core, the system maintains a population of competing models—each representing a different hypothesis about market dynamics. These models evolve in probability over time through Bayesian updating, and signals emerge from the full predictive distribution, not from point estimates.
+
+### The Pipeline
+
+```
+╔═══════════════════════════════════════════════════════════════════════════════════════╗
+║                                                                                       ║
+║   ┌─────────────┐                                                                     ║
+║   │ Yahoo       │                                                                     ║
+║   │ Finance API │                                                                     ║
+║   └──────┬──────┘                                                                     ║
+║          │                                                                            ║
+║          ▼                                                                            ║
+║   ┌─────────────────────────────────────────────────────────────────────────────┐     ║
+║   │                         DATA ENGINE  (make data)                            │     ║
+║   │                                                                             │     ║
+║   │   • Fetch 10 years OHLCV for 100+ symbols                                   │     ║
+║   │   • Multi-pass retry (Yahoo is flaky)                                       │     ║
+║   │   • Incremental cache updates                                               │     ║
+║   │   • Currency conversion to PLN base                                         │     ║
+║   │                                                                             │     ║
+║   │   Output: data/{SYMBOL}_1d.csv                                              │     ║
+║   └──────────────────────────────────┬──────────────────────────────────────────┘     ║
+║                                      │                                                ║
+║                                      ▼                                                ║
+║   ┌─────────────────────────────────────────────────────────────────────────────┐     ║
+║   │                        TUNING ENGINE  (make tune)                           │     ║
+║   │                                                                             │     ║
+║   │   For each asset:                                                           │     ║
+║   │   ┌─────────────────────────────────────────────────────────────────────┐   │     ║
+║   │   │  For each regime r ∈ {LOW_VOL_TREND, HIGH_VOL_TREND,                │   │     ║
+║   │   │                       LOW_VOL_RANGE, HIGH_VOL_RANGE, CRISIS_JUMP}:  │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │    For each model m ∈ {kalman_gaussian,                             │   │     ║
+║   │   │                        kalman_phi_gaussian,                         │   │     ║
+║   │   │                        phi_student_t_nu_4,  phi_student_t_nu_6,     │   │     ║
+║   │   │                        phi_student_t_nu_8,  phi_student_t_nu_12,    │   │     ║
+║   │   │                        phi_student_t_nu_20}:                        │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │      1. Fit θ = {q, c, φ} via MLE with regularization prior         │   │     ║
+║   │   │      2. Compute log-likelihood ℓ(θ)                                 │   │     ║
+║   │   │      3. Compute BIC = -2ℓ + k·log(n)                                │   │     ║
+║   │   │      4. Compute Hyvärinen score (robust to misspecification)        │   │     ║
+║   │   │      5. Run PIT calibration diagnostics                             │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │    Aggregate across models:                                         │   │     ║
+║   │   │      • w(m|r) = exp(-½ · ΔBIC) · hyv_weight^(1-α)                   │   │     ║
+║   │   │      • Apply temporal smoothing: w ← w_prev^α · w_raw               │   │     ║
+║   │   │      • Apply hierarchical shrinkage toward global                   │   │     ║
+║   │   │      • Normalize: p(m|r) = w(m|r) / Σw                              │   │     ║
+║   │   └─────────────────────────────────────────────────────────────────────┘   │     ║
+║   │                                                                             │     ║
+║   │   Output: scripts/quant/cache/kalman_q_cache.json                           │     ║
+║   │           {asset: {regime: {model: {q, φ, ν, BIC, p(m|r), ...}}}}           │     ║
+║   └──────────────────────────────────┬──────────────────────────────────────────┘     ║
+║                                      │                                                ║
+║                                      ▼                                                ║
+║   ┌─────────────────────────────────────────────────────────────────────────────┐     ║
+║   │                       SIGNAL ENGINE  (make stocks)                          │     ║
+║   │                                                                             │     ║
+║   │   For each asset:                                                           │     ║
+║   │   ┌─────────────────────────────────────────────────────────────────────┐   │     ║
+║   │   │  1. REGIME DETECTION                                                │   │     ║
+║   │   │     • Compute rolling volatility (EWMA fast/slow blend)             │   │     ║
+║   │   │     • Compute drift magnitude                                       │   │     ║
+║   │   │     • Classify: r_t ∈ {0,1,2,3,4}                                   │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │  2. LOAD BELIEFS                                                    │   │     ║
+║   │   │     • Retrieve p(m|r_t) and θ_{r_t,m} from cache                    │   │     ║
+║   │   │     • If regime sparse → borrow from global (hierarchical)          │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │  3. POSTERIOR PREDICTIVE MONTE CARLO                                │   │     ║
+║   │   │     samples = []                                                    │   │     ║
+║   │   │     for m, weight in p(m|r_t):                                      │   │     ║
+║   │   │         n_samples = weight × N_total                                │   │     ║
+║   │   │         for each sample:                                            │   │     ║
+║   │   │             μ = kalman_drift_estimate                               │   │     ║
+║   │   │             for t in 1..horizon:                                    │   │     ║
+║   │   │                 μ ← φ·μ + η,  η ~ N(0, q)                           │   │     ║
+║   │   │                 r_t ← μ + ε,  ε ~ model_distribution(σ)             │   │     ║
+║   │   │             samples.append(Σ r_t)                                   │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │  4. DECISION LAYER                                                  │   │     ║
+║   │   │     • P(return > 0) = count(samples > 0) / N                        │   │     ║
+║   │   │     • E[return] = mean(samples)                                     │   │     ║
+║   │   │     • Apply exhaustion dampening (UE↑/UE↓)                          │   │     ║
+║   │   │     • Map: P > 58% → BUY, P < 42% → SELL, else → HOLD               │   │     ║
+║   │   └─────────────────────────────────────────────────────────────────────┘   │     ║
+║   │                                                                             │     ║
+║   │   Output: Console tables + cached JSON                                      │     ║
+║   └──────────────────────────────────┬──────────────────────────────────────────┘     ║
+║                                      │                                                ║
+║                                      ▼                                                ║
+║                        ┌───────────────────────────┐                                  ║
+║                        │   BUY  │  HOLD  │  SELL   │                                  ║
+║                        │   🟢   │   ⚪   │   🔴   │                                   ║
+║                        └───────────────────────────┘                                  ║
+║                                                                                       ║
+╚═══════════════════════════════════════════════════════════════════════════════════════╝
+```
+
+### Quick Reference
+
+| Engine | Command | Input | Output | Time |
+|--------|---------|-------|--------|------|
+| **Data** | `make data` | Yahoo Finance API | `data/*.csv` | 5-15 min |
+| **Tuning** | `make tune` | Price CSVs | `kalman_q_cache.json` | 2-10 min |
+| **Signal** | `make stocks` | Cache + fresh prices | Console + JSON | 1-3 min |
+
+### Asset Universe
+
+The system tracks **100+ assets** across multiple asset classes:
+
+| Class | Examples | Count |
+|-------|----------|-------|
+| **Equities** | AAPL, MSFT, NVDA, TSLA, JPM, GS, UNH, LLY... | ~80 |
+| **Defense** | LMT, RTX, NOC, GD, BA, HII, AVAV, PLTR... | ~40 |
+| **ETFs** | SPY, VOO, GLD, SLV, SMH | 5 |
+| **Commodities** | GC=F (Gold), SI=F (Silver) | 2 |
+| **Crypto** | BTC-USD, MSTR | 2 |
+| **FX** | PLNJPY=X | 1 |
+
+All prices are converted to a common base currency (PLN) for portfolio-level analysis.
+
+### Model Universe
+
+The Tuning Engine fits **7 model classes** per regime:
+
+| Model | Parameters | Use Case |
+|-------|------------|----------|
+| `kalman_gaussian` | q, c | Baseline Gaussian innovations |
+| `kalman_phi_gaussian` | q, c, φ | AR(1) drift with Gaussian |
+| `phi_student_t_nu_4` | q, c, φ | Heavy tails (ν=4) |
+| `phi_student_t_nu_6` | q, c, φ | Moderate tails (ν=6) |
+| `phi_student_t_nu_8` | q, c, φ | Light tails (ν=8) |
+| `phi_student_t_nu_12` | q, c, φ | Near-Gaussian (ν=12) |
+| `phi_student_t_nu_20` | q, c, φ | Almost Gaussian (ν=20) |
+
+Student-t models use a **discrete ν grid** (not continuous optimization). Each ν is a separate sub-model in BMA, allowing the posterior to express uncertainty about tail thickness.
+
+### Regime Classification
+
+Markets are classified into **5 regimes** based on volatility and drift:
+
+| Regime | Condition |
+|--------|-----------|
+| `LOW_VOL_TREND` | vol < 0.85×median, \|drift\| > threshold |
+| `HIGH_VOL_TREND` | vol > 1.3×median, \|drift\| > threshold |
+| `LOW_VOL_RANGE` | vol < 0.85×median, \|drift\| ≤ threshold |
+| `HIGH_VOL_RANGE` | vol > 1.3×median, \|drift\| ≤ threshold |
+| `CRISIS_JUMP` | vol > 2×median OR tail_indicator > 4 |
+
+Regime assignment is **deterministic and consistent** between tuning and inference.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- macOS (Intel or Apple Silicon)
+- Python 3.7+
+- ~10GB disk space for price cache
+
+### Installation (One Command)
+
+```bash
+make setup
+```
+
+This will:
+1. Create `.venv/` virtual environment
+2. Install dependencies from `requirements.txt`
+3. Download 10 years of price data (3 passes for reliability)
+4. Clean cached data
+
+**Time:** 5-15 minutes depending on network.
+
+### Generate Your First Signals
+
+```bash
+make stocks
+```
+
+### What You'll See
+
+The system outputs beautifully formatted Rich console tables:
+
+```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+│                           NVDA — NVIDIA Corporation                       │
+│                      Regime: LOW_VOL_TREND │ Current: $142.58             │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ Horizon     P(r>0)    E[return]    Signal     Confidence
+─────────────────────────────────────────────────────────────
+ 1 day       54.2%      +0.08%      HOLD       ██░░░░░░░░
+ 1 week      58.7%      +0.42%      BUY        ████░░░░░░
+ 1 month     63.1%      +1.84%      BUY        ██████░░░░
+ 3 months    71.2%      +5.62%      BUY        ████████░░
+ 12 months   78.4%     +18.41%      BUY        █████████░
+```
+
+Signals are color-coded:
+- 🟢 **BUY** (green): P(r>0) ≥ 58%
+- ⚪ **HOLD** (dim): P(r>0) ∈ (42%, 58%)
+- 🔴 **SELL** (red): P(r>0) ≤ 42%
+
+### Understanding the Columns
+
+| Column | Meaning |
+|--------|---------|
+| **Horizon** | Forecast period (trading days) |
+| **P(r>0)** | Probability that return will be positive |
+| **E[return]** | Expected log return from posterior mean |
+| **Signal** | Decision derived from probability threshold |
+| **Confidence** | Visual indicator of probability magnitude |
+
+### Understanding the Regime
 
-This repo contains a simple options screener (options.py). These instructions are tailored for macOS.
+Each asset is classified into one of 5 regimes:
+
+| Regime | What It Means | Typical Behavior |
+|--------|---------------|------------------|
+| `LOW_VOL_TREND` | Quiet trending market | Smooth, directional moves |
+| `HIGH_VOL_TREND` | Volatile trending market | Sharp moves with direction |
+| `LOW_VOL_RANGE` | Quiet range-bound | Mean-reverting, choppy |
+| `HIGH_VOL_RANGE` | Volatile range-bound | Whipsaw, no clear direction |
+| `CRISIS_JUMP` | Extreme stress | Tail events, correlations spike |
 
-## 1) Install Python 3 (macOS)
+The regime affects which model receives the most weight in the BMA mixture.
 
-You can either use the helper script or install via Homebrew directly.
+---
 
-- Using the helper script (recommended):
+## Daily Workflow
 
-  chmod +x install_python.sh
-  ./install_python.sh
+### The 30-Second Morning Routine
 
-- Or manually with Homebrew (https://brew.sh):
+```bash
+make stocks
+```
 
-  brew install python
+That's it. This single command:
+1. Refreshes the last 5 days of price data
+2. Loads cached Kalman parameters
+3. Generates signals for all assets
+4. Displays formatted output
 
-After installation, verify:
+### When to Re-Tune
 
-  python3 --version
-  pip3 --version
+The Tuning Engine should be run:
+- **Weekly** during normal markets
+- **After major regime shifts** (VIX spike, Fed announcement)
+- **When signals feel stale** or miscalibrated
 
-## 2) Create and activate a virtual environment
+```bash
+# Weekly calibration
+make tune
 
-From the project folder:
+# Force complete re-estimation (ignore cache)
+make tune ARGS="--force"
+```
 
-  python3 -m venv .venv
-  source .venv/bin/activate
+### Offline Mode
 
-## 3) Install project dependencies
+Already have cached data? Work without network:
 
-With the virtual environment active:
+```bash
+# Render from cache only
+make report
 
-  python3 -m pip install -r requirements.txt
+# Or set environment variable
+OFFLINE_MODE=1 make stocks
+```
 
-## 4) Run the screener
+### Quick Validation
 
-Example:
+Before trusting signals, validate calibration:
 
-  python options.py --tickers AAPL,MSFT,NVDA,SPY --min_oi 200 --min_vol 50
+```bash
+# Check if probabilities match historical outcomes
+make fx-calibration
 
-Outputs:
-- screener_results.csv
-- screener_results_backtest.csv
-- plots/<TICKER>_support_resistance.png
+# Quick smoke test with 20 assets
+make top20
+```
 
-## Quick start (one command)
+---
 
-If you prefer automation, run:
+## Command Reference
 
-  bash setup_venv.sh
+All interaction happens through `make`. The Makefile orchestrates Python scripts, manages the virtual environment, and handles caching transparently.
 
-This will create a virtual environment and install requirements using `python -m pip`.
+---
 
-## Troubleshooting (macOS)
+### 🚀 Setup & Installation
 
-- zsh: command not found: python
-  - Use `python3` instead. Example: `python3 -m pip install -r requirements.txt`
-  - If `python3` is not found, install via `./install_python.sh` or `brew install python`.
-  - Optional (zsh): add an alias so `python` maps to `python3`:
-    - echo 'alias python=python3' >> ~/.zshrc && source ~/.zshrc
+#### `make setup`
 
-- zsh: command not found: pip
-  - Use the module form: `python3 -m pip install -r requirements.txt`
-  - Ensure your virtual environment is activated: `source .venv/bin/activate`
-  - If you recently installed Homebrew/Python, open a new terminal so PATH updates, or run `hash -r` in zsh.
+**The one command to rule them all.** Run this once after cloning.
 
-- Apple Silicon build tools
-  - If you encounter build errors for scipy or numpy on Apple Silicon, ensure Command Line Tools are installed:
+```bash
+make setup
+```
 
-    xcode-select --install
+**What happens internally:**
+1. Creates `.venv/` via `setup_venv.sh`
+2. Upgrades pip and installs `requirements.txt`
+3. Runs `precache_data.py` **3 times** (Yahoo Finance is flaky)
+4. Runs `clean_cache.py` to remove empty rows
 
-Notes:
-- These instructions focus on macOS. Linux/Windows setup has been omitted intentionally to keep this README mac-specific.
+**Time:** 5-15 minutes  
+**Disk:** ~10GB for full price cache
 
-# python-options (macOS)
+#### `make doctor`
 
-This repo contains a simple options screener (options.py). These instructions are tailored for macOS.
+Reinstalls all dependencies. Use when imports fail or packages are corrupted.
 
-## 1) Install Python 3 (macOS)
+```bash
+make doctor
+```
 
-You can either use the helper script or install via Homebrew directly.
+---
 
-- Using the helper script (recommended):
+### 📊 Data Engine
 
-  chmod +x install_python.sh
-  ./install_python.sh
+The Data Engine fetches OHLCV (Open, High, Low, Close, Volume) from Yahoo Finance and caches locally as CSV files.
 
-- Or manually with Homebrew (https://brew.sh):
+#### `make data`
 
-  brew install python
+Downloads full price history for all assets in the universe.
 
-After installation, verify:
+```bash
+make data                              # Standard run
+make data ARGS="--workers 4"           # Reduce parallelism
+make data ARGS="--batch-size 8"        # Smaller batches
+```
 
-  python3 --version
-  pip3 --version
+**Internals:**
+- Runs `refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16`
+- 5 retry passes (Yahoo Finance rate-limits aggressively)
+- 12 parallel workers, 16 assets per batch
+- Output: `data/<SYMBOL>_1d.csv`
 
-## 2) Create and activate a virtual environment
+#### `make refresh`
 
-From the project folder:
+Updates only the last 5 days. Fast daily refresh.
 
-  python3 -m venv .venv
-  source .venv/bin/activate
+```bash
+make refresh
+```
 
-## 3) Install project dependencies
+**Internals:**
+- Deletes last 5 rows from each cache file
+- Re-downloads with 5 retry passes
+- Typical time: 2-5 minutes
 
-With the virtual environment active:
+#### `make clean-cache`
 
-  python3 -m pip install -r requirements.txt
+Removes rows with all-NaN values (dates before asset existed).
 
-## 4) Run the screener
+```bash
+make clean-cache
+```
 
-Example:
+#### `make failed`
 
-  python options.py --tickers AAPL,MSFT,NVDA,SPY --min_oi 200 --min_vol 50
+Lists assets that failed to download (stored in `scripts/fx_failures.json`).
 
-Outputs:
-- screener_results.csv
-- screener_results_backtest.csv
-- plots/<TICKER>_support_resistance.png
+```bash
+make failed
+```
 
-## Quick start (one command)
+#### `make purge`
 
-If you prefer automation, run:
+Deletes cache files for failed assets so they can be re-downloaded.
 
-  bash setup_venv.sh
+```bash
+make purge                    # Clear cache for failed assets
+make purge ARGS="--all"       # Also clear the failures list
+```
 
-This will create a virtual environment and install requirements using `python -m pip`.
+---
 
-## Troubleshooting (macOS)
+### 🔧 Tuning Engine
 
-- zsh: command not found: python
-  - Use `python3` instead. Example: `python3 -m pip install -r requirements.txt`
-  - If `python3` is not found, install via `./install_python.sh` or `brew install python`.
-  - Optional (zsh): add an alias so `python` maps to `python3`:
-    - echo 'alias python=python3' >> ~/.zshrc && source ~/.zshrc
+The Tuning Engine estimates Kalman filter parameters via Maximum Likelihood Estimation, then applies Bayesian Model Averaging across model classes.
 
-- zsh: command not found: pip
-  - Use the module form: `python3 -m pip install -r requirements.txt`
-  - Ensure your virtual environment is activated: `source .venv/bin/activate`
-  - If you recently installed Homebrew/Python, open a new terminal so PATH updates, or run `hash -r` in zsh.
+#### `make tune`
 
-- Apple Silicon build tools
-  - If you encounter build errors for scipy or numpy on Apple Silicon, ensure Command Line Tools are installed:
+The heart of the calibration system.
 
-    xcode-select --install
+```bash
+make tune                              # Uses cache, skips already-tuned assets
+make tune ARGS="--force"               # Re-estimate everything
+make tune ARGS="--max-assets 10"       # Test with subset
+make tune ARGS="--dry-run"             # Preview without executing
+```
 
-Notes:
-- These instructions focus on macOS. Linux/Windows setup has been omitted intentionally to keep this README mac-specific.
+**What happens internally:**
+1. Loads asset universe from `fx_data_utils.py`
+2. For each asset, for each of 5 regimes:
+   - Fits 7 model classes (Gaussian, AR(1)-Gaussian, Student-t with ν ∈ {4,6,8,12,20})
+   - Computes BIC, AIC, Hyvärinen score, PIT diagnostics
+   - Converts scores to posterior weights
+   - Applies temporal smoothing against previous run
+   - Applies hierarchical shrinkage toward global
+3. Saves to `scripts/quant/cache/kalman_q_cache.json`
 
-## Run command shortcuts
+**Key ARGS:**
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--force` | Ignore cache, re-estimate all | False |
+| `--max-assets N` | Process only first N assets | All |
+| `--dry-run` | Preview without processing | False |
+| `--prior-mean X` | Prior mean for log₁₀(q) | -6.0 |
+| `--prior-lambda X` | Regularization strength | 1.0 |
+| `--lambda-regime X` | Hierarchical shrinkage | 0.05 |
+| `--debug` | Show stack traces on errors | False |
 
-After setting up the environment (see steps above), you can run the screener with a simple command:
+#### `make show-q`
 
-- Using the helper script:
+Displays the cached Kalman parameters as raw JSON.
 
-  chmod +x run.sh
-  ./run.sh   # no parameters needed; uses tickers.csv if present or built-in defaults
+```bash
+make show-q
+```
 
-- Or using Make (pass extra args via ARGS):
+#### `make clear-q`
 
-  make run   # runs with defaults
-  make run ARGS="--tickers_csv tickers.csv --min_oi 200 --min_vol 50"
+Deletes the parameter cache. Next `make tune` will re-estimate everything.
 
-### Backtest-only shortcut (quick way to see profitability)
+```bash
+make clear-q
+```
 
-If you only want to run the multi-year strategy backtest (skip the options screener) and print the total profitability and the average per-ticker profitability in the console, use:
+---
 
-- Using the helper script:
+### 📈 Signal Engine
 
-  chmod +x backtest.sh
-  ./backtest.sh            # uses tickers.csv if present, otherwise built-in defaults
-  ./backtest.sh --tickers AAPL,MSFT --bt_years 3 --bt_dte 7
+The Signal Engine consumes tuned parameters and generates Buy/Hold/Sell signals via posterior predictive Monte Carlo.
 
-- Or using Make:
+#### `make stocks`
 
-  make backtest
-  make backtest ARGS="--tickers AAPL,MSFT --bt_years 3"
+**The main command for daily use.** Refreshes data, then generates signals.
 
-What you’ll see in the console at the end (now with world‑class formatting):
-- A colored banner and a table of Top Option Candidates (if any)
-- A rich, colored Strategy Backtest Summary table (per ticker)
-- "Combined total profitability of all strategy trades: ...% (equal stake per trade)" in green/red depending on performance
-- "Average per-ticker total trade profitability: ...%" in green/red
+```bash
+make stocks                            # Full pipeline
+make stocks ARGS="--assets AAPL,MSFT"  # Specific assets only
+```
 
-Notes:
-- Pretty console output uses the Rich library and our scripts now force colors even when running under `make` or other non‑TTY contexts.
-- To disable colors, set NO_COLOR=1 (e.g., `NO_COLOR=1 make backtest`).
+**What happens internally:**
+1. Runs `refresh_data.py` (updates last 5 days)
+2. Runs `fx_pln_jpy_signals.py` with caching enabled
+3. For each asset:
+   - Determines current regime r_t
+   - Loads model posterior p(m|r_t) from cache
+   - Runs posterior predictive Monte Carlo
+   - Computes expected utility across horizons
+   - Maps to BUY/HOLD/SELL
 
-Additional outputs remain the same:
-- backtests/<TICKER>_equity.csv
-- screener_results_backtest.csv (contains per-ticker strategy metrics)
+**Output:** Beautiful Rich console tables showing:
+- Signal per horizon (1d, 3d, 7d, 21d, 63d, 126d, 252d)
+- Probability of positive return
+- Expected log return
+- Confidence indicators
 
+#### `make report`
 
-## Using a CSV for tickers
+Renders signals from cache without network calls. Use when offline.
 
-You can now provide tickers via a CSV file. By default, the script looks for a file named `tickers.csv` in the project root.
+```bash
+make report
+```
 
-- CSV format: one ticker per line is recommended. A header like `ticker` is supported. Comma/space/semicolon-separated values are also accepted.
+#### `make top20`
 
-Examples:
+Quick smoke test with first 20 assets. Good for testing changes.
 
-  # default (uses tickers.csv if it exists; otherwise built-in defaults)
-  ./run.sh
+```bash
+make top20
+```
 
-  # explicit CSV path and optional thresholds
-  ./run.sh --tickers_csv tickers.csv --min_oi 200 --min_vol 50
+---
 
-Backward compatibility: you can still pass a comma-separated list via `--tickers`, which is used if a CSV isn’t provided/found.
+### 🔬 Diagnostic Commands
 
+These commands validate model quality and calibration.
 
+#### `make fx-diagnostics`
 
-## Improved backtesting (multi-year strategy simulation)
+Full diagnostic suite. **Expensive** (runs out-of-sample tests).
 
-The screener now includes a more realistic multi-year backtest that simulates buying short-dated calls on breakout signals.
-It prices options via Black–Scholes using historical realized volatility and supports take-profit/stop-loss exits. Outputs include
-per-ticker equity curves under backtests/ and an aggregate summary in screener_results_backtest.csv.
+```bash
+make fx-diagnostics
+```
 
-Key CLI flags:
-- --bt_years N          # years of underlying history to load for backtesting (default: 3)
-- --bt_dte D            # option DTE in days for simulated trades (default: 7)
-- --bt_moneyness PCT    # OTM percent for strike; K = S * (1 + PCT), e.g., 0.05 = 5% OTM (default: 0.05)
-- --bt_tp_x X           # optional take-profit multiple of entry premium, e.g., 3.0 for +200%
-- --bt_sl_x X           # optional stop-loss multiple of entry premium, e.g., 0.5 for -50%
-- --bt_alloc_frac F     # fraction of equity per trade, 0..1 (default: 0.1)
-- --bt_trend_filter T   # true/false; require uptrend (default: true)
-- --bt_vol_filter V     # true/false; require rv5<rv21<rv63 (default: true)
-- --bt_time_stop_frac Q # fraction of DTE for time-based check (default: 0.5)
-- --bt_time_stop_mult M # min multiple at time stop to remain (default: 1.2)
-- --bt_use_target_delta B # true/false; use target delta for strike (default: false)
-- --bt_target_delta D   # target delta value when enabled (default: 0.25)
-- --bt_trail_start_mult X # start trailing when option >= X * entry (default: 1.5)
-- --bt_trail_back B     # trailing drawback from peak fraction (default: 0.5)
-- --bt_protect_mult P   # protective floor vs entry (default: 0.7)
-- --bt_cooldown_days N  # cooldown days after losing trade (default: 0)
-- --bt_entry_weekdays W # comma-separated weekdays 0=Mon..6=Sun to allow entries (e.g., 0,1,2)
-- --bt_skip_earnings E  # true/false; skip entries near earnings (auto-fetched from yfinance)
-- --bt_use_underlying_atr_exits B # true/false; use ATR-based exits on underlying (default: true)
-- --bt_tp_atr_mult X   # underlying ATR take-profit multiple (default: 2.0)
-- --bt_sl_atr_mult X   # underlying ATR stop-loss multiple (default: 1.0)
+**Includes:**
+- Log-likelihood analysis
+- Parameter stability across time windows
+- Out-of-sample predictive tests
 
-Examples:
+#### `make fx-diagnostics-lite`
 
-  # Run with defaults (uses tickers.csv if present)
-  ./run.sh
+Lightweight diagnostics. Skips OOS tests.
 
-  # 5-year backtest, 7DTE, 5% OTM, with TP=3x and SL=0.5x
-  ./run.sh --bt_years 5 --bt_dte 7 --bt_moneyness 0.05 --bt_tp_x 3 --bt_sl_x 0.5
+```bash
+make fx-diagnostics-lite
+```
 
-Outputs (in addition to the existing CSVs and plots):
-- backtests/<TICKER>_equity.csv   # per-ticker equity curve over time
-- screener_results_backtest.csv   # now includes strategy metrics (CAGR, Sharpe, max drawdown, win rate)
+#### `make fx-calibration`
 
+Probability Integral Transform (PIT) calibration check.
 
-## Diagnose and fix missing Python libraries (Environment Doctor)
+```bash
+make fx-calibration
+```
 
-If you suspect the wrong or missing libraries, use the built-in doctor:
+**What it tests:** If your 60% confidence intervals contain outcomes 60% of the time.
 
-- Quick check:
+#### `make fx-model-comparison`
 
-      make doctor
+Compares model classes via AIC/BIC. Shows which models the posterior favors.
 
-- Auto-fix (installs/repairs packages from requirements.txt):
+```bash
+make fx-model-comparison
+```
 
-      make doctor ARGS="--fix"
+#### `make fx-validate-kalman`
 
-You can also run the script directly:
+Level-7 Kalman validation science:
+- Drift estimation accuracy
+- Likelihood surface analysis
+- PIT histogram uniformity
+- Stress regime behavior
 
-    chmod +x doctor.sh
-    ./doctor.sh           # check only
-    ./doctor.sh --fix     # attempt to install requirements automatically
+```bash
+make fx-validate-kalman                        # Console output only
+make fx-validate-kalman-plots                  # Also saves plots to plots/kalman_validation/
+```
 
-Tips:
-- It prefers the project virtualenv at .venv if present; otherwise it uses your system python3.
-- If no virtualenv is active, consider creating one first:
+#### `make tests`
 
-      python3 -m venv .venv && source .venv/bin/activate
+Runs the unit test suite.
 
-- On macOS/Apple Silicon, ensure you have Command Line Tools installed if you hit build errors:
+```bash
+make tests
+```
 
-      xcode-select --install
+---
 
+### 💰 Debt Allocation Engine
 
-## Price data cache
+A specialized decision engine for balance-sheet currency risk.
 
-To avoid re-downloading historical prices every run, the script caches daily OHLCV per ticker in CSV files.
-- Default cache directory: data/
-- Cache file naming: data/<TICKER>_1d.csv
-- On each run, the cache is incrementally updated by fetching only missing dates. If any required columns are missing for existing rows, those rows are re-fetched and filled.
+#### `make debt`
 
-Controls:
-- --data_dir PATH       Use a custom directory for the cache (defaults to data or env PRICE_DATA_DIR)
-- --cache_refresh       Force refresh for the requested window (re-downloads and overwrites cache for that range)
-- Environment: set PRICE_DATA_DIR to override the default cache directory
+Determines the optimal day to switch JPY-denominated debt to EUR-denominated debt.
 
-# python-options (macOS)
+```bash
+make debt
+```
 
-This repo contains a simple options screener (options.py). These instructions are tailored for macOS.
+**This is NOT a trade signal.** It's a corporate treasury tool for:
+- Balance-sheet convexity control
+- Latent state inference (NORMAL → COMPRESSED → PRE_POLICY → POLICY)
+- Auditable, causal decision logic
 
-## 1) Install Python 3 (macOS)
+Output: `scripts/quant/cache/debt/`
 
-You can either use the helper script or install via Homebrew directly.
+---
 
-- Using the helper script (recommended):
+### 📋 Options Screener & Backtesting
 
-  chmod +x install_python.sh
-  ./install_python.sh
+Legacy modules for equity options analysis.
 
-- Or manually with Homebrew (https://brew.sh):
+#### `make run`
 
-  brew install python
+Runs the options screener with support/resistance analysis.
 
-After installation, verify:
+```bash
+make run                                       # Uses tickers.csv
+make run ARGS="--tickers AAPL,MSFT,NVDA"       # Explicit tickers
+make run ARGS="--min_oi 200 --min_vol 50"      # Filter thresholds
+```
 
-  python3 --version
-  pip3 --version
+**Output:**
+- `screener_results.csv`
+- `plots/<TICKER>_support_resistance.png`
 
-## 2) Create and activate a virtual environment
+#### `make backtest`
 
-From the project folder:
+Multi-year strategy simulation with Black-Scholes pricing.
 
-  python3 -m venv .venv
-  source .venv/bin/activate
+```bash
+make backtest                                  # Uses tickers.csv
+make backtest ARGS="--tickers AAPL --bt_years 5"
+```
 
-## 3) Install project dependencies
+**Key ARGS:**
 
-With the virtual environment active:
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--bt_years` | Years of history | 3 |
+| `--bt_dte` | Days to expiration | 7 |
+| `--bt_moneyness` | OTM percent | 0.05 |
+| `--bt_tp_x` | Take-profit multiple | None |
+| `--bt_sl_x` | Stop-loss multiple | None |
+| `--bt_alloc_frac` | Equity fraction per trade | 0.1 |
 
-  python3 -m pip install -r requirements.txt
+**Output:**
+- `backtests/<TICKER>_equity.csv`
+- `screener_results_backtest.csv`
 
-## 4) Run the screener
+---
 
-Example:
+### 📊 Fundamental Screeners
 
-  python options.py --tickers AAPL,MSFT,NVDA,SPY --min_oi 200 --min_vol 50
+#### `make top50`
 
-Outputs:
-- screener_results.csv
-- screener_results_backtest.csv
-- plots/<TICKER>_support_resistance.png
+Ranks small/mid caps by 3-year revenue CAGR.
 
-## Quick start (one command)
+```bash
+make top50
+make top50 ARGS="--csv path/to/universe.csv"
+```
 
-If you prefer automation, run:
+#### `make bagger50`
 
-  bash setup_venv.sh
+Ranks by 100× Bagger Score (probability-weighted growth potential).
 
-This will create a virtual environment and install requirements using `python -m pip`.
+```bash
+make bagger50
+make bagger50 ARGS="--bagger_horizon 15"       # 15-year horizon
+make bagger50 ARGS="--bagger_verbose"          # Show sub-scores
+```
 
-## Troubleshooting (macOS)
+#### `make top100`
 
-- zsh: command not found: python
-  - Use `python3` instead. Example: `python3 -m pip install -r requirements.txt`
-  - If `python3` is not found, install via `./install_python.sh` or `brew install python`.
-  - Optional (zsh): add an alias so `python` maps to `python3`:
-    - echo 'alias python=python3' >> ~/.zshrc && source ~/.zshrc
+Top 100 screener using Russell 5000 universe.
 
-- zsh: command not found: pip
-  - Use the module form: `python3 -m pip install -r requirements.txt`
-  - Ensure your virtual environment is activated: `source .venv/bin/activate`
-  - If you recently installed Homebrew/Python, open a new terminal so PATH updates, or run `hash -r` in zsh.
+```bash
+make top100
+```
 
-- Apple Silicon build tools
-  - If you encounter build errors for scipy or numpy on Apple Silicon, ensure Command Line Tools are installed:
+#### `make build-russell`
 
-    xcode-select --install
+Builds `data/universes/russell2500_tickers.csv` from public sources.
 
-Notes:
-- These instructions focus on macOS. Linux/Windows setup has been omitted intentionally to keep this README mac-specific.
+```bash
+make build-russell
+```
 
-# python-options (macOS)
+#### `make russell5000`
 
-This repo contains a simple options screener (options.py). These instructions are tailored for macOS.
+Builds the larger Russell 5000 universe.
 
-## 1) Install Python 3 (macOS)
+```bash
+make russell5000
+```
 
-You can either use the helper script or install via Homebrew directly.
+---
 
-- Using the helper script (recommended):
+### 🧹 Utility Commands
 
-  chmod +x install_python.sh
-  ./install_python.sh
+#### `make clear`
 
-- Or manually with Homebrew (https://brew.sh):
+Nuclear option. Clears all caches, plots, and temp files.
 
-  brew install python
+```bash
+make clear
+```
 
-After installation, verify:
+**Deletes:**
+- `__pycache__/`
+- `plots/*.png`
+- `data/meta/`
+- `data/*.backup`
 
-  python3 --version
-  pip3 --version
+#### `make colors`
 
-## 2) Create and activate a virtual environment
+Displays color palette test. Useful for terminal configuration.
 
-From the project folder:
+```bash
+make colors
+```
 
-  python3 -m venv .venv
-  source .venv/bin/activate
+---
 
-## 3) Install project dependencies
+## Architecture
 
-With the virtual environment active:
+```
+python-options/
+│
+├── Makefile                    # Command interface (start here)
+│
+├── scripts/
+│   ├── tune_q_mle.py           # TUNING ENGINE: MLE + BMA
+│   ├── tune_pretty.py          # Tuning UX wrapper
+│   ├── fx_pln_jpy_signals.py   # SIGNAL ENGINE: Posterior predictive
+│   ├── fx_signals_presentation.py  # Rich console output
+│   ├── refresh_data.py         # DATA ENGINE: Bulk download
+│   ├── fx_data_utils.py        # Data utilities + caching
+│   ├── debt_allocator.py       # Debt switch decision engine
+│   └── quant/
+│       └── cache/
+│           └── kalman_q_cache.json  # Tuned parameters
+│
+├── data/                       # Price cache (CSV per symbol)
+├── options.py                  # Options screener
+├── backtests/                  # Equity curves
+└── plots/                      # Generated charts
+```
 
-  python3 -m pip install -r requirements.txt
+### Design Principles
 
-## 4) Run the screener
+1. **Separation of concerns**
+   - Tuning engine knows nothing about decisions
+   - Signal engine acts on beliefs, doesn't create them
+   - Presentation layer is fully decoupled
 
-Example:
+2. **Bayesian integrity**
+   - When evidence is weak, the system becomes more ignorant, not more confident
+   - Fallback is hierarchical: `p(m|r, weak data) → p(m|global)`
+   - Never synthesize beliefs that weren't learned
 
-  python options.py --tickers AAPL,MSFT,NVDA,SPY --min_oi 200 --min_vol 50
+3. **Auditability**
+   - All parameters cached and versioned
+   - No hidden state mutations
+   - Deterministic regime assignment
 
-Outputs:
-- screener_results.csv
-- screener_results_backtest.csv
-- plots/<TICKER>_support_resistance.png
+---
 
-## Quick start (one command)
+## The Mathematics
 
-If you prefer automation, run:
+> *"The math always emerges from the underlying system—not the other way around."*
 
-  bash setup_venv.sh
+This section documents the mathematical foundations that govern each engine. The code implements these equations; understanding them illuminates why the system behaves as it does.
 
-This will create a virtual environment and install requirements using `python -m pip`.
+### Master Symbol Glossary
 
-## Troubleshooting (macOS)
+Before diving in, here's a complete reference of all mathematical symbols used:
 
-- zsh: command not found: python
-  - Use `python3` instead. Example: `python3 -m pip install -r requirements.txt`
-  - If `python3` is not found, install via `./install_python.sh` or `brew install python`.
-  - Optional (zsh): add an alias so `python` maps to `python3`:
-    - echo 'alias python=python3' >> ~/.zshrc && source ~/.zshrc
+#### Prices & Returns
 
-- zsh: command not found: pip
-  - Use the module form: `python3 -m pip install -r requirements.txt`
-  - Ensure your virtual environment is activated: `source .venv/bin/activate`
-  - If you recently installed Homebrew/Python, open a new terminal so PATH updates, or run `hash -r` in zsh.
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| Pₜ | Price at time t | The asset price at time step t |
+| rₜ | Return at time t | Log return: ln(Pₜ/Pₜ₋₁) |
+| h | Horizon | Forecast period in trading days |
 
-- Apple Silicon build tools
-  - If you encounter build errors for scipy or numpy on Apple Silicon, ensure Command Line Tools are installed:
+#### Volatility
 
-    xcode-select --install
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| σ | Sigma | Standard deviation (volatility) |
+| σₜ² | Sigma squared | Variance at time t |
+| λ | Lambda | Decay factor in EWMA (0.94-0.97) |
 
-Notes:
-- These instructions focus on macOS. Linux/Windows setup has been omitted intentionally to keep this README mac-specific.
+#### Kalman Filter
 
-## Run command shortcuts
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| μₜ | Mu | Latent (hidden) drift at time t |
+| q | Process noise | How much drift can change per step |
+| ηₜ | Eta | Random shock to drift ~ N(0, q) |
+| εₜ | Epsilon | Observation noise ~ N(0, σ²) |
+| K | Kalman gain | Weight given to new observation (0-1) |
+| P | State variance | Uncertainty in drift estimate |
+| m | Posterior mean | Best estimate of drift after update |
 
-After setting up the environment (see steps above), you can run the screener with a simple command:
+#### AR(1) Model
 
-- Using the helper script:
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| φ | Phi | Mean-reversion coefficient (-1 to 1) |
+| τ | Tau | Prior standard deviation for φ |
 
-  chmod +x run.sh
-  ./run.sh   # no parameters needed; uses tickers.csv if present or built-in defaults
+#### Student-t Distribution
 
-- Or using Make (pass extra args via ARGS):
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| ν | Nu | Degrees of freedom (tail thickness) |
+| t_ν | Student-t | t-distribution with ν degrees of freedom |
 
-  make run   # runs with defaults
-  make run ARGS="--tickers_csv tickers.csv --min_oi 200 --min_vol 50"
+#### Bayesian Inference
 
-### Backtest-only shortcut (quick way to see profitability)
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| p(·) | Probability | Probability or density function |
+| p(m\|r) | Model posterior | Probability of model m given regime r |
+| θ | Theta | Model parameters (q, φ, etc.) |
+| ℓ | Log-likelihood | Sum of log probabilities |
 
-If you only want to run the multi-year strategy backtest (skip the options screener) and print the total profitability and the average per-ticker profitability in the console, use:
+#### Model Selection
 
-- Using the helper script:
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| BIC | Bayesian Info Criterion | Penalized likelihood for model comparison |
+| k | Parameter count | Number of free parameters in model |
+| n | Sample size | Number of observations |
+| w | Weight | Unnormalized model weight |
+| α | Alpha | Smoothing/blending coefficient |
 
-  chmod +x backtest.sh
-  ./backtest.sh            # uses tickers.csv if present, otherwise built-in defaults
-  ./backtest.sh --tickers AAPL,MSFT --bt_years 3 --bt_dte 7
+#### Decision Theory
 
-- Or using Make:
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| E[·] | Expectation | Average value |
+| P(·) | Probability | Likelihood of event |
+| EU | Expected Utility | Risk-adjusted expected value |
+| f* | Optimal fraction | Kelly criterion bet size |
+| z | Z-score | Standardized edge metric |
 
-  make backtest
-  make backtest ARGS="--tickers AAPL,MSFT --bt_years 3"
+---
 
-What you’ll see in the console at the end (now with world‑class formatting):
-- A colored banner and a table of Top Option Candidates (if any)
-- A rich, colored Strategy Backtest Summary table (per ticker)
-- "Combined total profitability of all strategy trades: ...% (equal stake per trade)" in green/red depending on performance
-- "Average per-ticker total trade profitability: ...%" in green/red
+### Data Engine: Returns and Volatility
 
-Notes:
-- Pretty console output uses the Rich library and our scripts now force colors even when running under `make` or other non‑TTY contexts.
-- To disable colors, set NO_COLOR=1 (e.g., `NO_COLOR=1 make backtest`).
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
 
-Additional outputs remain the same:
-- backtests/<TICKER>_equity.csv
-- screener_results_backtest.csv (contains per-ticker strategy metrics)
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| rₜ | "r sub t" | The return at time t |
+| Pₜ | "P sub t" | The price at time t |
+| Pₜ₋₁ | "P sub t minus 1" | The price at the previous time step |
+| log | Natural logarithm | ln(x), the inverse of eˣ |
+| σₜ² | "sigma squared sub t" | Variance (volatility squared) at time t |
+| λ | "lambda" | Decay factor controlling how fast old data fades |
+| σ | "sigma" | Standard deviation (square root of variance) |
 
+</details>
 
-## Using a CSV for tickers
+**Log Returns**
 
-You can now provide tickers via a CSV file. By default, the script looks for a file named `tickers.csv` in the project root.
+The system works with log returns, not simple returns:
 
-- CSV format: one ticker per line is recommended. A header like `ticker` is supported. Comma/space/semicolon-separated values are also accepted.
+```
+rₜ = log(Pₜ / Pₜ₋₁)
+```
 
-Examples:
+**In plain English:** *"Today's return equals the natural log of today's price divided by yesterday's price."*
 
-  # default (uses tickers.csv if it exists; otherwise built-in defaults)
-  ./run.sh
+Log returns are additive over time and approximately normal for small values, which simplifies the probabilistic machinery.
 
-  # explicit CSV path and optional thresholds
-  ./run.sh --tickers_csv tickers.csv --min_oi 200 --min_vol 50
+**Realized Volatility**
 
-Backward compatibility: you can still pass a comma-separated list via `--tickers`, which is used if a CSV isn’t provided/found.
+Volatility is estimated via exponentially-weighted moving average (EWMA):
 
+```
+σₜ² = λ · σₜ₋₁² + (1 - λ) · rₜ²
+```
 
+**In plain English:** *"Today's variance equals lambda times yesterday's variance, plus (1 - lambda) times today's squared return."*
 
-## Improved backtesting (multi-year strategy simulation)
+**What this means:**
+- When λ = 0.94: Yesterday's variance gets 94% weight, today's return gets 6%
+- Higher λ = slower adaptation to new information
+- Lower λ = faster adaptation, more reactive
 
-The screener now includes a more realistic multi-year backtest that simulates buying short-dated calls on breakout signals.
-It prices options via Black–Scholes using historical realized volatility and supports take-profit/stop-loss exits. Outputs include
-per-ticker equity curves under backtests/ and an aggregate summary in screener_results_backtest.csv.
+Where λ ∈ (0,1) controls decay. We use multiple speeds:
+- **Fast** (λ = 0.94): Responsive to recent moves
+- **Slow** (λ = 0.97): Smoother, less reactive
 
-Key CLI flags:
-- --bt_years N          # years of underlying history to load for backtesting (default: 3)
-- --bt_dte D            # option DTE in days for simulated trades (default: 7)
-- --bt_moneyness PCT    # OTM percent for strike; K = S * (1 + PCT), e.g., 0.05 = 5% OTM (default: 0.05)
-- --bt_tp_x X           # optional take-profit multiple of entry premium, e.g., 3.0 for +200%
-- --bt_sl_x X           # optional stop-loss multiple of entry premium, e.g., 0.5 for -50%
-- --bt_alloc_frac F     # fraction of equity per trade, 0..1 (default: 0.1)
-- --bt_trend_filter T   # true/false; require uptrend (default: true)
-- --bt_vol_filter V     # true/false; require rv5<rv21<rv63 (default: true)
-- --bt_time_stop_frac Q # fraction of DTE for time-based check (default: 0.5)
-- --bt_time_stop_mult M # min multiple at time stop to remain (default: 1.2)
-- --bt_use_target_delta B # true/false; use target delta for strike (default: false)
-- --bt_target_delta D   # target delta value when enabled (default: 0.25)
-- --bt_trail_start_mult X # start trailing when option >= X * entry (default: 1.5)
-- --bt_trail_back B     # trailing drawback from peak fraction (default: 0.5)
-- --bt_protect_mult P   # protective floor vs entry (default: 0.7)
-- --bt_cooldown_days N  # cooldown days after losing trade (default: 0)
-- --bt_entry_weekdays W # comma-separated weekdays 0=Mon..6=Sun to allow entries (e.g., 0,1,2)
-- --bt_skip_earnings E  # true/false; skip entries near earnings (auto-fetched from yfinance)
-- --bt_use_underlying_atr_exits B # true/false; use ATR-based exits on underlying (default: true)
-- --bt_tp_atr_mult X   # underlying ATR take-profit multiple (default: 2.0)
-- --bt_sl_atr_mult X   # underlying ATR stop-loss multiple (default: 1.0)
+The final volatility blends both for robustness.
 
-Examples:
+**Winsorization**
 
-  # Run with defaults (uses tickers.csv if present)
-  ./run.sh
+Extreme returns are clipped to reduce outlier influence:
 
-  # 5-year backtest, 7DTE, 5% OTM, with TP=3x and SL=0.5x
-  ./run.sh --bt_years 5 --bt_dte 7 --bt_moneyness 0.05 --bt_tp_x 3 --bt_sl_x 0.5
+```
+rₜ → clip(rₜ, -3σ, +3σ)
+```
 
-Outputs (in addition to the existing CSVs and plots):
-- backtests/<TICKER>_equity.csv   # per-ticker equity curve over time
-- screener_results_backtest.csv   # now includes strategy metrics (CAGR, Sharpe, max drawdown, win rate)
+**In plain English:** *"If the return is more extreme than 3 standard deviations, cap it at 3 standard deviations."*
 
+This makes parameter estimation more stable without discarding information entirely.
 
-## Price data cache
+---
 
-To avoid re-downloading historical prices every run, the script caches daily OHLCV per ticker in CSV files.
-- Default cache directory: data/
-- Cache file naming: data/<TICKER>_1d.csv
-- On each run, the cache is incrementally updated by fetching only missing dates. If any required columns are missing for existing rows, those rows are re-fetched and filled.
+### Tuning Engine: Kalman Filter + MLE
 
-Controls:
-- --data_dir PATH       Use a custom directory for the cache (defaults to data or env PRICE_DATA_DIR)
-- --cache_refresh       Force refresh of cached price data for requested window (re-downloads and overwrites cache for that range)
-- Environment: set PRICE_DATA_DIR to override the default cache directory
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
 
-### Additional caches (to avoid re-fetching options metadata)
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| μₜ | "mu sub t" | Hidden (latent) drift at time t — the "true" trend we're trying to estimate |
+| μₜ₋₁ | "mu sub t minus 1" | Hidden drift at previous time step |
+| ηₜ | "eta sub t" | Random shock to the drift (process noise) |
+| εₜ | "epsilon sub t" | Observation noise (market randomness) |
+| q | "q" | Process noise variance — how much drift can change per step |
+| σₜ² | "sigma squared" | Observation noise variance (market volatility) |
+| N(0, q) | Normal distribution | Gaussian with mean 0 and variance q |
+| K | Kalman gain | How much weight to give new observations (0 to 1) |
+| P | State variance | Our uncertainty about the drift estimate |
+| m | Posterior mean | Our best estimate of drift after seeing data |
+| mₜ | "m sub t" | Posterior mean at time t |
+| ℓ(q) | Log-likelihood | How well parameters explain the observed data |
+| vₜ | Predictive variance | Total uncertainty before seeing observation |
+| φ | "phi" | Mean-reversion coefficient in AR(1) model |
+| τ | "tau" | Prior standard deviation for φ |
+| ν | "nu" | Degrees of freedom in Student-t distribution |
+| t_ν | Student-t | Heavy-tailed distribution with ν degrees of freedom |
 
-Besides price history, the following are cached automatically under data/ to reduce repeated downloads:
-- Expiration dates list (yfinance Ticker.options) → data/meta/<TICKER>_meta.json (TTL ~ 12 hours)
-- Earnings dates (get_earnings_dates / calendar fallback) → data/meta/<TICKER>_meta.json (TTL ~ 3 days)
-- Option chains (calls) per expiry (Ticker.option_chain) → data/options/<TICKER>/<EXPIRY>_calls.csv (TTL ~ 60 minutes)
-- Option chains (puts) per expiry (Ticker.option_chain) → data/options/<TICKER>/<EXPIRY>_puts.csv (TTL ~ 60 minutes)
-- Ticker info/fast_info snapshot → data/meta/<TICKER>_meta.json (TTL ~ 1 day)
-- Dividends series → data/meta/<TICKER>_dividends.csv (TTL ~ 7 days)
-- Splits series → data/meta/<TICKER>_splits.csv (TTL ~ 30 days)
+</details>
 
-You can override TTLs via environment variables:
-- EXPIRATIONS_TTL_HOURS (default 12)
-- EARNINGS_TTL_DAYS (default 3)
-- OPTION_CHAIN_TTL_MIN (default 60)
-- INFO_TTL_DAYS (default 1)
-- DIVIDENDS_TTL_DAYS (default 7)
-- SPLITS_TTL_DAYS (default 30)
+**The State-Space Model**
 
-Notes:
-- On cache read errors or stale TTL, the script transparently re-fetches and overwrites the cache.
-- To force a clean refresh, delete specific cache files in data/meta or data/options for the affected ticker/expiry.
+We model latent drift μₜ as a random walk observed through noisy returns:
 
+```
+State equation:     μₜ = μₜ₋₁ + ηₜ,     ηₜ ~ N(0, q)
+Observation:        rₜ = μₜ + εₜ,       εₜ ~ N(0, σₜ²)
+```
 
+**In plain English:**
+- *"The true drift today equals yesterday's drift plus a random shock."*
+- *"The observed return equals the true drift plus market noise."*
 
-## Revenue Growth Screener (Top 50)
+**What this means:**
+- We never see μₜ directly — it's hidden (latent)
+- We only see rₜ (the actual return)
+- The Kalman filter infers μₜ from the noisy observations
 
-This project includes a script to rank small/mid caps by 3-year revenue CAGR using yfinance.
+Here:
+- **μₜ** is the unobserved "true" drift (what we're trying to estimate)
+- **q** is the **process noise variance** (how much drift can change per step)
+- **σₜ²** is the observation noise (market volatility)
 
-How to run (uses the project virtualenv via Make):
+**Kalman Filter Recursion**
 
-  make top50
+Given prior μₜ₋₁|ₜ₋₁ ~ N(m, P), the Kalman filter updates:
 
-Defaults:
-- Universe source: CSV
-- CSV path: data/universes/russell2500_tickers.csv
-- Output: top50_small_mid_revenue_cagr.csv
+```
+Predict:    μₜ|ₜ₋₁ ~ N(m, P + q)
 
-Providing the universe:
-- Place a file at data/universes/russell2500_tickers.csv with a header `ticker` and one symbol per row.
-- Example:
+Update:     K = (P + q) / (P + q + σₜ²)           # Kalman gain
+            mₜ = m + K · (rₜ - m)                  # Posterior mean
+            Pₜ = (1 - K) · (P + q)                 # Posterior variance
+```
 
-  ticker
-  AAPL
-  MSFT
+**In plain English:**
+1. **Predict:** *"Before seeing today's return, our uncertainty grows by q."*
+2. **Kalman gain:** *"K measures how much to trust the new observation vs our prior belief."*
+3. **Update mean:** *"New estimate = old estimate + K × (surprise)."*
+4. **Update variance:** *"Our uncertainty shrinks after seeing data."*
 
-Overriding defaults:
+**Intuition for Kalman gain K:**
+- K close to 1: Trust the new observation heavily (high signal-to-noise)
+- K close to 0: Stick with prior belief (low signal-to-noise)
 
-  make top50 ARGS="--csv path/to/your_list.csv --min_mkt_cap 1e8 --max_mkt_cap 2e10 --top_n 100"
+The Kalman gain K ∈ (0,1) balances prior belief against new evidence.
 
-Notes:
-- The script attempts multiple sources in yfinance to construct at least 4 annual revenue values. Some tickers may be skipped if data is missing.
-- Market cap filter is read from yfinance fast_info/info and used to restrict to small/mid caps.
+**Maximum Likelihood Estimation**
 
-### Top 50 by 100× Bagger Score
+We find q by maximizing the log-likelihood:
 
-In addition to sorting by 3Y revenue CAGR, you can rank the universe by the modelled 100× Bagger Score (0–100) that estimates the probability-like chance of a stock becoming a 100× over a chosen horizon.
+```
+ℓ(q) = Σₜ log p(rₜ | r₁:ₜ₋₁, q)
+     = -½ Σₜ [ log(2π · vₜ) + (rₜ - mₜ)² / vₜ ]
+```
 
-How to run (uses the project virtualenv via Make):
+**In plain English:** *"Find the value of q that makes the observed returns most probable."*
 
-  make bagger50
+Where vₜ = P + q + σₜ² is the predictive variance (total uncertainty before observation).
 
-Output:
-- Same CSV: top50_small_mid_revenue_cagr.csv (sorted by the 100× score when invoked via `bagger50`).
-- Console table columns include: `#`, `Ticker`, `Mkt Cap`, `100× Score`, `Rev CAGR 3Y`, `Rev 3Y Ago`, `Rev Recent`.
+**Regularization Prior**
 
-Optional flags (pass via ARGS):
+To prevent overfitting, we add a Gaussian prior on log₁₀(q):
 
-  make bagger50 ARGS="--bagger_horizon 15"     # change 100× horizon (years)
-  make bagger50 ARGS="--top_n 50"               # number of rows (default 50)
-  make bagger50 ARGS="--plain"                  # plain (non-rich) console output
-  make bagger50 ARGS="--bagger_verbose"         # show sub-score breakdown
+```
+log₁₀(q) ~ N(μ_prior, 1/λ)
+```
 
-Tip:
-- If your universe file is missing, build it first:
+Default: μ_prior = -6 (q ≈ 10⁻⁶), λ = 1.0
 
-  make build-russell
+**In plain English:** *"We believe q is probably around 0.000001, and penalize values far from this."*
 
-This will generate `data/universes/russell2500_tickers.csv` which is used by both `top50` and `bagger50` by default.
+The penalized objective becomes:
 
+```
+ℓ_penalized(q) = ℓ(q) - λ/2 · (log₁₀(q) - μ_prior)²
+```
 
+**AR(1) Extension (φ-models)**
 
-### 100× Bagger Score: Ideation Funnel and Current Improvement
+For mean-reverting drift, we extend the state equation:
 
-New: Breakout-aware scoring (conservative)
-- The bagger model now adds a modest, risk-aware breakout component to avoid names with poor technical context and to prefer those showing a constructive upside breakout consistent with trend-following literature.
-- Ingredients: 55-day Donchian upper-band breakout, 20-day return filter, 100/200-day SMA alignment, and volume confirmation (20-day z-score). The effect is kept small by default and gated by risk, regime, and fundamental growth quality.
-- Configure:
-  - --no_breakout                      Disable the breakout component entirely
-  - --bagger_breakout_weight 0.0..1.0  Weight added to the composite S (default 0.1)
-- Outputs: When --export_subscores is used, the CSV includes columns 'breakout' and 'regime' for transparency.
+```
+μₜ = φ · μₜ₋₁ + ηₜ,     φ ∈ (-1, 1)
+```
 
-This project’s 100× Bagger Score has an ongoing improvement roadmap guided by an ideation funnel.
+**In plain English:** *"Today's drift equals phi times yesterday's drift, plus noise."*
 
-- Funnel (100 → 25 → 5 → 1):
-  - Generated 100 candidate improvements across data robustness, feature engineering, normalization/mapping, guardrails/priors, calibration, performance/caching, and UX/debuggability.
-  - Shortlisted the top 25 based on impact × feasibility × robustness × runtime.
-  - Narrowed to 5 finalists:
-    1) Blend LTM revenue momentum with 3Y CAGR (adds timeliness)
-    2) Sector‑aware valuation normalization (EV/S within sector percentiles)
-    3) Statement/price caches with TTL (stability + speed)
-    4) Growth stability upgrade (blend 5Y CAGR; add LTM vs prior‑LTM momentum trend)
-    5) Risk regime filter (200d SMA + outlier‑robust volatility mapping)
-  - Implemented the following improvements in code with minimal footprint and no new dependencies:
-  1) Blend LTM revenue momentum with 3Y CAGR (adds timeliness)
-  2) Sector‑aware valuation normalization (EV/S within sector percentiles)
-  3) Price caches with TTL via existing data_cache (stability + speed)
-  4) Growth stability upgrade (blend 5Y CAGR; add LTM vs prior‑LTM momentum trend)
-  5) Risk regime filter (200d SMA + outlier‑robust volatility mapping)
+**What φ values mean:**
+- φ = 0: Drift has no memory (fully mean-reverting)
+- φ = 0.9: Drift is very persistent (slow mean-reversion)
+- φ = 1: Random walk (no mean-reversion) — **unstable, we avoid this**
+- φ < 0: Drift oscillates (rare in financial data)
 
-What’s implemented now
-- LTM revenue momentum signal from quarterly income statements:
-  - ltm_momentum = (sum of last 4 quarters / prior 4 quarters) − 1
-- Growth sub‑score now blends:
-  - 50% weight to 3‑year revenue CAGR vs the horizon‑implied 100× CAGR threshold r*
-  - 20% weight to 5‑year revenue CAGR when available
-  - 30% weight to LTM revenue momentum vs a softer target (0.5·r*) plus a small bonus for rising momentum trend
-- Valuation now includes a sector‑aware normalization:
-  - EV/S or P/S is converted to a sector percentile, mapped to a [0,1] score, and blended with the global valuation score.
-- Risk uses winsorized realized volatility and incorporates a 200‑day SMA regime penalty.
-- Guardrails remain in place (tiny‑base revenue cap, negative margin caps, drawdown caps, etc.).
+When |φ| < 1, drift reverts toward zero. We apply a shrinkage prior:
 
-How to run and inspect
-- Top 50 by 100× score:
+```
+φ ~ N(0, τ²)
+```
 
-  make bagger50
+This prevents unit-root instability (φ → 1).
 
-- Audit distributions quickly (first 100 tickers):
+**Student-t Innovations**
 
-  make bagger50 ARGS="--debug_bagger 100 --export_subscores --plain"
+To capture fat tails, we replace Gaussian innovations with Student-t:
 
-- Relevant CLI flags:
-  - --bagger_horizon 5|10|15|20|25|30    # target 100× years (default: 5)
-  - --fast_bagger                       # skip heavier calcs (faster)
-  - --export_subscores                  # include subscores/diagnostics in CSV
+```
+εₜ ~ t_ν(0, σₜ)
+```
 
-Rationale
-- 3Y CAGR can lag inflections; LTM momentum adds responsiveness using available quarterly data.
-- Conservative mapping and modest blending (30%) prevent runaway effects while increasing timeliness.
+**In plain English:** *"Market noise follows a Student-t distribution instead of Gaussian, allowing for rare extreme moves."*
 
-Next candidates (not yet implemented)
-- Sector‑aware valuation normalization
-- Statement/price caches with TTL
-- Risk regime filter and robust volatility mapping
+The degrees-of-freedom ν controls tail thickness:
+- ν = 4: Very heavy tails (frequent extreme moves)
+- ν = 20: Nearly Gaussian (rare extreme moves)
+- ν → ∞: Gaussian limit
 
+We use a discrete grid ν ∈ {4, 6, 8, 12, 20} and let BMA select the mixture.
 
-## PLN/JPY FX Signals
+---
 
-Generate scientifically grounded Buy/Hold/Sell signals for Polish zloty vs Japanese yen across multiple horizons (1d, 3d, 7d, ~1m, ~3m, ~6m, ~12m) using volatility-adjusted expected returns, multi-window momentum, and a 200-day trend filter.
+### Tuning Engine: Bayesian Model Averaging
 
-Quick start:
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
 
-  make fx-plnjpy
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| p(·) | Probability | Probability or probability density |
+| p(m\|r) | "p of m given r" | Probability of model m, given we're in regime r |
+| rₜ₊ₕ | "r sub t plus h" | Return h days from now |
+| r | Regime | Market state (e.g., LOW_VOL_TREND) |
+| m | Model | A specific model class (e.g., kalman_gaussian) |
+| θ | "theta" | All parameters of a model (q, φ, etc.) |
+| θᵣ,ₘ | "theta r,m" | Parameters of model m in regime r |
+| Σₘ | "sum over m" | Add up across all models |
+| BIC | Bayesian Info Criterion | Score balancing fit vs complexity |
+| ℓ | Log-likelihood | How well model explains data |
+| k | Parameter count | Number of free parameters |
+| n | Sample size | Number of data points |
+| w | Weight | Unnormalized probability |
+| exp(·) | Exponential | e raised to the power of (·) |
+| α | "alpha" | Blending coefficient (0 to 1) |
+| λ | "lambda" | Shrinkage coefficient (0 to 1) |
+| H(m) | Hyvärinen score | Robust model comparison metric |
+| ∂ | Partial derivative | Rate of change with respect to one variable |
 
-Options:
+</details>
 
-  make fx-plnjpy ARGS="--start 2010-01-01 --horizons 1,3,7,21,63,126,252 --json fx_signals.json --csv fx_signals.csv"
-  
-Easy mode (plain English):
+**The BMA Equation**
 
-  make fx-plnjpy ARGS="--simple"
+Given regime r and model class m with parameters θ, the posterior predictive is:
 
-- --simple prints a friendly table with:
-  - Timeframe (e.g., 1 day, 1 week, 3 months)
-  - Chance PLN goes up (percent)
-  - Recommendation (BUY/HOLD/SELL)
-  - Why (one‑line explanation of trend, momentum, and volatility)
-- When exporting with --simple, CSV/JSON include the simple fields (and JSON still includes the detailed signals for compatibility).
+```
+p(rₜ₊ₕ | r) = Σₘ p(rₜ₊ₕ | r, m, θᵣ,ₘ) · p(m | r)
+```
 
-What it does:
-- Downloads PLNJPY=X daily prices (JPY per PLN) from Yahoo Finance.
-- Computes EWM drift and volatility (63d), 200-day trend, and 21/63/126/252-day momentum.
-- For each horizon H, forms a normalized score z combining (mu/vol)*sqrt(H) with momentum/trend tilts and volatility-regime dampening.
-- Maps scores to BUY/HOLD/SELL with horizon-aware thresholds and prints a table; optionally writes JSON/CSV.
+**In plain English:** *"The probability of a future return equals the weighted average of each model's prediction, where weights are how much we trust each model."*
 
-Note: A BUY indicates long PLN vs JPY (expect PLN to appreciate vs JPY).
+**Breaking it down:**
+- p(rₜ₊ₕ | r, m, θ) = "What does model m predict for the return?"
+- p(m | r) = "How much do we trust model m in this regime?"
+- Σₘ = "Add up across all 7 models"
 
-Columns (console/exports):
-- Horizon (trading days): Number of trading days in the forecast horizon.
-- Edge z (risk-adjusted): Risk-adjusted edge combining drift/vol with momentum/trend filters.
-- Pr[return>0] (prob_up in CSV/JSON): Estimated probability the horizon return is positive, mapped via the Normal CDF of Edge z.
-- E[log return] (expected_log_return): Expected cumulative log return over the horizon from the daily drift estimate.
-- Signal: Decision based on prob_up: BUY (>=58%), HOLD (42–58%), SELL (<=42%).
+This is the **core equation** of the system. Signals emerge from this mixture, not from any single "best" model.
 
-Exports:
-- CSV columns are named: horizon_trading_days, edge_z_risk_adjusted, prob_up, expected_log_return, signal.
-- JSON includes the above signals and a "column_descriptions" block documenting each field.
+**Model Weights via BIC**
 
+For each model m in regime r, we compute BIC:
 
+```
+BIC_m,r = -2 · ℓ_m,r + k_m · log(n_r)
+```
 
-## Upgraded PLN/JPY FX Signals (methodology and flags)
+**In plain English:** *"BIC = (how well it fits) minus (penalty for complexity)."*
 
-What’s new (world‑class, research‑grounded upgrades):
-- Context‑aware scoring while keeping the scientifically sound Sharpe‑style core z = (mu/vol)·sqrt(H)
-- Risk features:
-  - Volatility percentile vs own 3‑year history (dampen in top‑vol regimes)
-  - Downside volatility (semi‑std) penalty, realized skewness (252d) guardrail
-  - Trend‑slope proxies (100d/200d) in addition to 200d z‑distance
-- Macro and cross‑asset tilts (optional):
-  - VIX 63d z‑score and 5‑day change dampen conviction in stress (JPY safe‑haven)
-  - USDJPY 63d momentum (JPY weakness supports PLNJPY up)
-  - EURPLN 63d momentum (EURPLN down implies PLN strength; supportive)
-- Diagnostics: optional context table and JSON context block
+**Breaking it down:**
+- -2·ℓ = Negative log-likelihood (lower is better fit)
+- k·log(n) = Penalty for having more parameters
+- Models with more parameters must fit much better to justify the complexity
 
-CLI (examples):
-- Default run:
+Where:
+- ℓ_m,r = maximized log-likelihood (how well model fits data)
+- k_m = number of parameters (complexity penalty)
+- n_r = sample size in regime r
 
-  make fx-plnjpy
+Weights are softmax over negative BIC:
 
-- Diagnostics and disable context tilts:
+```
+w_raw(m|r) = exp(-½ · (BIC_m,r - BIC_min,r))
+p(m|r) = w_raw(m|r) / Σₘ' w_raw(m'|r)
+```
 
-  make fx-plnjpy ARGS="--diag --no_macro --no_cross"
+**In plain English:** *"Convert BIC differences to probabilities using softmax. Lower BIC → higher probability."*
 
-- Custom horizons and export:
+**Hyvärinen Score (Robust Alternative)**
 
-  make fx-plnjpy ARGS="--start 2010-01-01 --horizons 1,3,7,21,63,126,252 --json fx_signals.json --csv fx_signals.csv"
+BIC assumes the true model is in the candidate set. When misspecified, the **Hyvärinen score** is more robust:
 
-New flags:
-- --no_macro          Disable macro (VIX) tilt
-- --no_cross          Disable cross‑asset (USDJPY/EURPLN) tilt
-- --diag              Print a context diagnostics table under the signals
+```
+H(m) = Σₜ [ ∂²log p / ∂r² + ½(∂log p / ∂r)² ]
+```
 
-Notes:
-- A BUY indicates long PLN vs JPY (expect PLN to appreciate vs JPY). Tilts are modest and risk‑aware; the base z‑score remains the dominant driver.
-- Data source: Yahoo Finance (yfinance). No new dependencies beyond SciPy (already in requirements.txt).
+**In plain English:** *"A scoring rule based on the curvature and slope of the log-density. Rewards models that are confident where they should be."*
+
+**Why use it:**
+- Works even when no model is "true"
+- Naturally rewards accurate tail predictions
+- Doesn't require computing normalizing constants
+
+This is a **proper scoring rule** that doesn't require normalizing constants and naturally rewards tail accuracy.
+
+We blend BIC and Hyvärinen:
+
+```
+w_combined(m) = w_bic(m)^α · w_hyvarinen(m)^(1-α)
+```
+
+**In plain English:** *"Final weight is the geometric mean of BIC weight and Hyvärinen weight."*
+
+Default α = 0.5 (equal weighting).
+
+**Temporal Smoothing**
+
+To prevent erratic model switching, we smooth weights over time:
+
+```
+w_smooth(m|r) ∝ w_prev(m|r)^α · w_raw(m|r)
+```
+
+**In plain English:** *"New weight = (yesterday's weight)^α × (today's raw weight). This makes weights change gradually."*
+
+With α ≈ 0.85, this creates "sticky" posteriors that adapt gradually.
+
+**Hierarchical Shrinkage**
+
+When regime r has few samples, we shrink toward the global posterior:
+
+```
+p(m|r) = (1 - λ) · p_local(m|r) + λ · p(m|global)
+```
+
+**In plain English:** *"When data is scarce, borrow strength from the overall (global) model weights."*
+
+**What λ controls:**
+- λ = 0: Use only local regime data
+- λ = 1: Ignore local data, use global weights entirely
+- Default λ = 0.05: Slight shrinkage toward global
+
+Default λ = 0.05. When samples < threshold, we set λ = 1 (full borrowing) and mark `borrowed_from_global = True`.
+
+---
+
+### Signal Engine: Posterior Predictive Monte Carlo
+
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
+
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| p(rₜ₊ₕ \| r_t) | Predictive distribution | Probability of future return given current regime |
+| rₜ₊ₕ | "r sub t plus h" | Return h days from now |
+| r_t | Current regime | Which of the 5 regimes we're in now |
+| N_total | Total samples | Number of Monte Carlo samples (e.g., 10,000) |
+| n_m | Samples for model m | Number of samples allocated to model m |
+| w | Weight | Model probability p(m\|r) |
+| μ | "mu" | Current drift estimate |
+| h | Horizon | Forecast period in days |
+| q_m | Process noise for model m | Model-specific q parameter |
+| σ | "sigma" | Volatility |
+| P(r > 0) | Probability positive | Chance that return exceeds zero |
+| E[r] | Expected return | Average (mean) return |
+
+</details>
+
+**Monte Carlo Sampling**
+
+We approximate p(rₜ₊ₕ | r_t) via simulation:
+
+```python
+samples = []
+for m, w in model_posterior.items():
+    n_m = int(w * N_total)  # samples proportional to weight
+    for _ in range(n_m):
+        # Simulate Kalman path for h steps
+        μ = current_drift_estimate
+        for step in range(h):
+            μ += sample_from(N(0, q_m))
+            r_step = μ + sample_from(distribution_m(σ))
+        samples.append(sum_of_r_steps)
+```
+
+**In plain English:**
+1. *"For each model, draw samples proportional to how much we trust it."*
+2. *"For each sample, simulate the drift evolving over h days."*
+3. *"Add up all the daily returns to get the h-day return."*
+4. *"Collect all samples into one big distribution."*
+
+**Why this works:**
+- Models we trust more contribute more samples
+- The final distribution automatically reflects model uncertainty
+- We never pick a "best" model — uncertainty is preserved
+
+This produces samples from the full BMA mixture, not from any single model.
+
+**Probability of Positive Return**
+
+From the sample distribution:
+
+```
+P(rₜ₊ₕ > 0) = (# samples > 0) / N_total
+```
+
+**In plain English:** *"Count how many samples are positive, divide by total samples."*
+
+This is the key quantity for BUY/HOLD/SELL decisions.
+
+**Expected Log Return**
+
+```
+E[rₜ₊ₕ] = mean(samples)
+```
+
+**In plain English:** *"Average all the samples to get expected return."*
+
+Used for position sizing and expected utility calculations.
+
+**Signal Mapping**
+
+Signals map from probability:
+
+```
+P(r > 0) ≥ 0.58  →  BUY
+P(r > 0) ∈ (0.42, 0.58)  →  HOLD
+P(r > 0) ≤ 0.42  →  SELL
+```
+
+**In plain English:**
+- *"If there's a 58%+ chance of positive return → BUY"*
+- *"If there's a 42% or less chance → SELL"*
+- *"Otherwise → HOLD (not enough edge)"*
+
+The 58%/42% thresholds derive from expected utility theory with symmetric loss.
+
+---
+
+### Signal Engine: Expected Utility
+
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
+
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| EU | Expected Utility | Risk-adjusted expected value of a decision |
+| p | Probability | Chance of winning |
+| U(·) | Utility function | How much we value an outcome |
+| f* | "f star" | Optimal bet fraction (Kelly criterion) |
+| b | Win/loss ratio | How much we win vs lose |
+| z | Z-score | Standardized edge (like Sharpe ratio) |
+| μ | "mu" | Expected return (drift) |
+| σ | "sigma" | Volatility (standard deviation) |
+| h | Horizon | Forecast period in days |
+| √h | Square root of h | Scaling factor for multi-day returns |
+| z_adj | Adjusted z-score | Z-score after volatility dampening |
+| σ_median | Median volatility | "Normal" volatility level |
+
+</details>
+
+**The EU Framework**
+
+Decisions maximize expected utility, not expected return:
+
+```
+EU = p · U(gain) + (1-p) · U(loss)
+```
+
+**In plain English:** *"Expected utility = (chance of winning × value of winning) + (chance of losing × value of losing)."*
+
+For Kelly-style sizing with log utility U(x) = log(1 + x):
+
+```
+f* = p - (1-p)/b
+```
+
+**In plain English:** *"Optimal bet size = probability of winning minus (probability of losing divided by win/loss ratio)."*
+
+Where:
+- f* = optimal fraction of capital to bet
+- p = probability of win
+- b = win/loss ratio (how much you win vs lose)
+
+**Example:**
+- p = 60%, b = 1.5 (win $1.50 for every $1 risked)
+- f* = 0.60 - 0.40/1.5 = 0.60 - 0.27 = 0.33
+- *"Bet 33% of capital"*
+
+**Risk-Adjusted Edge**
+
+We compute a Sharpe-style z-score:
+
+```
+z = (μ / σ) · √h
+```
+
+**In plain English:** *"Edge = (expected return / volatility) × square root of horizon."*
+
+**Why √h?**
+- Returns scale linearly with time: μ × h
+- Volatility scales with square root: σ × √h
+- So Sharpe scales with √h
+
+Where h is the horizon in days. This normalizes edge across timeframes.
+
+**Volatility Regime Dampening**
+
+In high-volatility regimes, we reduce conviction:
+
+```
+z_adj = z · (1 - vol_penalty)
+vol_penalty = max(0, (σ / σ_median - 1.5) · 0.3)
+```
+
+**In plain English:** *"If volatility is 1.5× higher than normal, start reducing our edge estimate."*
+
+**What this means:**
+- σ/σ_median = 1.0 (normal vol): No penalty
+- σ/σ_median = 1.5 (50% above normal): No penalty yet
+- σ/σ_median = 2.0 (double normal): 15% penalty
+- σ/σ_median = 3.0 (triple normal): 45% penalty
+
+This prevents overconfidence when uncertainty is elevated.
+
+---
+
+### Debt Engine: Latent State Model
+
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
+
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| S | State | Current latent (hidden) policy state |
+| Sₜ | "S sub t" | State at time t |
+| Sₜ₋₁ | "S sub t minus 1" | State at previous time step |
+| Y | Observation vector | The 5 features we can measure |
+| C | Convex loss | Asymmetric penalty for adverse moves |
+| P | Tail mass | Probability of extreme outcomes |
+| D | Disagreement | How much models disagree (entropy) |
+| dD | Disagreement momentum | Rate of change in disagreement |
+| V | Vol compression | Volatility relative to recent history |
+| P(S\|Y) | State posterior | Probability of state given observations |
+| α | "alpha" | Decision threshold (e.g., 0.60) |
+| → | Transition arrow | Allowed state transition |
+
+</details>
+
+**State Space**
+
+The debt allocator models policy stress via 4 latent states:
+
+```
+S ∈ {NORMAL, COMPRESSED, PRE_POLICY, POLICY}
+```
+
+**In plain English:** *"The market is always in one of 4 hidden stress states."*
+
+**What each state means:**
+
+| State | Meaning | Typical Duration |
+|-------|---------|------------------|
+| NORMAL | Business as usual | Months |
+| COMPRESSED | Vol suppressed, pressure building | Weeks |
+| PRE_POLICY | Stress emerging, policy imminent | Days |
+| POLICY | Active policy intervention | Days to weeks |
+
+States are **partially ordered**: NORMAL → COMPRESSED → PRE_POLICY → POLICY. Backward transitions are forbidden except via explicit reset.
+
+**Observation Model**
+
+We observe a 5-dimensional feature vector:
+
+```
+Y = (C, P, D, dD, V)
+
+C  = Convex loss functional (asymmetric penalty for adverse moves)
+P  = Tail mass (probability beyond threshold)
+D  = Epistemic disagreement (entropy of model posterior)
+dD = Disagreement momentum (rate of change in D)
+V  = Volatility compression ratio (current vol / recent vol)
+```
+
+**In plain English:** *"We measure 5 things about the market that give clues about the hidden state."*
+
+**Transition Dynamics**
+
+State transitions follow a constrained Markov process:
+
+```
+P(Sₜ | Sₜ₋₁, Y) ∝ P(Y | Sₜ) · P(Sₜ | Sₜ₋₁)
+```
+
+**In plain English:** *"The probability of being in a state depends on what we observe AND where we were before."*
+
+With diagonal dominance (persistence ≈ 0.85) and forward-only transitions.
+
+**Decision Rule**
+
+Switch debt when:
+
+```
+P(PRE_POLICY | Y) > α
+```
+
+**In plain English:** *"If the probability of being in PRE_POLICY state exceeds our threshold, trigger the switch."*
+
+Default α = 0.60. The decision is **irreversible** (once triggered, done).
+
+---
+
+### Calibration: PIT Test
+
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
+
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| u | Uniform value | Transformed probability (should be 0-1 uniform) |
+| F | CDF | Cumulative Distribution Function (predicted) |
+| F(x) | "F of x" | Probability that outcome ≤ x |
+| r_actual | Actual return | The return that actually occurred |
+| KS | Kolmogorov-Smirnov | Test statistic measuring calibration |
+| sup | Supremum | Maximum value |
+| F_empirical | Empirical CDF | CDF estimated from actual data |
+| Uniform(0,1) | Uniform distribution | Every value between 0 and 1 equally likely |
+
+</details>
+
+**Probability Integral Transform**
+
+If predictions are well-calibrated:
+
+```
+u = F(r_actual)  should be  ~ Uniform(0, 1)
+```
+
+**In plain English:** *"If we plug actual outcomes into our predicted CDF, the results should be uniformly distributed."*
+
+**Why this works:**
+- If you predict "30% chance of rain" and it rains 30% of the time when you say that, you're calibrated
+- PIT is the formal version of this for continuous distributions
+- If u values cluster near 0 or 1, predictions are systematically wrong
+
+Where F is the predicted CDF (cumulative distribution function).
+
+**KS Test**
+
+We compute Kolmogorov-Smirnov statistic:
+
+```
+KS = sup_u | F_empirical(u) - u |
+```
+
+**In plain English:** *"Find the maximum gap between the empirical distribution of u values and the uniform line."*
+
+p-value > 0.05 indicates calibration is acceptable.
+
+**Interpretation**
+
+| Pattern | KS Value | Meaning |
+|---------|----------|---------|
+| KS ≈ 0 | < 0.05 | Perfect calibration ✓ |
+| KS moderate | 0.05-0.10 | Minor miscalibration |
+| KS > 0.1 | > 0.10 | Significant miscalibration ✗ |
+
+**Visual patterns in PIT histogram:**
+- **U-shape** (values cluster at 0 and 1): Overconfidence — predictions are too narrow
+- **∩-shape** (values cluster in middle): Underconfidence — predictions are too wide
+- **Flat** (uniform distribution): Well-calibrated ✓
+
+---
+
+### Summary: The Mathematical Contract
+
+This box summarizes the entire system in symbols. Refer to the Master Symbol Glossary at the top of this section for definitions.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                                                             │
+│   DATA:     rₜ = log(Pₜ/Pₜ₋₁)                               │
+│             σₜ² = EWMA(rₜ²)                                 │
+│                                                             │
+│   TUNING:   μₜ = φμₜ₋₁ + ηₜ        (state equation)         │
+│             rₜ = μₜ + εₜ           (observation)            │
+│             q* = argmax ℓ(q)       (MLE)                    │
+│             p(m|r) ∝ exp(-BIC/2)   (BMA weights)            │
+│                                                             │
+│   SIGNAL:   p(r|data) = Σₘ p(r|m,θ) · p(m|r)   (mixture)    │
+│             P(r>0) = ∫₀^∞ p(r) dr              (probability)│
+│             signal = map(P(r>0))               (decision)   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Line-by-line translation:**
+
+| Line | Symbols | Plain English |
+|------|---------|---------------|
+| `rₜ = log(Pₜ/Pₜ₋₁)` | Return = log(today's price / yesterday's price) | "Compute log returns" |
+| `σₜ² = EWMA(rₜ²)` | Variance = exponentially-weighted average of squared returns | "Estimate volatility" |
+| `μₜ = φμₜ₋₁ + ηₜ` | Drift = phi × yesterday's drift + noise | "Drift evolves with mean-reversion" |
+| `rₜ = μₜ + εₜ` | Return = drift + noise | "Observed return is noisy drift" |
+| `q* = argmax ℓ(q)` | Optimal q = value that maximizes likelihood | "Find best-fit process noise" |
+| `p(m\|r) ∝ exp(-BIC/2)` | Model probability proportional to exp(-BIC/2) | "Weight models by BIC" |
+| `p(r\|data) = Σₘ p(r\|m,θ)·p(m\|r)` | Prediction = weighted sum across models | "Average all model predictions" |
+| `P(r>0) = ∫₀^∞ p(r) dr` | Probability positive = integral from 0 to ∞ | "Count positive samples" |
+| `signal = map(P(r>0))` | Signal = function of probability | "Convert probability to BUY/HOLD/SELL" |
+
+**The math is the system. The code merely implements it.**
+
+---
+
+## Cheat Sheet
+
+### First Time Setup
+```bash
+make setup              # Install everything, download data
+```
+
+### Daily Use
+```bash
+make stocks             # The one command you need
+```
+
+### Weekly Maintenance
+```bash
+make tune               # Re-calibrate parameters
+make stocks             # Generate fresh signals
+```
+
+### When Things Break
+```bash
+make doctor             # Reinstall dependencies
+make failed             # See what failed
+make purge              # Clear failed cache
+make data               # Re-download everything
+```
+
+### Quick Reference Table
+
+| I want to... | Command |
+|--------------|---------|
+| Generate signals | `make stocks` |
+| Just see cached signals | `make report` |
+| Re-tune all parameters | `make tune ARGS="--force"` |
+| Test with few assets | `make top20` |
+| Validate calibration | `make fx-calibration` |
+| Clear everything | `make clear` |
+| See what failed | `make failed` |
+| Work offline | `OFFLINE_MODE=1 make stocks` |
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+**`zsh: command not found: python`**
+```bash
+echo 'alias python=python3' >> ~/.zshrc && source ~/.zshrc
+```
+
+**Build errors on Apple Silicon**
+```bash
+xcode-select --install
+```
+
+**Assets failing to download**
+```bash
+make failed    # See which assets failed
+make purge     # Clear their cache
+make data      # Re-download
+```
+
+**Stale parameters**
+```bash
+make clear-q   # Clear parameter cache
+make tune      # Re-estimate
+make stocks    # Fresh signals
+```
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `PRICE_DATA_DIR` | Override data cache location |
+| `NO_COLOR=1` | Disable colored output |
+| `PYTHON` | Force specific interpreter |
+| `OFFLINE_MODE=1` | Use cached data only, no network calls |
+
+---
+
+## Philosophy
+
+### The Core Principle
+
+> *"Act only on beliefs that were actually learned."*
+
+This system is a **belief evolution engine**. It maintains competing hypotheses about market dynamics and lets Bayesian inference arbitrate between them.
+
+### What Makes This Different
+
+| Traditional Systems | This System |
+|---------------------|-------------|
+| Pick the "best" model | Maintain model uncertainty |
+| Point estimates | Full distributions |
+| Fixed parameters | Continuously re-calibrated |
+| Confidence from conviction | Confidence from calibration |
+| Fail silently when wrong | Know when you don't know |
+
+### The Three Laws
+
+1. **Never invent beliefs.** When evidence is weak, become more ignorant—not more confident. Fallback is always hierarchical (regime → global), never fabricated.
+
+2. **Preserve distributional integrity.** Decisions come from distributions, not point estimates. The signal layer sees samples, not parameters.
+
+3. **Separate epistemology from agency.** The Tuning Engine learns beliefs. The Signal Engine acts on them. They never mix.
+
+### The Goal
+
+**Calibrated uncertainty**, not false precision.
+
+When the system says "62% probability," it should be right 62% of the time. Not 70%. Not 55%. Exactly 62%.
+
+That's what the PIT calibration tests verify. That's what makes this system trustworthy.
+
+---
+
+<h1 align="center">🇵🇱 Wersja Polska / Polish Version</h1>
+
+<p align="center">
+  <strong>Pełne tłumaczenie dokumentacji na język polski</strong>
+</p>
+
+---
+
+## Dlaczego Ten System Istnieje
+
+Większość systemów tradingowych wybiera jeden model i udaje, że jest poprawny. Ten system tak nie działa.
+
+Zamiast tego utrzymuje **7 konkurujących modeli** w **5 reżimach rynkowych**, pozwalając bayesowskiemu wnioskowaniu ciągle aktualizować, które modele są najbardziej wiarygodne w świetle ostatnich danych. Sygnały wyłaniają się z **pełnego rozkładu predykcyjnego a posteriori** — nie z pojedynczego "najlepszego przypuszczenia."
+
+Rezultat: **skalibrowana niepewność**. Kiedy system mówi "62% prawdopodobieństwa dodatniego zwrotu," oznacza to, że historycznie 62% takich prognoz okazało się trafnych.
+
+> *"Celem nie jest mieć rację. Celem jest wiedzieć, jak bardzo powinieneś być pewny."*
+
+---
+
+## System
+
+To jest **silnik ewolucji przekonań**, nie silnik reguł.
+
+W swojej istocie system utrzymuje populację konkurujących modeli — każdy reprezentuje inną hipotezę o dynamice rynku. Te modele ewoluują w prawdopodobieństwie w czasie poprzez bayesowską aktualizację, a sygnały wyłaniają się z pełnego rozkładu predykcyjnego, nie z punktowych estymacji.
+
+### Trzy Silniki
+
+| Silnik | Komenda | Co Robi |
+|--------|---------|---------|
+| **Silnik Danych** | `make data` | Pobiera OHLCV dla 100+ aktywów, cachuje jako CSV |
+| **Silnik Strojenia** | `make tune` | Dopasowuje parametry Kalmana przez MLE, oblicza wagi BMA |
+| **Silnik Sygnałów** | `make stocks` | Próbkuje rozkład predykcyjny, mapuje na sygnały |
+
+### Uniwersum Aktywów
+
+System śledzi **100+ aktywów** w wielu klasach:
+
+| Klasa | Przykłady | Liczba |
+|-------|-----------|--------|
+| **Akcje** | AAPL, MSFT, NVDA, TSLA, JPM, GS, UNH, LLY... | ~80 |
+| **Obronność** | LMT, RTX, NOC, GD, BA, HII, AVAV, PLTR... | ~40 |
+| **ETF-y** | SPY, VOO, GLD, SLV, SMH | 5 |
+| **Towary** | GC=F (Złoto), SI=F (Srebro) | 2 |
+| **Krypto** | BTC-USD, MSTR | 2 |
+| **FX** | PLNJPY=X | 1 |
+
+Wszystkie ceny są przeliczane na wspólną walutę bazową (PLN) dla analizy na poziomie portfela.
+
+### Uniwersum Modeli
+
+Silnik Strojenia dopasowuje **7 klas modeli** na reżim:
+
+| Model | Parametry | Zastosowanie |
+|-------|-----------|--------------|
+| `kalman_gaussian` | q, c | Bazowe innowacje gaussowskie |
+| `kalman_phi_gaussian` | q, c, φ | AR(1) dryft z gaussowskim |
+| `phi_student_t_nu_4` | q, c, φ | Grube ogony (ν=4) |
+| `phi_student_t_nu_6` | q, c, φ | Umiarkowane ogony (ν=6) |
+| `phi_student_t_nu_8` | q, c, φ | Lekkie ogony (ν=8) |
+| `phi_student_t_nu_12` | q, c, φ | Prawie gaussowski (ν=12) |
+| `phi_student_t_nu_20` | q, c, φ | Niemal gaussowski (ν=20) |
+
+Modele Student-t używają **dyskretnej siatki ν** (nie ciągłej optymalizacji). Każde ν jest osobnym podmodelem w BMA, pozwalając posteriorowi wyrażać niepewność co do grubości ogonów.
+
+### Klasyfikacja Reżimów
+
+Rynki są klasyfikowane do **5 reżimów** na podstawie zmienności i dryftu:
+
+| Reżim | Warunek |
+|-------|---------|
+| `LOW_VOL_TREND` (niski vol, trend) | vol < 0.85×mediana, \|dryft\| > próg |
+| `HIGH_VOL_TREND` (wysoki vol, trend) | vol > 1.3×mediana, \|dryft\| > próg |
+| `LOW_VOL_RANGE` (niski vol, zakres) | vol < 0.85×mediana, \|dryft\| ≤ próg |
+| `HIGH_VOL_RANGE` (wysoki vol, zakres) | vol > 1.3×mediana, \|dryft\| ≤ próg |
+| `CRISIS_JUMP` (skok kryzysowy) | vol > 2×mediana LUB wskaźnik_ogona > 4 |
+
+Przypisanie reżimu jest **deterministyczne i spójne** między strojeniem a wnioskowaniem.
+
+---
+
+## Szybki Start
+
+### Wymagania
+
+- macOS (Intel lub Apple Silicon)
+- Python 3.7+
+- ~10GB miejsca na dysku dla cache cen
+
+### Instalacja (Jedna Komenda)
+
+```bash
+make setup
+```
+
+To wykona:
+1. Utworzenie środowiska wirtualnego `.venv/`
+2. Instalację zależności z `requirements.txt`
+3. Pobranie 10 lat danych cenowych (3 przebiegi dla niezawodności)
+4. Wyczyszczenie danych w cache
+
+**Czas:** 5-15 minut w zależności od sieci.
+
+### Wygeneruj Swoje Pierwsze Sygnały
+
+```bash
+make stocks
+```
+
+### Co Zobaczysz
+
+System wyświetla pięknie sformatowane tabele Rich:
+
+```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+│                           NVDA — NVIDIA Corporation                        │
+│                      Reżim: LOW_VOL_TREND │ Obecna cena: $142.58           │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ Horyzont    P(r>0)    E[zwrot]     Sygnał     Pewność
+─────────────────────────────────────────────────────────────
+ 1 dzień     54.2%      +0.08%      CZEKAJ     ██░░░░░░░░
+ 1 tydzień   58.7%      +0.42%      KUP        ████░░░░░░
+ 1 miesiąc   63.1%      +1.84%      KUP        ██████░░░░
+ 3 miesiące  71.2%      +5.62%      KUP        ████████░░
+ 12 miesięcy 78.4%     +18.41%      KUP        █████████░
+```
+
+Sygnały są oznaczone kolorami:
+- 🟢 **KUP** (zielony): P(r>0) ≥ 58%
+- ⚪ **CZEKAJ** (przygaszony): P(r>0) ∈ (42%, 58%)
+- 🔴 **SPRZEDAJ** (czerwony): P(r>0) ≤ 42%
+
+### Zrozumienie Kolumn
+
+| Kolumna | Znaczenie |
+|---------|-----------|
+| **Horyzont** | Okres prognozy (dni handlowe) |
+| **P(r>0)** | Prawdopodobieństwo, że zwrot będzie dodatni |
+| **E[zwrot]** | Oczekiwany log-zwrot ze średniej posteriori |
+| **Sygnał** | Decyzja wynikająca z progu prawdopodobieństwa |
+| **Pewność** | Wizualny wskaźnik wielkości prawdopodobieństwa |
+
+### Zrozumienie Reżimu
+
+Każdy aktyw jest klasyfikowany do jednego z 5 reżimów:
+
+| Reżim | Co Oznacza | Typowe Zachowanie |
+|-------|------------|-------------------|
+| `LOW_VOL_TREND` | Cichy rynek trendujący | Gładkie, kierunkowe ruchy |
+| `HIGH_VOL_TREND` | Zmienny rynek trendujący | Ostre ruchy z kierunkiem |
+| `LOW_VOL_RANGE` | Cichy rynek boczny | Powracający do średniej, szarpany |
+| `HIGH_VOL_RANGE` | Zmienny rynek boczny | Whipsaw, brak jasnego kierunku |
+| `CRISIS_JUMP` | Ekstremalny stres | Zdarzenia ogonowe, korelacje rosną |
+
+Reżim wpływa na to, który model otrzymuje największą wagę w mieszance BMA.
+
+---
+
+## Dzienny Przepływ Pracy
+
+### 30-Sekundowa Poranna Rutyna
+
+```bash
+make stocks
+```
+
+To wszystko. Ta pojedyncza komenda:
+1. Odświeża ostatnie 5 dni danych cenowych
+2. Ładuje zapisane parametry Kalmana
+3. Generuje sygnały dla wszystkich aktywów
+4. Wyświetla sformatowane wyjście
+
+### Kiedy Ponownie Stroić
+
+Silnik Strojenia powinien być uruchamiany:
+- **Co tydzień** podczas normalnych rynków
+- **Po dużych zmianach reżimu** (skok VIX, ogłoszenie Fed)
+- **Gdy sygnały wydają się nieaktualne** lub źle skalibrowane
+
+```bash
+# Cotygodniowa kalibracja
+make tune
+
+# Wymuś pełną re-estymację (ignoruj cache)
+make tune ARGS="--force"
+```
+
+### Tryb Offline
+
+Masz już dane w cache? Pracuj bez sieci:
+
+```bash
+# Renderuj tylko z cache
+make report
+
+# Lub ustaw zmienną środowiskową
+OFFLINE_MODE=1 make stocks
+```
+
+---
+
+## Referencja Komend
+
+### Główne Komendy
+
+| Komenda | Opis |
+|---------|------|
+| `make setup` | Pełna konfiguracja: venv + zależności + dane (uruchom raz) |
+| `make data` | Pobierz wszystkie dane cenowe (5 prób) |
+| `make refresh` | Odśwież ostatnie 5 dni danych |
+| `make tune` | Kalibruj parametry Kalmana |
+| `make stocks` | **Główna komenda:** odśwież + sygnały |
+| `make report` | Renderuj sygnały z cache (offline) |
+
+### Komendy Strojenia
+
+| Komenda | Opis |
+|---------|------|
+| `make tune` | Strój wszystkie aktywa (używa cache) |
+| `make tune ARGS="--force"` | Wymuś re-estymację |
+| `make show-q` | Wyświetl zapisane parametry |
+| `make clear-q` | Wyczyść cache parametrów |
+
+### Komendy Diagnostyczne
+
+| Komenda | Opis |
+|---------|------|
+| `make fx-diagnostics` | Pełna diagnostyka (kosztowna) |
+| `make fx-diagnostics-lite` | Lekka diagnostyka |
+| `make fx-calibration` | Sprawdzenie kalibracji PIT |
+| `make fx-model-comparison` | Porównanie modeli AIC/BIC |
+| `make fx-validate-kalman` | Walidacja filtru Kalmana |
+| `make tests` | Uruchom testy jednostkowe |
+
+### Komendy Narzędziowe
+
+| Komenda | Opis |
+|---------|------|
+| `make doctor` | Przeinstaluj zależności |
+| `make failed` | Lista nieudanych aktywów |
+| `make purge` | Wyczyść cache dla nieudanych aktywów |
+| `make clear` | Wyczyść wszystkie cache |
+| `make clean-cache` | Usuń puste wiersze |
+| `make top20` | Szybki test z 20 aktywami |
+
+---
+
+## Matematyka
+
+> *"Matematyka zawsze wyłania się z bazowego systemu — nie odwrotnie."*
+
+Ta sekcja dokumentuje fundamenty matematyczne rządzące każdym silnikiem.
+
+### Główny Słownik Symboli
+
+#### Ceny i Zwroty
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| Pₜ | Cena w czasie t | Cena aktywa w kroku czasowym t |
+| rₜ | Zwrot w czasie t | Log-zwrot: ln(Pₜ/Pₜ₋₁) |
+| h | Horyzont | Okres prognozy w dniach handlowych |
+
+#### Zmienność
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| σ | Sigma | Odchylenie standardowe (zmienność) |
+| σₜ² | Sigma kwadrat | Wariancja w czasie t |
+| λ | Lambda | Współczynnik zaniku w EWMA (0.94-0.97) |
+
+#### Filtr Kalmana
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| μₜ | Mu | Ukryty (latentny) dryft w czasie t |
+| q | Szum procesu | O ile dryft może zmienić się na krok |
+| ηₜ | Eta | Losowy szok do dryftu ~ N(0, q) |
+| εₜ | Epsilon | Szum obserwacji ~ N(0, σ²) |
+| K | Wzmocnienie Kalmana | Waga nadana nowej obserwacji (0-1) |
+| P | Wariancja stanu | Niepewność w estymacji dryftu |
+| m | Średnia posteriori | Najlepsza estymacja dryftu po aktualizacji |
+
+#### Model AR(1)
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| φ | Phi | Współczynnik powrotu do średniej (-1 do 1) |
+| τ | Tau | Priorytetowe odchylenie standardowe dla φ |
+
+#### Rozkład Studenta-t
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| ν | Nu | Stopnie swobody (grubość ogonów) |
+| t_ν | Student-t | Rozkład t z ν stopniami swobody |
+
+#### Wnioskowanie Bayesowskie
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| p(·) | Prawdopodobieństwo | Funkcja prawdopodobieństwa lub gęstości |
+| p(m\|r) | Posterior modelu | Prawdopodobieństwo modelu m przy reżimie r |
+| θ | Theta | Parametry modelu (q, φ, itd.) |
+| ℓ | Log-wiarygodność | Suma logarytmów prawdopodobieństw |
+
+#### Selekcja Modeli
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| BIC | Bayesowskie Kryterium Inf. | Penalizowana wiarygodność do porównań |
+| k | Liczba parametrów | Liczba wolnych parametrów w modelu |
+| n | Wielkość próby | Liczba obserwacji |
+| w | Waga | Nieznormalizowana waga modelu |
+| α | Alfa | Współczynnik wygładzania/mieszania |
+
+#### Teoria Decyzji
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| E[·] | Wartość oczekiwana | Średnia wartość |
+| P(·) | Prawdopodobieństwo | Szansa zdarzenia |
+| EU | Oczekiwana Użyteczność | Skorygowana o ryzyko wartość oczekiwana |
+| f* | Optymalna frakcja | Wielkość zakładu wg kryterium Kelly'ego |
+| z | Z-score | Standaryzowana metryka przewagi |
+
+---
+
+### Silnik Danych: Zwroty i Zmienność
+
+**Log-Zwroty**
+
+System pracuje z log-zwrotami, nie prostymi zwrotami:
+
+```
+rₜ = log(Pₜ / Pₜ₋₁)
+```
+
+**Po polsku:** *"Dzisiejszy zwrot równa się logarytmowi naturalnemu z dzisiejszej ceny podzielonej przez wczorajszą cenę."*
+
+**Zrealizowana Zmienność**
+
+Zmienność jest estymowana przez wykładniczo-ważoną średnią ruchomą (EWMA):
+
+```
+σₜ² = λ · σₜ₋₁² + (1 - λ) · rₜ²
+```
+
+**Po polsku:** *"Dzisiejsza wariancja równa się lambda razy wczorajsza wariancja, plus (1 - lambda) razy dzisiejszy zwrot do kwadratu."*
+
+**Co to oznacza:**
+- Gdy λ = 0.94: Wczorajsza wariancja dostaje 94% wagi, dzisiejszy zwrot 6%
+- Wyższe λ = wolniejsza adaptacja do nowych informacji
+- Niższe λ = szybsza adaptacja, bardziej reaktywne
+
+**Winsoryzacja**
+
+Ekstremalne zwroty są przycinane, aby zmniejszyć wpływ wartości odstających:
+
+```
+rₜ → clip(rₜ, -3σ, +3σ)
+```
+
+**Po polsku:** *"Jeśli zwrot jest bardziej ekstremalny niż 3 odchylenia standardowe, ogranicz go do 3 odchyleń standardowych."*
+
+---
+
+### Silnik Strojenia: Filtr Kalmana + MLE
+
+**Model Przestrzeni Stanów**
+
+Modelujemy latentny dryft μₜ jako błądzenie losowe obserwowane przez zaszumione zwroty:
+
+```
+Równanie stanu:      μₜ = μₜ₋₁ + ηₜ,     ηₜ ~ N(0, q)
+Obserwacja:          rₜ = μₜ + εₜ,       εₜ ~ N(0, σₜ²)
+```
+
+**Po polsku:**
+- *"Prawdziwy dryft dzisiaj równa się wczorajszemu dryftowi plus losowy szok."*
+- *"Obserwowany zwrot równa się prawdziwemu dryftowi plus szum rynkowy."*
+
+**Rekurencja Filtru Kalmana**
+
+Przy danym priorze μₜ₋₁|ₜ₋₁ ~ N(m, P), filtr Kalmana aktualizuje:
+
+```
+Predykcja:  μₜ|ₜ₋₁ ~ N(m, P + q)
+
+Aktualizacja: K = (P + q) / (P + q + σₜ²)     # Wzmocnienie Kalmana
+              mₜ = m + K · (rₜ - m)            # Średnia posteriori
+              Pₜ = (1 - K) · (P + q)           # Wariancja posteriori
+```
+
+**Po polsku:**
+1. **Predykcja:** *"Przed zobaczeniem dzisiejszego zwrotu, nasza niepewność rośnie o q."*
+2. **Wzmocnienie Kalmana:** *"K mierzy, ile ufać nowej obserwacji vs. naszemu priorowi."*
+3. **Aktualizacja średniej:** *"Nowa estymacja = stara estymacja + K × (niespodzianka)."*
+4. **Aktualizacja wariancji:** *"Nasza niepewność maleje po zobaczeniu danych."*
+
+**Estymacja Największej Wiarygodności (MLE)**
+
+Znajdujemy q maksymalizując log-wiarygodność:
+
+```
+ℓ(q) = Σₜ log p(rₜ | r₁:ₜ₋₁, q)
+```
+
+**Po polsku:** *"Znajdź wartość q, która sprawia, że obserwowane zwroty są najbardziej prawdopodobne."*
+
+**Rozszerzenie AR(1) (modele φ)**
+
+Dla dryftu powracającego do średniej, rozszerzamy równanie stanu:
+
+```
+μₜ = φ · μₜ₋₁ + ηₜ,     φ ∈ (-1, 1)
+```
+
+**Po polsku:** *"Dzisiejszy dryft równa się phi razy wczorajszy dryft, plus szum."*
+
+**Co oznaczają wartości φ:**
+- φ = 0: Dryft nie ma pamięci (pełny powrót do średniej)
+- φ = 0.9: Dryft jest bardzo trwały (wolny powrót do średniej)
+- φ = 1: Błądzenie losowe (brak powrotu do średniej) — **niestabilne, unikamy**
+- φ < 0: Dryft oscyluje (rzadkie w danych finansowych)
+
+**Innowacje Studenta-t**
+
+Aby uchwycić grube ogony, zastępujemy gaussowskie innowacje rozkładem Studenta-t:
+
+```
+εₜ ~ t_ν(0, σₜ)
+```
+
+**Po polsku:** *"Szum rynkowy podąża za rozkładem Studenta-t zamiast gaussowskiego, pozwalając na rzadkie ekstremalne ruchy."*
+
+---
+
+### Silnik Strojenia: Bayesowskie Uśrednianie Modeli
+
+**Równanie BMA**
+
+Przy danym reżimie r i klasie modelu m z parametrami θ, rozkład predykcyjny posteriori to:
+
+```
+p(rₜ₊ₕ | r) = Σₘ p(rₜ₊ₕ | r, m, θᵣ,ₘ) · p(m | r)
+```
+
+**Po polsku:** *"Prawdopodobieństwo przyszłego zwrotu równa się ważonej średniej prognoz każdego modelu, gdzie wagi to ile ufamy każdemu modelowi."*
+
+To jest **główne równanie** systemu. Sygnały wyłaniają się z tej mieszanki, nie z żadnego pojedynczego "najlepszego" modelu.
+
+**Wagi Modeli przez BIC**
+
+Dla każdego modelu m w reżimie r, obliczamy BIC:
+
+```
+BIC_m,r = -2 · ℓ_m,r + k_m · log(n_r)
+```
+
+**Po polsku:** *"BIC = (jak dobrze pasuje) minus (kara za złożoność)."*
+
+**Wygładzanie Czasowe**
+
+Aby zapobiec gwałtownemu przełączaniu modeli, wygładzamy wagi w czasie:
+
+```
+w_smooth(m|r) ∝ w_prev(m|r)^α · w_raw(m|r)
+```
+
+**Po polsku:** *"Nowa waga = (wczorajsza waga)^α × (dzisiejsza surowa waga). To sprawia, że wagi zmieniają się stopniowo."*
+
+**Hierarchiczne Kurczenie**
+
+Gdy reżim r ma mało próbek, kurczymy w kierunku globalnego posterioru:
+
+```
+p(m|r) = (1 - λ) · p_local(m|r) + λ · p(m|global)
+```
+
+**Po polsku:** *"Gdy danych jest mało, pożyczaj siłę z ogólnych (globalnych) wag modeli."*
+
+---
+
+### Silnik Sygnałów: Monte Carlo Predykcyjne Posteriori
+
+**Próbkowanie Monte Carlo**
+
+Przybliżamy p(rₜ₊ₕ | r_t) przez symulację:
+
+```python
+samples = []
+for m, w in model_posterior.items():
+    n_m = int(w * N_total)  # próbki proporcjonalne do wagi
+    for _ in range(n_m):
+        μ = current_drift_estimate
+        for step in range(h):
+            μ += sample_from(N(0, q_m))
+            r_step = μ + sample_from(distribution_m(σ))
+        samples.append(sum_of_r_steps)
+```
+
+**Po polsku:**
+1. *"Dla każdego modelu, losuj próbki proporcjonalnie do tego, jak bardzo mu ufamy."*
+2. *"Dla każdej próbki, symuluj ewolucję dryftu przez h dni."*
+3. *"Zsumuj wszystkie dzienne zwroty, aby uzyskać zwrot h-dniowy."*
+4. *"Zbierz wszystkie próbki w jeden duży rozkład."*
+
+**Prawdopodobieństwo Dodatniego Zwrotu**
+
+Z rozkładu próbek:
+
+```
+P(rₜ₊ₕ > 0) = (# próbek > 0) / N_total
+```
+
+**Po polsku:** *"Policz ile próbek jest dodatnich, podziel przez całkowitą liczbę próbek."*
+
+**Mapowanie Sygnałów**
+
+Sygnały mapują z prawdopodobieństwa:
+
+```
+P(r > 0) ≥ 0.58  →  KUP
+P(r > 0) ∈ (0.42, 0.58)  →  CZEKAJ
+P(r > 0) ≤ 0.42  →  SPRZEDAJ
+```
+
+**Po polsku:**
+- *"Jeśli jest 58%+ szans na dodatni zwrot → KUP"*
+- *"Jeśli jest 42% lub mniej szans → SPRZEDAJ"*
+- *"W przeciwnym razie → CZEKAJ (niewystarczająca przewaga)"*
+
+---
+
+### Silnik Sygnałów: Oczekiwana Użyteczność
+
+**Ramy EU**
+
+Decyzje maksymalizują oczekiwaną użyteczność, nie oczekiwany zwrot:
+
+```
+EU = p · U(zysk) + (1-p) · U(strata)
+```
+
+**Po polsku:** *"Oczekiwana użyteczność = (szansa wygranej × wartość wygranej) + (szansa przegranej × wartość przegranej)."*
+
+Dla rozmiaru pozycji w stylu Kelly'ego z logarytmiczną użytecznością U(x) = log(1 + x):
+
+```
+f* = p - (1-p)/b
+```
+
+**Po polsku:** *"Optymalna wielkość zakładu = prawdopodobieństwo wygranej minus (prawdopodobieństwo przegranej podzielone przez stosunek wygrana/przegrana)."*
+
+**Przykład:**
+- p = 60%, b = 1.5 (wygrana $1.50 za każdy zaryzykowany $1)
+- f* = 0.60 - 0.40/1.5 = 0.60 - 0.27 = 0.33
+- *"Postaw 33% kapitału"*
+
+---
+
+### Kalibracja: Test PIT
+
+**Transformata Całkowa Prawdopodobieństwa**
+
+Jeśli prognozy są dobrze skalibrowane:
+
+```
+u = F(r_actual)  powinno być  ~ Uniform(0, 1)
+```
+
+**Po polsku:** *"Jeśli podstawimy rzeczywiste wyniki do naszej prognozowanej dystrybuanty, wyniki powinny być równomiernie rozłożone."*
+
+**Test KS**
+
+Obliczamy statystykę Kołmogorowa-Smirnowa:
+
+```
+KS = sup_u | F_empirical(u) - u |
+```
+
+**Po polsku:** *"Znajdź maksymalną lukę między empirycznym rozkładem wartości u a linią równomierną."*
+
+p-value > 0.05 wskazuje, że kalibracja jest akceptowalna.
+
+**Interpretacja**
+
+| Wzorzec | Wartość KS | Znaczenie |
+|---------|------------|-----------|
+| KS ≈ 0 | < 0.05 | Idealna kalibracja ✓ |
+| KS umiarkowane | 0.05-0.10 | Mniejsza błędna kalibracja |
+| KS > 0.1 | > 0.10 | Znacząca błędna kalibracja ✗ |
+
+**Wzorce wizualne w histogramie PIT:**
+- **Kształt U** (wartości grupują się przy 0 i 1): Nadmierna pewność — prognozy są zbyt wąskie
+- **Kształt ∩** (wartości grupują się w środku): Niedostateczna pewność — prognozy są zbyt szerokie
+- **Płaski** (rozkład równomierny): Dobrze skalibrowany ✓
+
+---
+
+### Podsumowanie: Kontrakt Matematyczny
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                                                             │
+│   DANE:     rₜ = log(Pₜ/Pₜ₋₁)                               │
+│             σₜ² = EWMA(rₜ²)                                 │
+│                                                             │
+│   STROJENIE: μₜ = φμₜ₋₁ + ηₜ       (równanie stanu)         │
+│              rₜ = μₜ + εₜ          (obserwacja)             │
+│              q* = argmax ℓ(q)      (MLE)                    │
+│              p(m|r) ∝ exp(-BIC/2)  (wagi BMA)               │
+│                                                             │
+│   SYGNAŁ:   p(r|dane) = Σₘ p(r|m,θ) · p(m|r)   (mieszanka) │
+│             P(r>0) = ∫₀^∞ p(r) dr    (prawdopodobieństwo)  │
+│             sygnał = map(P(r>0))     (decyzja)             │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Matematyka jest systemem. Kod jedynie ją implementuje.**
+
+---
+
+## Ściągawka
+
+### Pierwsza Konfiguracja
+```bash
+make setup              # Zainstaluj wszystko, pobierz dane
+```
+
+### Codzienne Użycie
+```bash
+make stocks             # Jedna komenda, której potrzebujesz
+```
+
+### Cotygodniowa Konserwacja
+```bash
+make tune               # Przekalibruj parametry
+make stocks             # Wygeneruj świeże sygnały
+```
+
+### Gdy Coś Nie Działa
+```bash
+make doctor             # Przeinstaluj zależności
+make failed             # Zobacz co się nie udało
+make purge              # Wyczyść cache nieudanych
+make data               # Pobierz wszystko ponownie
+```
+
+### Tabela Szybkiej Referencji
+
+| Chcę... | Komenda |
+|---------|---------|
+| Wygenerować sygnały | `make stocks` |
+| Tylko zobaczyć zapisane sygnały | `make report` |
+| Przekalibrować wszystkie parametry | `make tune ARGS="--force"` |
+| Przetestować z kilkoma aktywami | `make top20` |
+| Zwalidować kalibrację | `make fx-calibration` |
+| Wyczyścić wszystko | `make clear` |
+| Zobaczyć co się nie udało | `make failed` |
+| Pracować offline | `OFFLINE_MODE=1 make stocks` |
+
+---
+
+## Filozofia
+
+### Główna Zasada
+
+> *"Działaj tylko na podstawie przekonań, które faktycznie zostały wyuczone."*
+
+Ten system to **silnik ewolucji przekonań**. Utrzymuje konkurujące hipotezy o dynamice rynku i pozwala bayesowskiemu wnioskowaniu arbitrować między nimi.
+
+### Co Czyni To Innym
+
+| Tradycyjne Systemy | Ten System |
+|--------------------|------------|
+| Wybierz "najlepszy" model | Utrzymuj niepewność modelu |
+| Punktowe estymacje | Pełne rozkłady |
+| Stałe parametry | Ciągle przekalibrowywane |
+| Pewność z przekonania | Pewność z kalibracji |
+| Cicho zawodzą gdy błędne | Wiedzą, kiedy nie wiedzą |
+
+### Trzy Prawa
+
+1. **Nigdy nie wymyślaj przekonań.** Gdy dowody są słabe, stań się bardziej niewiedzący — nie bardziej pewny. Fallback jest zawsze hierarchiczny (reżim → globalny), nigdy sfabrykowany.
+
+2. **Zachowaj integralność rozkładową.** Decyzje pochodzą z rozkładów, nie punktowych estymacji. Warstwa sygnałów widzi próbki, nie parametry.
+
+3. **Oddziel epistemologię od agencji.** Silnik Strojenia uczy się przekonań. Silnik Sygnałów działa na ich podstawie. Nigdy się nie mieszają.
+
+### Cel
+
+**Skalibrowana niepewność**, nie fałszywa precyzja.
+
+Gdy system mówi "62% prawdopodobieństwa," powinien mieć rację w 62% przypadków. Nie 70%. Nie 55%. Dokładnie 62%.
+
+To właśnie weryfikują testy kalibracji PIT. To sprawia, że ten system jest godny zaufania.
+
+---
+
+## Licencja / License
+
+This project is for educational and research purposes. See individual dependencies for their respective licenses.
+
+Ten projekt służy celom edukacyjnym i badawczym. Zobacz poszczególne zależności dla ich odpowiednich licencji.
+
+---
+
+<p align="center">
+  <sub>Built with scientific rigor and engineering craftsmanship.</sub>
+</p>
+
+<p align="center">
+  <sub>Zbudowany z naukową rygorem i rzemieślniczym kunsztem.</sub>
+</p>
+
+<p align="center">
+  <sub>The math is the system. The code merely implements it.</sub>
+</p>
+
+<p align="center">
+  <sub>Matematyka jest systemem. Kod jedynie ją implementuje.</sub>
+</p>
