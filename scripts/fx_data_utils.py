@@ -3291,7 +3291,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     return pd.DataFrame()
 
 
-def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False, max_workers: int = 12, force_online: bool = False) -> Dict[str, pd.Series]:
+def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False, max_workers: int = 12, force_online: bool = False, show_symbol_tables: bool = True) -> Dict[str, pd.Series]:
     """Download multiple symbols in chunks to reduce rate limiting.
     Uses yf.download with list input; falls back to per-symbol for failures.
     Populates the local price cache so subsequent single fetches reuse data.
@@ -3307,6 +3307,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         skip_individual_fallback: If True, skip individual download fallback (for multi-pass bulk downloads)
         max_workers: Maximum number of parallel download workers
         force_online: If True, ignore OFFLINE_MODE and always attempt downloads (for make data)
+        show_symbol_tables: If True, print symbol mapping/failure tables at the end
     """
     # Determine if we should skip downloads (respect OFFLINE_MODE unless force_online)
     skip_downloads = OFFLINE_MODE and not force_online
@@ -3498,8 +3499,9 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                 # Data already stored by _download_prices via _store_disk_prices
                 satisfied_primaries.add(primary)
     
-    # Print accumulated symbol mapping tables (world-class Rich output)
-    print_symbol_tables()
+    # Print accumulated symbol mapping tables (world-class Rich output) if enabled
+    if show_symbol_tables:
+        print_symbol_tables()
     
     return result
 

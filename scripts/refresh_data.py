@@ -34,6 +34,9 @@ from rich.text import Text
 from rich.live import Live
 from rich.layout import Layout
 from rich import box
+from rich.rule import Rule
+from rich.align import Align
+from rich.padding import Padding
 
 # Ensure parent directory is in path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -45,35 +48,77 @@ from scripts.fx_data_utils import (
     reset_symbol_tables,
 )
 
+
+def create_stocks_console() -> Console:
+    """Create a beautiful console for stocks refresh."""
+    return Console(force_terminal=True, width=180)
+
+
 # Global console for rich output
-console = Console()
+console = create_stocks_console()
 
 
-def create_header_panel(days: int, retries: int, batch_size: int, workers: int) -> Panel:
-    """Create a beautiful header panel with configuration info."""
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column("Key", style="cyan")
-    table.add_column("Value", style="white")
+def render_stocks_header(symbols_count: int, passes: int, workers: int, batch_size: int) -> None:
+    """Render extraordinary Apple-quality header for stocks refresh.
     
-    table.add_row("📁 Cache", str(PRICE_CACHE_DIR_PATH))
-    table.add_row("📅 Days to trim", str(days))
-    table.add_row("🔄 Download passes", f"{retries} (always runs all)")
-    table.add_row("📦 Batch size", str(batch_size))
-    table.add_row("👷 Workers", str(workers))
+    Design: Cinematic title, clean stats, breathing room
+    """
+    console.print()
     
-    return Panel(
-        table,
-        title="[bold cyan]📊 Price Data Refresh[/bold cyan]",
-        border_style="cyan",
-        padding=(1, 2),
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # CINEMATIC TITLE
+    # ═══════════════════════════════════════════════════════════════════════════════
+    title = Text()
+    title.append("◆", style="bold bright_cyan")
+    title.append("  P R I C E   R E F R E S H", style="bold bright_white")
+    console.print(Align.center(title))
+    
+    subtitle = Text()
+    subtitle.append("Multi-Pass Bulk Download Engine", style="dim")
+    console.print(Align.center(subtitle))
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # CONFIGURATION - Clean horizontal stats
+    # ═══════════════════════════════════════════════════════════════════════════════
+    now = datetime.now()
+    
+    stats = Table.grid(padding=(0, 4))
+    stats.add_column(justify="center")
+    stats.add_column(justify="center")
+    stats.add_column(justify="center")
+    stats.add_column(justify="center")
+    
+    stats.add_row(
+        Text.assemble((f"{symbols_count:,}", "bold cyan"), ("\nsymbols", "dim")),
+        Text.assemble((f"{passes}", "bold white"), ("\npasses", "dim")),
+        Text.assemble((f"{workers}", "bold white"), ("\nworkers", "dim")),
+        Text.assemble((now.strftime("%H:%M"), "bold white"), ("\n" + now.strftime("%b %d"), "dim")),
     )
+    console.print(Align.center(stats))
+    console.print()
+
+
+def render_phase_header(phase_name: str, phase_num: int = None, total_phases: int = None) -> None:
+    """Render a clean phase header."""
+    console.print()
+    console.print(Rule(style="dim", characters="─"))
+    console.print()
+    
+    header = Text()
+    header.append("▸ ", style="bright_cyan")
+    header.append(phase_name.upper(), style="bold white")
+    if phase_num and total_phases:
+        header.append(f"  {phase_num}/{total_phases}", style="dim")
+    console.print(header)
+    console.print()
 
 
 def trim_last_n_days(days: int = 5, quiet: bool = False) -> int:
     """Remove the last N days of data from all cached CSV files."""
     if not PRICE_CACHE_DIR_PATH.exists():
         if not quiet:
-            console.print(f"[yellow]Cache directory does not exist:[/yellow] {PRICE_CACHE_DIR_PATH}")
+            console.print(f"    [dim]Cache directory does not exist[/dim]")
         return 0
     
     cutoff_date = datetime.now().date() - timedelta(days=days)
@@ -82,20 +127,33 @@ def trim_last_n_days(days: int = 5, quiet: bool = False) -> int:
     csv_files = list(PRICE_CACHE_DIR_PATH.glob("*.csv"))
     
     if not quiet:
+        render_phase_header("TRIM CACHE")
+        
+        info = Text()
+        info.append("    ")
+        info.append(f"{len(csv_files)}", style="bold cyan")
+        info.append(" files", style="dim")
+        info.append("   ·   ", style="dim")
+        info.append(f"{days}", style="bold white")
+        info.append(" days to remove", style="dim")
+        info.append("   ·   ", style="dim")
+        info.append(f"cutoff {cutoff_date}", style="dim")
+        console.print(info)
         console.print()
-        console.print(f"[bold]Step 1:[/bold] Trimming last [cyan]{days}[/cyan] days from [cyan]{len(csv_files)}[/cyan] cache files...")
-        console.print(f"[dim]Cutoff date: {cutoff_date}[/dim]")
     
     if not quiet and csv_files:
         with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(bar_width=40),
+            SpinnerColumn(spinner_name="dots", style="bright_cyan"),
+            BarColumn(bar_width=40, complete_style="cyan", finished_style="green"),
+            TextColumn("[bold]{task.percentage:>5.1f}%[/bold]"),
+            TextColumn("[dim]·[/dim]"),
             MofNCompleteColumn(),
+            TextColumn("[dim]·[/dim]"),
             TimeElapsedColumn(),
             console=console,
+            transient=True,
         ) as progress:
-            task = progress.add_task("[cyan]Trimming files...", total=len(csv_files))
+            task = progress.add_task("", total=len(csv_files))
             
             for csv_path in csv_files:
                 try:
@@ -116,7 +174,13 @@ def trim_last_n_days(days: int = 5, quiet: bool = False) -> int:
                 
                 progress.advance(task)
         
-        console.print(f"  [green]✓[/green] Modified [bold]{files_modified}[/bold] files")
+        # Show completion
+        result = Text()
+        result.append("    ")
+        result.append("✓ ", style="green")
+        result.append(f"{files_modified}", style="bold green")
+        result.append(" files trimmed", style="dim")
+        console.print(result)
     else:
         for csv_path in csv_files:
             try:
@@ -152,7 +216,7 @@ def get_all_symbols() -> List[str]:
 
 
 class DownloadProgressTracker:
-    """Track download progress for Rich live display."""
+    """Track download progress with Apple-quality display."""
     
     def __init__(self, total_symbols: int, num_passes: int):
         self.total_symbols = total_symbols
@@ -183,61 +247,6 @@ class DownloadProgressTracker:
         self.last_successful = successful
         self.last_failed = failed
         self.pass_results.append((successful, failed))
-        
-    def create_display(self) -> Panel:
-        """Create a rich panel showing current progress."""
-        # Main progress table
-        table = Table(show_header=False, box=None, padding=(0, 1))
-        table.add_column("", width=25)
-        table.add_column("", width=50)
-        
-        # Pass progress bar
-        pass_pct = (self.current_pass / self.num_passes) * 100 if self.num_passes > 0 else 0
-        pass_bar = self._make_bar(pass_pct, 30, "cyan")
-        table.add_row(
-            f"[bold]Pass Progress[/bold]",
-            f"{pass_bar} [cyan]{self.current_pass}/{self.num_passes}[/cyan]"
-        )
-        
-        # Download progress bar (within current pass)
-        if self.total_need > 0:
-            dl_pct = (self.fetched_count / self.total_need) * 100
-            dl_bar = self._make_bar(dl_pct, 30, "green")
-            table.add_row(
-                f"[bold]Download Progress[/bold]",
-                f"{dl_bar} [green]{self.fetched_count}/{self.total_need}[/green]"
-            )
-        
-        # Stats
-        table.add_row("", "")
-        table.add_row("[dim]From cache:[/dim]", f"[yellow]{self.from_cache}[/yellow]")
-        table.add_row("[dim]Chunks:[/dim]", f"[yellow]{self.chunks_total}[/yellow]")
-        
-        # Pass history
-        if self.pass_results:
-            table.add_row("", "")
-            history_parts = []
-            for i, (s, f) in enumerate(self.pass_results, 1):
-                if f == 0:
-                    history_parts.append(f"[green]P{i}:✓{s}[/green]")
-                else:
-                    history_parts.append(f"[yellow]P{i}:{s}✓/{f}✗[/yellow]")
-            table.add_row("[dim]History:[/dim]", " ".join(history_parts))
-        
-        is_final = self.current_pass == self.num_passes
-        title_suffix = " [yellow](final - with fallback)[/yellow]" if is_final else ""
-        
-        return Panel(
-            table,
-            title=f"[bold cyan]🔄 Pass {self.current_pass}/{self.num_passes}[/bold cyan]{title_suffix}",
-            border_style="cyan",
-        )
-    
-    def _make_bar(self, pct: float, width: int, color: str) -> str:
-        """Create a text-based progress bar."""
-        filled = int((pct / 100) * width)
-        empty = width - filled
-        return f"[{color}]{'█' * filled}[/{color}][dim]{'░' * empty}[/dim]"
 
 
 def bulk_download_n_times(
@@ -319,28 +328,31 @@ def bulk_download_n_times(
         
         if not quiet:
             console.print()
-            is_final_str = " [yellow](final - with individual fallback)[/yellow]" if is_final_pass else " [dim](bulk only)[/dim]"
-            console.print(Panel(
-                f"Processing [cyan]{len(all_symbols)}[/cyan] symbols (cached will be skipped)...",
-                title=f"[bold]🔄 Pass {pass_num}/{num_passes}[/bold]{is_final_str}",
-                border_style="blue",
-            ))
+            # Clean pass indicator
+            pass_header = Text()
+            pass_header.append("    ")
+            pass_header.append(f"Pass {pass_num}", style="bold cyan")
+            pass_header.append(f"/{num_passes}", style="dim")
+            if is_final_pass:
+                pass_header.append("  +fallback", style="yellow")
+            console.print(pass_header)
         
         try:
             # Create progress bar for this pass
             if not quiet:
                 progress_ctx = Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    BarColumn(bar_width=40),
-                    TextColumn("[green]{task.completed}/{task.total}[/green]"),
-                    TextColumn("[cyan]({task.percentage:>5.1f}%)[/cyan]"),
+                    SpinnerColumn(spinner_name="dots", style="cyan"),
+                    BarColumn(bar_width=40, complete_style="cyan", finished_style="green"),
+                    TextColumn("[bold]{task.percentage:>5.1f}%[/bold]"),
+                    TextColumn("[dim]·[/dim]"),
+                    MofNCompleteColumn(),
+                    TextColumn("[dim]·[/dim]"),
                     TimeElapsedColumn(),
                     console=console,
-                    transient=False,
+                    transient=True,
                 )
                 progress_ctx.start()
-                progress_task = progress_ctx.add_task("[cyan]Checking cache...[/cyan]", total=len(all_symbols))
+                progress_task = progress_ctx.add_task("", total=len(all_symbols))
             
             # Skip individual fallback on all passes except the last one
             # force_online=True ensures OFFLINE_MODE is ignored for make data
@@ -371,14 +383,24 @@ def bulk_download_n_times(
             tracker.end_pass(successful, last_failed_count)
             
             if not quiet:
-                console.print()  # Line break after progress bar
-                # Show pass results
+                # Show pass results - elegant inline
+                result = Text()
+                result.append("    ")
                 if last_failed_count == 0:
-                    console.print(f"  [green]✓[/green] Pass {pass_num}: [green]{successful}/{len(all_symbols)} successful[/green] — [bold green]All complete![/bold green]")
+                    result.append("✓ ", style="green")
+                    result.append(f"{successful}/{len(all_symbols)}", style="bold green")
+                    result.append(" complete", style="dim")
+                    console.print(result)
                     # Early exit: all symbols succeeded, skip remaining passes
                     break
                 else:
-                    console.print(f"  [yellow]⚡[/yellow] Pass {pass_num}: [green]{successful}[/green] successful, [yellow]{last_failed_count}[/yellow] pending")
+                    result.append("● ", style="yellow")
+                    result.append(f"{successful}", style="green")
+                    result.append(" ok", style="dim")
+                    result.append("  ·  ", style="dim")
+                    result.append(f"{last_failed_count}", style="yellow")
+                    result.append(" pending", style="dim")
+                    console.print(result)
             elif last_failed_count == 0:
                 # Early exit even in quiet mode
                 break
@@ -388,17 +410,16 @@ def bulk_download_n_times(
                 if not quiet:
                     wait_time = 5
                     with Progress(
-                        SpinnerColumn(),
-                        TextColumn("[dim]Waiting before next pass...[/dim]"),
-                        BarColumn(bar_width=20),
-                        TextColumn("[cyan]{task.completed}s/{task.total}s[/cyan]"),
+                        SpinnerColumn(spinner_name="dots", style="dim"),
+                        TextColumn("[dim]Next pass in[/dim]"),
+                        TextColumn("[cyan]{task.completed}s[/cyan]"),
                         console=console,
                         transient=True,
                     ) as progress:
                         task = progress.add_task("", total=wait_time)
                         for i in range(wait_time):
                             time.sleep(1)
-                            progress.update(task, completed=i + 1)
+                            progress.update(task, completed=wait_time - i - 1)
                 else:
                     time.sleep(5)
                 
@@ -410,54 +431,99 @@ def bulk_download_n_times(
                 except Exception:
                     pass
             if not quiet:
-                console.print(f"[red]Error during bulk download pass {pass_num}:[/red] {e}")
+                console.print(f"    [red]✗ Error:[/red] [dim]{e}[/dim]")
             tracker.end_pass(0, len(all_symbols))
             if pass_num < num_passes:
                 time.sleep(5)
     
-    # Final summary
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # FINAL SUMMARY - Apple-quality
+    # ═══════════════════════════════════════════════════════════════════════════════
     if not quiet:
         console.print()
+        render_phase_header("SUMMARY")
         
-        # Create summary table
-        summary_table = Table(
-            title="📊 Download Summary",
-            box=box.ROUNDED,
+        # Pass history as clean table
+        table = Table(
             show_header=True,
-            header_style="bold cyan",
+            header_style="dim",
+            box=None,
+            padding=(0, 2),
         )
-        summary_table.add_column("Pass", justify="center", width=8)
-        summary_table.add_column("Successful", justify="right", style="green", width=12)
-        summary_table.add_column("Failed", justify="right", style="yellow", width=12)
-        summary_table.add_column("Status", justify="center", width=15)
+        table.add_column("Pass", width=8)
+        table.add_column("Success", justify="right", width=8)
+        table.add_column("Pending", justify="right", width=8)
+        table.add_column("", width=10)
         
         for i, (s, f) in enumerate(tracker.pass_results, 1):
-            status = "[green]✓ Complete[/green]" if f == 0 else f"[yellow]{f} pending[/yellow]"
-            summary_table.add_row(f"Pass {i}", str(s), str(f), status)
+            if f == 0:
+                status = "[green]✓[/green]"
+            else:
+                status = f"[yellow]{f} left[/yellow]"
+            table.add_row(
+                f"[bold]{i}[/bold]",
+                f"[green]{s}[/green]",
+                f"[yellow]{f}[/yellow]" if f > 0 else "[dim]—[/dim]",
+                status
+            )
         
-        # Add total row
-        total_successful = tracker.pass_results[-1][0] if tracker.pass_results else 0
-        total_failed = tracker.pass_results[-1][0] if tracker.pass_results else len(all_symbols)
-        summary_table.add_row(
-            "[bold]Final[/bold]",
-            f"[bold]{total_successful}[/bold]",
-            f"[bold]{last_failed_count}[/bold]",
-            "[bold green]✓ Done[/bold green]" if last_failed_count == 0 else f"[bold yellow]{last_failed_count} issues[/bold yellow]",
-            style="bold",
-        )
+        console.print(Padding(table, (0, 0, 0, 4)))
         
-        console.print(summary_table)
-        
+        # Show failed symbols if any
         if last_failed_count > 0 and last_failed_symbols:
             console.print()
-            console.print(f"[yellow]⚠️  {last_failed_count} symbols may have issues:[/yellow]")
-            # Show first 10 in a compact format
-            shown = last_failed_symbols[:10]
-            console.print(f"  [dim]{', '.join(shown)}[/dim]")
-            if len(last_failed_symbols) > 10:
-                console.print(f"  [dim]... and {len(last_failed_symbols) - 10} more[/dim]")
+            warning = Text()
+            warning.append("    ")
+            warning.append("⚠ ", style="yellow")
+            warning.append(f"{last_failed_count}", style="bold yellow")
+            warning.append(" symbols may have issues", style="dim")
+            console.print(warning)
+            
+            # Show first 8 in compact format
+            shown = last_failed_symbols[:8]
+            console.print(f"      [dim]{', '.join(shown)}[/dim]")
+            if len(last_failed_symbols) > 8:
+                console.print(f"      [dim]...and {len(last_failed_symbols) - 8} more[/dim]")
     
     return last_failed_count
+
+
+def render_complete_banner(total: int, failed: int) -> None:
+    """Render the final completion banner."""
+    console.print()
+    console.print(Rule(style="dim", characters="─"))
+    console.print()
+    
+    if failed == 0:
+        # Success - centered
+        title = Text()
+        title.append("◆", style="bold green")
+        title.append("  C O M P L E T E", style="bold white")
+        console.print(Align.center(title))
+        console.print()
+        
+        stats = Text()
+        stats.append(f"{total:,}", style="bold green")
+        stats.append(" symbols refreshed", style="dim")
+        console.print(Align.center(stats))
+    else:
+        # Warning
+        title = Text()
+        title.append("◆", style="bold yellow")
+        title.append("  C O M P L E T E", style="bold white")
+        title.append("  (with warnings)", style="dim yellow")
+        console.print(Align.center(title))
+        console.print()
+        
+        stats = Text()
+        stats.append(f"{total - failed:,}", style="bold green")
+        stats.append(" ok", style="dim")
+        stats.append("   ·   ", style="dim")
+        stats.append(f"{failed:,}", style="bold yellow")
+        stats.append(" issues", style="dim")
+        console.print(Align.center(stats))
+    
+    console.print()
 
 
 def main():
@@ -474,29 +540,26 @@ def main():
 
     args = parser.parse_args()
 
+    # Get all symbols first for header
+    all_symbols = get_all_symbols()
+    
     if not args.quiet:
-        console.print()
-        console.print(create_header_panel(args.days, args.retries, args.batch_size, args.workers))
+        render_stocks_header(
+            symbols_count=len(all_symbols),
+            passes=args.retries,
+            workers=args.workers,
+            batch_size=args.batch_size
+        )
 
-    # Step 1: Trim last N days from cache
+    # Trim last N days from cache (unless skipped)
     if not args.skip_trim:
         trim_last_n_days(days=args.days, quiet=args.quiet)
     else:
         if not args.quiet:
-            console.print()
-            console.print(f"[bold]Step 1:[/bold] [dim]Skipping trim (--skip-trim)[/dim]")
+            render_phase_header("TRIM CACHE")
+            console.print("    [dim]Skipped (--skip-trim)[/dim]")
 
-    # Step 2: Get all symbols
-    all_symbols = get_all_symbols()
-    if not args.quiet:
-        console.print()
-        console.print(f"[bold]Step 2:[/bold] Found [cyan]{len(all_symbols)}[/cyan] symbols to download")
-
-    # Step 3: Bulk download N times (always runs all passes)
-    if not args.quiet:
-        console.print()
-        console.print(f"[bold]Step 3:[/bold] Running [cyan]{args.retries}[/cyan] bulk download passes...")
-    
+    # Bulk download N times (always runs all passes)
     failed_count = bulk_download_n_times(
         symbols=all_symbols,
         num_passes=args.retries,
@@ -507,20 +570,7 @@ def main():
     )
 
     if not args.quiet:
-        console.print()
-        if failed_count == 0:
-            console.print(Panel(
-                f"[green]All [bold]{len(all_symbols)}[/bold] symbols downloaded successfully![/green]",
-                title="[bold green]✅ Refresh Complete[/bold green]",
-                border_style="green",
-            ))
-        else:
-            console.print(Panel(
-                f"Completed {args.retries} passes for {len(all_symbols)} symbols\n"
-                f"[yellow]{failed_count} symbols may have issues[/yellow]",
-                title="[bold yellow]⚠️  Refresh Complete (with warnings)[/bold yellow]",
-                border_style="yellow",
-            ))
+        render_complete_banner(len(all_symbols), failed_count)
 
     sys.exit(0 if failed_count == 0 else 1)
 
