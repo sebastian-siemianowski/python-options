@@ -286,6 +286,7 @@ from fx_data_utils import (
     save_failed_assets,
     get_price_series,
     STANDARD_PRICE_COLUMNS,
+    print_symbol_tables,
 )
 
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
@@ -5326,31 +5327,71 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
     Retries only the assets that failed on prior attempts.
     Uses multiprocessing.Pool for true multi-process parallelism (CPU-bound work).
     """
-    console = Console()
+    from rich.rule import Rule
+    from rich.align import Align
+    
+    console = Console(force_terminal=True, width=140)
     pending = list(dict.fromkeys(a.strip() for a in assets if a and a.strip()))
     successes: List[Dict] = []
     failures: Dict[str, Dict[str, object]] = {}
     processed_canon = set()
 
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # EXTRAORDINARY APPLE-QUALITY PROCESSING UX
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    # Processing header
+    header = Text()
+    header.append("▸ ", style="bright_cyan")
+    header.append("PROCESSING", style="bold white")
+    console.print(header)
+    console.print()
+    
+    # Stats row
+    n_workers = min(cpu_count(), len(pending))
+    stats = Text()
+    stats.append("    ", style="")
+    stats.append(f"{len(pending)}", style="bold bright_cyan")
+    stats.append(" assets", style="dim")
+    stats.append("  ·  ", style="dim")
+    stats.append(f"{n_workers}", style="bold white")
+    stats.append(" cores", style="dim")
+    stats.append("  ·  ", style="dim")
+    stats.append(f"{max_retries}", style="white")
+    stats.append(" max retries", style="dim")
+    console.print(stats)
+    console.print()
+
     attempt = 1
     while attempt <= max_retries and pending:
         n_workers = min(cpu_count(), len(pending))
-        console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} worker process(es)...[/cyan]")
+        
+        # Pass indicator
+        pass_text = Text()
+        pass_text.append(f"    Pass {attempt}/{max_retries}", style="dim")
+        pass_text.append(f"  ·  {len(pending)} pending", style="dim")
+        console.print(pass_text)
+        
         work_items = [(asset, args, horizons) for asset in pending]
 
         # Prefetch prices in bulk on first attempt to reduce Yahoo rate limits
         if attempt == 1 and pending:
             try:
-                console.print(f"[cyan]Prefetching {len(pending)} assets in bulk to reduce rate limits...[/cyan]")
-                download_prices_bulk(pending, start=args.start, end=args.end)
+                # Suppress verbose output and symbol tables - they're shown after validation
+                download_prices_bulk(pending, start=args.start, end=args.end, progress=False, show_symbol_tables=False)
             except Exception as e:
-                console.print(f"[yellow]Warning:[/yellow] Bulk prefetch failed: {e}. Falling back to standard fetch.")
+                console.print(f"    [yellow]⚠[/yellow] [dim]Bulk prefetch failed, using standard fetch[/dim]")
 
         # Always use multiprocessing.Pool for true multi-process parallelism
         with Pool(processes=n_workers) as pool:
             results = pool.map(process_single_asset, work_items)
 
         next_pending: List[str] = []
+        pass_successes = 0
         for asset, result in zip(pending, results):
             if not result or result.get("status") != "success":
                 err = (result or {}).get("error", "unknown")
@@ -5381,21 +5422,46 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
                 continue
             processed_canon.add(canon)
             successes.append(result)
+            pass_successes += 1
             # drop from pending on success; nothing to add to next_pending
             if asset in failures:
                 failures.pop(asset, None)
 
         pending = list(dict.fromkeys(next_pending))
 
+        # Pass result
+        if pass_successes > 0:
+            console.print(f"    [bright_green]✓[/bright_green] [dim]{pass_successes} succeeded[/dim]")
+        
         # Early exit: if all assets succeeded, skip remaining passes
         if not pending:
-            console.print(f"[green]✓ Pass {attempt}: {len(successes)}/{len(successes)} successful — All complete![/green]")
             break
 
+        if pending and attempt < max_retries:
+            console.print(f"    [yellow]○[/yellow] [dim]{len(pending)} retrying...[/dim]")
+        
         attempt += 1
 
-    if pending:
-        console.print(f"[yellow]Retry budget exhausted; {len(pending)} assets still failing.[/yellow]")
+    console.print()
+    
+    # Final status
+    if not pending:
+        done = Text()
+        done.append("    ", style="")
+        done.append("✓", style="bold bright_green")
+        done.append(f"  {len(successes)} assets processed", style="white")
+        console.print(done)
+    else:
+        done = Text()
+        done.append("    ", style="")
+        done.append("!", style="bold yellow")
+        done.append(f"  {len(successes)} succeeded, {len(pending)} failed", style="white")
+        console.print(done)
+    
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
     return successes, failures
 
 
@@ -5463,13 +5529,38 @@ def main() -> None:
     # Parse assets
     assets = [a.strip() for a in args.assets.split(",") if a.strip()]
 
-    console = Console()
-    console.print(f"[cyan]Validating {len(assets)} requested assets against fx_data_utils mappings...[/cyan]")
+    console = Console(force_terminal=True, width=140)
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # VALIDATION PHASE - Apple-quality UX
+    # ═══════════════════════════════════════════════════════════════════════════════
+    from rich.rule import Rule
+    
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    validation_header = Text()
+    validation_header.append("▸ ", style="bright_cyan")
+    validation_header.append("VALIDATION", style="bold white")
+    console.print(validation_header)
+    console.print()
+    
+    validation_stats = Text()
+    validation_stats.append("    ", style="")
+    validation_stats.append(f"{len(assets)}", style="bold bright_cyan")
+    validation_stats.append(" assets requested", style="dim")
+    console.print(validation_stats)
+    console.print()
+    
     for a in assets:
         try:
             _resolve_symbol_candidates(a)
         except Exception as e:
-            console.print(f"[yellow]Warning:[/yellow] Could not resolve mapping for {a}: {e}")
+            console.print(f"    [yellow]⚠[/yellow] [dim]{a}: {e}[/dim]")
+    
+    # Print symbol resolution table right after validation (before processing starts)
+    print_symbol_tables()
 
     all_blocks = []  # for JSON export
     csv_rows_simple = []  # for CSV simple export
@@ -5480,7 +5571,6 @@ def main() -> None:
     # RETRYING PARALLEL PROCESSING: Compute features/signals with bounded retries
     # =========================================================================
     success_results, failures = _process_assets_with_retries(assets, args, horizons, max_retries=3)
-    console.print(f"[#00d700]✓ Parallel computation attempts complete. Now displaying results...[/#00d700]\n")
 
     # =========================================================================
     # SEQUENTIAL DISPLAY & AGGREGATION: Process results in order with console output

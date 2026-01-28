@@ -184,29 +184,70 @@ def render_detailed_signal_table(
         used_student_t_mapping: Whether Student-t CDF was used for probabilities
         show_caption: Whether to show detailed column explanations
     """
-    console = Console(force_terminal=True)
+    console = Console(force_terminal=True, width=160)
     last_close = convert_to_float(price_series.iloc[-1])
     last_date = price_series.index[-1].date()
 
-    # Create beautiful table with proper styling
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # EXTRAORDINARY APPLE-QUALITY SIGNAL TABLE
+    # Design: Clean, scannable, beautiful, informative
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    console.print()
+    console.print()
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # HEADER - Cinematic asset title
+    # ─────────────────────────────────────────────────────────────────────────────
+    header_content = Text()
+    header_content.append("\n", style="")
+    header_content.append(asset_symbol, style="bold bright_white")
+    header_content.append("\n", style="")
+    header_content.append(title, style="dim")
+    header_content.append("\n", style="")
+    
+    header_panel = Panel(
+        Align.center(header_content),
+        box=box.ROUNDED,
+        border_style="bright_cyan",
+        padding=(0, 4),
+    )
+    console.print(Align.center(header_panel, width=60))
+    console.print()
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # PRICE INFO - Clean stats row
+    # ─────────────────────────────────────────────────────────────────────────────
+    price_info = Text()
+    price_info.append(f"Last: ", style="dim")
+    price_info.append(f"{last_close:,.2f}", style="bold white")
+    price_info.append(f"  ·  ", style="dim")
+    price_info.append(f"{last_date}", style="dim")
+    price_info.append(f"  ·  ", style="dim")
+    cdf_name = "Student-t" if used_student_t_mapping else "Normal"
+    price_info.append(f"{cdf_name} CDF", style="dim italic")
+    console.print(Align.center(price_info))
+    console.print()
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # SIGNAL TABLE - Apple-quality with ROUNDED box
+    # ─────────────────────────────────────────────────────────────────────────────
     table = Table(
         show_header=True,
         header_style="bold white",
-        border_style="cyan",
+        border_style="dim",
+        box=box.ROUNDED,
         padding=(0, 1),
         expand=False,
     )
     
-    # Column headers with better names
-    table.add_column("Horizon", justify="center", style="bold", width=8)
-    table.add_column("Edge", justify="right", width=7)
-    table.add_column("Prob ↑", justify="right", width=8)
-    table.add_column("E[ret]", justify="right", width=9)
-    table.add_column(f"CI {int(confidence_level*100)}%", justify="center", width=18)
-    table.add_column("Strength", justify="right", width=9)
-    table.add_column("Regime", justify="center", width=10)
-    table.add_column("Profit (PLN)", justify="right", width=28)
-    table.add_column("Signal", justify="center", width=12)
+    # Cleaner column headers
+    table.add_column("", justify="center", width=6)  # Horizon
+    table.add_column("Prob", justify="right", width=6)
+    table.add_column("E[r]", justify="right", width=8)
+    table.add_column(f"CI {int(confidence_level*100)}%", justify="center", width=16)
+    table.add_column("Profit", justify="right", width=14)
+    table.add_column("Signal", justify="center", width=14)
 
     # Regime color mapping
     regime_colors = {
@@ -222,70 +263,39 @@ def render_detailed_signal_table(
         # Calculate percentage return for display
         notional = 1_000_000
         pct_return = signal.profit_pln / notional * 100
-        pct_ci_low = signal.profit_ci_low_pln / notional * 100
-        pct_ci_high = signal.profit_ci_high_pln / notional * 100
         
         # Format horizon with human-readable labels
         horizon_map = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
         horizon_label = horizon_map.get(signal.horizon_days, f"{signal.horizon_days}d")
         
-        # Color-code edge based on magnitude
-        edge_val = signal.score
-        if edge_val >= 1.0:
-            edge_str = f"[bold #00d700]{edge_val:+.2f}[/bold #00d700]"
-        elif edge_val >= 0.5:
-            edge_str = f"[#00d700]{edge_val:+.2f}[/#00d700]"
-        elif edge_val <= -1.0:
-            edge_str = f"[bold indian_red1]{edge_val:+.2f}[/bold indian_red1]"
-        elif edge_val <= -0.5:
-            edge_str = f"[indian_red1]{edge_val:+.2f}[/indian_red1]"
-        else:
-            edge_str = f"{edge_val:+.2f}"
-        
-        # Color-code probability
+        # Color-code probability with visual indicator
         p_val = signal.p_up * 100
         if p_val >= 65:
-            prob_str = f"[bold #00d700]{p_val:.1f}%[/bold #00d700]"
+            prob_str = f"[bold bright_green]{p_val:.0f}%[/bold bright_green]"
         elif p_val >= 55:
-            prob_str = f"[#00d700]{p_val:.1f}%[/#00d700]"
+            prob_str = f"[bright_green]{p_val:.0f}%[/bright_green]"
         elif p_val <= 35:
-            prob_str = f"[bold indian_red1]{p_val:.1f}%[/bold indian_red1]"
+            prob_str = f"[bold indian_red1]{p_val:.0f}%[/bold indian_red1]"
         elif p_val <= 45:
-            prob_str = f"[indian_red1]{p_val:.1f}%[/indian_red1]"
+            prob_str = f"[indian_red1]{p_val:.0f}%[/indian_red1]"
         else:
-            prob_str = f"{p_val:.1f}%"
+            prob_str = f"[dim]{p_val:.0f}%[/dim]"
         
-        # Color-code expected return (pleasant, non-neon colors)
+        # Color-code expected return
         exp_ret = signal.exp_ret
         if exp_ret >= 0.02:
-            ret_str = f"[bold #00d700]{exp_ret:+.4f}[/bold #00d700]"
+            ret_str = f"[bold bright_green]{exp_ret:+.3f}[/bold bright_green]"
         elif exp_ret >= 0.005:
-            ret_str = f"[#00d700]{exp_ret:+.4f}[/#00d700]"
+            ret_str = f"[bright_green]{exp_ret:+.3f}[/bright_green]"
         elif exp_ret <= -0.02:
-            ret_str = f"[bold indian_red1]{exp_ret:+.4f}[/bold indian_red1]"
+            ret_str = f"[bold indian_red1]{exp_ret:+.3f}[/bold indian_red1]"
         elif exp_ret <= -0.005:
-            ret_str = f"[indian_red1]{exp_ret:+.4f}[/indian_red1]"
+            ret_str = f"[indian_red1]{exp_ret:+.3f}[/indian_red1]"
         else:
-            ret_str = f"[#9e9e9e]{exp_ret:+.4f}[/#9e9e9e]"
+            ret_str = f"[dim]{exp_ret:+.3f}[/dim]"
         
-        # Format CI range
-        ci_str = f"[{signal.ci_low:+.3f}, {signal.ci_high:+.3f}]"
-        
-        # Color-code position strength (pleasant, non-neon colors)
-        strength = signal.position_strength
-        if strength >= 0.7:
-            strength_str = f"[bold #00d700]{strength:.2f}[/bold #00d700]"
-        elif strength >= 0.3:
-            strength_str = f"[#00d700]{strength:.2f}[/#00d700]"
-        elif strength <= 0.1:
-            strength_str = f"[#8a8a8a]{strength:.2f}[/#8a8a8a]"
-        else:
-            strength_str = f"[#9e9e9e]{strength:.2f}[/#9e9e9e]"
-        
-        # Color-code regime
-        regime = signal.regime.lower() if signal.regime else "normal"
-        regime_color = regime_colors.get(regime, 'white')
-        regime_str = f"[{regime_color}]{signal.regime}[/{regime_color}]"
+        # Format CI range - compact
+        ci_str = f"[dim][{signal.ci_low:+.2f}, {signal.ci_high:+.2f}][/dim]"
         
         # Format profit with compact display
         if abs(signal.profit_pln) >= 1_000_000:
@@ -295,62 +305,57 @@ def render_detailed_signal_table(
         else:
             profit_compact = f"{signal.profit_pln:+.0f}"
         
-        # Color the profit based on value (pleasant, non-neon colors)
+        # Color the profit based on value
         if pct_return >= 5:
-            profit_str = f"[bold #00d700]{profit_compact} ({pct_return:+.1f}%)[/bold #00d700]"
+            profit_str = f"[bold bright_green]{profit_compact}[/bold bright_green]"
         elif pct_return >= 1:
-            profit_str = f"[#00d700]{profit_compact} ({pct_return:+.1f}%)[/#00d700]"
+            profit_str = f"[bright_green]{profit_compact}[/bright_green]"
         elif pct_return <= -5:
-            profit_str = f"[bold indian_red1]{profit_compact} ({pct_return:+.1f}%)[/bold indian_red1]"
+            profit_str = f"[bold indian_red1]{profit_compact}[/bold indian_red1]"
         elif pct_return <= -1:
-            profit_str = f"[indian_red1]{profit_compact} ({pct_return:+.1f}%)[/indian_red1]"
+            profit_str = f"[indian_red1]{profit_compact}[/indian_red1]"
         else:
-            profit_str = f"[#9e9e9e]{profit_compact} ({pct_return:+.1f}%)[/#9e9e9e]"
+            profit_str = f"[dim]{profit_compact}[/dim]"
         
-        # Color-code signal label (pleasant, non-neon colors)
+        # Beautiful signal badges
         label_upper = signal.label.upper() if signal.label else "HOLD"
         if "STRONG" in label_upper and "BUY" in label_upper:
-            signal_str = f"[bold #00d700]▲▲ STRONG BUY[/bold #00d700]"
+            signal_str = f"[bold bright_green]▲▲ STRONG BUY[/bold bright_green]"
         elif "STRONG" in label_upper and "SELL" in label_upper:
             signal_str = f"[bold indian_red1]▼▼ STRONG SELL[/bold indian_red1]"
         elif "BUY" in label_upper:
-            signal_str = f"[#00d700]↑ BUY[/#00d700]"
+            signal_str = f"[bright_green]↑ BUY[/bright_green]"
         elif "SELL" in label_upper:
             signal_str = f"[indian_red1]↓ SELL[/indian_red1]"
         else:
-            signal_str = f"[#87afaf]HOLD[/#87afaf]"
+            signal_str = f"[dim]HOLD[/dim]"
 
         table.add_row(
-            horizon_label,
-            edge_str,
+            f"[bold]{horizon_label}[/bold]",
             prob_str,
             ret_str,
             ci_str,
-            strength_str,
-            regime_str,
             profit_str,
             signal_str,
         )
 
-    # Create title with asset info
-    panel_title = f"[bold cyan]{asset_symbol}[/bold cyan] — [white]{title}[/white]"
-    panel_subtitle = f"[dim]Last: {last_close:,.2f} on {last_date}[/dim]"
-    
-    # Print with panel wrapper for elegance
+    console.print(Align.center(table))
     console.print()
-    console.print(Panel(
-        table,
-        title=panel_title,
-        subtitle=panel_subtitle,
-        border_style="cyan",
-        padding=(1, 2),
-    ))
     
-    # Add compact caption with methodology
+    # ─────────────────────────────────────────────────────────────────────────────
+    # LEGEND - Compact, helpful
+    # ─────────────────────────────────────────────────────────────────────────────
     if show_caption:
-        cdf_name = "Student-t" if used_student_t_mapping else "Normal"
-        console.print(f"[dim]  Edge = risk-adjusted z-score • Prob mapped via {cdf_name} CDF • Strength = EU-based position sizing[/dim]")
-        console.print(f"[dim]  Profit on 1M PLN • CI = {int(confidence_level*100)}% confidence interval • HOLD when |edge| < floor[/dim]")
+        legend = Text()
+        legend.append("Prob", style="bold dim")
+        legend.append(" = P(return > 0)  ", style="dim")
+        legend.append("E[r]", style="bold dim")
+        legend.append(" = expected return  ", style="dim")
+        legend.append("CI", style="bold dim")
+        legend.append(f" = {int(confidence_level*100)}% interval  ", style="dim")
+        legend.append("Profit", style="bold dim")
+        legend.append(" = on 1M PLN", style="dim")
+        console.print(Align.center(legend))
     console.print()
 
 
