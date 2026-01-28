@@ -1,20 +1,37 @@
 <h1 align="center">Quantitative Signal Engine</h1>
 
 <p align="center">
-  <strong>Bayesian Model Averaging meets Kalman Filtering for multi-asset signal generation</strong>
+  <strong>Where Bayesian Model Averaging meets Kalman Filtering</strong><br>
+  <sub>Multi-asset signal generation with calibrated uncertainty</sub>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.7+-blue.svg" alt="Python 3.7+">
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="macOS">
+  <img src="https://img.shields.io/badge/assets-100+-green.svg" alt="100+ Assets">
+  <img src="https://img.shields.io/badge/models-7_per_regime-orange.svg" alt="7 Models">
 </p>
 
 <p align="center">
   <a href="#the-system">The System</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#daily-workflow">Daily Workflow</a> •
-  <a href="#architecture">Architecture</a> •
-  <a href="#command-reference">Commands</a>
+  <a href="#command-reference">Commands</a> •
+  <a href="#the-mathematics">Mathematics</a> •
+  <a href="#architecture">Architecture</a>
 </p>
 
-<p align="center">
-  <sub>Built for practitioners who want rigorous probabilistic inference without the academic overhead.</sub>
-</p>
+---
+
+## Why This System Exists
+
+Most trading systems choose a single model and pretend it's correct. This system doesn't.
+
+Instead, it maintains **7 competing models** across **5 market regimes**, letting Bayesian inference continuously update which models are most credible given recent data. Signals emerge from the **full posterior predictive distribution**—not from any single "best guess."
+
+The result: **calibrated uncertainty**. When the system says "62% probability of positive return," it means that historically, 62% of such predictions were correct.
+
+> *"The goal is not to be right. The goal is to know how confident you should be."*
 
 ---
 
@@ -24,48 +41,127 @@ This is a **belief evolution engine**, not a rule engine.
 
 At its core, the system maintains a population of competing models—each representing a different hypothesis about market dynamics. These models evolve in probability over time through Bayesian updating, and signals emerge from the full predictive distribution, not from point estimates.
 
-### Three Engines
-
-| Engine | Command | Purpose |
-|--------|---------|---------|
-| **Data Engine** | `make data` | Fetches and caches OHLCV for 50+ assets |
-| **Tuning Engine** | `make tune` | Calibrates Kalman parameters via MLE + BMA |
-| **Signal Engine** | `make stocks` | Generates Buy/Hold/Sell from posterior predictive |
-
-The engines form a pipeline: **Data → Tune → Signal**
+### The Pipeline
 
 ```
-Price Data (Yahoo Finance)
-       ↓
-   make data
-       ↓
-┌──────────────────────────────────────────┐
-│  TUNING ENGINE (make tune)               │
-│                                          │
-│  For each regime r ∈ {5 regimes}:        │
-│    For each model m ∈ {7 models}:        │
-│      • Fit θ_{r,m} via MLE               │
-│      • Compute BIC, Hyvärinen score      │
-│    → p(m|r) via BIC-weighted posterior   │
-│    → Apply temporal smoothing            │
-│    → Hierarchical shrinkage to global    │
-└──────────────────────────────────────────┘
-       ↓
-   kalman_q_cache.json
-       ↓
-┌──────────────────────────────────────────┐
-│  SIGNAL ENGINE (make stocks)             │
-│                                          │
-│  For current regime r_t:                 │
-│    p(x|r_t) = Σ_m p(x|r_t,m,θ) · p(m|r_t)│
-│                                          │
-│  → Posterior predictive Monte Carlo      │
-│  → Expected utility calculation          │
-│  → Position sizing via Kelly geometry    │
-└──────────────────────────────────────────┘
-       ↓
-   BUY / HOLD / SELL signals
+╔═══════════════════════════════════════════════════════════════════════════════════════╗
+║                                                                                       ║
+║   ┌─────────────┐                                                                     ║
+║   │ Yahoo       │                                                                     ║
+║   │ Finance API │                                                                     ║
+║   └──────┬──────┘                                                                     ║
+║          │                                                                            ║
+║          ▼                                                                            ║
+║   ┌─────────────────────────────────────────────────────────────────────────────┐     ║
+║   │                         DATA ENGINE  (make data)                            │     ║
+║   │                                                                             │     ║
+║   │   • Fetch 10 years OHLCV for 100+ symbols                                   │     ║
+║   │   • Multi-pass retry (Yahoo is flaky)                                       │     ║
+║   │   • Incremental cache updates                                               │     ║
+║   │   • Currency conversion to PLN base                                         │     ║
+║   │                                                                             │     ║
+║   │   Output: data/{SYMBOL}_1d.csv                                              │     ║
+║   └──────────────────────────────────┬──────────────────────────────────────────┘     ║
+║                                      │                                                ║
+║                                      ▼                                                ║
+║   ┌─────────────────────────────────────────────────────────────────────────────┐     ║
+║   │                        TUNING ENGINE  (make tune)                           │     ║
+║   │                                                                             │     ║
+║   │   For each asset:                                                           │     ║
+║   │   ┌─────────────────────────────────────────────────────────────────────┐   │     ║
+║   │   │  For each regime r ∈ {LOW_VOL_TREND, HIGH_VOL_TREND,                │   │     ║
+║   │   │                       LOW_VOL_RANGE, HIGH_VOL_RANGE, CRISIS_JUMP}:  │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │    For each model m ∈ {kalman_gaussian,                             │   │     ║
+║   │   │                        kalman_phi_gaussian,                         │   │     ║
+║   │   │                        phi_student_t_nu_4,  phi_student_t_nu_6,     │   │     ║
+║   │   │                        phi_student_t_nu_8,  phi_student_t_nu_12,    │   │     ║
+║   │   │                        phi_student_t_nu_20}:                        │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │      1. Fit θ = {q, c, φ} via MLE with regularization prior         │   │     ║
+║   │   │      2. Compute log-likelihood ℓ(θ)                                 │   │     ║
+║   │   │      3. Compute BIC = -2ℓ + k·log(n)                                │   │     ║
+║   │   │      4. Compute Hyvärinen score (robust to misspecification)        │   │     ║
+║   │   │      5. Run PIT calibration diagnostics                             │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │    Aggregate across models:                                         │   │     ║
+║   │   │      • w(m|r) = exp(-½ · ΔBIC) · hyv_weight^(1-α)                   │   │     ║
+║   │   │      • Apply temporal smoothing: w ← w_prev^α · w_raw               │   │     ║
+║   │   │      • Apply hierarchical shrinkage toward global                   │   │     ║
+║   │   │      • Normalize: p(m|r) = w(m|r) / Σw                              │   │     ║
+║   │   └─────────────────────────────────────────────────────────────────────┘   │     ║
+║   │                                                                             │     ║
+║   │   Output: scripts/quant/cache/kalman_q_cache.json                           │     ║
+║   │           {asset: {regime: {model: {q, φ, ν, BIC, p(m|r), ...}}}}           │     ║
+║   └──────────────────────────────────┬──────────────────────────────────────────┘     ║
+║                                      │                                                ║
+║                                      ▼                                                ║
+║   ┌─────────────────────────────────────────────────────────────────────────────┐     ║
+║   │                       SIGNAL ENGINE  (make stocks)                          │     ║
+║   │                                                                             │     ║
+║   │   For each asset:                                                           │     ║
+║   │   ┌─────────────────────────────────────────────────────────────────────┐   │     ║
+║   │   │  1. REGIME DETECTION                                                │   │     ║
+║   │   │     • Compute rolling volatility (EWMA fast/slow blend)             │   │     ║
+║   │   │     • Compute drift magnitude                                       │   │     ║
+║   │   │     • Classify: r_t ∈ {0,1,2,3,4}                                   │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │  2. LOAD BELIEFS                                                    │   │     ║
+║   │   │     • Retrieve p(m|r_t) and θ_{r_t,m} from cache                    │   │     ║
+║   │   │     • If regime sparse → borrow from global (hierarchical)          │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │  3. POSTERIOR PREDICTIVE MONTE CARLO                                │   │     ║
+║   │   │     samples = []                                                    │   │     ║
+║   │   │     for m, weight in p(m|r_t):                                      │   │     ║
+║   │   │         n_samples = weight × N_total                                │   │     ║
+║   │   │         for each sample:                                            │   │     ║
+║   │   │             μ = kalman_drift_estimate                               │   │     ║
+║   │   │             for t in 1..horizon:                                    │   │     ║
+║   │   │                 μ ← φ·μ + η,  η ~ N(0, q)                           │   │     ║
+║   │   │                 r_t ← μ + ε,  ε ~ model_distribution(σ)             │   │     ║
+║   │   │             samples.append(Σ r_t)                                   │   │     ║
+║   │   │                                                                     │   │     ║
+║   │   │  4. DECISION LAYER                                                  │   │     ║
+║   │   │     • P(return > 0) = count(samples > 0) / N                        │   │     ║
+║   │   │     • E[return] = mean(samples)                                     │   │     ║
+║   │   │     • Apply exhaustion dampening (UE↑/UE↓)                          │   │     ║
+║   │   │     • Map: P > 58% → BUY, P < 42% → SELL, else → HOLD               │   │     ║
+║   │   └─────────────────────────────────────────────────────────────────────┘   │     ║
+║   │                                                                             │     ║
+║   │   Output: Console tables + cached JSON                                      │     ║
+║   └──────────────────────────────────┬──────────────────────────────────────────┘     ║
+║                                      │                                                ║
+║                                      ▼                                                ║
+║                        ┌───────────────────────────┐                                  ║
+║                        │   BUY  │  HOLD  │  SELL   │                                  ║
+║                        │   🟢   │   ⚪   │   🔴   │                                   ║
+║                        └───────────────────────────┘                                  ║
+║                                                                                       ║
+╚═══════════════════════════════════════════════════════════════════════════════════════╝
 ```
+
+### Quick Reference
+
+| Engine | Command | Input | Output | Time |
+|--------|---------|-------|--------|------|
+| **Data** | `make data` | Yahoo Finance API | `data/*.csv` | 5-15 min |
+| **Tuning** | `make tune` | Price CSVs | `kalman_q_cache.json` | 2-10 min |
+| **Signal** | `make stocks` | Cache + fresh prices | Console + JSON | 1-3 min |
+
+### Asset Universe
+
+The system tracks **100+ assets** across multiple asset classes:
+
+| Class | Examples | Count |
+|-------|----------|-------|
+| **Equities** | AAPL, MSFT, NVDA, TSLA, JPM, GS, UNH, LLY... | ~80 |
+| **Defense** | LMT, RTX, NOC, GD, BA, HII, AVAV, PLTR... | ~40 |
+| **ETFs** | SPY, VOO, GLD, SLV, SMH | 5 |
+| **Commodities** | GC=F (Gold), SI=F (Silver) | 2 |
+| **Crypto** | BTC-USD, MSTR | 2 |
+| **FX** | PLNJPY=X | 1 |
+
+All prices are converted to a common base currency (PLN) for portfolio-level analysis.
 
 ### Model Universe
 
@@ -105,9 +201,9 @@ Regime assignment is **deterministic and consistent** between tuning and inferen
 
 - macOS (Intel or Apple Silicon)
 - Python 3.7+
-- 10GB disk space for price cache
+- ~10GB disk space for price cache
 
-### One-Command Setup
+### Installation (One Command)
 
 ```bash
 make setup
@@ -116,53 +212,118 @@ make setup
 This will:
 1. Create `.venv/` virtual environment
 2. Install dependencies from `requirements.txt`
-3. Download price data (3 passes for reliability)
+3. Download 10 years of price data (3 passes for reliability)
 4. Clean cached data
 
 **Time:** 5-15 minutes depending on network.
 
-### First Run
-
-After setup, generate your first signals:
+### Generate Your First Signals
 
 ```bash
 make stocks
 ```
 
-You'll see a beautiful Rich console output with:
-- Per-asset signal tables (1d → 252d horizons)
-- Probability estimates with confidence intervals
-- Color-coded Buy/Hold/Sell recommendations
+### What You'll See
+
+The system outputs beautifully formatted Rich console tables:
+
+```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+│                           NVDA — NVIDIA Corporation                       │
+│                      Regime: LOW_VOL_TREND │ Current: $142.58             │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ Horizon     P(r>0)    E[return]    Signal     Confidence
+─────────────────────────────────────────────────────────────
+ 1 day       54.2%      +0.08%      HOLD       ██░░░░░░░░
+ 1 week      58.7%      +0.42%      BUY        ████░░░░░░
+ 1 month     63.1%      +1.84%      BUY        ██████░░░░
+ 3 months    71.2%      +5.62%      BUY        ████████░░
+ 12 months   78.4%     +18.41%      BUY        █████████░
+```
+
+Signals are color-coded:
+- 🟢 **BUY** (green): P(r>0) ≥ 58%
+- ⚪ **HOLD** (dim): P(r>0) ∈ (42%, 58%)
+- 🔴 **SELL** (red): P(r>0) ≤ 42%
+
+### Understanding the Columns
+
+| Column | Meaning |
+|--------|---------|
+| **Horizon** | Forecast period (trading days) |
+| **P(r>0)** | Probability that return will be positive |
+| **E[return]** | Expected log return from posterior mean |
+| **Signal** | Decision derived from probability threshold |
+| **Confidence** | Visual indicator of probability magnitude |
+
+### Understanding the Regime
+
+Each asset is classified into one of 5 regimes:
+
+| Regime | What It Means | Typical Behavior |
+|--------|---------------|------------------|
+| `LOW_VOL_TREND` | Quiet trending market | Smooth, directional moves |
+| `HIGH_VOL_TREND` | Volatile trending market | Sharp moves with direction |
+| `LOW_VOL_RANGE` | Quiet range-bound | Mean-reverting, choppy |
+| `HIGH_VOL_RANGE` | Volatile range-bound | Whipsaw, no clear direction |
+| `CRISIS_JUMP` | Extreme stress | Tail events, correlations spike |
+
+The regime affects which model receives the most weight in the BMA mixture.
 
 ---
 
 ## Daily Workflow
 
-### Morning Routine
+### The 30-Second Morning Routine
 
 ```bash
-# 1. Refresh price data (last 5 days)
-make refresh
-
-# 2. Generate signals
 make stocks
 ```
 
-### Weekly Calibration
+That's it. This single command:
+1. Refreshes the last 5 days of price data
+2. Loads cached Kalman parameters
+3. Generates signals for all assets
+4. Displays formatted output
+
+### When to Re-Tune
+
+The Tuning Engine should be run:
+- **Weekly** during normal markets
+- **After major regime shifts** (VIX spike, Fed announcement)
+- **When signals feel stale** or miscalibrated
 
 ```bash
-# Re-estimate Kalman parameters
+# Weekly calibration
 make tune
 
-# Then generate signals with fresh parameters
-make stocks
+# Force complete re-estimation (ignore cache)
+make tune ARGS="--force"
 ```
 
-### When Parameters Feel Stale
+### Offline Mode
+
+Already have cached data? Work without network:
 
 ```bash
-# Force full re-estimation (ignore cache)
-make tune ARGS="--force"
+# Render from cache only
+make report
+
+# Or set environment variable
+OFFLINE_MODE=1 make stocks
+```
+
+### Quick Validation
+
+Before trusting signals, validate calibration:
+
+```bash
+# Check if probabilities match historical outcomes
+make fx-calibration
+
+# Quick smoke test with 20 assets
+make top20
 ```
 
 ---
@@ -999,11 +1160,11 @@ p-value > 0.05 indicates calibration is acceptable.
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                                                             │
-│   DATA:     rₜ = log(Pₜ/Pₜ₋₁)                               │
-│             σₜ² = EWMA(rₜ²)                                 │
+│   DATA:     rₜ = log(Pₜ/Pₜ₋₁)                                 │
+│             σₜ² = EWMA(rₜ²)                                  │
 │                                                             │
-│   TUNING:   μₜ = φμₜ₋₁ + ηₜ        (state equation)         │
-│             rₜ = μₜ + εₜ           (observation)            │
+│   TUNING:   μₜ = φμₜ₋₁ + ηₜ        (state equation)           │
+│             rₜ = μₜ + εₜ           (observation)              │
 │             q* = argmax ℓ(q)       (MLE)                    │
 │             p(m|r) ∝ exp(-BIC/2)   (BMA weights)            │
 │                                                             │
@@ -1015,6 +1176,47 @@ p-value > 0.05 indicates calibration is acceptable.
 ```
 
 The math is the system. The code merely implements it.
+
+---
+
+## Cheat Sheet
+
+### First Time Setup
+```bash
+make setup              # Install everything, download data
+```
+
+### Daily Use
+```bash
+make stocks             # The one command you need
+```
+
+### Weekly Maintenance
+```bash
+make tune               # Re-calibrate parameters
+make stocks             # Generate fresh signals
+```
+
+### When Things Break
+```bash
+make doctor             # Reinstall dependencies
+make failed             # See what failed
+make purge              # Clear failed cache
+make data               # Re-download everything
+```
+
+### Quick Reference Table
+
+| I want to... | Command |
+|--------------|---------|
+| Generate signals | `make stocks` |
+| Just see cached signals | `make report` |
+| Re-tune all parameters | `make tune ARGS="--force"` |
+| Test with few assets | `make top20` |
+| Validate calibration | `make fx-calibration` |
+| Clear everything | `make clear` |
+| See what failed | `make failed` |
+| Work offline | `OFFLINE_MODE=1 make stocks` |
 
 ---
 
@@ -1053,24 +1255,56 @@ make stocks    # Fresh signals
 | `PRICE_DATA_DIR` | Override data cache location |
 | `NO_COLOR=1` | Disable colored output |
 | `PYTHON` | Force specific interpreter |
+| `OFFLINE_MODE=1` | Use cached data only, no network calls |
 
 ---
 
 ## Philosophy
 
-> "Act only on beliefs that were actually learned."
+### The Core Principle
+
+> *"Act only on beliefs that were actually learned."*
 
 This system is a **belief evolution engine**. It maintains competing hypotheses about market dynamics and lets Bayesian inference arbitrate between them.
 
-When evidence is weak:
-- The system becomes more ignorant, not more confident
-- It reverts to higher-level posteriors, not point estimates
-- It never invents beliefs
+### What Makes This Different
 
-The goal is **calibrated uncertainty**, not false precision.
+| Traditional Systems | This System |
+|---------------------|-------------|
+| Pick the "best" model | Maintain model uncertainty |
+| Point estimates | Full distributions |
+| Fixed parameters | Continuously re-calibrated |
+| Confidence from conviction | Confidence from calibration |
+| Fail silently when wrong | Know when you don't know |
+
+### The Three Laws
+
+1. **Never invent beliefs.** When evidence is weak, become more ignorant—not more confident. Fallback is always hierarchical (regime → global), never fabricated.
+
+2. **Preserve distributional integrity.** Decisions come from distributions, not point estimates. The signal layer sees samples, not parameters.
+
+3. **Separate epistemology from agency.** The Tuning Engine learns beliefs. The Signal Engine acts on them. They never mix.
+
+### The Goal
+
+**Calibrated uncertainty**, not false precision.
+
+When the system says "62% probability," it should be right 62% of the time. Not 70%. Not 55%. Exactly 62%.
+
+That's what the PIT calibration tests verify. That's what makes this system trustworthy.
+
+---
+
+## License
+
+This project is for educational and research purposes. See individual dependencies for their respective licenses.
 
 ---
 
 <p align="center">
   <sub>Built with scientific rigor and engineering craftsmanship.</sub>
+</p>
+
+<p align="center">
+  <sub>The math is the system. The code merely implements it.</sub>
 </p>
