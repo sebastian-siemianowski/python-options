@@ -90,19 +90,17 @@ def build_asset_display_label(asset_symbol: str, full_title: str) -> str:
 
 
 def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln: float = 1_000_000) -> str:
-    """Format signal with ultra-compact, high-visibility styling.
+    """Format signal with ultra-compact styling.
     
-    World-class UX: Clean, scannable, color-coded signals.
-    Visual hierarchy (strongest to weakest):
-      - ▲▲▼▼ Double filled triangles = Strong signals (STRONG BUY/SELL)
-      - △▽ Empty triangles = Notable HOLD moves (significant return but no signal)
-      - ↑↓ Arrows = Regular signals (BUY/SELL)
-      - No symbol = Small moves
-    Color coding: Green=positive, Red=negative, Light Blue=neutral small HOLD
+    Apple-quality UX: Clean, scannable, minimal.
+    Visual hierarchy:
+      - ▲▲▼▼ = Strong signals
+      - △▽ = Notable moves
+      - ↑↓ = Regular signals
     """
     pct_return = (profit_pln / notional_pln * 100) if notional_pln > 0 else 0.0
 
-    # Ultra-compact profit display
+    # Compact profit display
     abs_profit = abs(profit_pln)
     if abs_profit >= 1_000_000:
         profit_compact = f"{profit_pln/1_000_000:+.0f}M"
@@ -114,35 +112,30 @@ def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln
     if isinstance(signal_label, str):
         label_upper = signal_label.upper()
         
-        # Strong signals: double filled triangles ▲▲▼▼ (pleasant muted tones)
+        # Strong signals: ▲▲▼▼
         if label_upper.startswith("STRONG BUY"):
-            return f"[bold #00d700]▲▲{pct_return:+.1f}% ({profit_compact})[/bold #00d700]"
+            return f"[bold #00d700]▲▲{pct_return:+.1f}%[/bold #00d700]"
         elif label_upper.startswith("STRONG SELL"):
-            return f"[bold indian_red1]▼▼{pct_return:+.1f}% ({profit_compact})[/bold indian_red1]"
-        # Regular BUY/SELL: arrows ↑↓ (natural, pleasant colors)
+            return f"[bold indian_red1]▼▼{pct_return:+.1f}%[/bold indian_red1]"
+        # Regular BUY/SELL: ↑↓
         elif "SELL" in label_upper:
-            return f"[indian_red1]↓{pct_return:+.1f}% ({profit_compact})[/indian_red1]"
+            return f"[indian_red1]↓{pct_return:+.1f}%[/indian_red1]"
         elif "BUY" in label_upper:
-            return f"[#00d700]↑{pct_return:+.1f}% ({profit_compact})[/#00d700]"
+            return f"[#00d700]↑{pct_return:+.1f}%[/#00d700]"
         else:
-            # HOLD: Notable moves use pleasant colors based on direction
-            # Small moves use grey (neutral)
+            # HOLD: Notable moves
             if pct_return > 10.0:
-                return f"[bold #00d700]△{pct_return:+.1f}% ({profit_compact})[/bold #00d700]"
+                return f"[bold #00d700]△{pct_return:+.1f}%[/bold #00d700]"
             elif pct_return < -10.0:
-                return f"[bold indian_red1]▽{pct_return:+.1f}% ({profit_compact})[/bold indian_red1]"
+                return f"[bold indian_red1]▽{pct_return:+.1f}%[/bold indian_red1]"
             elif pct_return > 3.0:
-                return f"[#00d700]△{pct_return:+.1f}% ({profit_compact})[/#00d700]"
+                return f"[#00d700]△{pct_return:+.1f}%[/#00d700]"
             elif pct_return < -3.0:
-                return f"[indian_red1]▽{pct_return:+.1f}% ({profit_compact})[/indian_red1]"
-            elif pct_return > 1.0:
-                return f"[#a8a8a8]{pct_return:+.1f}% ({profit_compact})[/#a8a8a8]"
-            elif pct_return < -1.0:
-                return f"[#a8a8a8]{pct_return:+.1f}% ({profit_compact})[/#a8a8a8]"
+                return f"[indian_red1]▽{pct_return:+.1f}%[/indian_red1]"
             else:
-                return f"[#8a8a8a]{pct_return:+.1f}% ({profit_compact})[/#8a8a8a]"
+                return f"[dim]{pct_return:+.1f}%[/dim]"
     
-    return f"{pct_return:+.1f}% ({profit_compact})"
+    return f"{pct_return:+.1f}%"
 
 
 def extract_symbol_from_title(title: str) -> str:
@@ -567,14 +560,14 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
     # Asset column - generous width for full names
     table.add_column("Asset", justify="left", style="white", width=asset_col_width, no_wrap=True, overflow="ellipsis")
     # Exhaustion columns
-    table.add_column("↑%", justify="right", width=4, style="indian_red1")  # Overbought
-    table.add_column("↓%", justify="right", width=4, style="bright_green")  # Oversold
+    table.add_column("↑", justify="right", width=3, style="indian_red1")  # Overbought
+    table.add_column("↓", justify="right", width=3, style="bright_green")  # Oversold
     
-    # Horizon columns
+    # Horizon columns - slightly wider for readability
     horizon_labels = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
     for horizon in horizons:
         label = horizon_labels.get(horizon, f"{horizon}d")
-        table.add_column(label, justify="center", width=15, no_wrap=True)
+        table.add_column(label, justify="center", width=11, no_wrap=True)
 
     for row in sorted_rows:
         asset_label = row.get("asset_label", "Unknown")
