@@ -1683,9 +1683,714 @@ That's what the PIT calibration tests verify. That's what makes this system trus
 
 ---
 
-## License
+<h1 align="center">🇵🇱 Wersja Polska / Polish Version</h1>
+
+<p align="center">
+  <strong>Pełne tłumaczenie dokumentacji na język polski</strong>
+</p>
+
+---
+
+## Dlaczego Ten System Istnieje
+
+Większość systemów tradingowych wybiera jeden model i udaje, że jest poprawny. Ten system tak nie działa.
+
+Zamiast tego utrzymuje **7 konkurujących modeli** w **5 reżimach rynkowych**, pozwalając bayesowskiemu wnioskowaniu ciągle aktualizować, które modele są najbardziej wiarygodne w świetle ostatnich danych. Sygnały wyłaniają się z **pełnego rozkładu predykcyjnego a posteriori** — nie z pojedynczego "najlepszego przypuszczenia."
+
+Rezultat: **skalibrowana niepewność**. Kiedy system mówi "62% prawdopodobieństwa dodatniego zwrotu," oznacza to, że historycznie 62% takich prognoz okazało się trafnych.
+
+> *"Celem nie jest mieć rację. Celem jest wiedzieć, jak bardzo powinieneś być pewny."*
+
+---
+
+## System
+
+To jest **silnik ewolucji przekonań**, nie silnik reguł.
+
+W swojej istocie system utrzymuje populację konkurujących modeli — każdy reprezentuje inną hipotezę o dynamice rynku. Te modele ewoluują w prawdopodobieństwie w czasie poprzez bayesowską aktualizację, a sygnały wyłaniają się z pełnego rozkładu predykcyjnego, nie z punktowych estymacji.
+
+### Trzy Silniki
+
+| Silnik | Komenda | Co Robi |
+|--------|---------|---------|
+| **Silnik Danych** | `make data` | Pobiera OHLCV dla 100+ aktywów, cachuje jako CSV |
+| **Silnik Strojenia** | `make tune` | Dopasowuje parametry Kalmana przez MLE, oblicza wagi BMA |
+| **Silnik Sygnałów** | `make stocks` | Próbkuje rozkład predykcyjny, mapuje na sygnały |
+
+### Uniwersum Aktywów
+
+System śledzi **100+ aktywów** w wielu klasach:
+
+| Klasa | Przykłady | Liczba |
+|-------|-----------|--------|
+| **Akcje** | AAPL, MSFT, NVDA, TSLA, JPM, GS, UNH, LLY... | ~80 |
+| **Obronność** | LMT, RTX, NOC, GD, BA, HII, AVAV, PLTR... | ~40 |
+| **ETF-y** | SPY, VOO, GLD, SLV, SMH | 5 |
+| **Towary** | GC=F (Złoto), SI=F (Srebro) | 2 |
+| **Krypto** | BTC-USD, MSTR | 2 |
+| **FX** | PLNJPY=X | 1 |
+
+Wszystkie ceny są przeliczane na wspólną walutę bazową (PLN) dla analizy na poziomie portfela.
+
+### Uniwersum Modeli
+
+Silnik Strojenia dopasowuje **7 klas modeli** na reżim:
+
+| Model | Parametry | Zastosowanie |
+|-------|-----------|--------------|
+| `kalman_gaussian` | q, c | Bazowe innowacje gaussowskie |
+| `kalman_phi_gaussian` | q, c, φ | AR(1) dryft z gaussowskim |
+| `phi_student_t_nu_4` | q, c, φ | Grube ogony (ν=4) |
+| `phi_student_t_nu_6` | q, c, φ | Umiarkowane ogony (ν=6) |
+| `phi_student_t_nu_8` | q, c, φ | Lekkie ogony (ν=8) |
+| `phi_student_t_nu_12` | q, c, φ | Prawie gaussowski (ν=12) |
+| `phi_student_t_nu_20` | q, c, φ | Niemal gaussowski (ν=20) |
+
+Modele Student-t używają **dyskretnej siatki ν** (nie ciągłej optymalizacji). Każde ν jest osobnym podmodelem w BMA, pozwalając posteriorowi wyrażać niepewność co do grubości ogonów.
+
+### Klasyfikacja Reżimów
+
+Rynki są klasyfikowane do **5 reżimów** na podstawie zmienności i dryftu:
+
+| Reżim | Warunek |
+|-------|---------|
+| `LOW_VOL_TREND` (niski vol, trend) | vol < 0.85×mediana, \|dryft\| > próg |
+| `HIGH_VOL_TREND` (wysoki vol, trend) | vol > 1.3×mediana, \|dryft\| > próg |
+| `LOW_VOL_RANGE` (niski vol, zakres) | vol < 0.85×mediana, \|dryft\| ≤ próg |
+| `HIGH_VOL_RANGE` (wysoki vol, zakres) | vol > 1.3×mediana, \|dryft\| ≤ próg |
+| `CRISIS_JUMP` (skok kryzysowy) | vol > 2×mediana LUB wskaźnik_ogona > 4 |
+
+Przypisanie reżimu jest **deterministyczne i spójne** między strojeniem a wnioskowaniem.
+
+---
+
+## Szybki Start
+
+### Wymagania
+
+- macOS (Intel lub Apple Silicon)
+- Python 3.7+
+- ~10GB miejsca na dysku dla cache cen
+
+### Instalacja (Jedna Komenda)
+
+```bash
+make setup
+```
+
+To wykona:
+1. Utworzenie środowiska wirtualnego `.venv/`
+2. Instalację zależności z `requirements.txt`
+3. Pobranie 10 lat danych cenowych (3 przebiegi dla niezawodności)
+4. Wyczyszczenie danych w cache
+
+**Czas:** 5-15 minut w zależności od sieci.
+
+### Wygeneruj Swoje Pierwsze Sygnały
+
+```bash
+make stocks
+```
+
+### Co Zobaczysz
+
+System wyświetla pięknie sformatowane tabele Rich:
+
+```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+│                           NVDA — NVIDIA Corporation                        │
+│                      Reżim: LOW_VOL_TREND │ Obecna cena: $142.58           │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ Horyzont    P(r>0)    E[zwrot]     Sygnał     Pewność
+─────────────────────────────────────────────────────────────
+ 1 dzień     54.2%      +0.08%      CZEKAJ     ██░░░░░░░░
+ 1 tydzień   58.7%      +0.42%      KUP        ████░░░░░░
+ 1 miesiąc   63.1%      +1.84%      KUP        ██████░░░░
+ 3 miesiące  71.2%      +5.62%      KUP        ████████░░
+ 12 miesięcy 78.4%     +18.41%      KUP        █████████░
+```
+
+Sygnały są oznaczone kolorami:
+- 🟢 **KUP** (zielony): P(r>0) ≥ 58%
+- ⚪ **CZEKAJ** (przygaszony): P(r>0) ∈ (42%, 58%)
+- 🔴 **SPRZEDAJ** (czerwony): P(r>0) ≤ 42%
+
+### Zrozumienie Kolumn
+
+| Kolumna | Znaczenie |
+|---------|-----------|
+| **Horyzont** | Okres prognozy (dni handlowe) |
+| **P(r>0)** | Prawdopodobieństwo, że zwrot będzie dodatni |
+| **E[zwrot]** | Oczekiwany log-zwrot ze średniej posteriori |
+| **Sygnał** | Decyzja wynikająca z progu prawdopodobieństwa |
+| **Pewność** | Wizualny wskaźnik wielkości prawdopodobieństwa |
+
+### Zrozumienie Reżimu
+
+Każdy aktyw jest klasyfikowany do jednego z 5 reżimów:
+
+| Reżim | Co Oznacza | Typowe Zachowanie |
+|-------|------------|-------------------|
+| `LOW_VOL_TREND` | Cichy rynek trendujący | Gładkie, kierunkowe ruchy |
+| `HIGH_VOL_TREND` | Zmienny rynek trendujący | Ostre ruchy z kierunkiem |
+| `LOW_VOL_RANGE` | Cichy rynek boczny | Powracający do średniej, szarpany |
+| `HIGH_VOL_RANGE` | Zmienny rynek boczny | Whipsaw, brak jasnego kierunku |
+| `CRISIS_JUMP` | Ekstremalny stres | Zdarzenia ogonowe, korelacje rosną |
+
+Reżim wpływa na to, który model otrzymuje największą wagę w mieszance BMA.
+
+---
+
+## Dzienny Przepływ Pracy
+
+### 30-Sekundowa Poranna Rutyna
+
+```bash
+make stocks
+```
+
+To wszystko. Ta pojedyncza komenda:
+1. Odświeża ostatnie 5 dni danych cenowych
+2. Ładuje zapisane parametry Kalmana
+3. Generuje sygnały dla wszystkich aktywów
+4. Wyświetla sformatowane wyjście
+
+### Kiedy Ponownie Stroić
+
+Silnik Strojenia powinien być uruchamiany:
+- **Co tydzień** podczas normalnych rynków
+- **Po dużych zmianach reżimu** (skok VIX, ogłoszenie Fed)
+- **Gdy sygnały wydają się nieaktualne** lub źle skalibrowane
+
+```bash
+# Cotygodniowa kalibracja
+make tune
+
+# Wymuś pełną re-estymację (ignoruj cache)
+make tune ARGS="--force"
+```
+
+### Tryb Offline
+
+Masz już dane w cache? Pracuj bez sieci:
+
+```bash
+# Renderuj tylko z cache
+make report
+
+# Lub ustaw zmienną środowiskową
+OFFLINE_MODE=1 make stocks
+```
+
+---
+
+## Referencja Komend
+
+### Główne Komendy
+
+| Komenda | Opis |
+|---------|------|
+| `make setup` | Pełna konfiguracja: venv + zależności + dane (uruchom raz) |
+| `make data` | Pobierz wszystkie dane cenowe (5 prób) |
+| `make refresh` | Odśwież ostatnie 5 dni danych |
+| `make tune` | Kalibruj parametry Kalmana |
+| `make stocks` | **Główna komenda:** odśwież + sygnały |
+| `make report` | Renderuj sygnały z cache (offline) |
+
+### Komendy Strojenia
+
+| Komenda | Opis |
+|---------|------|
+| `make tune` | Strój wszystkie aktywa (używa cache) |
+| `make tune ARGS="--force"` | Wymuś re-estymację |
+| `make show-q` | Wyświetl zapisane parametry |
+| `make clear-q` | Wyczyść cache parametrów |
+
+### Komendy Diagnostyczne
+
+| Komenda | Opis |
+|---------|------|
+| `make fx-diagnostics` | Pełna diagnostyka (kosztowna) |
+| `make fx-diagnostics-lite` | Lekka diagnostyka |
+| `make fx-calibration` | Sprawdzenie kalibracji PIT |
+| `make fx-model-comparison` | Porównanie modeli AIC/BIC |
+| `make fx-validate-kalman` | Walidacja filtru Kalmana |
+| `make tests` | Uruchom testy jednostkowe |
+
+### Komendy Narzędziowe
+
+| Komenda | Opis |
+|---------|------|
+| `make doctor` | Przeinstaluj zależności |
+| `make failed` | Lista nieudanych aktywów |
+| `make purge` | Wyczyść cache dla nieudanych aktywów |
+| `make clear` | Wyczyść wszystkie cache |
+| `make clean-cache` | Usuń puste wiersze |
+| `make top20` | Szybki test z 20 aktywami |
+
+---
+
+## Matematyka
+
+> *"Matematyka zawsze wyłania się z bazowego systemu — nie odwrotnie."*
+
+Ta sekcja dokumentuje fundamenty matematyczne rządzące każdym silnikiem.
+
+### Główny Słownik Symboli
+
+#### Ceny i Zwroty
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| Pₜ | Cena w czasie t | Cena aktywa w kroku czasowym t |
+| rₜ | Zwrot w czasie t | Log-zwrot: ln(Pₜ/Pₜ₋₁) |
+| h | Horyzont | Okres prognozy w dniach handlowych |
+
+#### Zmienność
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| σ | Sigma | Odchylenie standardowe (zmienność) |
+| σₜ² | Sigma kwadrat | Wariancja w czasie t |
+| λ | Lambda | Współczynnik zaniku w EWMA (0.94-0.97) |
+
+#### Filtr Kalmana
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| μₜ | Mu | Ukryty (latentny) dryft w czasie t |
+| q | Szum procesu | O ile dryft może zmienić się na krok |
+| ηₜ | Eta | Losowy szok do dryftu ~ N(0, q) |
+| εₜ | Epsilon | Szum obserwacji ~ N(0, σ²) |
+| K | Wzmocnienie Kalmana | Waga nadana nowej obserwacji (0-1) |
+| P | Wariancja stanu | Niepewność w estymacji dryftu |
+| m | Średnia posteriori | Najlepsza estymacja dryftu po aktualizacji |
+
+#### Model AR(1)
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| φ | Phi | Współczynnik powrotu do średniej (-1 do 1) |
+| τ | Tau | Priorytetowe odchylenie standardowe dla φ |
+
+#### Rozkład Studenta-t
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| ν | Nu | Stopnie swobody (grubość ogonów) |
+| t_ν | Student-t | Rozkład t z ν stopniami swobody |
+
+#### Wnioskowanie Bayesowskie
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| p(·) | Prawdopodobieństwo | Funkcja prawdopodobieństwa lub gęstości |
+| p(m\|r) | Posterior modelu | Prawdopodobieństwo modelu m przy reżimie r |
+| θ | Theta | Parametry modelu (q, φ, itd.) |
+| ℓ | Log-wiarygodność | Suma logarytmów prawdopodobieństw |
+
+#### Selekcja Modeli
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| BIC | Bayesowskie Kryterium Inf. | Penalizowana wiarygodność do porównań |
+| k | Liczba parametrów | Liczba wolnych parametrów w modelu |
+| n | Wielkość próby | Liczba obserwacji |
+| w | Waga | Nieznormalizowana waga modelu |
+| α | Alfa | Współczynnik wygładzania/mieszania |
+
+#### Teoria Decyzji
+
+| Symbol | Nazwa | Znaczenie |
+|--------|-------|-----------|
+| E[·] | Wartość oczekiwana | Średnia wartość |
+| P(·) | Prawdopodobieństwo | Szansa zdarzenia |
+| EU | Oczekiwana Użyteczność | Skorygowana o ryzyko wartość oczekiwana |
+| f* | Optymalna frakcja | Wielkość zakładu wg kryterium Kelly'ego |
+| z | Z-score | Standaryzowana metryka przewagi |
+
+---
+
+### Silnik Danych: Zwroty i Zmienność
+
+**Log-Zwroty**
+
+System pracuje z log-zwrotami, nie prostymi zwrotami:
+
+```
+rₜ = log(Pₜ / Pₜ₋₁)
+```
+
+**Po polsku:** *"Dzisiejszy zwrot równa się logarytmowi naturalnemu z dzisiejszej ceny podzielonej przez wczorajszą cenę."*
+
+**Zrealizowana Zmienność**
+
+Zmienność jest estymowana przez wykładniczo-ważoną średnią ruchomą (EWMA):
+
+```
+σₜ² = λ · σₜ₋₁² + (1 - λ) · rₜ²
+```
+
+**Po polsku:** *"Dzisiejsza wariancja równa się lambda razy wczorajsza wariancja, plus (1 - lambda) razy dzisiejszy zwrot do kwadratu."*
+
+**Co to oznacza:**
+- Gdy λ = 0.94: Wczorajsza wariancja dostaje 94% wagi, dzisiejszy zwrot 6%
+- Wyższe λ = wolniejsza adaptacja do nowych informacji
+- Niższe λ = szybsza adaptacja, bardziej reaktywne
+
+**Winsoryzacja**
+
+Ekstremalne zwroty są przycinane, aby zmniejszyć wpływ wartości odstających:
+
+```
+rₜ → clip(rₜ, -3σ, +3σ)
+```
+
+**Po polsku:** *"Jeśli zwrot jest bardziej ekstremalny niż 3 odchylenia standardowe, ogranicz go do 3 odchyleń standardowych."*
+
+---
+
+### Silnik Strojenia: Filtr Kalmana + MLE
+
+**Model Przestrzeni Stanów**
+
+Modelujemy latentny dryft μₜ jako błądzenie losowe obserwowane przez zaszumione zwroty:
+
+```
+Równanie stanu:      μₜ = μₜ₋₁ + ηₜ,     ηₜ ~ N(0, q)
+Obserwacja:          rₜ = μₜ + εₜ,       εₜ ~ N(0, σₜ²)
+```
+
+**Po polsku:**
+- *"Prawdziwy dryft dzisiaj równa się wczorajszemu dryftowi plus losowy szok."*
+- *"Obserwowany zwrot równa się prawdziwemu dryftowi plus szum rynkowy."*
+
+**Rekurencja Filtru Kalmana**
+
+Przy danym priorze μₜ₋₁|ₜ₋₁ ~ N(m, P), filtr Kalmana aktualizuje:
+
+```
+Predykcja:  μₜ|ₜ₋₁ ~ N(m, P + q)
+
+Aktualizacja: K = (P + q) / (P + q + σₜ²)     # Wzmocnienie Kalmana
+              mₜ = m + K · (rₜ - m)            # Średnia posteriori
+              Pₜ = (1 - K) · (P + q)           # Wariancja posteriori
+```
+
+**Po polsku:**
+1. **Predykcja:** *"Przed zobaczeniem dzisiejszego zwrotu, nasza niepewność rośnie o q."*
+2. **Wzmocnienie Kalmana:** *"K mierzy, ile ufać nowej obserwacji vs. naszemu priorowi."*
+3. **Aktualizacja średniej:** *"Nowa estymacja = stara estymacja + K × (niespodzianka)."*
+4. **Aktualizacja wariancji:** *"Nasza niepewność maleje po zobaczeniu danych."*
+
+**Estymacja Największej Wiarygodności (MLE)**
+
+Znajdujemy q maksymalizując log-wiarygodność:
+
+```
+ℓ(q) = Σₜ log p(rₜ | r₁:ₜ₋₁, q)
+```
+
+**Po polsku:** *"Znajdź wartość q, która sprawia, że obserwowane zwroty są najbardziej prawdopodobne."*
+
+**Rozszerzenie AR(1) (modele φ)**
+
+Dla dryftu powracającego do średniej, rozszerzamy równanie stanu:
+
+```
+μₜ = φ · μₜ₋₁ + ηₜ,     φ ∈ (-1, 1)
+```
+
+**Po polsku:** *"Dzisiejszy dryft równa się phi razy wczorajszy dryft, plus szum."*
+
+**Co oznaczają wartości φ:**
+- φ = 0: Dryft nie ma pamięci (pełny powrót do średniej)
+- φ = 0.9: Dryft jest bardzo trwały (wolny powrót do średniej)
+- φ = 1: Błądzenie losowe (brak powrotu do średniej) — **niestabilne, unikamy**
+- φ < 0: Dryft oscyluje (rzadkie w danych finansowych)
+
+**Innowacje Studenta-t**
+
+Aby uchwycić grube ogony, zastępujemy gaussowskie innowacje rozkładem Studenta-t:
+
+```
+εₜ ~ t_ν(0, σₜ)
+```
+
+**Po polsku:** *"Szum rynkowy podąża za rozkładem Studenta-t zamiast gaussowskiego, pozwalając na rzadkie ekstremalne ruchy."*
+
+---
+
+### Silnik Strojenia: Bayesowskie Uśrednianie Modeli
+
+**Równanie BMA**
+
+Przy danym reżimie r i klasie modelu m z parametrami θ, rozkład predykcyjny posteriori to:
+
+```
+p(rₜ₊ₕ | r) = Σₘ p(rₜ₊ₕ | r, m, θᵣ,ₘ) · p(m | r)
+```
+
+**Po polsku:** *"Prawdopodobieństwo przyszłego zwrotu równa się ważonej średniej prognoz każdego modelu, gdzie wagi to ile ufamy każdemu modelowi."*
+
+To jest **główne równanie** systemu. Sygnały wyłaniają się z tej mieszanki, nie z żadnego pojedynczego "najlepszego" modelu.
+
+**Wagi Modeli przez BIC**
+
+Dla każdego modelu m w reżimie r, obliczamy BIC:
+
+```
+BIC_m,r = -2 · ℓ_m,r + k_m · log(n_r)
+```
+
+**Po polsku:** *"BIC = (jak dobrze pasuje) minus (kara za złożoność)."*
+
+**Wygładzanie Czasowe**
+
+Aby zapobiec gwałtownemu przełączaniu modeli, wygładzamy wagi w czasie:
+
+```
+w_smooth(m|r) ∝ w_prev(m|r)^α · w_raw(m|r)
+```
+
+**Po polsku:** *"Nowa waga = (wczorajsza waga)^α × (dzisiejsza surowa waga). To sprawia, że wagi zmieniają się stopniowo."*
+
+**Hierarchiczne Kurczenie**
+
+Gdy reżim r ma mało próbek, kurczymy w kierunku globalnego posterioru:
+
+```
+p(m|r) = (1 - λ) · p_local(m|r) + λ · p(m|global)
+```
+
+**Po polsku:** *"Gdy danych jest mało, pożyczaj siłę z ogólnych (globalnych) wag modeli."*
+
+---
+
+### Silnik Sygnałów: Monte Carlo Predykcyjne Posteriori
+
+**Próbkowanie Monte Carlo**
+
+Przybliżamy p(rₜ₊ₕ | r_t) przez symulację:
+
+```python
+samples = []
+for m, w in model_posterior.items():
+    n_m = int(w * N_total)  # próbki proporcjonalne do wagi
+    for _ in range(n_m):
+        μ = current_drift_estimate
+        for step in range(h):
+            μ += sample_from(N(0, q_m))
+            r_step = μ + sample_from(distribution_m(σ))
+        samples.append(sum_of_r_steps)
+```
+
+**Po polsku:**
+1. *"Dla każdego modelu, losuj próbki proporcjonalnie do tego, jak bardzo mu ufamy."*
+2. *"Dla każdej próbki, symuluj ewolucję dryftu przez h dni."*
+3. *"Zsumuj wszystkie dzienne zwroty, aby uzyskać zwrot h-dniowy."*
+4. *"Zbierz wszystkie próbki w jeden duży rozkład."*
+
+**Prawdopodobieństwo Dodatniego Zwrotu**
+
+Z rozkładu próbek:
+
+```
+P(rₜ₊ₕ > 0) = (# próbek > 0) / N_total
+```
+
+**Po polsku:** *"Policz ile próbek jest dodatnich, podziel przez całkowitą liczbę próbek."*
+
+**Mapowanie Sygnałów**
+
+Sygnały mapują z prawdopodobieństwa:
+
+```
+P(r > 0) ≥ 0.58  →  KUP
+P(r > 0) ∈ (0.42, 0.58)  →  CZEKAJ
+P(r > 0) ≤ 0.42  →  SPRZEDAJ
+```
+
+**Po polsku:**
+- *"Jeśli jest 58%+ szans na dodatni zwrot → KUP"*
+- *"Jeśli jest 42% lub mniej szans → SPRZEDAJ"*
+- *"W przeciwnym razie → CZEKAJ (niewystarczająca przewaga)"*
+
+---
+
+### Silnik Sygnałów: Oczekiwana Użyteczność
+
+**Ramy EU**
+
+Decyzje maksymalizują oczekiwaną użyteczność, nie oczekiwany zwrot:
+
+```
+EU = p · U(zysk) + (1-p) · U(strata)
+```
+
+**Po polsku:** *"Oczekiwana użyteczność = (szansa wygranej × wartość wygranej) + (szansa przegranej × wartość przegranej)."*
+
+Dla rozmiaru pozycji w stylu Kelly'ego z logarytmiczną użytecznością U(x) = log(1 + x):
+
+```
+f* = p - (1-p)/b
+```
+
+**Po polsku:** *"Optymalna wielkość zakładu = prawdopodobieństwo wygranej minus (prawdopodobieństwo przegranej podzielone przez stosunek wygrana/przegrana)."*
+
+**Przykład:**
+- p = 60%, b = 1.5 (wygrana $1.50 za każdy zaryzykowany $1)
+- f* = 0.60 - 0.40/1.5 = 0.60 - 0.27 = 0.33
+- *"Postaw 33% kapitału"*
+
+---
+
+### Kalibracja: Test PIT
+
+**Transformata Całkowa Prawdopodobieństwa**
+
+Jeśli prognozy są dobrze skalibrowane:
+
+```
+u = F(r_actual)  powinno być  ~ Uniform(0, 1)
+```
+
+**Po polsku:** *"Jeśli podstawimy rzeczywiste wyniki do naszej prognozowanej dystrybuanty, wyniki powinny być równomiernie rozłożone."*
+
+**Test KS**
+
+Obliczamy statystykę Kołmogorowa-Smirnowa:
+
+```
+KS = sup_u | F_empirical(u) - u |
+```
+
+**Po polsku:** *"Znajdź maksymalną lukę między empirycznym rozkładem wartości u a linią równomierną."*
+
+p-value > 0.05 wskazuje, że kalibracja jest akceptowalna.
+
+**Interpretacja**
+
+| Wzorzec | Wartość KS | Znaczenie |
+|---------|------------|-----------|
+| KS ≈ 0 | < 0.05 | Idealna kalibracja ✓ |
+| KS umiarkowane | 0.05-0.10 | Mniejsza błędna kalibracja |
+| KS > 0.1 | > 0.10 | Znacząca błędna kalibracja ✗ |
+
+**Wzorce wizualne w histogramie PIT:**
+- **Kształt U** (wartości grupują się przy 0 i 1): Nadmierna pewność — prognozy są zbyt wąskie
+- **Kształt ∩** (wartości grupują się w środku): Niedostateczna pewność — prognozy są zbyt szerokie
+- **Płaski** (rozkład równomierny): Dobrze skalibrowany ✓
+
+---
+
+### Podsumowanie: Kontrakt Matematyczny
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                                                             │
+│   DANE:     rₜ = log(Pₜ/Pₜ₋₁)                               │
+│             σₜ² = EWMA(rₜ²)                                 │
+│                                                             │
+│   STROJENIE: μₜ = φμₜ₋₁ + ηₜ       (równanie stanu)         │
+│              rₜ = μₜ + εₜ          (obserwacja)             │
+│              q* = argmax ℓ(q)      (MLE)                    │
+│              p(m|r) ∝ exp(-BIC/2)  (wagi BMA)               │
+│                                                             │
+│   SYGNAŁ:   p(r|dane) = Σₘ p(r|m,θ) · p(m|r)   (mieszanka) │
+│             P(r>0) = ∫₀^∞ p(r) dr    (prawdopodobieństwo)  │
+│             sygnał = map(P(r>0))     (decyzja)             │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Matematyka jest systemem. Kod jedynie ją implementuje.**
+
+---
+
+## Ściągawka
+
+### Pierwsza Konfiguracja
+```bash
+make setup              # Zainstaluj wszystko, pobierz dane
+```
+
+### Codzienne Użycie
+```bash
+make stocks             # Jedna komenda, której potrzebujesz
+```
+
+### Cotygodniowa Konserwacja
+```bash
+make tune               # Przekalibruj parametry
+make stocks             # Wygeneruj świeże sygnały
+```
+
+### Gdy Coś Nie Działa
+```bash
+make doctor             # Przeinstaluj zależności
+make failed             # Zobacz co się nie udało
+make purge              # Wyczyść cache nieudanych
+make data               # Pobierz wszystko ponownie
+```
+
+### Tabela Szybkiej Referencji
+
+| Chcę... | Komenda |
+|---------|---------|
+| Wygenerować sygnały | `make stocks` |
+| Tylko zobaczyć zapisane sygnały | `make report` |
+| Przekalibrować wszystkie parametry | `make tune ARGS="--force"` |
+| Przetestować z kilkoma aktywami | `make top20` |
+| Zwalidować kalibrację | `make fx-calibration` |
+| Wyczyścić wszystko | `make clear` |
+| Zobaczyć co się nie udało | `make failed` |
+| Pracować offline | `OFFLINE_MODE=1 make stocks` |
+
+---
+
+## Filozofia
+
+### Główna Zasada
+
+> *"Działaj tylko na podstawie przekonań, które faktycznie zostały wyuczone."*
+
+Ten system to **silnik ewolucji przekonań**. Utrzymuje konkurujące hipotezy o dynamice rynku i pozwala bayesowskiemu wnioskowaniu arbitrować między nimi.
+
+### Co Czyni To Innym
+
+| Tradycyjne Systemy | Ten System |
+|--------------------|------------|
+| Wybierz "najlepszy" model | Utrzymuj niepewność modelu |
+| Punktowe estymacje | Pełne rozkłady |
+| Stałe parametry | Ciągle przekalibrowywane |
+| Pewność z przekonania | Pewność z kalibracji |
+| Cicho zawodzą gdy błędne | Wiedzą, kiedy nie wiedzą |
+
+### Trzy Prawa
+
+1. **Nigdy nie wymyślaj przekonań.** Gdy dowody są słabe, stań się bardziej niewiedzący — nie bardziej pewny. Fallback jest zawsze hierarchiczny (reżim → globalny), nigdy sfabrykowany.
+
+2. **Zachowaj integralność rozkładową.** Decyzje pochodzą z rozkładów, nie punktowych estymacji. Warstwa sygnałów widzi próbki, nie parametry.
+
+3. **Oddziel epistemologię od agencji.** Silnik Strojenia uczy się przekonań. Silnik Sygnałów działa na ich podstawie. Nigdy się nie mieszają.
+
+### Cel
+
+**Skalibrowana niepewność**, nie fałszywa precyzja.
+
+Gdy system mówi "62% prawdopodobieństwa," powinien mieć rację w 62% przypadków. Nie 70%. Nie 55%. Dokładnie 62%.
+
+To właśnie weryfikują testy kalibracji PIT. To sprawia, że ten system jest godny zaufania.
+
+---
+
+## Licencja / License
 
 This project is for educational and research purposes. See individual dependencies for their respective licenses.
+
+Ten projekt służy celom edukacyjnym i badawczym. Zobacz poszczególne zależności dla ich odpowiednich licencji.
 
 ---
 
@@ -1694,5 +2399,13 @@ This project is for educational and research purposes. See individual dependenci
 </p>
 
 <p align="center">
+  <sub>Zbudowany z naukową rygorem i rzemieślniczym kunsztem.</sub>
+</p>
+
+<p align="center">
   <sub>The math is the system. The code merely implements it.</sub>
+</p>
+
+<p align="center">
+  <sub>Matematyka jest systemem. Kod jedynie ją implementuje.</sub>
 </p>
