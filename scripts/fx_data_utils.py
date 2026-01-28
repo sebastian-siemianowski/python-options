@@ -27,11 +27,19 @@ import requests
 try:
     from rich.console import Console
     from rich.table import Table
+    from rich import box
+    from rich.text import Text
+    from rich.panel import Panel
+    from rich.align import Align
     _HAS_RICH = True
 except ImportError:
     _HAS_RICH = False
     Console = None
     Table = None
+    box = None
+    Text = None
+    Panel = None
+    Align = None
 
 # Configure yfinance with longer timeout (default is 10 seconds, which is too short for bulk downloads)
 YFINANCE_TIMEOUT = 60  # seconds
@@ -49,7 +57,7 @@ PRICE_CACHE_DIR = os.path.join("scripts", "quant", "cache", "prices")
 PRICE_CACHE_DIR_PATH = pathlib.Path(PRICE_CACHE_DIR)
 PRICE_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
 
-FAILED_CACHE_DIR = os.path.join("cache", "failed")
+FAILED_CACHE_DIR = os.path.join("scripts", "quant", "cache", "failed")
 FAILED_CACHE_DIR_PATH = pathlib.Path(FAILED_CACHE_DIR)
 FAILED_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
 FAILED_ASSETS_FILE = FAILED_CACHE_DIR_PATH / "failed_assets.json"
@@ -262,6 +270,14 @@ _RICH_CONSOLE = None
 # Track logged symbols to prevent duplicates
 _LOGGED_SYMBOL_MAPPINGS: set = set()
 _LOGGED_SYMBOL_FAILURES: set = set()
+# Global flag to suppress symbol table output entirely
+_SUPPRESS_SYMBOL_TABLES = False
+
+
+def suppress_symbol_tables(suppress: bool = True) -> None:
+    """Enable/disable symbol table logging globally."""
+    global _SUPPRESS_SYMBOL_TABLES
+    _SUPPRESS_SYMBOL_TABLES = suppress
 
 
 def _get_rich_console():
@@ -272,37 +288,38 @@ def _get_rich_console():
 
 
 def _init_symbol_map_table():
-    """Create a beautiful Rich table for symbol mappings."""
+    """Create an extraordinary Apple-quality Rich table for symbol mappings."""
     table = Table(
-        title="[bold cyan]Symbol Mappings[/bold cyan]",
         show_header=True,
         header_style="bold white",
-        border_style="cyan",
-        title_style="bold cyan",
+        border_style="dim",
+        box=box.ROUNDED,
         padding=(0, 1),
         collapse_padding=True,
+        expand=False,
     )
-    table.add_column("Original", style="cyan", justify="left", width=14)
-    table.add_column("Normalized", style="white", justify="left", width=14)
-    table.add_column("Action", style="green", justify="left", width=24)
-    table.add_column("Reason", style="white", justify="left", width=30)
+    table.add_column("Original", style="white", justify="left", width=14)
+    table.add_column("→", style="dim", justify="center", width=2)
+    table.add_column("Resolved", style="bold cyan", justify="left", width=14)
+    table.add_column("Action", style="green", justify="left", width=22)
+    table.add_column("Reason", style="dim", justify="left", width=28)
     return table
 
 
 def _init_symbol_fail_table():
-    """Create a beautiful Rich table for symbol failures."""
+    """Create an extraordinary Apple-quality Rich table for symbol failures."""
     table = Table(
-        title="[bold red]Symbol Failures[/bold red]",
         show_header=True,
         header_style="bold white",
-        border_style="red",
-        title_style="bold red",
+        border_style="dim",
+        box=box.ROUNDED,
         padding=(0, 1),
         collapse_padding=True,
+        expand=False,
     )
-    table.add_column("Original", style="yellow", justify="left", width=14)
-    table.add_column("Status", style="red", justify="left", width=24)
-    table.add_column("Reason", style="white", justify="left", width=35)
+    table.add_column("Symbol", style="yellow", justify="left", width=14)
+    table.add_column("Status", style="indian_red1", justify="left", width=22)
+    table.add_column("Details", style="dim", justify="left", width=32)
     return table
 
 
@@ -344,6 +361,11 @@ def _print_symbol_fail_header():
 
 def _log_symbol_map(original: str, normalized: str, meta: Dict) -> None:
     global _LOGGED_SYMBOL_MAPPINGS
+    
+    # Respect global suppression
+    if _SUPPRESS_SYMBOL_TABLES:
+        return
+    
     # Deduplicate - only log each (original, normalized) pair once
     key = (original, normalized)
     if key in _LOGGED_SYMBOL_MAPPINGS:
@@ -357,9 +379,10 @@ def _log_symbol_map(original: str, normalized: str, meta: Dict) -> None:
     if _HAS_RICH and _SYMBOL_MAP_TABLE is not None:
         _SYMBOL_MAP_TABLE.add_row(
             original,
-            f"[bold]{normalized}[/bold]",
-            f"[green]✔ {action}[/green]",
-            why
+            "[dim]→[/dim]",
+            f"[bold cyan]{normalized}[/bold cyan]",
+            f"[green]✓ {action}[/green]",
+            f"[dim]{why}[/dim]"
         )
     else:
         icon = "✔" if _USE_COLOR else "*"
@@ -385,16 +408,35 @@ def _log_symbol_fail(original: str, status: str, reason: Optional[str] = None) -
 
 
 def print_symbol_tables() -> None:
-    """Print the accumulated symbol mapping and failure tables.
-    Call this after all symbols have been processed."""
+    """Print the accumulated symbol mapping and failure tables with Apple-quality UX."""
     global _SYMBOL_MAP_TABLE, _SYMBOL_FAIL_TABLE, _SYMBOL_MAP_HEADER_PRINTED, _SYMBOL_FAIL_HEADER_PRINTED
     
     if _HAS_RICH:
         console = _get_rich_console()
+        
+        # Print mappings table with elegant header
         if _SYMBOL_MAP_TABLE is not None and _SYMBOL_MAP_TABLE.row_count > 0:
             console.print()
+            
+            # Section header
+            header = Text()
+            header.append("▸ ", style="bright_cyan")
+            header.append("SYMBOL RESOLUTION", style="bold white")
+            header.append(f"   ({_SYMBOL_MAP_TABLE.row_count} mapped)", style="dim")
+            console.print(header)
+            console.print()
             console.print(_SYMBOL_MAP_TABLE)
+        
+        # Print failures table with warning styling
         if _SYMBOL_FAIL_TABLE is not None and _SYMBOL_FAIL_TABLE.row_count > 0:
+            console.print()
+            
+            # Section header
+            header = Text()
+            header.append("▸ ", style="indian_red1")
+            header.append("RESOLUTION FAILURES", style="bold indian_red1")
+            header.append(f"   ({_SYMBOL_FAIL_TABLE.row_count} failed)", style="dim")
+            console.print(header)
             console.print()
             console.print(_SYMBOL_FAIL_TABLE)
     else:
@@ -1074,6 +1116,20 @@ COMPANY_NAMES: Dict[str, str] = {
     "NXPI": "NXP Semiconductors N.V.",
     "ADI": "Analog Devices, Inc.",
     "ON": "ON Semiconductor Corporation",
+    "ARM": "Arm Holdings plc",
+    "000660.KS": "SK Hynix Inc.",
+    "8035.T": "Tokyo Electron Limited",
+    "6723.T": "Renesas Electronics Corporation",
+    
+    # AI Power Semiconductors
+    "IFX.DE": "Infineon Technologies AG",
+    "STM": "STMicroelectronics N.V.",
+    "MPWR": "Monolithic Power Systems, Inc.",
+    "AOSL": "Alpha and Omega Semiconductor Limited",
+    "POWI": "Power Integrations, Inc.",
+    "VSH": "Vishay Intertechnology, Inc.",
+    "2308.TW": "Delta Electronics, Inc.",
+    "ETN": "Eaton Corporation plc",
     
     # Industrial & Infrastructure
     "PWR": "Quanta Services, Inc.",
@@ -1650,9 +1706,33 @@ DEFAULT_ASSET_UNIVERSE = [
     "ANET",   # Arista Networks — AI data-center networking spine
     "SNPS",   # Synopsys — Chip design software monopoly layer
     "CDNS",   # Cadence Design — Digital silicon design infrastructure
+    "000660.KS", # SK Hynix — Dominant in HBM3/HBM4, NVIDIA's memory supplier
+    "8035.T",    # Tokyo Electron — Japanese precision, leading-edge process control
 
     # -------------------------
-    # Cloud & Cybersecurity Infrastructure
+    # AI Hardware / Edge Compute
+    # -------------------------
+    "MRVL",   # Marvell Technology — Networking + storage + custom silicon
+    "NXPI",   # NXP Semiconductors — Edge AI + automotive brains
+    "ADI",    # Analog Devices — Sensor-to-AI interface layer
+    "ON",     # ON Semiconductor — EV + power + edge AI
+    "6723.T", # Renesas Electronics — Embedded + power control, industrial AI
+
+    # -------------------------
+    # AI Power Semiconductors
+    # -------------------------
+    "IFX.DE", # Infineon Technologies — World leader in power electronics, SiC
+    "STM",    # STMicroelectronics — Strong in SiC and industrial power
+    "TXN",    # Texas Instruments — Analog power, decades-long compounder
+    "MPWR",   # Monolithic Power Systems — Elite margins, AI server power
+    "AOSL",   # Alpha and Omega Semiconductor — High-voltage MOSFETs
+    "POWI",   # Power Integrations — Power efficiency specialists
+    "VSH",    # Vishay Intertechnology — Essential components
+    "2308.TW", # Delta Electronics — Power supplies for hyperscale data centers
+    "ETN",    # Eaton Corporation — Grid, UPS, power conditioning
+
+    # -------------------------
+    # Industrial / Infrastructure Transition
     # -------------------------
     "CRWD",   # CrowdStrike — AI-native cybersecurity platform
     "ZS",     # Zscaler — Zero-trust security backbone
@@ -1719,14 +1799,6 @@ DEFAULT_ASSET_UNIVERSE = [
     "PATH",   # UiPath — AI automation layer
 
     # -------------------------
-    # AI Hardware / Edge Compute
-    # -------------------------
-    "MRVL",   # Marvell — AI networking silicon
-    "NXPI",   # NXP Semiconductors — Edge AI + automotive brains
-    "ADI",    # Analog Devices — Sensor-to-AI interface layer
-    "ON",     # ON Semiconductor — EV + power + edge AI
-
-    # -------------------------
     # Industrial / Infrastructure Transition
     # -------------------------
     "PWR",    # Quanta Services — Grid + energy infrastructure rebuild
@@ -1752,6 +1824,67 @@ DEFAULT_ASSET_UNIVERSE = [
     "FLNC",   # Fluence Energy — Grid-scale battery systems
     "ENPH",   # Enphase Energy — Solar + storage intelligence
     "BE",     # Bloom Energy — Solid oxide fuel cells
+
+    # =========================================================================
+    # SMALL-MID CAP SCREENER PICKS (Top 100 Revenue Growth Screener)
+    # =========================================================================
+
+    # -------------------------
+    # Small-Mid Cap — Finance (🟢 Institutional-Grade ≥70)
+    # -------------------------
+    "AGNC",   # AGNC Investment Corp. — Mortgage REIT, institutional dividend
+    "ABTC",   # AMERIBANCORP, Inc. — Regional banking, high growth
+    "AXG",    # Axos Financial, Inc. — Digital banking platform
+    "ASB",    # Associated Banc-Corp — Regional bank, Midwest footprint
+    "ANGX",   # Angel Oak Financial Strategies — Specialty finance
+
+    # -------------------------
+    # Small-Mid Cap — Biotech/Healthcare (🟢 Institutional-Grade ≥70)
+    # -------------------------
+    "ANNA",   # Annovis Bio, Inc. — Neurodegenerative disease therapeutics
+    "BBIO",   # BridgeBio Pharma, Inc. — Genetic disease platform
+    "ATAI",   # atai Life Sciences N.V. — Mental health biotech
+    "APLM",   # Apollomics, Inc. — Oncology-focused biotech
+
+    # -------------------------
+    # Small-Mid Cap — Technology/Space (🟢 Institutional-Grade ≥70)
+    # -------------------------
+    # "ASTS",  # AST SpaceMobile, Inc. — Already in universe (Space section)
+    "BZAI",   # Banzai International, Inc. — AI-powered engagement platform
+
+    # -------------------------
+    # Small-Mid Cap — Real Estate (🟢 Institutional-Grade ≥70)
+    # -------------------------
+    "AIRE",   # reAlpha Tech Corp. — AI-driven real estate platform
+
+    # -------------------------
+    # Small-Mid Cap — Finance (🟡 Tradeable 60-69)
+    # -------------------------
+    "BMHL",   # BM Technologies, Inc. — Digital banking fintech
+    "BNZI",   # Banzai International, Inc. — Engagement tech (alt ticker)
+    "BNKK",   # BNK Financial Group, Inc. — Korean financial services
+    "BTCS",   # BTCS Inc. — Blockchain infrastructure
+    "BCAL",   # California BanCorp — Regional California bank
+    "ARR",    # ARMOUR Residential REIT, Inc. — Mortgage REIT
+
+    # -------------------------
+    # Small-Mid Cap — Biotech/Healthcare (🟡 Tradeable 60-69)
+    # -------------------------
+    "ALNY",   # Alnylam Pharmaceuticals, Inc. — RNAi therapeutics leader
+    "APLS",   # Apellis Pharmaceuticals, Inc. — Complement pathway therapies
+    "APLT",   # Applied Therapeutics, Inc. — Rare disease treatments
+    "BETA",   # Beta Bionics, Inc. — Diabetes management tech
+
+    # -------------------------
+    # Small-Mid Cap — Technology/Industrial (🟡 Tradeable 60-69)
+    # -------------------------
+    "ASPI",   # ASP Isotopes Inc. — Isotope enrichment technology
+    "ABAT",   # American Battery Technology Company — Battery recycling
+    "ADUR",   # Aduro Clean Technologies — Chemical recycling tech
+    "APLD",   # Applied Digital Corporation — AI data center infrastructure
+    "ALMU",   # Aeluma, Inc. — Compound semiconductor materials
+    "AMZE",   # Amaze Holdings, Inc. — Technology solutions
+    "AIFF",   # Firefly Neuroscience, Inc. — AI neuroscience platform
 ]
 
 MAPPING = {
@@ -2172,7 +2305,7 @@ SECTOR_MAP = {
         "JPM", "BAC", "WFC", "C", "USB", "PNC", "TFC", "GS", "MS", "BK"
     },
     "Consumer Discretionary": {
-        "BKNG", "GM", "HD", "LOW", "MCD", "NKE", "SBUX", "TGT", "TSLA", "VOW3", "VOW3.DE", "BMW", "BMW.DE", "CELH"
+        "BKNG", "GM", "HD", "LOW", "MCD", "NKE", "SBUX", "TGT", "TSLA", "VOW3", "VOW3.DE", "BMW", "BMW.DE", "BMW3.DE", "CELH"
     },
     "Industrials": {
         "CAT", "DE", "EMR", "FDX", "MMM", "UBER", "UNP", "UPS", "TKA", "TKA.DE", "MTX.DE"
@@ -2214,23 +2347,38 @@ SECTOR_MAP = {
     "Options / Structured Products": {
         "TSLD", "PLTI", "QQQO", "METI", "MSFI", "MAGD", "AMDI", "AMZD", "GOOO", "BABI", "BABY", "AAPI", "AVGI", "MSTP"
     },
-    "Nuclear": {"OKLO", "CCJ", "UUUU", "GEV", "LEU", "SMR"},
+    "Nuclear": {"OKLO", "CCJ", "UUUU", "GEV", "LEU", "SMR", "NXE", "UEC"},
     "Critical Materials": {"MP", "CRML", "IDR", "FCX", "UAMY"},
     "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR", "SPIR", "GSAT", "IRDM", "ASTR", "MDA.TO", "MDALF"},
     "Drones": {"ONDS", "UMAC", "AVAV", "KTOS", "DPRO"},
-    "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY", "SMCI", "ANET", "VRT"},
+    "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY", "SMCI", "ANET", "VRT", "2308.TW", "ETN"},
     "AI Software / Data Platforms": {"CFLT", "ESTC", "PATH", "DDOG", "SNOW", "MDB"},
-    "Semiconductor Equipment": {"ASML", "LRCX", "AMAT", "TSM", "ARM", "SNPS", "CDNS"},
-    "AI Power Semiconductors": {"NVTS", "WOLF", "AEHR", "ALAB", "CRDO"},
-    "AI Hardware / Edge Compute": {"MRVL", "NXPI", "ADI", "ON"},
+    "Semiconductor Equipment": {"ASML", "LRCX", "AMAT", "TSM", "ARM", "SNPS", "CDNS", "8035.T"},
+    "AI Power Semiconductors": {"NVTS", "WOLF", "AEHR", "ALAB", "CRDO", "IFX.DE", "STM", "MPWR", "AOSL", "POWI", "VSH"},
+    "AI Hardware / Edge Compute": {"MRVL", "NXPI", "ADI", "ON", "000660.KS", "6723.T"},
     "Cloud & Cybersecurity": {"CRWD", "ZS"},
     "Fintech": {"HUBS", "AFRM", "NU", "COIN", "PYPL"},
     "Batteries & Energy Tech": {"ENVX", "QS", "FLNC", "ENPH", "BE"},
     "TechBio / AI Drug Discovery": {"RXRX", "SDGR", "ABCL", "NTLA", "TEM"},
     "Biotech Platforms / Genomics": {"VRTX", "ILMN", "PACB", "EXAI"},
     "Quantum Computing": {"IONQ", "QBTS", "ARQQ", "RGTI", "QUBT"},
-    "Industrial Infrastructure": {"PWR", "JCI"},
-    "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"}
+    "Industrial Infrastructure": {"PWR", "JCI", "ETN", "2308.TW"},
+    "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"},
+    # -------------------------------------------------------------------------
+    # Small-Mid Cap Growth (Top 100 Revenue Screener picks)
+    # -------------------------------------------------------------------------
+    # Small-Mid Cap Finance: AGNC, ABTC, AXG, ASB, ANGX (Institutional), BMHL, BNZI, BNKK, BTCS, BCAL, ARR (Tradeable)
+    "Small-Mid Cap Finance": {
+        "AGNC", "ABTC", "AXG", "ASB", "ANGX", "BMHL", "BNZI", "BNKK", "BTCS", "BCAL", "ARR"
+    },
+    # Small-Mid Cap Biotech: ANNA, BBIO, ATAI, APLM (Institutional), ALNY, APLS, APLT (Tradeable)
+    "Small-Mid Cap Biotech": {
+        "ANNA", "BBIO", "ATAI", "APLM", "ALNY", "APLS", "APLT"
+    },
+    # Small-Mid Cap Technology: BZAI, AIRE (Institutional), ASPI, ABAT, ADUR, APLD, ALMU, AMZE, AIFF (Tradeable)
+    "Small-Mid Cap Technology": {
+        "BZAI", "AIRE", "ASPI", "ABAT", "ADUR", "APLD", "ALMU", "AMZE", "AIFF"
+    },
 }
 
 def get_sector(symbol: str) -> str:
@@ -2357,6 +2505,15 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     "SMCI": "USD", "ANET": "USD", "SNPS": "USD", "CDNS": "USD", "MRVL": "USD",
     "NXPI": "USD", "ADI": "USD", "ON": "USD", "NVTS": "USD", "WOLF": "USD",
     "AEHR": "USD", "ALAB": "USD", "CRDO": "USD", "MU": "USD",
+    # AI Power Semiconductors (USD)
+    "STM": "USD", "MPWR": "USD", "AOSL": "USD", "POWI": "USD", "VSH": "USD", "ETN": "USD",
+    
+    # AI & Semiconductors (International)
+    "000660.KS": "KRW",  # SK Hynix (Korean Won)
+    "8035.T": "JPY",     # Tokyo Electron (Japanese Yen)
+    "6723.T": "JPY",     # Renesas Electronics (Japanese Yen)
+    "IFX.DE": "EUR",     # Infineon (Euro)
+    "2308.TW": "TWD",    # Delta Electronics (Taiwan Dollar)
     
     # Cloud & Cybersecurity (USD)
     "CRWD": "USD", "ZS": "USD", "DDOG": "USD", "SNOW": "USD", "MDB": "USD",
@@ -2381,6 +2538,20 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     # Growth Screen (USD)
     "NUTX": "USD", "SANM": "USD", "SEZL": "USD", "AMCR": "USD", "PSIX": "USD",
     "DLO": "USD", "COMM": "USD", "PGY": "USD", "FOUR": "USD",
+    
+    # =========================================================================
+    # Small-Mid Cap Growth (Top 100 Revenue Screener) - All USD
+    # =========================================================================
+    # Finance
+    "AGNC": "USD", "ABTC": "USD", "AXG": "USD", "ASB": "USD", "ANGX": "USD",
+    "BMHL": "USD", "BNZI": "USD", "BNKK": "USD", "BTCS": "USD", "BCAL": "USD",
+    "ARR": "USD",
+    # Biotech
+    "ANNA": "USD", "BBIO": "USD", "ATAI": "USD", "APLM": "USD",
+    "ALNY": "USD", "APLS": "USD", "APLT": "USD",
+    # Technology
+    "BZAI": "USD", "AIRE": "USD", "ASPI": "USD", "ABAT": "USD", "ADUR": "USD",
+    "APLD": "USD", "ALMU": "USD", "AMZE": "USD", "AIFF": "USD",
     
     # Drones (USD)
     "ONDS": "USD", "UMAC": "USD",
@@ -3191,7 +3362,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     return pd.DataFrame()
 
 
-def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False, max_workers: int = 12, force_online: bool = False) -> Dict[str, pd.Series]:
+def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional[str], chunk_size: int = 10, progress: bool = True, log_fn=None, skip_individual_fallback: bool = False, max_workers: int = 12, force_online: bool = False, show_symbol_tables: bool = True) -> Dict[str, pd.Series]:
     """Download multiple symbols in chunks to reduce rate limiting.
     Uses yf.download with list input; falls back to per-symbol for failures.
     Populates the local price cache so subsequent single fetches reuse data.
@@ -3207,6 +3378,7 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         skip_individual_fallback: If True, skip individual download fallback (for multi-pass bulk downloads)
         max_workers: Maximum number of parallel download workers
         force_online: If True, ignore OFFLINE_MODE and always attempt downloads (for make data)
+        show_symbol_tables: If True, print symbol mapping/failure tables at the end
     """
     # Determine if we should skip downloads (respect OFFLINE_MODE unless force_online)
     skip_downloads = OFFLINE_MODE and not force_online
@@ -3398,8 +3570,9 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
                 # Data already stored by _download_prices via _store_disk_prices
                 satisfied_primaries.add(primary)
     
-    # Print accumulated symbol mapping tables (world-class Rich output)
-    print_symbol_tables()
+    # Print accumulated symbol mapping tables (world-class Rich output) if enabled
+    if show_symbol_tables:
+        print_symbol_tables()
     
     return result
 

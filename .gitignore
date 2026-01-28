@@ -35,6 +35,11 @@ plots/kalman_validation/*.png
 data/meta/
 *.backup
 
+# Quant script caches (prices and screener data)
+scripts/quant/cache/prices/
+scripts/quant/cache/top100/
+scripts/quant/cache/failed/
+
 # Distribution / packaging
 .Python
 build/

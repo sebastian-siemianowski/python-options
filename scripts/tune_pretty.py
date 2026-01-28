@@ -110,16 +110,11 @@ Examples:
     )
 
     # Load asset list
-    if args.assets:
-        console.print(f"\n[cyan]Filtering to specified assets: {args.assets}[/cyan]")
     assets = load_asset_list(args.assets, args.assets_file)
 
     # Apply max-assets limit
     if args.max_assets:
         assets = assets[:args.max_assets]
-        console.print(f"\n[dim]Limited to first {args.max_assets} assets[/dim]")
-
-    console.print(f"\n[bold]Assets to process:[/bold] {len(assets)}")
 
     # Dry-run mode
     if args.dry_run:
@@ -128,7 +123,6 @@ Examples:
 
     # Load existing cache
     cache = load_cache(args.cache_json)
-    render_cache_status(len(cache), args.cache_json, console=console)
 
     # Process counters
     new_estimates = 0
@@ -149,21 +143,25 @@ Examples:
     processing_log: List[str] = []  # Log of what was processed
 
     # Check cache for each asset
-    console.print("\n[dim]Checking cache...[/dim]")
     for asset in assets:
         if not args.force and asset in cache:
             reused_cached += 1
             continue
         assets_to_process.append(asset)
 
-    console.print(f"[cyan]Found {reused_cached} cached[/cyan], [#00d700]{len(assets_to_process)} to process[/#00d700]")
-
     if assets_to_process:
         # Parallel processing
         import multiprocessing
         n_workers = multiprocessing.cpu_count()
         
-        render_tuning_progress_start(len(assets_to_process), n_workers, console=console)
+        render_tuning_progress_start(
+            len(assets_to_process), 
+            n_workers, 
+            reused_cached,
+            len(cache),
+            args.cache_json,
+            console=console
+        )
         
         # Create progress tracker
         tracker = TuningProgressTracker(len(assets_to_process), console=console)
@@ -223,17 +221,31 @@ Examples:
                                 'n_obs': global_result.get('n_obs'),
                             }
 
-                        # Update progress tracker
+                        # Update progress tracker with rich model info
                         q_val = global_result.get('q', float('nan'))
+                        c_val = global_result.get('c', 1.0)
                         phi_val = global_result.get('phi')
                         nu_val = global_result.get('nu')
+                        bic_val = global_result.get('bic', float('nan'))
                         model_type = global_result.get('noise_model', 'gaussian')
                         
-                        details = f"q={q_val:.2e}"
+                        # Build comprehensive details string for UX display
+                        # Format: model|q|c|phi|nu|bic
+                        if model_type.startswith('phi_student_t_nu_') and nu_val is not None:
+                            model_str = "Student-t"
+                        elif phi_val is not None:
+                            model_str = "φ-Gaussian"
+                        else:
+                            model_str = "Gaussian"
+                        
+                        import math
+                        details = f"{model_str}|q={q_val:.2e}|c={c_val:.3f}"
                         if phi_val is not None:
-                            details += f", φ={phi_val:.3f}"
-                        if nu_val is not None and model_type.startswith('phi_student_t_nu_'):
-                            details += f", ν={nu_val:.1f}"
+                            details += f"|φ={phi_val:+.2f}"
+                        if nu_val is not None:
+                            details += f"|ν={int(nu_val)}"
+                        if math.isfinite(bic_val):
+                            details += f"|bic={bic_val:.0f}"
                         
                         # Log this processing for end-of-run
                         processing_log.append(f"✓ {asset_name}: {details}")
@@ -259,29 +271,61 @@ Examples:
         
         tracker.finish()
     else:
-        console.print("\n[dim]No assets to process (all reused from cache).[/dim]")
+        # All cached - show minimal info
+        from rich.align import Align
+        from rich.text import Text
+        console.print()
+        info = Text()
+        info.append("○", style="dim cyan")
+        info.append(f"  All {len(assets)} assets cached", style="dim")
+        info.append(f"  ·  {len(cache):,} total in cache", style="dim")
+        console.print(Align.center(info))
+        console.print()
 
     # Save updated cache
     if new_estimates > 0:
         save_cache_json(cache, args.cache_json)
-        render_cache_update(args.cache_json, console=console)
 
     # Count regime statistics from cache
     regime_fit_counts = {r: 0 for r in range(5)}
     regime_shrunk_counts = {r: 0 for r in range(5)}
     collapse_warnings = 0
     
+    # Detailed model breakdown: {regime_id: {'gaussian': count, 'phi_gaussian': count, 'student_t_4': count, ...}}
+    regime_model_breakdown = {r: {} for r in range(5)}
+    
     for asset, data in cache.items():
+        # Get the global noise model for this asset
+        global_data = data.get('global', data)
+        noise_model = global_data.get('noise_model', 'gaussian')
+        nu_val = global_data.get('nu')
+        phi_val = global_data.get('phi')
+        
+        # Determine model category
+        if noise_model.startswith('phi_student_t_nu_') and nu_val is not None:
+            model_key = f"φ-t(ν={int(nu_val)})"
+        elif noise_model == 'kalman_phi_gaussian' or phi_val is not None:
+            model_key = "φ-Gaussian"
+        else:
+            model_key = "Gaussian"
+        
         regime_data = data.get('regime')
         if regime_data is not None and isinstance(regime_data, dict):
             for r, params in regime_data.items():
                 if isinstance(params, dict):
                     is_fallback = params.get('fallback', False) or params.get('regime_meta', {}).get('fallback', False)
                     if not is_fallback:
-                        regime_fit_counts[int(r)] += 1
+                        r_int = int(r)
+                        regime_fit_counts[r_int] += 1
+                        
+                        # Count model breakdown per regime
+                        if model_key not in regime_model_breakdown[r_int]:
+                            regime_model_breakdown[r_int][model_key] = 0
+                        regime_model_breakdown[r_int][model_key] += 1
+                        
                         is_shrunk = params.get('shrinkage_applied', False) or params.get('regime_meta', {}).get('shrinkage_applied', False)
                         if is_shrunk:
-                            regime_shrunk_counts[int(r)] += 1
+                            regime_shrunk_counts[r_int] += 1
         if 'hierarchical_tuning' in data:
             if data['hierarchical_tuning'].get('collapse_warning', False):
                 collapse_warnings += 1
@@ -301,6 +345,7 @@ Examples:
         regime_shrunk_counts=regime_shrunk_counts,
         collapse_warnings=collapse_warnings,
         cache_path=args.cache_json,
+        regime_model_breakdown=regime_model_breakdown,
         console=console,
     )
 

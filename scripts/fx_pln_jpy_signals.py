@@ -199,7 +199,6 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from multiprocessing import Pool, cpu_count
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -207,6 +206,13 @@ import yfinance as yf
 from scipy.stats import t as student_t, norm, skew as scipy_stats_skew
 from scipy.special import gammaln
 from rich.console import Console
+from rich.padding import Padding
+from rich.text import Text
+from rich.panel import Panel
+from rich.table import Table
+from rich.rule import Rule
+from rich.align import Align
+from rich import box
 import logging
 import os
 
@@ -280,6 +286,7 @@ from fx_data_utils import (
     save_failed_assets,
     get_price_series,
     STANDARD_PRICE_COLUMNS,
+    print_symbol_tables,
 )
 
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
@@ -368,129 +375,463 @@ def clear_display_price_cache() -> None:
 
 
 # ============================================================================
-# UNIFIED EXHAUSTION SCALAR (UES) — MODULE-LEVEL STATE
+# DUAL-SIDED TREND EXHAUSTION (UE↑ / UE↓)
 # ============================================================================
-# UES measures trend fragility relative to the system's own beliefs.
-# State is keyed by (asset_key, horizon) and resets on regime change.
-# This ensures deterministic, replay-safe behavior.
+# Measures market-space trend fragility in two independent directions:
+#   - Upside Exhaustion (UE↑): late-stage rally fragility, blow-off risk
+#   - Downside Exhaustion (UE↓): late-stage sell-off fragility, rebound risk
 #
-# KEY INVARIANTS (Locked):
-# - UES location: latest_signals() only
-# - State: module-level cache
-# - Regime source: regime_used (from _get_regime_params_for_horizon)
-# - Alignment: signal direction (sign(mu_H)), not raw returns
-# - Scope: modulation only
-# - Feedback to tuning: FORBIDDEN
+# KEY DESIGN PRINCIPLES:
+#   1. Exhaustion is directional in MARKET space, not position space
+#   2. UE↑ and UE↓ are mutually exclusive (only one can be active)
+#   3. Both bounded in (0, 1)
+#   4. Neither decides direction - only modulates risk/confidence
+#   5. No tuning feedback, no signal flips
+#
+# This removes the confusion of a single ambiguous "exhaustion" metric.
 # ============================================================================
-_ues_state: Dict[str, Dict[int, Dict[str, float]]] = {}
-# Structure: { asset_key: { horizon: {"cum_log": float, "cum_dir": float, "regime": int} } }
+
+# Module-level state for tracking cumulative returns per asset/horizon
+_exhaustion_state: Dict[str, Dict[int, Dict[str, float]]] = {}
+# Structure: { asset_key: { horizon: {"cum_log": float, "regime": int} } }
 
 
-def _update_ues_state(
+def _update_exhaustion_state(
     asset_key: str,
     horizon: int,
     realized_log_ret: float,
     regime_id: int,
-    signal_direction: float,
-) -> Tuple[float, float]:
+) -> Tuple[float, int]:
     """
-    Update UES state for an asset/horizon pair.
+    Update exhaustion state and return cumulative log return since regime entry.
     
-    Maintains cumulative log returns and directional alignment since regime entry.
-    Resets state on regime change to maintain path consistency.
+    DEPRECATED: This function is kept for backward compatibility but the new
+    exhaustion calculation uses price-based deviation from EMA, not cumulative returns.
     
     Args:
-        asset_key: Canonical asset identifier (e.g., ticker symbol)
+        asset_key: Unique identifier for the asset
         horizon: Forecast horizon in days
-        realized_log_ret: Most recent realized log return observation
-        regime_id: Current regime ID (from regime_used in _get_regime_params_for_horizon)
-        signal_direction: Sign of mu_H (+1, -1, or 0) — the system's directional belief
+        realized_log_ret: Most recent realized log return
+        regime_id: Current regime index
         
     Returns:
-        Tuple of (cumulative_log_return, directional_cumulative_return) since regime entry
+        Tuple of (cumulative_log_return, days_in_regime)
     """
-    if not asset_key:
-        return 0.0, 0.0
-    
     key = asset_key
-    state_by_h = _ues_state.setdefault(key, {})
-    state = state_by_h.get(horizon, {"cum_log": 0.0, "cum_dir": 0.0, "regime": None})
+    state_by_h = _exhaustion_state.setdefault(key, {})
+    state = state_by_h.get(horizon, {
+        "cum_log": 0.0,
+        "regime": None,
+        "days_in_regime": 0,
+    })
 
-    # Reset on regime change - path memory only valid within regime
-    if state["regime"] != regime_id:
-        state = {"cum_log": 0.0, "cum_dir": 0.0, "regime": regime_id}
-
-    # Accumulate realized returns
-    state["cum_log"] += realized_log_ret
-    # Directional alignment: positive when returns match signal direction
-    state["cum_dir"] += signal_direction * realized_log_ret
+    if state["regime"] is None:
+        state = {"cum_log": realized_log_ret, "regime": regime_id, "days_in_regime": 1}
+    elif state["regime"] == regime_id:
+        state["cum_log"] += realized_log_ret
+        state["days_in_regime"] += 1
+    else:
+        # Regime changed - reset
+        state = {"cum_log": realized_log_ret, "regime": regime_id, "days_in_regime": 1}
 
     state_by_h[horizon] = state
-    return state["cum_log"], state["cum_dir"]
+    return state["cum_log"], state["days_in_regime"]
 
 
-def compute_ues(
+def compute_directional_exhaustion_from_features(
+    feats: Dict[str, pd.Series],
+    lookback_short: int = 9,
+    lookback_long: int = 21,
+    vol_lookback: int = 21,
+) -> Dict[str, float]:
+    """
+    Compute directional exhaustion as a 0-100% metric using multi-timeframe
+    EMA analysis with Student-t fat-tail corrections.
+
+    SENIOR QUANT PANEL METHODOLOGY:
+    ===============================
+    
+    1. MULTI-TIMEFRAME DEVIATION ANALYSIS
+       - Compute price deviation from 5 EMAs (9, 21, 50, 100, 200 days)
+       - Separate into short-term (9, 21) and long-term (50, 100, 200) groups
+       - Long-term deviation determines structural position
+       - Short-term deviation determines recent move direction
+    
+    2. MOMENTUM ALIGNMENT DETECTION
+       - Compare short-term vs long-term momentum (mom63 vs mom252)
+       - Divergence indicates regime transition
+       - Convergence indicates trend confirmation
+    
+    3. RECENT PEAK/TROUGH DETECTION
+       - Find rolling 63-day high and low
+       - Measure distance from recent extremes
+       - Rally-then-breakdown: near recent high but falling
+       - Capitulation-then-recovery: near recent low but rising
+    
+    4. FAT-TAIL PROBABILITY ADJUSTMENT
+       - Use Student-t CDF instead of Gaussian
+       - Heavy tails (low ν) → extreme moves more expected → lower exhaustion
+    
+    5. OUTPUT: 0-100% scale
+       - ue_up > 0: Price above long-term equilibrium
+       - ue_down > 0: Price below long-term equilibrium
+       - Mutual exclusivity enforced
+
+    Args:
+        feats: Feature dictionary
+        lookback_short, lookback_long, vol_lookback: Configuration params
+
+    Returns:
+        Dict with "ue_up" (0-1), "ue_down" (0-1), and diagnostics
+    """
+    from scipy.stats import norm as scipy_norm, t as scipy_t
+    
+    # Extract price series
+    px_series = feats.get("px", pd.Series(dtype=float))
+    if px_series is None or len(px_series) < 200:
+        return _compute_simple_exhaustion(feats, lookback_short, lookback_long, vol_lookback)
+
+    price = float(px_series.iloc[-1])
+    if not np.isfinite(price) or price <= 0:
+        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+
+    # =========================================================================
+    # STEP 1: MULTI-TIMEFRAME EMA DEVIATIONS (SHORT vs LONG)
+    # =========================================================================
+    ema_periods_short = [9, 21]
+    ema_periods_long = [50, 100, 200]
+    
+    ema_values = {}
+    short_deviations = []
+    long_deviations = []
+    
+    for period in ema_periods_short + ema_periods_long:
+        if len(px_series) >= period:
+            ema = px_series.ewm(span=period, adjust=False).mean()
+            ema_now = float(ema.iloc[-1])
+            if np.isfinite(ema_now) and ema_now > 0:
+                deviation_pct = (price - ema_now) / ema_now
+                ema_values[f"ema_{period}"] = ema_now
+                if period in ema_periods_short:
+                    short_deviations.append(deviation_pct)
+                else:
+                    long_deviations.append(deviation_pct)
+    
+    if not long_deviations:
+        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+    
+    # Calculate group averages
+    short_dev_avg = np.mean(short_deviations) if short_deviations else 0.0
+    long_dev_avg = np.mean(long_deviations)
+    
+    # Structural deviation (long-term determines direction)
+    structural_deviation = long_dev_avg
+    
+    # =========================================================================
+    # STEP 2: MOMENTUM EXTRACTION AND ALIGNMENT
+    # =========================================================================
+    mom21 = feats.get("mom21", pd.Series(dtype=float))
+    mom63 = feats.get("mom63", pd.Series(dtype=float))
+    mom126 = feats.get("mom126", pd.Series(dtype=float))
+    mom252 = feats.get("mom252", pd.Series(dtype=float))
+    
+    def get_mom(m):
+        if m is not None and len(m) > 0:
+            v = float(m.iloc[-1])
+            return v if np.isfinite(v) else 0.0
+        return 0.0
+    
+    mom21_now = get_mom(mom21)
+    mom63_now = get_mom(mom63)
+    mom126_now = get_mom(mom126)
+    mom252_now = get_mom(mom252)
+    
+    # Short-term vs long-term momentum comparison
+    short_term_mom = (mom21_now + mom63_now) / 2
+    long_term_mom = (mom126_now + mom252_now) / 2
+    
+    # Momentum alignment: positive = aligned, negative = diverging
+    mom_alignment = short_term_mom * long_term_mom  # Same sign → positive product
+    
+    # =========================================================================
+    # STEP 3: RECENT PEAK/TROUGH DETECTION (63-day lookback)
+    # =========================================================================
+    lookback_extreme = 63
+    if len(px_series) >= lookback_extreme:
+        rolling_high = float(px_series.iloc[-lookback_extreme:].max())
+        rolling_low = float(px_series.iloc[-lookback_extreme:].min())
+        
+        # Distance from recent high (0 = at high, 1 = at low)
+        high_low_range = rolling_high - rolling_low
+        if high_low_range > 0:
+            position_in_range = (price - rolling_low) / high_low_range
+        else:
+            position_in_range = 0.5
+        
+        # Detect breakdown from recent high
+        distance_from_high_pct = (rolling_high - price) / rolling_high if rolling_high > 0 else 0
+        distance_from_low_pct = (price - rolling_low) / rolling_low if rolling_low > 0 else 0
+    else:
+        position_in_range = 0.5
+        distance_from_high_pct = 0.0
+        distance_from_low_pct = 0.0
+    
+    # =========================================================================
+    # STEP 4: VOLATILITY AND FAT-TAIL ADJUSTMENT
+    # =========================================================================
+    ret_series = feats.get("ret", pd.Series(dtype=float))
+    if ret_series is not None and len(ret_series) >= vol_lookback:
+        recent_vol = float(ret_series.iloc[-vol_lookback:].std())
+        if not np.isfinite(recent_vol) or recent_vol <= 0:
+            recent_vol = 0.02
+    else:
+        recent_vol = 0.02
+    
+    # Z-score based on structural deviation
+    z_score = structural_deviation / max(recent_vol, 1e-10)
+    
+    # Get tail parameter
+    nu_hat_series = feats.get("nu_hat", None)
+    if nu_hat_series is not None and len(nu_hat_series) > 0:
+        nu = float(nu_hat_series.iloc[-1])
+        if not np.isfinite(nu) or nu <= 2:
+            nu = 30.0
+    else:
+        nu = 30.0
+    nu = max(4.0, min(nu, 100.0))
+    
+    # CDF transformation
+    if nu < 30:
+        cdf_val = scipy_t.cdf(abs(z_score), df=nu)
+    else:
+        cdf_val = scipy_norm.cdf(abs(z_score))
+    
+    exhaustion_base = 2.0 * (cdf_val - 0.5)  # Maps to (0, 1)
+    
+    # =========================================================================
+    # STEP 5: PATTERN DETECTION
+    # =========================================================================
+    
+    # EMA slope for trend direction
+    ema_9_series = px_series.ewm(span=9, adjust=False).mean()
+    if len(ema_9_series) >= 5:
+        ema_9_slope = (float(ema_9_series.iloc[-1]) - float(ema_9_series.iloc[-5])) / max(float(ema_9_series.iloc[-5]), 1e-10)
+    else:
+        ema_9_slope = 0.0
+    
+    # Pattern 1: RALLY THEN BREAKDOWN
+    # Long-term momentum strong positive, but short-term breaking down
+    is_rally_breakdown = (
+        long_term_mom > 1.0 and           # Strong long-term momentum
+        short_term_mom < long_term_mom and # Short-term weakening
+        ema_9_slope < -0.005 and          # 9-EMA turning down
+        distance_from_high_pct > 0.05      # At least 5% off recent high
+    )
+    
+    # Pattern 2: PARABOLIC RALLY (extreme)
+    is_parabolic = (
+        mom126_now > 2.0 and
+        structural_deviation > 0.10
+    )
+    
+    # Pattern 3: CAPITULATION
+    is_capitulation = (
+        mom63_now < -2.0 and
+        mom126_now < -1.5 and
+        structural_deviation < -0.15
+    )
+    
+    # Pattern 4: RECOVERY FROM CRASH
+    # Price recovering but still below long-term equilibrium
+    is_recovery = (
+        structural_deviation < 0 and       # Below long-term EMAs
+        short_dev_avg > long_dev_avg and  # Short-term above long-term (recovering)
+        ema_9_slope > 0.005               # Short-term trend up
+    )
+    
+    # Pattern 5: PULLBACK IN UPTREND
+    # Long-term trend up, short-term pullback
+    is_pullback_uptrend = (
+        long_term_mom > 0.5 and            # Long-term trend up
+        structural_deviation > -0.05 and   # Not too far below
+        short_dev_avg < 0 and              # Short-term below EMAs
+        ema_9_slope < 0                    # Pulling back
+    )
+    
+    # =========================================================================
+    # STEP 6: FINAL CALCULATION WITH CONTEXT
+    # =========================================================================
+    
+    if structural_deviation > 0:
+        # PRICE ABOVE LONG-TERM EQUILIBRIUM → ue_up
+        ue_up_raw = exhaustion_base
+        
+        # Boost for parabolic moves
+        if is_parabolic:
+            ue_up_raw = min(ue_up_raw * 1.4 + 0.15, 0.99)
+        
+        # Momentum confirmation boost
+        if long_term_mom > 1.0:
+            ue_up_raw = min(ue_up_raw + 0.1, 0.99)
+        if mom252_now > 1.5:
+            ue_up_raw = min(ue_up_raw + 0.1, 0.99)
+        
+        ue_up = min(ue_up_raw, 0.99)
+        ue_down = 0.0
+        
+    elif structural_deviation < 0:
+        # PRICE BELOW LONG-TERM EQUILIBRIUM → consider ue_down
+        ue_down_raw = exhaustion_base
+        
+        # Rally-then-breakdown: this is MEAN REVERSION, not oversold
+        # Flip to showing ue_up based on long-term momentum strength
+        if is_rally_breakdown:
+            # Strong prior rally means this breakdown is healthy
+            if long_term_mom > 1.5:
+                # Still structurally extended - show ue_up
+                ue_up = min(0.25 + long_term_mom * 0.15, 0.70)
+                ue_down = 0.0
+                return {
+                    "ue_up": float(ue_up),
+                    "ue_down": 0.0,
+                    "z_score": float(z_score),
+                    "deviation_pct": float(structural_deviation * 100),
+                    **ema_values,
+                }
+            else:
+                # Moderate prior rally - reduce ue_down significantly
+                ue_down_raw *= 0.3
+        
+        # Recovery pattern: reduce ue_down (price improving)
+        if is_recovery:
+            recovery_factor = 1.0 - min(short_dev_avg - long_dev_avg, 0.1) * 5
+            ue_down_raw *= max(recovery_factor, 0.3)
+        
+        # Pullback in uptrend: show low ue_down (buying opportunity)
+        if is_pullback_uptrend:
+            ue_down_raw *= 0.4
+            
+        # Capitulation: boost ue_down
+        if is_capitulation:
+            ue_down_raw = min(ue_down_raw * 1.3 + 0.1, 0.99)
+        
+        # Momentum context penalty (positive long-term = less oversold)
+        if not is_capitulation:
+            if long_term_mom > 0.5:
+                ue_down_raw *= 0.7
+            if mom252_now > 1.0:
+                ue_down_raw *= 0.6
+        
+        ue_down = min(max(ue_down_raw, 0.0), 0.99)
+        ue_up = 0.0
+        
+    else:
+        ue_up = 0.0
+        ue_down = 0.0
+    
+    return {
+        "ue_up": float(ue_up),
+        "ue_down": float(ue_down),
+        "z_score": float(z_score),
+        "deviation_pct": float(structural_deviation * 100),
+        **ema_values,
+    }
+
+
+def _compute_simple_exhaustion(
+    feats: Dict[str, pd.Series],
+    lookback_short: int = 9,
+    lookback_long: int = 21,
+    vol_lookback: int = 21,
+) -> Dict[str, float]:
+    """
+    Fallback simple exhaustion calculation when not enough data for multi-timeframe.
+    """
+    from scipy.stats import norm as scipy_norm
+    
+    px_series = feats.get("px", pd.Series(dtype=float))
+    if px_series is None or len(px_series) < max(lookback_short, lookback_long, vol_lookback):
+        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+
+    price = float(px_series.iloc[-1])
+    if not np.isfinite(price) or price <= 0:
+        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+
+    ema_short = px_series.ewm(span=lookback_short, adjust=False).mean()
+    ema_short_now = float(ema_short.iloc[-1])
+
+    if not np.isfinite(ema_short_now) or ema_short_now <= 0:
+        return {"ue_up": 0.0, "ue_down": 0.0, "z_score": 0.0, "deviation_pct": 0.0}
+
+    ret_series = feats.get("ret", pd.Series(dtype=float))
+    if ret_series is not None and len(ret_series) >= vol_lookback:
+        recent_vol = float(ret_series.iloc[-vol_lookback:].std())
+        if not np.isfinite(recent_vol) or recent_vol <= 0:
+            recent_vol = 0.02
+    else:
+        recent_vol = 0.02
+
+    deviation = price - ema_short_now
+    deviation_pct = deviation / ema_short_now
+    price_vol = ema_short_now * recent_vol
+    z_score = deviation / max(price_vol, 1e-10)
+
+    cdf_val = scipy_norm.cdf(abs(z_score))
+    exhaustion_magnitude = 2.0 * (cdf_val - 0.5)
+
+    if deviation > 0:
+        ue_up = min(exhaustion_magnitude, 0.99)
+        ue_down = 0.0
+    elif deviation < 0:
+        ue_up = 0.0
+        ue_down = min(exhaustion_magnitude, 0.99)
+    else:
+        ue_up = 0.0
+        ue_down = 0.0
+
+    return {
+        "ue_up": float(ue_up),
+        "ue_down": float(ue_down),
+        "z_score": float(z_score),
+        "deviation_pct": float(deviation_pct * 100),
+    }
+
+
+def compute_directional_exhaustion(
     realized_cum_log: float,
     expected_cum_log: float,
     expected_sigma: float,
-    directional_cum_log: float,
+    cumulative_log_return: float,
     *,
+    days_in_regime: int = 1,
+    nu: Optional[float] = None,
     w_D: float = 1.0,
     w_L: float = 1.0,
     lambda_0: float = 1.0,
     alpha: float = 1.0,
-) -> float:
+) -> Dict[str, float]:
     """
-    Compute Unified Exhaustion Scalar (UES).
+    DEPRECATED: Old exhaustion calculation. Kept for backward compatibility.
     
-    UES measures trend fragility via two components:
-    1. Deviation (D): How far realized returns deviate from expected (normalized)
-    2. Hazard (L): Exponentially increasing risk from prolonged directional moves
-    
-    Formula:
-        D = (realized_cum_log - expected_cum_log) / expected_sigma
-        hazard = lambda_0 * exp(alpha * |directional_cum_log|)
-        raw = w_D * |D| + w_L * log(1 + hazard)
-        UES = sigmoid(raw) ∈ (0, 1)
-    
-    Args:
-        realized_cum_log: Cumulative realized log return since regime start
-        expected_cum_log: Expected cumulative log return (mu_H * H)
-        expected_sigma: Expected volatility over horizon (sig_H * sqrt(H))
-        directional_cum_log: Cumulative return aligned with signal direction
-        w_D: Weight for deviation component (default 1.0)
-        w_L: Weight for hazard component (default 1.0)
-        lambda_0: Base hazard rate (default 1.0)
-        alpha: Hazard growth rate (default 1.0)
-        
-    Returns:
-        UES value in (0, 1), where higher = more fragile/exhausted
-        
-    Properties:
-        - UES increases during extended rallies
-        - UES resets on regime change
-        - UES is bounded, smooth, and interpretable
-        - UES never decides direction or triggers exits
+    Use compute_directional_exhaustion_from_features() instead, which provides
+    mathematically sound price-based exhaustion measurement.
     """
-    eps = 1e-8
-    
-    # Deviation: standardized distance from expectation
-    D = (realized_cum_log - expected_cum_log) / max(expected_sigma, eps)
-    
-    # Hazard: exponentially increasing with directional extension
-    hazard = lambda_0 * np.exp(alpha * abs(directional_cum_log))
-    
-    # Combine components
-    raw = w_D * abs(D) + w_L * np.log1p(hazard)
-    
-    # Sigmoid to bound in (0, 1)
-    return float(1.0 / (1.0 + np.exp(-raw)))
+    # Return zeros - this function should not be used
+    return {
+        "ue_up": 0.0,
+        "ue_down": 0.0,
+        "D_raw": 0.0,
+        "D_time_adjusted": 0.0,
+        "time_factor": 1.0,
+        "tail_amplifier": 1.0,
+        "days_in_regime": int(days_in_regime),
+    }
 
 
-def clear_ues_state_cache() -> None:
-    """Clear the UES state cache. Useful for testing or resets."""
-    global _ues_state
-    _ues_state.clear()
+def clear_exhaustion_state_cache() -> None:
+    """Clear the exhaustion state cache. Useful for testing or resets."""
+    global _exhaustion_state
+    _exhaustion_state.clear()
 
 
 # NOTE: ExpectedUtilityResult dataclass removed - was only used by the legacy
@@ -533,20 +874,9 @@ class Signal:
     bma_method: str = "legacy"               # "bayesian_model_averaging_full" or "legacy"
     bma_has_model_posterior: bool = False    # True if BMA with model posteriors was used
     bma_borrowed_from_global: bool = False   # True if regime used hierarchical fallback
-    # ========================================================================
-    # UNIFIED EXHAUSTION SCALAR (UES) — Trend Fragility Measurement
-    # ========================================================================
-    # UES measures how fragile the current trend is relative to the system's
-    # own beliefs. High values imply asymmetric downside risk.
-    #
-    # Properties:
-    # - UES ∈ (0, 1) - bounded, smooth, interpretable
-    # - UES increases during extended rallies
-    # - UES resets on regime change
-    # - UES modulates position_strength, never flips direction
-    # - UES NEVER feeds back into tuning
-    # ========================================================================
-    ues: float = 0.0  # Unified Exhaustion Scalar - trend fragility in (0, 1)
+    # DUAL-SIDED TREND EXHAUSTION (0-100% scale, multi-timeframe weighted EMA deviation):
+    ue_up: float = 0.0    # Price above weighted EMA equilibrium (0-1 scale)
+    ue_down: float = 0.0  # Price below weighted EMA equilibrium (0-1 scale)
 
 
 
@@ -1861,76 +2191,146 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             else:
                 return ("light", "cyan")
         
-        # Build model weights table with BIC and Hyvärinen scores
-        weights_table = Table(
-            show_header=True,
-            header_style="bold white",
-            border_style="cyan",
-            padding=(0, 1),
-            expand=False,
-        )
-        weights_table.add_column("Model", style="bold", width=14)
-        weights_table.add_column("Weight", justify="right", width=8)
-        weights_table.add_column("BIC", justify="right", width=10)
-        weights_table.add_column("Hyvärinen", justify="right", width=10)
-        weights_table.add_column("Confidence", width=20)
-        weights_table.add_column("", width=3)
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # EXTRAORDINARY APPLE-QUALITY MODEL PANEL
+        # Design: Clean, premium, scannable, beautiful
+        # ═══════════════════════════════════════════════════════════════════════════════
+        
+        from rich.rule import Rule
+        from rich.align import Align
         
         # Get all models from posterior, sorted by weight descending
         all_models = sorted(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0), reverse=True)
         
-        for model_name in all_models:
+        # Get global-level aggregate scores
+        global_hyv_max = tuned_params.get('hyvarinen_max')
+        global_bic_min = tuned_params.get('bic_min')
+        
+        console.print()
+        console.print()
+        
+        # ─────────────────────────────────────────────────────────────────────────────
+        # ASSET HEADER - Cinematic, clean
+        # ─────────────────────────────────────────────────────────────────────────────
+        header_content = Text()
+        header_content.append("\n", style="")
+        header_content.append(asset_symbol, style="bold bright_white")
+        header_content.append("\n", style="")
+        header_content.append(company_name, style="dim")
+        if sector:
+            header_content.append(f"  ·  {sector}", style="dim italic")
+        header_content.append("\n", style="")
+        
+        header_panel = Panel(
+            Align.center(header_content),
+            box=box.ROUNDED,
+            border_style="bright_cyan",
+            padding=(0, 2),
+        )
+        console.print(Align.center(header_panel, width=50))
+        console.print()
+        
+        # ─────────────────────────────────────────────────────────────────────────────
+        # WINNING MODEL - Hero section
+        # ─────────────────────────────────────────────────────────────────────────────
+        best_info = model_info.get(best_model, {'short': best_model[:12] if best_model else '—'})
+        best_params = global_models.get(best_model, {})
+        best_weight = model_posterior.get(best_model, 0.0)
+        
+        # Get BIC/Hyvärinen from best model params (more reliable)
+        best_bic = best_params.get('bic')
+        best_hyv = best_params.get('hyvarinen_score')
+        
+        winner_grid = Table.grid(padding=(0, 4))
+        winner_grid.add_column(justify="center")
+        winner_grid.add_column(justify="center")
+        winner_grid.add_column(justify="center")
+        winner_grid.add_column(justify="center")
+        
+        def metric_text(value: str, label: str, color: str = "white") -> Text:
+            t = Text()
+            t.append(f"{value}\n", style=f"bold {color}")
+            t.append(label, style="dim")
+            return t
+        
+        bic_str = f"{best_bic:.0f}" if best_bic and np.isfinite(best_bic) else "—"
+        hyv_str = f"{best_hyv:.0f}" if best_hyv and np.isfinite(best_hyv) else "—"
+        
+        winner_grid.add_row(
+            metric_text(best_info['short'], "Model", "bright_green"),
+            metric_text(f"{best_weight:.0%}", "Weight", "bright_cyan"),
+            metric_text(bic_str, "BIC", "white"),
+            metric_text(hyv_str, "Hyv", "white"),
+        )
+        console.print(Align.center(winner_grid))
+        console.print()
+        
+        # ─────────────────────────────────────────────────────────────────────────────
+        # MODEL COMPARISON - Compact, scannable
+        # ─────────────────────────────────────────────────────────────────────────────
+        console.print(Rule(style="dim", characters="─"))
+        console.print()
+        
+        # Only show models with weight > 0.001% to reduce clutter
+        visible_models = [m for m in all_models if model_posterior.get(m, 0) >= 0.0001]
+        
+        for model_name in visible_models:
             p = model_posterior.get(model_name, 0.0)
-            bar_len = int(p * 15)
-            bar_filled = '█' * bar_len
-            bar_empty = '░' * (15 - bar_len)
-            info = model_info.get(model_name, {'short': model_name[:12], 'icon': '•'})
-            
-            # Get BIC and Hyvärinen scores from model params
             m_params = global_models.get(model_name, {})
+            info = model_info.get(model_name, {'short': model_name[:12]})
+            is_best = model_name == best_model
+            
             bic_val = m_params.get('bic')
             hyv_val = m_params.get('hyvarinen_score')
             
-            # Format scores
-            bic_str = f"{bic_val:.1f}" if bic_val is not None and np.isfinite(bic_val) else "—"
-            hyv_str = f"{hyv_val:.1f}" if hyv_val is not None and np.isfinite(hyv_val) else "—"
+            # Visual weight bar
+            bar_width = 20
+            filled = int(p * bar_width)
             
-            is_best = model_name == best_model
+            # Build row
+            row = Text()
+            row.append("    ", style="")
+            
             if is_best:
-                weights_table.add_row(
-                    f"[bold #00d700]{info['short']}[/bold #00d700]",
-                    f"[bold #00d700]{p:.1%}[/bold #00d700]",
-                    f"[#00d700]{bic_str}[/#00d700]",
-                    f"[#00d700]{hyv_str}[/#00d700]",
-                    f"[#00d700]{bar_filled}[/#00d700][dim]{bar_empty}[/dim]",
-                    "[bold #00d700]◀[/bold #00d700]"
-                )
+                row.append("● ", style="bold bright_green")
+                row.append(f"{info['short']:<14}", style="bold bright_green")
+                row.append(f"{p:>6.1%}  ", style="bold bright_green")
+                row.append("━" * filled, style="bright_green")
+                row.append("─" * (bar_width - filled), style="dim")
             else:
-                weights_table.add_row(
-                    info['short'],
-                    f"{p:.1%}",
-                    bic_str,
-                    hyv_str,
-                    f"[cyan]{bar_filled}[/cyan][dim]{bar_empty}[/dim]",
-                    ""
-                )
+                row.append("○ ", style="dim")
+                row.append(f"{info['short']:<14}", style="dim")
+                row.append(f"{p:>6.1%}  ", style="dim")
+                row.append("─" * bar_width, style="dim")
+            
+            console.print(row)
         
-        # Build parameters table
+        console.print()
+        
+        # ─────────────────────────────────────────────────────────────────────────────
+        # PARAMETER ESTIMATES TABLE - All models, Apple-quality
+        # ─────────────────────────────────────────────────────────────────────────────
+        params_header = Text()
+        params_header.append("    ▸ ", style="bright_cyan")
+        params_header.append("Parameter Estimates", style="bold white")
+        console.print(params_header)
+        console.print()
+        
         params_table = Table(
             show_header=True,
-            header_style="bold white",
-            border_style="cyan",
+            header_style="dim",
+            border_style="dim",
+            box=box.ROUNDED,
             padding=(0, 1),
             expand=False,
         )
-        params_table.add_column("Model", style="bold", width=14)
+        params_table.add_column("Model", style="white", width=14)
         params_table.add_column("Drift (q)", justify="center", width=12)
         params_table.add_column("Vol (c)", justify="center", width=12)
         params_table.add_column("Persist (φ)", justify="center", width=12)
         params_table.add_column("Tails (ν)", justify="center", width=12)
         
-        # Iterate over all models from posterior (same order as weights table)
-        for model_name in all_models:
+        for model_name in visible_models:
             m_params = global_models.get(model_name, {})
             info = model_info.get(model_name, {'short': model_name[:12]})
             is_best = model_name == best_model
@@ -1943,67 +2343,38 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 
                 drift_desc, drift_color = describe_drift_speed(q)
                 vol_desc, vol_color = describe_vol_scale(c)
-                persist_desc, persist_color = describe_persistence(phi)
-                tail_desc, tail_color = describe_tail_weight(nu)
+                persist_desc, persist_color = describe_persistence(phi) if phi else ("—", "dim")
+                tail_desc, tail_color = describe_tail_weight(nu) if nu else ("—", "dim")
                 
-                model_style = "bold green" if is_best else "white"
-                
-                params_table.add_row(
-                    f"[{model_style}]{info['short']}[/{model_style}]",
-                    f"[{drift_color}]{drift_desc}[/{drift_color}]",
-                    f"[{vol_color}]{vol_desc}[/{vol_color}]",
-                    f"[{persist_color}]{persist_desc}[/{persist_color}]" if phi is not None else "[dim]—[/dim]",
-                    f"[{tail_color}]{tail_desc}[/{tail_color}]" if nu is not None else "[dim]—[/dim]",
-                )
+                if is_best:
+                    params_table.add_row(
+                        f"[bold bright_green]{info['short']}[/bold bright_green]",
+                        f"[bold {drift_color}]{drift_desc}[/bold {drift_color}]",
+                        f"[bold {vol_color}]{vol_desc}[/bold {vol_color}]",
+                        f"[bold {persist_color}]{persist_desc}[/bold {persist_color}]",
+                        f"[bold {tail_color}]{tail_desc}[/bold {tail_color}]",
+                    )
+                else:
+                    params_table.add_row(
+                        f"[dim]{info['short']}[/dim]",
+                        f"[dim]{drift_desc}[/dim]",
+                        f"[dim]{vol_desc}[/dim]",
+                        f"[dim]{persist_desc}[/dim]",
+                        f"[dim]{tail_desc}[/dim]",
+                    )
             else:
                 params_table.add_row(
-                    info['short'],
-                    "[dim]failed[/dim]",
+                    f"[dim]{info['short']}[/dim]",
+                    "[dim]—[/dim]",
                     "[dim]—[/dim]",
                     "[dim]—[/dim]",
                     "[dim]—[/dim]",
                 )
         
-        # Create header
-        if sector:
-            title = f"[bold cyan]📊 {company_name}[/bold cyan] [dim]({asset_symbol})[/dim] — [white]{sector}[/white]"
-        else:
-            title = f"[bold cyan]📊 {company_name}[/bold cyan] [dim]({asset_symbol})[/dim]"
+        console.print(Padding(params_table, (0, 0, 0, 4)))
         
-        # Get global-level aggregate scores
-        global_hyv_max = tuned_params.get('hyvarinen_max')
-        global_bic_min = tuned_params.get('bic_min')
-        global_comb_min = tuned_params.get('combined_score_min')
-        
-        # Build summary text
-        summary_parts = []
-        if global_bic_min is not None and np.isfinite(global_bic_min):
-            summary_parts.append(f"BIC↓ {global_bic_min:.1f}")
-        if global_hyv_max is not None and np.isfinite(global_hyv_max):
-            summary_parts.append(f"Hyvärinen↑ {global_hyv_max:.1f}")
-        if global_comb_min is not None and np.isfinite(global_comb_min):
-            summary_parts.append(f"Combined↓ {global_comb_min:.2f}")
-        summary_text = " • ".join(summary_parts) if summary_parts else ""
-        summary_text = " • ".join(summary_parts) if summary_parts else ""
-        
-        # Print with elegant layout
         console.print()
-        console.print(Panel(
-            Group(
-                Text(f"Model Weights — Selection: {method_short}", style="bold white"),
-                Text(f"[dim]{method_desc}[/dim]"),
-                weights_table,
-                Text(""),
-                Text("Parameter Estimates", style="bold white"),
-                params_table,
-                Text(""),
-                Text(f"[dim]Best scores: {summary_text}[/dim]") if summary_text else Text(""),
-            ),
-            title=title,
-            subtitle=f"[dim]Bayesian Model Averaging • {method_short}[/dim]",
-            border_style="cyan",
-            padding=(1, 2),
-        ))
+        console.print(Rule(style="dim", characters="─"))
         console.print()
     elif asset_symbol and tuned_params:
         # Old cache format warning
@@ -4691,61 +5062,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # pos_strength is the ONLY position sizing variable used downstream
         # NO Kelly, NO mean/variance ratios - r_samples is the ONLY input
         pos_strength = drift_weight * eu_position_size
-        
-        # ========================================================================
-        # UNIFIED EXHAUSTION SCALAR (UES) — Trend Fragility Measurement
-        # ========================================================================
-        # UES measures how fragile the current trend is relative to the system's
-        # own beliefs. High values imply asymmetric downside risk.
-        #
-        # Integration point: AFTER mu_H, sig_H, regime_used, pos_strength
-        # Modulation: soft scaling of position strength only
-        #
-        # KEY INVARIANTS:
-        # - UES is computed ONLY here (not in compute_features)
-        # - Uses regime_used from _select_regime_params (regime source consistency)
-        # - Aligns direction with sign(mu_H) (signal intent, not raw returns)
-        # - NEVER changes direction, NEVER triggers exits
-        # - NEVER feeds back into tuning
-        # ========================================================================
-        
-        # Get most recent realized return for state update
-        ret_series = feats.get("ret", pd.Series(dtype=float))
-        if isinstance(ret_series, pd.Series) and len(ret_series) > 0:
-            last_ret = float(ret_series.iloc[-1])
-            if not np.isfinite(last_ret):
-                last_ret = 0.0
-        else:
-            last_ret = 0.0
-        
-        # Signal direction from expected return (system's belief about direction)
-        signal_dir = float(np.sign(mu_H)) if abs(mu_H) > 1e-12 else 0.0
-        
-        # Update UES state (regime_used comes from _select_regime_params)
-        regime_for_ues = regime_used if regime_used is not None else 0
-        cum_log, cum_dir = _update_ues_state(
-            asset_key or "", H, last_ret, regime_for_ues, signal_dir
-        )
-        
-        # Compute expected cumulative statistics for comparison
-        expected_cum = mu_H * H  # Expected cumulative log return
-        expected_sigma = sig_H * np.sqrt(H) if sig_H > 0 else 1e-6  # Expected volatility over horizon
-        
-        # Compute UES
-        ues = compute_ues(cum_log, expected_cum, expected_sigma, cum_dir)
-        
-        # ========================================================================
-        # UES MODULATION (Soft Only)
-        # ========================================================================
-        # UES reduces position sizing when trend is exhausted.
-        # Does NOT change direction, does NOT trigger exits.
-        # ========================================================================
-        ues_modulation_factor = 1.0 - 0.5 * ues  # Range: [0.5, 1.0] at max exhaustion
-        pos_strength *= ues_modulation_factor
-        
-        # Store UES value for Signal dataclass
-        ues_value = float(ues)
-        
+
         # Logging/diagnostics: p, E_gain, E_loss, EU, pos_strength
         # (These are stored in Signal dataclass for analysis)
 
@@ -4817,6 +5134,39 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             profit_ci_low_pln = raw_profit_ci_low_pln
             profit_ci_high_pln = raw_profit_ci_high_pln
 
+        # ========================================================================
+        # DUAL-SIDED TREND EXHAUSTION (UE↑ / UE↓) - MULTI-TIMEFRAME
+        # ========================================================================
+        # Compute directional exhaustion using weighted multi-timeframe EMA
+        # deviation with Student-t fat-tail corrections.
+        #
+        # Output: 0-100% scale indicating how far price deviates from equilibrium
+        # - ue_up: Price above weighted EMA equilibrium (higher = more extended)
+        # - ue_down: Price below weighted EMA equilibrium (higher = more extended)
+        # - Mutual exclusivity: only one can be non-zero
+        # - Same value for all horizons (price-based, not model-based)
+        # ========================================================================
+
+        # Compute exhaustion from price features (same for all horizons)
+        exh_result = compute_directional_exhaustion_from_features(feats)
+
+        ue_up = exh_result["ue_up"]
+        ue_down = exh_result["ue_down"]
+
+        # ========================================================================
+        # EXHAUSTION-BASED RISK MODULATION (SOFT ONLY)
+        # ========================================================================
+        # Higher ue_up → reduce long conviction (extended above equilibrium)
+        # Higher ue_down → reduce short conviction (extended below equilibrium)
+        # This does NOT flip signals - only modulates confidence
+        # ========================================================================
+        if ue_up > 0 and pos_strength > 0:
+            # Extended above equilibrium: reduce long conviction
+            pos_strength *= (1.0 - 0.5 * ue_up)
+        if ue_down > 0 and pos_strength > 0:
+            # Extended below equilibrium: reduce short conviction
+            pos_strength *= (1.0 - 0.5 * ue_down)
+
         sigs.append(Signal(
             horizon_days=int(H),
             score=float(edge_now),
@@ -4865,15 +5215,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             bma_method=str(bma_meta.get("method", "legacy")),
             bma_has_model_posterior=bool(bma_meta.get("has_bma", False)),
             bma_borrowed_from_global=bool(bma_meta.get("regime_details", {}).get(regime_used, {}).get("borrowed_from_global", False)) if regime_used is not None else False,
-            # ================================================================
-            # UNIFIED EXHAUSTION SCALAR (UES)
-            # ================================================================
-            # UES measures trend fragility relative to system beliefs.
-            # - UES ∈ (0, 1) - higher = more fragile/exhausted
-            # - Modulates position_strength (already applied above)
-            # - NEVER changes direction or triggers exits
-            # ================================================================
-            ues=float(ues_value),
+            # DUAL-SIDED TREND EXHAUSTION (market-space fragility):
+            ue_up=float(ue_up),
+            ue_down=float(ue_down),
         ))
 
     return sigs, thresholds
@@ -4978,48 +5322,76 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         }
 
 
-def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, horizons: List[int], max_retries: int = 3, use_bulk: bool = True):
+def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, horizons: List[int], max_retries: int = 3):
     """Run asset processing with bounded retries and collect failures.
     Retries only the assets that failed on prior attempts.
-    When use_bulk is True, prefetches prices in batches to reduce Yahoo rate limits
-    and processes sequentially to reuse the shared in-memory cache.
+    Uses multiprocessing.Pool for true multi-process parallelism (CPU-bound work).
     """
-    console = Console()
+    from rich.rule import Rule
+    from rich.align import Align
+    
+    console = Console(force_terminal=True, width=140)
     pending = list(dict.fromkeys(a.strip() for a in assets if a and a.strip()))
     successes: List[Dict] = []
     failures: Dict[str, Dict[str, object]] = {}
     processed_canon = set()
 
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # EXTRAORDINARY APPLE-QUALITY PROCESSING UX
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    # Processing header
+    header = Text()
+    header.append("▸ ", style="bright_cyan")
+    header.append("PROCESSING", style="bold white")
+    console.print(header)
+    console.print()
+    
+    # Stats row
+    n_workers = min(cpu_count(), len(pending))
+    stats = Text()
+    stats.append("    ", style="")
+    stats.append(f"{len(pending)}", style="bold bright_cyan")
+    stats.append(" assets", style="dim")
+    stats.append("  ·  ", style="dim")
+    stats.append(f"{n_workers}", style="bold white")
+    stats.append(" cores", style="dim")
+    stats.append("  ·  ", style="dim")
+    stats.append(f"{max_retries}", style="white")
+    stats.append(" max retries", style="dim")
+    console.print(stats)
+    console.print()
+
     attempt = 1
     while attempt <= max_retries and pending:
         n_workers = min(cpu_count(), len(pending))
-        console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} workers...[/cyan]")
+        
+        # Pass indicator
+        pass_text = Text()
+        pass_text.append(f"    Pass {attempt}/{max_retries}", style="dim")
+        pass_text.append(f"  ·  {len(pending)} pending", style="dim")
+        console.print(pass_text)
+        
         work_items = [(asset, args, horizons) for asset in pending]
 
-        if use_bulk and attempt == 1 and pending:
+        # Prefetch prices in bulk on first attempt to reduce Yahoo rate limits
+        if attempt == 1 and pending:
             try:
-                console.print(f"[cyan]Prefetching {len(pending)} assets in bulk to reduce rate limits...[/cyan]")
-                download_prices_bulk(pending, start=args.start, end=args.end)
+                # Suppress verbose output and symbol tables - they're shown after validation
+                download_prices_bulk(pending, start=args.start, end=args.end, progress=False, show_symbol_tables=False)
             except Exception as e:
-                console.print(f"[yellow]Warning:[/yellow] Bulk prefetch failed: {e}. Falling back to standard fetch.")
+                console.print(f"    [yellow]⚠[/yellow] [dim]Bulk prefetch failed, using standard fetch[/dim]")
 
-        if use_bulk:
-            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets in parallel with shared cache...[/cyan]")
-            results = []
-            with ThreadPoolExecutor(max_workers=n_workers) as ex:
-                future_map = {ex.submit(process_single_asset, item): item for item in work_items}
-                for fut in as_completed(future_map):
-                    try:
-                        results.append(fut.result())
-                    except Exception as exc:
-                        asset = future_map[fut][0]
-                        results.append({"status": "error", "asset": asset, "error": str(exc)})
-        else:
-            console.print(f"[cyan]Attempt {attempt}/{max_retries}: processing {len(pending)} assets with {n_workers} worker process(es)...[/cyan]")
-            with Pool(processes=n_workers) as pool:
-                results = pool.map(process_single_asset, work_items)
+        # Always use multiprocessing.Pool for true multi-process parallelism
+        with Pool(processes=n_workers) as pool:
+            results = pool.map(process_single_asset, work_items)
 
         next_pending: List[str] = []
+        pass_successes = 0
         for asset, result in zip(pending, results):
             if not result or result.get("status") != "success":
                 err = (result or {}).get("error", "unknown")
@@ -5050,15 +5422,46 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
                 continue
             processed_canon.add(canon)
             successes.append(result)
+            pass_successes += 1
             # drop from pending on success; nothing to add to next_pending
             if asset in failures:
                 failures.pop(asset, None)
 
         pending = list(dict.fromkeys(next_pending))
+
+        # Pass result
+        if pass_successes > 0:
+            console.print(f"    [bright_green]✓[/bright_green] [dim]{pass_successes} succeeded[/dim]")
+        
+        # Early exit: if all assets succeeded, skip remaining passes
+        if not pending:
+            break
+
+        if pending and attempt < max_retries:
+            console.print(f"    [yellow]○[/yellow] [dim]{len(pending)} retrying...[/dim]")
+        
         attempt += 1
 
-    if pending:
-        console.print(f"[yellow]Retry budget exhausted; {len(pending)} assets still failing.[/yellow]")
+    console.print()
+    
+    # Final status
+    if not pending:
+        done = Text()
+        done.append("    ", style="")
+        done.append("✓", style="bold bright_green")
+        done.append(f"  {len(successes)} assets processed", style="white")
+        console.print(done)
+    else:
+        done = Text()
+        done.append("    ", style="")
+        done.append("!", style="bold yellow")
+        done.append(f"  {len(successes)} succeeded, {len(pending)} failed", style="white")
+        console.print(done)
+    
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
     return successes, failures
 
 
@@ -5097,7 +5500,8 @@ def main() -> None:
                     horizon_signals[int(h)] = {
                         "label": sig.get("label", "HOLD"),
                         "profit_pln": float(sig.get("profit_pln", 0.0)),
-                        "ues": float(sig.get("ues", 0.0)),  # Include UES from cache
+                        "ue_up": float(sig.get("ue_up", 0.0)),
+                        "ue_down": float(sig.get("ue_down", 0.0)),
                     }
                 nearest_label = next(iter(horizon_signals.values()), {}).get("label", "HOLD")
                 summary_rows_cached.append({"asset_label": asset_label, "horizon_signals": horizon_signals, "nearest_label": nearest_label, "sector": sector})
@@ -5125,13 +5529,38 @@ def main() -> None:
     # Parse assets
     assets = [a.strip() for a in args.assets.split(",") if a.strip()]
 
-    console = Console()
-    console.print(f"[cyan]Validating {len(assets)} requested assets against fx_data_utils mappings...[/cyan]")
+    console = Console(force_terminal=True, width=140)
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # VALIDATION PHASE - Apple-quality UX
+    # ═══════════════════════════════════════════════════════════════════════════════
+    from rich.rule import Rule
+    
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    validation_header = Text()
+    validation_header.append("▸ ", style="bright_cyan")
+    validation_header.append("VALIDATION", style="bold white")
+    console.print(validation_header)
+    console.print()
+    
+    validation_stats = Text()
+    validation_stats.append("    ", style="")
+    validation_stats.append(f"{len(assets)}", style="bold bright_cyan")
+    validation_stats.append(" assets requested", style="dim")
+    console.print(validation_stats)
+    console.print()
+    
     for a in assets:
         try:
             _resolve_symbol_candidates(a)
         except Exception as e:
-            console.print(f"[yellow]Warning:[/yellow] Could not resolve mapping for {a}: {e}")
+            console.print(f"    [yellow]⚠[/yellow] [dim]{a}: {e}[/dim]")
+    
+    # Print symbol resolution table right after validation (before processing starts)
+    print_symbol_tables()
 
     all_blocks = []  # for JSON export
     csv_rows_simple = []  # for CSV simple export
@@ -5142,7 +5571,6 @@ def main() -> None:
     # RETRYING PARALLEL PROCESSING: Compute features/signals with bounded retries
     # =========================================================================
     success_results, failures = _process_assets_with_retries(assets, args, horizons, max_retries=3)
-    console.print(f"[#00d700]✓ Parallel computation attempts complete. Now displaying results...[/#00d700]\n")
 
     # =========================================================================
     # SEQUENTIAL DISPLAY & AGGREGATION: Process results in order with console output
@@ -5695,7 +6123,8 @@ def main() -> None:
             int(s.horizon_days): {
                 "label": s.label,
                 "profit_pln": float(s.profit_pln),
-                "ues": float(getattr(s, 'ues', 0.0)),  # Include UES for summary
+                "ue_up": float(s.ue_up),
+                "ue_down": float(s.ue_down),
             }
             for s in sigs
         }

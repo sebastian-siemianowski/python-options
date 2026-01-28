@@ -82,6 +82,7 @@ from scipy.stats import dirichlet, entropy
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.padding import Padding
 from rich import box
 
 
@@ -404,6 +405,7 @@ class BayesianTransitionModel:
     Includes exponential forgetting to handle non-stationary markets:
     - α_posterior *= decay before each update
     - This gives more weight to recent transitions
+
     """
 
     def __init__(
@@ -1462,7 +1464,7 @@ class UnifiedDecisionGate:
         self._confidence_ema = 0.0
         self._primary_signal = 0.0
         self._amplifier = 1.0
-        
+    
     def compute_switch_confidence(
         self,
         wasserstein_distance: float,
@@ -1653,74 +1655,123 @@ class UnifiedDecisionGate:
 # DATA INGESTION (READ-ONLY, ISOLATED)
 # =============================================================================
 
-def _load_eurjpy_prices(data_path: str = EURJPY_DATA_FILE, force_refresh: bool = True) -> Optional[pd.Series]:
+def _load_eurjpy_prices(data_path: str = EURJPY_DATA_FILE, force_refresh: bool = True, quiet: bool = False) -> Optional[pd.Series]:
     """
     Load EURJPY price series, downloading fresh data from yfinance.
     
     Args:
         data_path: Path to EURJPY daily data CSV
         force_refresh: If True, always download fresh data
+        quiet: Suppress verbose output
         
     Returns:
         pd.Series with DatetimeIndex and EURJPY prices, or None if unavailable
     """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.text import Text
+    
     path = Path(data_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    
+    console = Console(force_terminal=True, width=100, quiet=quiet)
     
     # Try to download fresh data from yfinance
     if force_refresh:
         try:
             import yfinance as yf
             
-            print(f"[debt_allocator] Downloading fresh EURJPY data...")
-            
-            ticker = yf.Ticker("EURJPY=X")
-            df = ticker.history(period="max")  # Get maximum available history (>10 years)
+            if not quiet:
+                with Progress(
+                    SpinnerColumn(spinner_name="dots", style="bright_cyan"),
+                    TextColumn("[bold white]Fetching EURJPY data[/bold white]"),
+                    TextColumn("[dim]yfinance[/dim]"),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    task = progress.add_task("", total=None)
+                    
+                    ticker = yf.Ticker("EURJPY=X")
+                    df = ticker.history(period="max")
+            else:
+                ticker = yf.Ticker("EURJPY=X")
+                df = ticker.history(period="max")
             
             if df is not None and not df.empty and 'Close' in df.columns:
                 df_save = df.reset_index()
                 df_save.to_csv(path, index=False)
                 
-                print(f"[debt_allocator] Downloaded {len(df)} days of EURJPY data")
-                print(f"[debt_allocator] Saved to: {path}")
+                if not quiet:
+                    # Show elegant data summary
+                    data_text = Text()
+                    data_text.append("    ✓ ", style="bright_green")
+                    data_text.append(f"{len(df):,}", style="bold white")
+                    data_text.append(" days of EURJPY history\n", style="white")
+                    data_text.append("    ◎ ", style="dim")
+                    data_text.append("Cached to ", style="dim")
+                    data_text.append(str(path.name), style="dim italic")
+                    console.print(data_text)
+                    console.print()
                 
                 prices = df['Close'].dropna()
                 if len(prices) >= MIN_HISTORY_DAYS:
                     return prices.sort_index()
                 else:
-                    print(f"[debt_allocator] Warning: Only {len(prices)} days (need {MIN_HISTORY_DAYS})")
+                    if not quiet:
+                        console.print(f"[yellow]    ⚠ Only {len(prices)} days (need {MIN_HISTORY_DAYS})[/yellow]")
+                    
         except ImportError:
-            print("[debt_allocator] Warning: yfinance not installed, trying cached data")
+            if not quiet:
+                console.print("[yellow]    ⚠ yfinance not installed, using cache[/yellow]")
         except Exception as e:
-            print(f"[debt_allocator] Warning: Download failed ({e}), trying cached data")
+            if not quiet:
+                console.print(f"[yellow]    ⚠ Download failed, using cache[/yellow]")
     
     # Fall back to cached data
     try:
         if path.exists():
-            print(f"[debt_allocator] Loading cached EURJPY data from: {path}")
-            df = pd.read_csv(path, parse_dates=['Date'], index_col='Date')
+            if not quiet:
+                with Progress(
+                    SpinnerColumn(spinner_name="dots", style="dim"),
+                    TextColumn("[white]Loading cached data[/white]"),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    task = progress.add_task("", total=None)
+                    df = pd.read_csv(path, parse_dates=['Date'], index_col='Date')
+            else:
+                df = pd.read_csv(path, parse_dates=['Date'], index_col='Date')
             
             if 'Close' in df.columns:
                 prices = df['Close']
             elif 'Adj Close' in df.columns:
                 prices = df['Adj Close']
             else:
-                print("[debt_allocator] Error: No Close column in cached data")
+                if not quiet:
+                    console.print("[red]    ✗ No Close column in cached data[/red]")
                 return None
             
             prices = prices.dropna()
             if len(prices) >= MIN_HISTORY_DAYS:
-                print(f"[debt_allocator] Loaded {len(prices)} days from cache")
+                if not quiet:
+                    data_text = Text()
+                    data_text.append("    ✓ ", style="bright_green")
+                    data_text.append(f"{len(prices):,}", style="bold white")
+                    data_text.append(" days from cache\n", style="white")
+                    console.print(data_text)
+                    console.print()
                 return prices.sort_index()
             else:
-                print(f"[debt_allocator] Warning: Cached data has only {len(prices)} days")
+                if not quiet:
+                    console.print(f"[yellow]    ⚠ Cached data has only {len(prices)} days[/yellow]")
                 return None
         else:
-            print(f"[debt_allocator] Error: No cached data found at {path}")
+            if not quiet:
+                console.print(f"[red]    ✗ No cached data at {path}[/red]")
             return None
             
     except Exception as e:
-        print(f"[debt_allocator] Error loading cached data: {e}")
+        if not quiet:
+            console.print(f"[red]    ✗ Error loading cached data: {e}[/red]")
         return None
 
 
@@ -1798,18 +1849,30 @@ def _compute_convex_loss(
     """
     Compute convex loss functional: C(t) = E[max(ΔX, 0)^p]
     
-    Rules:
-    - Estimated via posterior predictive Monte Carlo ONLY
-    - No analytical tails
-    - Trim extreme outliers
+    Mathematical Foundation:
+    ========================
+    The convex loss functional measures expected positive tail risk using
+    a power utility with exponent p ∈ (1, 2]. This is a coherent risk measure.
+    
+    Properties:
+    1. C(X) ≥ 0 (non-negative)
+    2. Monotonicity: X ≤ Y a.s. ⟹ C(X) ≤ C(Y)
+    3. Convexity: C(λX + (1-λ)Y) ≤ λC(X) + (1-λ)C(Y)
+    
+    The exponent p controls risk sensitivity:
+    - p = 1: Linear (expected positive return)
+    - p = 1.5: Moderate risk aversion (default)
+    - p = 2: Quadratic (emphasizes large moves)
+    
+    Estimation via Monte Carlo: C(t) ≈ (1/N) Σᵢ max(xᵢ, 0)^p
     
     Args:
         posterior_samples: Monte Carlo samples of future returns
-        p: Convex exponent in (1, 2]
-        trim_percentile: Percentile for outlier trimming
+        p: Convex exponent in (1, 2], controls risk sensitivity
+        trim_percentile: Percentile for outlier trimming (robustness)
         
     Returns:
-        Convex loss estimate
+        Convex loss estimate C(t) ≥ 0
     """
     if len(posterior_samples) < MIN_POSTERIOR_SAMPLES:
         return float('nan')
@@ -1927,7 +1990,8 @@ def _compute_epistemic_disagreement(
 def _compute_volatility_ratio(
     log_returns: pd.Series,
     short_window: int = VOL_LOOKBACK_SHORT,
-    long_window: int = VOL_LOOKBACK_LONG
+    long_window: int = VOL_LOOKBACK_LONG,
+    adaptive: bool = True
 ) -> float:
     """
     Compute volatility compression/expansion ratio.
@@ -1942,20 +2006,43 @@ def _compute_volatility_ratio(
         log_returns: Historical log returns
         short_window: Short-term volatility window
         long_window: Long-term volatility window
+        adaptive: If True (default), use available data when insufficient for long_window
+                 (but only if data is at least 60% of required)
         
     Returns:
         Volatility ratio
     """
-    if len(log_returns) < long_window:
+    n = len(log_returns)
+    
+    # Minimum requirement: need at least short_window * 2 for any comparison
+    if n < short_window * 2:
         return float('nan')
     
+    # Check if we have enough data for requested long_window
+    if n < long_window:
+        if adaptive:
+            # Only adapt if we have at least 60% of requested data
+            # This prevents using very limited data that could be misleading
+            min_required = int(long_window * 0.6)
+            if n < min_required:
+                return float('nan')
+            # Adaptive mode - use all available data
+            effective_long_window = n
+            # Ensure meaningful separation from short window
+            if effective_long_window <= short_window:
+                return float('nan')
+        else:
+            # Strict mode - return NaN if not enough data
+            return float('nan')
+    else:
+        effective_long_window = long_window    
     recent = log_returns.iloc[-short_window:]
-    historical = log_returns.iloc[-long_window:]
+    historical = log_returns.iloc[-effective_long_window:]
     
     vol_short = float(recent.std())
     vol_long = float(historical.std())
     
-    if vol_long <= 0:
+    if vol_long <= 0 or not np.isfinite(vol_long):
         return float('nan')
     
     return vol_short / vol_long
@@ -2010,8 +2097,8 @@ def _construct_observation_vector(
     else:
         disagreement_momentum = 0.0
     
-    # 6) Volatility Ratio
-    vol_ratio = _compute_volatility_ratio(log_returns)
+    # 6) Volatility Ratio (adaptive mode for robustness with limited data)
+    vol_ratio = _compute_volatility_ratio(log_returns, adaptive=True)
     
     # Construct raw observation
     raw_obs = ObservationVector(
@@ -2036,41 +2123,74 @@ def _build_base_transition_matrix(persistence: float = TRANSITION_PERSISTENCE) -
     """
     Build base monotone transition matrix respecting partial ordering.
     
-    States: NORMAL → COMPRESSED → PRE_POLICY → POLICY
-    Backward transitions are forbidden (set to 0).
+    Mathematical Foundation:
+    ========================
+    The latent states form a partial order (poset):
+    
+        NORMAL ≺ COMPRESSED ≺ PRE_POLICY ≺ POLICY
+    
+    The transition matrix A = [A_ij] must respect this ordering:
+    
+    1. Monotonicity: A_ij = 0 for j < i (no backward transitions)
+    2. Stochasticity: Σ_j A_ij = 1 (rows sum to 1)
+    3. Persistence: A_ii = p (diagonal dominance)
+    4. Absorbing: A_33 = 1 (POLICY is terminal)
+    
+    Forward Transition Distribution:
+    ================================
+    For non-terminal states i < 3, the forward transition probabilities are:
+    
+        A_i,i+k = (1-p) · w_k / Σ_j w_j  for k ≥ 1
+    
+    where w_k = 2^(K-k) are geometric weights favoring immediate transitions.
+    
+    This implements a "decay" prior: more likely to move to adjacent state
+    than to skip states, but skipping is not forbidden.
+    
+    Interpretation:
+    ==============
+    - p = 0.85: High persistence reflects sticky regime behavior
+    - w_k geometric: Prefer gradual transitions over regime skipping
+    - POLICY absorbing: Once triggered, no recovery (irreversible decision)
     
     Args:
-        persistence: Diagonal dominance (probability of staying in same state)
+        persistence: Diagonal probability p ∈ (0, 1), default 0.85
         
     Returns:
-        4x4 transition matrix
+        4×4 row-stochastic transition matrix
     """
     n_states = LatentState.n_states()
     A = np.zeros((n_states, n_states))
     
     for i in range(n_states):
-        # Diagonal: persistence probability
-        A[i, i] = persistence
-        
-        # Forward transitions only (monotone constraint)
-        remaining = 1.0 - persistence
-        
-        if i < n_states - 1:
-            # Distribute remaining probability to forward states
-            # More weight to immediate next state
+        if i == n_states - 1:
+            # POLICY state: absorbing (probability 1 of staying)
+            A[i, i] = 1.0
+        else:
+            # Non-terminal states: persistence + forward transitions
+            A[i, i] = persistence
+            
+            # Forward transition mass
+            remaining = 1.0 - persistence
+            
+            # Number of forward states
             forward_states = n_states - i - 1
+            
+            # Geometric weights: 2^(K-k-1) for k ∈ {0, ..., K-1}
+            # This gives [2^(K-1), 2^(K-2), ..., 2, 1] pattern
+            # Normalized to sum to 1
             weights = np.array([2.0 ** (forward_states - j - 1) for j in range(forward_states)])
             weights = weights / weights.sum()
             
+            # Assign forward probabilities
             for j, w in enumerate(weights):
                 A[i, i + 1 + j] = remaining * w
-        else:
-            # POLICY state: absorbing (stays in POLICY)
-            A[i, i] = 1.0
     
-    # Normalize rows
+    # Verify stochasticity (defensive)
     for i in range(n_states):
-        A[i, :] = A[i, :] / A[i, :].sum()
+        row_sum = A[i, :].sum()
+        if abs(row_sum - 1.0) > 1e-10:
+            A[i, :] = A[i, :] / row_sum
     
     return A
 
@@ -2618,8 +2738,6 @@ def _g_convexity_adjustment(delta_c: float, scale: float = 0.0005) -> float:
     - g(·) is monotonically increasing
     - g(·) is bounded (saturates to prevent extreme thresholds)
     
-    Uses tanh for smooth saturation.
-    
     Args:
         delta_c: Convex loss acceleration ΔC(t) = C(t) - C(t-1)
         scale: Normalization scale for typical ΔC values
@@ -2630,18 +2748,11 @@ def _g_convexity_adjustment(delta_c: float, scale: float = 0.0005) -> float:
     if not np.isfinite(delta_c):
         return 0.0
     
-    # Only reduce threshold for positive acceleration (increasing convexity)
     if delta_c <= 0:
         return 0.0
     
-    # Normalize by typical scale
     normalized = delta_c / scale
-    
-    # Apply tanh for bounded, monotonic, saturating behavior
-    # tanh(x) ∈ [-1, 1], we use only positive part
     raw_g = np.tanh(normalized)
-    
-    # Maximum adjustment to α is 0.20 (from 0.60 base to 0.40 minimum)
     max_adjustment = 0.20
     
     return max_adjustment * raw_g
@@ -2654,41 +2765,21 @@ def _compute_dynamic_alpha(
     """
     Compute risk-adaptive decision boundary α(t).
     
-    v3.1.0 - Issue 2 Fix: Static α replaced with dynamic α(t)
-    
-    Formula:
-        α(t) = α₀ − g(ΔC(t))
-    
-    Where:
-    - α₀ is the baseline confidence threshold (base_alpha)
-    - g(·) is a bounded, monotone increasing function
-    - ΔC(t) = C(t) - C(t-1) is convex loss acceleration
-    
-    Interpretation:
-    - When convexity is flat (ΔC ≈ 0) → require high certainty (α ≈ α₀)
-    - When convexity accelerates (ΔC > 0) → act earlier with less certainty
-    
-    This implements risk-sensitive Bayesian decision theory.
-    No discretionary logic is permitted.
+    Formula: α(t) = α₀ − g(ΔC(t))
     
     Args:
         observation: Current observation vector
-        base_alpha: Baseline threshold α₀ (default PRE_POLICY_THRESHOLD)
+        base_alpha: Baseline threshold α₀
         
     Returns:
-        Dynamic threshold α(t) ∈ (0, 1)
+        Dynamic threshold α(t) ∈ [0.40, α₀]
     """
-    # v3.1.0 - Issue 2 Fix: α(t) = α₀ − g(ΔC(t))
-    # This is the ONLY adjustment - no discretionary logic
     alpha = base_alpha
     
     if np.isfinite(observation.convex_loss_acceleration):
         g_adjustment = _g_convexity_adjustment(observation.convex_loss_acceleration)
         alpha -= g_adjustment
     
-    # Enforce strict bounds: α(t) ∈ (0, 1)
-    # Lower bound prevents extreme threshold reduction
-    # Upper bound is the base_alpha
     alpha = max(0.40, min(alpha, base_alpha))
     
     return alpha
@@ -2701,7 +2792,8 @@ def _compute_dynamic_alpha(
 def _run_inference(
     log_returns: pd.Series,
     lookback_days: int = 252,
-    random_seed: int = 42
+    random_seed: int = 42,
+    quiet: bool = False,
 ) -> Tuple[ObservationVector, StatePosterior, List[ObservationVector]]:
     """
     Run latent state inference on the full history.
@@ -2709,11 +2801,18 @@ def _run_inference(
     Args:
         log_returns: Historical log returns
         lookback_days: Number of days for inference window
-        random_seed: Random seed for reproducibility (default: 42)
+        random_seed: Random seed for reproducibility
+        quiet: Suppress verbose output
         
     Returns:
         Tuple of (current_observation, current_posterior, observation_history)
     """
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+    from rich.text import Text
+    from rich.align import Align
+    
+    console = Console(force_terminal=True, width=100, quiet=quiet)
+    
     # Freeze randomness for reproducibility
     np.random.seed(random_seed)
     random.seed(random_seed)
@@ -2723,10 +2822,6 @@ def _run_inference(
     if n_obs < MIN_HISTORY_DAYS:
         raise ValueError(f"Insufficient history: {n_obs} < {MIN_HISTORY_DAYS}")
     
-    # Build observation history
-    print("[debt_allocator] Building observation history...")
-    
-    # Use rolling window approach
     window_size = min(lookback_days, n_obs - MIN_HISTORY_DAYS)
     start_idx = n_obs - window_size
     
@@ -2735,66 +2830,110 @@ def _run_inference(
     prev_disagreement = None
     prev_convex_loss = None
     
-    for t in range(start_idx, n_obs):
-        # Use data up to time t
-        returns_to_t = log_returns.iloc[:t+1]
-        
-        obs = _construct_observation_vector(
-            returns_to_t, 
-            prev_disagreement=prev_disagreement,
-            prev_convex_loss=prev_convex_loss,
-            timestamp=str(log_returns.index[t])
-        )
-        observations.append(obs)
-        obs_arrays.append(obs.to_array())
-        
-        # Update for next iteration
-        prev_disagreement = obs.disagreement
-        prev_convex_loss = obs.convex_loss
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # PHASE 1: Build Observation History with elegant progress
+    # ═══════════════════════════════════════════════════════════════════════════════
+    if not quiet:
+        with Progress(
+            SpinnerColumn(spinner_name="dots", style="bright_cyan"),
+            TextColumn("[bold white]Building observations[/bold white]"),
+            BarColumn(bar_width=30, style="bright_cyan", complete_style="bright_green"),
+            TaskProgressColumn(),
+            TextColumn("[dim]{task.description}[/dim]"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("", total=window_size)
+            
+            for idx, t in enumerate(range(start_idx, n_obs)):
+                returns_to_t = log_returns.iloc[:t+1]
+                
+                obs = _construct_observation_vector(
+                    returns_to_t, 
+                    prev_disagreement=prev_disagreement,
+                    prev_convex_loss=prev_convex_loss,
+                    timestamp=str(log_returns.index[t])
+                )
+                observations.append(obs)
+                obs_arrays.append(obs.to_array())
+                
+                prev_disagreement = obs.disagreement
+                prev_convex_loss = obs.convex_loss
+                
+                progress.update(task, advance=1, description=f"day {idx+1}/{window_size}")
+    else:
+        for t in range(start_idx, n_obs):
+            returns_to_t = log_returns.iloc[:t+1]
+            obs = _construct_observation_vector(
+                returns_to_t, 
+                prev_disagreement=prev_disagreement,
+                prev_convex_loss=prev_convex_loss,
+                timestamp=str(log_returns.index[t])
+            )
+            observations.append(obs)
+            obs_arrays.append(obs.to_array())
+            prev_disagreement = obs.disagreement
+            prev_convex_loss = obs.convex_loss
     
     if len(observations) == 0:
         raise ValueError("No observations constructed")
     
-    print(f"[debt_allocator] Built {len(observations)} observations")
-    
-    # Convert to array for HMM
     historical_obs_array = np.array(obs_arrays)
-    
-    # Build transition matrix
     A = _build_transition_matrix()
-    
-    # Initial distribution (start in NORMAL with high probability)
     pi = np.array([0.85, 0.10, 0.04, 0.01])
     
-    # Run forward inference
-    print("[debt_allocator] Running forward inference...")
-    posteriors = _forward_algorithm(
-        [obs.to_array() for obs in observations],
-        A,
-        pi,
-        historical_obs_array
-    )
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # PHASE 2-4: Run inference pipeline with elegant status display
+    # ═══════════════════════════════════════════════════════════════════════════════
+    if not quiet:
+        with Progress(
+            SpinnerColumn(spinner_name="dots", style="bright_cyan"),
+            TextColumn("[bold white]{task.description}[/bold white]"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Forward inference...", total=None)
+            posteriors = _forward_algorithm(
+                [obs.to_array() for obs in observations],
+                A,
+                pi,
+                historical_obs_array
+            )
+            progress.update(task, completed=True)
+            
+            progress.update(task, description="Bayesian + Wasserstein + MI...")
+            feature_names = ['convex_loss', 'tail_mass', 'disagreement', 
+                             'disag_momentum', 'vol_ratio', 'convex_accel']
+            
+            enhanced_hmm = EnhancedHMMInference(n_states=LatentState.n_states())
+            enhanced_hmm.fit(
+                observations=historical_obs_array,
+                state_posteriors=posteriors,
+                feature_names=feature_names
+            )
+            
+            progress.update(task, description="Decision gate...")
+    else:
+        posteriors = _forward_algorithm(
+            [obs.to_array() for obs in observations],
+            A,
+            pi,
+            historical_obs_array
+        )
+        
+        feature_names = ['convex_loss', 'tail_mass', 'disagreement', 
+                         'disag_momentum', 'vol_ratio', 'convex_accel']
+        
+        enhanced_hmm = EnhancedHMMInference(n_states=LatentState.n_states())
+        enhanced_hmm.fit(
+            observations=historical_obs_array,
+            state_posteriors=posteriors,
+            feature_names=feature_names
+        )
     
-    # ==========================================================================
-    # ENHANCED HMM: Bayesian Model Averaging + Wasserstein + Information Theory
-    # ==========================================================================
-    print("[debt_allocator] Running enhanced inference (Bayesian + Wasserstein + MI)...")
-    
-    feature_names = ['convex_loss', 'tail_mass', 'disagreement', 
-                     'disag_momentum', 'vol_ratio', 'convex_accel']
-    
-    enhanced_hmm = EnhancedHMMInference(n_states=LatentState.n_states())
-    enhanced_hmm.fit(
-        observations=historical_obs_array,
-        state_posteriors=posteriors,
-        feature_names=feature_names
-    )
-    
-    # ==========================================================================
-    # UNIFIED DECISION GATE: Single scalar output architecture
-    # ==========================================================================
-    print("[debt_allocator] Running unified decision gate...")
-    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # UNIFIED DECISION GATE
+    # ═══════════════════════════════════════════════════════════════════════════════
     decision_gate = UnifiedDecisionGate(
         n_states=LatentState.n_states(),
         wasserstein_threshold=0.15,
@@ -2803,68 +2942,102 @@ def _run_inference(
         switch_threshold=0.6,
     )
     
-    # Get enhanced posterior for final observation
     current_posterior_probs = posteriors[-1]
     
     if enhanced_hmm.is_fitted:
-        # Get Wasserstein score (PRIMARY SIGNAL)
         wasserstein_score = 0.0
         if enhanced_hmm.wasserstein_detector is not None:
             if enhanced_hmm.wasserstein_detector.scores_ is not None:
                 wasserstein_score = enhanced_hmm.wasserstein_detector.scores_[-1]
         
-        # Get MI ratio (AMPLIFIER ONLY)
         mi_ratio = None
         if enhanced_hmm.info_weighting.mi_scores_ is not None:
             total_mi = enhanced_hmm.info_weighting.mi_scores_.sum()
             if total_mi > 0:
-                mi_ratio = total_mi / 1.0  # Normalize to baseline of 1.0
+                mi_ratio = total_mi / 1.0
         
-        # Get KL divergence (AMPLIFIER ONLY)
         kl_divergence = None
         if enhanced_hmm.info_weighting.emission_means_ is not None:
             kl_matrix = enhanced_hmm.info_weighting.compute_kl_divergence_matrix()
             kl_divergence = np.mean(kl_matrix[kl_matrix > 0]) if np.any(kl_matrix > 0) else 0.0
         
-        # UNIFIED DECISION: Compute single scalar switch confidence
         switch_confidence_scalar = decision_gate.compute_switch_confidence(
             wasserstein_distance=wasserstein_score,
             mi_ratio=mi_ratio,
             kl_divergence=kl_divergence,
         )
         
-        # Update belief using Bayesian transition with decay
         transition_matrix = enhanced_hmm.bayesian_transition.expected_transition_matrix()
         decision_gate.belief = current_posterior_probs.copy()
         decision_gate.update_belief(transition_matrix)
         
-        # Get final decision
         should_switch, final_confidence, decision_reason = decision_gate.should_switch()
         
-        # Log unified gate diagnostics
-        gate_diag = decision_gate.get_diagnostics()
-        print(f"[debt_allocator] Unified Decision Gate:")
-        print(f"  - Primary Signal (Wasserstein): {gate_diag['primary_signal']['wasserstein']:.4f}")
-        print(f"  - Normalized Signal: {gate_diag['primary_signal']['normalized_signal']:.4f}")
-        print(f"  - Amplifier (combined): {gate_diag['amplifiers']['combined']:.3f}")
-        print(f"  - Switch Confidence: {gate_diag['switch_confidence']:.2%}")
-        print(f"  - Decision: {'SWITCH' if should_switch else 'HOLD'} ({decision_reason})")
-        print(f"  - Forward State P(PRE_POLICY+POLICY): {gate_diag['forward_state_probability']:.2%}")
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # BEAUTIFUL INFERENCE SUMMARY (Apple-quality UX)
+        # ═══════════════════════════════════════════════════════════════════════════════
+        if not quiet:
+            gate_diag = decision_gate.get_diagnostics()
+            diagnostics = enhanced_hmm.get_diagnostics()
+            
+            console.print()
+            
+            summary_text = Text()
+            summary_text.append("\n", style="")
+            
+            summary_text.append("    ✓ ", style="bright_green")
+            summary_text.append(f"{len(observations)} observations\n", style="white")
+            summary_text.append("    ✓ ", style="bright_green")
+            summary_text.append("Forward inference\n", style="white")
+            summary_text.append("    ✓ ", style="bright_green")
+            summary_text.append("Bayesian model averaging\n", style="white")
+            summary_text.append("    ✓ ", style="bright_green")
+            summary_text.append("Wasserstein regime detection\n", style="white")
+            summary_text.append("    ✓ ", style="bright_green")
+            summary_text.append("MI-weighted emissions\n", style="white")
+            summary_text.append("\n", style="")
+            
+            regime_stability = diagnostics.get('regime_stability', 0)
+            n_regime_changes = diagnostics.get('n_regime_changes', 0)
+            trans_uncertainty = diagnostics.get('transition_uncertainty_mean', 0)
+            
+            if regime_stability > 0.7:
+                stab_color = "bright_green"
+                stab_icon = "●"
+            elif regime_stability > 0.5:
+                stab_color = "yellow"
+                stab_icon = "◐"
+            else:
+                stab_color = "red"
+                stab_icon = "○"
+            
+            summary_text.append(f"    {stab_icon} ", style=stab_color)
+            summary_text.append("Stability ", style="dim")
+            summary_text.append(f"{regime_stability:.0%}\n", style=f"bold {stab_color}")
+            
+            summary_text.append("    ◎ ", style="dim")
+            summary_text.append("Regime shifts ", style="dim")
+            summary_text.append(f"{n_regime_changes}\n", style="white")
+            
+            summary_text.append("    ◎ ", style="dim")
+            summary_text.append("Uncertainty ", style="dim")
+            summary_text.append(f"{trans_uncertainty:.4f}\n", style="white")
+            
+            summary_text.append("\n", style="")
+            
+            inference_panel = Panel(
+                summary_text,
+                title="[bold white]Inference Complete[/bold white]",
+                title_align="left",
+                border_style="bright_cyan",
+                box=box.ROUNDED,
+                padding=(0, 2),
+            )
+            console.print(inference_panel)
         
-        # Also log legacy diagnostics for comparison
-        diagnostics = enhanced_hmm.get_diagnostics()
-        print(f"[debt_allocator] Supporting diagnostics:")
-        print(f"  - Regime stability: {diagnostics.get('regime_stability', 'N/A'):.3f}")
-        print(f"  - Transition uncertainty: {diagnostics.get('transition_uncertainty_mean', 'N/A'):.4f}")
-        print(f"  - Regime changes detected: {diagnostics.get('n_regime_changes', 'N/A')}")
-        
-        # Use the unified gate's belief as the final posterior
         current_posterior_probs = decision_gate.belief
     
-    # Get current (final) observation and posterior
     current_obs = observations[-1]
-    
-    # Find dominant state
     dominant_state = LatentState(int(np.argmax(current_posterior_probs)))
     
     current_posterior = StatePosterior(
@@ -3063,6 +3236,7 @@ def run_debt_allocation_engine(
     force_reevaluate: bool = False,
     force_refresh_data: bool = True,
     use_dynamic_alpha: bool = True,
+    quiet: bool = False,
 ) -> Optional[DebtSwitchDecision]:
     """
     Run the debt allocation engine.
@@ -3073,6 +3247,7 @@ def run_debt_allocation_engine(
         force_reevaluate: If True, ignore persisted decision
         force_refresh_data: If True, download fresh data
         use_dynamic_alpha: Use dynamic threshold α(t)
+        quiet: Suppress verbose output
         
     Returns:
         DebtSwitchDecision or None if engine cannot run
@@ -3081,27 +3256,30 @@ def run_debt_allocation_engine(
     if not force_reevaluate:
         prior_decision = _load_persisted_decision(persistence_path)
         if prior_decision is not None and prior_decision.triggered:
-            print("[debt_allocator] Prior triggered decision exists - returning cached")
+            if not quiet:
+                print("[debt_allocator] Prior triggered decision exists - returning cached")
             return prior_decision
     
     # LOAD DATA
-    prices = _load_eurjpy_prices(data_path, force_refresh=force_refresh_data)
+    prices = _load_eurjpy_prices(data_path, force_refresh=force_refresh_data, quiet=quiet)
     if prices is None:
         return None
     
     # COMPUTE LOG RETURNS
     log_returns = _compute_log_returns(prices)
     if len(log_returns) < MIN_HISTORY_DAYS:
-        print(f"[debt_allocator] Insufficient data: {len(log_returns)} < {MIN_HISTORY_DAYS}")
+        if not quiet:
+            print(f"[debt_allocator] Insufficient data: {len(log_returns)} < {MIN_HISTORY_DAYS}")
         return None
     
     # RUN INFERENCE
     try:
-        observation, posterior, _ = _run_inference(log_returns)
+        observation, posterior, _ = _run_inference(log_returns, quiet=quiet)
     except Exception as e:
-        print(f"[debt_allocator] Inference failed: {e}")
-        import traceback
-        traceback.print_exc()
+        if not quiet:
+            print(f"[debt_allocator] Inference failed: {e}")
+            import traceback
+            traceback.print_exc()
         return None
     
     # MAKE DECISION
@@ -3114,7 +3292,8 @@ def run_debt_allocation_engine(
     # PERSIST IF TRIGGERED
     if decision.triggered:
         _persist_decision(decision, persistence_path)
-        print(f"[debt_allocator] DECISION TRIGGERED - persisted to {persistence_path}")
+        if not quiet:
+            print(f"[debt_allocator] DECISION TRIGGERED - persisted to {persistence_path}")
     
     return decision
 
@@ -3127,189 +3306,255 @@ def _get_status_display(decision: DebtSwitchDecision) -> Tuple[str, str, str]:
     """Get status emoji, text, and color for display."""
     if decision.triggered:
         if decision.state_posterior.dominant_state == LatentState.POLICY:
-            return "🔴", "SWITCH TRIGGERED (POLICY)", "red"
+            return "🔴", "SWITCH NOW", "red"
         elif decision.state_posterior.dominant_state == LatentState.PRE_POLICY:
-            return "🔴", "SWITCH TRIGGERED (PRE-POLICY)", "red"
+            return "🔴", "SWITCH NOW", "red"
         else:
-            return "🔴", "SWITCH TRIGGERED", "red"
+            return "🔴", "SWITCH NOW", "red"
     
     dominant = decision.state_posterior.dominant_state
     if dominant == LatentState.PRE_POLICY:
-        return "🟡", "MONITORING (PRE-POLICY)", "yellow"
+        return "🟡", "MONITOR", "yellow"
     elif dominant == LatentState.COMPRESSED:
-        return "🟡", "MONITORING (COMPRESSED)", "yellow"
+        return "🟡", "MONITOR", "yellow"
     else:
-        return "🟢", "NO ACTION REQUIRED", "green"
+        return "🟢", "HOLD", "bright_green"
 
 
 def render_debt_switch_decision(
     decision: Optional[DebtSwitchDecision],
     console: Optional[Console] = None
 ) -> None:
-    """Render debt switch decision with Rich formatting."""
-    if console is None:
-        console = Console()
+    """Render debt switch decision with extraordinary Apple-quality UX."""
+    from rich.rule import Rule
+    from rich.align import Align
+    from rich.text import Text
+    from rich.columns import Columns
     
-    # Header
-    console.print()
-    console.print("=" * 60)
-    console.print("[bold cyan]DEBT ALLOCATION — EURJPY (v4.0.0)[/bold cyan]", justify="center")
-    console.print("=" * 60)
-    console.print()
+    if console is None:
+        console = Console(force_terminal=True, width=100)
     
     if decision is None:
-        console.print(Panel(
-            "[bold red]ENGINE CANNOT RUN[/bold red]\n\n"
-            "Possible reasons:\n"
-            "• Insufficient EURJPY data\n"
-            "• Inference failure\n"
-            "• Data validation failed",
-            title="[bold red]❌ ERROR[/bold red]",
+        console.print()
+        error_text = Text()
+        error_text.append("\n", style="")
+        error_text.append("Engine Cannot Run", style="bold red")
+        error_text.append("\n\n", style="")
+        error_text.append("Insufficient data or inference failure", style="dim")
+        error_text.append("\n", style="")
+        
+        error_panel = Panel(
+            Align.center(error_text),
             border_style="red",
-        ))
+            box=box.ROUNDED,
+            padding=(1, 4),
+        )
+        console.print(Align.center(error_panel, width=50))
+        console.print()
         return
     
-    # Status
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # DECISION STATUS - Hero Section
+    # ═══════════════════════════════════════════════════════════════════════════════
     status_emoji, status_text, status_color = _get_status_display(decision)
     
-    # Build status panel
-    if decision.triggered:
-        status_content = (
-            f"[bold]Switch Status[/bold]     : {status_emoji} [bold {status_color}]{status_text}[/bold {status_color}]\n"
-            f"[bold]Effective Date[/bold]    : [bold white]{decision.effective_date}[/bold white]\n"
-            f"[bold]Dynamic α(t)[/bold]      : {decision.dynamic_alpha:.2%}"
-        )
-    else:
-        status_content = (
-            f"[bold]Switch Status[/bold]     : {status_emoji} [{status_color}]{status_text}[/{status_color}]\n"
-            f"[bold]Dynamic α(t)[/bold]      : {decision.dynamic_alpha:.2%}"
-        )
-    
-    console.print(Panel(
-        status_content,
-        title=f"[bold {status_color}]Decision Status[/bold {status_color}]",
-        border_style=status_color,
-        padding=(1, 2),
-    ))
-    
     console.print()
     
-    # Latent State Probabilities (4 states)
-    console.print("[bold cyan]Latent State Probabilities:[/bold cyan]")
+    # Central status badge
+    status_content = Text()
+    status_content.append("\n", style="")
+    status_content.append(status_emoji + "  ", style="")
+    status_content.append(status_text, style=f"bold {status_color}")
+    status_content.append("\n", style="")
     
-    state_table = Table(
-        show_header=True,
-        header_style="bold",
-        box=box.SIMPLE,
-        padding=(0, 2),
+    if decision.triggered:
+        status_content.append("\n", style="")
+        status_content.append("Effective: ", style="dim")
+        status_content.append(str(decision.effective_date), style="bold white")
+        status_content.append("\n", style="")
+    
+    status_panel = Panel(
+        Align.center(status_content),
+        border_style=status_color if decision.triggered else "dim",
+        box=box.DOUBLE if decision.triggered else box.ROUNDED,
+        padding=(0, 6),
     )
-    state_table.add_column("State", style="bold")
-    state_table.add_column("Probability", justify="right")
-    state_table.add_column("", justify="center", width=20)
+    console.print(Align.center(status_panel, width=40))
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # LATENT STATES - Visual Bars
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    section_header = Text()
+    section_header.append("▸ ", style="bright_cyan")
+    section_header.append("LATENT STATES", style="bold white")
+    console.print(section_header)
+    console.print()
     
     post = decision.state_posterior
-    probs = [
-        ("NORMAL", post.p_normal),
-        ("COMPRESSED", post.p_compressed),
-        ("PRE_POLICY", post.p_pre_policy),
-        ("POLICY", post.p_policy),
+    states = [
+        ("NORMAL", post.p_normal, "bright_green"),
+        ("COMPRESSED", post.p_compressed, "yellow"),
+        ("PRE_POLICY", post.p_pre_policy, "orange1"),
+        ("POLICY", post.p_policy, "red"),
     ]
     
-    for state_name, prob in probs:
-        # Create visual bar
-        bar_len = int(prob * 20)
-        bar = "█" * bar_len + "░" * (20 - bar_len)
+    bar_width = 35
+    for state_name, prob, color in states:
+        filled = int(prob * bar_width)
+        is_dominant = state_name == post.dominant_state.name
         
-        # Color based on state
-        if state_name == post.dominant_state.name:
-            prob_str = f"[bold cyan]{prob:.1%}[/bold cyan]"
-            bar_str = f"[cyan]{bar}[/cyan]"
-        elif state_name in ("PRE_POLICY", "POLICY") and prob > 0.2:
-            prob_str = f"[yellow]{prob:.1%}[/yellow]"
-            bar_str = f"[yellow]{bar}[/yellow]"
+        row = Text()
+        row.append("    ", style="")
+        
+        if is_dominant:
+            row.append("● ", style=f"bold {color}")
+            row.append(f"{state_name:<12}", style=f"bold {color}")
+            row.append(f"{prob:>7.1%}  ", style=f"bold {color}")
+            row.append("━" * filled, style=color)
+            row.append("─" * (bar_width - filled), style="dim")
         else:
-            prob_str = f"{prob:.1%}"
-            bar_str = f"[dim]{bar}[/dim]"
+            row.append("○ ", style="dim")
+            row.append(f"{state_name:<12}", style="dim")
+            row.append(f"{prob:>7.1%}  ", style="dim")
+            row.append("─" * bar_width, style="dim")
         
-        state_table.add_row(state_name, prob_str, bar_str)
+        console.print(row)
     
-    console.print(state_table)
     console.print()
     
-    # Observation Metrics
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # OBSERVATION METRICS - Clean Grid
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    section_header = Text()
+    section_header.append("▸ ", style="bright_cyan")
+    section_header.append("METRICS", style="bold white")
+    console.print(section_header)
+    console.print()
+    
     obs = decision.observation
     
     metrics_table = Table(
         show_header=True,
-        header_style="bold cyan",
+        header_style="dim",
+        border_style="dim",
         box=box.ROUNDED,
-        padding=(0, 1),
+        padding=(0, 2),
+        expand=False,
     )
-    metrics_table.add_column("Metric", style="bold", width=25)
-    metrics_table.add_column("Value", justify="right", width=20)
+    metrics_table.add_column("Metric", style="white", width=22)
+    metrics_table.add_column("Value", justify="right", width=14)
+    metrics_table.add_column("", justify="left", width=12)
     
-    # Format metrics with appropriate precision
-    if np.isfinite(obs.convex_loss):
-        convex_str = f"{obs.convex_loss:.6f}"
+    # Convex Loss
+    convex_str = f"{obs.convex_loss:.6f}" if np.isfinite(obs.convex_loss) else "—"
+    convex_status = ""
+    
+    # Acceleration
+    if np.isfinite(obs.convex_loss_acceleration):
+        accel = obs.convex_loss_acceleration
+        accel_str = f"{accel:+.6f}"
+        if accel > 0.0002:
+            accel_status = "[yellow]↑ rising[/yellow]"
+        elif accel < -0.0002:
+            accel_status = "[bright_green]↓ falling[/bright_green]"
+        else:
+            accel_status = "[dim]stable[/dim]"
     else:
-        convex_str = "[dim]N/A[/dim]"
+        accel_str = "—"
+        accel_status = ""
     
+    # Tail Mass
     if np.isfinite(obs.tail_mass):
-        tail_str = f"{obs.tail_mass:.2%}"
-        if obs.tail_mass > 0.55:
-            tail_str = f"[yellow]{tail_str}[/yellow]"
+        tail_str = f"{obs.tail_mass:.1%}"
+        if obs.tail_mass > 0.60:
+            tail_status = "[yellow]elevated[/yellow]"
+        else:
+            tail_status = "[dim]normal[/dim]"
     else:
-        tail_str = "[dim]N/A[/dim]"
+        tail_str = "—"
+        tail_status = ""
     
+    # Disagreement
     if np.isfinite(obs.disagreement):
         disag_str = f"{obs.disagreement:.3f}"
         if obs.disagreement > 0.4:
-            disag_str = f"[yellow]{disag_str}[/yellow]"
+            disag_status = "[yellow]high[/yellow]"
+        else:
+            disag_status = "[dim]normal[/dim]"
     else:
-        disag_str = "[dim]N/A[/dim]"
+        disag_str = "—"
+        disag_status = ""
     
+    # Momentum
     if np.isfinite(obs.disagreement_momentum):
         mom_str = f"{obs.disagreement_momentum:+.4f}"
         if obs.disagreement_momentum > 0.02:
-            mom_str = f"[yellow]{mom_str}[/yellow]"
+            mom_status = "[yellow]↑[/yellow]"
+        elif obs.disagreement_momentum < -0.02:
+            mom_status = "[bright_green]↓[/bright_green]"
+        else:
+            mom_status = "[dim]—[/dim]"
     else:
-        mom_str = "[dim]N/A[/dim]"
+        mom_str = "—"
+        mom_status = ""
     
+    # Vol Ratio
     if np.isfinite(obs.vol_ratio):
         vol_str = f"{obs.vol_ratio:.3f}"
         if obs.vol_ratio < 0.8:
-            vol_str = f"[yellow]{vol_str}[/yellow] (compressed)"
+            vol_status = "[cyan]compressed[/cyan]"
         elif obs.vol_ratio > 1.3:
-            vol_str = f"[red]{vol_str}[/red] (expanding)"
+            vol_status = "[red]expanding[/red]"
+        else:
+            vol_status = "[dim]normal[/dim]"
     else:
-        vol_str = "[dim]N/A[/dim]"
+        vol_str = "—"
+        vol_status = ""
     
-    # Convex loss acceleration
-    if np.isfinite(obs.convex_loss_acceleration):
-        accel_str = f"{obs.convex_loss_acceleration:+.6f}"
-        if obs.convex_loss_acceleration > 0.0002:
-            accel_str = f"[yellow]{accel_str}[/yellow] (accelerating)"
-        elif obs.convex_loss_acceleration < -0.0002:
-            accel_str = f"[green]{accel_str}[/green] (decelerating)"
-    else:
-        accel_str = "[dim]N/A[/dim]"
+    metrics_table.add_row("Convex Loss C(t)", convex_str, convex_status)
+    metrics_table.add_row("Acceleration ΔC(t)", accel_str, accel_status)
+    metrics_table.add_row("Tail Mass P(ΔX>0)", tail_str, tail_status)
+    metrics_table.add_row("Disagreement D(t)", disag_str, disag_status)
+    metrics_table.add_row("Momentum dD/dt", mom_str, mom_status)
+    metrics_table.add_row("Vol Ratio V(t)", vol_str, vol_status)
     
-    metrics_table.add_row("Convex Loss C(t)", convex_str)
-    metrics_table.add_row("Convex Accel ΔC(t)", accel_str)
-    metrics_table.add_row("Tail Mass P(ΔX > 0)", tail_str)
-    metrics_table.add_row("Disagreement D(t)", disag_str)
-    metrics_table.add_row("Momentum dD(t)", mom_str)
-    metrics_table.add_row("Vol Ratio V(t)", vol_str)
-    
-    console.print(metrics_table)
+    console.print(Padding(metrics_table, (0, 0, 0, 4)))
     console.print()
     
-    # Decision Basis
-    console.print(f"[bold]Decision Basis:[/bold] {decision.decision_basis}")
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # FOOTER - Decision Details
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print(Rule(style="dim"))
     console.print()
+    
+    # Decision basis
+    basis_text = Text()
+    basis_text.append("    ", style="")
+    basis_text.append("Decision: ", style="dim")
+    basis_text.append(decision.decision_basis, style="white")
+    console.print(basis_text)
+    
+    # Threshold
+    threshold_text = Text()
+    threshold_text.append("    ", style="")
+    threshold_text.append("Threshold α(t): ", style="dim")
+    threshold_text.append(f"{decision.dynamic_alpha:.0%}", style="white")
+    console.print(threshold_text)
     
     # Signature
-    console.print(f"[dim]Signature: {decision.signature[:16]}...[/dim]")
+    sig_text = Text()
+    sig_text.append("    ", style="")
+    sig_text.append("Signature: ", style="dim")
+    sig_text.append(decision.signature[:16], style="dim italic")
+    console.print(sig_text)
+    
     console.print()
 
 
@@ -3350,39 +3595,66 @@ def main():
         action='store_true',
         help='Use fixed threshold instead of dynamic α(t)'
     )
+    parser.add_argument(
+        '--quiet', '-q',
+        action='store_true',
+        help='Suppress verbose processing output'
+    )
     
     args = parser.parse_args()
     
-    console = Console()
-    
     use_dynamic_alpha = not args.no_dynamic_alpha
     
-    # Show header
+    from rich.rule import Rule
+    from rich.align import Align
+    from rich.text import Text
+    
+    console = Console(force_terminal=True, width=100)
+    
+    # Show header - Apple-quality cinematic design
     if not args.json:
         console.print()
-        console.print(Panel(
-            "[bold cyan]FX Debt Allocation Engine[/bold cyan]\n"
-            "[dim]EURJPY Latent Policy-Stress Inference[/dim]\n"
-            "[bold green]Version 4.0.0[/bold green]",
-            border_style="cyan",
-        ))
         console.print()
-        console.print(f"[dim]Cache directory: {DEBT_CACHE_DIR}[/dim]")
-        console.print(f"[dim]Data file: {args.data_path}[/dim]")
         
-        # Show feature status
+        # Cinematic header
+        header_text = Text()
+        header_text.append("\n", style="")
+        header_text.append("D E B T   A L L O C A T I O N", style="bold white")
+        header_text.append("\n", style="")
+        header_text.append("EURJPY Policy-Stress Engine", style="dim")
+        header_text.append("\n", style="")
+        
+        header_panel = Panel(
+            Align.center(header_text),
+            box=box.DOUBLE,
+            border_style="bright_cyan",
+            padding=(1, 4),
+        )
+        console.print(Align.center(header_panel, width=50))
         console.print()
-        console.print("[bold]Features:[/bold]")
-        console.print(f"  Dynamic α(t):           {'[green]ON[/green]' if use_dynamic_alpha else '[yellow]OFF[/yellow]'}")
-        console.print(f"  Transition Pressure Φ:  [green]ON[/green]")
+        
+        # Feature badges
+        features = Text()
+        features.append("◉ ", style="bright_green" if use_dynamic_alpha else "dim")
+        features.append("Dynamic α(t)", style="white" if use_dynamic_alpha else "dim")
+        features.append("    ", style="")
+        features.append("◉ ", style="bright_green")
+        features.append("Transition Φ", style="white")
+        features.append("    ", style="")
+        features.append("◎ ", style="dim")
+        features.append("v4.0.0", style="dim")
+        console.print(Align.center(features))
+        console.print()
+        console.print(Rule(style="dim"))
         console.print()
     
-    # Run engine
+    # Run engine with quiet mode (ONLY ONCE!)
     decision = run_debt_allocation_engine(
         data_path=args.data_path,
         force_reevaluate=args.force,
         force_refresh_data=not args.no_refresh,
         use_dynamic_alpha=use_dynamic_alpha,
+        quiet=args.quiet or args.json,
     )
     
     if args.json:
