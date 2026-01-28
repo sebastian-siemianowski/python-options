@@ -82,6 +82,7 @@ from scipy.stats import dirichlet, entropy
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.padding import Padding
 from rich import box
 
 
@@ -404,6 +405,7 @@ class BayesianTransitionModel:
     Includes exponential forgetting to handle non-stationary markets:
     - α_posterior *= decay before each update
     - This gives more weight to recent transitions
+
     """
 
     def __init__(
@@ -1462,7 +1464,7 @@ class UnifiedDecisionGate:
         self._confidence_ema = 0.0
         self._primary_signal = 0.0
         self._amplifier = 1.0
-        
+    
     def compute_switch_confidence(
         self,
         wasserstein_distance: float,
@@ -1653,13 +1655,14 @@ class UnifiedDecisionGate:
 # DATA INGESTION (READ-ONLY, ISOLATED)
 # =============================================================================
 
-def _load_eurjpy_prices(data_path: str = EURJPY_DATA_FILE, force_refresh: bool = True) -> Optional[pd.Series]:
+def _load_eurjpy_prices(data_path: str = EURJPY_DATA_FILE, force_refresh: bool = True, quiet: bool = False) -> Optional[pd.Series]:
     """
     Load EURJPY price series, downloading fresh data from yfinance.
     
     Args:
         data_path: Path to EURJPY daily data CSV
         force_refresh: If True, always download fresh data
+        quiet: Suppress verbose output
         
     Returns:
         pd.Series with DatetimeIndex and EURJPY prices, or None if unavailable
@@ -1667,12 +1670,16 @@ def _load_eurjpy_prices(data_path: str = EURJPY_DATA_FILE, force_refresh: bool =
     path = Path(data_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     
+    def log(msg: str):
+        if not quiet:
+            print(msg)
+    
     # Try to download fresh data from yfinance
     if force_refresh:
         try:
             import yfinance as yf
             
-            print(f"[debt_allocator] Downloading fresh EURJPY data...")
+            log(f"[debt_allocator] Downloading fresh EURJPY data...")
             
             ticker = yf.Ticker("EURJPY=X")
             df = ticker.history(period="max")  # Get maximum available history (>10 years)
@@ -1681,23 +1688,23 @@ def _load_eurjpy_prices(data_path: str = EURJPY_DATA_FILE, force_refresh: bool =
                 df_save = df.reset_index()
                 df_save.to_csv(path, index=False)
                 
-                print(f"[debt_allocator] Downloaded {len(df)} days of EURJPY data")
-                print(f"[debt_allocator] Saved to: {path}")
+                log(f"[debt_allocator] Downloaded {len(df)} days of EURJPY data")
+                log(f"[debt_allocator] Saved to: {path}")
                 
                 prices = df['Close'].dropna()
                 if len(prices) >= MIN_HISTORY_DAYS:
                     return prices.sort_index()
                 else:
-                    print(f"[debt_allocator] Warning: Only {len(prices)} days (need {MIN_HISTORY_DAYS})")
+                    log(f"[debt_allocator] Warning: Only {len(prices)} days (need {MIN_HISTORY_DAYS})")
         except ImportError:
-            print("[debt_allocator] Warning: yfinance not installed, trying cached data")
+            log("[debt_allocator] Warning: yfinance not installed, trying cached data")
         except Exception as e:
-            print(f"[debt_allocator] Warning: Download failed ({e}), trying cached data")
+            log(f"[debt_allocator] Warning: Download failed ({e}), trying cached data")
     
     # Fall back to cached data
     try:
         if path.exists():
-            print(f"[debt_allocator] Loading cached EURJPY data from: {path}")
+            log(f"[debt_allocator] Loading cached EURJPY data from: {path}")
             df = pd.read_csv(path, parse_dates=['Date'], index_col='Date')
             
             if 'Close' in df.columns:
@@ -1705,22 +1712,22 @@ def _load_eurjpy_prices(data_path: str = EURJPY_DATA_FILE, force_refresh: bool =
             elif 'Adj Close' in df.columns:
                 prices = df['Adj Close']
             else:
-                print("[debt_allocator] Error: No Close column in cached data")
+                log("[debt_allocator] Error: No Close column in cached data")
                 return None
             
             prices = prices.dropna()
             if len(prices) >= MIN_HISTORY_DAYS:
-                print(f"[debt_allocator] Loaded {len(prices)} days from cache")
+                log(f"[debt_allocator] Loaded {len(prices)} days from cache")
                 return prices.sort_index()
             else:
-                print(f"[debt_allocator] Warning: Cached data has only {len(prices)} days")
+                log(f"[debt_allocator] Warning: Cached data has only {len(prices)} days")
                 return None
         else:
-            print(f"[debt_allocator] Error: No cached data found at {path}")
+            log(f"[debt_allocator] Error: No cached data found at {path}")
             return None
             
     except Exception as e:
-        print(f"[debt_allocator] Error loading cached data: {e}")
+        log(f"[debt_allocator] Error loading cached data: {e}")
         return None
 
 
@@ -2701,7 +2708,8 @@ def _compute_dynamic_alpha(
 def _run_inference(
     log_returns: pd.Series,
     lookback_days: int = 252,
-    random_seed: int = 42
+    random_seed: int = 42,
+    quiet: bool = False,
 ) -> Tuple[ObservationVector, StatePosterior, List[ObservationVector]]:
     """
     Run latent state inference on the full history.
@@ -2710,10 +2718,15 @@ def _run_inference(
         log_returns: Historical log returns
         lookback_days: Number of days for inference window
         random_seed: Random seed for reproducibility (default: 42)
+        quiet: Suppress verbose output
         
     Returns:
         Tuple of (current_observation, current_posterior, observation_history)
     """
+    def log(msg: str):
+        if not quiet:
+            print(msg)
+    
     # Freeze randomness for reproducibility
     np.random.seed(random_seed)
     random.seed(random_seed)
@@ -2724,7 +2737,7 @@ def _run_inference(
         raise ValueError(f"Insufficient history: {n_obs} < {MIN_HISTORY_DAYS}")
     
     # Build observation history
-    print("[debt_allocator] Building observation history...")
+    log("[debt_allocator] Building observation history...")
     
     # Use rolling window approach
     window_size = min(lookback_days, n_obs - MIN_HISTORY_DAYS)
@@ -2755,7 +2768,7 @@ def _run_inference(
     if len(observations) == 0:
         raise ValueError("No observations constructed")
     
-    print(f"[debt_allocator] Built {len(observations)} observations")
+    log(f"[debt_allocator] Built {len(observations)} observations")
     
     # Convert to array for HMM
     historical_obs_array = np.array(obs_arrays)
@@ -2767,7 +2780,7 @@ def _run_inference(
     pi = np.array([0.85, 0.10, 0.04, 0.01])
     
     # Run forward inference
-    print("[debt_allocator] Running forward inference...")
+    log("[debt_allocator] Running forward inference...")
     posteriors = _forward_algorithm(
         [obs.to_array() for obs in observations],
         A,
@@ -2778,7 +2791,7 @@ def _run_inference(
     # ==========================================================================
     # ENHANCED HMM: Bayesian Model Averaging + Wasserstein + Information Theory
     # ==========================================================================
-    print("[debt_allocator] Running enhanced inference (Bayesian + Wasserstein + MI)...")
+    log("[debt_allocator] Running enhanced inference (Bayesian + Wasserstein + MI)...")
     
     feature_names = ['convex_loss', 'tail_mass', 'disagreement', 
                      'disag_momentum', 'vol_ratio', 'convex_accel']
@@ -2793,7 +2806,7 @@ def _run_inference(
     # ==========================================================================
     # UNIFIED DECISION GATE: Single scalar output architecture
     # ==========================================================================
-    print("[debt_allocator] Running unified decision gate...")
+    log("[debt_allocator] Running unified decision gate...")
     
     decision_gate = UnifiedDecisionGate(
         n_states=LatentState.n_states(),
@@ -2841,22 +2854,23 @@ def _run_inference(
         # Get final decision
         should_switch, final_confidence, decision_reason = decision_gate.should_switch()
         
-        # Log unified gate diagnostics
-        gate_diag = decision_gate.get_diagnostics()
-        print(f"[debt_allocator] Unified Decision Gate:")
-        print(f"  - Primary Signal (Wasserstein): {gate_diag['primary_signal']['wasserstein']:.4f}")
-        print(f"  - Normalized Signal: {gate_diag['primary_signal']['normalized_signal']:.4f}")
-        print(f"  - Amplifier (combined): {gate_diag['amplifiers']['combined']:.3f}")
-        print(f"  - Switch Confidence: {gate_diag['switch_confidence']:.2%}")
-        print(f"  - Decision: {'SWITCH' if should_switch else 'HOLD'} ({decision_reason})")
-        print(f"  - Forward State P(PRE_POLICY+POLICY): {gate_diag['forward_state_probability']:.2%}")
-        
-        # Also log legacy diagnostics for comparison
-        diagnostics = enhanced_hmm.get_diagnostics()
-        print(f"[debt_allocator] Supporting diagnostics:")
-        print(f"  - Regime stability: {diagnostics.get('regime_stability', 'N/A'):.3f}")
-        print(f"  - Transition uncertainty: {diagnostics.get('transition_uncertainty_mean', 'N/A'):.4f}")
-        print(f"  - Regime changes detected: {diagnostics.get('n_regime_changes', 'N/A')}")
+        # Log unified gate diagnostics (only if not quiet)
+        if not quiet:
+            gate_diag = decision_gate.get_diagnostics()
+            log(f"[debt_allocator] Unified Decision Gate:")
+            log(f"  - Primary Signal (Wasserstein): {gate_diag['primary_signal']['wasserstein']:.4f}")
+            log(f"  - Normalized Signal: {gate_diag['primary_signal']['normalized_signal']:.4f}")
+            log(f"  - Amplifier (combined): {gate_diag['amplifiers']['combined']:.3f}")
+            log(f"  - Switch Confidence: {gate_diag['switch_confidence']:.2%}")
+            log(f"  - Decision: {'SWITCH' if should_switch else 'HOLD'} ({decision_reason})")
+            log(f"  - Forward State P(PRE_POLICY+POLICY): {gate_diag['forward_state_probability']:.2%}")
+            
+            # Also log legacy diagnostics for comparison
+            diagnostics = enhanced_hmm.get_diagnostics()
+            log(f"[debt_allocator] Supporting diagnostics:")
+            log(f"  - Regime stability: {diagnostics.get('regime_stability', 'N/A'):.3f}")
+            log(f"  - Transition uncertainty: {diagnostics.get('transition_uncertainty_mean', 'N/A'):.4f}")
+            log(f"  - Regime changes detected: {diagnostics.get('n_regime_changes', 'N/A')}")
         
         # Use the unified gate's belief as the final posterior
         current_posterior_probs = decision_gate.belief
@@ -3063,6 +3077,7 @@ def run_debt_allocation_engine(
     force_reevaluate: bool = False,
     force_refresh_data: bool = True,
     use_dynamic_alpha: bool = True,
+    quiet: bool = False,
 ) -> Optional[DebtSwitchDecision]:
     """
     Run the debt allocation engine.
@@ -3073,6 +3088,7 @@ def run_debt_allocation_engine(
         force_reevaluate: If True, ignore persisted decision
         force_refresh_data: If True, download fresh data
         use_dynamic_alpha: Use dynamic threshold α(t)
+        quiet: Suppress verbose output
         
     Returns:
         DebtSwitchDecision or None if engine cannot run
@@ -3081,27 +3097,30 @@ def run_debt_allocation_engine(
     if not force_reevaluate:
         prior_decision = _load_persisted_decision(persistence_path)
         if prior_decision is not None and prior_decision.triggered:
-            print("[debt_allocator] Prior triggered decision exists - returning cached")
+            if not quiet:
+                print("[debt_allocator] Prior triggered decision exists - returning cached")
             return prior_decision
     
     # LOAD DATA
-    prices = _load_eurjpy_prices(data_path, force_refresh=force_refresh_data)
+    prices = _load_eurjpy_prices(data_path, force_refresh=force_refresh_data, quiet=quiet)
     if prices is None:
         return None
     
     # COMPUTE LOG RETURNS
     log_returns = _compute_log_returns(prices)
     if len(log_returns) < MIN_HISTORY_DAYS:
-        print(f"[debt_allocator] Insufficient data: {len(log_returns)} < {MIN_HISTORY_DAYS}")
+        if not quiet:
+            print(f"[debt_allocator] Insufficient data: {len(log_returns)} < {MIN_HISTORY_DAYS}")
         return None
     
     # RUN INFERENCE
     try:
-        observation, posterior, _ = _run_inference(log_returns)
+        observation, posterior, _ = _run_inference(log_returns, quiet=quiet)
     except Exception as e:
-        print(f"[debt_allocator] Inference failed: {e}")
-        import traceback
-        traceback.print_exc()
+        if not quiet:
+            print(f"[debt_allocator] Inference failed: {e}")
+            import traceback
+            traceback.print_exc()
         return None
     
     # MAKE DECISION
@@ -3114,7 +3133,8 @@ def run_debt_allocation_engine(
     # PERSIST IF TRIGGERED
     if decision.triggered:
         _persist_decision(decision, persistence_path)
-        print(f"[debt_allocator] DECISION TRIGGERED - persisted to {persistence_path}")
+        if not quiet:
+            print(f"[debt_allocator] DECISION TRIGGERED - persisted to {persistence_path}")
     
     return decision
 
@@ -3127,189 +3147,255 @@ def _get_status_display(decision: DebtSwitchDecision) -> Tuple[str, str, str]:
     """Get status emoji, text, and color for display."""
     if decision.triggered:
         if decision.state_posterior.dominant_state == LatentState.POLICY:
-            return "🔴", "SWITCH TRIGGERED (POLICY)", "red"
+            return "🔴", "SWITCH NOW", "red"
         elif decision.state_posterior.dominant_state == LatentState.PRE_POLICY:
-            return "🔴", "SWITCH TRIGGERED (PRE-POLICY)", "red"
+            return "🔴", "SWITCH NOW", "red"
         else:
-            return "🔴", "SWITCH TRIGGERED", "red"
+            return "🔴", "SWITCH NOW", "red"
     
     dominant = decision.state_posterior.dominant_state
     if dominant == LatentState.PRE_POLICY:
-        return "🟡", "MONITORING (PRE-POLICY)", "yellow"
+        return "🟡", "MONITOR", "yellow"
     elif dominant == LatentState.COMPRESSED:
-        return "🟡", "MONITORING (COMPRESSED)", "yellow"
+        return "🟡", "MONITOR", "yellow"
     else:
-        return "🟢", "NO ACTION REQUIRED", "green"
+        return "🟢", "HOLD", "bright_green"
 
 
 def render_debt_switch_decision(
     decision: Optional[DebtSwitchDecision],
     console: Optional[Console] = None
 ) -> None:
-    """Render debt switch decision with Rich formatting."""
-    if console is None:
-        console = Console()
+    """Render debt switch decision with extraordinary Apple-quality UX."""
+    from rich.rule import Rule
+    from rich.align import Align
+    from rich.text import Text
+    from rich.columns import Columns
     
-    # Header
-    console.print()
-    console.print("=" * 60)
-    console.print("[bold cyan]DEBT ALLOCATION — EURJPY (v4.0.0)[/bold cyan]", justify="center")
-    console.print("=" * 60)
-    console.print()
+    if console is None:
+        console = Console(force_terminal=True, width=100)
     
     if decision is None:
-        console.print(Panel(
-            "[bold red]ENGINE CANNOT RUN[/bold red]\n\n"
-            "Possible reasons:\n"
-            "• Insufficient EURJPY data\n"
-            "• Inference failure\n"
-            "• Data validation failed",
-            title="[bold red]❌ ERROR[/bold red]",
+        console.print()
+        error_text = Text()
+        error_text.append("\n", style="")
+        error_text.append("Engine Cannot Run", style="bold red")
+        error_text.append("\n\n", style="")
+        error_text.append("Insufficient data or inference failure", style="dim")
+        error_text.append("\n", style="")
+        
+        error_panel = Panel(
+            Align.center(error_text),
             border_style="red",
-        ))
+            box=box.ROUNDED,
+            padding=(1, 4),
+        )
+        console.print(Align.center(error_panel, width=50))
+        console.print()
         return
     
-    # Status
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # DECISION STATUS - Hero Section
+    # ═══════════════════════════════════════════════════════════════════════════════
     status_emoji, status_text, status_color = _get_status_display(decision)
     
-    # Build status panel
-    if decision.triggered:
-        status_content = (
-            f"[bold]Switch Status[/bold]     : {status_emoji} [bold {status_color}]{status_text}[/bold {status_color}]\n"
-            f"[bold]Effective Date[/bold]    : [bold white]{decision.effective_date}[/bold white]\n"
-            f"[bold]Dynamic α(t)[/bold]      : {decision.dynamic_alpha:.2%}"
-        )
-    else:
-        status_content = (
-            f"[bold]Switch Status[/bold]     : {status_emoji} [{status_color}]{status_text}[/{status_color}]\n"
-            f"[bold]Dynamic α(t)[/bold]      : {decision.dynamic_alpha:.2%}"
-        )
-    
-    console.print(Panel(
-        status_content,
-        title=f"[bold {status_color}]Decision Status[/bold {status_color}]",
-        border_style=status_color,
-        padding=(1, 2),
-    ))
-    
     console.print()
     
-    # Latent State Probabilities (4 states)
-    console.print("[bold cyan]Latent State Probabilities:[/bold cyan]")
+    # Central status badge
+    status_content = Text()
+    status_content.append("\n", style="")
+    status_content.append(status_emoji + "  ", style="")
+    status_content.append(status_text, style=f"bold {status_color}")
+    status_content.append("\n", style="")
     
-    state_table = Table(
-        show_header=True,
-        header_style="bold",
-        box=box.SIMPLE,
-        padding=(0, 2),
+    if decision.triggered:
+        status_content.append("\n", style="")
+        status_content.append("Effective: ", style="dim")
+        status_content.append(str(decision.effective_date), style="bold white")
+        status_content.append("\n", style="")
+    
+    status_panel = Panel(
+        Align.center(status_content),
+        border_style=status_color if decision.triggered else "dim",
+        box=box.DOUBLE if decision.triggered else box.ROUNDED,
+        padding=(0, 6),
     )
-    state_table.add_column("State", style="bold")
-    state_table.add_column("Probability", justify="right")
-    state_table.add_column("", justify="center", width=20)
+    console.print(Align.center(status_panel, width=40))
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # LATENT STATES - Visual Bars
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    section_header = Text()
+    section_header.append("▸ ", style="bright_cyan")
+    section_header.append("LATENT STATES", style="bold white")
+    console.print(section_header)
+    console.print()
     
     post = decision.state_posterior
-    probs = [
-        ("NORMAL", post.p_normal),
-        ("COMPRESSED", post.p_compressed),
-        ("PRE_POLICY", post.p_pre_policy),
-        ("POLICY", post.p_policy),
+    states = [
+        ("NORMAL", post.p_normal, "bright_green"),
+        ("COMPRESSED", post.p_compressed, "yellow"),
+        ("PRE_POLICY", post.p_pre_policy, "orange1"),
+        ("POLICY", post.p_policy, "red"),
     ]
     
-    for state_name, prob in probs:
-        # Create visual bar
-        bar_len = int(prob * 20)
-        bar = "█" * bar_len + "░" * (20 - bar_len)
+    bar_width = 35
+    for state_name, prob, color in states:
+        filled = int(prob * bar_width)
+        is_dominant = state_name == post.dominant_state.name
         
-        # Color based on state
-        if state_name == post.dominant_state.name:
-            prob_str = f"[bold cyan]{prob:.1%}[/bold cyan]"
-            bar_str = f"[cyan]{bar}[/cyan]"
-        elif state_name in ("PRE_POLICY", "POLICY") and prob > 0.2:
-            prob_str = f"[yellow]{prob:.1%}[/yellow]"
-            bar_str = f"[yellow]{bar}[/yellow]"
+        row = Text()
+        row.append("    ", style="")
+        
+        if is_dominant:
+            row.append("● ", style=f"bold {color}")
+            row.append(f"{state_name:<12}", style=f"bold {color}")
+            row.append(f"{prob:>7.1%}  ", style=f"bold {color}")
+            row.append("━" * filled, style=color)
+            row.append("─" * (bar_width - filled), style="dim")
         else:
-            prob_str = f"{prob:.1%}"
-            bar_str = f"[dim]{bar}[/dim]"
+            row.append("○ ", style="dim")
+            row.append(f"{state_name:<12}", style="dim")
+            row.append(f"{prob:>7.1%}  ", style="dim")
+            row.append("─" * bar_width, style="dim")
         
-        state_table.add_row(state_name, prob_str, bar_str)
+        console.print(row)
     
-    console.print(state_table)
     console.print()
     
-    # Observation Metrics
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # OBSERVATION METRICS - Clean Grid
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    section_header = Text()
+    section_header.append("▸ ", style="bright_cyan")
+    section_header.append("METRICS", style="bold white")
+    console.print(section_header)
+    console.print()
+    
     obs = decision.observation
     
     metrics_table = Table(
         show_header=True,
-        header_style="bold cyan",
+        header_style="dim",
+        border_style="dim",
         box=box.ROUNDED,
-        padding=(0, 1),
+        padding=(0, 2),
+        expand=False,
     )
-    metrics_table.add_column("Metric", style="bold", width=25)
-    metrics_table.add_column("Value", justify="right", width=20)
+    metrics_table.add_column("Metric", style="white", width=22)
+    metrics_table.add_column("Value", justify="right", width=14)
+    metrics_table.add_column("", justify="left", width=12)
     
-    # Format metrics with appropriate precision
-    if np.isfinite(obs.convex_loss):
-        convex_str = f"{obs.convex_loss:.6f}"
+    # Convex Loss
+    convex_str = f"{obs.convex_loss:.6f}" if np.isfinite(obs.convex_loss) else "—"
+    convex_status = ""
+    
+    # Acceleration
+    if np.isfinite(obs.convex_loss_acceleration):
+        accel = obs.convex_loss_acceleration
+        accel_str = f"{accel:+.6f}"
+        if accel > 0.0002:
+            accel_status = "[yellow]↑ rising[/yellow]"
+        elif accel < -0.0002:
+            accel_status = "[bright_green]↓ falling[/bright_green]"
+        else:
+            accel_status = "[dim]stable[/dim]"
     else:
-        convex_str = "[dim]N/A[/dim]"
+        accel_str = "—"
+        accel_status = ""
     
+    # Tail Mass
     if np.isfinite(obs.tail_mass):
-        tail_str = f"{obs.tail_mass:.2%}"
-        if obs.tail_mass > 0.55:
-            tail_str = f"[yellow]{tail_str}[/yellow]"
+        tail_str = f"{obs.tail_mass:.1%}"
+        if obs.tail_mass > 0.60:
+            tail_status = "[yellow]elevated[/yellow]"
+        else:
+            tail_status = "[dim]normal[/dim]"
     else:
-        tail_str = "[dim]N/A[/dim]"
+        tail_str = "—"
+        tail_status = ""
     
+    # Disagreement
     if np.isfinite(obs.disagreement):
         disag_str = f"{obs.disagreement:.3f}"
         if obs.disagreement > 0.4:
-            disag_str = f"[yellow]{disag_str}[/yellow]"
+            disag_status = "[yellow]high[/yellow]"
+        else:
+            disag_status = "[dim]normal[/dim]"
     else:
-        disag_str = "[dim]N/A[/dim]"
+        disag_str = "—"
+        disag_status = ""
     
+    # Momentum
     if np.isfinite(obs.disagreement_momentum):
         mom_str = f"{obs.disagreement_momentum:+.4f}"
         if obs.disagreement_momentum > 0.02:
-            mom_str = f"[yellow]{mom_str}[/yellow]"
+            mom_status = "[yellow]↑[/yellow]"
+        elif obs.disagreement_momentum < -0.02:
+            mom_status = "[bright_green]↓[/bright_green]"
+        else:
+            mom_status = "[dim]—[/dim]"
     else:
-        mom_str = "[dim]N/A[/dim]"
+        mom_str = "—"
+        mom_status = ""
     
+    # Vol Ratio
     if np.isfinite(obs.vol_ratio):
         vol_str = f"{obs.vol_ratio:.3f}"
         if obs.vol_ratio < 0.8:
-            vol_str = f"[yellow]{vol_str}[/yellow] (compressed)"
+            vol_status = "[cyan]compressed[/cyan]"
         elif obs.vol_ratio > 1.3:
-            vol_str = f"[red]{vol_str}[/red] (expanding)"
+            vol_status = "[red]expanding[/red]"
+        else:
+            vol_status = "[dim]normal[/dim]"
     else:
-        vol_str = "[dim]N/A[/dim]"
+        vol_str = "—"
+        vol_status = ""
     
-    # Convex loss acceleration
-    if np.isfinite(obs.convex_loss_acceleration):
-        accel_str = f"{obs.convex_loss_acceleration:+.6f}"
-        if obs.convex_loss_acceleration > 0.0002:
-            accel_str = f"[yellow]{accel_str}[/yellow] (accelerating)"
-        elif obs.convex_loss_acceleration < -0.0002:
-            accel_str = f"[green]{accel_str}[/green] (decelerating)"
-    else:
-        accel_str = "[dim]N/A[/dim]"
+    metrics_table.add_row("Convex Loss C(t)", convex_str, convex_status)
+    metrics_table.add_row("Acceleration ΔC(t)", accel_str, accel_status)
+    metrics_table.add_row("Tail Mass P(ΔX>0)", tail_str, tail_status)
+    metrics_table.add_row("Disagreement D(t)", disag_str, disag_status)
+    metrics_table.add_row("Momentum dD/dt", mom_str, mom_status)
+    metrics_table.add_row("Vol Ratio V(t)", vol_str, vol_status)
     
-    metrics_table.add_row("Convex Loss C(t)", convex_str)
-    metrics_table.add_row("Convex Accel ΔC(t)", accel_str)
-    metrics_table.add_row("Tail Mass P(ΔX > 0)", tail_str)
-    metrics_table.add_row("Disagreement D(t)", disag_str)
-    metrics_table.add_row("Momentum dD(t)", mom_str)
-    metrics_table.add_row("Vol Ratio V(t)", vol_str)
-    
-    console.print(metrics_table)
+    console.print(Padding(metrics_table, (0, 0, 0, 4)))
     console.print()
     
-    # Decision Basis
-    console.print(f"[bold]Decision Basis:[/bold] {decision.decision_basis}")
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # FOOTER - Decision Details
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print(Rule(style="dim"))
     console.print()
+    
+    # Decision basis
+    basis_text = Text()
+    basis_text.append("    ", style="")
+    basis_text.append("Decision: ", style="dim")
+    basis_text.append(decision.decision_basis, style="white")
+    console.print(basis_text)
+    
+    # Threshold
+    threshold_text = Text()
+    threshold_text.append("    ", style="")
+    threshold_text.append("Threshold α(t): ", style="dim")
+    threshold_text.append(f"{decision.dynamic_alpha:.0%}", style="white")
+    console.print(threshold_text)
     
     # Signature
-    console.print(f"[dim]Signature: {decision.signature[:16]}...[/dim]")
+    sig_text = Text()
+    sig_text.append("    ", style="")
+    sig_text.append("Signature: ", style="dim")
+    sig_text.append(decision.signature[:16], style="dim italic")
+    console.print(sig_text)
+    
     console.print()
 
 
@@ -3350,39 +3436,66 @@ def main():
         action='store_true',
         help='Use fixed threshold instead of dynamic α(t)'
     )
+    parser.add_argument(
+        '--quiet', '-q',
+        action='store_true',
+        help='Suppress verbose processing output'
+    )
     
     args = parser.parse_args()
     
-    console = Console()
-    
     use_dynamic_alpha = not args.no_dynamic_alpha
     
-    # Show header
+    from rich.rule import Rule
+    from rich.align import Align
+    from rich.text import Text
+    
+    console = Console(force_terminal=True, width=100)
+    
+    # Show header - Apple-quality cinematic design
     if not args.json:
         console.print()
-        console.print(Panel(
-            "[bold cyan]FX Debt Allocation Engine[/bold cyan]\n"
-            "[dim]EURJPY Latent Policy-Stress Inference[/dim]\n"
-            "[bold green]Version 4.0.0[/bold green]",
-            border_style="cyan",
-        ))
         console.print()
-        console.print(f"[dim]Cache directory: {DEBT_CACHE_DIR}[/dim]")
-        console.print(f"[dim]Data file: {args.data_path}[/dim]")
         
-        # Show feature status
+        # Cinematic header
+        header_text = Text()
+        header_text.append("\n", style="")
+        header_text.append("D E B T   A L L O C A T I O N", style="bold white")
+        header_text.append("\n", style="")
+        header_text.append("EURJPY Policy-Stress Engine", style="dim")
+        header_text.append("\n", style="")
+        
+        header_panel = Panel(
+            Align.center(header_text),
+            box=box.DOUBLE,
+            border_style="bright_cyan",
+            padding=(1, 4),
+        )
+        console.print(Align.center(header_panel, width=50))
         console.print()
-        console.print("[bold]Features:[/bold]")
-        console.print(f"  Dynamic α(t):           {'[green]ON[/green]' if use_dynamic_alpha else '[yellow]OFF[/yellow]'}")
-        console.print(f"  Transition Pressure Φ:  [green]ON[/green]")
+        
+        # Feature badges
+        features = Text()
+        features.append("◉ ", style="bright_green" if use_dynamic_alpha else "dim")
+        features.append("Dynamic α(t)", style="white" if use_dynamic_alpha else "dim")
+        features.append("    ", style="")
+        features.append("◉ ", style="bright_green")
+        features.append("Transition Φ", style="white")
+        features.append("    ", style="")
+        features.append("◎ ", style="dim")
+        features.append("v4.0.0", style="dim")
+        console.print(Align.center(features))
+        console.print()
+        console.print(Rule(style="dim"))
         console.print()
     
-    # Run engine
+    # Run engine with quiet mode (ONLY ONCE!)
     decision = run_debt_allocation_engine(
         data_path=args.data_path,
         force_reevaluate=args.force,
         force_refresh_data=not args.no_refresh,
         use_dynamic_alpha=use_dynamic_alpha,
+        quiet=args.quiet or args.json,
     )
     
     if args.json:
