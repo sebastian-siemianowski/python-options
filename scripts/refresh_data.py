@@ -46,6 +46,7 @@ from scripts.fx_data_utils import (
     download_prices_bulk,
     PRICE_CACHE_DIR_PATH,
     reset_symbol_tables,
+    suppress_symbol_tables,
 )
 
 
@@ -100,16 +101,16 @@ def render_stocks_header(symbols_count: int, passes: int, workers: int, batch_si
 
 
 def render_phase_header(phase_name: str, phase_num: int = None, total_phases: int = None) -> None:
-    """Render a clean phase header."""
+    """Render a beautiful section header with numbered badge."""
     console.print()
-    console.print(Rule(style="dim", characters="─"))
+    console.print(Rule(style="dim"))
     console.print()
     
     header = Text()
-    header.append("▸ ", style="bright_cyan")
+    if phase_num:
+        header.append(f"  {phase_num}  ", style="bold bright_white on blue")
+        header.append("  ", style="")
     header.append(phase_name.upper(), style="bold white")
-    if phase_num and total_phases:
-        header.append(f"  {phase_num}/{total_phases}", style="dim")
     console.print(header)
     console.print()
 
@@ -264,6 +265,7 @@ def bulk_download_n_times(
     """
     # Reset symbol tables to prevent duplicates from previous runs
     reset_symbol_tables()
+    suppress_symbol_tables(True)  # Suppress verbose symbol tables for clean UX
     
     if not symbols:
         if not quiet:
@@ -281,6 +283,23 @@ def bulk_download_n_times(
     
     # Create progress tracker
     tracker = DownloadProgressTracker(len(all_symbols), num_passes)
+    
+    if not quiet:
+        render_phase_header("DOWNLOAD", 2)
+        
+        # Stats line
+        stats = Text()
+        stats.append("    ")
+        stats.append(f"{len(all_symbols):,}", style="bold cyan")
+        stats.append(" symbols", style="dim")
+        stats.append("  ·  ", style="dim")
+        stats.append(f"{num_passes}", style="bold white")
+        stats.append(" passes", style="dim")
+        stats.append("  ·  ", style="dim")
+        stats.append(f"{workers}", style="bold white")
+        stats.append(" workers", style="dim")
+        console.print(stats)
+        console.print()
     
     # For live progress display - declared here so rich_log can access them
     progress_ctx: Optional[Progress] = None
@@ -441,7 +460,7 @@ def bulk_download_n_times(
     # ═══════════════════════════════════════════════════════════════════════════════
     if not quiet:
         console.print()
-        render_phase_header("SUMMARY")
+        render_phase_header("SUMMARY", 3)
         
         # Pass history as clean table
         table = Table(
@@ -489,39 +508,52 @@ def bulk_download_n_times(
 
 
 def render_complete_banner(total: int, failed: int) -> None:
-    """Render the final completion banner."""
+    """Render a beautiful Apple-quality completion banner."""
     console.print()
-    console.print(Rule(style="dim", characters="─"))
+    console.print(Rule(style="dim"))
     console.print()
     
     if failed == 0:
-        # Success - centered
-        title = Text()
-        title.append("◆", style="bold green")
-        title.append("  C O M P L E T E", style="bold white")
-        console.print(Align.center(title))
-        console.print()
+        # Success state - elegant panel
+        content = Text()
+        content.append("\n", style="")
+        content.append("✓", style="bold bright_green")
+        content.append("  ", style="")
+        content.append("Complete", style="bold white")
+        content.append("\n\n", style="")
+        content.append(f"{total:,}", style="bold bright_green")
+        content.append(" symbols refreshed", style="dim")
+        content.append("\n", style="")
         
-        stats = Text()
-        stats.append(f"{total:,}", style="bold green")
-        stats.append(" symbols refreshed", style="dim")
-        console.print(Align.center(stats))
+        success_panel = Panel(
+            Align.center(content),
+            box=box.ROUNDED,
+            border_style="bright_green",
+            padding=(0, 4),
+        )
+        console.print(Align.center(success_panel, width=50))
     else:
-        # Warning
-        title = Text()
-        title.append("◆", style="bold yellow")
-        title.append("  C O M P L E T E", style="bold white")
-        title.append("  (with warnings)", style="dim yellow")
-        console.print(Align.center(title))
-        console.print()
+        # Warning state
+        content = Text()
+        content.append("\n", style="")
+        content.append("⚠", style="bold bright_yellow")
+        content.append("  ", style="")
+        content.append("Complete with warnings", style="bold white")
+        content.append("\n\n", style="")
+        content.append(f"{total - failed:,}", style="bold bright_green")
+        content.append(" loaded", style="dim")
+        content.append("  ·  ", style="dim")
+        content.append(f"{failed:,}", style="bold bright_yellow")
+        content.append(" issues", style="dim")
+        content.append("\n", style="")
         
-        stats = Text()
-        stats.append(f"{total - failed:,}", style="bold green")
-        stats.append(" ok", style="dim")
-        stats.append("   ·   ", style="dim")
-        stats.append(f"{failed:,}", style="bold yellow")
-        stats.append(" issues", style="dim")
-        console.print(Align.center(stats))
+        warning_panel = Panel(
+            Align.center(content),
+            box=box.ROUNDED,
+            border_style="bright_yellow",
+            padding=(0, 4),
+        )
+        console.print(Align.center(warning_panel, width=50))
     
     console.print()
 
@@ -556,7 +588,7 @@ def main():
         trim_last_n_days(days=args.days, quiet=args.quiet)
     else:
         if not args.quiet:
-            render_phase_header("TRIM CACHE")
+            render_phase_header("CACHE TRIM", 1)
             console.print("    [dim]Skipped (--skip-trim)[/dim]")
 
     # Bulk download N times (always runs all passes)

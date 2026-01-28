@@ -262,6 +262,14 @@ _RICH_CONSOLE = None
 # Track logged symbols to prevent duplicates
 _LOGGED_SYMBOL_MAPPINGS: set = set()
 _LOGGED_SYMBOL_FAILURES: set = set()
+# Global flag to suppress symbol table output entirely
+_SUPPRESS_SYMBOL_TABLES = False
+
+
+def suppress_symbol_tables(suppress: bool = True) -> None:
+    """Enable/disable symbol table logging globally."""
+    global _SUPPRESS_SYMBOL_TABLES
+    _SUPPRESS_SYMBOL_TABLES = suppress
 
 
 def _get_rich_console():
@@ -344,6 +352,11 @@ def _print_symbol_fail_header():
 
 def _log_symbol_map(original: str, normalized: str, meta: Dict) -> None:
     global _LOGGED_SYMBOL_MAPPINGS
+    
+    # Respect global suppression
+    if _SUPPRESS_SYMBOL_TABLES:
+        return
+    
     # Deduplicate - only log each (original, normalized) pair once
     key = (original, normalized)
     if key in _LOGGED_SYMBOL_MAPPINGS:
