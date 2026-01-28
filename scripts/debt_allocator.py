@@ -1805,18 +1805,30 @@ def _compute_convex_loss(
     """
     Compute convex loss functional: C(t) = E[max(ΔX, 0)^p]
     
-    Rules:
-    - Estimated via posterior predictive Monte Carlo ONLY
-    - No analytical tails
-    - Trim extreme outliers
+    Mathematical Foundation:
+    ========================
+    The convex loss functional measures expected positive tail risk using
+    a power utility with exponent p ∈ (1, 2]. This is a coherent risk measure.
+    
+    Properties:
+    1. C(X) ≥ 0 (non-negative)
+    2. Monotonicity: X ≤ Y a.s. ⟹ C(X) ≤ C(Y)
+    3. Convexity: C(λX + (1-λ)Y) ≤ λC(X) + (1-λ)C(Y)
+    
+    The exponent p controls risk sensitivity:
+    - p = 1: Linear (expected positive return)
+    - p = 1.5: Moderate risk aversion (default)
+    - p = 2: Quadratic (emphasizes large moves)
+    
+    Estimation via Monte Carlo: C(t) ≈ (1/N) Σᵢ max(xᵢ, 0)^p
     
     Args:
         posterior_samples: Monte Carlo samples of future returns
-        p: Convex exponent in (1, 2]
-        trim_percentile: Percentile for outlier trimming
+        p: Convex exponent in (1, 2], controls risk sensitivity
+        trim_percentile: Percentile for outlier trimming (robustness)
         
     Returns:
-        Convex loss estimate
+        Convex loss estimate C(t) ≥ 0
     """
     if len(posterior_samples) < MIN_POSTERIOR_SAMPLES:
         return float('nan')
@@ -2068,41 +2080,74 @@ def _build_base_transition_matrix(persistence: float = TRANSITION_PERSISTENCE) -
     """
     Build base monotone transition matrix respecting partial ordering.
     
-    States: NORMAL → COMPRESSED → PRE_POLICY → POLICY
-    Backward transitions are forbidden (set to 0).
+    Mathematical Foundation:
+    ========================
+    The latent states form a partial order (poset):
+    
+        NORMAL ≺ COMPRESSED ≺ PRE_POLICY ≺ POLICY
+    
+    The transition matrix A = [A_ij] must respect this ordering:
+    
+    1. Monotonicity: A_ij = 0 for j < i (no backward transitions)
+    2. Stochasticity: Σ_j A_ij = 1 (rows sum to 1)
+    3. Persistence: A_ii = p (diagonal dominance)
+    4. Absorbing: A_33 = 1 (POLICY is terminal)
+    
+    Forward Transition Distribution:
+    ================================
+    For non-terminal states i < 3, the forward transition probabilities are:
+    
+        A_i,i+k = (1-p) · w_k / Σ_j w_j  for k ≥ 1
+    
+    where w_k = 2^(K-k) are geometric weights favoring immediate transitions.
+    
+    This implements a "decay" prior: more likely to move to adjacent state
+    than to skip states, but skipping is not forbidden.
+    
+    Interpretation:
+    ==============
+    - p = 0.85: High persistence reflects sticky regime behavior
+    - w_k geometric: Prefer gradual transitions over regime skipping
+    - POLICY absorbing: Once triggered, no recovery (irreversible decision)
     
     Args:
-        persistence: Diagonal dominance (probability of staying in same state)
+        persistence: Diagonal probability p ∈ (0, 1), default 0.85
         
     Returns:
-        4x4 transition matrix
+        4×4 row-stochastic transition matrix
     """
     n_states = LatentState.n_states()
     A = np.zeros((n_states, n_states))
     
     for i in range(n_states):
-        # Diagonal: persistence probability
-        A[i, i] = persistence
-        
-        # Forward transitions only (monotone constraint)
-        remaining = 1.0 - persistence
-        
-        if i < n_states - 1:
-            # Distribute remaining probability to forward states
-            # More weight to immediate next state
+        if i == n_states - 1:
+            # POLICY state: absorbing (probability 1 of staying)
+            A[i, i] = 1.0
+        else:
+            # Non-terminal states: persistence + forward transitions
+            A[i, i] = persistence
+            
+            # Forward transition mass
+            remaining = 1.0 - persistence
+            
+            # Number of forward states
             forward_states = n_states - i - 1
+            
+            # Geometric weights: 2^(K-k-1) for k ∈ {0, ..., K-1}
+            # This gives [2^(K-1), 2^(K-2), ..., 2, 1] pattern
+            # Normalized to sum to 1
             weights = np.array([2.0 ** (forward_states - j - 1) for j in range(forward_states)])
             weights = weights / weights.sum()
             
+            # Assign forward probabilities
             for j, w in enumerate(weights):
                 A[i, i + 1 + j] = remaining * w
-        else:
-            # POLICY state: absorbing (stays in POLICY)
-            A[i, i] = 1.0
     
-    # Normalize rows
+    # Verify stochasticity (defensive)
     for i in range(n_states):
-        A[i, :] = A[i, :] / A[i, :].sum()
+        row_sum = A[i, :].sum()
+        if abs(row_sum - 1.0) > 1e-10:
+            A[i, :] = A[i, :] / row_sum
     
     return A
 
