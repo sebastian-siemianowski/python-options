@@ -22,6 +22,8 @@ from rich.live import Live
 from rich.layout import Layout
 from rich.spinner import Spinner
 from rich.padding import Padding
+from rich.rule import Rule
+from rich.align import Align
 from contextlib import contextmanager
 
 
@@ -542,31 +544,32 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         return len(re.sub(r"\[/?[^\]]+\]", "", text))
     if asset_col_width is None:
         longest_asset = max((_plain_len(r.get("asset_label", "")) for r in sorted_rows), default=0)
-        asset_col_width = max(28, min(40, longest_asset + 2))
+        asset_col_width = max(40, min(52, longest_asset + 4))
 
     if console is None:
-        console = Console()
+        console = Console(force_terminal=True, width=200)
     
-    # Clean compact table with elegant styling
+    # Clean table with vertical columns
     table = Table(
         title=title_override,
         show_header=True,
-        header_style="bold cyan",
-        border_style="blue",
+        header_style="bold white",
+        border_style="dim",
+        box=box.ROUNDED,
         padding=(0, 1),
         collapse_padding=False,
     )
-    # Asset column - truncate long names with ellipsis
-    table.add_column(" Asset", justify="left", style="bold", width=asset_col_width, no_wrap=True, overflow="ellipsis")
-    # Dual-sided exhaustion columns as percentages (0-100% scale)
-    table.add_column(" ↑% ", justify="center", width=4, no_wrap=True)  # Price above weighted EMA equilibrium
-    table.add_column(" ↓% ", justify="center", width=4, no_wrap=True)  # Price below weighted EMA equilibrium
+    # Asset column - generous width for full names
+    table.add_column("Asset", justify="left", style="white", width=asset_col_width, no_wrap=True, overflow="ellipsis")
+    # Exhaustion columns
+    table.add_column("↑%", justify="right", width=4, style="indian_red1")  # Overbought
+    table.add_column("↓%", justify="right", width=4, style="bright_green")  # Oversold
     
-    # Compact horizon labels - all same width for alignment
+    # Horizon columns
     horizon_labels = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
     for horizon in horizons:
         label = horizon_labels.get(horizon, f"{horizon}d")
-        table.add_column(label, justify="center", width=18, no_wrap=True)
+        table.add_column(label, justify="center", width=15, no_wrap=True)
 
     for row in sorted_rows:
         asset_label = row.get("asset_label", "Unknown")
@@ -622,51 +625,147 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
 
 
 def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) -> None:
-    """Render compact sector-grouped tables with clean visual hierarchy."""
+    """Render extraordinary Apple-quality sector-grouped signal tables."""
     if not summary_rows:
         return
 
     buckets: Dict[str, List[Dict]] = {}
     for row in summary_rows:
         sector = row.get("sector", "") or ""
-        sector = sector.strip() if sector else "Other"  # Default to "Other" for empty sectors
+        sector = sector.strip() if sector else "Other"
         buckets.setdefault(sector, []).append(row)
 
     import re
+    from datetime import datetime
+    from rich.rule import Rule
+    from rich.align import Align
+    
     def _plain_len(text: str) -> int:
         if not isinstance(text, str):
             return 0
         return len(re.sub(r"\[/?[^\]]+\]", "", text))
     longest_asset = max((_plain_len(r.get("asset_label", "")) for r in summary_rows), default=0)
-    asset_col_width = max(22, min(32, longest_asset))
+    asset_col_width = max(38, min(50, longest_asset + 4))
 
-    console = Console(force_terminal=True)
+    console = Console(force_terminal=True, width=180)
     
-    # Print header and legend with elegant styling (no background)
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # CINEMATIC HEADER
+    # ═══════════════════════════════════════════════════════════════════════════════
     console.print()
-    console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
-    console.print("[bold cyan]  SIGNAL DASHBOARD[/bold cyan]                                                          [white]Returns on 1M PLN investment[/white]")
-    console.print("[white]  ▲▲▼▼ Strong Signal   △▽ Notable [dim](HOLD w/ big return)[/dim]   ↑↓ Signal   [#00d700]Green[/#00d700]=Positive [indian_red1]Red[/indian_red1]=Negative[/white]")
-    console.print("[white]  ↑%=Above EMA equilibrium (0-100)   ↓%=Below EMA equilibrium (0-100)   [dim]Multi-TF weighted + Student-t[/dim][/white]")
-    console.print("[bold cyan]═══════════════════════════════════════════════════════════════════════════════════════════════════════════════[/bold cyan]")
     console.print()
+    
+    title_content = Text()
+    title_content.append("\n", style="")
+    title_content.append("S I G N A L S", style="bold bright_white")
+    title_content.append("\n", style="")
+    title_content.append("Bayesian Forecast Dashboard", style="dim")
+    title_content.append("\n", style="")
+    
+    title_panel = Panel(
+        Align.center(title_content),
+        box=box.DOUBLE,
+        border_style="bright_cyan",
+        padding=(0, 6),
+    )
+    console.print(Align.center(title_panel, width=50))
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # LEGEND
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    legend_grid = Table.grid(padding=(0, 2))
+    legend_grid.add_column(justify="center")
+    legend_grid.add_column(justify="center")
+    legend_grid.add_column(justify="center")
+    legend_grid.add_column(justify="center")
+    legend_grid.add_column(justify="center")
+    
+    legend_grid.add_row(
+        Text.assemble(("▲▲", "bold bright_green"), (" Strong Buy", "dim")),
+        Text.assemble(("▼▼", "bold indian_red1"), (" Strong Sell", "dim")),
+        Text.assemble(("△▽", "bold white"), (" Notable", "dim")),
+        Text.assemble(("↑↓", "bold white"), (" Signal", "dim")),
+        Text.assemble(("1M PLN", "bold cyan"), (" notional", "dim")),
+    )
+    console.print(Align.center(legend_grid))
+    console.print()
+    
+    exhaust_legend = Table.grid(padding=(0, 4))
+    exhaust_legend.add_column(justify="center")
+    exhaust_legend.add_column(justify="center")
+    
+    exhaust_legend.add_row(
+        Text.assemble(("↑%", "bold indian_red1"), (" Overbought (above EMA)", "dim")),
+        Text.assemble(("↓%", "bold bright_green"), (" Oversold (below EMA)", "dim")),
+    )
+    console.print(Align.center(exhaust_legend))
+    console.print()
+    console.print(Rule(style="dim"))
 
     # Sort sectors alphabetically but put "Other" at the end
     def sector_sort_key(item):
         sector_name = item[0]
         if sector_name in ("Other", "Unspecified"):
-            return ("~", sector_name)  # ~ sorts after letters
+            return ("~", sector_name)
         return ("", sector_name)
 
-    first_sector = True
+    sector_num = 0
     for sector, rows in sorted(buckets.items(), key=sector_sort_key):
-        # Print sector name as a centered header with elegant orange styling
-        if first_sector:
-            console.print(f"\n[bold orange1]━━━━━━━━━━━━━━━━━━━━━━  {sector}  ━━━━━━━━━━━━━━━━━━━━━━[/bold orange1]", justify="center")
-            first_sector = False
-        else:
-            console.print(f"\n[bold orange1]━━━━━━━━━━━━━━━━━━━━━━  {sector}  ━━━━━━━━━━━━━━━━━━━━━━[/bold orange1]", justify="center")
+        sector_num += 1
+        
+        # Sector header - format:  14     Defense & Aerospace   (108 assets)
+        console.print()
+        sector_header = Text()
+        sector_header.append(f"  {sector_num:2d}  ", style="bold bright_white on bright_blue")
+        sector_header.append("   ", style="")
+        sector_header.append(sector, style="bold white")
+        sector_header.append("   ", style="")
+        sector_header.append(f"({len(rows)} assets)", style="dim")
+        console.print(sector_header)
+        console.print()
+        
         render_multi_asset_summary_table(rows, horizons, title_override=None, asset_col_width=asset_col_width, console=console)
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # COMPLETION FOOTER
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    total_signals = sum(
+        1 for row in summary_rows
+        for sig in row.get("horizon_signals", {}).values()
+        if sig.get("label", "HOLD") not in ("HOLD", "")
+    )
+    
+    content = Text()
+    content.append("\n", style="")
+    content.append("✓", style="bold bright_green")
+    content.append("  Complete", style="bold white")
+    content.append("\n\n", style="")
+    content.append(f"{len(summary_rows):,}", style="bold bright_cyan")
+    content.append(" assets", style="dim")
+    content.append("  ·  ", style="dim")
+    content.append(f"{sector_num}", style="bold white")
+    content.append(" sectors", style="dim")
+    content.append("  ·  ", style="dim")
+    content.append(f"{total_signals:,}", style="bold bright_green")
+    content.append(" signals", style="dim")
+    content.append("\n", style="")
+    
+    completion_panel = Panel(
+        Align.center(content),
+        box=box.ROUNDED,
+        border_style="bright_green",
+        padding=(0, 4),
+    )
+    console.print(Align.center(completion_panel, width=55))
+    console.print()
 
 
 def render_portfolio_allocation_table(
