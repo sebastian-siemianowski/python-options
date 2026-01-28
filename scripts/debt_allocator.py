@@ -1667,67 +1667,111 @@ def _load_eurjpy_prices(data_path: str = EURJPY_DATA_FILE, force_refresh: bool =
     Returns:
         pd.Series with DatetimeIndex and EURJPY prices, or None if unavailable
     """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.text import Text
+    
     path = Path(data_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     
-    def log(msg: str):
-        if not quiet:
-            print(msg)
+    console = Console(force_terminal=True, width=100, quiet=quiet)
     
     # Try to download fresh data from yfinance
     if force_refresh:
         try:
             import yfinance as yf
             
-            log(f"[debt_allocator] Downloading fresh EURJPY data...")
-            
-            ticker = yf.Ticker("EURJPY=X")
-            df = ticker.history(period="max")  # Get maximum available history (>10 years)
+            if not quiet:
+                with Progress(
+                    SpinnerColumn(spinner_name="dots", style="bright_cyan"),
+                    TextColumn("[bold white]Fetching EURJPY data[/bold white]"),
+                    TextColumn("[dim]yfinance[/dim]"),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    task = progress.add_task("", total=None)
+                    
+                    ticker = yf.Ticker("EURJPY=X")
+                    df = ticker.history(period="max")
+            else:
+                ticker = yf.Ticker("EURJPY=X")
+                df = ticker.history(period="max")
             
             if df is not None and not df.empty and 'Close' in df.columns:
                 df_save = df.reset_index()
                 df_save.to_csv(path, index=False)
                 
-                log(f"[debt_allocator] Downloaded {len(df)} days of EURJPY data")
-                log(f"[debt_allocator] Saved to: {path}")
+                if not quiet:
+                    # Show elegant data summary
+                    data_text = Text()
+                    data_text.append("    ✓ ", style="bright_green")
+                    data_text.append(f"{len(df):,}", style="bold white")
+                    data_text.append(" days of EURJPY history\n", style="white")
+                    data_text.append("    ◎ ", style="dim")
+                    data_text.append("Cached to ", style="dim")
+                    data_text.append(str(path.name), style="dim italic")
+                    console.print(data_text)
+                    console.print()
                 
                 prices = df['Close'].dropna()
                 if len(prices) >= MIN_HISTORY_DAYS:
                     return prices.sort_index()
                 else:
-                    log(f"[debt_allocator] Warning: Only {len(prices)} days (need {MIN_HISTORY_DAYS})")
+                    if not quiet:
+                        console.print(f"[yellow]    ⚠ Only {len(prices)} days (need {MIN_HISTORY_DAYS})[/yellow]")
+                    
         except ImportError:
-            log("[debt_allocator] Warning: yfinance not installed, trying cached data")
+            if not quiet:
+                console.print("[yellow]    ⚠ yfinance not installed, using cache[/yellow]")
         except Exception as e:
-            log(f"[debt_allocator] Warning: Download failed ({e}), trying cached data")
+            if not quiet:
+                console.print(f"[yellow]    ⚠ Download failed, using cache[/yellow]")
     
     # Fall back to cached data
     try:
         if path.exists():
-            log(f"[debt_allocator] Loading cached EURJPY data from: {path}")
-            df = pd.read_csv(path, parse_dates=['Date'], index_col='Date')
+            if not quiet:
+                with Progress(
+                    SpinnerColumn(spinner_name="dots", style="dim"),
+                    TextColumn("[white]Loading cached data[/white]"),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    task = progress.add_task("", total=None)
+                    df = pd.read_csv(path, parse_dates=['Date'], index_col='Date')
+            else:
+                df = pd.read_csv(path, parse_dates=['Date'], index_col='Date')
             
             if 'Close' in df.columns:
                 prices = df['Close']
             elif 'Adj Close' in df.columns:
                 prices = df['Adj Close']
             else:
-                log("[debt_allocator] Error: No Close column in cached data")
+                if not quiet:
+                    console.print("[red]    ✗ No Close column in cached data[/red]")
                 return None
             
             prices = prices.dropna()
             if len(prices) >= MIN_HISTORY_DAYS:
-                log(f"[debt_allocator] Loaded {len(prices)} days from cache")
+                if not quiet:
+                    data_text = Text()
+                    data_text.append("    ✓ ", style="bright_green")
+                    data_text.append(f"{len(prices):,}", style="bold white")
+                    data_text.append(" days from cache\n", style="white")
+                    console.print(data_text)
+                    console.print()
                 return prices.sort_index()
             else:
-                log(f"[debt_allocator] Warning: Cached data has only {len(prices)} days")
+                if not quiet:
+                    console.print(f"[yellow]    ⚠ Cached data has only {len(prices)} days[/yellow]")
                 return None
         else:
-            log(f"[debt_allocator] Error: No cached data found at {path}")
+            if not quiet:
+                console.print(f"[red]    ✗ No cached data at {path}[/red]")
             return None
             
     except Exception as e:
-        log(f"[debt_allocator] Error loading cached data: {e}")
+        if not quiet:
+            console.print(f"[red]    ✗ Error loading cached data: {e}[/red]")
         return None
 
 
@@ -1991,8 +2035,7 @@ def _compute_volatility_ratio(
             # Strict mode - return NaN if not enough data
             return float('nan')
     else:
-        effective_long_window = long_window
-    
+        effective_long_window = long_window    
     recent = log_returns.iloc[-short_window:]
     historical = log_returns.iloc[-effective_long_window:]
     
@@ -2695,8 +2738,6 @@ def _g_convexity_adjustment(delta_c: float, scale: float = 0.0005) -> float:
     - g(·) is monotonically increasing
     - g(·) is bounded (saturates to prevent extreme thresholds)
     
-    Uses tanh for smooth saturation.
-    
     Args:
         delta_c: Convex loss acceleration ΔC(t) = C(t) - C(t-1)
         scale: Normalization scale for typical ΔC values
@@ -2707,18 +2748,11 @@ def _g_convexity_adjustment(delta_c: float, scale: float = 0.0005) -> float:
     if not np.isfinite(delta_c):
         return 0.0
     
-    # Only reduce threshold for positive acceleration (increasing convexity)
     if delta_c <= 0:
         return 0.0
     
-    # Normalize by typical scale
     normalized = delta_c / scale
-    
-    # Apply tanh for bounded, monotonic, saturating behavior
-    # tanh(x) ∈ [-1, 1], we use only positive part
     raw_g = np.tanh(normalized)
-    
-    # Maximum adjustment to α is 0.20 (from 0.60 base to 0.40 minimum)
     max_adjustment = 0.20
     
     return max_adjustment * raw_g
@@ -2731,41 +2765,21 @@ def _compute_dynamic_alpha(
     """
     Compute risk-adaptive decision boundary α(t).
     
-    v3.1.0 - Issue 2 Fix: Static α replaced with dynamic α(t)
-    
-    Formula:
-        α(t) = α₀ − g(ΔC(t))
-    
-    Where:
-    - α₀ is the baseline confidence threshold (base_alpha)
-    - g(·) is a bounded, monotone increasing function
-    - ΔC(t) = C(t) - C(t-1) is convex loss acceleration
-    
-    Interpretation:
-    - When convexity is flat (ΔC ≈ 0) → require high certainty (α ≈ α₀)
-    - When convexity accelerates (ΔC > 0) → act earlier with less certainty
-    
-    This implements risk-sensitive Bayesian decision theory.
-    No discretionary logic is permitted.
+    Formula: α(t) = α₀ − g(ΔC(t))
     
     Args:
         observation: Current observation vector
-        base_alpha: Baseline threshold α₀ (default PRE_POLICY_THRESHOLD)
+        base_alpha: Baseline threshold α₀
         
     Returns:
-        Dynamic threshold α(t) ∈ (0, 1)
+        Dynamic threshold α(t) ∈ [0.40, α₀]
     """
-    # v3.1.0 - Issue 2 Fix: α(t) = α₀ − g(ΔC(t))
-    # This is the ONLY adjustment - no discretionary logic
     alpha = base_alpha
     
     if np.isfinite(observation.convex_loss_acceleration):
         g_adjustment = _g_convexity_adjustment(observation.convex_loss_acceleration)
         alpha -= g_adjustment
     
-    # Enforce strict bounds: α(t) ∈ (0, 1)
-    # Lower bound prevents extreme threshold reduction
-    # Upper bound is the base_alpha
     alpha = max(0.40, min(alpha, base_alpha))
     
     return alpha
@@ -2787,15 +2801,17 @@ def _run_inference(
     Args:
         log_returns: Historical log returns
         lookback_days: Number of days for inference window
-        random_seed: Random seed for reproducibility (default: 42)
+        random_seed: Random seed for reproducibility
         quiet: Suppress verbose output
         
     Returns:
         Tuple of (current_observation, current_posterior, observation_history)
     """
-    def log(msg: str):
-        if not quiet:
-            print(msg)
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+    from rich.text import Text
+    from rich.align import Align
+    
+    console = Console(force_terminal=True, width=100, quiet=quiet)
     
     # Freeze randomness for reproducibility
     np.random.seed(random_seed)
@@ -2806,10 +2822,6 @@ def _run_inference(
     if n_obs < MIN_HISTORY_DAYS:
         raise ValueError(f"Insufficient history: {n_obs} < {MIN_HISTORY_DAYS}")
     
-    # Build observation history
-    log("[debt_allocator] Building observation history...")
-    
-    # Use rolling window approach
     window_size = min(lookback_days, n_obs - MIN_HISTORY_DAYS)
     start_idx = n_obs - window_size
     
@@ -2818,66 +2830,110 @@ def _run_inference(
     prev_disagreement = None
     prev_convex_loss = None
     
-    for t in range(start_idx, n_obs):
-        # Use data up to time t
-        returns_to_t = log_returns.iloc[:t+1]
-        
-        obs = _construct_observation_vector(
-            returns_to_t, 
-            prev_disagreement=prev_disagreement,
-            prev_convex_loss=prev_convex_loss,
-            timestamp=str(log_returns.index[t])
-        )
-        observations.append(obs)
-        obs_arrays.append(obs.to_array())
-        
-        # Update for next iteration
-        prev_disagreement = obs.disagreement
-        prev_convex_loss = obs.convex_loss
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # PHASE 1: Build Observation History with elegant progress
+    # ═══════════════════════════════════════════════════════════════════════════════
+    if not quiet:
+        with Progress(
+            SpinnerColumn(spinner_name="dots", style="bright_cyan"),
+            TextColumn("[bold white]Building observations[/bold white]"),
+            BarColumn(bar_width=30, style="bright_cyan", complete_style="bright_green"),
+            TaskProgressColumn(),
+            TextColumn("[dim]{task.description}[/dim]"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("", total=window_size)
+            
+            for idx, t in enumerate(range(start_idx, n_obs)):
+                returns_to_t = log_returns.iloc[:t+1]
+                
+                obs = _construct_observation_vector(
+                    returns_to_t, 
+                    prev_disagreement=prev_disagreement,
+                    prev_convex_loss=prev_convex_loss,
+                    timestamp=str(log_returns.index[t])
+                )
+                observations.append(obs)
+                obs_arrays.append(obs.to_array())
+                
+                prev_disagreement = obs.disagreement
+                prev_convex_loss = obs.convex_loss
+                
+                progress.update(task, advance=1, description=f"day {idx+1}/{window_size}")
+    else:
+        for t in range(start_idx, n_obs):
+            returns_to_t = log_returns.iloc[:t+1]
+            obs = _construct_observation_vector(
+                returns_to_t, 
+                prev_disagreement=prev_disagreement,
+                prev_convex_loss=prev_convex_loss,
+                timestamp=str(log_returns.index[t])
+            )
+            observations.append(obs)
+            obs_arrays.append(obs.to_array())
+            prev_disagreement = obs.disagreement
+            prev_convex_loss = obs.convex_loss
     
     if len(observations) == 0:
         raise ValueError("No observations constructed")
     
-    log(f"[debt_allocator] Built {len(observations)} observations")
-    
-    # Convert to array for HMM
     historical_obs_array = np.array(obs_arrays)
-    
-    # Build transition matrix
     A = _build_transition_matrix()
-    
-    # Initial distribution (start in NORMAL with high probability)
     pi = np.array([0.85, 0.10, 0.04, 0.01])
     
-    # Run forward inference
-    log("[debt_allocator] Running forward inference...")
-    posteriors = _forward_algorithm(
-        [obs.to_array() for obs in observations],
-        A,
-        pi,
-        historical_obs_array
-    )
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # PHASE 2-4: Run inference pipeline with elegant status display
+    # ═══════════════════════════════════════════════════════════════════════════════
+    if not quiet:
+        with Progress(
+            SpinnerColumn(spinner_name="dots", style="bright_cyan"),
+            TextColumn("[bold white]{task.description}[/bold white]"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Forward inference...", total=None)
+            posteriors = _forward_algorithm(
+                [obs.to_array() for obs in observations],
+                A,
+                pi,
+                historical_obs_array
+            )
+            progress.update(task, completed=True)
+            
+            progress.update(task, description="Bayesian + Wasserstein + MI...")
+            feature_names = ['convex_loss', 'tail_mass', 'disagreement', 
+                             'disag_momentum', 'vol_ratio', 'convex_accel']
+            
+            enhanced_hmm = EnhancedHMMInference(n_states=LatentState.n_states())
+            enhanced_hmm.fit(
+                observations=historical_obs_array,
+                state_posteriors=posteriors,
+                feature_names=feature_names
+            )
+            
+            progress.update(task, description="Decision gate...")
+    else:
+        posteriors = _forward_algorithm(
+            [obs.to_array() for obs in observations],
+            A,
+            pi,
+            historical_obs_array
+        )
+        
+        feature_names = ['convex_loss', 'tail_mass', 'disagreement', 
+                         'disag_momentum', 'vol_ratio', 'convex_accel']
+        
+        enhanced_hmm = EnhancedHMMInference(n_states=LatentState.n_states())
+        enhanced_hmm.fit(
+            observations=historical_obs_array,
+            state_posteriors=posteriors,
+            feature_names=feature_names
+        )
     
-    # ==========================================================================
-    # ENHANCED HMM: Bayesian Model Averaging + Wasserstein + Information Theory
-    # ==========================================================================
-    log("[debt_allocator] Running enhanced inference (Bayesian + Wasserstein + MI)...")
-    
-    feature_names = ['convex_loss', 'tail_mass', 'disagreement', 
-                     'disag_momentum', 'vol_ratio', 'convex_accel']
-    
-    enhanced_hmm = EnhancedHMMInference(n_states=LatentState.n_states())
-    enhanced_hmm.fit(
-        observations=historical_obs_array,
-        state_posteriors=posteriors,
-        feature_names=feature_names
-    )
-    
-    # ==========================================================================
-    # UNIFIED DECISION GATE: Single scalar output architecture
-    # ==========================================================================
-    log("[debt_allocator] Running unified decision gate...")
-    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # UNIFIED DECISION GATE
+    # ═══════════════════════════════════════════════════════════════════════════════
     decision_gate = UnifiedDecisionGate(
         n_states=LatentState.n_states(),
         wasserstein_threshold=0.15,
@@ -2886,69 +2942,102 @@ def _run_inference(
         switch_threshold=0.6,
     )
     
-    # Get enhanced posterior for final observation
     current_posterior_probs = posteriors[-1]
     
     if enhanced_hmm.is_fitted:
-        # Get Wasserstein score (PRIMARY SIGNAL)
         wasserstein_score = 0.0
         if enhanced_hmm.wasserstein_detector is not None:
             if enhanced_hmm.wasserstein_detector.scores_ is not None:
                 wasserstein_score = enhanced_hmm.wasserstein_detector.scores_[-1]
         
-        # Get MI ratio (AMPLIFIER ONLY)
         mi_ratio = None
         if enhanced_hmm.info_weighting.mi_scores_ is not None:
             total_mi = enhanced_hmm.info_weighting.mi_scores_.sum()
             if total_mi > 0:
-                mi_ratio = total_mi / 1.0  # Normalize to baseline of 1.0
+                mi_ratio = total_mi / 1.0
         
-        # Get KL divergence (AMPLIFIER ONLY)
         kl_divergence = None
         if enhanced_hmm.info_weighting.emission_means_ is not None:
             kl_matrix = enhanced_hmm.info_weighting.compute_kl_divergence_matrix()
             kl_divergence = np.mean(kl_matrix[kl_matrix > 0]) if np.any(kl_matrix > 0) else 0.0
         
-        # UNIFIED DECISION: Compute single scalar switch confidence
         switch_confidence_scalar = decision_gate.compute_switch_confidence(
             wasserstein_distance=wasserstein_score,
             mi_ratio=mi_ratio,
             kl_divergence=kl_divergence,
         )
         
-        # Update belief using Bayesian transition with decay
         transition_matrix = enhanced_hmm.bayesian_transition.expected_transition_matrix()
         decision_gate.belief = current_posterior_probs.copy()
         decision_gate.update_belief(transition_matrix)
         
-        # Get final decision
         should_switch, final_confidence, decision_reason = decision_gate.should_switch()
         
-        # Log unified gate diagnostics (only if not quiet)
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # BEAUTIFUL INFERENCE SUMMARY (Apple-quality UX)
+        # ═══════════════════════════════════════════════════════════════════════════════
         if not quiet:
             gate_diag = decision_gate.get_diagnostics()
-            log(f"[debt_allocator] Unified Decision Gate:")
-            log(f"  - Primary Signal (Wasserstein): {gate_diag['primary_signal']['wasserstein']:.4f}")
-            log(f"  - Normalized Signal: {gate_diag['primary_signal']['normalized_signal']:.4f}")
-            log(f"  - Amplifier (combined): {gate_diag['amplifiers']['combined']:.3f}")
-            log(f"  - Switch Confidence: {gate_diag['switch_confidence']:.2%}")
-            log(f"  - Decision: {'SWITCH' if should_switch else 'HOLD'} ({decision_reason})")
-            log(f"  - Forward State P(PRE_POLICY+POLICY): {gate_diag['forward_state_probability']:.2%}")
-            
-            # Also log legacy diagnostics for comparison
             diagnostics = enhanced_hmm.get_diagnostics()
-            log(f"[debt_allocator] Supporting diagnostics:")
-            log(f"  - Regime stability: {diagnostics.get('regime_stability', 'N/A'):.3f}")
-            log(f"  - Transition uncertainty: {diagnostics.get('transition_uncertainty_mean', 'N/A'):.4f}")
-            log(f"  - Regime changes detected: {diagnostics.get('n_regime_changes', 'N/A')}")
+            
+            console.print()
+            
+            summary_text = Text()
+            summary_text.append("\n", style="")
+            
+            summary_text.append("    ✓ ", style="bright_green")
+            summary_text.append(f"{len(observations)} observations\n", style="white")
+            summary_text.append("    ✓ ", style="bright_green")
+            summary_text.append("Forward inference\n", style="white")
+            summary_text.append("    ✓ ", style="bright_green")
+            summary_text.append("Bayesian model averaging\n", style="white")
+            summary_text.append("    ✓ ", style="bright_green")
+            summary_text.append("Wasserstein regime detection\n", style="white")
+            summary_text.append("    ✓ ", style="bright_green")
+            summary_text.append("MI-weighted emissions\n", style="white")
+            summary_text.append("\n", style="")
+            
+            regime_stability = diagnostics.get('regime_stability', 0)
+            n_regime_changes = diagnostics.get('n_regime_changes', 0)
+            trans_uncertainty = diagnostics.get('transition_uncertainty_mean', 0)
+            
+            if regime_stability > 0.7:
+                stab_color = "bright_green"
+                stab_icon = "●"
+            elif regime_stability > 0.5:
+                stab_color = "yellow"
+                stab_icon = "◐"
+            else:
+                stab_color = "red"
+                stab_icon = "○"
+            
+            summary_text.append(f"    {stab_icon} ", style=stab_color)
+            summary_text.append("Stability ", style="dim")
+            summary_text.append(f"{regime_stability:.0%}\n", style=f"bold {stab_color}")
+            
+            summary_text.append("    ◎ ", style="dim")
+            summary_text.append("Regime shifts ", style="dim")
+            summary_text.append(f"{n_regime_changes}\n", style="white")
+            
+            summary_text.append("    ◎ ", style="dim")
+            summary_text.append("Uncertainty ", style="dim")
+            summary_text.append(f"{trans_uncertainty:.4f}\n", style="white")
+            
+            summary_text.append("\n", style="")
+            
+            inference_panel = Panel(
+                summary_text,
+                title="[bold white]Inference Complete[/bold white]",
+                title_align="left",
+                border_style="bright_cyan",
+                box=box.ROUNDED,
+                padding=(0, 2),
+            )
+            console.print(inference_panel)
         
-        # Use the unified gate's belief as the final posterior
         current_posterior_probs = decision_gate.belief
     
-    # Get current (final) observation and posterior
     current_obs = observations[-1]
-    
-    # Find dominant state
     dominant_state = LatentState(int(np.argmax(current_posterior_probs)))
     
     current_posterior = StatePosterior(
