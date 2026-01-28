@@ -2363,7 +2363,22 @@ SECTOR_MAP = {
     "Biotech Platforms / Genomics": {"VRTX", "ILMN", "PACB", "EXAI"},
     "Quantum Computing": {"IONQ", "QBTS", "ARQQ", "RGTI", "QUBT"},
     "Industrial Infrastructure": {"PWR", "JCI", "ETN", "2308.TW"},
-    "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"}
+    "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"},
+    # -------------------------------------------------------------------------
+    # Small-Mid Cap Growth (Top 100 Revenue Screener picks)
+    # -------------------------------------------------------------------------
+    # Small-Mid Cap Finance: AGNC, ABTC, AXG, ASB, ANGX (Institutional), BMHL, BNZI, BNKK, BTCS, BCAL, ARR (Tradeable)
+    "Small-Mid Cap Finance": {
+        "AGNC", "ABTC", "AXG", "ASB", "ANGX", "BMHL", "BNZI", "BNKK", "BTCS", "BCAL", "ARR"
+    },
+    # Small-Mid Cap Biotech: ANNA, BBIO, ATAI, APLM (Institutional), ALNY, APLS, APLT (Tradeable)
+    "Small-Mid Cap Biotech": {
+        "ANNA", "BBIO", "ATAI", "APLM", "ALNY", "APLS", "APLT"
+    },
+    # Small-Mid Cap Technology: BZAI, AIRE (Institutional), ASPI, ABAT, ADUR, APLD, ALMU, AMZE, AIFF (Tradeable)
+    "Small-Mid Cap Technology": {
+        "BZAI", "AIRE", "ASPI", "ABAT", "ADUR", "APLD", "ALMU", "AMZE", "AIFF"
+    },
 }
 
 def get_sector(symbol: str) -> str:
@@ -2523,6 +2538,20 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     # Growth Screen (USD)
     "NUTX": "USD", "SANM": "USD", "SEZL": "USD", "AMCR": "USD", "PSIX": "USD",
     "DLO": "USD", "COMM": "USD", "PGY": "USD", "FOUR": "USD",
+    
+    # =========================================================================
+    # Small-Mid Cap Growth (Top 100 Revenue Screener) - All USD
+    # =========================================================================
+    # Finance
+    "AGNC": "USD", "ABTC": "USD", "AXG": "USD", "ASB": "USD", "ANGX": "USD",
+    "BMHL": "USD", "BNZI": "USD", "BNKK": "USD", "BTCS": "USD", "BCAL": "USD",
+    "ARR": "USD",
+    # Biotech
+    "ANNA": "USD", "BBIO": "USD", "ATAI": "USD", "APLM": "USD",
+    "ALNY": "USD", "APLS": "USD", "APLT": "USD",
+    # Technology
+    "BZAI": "USD", "AIRE": "USD", "ASPI": "USD", "ABAT": "USD", "ADUR": "USD",
+    "APLD": "USD", "ALMU": "USD", "AMZE": "USD", "AIFF": "USD",
     
     # Drones (USD)
     "ONDS": "USD", "UMAC": "USD",
