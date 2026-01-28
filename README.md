@@ -777,9 +777,70 @@ python-options/
 
 This section documents the mathematical foundations that govern each engine. The code implements these equations; understanding them illuminates why the system behaves as it does.
 
+### Master Symbol Glossary
+
+Before diving in, here's a complete reference of all mathematical symbols used:
+
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| **Prices & Returns** |||
+| Pₜ | Price at time t | The asset price at time step t |
+| rₜ | Return at time t | Log return: ln(Pₜ/Pₜ₋₁) |
+| h | Horizon | Forecast period in trading days |
+| **Volatility** |||
+| σ | Sigma | Standard deviation (volatility) |
+| σₜ² | Sigma squared | Variance at time t |
+| λ | Lambda | Decay factor in EWMA (0.94-0.97) |
+| **Kalman Filter** |||
+| μₜ | Mu | Latent (hidden) drift at time t |
+| q | Process noise | How much drift can change per step |
+| ηₜ | Eta | Random shock to drift ~ N(0, q) |
+| εₜ | Epsilon | Observation noise ~ N(0, σ²) |
+| K | Kalman gain | Weight given to new observation (0-1) |
+| P | State variance | Uncertainty in drift estimate |
+| m | Posterior mean | Best estimate of drift after update |
+| **AR(1) Model** |||
+| φ | Phi | Mean-reversion coefficient (-1 to 1) |
+| τ | Tau | Prior standard deviation for φ |
+| **Student-t** |||
+| ν | Nu | Degrees of freedom (tail thickness) |
+| t_ν | Student-t | t-distribution with ν degrees of freedom |
+| **Bayesian** |||
+| p(·) | Probability | Probability or density function |
+| p(m\|r) | Model posterior | Probability of model m given regime r |
+| θ | Theta | Model parameters (q, φ, etc.) |
+| ℓ | Log-likelihood | Sum of log probabilities |
+| **Model Selection** |||
+| BIC | Bayesian Info Criterion | Penalized likelihood for model comparison |
+| k | Parameter count | Number of free parameters in model |
+| n | Sample size | Number of observations |
+| w | Weight | Unnormalized model weight |
+| α | Alpha | Smoothing/blending coefficient |
+| **Decision** |||
+| E[·] | Expectation | Average value |
+| P(·) | Probability | Likelihood of event |
+| EU | Expected Utility | Risk-adjusted expected value |
+| f* | Optimal fraction | Kelly criterion bet size |
+| z | Z-score | Standardized edge metric |
+
 ---
 
 ### Data Engine: Returns and Volatility
+
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
+
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| rₜ | "r sub t" | The return at time t |
+| Pₜ | "P sub t" | The price at time t |
+| Pₜ₋₁ | "P sub t minus 1" | The price at the previous time step |
+| log | Natural logarithm | ln(x), the inverse of eˣ |
+| σₜ² | "sigma squared sub t" | Variance (volatility squared) at time t |
+| λ | "lambda" | Decay factor controlling how fast old data fades |
+| σ | "sigma" | Standard deviation (square root of variance) |
+
+</details>
 
 **Log Returns**
 
@@ -788,6 +849,8 @@ The system works with log returns, not simple returns:
 ```
 rₜ = log(Pₜ / Pₜ₋₁)
 ```
+
+**In plain English:** *"Today's return equals the natural log of today's price divided by yesterday's price."*
 
 Log returns are additive over time and approximately normal for small values, which simplifies the probabilistic machinery.
 
@@ -798,6 +861,13 @@ Volatility is estimated via exponentially-weighted moving average (EWMA):
 ```
 σₜ² = λ · σₜ₋₁² + (1 - λ) · rₜ²
 ```
+
+**In plain English:** *"Today's variance equals lambda times yesterday's variance, plus (1 - lambda) times today's squared return."*
+
+**What this means:**
+- When λ = 0.94: Yesterday's variance gets 94% weight, today's return gets 6%
+- Higher λ = slower adaptation to new information
+- Lower λ = faster adaptation, more reactive
 
 Where λ ∈ (0,1) controls decay. We use multiple speeds:
 - **Fast** (λ = 0.94): Responsive to recent moves
@@ -813,11 +883,38 @@ Extreme returns are clipped to reduce outlier influence:
 rₜ → clip(rₜ, -3σ, +3σ)
 ```
 
+**In plain English:** *"If the return is more extreme than 3 standard deviations, cap it at 3 standard deviations."*
+
 This makes parameter estimation more stable without discarding information entirely.
 
 ---
 
 ### Tuning Engine: Kalman Filter + MLE
+
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
+
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| μₜ | "mu sub t" | Hidden (latent) drift at time t — the "true" trend we're trying to estimate |
+| μₜ₋₁ | "mu sub t minus 1" | Hidden drift at previous time step |
+| ηₜ | "eta sub t" | Random shock to the drift (process noise) |
+| εₜ | "epsilon sub t" | Observation noise (market randomness) |
+| q | "q" | Process noise variance — how much drift can change per step |
+| σₜ² | "sigma squared" | Observation noise variance (market volatility) |
+| N(0, q) | Normal distribution | Gaussian with mean 0 and variance q |
+| K | Kalman gain | How much weight to give new observations (0 to 1) |
+| P | State variance | Our uncertainty about the drift estimate |
+| m | Posterior mean | Our best estimate of drift after seeing data |
+| mₜ | "m sub t" | Posterior mean at time t |
+| ℓ(q) | Log-likelihood | How well parameters explain the observed data |
+| vₜ | Predictive variance | Total uncertainty before seeing observation |
+| φ | "phi" | Mean-reversion coefficient in AR(1) model |
+| τ | "tau" | Prior standard deviation for φ |
+| ν | "nu" | Degrees of freedom in Student-t distribution |
+| t_ν | Student-t | Heavy-tailed distribution with ν degrees of freedom |
+
+</details>
 
 **The State-Space Model**
 
@@ -828,8 +925,17 @@ State equation:     μₜ = μₜ₋₁ + ηₜ,     ηₜ ~ N(0, q)
 Observation:        rₜ = μₜ + εₜ,       εₜ ~ N(0, σₜ²)
 ```
 
+**In plain English:**
+- *"The true drift today equals yesterday's drift plus a random shock."*
+- *"The observed return equals the true drift plus market noise."*
+
+**What this means:**
+- We never see μₜ directly — it's hidden (latent)
+- We only see rₜ (the actual return)
+- The Kalman filter infers μₜ from the noisy observations
+
 Here:
-- **μₜ** is the unobserved "true" drift
+- **μₜ** is the unobserved "true" drift (what we're trying to estimate)
 - **q** is the **process noise variance** (how much drift can change per step)
 - **σₜ²** is the observation noise (market volatility)
 
@@ -845,6 +951,16 @@ Update:     K = (P + q) / (P + q + σₜ²)           # Kalman gain
             Pₜ = (1 - K) · (P + q)                 # Posterior variance
 ```
 
+**In plain English:**
+1. **Predict:** *"Before seeing today's return, our uncertainty grows by q."*
+2. **Kalman gain:** *"K measures how much to trust the new observation vs our prior belief."*
+3. **Update mean:** *"New estimate = old estimate + K × (surprise)."*
+4. **Update variance:** *"Our uncertainty shrinks after seeing data."*
+
+**Intuition for Kalman gain K:**
+- K close to 1: Trust the new observation heavily (high signal-to-noise)
+- K close to 0: Stick with prior belief (low signal-to-noise)
+
 The Kalman gain K ∈ (0,1) balances prior belief against new evidence.
 
 **Maximum Likelihood Estimation**
@@ -856,7 +972,9 @@ We find q by maximizing the log-likelihood:
      = -½ Σₜ [ log(2π · vₜ) + (rₜ - mₜ)² / vₜ ]
 ```
 
-Where vₜ = P + q + σₜ² is the predictive variance.
+**In plain English:** *"Find the value of q that makes the observed returns most probable."*
+
+Where vₜ = P + q + σₜ² is the predictive variance (total uncertainty before observation).
 
 **Regularization Prior**
 
@@ -867,6 +985,8 @@ log₁₀(q) ~ N(μ_prior, 1/λ)
 ```
 
 Default: μ_prior = -6 (q ≈ 10⁻⁶), λ = 1.0
+
+**In plain English:** *"We believe q is probably around 0.000001, and penalize values far from this."*
 
 The penalized objective becomes:
 
@@ -881,6 +1001,14 @@ For mean-reverting drift, we extend the state equation:
 ```
 μₜ = φ · μₜ₋₁ + ηₜ,     φ ∈ (-1, 1)
 ```
+
+**In plain English:** *"Today's drift equals phi times yesterday's drift, plus noise."*
+
+**What φ values mean:**
+- φ = 0: Drift has no memory (fully mean-reverting)
+- φ = 0.9: Drift is very persistent (slow mean-reversion)
+- φ = 1: Random walk (no mean-reversion) — **unstable, we avoid this**
+- φ < 0: Drift oscillates (rare in financial data)
 
 When |φ| < 1, drift reverts toward zero. We apply a shrinkage prior:
 
@@ -898,9 +1026,11 @@ To capture fat tails, we replace Gaussian innovations with Student-t:
 εₜ ~ t_ν(0, σₜ)
 ```
 
+**In plain English:** *"Market noise follows a Student-t distribution instead of Gaussian, allowing for rare extreme moves."*
+
 The degrees-of-freedom ν controls tail thickness:
-- ν = 4: Very heavy tails
-- ν = 20: Nearly Gaussian
+- ν = 4: Very heavy tails (frequent extreme moves)
+- ν = 20: Nearly Gaussian (rare extreme moves)
 - ν → ∞: Gaussian limit
 
 We use a discrete grid ν ∈ {4, 6, 8, 12, 20} and let BMA select the mixture.
@@ -909,6 +1039,32 @@ We use a discrete grid ν ∈ {4, 6, 8, 12, 20} and let BMA select the mixture.
 
 ### Tuning Engine: Bayesian Model Averaging
 
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
+
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| p(·) | Probability | Probability or probability density |
+| p(m\|r) | "p of m given r" | Probability of model m, given we're in regime r |
+| rₜ₊ₕ | "r sub t plus h" | Return h days from now |
+| r | Regime | Market state (e.g., LOW_VOL_TREND) |
+| m | Model | A specific model class (e.g., kalman_gaussian) |
+| θ | "theta" | All parameters of a model (q, φ, etc.) |
+| θᵣ,ₘ | "theta r,m" | Parameters of model m in regime r |
+| Σₘ | "sum over m" | Add up across all models |
+| BIC | Bayesian Info Criterion | Score balancing fit vs complexity |
+| ℓ | Log-likelihood | How well model explains data |
+| k | Parameter count | Number of free parameters |
+| n | Sample size | Number of data points |
+| w | Weight | Unnormalized probability |
+| exp(·) | Exponential | e raised to the power of (·) |
+| α | "alpha" | Blending coefficient (0 to 1) |
+| λ | "lambda" | Shrinkage coefficient (0 to 1) |
+| H(m) | Hyvärinen score | Robust model comparison metric |
+| ∂ | Partial derivative | Rate of change with respect to one variable |
+
+</details>
+
 **The BMA Equation**
 
 Given regime r and model class m with parameters θ, the posterior predictive is:
@@ -916,6 +1072,13 @@ Given regime r and model class m with parameters θ, the posterior predictive is
 ```
 p(rₜ₊ₕ | r) = Σₘ p(rₜ₊ₕ | r, m, θᵣ,ₘ) · p(m | r)
 ```
+
+**In plain English:** *"The probability of a future return equals the weighted average of each model's prediction, where weights are how much we trust each model."*
+
+**Breaking it down:**
+- p(rₜ₊ₕ | r, m, θ) = "What does model m predict for the return?"
+- p(m | r) = "How much do we trust model m in this regime?"
+- Σₘ = "Add up across all 7 models"
 
 This is the **core equation** of the system. Signals emerge from this mixture, not from any single "best" model.
 
@@ -927,9 +1090,16 @@ For each model m in regime r, we compute BIC:
 BIC_m,r = -2 · ℓ_m,r + k_m · log(n_r)
 ```
 
+**In plain English:** *"BIC = (how well it fits) minus (penalty for complexity)."*
+
+**Breaking it down:**
+- -2·ℓ = Negative log-likelihood (lower is better fit)
+- k·log(n) = Penalty for having more parameters
+- Models with more parameters must fit much better to justify the complexity
+
 Where:
-- ℓ_m,r = maximized log-likelihood
-- k_m = number of parameters
+- ℓ_m,r = maximized log-likelihood (how well model fits data)
+- k_m = number of parameters (complexity penalty)
 - n_r = sample size in regime r
 
 Weights are softmax over negative BIC:
@@ -939,6 +1109,8 @@ w_raw(m|r) = exp(-½ · (BIC_m,r - BIC_min,r))
 p(m|r) = w_raw(m|r) / Σₘ' w_raw(m'|r)
 ```
 
+**In plain English:** *"Convert BIC differences to probabilities using softmax. Lower BIC → higher probability."*
+
 **Hyvärinen Score (Robust Alternative)**
 
 BIC assumes the true model is in the candidate set. When misspecified, the **Hyvärinen score** is more robust:
@@ -946,6 +1118,13 @@ BIC assumes the true model is in the candidate set. When misspecified, the **Hyv
 ```
 H(m) = Σₜ [ ∂²log p / ∂r² + ½(∂log p / ∂r)² ]
 ```
+
+**In plain English:** *"A scoring rule based on the curvature and slope of the log-density. Rewards models that are confident where they should be."*
+
+**Why use it:**
+- Works even when no model is "true"
+- Naturally rewards accurate tail predictions
+- Doesn't require computing normalizing constants
 
 This is a **proper scoring rule** that doesn't require normalizing constants and naturally rewards tail accuracy.
 
@@ -955,7 +1134,9 @@ We blend BIC and Hyvärinen:
 w_combined(m) = w_bic(m)^α · w_hyvarinen(m)^(1-α)
 ```
 
-Default α = 0.5.
+**In plain English:** *"Final weight is the geometric mean of BIC weight and Hyvärinen weight."*
+
+Default α = 0.5 (equal weighting).
 
 **Temporal Smoothing**
 
@@ -964,6 +1145,8 @@ To prevent erratic model switching, we smooth weights over time:
 ```
 w_smooth(m|r) ∝ w_prev(m|r)^α · w_raw(m|r)
 ```
+
+**In plain English:** *"New weight = (yesterday's weight)^α × (today's raw weight). This makes weights change gradually."*
 
 With α ≈ 0.85, this creates "sticky" posteriors that adapt gradually.
 
@@ -975,11 +1158,38 @@ When regime r has few samples, we shrink toward the global posterior:
 p(m|r) = (1 - λ) · p_local(m|r) + λ · p(m|global)
 ```
 
+**In plain English:** *"When data is scarce, borrow strength from the overall (global) model weights."*
+
+**What λ controls:**
+- λ = 0: Use only local regime data
+- λ = 1: Ignore local data, use global weights entirely
+- Default λ = 0.05: Slight shrinkage toward global
+
 Default λ = 0.05. When samples < threshold, we set λ = 1 (full borrowing) and mark `borrowed_from_global = True`.
 
 ---
 
 ### Signal Engine: Posterior Predictive Monte Carlo
+
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
+
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| p(rₜ₊ₕ \| r_t) | Predictive distribution | Probability of future return given current regime |
+| rₜ₊ₕ | "r sub t plus h" | Return h days from now |
+| r_t | Current regime | Which of the 5 regimes we're in now |
+| N_total | Total samples | Number of Monte Carlo samples (e.g., 10,000) |
+| n_m | Samples for model m | Number of samples allocated to model m |
+| w | Weight | Model probability p(m\|r) |
+| μ | "mu" | Current drift estimate |
+| h | Horizon | Forecast period in days |
+| q_m | Process noise for model m | Model-specific q parameter |
+| σ | "sigma" | Volatility |
+| P(r > 0) | Probability positive | Chance that return exceeds zero |
+| E[r] | Expected return | Average (mean) return |
+
+</details>
 
 **Monte Carlo Sampling**
 
@@ -998,6 +1208,17 @@ for m, w in model_posterior.items():
         samples.append(sum_of_r_steps)
 ```
 
+**In plain English:**
+1. *"For each model, draw samples proportional to how much we trust it."*
+2. *"For each sample, simulate the drift evolving over h days."*
+3. *"Add up all the daily returns to get the h-day return."*
+4. *"Collect all samples into one big distribution."*
+
+**Why this works:**
+- Models we trust more contribute more samples
+- The final distribution automatically reflects model uncertainty
+- We never pick a "best" model — uncertainty is preserved
+
 This produces samples from the full BMA mixture, not from any single model.
 
 **Probability of Positive Return**
@@ -1008,6 +1229,8 @@ From the sample distribution:
 P(rₜ₊ₕ > 0) = (# samples > 0) / N_total
 ```
 
+**In plain English:** *"Count how many samples are positive, divide by total samples."*
+
 This is the key quantity for BUY/HOLD/SELL decisions.
 
 **Expected Log Return**
@@ -1015,6 +1238,8 @@ This is the key quantity for BUY/HOLD/SELL decisions.
 ```
 E[rₜ₊ₕ] = mean(samples)
 ```
+
+**In plain English:** *"Average all the samples to get expected return."*
 
 Used for position sizing and expected utility calculations.
 
@@ -1028,11 +1253,36 @@ P(r > 0) ∈ (0.42, 0.58)  →  HOLD
 P(r > 0) ≤ 0.42  →  SELL
 ```
 
+**In plain English:**
+- *"If there's a 58%+ chance of positive return → BUY"*
+- *"If there's a 42% or less chance → SELL"*
+- *"Otherwise → HOLD (not enough edge)"*
+
 The 58%/42% thresholds derive from expected utility theory with symmetric loss.
 
 ---
 
 ### Signal Engine: Expected Utility
+
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
+
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| EU | Expected Utility | Risk-adjusted expected value of a decision |
+| p | Probability | Chance of winning |
+| U(·) | Utility function | How much we value an outcome |
+| f* | "f star" | Optimal bet fraction (Kelly criterion) |
+| b | Win/loss ratio | How much we win vs lose |
+| z | Z-score | Standardized edge (like Sharpe ratio) |
+| μ | "mu" | Expected return (drift) |
+| σ | "sigma" | Volatility (standard deviation) |
+| h | Horizon | Forecast period in days |
+| √h | Square root of h | Scaling factor for multi-day returns |
+| z_adj | Adjusted z-score | Z-score after volatility dampening |
+| σ_median | Median volatility | "Normal" volatility level |
+
+</details>
 
 **The EU Framework**
 
@@ -1042,16 +1292,25 @@ Decisions maximize expected utility, not expected return:
 EU = p · U(gain) + (1-p) · U(loss)
 ```
 
+**In plain English:** *"Expected utility = (chance of winning × value of winning) + (chance of losing × value of losing)."*
+
 For Kelly-style sizing with log utility U(x) = log(1 + x):
 
 ```
 f* = p - (1-p)/b
 ```
 
+**In plain English:** *"Optimal bet size = probability of winning minus (probability of losing divided by win/loss ratio)."*
+
 Where:
-- f* = optimal fraction of capital
+- f* = optimal fraction of capital to bet
 - p = probability of win
-- b = win/loss ratio
+- b = win/loss ratio (how much you win vs lose)
+
+**Example:**
+- p = 60%, b = 1.5 (win $1.50 for every $1 risked)
+- f* = 0.60 - 0.40/1.5 = 0.60 - 0.27 = 0.33
+- *"Bet 33% of capital"*
 
 **Risk-Adjusted Edge**
 
@@ -1060,6 +1319,13 @@ We compute a Sharpe-style z-score:
 ```
 z = (μ / σ) · √h
 ```
+
+**In plain English:** *"Edge = (expected return / volatility) × square root of horizon."*
+
+**Why √h?**
+- Returns scale linearly with time: μ × h
+- Volatility scales with square root: σ × √h
+- So Sharpe scales with √h
 
 Where h is the horizon in days. This normalizes edge across timeframes.
 
@@ -1072,11 +1338,39 @@ z_adj = z · (1 - vol_penalty)
 vol_penalty = max(0, (σ / σ_median - 1.5) · 0.3)
 ```
 
+**In plain English:** *"If volatility is 1.5× higher than normal, start reducing our edge estimate."*
+
+**What this means:**
+- σ/σ_median = 1.0 (normal vol): No penalty
+- σ/σ_median = 1.5 (50% above normal): No penalty yet
+- σ/σ_median = 2.0 (double normal): 15% penalty
+- σ/σ_median = 3.0 (triple normal): 45% penalty
+
 This prevents overconfidence when uncertainty is elevated.
 
 ---
 
 ### Debt Engine: Latent State Model
+
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
+
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| S | State | Current latent (hidden) policy state |
+| Sₜ | "S sub t" | State at time t |
+| Sₜ₋₁ | "S sub t minus 1" | State at previous time step |
+| Y | Observation vector | The 5 features we can measure |
+| C | Convex loss | Asymmetric penalty for adverse moves |
+| P | Tail mass | Probability of extreme outcomes |
+| D | Disagreement | How much models disagree (entropy) |
+| dD | Disagreement momentum | Rate of change in disagreement |
+| V | Vol compression | Volatility relative to recent history |
+| P(S\|Y) | State posterior | Probability of state given observations |
+| α | "alpha" | Decision threshold (e.g., 0.60) |
+| → | Transition arrow | Allowed state transition |
+
+</details>
 
 **State Space**
 
@@ -1085,6 +1379,16 @@ The debt allocator models policy stress via 4 latent states:
 ```
 S ∈ {NORMAL, COMPRESSED, PRE_POLICY, POLICY}
 ```
+
+**In plain English:** *"The market is always in one of 4 hidden stress states."*
+
+**What each state means:**
+| State | Meaning | Typical Duration |
+|-------|---------|------------------|
+| NORMAL | Business as usual | Months |
+| COMPRESSED | Vol suppressed, pressure building | Weeks |
+| PRE_POLICY | Stress emerging, policy imminent | Days |
+| POLICY | Active policy intervention | Days to weeks |
 
 States are **partially ordered**: NORMAL → COMPRESSED → PRE_POLICY → POLICY. Backward transitions are forbidden except via explicit reset.
 
@@ -1098,6 +1402,11 @@ Y = (C, P, D, dD, V)
 C  = Convex loss functional (asymmetric penalty for adverse moves)
 P  = Tail mass (probability beyond threshold)
 D  = Epistemic disagreement (entropy of model posterior)
+dD = Disagreement momentum (rate of change in D)
+V  = Volatility compression ratio (current vol / recent vol)
+```
+
+**In plain English:** *"We measure 5 things about the market that give clues about the hidden state."*
 dD = Disagreement momentum (rate of change)
 V  = Volatility compression ratio
 ```
@@ -1126,6 +1435,22 @@ Default α = 0.60. The decision is **irreversible** (once triggered, done).
 
 ### Calibration: PIT Test
 
+<details>
+<summary><strong>📖 Symbols used in this section</strong></summary>
+
+| Symbol | Name | What it represents |
+|--------|------|-------------------|
+| u | Uniform value | Transformed probability (should be 0-1 uniform) |
+| F | CDF | Cumulative Distribution Function (predicted) |
+| F(x) | "F of x" | Probability that outcome ≤ x |
+| r_actual | Actual return | The return that actually occurred |
+| KS | Kolmogorov-Smirnov | Test statistic measuring calibration |
+| sup | Supremum | Maximum value |
+| F_empirical | Empirical CDF | CDF estimated from actual data |
+| Uniform(0,1) | Uniform distribution | Every value between 0 and 1 equally likely |
+
+</details>
+
 **Probability Integral Transform**
 
 If predictions are well-calibrated:
@@ -1134,7 +1459,14 @@ If predictions are well-calibrated:
 u = F(r_actual)  should be  ~ Uniform(0, 1)
 ```
 
-Where F is the predicted CDF.
+**In plain English:** *"If we plug actual outcomes into our predicted CDF, the results should be uniformly distributed."*
+
+**Why this works:**
+- If you predict "30% chance of rain" and it rains 30% of the time when you say that, you're calibrated
+- PIT is the formal version of this for continuous distributions
+- If u values cluster near 0 or 1, predictions are systematically wrong
+
+Where F is the predicted CDF (cumulative distribution function).
 
 **KS Test**
 
@@ -1144,27 +1476,37 @@ We compute Kolmogorov-Smirnov statistic:
 KS = sup_u | F_empirical(u) - u |
 ```
 
+**In plain English:** *"Find the maximum gap between the empirical distribution of u values and the uniform line."*
+
 p-value > 0.05 indicates calibration is acceptable.
 
 **Interpretation**
 
-- KS ≈ 0: Perfect calibration
-- KS > 0.1: Miscalibration detected
-- Systematic U-shape in PIT histogram: Overconfidence
-- Systematic ∩-shape: Underconfidence
+| Pattern | KS Value | Meaning |
+|---------|----------|---------|
+| KS ≈ 0 | < 0.05 | Perfect calibration ✓ |
+| KS moderate | 0.05-0.10 | Minor miscalibration |
+| KS > 0.1 | > 0.10 | Significant miscalibration ✗ |
+
+**Visual patterns in PIT histogram:**
+- **U-shape** (values cluster at 0 and 1): Overconfidence — predictions are too narrow
+- **∩-shape** (values cluster in middle): Underconfidence — predictions are too wide
+- **Flat** (uniform distribution): Well-calibrated ✓
 
 ---
 
 ### Summary: The Mathematical Contract
 
+This box summarizes the entire system in symbols. Refer to the Master Symbol Glossary at the top of this section for definitions.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                                                             │
-│   DATA:     rₜ = log(Pₜ/Pₜ₋₁)                                 │
-│             σₜ² = EWMA(rₜ²)                                  │
+│   DATA:     rₜ = log(Pₜ/Pₜ₋₁)                               │
+│             σₜ² = EWMA(rₜ²)                                 │
 │                                                             │
-│   TUNING:   μₜ = φμₜ₋₁ + ηₜ        (state equation)           │
-│             rₜ = μₜ + εₜ           (observation)              │
+│   TUNING:   μₜ = φμₜ₋₁ + ηₜ        (state equation)         │
+│             rₜ = μₜ + εₜ           (observation)            │
 │             q* = argmax ℓ(q)       (MLE)                    │
 │             p(m|r) ∝ exp(-BIC/2)   (BMA weights)            │
 │                                                             │
@@ -1175,7 +1517,21 @@ p-value > 0.05 indicates calibration is acceptable.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-The math is the system. The code merely implements it.
+**Line-by-line translation:**
+
+| Line | Symbols | Plain English |
+|------|---------|---------------|
+| `rₜ = log(Pₜ/Pₜ₋₁)` | Return = log(today's price / yesterday's price) | "Compute log returns" |
+| `σₜ² = EWMA(rₜ²)` | Variance = exponentially-weighted average of squared returns | "Estimate volatility" |
+| `μₜ = φμₜ₋₁ + ηₜ` | Drift = phi × yesterday's drift + noise | "Drift evolves with mean-reversion" |
+| `rₜ = μₜ + εₜ` | Return = drift + noise | "Observed return is noisy drift" |
+| `q* = argmax ℓ(q)` | Optimal q = value that maximizes likelihood | "Find best-fit process noise" |
+| `p(m\|r) ∝ exp(-BIC/2)` | Model probability proportional to exp(-BIC/2) | "Weight models by BIC" |
+| `p(r\|data) = Σₘ p(r\|m,θ)·p(m\|r)` | Prediction = weighted sum across models | "Average all model predictions" |
+| `P(r>0) = ∫₀^∞ p(r) dr` | Probability positive = integral from 0 to ∞ | "Count positive samples" |
+| `signal = map(P(r>0))` | Signal = function of probability | "Convert probability to BUY/HOLD/SELL" |
+
+**The math is the system. The code merely implements it.**
 
 ---
 
