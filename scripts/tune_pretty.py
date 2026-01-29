@@ -151,6 +151,8 @@ Examples:
     mixture_selected_count = 0
     nu_refinement_attempted_count = 0
     nu_refinement_improved_count = 0
+    gh_attempted_count = 0
+    gh_selected_count = 0
     regime_tuning_count = 0
 
     assets_to_process: List[str] = []
@@ -415,6 +417,53 @@ Examples:
         if 'hierarchical_tuning' in data:
             if data['hierarchical_tuning'].get('collapse_warning', False):
                 collapse_warnings += 1
+
+    # Compute escalation statistics from cache (for both fresh and cached runs)
+    # These need to be computed from the full cache to show accurate totals
+    mixture_attempted_count = 0
+    mixture_selected_count = 0
+    nu_refinement_attempted_count = 0
+    nu_refinement_improved_count = 0
+    gh_attempted_count = 0
+    gh_selected_count = 0
+    calibration_warnings = 0
+    gaussian_count = 0
+    student_t_count = 0
+    
+    for asset, data in cache.items():
+        global_data = data.get('global', data)
+        
+        # Count model types
+        noise_model = global_data.get('noise_model', '')
+        if noise_model.startswith('phi_student_t_nu_'):
+            student_t_count += 1
+        elif noise_model == 'generalized_hyperbolic':
+            pass  # GH is separate
+        elif 'gaussian' in noise_model.lower():
+            gaussian_count += 1
+        
+        # Count calibration warnings
+        if global_data.get('calibration_warning'):
+            calibration_warnings += 1
+        
+        # Count mixture attempts and selections
+        if global_data.get('mixture_attempted'):
+            mixture_attempted_count += 1
+        if global_data.get('mixture_selected'):
+            mixture_selected_count += 1
+        
+        # Count ν refinement attempts and improvements
+        nu_refinement = global_data.get('nu_refinement', {})
+        if nu_refinement.get('refinement_attempted'):
+            nu_refinement_attempted_count += 1
+        if nu_refinement.get('improvement_achieved'):
+            nu_refinement_improved_count += 1
+        
+        # Count GH attempts and selections
+        if global_data.get('gh_attempted'):
+            gh_attempted_count += 1
+        if global_data.get('gh_selected'):
+            gh_selected_count += 1
 
     # Render beautiful summary
     render_tuning_summary(

@@ -269,14 +269,6 @@ class GHModelResult:
     skewness_direction: str = "symmetric"  # "left", "right", or "symmetric"
     tail_behavior: str = "medium"  # "light", "medium", "heavy"
     
-    # Comparison with previous model
-    bic_improvement: float = 0.0
-    pit_improvement_ratio: float = 1.0
-    
-    # Interpretation
-    skewness_direction: str = "symmetric"  # "left", "right", or "symmetric"
-    tail_behavior: str = "medium"  # "light", "medium", "heavy"
-    
     @property
     def is_calibrated(self) -> bool:
         """Check if model passes calibration."""

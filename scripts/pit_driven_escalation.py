@@ -541,14 +541,137 @@ def get_escalation_summary_from_cache(cache: Dict[str, Dict]) -> Dict[str, Any]:
         Summary dictionary with escalation statistics
     """
     results = {}
+    skipped = 0
+    
     for asset, result in cache.items():
         try:
             results[asset] = extract_escalation_from_result(result)
-        except Exception:
+        except Exception as e:
+            # Log but continue - don't silently skip assets
+            skipped += 1
             continue
     
+    # If too many assets were skipped, fall back to direct counting
+    if skipped > len(cache) * 0.1:  # More than 10% skipped
+        return _compute_summary_directly_from_cache(cache)
+    
     orchestrator = PDDEOrchestrator()
-    return orchestrator.summarize_escalation(results)
+    summary = orchestrator.summarize_escalation(results)
+    summary['skipped_assets'] = skipped
+    return summary
+
+
+def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, Any]:
+    """
+    Compute escalation summary directly from cache without EscalationResult conversion.
+    
+    This is a fallback when extract_escalation_from_result fails for too many assets.
+    """
+    total = len(cache)
+    if total == 0:
+        return {'total': 0}
+    
+    # Initialize counters
+    calibrated = 0
+    warnings = 0
+    critical = 0
+    
+    # Model type counters
+    gaussian_count = 0
+    phi_gaussian_count = 0
+    student_t_count = 0
+    student_t_refined_count = 0
+    mixture_count = 0
+    gh_count = 0
+    
+    # Escalation counters
+    mixture_attempts = 0
+    mixture_successes = 0
+    nu_refinement_attempts = 0
+    nu_refinement_successes = 0
+    gh_attempts = 0
+    gh_successes = 0
+    
+    for asset, data in cache.items():
+        global_data = data.get('global', data)
+        
+        # Get PIT p-value and calibration status
+        pit_p = global_data.get('pit_ks_pvalue', 0)
+        calibration_warning = global_data.get('calibration_warning', False)
+        
+        if pit_p >= 0.05 and not calibration_warning:
+            calibrated += 1
+        elif pit_p >= 0.01:
+            warnings += 1
+        else:
+            critical += 1
+        
+        # Count model types
+        noise_model = global_data.get('noise_model', '')
+        nu_ref = global_data.get('nu_refinement', {})
+        
+        if global_data.get('gh_selected'):
+            gh_count += 1
+        elif global_data.get('mixture_selected'):
+            mixture_count += 1
+        elif nu_ref.get('improvement_achieved'):
+            student_t_refined_count += 1
+        elif noise_model.startswith('phi_student_t'):
+            student_t_count += 1
+        elif noise_model == 'kalman_phi_gaussian' or global_data.get('phi') is not None:
+            phi_gaussian_count += 1
+        else:
+            gaussian_count += 1
+        
+        # Count escalation attempts
+        if global_data.get('mixture_attempted'):
+            mixture_attempts += 1
+            if global_data.get('mixture_selected'):
+                mixture_successes += 1
+        
+        if nu_ref.get('refinement_attempted'):
+            nu_refinement_attempts += 1
+            if nu_ref.get('improvement_achieved'):
+                nu_refinement_successes += 1
+        
+        if global_data.get('gh_attempted'):
+            gh_attempts += 1
+            if global_data.get('gh_selected'):
+                gh_successes += 1
+    
+    return {
+        'total': total,
+        'calibrated': calibrated,
+        'calibrated_pct': calibrated / total * 100 if total > 0 else 0,
+        'warnings': warnings,
+        'critical': critical,
+        'level_counts': {
+            'φ-Gaussian': phi_gaussian_count + gaussian_count,
+            'φ-Student-t': student_t_count,
+            'φ-Student-t (ν-refined)': student_t_refined_count,
+            'K=2 Scale Mixture': mixture_count,
+            'Generalized Hyperbolic': gh_count,
+            'EVT Tail Splice': 0,
+        },
+        'model_counts': {
+            'gaussian': gaussian_count,
+            'phi-gaussian': phi_gaussian_count,
+            'phi-t': student_t_count,
+            'phi-t-refined': student_t_refined_count,
+            'mixture': mixture_count,
+            'gh': gh_count,
+        },
+        'escalations_triggered': student_t_count + student_t_refined_count + mixture_count + gh_count,
+        'mixture_attempts': mixture_attempts,
+        'mixture_successes': mixture_successes,
+        'mixture_success_rate': mixture_successes / mixture_attempts * 100 if mixture_attempts > 0 else 0,
+        'nu_refinement_attempts': nu_refinement_attempts,
+        'nu_refinement_successes': nu_refinement_successes,
+        'nu_refinement_success_rate': nu_refinement_successes / nu_refinement_attempts * 100 if nu_refinement_attempts > 0 else 0,
+        'gh_attempts': gh_attempts,
+        'gh_successes': gh_successes,
+        'gh_success_rate': gh_successes / gh_attempts * 100 if gh_attempts > 0 else 0,
+    }
 
 
 # =============================================================================

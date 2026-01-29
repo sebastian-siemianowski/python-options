@@ -1746,6 +1746,7 @@ def render_pdde_escalation_summary(
             ("φ-Student-t", "cyan"),
             ("φ-Student-t (ν-refined)", "bright_cyan"),
             ("K=2 Scale Mixture", "bright_yellow"),
+            ("Generalized Hyperbolic", "bright_magenta"),
             ("EVT Tail Splice", "magenta"),
         ]
         
@@ -1778,7 +1779,11 @@ def render_pdde_escalation_summary(
     nu_successes = escalation_summary.get('nu_refinement_successes', 0)
     nu_rate = escalation_summary.get('nu_refinement_success_rate', 0)
     
-    if mixture_attempts > 0 or nu_attempts > 0:
+    gh_attempts = escalation_summary.get('gh_attempts', 0)
+    gh_successes = escalation_summary.get('gh_successes', 0)
+    gh_rate = escalation_summary.get('gh_success_rate', 0)
+    
+    if mixture_attempts > 0 or nu_attempts > 0 or gh_attempts > 0:
         console.print(Text("    Escalation Effectiveness:", style="dim"))
         console.print()
         
@@ -1795,6 +1800,13 @@ def render_pdde_escalation_summary(
             mix_row.append(f"{mixture_successes}/{mixture_attempts}", style="bold white")
             mix_row.append(f" selected ({mixture_rate:.0f}%)", style="dim")
             console.print(mix_row)
+        
+        if gh_attempts > 0:
+            gh_row = Text()
+            gh_row.append("      ★ GH (Skew):    ", style="bright_magenta")
+            gh_row.append(f"{gh_successes}/{gh_attempts}", style="bold white")
+            gh_row.append(f" selected ({gh_rate:.0f}%)", style="dim")
+            console.print(gh_row)
         
         console.print()
 

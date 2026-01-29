@@ -800,10 +800,27 @@ def load_cache(cache_json: str) -> Dict[str, Dict]:
 
 def save_cache_json(cache: Dict[str, Dict], cache_json: str) -> None:
     """Persist cache to JSON atomically."""
+    import numpy as np
+    
+    class NumpyEncoder(json.JSONEncoder):
+        """Custom JSON encoder that handles numpy types."""
+        def default(self, obj):
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, np.bool_):
+                return bool(obj)
+            elif isinstance(obj, (np.bool_, bool)):
+                return bool(obj)
+            return super().default(obj)
+    
     os.makedirs(os.path.dirname(cache_json) if os.path.dirname(cache_json) else '.', exist_ok=True)
     json_temp = cache_json + '.tmp'
     with open(json_temp, 'w') as f:
-        json.dump(cache, f, indent=2)
+        json.dump(cache, f, indent=2, cls=NumpyEncoder)
     os.replace(json_temp, cache_json)
 
 
