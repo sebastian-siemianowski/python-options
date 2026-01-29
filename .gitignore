@@ -47,7 +47,7 @@ scripts/quant/cache/calibration/
 scripts/quant/cache/kalman_q_cache.json
 # Per-asset cache files (ignored by default, but you can commit specific important ones)
 # Uncomment to track all per-asset cache files:
- !scripts/quant/cache/tune/*.json
+!scripts/quant/cache/tune/*.json
 # Or keep them ignored (default) for local-only cache:
 
 # Distribution / packaging
