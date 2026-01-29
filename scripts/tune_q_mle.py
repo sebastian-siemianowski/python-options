@@ -223,6 +223,22 @@ try:
 except ImportError:
     ADAPTIVE_NU_AVAILABLE = False
 
+# Import Generalized Hyperbolic (GH) distribution for calibration improvement
+# GH is a fallback model when Student-t fails - captures skewness that t cannot
+try:
+    from gh_distribution import (
+        GHModel,
+        GHModelConfig,
+        GHModelResult,
+        should_attempt_gh,
+        should_select_gh,
+        compute_gh_probability,
+        gh_cdf,
+    )
+    GH_MODEL_AVAILABLE = True
+except ImportError:
+    GH_MODEL_AVAILABLE = False
+
 # Import presentation layer for world-class UX output
 from fx_signals_presentation import (
     create_tuning_console,
@@ -434,6 +450,59 @@ def get_mixture_config() -> Optional['PhiTMixtureK2Config']:
         sigma_ratio_max=5.0,
         entropy_penalty=MIXTURE_ENTROPY_PENALTY,
         bic_threshold=MIXTURE_BIC_THRESHOLD,
+    )
+
+
+# =============================================================================
+# GENERALIZED HYPERBOLIC (GH) DISTRIBUTION CONFIGURATION
+# =============================================================================
+# GH distribution is a fallback model when Student-t fails PIT calibration.
+# GH captures SKEWNESS that symmetric Student-t cannot.
+#
+# GH is a 5-parameter family that includes Student-t, NIG, and Variance-Gamma
+# as special cases. The key addition is β (beta) for skewness.
+#
+# When enabled:
+#   - GH is attempted ONLY when other escalation methods fail
+#   - GH must improve PIT p-value to be selected
+#   - Small BIC penalty is acceptable if calibration improves
+#
+# ESCALATION ORDER:
+#   1. φ-Gaussian / φ-Student-t (baseline)
+#   2. Adaptive ν refinement (if boundary ν)
+#   3. K=2 mixture (if still failing)
+#   4. GH distribution (last resort for skewed assets)
+# =============================================================================
+
+# Feature toggle
+GH_MODEL_ENABLED = True
+
+# PIT threshold to attempt GH
+GH_PIT_THRESHOLD = 0.05
+
+# BIC threshold: allow GH even if BIC is slightly worse (for calibration)
+# Negative value means we accept up to 10 BIC worse if PIT improves
+GH_BIC_THRESHOLD = -10.0
+
+# PIT improvement factor: must at least double p-value to justify GH
+GH_PIT_IMPROVEMENT_FACTOR = 2.0
+
+
+def get_gh_config() -> Optional['GHModelConfig']:
+    """
+    Get GH model configuration based on global settings.
+    
+    Returns:
+        GHModelConfig if GH is available and enabled, None otherwise.
+    """
+    if not GH_MODEL_AVAILABLE or not GH_MODEL_ENABLED:
+        return None
+    
+    return GHModelConfig(
+        enabled=GH_MODEL_ENABLED,
+        pit_threshold=GH_PIT_THRESHOLD,
+        bic_threshold=GH_BIC_THRESHOLD,
+        pit_improvement_factor=GH_PIT_IMPROVEMENT_FACTOR,
     )
 
 
@@ -2995,6 +3064,98 @@ def tune_asset_q(
                 _log(f"     ✗ Mixture error: {mix_err}")
                 result['mixture_model'] = None
                 result['mixture_selected'] = False
+
+        # =================================================================
+        # GENERALIZED HYPERBOLIC (GH) DISTRIBUTION FALLBACK
+        # =================================================================
+        # GH is attempted as LAST RESORT when:
+        #   1. Calibration still fails (PIT p < 0.05)
+        #   2. Mixture was attempted but not selected OR still failing
+        #   3. ν-refinement didn't solve the problem
+        #
+        # GH captures SKEWNESS that symmetric Student-t cannot.
+        # It's computationally expensive, so only used when necessary.
+        # =================================================================
+        gh_config = get_gh_config()
+        result['gh_attempted'] = False
+        result['gh_selected'] = False
+        result['gh_model'] = None
+        
+        # Check if we should attempt GH
+        current_pit_pvalue = result.get('pit_ks_pvalue', ks_pvalue)
+        current_calibration_warning = result.get('calibration_warning', calibration_warning)
+        
+        if gh_config is not None and current_calibration_warning:
+            # Check escalation conditions
+            mixture_attempted = result.get('mixture_attempted', False)
+            mixture_selected = result.get('mixture_selected', False)
+            nu_ref = result.get('nu_refinement', {})
+            nu_refinement_attempted = nu_ref.get('refinement_attempted', False)
+            nu_refinement_improved = nu_ref.get('improvement_achieved', False)
+            
+            attempt_gh = should_attempt_gh(
+                pit_ks_pvalue=current_pit_pvalue,
+                mixture_attempted=mixture_attempted,
+                mixture_selected=mixture_selected,
+                nu_refinement_attempted=nu_refinement_attempted,
+                nu_refinement_improved=nu_refinement_improved,
+                config=gh_config
+            )
+            
+            if attempt_gh:
+                _log(f"  🔧 Attempting Generalized Hyperbolic (GH) model for calibration improvement...")
+                result['gh_attempted'] = True
+                
+                try:
+                    # Compute standardized residuals for GH fitting
+                    forecast_std = np.sqrt(c_optimal * (vol_arr ** 2) + P_filtered)
+                    standardized_residuals = (returns_arr - mu_filtered) / forecast_std
+                    
+                    # Fit GH model
+                    gh_model = GHModel(gh_config)
+                    gh_result = gh_model.fit(
+                        z=standardized_residuals,
+                        single_bic=bic_final,
+                        single_pit_pvalue=current_pit_pvalue
+                    )
+                    
+                    if gh_result is not None:
+                        _log(f"     GH fit: λ={gh_result.lam:.2f}, α={gh_result.alpha:.2f}, "
+                             f"β={gh_result.beta:.2f}, δ={gh_result.delta:.2f}")
+                        _log(f"     GH PIT p={gh_result.pit_ks_pvalue:.4f}, "
+                             f"skew={gh_result.skewness_direction}, tails={gh_result.tail_behavior}")
+                        
+                        # Check if GH should be selected
+                        use_gh = should_select_gh(
+                            gh_result=gh_result,
+                            single_pit_pvalue=current_pit_pvalue,
+                            config=gh_config
+                        )
+                        
+                        if use_gh:
+                            _log(f"     ✓ GH selected: PIT improved {current_pit_pvalue:.4f}→{gh_result.pit_ks_pvalue:.4f}")
+                            
+                            result['gh_model'] = gh_result.to_dict()
+                            result['gh_selected'] = True
+                            result['noise_model'] = 'generalized_hyperbolic'
+                            
+                            # Update calibration status
+                            if gh_result.is_calibrated:
+                                result['calibration_warning'] = False
+                                result['pit_ks_pvalue'] = float(gh_result.pit_ks_pvalue)
+                                result['ks_statistic'] = float(gh_result.ks_statistic)
+                        else:
+                            _log(f"     ✗ GH not selected (PIT {current_pit_pvalue:.4f}→{gh_result.pit_ks_pvalue:.4f}, "
+                                 f"BIC impr={gh_result.bic_improvement:.1f})")
+                            result['gh_model'] = gh_result.to_dict()
+                            result['gh_selected'] = False
+                    else:
+                        _log(f"     ✗ GH fitting failed")
+                        
+                except Exception as gh_err:
+                    _log(f"     ✗ GH error: {gh_err}")
+                    result['gh_model'] = None
+                    result['gh_selected'] = False
 
         return result
         

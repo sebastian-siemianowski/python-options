@@ -263,6 +263,12 @@ Examples:
                         if nu_refinement.get('improvement_achieved'):
                             nu_refinement_improved_count += 1
                         
+                        # Track GH distribution attempts and selections
+                        if global_result.get('gh_attempted'):
+                            gh_attempted_count += 1
+                        if global_result.get('gh_selected'):
+                            gh_selected_count += 1
+                        
                         # Collect regime distribution
                         if result.get('regime_counts'):
                             regime_distributions[asset_name] = result['regime_counts']
@@ -294,7 +300,13 @@ Examples:
                         
                         # Build comprehensive details string for UX display
                         # Format: model|q|c|phi|nu|bic
-                        if global_result.get('mixture_selected'):
+                        if global_result.get('gh_selected'):
+                            gh_model = global_result.get('gh_model', {})
+                            gh_params = gh_model.get('parameters', {})
+                            beta = gh_params.get('beta', 0)
+                            skew = gh_model.get('skewness_direction', 'sym')[:1].upper()
+                            model_str = f"GH(β={beta:.1f},{skew})"
+                        elif global_result.get('mixture_selected'):
                             mixture_model = global_result.get('mixture_model', {})
                             sigma_ratio = mixture_model.get('sigma_ratio', 0)
                             weight = mixture_model.get('weight', 0)
@@ -424,6 +436,8 @@ Examples:
         mixture_selected_count=mixture_selected_count,
         nu_refinement_attempted_count=nu_refinement_attempted_count,
         nu_refinement_improved_count=nu_refinement_improved_count,
+        gh_attempted_count=gh_attempted_count,
+        gh_selected_count=gh_selected_count,
         console=console,
     )
 

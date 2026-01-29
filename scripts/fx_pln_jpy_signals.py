@@ -4634,14 +4634,45 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         raise ValueError("Student-t model selected but ν missing from tuning cache")
     nu_prob = float(tuned_nu_meta) if is_student_world else nu_glob
 
+    # Check for GH (Generalized Hyperbolic) model - captures skewness
+    is_gh_world = noise_model == 'generalized_hyperbolic'
+    gh_params = km_prob.get("gh_model", {}).get("parameters", {}) if is_gh_world else {}
+    gh_lambda = gh_params.get("lambda", -0.5)
+    gh_alpha = gh_params.get("alpha", 1.0)
+    gh_beta = gh_params.get("beta", 0.0)
+    gh_delta = gh_params.get("delta", 1.0)
+
+    # Import GH CDF function if GH model is used
+    gh_cdf_func = None
+    if is_gh_world:
+        try:
+            from gh_distribution import gh_cdf
+            gh_cdf_func = gh_cdf
+        except ImportError:
+            # Fallback to Student-t if GH not available
+            is_gh_world = False
+            is_student_world = True
+            nu_prob = 8.0  # Default to moderate tails
+
     # Mapping function that accepts per‑day skew/nu
     def map_prob(edge: float, nu_val: float, skew_val: float) -> float:
         if not np.isfinite(edge):
             return 0.5
         z = float(edge)
         nu_eff = nu_prob if is_student_world else nu_val
+        
+        # GH model: use fitted GH CDF for probability mapping
+        if is_gh_world and gh_cdf_func is not None:
+            try:
+                # GH CDF returns P(Z <= z), we need this for probability computation
+                base_p = float(gh_cdf_func(np.array([z]), gh_lambda, gh_alpha, gh_beta, gh_delta)[0])
+                if not np.isfinite(base_p):
+                    # Fallback to Student-t if GH fails
+                    base_p = float(student_t.cdf(z, df=8.0))
+            except Exception:
+                base_p = float(student_t.cdf(z, df=8.0))
         # Base symmetric mapping dictated solely by model identity
-        if is_student_world:
+        elif is_student_world:
             base_p = float(student_t.cdf(z, df=nu_eff))
         else:
             base_p = float(norm.cdf(z))
@@ -4675,7 +4706,11 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     # CI quantile based on 'now'
     alpha = np.clip(ci, 1e-6, 0.999999)
     tail = 0.5 * (1 + alpha)
-    if is_student_world:
+    if is_gh_world:
+        # For GH, use Student-t approximation for quantile (GH quantile is expensive)
+        # The GH model captures skewness in CDF, but for CI we use symmetric approximation
+        z_star = float(student_t.ppf(tail, df=8.0))
+    elif is_student_world:
         z_star = float(student_t.ppf(tail, df=float(nu_prob)))
     else:
         z_star = float(norm.ppf(tail))

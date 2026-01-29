@@ -1818,6 +1818,8 @@ def render_tuning_summary(
     mixture_selected_count: int = 0,
     nu_refinement_attempted_count: int = 0,
     nu_refinement_improved_count: int = 0,
+    gh_attempted_count: int = 0,
+    gh_selected_count: int = 0,
     console: Console = None
 ) -> None:
     """Render extraordinary Apple-quality tuning summary.
@@ -1970,6 +1972,27 @@ def render_tuning_summary(
                 nu_row.append("Improved: 0", style="dim")
                 nu_row.append("  (no improvement found)", style="dim")
             console.print(nu_row)
+        
+        # GH Distribution Fallback row (only if attempted)
+        if gh_attempted_count > 0:
+            console.print()
+            gh_section = Text()
+            gh_section.append("    ★ ", style="bright_magenta")
+            gh_section.append("Generalized Hyperbolic (Skew)", style="bright_magenta")
+            console.print(gh_section)
+            
+            gh_row = Text()
+            gh_row.append("      ", style="")
+            gh_row.append(f"Attempted: {gh_attempted_count}", style="dim")
+            gh_row.append("  →  ", style="dim")
+            if gh_selected_count > 0:
+                gh_row.append(f"Selected: {gh_selected_count}", style="bold bright_green")
+                success_rate = gh_selected_count / gh_attempted_count * 100
+                gh_row.append(f"  ({success_rate:.0f}% success)", style="dim")
+            else:
+                gh_row.append("Selected: 0", style="dim")
+                gh_row.append("  (skewness not significant)", style="dim")
+            console.print(gh_row)
         
         console.print()
         console.print()
@@ -2442,11 +2465,20 @@ def render_calibration_report(
         nu_refinement_attempted = nu_refinement.get('refinement_attempted', False)
         nu_refinement_improved = nu_refinement.get('improvement_achieved', False)
         
+        # Check for GH model usage
+        gh_selected = data.get('gh_selected', False)
+        gh_attempted = data.get('gh_attempted', False)
+        gh_model = data.get('gh_model')
+        
         collapse_warning = raw_data.get('hierarchical_tuning', {}).get('collapse_warning', False)
         
         has_issue = False
         issue_type = []
         severity = 'ok'
+        
+        # If GH was selected and improved calibration, skip this asset
+        if gh_selected and gh_model and not calibration_warning:
+            continue
         
         # If mixture was selected and improved calibration, skip this asset
         if mixture_selected and mixture_model and not calibration_warning:
@@ -2454,8 +2486,12 @@ def render_calibration_report(
         
         if calibration_warning or (pit_p is not None and pit_p < 0.05):
             has_issue = True
-            # Note if mixture was attempted (whether selected or not)
-            if mixture_attempted and mixture_selected:
+            # Note escalation status
+            if gh_attempted and gh_selected:
+                issue_type.append('PIT < 0.05 (GH-sel)')
+            elif gh_attempted:
+                issue_type.append('PIT < 0.05 (GH-tried)')
+            elif mixture_attempted and mixture_selected:
                 issue_type.append('PIT < 0.05 (mix-sel)')
             elif mixture_attempted:
                 issue_type.append('PIT < 0.05 (mix-tried)')
@@ -2481,7 +2517,13 @@ def render_calibration_report(
             issue_type.append('Regime Collapse')
         
         if has_issue:
-            if mixture_selected and mixture_model:
+            if gh_selected and gh_model:
+                # Show GH model info
+                gh_params = gh_model.get('parameters', {})
+                beta = gh_params.get('beta', 0)
+                skew_dir = gh_model.get('skewness_direction', 'sym')[:1].upper()
+                model_str = f"GH(β={beta:.1f},{skew_dir})"
+            elif mixture_selected and mixture_model:
                 # Show mixture model info
                 sigma_ratio = mixture_model.get('sigma_ratio', 0)
                 model_str = f"Mix(σ={sigma_ratio:.1f})"
@@ -2510,6 +2552,8 @@ def render_calibration_report(
                 'mixture_attempted': mixture_attempted,
                 'nu_refinement_attempted': nu_refinement_attempted,
                 'nu_refinement_improved': nu_refinement_improved,
+                'gh_attempted': gh_attempted,
+                'gh_selected': gh_selected,
             })
     
     # Sort by severity (critical first), then by PIT p-value
@@ -2588,13 +2632,23 @@ def render_calibration_report(
             'flatness_threshold': 2.0,
             'severe_pit_always_refine': True,
         },
+        'generalized_hyperbolic': {
+            'enabled': True,
+            'description': 'GH distribution fallback for skewed assets (last resort)',
+            'pit_threshold': 0.05,
+            'bic_threshold': -10.0,
+            'pit_improvement_factor': 2.0,
+            'captures': 'Skewness that symmetric Student-t cannot model',
+        },
         'diagnostics': {
             'escalation_stats': {
                 'mixture_attempted_count': sum(1 for i in issues if i.get('mixture_attempted')),
                 'mixture_selected_count': sum(1 for i in issues if i.get('mixture_selected')),
                 'nu_refinement_attempted_count': sum(1 for i in issues if i.get('nu_refinement_attempted')),
                 'nu_refinement_improved_count': sum(1 for i in issues if i.get('nu_refinement_improved')),
-                'no_escalation_count': sum(1 for i in issues if not i.get('mixture_attempted') and not i.get('nu_refinement_attempted')),
+                'gh_attempted_count': sum(1 for i in issues if i.get('gh_attempted')),
+                'gh_selected_count': sum(1 for i in issues if i.get('gh_selected')),
+                'no_escalation_count': sum(1 for i in issues if not i.get('mixture_attempted') and not i.get('nu_refinement_attempted') and not i.get('gh_attempted')),
             },
             'model_distribution': {},
             'nu_distribution': {},
