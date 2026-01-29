@@ -1040,7 +1040,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
         )
         
         buy_table.add_column("Asset", justify="left", width=50, no_wrap=True)
-        buy_table.add_column("Sector", justify="left", width=20, no_wrap=True, style="dim")
+        buy_table.add_column("Sector", justify="left", width=25, no_wrap=True, style="dim")
         buy_table.add_column("Horizon", justify="center", width=10)
         buy_table.add_column("P(r>0)", justify="right", width=8)
         buy_table.add_column("E[return]", justify="right", width=10)
@@ -1067,7 +1067,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
             
             buy_table.add_row(
                 sig["asset"],
-                sig["sector"][:18] if sig["sector"] else "",
+                sig["sector"][:23] if sig["sector"] else "",
                 horizon_label,
                 f"[bold bright_green]{p_pct:.1f}%[/]",
                 f"[bright_green]{exp_ret_pct:+.2f}%[/]",
@@ -1100,7 +1100,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
         )
         
         sell_table.add_column("Asset", justify="left", width=50, no_wrap=True)
-        sell_table.add_column("Sector", justify="left", width=20, no_wrap=True, style="dim")
+        sell_table.add_column("Sector", justify="left", width=25, no_wrap=True, style="dim")
         sell_table.add_column("Horizon", justify="center", width=10)
         sell_table.add_column("P(r>0)", justify="right", width=8)
         sell_table.add_column("E[return]", justify="right", width=10)
@@ -1127,7 +1127,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
             
             sell_table.add_row(
                 sig["asset"],
-                sig["sector"][:18] if sig["sector"] else "",
+                sig["sector"][:23] if sig["sector"] else "",
                 horizon_label,
                 f"[bold indian_red1]{p_pct:.1f}%[/]",
                 f"[indian_red1]{exp_ret_pct:+.2f}%[/]",
