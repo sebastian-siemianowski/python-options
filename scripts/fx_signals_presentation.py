@@ -1711,96 +1711,137 @@ def render_tuning_summary(
     console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════════
-    # COMPLETION TITLE
+    # COMPLETION HEADER - Elegant centered title
     # ═══════════════════════════════════════════════════════════════════════════════
-    title = Text()
-    title.append("◆", style="bold bright_green")
-    title.append("  C O M P L E T E", style="bold bright_white")
-    console.print(Align.center(title))
+    header_text = Text(justify="center")
+    header_text.append("\n", style="")
+    header_text.append("✓ ", style="bold bright_green")
+    header_text.append("TUNING COMPLETE", style="bold bright_white")
+    header_text.append("\n", style="")
+    
+    header_panel = Panel(
+        Align.center(header_text),
+        box=box.ROUNDED,
+        border_style="bright_green",
+        padding=(0, 4),
+        width=40,
+    )
+    console.print(Align.center(header_panel))
     console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════════
-    # METRICS ROW - Ultra clean
+    # METRICS ROW - Clean cards with clear labels
     # ═══════════════════════════════════════════════════════════════════════════════
-    metrics = Table.grid(padding=(0, 6))
-    metrics.add_column(justify="center")
-    metrics.add_column(justify="center")
-    metrics.add_column(justify="center")
-    metrics.add_column(justify="center")
+    console.print()
     
-    def metric_cell(value: int, label: str, color: str = "white") -> Text:
-        t = Text()
-        t.append(f"{value:,}", style=f"bold {color}")
-        t.append(f"\n{label}", style="dim")
+    metrics_table = Table(
+        show_header=False,
+        box=None,
+        padding=(0, 4),
+        expand=False,
+    )
+    metrics_table.add_column(justify="center")
+    metrics_table.add_column(justify="center")
+    metrics_table.add_column(justify="center")
+    metrics_table.add_column(justify="center")
+    
+    def metric_text(value: int, label: str, color: str = "white") -> Text:
+        t = Text(justify="center")
+        t.append(f"{value:,}\n", style=f"bold {color}")
+        t.append(label, style="dim")
         return t
     
-    failed_color = "red" if failed > 0 else "dim"
-    metrics.add_row(
-        metric_cell(total_assets, "TOTAL", "white"),
-        metric_cell(new_estimates, "NEW", "green"),
-        metric_cell(reused_cached, "CACHED", "cyan"),
-        metric_cell(failed, "FAILED", failed_color),
-    )
-    console.print(Align.center(metrics))
+    failed_color = "indian_red1" if failed > 0 else "dim"
     
+    metrics_table.add_row(
+        metric_text(total_assets, "Total", "bright_white"),
+        metric_text(new_estimates, "New", "bright_green"),
+        metric_text(reused_cached, "Cached", "bright_cyan"),
+        metric_text(failed, "Failed", failed_color),
+    )
+    
+    console.print(Align.center(metrics_table))
     console.print()
     console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════════
-    # MODEL SELECTION - Visual bars
+    # MODEL SELECTION - Visual comparison with elegant bars
     # ═══════════════════════════════════════════════════════════════════════════════
     total_models = gaussian_count + student_t_count
     if total_models > 0:
+        console.print(Rule(style="dim"))
+        console.print()
+        
         section = Text()
-        section.append("▸ ", style="bright_cyan")
-        section.append("MODEL SELECTION", style="bold white")
+        section.append("  📈  ", style="bold bright_cyan")
+        section.append("MODEL SELECTION", style="bold bright_white")
         console.print(section)
         console.print()
         
         gauss_pct = gaussian_count / total_models * 100
         student_pct = student_t_count / total_models * 100
         
-        # Gaussian bar
-        bar_width = 30
+        # Visual bars
+        bar_width = 35
         gauss_filled = int(gauss_pct / 100 * bar_width)
         student_filled = int(student_pct / 100 * bar_width)
         
-        console.print(f"    [green]Gaussian[/green]     [green]{'█' * gauss_filled}[/green][dim]{'░' * (bar_width - gauss_filled)}[/dim]  [bold]{gaussian_count}[/bold] [dim]({gauss_pct:.0f}%)[/dim]")
-        console.print(f"    [magenta]Student-t[/magenta]    [magenta]{'█' * student_filled}[/magenta][dim]{'░' * (bar_width - student_filled)}[/dim]  [bold]{student_t_count}[/bold] [dim]({student_pct:.0f}%)[/dim]")
+        # Gaussian row
+        gauss_row = Text()
+        gauss_row.append("    ○ ", style="green")
+        gauss_row.append("Gaussian      ", style="green")
+        gauss_row.append("█" * gauss_filled, style="green")
+        gauss_row.append("░" * (bar_width - gauss_filled), style="dim")
+        gauss_row.append(f"  {gaussian_count:>4}", style="bold white")
+        gauss_row.append(f"  ({gauss_pct:>4.1f}%)", style="dim")
+        console.print(gauss_row)
+        
+        # Student-t row
+        student_row = Text()
+        student_row.append("    ● ", style="magenta")
+        student_row.append("Student-t     ", style="magenta")
+        student_row.append("█" * student_filled, style="magenta")
+        student_row.append("░" * (bar_width - student_filled), style="dim")
+        student_row.append(f"  {student_t_count:>4}", style="bold white")
+        student_row.append(f"  ({student_pct:>4.1f}%)", style="dim")
+        console.print(student_row)
         
         console.print()
         console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════════
-    # REGIME TABLE - With model breakdown
+    # REGIME TABLE - With model breakdown in elegant table
     # ═══════════════════════════════════════════════════════════════════════════════
+    console.print(Rule(style="dim"))
+    console.print()
+    
     section = Text()
-    section.append("▸ ", style="bright_cyan")
-    section.append("REGIME COVERAGE", style="bold white")
+    section.append("  🎯  ", style="bold bright_cyan")
+    section.append("REGIME COVERAGE", style="bold bright_white")
     console.print(section)
     console.print()
     
     # Regime names and colors
     regime_names = ["LOW_VOL_TREND", "HIGH_VOL_TREND", "LOW_VOL_RANGE", "HIGH_VOL_RANGE", "CRISIS_JUMP"]
     regime_short = ["LV Trend", "HV Trend", "LV Range", "HV Range", "Crisis"]
-    regime_colors_list = ["cyan", "yellow", "green", "orange1", "red"]
+    regime_colors_list = ["bright_cyan", "yellow", "bright_green", "orange1", "indian_red1"]
+    regime_icons = ["◇", "◆", "○", "●", "⚠"]
     
     max_fits = max(regime_fit_counts.values()) if regime_fit_counts.values() else 1
     
-    # Collect all model types across all regimes for consistent ordering
+    # Collect all model types across all regimes
     all_model_types = set()
     if regime_model_breakdown:
         for r_breakdown in regime_model_breakdown.values():
             all_model_types.update(r_breakdown.keys())
     
-    # Sort model types: Gaussian first, then φ-Gaussian, then Student-t variants by ν
+    # Sort model types
     def model_sort_key(m):
         if m == "Gaussian":
             return (0, 0)
         elif m == "φ-Gaussian":
             return (1, 0)
         else:
-            # Extract ν value for sorting
             import re
             nu_match = re.search(r'ν=(\d+)', m)
             nu = int(nu_match.group(1)) if nu_match else 0
@@ -1808,17 +1849,18 @@ def render_tuning_summary(
     
     sorted_models = sorted(all_model_types, key=model_sort_key)
     
-    # Create table with regime rows
+    # Create elegant table
     table = Table(
         show_header=True,
-        header_style="dim",
-        box=None,
-        padding=(0, 2),
-        collapse_padding=True,
+        header_style="bold white",
+        border_style="dim",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
     )
-    table.add_column("Regime", width=10)
-    table.add_column("Total", justify="right", width=5)
-    table.add_column("", width=20)  # Visual bar
+    table.add_column("Regime", width=12)
+    table.add_column("Fits", justify="right", width=6)
+    table.add_column("Distribution", width=25)
     
     # Add columns for each model type
     for model in sorted_models:
@@ -1827,26 +1869,25 @@ def render_tuning_summary(
         elif model == "φ-Gaussian":
             table.add_column("φ-G", justify="right", width=4, style="cyan")
         else:
-            # Extract ν for column header
             import re
             nu_match = re.search(r'ν=(\d+)', model)
             nu = nu_match.group(1) if nu_match else "?"
             table.add_column(f"t{nu}", justify="right", width=4, style="magenta")
     
-    for i, (name, short, color) in enumerate(zip(regime_names, regime_short, regime_colors_list)):
+    for i, (name, short, color, icon) in enumerate(zip(regime_names, regime_short, regime_colors_list, regime_icons)):
         fit_count = regime_fit_counts.get(i, 0)
         
         # Create visual bar
         if fit_count == 0:
-            bar = "[dim]" + "─" * 20 + "[/dim]"
+            bar = "[dim]" + "─" * 20 + "[/]"
         else:
             filled = int(fit_count / max_fits * 20) if max_fits > 0 else 0
-            bar = f"[{color}]{'━' * filled}[/{color}][dim]{'─' * (20 - filled)}[/dim]"
+            bar = f"[{color}]{'━' * filled}[/{color}][dim]{'─' * (20 - filled)}[/]"
         
-        # Build row with model breakdown
+        # Build row
         row = [
-            f"[{color}]{short}[/{color}]",
-            f"[bold]{fit_count}[/bold]",
+            f"[{color}]{icon} {short}[/{color}]",
+            f"[bold]{fit_count}[/]" if fit_count > 0 else "[dim]0[/]",
             bar,
         ]
         
@@ -1856,39 +1897,30 @@ def render_tuning_summary(
             for model in sorted_models:
                 count = r_breakdown.get(model, 0)
                 if count > 0:
-                    row.append(str(count))
+                    row.append(f"{count}")
                 else:
-                    row.append("[dim]—[/dim]")
+                    row.append("[dim]—[/]")
         
         table.add_row(*row)
     
-    console.print(Padding(table, (0, 0, 0, 4)))
+    console.print(table)
     console.print()
     
     # Warnings
     if collapse_warnings > 0 or calibration_warnings > 0:
-        console.print()
+        warnings_text = Text()
+        warnings_text.append("    ", style="")
         if collapse_warnings > 0:
-            console.print(f"    [yellow]⚠[/yellow] [dim]{collapse_warnings} collapse warnings[/dim]")
+            warnings_text.append("⚠ ", style="yellow")
+            warnings_text.append(f"{collapse_warnings} collapse", style="dim")
+            if calibration_warnings > 0:
+                warnings_text.append("   ·   ", style="dim")
         if calibration_warnings > 0:
-            console.print(f"    [yellow]⚠[/yellow] [dim]{calibration_warnings} calibration warnings[/dim]")
+            warnings_text.append("⚠ ", style="yellow")
+            warnings_text.append(f"{calibration_warnings} calibration", style="dim")
+        console.print(warnings_text)
+        console.print()
     
-    console.print()
-    console.print()
-    
-    # ═══════════════════════════════════════════════════════════════════════════════
-    # FOOTER - Subtle
-    # ═══════════════════════════════════════════════════════════════════════════════
-    console.print(Rule(style="dim", characters="─"))
-    console.print()
-    
-    footer = Text()
-    footer.append("  Cache saved", style="dim")
-    footer.append("  ·  ", style="dim")
-    footer.append(f"{regime_tuning_count} regime params", style="dim")
-    footer.append("  ·  ", style="dim")
-    footer.append("Ready", style="green")
-    console.print(footer)
     console.print()
 
 
@@ -2023,7 +2055,7 @@ def render_failed_assets(
     failure_reasons: Dict[str, str],
     console: Console = None
 ) -> None:
-    """Render failed assets - clean, actionable."""
+    """Render failed assets - clean, actionable, Apple-quality design."""
     if console is None:
         console = create_tuning_console()
     
@@ -2031,16 +2063,42 @@ def render_failed_assets(
         return
     
     console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
     section = Text()
-    section.append("▸ ", style="red")
-    section.append("FAILED", style="bold red")
+    section.append("  ❌  ", style="bold indian_red1")
+    section.append("FAILED ASSETS", style="bold indian_red1")
+    section.append(f"  ({len(failure_reasons)})", style="dim")
     console.print(section)
     console.print()
     
-    for asset, reason in failure_reasons.items():
-        first_line = reason.split('\n')[0][:60] if reason else "Unknown"
-        console.print(f"    [red]✗[/red] [bold]{asset}[/bold]  [dim]{first_line}[/dim]")
+    # Create table for failed assets
+    table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="indian_red1",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
+    )
+    table.add_column("Asset", style="bold indian_red1", width=15, no_wrap=True)
+    table.add_column("Error", style="dim", width=70, no_wrap=True, overflow="ellipsis")
     
+    for asset, reason in sorted(failure_reasons.items()):
+        first_line = reason.split('\n')[0][:65] if reason else "Unknown error"
+        table.add_row(asset, first_line)
+    
+    console.print(table)
+    console.print()
+    
+    # Action hint
+    hint = Text()
+    hint.append("    → ", style="dim")
+    hint.append("Re-run with ", style="dim")
+    hint.append("make tune ARGS='--force --assets <TICKER>'", style="bold white")
+    hint.append(" to retry", style="dim")
+    console.print(hint)
     console.print()
 
 
@@ -2049,31 +2107,79 @@ def render_dry_run_preview(
     max_display: int = 20,
     console: Console = None
 ) -> None:
-    """Render dry run preview - clean list."""
+    """Render dry run preview - clean, informative, Apple-quality design."""
     if console is None:
         console = create_tuning_console()
     
     from rich.align import Align
     
     console.print()
-    
-    # Warning badge
-    badge = Text()
-    badge.append("  DRY RUN  ", style="bold black on yellow")
-    badge.append("  No changes will be made", style="dim")
-    console.print(badge)
-    
-    console.print()
-    console.print(f"  Would process [bold]{len(assets)}[/bold] assets:")
     console.print()
     
-    # Show assets in columns
+    # Warning panel
+    warning_text = Text(justify="center")
+    warning_text.append("\n", style="")
+    warning_text.append("⚠️  DRY RUN MODE", style="bold bright_yellow")
+    warning_text.append("\n", style="")
+    warning_text.append("No changes will be made to cache", style="dim")
+    warning_text.append("\n", style="")
+    
+    warning_panel = Panel(
+        Align.center(warning_text),
+        box=box.ROUNDED,
+        border_style="yellow",
+        padding=(0, 4),
+        width=45,
+    )
+    console.print(Align.center(warning_panel))
+    console.print()
+    
+    # Assets list header
+    header = Text()
+    header.append("  📋  ", style="bold bright_cyan")
+    header.append(f"Would process ", style="white")
+    header.append(f"{len(assets)}", style="bold bright_cyan")
+    header.append(" assets:", style="white")
+    console.print(header)
+    console.print()
+    
+    # Create table for assets
+    table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="dim",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
+    )
+    table.add_column("#", justify="right", width=4, style="dim")
+    table.add_column("Asset", style="bold", width=15)
+    table.add_column("Status", width=15)
+    
     for i, asset in enumerate(assets[:max_display], 1):
-        console.print(f"    [dim]{i:3}.[/dim] {asset}")
+        table.add_row(
+            f"{i}",
+            asset,
+            "[dim]pending[/]"
+        )
     
     if len(assets) > max_display:
-        console.print(f"    [dim]    ... and {len(assets) - max_display} more[/dim]")
+        table.add_row(
+            "[dim]...[/]",
+            f"[dim]+ {len(assets) - max_display} more[/]",
+            ""
+        )
     
+    console.print(table)
+    console.print()
+    
+    # Hint
+    hint = Text()
+    hint.append("    → ", style="dim")
+    hint.append("Remove ", style="dim")
+    hint.append("--dry-run", style="bold white")
+    hint.append(" to execute", style="dim")
+    console.print(hint)
     console.print()
 
 
