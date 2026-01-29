@@ -1711,96 +1711,137 @@ def render_tuning_summary(
     console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════════
-    # COMPLETION TITLE
+    # COMPLETION HEADER - Elegant centered title
     # ═══════════════════════════════════════════════════════════════════════════════
-    title = Text()
-    title.append("◆", style="bold bright_green")
-    title.append("  C O M P L E T E", style="bold bright_white")
-    console.print(Align.center(title))
+    header_text = Text(justify="center")
+    header_text.append("\n", style="")
+    header_text.append("✓ ", style="bold bright_green")
+    header_text.append("TUNING COMPLETE", style="bold bright_white")
+    header_text.append("\n", style="")
+    
+    header_panel = Panel(
+        Align.center(header_text),
+        box=box.ROUNDED,
+        border_style="bright_green",
+        padding=(0, 4),
+        width=40,
+    )
+    console.print(Align.center(header_panel))
     console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════════
-    # METRICS ROW - Ultra clean
+    # METRICS ROW - Clean cards with clear labels
     # ═══════════════════════════════════════════════════════════════════════════════
-    metrics = Table.grid(padding=(0, 6))
-    metrics.add_column(justify="center")
-    metrics.add_column(justify="center")
-    metrics.add_column(justify="center")
-    metrics.add_column(justify="center")
+    console.print()
     
-    def metric_cell(value: int, label: str, color: str = "white") -> Text:
-        t = Text()
-        t.append(f"{value:,}", style=f"bold {color}")
-        t.append(f"\n{label}", style="dim")
+    metrics_table = Table(
+        show_header=False,
+        box=None,
+        padding=(0, 4),
+        expand=False,
+    )
+    metrics_table.add_column(justify="center")
+    metrics_table.add_column(justify="center")
+    metrics_table.add_column(justify="center")
+    metrics_table.add_column(justify="center")
+    
+    def metric_text(value: int, label: str, color: str = "white") -> Text:
+        t = Text(justify="center")
+        t.append(f"{value:,}\n", style=f"bold {color}")
+        t.append(label, style="dim")
         return t
     
-    failed_color = "red" if failed > 0 else "dim"
-    metrics.add_row(
-        metric_cell(total_assets, "TOTAL", "white"),
-        metric_cell(new_estimates, "NEW", "green"),
-        metric_cell(reused_cached, "CACHED", "cyan"),
-        metric_cell(failed, "FAILED", failed_color),
-    )
-    console.print(Align.center(metrics))
+    failed_color = "indian_red1" if failed > 0 else "dim"
     
+    metrics_table.add_row(
+        metric_text(total_assets, "Total", "bright_white"),
+        metric_text(new_estimates, "New", "bright_green"),
+        metric_text(reused_cached, "Cached", "bright_cyan"),
+        metric_text(failed, "Failed", failed_color),
+    )
+    
+    console.print(Align.center(metrics_table))
     console.print()
     console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════════
-    # MODEL SELECTION - Visual bars
+    # MODEL SELECTION - Visual comparison with elegant bars
     # ═══════════════════════════════════════════════════════════════════════════════
     total_models = gaussian_count + student_t_count
     if total_models > 0:
+        console.print(Rule(style="dim"))
+        console.print()
+        
         section = Text()
-        section.append("▸ ", style="bright_cyan")
-        section.append("MODEL SELECTION", style="bold white")
+        section.append("  📈  ", style="bold bright_cyan")
+        section.append("MODEL SELECTION", style="bold bright_white")
         console.print(section)
         console.print()
         
         gauss_pct = gaussian_count / total_models * 100
         student_pct = student_t_count / total_models * 100
         
-        # Gaussian bar
-        bar_width = 30
+        # Visual bars
+        bar_width = 35
         gauss_filled = int(gauss_pct / 100 * bar_width)
         student_filled = int(student_pct / 100 * bar_width)
         
-        console.print(f"    [green]Gaussian[/green]     [green]{'█' * gauss_filled}[/green][dim]{'░' * (bar_width - gauss_filled)}[/dim]  [bold]{gaussian_count}[/bold] [dim]({gauss_pct:.0f}%)[/dim]")
-        console.print(f"    [magenta]Student-t[/magenta]    [magenta]{'█' * student_filled}[/magenta][dim]{'░' * (bar_width - student_filled)}[/dim]  [bold]{student_t_count}[/bold] [dim]({student_pct:.0f}%)[/dim]")
+        # Gaussian row
+        gauss_row = Text()
+        gauss_row.append("    ○ ", style="green")
+        gauss_row.append("Gaussian      ", style="green")
+        gauss_row.append("█" * gauss_filled, style="green")
+        gauss_row.append("░" * (bar_width - gauss_filled), style="dim")
+        gauss_row.append(f"  {gaussian_count:>4}", style="bold white")
+        gauss_row.append(f"  ({gauss_pct:>4.1f}%)", style="dim")
+        console.print(gauss_row)
+        
+        # Student-t row
+        student_row = Text()
+        student_row.append("    ● ", style="magenta")
+        student_row.append("Student-t     ", style="magenta")
+        student_row.append("█" * student_filled, style="magenta")
+        student_row.append("░" * (bar_width - student_filled), style="dim")
+        student_row.append(f"  {student_t_count:>4}", style="bold white")
+        student_row.append(f"  ({student_pct:>4.1f}%)", style="dim")
+        console.print(student_row)
         
         console.print()
         console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════════
-    # REGIME TABLE - With model breakdown
+    # REGIME TABLE - With model breakdown in elegant table
     # ═══════════════════════════════════════════════════════════════════════════════
+    console.print(Rule(style="dim"))
+    console.print()
+    
     section = Text()
-    section.append("▸ ", style="bright_cyan")
-    section.append("REGIME COVERAGE", style="bold white")
+    section.append("  🎯  ", style="bold bright_cyan")
+    section.append("REGIME COVERAGE", style="bold bright_white")
     console.print(section)
     console.print()
     
     # Regime names and colors
     regime_names = ["LOW_VOL_TREND", "HIGH_VOL_TREND", "LOW_VOL_RANGE", "HIGH_VOL_RANGE", "CRISIS_JUMP"]
     regime_short = ["LV Trend", "HV Trend", "LV Range", "HV Range", "Crisis"]
-    regime_colors_list = ["cyan", "yellow", "green", "orange1", "red"]
+    regime_colors_list = ["bright_cyan", "yellow", "bright_green", "orange1", "indian_red1"]
+    regime_icons = ["◇", "◆", "○", "●", "⚠"]
     
     max_fits = max(regime_fit_counts.values()) if regime_fit_counts.values() else 1
     
-    # Collect all model types across all regimes for consistent ordering
+    # Collect all model types across all regimes
     all_model_types = set()
     if regime_model_breakdown:
         for r_breakdown in regime_model_breakdown.values():
             all_model_types.update(r_breakdown.keys())
     
-    # Sort model types: Gaussian first, then φ-Gaussian, then Student-t variants by ν
+    # Sort model types
     def model_sort_key(m):
         if m == "Gaussian":
             return (0, 0)
         elif m == "φ-Gaussian":
             return (1, 0)
         else:
-            # Extract ν value for sorting
             import re
             nu_match = re.search(r'ν=(\d+)', m)
             nu = int(nu_match.group(1)) if nu_match else 0
@@ -1808,17 +1849,18 @@ def render_tuning_summary(
     
     sorted_models = sorted(all_model_types, key=model_sort_key)
     
-    # Create table with regime rows
+    # Create elegant table
     table = Table(
         show_header=True,
-        header_style="dim",
-        box=None,
-        padding=(0, 2),
-        collapse_padding=True,
+        header_style="bold white",
+        border_style="dim",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
     )
-    table.add_column("Regime", width=10)
-    table.add_column("Total", justify="right", width=5)
-    table.add_column("", width=20)  # Visual bar
+    table.add_column("Regime", width=12)
+    table.add_column("Fits", justify="right", width=6)
+    table.add_column("Distribution", width=25)
     
     # Add columns for each model type
     for model in sorted_models:
@@ -1827,26 +1869,25 @@ def render_tuning_summary(
         elif model == "φ-Gaussian":
             table.add_column("φ-G", justify="right", width=4, style="cyan")
         else:
-            # Extract ν for column header
             import re
             nu_match = re.search(r'ν=(\d+)', model)
             nu = nu_match.group(1) if nu_match else "?"
             table.add_column(f"t{nu}", justify="right", width=4, style="magenta")
     
-    for i, (name, short, color) in enumerate(zip(regime_names, regime_short, regime_colors_list)):
+    for i, (name, short, color, icon) in enumerate(zip(regime_names, regime_short, regime_colors_list, regime_icons)):
         fit_count = regime_fit_counts.get(i, 0)
         
         # Create visual bar
         if fit_count == 0:
-            bar = "[dim]" + "─" * 20 + "[/dim]"
+            bar = "[dim]" + "─" * 20 + "[/]"
         else:
             filled = int(fit_count / max_fits * 20) if max_fits > 0 else 0
-            bar = f"[{color}]{'━' * filled}[/{color}][dim]{'─' * (20 - filled)}[/dim]"
+            bar = f"[{color}]{'━' * filled}[/{color}][dim]{'─' * (20 - filled)}[/]"
         
-        # Build row with model breakdown
+        # Build row
         row = [
-            f"[{color}]{short}[/{color}]",
-            f"[bold]{fit_count}[/bold]",
+            f"[{color}]{icon} {short}[/{color}]",
+            f"[bold]{fit_count}[/]" if fit_count > 0 else "[dim]0[/]",
             bar,
         ]
         
@@ -1856,39 +1897,30 @@ def render_tuning_summary(
             for model in sorted_models:
                 count = r_breakdown.get(model, 0)
                 if count > 0:
-                    row.append(str(count))
+                    row.append(f"{count}")
                 else:
-                    row.append("[dim]—[/dim]")
+                    row.append("[dim]—[/]")
         
         table.add_row(*row)
     
-    console.print(Padding(table, (0, 0, 0, 4)))
+    console.print(table)
     console.print()
     
     # Warnings
     if collapse_warnings > 0 or calibration_warnings > 0:
-        console.print()
+        warnings_text = Text()
+        warnings_text.append("    ", style="")
         if collapse_warnings > 0:
-            console.print(f"    [yellow]⚠[/yellow] [dim]{collapse_warnings} collapse warnings[/dim]")
+            warnings_text.append("⚠ ", style="yellow")
+            warnings_text.append(f"{collapse_warnings} collapse", style="dim")
+            if calibration_warnings > 0:
+                warnings_text.append("   ·   ", style="dim")
         if calibration_warnings > 0:
-            console.print(f"    [yellow]⚠[/yellow] [dim]{calibration_warnings} calibration warnings[/dim]")
+            warnings_text.append("⚠ ", style="yellow")
+            warnings_text.append(f"{calibration_warnings} calibration", style="dim")
+        console.print(warnings_text)
+        console.print()
     
-    console.print()
-    console.print()
-    
-    # ═══════════════════════════════════════════════════════════════════════════════
-    # FOOTER - Subtle
-    # ═══════════════════════════════════════════════════════════════════════════════
-    console.print(Rule(style="dim", characters="─"))
-    console.print()
-    
-    footer = Text()
-    footer.append("  Cache saved", style="dim")
-    footer.append("  ·  ", style="dim")
-    footer.append(f"{regime_tuning_count} regime params", style="dim")
-    footer.append("  ·  ", style="dim")
-    footer.append("Ready", style="green")
-    console.print(footer)
     console.print()
 
 
@@ -1896,7 +1928,7 @@ def render_parameter_table(
     cache: Dict[str, Dict],
     console: Console = None
 ) -> None:
-    """Render beautiful parameter table - clean, scannable."""
+    """Render beautiful parameter table - clean, scannable, Apple-quality design."""
     if console is None:
         console = create_tuning_console()
     
@@ -1933,13 +1965,17 @@ def render_parameter_table(
         groups[model].sort(key=lambda x: -_get_q_for_sort(x[1]))
     
     console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
     section = Text()
-    section.append("▸ ", style="bright_cyan")
-    section.append("PARAMETERS", style="bold white")
+    section.append("  📊  ", style="bold bright_cyan")
+    section.append("TUNED PARAMETERS", style="bold bright_white")
     console.print(section)
     console.print()
     
     model_colors = {'Gaussian': 'green', 'φ-Gaussian': 'cyan', 'Student-t': 'magenta'}
+    model_icons = {'Gaussian': '○', 'φ-Gaussian': '◐', 'Student-t': '●'}
     
     for model_name in ['Gaussian', 'φ-Gaussian', 'Student-t']:
         if model_name not in groups:
@@ -1947,28 +1983,34 @@ def render_parameter_table(
         
         assets = groups[model_name]
         color = model_colors.get(model_name, 'white')
+        icon = model_icons.get(model_name, '·')
         
-        # Model header
-        console.print(f"    [{color}]● {model_name}[/{color}] [dim]({len(assets)} assets)[/dim]")
+        # Model header with count
+        console.print()
+        header = Text()
+        header.append(f"  {icon} ", style=f"bold {color}")
+        header.append(f"{model_name}", style=f"bold {color}")
+        header.append(f"  ({len(assets)} assets)", style="dim")
+        console.print(header)
         console.print()
         
-        # Create compact table
+        # Create elegant table with proper borders
         table = Table(
             show_header=True,
-            header_style="dim",
-            box=None,
-            padding=(0, 2),
-            collapse_padding=True,
+            header_style="bold white",
+            border_style="dim",
+            box=box.ROUNDED,
+            padding=(0, 1),
+            row_styles=["", "on grey7"],
         )
-        table.add_column("Asset", style="bold", width=12)
-        table.add_column("log₁₀(q)", justify="right", width=8)
-        table.add_column("c", justify="right", width=6)
-        table.add_column("φ", justify="right", width=7)
-        table.add_column("ν", justify="right", width=5)
-        table.add_column("BIC", justify="right", width=8)
-        table.add_column("PIT p", justify="right", width=7)
+        table.add_column("Asset", style="bold", width=14, no_wrap=True)
+        table.add_column("log₁₀(q)", justify="right", width=10)
+        table.add_column("c", justify="right", width=8)
+        table.add_column("φ", justify="right", width=8)
+        table.add_column("ν", justify="right", width=6)
+        table.add_column("BIC", justify="right", width=10)
+        table.add_column("PIT p", justify="right", width=8)
         
-        # Show ALL assets (no truncation)
         for asset, raw_data in assets:
             if 'global' in raw_data:
                 data = raw_data['global']
@@ -1984,33 +2026,36 @@ def render_parameter_table(
             
             log10_q = np.log10(q_val) if q_val > 0 else float('nan')
             
-            # Format values
-            q_str = f"{log10_q:.2f}" if np.isfinite(log10_q) else "—"
+            # Format values with proper styling
+            q_str = f"{log10_q:.2f}" if np.isfinite(log10_q) else "[dim]—[/]"
             c_str = f"{c_val:.3f}"
-            phi_str = f"{phi_val:+.2f}" if phi_val is not None else "[dim]—[/dim]"
-            nu_str = f"{nu_val:.0f}" if nu_val is not None else "[dim]—[/dim]"
-            bic_str = f"{bic_val:.0f}" if np.isfinite(bic_val) else "—"
+            phi_str = f"{phi_val:+.3f}" if phi_val is not None else "[dim]—[/]"
+            nu_str = f"{nu_val:.0f}" if nu_val is not None else "[dim]—[/]"
+            bic_str = f"{bic_val:,.0f}" if np.isfinite(bic_val) else "[dim]—[/]"
             
-            # Color PIT p-value
+            # Color PIT p-value based on calibration
             if np.isfinite(pit_p):
-                if pit_p < 0.05:
-                    pit_str = f"[yellow]{pit_p:.3f}[/yellow]"
+                if pit_p < 0.01:
+                    pit_str = f"[bold indian_red1]{pit_p:.4f}[/]"
+                elif pit_p < 0.05:
+                    pit_str = f"[yellow]{pit_p:.4f}[/]"
                 else:
-                    pit_str = f"[green]{pit_p:.3f}[/green]"
+                    pit_str = f"[bright_green]{pit_p:.4f}[/]"
             else:
-                pit_str = "[dim]—[/dim]"
+                pit_str = "[dim]—[/]"
             
             table.add_row(asset, q_str, c_str, phi_str, nu_str, bic_str, pit_str)
         
         console.print(table)
-        console.print()
+    
+    console.print()
 
 
 def render_failed_assets(
     failure_reasons: Dict[str, str],
     console: Console = None
 ) -> None:
-    """Render failed assets - clean, actionable."""
+    """Render failed assets - clean, actionable, Apple-quality design."""
     if console is None:
         console = create_tuning_console()
     
@@ -2018,16 +2063,42 @@ def render_failed_assets(
         return
     
     console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
     section = Text()
-    section.append("▸ ", style="red")
-    section.append("FAILED", style="bold red")
+    section.append("  ❌  ", style="bold indian_red1")
+    section.append("FAILED ASSETS", style="bold indian_red1")
+    section.append(f"  ({len(failure_reasons)})", style="dim")
     console.print(section)
     console.print()
     
-    for asset, reason in failure_reasons.items():
-        first_line = reason.split('\n')[0][:60] if reason else "Unknown"
-        console.print(f"    [red]✗[/red] [bold]{asset}[/bold]  [dim]{first_line}[/dim]")
+    # Create table for failed assets
+    table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="indian_red1",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
+    )
+    table.add_column("Asset", style="bold indian_red1", width=15, no_wrap=True)
+    table.add_column("Error", style="dim", width=70, no_wrap=True, overflow="ellipsis")
     
+    for asset, reason in sorted(failure_reasons.items()):
+        first_line = reason.split('\n')[0][:65] if reason else "Unknown error"
+        table.add_row(asset, first_line)
+    
+    console.print(table)
+    console.print()
+    
+    # Action hint
+    hint = Text()
+    hint.append("    → ", style="dim")
+    hint.append("Re-run with ", style="dim")
+    hint.append("make tune ARGS='--force --assets <TICKER>'", style="bold white")
+    hint.append(" to retry", style="dim")
+    console.print(hint)
     console.print()
 
 
@@ -2036,31 +2107,79 @@ def render_dry_run_preview(
     max_display: int = 20,
     console: Console = None
 ) -> None:
-    """Render dry run preview - clean list."""
+    """Render dry run preview - clean, informative, Apple-quality design."""
     if console is None:
         console = create_tuning_console()
     
     from rich.align import Align
     
     console.print()
-    
-    # Warning badge
-    badge = Text()
-    badge.append("  DRY RUN  ", style="bold black on yellow")
-    badge.append("  No changes will be made", style="dim")
-    console.print(badge)
-    
-    console.print()
-    console.print(f"  Would process [bold]{len(assets)}[/bold] assets:")
     console.print()
     
-    # Show assets in columns
+    # Warning panel
+    warning_text = Text(justify="center")
+    warning_text.append("\n", style="")
+    warning_text.append("⚠️  DRY RUN MODE", style="bold bright_yellow")
+    warning_text.append("\n", style="")
+    warning_text.append("No changes will be made to cache", style="dim")
+    warning_text.append("\n", style="")
+    
+    warning_panel = Panel(
+        Align.center(warning_text),
+        box=box.ROUNDED,
+        border_style="yellow",
+        padding=(0, 4),
+        width=45,
+    )
+    console.print(Align.center(warning_panel))
+    console.print()
+    
+    # Assets list header
+    header = Text()
+    header.append("  📋  ", style="bold bright_cyan")
+    header.append(f"Would process ", style="white")
+    header.append(f"{len(assets)}", style="bold bright_cyan")
+    header.append(" assets:", style="white")
+    console.print(header)
+    console.print()
+    
+    # Create table for assets
+    table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="dim",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
+    )
+    table.add_column("#", justify="right", width=4, style="dim")
+    table.add_column("Asset", style="bold", width=15)
+    table.add_column("Status", width=15)
+    
     for i, asset in enumerate(assets[:max_display], 1):
-        console.print(f"    [dim]{i:3}.[/dim] {asset}")
+        table.add_row(
+            f"{i}",
+            asset,
+            "[dim]pending[/]"
+        )
     
     if len(assets) > max_display:
-        console.print(f"    [dim]    ... and {len(assets) - max_display} more[/dim]")
+        table.add_row(
+            "[dim]...[/]",
+            f"[dim]+ {len(assets) - max_display} more[/]",
+            ""
+        )
     
+    console.print(table)
+    console.print()
+    
+    # Hint
+    hint = Text()
+    hint.append("    → ", style="dim")
+    hint.append("Remove ", style="dim")
+    hint.append("--dry-run", style="bold white")
+    hint.append(" to execute", style="dim")
+    console.print(hint)
     console.print()
 
 
@@ -2070,7 +2189,8 @@ def render_end_of_run_summary(
     model_comparisons: Dict[str, Dict],
     failure_reasons: Dict[str, str],
     processing_log: List[str],
-    console: Console = None
+    console: Console = None,
+    cache: Dict = None,
 ) -> None:
     """Render end-of-run summary - optional verbose details."""
     if console is None:
@@ -2079,6 +2199,337 @@ def render_end_of_run_summary(
     # This is called for verbose output - keep it minimal unless user requests details
     if failure_reasons:
         render_failed_assets(failure_reasons, console=console)
+    
+    # Render calibration report if cache is provided
+    if cache:
+        render_calibration_report(cache, failure_reasons, console=console)
+
+
+def render_calibration_report(
+    cache: Dict,
+    failure_reasons: Dict[str, str],
+    console: Console = None
+) -> None:
+    """Render Apple-quality calibration report showing assets with issues.
+    
+    Shows:
+    - PIT p-value < 0.05 (model predictions not well-calibrated)
+    - High kurtosis (fat tails not captured)
+    - Failed tuning
+    - Regime collapse warnings
+    
+    Also saves issues to JSON file: scripts/quant/cache/calibration/calibration_failures.json
+    """
+    import numpy as np
+    import json
+    import os
+    from datetime import datetime
+    
+    if console is None:
+        console = create_tuning_console()
+    
+    # Collect calibration issues
+    issues = []
+    
+    # 1. Failed assets
+    for asset, reason in (failure_reasons or {}).items():
+        issues.append({
+            'asset': asset,
+            'issue_type': 'FAILED',
+            'severity': 'critical',
+            'pit_p': None,
+            'ks_stat': None,
+            'kurtosis': None,
+            'model': '-',
+            'q': None,
+            'phi': None,
+            'nu': None,
+            'details': reason[:200] if reason else ''
+        })
+    
+    # 2. Calibration warnings from cache
+    for asset, raw_data in (cache or {}).items():
+        if 'global' in raw_data:
+            data = raw_data['global']
+        else:
+            data = raw_data
+        
+        pit_p = data.get('pit_ks_pvalue')
+        ks_stat = data.get('ks_statistic')
+        kurtosis = data.get('std_residual_kurtosis') or data.get('excess_kurtosis')
+        calibration_warning = data.get('calibration_warning', False)
+        noise_model = data.get('noise_model', '')
+        q_val = data.get('q')
+        phi_val = data.get('phi')
+        nu_val = data.get('nu')
+        
+        collapse_warning = raw_data.get('hierarchical_tuning', {}).get('collapse_warning', False)
+        
+        has_issue = False
+        issue_type = []
+        severity = 'ok'
+        
+        if calibration_warning or (pit_p is not None and pit_p < 0.05):
+            has_issue = True
+            issue_type.append('PIT < 0.05')
+            severity = 'warning'
+        
+        if pit_p is not None and pit_p < 0.01:
+            severity = 'critical'
+        
+        if kurtosis is not None and kurtosis > 6:
+            has_issue = True
+            issue_type.append('High Kurt')
+            if severity != 'critical':
+                severity = 'warning'
+        
+        if collapse_warning:
+            has_issue = True
+            issue_type.append('Regime Collapse')
+        
+        if has_issue:
+            if 'student_t' in noise_model:
+                model_str = f"φ-T(ν={int(nu_val)})" if nu_val else "Student-t"
+            elif 'phi' in noise_model:
+                model_str = "φ-Gaussian"
+            elif 'gaussian' in noise_model:
+                model_str = "Gaussian"
+            else:
+                model_str = noise_model[:12] if noise_model else '-'
+            
+            issues.append({
+                'asset': asset,
+                'issue_type': ', '.join(issue_type),
+                'severity': severity,
+                'pit_p': pit_p,
+                'ks_stat': ks_stat,
+                'kurtosis': kurtosis,
+                'model': model_str,
+                'q': q_val,
+                'phi': phi_val,
+                'nu': nu_val,
+                'details': ''
+            })
+    
+    # Sort by severity (critical first), then by PIT p-value
+    severity_order = {'critical': 0, 'warning': 1, 'ok': 2}
+    issues.sort(key=lambda x: (severity_order.get(x['severity'], 2), x.get('pit_p') or 1.0))
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # SAVE CALIBRATION ISSUES TO JSON FILE
+    # ═══════════════════════════════════════════════════════════════════════════════
+    calibration_dir = os.path.join(os.path.dirname(__file__), 'quant', 'cache', 'calibration')
+    os.makedirs(calibration_dir, exist_ok=True)
+    calibration_file = os.path.join(calibration_dir, 'calibration_failures.json')
+    
+    # Prepare JSON-serializable data
+    total_assets = len(cache) if cache else 0
+    critical_count = sum(1 for i in issues if i['severity'] == 'critical')
+    warning_count = sum(1 for i in issues if i['severity'] == 'warning')
+    failed_count = sum(1 for i in issues if i['issue_type'] == 'FAILED')
+    
+    calibration_report = {
+        'timestamp': datetime.now().isoformat(),
+        'summary': {
+            'total_assets': total_assets,
+            'total_issues': len(issues),
+            'critical': critical_count,
+            'warnings': warning_count,
+            'failed': failed_count,
+            'passed': total_assets - len(issues) if total_assets > 0 else 0,
+        },
+        'issues': [
+            {
+                'asset': issue['asset'],
+                'issue_type': issue['issue_type'],
+                'severity': issue['severity'],
+                'pit_ks_pvalue': issue['pit_p'],
+                'ks_statistic': issue['ks_stat'],
+                'kurtosis': issue['kurtosis'],
+                'model': issue['model'],
+                'q': issue['q'],
+                'phi': issue['phi'],
+                'nu': issue['nu'],
+                'details': issue['details'],
+            }
+            for issue in issues
+        ],
+        'thresholds': {
+            'pit_warning': 0.05,
+            'pit_critical': 0.01,
+            'kurtosis_warning': 6.0,
+            'kurtosis_critical': 10.0,
+        }
+    }
+    
+    try:
+        with open(calibration_file, 'w') as f:
+            json.dump(calibration_report, f, indent=2, default=str)
+    except Exception as e:
+        # Don't fail the report if we can't save the file
+        pass
+    
+    # SECTION HEADER - Always show
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    section_header = Text()
+    section_header.append("  📊  ", style="bold bright_cyan")
+    section_header.append("CALIBRATION REPORT", style="bold bright_white")
+    console.print(section_header)
+    console.print()
+    
+    # Show success or issues
+    if not issues:
+        console.print()
+        success_text = Text()
+        success_text.append("  ✓ ", style="bold bright_green")
+        success_text.append("All ", style="white")
+        success_text.append(f"{total_assets}", style="bold bright_cyan")
+        success_text.append(" assets passed calibration checks", style="white")
+        console.print(success_text)
+        console.print()
+        
+        stats_text = Text()
+        stats_text.append("    PIT p-value ≥ 0.05 for all models  ·  ", style="dim")
+        stats_text.append("No regime collapse detected", style="dim")
+        console.print(stats_text)
+        console.print()
+        return
+    
+    # ISSUES HEADER
+    issues_header = Text()
+    issues_header.append("  ⚠️  ", style="bold yellow")
+    issues_header.append(f"{len(issues)} assets with calibration issues", style="bold yellow")
+    console.print(issues_header)
+    console.print()
+    
+    # SUMMARY STATS (use counts computed earlier)
+    summary = Text()
+    summary.append("    ", style="")
+    if critical_count > 0:
+        summary.append(f"{critical_count}", style="bold indian_red1")
+        summary.append(" critical", style="dim")
+        summary.append("   ·   ", style="dim")
+    if warning_count > 0:
+        summary.append(f"{warning_count}", style="bold yellow")
+        summary.append(" warnings", style="dim")
+        summary.append("   ·   ", style="dim")
+    if failed_count > 0:
+        summary.append(f"{failed_count}", style="bold red")
+        summary.append(" failed", style="dim")
+        summary.append("   ·   ", style="dim")
+    summary.append(f"{total_assets}", style="white")
+    summary.append(" total assets", style="dim")
+    
+    console.print(summary)
+    console.print()
+    
+    # ISSUES TABLE
+    table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="dim",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
+    )
+    
+    table.add_column("Asset", justify="left", width=30, no_wrap=True)
+    table.add_column("Issue", justify="left", width=18)
+    table.add_column("PIT p", justify="right", width=8)
+    table.add_column("KS", justify="right", width=6)
+    table.add_column("Kurt", justify="right", width=6)
+    table.add_column("Model", justify="left", width=12)
+    table.add_column("log₁₀(q)", justify="right", width=9)
+    table.add_column("φ", justify="right", width=6)
+    table.add_column("Details", justify="left", width=25, no_wrap=True)
+    
+    for issue in issues:
+        if issue['severity'] == 'critical':
+            severity_style = "bold indian_red1"
+            asset_style = "indian_red1"
+        elif issue['severity'] == 'warning':
+            severity_style = "yellow"
+            asset_style = "yellow"
+        else:
+            severity_style = "dim"
+            asset_style = "white"
+        
+        pit_str = f"{issue['pit_p']:.4f}" if issue['pit_p'] is not None else "-"
+        ks_str = f"{issue['ks_stat']:.3f}" if issue['ks_stat'] is not None else "-"
+        kurt_str = f"{issue['kurtosis']:.1f}" if issue['kurtosis'] is not None else "-"
+        
+        if issue['q'] is not None and issue['q'] > 0:
+            log_q_str = f"{np.log10(issue['q']):.2f}"
+        else:
+            log_q_str = "-"
+        
+        phi_str = f"{issue['phi']:.3f}" if issue['phi'] is not None else "-"
+        
+        if issue['pit_p'] is not None:
+            if issue['pit_p'] < 0.01:
+                pit_styled = f"[bold indian_red1]{pit_str}[/]"
+            elif issue['pit_p'] < 0.05:
+                pit_styled = f"[yellow]{pit_str}[/]"
+            else:
+                pit_styled = f"[dim]{pit_str}[/]"
+        else:
+            pit_styled = "[dim]-[/]"
+        
+        if issue['kurtosis'] is not None:
+            if issue['kurtosis'] > 10:
+                kurt_styled = f"[bold indian_red1]{kurt_str}[/]"
+            elif issue['kurtosis'] > 6:
+                kurt_styled = f"[yellow]{kurt_str}[/]"
+            else:
+                kurt_styled = f"[dim]{kurt_str}[/]"
+        else:
+            kurt_styled = "[dim]-[/]"
+        
+        table.add_row(
+            f"[{asset_style}]{issue['asset']}[/]",
+            f"[{severity_style}]{issue['issue_type']}[/]",
+            pit_styled,
+            f"[dim]{ks_str}[/]",
+            kurt_styled,
+            f"[dim]{issue['model']}[/]",
+            f"[dim]{log_q_str}[/]",
+            f"[dim]{phi_str}[/]",
+            f"[dim]{issue['details']}[/]",
+        )
+    
+    console.print(table)
+    console.print()
+    
+    # LEGEND
+    legend = Text()
+    legend.append("    ", style="")
+    legend.append("PIT p < 0.05", style="yellow")
+    legend.append(" = model may be miscalibrated   ·   ", style="dim")
+    legend.append("Kurt > 6", style="yellow")
+    legend.append(" = heavy tails not fully captured", style="dim")
+    
+    console.print(legend)
+    console.print()
+    
+    # Action recommendation
+    if critical_count > 0:
+        action = Text()
+        action.append("    → ", style="dim")
+        action.append("Consider re-tuning critical assets with ", style="dim")
+        action.append("make tune ARGS='--force --assets <TICKER>'", style="bold white")
+        console.print(action)
+        console.print()
+    
+    # Show where file was saved
+    file_info = Text()
+    file_info.append("    💾 ", style="dim")
+    file_info.append("Saved to ", style="dim")
+    file_info.append("scripts/quant/cache/calibration/calibration_failures.json", style="dim italic")
+    console.print(file_info)
+    console.print()
 
 
 class TuningProgressTracker:

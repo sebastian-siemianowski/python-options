@@ -634,7 +634,7 @@ COMPANY_NAMES: Dict[str, str] = {
     "ANGL": "VanEck Fallen Angel High Yield Bond ETF",
     "CNXT": "VanEck ChiNext ETF",
     "DURA": "VanEck Morningstar Durable Dividend ETF",
-    "EGPT": "VanEck Egypt Index ETF",
+#     "EGPT": "VanEck Egypt Index ETF",
     "FLTR": "VanEck Investment Grade Floating Rate ETF",
     "GDX": "VanEck Gold Miners ETF",
     "GDXJ": "VanEck Junior Gold Miners ETF",
@@ -1609,7 +1609,7 @@ DEFAULT_ASSET_UNIVERSE = [
 #     "BRF",    # VanEck Brazil Small-Cap ETF
     "CNXT",   # VanEck ChiNext ETF
     "DURA",   # VanEck Morningstar Durable Dividend ETF
-    "EGPT",   # VanEck Egypt Index ETF
+#     "EGPT",   # VanEck Egypt Index ETF
 #     "EMLC",   # VanEck J.P. Morgan EM Local Currency Bond ETF
     "FLTR",   # VanEck Investment Grade Floating Rate ETF
     "GDX",    # VanEck Gold Miners ETF
@@ -2248,7 +2248,7 @@ MAPPING = {
     # "VANECK BRAZIL SMALL-CAP": ["BRF"],
     "VANECK CHINEXT": ["CNXT"],
     "VANECK MORNINGSTAR DURABLE DIVIDEND": ["DURA"],
-    "VANECK EGYPT INDEX": ["EGPT"],
+#     "VANECK EGYPT INDEX": ["EGPT"],
     # "VANECK JP MORGAN EM LOCAL CURRENCY BOND": ["EMLC"],
     "VANECK INVESTMENT GRADE FLOATING RATE": ["FLTR"],
     "VANECK INDIA GROWTH LEADERS": ["GLIN"],
