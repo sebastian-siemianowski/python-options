@@ -2263,15 +2263,27 @@ def render_calibration_report(
         phi_val = data.get('phi')
         nu_val = data.get('nu')
         
+        # Check for mixture model usage
+        mixture_selected = data.get('mixture_selected', False)
+        mixture_model = data.get('mixture_model')
+        
         collapse_warning = raw_data.get('hierarchical_tuning', {}).get('collapse_warning', False)
         
         has_issue = False
         issue_type = []
         severity = 'ok'
         
+        # If mixture was selected and improved calibration, skip this asset
+        if mixture_selected and mixture_model and not calibration_warning:
+            continue
+        
         if calibration_warning or (pit_p is not None and pit_p < 0.05):
             has_issue = True
-            issue_type.append('PIT < 0.05')
+            # Note if mixture was attempted but didn't help
+            if mixture_selected:
+                issue_type.append('PIT < 0.05 (mix)')
+            else:
+                issue_type.append('PIT < 0.05')
             severity = 'warning'
         
         if pit_p is not None and pit_p < 0.01:
@@ -2288,7 +2300,11 @@ def render_calibration_report(
             issue_type.append('Regime Collapse')
         
         if has_issue:
-            if 'student_t' in noise_model:
+            if mixture_selected and mixture_model:
+                # Show mixture model info
+                sigma_ratio = mixture_model.get('sigma_ratio', 0)
+                model_str = f"Mix(σ={sigma_ratio:.1f})"
+            elif 'student_t' in noise_model:
                 model_str = f"φ-T(ν={int(nu_val)})" if nu_val else "Student-t"
             elif 'phi' in noise_model:
                 model_str = "φ-Gaussian"
@@ -2308,7 +2324,8 @@ def render_calibration_report(
                 'q': q_val,
                 'phi': phi_val,
                 'nu': nu_val,
-                'details': ''
+                'details': '',
+                'mixture_selected': mixture_selected,
             })
     
     # Sort by severity (critical first), then by PIT p-value
@@ -2351,6 +2368,7 @@ def render_calibration_report(
                 'phi': issue['phi'],
                 'nu': issue['nu'],
                 'details': issue['details'],
+                'mixture_attempted': issue.get('mixture_selected', False),
             }
             for issue in issues
         ],
@@ -2359,6 +2377,12 @@ def render_calibration_report(
             'pit_critical': 0.01,
             'kurtosis_warning': 6.0,
             'kurtosis_critical': 10.0,
+        },
+        'mixture_model': {
+            'enabled': True,
+            'description': 'K=2 symmetric φ-t mixture for calibration improvement',
+            'sigma_ratio_min': 1.5,
+            'weight_bounds': [0.1, 0.9],
         }
     }
     

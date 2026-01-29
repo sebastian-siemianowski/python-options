@@ -1540,6 +1540,56 @@ p-value > 0.05 indicates calibration is acceptable.
 
 ---
 
+### K=2 Mixture Model for Calibration Improvement
+
+When single models fail PIT calibration (p-value < 0.05), the system automatically attempts a **K=2 mixture of symmetric φ-t models** to capture latent regime heterogeneity.
+
+<details>
+<summary><strong>📖 Key Insight</strong></summary>
+
+Calibration failures often occur not because the model has wrong parameters, but because markets alternate between **calm** and **stress** regimes within the estimation window. A single symmetric distribution cannot express this asymmetry.
+
+The K=2 mixture solves this by allowing the predictive distribution to allocate mass asymmetrically **without breaking symmetry locally**.
+
+</details>
+
+**Model Definition**
+
+```
+p(rₜ | Fₜ₋₁) = w · Tᵥ(rₜ; μₜ, σ_A) + (1-w) · Tᵥ(rₜ; μₜ, σ_B)
+```
+
+Where:
+- `φ` is **shared** across components (same drift dynamics)
+- `ν` is **shared** (same tail thickness)
+- `σ_A` = calm regime scale
+- `σ_B` = stress regime scale, constrained: `σ_B ≥ 1.5 × σ_A`
+- `w ∈ [0.1, 0.9]` = weight on calm component
+
+**Interpretation**
+
+| Component | σ | Role |
+|-----------|---|------|
+| A (calm) | σ_A (smaller) | Normal market conditions |
+| B (stress) | σ_B (larger) | Crisis / tail events |
+
+**Selection Logic**
+
+The mixture model is only selected if:
+1. Single model has calibration warning (PIT p < 0.05)
+2. Mixture fitting succeeds
+3. Mixture BIC < single model BIC - threshold
+
+**Design Principles**
+
+✓ Asymmetry emerges from geometry (σ dispersion), not parameters
+✓ K=2 only (no K>2, prevents overfitting)
+✓ Shared φ and ν (maintains interpretability)
+✓ Static weights (no HMM complexity)
+✓ BIC-controlled selection (simpler model preferred)
+
+---
+
 ### Summary: The Mathematical Contract
 
 This box summarizes the entire system in symbols. Refer to the Master Symbol Glossary at the top of this section for definitions.

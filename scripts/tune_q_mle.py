@@ -194,6 +194,20 @@ if SCRIPT_DIR not in sys.path:
 
 from fx_data_utils import fetch_px, _download_prices, get_default_asset_universe
 
+# Import K=2 Mixture Model for calibration improvement
+try:
+    from phi_t_mixture_k2 import (
+        PhiTMixtureK2,
+        PhiTMixtureK2Config,
+        PhiTMixtureK2Result,
+        should_use_mixture,
+        fit_and_select,
+        summarize_mixture_improvement,
+    )
+    MIXTURE_MODEL_AVAILABLE = True
+except ImportError:
+    MIXTURE_MODEL_AVAILABLE = False
+
 # Import presentation layer for world-class UX output
 from fx_signals_presentation import (
     create_tuning_console,
@@ -346,6 +360,58 @@ PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
 # λ=0.05 → τ = 1/√(0.1) ≈ 3.16 (very weak prior, barely constrains φ)
 # We use the scaled version: λ_effective = 0.05 * prior_scale
 PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
+
+
+# =============================================================================
+# K=2 MIXTURE MODEL CONFIGURATION
+# =============================================================================
+# Optional K=2 mixture of symmetric φ-t models for improved calibration.
+# Asymmetry emerges from σ dispersion, not parameter asymmetry.
+#
+# When enabled:
+#   - After fitting single φ-t model, mixture is attempted
+#   - Mixture must beat single by BIC threshold to be selected
+#   - Component A = calm regime, Component B = stress regime
+#   - σ_B ≥ 1.5 × σ_A (identifiability constraint)
+#   - w ∈ [0.1, 0.9] (prevents degenerate solutions)
+# =============================================================================
+
+# Feature toggle (set to True to enable mixture fitting)
+MIXTURE_MODEL_ENABLED = True
+
+# Minimum σ ratio between components (stress / calm)
+MIXTURE_SIGMA_RATIO_MIN = 1.5
+
+# Weight bounds for mixture
+MIXTURE_MIN_WEIGHT = 0.1
+MIXTURE_MAX_WEIGHT = 0.9
+
+# BIC threshold: mixture must beat single model by this margin
+MIXTURE_BIC_THRESHOLD = 2.0  # Conservative: require meaningful improvement
+
+# Entropy regularization (encourages balanced mixtures)
+MIXTURE_ENTROPY_PENALTY = 0.05
+
+
+def get_mixture_config() -> Optional['PhiTMixtureK2Config']:
+    """
+    Get mixture model configuration based on global settings.
+    
+    Returns:
+        PhiTMixtureK2Config if mixture is available and enabled, None otherwise.
+    """
+    if not MIXTURE_MODEL_AVAILABLE or not MIXTURE_MODEL_ENABLED:
+        return None
+    
+    return PhiTMixtureK2Config(
+        enabled=MIXTURE_MODEL_ENABLED,
+        min_weight=MIXTURE_MIN_WEIGHT,
+        max_weight=MIXTURE_MAX_WEIGHT,
+        sigma_ratio_min=MIXTURE_SIGMA_RATIO_MIN,
+        sigma_ratio_max=5.0,
+        entropy_penalty=MIXTURE_ENTROPY_PENALTY,
+        bic_threshold=MIXTURE_BIC_THRESHOLD,
+    )
 
 
 def phi_shrinkage_log_prior(
@@ -2594,6 +2660,72 @@ def tune_asset_q(
             result['gaussian_log_likelihood'] = float(ll_gauss_full)
             result['gaussian_pit_ks_pvalue'] = float(pit_p_gauss)
             result['bic_improvement'] = float(bic_gauss - bic_student)
+
+        # =================================================================
+        # K=2 MIXTURE MODEL ENHANCEMENT
+        # =================================================================
+        # When calibration is poor (PIT p < 0.05), attempt K=2 mixture
+        # to capture latent regime heterogeneity via σ dispersion.
+        #
+        # The mixture only replaces the single model if:
+        #   1. Mixture fitting succeeds
+        #   2. Mixture BIC < single BIC - threshold
+        #   3. Mixture passes validation checks
+        # =================================================================
+        mixture_config = get_mixture_config()
+        if mixture_config is not None and calibration_warning:
+            _log(f"  🔧 Attempting K=2 mixture model for calibration improvement...")
+            
+            try:
+                mixer = PhiTMixtureK2(mixture_config)
+                
+                # Use the selected model's parameters for warm-start
+                sigma_init = np.sqrt(c_optimal) * np.median(vol_arr)
+                
+                mixture_result = mixer.fit(
+                    returns=returns_arr,
+                    vol=vol_arr,
+                    nu=nu_optimal if nu_optimal is not None else 8.0,
+                    phi_init=phi_selected if phi_selected is not None else 0.0,
+                    sigma_init=sigma_init
+                )
+                
+                if mixture_result is not None:
+                    # Check if mixture improves calibration
+                    improvement = summarize_mixture_improvement(
+                        single_bic=bic_final,
+                        single_pit_pvalue=ks_pvalue,
+                        mixture_result=mixture_result
+                    )
+                    
+                    if improvement['recommendation'] == 'mixture':
+                        _log(f"     ✓ Mixture selected: σ_ratio={mixture_result.sigma_ratio:.2f}, "
+                             f"w_calm={mixture_result.weight:.2f}, PIT p={mixture_result.pit_ks_pvalue:.4f}")
+                        
+                        # Update result with mixture parameters
+                        result['mixture_model'] = mixture_result.to_dict()
+                        result['mixture_selected'] = True
+                        result['mixture_improvement'] = improvement
+                        
+                        # Update calibration status if mixture improves it
+                        if mixture_result.pit_ks_pvalue >= 0.05:
+                            result['calibration_warning'] = False
+                            result['pit_ks_pvalue'] = float(mixture_result.pit_ks_pvalue)
+                            result['ks_statistic'] = float(mixture_result.ks_statistic)
+                    else:
+                        _log(f"     ✗ Mixture not selected (single model preferred)")
+                        result['mixture_model'] = None
+                        result['mixture_selected'] = False
+                        result['mixture_improvement'] = improvement
+                else:
+                    _log(f"     ✗ Mixture fitting failed")
+                    result['mixture_model'] = None
+                    result['mixture_selected'] = False
+                    
+            except Exception as mix_err:
+                _log(f"     ✗ Mixture error: {mix_err}")
+                result['mixture_model'] = None
+                result['mixture_selected'] = False
 
         return result
         
