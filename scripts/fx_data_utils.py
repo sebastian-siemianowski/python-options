@@ -4143,13 +4143,34 @@ def convert_currency_to_pln(quote_ccy: str, start: Optional[str], end: Optional[
             eurseK, _ = _fetch_with_fallback(["EURSEK=X"], s_ext, e_ext)
             return eurpln / eurseK
     if q == "NOK":
+        # NOKPLN=X often has very limited history on Yahoo Finance
+        # Prefer cross rate (EURPLN/EURNOK) which has much better coverage
         try:
-            nokpln, _ = _fetch_with_fallback(["NOKPLN=X"], s_ext, e_ext)
-            return nokpln
-        except Exception:
             eurpln, _ = _fetch_with_fallback(["EURPLN=X"], s_ext, e_ext)
             eurnok, _ = _fetch_with_fallback(["EURNOK=X"], s_ext, e_ext)
-            return eurpln / eurnok
+            # Align the series
+            df = pd.concat([eurpln, eurnok], axis=1, join='inner').dropna()
+            if len(df) >= 100:  # Require substantial history
+                nokpln_cross = (df.iloc[:, 0] / df.iloc[:, 1]).rename("px")
+                return nokpln_cross
+        except Exception:
+            pass
+        # Fallback: try direct NOKPLN (may have limited data)
+        try:
+            nokpln, _ = _fetch_with_fallback(["NOKPLN=X"], s_ext, e_ext)
+            if len(nokpln) >= 100:  # Only use if substantial history
+                return nokpln
+        except Exception:
+            pass
+        # Final fallback: cross rate even with less history
+        try:
+            eurpln, _ = _fetch_with_fallback(["EURPLN=X"], s_ext, e_ext)
+            eurnok, _ = _fetch_with_fallback(["EURNOK=X"], s_ext, e_ext)
+            df = pd.concat([eurpln, eurnok], axis=1, join='inner').dropna()
+            nokpln_cross = (df.iloc[:, 0] / df.iloc[:, 1]).rename("px")
+            return nokpln_cross
+        except Exception:
+            raise RuntimeError("Cannot compute NOK→PLN rate via NOKPLN=X or EURPLN/EURNOK cross")
     if q == "DKK":
         try:
             dkkpln, _ = _fetch_with_fallback(["DKKPLN=X"], s_ext, e_ext)

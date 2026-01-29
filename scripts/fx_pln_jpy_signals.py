@@ -250,6 +250,7 @@ from fx_signals_presentation import (
     render_simplified_signal_table,
     render_multi_asset_summary_table,
     render_sector_summary_tables,
+    render_strong_signals_summary,
     build_asset_display_label,
     extract_symbol_from_title,
     format_horizon_label,
@@ -1592,9 +1593,12 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
         # ====================================================================
         
         if 'global' not in raw_data:
-            # Old flat schema - not supported
-            if os.getenv('DEBUG'):
-                print(f"Warning: {asset_symbol} has old flat schema - regenerate with tune_q_mle.py")
+            # Old flat schema - not supported - ALWAYS warn user
+            import sys
+            print(f"\n⚠️  CACHE FORMAT ERROR for {asset_symbol}:", file=sys.stderr)
+            print(f"   Cache entry exists but uses OLD flat schema (missing 'global' key)", file=sys.stderr)
+            print(f"   Top-level keys in cache: {list(raw_data.keys())[:10]}", file=sys.stderr)
+            print(f"   → Fix: Run 'make tune ARGS=\"--assets {asset_symbol}\"' to regenerate\n", file=sys.stderr)
             return None
         
         global_data = raw_data['global']
@@ -1605,9 +1609,11 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
         models = global_data.get('models', {})
         
         if not models:
-            # Invalid BMA structure - no models
-            if os.getenv('DEBUG'):
-                print(f"Warning: {asset_symbol} has no models in global - invalid BMA structure")
+            # Invalid BMA structure - no models - ALWAYS warn user
+            import sys
+            print(f"\n⚠️  CACHE STRUCTURE ERROR for {asset_symbol}:", file=sys.stderr)
+            print(f"   Cache entry has 'global' key but no models inside", file=sys.stderr)
+            print(f"   → Fix: Run 'make tune ARGS=\"--assets {asset_symbol}\"' to regenerate\n", file=sys.stderr)
             return None
         
         # Helper to check if model is Student-t (phi_student_t_nu_* naming)
@@ -2210,9 +2216,9 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         console.print()
         
         # ─────────────────────────────────────────────────────────────────────────────
-        # ASSET HEADER - Cinematic, clean
+        # ASSET HEADER - Cinematic, clean, CENTERED
         # ─────────────────────────────────────────────────────────────────────────────
-        header_content = Text()
+        header_content = Text(justify="center")
         header_content.append("\n", style="")
         header_content.append(asset_symbol, style="bold bright_white")
         header_content.append("\n", style="")
@@ -2225,9 +2231,9 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             Align.center(header_content),
             box=box.ROUNDED,
             border_style="bright_cyan",
-            padding=(0, 2),
+            padding=(0, 4),
         )
-        console.print(Align.center(header_panel, width=50))
+        console.print(Align.center(header_panel, width=55))
         console.print()
         
         # ─────────────────────────────────────────────────────────────────────────────
@@ -2279,6 +2285,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             m_params = global_models.get(model_name, {})
             info = model_info.get(model_name, {'short': model_name[:12]})
             is_best = model_name == best_model
+            is_significant = p >= 0.02  # 2% threshold for significant contribution
             
             bic_val = m_params.get('bic')
             hyv_val = m_params.get('hyvarinen_score')
@@ -2292,12 +2299,21 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             row.append("    ", style="")
             
             if is_best:
+                # Best model: bold green with filled bar
                 row.append("● ", style="bold bright_green")
                 row.append(f"{info['short']:<14}", style="bold bright_green")
                 row.append(f"{p:>6.1%}  ", style="bold bright_green")
                 row.append("━" * filled, style="bright_green")
                 row.append("─" * (bar_width - filled), style="dim")
+            elif is_significant:
+                # Significant model (>=2%): green with filled bar (not bold)
+                row.append("● ", style="bright_green")
+                row.append(f"{info['short']:<14}", style="bright_green")
+                row.append(f"{p:>6.1%}  ", style="bright_green")
+                row.append("━" * filled, style="green")
+                row.append("─" * (bar_width - filled), style="dim")
             else:
+                # Minor model (<2%): dim
                 row.append("○ ", style="dim")
                 row.append(f"{info['short']:<14}", style="dim")
                 row.append(f"{p:>6.1%}  ", style="dim")
@@ -3778,10 +3794,23 @@ def bayesian_model_average_mc(
     
     # If no BMA structure available, this is old cache format - REJECT
     if not has_bma:
+        # Print warning to stderr so user knows there's an issue
+        import sys
+        if tuned_params is None:
+            reason = "tuned_params is None (asset not in kalman_q_cache.json)"
+        elif 'global' not in tuned_params:
+            reason = "missing 'global' key (old cache format)"
+        else:
+            reason = "has_bma is False or missing"
+        print(f"\n⚠️  BMA STRUCTURE MISSING: {reason}", file=sys.stderr)
+        print(f"   → Signals will show 0% for all horizons", file=sys.stderr)
+        print(f"   → Fix: Run 'make tune' to regenerate cache\n", file=sys.stderr)
+        
         return np.array([0.0]), np.array([0.2, 0.2, 0.2, 0.2, 0.2]), {
             "method": "REJECTED",
             "reason": "no_bma_structure_old_cache_format",
             "error": "Cache must be regenerated with tune_q_mle.py for BMA support",
+            "debug_reason": reason,
         }
     
     # ========================================================================
@@ -5502,11 +5531,14 @@ def main() -> None:
                         "profit_pln": float(sig.get("profit_pln", 0.0)),
                         "ue_up": float(sig.get("ue_up", 0.0)),
                         "ue_down": float(sig.get("ue_down", 0.0)),
+                        "p_up": float(sig.get("p_up", 0.5)),
+                        "exp_ret": float(sig.get("exp_ret", 0.0)),
                     }
                 nearest_label = next(iter(horizon_signals.values()), {}).get("label", "HOLD")
                 summary_rows_cached.append({"asset_label": asset_label, "horizon_signals": horizon_signals, "nearest_label": nearest_label, "sector": sector})
         else:
-            # Ensure existing summary_rows have proper sectors
+            # Ensure existing summary_rows have proper sectors and p_up/exp_ret fields
+            # This handles old cache format that may be missing these fields
             for row in summary_rows_cached:
                 if not row.get("sector"):
                     # Try to extract symbol from asset_label and look up sector
@@ -5519,9 +5551,25 @@ def main() -> None:
                         row["sector"] = get_sector(sym) or "Other"
                     else:
                         row["sector"] = "Other"
+                
+                # Ensure horizon_signals have p_up and exp_ret (from assets_cached if needed)
+                horizon_signals = row.get("horizon_signals", {})
+                for h, sig_data in horizon_signals.items():
+                    if "p_up" not in sig_data or "exp_ret" not in sig_data:
+                        # Try to find from assets_cached
+                        for asset_data in assets_cached:
+                            for sig in asset_data.get("signals", []):
+                                if sig.get("horizon_days") == h or sig.get("horizon_days") == int(h):
+                                    if "p_up" not in sig_data:
+                                        sig_data["p_up"] = float(sig.get("p_up", 0.5))
+                                    if "exp_ret" not in sig_data:
+                                        sig_data["exp_ret"] = float(sig.get("exp_ret", 0.0))
+                                    break
         
         try:
             render_sector_summary_tables(summary_rows_cached, horizons_cached)
+            # Add high-conviction signals summary for short-term trading
+            render_strong_signals_summary(summary_rows_cached, horizons=[1, 3, 7])
         except Exception as e:
             console.print(f"[yellow]Warning:[/yellow] Could not print summary tables from cache: {e}")
         return
@@ -6125,6 +6173,8 @@ def main() -> None:
                 "profit_pln": float(s.profit_pln),
                 "ue_up": float(s.ue_up),
                 "ue_down": float(s.ue_down),
+                "p_up": float(s.p_up),
+                "exp_ret": float(s.exp_ret),
             }
             for s in sigs
         }
@@ -6212,6 +6262,8 @@ def main() -> None:
     try:
         # Group summary rows by sector and render one table per sector
         render_sector_summary_tables(summary_rows, horizons)
+        # Add high-conviction signals summary for short-term trading
+        render_strong_signals_summary(summary_rows, horizons=[1, 3, 7])
     except Exception as e:
         Console().print(f"[yellow]Warning:[/yellow] Could not print summary tables: {e}")
 
