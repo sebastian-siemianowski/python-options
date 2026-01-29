@@ -178,14 +178,13 @@ def needs_nu_refinement(
     config: AdaptiveNuConfig = None
 ) -> bool:
     """
-    Flag asset as ν-resolution limited when ALL conditions hold:
-    - Best ν is at grid boundary (12 or 20)
-    - PIT KS p-value < 0.05 (calibration failure)
-    - Model is φ-t variant (not Gaussian or mixture)
-    - Likelihood is locally flat in ν (ν not well identified)
+    Flag asset as ν-resolution limited when conditions indicate refinement may help.
     
-    The flatness check prevents over-refinement when boundary ν
-    is actually correct and PIT failure has other causes.
+    AGGRESSIVE MODE (expanded from original):
+    - For SEVERE failures (PIT < 0.01): Always attempt refinement for any ν
+    - For MODERATE failures (PIT < 0.05): Require boundary ν OR flat likelihood
+    
+    The goal is to attempt refinement more often, letting BIC decide if it helps.
     
     Args:
         result: Calibration result dictionary containing:
@@ -213,26 +212,34 @@ def needs_nu_refinement(
     if not is_phi_t:
         return False
     
-    # Condition 2: ν is at grid boundary
+    # Condition 2: ν must exist and have refinement candidates
     if nu is None:
         return False
-    is_boundary = float(nu) in config.boundary_nu_values
-    if not is_boundary:
+    nu_float = float(nu)
+    has_candidates = nu_float in config.refinement_candidates
+    if not has_candidates:
         return False
     
     # Condition 3: PIT failure
     if pit_p is None:
         return False
-    is_pit_failure = float(pit_p) < config.pit_threshold
+    pit_float = float(pit_p)
+    is_pit_failure = pit_float < config.pit_threshold
     if not is_pit_failure:
         return False
     
-    # Condition 4: Likelihood is flat (ν not well identified)
-    is_flat = is_nu_likelihood_flat(result, config.likelihood_flatness_threshold)
-    if not is_flat:
-        return False
+    # AGGRESSIVE LOGIC:
+    # For severe failures (PIT < 0.01), always attempt refinement
+    is_severe = pit_float < config.pit_severe_threshold
+    if is_severe:
+        return True
     
-    return True
+    # For moderate failures, check if ν is at boundary OR likelihood is flat
+    is_boundary = nu_float in config.boundary_nu_values
+    is_flat = is_nu_likelihood_flat(result, config.likelihood_flatness_threshold)
+    
+    # Trigger refinement if either condition holds (more aggressive than original AND)
+    return is_boundary or is_flat
 
 
 def get_refinement_candidates(

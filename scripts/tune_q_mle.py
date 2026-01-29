@@ -402,7 +402,13 @@ MIXTURE_MIN_WEIGHT = 0.1
 MIXTURE_MAX_WEIGHT = 0.9
 
 # BIC threshold: mixture must beat single model by this margin
-MIXTURE_BIC_THRESHOLD = 2.0  # Conservative: require meaningful improvement
+# RELAXED from 2.0 to 0.0 - any BIC improvement now triggers selection
+# Reason: Original threshold was too conservative, preventing valid selections
+MIXTURE_BIC_THRESHOLD = 0.0  # Any improvement is acceptable
+
+# PIT improvement threshold: select mixture if PIT improves by this factor
+# Even if BIC doesn't improve, a 10x PIT improvement justifies mixture
+MIXTURE_PIT_IMPROVEMENT_FACTOR = 10.0
 
 # Entropy regularization (DISABLED: was incorrectly encouraging w=0.5)
 # For calm/stress regime model, we expect w_calm ≈ 0.7-0.8, not 0.5
@@ -2935,14 +2941,24 @@ def tune_asset_q(
                     improvement['pit_improvement_kalman'] = float(effective_pit_pvalue - ks_pvalue)
                     improvement['mixture_calibrated_kalman'] = effective_pit_pvalue >= 0.05
                     
-                    # Decision based on Kalman PIT (more accurate)
-                    use_mixture = (
-                        improvement['bic_improvement'] > mixture_config.bic_threshold and
-                        effective_pit_pvalue > ks_pvalue  # Mixture must improve PIT
-                    )
+                    # Compute PIT improvement ratio (avoid division by zero)
+                    pit_improvement_ratio = effective_pit_pvalue / max(ks_pvalue, 1e-300)
+                    improvement['pit_improvement_ratio'] = float(pit_improvement_ratio)
                     
+                    # DUAL CRITERION: Select mixture if EITHER:
+                    # 1. BIC improves (any amount, threshold=0)
+                    # 2. PIT improves by factor of 10+ (even if BIC doesn't improve)
+                    # AND PIT must not get worse
+                    bic_criterion = improvement['bic_improvement'] > mixture_config.bic_threshold
+                    pit_criterion = pit_improvement_ratio >= MIXTURE_PIT_IMPROVEMENT_FACTOR
+                    pit_not_worse = effective_pit_pvalue >= ks_pvalue
+                    
+                    use_mixture = (bic_criterion or pit_criterion) and pit_not_worse
+                    
+                    # Log decision reasoning
                     if use_mixture:
-                        _log(f"     ✓ Mixture selected: σ_ratio={mixture_result.sigma_ratio:.2f}, "
+                        reason = "BIC" if bic_criterion else f"PIT×{pit_improvement_ratio:.0f}"
+                        _log(f"     ✓ Mixture selected ({reason}): σ_ratio={mixture_result.sigma_ratio:.2f}, "
                              f"w_calm={mixture_result.weight:.2f}, PIT p={effective_pit_pvalue:.4f}")
                         
                         # Update result with mixture parameters

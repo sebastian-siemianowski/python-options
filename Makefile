@@ -99,6 +99,29 @@ tune: .venv/.deps_installed
 	@mkdir -p cache
 	@.venv/bin/python scripts/tune_pretty.py $(ARGS)
 
+# Re-tune only assets that failed calibration without escalation attempt
+# This targets assets where neither mixture nor ν-refinement was tried
+# Use this after implementing new escalation logic to activate it
+escalate: .venv/.deps_installed
+	@echo "🔧 Re-tuning assets that need escalation (mixture/ν-refinement not attempted)..."
+	@.venv/bin/python scripts/tune_pretty.py --force-escalation $(ARGS)
+
+# Re-tune 4 random assets with calibration failures
+# Useful for testing calibration fixes incrementally
+calibrate-four: .venv/.deps_installed
+	@if [ ! -f scripts/quant/cache/calibration/calibration_failures.json ]; then \
+		echo "❌ No calibration_failures.json found. Run 'make tune' first."; \
+		exit 1; \
+	fi
+	@echo "🎲 Selecting 4 random assets with calibration failures..."
+	@FAILED_ASSETS=$$(.venv/bin/python -c "import json, random; f=json.load(open('scripts/quant/cache/calibration/calibration_failures.json')); assets=[i['asset'] for i in f['issues']]; random.shuffle(assets); print(','.join(assets[:4]))"); \
+	if [ -z "$$FAILED_ASSETS" ]; then \
+		echo "✅ No calibration failures found. All assets are well-calibrated!"; \
+	else \
+		echo "🔧 Re-tuning: $$FAILED_ASSETS"; \
+		.venv/bin/python scripts/tune_pretty.py --assets "$$FAILED_ASSETS" --force $(ARGS); \
+	fi
+
 # Re-tune only assets with calibration failures (PIT p-value < 0.05)
 # Uses calibration_failures.json from previous tune run
 # Options:

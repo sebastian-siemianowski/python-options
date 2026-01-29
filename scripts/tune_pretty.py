@@ -58,6 +58,7 @@ from fx_signals_presentation import (
     render_tuning_progress_start,
     render_tuning_summary,
     render_parameter_table,
+    render_pdde_escalation_summary,
     render_failed_assets,
     render_dry_run_preview,
     render_cache_status,
@@ -87,6 +88,8 @@ Examples:
                        help='Path to JSON cache file')
     parser.add_argument('--force', action='store_true',
                        help='Force re-estimation even if cached values exist')
+    parser.add_argument('--force-escalation', action='store_true',
+                       help='Force re-estimation only for assets that failed calibration without escalation')
     parser.add_argument('--start', type=str, default='2015-01-01',
                        help='Start date for data fetching')
     parser.add_argument('--end', type=str, default=None,
@@ -159,12 +162,41 @@ Examples:
     model_comparisons: Dict[str, Dict] = {}  # Per-asset model comparison results
     processing_log: List[str] = []  # Log of what was processed
 
+    # Helper function to check if asset needs escalation re-tuning
+    def needs_escalation_retune(data: Dict) -> bool:
+        """Check if asset failed calibration without proper escalation attempt."""
+        global_data = data.get('global', data)
+        pit_p = global_data.get('pit_ks_pvalue', 1.0)
+        calibration_warning = global_data.get('calibration_warning', False)
+        mixture_attempted = global_data.get('mixture_attempted', False)
+        nu_ref = global_data.get('nu_refinement', {})
+        nu_refinement_attempted = nu_ref.get('refinement_attempted', False)
+        
+        # Asset needs re-tuning if:
+        # 1. Has calibration warning (PIT < 0.05)
+        # 2. AND neither mixture nor ν-refinement was attempted
+        if calibration_warning or pit_p < 0.05:
+            if not mixture_attempted and not nu_refinement_attempted:
+                return True
+        return False
+
     # Check cache for each asset
     for asset in assets:
-        if not args.force and asset in cache:
+        if args.force:
+            # Force mode: re-tune all
+            assets_to_process.append(asset)
+        elif args.force_escalation and asset in cache:
+            # Force-escalation mode: only re-tune if escalation was skipped
+            if needs_escalation_retune(cache[asset]):
+                assets_to_process.append(asset)
+            else:
+                reused_cached += 1
+        elif asset in cache:
+            # Normal mode: use cached value
             reused_cached += 1
-            continue
-        assets_to_process.append(asset)
+        else:
+            # Asset not in cache: always process
+            assets_to_process.append(asset)
 
     if assets_to_process:
         # Parallel processing

@@ -2561,6 +2561,7 @@ def render_calibration_report(
         'thresholds': {
             'pit_warning': 0.05,
             'pit_critical': 0.01,
+            'pit_severe': 0.01,
             'kurtosis_warning': 6.0,
             'kurtosis_critical': 10.0,
         },
@@ -2569,18 +2570,44 @@ def render_calibration_report(
             'description': 'K=2 symmetric φ-t mixture for calibration improvement',
             'sigma_ratio_min': 1.5,
             'weight_bounds': [0.1, 0.9],
+            'bic_threshold': 0.0,
+            'pit_improvement_factor': 10.0,
+            'selection_criterion': 'BIC improvement OR PIT improvement 10x',
         },
         'adaptive_nu': {
             'enabled': True,
-            'description': 'Adaptive ν refinement for boundary values',
-            'boundary_values': [12.0, 20.0],
+            'description': 'Adaptive ν refinement (EXPANDED to all ν values)',
+            'boundary_values': [4.0, 6.0, 8.0, 12.0, 20.0],
             'refinement_candidates': {
+                '4.0': [3.0, 5.0],
+                '6.0': [5.0, 7.0],
+                '8.0': [6.0, 10.0],
                 '12.0': [10.0, 14.0],
-                '20.0': [16.0],
+                '20.0': [16.0, 25.0],
             },
-            'flatness_threshold': 1.0,
+            'flatness_threshold': 2.0,
+            'severe_pit_always_refine': True,
+        },
+        'diagnostics': {
+            'escalation_stats': {
+                'mixture_attempted_count': sum(1 for i in issues if i.get('mixture_attempted')),
+                'mixture_selected_count': sum(1 for i in issues if i.get('mixture_selected')),
+                'nu_refinement_attempted_count': sum(1 for i in issues if i.get('nu_refinement_attempted')),
+                'nu_refinement_improved_count': sum(1 for i in issues if i.get('nu_refinement_improved')),
+                'no_escalation_count': sum(1 for i in issues if not i.get('mixture_attempted') and not i.get('nu_refinement_attempted')),
+            },
+            'model_distribution': {},
+            'nu_distribution': {},
+            'phi_at_boundary_count': sum(1 for i in issues if i.get('phi') and abs(i.get('phi', 0)) > 0.99),
         }
     }
+    
+    # Add model and nu distribution stats
+    from collections import Counter
+    model_counts = Counter(i['model'] for i in issues)
+    nu_counts = Counter(i['nu'] for i in issues if i.get('nu') is not None)
+    calibration_report['diagnostics']['model_distribution'] = dict(model_counts)
+    calibration_report['diagnostics']['nu_distribution'] = {str(k): v for k, v in nu_counts.items()}
     
     try:
         with open(calibration_file, 'w') as f:
