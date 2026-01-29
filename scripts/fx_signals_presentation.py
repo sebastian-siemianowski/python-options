@@ -2267,6 +2267,11 @@ def render_calibration_report(
         mixture_selected = data.get('mixture_selected', False)
         mixture_model = data.get('mixture_model')
         
+        # Check for ν refinement
+        nu_refinement = data.get('nu_refinement', {})
+        nu_refinement_attempted = nu_refinement.get('refinement_attempted', False)
+        nu_refinement_improved = nu_refinement.get('improvement_achieved', False)
+        
         collapse_warning = raw_data.get('hierarchical_tuning', {}).get('collapse_warning', False)
         
         has_issue = False
@@ -2282,6 +2287,10 @@ def render_calibration_report(
             # Note if mixture was attempted but didn't help
             if mixture_selected:
                 issue_type.append('PIT < 0.05 (mix)')
+            elif nu_refinement_attempted and nu_refinement_improved:
+                issue_type.append('PIT < 0.05 (ν-ref)')
+            elif nu_refinement_attempted:
+                issue_type.append('PIT < 0.05 (ν-tried)')
             else:
                 issue_type.append('PIT < 0.05')
             severity = 'warning'
@@ -2326,6 +2335,8 @@ def render_calibration_report(
                 'nu': nu_val,
                 'details': '',
                 'mixture_selected': mixture_selected,
+                'nu_refinement_attempted': nu_refinement_attempted,
+                'nu_refinement_improved': nu_refinement_improved,
             })
     
     # Sort by severity (critical first), then by PIT p-value
@@ -2369,6 +2380,8 @@ def render_calibration_report(
                 'nu': issue['nu'],
                 'details': issue['details'],
                 'mixture_attempted': issue.get('mixture_selected', False),
+                'nu_refinement_attempted': issue.get('nu_refinement_attempted', False),
+                'nu_refinement_improved': issue.get('nu_refinement_improved', False),
             }
             for issue in issues
         ],
@@ -2383,6 +2396,16 @@ def render_calibration_report(
             'description': 'K=2 symmetric φ-t mixture for calibration improvement',
             'sigma_ratio_min': 1.5,
             'weight_bounds': [0.1, 0.9],
+        },
+        'adaptive_nu': {
+            'enabled': True,
+            'description': 'Adaptive ν refinement for boundary values',
+            'boundary_values': [12.0, 20.0],
+            'refinement_candidates': {
+                '12.0': [10.0, 14.0],
+                '20.0': [16.0],
+            },
+            'flatness_threshold': 1.0,
         }
     }
     

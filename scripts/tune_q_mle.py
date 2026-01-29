@@ -208,6 +208,21 @@ try:
 except ImportError:
     MIXTURE_MODEL_AVAILABLE = False
 
+# Import Adaptive ν Refinement for calibration improvement
+try:
+    from adaptive_nu_refinement import (
+        AdaptiveNuConfig,
+        AdaptiveNuRefiner,
+        NuRefinementResult,
+        needs_nu_refinement,
+        get_refinement_candidates,
+        is_nu_likelihood_flat,
+        is_phi_t_model,
+    )
+    ADAPTIVE_NU_AVAILABLE = True
+except ImportError:
+    ADAPTIVE_NU_AVAILABLE = False
+
 # Import presentation layer for world-class UX output
 from fx_signals_presentation import (
     create_tuning_console,
@@ -411,6 +426,68 @@ def get_mixture_config() -> Optional['PhiTMixtureK2Config']:
         sigma_ratio_max=5.0,
         entropy_penalty=MIXTURE_ENTROPY_PENALTY,
         bic_threshold=MIXTURE_BIC_THRESHOLD,
+    )
+
+
+# =============================================================================
+# ADAPTIVE ν REFINEMENT CONFIGURATION
+# =============================================================================
+# When calibration fails (PIT p < 0.05) for φ-T models at boundary ν values
+# (12 or 20), we locally refine the ν grid to test intermediate values.
+#
+# CORE PRINCIPLE: Add resolution only where truth demands it.
+#
+# Detection criteria (ALL must hold):
+#   1. Best ν is at grid boundary (12 or 20)
+#   2. PIT KS p-value < 0.05 (calibration failure)
+#   3. Model is φ-t variant (not Gaussian or mixture)
+#   4. Likelihood is locally flat in ν (ν not well identified)
+#
+# Refinement candidates:
+#   - ν = 12 → test [10, 14] (between 8-12 and 12-20)
+#   - ν = 20 → test [16] only (asymmetric: ν > 30 ≈ Gaussian)
+#
+# Computational budget:
+#   - Expected flagged assets: ~2-5% of universe
+#   - Additional likelihood evaluations: 1-2 per flagged asset
+#   - Total compute increase: ≤5%
+# =============================================================================
+
+# Feature toggle
+ADAPTIVE_NU_ENABLED = True
+
+# Boundary ν values that trigger refinement check
+ADAPTIVE_NU_BOUNDARY_VALUES = (12.0, 20.0)
+
+# PIT p-value threshold for calibration failure
+ADAPTIVE_NU_PIT_THRESHOLD = 0.05
+
+# Log-likelihood flatness threshold (refinement only if |LL_best - LL_second| < threshold)
+ADAPTIVE_NU_FLATNESS_THRESHOLD = 1.0
+
+# Refinement candidates for each boundary ν (asymmetric for ν=20)
+ADAPTIVE_NU_CANDIDATES = {
+    12.0: [10.0, 14.0],  # Test between 8-12 and 12-20
+    20.0: [16.0],        # One-sided refinement only (downward)
+}
+
+
+def get_adaptive_nu_config() -> Optional['AdaptiveNuConfig']:
+    """
+    Get adaptive ν refinement configuration based on global settings.
+    
+    Returns:
+        AdaptiveNuConfig if available and enabled, None otherwise.
+    """
+    if not ADAPTIVE_NU_AVAILABLE or not ADAPTIVE_NU_ENABLED:
+        return None
+    
+    return AdaptiveNuConfig(
+        enabled=ADAPTIVE_NU_ENABLED,
+        boundary_nu_values=ADAPTIVE_NU_BOUNDARY_VALUES,
+        pit_threshold=ADAPTIVE_NU_PIT_THRESHOLD,
+        likelihood_flatness_threshold=ADAPTIVE_NU_FLATNESS_THRESHOLD,
+        refinement_candidates=ADAPTIVE_NU_CANDIDATES,
     )
 
 
@@ -2322,6 +2399,112 @@ def tune_asset_q(
             opt_diag_student = {}
 
         # =================================================================
+        # STEP 2.5: ADAPTIVE ν REFINEMENT
+        # =================================================================
+        # When calibration fails (PIT p < 0.05) for φ-T models at boundary ν,
+        # we locally refine the ν grid to test intermediate values.
+        #
+        # Core principle: Add resolution only where truth demands it.
+        # =================================================================
+        nu_refinement_result = None
+        if student_t_fit_success and ADAPTIVE_NU_AVAILABLE and ADAPTIVE_NU_ENABLED:
+            # Check if refinement is needed
+            # Build a result dict for the detection function
+            student_t_logliks = {
+                f"phi_student_t_nu_{int(r[11])}": {'ll': r[3], 'bic': r[1]}
+                for r in student_t_results
+            }
+            
+            refinement_check = {
+                'model': f'φ-T(ν={int(nu_student)})',
+                'nu': float(nu_student),
+                'pit_ks_pvalue': float(pit_p_student),
+                'bic': float(bic_student),
+                'model_comparison': student_t_logliks,
+            }
+            
+            if needs_nu_refinement(refinement_check, get_adaptive_nu_config()):
+                # Get refinement candidates
+                candidates = get_refinement_candidates(float(nu_student), get_adaptive_nu_config())
+                
+                if candidates:
+                    _log(f"  🔧 Adaptive ν refinement: testing {candidates} for ν={nu_student}...")
+                    
+                    pit_before = pit_p_student
+                    bic_before = bic_student
+                    nu_before = nu_student
+                    
+                    # Test each candidate
+                    refinement_tested = []
+                    for nu_cand in candidates:
+                        model_name_cand = f"phi_student_t_nu_{int(nu_cand)}"
+                        try:
+                            q_cand, c_cand, phi_cand, ll_cv_cand, diag_cand = PhiStudentTDriftModel.optimize_params_fixed_nu(
+                                returns_arr, vol_arr,
+                                nu=nu_cand,
+                                prior_log_q_mean=prior_log_q_mean,
+                                prior_lambda=prior_lambda
+                            )
+                            
+                            mu_cand, P_cand, ll_full_cand = kalman_filter_drift_phi_student_t(
+                                returns_arr, vol_arr, q_cand, c_cand, phi_cand, nu_cand
+                            )
+                            
+                            ks_cand, pit_p_cand = compute_pit_ks_pvalue_student_t(
+                                returns_arr, mu_cand, vol_arr, P_cand, c_cand, nu_cand
+                            )
+                            
+                            aic_cand = compute_aic(ll_full_cand, n_params=3)
+                            bic_cand = compute_bic(ll_full_cand, n_params=3, n_obs=n_obs)
+                            
+                            _log(f"     {model_name_cand}: BIC={bic_cand:.1f}, PIT p={pit_p_cand:.4f}")
+                            
+                            refinement_tested.append((
+                                model_name_cand, bic_cand, aic_cand, ll_full_cand,
+                                mu_cand, P_cand, ks_cand, pit_p_cand,
+                                q_cand, c_cand, phi_cand, nu_cand, diag_cand
+                            ))
+                            
+                            # Also add to student_t_results for model comparison
+                            student_t_results.append((
+                                model_name_cand, bic_cand, aic_cand, ll_full_cand,
+                                mu_cand, P_cand, ks_cand, pit_p_cand,
+                                q_cand, c_cand, phi_cand, nu_cand, diag_cand
+                            ))
+                            
+                        except Exception as e:
+                            _log(f"     {model_name_cand}: ⚠️ refinement failed: {e}")
+                            continue
+                    
+                    # Check if any refinement improved BIC
+                    if refinement_tested:
+                        # Re-find best Student-t model including new candidates
+                        best_student_t = min(student_t_results, key=lambda x: x[1])
+                        (best_st_name, bic_student, aic_student, ll_student_full,
+                         mu_student, P_student, ks_student, pit_p_student,
+                         q_student, c_student, phi_student, nu_student, opt_diag_student) = best_student_t
+                        
+                        improvement_achieved = (bic_student < bic_before)
+                        
+                        nu_refinement_result = {
+                            'refinement_attempted': True,
+                            'nu_original': float(nu_before),
+                            'nu_candidates_tested': [float(c) for c in candidates],
+                            'nu_final': float(nu_student),
+                            'improvement_achieved': bool(improvement_achieved),
+                            'pit_before_refinement': float(pit_before),
+                            'pit_after_refinement': float(pit_p_student),
+                            'bic_before_refinement': float(bic_before),
+                            'bic_after_refinement': float(bic_student),
+                            'likelihood_flatness': bool(is_nu_likelihood_flat(refinement_check)),
+                        }
+                        
+                        if improvement_achieved:
+                            _log(f"     ✓ Refinement improved: ν={nu_before}→{nu_student}, BIC={bic_before:.1f}→{bic_student:.1f}")
+                        else:
+                            _log(f"     ✗ Refinement did not improve (keeping ν={nu_student})")
+
+        # =================================================================
         # STEP 3: Model Selection via BIC
         # =================================================================
         # Lower BIC is better (penalizes complexity)
@@ -2660,6 +2843,18 @@ def tune_asset_q(
             result['gaussian_log_likelihood'] = float(ll_gauss_full)
             result['gaussian_pit_ks_pvalue'] = float(pit_p_gauss)
             result['bic_improvement'] = float(bic_gauss - bic_student)
+
+        # Add adaptive ν refinement results if attempted
+        if nu_refinement_result is not None:
+            result['nu_refinement'] = nu_refinement_result
+        else:
+            result['nu_refinement'] = {
+                'refinement_attempted': False,
+                'nu_original': float(nu_optimal) if nu_optimal is not None else None,
+                'nu_candidates_tested': [],
+                'nu_final': float(nu_optimal) if nu_optimal is not None else None,
+                'improvement_achieved': False,
+            }
 
         # =================================================================
         # K=2 MIXTURE MODEL ENHANCEMENT
