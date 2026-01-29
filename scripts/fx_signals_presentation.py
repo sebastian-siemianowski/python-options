@@ -1158,8 +1158,6 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
     footer.append("Sorted by signal strength", style="dim italic")
     console.print(Align.center(footer))
     console.print()
-    console.print(Rule(style="dim"))
-    console.print()
 
 
 def render_portfolio_allocation_table(
@@ -1678,6 +1676,127 @@ def _get_status(fit_count: int, shrunk_count: int) -> str:
         return f"{pct:.0f}%"
     else:
         return "✓"
+
+
+def render_pdde_escalation_summary(
+    escalation_summary: Dict[str, Any],
+    console: Console = None
+) -> None:
+    """
+    Render PIT-Driven Distribution Escalation summary.
+    
+    Shows the escalation chain statistics including:
+    - Level distribution
+    - Escalation success rates
+    - Calibration improvement metrics
+    
+    Args:
+        escalation_summary: Summary dict from get_escalation_summary_from_cache
+        console: Rich console instance
+    """
+    if console is None:
+        console = create_tuning_console()
+    
+    from rich.align import Align
+    from rich.rule import Rule
+    
+    total = escalation_summary.get('total', 0)
+    if total == 0:
+        return
+    
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    # Section header
+    section = Text()
+    section.append("  🎯  ", style="bold bright_yellow")
+    section.append("PIT-DRIVEN ESCALATION", style="bold bright_white")
+    console.print(section)
+    console.print()
+    
+    # Calibration status overview
+    calibrated = escalation_summary.get('calibrated', 0)
+    calibrated_pct = escalation_summary.get('calibrated_pct', 0)
+    warnings = escalation_summary.get('warnings', 0)
+    critical = escalation_summary.get('critical', 0)
+    
+    status_row = Text()
+    status_row.append("    Calibration: ", style="dim")
+    status_row.append(f"{calibrated}", style="bold bright_green")
+    status_row.append(f" ({calibrated_pct:.1f}%) passed", style="dim")
+    status_row.append("  ·  ", style="dim")
+    if warnings > 0:
+        status_row.append(f"{warnings} warnings", style="yellow")
+        status_row.append("  ·  ", style="dim")
+    if critical > 0:
+        status_row.append(f"{critical} critical", style="indian_red1")
+    console.print(status_row)
+    console.print()
+    
+    # Escalation chain
+    level_counts = escalation_summary.get('level_counts', {})
+    if level_counts:
+        console.print(Text("    Escalation Chain:", style="dim"))
+        console.print()
+        
+        # Define level order and colors
+        level_order = [
+            ("φ-Gaussian", "green"),
+            ("φ-Student-t", "cyan"),
+            ("φ-Student-t (ν-refined)", "bright_cyan"),
+            ("K=2 Scale Mixture", "bright_yellow"),
+            ("EVT Tail Splice", "magenta"),
+        ]
+        
+        bar_width = 30
+        max_count = max(level_counts.values()) if level_counts.values() else 1
+        
+        for level_name, color in level_order:
+            count = level_counts.get(level_name, 0)
+            if count > 0 or level_name in ["φ-Gaussian", "φ-Student-t"]:
+                pct = count / total * 100 if total > 0 else 0
+                filled = int(count / max_count * bar_width) if max_count > 0 else 0
+                
+                row = Text()
+                row.append("      ", style="")
+                row.append(f"{level_name:26s}", style=color)
+                row.append("█" * filled, style=color)
+                row.append("░" * (bar_width - filled), style="dim")
+                row.append(f"  {count:>4}", style="bold white")
+                row.append(f"  ({pct:>5.1f}%)", style="dim")
+                console.print(row)
+        
+        console.print()
+    
+    # Escalation attempts summary
+    mixture_attempts = escalation_summary.get('mixture_attempts', 0)
+    mixture_successes = escalation_summary.get('mixture_successes', 0)
+    mixture_rate = escalation_summary.get('mixture_success_rate', 0)
+    
+    nu_attempts = escalation_summary.get('nu_refinement_attempts', 0)
+    nu_successes = escalation_summary.get('nu_refinement_successes', 0)
+    nu_rate = escalation_summary.get('nu_refinement_success_rate', 0)
+    
+    if mixture_attempts > 0 or nu_attempts > 0:
+        console.print(Text("    Escalation Effectiveness:", style="dim"))
+        console.print()
+        
+        if nu_attempts > 0:
+            nu_row = Text()
+            nu_row.append("      ◇ ν-Refinement: ", style="bright_cyan")
+            nu_row.append(f"{nu_successes}/{nu_attempts}", style="bold white")
+            nu_row.append(f" improved ({nu_rate:.0f}%)", style="dim")
+            console.print(nu_row)
+        
+        if mixture_attempts > 0:
+            mix_row = Text()
+            mix_row.append("      ◆ K=2 Mixture:  ", style="bright_yellow")
+            mix_row.append(f"{mixture_successes}/{mixture_attempts}", style="bold white")
+            mix_row.append(f" selected ({mixture_rate:.0f}%)", style="dim")
+            console.print(mix_row)
+        
+        console.print()
 
 
 def render_tuning_summary(
@@ -2473,12 +2592,6 @@ def render_calibration_report(
     # SECTION HEADER - Always show
     console.print()
     console.print(Rule(style="dim"))
-    console.print()
-    
-    section_header = Text()
-    section_header.append("  📊  ", style="bold bright_cyan")
-    section_header.append("CALIBRATION REPORT", style="bold bright_white")
-    console.print(section_header)
     console.print()
     
     # Show success or issues

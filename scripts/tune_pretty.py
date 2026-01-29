@@ -39,6 +39,18 @@ from tune_q_mle import (
     REGIME_LABELS,
 )
 
+# Import PIT-Driven Distribution Escalation
+try:
+    from pit_driven_escalation import (
+        get_escalation_summary_from_cache,
+        extract_escalation_from_result,
+        EscalationLevel,
+        LEVEL_NAMES,
+    )
+    PDDE_AVAILABLE = True
+except ImportError:
+    PDDE_AVAILABLE = False
+
 # Import presentation layer
 from fx_signals_presentation import (
     create_tuning_console,
@@ -131,6 +143,11 @@ Examples:
     calibration_warnings = 0
     student_t_count = 0
     gaussian_count = 0
+    regime_tuning_count = 0
+    mixture_attempted_count = 0
+    mixture_selected_count = 0
+    nu_refinement_attempted_count = 0
+    nu_refinement_improved_count = 0
     regime_tuning_count = 0
 
     assets_to_process: List[str] = []
@@ -371,8 +388,21 @@ Examples:
         collapse_warnings=collapse_warnings,
         cache_path=args.cache_json,
         regime_model_breakdown=regime_model_breakdown,
+        mixture_attempted_count=mixture_attempted_count,
+        mixture_selected_count=mixture_selected_count,
+        nu_refinement_attempted_count=nu_refinement_attempted_count,
+        nu_refinement_improved_count=nu_refinement_improved_count,
         console=console,
     )
+
+    # Render PDDE escalation summary if available
+    if PDDE_AVAILABLE and cache:
+        try:
+            escalation_summary = get_escalation_summary_from_cache(cache)
+            if escalation_summary.get('total', 0) > 0:
+                render_pdde_escalation_summary(escalation_summary, console=console)
+        except Exception:
+            pass  # Silently skip if PDDE summary fails
 
     # Render parameter table
     if cache:

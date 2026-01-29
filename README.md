@@ -1590,6 +1590,86 @@ The mixture model is only selected if:
 
 ---
 
+### PIT-Driven Distribution Escalation (PDDE)
+
+The system implements a **hierarchical model escalation** mechanism that automatically upgrades model complexity when diagnostics demand it.
+
+<details>
+<summary><strong>📖 Core Principle</strong></summary>
+
+> **Escalate model complexity only when diagnostics demand it.**
+> Treat PIT failure as information — not error.
+
+Do NOT expand the global model grid blindly.
+Refine locally, conditionally, and reversibly.
+
+</details>
+
+**Escalation Chain**
+
+```
+Level 0: φ-Gaussian
+    ↓ (PIT p < 0.05)
+Level 1: φ-Student-t (coarse ν grid: 4, 6, 8, 12, 20)
+    ↓ (PIT fail at boundary ν)
+Level 2: Adaptive ν Refinement (local grid expansion)
+    ↓ (ν-refinement fails)
+Level 3: K=2 Scale Mixture (σ dispersion for regime heterogeneity)
+    ↓ (mixture fails, extreme kurtosis)
+Level 4: EVT Tail Splice (GPD beyond threshold, rare)
+```
+
+**Escalation Triggers**
+
+| Level | Trigger Condition | What It Does |
+|-------|-------------------|--------------|
+| 0 → 1 | PIT p < 0.05 | Try heavier tails (Student-t) |
+| 1 → 2 | Best ν at boundary (12 or 20) | Refine ν locally |
+| 2 → 3 | ν-refinement fails | Try regime mixture |
+| 3 → 4 | Kurtosis > 10, mixture fails | Apply EVT tail splice |
+
+**Output Contract**
+
+Each asset records its escalation history:
+
+```json
+{
+  "final_model": "phi-t | phi-t-refined | mixture | evt",
+  "escalation_level": 0-4,
+  "pit_ks_pvalue": 0.0823,
+  "escalation_path": ["baseline_fit", "student_t_selected", "nu_refinement_attempted"],
+  "justification": "diagnostic-driven"
+}
+```
+
+**Files**
+
+| File | Purpose |
+|------|---------|
+| `scripts/pit_driven_escalation.py` | Orchestration logic |
+| `scripts/adaptive_nu_refinement.py` | Level 2: ν refinement |
+| `scripts/phi_t_mixture_k2.py` | Level 3: K=2 mixture |
+| `scripts/quant/cache/calibration/calibration_failures.json` | Diagnostic output |
+
+**View Escalation Summary**
+
+After running `make tune`, the summary shows escalation statistics:
+
+```
+📈  MODEL SELECTION
+
+    ○ Gaussian       ████████████░░░░░░░░░   42  ( 35.0%)
+    ● Student-t      ████████████████████░   78  ( 65.0%)
+
+    ◆ K=2 Mixture Fallback
+      Attempted: 25  →  Selected: 8  (32% success)
+
+    ◇ Adaptive ν Refinement
+      Attempted: 15  →  Improved: 6  (40% success)
+```
+
+---
+
 ### Summary: The Mathematical Contract
 
 This box summarizes the entire system in symbols. Refer to the Master Symbol Glossary at the top of this section for definitions.
