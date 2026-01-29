@@ -1846,6 +1846,12 @@ def render_tuning_summary(
     gh_selected_count: int = 0,
     tvvm_attempted_count: int = 0,
     tvvm_selected_count: int = 0,
+    # Calibrated Trust Authority statistics
+    recalibration_applied_count: int = 0,
+    calibrated_trust_count: int = 0,
+    avg_effective_trust: float = 0.0,
+    low_trust_count: int = 0,
+    high_trust_count: int = 0,
     console: Console = None
 ) -> None:
     """Render extraordinary Apple-quality tuning summary.
@@ -2040,6 +2046,86 @@ def render_tuning_summary(
                 tvvm_row.append("Selected: 0", style="dim")
                 tvvm_row.append("  (vol-of-vol effect not significant)", style="dim")
             console.print(tvvm_row)
+        
+        console.print()
+        console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # CALIBRATED TRUST AUTHORITY - Additive decomposition governance
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # Always show section - with hint if no trust data yet
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    section = Text()
+    section.append("  🎯  ", style="bold bright_cyan")
+    section.append("CALIBRATED TRUST AUTHORITY", style="bold bright_white")
+    console.print(section)
+    console.print()
+    
+    # Architectural law subtitle
+    law_text = Text()
+    law_text.append("      ", style="")
+    law_text.append("Trust = Calibration − Regime Penalty", style="dim italic")
+    law_text.append("  (additive, bounded, auditable)", style="dim")
+    console.print(law_text)
+    console.print()
+    
+    if calibrated_trust_count > 0 or recalibration_applied_count > 0:
+        # Isotonic Recalibration row
+        recal_section = Text()
+        recal_section.append("    ◈ ", style="bright_cyan")
+        recal_section.append("Isotonic Recalibration", style="bright_cyan")
+        console.print(recal_section)
+        
+        recal_row = Text()
+        recal_row.append("      ", style="")
+        recal_row.append(f"Applied: {recalibration_applied_count}", style="bold bright_white")
+        recal_row.append(f" assets", style="dim")
+        console.print(recal_row)
+        
+        # Trust Statistics row
+        console.print()
+        trust_section = Text()
+        trust_section.append("    ◉ ", style="bright_magenta")
+        trust_section.append("Trust Distribution", style="bright_magenta")
+        console.print(trust_section)
+        
+        trust_row = Text()
+        trust_row.append("      ", style="")
+        trust_row.append(f"Computed: {calibrated_trust_count}", style="dim")
+        trust_row.append("  ·  ", style="dim")
+        trust_row.append(f"Avg: {avg_effective_trust:.1%}", style="bold bright_white")
+        console.print(trust_row)
+        
+        # Trust level breakdown
+        if calibrated_trust_count > 0:
+            level_row = Text()
+            level_row.append("      ", style="")
+            if high_trust_count > 0:
+                level_row.append(f"High (≥70%): {high_trust_count}", style="bright_green")
+                level_row.append("  ·  ", style="dim")
+            if low_trust_count > 0:
+                level_row.append(f"Low (<30%): {low_trust_count}", style="indian_red1")
+            else:
+                level_row.append(f"Low (<30%): 0", style="dim")
+            console.print(level_row)
+        
+        console.print()
+        console.print()
+    else:
+        # No trust data yet - show hint to re-tune
+        hint_row = Text()
+        hint_row.append("    ⚡ ", style="dim yellow")
+        hint_row.append("No trust data computed yet", style="dim")
+        console.print(hint_row)
+        
+        hint2_row = Text()
+        hint2_row.append("      ", style="")
+        hint2_row.append("→ Run ", style="dim")
+        hint2_row.append("make tune ARGS='--force'", style="dim cyan")
+        hint2_row.append(" to compute calibrated trust for all assets", style="dim")
+        console.print(hint2_row)
         
         console.print()
         console.print()

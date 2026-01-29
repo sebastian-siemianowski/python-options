@@ -154,6 +154,11 @@ Examples:
     gh_attempted_count = 0
     gh_selected_count = 0
     regime_tuning_count = 0
+    
+    # Calibrated Trust Authority statistics
+    recalibration_applied_count = 0
+    calibrated_trust_count = 0
+    trust_effective_values = []  # For computing average trust
 
     assets_to_process: List[str] = []
     failure_reasons: Dict[str, str] = {}
@@ -301,7 +306,7 @@ Examples:
                         nu_was_refined = nu_refinement.get('improvement_achieved', False)
                         
                         # Build comprehensive details string for UX display
-                        # Format: model|q|c|phi|nu|bic
+                        # Format: model|q|c|phi|nu|bic|trust
                         if global_result.get('gh_selected'):
                             gh_model = global_result.get('gh_model', {})
                             gh_params = gh_model.get('parameters', {})
@@ -329,6 +334,18 @@ Examples:
                             details += f"|{nu_indicator}"
                         if math.isfinite(bic_val):
                             details += f"|bic={bic_val:.0f}"
+                        
+                        # Add trust indicator if available
+                        effective_trust = global_result.get('effective_trust')
+                        if effective_trust is not None:
+                            trust_pct = effective_trust * 100
+                            if trust_pct >= 70:
+                                trust_indicator = f"T={trust_pct:.0f}%✓"
+                            elif trust_pct < 30:
+                                trust_indicator = f"T={trust_pct:.0f}%⚠"
+                            else:
+                                trust_indicator = f"T={trust_pct:.0f}%"
+                            details += f"|{trust_indicator}"
                         
                         # Log this processing for end-of-run
                         processing_log.append(f"✓ {asset_name}: {details}")
@@ -431,6 +448,10 @@ Examples:
     calibration_warnings = 0
     gaussian_count = 0
     student_t_count = 0
+    # Reset trust statistics for full cache computation
+    recalibration_applied_count = 0
+    calibrated_trust_count = 0
+    trust_effective_values = []
     
     for asset, data in cache.items():
         global_data = data.get('global', data)
@@ -472,6 +493,20 @@ Examples:
             tvvm_attempted_count += 1
         if global_data.get('tvvm_selected'):
             tvvm_selected_count += 1
+        
+        # Count Calibrated Trust Authority statistics
+        if global_data.get('recalibration_applied'):
+            recalibration_applied_count += 1
+        if global_data.get('calibrated_trust'):
+            calibrated_trust_count += 1
+            effective_trust = global_data.get('effective_trust')
+            if effective_trust is not None:
+                trust_effective_values.append(effective_trust)
+
+    # Compute trust statistics
+    avg_effective_trust = sum(trust_effective_values) / len(trust_effective_values) if trust_effective_values else 0.0
+    low_trust_count = sum(1 for t in trust_effective_values if t < 0.3)
+    high_trust_count = sum(1 for t in trust_effective_values if t >= 0.7)
 
     # Render beautiful summary
     render_tuning_summary(
@@ -497,6 +532,12 @@ Examples:
         gh_selected_count=gh_selected_count,
         tvvm_attempted_count=tvvm_attempted_count,
         tvvm_selected_count=tvvm_selected_count,
+        # Calibrated Trust Authority statistics
+        recalibration_applied_count=recalibration_applied_count,
+        calibrated_trust_count=calibrated_trust_count,
+        avg_effective_trust=avg_effective_trust,
+        low_trust_count=low_trust_count,
+        high_trust_count=high_trust_count,
         console=console,
     )
 
