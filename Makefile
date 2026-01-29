@@ -159,7 +159,21 @@ show-q:
 clear-q:
 	@echo "Clearing Kalman q parameter cache..."
 	@rm -f scripts/quant/cache/kalman_q_cache.json
+	@rm -f scripts/quant/cache/tune/*.json
 	@echo "Cache cleared."
+
+# Cache management utilities
+cache-stats: .venv/.deps_installed
+	@echo "📊 Kalman tuning cache statistics:"
+	@.venv/bin/python -c "import sys; sys.path.insert(0, 'scripts/quant'); from kalman_cache import get_cache_stats; s=get_cache_stats(); print(f'  Assets:     {s[\"n_assets\"]}'); print(f'  Total Size: {s[\"total_size_kb\"]:.1f} KB'); print(f'  Avg Size:   {s[\"avg_size_kb\"]:.1f} KB'); print(f'  Directory:  {s[\"cache_dir\"]}')"
+
+cache-migrate: .venv/.deps_installed
+	@echo "🔄 Migrating legacy cache to per-asset files..."
+	@.venv/bin/python -c "import sys; sys.path.insert(0, 'scripts/quant'); from kalman_cache import migrate_legacy_cache; migrate_legacy_cache()"
+
+cache-list: .venv/.deps_installed
+	@echo "📋 Cached symbols:"
+	@.venv/bin/python -c "import sys; sys.path.insert(0, 'scripts/quant'); from kalman_cache import list_cached_symbols; symbols=list_cached_symbols(); print(f'  Total: {len(symbols)} assets'); print('  ' + ', '.join(symbols[:20]) + ('...' if len(symbols) > 20 else ''))"
 
 tests: .venv/.deps_installed
 	@echo "Running all tests..."

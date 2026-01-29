@@ -957,8 +957,56 @@ def load_asset_list(assets_arg: Optional[str], assets_file: Optional[str]) -> Li
     return get_default_asset_universe()
 
 
+# =============================================================================
+# CACHE MANAGEMENT - Per-Asset Architecture
+# =============================================================================
+# Cache is now stored in individual files per asset under:
+#   scripts/quant/cache/tune/{SYMBOL}.json
+# 
+# This enables:
+#   - Git-friendly storage (small individual files)
+#   - Parallel-safe tuning (no file lock contention)
+#   - Incremental updates (re-tune one asset without touching others)
+#
+# Legacy single-file cache is supported for backward compatibility during migration.
+# =============================================================================
+
+# Import per-asset cache module
+try:
+    from quant.kalman_cache import (
+        load_tuned_params as _load_per_asset,
+        save_tuned_params as _save_per_asset,
+        load_full_cache as _load_full_cache,
+        list_cached_symbols,
+        get_cache_stats,
+        TUNE_CACHE_DIR,
+    )
+    PER_ASSET_CACHE_AVAILABLE = True
+except ImportError:
+    PER_ASSET_CACHE_AVAILABLE = False
+
+
 def load_cache(cache_json: str) -> Dict[str, Dict]:
-    """Load existing cache from JSON file."""
+    """
+    Load existing cache from per-asset files or legacy single JSON file.
+    
+    The cache_json parameter is kept for backward compatibility but is ignored
+    when per-asset cache is available. It falls back to the legacy behavior
+    if the per-asset module is not found.
+    
+    Args:
+        cache_json: Path to legacy cache file (used as fallback)
+        
+    Returns:
+        Dict mapping symbol -> params for all cached assets
+    """
+    # Try per-asset cache first
+    if PER_ASSET_CACHE_AVAILABLE:
+        cache = _load_full_cache()
+        if cache:
+            return cache
+    
+    # Fallback to legacy single-file cache
     if os.path.exists(cache_json):
         try:
             with open(cache_json, 'r') as f:
@@ -969,8 +1017,44 @@ def load_cache(cache_json: str) -> Dict[str, Dict]:
     return {}
 
 
+def load_single_asset_cache(symbol: str, cache_json: str = None) -> Optional[Dict]:
+    """
+    Load cached parameters for a single asset.
+    
+    This is more efficient than load_cache() when you only need one asset.
+    
+    Args:
+        symbol: Asset symbol
+        cache_json: Path to legacy cache file (used as fallback)
+        
+    Returns:
+        Dict with tuned parameters or None if not cached
+    """
+    if PER_ASSET_CACHE_AVAILABLE:
+        return _load_per_asset(symbol)
+    
+    # Fallback to legacy cache
+    if cache_json and os.path.exists(cache_json):
+        try:
+            with open(cache_json, 'r') as f:
+                cache = json.load(f)
+            return cache.get(symbol)
+        except Exception:
+            pass
+    return None
+
+
 def save_cache_json(cache: Dict[str, Dict], cache_json: str) -> None:
-    """Persist cache to JSON atomically."""
+    """
+    Persist cache to per-asset files (preferred) or legacy single JSON file.
+    
+    When per-asset cache is available, each asset is saved to its own file.
+    The cache_json path is used as fallback location.
+    
+    Args:
+        cache: Dict mapping symbol -> params
+        cache_json: Path to legacy cache file (used as fallback)
+    """
     import numpy as np
     
     class NumpyEncoder(json.JSONEncoder):
@@ -988,6 +1072,29 @@ def save_cache_json(cache: Dict[str, Dict], cache_json: str) -> None:
                 return bool(obj)
             return super().default(obj)
     
+    # Use per-asset cache if available
+    if PER_ASSET_CACHE_AVAILABLE:
+        saved_count = 0
+        for symbol, params in cache.items():
+            try:
+                _save_per_asset(symbol, params)
+                saved_count += 1
+            except Exception as e:
+                print(f"Warning: Failed to save {symbol} to per-asset cache: {e}")
+        
+        # Also save to legacy file for backward compatibility during transition
+        # (can be removed after full migration)
+        try:
+            os.makedirs(os.path.dirname(cache_json) if os.path.dirname(cache_json) else '.', exist_ok=True)
+            json_temp = cache_json + '.tmp'
+            with open(json_temp, 'w') as f:
+                json.dump(cache, f, indent=2, cls=NumpyEncoder)
+            os.replace(json_temp, cache_json)
+        except Exception as e:
+            print(f"Warning: Failed to save legacy cache (per-asset saved successfully): {e}")
+        return
+    
+    # Fallback to legacy single-file cache
     os.makedirs(os.path.dirname(cache_json) if os.path.dirname(cache_json) else '.', exist_ok=True)
     json_temp = cache_json + '.tmp'
     with open(json_temp, 'w') as f:

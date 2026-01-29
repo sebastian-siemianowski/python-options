@@ -4280,27 +4280,58 @@ def _resolve_symbol_candidates(asset: str) -> List[str]:
 
 def drop_first_k_from_kalman_cache(k: int = 4, cache_path: str = 'cache/kalman_q_cache.json') -> List[str]:
     """
-    Remove the first k tickers from the Kalman q cache JSON (in file order).
+    Remove the first k tickers from the Kalman q cache.
+    
+    Supports both:
+    - Legacy single-file cache (kalman_q_cache.json)
+    - New per-asset cache (cache/tune/*.json)
+    
     Returns the list of removed tickers (empty if none removed).
-    Safe against missing/invalid cache and writes atomically like other helpers.
+    Safe against missing/invalid cache and writes atomically.
     """
+    removed = []
+    
+    # Try per-asset cache first (preferred)
+    tune_cache_dir = pathlib.Path(cache_path).parent / 'tune'
+    if tune_cache_dir.exists():
+        json_files = sorted([f for f in tune_cache_dir.iterdir() 
+                            if f.suffix == '.json' and f.name != '.keep'])
+        files_to_remove = json_files[:max(0, int(k))]
+        for f in files_to_remove:
+            ticker = f.stem  # filename without .json
+            try:
+                f.unlink()
+                removed.append(ticker)
+            except Exception as e:
+                print(f"Warning: Failed to remove {f}: {e}")
+        
+        if removed:
+            print(f"Removed {len(removed)} per-asset cache files")
+    
+    # Also update legacy cache if it exists
     path = pathlib.Path(cache_path)
-    if not path.exists():
-        return []
-    try:
-        raw = path.read_text()
-        data = json.loads(raw)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to load cache {cache_path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValueError('Cache JSON is not an object mapping tickers to entries')
-    keys = list(data.keys())
-    removed = keys[: max(0, int(k))]
-    if not removed:
-        return []
-    for key in removed:
-        data.pop(key, None)
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_text(json.dumps(data, indent=2))
-    tmp.replace(path)
+    if path.exists():
+        try:
+            raw = path.read_text()
+            data = json.loads(raw)
+        except Exception as exc:
+            print(f"Warning: Failed to load legacy cache {cache_path}: {exc}")
+            return removed
+            
+        if not isinstance(data, dict):
+            print('Warning: Legacy cache JSON is not an object mapping tickers to entries')
+            return removed
+            
+        keys = list(data.keys())
+        legacy_removed = keys[: max(0, int(k))]
+        if legacy_removed:
+            for key in legacy_removed:
+                data.pop(key, None)
+                if key not in removed:
+                    removed.append(key)
+            tmp = path.with_suffix(path.suffix + '.tmp')
+            tmp.write_text(json.dumps(data, indent=2))
+            tmp.replace(path)
+            print(f"Updated legacy cache (removed {len(legacy_removed)} entries)")
+    
     return removed
