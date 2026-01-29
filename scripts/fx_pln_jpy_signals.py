@@ -1593,9 +1593,12 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
         # ====================================================================
         
         if 'global' not in raw_data:
-            # Old flat schema - not supported
-            if os.getenv('DEBUG'):
-                print(f"Warning: {asset_symbol} has old flat schema - regenerate with tune_q_mle.py")
+            # Old flat schema - not supported - ALWAYS warn user
+            import sys
+            print(f"\n⚠️  CACHE FORMAT ERROR for {asset_symbol}:", file=sys.stderr)
+            print(f"   Cache entry exists but uses OLD flat schema (missing 'global' key)", file=sys.stderr)
+            print(f"   Top-level keys in cache: {list(raw_data.keys())[:10]}", file=sys.stderr)
+            print(f"   → Fix: Run 'make tune ARGS=\"--assets {asset_symbol}\"' to regenerate\n", file=sys.stderr)
             return None
         
         global_data = raw_data['global']
@@ -1606,9 +1609,11 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
         models = global_data.get('models', {})
         
         if not models:
-            # Invalid BMA structure - no models
-            if os.getenv('DEBUG'):
-                print(f"Warning: {asset_symbol} has no models in global - invalid BMA structure")
+            # Invalid BMA structure - no models - ALWAYS warn user
+            import sys
+            print(f"\n⚠️  CACHE STRUCTURE ERROR for {asset_symbol}:", file=sys.stderr)
+            print(f"   Cache entry has 'global' key but no models inside", file=sys.stderr)
+            print(f"   → Fix: Run 'make tune ARGS=\"--assets {asset_symbol}\"' to regenerate\n", file=sys.stderr)
             return None
         
         # Helper to check if model is Student-t (phi_student_t_nu_* naming)
@@ -3789,10 +3794,23 @@ def bayesian_model_average_mc(
     
     # If no BMA structure available, this is old cache format - REJECT
     if not has_bma:
+        # Print warning to stderr so user knows there's an issue
+        import sys
+        if tuned_params is None:
+            reason = "tuned_params is None (asset not in kalman_q_cache.json)"
+        elif 'global' not in tuned_params:
+            reason = "missing 'global' key (old cache format)"
+        else:
+            reason = "has_bma is False or missing"
+        print(f"\n⚠️  BMA STRUCTURE MISSING: {reason}", file=sys.stderr)
+        print(f"   → Signals will show 0% for all horizons", file=sys.stderr)
+        print(f"   → Fix: Run 'make tune' to regenerate cache\n", file=sys.stderr)
+        
         return np.array([0.0]), np.array([0.2, 0.2, 0.2, 0.2, 0.2]), {
             "method": "REJECTED",
             "reason": "no_bma_structure_old_cache_format",
             "error": "Cache must be regenerated with tune_q_mle.py for BMA support",
+            "debug_reason": reason,
         }
     
     # ========================================================================

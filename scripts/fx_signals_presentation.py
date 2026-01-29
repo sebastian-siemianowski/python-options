@@ -1002,7 +1002,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
     # ═══════════════════════════════════════════════════════════════════════════════
     header_content = Text(justify="center")
     header_content.append("\n", style="")
-    header_content.append("⚡ HIGH CONVICTION SIGNALS", style="bold bright_white")
+    header_content.append("HIGH CONVICTION SIGNALS", style="bold bright_white")
     header_content.append("\n", style="")
     header_content.append("Short-term opportunities (next 7 trading days)", style="dim")
     header_content.append("\n", style="")
@@ -1011,7 +1011,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
         Align.center(header_content),
         box=box.HEAVY,
         border_style="bright_yellow",
-        padding=(0, 4),
+        padding=(0, 2),
     )
     console.print(Align.center(header_panel, width=60))
     console.print()
@@ -1039,7 +1039,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
             row_styles=["", "on grey7"],
         )
         
-        buy_table.add_column("Asset", justify="left", width=40, no_wrap=True)
+        buy_table.add_column("Asset", justify="left", width=50, no_wrap=True)
         buy_table.add_column("Sector", justify="left", width=20, no_wrap=True, style="dim")
         buy_table.add_column("Horizon", justify="center", width=10)
         buy_table.add_column("P(r>0)", justify="right", width=8)
@@ -1099,7 +1099,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
             row_styles=["", "on grey7"],
         )
         
-        sell_table.add_column("Asset", justify="left", width=40, no_wrap=True)
+        sell_table.add_column("Asset", justify="left", width=50, no_wrap=True)
         sell_table.add_column("Sector", justify="left", width=20, no_wrap=True, style="dim")
         sell_table.add_column("Horizon", justify="center", width=10)
         sell_table.add_column("P(r>0)", justify="right", width=8)
