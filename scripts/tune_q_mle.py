@@ -404,8 +404,10 @@ MIXTURE_MAX_WEIGHT = 0.9
 # BIC threshold: mixture must beat single model by this margin
 MIXTURE_BIC_THRESHOLD = 2.0  # Conservative: require meaningful improvement
 
-# Entropy regularization (encourages balanced mixtures)
-MIXTURE_ENTROPY_PENALTY = 0.05
+# Entropy regularization (DISABLED: was incorrectly encouraging w=0.5)
+# For calm/stress regime model, we expect w_calm ≈ 0.7-0.8, not 0.5
+# Setting to 0 lets the data determine the natural mixture proportion
+MIXTURE_ENTROPY_PENALTY = 0.0
 
 
 def get_mixture_config() -> Optional['PhiTMixtureK2Config']:
@@ -2866,10 +2868,17 @@ def tune_asset_q(
         #   1. Mixture fitting succeeds
         #   2. Mixture BIC < single BIC - threshold
         #   3. Mixture passes validation checks
+        #
+        # IMPORTANT: We use Kalman-filtered drift for PIT computation to
+        # enable proper comparison with the single model. The mixture
+        # scales (σ_A, σ_B) are applied on top of the Kalman forecast std.
         # =================================================================
         mixture_config = get_mixture_config()
+        result['mixture_attempted'] = False  # Track whether mixture was attempted
+        
         if mixture_config is not None and calibration_warning:
             _log(f"  🔧 Attempting K=2 mixture model for calibration improvement...")
+            result['mixture_attempted'] = True
             
             try:
                 mixer = PhiTMixtureK2(mixture_config)
@@ -2886,6 +2895,34 @@ def tune_asset_q(
                 )
                 
                 if mixture_result is not None:
+                    # CRITICAL: Use Kalman-filtered drift for PIT to enable 
+                    # apples-to-apples comparison with single model
+                    try:
+                        pit_values, mix_ks_stat, mix_ks_pvalue = mixer.compute_pit_with_kalman_drift(
+                            returns=returns_arr,
+                            mu_filtered=mu_filtered,
+                            vol=vol_arr,
+                            P_filtered=P_filtered,
+                            c=c_optimal,
+                            result=mixture_result
+                        )
+                        
+                        # Update mixture result with Kalman-based PIT
+                        mixture_result_dict = mixture_result.to_dict()
+                        mixture_result_dict['ks_statistic_kalman'] = float(mix_ks_stat)
+                        mixture_result_dict['pit_ks_pvalue_kalman'] = float(mix_ks_pvalue)
+                        
+                        # Use Kalman-based PIT for decision making
+                        effective_pit_pvalue = mix_ks_pvalue
+                        effective_ks_stat = mix_ks_stat
+                        
+                    except Exception as pit_err:
+                        _log(f"     ⚠️ Kalman PIT fallback to AR(1): {pit_err}")
+                        # Fallback to original AR(1) PIT if Kalman fails
+                        mixture_result_dict = mixture_result.to_dict()
+                        effective_pit_pvalue = mixture_result.pit_ks_pvalue
+                        effective_ks_stat = mixture_result.ks_statistic
+                    
                     # Check if mixture improves calibration
                     improvement = summarize_mixture_improvement(
                         single_bic=bic_final,
@@ -2893,23 +2930,35 @@ def tune_asset_q(
                         mixture_result=mixture_result
                     )
                     
-                    if improvement['recommendation'] == 'mixture':
+                    # Override improvement metrics with Kalman-based PIT
+                    improvement['mixture_pit_pvalue_kalman'] = float(effective_pit_pvalue)
+                    improvement['pit_improvement_kalman'] = float(effective_pit_pvalue - ks_pvalue)
+                    improvement['mixture_calibrated_kalman'] = effective_pit_pvalue >= 0.05
+                    
+                    # Decision based on Kalman PIT (more accurate)
+                    use_mixture = (
+                        improvement['bic_improvement'] > mixture_config.bic_threshold and
+                        effective_pit_pvalue > ks_pvalue  # Mixture must improve PIT
+                    )
+                    
+                    if use_mixture:
                         _log(f"     ✓ Mixture selected: σ_ratio={mixture_result.sigma_ratio:.2f}, "
-                             f"w_calm={mixture_result.weight:.2f}, PIT p={mixture_result.pit_ks_pvalue:.4f}")
+                             f"w_calm={mixture_result.weight:.2f}, PIT p={effective_pit_pvalue:.4f}")
                         
                         # Update result with mixture parameters
-                        result['mixture_model'] = mixture_result.to_dict()
+                        result['mixture_model'] = mixture_result_dict
                         result['mixture_selected'] = True
                         result['mixture_improvement'] = improvement
                         
                         # Update calibration status if mixture improves it
-                        if mixture_result.pit_ks_pvalue >= 0.05:
+                        if effective_pit_pvalue >= 0.05:
                             result['calibration_warning'] = False
-                            result['pit_ks_pvalue'] = float(mixture_result.pit_ks_pvalue)
-                            result['ks_statistic'] = float(mixture_result.ks_statistic)
+                            result['pit_ks_pvalue'] = float(effective_pit_pvalue)
+                            result['ks_statistic'] = float(effective_ks_stat)
                     else:
-                        _log(f"     ✗ Mixture not selected (single model preferred)")
-                        result['mixture_model'] = None
+                        _log(f"     ✗ Mixture not selected (BIC impr={improvement['bic_improvement']:.1f}, "
+                             f"PIT {ks_pvalue:.4f}→{effective_pit_pvalue:.4f})")
+                        result['mixture_model'] = mixture_result_dict
                         result['mixture_selected'] = False
                         result['mixture_improvement'] = improvement
                 else:

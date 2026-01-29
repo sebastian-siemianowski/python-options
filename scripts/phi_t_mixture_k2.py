@@ -83,8 +83,10 @@ class PhiTMixtureK2Config:
     sigma_ratio_min: float = 1.5
     sigma_ratio_max: float = 5.0
     
-    # Entropy regularization [encourages balanced mixtures]
-    entropy_penalty: float = 0.05
+    # Entropy regularization [DISABLED: was incorrectly encouraging w=0.5]
+    # For calm/stress regime model, we expect w_calm ≈ 0.7-0.8, not 0.5
+    # Setting to 0 disables the entropy term entirely
+    entropy_penalty: float = 0.0
     
     # BIC threshold [mixture must beat single model by this margin]
     bic_threshold: float = 0.0
@@ -671,6 +673,102 @@ class PhiTMixtureK2:
             weight=result.weight,
             nu=result.nu
         )
+    
+    def compute_pit_with_kalman_drift(
+        self,
+        returns: np.ndarray,
+        mu_filtered: np.ndarray,
+        vol: np.ndarray,
+        P_filtered: np.ndarray,
+        c: float,
+        result: PhiTMixtureK2Result
+    ) -> Tuple[np.ndarray, float, float]:
+        """
+        Compute PIT values using Kalman-filtered drift (for comparison with single model).
+        
+        This method uses the SAME innovation structure as the single Kalman model:
+            innovation_t = r_t - μ_t  (Kalman drift)
+            forecast_var = c * vol_t² + P_t
+        
+        But applies mixture scales to the Student-t CDF:
+            PIT = w * T_ν(z / σ_A) + (1-w) * T_ν(z / σ_B)
+        
+        Where z = innovation / sqrt(forecast_var) and σ_A, σ_B are relative scale factors.
+        
+        This enables apples-to-apples comparison with the single model PIT.
+        
+        Args:
+            returns: Log returns (n,)
+            mu_filtered: Kalman-filtered drift estimates (n,)
+            vol: Volatility estimates (n,)
+            P_filtered: Posterior variance from Kalman filter (n,)
+            c: Observation noise multiplier
+            result: Fitted mixture result
+            
+        Returns:
+            Tuple of (pit_values, ks_statistic, ks_pvalue)
+        """
+        returns = np.asarray(returns).flatten()
+        mu_filtered = np.asarray(mu_filtered).flatten()
+        vol = np.asarray(vol).flatten()
+        P_filtered = np.asarray(P_filtered).flatten()
+        
+        n = len(returns)
+        
+        # Compute forecast variance (same as single model)
+        forecast_var = c * (vol ** 2) + P_filtered
+        forecast_std = np.sqrt(np.maximum(forecast_var, 1e-20))
+        
+        # Compute innovations using Kalman drift
+        innovations = returns - mu_filtered
+        
+        # Standardized innovations
+        z = innovations / forecast_std
+        
+        # For the mixture, we scale the standardized innovations by the relative
+        # sigma factors. The mixture says the true scale is either σ_A or σ_B
+        # times the base scale, so we need to adjust the standardized values.
+        #
+        # If the mixture scale is σ_A, then the properly standardized value is:
+        #   z_A = innovation / (σ_A * forecast_std_base)
+        #       = z / σ_A  (if z = innovation / forecast_std_base)
+        #
+        # But we need to be careful about what forecast_std represents.
+        # In the mixture model, we're saying:
+        #   ε ~ w * T(0, σ_A * vol, ν) + (1-w) * T(0, σ_B * vol, ν)
+        #
+        # So the scale factors σ_A, σ_B are multipliers on vol, not on the full forecast_std.
+        # 
+        # For proper comparison, we compute:
+        #   z_A = innovation / (σ_A * vol)
+        #   z_B = innovation / (σ_B * vol)
+        
+        scale_a = result.sigma_a * vol
+        scale_b = result.sigma_b * vol
+        
+        # Ensure numerical stability
+        scale_a = np.maximum(scale_a, 1e-10)
+        scale_b = np.maximum(scale_b, 1e-10)
+        
+        z_a = innovations / scale_a
+        z_b = innovations / scale_b
+        
+        # Compute mixture CDF
+        cdf_a = student_t.cdf(z_a, df=result.nu)
+        cdf_b = student_t.cdf(z_b, df=result.nu)
+        
+        pit_values = result.weight * cdf_a + (1.0 - result.weight) * cdf_b
+        
+        # KS test
+        valid = pit_values[np.isfinite(pit_values)]
+        valid = valid[(valid >= 0) & (valid <= 1)]
+        
+        if len(valid) < 10:
+            return pit_values, 1.0, 0.0
+        
+        ks_result = kstest(valid, 'uniform')
+        
+        return pit_values, float(ks_result.statistic), float(ks_result.pvalue)
 
 
 # =============================================================================

@@ -2265,6 +2265,7 @@ def render_calibration_report(
         
         # Check for mixture model usage
         mixture_selected = data.get('mixture_selected', False)
+        mixture_attempted = data.get('mixture_attempted', mixture_selected)  # Fallback to mixture_selected for backward compat
         mixture_model = data.get('mixture_model')
         
         # Check for ν refinement
@@ -2284,9 +2285,11 @@ def render_calibration_report(
         
         if calibration_warning or (pit_p is not None and pit_p < 0.05):
             has_issue = True
-            # Note if mixture was attempted but didn't help
-            if mixture_selected:
-                issue_type.append('PIT < 0.05 (mix)')
+            # Note if mixture was attempted (whether selected or not)
+            if mixture_attempted and mixture_selected:
+                issue_type.append('PIT < 0.05 (mix-sel)')
+            elif mixture_attempted:
+                issue_type.append('PIT < 0.05 (mix-tried)')
             elif nu_refinement_attempted and nu_refinement_improved:
                 issue_type.append('PIT < 0.05 (ν-ref)')
             elif nu_refinement_attempted:
@@ -2335,6 +2338,7 @@ def render_calibration_report(
                 'nu': nu_val,
                 'details': '',
                 'mixture_selected': mixture_selected,
+                'mixture_attempted': mixture_attempted,
                 'nu_refinement_attempted': nu_refinement_attempted,
                 'nu_refinement_improved': nu_refinement_improved,
             })
@@ -2379,7 +2383,7 @@ def render_calibration_report(
                 'phi': issue['phi'],
                 'nu': issue['nu'],
                 'details': issue['details'],
-                'mixture_attempted': issue.get('mixture_selected', False),
+                'mixture_attempted': issue.get('mixture_attempted', issue.get('mixture_selected', False)),
                 'nu_refinement_attempted': issue.get('nu_refinement_attempted', False),
                 'nu_refinement_improved': issue.get('nu_refinement_improved', False),
             }
