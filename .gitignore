@@ -26,6 +26,7 @@ fx_signals.json
 backtest_report.csv
 screener_results.csv
 screener_results_backtest.csv
+top100_screener_results.csv
 
 # Generated plots and visualizations
 plots/*.png
@@ -39,6 +40,7 @@ data/meta/
 scripts/quant/cache/prices/
 scripts/quant/cache/top100/
 scripts/quant/cache/failed/
+scripts/quant/cache/calibration/
 
 # Distribution / packaging
 .Python

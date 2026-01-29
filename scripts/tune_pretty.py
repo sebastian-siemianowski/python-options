@@ -354,15 +354,15 @@ Examples:
         render_parameter_table(cache, console=console)
 
     # Render comprehensive end-of-run summary with all collected data
-    if processed_assets or failure_reasons:
-        render_end_of_run_summary(
-            processed_assets=processed_assets,
-            regime_distributions=regime_distributions,
-            model_comparisons=model_comparisons,
-            failure_reasons=failure_reasons,
-            processing_log=processing_log,
-            console=console,
-        )
+    render_end_of_run_summary(
+        processed_assets=processed_assets,
+        regime_distributions=regime_distributions,
+        model_comparisons=model_comparisons,
+        failure_reasons=failure_reasons,
+        processing_log=processing_log,
+        console=console,
+        cache=cache,
+    )
 
 
 if __name__ == '__main__':
