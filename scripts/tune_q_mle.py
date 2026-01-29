@@ -239,6 +239,22 @@ try:
 except ImportError:
     GH_MODEL_AVAILABLE = False
 
+# Import Time-Varying Volatility Multiplier (TVVM) for calibration improvement
+# TVVM addresses volatility-of-volatility effect with dynamic c_t
+try:
+    from tvvm_model import (
+        TVVMModel,
+        TVVMConfig,
+        TVVMResult,
+        compute_vol_of_vol,
+        compute_dynamic_c,
+        should_attempt_tvvm,
+        should_select_tvvm,
+    )
+    TVVM_AVAILABLE = True
+except ImportError:
+    TVVM_AVAILABLE = False
+
 # Import presentation layer for world-class UX output
 from fx_signals_presentation import (
     create_tuning_console,
@@ -503,6 +519,59 @@ def get_gh_config() -> Optional['GHModelConfig']:
         pit_threshold=GH_PIT_THRESHOLD,
         bic_threshold=GH_BIC_THRESHOLD,
         pit_improvement_factor=GH_PIT_IMPROVEMENT_FACTOR,
+    )
+
+
+# =============================================================================
+# TIME-VARYING VOLATILITY MULTIPLIER (TVVM) CONFIGURATION
+# =============================================================================
+# TVVM addresses the volatility-of-volatility effect by making c time-varying.
+#
+# Standard model: r_t = μ_t + √(c·σ_t²)·ε_t  (static c)
+# TVVM model:     r_t = μ_t + √(c_t·σ_t²)·ε_t  (dynamic c_t)
+#
+# where: c_t = c_base * (1 + γ * |Δσ_t/σ_t|)
+#
+# ESCALATION ORDER (TVVM is after GH):
+#   1. φ-Gaussian / φ-Student-t (baseline)
+#   2. Adaptive ν refinement
+#   3. K=2 mixture
+#   4. GH distribution (skewness)
+#   5. TVVM (volatility-of-volatility)
+# =============================================================================
+
+# Feature toggle
+TVVM_ENABLED = True
+
+# PIT threshold to attempt TVVM
+TVVM_PIT_THRESHOLD = 0.05
+
+# Volatility-of-volatility threshold
+TVVM_VOL_OF_VOL_THRESHOLD = 0.1
+
+# PIT improvement factor
+TVVM_PIT_IMPROVEMENT_FACTOR = 1.5
+
+# Gamma grid for optimization
+TVVM_GAMMA_GRID = (0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5)
+
+
+def get_tvvm_config() -> Optional['TVVMConfig']:
+    """
+    Get TVVM model configuration based on global settings.
+    
+    Returns:
+        TVVMConfig if TVVM is available and enabled, None otherwise.
+    """
+    if not TVVM_AVAILABLE or not TVVM_ENABLED:
+        return None
+    
+    return TVVMConfig(
+        enabled=TVVM_ENABLED,
+        pit_threshold=TVVM_PIT_THRESHOLD,
+        vol_of_vol_threshold=TVVM_VOL_OF_VOL_THRESHOLD,
+        pit_improvement_factor=TVVM_PIT_IMPROVEMENT_FACTOR,
+        gamma_grid=TVVM_GAMMA_GRID,
     )
 
 
@@ -3173,6 +3242,89 @@ def tune_asset_q(
                     _log(f"     ✗ GH error: {gh_err}")
                     result['gh_model'] = None
                     result['gh_selected'] = False
+
+        # =================================================================
+        # TIME-VARYING VOLATILITY MULTIPLIER (TVVM) FALLBACK
+        # =================================================================
+        # TVVM is attempted as LAST RESORT when:
+        #   1. Calibration still fails (PIT p < 0.05)
+        #   2. Other escalation methods have been tried
+        #   3. Asset shows volatility regime switching (vol-of-vol > threshold)
+        #
+        # TVVM addresses volatility-of-volatility effect by making c dynamic:
+        #   c_t = c_base * (1 + γ * |Δσ_t/σ_t|)
+        # =================================================================
+        tvvm_config = get_tvvm_config()
+        result['tvvm_attempted'] = False
+        result['tvvm_selected'] = False
+        result['tvvm_model'] = None
+        
+        # Check if we should attempt TVVM
+        current_pit_pvalue = result.get('pit_ks_pvalue', ks_pvalue)
+        current_calibration_warning = result.get('calibration_warning', calibration_warning)
+        
+        if tvvm_config is not None and current_calibration_warning:
+            # Check if TVVM should be attempted
+            attempt_tvvm = should_attempt_tvvm(
+                pit_ks_pvalue=current_pit_pvalue,
+                vol=vol_arr,
+                config=tvvm_config
+            )
+            
+            if attempt_tvvm:
+                _log(f"  🔧 Attempting Time-Varying Volatility Multiplier (TVVM)...")
+                result['tvvm_attempted'] = True
+                
+                try:
+                    # Fit TVVM model
+                    tvvm_model = TVVMModel(tvvm_config)
+                    tvvm_result = tvvm_model.fit(
+                        returns=returns_arr,
+                        vol=vol_arr,
+                        mu_filtered=mu_filtered,
+                        P_filtered=P_filtered,
+                        c_static=c_optimal,
+                        nu=nu_optimal,
+                        static_pit_pvalue=current_pit_pvalue,
+                        static_bic=bic_final
+                    )
+                    
+                    if tvvm_result is not None:
+                        _log(f"     TVVM fit: γ={tvvm_result.gamma:.2f}, "
+                             f"c_mean={tvvm_result.c_mean:.3f}, c_max={tvvm_result.c_max:.3f}")
+                        _log(f"     TVVM PIT p={tvvm_result.pit_ks_pvalue:.4f}, "
+                             f"vol_of_vol={tvvm_result.vol_of_vol:.3f}")
+                        
+                        # Check if TVVM should be selected
+                        use_tvvm = should_select_tvvm(
+                            tvvm_result=tvvm_result,
+                            static_pit_pvalue=current_pit_pvalue,
+                            config=tvvm_config
+                        )
+                        
+                        if use_tvvm:
+                            _log(f"     ✓ TVVM selected: PIT improved {current_pit_pvalue:.4f}→{tvvm_result.pit_ks_pvalue:.4f}")
+                            
+                            result['tvvm_model'] = tvvm_result.to_dict()
+                            result['tvvm_selected'] = True
+                            result['tvvm_gamma'] = float(tvvm_result.gamma)
+                            
+                            # Update calibration status
+                            if tvvm_result.is_calibrated:
+                                result['calibration_warning'] = False
+                                result['pit_ks_pvalue'] = float(tvvm_result.pit_ks_pvalue)
+                                result['ks_statistic'] = float(tvvm_result.ks_statistic)
+                        else:
+                            _log(f"     ✗ TVVM not selected (PIT {current_pit_pvalue:.4f}→{tvvm_result.pit_ks_pvalue:.4f})")
+                            result['tvvm_model'] = tvvm_result.to_dict()
+                            result['tvvm_selected'] = False
+                    else:
+                        _log(f"     ✗ TVVM fitting failed")
+                        
+                except Exception as tvvm_err:
+                    _log(f"     ✗ TVVM error: {tvvm_err}")
+                    result['tvvm_model'] = None
+                    result['tvvm_selected'] = False
 
         return result
         

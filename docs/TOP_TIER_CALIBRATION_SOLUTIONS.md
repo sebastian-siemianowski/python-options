@@ -96,6 +96,8 @@ def gh_log_likelihood(params, returns, vol):
 
 **Score**: 9.2/10
 
+**Status**: ✅ IMPLEMENTED (Jan 29, 2026) - See `scripts/gh_distribution.py`
+
 ---
 
 ### Solution 2: Time-Varying Volatility Multiplier (TVVM)
@@ -130,6 +132,8 @@ def compute_dynamic_c(vol_series, c_base, gamma=0.5):
 **Complexity**: Low (1 additional parameter γ)
 
 **Score**: 8.8/10
+
+**Status**: ✅ IMPLEMENTED (Jan 29, 2026) - See `scripts/tvvm_model.py`
 
 ---
 

@@ -610,7 +610,9 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
         noise_model = global_data.get('noise_model', '')
         nu_ref = global_data.get('nu_refinement', {})
         
-        if global_data.get('gh_selected'):
+        if global_data.get('tvvm_selected'):
+            tvvm_count += 1
+        elif global_data.get('gh_selected'):
             gh_count += 1
         elif global_data.get('mixture_selected'):
             mixture_count += 1
@@ -638,6 +640,11 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             gh_attempts += 1
             if global_data.get('gh_selected'):
                 gh_successes += 1
+        
+        if global_data.get('tvvm_attempted'):
+            tvvm_attempts += 1
+            if global_data.get('tvvm_selected'):
+                tvvm_successes += 1
     
     return {
         'total': total,
@@ -651,6 +658,7 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             'φ-Student-t (ν-refined)': student_t_refined_count,
             'K=2 Scale Mixture': mixture_count,
             'Generalized Hyperbolic': gh_count,
+            'Time-Varying Vol Multiplier': tvvm_count,
             'EVT Tail Splice': 0,
         },
         'model_counts': {
@@ -660,8 +668,9 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             'phi-t-refined': student_t_refined_count,
             'mixture': mixture_count,
             'gh': gh_count,
+            'tvvm': tvvm_count,
         },
-        'escalations_triggered': student_t_count + student_t_refined_count + mixture_count + gh_count,
+        'escalations_triggered': student_t_count + student_t_refined_count + mixture_count + gh_count + tvvm_count,
         'mixture_attempts': mixture_attempts,
         'mixture_successes': mixture_successes,
         'mixture_success_rate': mixture_successes / mixture_attempts * 100 if mixture_attempts > 0 else 0,
@@ -671,6 +680,9 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
         'gh_attempts': gh_attempts,
         'gh_successes': gh_successes,
         'gh_success_rate': gh_successes / gh_attempts * 100 if gh_attempts > 0 else 0,
+        'tvvm_attempts': tvvm_attempts,
+        'tvvm_successes': tvvm_successes,
+        'tvvm_success_rate': tvvm_successes / tvvm_attempts * 100 if tvvm_attempts > 0 else 0,
     }
 
 

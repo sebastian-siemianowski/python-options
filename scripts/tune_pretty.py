@@ -426,6 +426,8 @@ Examples:
     nu_refinement_improved_count = 0
     gh_attempted_count = 0
     gh_selected_count = 0
+    tvvm_attempted_count = 0
+    tvvm_selected_count = 0
     calibration_warnings = 0
     gaussian_count = 0
     student_t_count = 0
@@ -464,6 +466,12 @@ Examples:
             gh_attempted_count += 1
         if global_data.get('gh_selected'):
             gh_selected_count += 1
+        
+        # Count TVVM attempts and selections
+        if global_data.get('tvvm_attempted'):
+            tvvm_attempted_count += 1
+        if global_data.get('tvvm_selected'):
+            tvvm_selected_count += 1
 
     # Render beautiful summary
     render_tuning_summary(
@@ -487,6 +495,8 @@ Examples:
         nu_refinement_improved_count=nu_refinement_improved_count,
         gh_attempted_count=gh_attempted_count,
         gh_selected_count=gh_selected_count,
+        tvvm_attempted_count=tvvm_attempted_count,
+        tvvm_selected_count=tvvm_selected_count,
         console=console,
     )
 

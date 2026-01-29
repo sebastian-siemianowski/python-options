@@ -1747,6 +1747,7 @@ def render_pdde_escalation_summary(
             ("φ-Student-t (ν-refined)", "bright_cyan"),
             ("K=2 Scale Mixture", "bright_yellow"),
             ("Generalized Hyperbolic", "bright_magenta"),
+            ("Time-Varying Vol Multiplier", "bright_blue"),
             ("EVT Tail Splice", "magenta"),
         ]
         
@@ -1783,7 +1784,11 @@ def render_pdde_escalation_summary(
     gh_successes = escalation_summary.get('gh_successes', 0)
     gh_rate = escalation_summary.get('gh_success_rate', 0)
     
-    if mixture_attempts > 0 or nu_attempts > 0 or gh_attempts > 0:
+    tvvm_attempts = escalation_summary.get('tvvm_attempts', 0)
+    tvvm_successes = escalation_summary.get('tvvm_successes', 0)
+    tvvm_rate = escalation_summary.get('tvvm_success_rate', 0)
+    
+    if mixture_attempts > 0 or nu_attempts > 0 or gh_attempts > 0 or tvvm_attempts > 0:
         console.print(Text("    Escalation Effectiveness:", style="dim"))
         console.print()
         
@@ -1807,6 +1812,13 @@ def render_pdde_escalation_summary(
             gh_row.append(f"{gh_successes}/{gh_attempts}", style="bold white")
             gh_row.append(f" selected ({gh_rate:.0f}%)", style="dim")
             console.print(gh_row)
+        
+        if tvvm_attempts > 0:
+            tvvm_row = Text()
+            tvvm_row.append("      ⚡ TVVM:        ", style="bright_blue")
+            tvvm_row.append(f"{tvvm_successes}/{tvvm_attempts}", style="bold white")
+            tvvm_row.append(f" selected ({tvvm_rate:.0f}%)", style="dim")
+            console.print(tvvm_row)
         
         console.print()
 
@@ -1832,6 +1844,8 @@ def render_tuning_summary(
     nu_refinement_improved_count: int = 0,
     gh_attempted_count: int = 0,
     gh_selected_count: int = 0,
+    tvvm_attempted_count: int = 0,
+    tvvm_selected_count: int = 0,
     console: Console = None
 ) -> None:
     """Render extraordinary Apple-quality tuning summary.
@@ -2005,6 +2019,27 @@ def render_tuning_summary(
                 gh_row.append("Selected: 0", style="dim")
                 gh_row.append("  (skewness not significant)", style="dim")
             console.print(gh_row)
+        
+        # TVVM Fallback row (only if attempted)
+        if tvvm_attempted_count > 0:
+            console.print()
+            tvvm_section = Text()
+            tvvm_section.append("    ⚡ ", style="bright_blue")
+            tvvm_section.append("Time-Varying Vol Multiplier", style="bright_blue")
+            console.print(tvvm_section)
+            
+            tvvm_row = Text()
+            tvvm_row.append("      ", style="")
+            tvvm_row.append(f"Attempted: {tvvm_attempted_count}", style="dim")
+            tvvm_row.append("  →  ", style="dim")
+            if tvvm_selected_count > 0:
+                tvvm_row.append(f"Selected: {tvvm_selected_count}", style="bold bright_green")
+                success_rate = tvvm_selected_count / tvvm_attempted_count * 100
+                tvvm_row.append(f"  ({success_rate:.0f}% success)", style="dim")
+            else:
+                tvvm_row.append("Selected: 0", style="dim")
+                tvvm_row.append("  (vol-of-vol effect not significant)", style="dim")
+            console.print(tvvm_row)
         
         console.print()
         console.print()
