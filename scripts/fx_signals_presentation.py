@@ -1695,6 +1695,10 @@ def render_tuning_summary(
     collapse_warnings: int,
     cache_path: str,
     regime_model_breakdown: Optional[Dict[int, Dict[str, int]]] = None,
+    mixture_attempted_count: int = 0,
+    mixture_selected_count: int = 0,
+    nu_refinement_attempted_count: int = 0,
+    nu_refinement_improved_count: int = 0,
     console: Console = None
 ) -> None:
     """Render extraordinary Apple-quality tuning summary.
@@ -1806,6 +1810,48 @@ def render_tuning_summary(
         student_row.append(f"  ({student_pct:>4.1f}%)", style="dim")
         console.print(student_row)
         
+        # K=2 Mixture row (only if attempted)
+        if mixture_attempted_count > 0:
+            console.print()
+            mix_section = Text()
+            mix_section.append("    ◆ ", style="bright_yellow")
+            mix_section.append("K=2 Mixture Fallback", style="bright_yellow")
+            console.print(mix_section)
+            
+            mix_row = Text()
+            mix_row.append("      ", style="")
+            mix_row.append(f"Attempted: {mixture_attempted_count}", style="dim")
+            mix_row.append("  →  ", style="dim")
+            if mixture_selected_count > 0:
+                mix_row.append(f"Selected: {mixture_selected_count}", style="bold bright_green")
+                success_rate = mixture_selected_count / mixture_attempted_count * 100
+                mix_row.append(f"  ({success_rate:.0f}% success)", style="dim")
+            else:
+                mix_row.append("Selected: 0", style="dim")
+                mix_row.append("  (none improved calibration)", style="dim")
+            console.print(mix_row)
+        
+        # Adaptive ν Refinement row (only if attempted)
+        if nu_refinement_attempted_count > 0:
+            console.print()
+            nu_section = Text()
+            nu_section.append("    ◇ ", style="bright_cyan")
+            nu_section.append("Adaptive ν Refinement", style="bright_cyan")
+            console.print(nu_section)
+            
+            nu_row = Text()
+            nu_row.append("      ", style="")
+            nu_row.append(f"Attempted: {nu_refinement_attempted_count}", style="dim")
+            nu_row.append("  →  ", style="dim")
+            if nu_refinement_improved_count > 0:
+                nu_row.append(f"Improved: {nu_refinement_improved_count}", style="bold bright_green")
+                success_rate = nu_refinement_improved_count / nu_refinement_attempted_count * 100
+                nu_row.append(f"  ({success_rate:.0f}% success)", style="dim")
+            else:
+                nu_row.append("Improved: 0", style="dim")
+                nu_row.append("  (no improvement found)", style="dim")
+            console.print(nu_row)
+        
         console.print()
         console.print()
     
@@ -1841,6 +1887,8 @@ def render_tuning_summary(
             return (0, 0)
         elif m == "φ-Gaussian":
             return (1, 0)
+        elif m.startswith("K2-Mix"):
+            return (3, 0)  # Mixture models come after Student-t
         else:
             import re
             nu_match = re.search(r'ν=(\d+)', m)
@@ -1868,6 +1916,8 @@ def render_tuning_summary(
             table.add_column("G", justify="right", width=4, style="green")
         elif model == "φ-Gaussian":
             table.add_column("φ-G", justify="right", width=4, style="cyan")
+        elif model.startswith("K2-Mix"):
+            table.add_column("K2", justify="right", width=4, style="bright_yellow")
         else:
             import re
             nu_match = re.search(r'ν=(\d+)', model)

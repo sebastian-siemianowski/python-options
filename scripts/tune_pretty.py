@@ -201,6 +201,19 @@ Examples:
                         if global_result.get('calibration_warning'):
                             calibration_warnings += 1
                         
+                        # Track K=2 mixture model attempts and selections
+                        if global_result.get('mixture_attempted'):
+                            mixture_attempted_count += 1
+                        if global_result.get('mixture_selected'):
+                            mixture_selected_count += 1
+                        
+                        # Track adaptive ν refinement attempts and improvements
+                        nu_refinement = global_result.get('nu_refinement', {})
+                        if nu_refinement.get('refinement_attempted'):
+                            nu_refinement_attempted_count += 1
+                        if nu_refinement.get('improvement_achieved'):
+                            nu_refinement_improved_count += 1
+                        
                         # Collect regime distribution
                         if result.get('regime_counts'):
                             regime_distributions[asset_name] = result['regime_counts']
@@ -228,10 +241,16 @@ Examples:
                         nu_val = global_result.get('nu')
                         bic_val = global_result.get('bic', float('nan'))
                         model_type = global_result.get('noise_model', 'gaussian')
+                        nu_was_refined = nu_refinement.get('improvement_achieved', False)
                         
                         # Build comprehensive details string for UX display
                         # Format: model|q|c|phi|nu|bic
-                        if model_type.startswith('phi_student_t_nu_') and nu_val is not None:
+                        if global_result.get('mixture_selected'):
+                            mixture_model = global_result.get('mixture_model', {})
+                            sigma_ratio = mixture_model.get('sigma_ratio', 0)
+                            weight = mixture_model.get('weight', 0)
+                            model_str = f"K2-Mix(σ={sigma_ratio:.1f})"
+                        elif model_type.startswith('phi_student_t_nu_') and nu_val is not None:
                             model_str = "Student-t"
                         elif phi_val is not None:
                             model_str = "φ-Gaussian"
@@ -243,7 +262,8 @@ Examples:
                         if phi_val is not None:
                             details += f"|φ={phi_val:+.2f}"
                         if nu_val is not None:
-                            details += f"|ν={int(nu_val)}"
+                            nu_indicator = f"ν={int(nu_val)}" + ("*" if nu_was_refined else "")
+                            details += f"|{nu_indicator}"
                         if math.isfinite(bic_val):
                             details += f"|bic={bic_val:.0f}"
                         
@@ -300,9 +320,14 @@ Examples:
         noise_model = global_data.get('noise_model', 'gaussian')
         nu_val = global_data.get('nu')
         phi_val = global_data.get('phi')
+        mixture_selected = global_data.get('mixture_selected', False)
+        mixture_model = global_data.get('mixture_model', {})
         
-        # Determine model category
-        if noise_model.startswith('phi_student_t_nu_') and nu_val is not None:
+        # Determine model category - check mixture first
+        if mixture_selected and mixture_model:
+            sigma_ratio = mixture_model.get('sigma_ratio', 0)
+            model_key = f"K2-Mix(σ={sigma_ratio:.1f})"
+        elif noise_model.startswith('phi_student_t_nu_') and nu_val is not None:
             model_key = f"φ-t(ν={int(nu_val)})"
         elif noise_model == 'kalman_phi_gaussian' or phi_val is not None:
             model_key = "φ-Gaussian"
