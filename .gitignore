@@ -41,6 +41,7 @@ scripts/quant/cache/prices/
 scripts/quant/cache/top100/
 scripts/quant/cache/failed/
 scripts/quant/cache/calibration/
+scripts/quant/cache/kalman_q_cache.json
 
 # Distribution / packaging
 .Python

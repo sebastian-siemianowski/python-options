@@ -255,6 +255,26 @@ try:
 except ImportError:
     TVVM_AVAILABLE = False
 
+# Import Isotonic Recalibration — Probability Transport Operator
+# This is the CORE calibration layer - applied to ALL models BEFORE diagnostics
+# Calibration is NOT a validator/patch/escalation trigger
+# Calibration IS a learned probability transport map g: [0,1] → [0,1]
+try:
+    from isotonic_recalibration import (
+        IsotonicRecalibrationConfig,
+        TransportMapResult,
+        IsotonicRecalibrator,
+        fit_recalibrator_for_asset,
+        apply_recalibration,
+        compute_calibration_diagnostics,
+        classify_calibration_failure,
+        compute_raw_pit_gaussian,
+        compute_raw_pit_student_t,
+    )
+    ISOTONIC_RECALIBRATION_AVAILABLE = True
+except ImportError:
+    ISOTONIC_RECALIBRATION_AVAILABLE = False
+
 # Import presentation layer for world-class UX output
 from fx_signals_presentation import (
     create_tuning_console,
@@ -572,6 +592,69 @@ def get_tvvm_config() -> Optional['TVVMConfig']:
         vol_of_vol_threshold=TVVM_VOL_OF_VOL_THRESHOLD,
         pit_improvement_factor=TVVM_PIT_IMPROVEMENT_FACTOR,
         gamma_grid=TVVM_GAMMA_GRID,
+    )
+
+
+# =============================================================================
+# ISOTONIC RECALIBRATION CONFIGURATION
+# =============================================================================
+# Isotonic recalibration is a FIRST-CLASS PROBABILISTIC TRANSPORT OPERATOR.
+# It is NOT a patch, validator, or escalation trigger.
+#
+# CORE DOCTRINE:
+#   "Inference generates beliefs. Regimes provide context.
+#    Calibration aligns beliefs with reality. Trust is updated continuously."
+#
+# ARCHITECTURE:
+#   Model Inference → Raw PIT → Transport Map g → Calibrated PIT
+#                                    ↓
+#               Regime-Conditioned Diagnostics → Weight Updates
+#
+# KEY RULE: Raw PIT is NEVER used by regimes, diagnostics, or escalation.
+#           Regimes see CALIBRATED probability, not raw belief.
+#
+# The transport map g: [0,1] → [0,1] is:
+#   - Monotone (preserves probability ranking)
+#   - Learned from data (via isotonic regression)
+#   - Persisted with model parameters
+#   - Applied BEFORE any downstream processing
+# =============================================================================
+
+# Feature toggle
+ISOTONIC_RECALIBRATION_ENABLED = True
+
+# Minimum observations for fitting
+ISOTONIC_MIN_OBSERVATIONS = 50
+
+# Validation split for out-of-sample check
+ISOTONIC_VALIDATION_SPLIT = 0.2
+
+# PIT bounds (numerical stability)
+ISOTONIC_PIT_MIN = 0.001
+ISOTONIC_PIT_MAX = 0.999
+
+
+def get_recalibration_config():
+    """
+    Get isotonic recalibration configuration based on global settings.
+    
+    Returns:
+        IsotonicRecalibrationConfig if available and enabled, None otherwise.
+    """
+    # Check if isotonic recalibration module is available
+    try:
+        if not ISOTONIC_RECALIBRATION_AVAILABLE or not ISOTONIC_RECALIBRATION_ENABLED:
+            return None
+    except NameError:
+        # Variable not defined, module not available
+        return None
+    
+    return IsotonicRecalibrationConfig(
+        enabled=ISOTONIC_RECALIBRATION_ENABLED,
+        min_observations=ISOTONIC_MIN_OBSERVATIONS,
+        validation_split=ISOTONIC_VALIDATION_SPLIT,
+        pit_min=ISOTONIC_PIT_MIN,
+        pit_max=ISOTONIC_PIT_MAX,
     )
 
 
@@ -3325,6 +3408,93 @@ def tune_asset_q(
                     _log(f"     ✗ TVVM error: {tvvm_err}")
                     result['tvvm_model'] = None
                     result['tvvm_selected'] = False
+
+        # =================================================================
+        # ISOTONIC RECALIBRATION — PROBABILITY TRANSPORT OPERATOR
+        # =================================================================
+        # This is the CORE calibration layer. Applied to ALL models, ALWAYS.
+        # 
+        # DOCTRINE:
+        #   - Calibration is NOT a validator/patch/escalation trigger
+        #   - Calibration IS a learned probability transport map
+        #   - Applied BEFORE regimes see PIT values
+        #   - Persisted with model parameters
+        #
+        # ARCHITECTURE:
+        #   Model → Raw PIT → Transport Map g → Calibrated PIT
+        #                            ↓
+        #           Regime-Conditioned Diagnostics
+        #
+        # KEY RULE: Regimes see CALIBRATED probability, not raw belief.
+        # =================================================================
+        recal_config = get_recalibration_config()
+        result['recalibration'] = None
+        result['recalibration_applied'] = False
+        
+        if recal_config is not None:
+            _log(f"  📐 Fitting isotonic recalibration transport map...")
+            
+            try:
+                # Fit transport map on raw PIT values
+                recal_result = fit_recalibrator_for_asset(
+                    returns=returns_arr,
+                    mu_filtered=mu_filtered,
+                    vol=vol_arr,
+                    P_filtered=P_filtered,
+                    c=c_optimal,
+                    nu=nu_optimal,
+                    config=recal_config
+                )
+                
+                # Store result for persistence
+                result['recalibration'] = recal_result.to_dict()
+                result['recalibration_applied'] = True
+                
+                # Log outcome
+                if recal_result.is_identity:
+                    _log(f"     Already calibrated (identity map), raw KS p={recal_result.raw_ks_pvalue:.4f}")
+                elif recal_result.fallback_to_identity:
+                    _log(f"     ⚠️ Fallback to identity: {recal_result.warning_message}")
+                else:
+                    ks_improve = recal_result.ks_improvement
+                    _log(f"     ✓ Transport map fitted: {recal_result.n_segments} segments")
+                    _log(f"     KS: {recal_result.raw_ks_statistic:.4f}→{recal_result.calibrated_ks_statistic:.4f} "
+                         f"(Δ={ks_improve:+.4f})")
+                    _log(f"     p-value: {recal_result.raw_ks_pvalue:.4f}→{recal_result.calibrated_ks_pvalue:.4f}")
+                    
+                    if recal_result.validation_ks_pvalue is not None:
+                        _log(f"     Validation KS p={recal_result.validation_ks_pvalue:.4f}")
+                    
+                    # Update calibration status based on CALIBRATED PIT
+                    if recal_result.calibrated_ks_pvalue >= 0.05:
+                        result['calibration_warning'] = False
+                        result['pit_ks_pvalue_calibrated'] = float(recal_result.calibrated_ks_pvalue)
+                        result['ks_statistic_calibrated'] = float(recal_result.calibrated_ks_statistic)
+                
+                # Compute enhanced diagnostics on CALIBRATED PIT
+                if not recal_result.is_identity and not recal_result.fallback_to_identity:
+                    # Compute raw PIT
+                    if nu_optimal is not None and nu_optimal > 2:
+                        raw_pit = compute_raw_pit_student_t(returns_arr, mu_filtered, vol_arr, P_filtered, c_optimal, nu_optimal)
+                    else:
+                        raw_pit = compute_raw_pit_gaussian(returns_arr, mu_filtered, vol_arr, P_filtered, c_optimal)
+                    
+                    # Apply transport map
+                    calibrated_pit = apply_recalibration(raw_pit, recal_result)
+                    
+                    # Compute diagnostics on CALIBRATED PIT
+                    diagnostics = compute_calibration_diagnostics(
+                        pit_values=calibrated_pit,
+                        returns=returns_arr,
+                        vol_proxy=vol_arr
+                    )
+                    result['calibration_diagnostics'] = diagnostics
+                    result['failure_category'] = diagnostics.get('failure_category', 'UNKNOWN')
+                
+            except Exception as recal_err:
+                _log(f"     ✗ Recalibration error: {recal_err}")
+                result['recalibration'] = None
+                result['recalibration_applied'] = False
 
         return result
         

@@ -223,6 +223,20 @@ try:
 except ImportError:
     HMM_AVAILABLE = False
 
+# Isotonic Recalibration — Probability Transport Operator
+# This is the CORE calibration layer for aligning model beliefs with reality
+try:
+    from isotonic_recalibration import (
+        TransportMapResult,
+        IsotonicRecalibrator,
+        apply_recalibration,
+        compute_raw_pit_gaussian,
+        compute_raw_pit_student_t,
+    )
+    ISOTONIC_RECALIBRATION_AVAILABLE = True
+except ImportError:
+    ISOTONIC_RECALIBRATION_AVAILABLE = False
+
 # Context manager to suppress noisy HMM convergence messages
 import contextlib
 import io
@@ -306,6 +320,77 @@ class StudentTDriftModel:
         log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
         log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
         return float(log_norm + log_kernel)
+
+
+# =============================================================================
+# ISOTONIC RECALIBRATION HELPER
+# =============================================================================
+# This function loads a persisted transport map and applies it to PIT values.
+# The transport map is learned during tuning and stored in the cache.
+#
+# DOCTRINE:
+#   - Calibration is a FIRST-CLASS PROBABILISTIC TRANSPORT OPERATOR
+#   - Applied BEFORE regimes see PIT values
+#   - Regimes see CALIBRATED probability, not raw belief
+#   - This is NOT a patch/validator/escalation trigger
+# =============================================================================
+
+def load_and_apply_recalibration(
+    tuned_params: Optional[Dict],
+    raw_pit: np.ndarray,
+) -> Tuple[np.ndarray, bool, Optional[Dict]]:
+    """
+    Load recalibration transport map from tuned params and apply to raw PIT.
+    
+    Args:
+        tuned_params: Full tuned params dict containing recalibration info
+        raw_pit: Array of raw PIT values from model
+        
+    Returns:
+        Tuple of:
+        - calibrated_pit: Array of calibrated PIT values
+        - was_recalibrated: True if recalibration was applied
+        - recal_meta: Metadata about recalibration (or None)
+    """
+    if not ISOTONIC_RECALIBRATION_AVAILABLE:
+        return raw_pit, False, None
+    
+    if tuned_params is None:
+        return raw_pit, False, None
+    
+    recal_data = tuned_params.get('recalibration')
+    if recal_data is None or not tuned_params.get('recalibration_applied', False):
+        return raw_pit, False, None
+    
+    try:
+        # Load transport map from persisted data
+        transport_map = TransportMapResult.from_dict(recal_data)
+        
+        # Check if it's an identity map (no change needed)
+        if transport_map.is_identity or transport_map.fallback_to_identity:
+            return raw_pit, False, {
+                'is_identity': True,
+                'reason': 'identity_map' if transport_map.is_identity else 'fallback',
+            }
+        
+        # Apply recalibration
+        calibrated_pit = apply_recalibration(raw_pit, transport_map)
+        
+        recal_meta = {
+            'applied': True,
+            'n_segments': transport_map.n_segments,
+            'ks_improvement': transport_map.ks_improvement,
+            'raw_ks_pvalue': transport_map.raw_ks_pvalue,
+            'calibrated_ks_pvalue': transport_map.calibrated_ks_pvalue,
+        }
+        
+        return calibrated_pit, True, recal_meta
+        
+    except Exception as e:
+        # If recalibration fails, return raw PIT
+        if os.getenv('DEBUG'):
+            print(f"Warning: Recalibration failed: {e}")
+        return raw_pit, False, {'error': str(e)}
 
 
 PAIR = "PLNJPY=X"
@@ -1685,6 +1770,14 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
             'log_likelihood': best_params.get('log_likelihood'),
             'pit_ks_pvalue': best_params.get('pit_ks_pvalue'),
             'ks_statistic': best_params.get('ks_statistic'),
+            
+            # Isotonic Recalibration Transport Map
+            # This is the CORE calibration layer - applied BEFORE regimes see PIT
+            'recalibration': global_data.get('recalibration'),
+            'recalibration_applied': global_data.get('recalibration_applied', False),
+            'pit_ks_pvalue_calibrated': global_data.get('pit_ks_pvalue_calibrated'),
+            'calibration_diagnostics': global_data.get('calibration_diagnostics'),
+            'failure_category': global_data.get('failure_category'),
             
             # Model comparison: build from all models (includes Hyvärinen scores)
             'model_comparison': {
