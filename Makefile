@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20 data four purge failed setup
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune calibrate show-q clear-q tests report top20 data four purge failed setup
 # Usage:
 #   make setup                         # full setup: install deps + download all data (runs 3x for reliability)
 #   make run                           # runs with defaults (screener + backtest)
@@ -24,6 +24,8 @@ SHELL := /bin/bash
 #   make fx-validate-kalman-plots      # Kalman validation with diagnostic plots saved to plots/kalman_validation/
 #   make tune                          # estimate optimal Kalman drift q parameters via MLE (caches results)
 #   make tune ARGS="--force"           # re-estimate q for all assets (ignore cache)
+#   make calibrate                     # re-tune only assets with PIT calibration failures (p < 0.05)
+#   make calibrate ARGS="--dry-run"    # preview assets that would be re-tuned
 #   make show-q                        # display cached q parameter estimates
 #   make clear-q                       # clear q parameter cache
 #   make tests                         # runs all tests in the tests/ directory
@@ -96,6 +98,27 @@ fx-validate-kalman-plots: .venv/.deps_installed
 tune: .venv/.deps_installed
 	@mkdir -p cache
 	@.venv/bin/python scripts/tune_pretty.py $(ARGS)
+
+# Re-tune only assets with calibration failures (PIT p-value < 0.05)
+# Uses calibration_failures.json from previous tune run
+# Options:
+#   make calibrate                          # Re-tune all calibration failures
+#   make calibrate ARGS="--severity critical"  # Only critical failures
+#   make calibrate ARGS="--dry-run"         # Preview what would be re-tuned
+calibrate: .venv/.deps_installed
+	@if [ ! -f scripts/quant/cache/calibration/calibration_failures.json ]; then \
+		echo "❌ No calibration_failures.json found. Run 'make tune' first."; \
+		exit 1; \
+	fi
+	@echo "📊 Extracting assets with calibration failures..."
+	@FAILED_ASSETS=$$(.venv/bin/python scripts/extract_calibration_failures.py); \
+	if [ -z "$$FAILED_ASSETS" ]; then \
+		echo "✅ No calibration failures found. All assets are well-calibrated!"; \
+	else \
+		ASSET_COUNT=$$(echo "$$FAILED_ASSETS" | tr ',' '\n' | wc -l | tr -d ' '); \
+		echo "🔧 Re-tuning $$ASSET_COUNT assets with calibration issues..."; \
+		.venv/bin/python scripts/tune_pretty.py --assets "$$FAILED_ASSETS" --force $(ARGS); \
+	fi
 
 # FX Debt Allocation Engine - EURJPY balance sheet convexity control
 debt: .venv/.deps_installed
