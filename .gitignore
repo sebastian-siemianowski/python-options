@@ -41,6 +41,7 @@ scripts/quant/cache/prices/
 scripts/quant/cache/top100/
 scripts/quant/cache/failed/
 scripts/quant/cache/calibration/
+scripts/quant/cache/tune/
 
 # Kalman tuning cache - per-asset files (git-friendly, commit individual files as needed)
 # Legacy single-file cache (deprecated, use per-asset)
