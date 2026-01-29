@@ -2217,8 +2217,13 @@ def render_calibration_report(
     - High kurtosis (fat tails not captured)
     - Failed tuning
     - Regime collapse warnings
+    
+    Also saves issues to JSON file: scripts/quant/cache/calibration/calibration_failures.json
     """
     import numpy as np
+    import json
+    import os
+    from datetime import datetime
     
     if console is None:
         console = create_tuning_console()
@@ -2239,7 +2244,7 @@ def render_calibration_report(
             'q': None,
             'phi': None,
             'nu': None,
-            'details': reason[:50] + '...' if len(reason) > 50 else reason
+            'details': reason[:200] if reason else ''
         })
     
     # 2. Calibration warnings from cache
@@ -2310,6 +2315,60 @@ def render_calibration_report(
     severity_order = {'critical': 0, 'warning': 1, 'ok': 2}
     issues.sort(key=lambda x: (severity_order.get(x['severity'], 2), x.get('pit_p') or 1.0))
     
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # SAVE CALIBRATION ISSUES TO JSON FILE
+    # ═══════════════════════════════════════════════════════════════════════════════
+    calibration_dir = os.path.join(os.path.dirname(__file__), 'quant', 'cache', 'calibration')
+    os.makedirs(calibration_dir, exist_ok=True)
+    calibration_file = os.path.join(calibration_dir, 'calibration_failures.json')
+    
+    # Prepare JSON-serializable data
+    total_assets = len(cache) if cache else 0
+    critical_count = sum(1 for i in issues if i['severity'] == 'critical')
+    warning_count = sum(1 for i in issues if i['severity'] == 'warning')
+    failed_count = sum(1 for i in issues if i['issue_type'] == 'FAILED')
+    
+    calibration_report = {
+        'timestamp': datetime.now().isoformat(),
+        'summary': {
+            'total_assets': total_assets,
+            'total_issues': len(issues),
+            'critical': critical_count,
+            'warnings': warning_count,
+            'failed': failed_count,
+            'passed': total_assets - len(issues) if total_assets > 0 else 0,
+        },
+        'issues': [
+            {
+                'asset': issue['asset'],
+                'issue_type': issue['issue_type'],
+                'severity': issue['severity'],
+                'pit_ks_pvalue': issue['pit_p'],
+                'ks_statistic': issue['ks_stat'],
+                'kurtosis': issue['kurtosis'],
+                'model': issue['model'],
+                'q': issue['q'],
+                'phi': issue['phi'],
+                'nu': issue['nu'],
+                'details': issue['details'],
+            }
+            for issue in issues
+        ],
+        'thresholds': {
+            'pit_warning': 0.05,
+            'pit_critical': 0.01,
+            'kurtosis_warning': 6.0,
+            'kurtosis_critical': 10.0,
+        }
+    }
+    
+    try:
+        with open(calibration_file, 'w') as f:
+            json.dump(calibration_report, f, indent=2, default=str)
+    except Exception as e:
+        # Don't fail the report if we can't save the file
+        pass
+    
     # SECTION HEADER - Always show
     console.print()
     console.print(Rule(style="dim"))
@@ -2320,8 +2379,6 @@ def render_calibration_report(
     section_header.append("CALIBRATION REPORT", style="bold bright_white")
     console.print(section_header)
     console.print()
-    
-    total_assets = len(cache) if cache else 0
     
     # Show success or issues
     if not issues:
@@ -2348,11 +2405,7 @@ def render_calibration_report(
     console.print(issues_header)
     console.print()
     
-    # SUMMARY STATS
-    critical_count = sum(1 for i in issues if i['severity'] == 'critical')
-    warning_count = sum(1 for i in issues if i['severity'] == 'warning')
-    failed_count = sum(1 for i in issues if i['issue_type'] == 'FAILED')
-    
+    # SUMMARY STATS (use counts computed earlier)
     summary = Text()
     summary.append("    ", style="")
     if critical_count > 0:
@@ -2469,6 +2522,14 @@ def render_calibration_report(
         action.append("make tune ARGS='--force --assets <TICKER>'", style="bold white")
         console.print(action)
         console.print()
+    
+    # Show where file was saved
+    file_info = Text()
+    file_info.append("    💾 ", style="dim")
+    file_info.append("Saved to ", style="dim")
+    file_info.append("scripts/quant/cache/calibration/calibration_failures.json", style="dim italic")
+    console.print(file_info)
+    console.print()
 
 
 class TuningProgressTracker:
