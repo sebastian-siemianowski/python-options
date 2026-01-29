@@ -61,22 +61,26 @@ class AdaptiveNuConfig:
     # Enable/disable adaptive refinement
     enabled: bool = True
     
-    # Boundary ν values that trigger refinement check
-    boundary_nu_values: Tuple[float, ...] = (12.0, 20.0)
+    # Boundary ν values that trigger refinement check (EXPANDED to all values)
+    boundary_nu_values: Tuple[float, ...] = (4.0, 6.0, 8.0, 12.0, 20.0)
     
     # PIT p-value threshold for calibration failure
     pit_threshold: float = 0.05
     
-    # Log-likelihood flatness threshold
-    # Refinement only triggered if |LL_best - LL_second| < threshold
-    likelihood_flatness_threshold: float = 1.0
+    # Severe PIT threshold - always attempt refinement regardless of other criteria
+    pit_severe_threshold: float = 0.01
     
-    # Refinement candidates for each boundary ν
-    # Asymmetric design: ν=20 only tests downward (ν > 30 ≈ Gaussian)
+    # Log-likelihood flatness threshold (increased for more aggressive refinement)
+    likelihood_flatness_threshold: float = 2.0
+    
+    # Refinement candidates for each ν value (EXPANDED)
     refinement_candidates: Dict[float, List[float]] = field(
         default_factory=lambda: {
-            12.0: [10.0, 14.0],  # Test between 8-12 and 12-20
-            20.0: [16.0],        # One-sided refinement only (downward)
+            4.0: [3.0, 5.0],      # For extreme fat tails
+            6.0: [5.0, 7.0],      # Fill gap between 4 and 8
+            8.0: [6.0, 10.0],     # Fill gap between 6 and 12
+            12.0: [10.0, 14.0],   # Test between 8-12 and 12-20
+            20.0: [16.0, 25.0],   # Both directions
         }
     )
     
@@ -89,6 +93,7 @@ class AdaptiveNuConfig:
             'enabled': self.enabled,
             'boundary_nu_values': list(self.boundary_nu_values),
             'pit_threshold': self.pit_threshold,
+            'pit_severe_threshold': self.pit_severe_threshold,
             'likelihood_flatness_threshold': self.likelihood_flatness_threshold,
             'refinement_candidates': {str(k): v for k, v in self.refinement_candidates.items()},
             'eligible_model_prefixes': list(self.eligible_model_prefixes),

@@ -440,43 +440,51 @@ def get_mixture_config() -> Optional['PhiTMixtureK2Config']:
 # =============================================================================
 # ADAPTIVE ν REFINEMENT CONFIGURATION
 # =============================================================================
-# When calibration fails (PIT p < 0.05) for φ-T models at boundary ν values
-# (12 or 20), we locally refine the ν grid to test intermediate values.
+# When calibration fails (PIT p < 0.05) for φ-T models at boundary ν values,
+# we locally refine the ν grid to test intermediate values.
 #
 # CORE PRINCIPLE: Add resolution only where truth demands it.
 #
-# Detection criteria (ALL must hold):
-#   1. Best ν is at grid boundary (12 or 20)
+# EXPANDED (Jan 2026): Now covers ALL ν values, not just boundaries.
+# For severe failures (PIT < 0.01), always attempt refinement.
+#
+# Detection criteria (OR logic for severe, boundary OR flat for moderate):
+#   1. Best ν has refinement candidates available
 #   2. PIT KS p-value < 0.05 (calibration failure)
 #   3. Model is φ-t variant (not Gaussian or mixture)
-#   4. Likelihood is locally flat in ν (ν not well identified)
+#   4. SEVERE (PIT < 0.01): Always refine
+#   5. MODERATE: Boundary ν OR likelihood is locally flat
 #
-# Refinement candidates:
-#   - ν = 12 → test [10, 14] (between 8-12 and 12-20)
-#   - ν = 20 → test [16] only (asymmetric: ν > 30 ≈ Gaussian)
-#
-# Computational budget:
-#   - Expected flagged assets: ~2-5% of universe
-#   - Additional likelihood evaluations: 1-2 per flagged asset
-#   - Total compute increase: ≤5%
+# Refinement candidates (EXPANDED):
+#   - ν = 4  → test [3, 5] (extreme fat tails)
+#   - ν = 6  → test [5, 7]
+#   - ν = 8  → test [6, 10]
+#   - ν = 12 → test [10, 14]
+#   - ν = 20 → test [16, 25]
 # =============================================================================
 
 # Feature toggle
 ADAPTIVE_NU_ENABLED = True
 
-# Boundary ν values that trigger refinement check
-ADAPTIVE_NU_BOUNDARY_VALUES = (12.0, 20.0)
+# Boundary ν values that trigger refinement check (EXPANDED to all values)
+ADAPTIVE_NU_BOUNDARY_VALUES = (4.0, 6.0, 8.0, 12.0, 20.0)
 
 # PIT p-value threshold for calibration failure
 ADAPTIVE_NU_PIT_THRESHOLD = 0.05
 
-# Log-likelihood flatness threshold (refinement only if |LL_best - LL_second| < threshold)
-ADAPTIVE_NU_FLATNESS_THRESHOLD = 1.0
+# Severe PIT threshold - always attempt refinement regardless of other criteria
+ADAPTIVE_NU_PIT_SEVERE_THRESHOLD = 0.01
 
-# Refinement candidates for each boundary ν (asymmetric for ν=20)
+# Log-likelihood flatness threshold (increased for more aggressive refinement)
+ADAPTIVE_NU_FLATNESS_THRESHOLD = 2.0
+
+# Refinement candidates for each ν value (EXPANDED)
 ADAPTIVE_NU_CANDIDATES = {
-    12.0: [10.0, 14.0],  # Test between 8-12 and 12-20
-    20.0: [16.0],        # One-sided refinement only (downward)
+    4.0: [3.0, 5.0],      # For extreme fat tails
+    6.0: [5.0, 7.0],      # Fill gap between 4 and 8
+    8.0: [6.0, 10.0],     # Fill gap between 6 and 12
+    12.0: [10.0, 14.0],   # Test between 8-12 and 12-20
+    20.0: [16.0, 25.0],   # Both directions
 }
 
 
@@ -494,6 +502,7 @@ def get_adaptive_nu_config() -> Optional['AdaptiveNuConfig']:
         enabled=ADAPTIVE_NU_ENABLED,
         boundary_nu_values=ADAPTIVE_NU_BOUNDARY_VALUES,
         pit_threshold=ADAPTIVE_NU_PIT_THRESHOLD,
+        pit_severe_threshold=ADAPTIVE_NU_PIT_SEVERE_THRESHOLD,
         likelihood_flatness_threshold=ADAPTIVE_NU_FLATNESS_THRESHOLD,
         refinement_candidates=ADAPTIVE_NU_CANDIDATES,
     )
