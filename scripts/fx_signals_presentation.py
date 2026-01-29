@@ -701,6 +701,7 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         box=box.ROUNDED,
         padding=(0, 1),
         collapse_padding=False,
+        row_styles=["", "on grey7"],  # Alternating row colors
     )
     # Asset column - generous width for full names
     table.add_column("Asset", justify="left", style="white", width=asset_col_width, no_wrap=True, overflow="ellipsis")
@@ -874,7 +875,7 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
         render_multi_asset_summary_table(rows, horizons, title_override=None, asset_col_width=asset_col_width, console=console)
     
     # ═══════════════════════════════════════════════════════════════════════════════
-    # COMPLETION FOOTER
+    # COMPLETION FOOTER - Centered panel matching header style
     # ═══════════════════════════════════════════════════════════════════════════════
     console.print()
     console.print(Rule(style="dim"))
@@ -886,10 +887,11 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
         if sig.get("label", "HOLD") not in ("HOLD", "")
     )
     
-    content = Text()
+    # Centered panel footer
+    content = Text(justify="center")
     content.append("\n", style="")
-    content.append("✓", style="bold bright_green")
-    content.append("  Complete", style="bold white")
+    content.append("✓ ", style="bold bright_green")
+    content.append("Complete", style="bold white")
     content.append("\n\n", style="")
     content.append(f"{len(summary_rows):,}", style="bold bright_cyan")
     content.append(" assets", style="dim")
@@ -906,8 +908,9 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
         box=box.ROUNDED,
         border_style="bright_green",
         padding=(0, 4),
+        width=54,
     )
-    console.print(Align.center(completion_panel, width=55))
+    console.print(Align.center(completion_panel))
     console.print()
 
 
@@ -933,7 +936,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
     if horizons is None:
         horizons = [1, 3, 7]  # Focus on short-term: 1d, 3d, 1w
     
-    console = Console(force_terminal=True, width=140)
+    console = Console(force_terminal=True, width=180)
     
     # Thresholds for "high conviction"
     BUY_THRESHOLD = 0.62   # P(r>0) >= 62% for strong buy
@@ -994,11 +997,11 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
     
     console.print()
     console.print()
-    console.print(Rule(style="bright_cyan", characters="═"))
+    console.print(Rule(style="dim"))
     console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════════
-    # HEADER
+    # HEADER - Centered panel
     # ═══════════════════════════════════════════════════════════════════════════════
     header_content = Text(justify="center")
     header_content.append("\n", style="")
@@ -1012,8 +1015,9 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
         box=box.HEAVY,
         border_style="bright_yellow",
         padding=(0, 2),
+        width=54,
     )
-    console.print(Align.center(header_panel, width=60))
+    console.print(Align.center(header_panel))
     console.print()
     
     horizon_labels = {1: "1 day", 3: "3 days", 7: "1 week"}
@@ -1040,7 +1044,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
         )
         
         buy_table.add_column("Asset", justify="left", width=50, no_wrap=True)
-        buy_table.add_column("Sector", justify="left", width=25, no_wrap=True, style="dim")
+        buy_table.add_column("Sector", justify="left", width=30, no_wrap=True, style="dim")
         buy_table.add_column("Horizon", justify="center", width=10)
         buy_table.add_column("P(r>0)", justify="right", width=8)
         buy_table.add_column("E[return]", justify="right", width=10)
@@ -1067,7 +1071,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
             
             buy_table.add_row(
                 sig["asset"],
-                sig["sector"][:23] if sig["sector"] else "",
+                sig["sector"][:28] if sig["sector"] else "",
                 horizon_label,
                 f"[bold bright_green]{p_pct:.1f}%[/]",
                 f"[bright_green]{exp_ret_pct:+.2f}%[/]",
@@ -1100,7 +1104,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
         )
         
         sell_table.add_column("Asset", justify="left", width=50, no_wrap=True)
-        sell_table.add_column("Sector", justify="left", width=25, no_wrap=True, style="dim")
+        sell_table.add_column("Sector", justify="left", width=30, no_wrap=True, style="dim")
         sell_table.add_column("Horizon", justify="center", width=10)
         sell_table.add_column("P(r>0)", justify="right", width=8)
         sell_table.add_column("E[return]", justify="right", width=10)
@@ -1127,7 +1131,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
             
             sell_table.add_row(
                 sig["asset"],
-                sig["sector"][:23] if sig["sector"] else "",
+                sig["sector"][:28] if sig["sector"] else "",
                 horizon_label,
                 f"[bold indian_red1]{p_pct:.1f}%[/]",
                 f"[indian_red1]{exp_ret_pct:+.2f}%[/]",
@@ -1154,7 +1158,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
     footer.append("Sorted by signal strength", style="dim italic")
     console.print(Align.center(footer))
     console.print()
-    console.print(Rule(style="bright_cyan", characters="═"))
+    console.print(Rule(style="dim"))
     console.print()
 
 
