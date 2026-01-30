@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune show-q clear-q tests report top20 data four purge failed setup
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune calibrate show-q clear-q tests report top20 data four purge failed setup
 # Usage:
 #   make setup                         # full setup: install deps + download all data (runs 3x for reliability)
 #   make run                           # runs with defaults (screener + backtest)
@@ -24,6 +24,8 @@ SHELL := /bin/bash
 #   make fx-validate-kalman-plots      # Kalman validation with diagnostic plots saved to plots/kalman_validation/
 #   make tune                          # estimate optimal Kalman drift q parameters via MLE (caches results)
 #   make tune ARGS="--force"           # re-estimate q for all assets (ignore cache)
+#   make calibrate                     # re-tune only assets with PIT calibration failures (p < 0.05)
+#   make calibrate ARGS="--dry-run"    # preview assets that would be re-tuned
 #   make show-q                        # display cached q parameter estimates
 #   make clear-q                       # clear q parameter cache
 #   make tests                         # runs all tests in the tests/ directory
@@ -97,23 +99,82 @@ tune: .venv/.deps_installed
 	@mkdir -p cache
 	@.venv/bin/python scripts/tune_pretty.py $(ARGS)
 
+# Re-tune only assets that failed calibration without escalation attempt
+# This targets assets where neither mixture nor ν-refinement was tried
+# Use this after implementing new escalation logic to activate it
+escalate: .venv/.deps_installed
+	@echo "🔧 Re-tuning assets that need escalation (mixture/ν-refinement not attempted)..."
+	@.venv/bin/python scripts/tune_pretty.py --force-escalation $(ARGS)
+
+# Re-tune 4 random assets with calibration failures
+# Useful for testing calibration fixes incrementally
+calibrate-four: .venv/.deps_installed
+	@if [ ! -f scripts/quant/cache/calibration/calibration_failures.json ]; then \
+		echo "❌ No calibration_failures.json found. Run 'make tune' first."; \
+		exit 1; \
+	fi
+	@echo "🎲 Selecting 4 random assets with calibration failures..."
+	@FAILED_ASSETS=$$(.venv/bin/python -c "import json, random; f=json.load(open('scripts/quant/cache/calibration/calibration_failures.json')); assets=[i['asset'] for i in f['issues']]; random.shuffle(assets); print(','.join(assets[:4]))"); \
+	if [ -z "$$FAILED_ASSETS" ]; then \
+		echo "✅ No calibration failures found. All assets are well-calibrated!"; \
+	else \
+		echo "🔧 Re-tuning: $$FAILED_ASSETS"; \
+		.venv/bin/python scripts/tune_pretty.py --assets "$$FAILED_ASSETS" --force $(ARGS); \
+	fi
+
+# Re-tune only assets with calibration failures (PIT p-value < 0.05)
+# Uses calibration_failures.json from previous tune run
+# Options:
+#   make calibrate                          # Re-tune all calibration failures
+#   make calibrate ARGS="--severity critical"  # Only critical failures
+#   make calibrate ARGS="--dry-run"         # Preview what would be re-tuned
+calibrate: .venv/.deps_installed
+	@if [ ! -f scripts/quant/cache/calibration/calibration_failures.json ]; then \
+		echo "❌ No calibration_failures.json found. Run 'make tune' first."; \
+		exit 1; \
+	fi
+	@echo "📊 Extracting assets with calibration failures..."
+	@FAILED_ASSETS=$$(.venv/bin/python scripts/extract_calibration_failures.py); \
+	if [ -z "$$FAILED_ASSETS" ]; then \
+		echo "✅ No calibration failures found. All assets are well-calibrated!"; \
+	else \
+		ASSET_COUNT=$$(echo "$$FAILED_ASSETS" | tr ',' '\n' | wc -l | tr -d ' '); \
+		echo "🔧 Re-tuning $$ASSET_COUNT assets with calibration issues..."; \
+		.venv/bin/python scripts/tune_pretty.py --assets "$$FAILED_ASSETS" --force $(ARGS); \
+	fi
+
 # FX Debt Allocation Engine - EURJPY balance sheet convexity control
 debt: .venv/.deps_installed
 	@mkdir -p scripts/quant/cache/debt
 	@.venv/bin/python scripts/debt_allocator.py $(ARGS)
 
 show-q:
-	@if [ -f scripts/quant/cache/kalman_q_cache.json ]; then \
-		echo "=== Cached Kalman q Parameters (JSON) ==="; \
-		cat scripts/quant/cache/kalman_q_cache.json; \
+	@if [ -d scripts/quant/cache/tune ] && [ "$$(ls -A scripts/quant/cache/tune/*.json 2>/dev/null | head -1)" ]; then \
+		echo "=== Cached Kalman q Parameters (per-asset) ==="; \
+		echo "Directory: scripts/quant/cache/tune/"; \
+		.venv/bin/python -c "import sys; sys.path.insert(0, 'scripts/quant'); from kalman_cache import list_cached_symbols, get_cache_stats; symbols=list_cached_symbols(); stats=get_cache_stats(); print(f'Total assets: {stats[\"n_assets\"]}'); print(f'Total size: {stats[\"total_size_kb\"]:.1f} KB'); print('First 20 symbols:', ', '.join(symbols[:20]) + ('...' if len(symbols) > 20 else ''))"; \
 	else \
-		echo "No cache file found. Run 'make tune' first."; \
+		echo "No cache files found. Run 'make tune' first."; \
 	fi
 
 clear-q:
 	@echo "Clearing Kalman q parameter cache..."
 	@rm -f scripts/quant/cache/kalman_q_cache.json
+	@rm -f scripts/quant/cache/tune/*.json
 	@echo "Cache cleared."
+
+# Cache management utilities
+cache-stats: .venv/.deps_installed
+	@echo "📊 Kalman tuning cache statistics:"
+	@.venv/bin/python -c "import sys; sys.path.insert(0, 'scripts/quant'); from kalman_cache import get_cache_stats; s=get_cache_stats(); print(f'  Assets:     {s[\"n_assets\"]}'); print(f'  Total Size: {s[\"total_size_kb\"]:.1f} KB'); print(f'  Avg Size:   {s[\"avg_size_kb\"]:.1f} KB'); print(f'  Directory:  {s[\"cache_dir\"]}')"
+
+cache-migrate: .venv/.deps_installed
+	@echo "🔄 Migrating legacy cache to per-asset files..."
+	@.venv/bin/python -c "import sys; sys.path.insert(0, 'scripts/quant'); from kalman_cache import migrate_legacy_cache; migrate_legacy_cache()"
+
+cache-list: .venv/.deps_installed
+	@echo "📋 Cached symbols:"
+	@.venv/bin/python -c "import sys; sys.path.insert(0, 'scripts/quant'); from kalman_cache import list_cached_symbols; symbols=list_cached_symbols(); print(f'  Total: {len(symbols)} assets'); print('  ' + ', '.join(symbols[:20]) + ('...' if len(symbols) > 20 else ''))"
 
 tests: .venv/.deps_installed
 	@echo "Running all tests..."
@@ -159,10 +220,10 @@ refresh: .venv/.deps_installed
 	@.venv/bin/python scripts/refresh_data.py --days 5 --retries 5 --workers 12 --batch-size 16 $(ARGS)
 
 four:
-	@if [ ! -f scripts/quant/cache/kalman_q_cache.json ]; then \
-		echo "scripts/quant/cache/kalman_q_cache.json not found"; exit 1; \
+	@if [ ! -d scripts/quant/cache/tune ] || [ -z "$$(ls -A scripts/quant/cache/tune/*.json 2>/dev/null | head -1)" ]; then \
+		echo "No per-asset cache files found in scripts/quant/cache/tune/"; exit 1; \
 	fi
-	@PYTHONPATH=$(CURDIR) .venv/bin/python -c "from scripts.fx_data_utils import drop_first_k_from_kalman_cache; removed = drop_first_k_from_kalman_cache(4, 'scripts/quant/cache/kalman_q_cache.json'); print(f'Removed {len(removed)} entries: {', '.join(removed)}')"
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -c "from scripts.fx_data_utils import drop_first_k_from_kalman_cache; removed = drop_first_k_from_kalman_cache(4, 'scripts/quant/cache/tune'); print(f'Removed {len(removed)} entries: {chr(44).join(removed)}')"
 
 # List failed assets
 failed: .venv/.deps_installed

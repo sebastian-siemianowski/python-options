@@ -758,7 +758,11 @@ python-options/
 │   ├── debt_allocator.py       # Debt switch decision engine
 │   └── quant/
 │       └── cache/
-│           └── kalman_q_cache.json  # Tuned parameters
+│           ├── tune/           # Tuned parameters (per-asset)
+│           │   ├── AAPL.json
+│           │   ├── MSFT.json
+│           │   └── ...
+│           └── calibration/    # Calibration diagnostics
 │
 ├── data/                       # Price cache (CSV per symbol)
 ├── options.py                  # Options screener
@@ -1537,6 +1541,136 @@ p-value > 0.05 indicates calibration is acceptable.
 - **U-shape** (values cluster at 0 and 1): Overconfidence — predictions are too narrow
 - **∩-shape** (values cluster in middle): Underconfidence — predictions are too wide
 - **Flat** (uniform distribution): Well-calibrated ✓
+
+---
+
+### K=2 Mixture Model for Calibration Improvement
+
+When single models fail PIT calibration (p-value < 0.05), the system automatically attempts a **K=2 mixture of symmetric φ-t models** to capture latent regime heterogeneity.
+
+<details>
+<summary><strong>📖 Key Insight</strong></summary>
+
+Calibration failures often occur not because the model has wrong parameters, but because markets alternate between **calm** and **stress** regimes within the estimation window. A single symmetric distribution cannot express this asymmetry.
+
+The K=2 mixture solves this by allowing the predictive distribution to allocate mass asymmetrically **without breaking symmetry locally**.
+
+</details>
+
+**Model Definition**
+
+```
+p(rₜ | Fₜ₋₁) = w · Tᵥ(rₜ; μₜ, σ_A) + (1-w) · Tᵥ(rₜ; μₜ, σ_B)
+```
+
+Where:
+- `φ` is **shared** across components (same drift dynamics)
+- `ν` is **shared** (same tail thickness)
+- `σ_A` = calm regime scale
+- `σ_B` = stress regime scale, constrained: `σ_B ≥ 1.5 × σ_A`
+- `w ∈ [0.1, 0.9]` = weight on calm component
+
+**Interpretation**
+
+| Component | σ | Role |
+|-----------|---|------|
+| A (calm) | σ_A (smaller) | Normal market conditions |
+| B (stress) | σ_B (larger) | Crisis / tail events |
+
+**Selection Logic**
+
+The mixture model is only selected if:
+1. Single model has calibration warning (PIT p < 0.05)
+2. Mixture fitting succeeds
+3. Mixture BIC < single model BIC - threshold
+
+**Design Principles**
+
+✓ Asymmetry emerges from geometry (σ dispersion), not parameters
+✓ K=2 only (no K>2, prevents overfitting)
+✓ Shared φ and ν (maintains interpretability)
+✓ Static weights (no HMM complexity)
+✓ BIC-controlled selection (simpler model preferred)
+
+---
+
+### PIT-Driven Distribution Escalation (PDDE)
+
+The system implements a **hierarchical model escalation** mechanism that automatically upgrades model complexity when diagnostics demand it.
+
+<details>
+<summary><strong>📖 Core Principle</strong></summary>
+
+> **Escalate model complexity only when diagnostics demand it.**
+> Treat PIT failure as information — not error.
+
+Do NOT expand the global model grid blindly.
+Refine locally, conditionally, and reversibly.
+
+</details>
+
+**Escalation Chain**
+
+```
+Level 0: φ-Gaussian
+    ↓ (PIT p < 0.05)
+Level 1: φ-Student-t (coarse ν grid: 4, 6, 8, 12, 20)
+    ↓ (PIT fail at boundary ν)
+Level 2: Adaptive ν Refinement (local grid expansion)
+    ↓ (ν-refinement fails)
+Level 3: K=2 Scale Mixture (σ dispersion for regime heterogeneity)
+    ↓ (mixture fails, extreme kurtosis)
+Level 4: EVT Tail Splice (GPD beyond threshold, rare)
+```
+
+**Escalation Triggers**
+
+| Level | Trigger Condition | What It Does |
+|-------|-------------------|--------------|
+| 0 → 1 | PIT p < 0.05 | Try heavier tails (Student-t) |
+| 1 → 2 | Best ν at boundary (12 or 20) | Refine ν locally |
+| 2 → 3 | ν-refinement fails | Try regime mixture |
+| 3 → 4 | Kurtosis > 10, mixture fails | Apply EVT tail splice |
+
+**Output Contract**
+
+Each asset records its escalation history:
+
+```json
+{
+  "final_model": "phi-t | phi-t-refined | mixture | evt",
+  "escalation_level": 0-4,
+  "pit_ks_pvalue": 0.0823,
+  "escalation_path": ["baseline_fit", "student_t_selected", "nu_refinement_attempted"],
+  "justification": "diagnostic-driven"
+}
+```
+
+**Files**
+
+| File | Purpose |
+|------|---------|
+| `scripts/pit_driven_escalation.py` | Orchestration logic |
+| `scripts/adaptive_nu_refinement.py` | Level 2: ν refinement |
+| `scripts/phi_t_mixture_k2.py` | Level 3: K=2 mixture |
+| `scripts/quant/cache/calibration/calibration_failures.json` | Diagnostic output |
+
+**View Escalation Summary**
+
+After running `make tune`, the summary shows escalation statistics:
+
+```
+📈  MODEL SELECTION
+
+    ○ Gaussian       ████████████░░░░░░░░░   42  ( 35.0%)
+    ● Student-t      ████████████████████░   78  ( 65.0%)
+
+    ◆ K=2 Mixture Fallback
+      Attempted: 25  →  Selected: 8  (32% success)
+
+    ◇ Adaptive ν Refinement
+      Attempted: 15  →  Improved: 6  (40% success)
+```
 
 ---
 

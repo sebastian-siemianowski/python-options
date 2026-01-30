@@ -1158,8 +1158,6 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
     footer.append("Sorted by signal strength", style="dim italic")
     console.print(Align.center(footer))
     console.print()
-    console.print(Rule(style="dim"))
-    console.print()
 
 
 def render_portfolio_allocation_table(
@@ -1680,6 +1678,151 @@ def _get_status(fit_count: int, shrunk_count: int) -> str:
         return "✓"
 
 
+def render_pdde_escalation_summary(
+    escalation_summary: Dict[str, Any],
+    console: Console = None
+) -> None:
+    """
+    Render PIT-Driven Distribution Escalation summary.
+    
+    Shows the escalation chain statistics including:
+    - Level distribution
+    - Escalation success rates
+    - Calibration improvement metrics
+    
+    Args:
+        escalation_summary: Summary dict from get_escalation_summary_from_cache
+        console: Rich console instance
+    """
+    if console is None:
+        console = create_tuning_console()
+    
+    from rich.align import Align
+    from rich.rule import Rule
+    
+    total = escalation_summary.get('total', 0)
+    if total == 0:
+        return
+    
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    # Section header
+    section = Text()
+    section.append("  🎯  ", style="bold bright_yellow")
+    section.append("PIT-DRIVEN ESCALATION", style="bold bright_white")
+    console.print(section)
+    console.print()
+    
+    # Calibration status overview
+    calibrated = escalation_summary.get('calibrated', 0)
+    calibrated_pct = escalation_summary.get('calibrated_pct', 0)
+    warnings = escalation_summary.get('warnings', 0)
+    critical = escalation_summary.get('critical', 0)
+    
+    status_row = Text()
+    status_row.append("    Calibration: ", style="dim")
+    status_row.append(f"{calibrated}", style="bold bright_green")
+    status_row.append(f" ({calibrated_pct:.1f}%) passed", style="dim")
+    status_row.append("  ·  ", style="dim")
+    if warnings > 0:
+        status_row.append(f"{warnings} warnings", style="yellow")
+        status_row.append("  ·  ", style="dim")
+    if critical > 0:
+        status_row.append(f"{critical} critical", style="indian_red1")
+    console.print(status_row)
+    console.print()
+    
+    # Escalation chain
+    level_counts = escalation_summary.get('level_counts', {})
+    if level_counts:
+        console.print(Text("    Escalation Chain:", style="dim"))
+        console.print()
+        
+        # Define level order and colors
+        level_order = [
+            ("φ-Gaussian", "green"),
+            ("φ-Student-t", "cyan"),
+            ("φ-Student-t (ν-refined)", "bright_cyan"),
+            ("K=2 Scale Mixture", "bright_yellow"),
+            ("Generalized Hyperbolic", "bright_magenta"),
+            ("Time-Varying Vol Multiplier", "bright_blue"),
+            ("EVT Tail Splice", "magenta"),
+        ]
+        
+        bar_width = 30
+        max_count = max(level_counts.values()) if level_counts.values() else 1
+        
+        for level_name, color in level_order:
+            count = level_counts.get(level_name, 0)
+            if count > 0 or level_name in ["φ-Gaussian", "φ-Student-t"]:
+                pct = count / total * 100 if total > 0 else 0
+                filled = int(count / max_count * bar_width) if max_count > 0 else 0
+                
+                row = Text()
+                row.append("      ", style="")
+                row.append(f"{level_name:26s}", style=color)
+                row.append("█" * filled, style=color)
+                row.append("░" * (bar_width - filled), style="dim")
+                row.append(f"  {count:>4}", style="bold white")
+                row.append(f"  ({pct:>5.1f}%)", style="dim")
+                console.print(row)
+        
+        console.print()
+    
+    # Escalation attempts summary
+    mixture_attempts = escalation_summary.get('mixture_attempts', 0)
+    mixture_successes = escalation_summary.get('mixture_successes', 0)
+    mixture_rate = escalation_summary.get('mixture_success_rate', 0)
+    
+    nu_attempts = escalation_summary.get('nu_refinement_attempts', 0)
+    nu_successes = escalation_summary.get('nu_refinement_successes', 0)
+    nu_rate = escalation_summary.get('nu_refinement_success_rate', 0)
+    
+    gh_attempts = escalation_summary.get('gh_attempts', 0)
+    gh_successes = escalation_summary.get('gh_successes', 0)
+    gh_rate = escalation_summary.get('gh_success_rate', 0)
+    
+    tvvm_attempts = escalation_summary.get('tvvm_attempts', 0)
+    tvvm_successes = escalation_summary.get('tvvm_successes', 0)
+    tvvm_rate = escalation_summary.get('tvvm_success_rate', 0)
+    
+    if mixture_attempts > 0 or nu_attempts > 0 or gh_attempts > 0 or tvvm_attempts > 0:
+        console.print(Text("    Escalation Effectiveness:", style="dim"))
+        console.print()
+        
+        if nu_attempts > 0:
+            nu_row = Text()
+            nu_row.append("      ◇ ν-Refinement: ", style="bright_cyan")
+            nu_row.append(f"{nu_successes}/{nu_attempts}", style="bold white")
+            nu_row.append(f" improved ({nu_rate:.0f}%)", style="dim")
+            console.print(nu_row)
+        
+        if mixture_attempts > 0:
+            mix_row = Text()
+            mix_row.append("      ◆ K=2 Mixture:  ", style="bright_yellow")
+            mix_row.append(f"{mixture_successes}/{mixture_attempts}", style="bold white")
+            mix_row.append(f" selected ({mixture_rate:.0f}%)", style="dim")
+            console.print(mix_row)
+        
+        if gh_attempts > 0:
+            gh_row = Text()
+            gh_row.append("      ★ GH (Skew):    ", style="bright_magenta")
+            gh_row.append(f"{gh_successes}/{gh_attempts}", style="bold white")
+            gh_row.append(f" selected ({gh_rate:.0f}%)", style="dim")
+            console.print(gh_row)
+        
+        if tvvm_attempts > 0:
+            tvvm_row = Text()
+            tvvm_row.append("      ⚡ TVVM:        ", style="bright_blue")
+            tvvm_row.append(f"{tvvm_successes}/{tvvm_attempts}", style="bold white")
+            tvvm_row.append(f" selected ({tvvm_rate:.0f}%)", style="dim")
+            console.print(tvvm_row)
+        
+        console.print()
+
+
 def render_tuning_summary(
     total_assets: int,
     new_estimates: int,
@@ -1695,6 +1838,20 @@ def render_tuning_summary(
     collapse_warnings: int,
     cache_path: str,
     regime_model_breakdown: Optional[Dict[int, Dict[str, int]]] = None,
+    mixture_attempted_count: int = 0,
+    mixture_selected_count: int = 0,
+    nu_refinement_attempted_count: int = 0,
+    nu_refinement_improved_count: int = 0,
+    gh_attempted_count: int = 0,
+    gh_selected_count: int = 0,
+    tvvm_attempted_count: int = 0,
+    tvvm_selected_count: int = 0,
+    # Calibrated Trust Authority statistics
+    recalibration_applied_count: int = 0,
+    calibrated_trust_count: int = 0,
+    avg_effective_trust: float = 0.0,
+    low_trust_count: int = 0,
+    high_trust_count: int = 0,
     console: Console = None
 ) -> None:
     """Render extraordinary Apple-quality tuning summary.
@@ -1806,6 +1963,165 @@ def render_tuning_summary(
         student_row.append(f"  ({student_pct:>4.1f}%)", style="dim")
         console.print(student_row)
         
+        # K=2 Mixture REMOVED (empirically falsified: 206 attempts, 0 selections)
+        # Display section kept for backward compatibility with cached results
+        # that may still have mixture_attempted=True
+        if mixture_attempted_count > 0:
+            console.print()
+            mix_section = Text()
+            mix_section.append("    ◆ ", style="dim")
+            mix_section.append("K=2 Mixture (REMOVED)", style="dim")
+            console.print(mix_section)
+            
+            mix_row = Text()
+            mix_row.append("      ", style="")
+            mix_row.append(f"Legacy cached: {mixture_attempted_count}", style="dim")
+            mix_row.append("  (feature removed - 0% historical success)", style="dim")
+            console.print(mix_row)
+        
+        # Adaptive ν Refinement row (only if attempted)
+        if nu_refinement_attempted_count > 0:
+            console.print()
+            nu_section = Text()
+            nu_section.append("    ◇ ", style="bright_cyan")
+            nu_section.append("Adaptive ν Refinement", style="bright_cyan")
+            console.print(nu_section)
+            
+            nu_row = Text()
+            nu_row.append("      ", style="")
+            nu_row.append(f"Attempted: {nu_refinement_attempted_count}", style="dim")
+            nu_row.append("  →  ", style="dim")
+            if nu_refinement_improved_count > 0:
+                nu_row.append(f"Improved: {nu_refinement_improved_count}", style="bold bright_green")
+                success_rate = nu_refinement_improved_count / nu_refinement_attempted_count * 100
+                nu_row.append(f"  ({success_rate:.0f}% success)", style="dim")
+            else:
+                nu_row.append("Improved: 0", style="dim")
+                nu_row.append("  (no improvement found)", style="dim")
+            console.print(nu_row)
+        
+        # GH Distribution Fallback row (only if attempted)
+        if gh_attempted_count > 0:
+            console.print()
+            gh_section = Text()
+            gh_section.append("    ★ ", style="bright_magenta")
+            gh_section.append("Generalized Hyperbolic (Skew)", style="bright_magenta")
+            console.print(gh_section)
+            
+            gh_row = Text()
+            gh_row.append("      ", style="")
+            gh_row.append(f"Attempted: {gh_attempted_count}", style="dim")
+            gh_row.append("  →  ", style="dim")
+            if gh_selected_count > 0:
+                gh_row.append(f"Selected: {gh_selected_count}", style="bold bright_green")
+                success_rate = gh_selected_count / gh_attempted_count * 100
+                gh_row.append(f"  ({success_rate:.0f}% success)", style="dim")
+            else:
+                gh_row.append("Selected: 0", style="dim")
+                gh_row.append("  (skewness not significant)", style="dim")
+            console.print(gh_row)
+        
+        # TVVM Fallback row (only if attempted)
+        if tvvm_attempted_count > 0:
+            console.print()
+            tvvm_section = Text()
+            tvvm_section.append("    ⚡ ", style="bright_blue")
+            tvvm_section.append("Time-Varying Vol Multiplier", style="bright_blue")
+            console.print(tvvm_section)
+            
+            tvvm_row = Text()
+            tvvm_row.append("      ", style="")
+            tvvm_row.append(f"Attempted: {tvvm_attempted_count}", style="dim")
+            tvvm_row.append("  →  ", style="dim")
+            if tvvm_selected_count > 0:
+                tvvm_row.append(f"Selected: {tvvm_selected_count}", style="bold bright_green")
+                success_rate = tvvm_selected_count / tvvm_attempted_count * 100
+                tvvm_row.append(f"  ({success_rate:.0f}% success)", style="dim")
+            else:
+                tvvm_row.append("Selected: 0", style="dim")
+                tvvm_row.append("  (vol-of-vol effect not significant)", style="dim")
+            console.print(tvvm_row)
+        
+        console.print()
+        console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # CALIBRATED TRUST AUTHORITY - Additive decomposition governance
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # Always show section - with hint if no trust data yet
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    section = Text()
+    section.append("  🎯  ", style="bold bright_cyan")
+    section.append("CALIBRATED TRUST AUTHORITY", style="bold bright_white")
+    console.print(section)
+    console.print()
+    
+    # Architectural law subtitle
+    law_text = Text()
+    law_text.append("      ", style="")
+    law_text.append("Trust = Calibration − Regime Penalty", style="dim italic")
+    law_text.append("  (additive, bounded, auditable)", style="dim")
+    console.print(law_text)
+    console.print()
+    
+    if calibrated_trust_count > 0 or recalibration_applied_count > 0:
+        # Isotonic Recalibration row
+        recal_section = Text()
+        recal_section.append("    ◈ ", style="bright_cyan")
+        recal_section.append("Isotonic Recalibration", style="bright_cyan")
+        console.print(recal_section)
+        
+        recal_row = Text()
+        recal_row.append("      ", style="")
+        recal_row.append(f"Applied: {recalibration_applied_count}", style="bold bright_white")
+        recal_row.append(f" assets", style="dim")
+        console.print(recal_row)
+        
+        # Trust Statistics row
+        console.print()
+        trust_section = Text()
+        trust_section.append("    ◉ ", style="bright_magenta")
+        trust_section.append("Trust Distribution", style="bright_magenta")
+        console.print(trust_section)
+        
+        trust_row = Text()
+        trust_row.append("      ", style="")
+        trust_row.append(f"Computed: {calibrated_trust_count}", style="dim")
+        trust_row.append("  ·  ", style="dim")
+        trust_row.append(f"Avg: {avg_effective_trust:.1%}", style="bold bright_white")
+        console.print(trust_row)
+        
+        # Trust level breakdown
+        if calibrated_trust_count > 0:
+            level_row = Text()
+            level_row.append("      ", style="")
+            if high_trust_count > 0:
+                level_row.append(f"High (≥70%): {high_trust_count}", style="bright_green")
+                level_row.append("  ·  ", style="dim")
+            if low_trust_count > 0:
+                level_row.append(f"Low (<30%): {low_trust_count}", style="indian_red1")
+            else:
+                level_row.append(f"Low (<30%): 0", style="dim")
+            console.print(level_row)
+        
+        console.print()
+        console.print()
+    else:
+        # No trust data yet - show hint to re-tune
+        hint_row = Text()
+        hint_row.append("    ⚡ ", style="dim yellow")
+        hint_row.append("No trust data computed yet", style="dim")
+        console.print(hint_row)
+        
+        hint2_row = Text()
+        hint2_row.append("      ", style="")
+        hint2_row.append("→ Run ", style="dim")
+        hint2_row.append("make tune ARGS='--force'", style="dim cyan")
+        hint2_row.append(" to compute calibrated trust for all assets", style="dim")
+        console.print(hint2_row)
+        
         console.print()
         console.print()
     
@@ -1841,6 +2157,8 @@ def render_tuning_summary(
             return (0, 0)
         elif m == "φ-Gaussian":
             return (1, 0)
+        elif m.startswith("K2-Mix"):
+            return (3, 0)  # Mixture models come after Student-t
         else:
             import re
             nu_match = re.search(r'ν=(\d+)', m)
@@ -1868,6 +2186,8 @@ def render_tuning_summary(
             table.add_column("G", justify="right", width=4, style="green")
         elif model == "φ-Gaussian":
             table.add_column("φ-G", justify="right", width=4, style="cyan")
+        elif model.startswith("K2-Mix"):
+            table.add_column("K2", justify="right", width=4, style="bright_yellow")
         else:
             import re
             nu_match = re.search(r'ν=(\d+)', model)
@@ -2263,15 +2583,52 @@ def render_calibration_report(
         phi_val = data.get('phi')
         nu_val = data.get('nu')
         
+        # Check for mixture model usage
+        mixture_selected = data.get('mixture_selected', False)
+        mixture_attempted = data.get('mixture_attempted', mixture_selected)  # Fallback to mixture_selected for backward compat
+        mixture_model = data.get('mixture_model')
+        
+        # Check for ν refinement
+        nu_refinement = data.get('nu_refinement', {})
+        nu_refinement_attempted = nu_refinement.get('refinement_attempted', False)
+        nu_refinement_improved = nu_refinement.get('improvement_achieved', False)
+        
+        # Check for GH model usage
+        gh_selected = data.get('gh_selected', False)
+        gh_attempted = data.get('gh_attempted', False)
+        gh_model = data.get('gh_model')
+        
         collapse_warning = raw_data.get('hierarchical_tuning', {}).get('collapse_warning', False)
         
         has_issue = False
         issue_type = []
         severity = 'ok'
         
+        # If GH was selected and improved calibration, skip this asset
+        if gh_selected and gh_model and not calibration_warning:
+            continue
+        
+        # If mixture was selected and improved calibration, skip this asset
+        if mixture_selected and mixture_model and not calibration_warning:
+            continue
+        
         if calibration_warning or (pit_p is not None and pit_p < 0.05):
             has_issue = True
-            issue_type.append('PIT < 0.05')
+            # Note escalation status
+            if gh_attempted and gh_selected:
+                issue_type.append('PIT < 0.05 (GH-sel)')
+            elif gh_attempted:
+                issue_type.append('PIT < 0.05 (GH-tried)')
+            elif mixture_attempted and mixture_selected:
+                issue_type.append('PIT < 0.05 (mix-sel)')
+            elif mixture_attempted:
+                issue_type.append('PIT < 0.05 (mix-tried)')
+            elif nu_refinement_attempted and nu_refinement_improved:
+                issue_type.append('PIT < 0.05 (ν-ref)')
+            elif nu_refinement_attempted:
+                issue_type.append('PIT < 0.05 (ν-tried)')
+            else:
+                issue_type.append('PIT < 0.05')
             severity = 'warning'
         
         if pit_p is not None and pit_p < 0.01:
@@ -2288,7 +2645,17 @@ def render_calibration_report(
             issue_type.append('Regime Collapse')
         
         if has_issue:
-            if 'student_t' in noise_model:
+            if gh_selected and gh_model:
+                # Show GH model info
+                gh_params = gh_model.get('parameters', {})
+                beta = gh_params.get('beta', 0)
+                skew_dir = gh_model.get('skewness_direction', 'sym')[:1].upper()
+                model_str = f"GH(β={beta:.1f},{skew_dir})"
+            elif mixture_selected and mixture_model:
+                # Show mixture model info
+                sigma_ratio = mixture_model.get('sigma_ratio', 0)
+                model_str = f"Mix(σ={sigma_ratio:.1f})"
+            elif 'student_t' in noise_model:
                 model_str = f"φ-T(ν={int(nu_val)})" if nu_val else "Student-t"
             elif 'phi' in noise_model:
                 model_str = "φ-Gaussian"
@@ -2308,7 +2675,13 @@ def render_calibration_report(
                 'q': q_val,
                 'phi': phi_val,
                 'nu': nu_val,
-                'details': ''
+                'details': '',
+                'mixture_selected': mixture_selected,
+                'mixture_attempted': mixture_attempted,
+                'nu_refinement_attempted': nu_refinement_attempted,
+                'nu_refinement_improved': nu_refinement_improved,
+                'gh_attempted': gh_attempted,
+                'gh_selected': gh_selected,
             })
     
     # Sort by severity (critical first), then by PIT p-value
@@ -2351,16 +2724,72 @@ def render_calibration_report(
                 'phi': issue['phi'],
                 'nu': issue['nu'],
                 'details': issue['details'],
+                'mixture_attempted': issue.get('mixture_attempted', issue.get('mixture_selected', False)),
+                'nu_refinement_attempted': issue.get('nu_refinement_attempted', False),
+                'nu_refinement_improved': issue.get('nu_refinement_improved', False),
             }
             for issue in issues
         ],
         'thresholds': {
             'pit_warning': 0.05,
             'pit_critical': 0.01,
+            'pit_severe': 0.01,
             'kurtosis_warning': 6.0,
             'kurtosis_critical': 10.0,
+        },
+        'mixture_model': {
+            'enabled': True,
+            'description': 'K=2 symmetric φ-t mixture for calibration improvement',
+            'sigma_ratio_min': 1.5,
+            'weight_bounds': [0.1, 0.9],
+            'bic_threshold': 0.0,
+            'pit_improvement_factor': 10.0,
+            'selection_criterion': 'BIC improvement OR PIT improvement 10x',
+        },
+        'adaptive_nu': {
+            'enabled': True,
+            'description': 'Adaptive ν refinement (EXPANDED to all ν values)',
+            'boundary_values': [4.0, 6.0, 8.0, 12.0, 20.0],
+            'refinement_candidates': {
+                '4.0': [3.0, 5.0],
+                '6.0': [5.0, 7.0],
+                '8.0': [6.0, 10.0],
+                '12.0': [10.0, 14.0],
+                '20.0': [16.0, 25.0],
+            },
+            'flatness_threshold': 2.0,
+            'severe_pit_always_refine': True,
+        },
+        'generalized_hyperbolic': {
+            'enabled': True,
+            'description': 'GH distribution fallback for skewed assets (last resort)',
+            'pit_threshold': 0.05,
+            'bic_threshold': -10.0,
+            'pit_improvement_factor': 2.0,
+            'captures': 'Skewness that symmetric Student-t cannot model',
+        },
+        'diagnostics': {
+            'escalation_stats': {
+                'mixture_attempted_count': sum(1 for i in issues if i.get('mixture_attempted')),
+                'mixture_selected_count': sum(1 for i in issues if i.get('mixture_selected')),
+                'nu_refinement_attempted_count': sum(1 for i in issues if i.get('nu_refinement_attempted')),
+                'nu_refinement_improved_count': sum(1 for i in issues if i.get('nu_refinement_improved')),
+                'gh_attempted_count': sum(1 for i in issues if i.get('gh_attempted')),
+                'gh_selected_count': sum(1 for i in issues if i.get('gh_selected')),
+                'no_escalation_count': sum(1 for i in issues if not i.get('mixture_attempted') and not i.get('nu_refinement_attempted') and not i.get('gh_attempted')),
+            },
+            'model_distribution': {},
+            'nu_distribution': {},
+            'phi_at_boundary_count': sum(1 for i in issues if i.get('phi') and abs(i.get('phi', 0)) > 0.99),
         }
     }
+    
+    # Add model and nu distribution stats
+    from collections import Counter
+    model_counts = Counter(i['model'] for i in issues)
+    nu_counts = Counter(i['nu'] for i in issues if i.get('nu') is not None)
+    calibration_report['diagnostics']['model_distribution'] = dict(model_counts)
+    calibration_report['diagnostics']['nu_distribution'] = {str(k): v for k, v in nu_counts.items()}
     
     try:
         with open(calibration_file, 'w') as f:
@@ -2372,12 +2801,6 @@ def render_calibration_report(
     # SECTION HEADER - Always show
     console.print()
     console.print(Rule(style="dim"))
-    console.print()
-    
-    section_header = Text()
-    section_header.append("  📊  ", style="bold bright_cyan")
-    section_header.append("CALIBRATION REPORT", style="bold bright_white")
-    console.print(section_header)
     console.print()
     
     # Show success or issues

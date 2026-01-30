@@ -19,25 +19,32 @@ def test_load_tuned_params():
     print("Testing Model Selection Integration")
     print("=" * 80)
     
-    cache_path = "scripts/quant/cache/kalman_q_cache.json"
+    cache_dir = "scripts/quant/cache/tune"
     
-    if not os.path.exists(cache_path):
-        print(f"❌ Cache file not found: {cache_path}")
+    if not os.path.isdir(cache_dir):
+        print(f"❌ Cache directory not found: {cache_dir}")
         return False
     
-    # Load cache directly to see what's available
-    with open(cache_path, 'r') as f:
-        cache = json.load(f)
+    # Load cache using kalman_cache module
+    import sys
+    sys.path.insert(0, 'scripts/quant')
+    from kalman_cache import load_full_cache, list_cached_symbols
     
-    print(f"\n✓ Cache loaded with {len(cache)} assets")
+    cache = load_full_cache()
+    cached_symbols = list_cached_symbols()
+    
+    print(f"\n✓ Cache loaded with {len(cached_symbols)} assets")
     
     # Test a few assets
     test_assets = ["PLNJPY=X", "GC=F", "SPY", "BTC-USD"]
     
     for asset in test_assets:
         if asset not in cache:
-            print(f"\n⚠️  {asset}: Not in cache")
-            continue
+            # Try normalized version
+            normalized = asset.replace("=", "_").replace("-", "_").upper()
+            if normalized not in [s.upper() for s in cached_symbols]:
+                print(f"\n⚠️  {asset}: Not in cache")
+                continue
         
         print(f"\n{'=' * 60}")
         print(f"Asset: {asset}")
