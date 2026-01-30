@@ -1025,7 +1025,7 @@ def load_single_asset_cache(symbol: str, cache_json: str = None) -> Optional[Dic
     
     Args:
         symbol: Asset symbol
-        cache_json: Path to legacy cache file (used as fallback)
+        cache_json: Path to cache directory or legacy cache file (used as fallback)
         
     Returns:
         Dict with tuned parameters or None if not cached
@@ -1033,8 +1033,8 @@ def load_single_asset_cache(symbol: str, cache_json: str = None) -> Optional[Dic
     if PER_ASSET_CACHE_AVAILABLE:
         return _load_per_asset(symbol)
     
-    # Fallback to legacy cache
-    if cache_json and os.path.exists(cache_json):
+    # Fallback to legacy cache (only if it's a file, not a directory)
+    if cache_json and os.path.isfile(cache_json):
         try:
             with open(cache_json, 'r') as f:
                 cache = json.load(f)
