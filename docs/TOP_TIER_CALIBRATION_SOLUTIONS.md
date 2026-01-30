@@ -96,7 +96,7 @@ def gh_log_likelihood(params, returns, vol):
 
 **Score**: 9.2/10
 
-**Status**: ✅ IMPLEMENTED (Jan 29, 2026) - See `scripts/gh_distribution.py`
+**Status**: ✅ IMPLEMENTED (Jan 29, 2026) - See `src/gh_distribution.py`
 
 ---
 
@@ -133,7 +133,7 @@ def compute_dynamic_c(vol_series, c_base, gamma=0.5):
 
 **Score**: 8.8/10
 
-**Status**: ✅ IMPLEMENTED (Jan 29, 2026) - See `scripts/tvvm_model.py`
+**Status**: ✅ IMPLEMENTED (Jan 29, 2026) - See `src/tvvm_model.py`
 
 ---
 

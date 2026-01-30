@@ -87,3 +87,10 @@ htmlcov/
 /src/src/quant/cache/prices/AAPL.csv
 /src/src/quant/cache/fx_rates.json
 /src/src/quant/cache/prices/USDPLN_X.csv
+/src/scripts/quant/cache/prices/AAPL.csv
+/src/scripts/quant/cache/prices/USDPLN_X.csv
+/src/scripts/quant/cache/fx_rates.json
+/src/fx_failures.json
+/src/quant/cache/fx_plnjpy.json
+/src/quant/cache/fx_rates.json
+/src/quant/cache/debt/EURJPY_1d.csv

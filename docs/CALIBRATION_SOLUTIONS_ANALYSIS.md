@@ -26,24 +26,24 @@ The following changes have been implemented based on the expert panel analysis:
 
 ### Changes Made
 
-#### 1. `scripts/adaptive_nu_refinement.py`
+#### 1. `src/adaptive_nu_refinement.py`
 - **Expanded ν-refinement to ALL ν values** (not just boundaries 12, 20)
 - Added refinement candidates: ν=4→[3,5], ν=6→[5,7], ν=8→[6,10], ν=20→[16,25]
 - Added `pit_severe_threshold = 0.01` for aggressive refinement
 - Changed logic from AND to OR: `is_boundary OR is_flat` triggers refinement
 - Increased `likelihood_flatness_threshold` from 1.0 to 2.0
 
-#### 2. `scripts/tune.py`
+#### 2. `src/tune.py`
 - **Relaxed BIC threshold** from 2.0 to 0.0 (any improvement accepted)
 - Added **dual selection criterion**: BIC improvement OR PIT improvement 10x
 - Added `MIXTURE_PIT_IMPROVEMENT_FACTOR = 10.0`
 
-#### 3. `scripts/tune_ux.py`
+#### 3. `src/tune_ux.py`
 - Added `--force-escalation` flag to re-tune only assets needing escalation
 - Added `needs_escalation_retune()` helper function
 - Fixed mixture/ν-refinement counter tracking
 
-#### 4. `scripts/signals_ux.py`
+#### 4. `src/signals_ux.py`
 - Enhanced diagnostics in `calibration_failures.json`
 - Added escalation stats, model distribution, nu distribution
 - Updated configuration display to show new expanded parameters
@@ -338,11 +338,11 @@ After implementation:
 
 ## Files to Modify
 
-1. `scripts/tune.py` - Fix trigger ordering, expand ν grid
-2. `scripts/phi_t_mixture_k2.py` - Relax BIC threshold
-3. `scripts/adaptive_nu_refinement.py` - Add refinement candidates for ν=4,6,8
-4. `scripts/signals_ux.py` - Enhanced diagnostics display
-5. `scripts/tune_ux.py` - Add `--force-escalation` flag
+1. `src/tune.py` - Fix trigger ordering, expand ν grid
+2. `src/phi_t_mixture_k2.py` - Relax BIC threshold
+3. `src/adaptive_nu_refinement.py` - Add refinement candidates for ν=4,6,8
+4. `src/signals_ux.py` - Enhanced diagnostics display
+5. `src/tune_ux.py` - Add `--force-escalation` flag
 
 ---
 

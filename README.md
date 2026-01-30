@@ -91,7 +91,7 @@ At its core, the system maintains a population of competing models—each repres
 ║   │   │      • Normalize: p(m|r) = w(m|r) / Σw                              │   │     ║
 ║   │   └─────────────────────────────────────────────────────────────────────┘   │     ║
 ║   │                                                                             │     ║
-║   │   Output: scripts/quant/cache/kalman_q_cache.json                           │     ║
+║   │   Output: src/quant/cache/kalman_q_cache.json                           │     ║
 ║   │           {asset: {regime: {model: {q, φ, ν, BIC, p(m|r), ...}}}}           │     ║
 ║   └──────────────────────────────────┬──────────────────────────────────────────┘     ║
 ║                                      │                                                ║
@@ -419,7 +419,7 @@ make clean-cache
 
 #### `make failed`
 
-Lists assets that failed to download (stored in `scripts/fx_failures.json`).
+Lists assets that failed to download (stored in `src/fx_failures.json`).
 
 ```bash
 make failed
@@ -459,7 +459,7 @@ make tune ARGS="--dry-run"             # Preview without executing
    - Converts scores to posterior weights
    - Applies temporal smoothing against previous run
    - Applies hierarchical shrinkage toward global
-3. Saves to `scripts/quant/cache/kalman_q_cache.json`
+3. Saves to `src/quant/cache/kalman_q_cache.json`
 
 **Key ARGS:**
 | Argument | Description | Default |
@@ -620,7 +620,7 @@ make debt
 - Latent state inference (NORMAL → COMPRESSED → PRE_POLICY → POLICY)
 - Auditable, causal decision logic
 
-Output: `scripts/quant/cache/debt/`
+Output: `src/quant/cache/debt/`
 
 ---
 
@@ -748,7 +748,7 @@ python-options/
 │
 ├── Makefile                    # Command interface (start here)
 │
-├── scripts/
+├── src/
 │   ├── tune.py           # TUNING ENGINE: MLE + BMA
 │   ├── tune_ux.py          # Tuning UX wrapper
 │   ├── signals.py   # SIGNAL ENGINE: Posterior predictive
@@ -1650,10 +1650,10 @@ Each asset records its escalation history:
 
 | File | Purpose |
 |------|---------|
-| `scripts/pit_driven_escalation.py` | Orchestration logic |
-| `scripts/adaptive_nu_refinement.py` | Level 2: ν refinement |
-| `scripts/phi_t_mixture_k2.py` | Level 3: K=2 mixture |
-| `scripts/quant/cache/calibration/calibration_failures.json` | Diagnostic output |
+| `src/pit_driven_escalation.py` | Orchestration logic |
+| `src/adaptive_nu_refinement.py` | Level 2: ν refinement |
+| `src/phi_t_mixture_k2.py` | Level 3: K=2 mixture |
+| `src/quant/cache/calibration/calibration_failures.json` | Diagnostic output |
 
 **View Escalation Summary**
 
