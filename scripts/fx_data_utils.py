@@ -1383,7 +1383,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "SKYH",   # Sky Harbour Group Corp
     "SPAI",   # Safe Pro Group Inc
     "SPCE",   # Virgin Galactic Holdings Inc
-    "SPR",    # Spirit AeroSystems Holdings, Inc.
+#     "SPR",    # Spirit AeroSystems Holdings, Inc.
     "SWBI",   # Smith & Wesson Brands Inc
     "TATT",   # TAT Technologies Ltd
     "TDG",    # TransDigm Group Inc

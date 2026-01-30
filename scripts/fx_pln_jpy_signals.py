@@ -1744,127 +1744,141 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "scripts/quan
         print(f"   Cache entry has 'global' key but no models inside", file=sys.stderr)
         print(f"   → Fix: Run 'make tune ARGS=\"--assets {asset_symbol}\"' to regenerate\n", file=sys.stderr)
         return None
-        
-        # Helper to check if model is Student-t (phi_student_t_nu_* naming)
-        def _is_student_t(model_name: str) -> bool:
-            return model_name.startswith('phi_student_t_nu_')
-        
-        # Extract representative params from highest-posterior model for Kalman filter
-        # (The BMA path uses full model averaging, but Kalman filter needs single params)
-        if model_posterior:
-            best_model = max(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0))
+    
+    # Helper to check if model is Student-t (phi_student_t_nu_* naming)
+    def _is_student_t(model_name: str) -> bool:
+        return model_name.startswith('phi_student_t_nu_')
+    
+    # Extract representative params from highest-posterior model for Kalman filter
+    # (The BMA path uses full model averaging, but Kalman filter needs single params)
+    if model_posterior:
+        best_model = max(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0))
+    else:
+        # Fallback order: any Student-t > phi_gaussian > gaussian
+        # First check for new naming (phi_student_t_nu_*)
+        student_t_models = [m for m in models if _is_student_t(m)]
+        if student_t_models:
+            best_model = student_t_models[0]  # Pick first available Student-t
+        elif 'kalman_phi_gaussian' in models:
+            best_model = 'kalman_phi_gaussian'
+        elif 'kalman_gaussian' in models:
+            best_model = 'kalman_gaussian'
         else:
-            # Fallback order: any Student-t > phi_gaussian > gaussian
-            # First check for new naming (phi_student_t_nu_*)
-            student_t_models = [m for m in models if _is_student_t(m)]
-            if student_t_models:
-                best_model = student_t_models[0]  # Pick first available Student-t
-            elif 'kalman_phi_gaussian' in models:
-                best_model = 'kalman_phi_gaussian'
-            elif 'kalman_gaussian' in models:
-                best_model = 'kalman_gaussian'
-            else:
-                best_model = next(iter(models), None)
-        
-        if not best_model or best_model not in models:
-            return None
-        
-        best_params = models[best_model]
-        
-        # Extract params from best model
-        q_val = best_params.get('q')
-        c_val = best_params.get('c', 1.0)
-        phi_val = best_params.get('phi')
-        nu_val = best_params.get('nu')
-        
-        # Derive noise_model from best model name
-        # Normalize to standard categories for downstream processing
-        if _is_student_t(best_model):
-            noise_model = best_model  # Keep actual model name (e.g., phi_student_t_nu_6)
-        elif 'phi' in best_model:
-            noise_model = 'kalman_phi_gaussian'
-        else:
-            noise_model = 'gaussian'
-        
-        # Validate required params
-        if q_val is None or not np.isfinite(q_val) or q_val <= 0:
-            return None
-        if c_val is None or not np.isfinite(c_val) or c_val <= 0:
-            return None
-        
-        result = {
-            # Full BMA structure from tune_q_mle.py
-            'global': global_data,
-            'regime': regime_data,
-            'has_bma': True,
-            
-            # Representative params from best model (for Kalman filter compatibility)
-            'q': float(q_val),
-            'c': float(c_val),
-            'phi': float(phi_val) if phi_val is not None and np.isfinite(phi_val) else None,
-            'nu': float(nu_val) if nu_val is not None and np.isfinite(nu_val) else None,
-            'noise_model': noise_model,
-            'best_model': best_model,
-            
-            # Diagnostics from best model (for display compatibility)
-            'bic': best_params.get('bic'),
-            'aic': best_params.get('aic'),
-            'hyvarinen_score': best_params.get('hyvarinen_score'),
-            'combined_score': best_params.get('combined_score'),
-            'log_likelihood': best_params.get('log_likelihood'),
-            'pit_ks_pvalue': best_params.get('pit_ks_pvalue'),
-            'ks_statistic': best_params.get('ks_statistic'),
-            
-            # Isotonic Recalibration Transport Map
-            # This is the CORE calibration layer - applied BEFORE regimes see PIT
-            'recalibration': global_data.get('recalibration'),
-            'recalibration_applied': global_data.get('recalibration_applied', False),
-            'pit_ks_pvalue_calibrated': global_data.get('pit_ks_pvalue_calibrated'),
-            'calibration_diagnostics': global_data.get('calibration_diagnostics'),
-            'failure_category': global_data.get('failure_category'),
-            
-            # Model comparison: build from all models (includes Hyvärinen scores)
-            'model_comparison': {
-                m: {
-                    'bic': m_params.get('bic'),
-                    'aic': m_params.get('aic'),
-                    'hyvarinen_score': m_params.get('hyvarinen_score'),
-                    'combined_score': m_params.get('combined_score'),
-                    'll': m_params.get('log_likelihood'),
-                    'n_params': m_params.get('n_params'),
-                }
-                for m, m_params in models.items()
-                if isinstance(m_params, dict) and m_params.get('fit_success', False)
-            },
-            
-            # Model selection metadata from tune_q_mle.py
-            'model_selection_method': raw_data.get('meta', {}).get('model_selection_method', 'combined'),
-            'bic_weight': raw_data.get('meta', {}).get('bic_weight', 0.5),
-            'entropy_lambda': raw_data.get('meta', {}).get('entropy_lambda', 0.05),
-            
-            # Global-level aggregates (from global block or computed)
-            'hyvarinen_max': global_data.get('hyvarinen_max'),
-            'combined_score_min': global_data.get('combined_score_min'),
-            'bic_min': global_data.get('bic_min'),
-            
-            # Calibrated Trust Authority
-            # ARCHITECTURAL LAW: Trust = Calibration Authority − Bounded Regime Penalty
-            # This is the SINGLE AUTHORITY for trust decisions
-            'calibrated_trust': global_data.get('calibrated_trust'),
-            'effective_trust': global_data.get('effective_trust'),
-            'calibration_trust': global_data.get('calibration_trust'),
-            'regime_penalty': global_data.get('regime_penalty'),
-            
-            # Metadata
-            'source': 'tuned_cache_bma',
-            'timestamp': raw_data.get('timestamp') or raw_data.get('meta', {}).get('timestamp'),
-            'model_posterior': model_posterior,
-        }
-        return result
-    except Exception as e:
-        if os.getenv('DEBUG'):
-            print(f"Warning: Failed to load tuned params for {asset_symbol}: {e}")
+            best_model = next(iter(models), None)
+    
+    if not best_model or best_model not in models:
         return None
+    
+    best_params = models[best_model]
+    
+    # Extract params from best model
+    q_val = best_params.get('q')
+    c_val = best_params.get('c', 1.0)
+    phi_val = best_params.get('phi')
+    nu_val = best_params.get('nu')
+    
+    # Derive noise_model from best model name
+    # Normalize to standard categories for downstream processing
+    if _is_student_t(best_model):
+        noise_model = best_model  # Keep actual model name (e.g., phi_student_t_nu_6)
+    elif 'phi' in best_model:
+        noise_model = 'kalman_phi_gaussian'
+    else:
+        noise_model = 'gaussian'
+    
+    # Validate required params
+    if q_val is None or not np.isfinite(q_val) or q_val <= 0:
+        return None
+    if c_val is None or not np.isfinite(c_val) or c_val <= 0:
+        return None
+    
+    result = {
+        # Full BMA structure from tune_q_mle.py
+        'global': global_data,
+        'regime': regime_data,
+        'has_bma': True,
+        
+        # Representative params from best model (for Kalman filter compatibility)
+        'q': float(q_val),
+        'c': float(c_val),
+        'phi': float(phi_val) if phi_val is not None and np.isfinite(phi_val) else None,
+        'nu': float(nu_val) if nu_val is not None and np.isfinite(nu_val) else None,
+        'noise_model': noise_model,
+        'best_model': best_model,
+        
+        # Diagnostics from best model (for display compatibility)
+        'bic': best_params.get('bic'),
+        'aic': best_params.get('aic'),
+        'hyvarinen_score': best_params.get('hyvarinen_score'),
+        'combined_score': best_params.get('combined_score'),
+        'log_likelihood': best_params.get('log_likelihood'),
+        'pit_ks_pvalue': best_params.get('pit_ks_pvalue'),
+        'ks_statistic': best_params.get('ks_statistic'),
+        
+        # Isotonic Recalibration Transport Map
+        # This is the CORE calibration layer - applied BEFORE regimes see PIT
+        'recalibration': global_data.get('recalibration'),
+        'recalibration_applied': global_data.get('recalibration_applied', False),
+        'pit_ks_pvalue_calibrated': global_data.get('pit_ks_pvalue_calibrated'),
+        'calibration_diagnostics': global_data.get('calibration_diagnostics'),
+        'failure_category': global_data.get('failure_category'),
+        
+        # Model comparison: build from all models (includes Hyvärinen scores)
+        'model_comparison': {
+            m: {
+                'bic': m_params.get('bic'),
+                'aic': m_params.get('aic'),
+                'hyvarinen_score': m_params.get('hyvarinen_score'),
+                'combined_score': m_params.get('combined_score'),
+                'll': m_params.get('log_likelihood'),
+                'n_params': m_params.get('n_params'),
+            }
+            for m, m_params in models.items()
+            if isinstance(m_params, dict) and m_params.get('fit_success', False)
+        },
+        
+        # Model selection metadata from tune_q_mle.py
+        'model_selection_method': raw_data.get('meta', {}).get('model_selection_method', 'combined'),
+        'bic_weight': raw_data.get('meta', {}).get('bic_weight', 0.5),
+        'entropy_lambda': raw_data.get('meta', {}).get('entropy_lambda', 0.05),
+        
+        # Global-level aggregates (from global block or computed)
+        'hyvarinen_max': global_data.get('hyvarinen_max'),
+        'combined_score_min': global_data.get('combined_score_min'),
+        'bic_min': global_data.get('bic_min'),
+        
+        # Calibrated Trust Authority
+        # ARCHITECTURAL LAW: Trust = Calibration Authority − Bounded Regime Penalty
+        # This is the SINGLE AUTHORITY for trust decisions
+        'calibrated_trust': global_data.get('calibrated_trust'),
+        'effective_trust': global_data.get('effective_trust'),
+        'calibration_trust': global_data.get('calibration_trust'),
+        'regime_penalty': global_data.get('regime_penalty'),
+        
+        # Calibration status and escalation tracking
+        'calibration_warning': global_data.get('calibration_warning', False),
+        'nu_refinement': global_data.get('nu_refinement', {}),
+        
+        # K=2 mixture (DEPRECATED - kept for backward compatibility)
+        'mixture_attempted': global_data.get('mixture_attempted', False),
+        'mixture_selected': global_data.get('mixture_selected', False),
+        'mixture_model': global_data.get('mixture_model'),
+        
+        # GH distribution fallback
+        'gh_attempted': global_data.get('gh_attempted', False),
+        'gh_selected': global_data.get('gh_selected', False),
+        'gh_model': global_data.get('gh_model'),
+        
+        # TVVM (Time-Varying Volatility Multiplier)
+        'tvvm_attempted': global_data.get('tvvm_attempted', False),
+        'tvvm_selected': global_data.get('tvvm_selected', False),
+        
+        # Metadata
+        'source': 'tuned_cache_bma',
+        'timestamp': raw_data.get('timestamp') or raw_data.get('meta', {}).get('timestamp'),
+        'model_posterior': model_posterior,
+    }
+    return result
 
 
 def _select_regime_params(
@@ -2265,16 +2279,39 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         sector = get_sector(asset_symbol) or ""
         
         # Model short names and descriptions
+        # Include ALL possible ν values from adaptive refinement
         model_info = {
             'kalman_gaussian': {'short': 'Gaussian', 'icon': '📈', 'desc': 'Standard Kalman filter'},
             'kalman_phi_gaussian': {'short': 'φ-Gaussian', 'icon': '🔄', 'desc': 'Autoregressive drift'}, 
-            # Discrete nu grid Student-t models
-            'phi_student_t_nu_4': {'short': 'φ-T(ν=4)', 'icon': '📊', 'desc': 'Heavy tails, ν=4'},
+            # Discrete nu grid Student-t models (original grid)
+            'phi_student_t_nu_4': {'short': 'φ-T(ν=4)', 'icon': '📊', 'desc': 'Very heavy tails, ν=4'},
             'phi_student_t_nu_6': {'short': 'φ-T(ν=6)', 'icon': '📊', 'desc': 'Heavy tails, ν=6'},
             'phi_student_t_nu_8': {'short': 'φ-T(ν=8)', 'icon': '📊', 'desc': 'Moderate tails, ν=8'},
             'phi_student_t_nu_12': {'short': 'φ-T(ν=12)', 'icon': '📊', 'desc': 'Light tails, ν=12'},
             'phi_student_t_nu_20': {'short': 'φ-T(ν=20)', 'icon': '📊', 'desc': 'Near-Gaussian, ν=20'},
+            # Adaptive ν refinement candidates (intermediate values)
+            'phi_student_t_nu_3': {'short': 'φ-T(ν=3)', 'icon': '📊', 'desc': 'Extreme tails, ν=3 (refined)'},
+            'phi_student_t_nu_5': {'short': 'φ-T(ν=5)', 'icon': '📊', 'desc': 'Heavy tails, ν=5 (refined)'},
+            'phi_student_t_nu_7': {'short': 'φ-T(ν=7)', 'icon': '📊', 'desc': 'Heavy tails, ν=7 (refined)'},
+            'phi_student_t_nu_10': {'short': 'φ-T(ν=10)', 'icon': '📊', 'desc': 'Moderate tails, ν=10 (refined)'},
+            'phi_student_t_nu_14': {'short': 'φ-T(ν=14)', 'icon': '📊', 'desc': 'Light tails, ν=14 (refined)'},
+            'phi_student_t_nu_16': {'short': 'φ-T(ν=16)', 'icon': '📊', 'desc': 'Light tails, ν=16 (refined)'},
+            'phi_student_t_nu_25': {'short': 'φ-T(ν=25)', 'icon': '📊', 'desc': 'Near-Gaussian, ν=25 (refined)'},
         }
+        
+        # Dynamic fallback: if model not in model_info, generate entry dynamically
+        def get_model_info(model_name: str) -> dict:
+            if model_name in model_info:
+                return model_info[model_name]
+            # Handle phi_student_t_nu_* with any ν value
+            if model_name.startswith('phi_student_t_nu_'):
+                try:
+                    nu_val = int(model_name.split('_')[-1])
+                    return {'short': f'φ-T(ν={nu_val})', 'icon': '📊', 'desc': f'Student-t, ν={nu_val}'}
+                except ValueError:
+                    pass
+            # Fallback
+            return {'short': model_name[:14], 'icon': '?', 'desc': model_name}
         
         # Model selection method description
         selection_method_info = {
@@ -2384,7 +2421,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         # ─────────────────────────────────────────────────────────────────────────────
         # WINNING MODEL - Hero section
         # ─────────────────────────────────────────────────────────────────────────────
-        best_info = model_info.get(best_model, {'short': best_model[:12] if best_model else '—'})
+        best_info = get_model_info(best_model)
         best_params = global_models.get(best_model, {})
         best_weight = model_posterior.get(best_model, 0.0)
         
@@ -2428,7 +2465,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         for model_name in visible_models:
             p = model_posterior.get(model_name, 0.0)
             m_params = global_models.get(model_name, {})
-            info = model_info.get(model_name, {'short': model_name[:12]})
+            info = get_model_info(model_name)
             is_best = model_name == best_model
             is_significant = p >= 0.02  # 2% threshold for significant contribution
             
@@ -2493,7 +2530,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         
         for model_name in visible_models:
             m_params = global_models.get(model_name, {})
-            info = model_info.get(model_name, {'short': model_name[:12]})
+            info = get_model_info(model_name)
             is_best = model_name == best_model
             
             if m_params.get('fit_success', False):
@@ -2533,6 +2570,114 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 )
         
         console.print(Padding(params_table, (0, 0, 0, 4)))
+        
+        # ─────────────────────────────────────────────────────────────────────────────
+        # CALIBRATION & TRUST - Shows calibration status and effective trust
+        # ─────────────────────────────────────────────────────────────────────────────
+        console.print()
+        
+        calibration_header = Text()
+        calibration_header.append("    ▸ ", style="bright_cyan")
+        calibration_header.append("Calibration & Trust", style="bold white")
+        console.print(calibration_header)
+        console.print()
+        
+        # Get calibration data from tuned params
+        calibrated_trust_data = tuned_params.get('calibrated_trust', {})
+        effective_trust = tuned_params.get('effective_trust')
+        calibration_trust = tuned_params.get('calibration_trust')
+        regime_penalty = tuned_params.get('regime_penalty')
+        calibration_warning = tuned_params.get('calibration_warning', False)
+        pit_ks_pvalue = global_data.get('pit_ks_pvalue')
+        pit_ks_pvalue_calibrated = global_data.get('pit_ks_pvalue_calibrated')
+        recalibration_applied = tuned_params.get('recalibration_applied', False)
+        nu_refinement = tuned_params.get('nu_refinement', {})
+        gh_selected = tuned_params.get('gh_selected', False)
+        gh_model = tuned_params.get('gh_model', {})
+        
+        # Trust decomposition table
+        trust_table = Table(
+            show_header=False,
+            border_style="dim",
+            box=box.SIMPLE,
+            padding=(0, 2),
+            expand=False,
+        )
+        trust_table.add_column("Label", style="dim", width=24)
+        trust_table.add_column("Value", width=30)
+        
+        # Calibration status
+        if calibration_warning:
+            cal_status = "[bold yellow]⚠ Warning[/bold yellow]"
+        else:
+            cal_status = "[bold green]✓ Passed[/bold green]"
+        trust_table.add_row("PIT Calibration", cal_status)
+        
+        # PIT p-values
+        if pit_ks_pvalue is not None:
+            pit_color = "red" if pit_ks_pvalue < 0.01 else "yellow" if pit_ks_pvalue < 0.05 else "green"
+            pit_str = f"[{pit_color}]{pit_ks_pvalue:.4f}[/{pit_color}]"
+            trust_table.add_row("  Raw PIT p-value", pit_str)
+        
+        if pit_ks_pvalue_calibrated is not None:
+            pit_cal_color = "red" if pit_ks_pvalue_calibrated < 0.01 else "yellow" if pit_ks_pvalue_calibrated < 0.05 else "green"
+            pit_cal_str = f"[{pit_cal_color}]{pit_ks_pvalue_calibrated:.4f}[/{pit_cal_color}]"
+            trust_table.add_row("  Calibrated PIT p-value", pit_cal_str)
+        
+        # Isotonic recalibration
+        if recalibration_applied:
+            trust_table.add_row("  Isotonic Recalibration", "[green]✓ Applied[/green]")
+        else:
+            trust_table.add_row("  Isotonic Recalibration", "[dim]Not applied[/dim]")
+        
+        # ν refinement
+        if nu_refinement:
+            nu_attempted = nu_refinement.get('refinement_attempted', False)
+            nu_improved = nu_refinement.get('improvement_achieved', False)
+            nu_original = nu_refinement.get('nu_original')
+            nu_final = nu_refinement.get('nu_final')
+            
+            if nu_attempted:
+                if nu_improved and nu_original != nu_final:
+                    trust_table.add_row("  ν Refinement", f"[green]✓ Improved ν={nu_original}→{nu_final}[/green]")
+                else:
+                    trust_table.add_row("  ν Refinement", f"[dim]Attempted, no improvement[/dim]")
+            else:
+                trust_table.add_row("  ν Refinement", "[dim]Not needed[/dim]")
+        
+        # GH model
+        if gh_selected and gh_model:
+            gh_params = gh_model.get('parameters', {})
+            gh_skew = gh_params.get('beta', 0)
+            skew_dir = "right" if gh_skew > 0.1 else "left" if gh_skew < -0.1 else "symmetric"
+            trust_table.add_row("  GH Skew Model", f"[cyan]✓ Selected ({skew_dir})[/cyan]")
+        
+        # Trust decomposition (main feature)
+        if effective_trust is not None and calibration_trust is not None:
+            trust_table.add_row("", "")  # Spacer
+            trust_table.add_row("[bold]Trust Authority[/bold]", "")
+            
+            # Calibration trust
+            cal_trust_color = "green" if calibration_trust > 0.8 else "yellow" if calibration_trust > 0.5 else "red"
+            trust_table.add_row("  Calibration Trust", f"[{cal_trust_color}]{calibration_trust:.1%}[/{cal_trust_color}]")
+            
+            # Regime penalty
+            if regime_penalty is not None:
+                penalty_color = "dim" if regime_penalty < 0.1 else "yellow" if regime_penalty < 0.2 else "red"
+                regime_context = calibrated_trust_data.get('regime_context', 'normal')
+                trust_table.add_row("  Regime Penalty", f"[{penalty_color}]-{regime_penalty:.1%} ({regime_context})[/{penalty_color}]")
+            
+            # Effective trust (final)
+            eff_trust_color = "green" if effective_trust > 0.7 else "yellow" if effective_trust > 0.4 else "red"
+            trust_table.add_row("  [bold]Effective Trust[/bold]", f"[bold {eff_trust_color}]{effective_trust:.1%}[/bold {eff_trust_color}]")
+            
+            # Tail bias
+            tail_bias = calibrated_trust_data.get('tail_bias')
+            if tail_bias is not None:
+                bias_dir = "right" if tail_bias > 0.02 else "left" if tail_bias < -0.02 else "centered"
+                trust_table.add_row("  Tail Bias", f"[dim]{tail_bias:+.3f} ({bias_dir})[/dim]")
+        
+        console.print(Padding(trust_table, (0, 0, 0, 4)))
         
         console.print()
         console.print(Rule(style="dim", characters="─"))
