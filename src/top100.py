@@ -1723,7 +1723,7 @@ Examples:
     # BATCH PROCESSING WITH CACHING - Much faster than individual requests
     # ═══════════════════════════════════════════════════════════════════════════════
     
-    CACHE_DIR = "src/quant/cache/top100"
+    CACHE_DIR = "src/cache/top100"
     os.makedirs(CACHE_DIR, exist_ok=True)
     
     import json

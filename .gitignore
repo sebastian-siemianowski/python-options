@@ -37,18 +37,18 @@ data/meta/
 *.backup
 
 # Quant script caches (prices and screener data)
-src/quant/cache/prices/
-src/quant/cache/top100/
-src/quant/cache/failed/
-src/quant/cache/calibration/
-src/quant/cache/tune/
+src/cache/prices/
+src/cache/top100/
+src/cache/failed/
+src/cache/calibration/
+src/cache/tune/
 
 # Kalman tuning cache - per-asset files (git-friendly, commit individual files as needed)
 # Legacy single-file cache (deprecated, use per-asset)
-src/quant/cache/kalman_q_cache.json
+src/cache/kalman_q_cache.json
 # Per-asset cache files (ignored by default, but you can commit specific important ones)
 # Uncomment to track all per-asset cache files:
-!src/quant/cache/tune/*.json
+!src/cache/tune/*.json
 # Or keep them ignored (default) for local-only cache:
 
 # Distribution / packaging
@@ -84,13 +84,13 @@ htmlcov/
 
 # Logs
 *.log
-/src/src/quant/cache/prices/AAPL.csv
-/src/src/quant/cache/fx_rates.json
-/src/src/quant/cache/prices/USDPLN_X.csv
-/src/scripts/quant/cache/prices/AAPL.csv
-/src/scripts/quant/cache/prices/USDPLN_X.csv
-/src/scripts/quant/cache/fx_rates.json
+/src/src/cache/prices/AAPL.csv
+/src/src/cache/fx_rates.json
+/src/src/cache/prices/USDPLN_X.csv
+/src/cache/prices/AAPL.csv
+/src/cache/prices/USDPLN_X.csv
+/src/cache/fx_rates.json
 /src/fx_failures.json
-/src/quant/cache/fx_plnjpy.json
-/src/quant/cache/fx_rates.json
-/src/quant/cache/debt/EURJPY_1d.csv
+/src/cache/fx_plnjpy.json
+/src/cache/fx_rates.json
+/src/cache/debt/EURJPY_1d.csv

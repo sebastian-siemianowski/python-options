@@ -2538,7 +2538,7 @@ def render_calibration_report(
     - Failed tuning
     - Regime collapse warnings
     
-    Also saves issues to JSON file: src/quant/cache/calibration/calibration_failures.json
+    Also saves issues to JSON file: src/cache/calibration/calibration_failures.json
     """
     import numpy as np
     import json
@@ -2950,7 +2950,7 @@ def render_calibration_report(
     file_info = Text()
     file_info.append("    💾 ", style="dim")
     file_info.append("Saved to ", style="dim")
-    file_info.append("src/quant/cache/calibration/calibration_failures.json", style="dim italic")
+    file_info.append("src/cache/calibration/calibration_failures.json", style="dim italic")
     console.print(file_info)
     console.print()
 

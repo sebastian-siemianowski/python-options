@@ -91,7 +91,7 @@ from rich import box
 # =============================================================================
 
 # File paths (isolated, deletable)
-DEBT_CACHE_DIR = "src/quant/cache/debt"
+DEBT_CACHE_DIR = "src/cache/debt"
 DECISION_PERSISTENCE_FILE = f"{DEBT_CACHE_DIR}/debt_switch_decision.json"
 EURJPY_DATA_FILE = f"{DEBT_CACHE_DIR}/EURJPY_1d.csv"
 STATE_HISTORY_FILE = f"{DEBT_CACHE_DIR}/state_history.json"

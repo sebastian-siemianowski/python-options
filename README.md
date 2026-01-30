@@ -91,7 +91,7 @@ At its core, the system maintains a population of competing models—each repres
 ║   │   │      • Normalize: p(m|r) = w(m|r) / Σw                              │   │     ║
 ║   │   └─────────────────────────────────────────────────────────────────────┘   │     ║
 ║   │                                                                             │     ║
-║   │   Output: src/quant/cache/kalman_q_cache.json                           │     ║
+║   │   Output: src/cache/kalman_q_cache.json                           │     ║
 ║   │           {asset: {regime: {model: {q, φ, ν, BIC, p(m|r), ...}}}}           │     ║
 ║   └──────────────────────────────────┬──────────────────────────────────────────┘     ║
 ║                                      │                                                ║
@@ -459,7 +459,7 @@ make tune ARGS="--dry-run"             # Preview without executing
    - Converts scores to posterior weights
    - Applies temporal smoothing against previous run
    - Applies hierarchical shrinkage toward global
-3. Saves to `src/quant/cache/kalman_q_cache.json`
+3. Saves to `src/cache/kalman_q_cache.json`
 
 **Key ARGS:**
 | Argument | Description | Default |
@@ -620,7 +620,7 @@ make debt
 - Latent state inference (NORMAL → COMPRESSED → PRE_POLICY → POLICY)
 - Auditable, causal decision logic
 
-Output: `src/quant/cache/debt/`
+Output: `src/cache/debt/`
 
 ---
 
@@ -1653,7 +1653,7 @@ Each asset records its escalation history:
 | `src/pit_driven_escalation.py` | Orchestration logic |
 | `src/adaptive_nu_refinement.py` | Level 2: ν refinement |
 | `src/phi_t_mixture_k2.py` | Level 3: K=2 mixture |
-| `src/quant/cache/calibration/calibration_failures.json` | Diagnostic output |
+| `src/cache/calibration/calibration_failures.json` | Diagnostic output |
 
 **View Escalation Summary**
 

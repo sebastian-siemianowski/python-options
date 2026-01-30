@@ -53,11 +53,11 @@ try:
 except Exception:
     pass  # Fallback: yfinance will use its defaults
 
-PRICE_CACHE_DIR = os.path.join("src", "quant", "cache", "prices")
+PRICE_CACHE_DIR = os.path.join("src", "cache", "prices")
 PRICE_CACHE_DIR_PATH = pathlib.Path(PRICE_CACHE_DIR)
 PRICE_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
 
-FAILED_CACHE_DIR = os.path.join("src", "quant", "cache", "failed")
+FAILED_CACHE_DIR = os.path.join("src", "cache", "failed")
 FAILED_CACHE_DIR_PATH = pathlib.Path(FAILED_CACHE_DIR)
 FAILED_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
 FAILED_ASSETS_FILE = FAILED_CACHE_DIR_PATH / "failed_assets.json"
@@ -67,7 +67,7 @@ FAILED_ASSETS_FILE = FAILED_CACHE_DIR_PATH / "failed_assets.json"
 # ============================================================================
 # Set via environment variable: OFFLINE_MODE=1
 # When enabled:
-# - Uses only cached price data from src/quant/cache/prices
+# - Uses only cached price data from src/cache/prices
 # - Skips all Yahoo Finance API calls
 # - Allows system to run without network connectivity
 # ============================================================================
@@ -2397,7 +2397,7 @@ def get_sector(symbol: str) -> str:
     return "Unspecified"
 
 # FX rate cache (JSON on disk) to avoid repeated network calls
-FX_RATE_CACHE_PATH = os.path.join("src", "quant", "cache", "fx_rates.json")
+FX_RATE_CACHE_PATH = os.path.join("src", "cache", "fx_rates.json")
 FX_RATE_CACHE_MAX_AGE_DAYS = 3  # Cache FX rates for 3 days to reduce rate limiting
 _FX_RATE_CACHE: Optional[Dict[str, dict]] = None
 
@@ -3080,7 +3080,7 @@ def save_failed_assets(failures: Dict[str, Dict], append: bool = True) -> str:
 
 
 def load_failed_assets() -> Dict[str, Dict]:
-    """Load failed assets from src/quant/cache/failed/failed_assets.json.
+    """Load failed assets from src/cache/failed/failed_assets.json.
     
     Returns:
         Dict mapping asset symbol to failure info
@@ -3120,7 +3120,7 @@ def purge_failed_assets_from_cache(verbose: bool = True) -> Dict[str, bool]:
     failures = load_failed_assets()
     if not failures:
         if verbose:
-            print("No failed assets found in src/quant/cache/failed/failed_assets.json")
+            print("No failed assets found in src/cache/failed/failed_assets.json")
         return {}
     
     results = {}
@@ -4278,7 +4278,7 @@ def _resolve_symbol_candidates(asset: str) -> List[str]:
     return deduped
 
 
-def drop_first_k_from_kalman_cache(k: int = 4, cache_path: str = 'src/quant/cache/tune') -> List[str]:
+def drop_first_k_from_kalman_cache(k: int = 4, cache_path: str = 'src/cache/tune') -> List[str]:
     """
     Remove the first k tickers from the Kalman q cache.
     

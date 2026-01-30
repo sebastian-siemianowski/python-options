@@ -19,7 +19,7 @@ def test_load_tuned_params():
     print("Testing Model Selection Integration")
     print("=" * 80)
     
-    cache_dir = "src/quant/cache/tune"
+    cache_dir = "src/cache/tune"
     
     if not os.path.isdir(cache_dir):
         print(f"❌ Cache directory not found: {cache_dir}")

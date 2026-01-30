@@ -1,7 +1,7 @@
 """
 Per-asset Kalman parameter cache.
 
-Stores tuned parameters in individual JSON files under src/quant/cache/tune/
+Stores tuned parameters in individual JSON files under src/cache/tune/
 to enable git-friendly storage and parallel-safe tuning.
 
 Architecture:
