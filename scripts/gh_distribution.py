@@ -546,14 +546,18 @@ def should_attempt_gh(
     
     Args:
         pit_ks_pvalue: Current PIT p-value
-        mixture_attempted: Whether K=2 mixture was attempted
-        mixture_selected: Whether K=2 mixture was selected
+        mixture_attempted: DEPRECATED - K=2 mixture removed (always False for new runs)
+        mixture_selected: DEPRECATED - K=2 mixture removed (always False for new runs)
         nu_refinement_attempted: Whether ν refinement was attempted
         nu_refinement_improved: Whether ν refinement improved calibration
         config: GH model configuration
         
     Returns:
         True if GH should be attempted
+        
+    Note:
+        K=2 mixture was removed after empirical evaluation (206 attempts, 0 selections).
+        The mixture_attempted/mixture_selected params are kept for backward compatibility.
     """
     config = config or DEFAULT_GH_CONFIG
     
@@ -564,8 +568,8 @@ def should_attempt_gh(
     if pit_ks_pvalue >= config.pit_threshold:
         return False
     
-    # Attempt if mixture was tried but not selected (or not attempted)
-    # AND if ν refinement didn't solve it
+    # K=2 mixture check removed - feature empirically falsified
+    # Legacy cached results may still have mixture_selected=True
     if mixture_selected:
         # Mixture was selected but still failing - try GH
         return True

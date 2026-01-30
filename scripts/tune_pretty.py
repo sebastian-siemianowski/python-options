@@ -147,6 +147,8 @@ Examples:
     student_t_count = 0
     gaussian_count = 0
     regime_tuning_count = 0
+    # K=2 mixture removed (empirically falsified: 206 attempts, 0 selections)
+    # Counters kept for backward compatibility with cached results
     mixture_attempted_count = 0
     mixture_selected_count = 0
     nu_refinement_attempted_count = 0

@@ -194,19 +194,10 @@ if SCRIPT_DIR not in sys.path:
 
 from fx_data_utils import fetch_px, _download_prices, get_default_asset_universe
 
-# Import K=2 Mixture Model for calibration improvement
-try:
-    from phi_t_mixture_k2 import (
-        PhiTMixtureK2,
-        PhiTMixtureK2Config,
-        PhiTMixtureK2Result,
-        should_use_mixture,
-        fit_and_select,
-        summarize_mixture_improvement,
-    )
-    MIXTURE_MODEL_AVAILABLE = True
-except ImportError:
-    MIXTURE_MODEL_AVAILABLE = False
+# K=2 Mixture Model REMOVED - empirically falsified (206 attempts, 0 selections)
+# The HMM regime-switching + Student-t already captures regime heterogeneity.
+# See: docs/CALIBRATION_SOLUTIONS_ANALYSIS.md for decision rationale.
+MIXTURE_MODEL_AVAILABLE = False
 
 # Import Adaptive ν Refinement for calibration improvement
 try:
@@ -449,63 +440,30 @@ PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 
 
 # =============================================================================
-# K=2 MIXTURE MODEL CONFIGURATION
+# K=2 MIXTURE MODEL - REMOVED (Empirically Falsified)
 # =============================================================================
-# Optional K=2 mixture of symmetric φ-t models for improved calibration.
-# Asymmetry emerges from σ dispersion, not parameter asymmetry.
+# The K=2 mixture model was removed after empirical evaluation:
+#   - 206 attempts across assets, 0 selections
+#   - 0% success rate indicates model misspecification
+#   - Returns are fat-tailed unimodal, not bimodal
+#   - HMM regime-switching + Student-t already captures regime heterogeneity
 #
-# When enabled:
-#   - After fitting single φ-t model, mixture is attempted
-#   - Mixture must beat single by BIC threshold to be selected
-#   - Component A = calm regime, Component B = stress regime
-#   - σ_B ≥ 1.5 × σ_A (identifiability constraint)
-#   - w ∈ [0.1, 0.9] (prevents degenerate solutions)
+# Decision rationale documented in docs/CALIBRATION_SOLUTIONS_ANALYSIS.md
+# Panel scoring: 92.3/100 for removal option
 # =============================================================================
 
-# Feature toggle (set to True to enable mixture fitting)
-MIXTURE_MODEL_ENABLED = True
-
-# Minimum σ ratio between components (stress / calm)
-MIXTURE_SIGMA_RATIO_MIN = 1.5
-
-# Weight bounds for mixture
-MIXTURE_MIN_WEIGHT = 0.1
-MIXTURE_MAX_WEIGHT = 0.9
-
-# BIC threshold: mixture must beat single model by this margin
-# RELAXED from 2.0 to 0.0 - any BIC improvement now triggers selection
-# Reason: Original threshold was too conservative, preventing valid selections
-MIXTURE_BIC_THRESHOLD = 0.0  # Any improvement is acceptable
-
-# PIT improvement threshold: select mixture if PIT improves by this factor
-# Even if BIC doesn't improve, a 10x PIT improvement justifies mixture
-MIXTURE_PIT_IMPROVEMENT_FACTOR = 10.0
-
-# Entropy regularization (DISABLED: was incorrectly encouraging w=0.5)
-# For calm/stress regime model, we expect w_calm ≈ 0.7-0.8, not 0.5
-# Setting to 0 lets the data determine the natural mixture proportion
-MIXTURE_ENTROPY_PENALTY = 0.0
+# Feature toggle (DISABLED - feature removed)
+MIXTURE_MODEL_ENABLED = False
 
 
-def get_mixture_config() -> Optional['PhiTMixtureK2Config']:
+def get_mixture_config():
     """
-    Get mixture model configuration based on global settings.
+    K=2 mixture model has been removed - always returns None.
     
-    Returns:
-        PhiTMixtureK2Config if mixture is available and enabled, None otherwise.
+    Reason: 206 attempts, 0 selections. The existing HMM regime-switching
+    with Student-t tail modeling provides superior calibration.
     """
-    if not MIXTURE_MODEL_AVAILABLE or not MIXTURE_MODEL_ENABLED:
-        return None
-    
-    return PhiTMixtureK2Config(
-        enabled=MIXTURE_MODEL_ENABLED,
-        min_weight=MIXTURE_MIN_WEIGHT,
-        max_weight=MIXTURE_MAX_WEIGHT,
-        sigma_ratio_min=MIXTURE_SIGMA_RATIO_MIN,
-        sigma_ratio_max=5.0,
-        entropy_penalty=MIXTURE_ENTROPY_PENALTY,
-        bic_threshold=MIXTURE_BIC_THRESHOLD,
-    )
+    return None
 
 
 # =============================================================================
@@ -3238,127 +3196,18 @@ def tune_asset_q(
             }
 
         # =================================================================
-        # K=2 MIXTURE MODEL ENHANCEMENT
+        # K=2 MIXTURE MODEL - REMOVED (Empirically Falsified)
         # =================================================================
-        # When calibration is poor (PIT p < 0.05), attempt K=2 mixture
-        # to capture latent regime heterogeneity via σ dispersion.
-        #
-        # The mixture only replaces the single model if:
-        #   1. Mixture fitting succeeds
-        #   2. Mixture BIC < single BIC - threshold
-        #   3. Mixture passes validation checks
-        #
-        # IMPORTANT: We use Kalman-filtered drift for PIT computation to
-        # enable proper comparison with the single model. The mixture
-        # scales (σ_A, σ_B) are applied on top of the Kalman forecast std.
+        # K=2 mixture was removed after evaluation:
+        #   - 206 attempts, 0 selections (0% success rate)
+        #   - Returns are fat-tailed unimodal, not bimodal
+        #   - HMM regime-switching + Student-t already handles regimes
+        # 
+        # Fields preserved for backward compatibility with cached results
         # =================================================================
-        mixture_config = get_mixture_config()
-        result['mixture_attempted'] = False  # Track whether mixture was attempted
-        
-        if mixture_config is not None and calibration_warning:
-            _log(f"  🔧 Attempting K=2 mixture model for calibration improvement...")
-            result['mixture_attempted'] = True
-            
-            try:
-                mixer = PhiTMixtureK2(mixture_config)
-                
-                # Use the selected model's parameters for warm-start
-                sigma_init = np.sqrt(c_optimal) * np.median(vol_arr)
-                
-                mixture_result = mixer.fit(
-                    returns=returns_arr,
-                    vol=vol_arr,
-                    nu=nu_optimal if nu_optimal is not None else 8.0,
-                    phi_init=phi_selected if phi_selected is not None else 0.0,
-                    sigma_init=sigma_init
-                )
-                
-                if mixture_result is not None:
-                    # CRITICAL: Use Kalman-filtered drift for PIT to enable 
-                    # apples-to-apples comparison with single model
-                    try:
-                        pit_values, mix_ks_stat, mix_ks_pvalue = mixer.compute_pit_with_kalman_drift(
-                            returns=returns_arr,
-                            mu_filtered=mu_filtered,
-                            vol=vol_arr,
-                            P_filtered=P_filtered,
-                            c=c_optimal,
-                            result=mixture_result
-                        )
-                        
-                        # Update mixture result with Kalman-based PIT
-                        mixture_result_dict = mixture_result.to_dict()
-                        mixture_result_dict['ks_statistic_kalman'] = float(mix_ks_stat)
-                        mixture_result_dict['pit_ks_pvalue_kalman'] = float(mix_ks_pvalue)
-                        
-                        # Use Kalman-based PIT for decision making
-                        effective_pit_pvalue = mix_ks_pvalue
-                        effective_ks_stat = mix_ks_stat
-                        
-                    except Exception as pit_err:
-                        _log(f"     ⚠️ Kalman PIT fallback to AR(1): {pit_err}")
-                        # Fallback to original AR(1) PIT if Kalman fails
-                        mixture_result_dict = mixture_result.to_dict()
-                        effective_pit_pvalue = mixture_result.pit_ks_pvalue
-                        effective_ks_stat = mixture_result.ks_statistic
-                    
-                    # Check if mixture improves calibration
-                    improvement = summarize_mixture_improvement(
-                        single_bic=bic_final,
-                        single_pit_pvalue=ks_pvalue,
-                        mixture_result=mixture_result
-                    )
-                    
-                    # Override improvement metrics with Kalman-based PIT
-                    improvement['mixture_pit_pvalue_kalman'] = float(effective_pit_pvalue)
-                    improvement['pit_improvement_kalman'] = float(effective_pit_pvalue - ks_pvalue)
-                    improvement['mixture_calibrated_kalman'] = effective_pit_pvalue >= 0.05
-                    
-                    # Compute PIT improvement ratio (avoid division by zero)
-                    pit_improvement_ratio = effective_pit_pvalue / max(ks_pvalue, 1e-300)
-                    improvement['pit_improvement_ratio'] = float(pit_improvement_ratio)
-                    
-                    # DUAL CRITERION: Select mixture if EITHER:
-                    # 1. BIC improves (any amount, threshold=0)
-                    # 2. PIT improves by factor of 10+ (even if BIC doesn't improve)
-                    # AND PIT must not get worse
-                    bic_criterion = improvement['bic_improvement'] > mixture_config.bic_threshold
-                    pit_criterion = pit_improvement_ratio >= MIXTURE_PIT_IMPROVEMENT_FACTOR
-                    pit_not_worse = effective_pit_pvalue >= ks_pvalue
-                    
-                    use_mixture = (bic_criterion or pit_criterion) and pit_not_worse
-                    
-                    # Log decision reasoning
-                    if use_mixture:
-                        reason = "BIC" if bic_criterion else f"PIT×{pit_improvement_ratio:.0f}"
-                        _log(f"     ✓ Mixture selected ({reason}): σ_ratio={mixture_result.sigma_ratio:.2f}, "
-                             f"w_calm={mixture_result.weight:.2f}, PIT p={effective_pit_pvalue:.4f}")
-                        
-                        # Update result with mixture parameters
-                        result['mixture_model'] = mixture_result_dict
-                        result['mixture_selected'] = True
-                        result['mixture_improvement'] = improvement
-                        
-                        # Update calibration status if mixture improves it
-                        if effective_pit_pvalue >= 0.05:
-                            result['calibration_warning'] = False
-                            result['pit_ks_pvalue'] = float(effective_pit_pvalue)
-                            result['ks_statistic'] = float(effective_ks_stat)
-                    else:
-                        _log(f"     ✗ Mixture not selected (BIC impr={improvement['bic_improvement']:.1f}, "
-                             f"PIT {ks_pvalue:.4f}→{effective_pit_pvalue:.4f})")
-                        result['mixture_model'] = mixture_result_dict
-                        result['mixture_selected'] = False
-                        result['mixture_improvement'] = improvement
-                else:
-                    _log(f"     ✗ Mixture fitting failed")
-                    result['mixture_model'] = None
-                    result['mixture_selected'] = False
-                    
-            except Exception as mix_err:
-                _log(f"     ✗ Mixture error: {mix_err}")
-                result['mixture_model'] = None
-                result['mixture_selected'] = False
+        result['mixture_attempted'] = False
+        result['mixture_selected'] = False
+        result['mixture_model'] = None
 
         # =================================================================
         # GENERALIZED HYPERBOLIC (GH) DISTRIBUTION FALLBACK

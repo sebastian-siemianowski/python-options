@@ -1,8 +1,25 @@
 #!/usr/bin/env python3
 """
 ===============================================================================
-TEST SUITE FOR K=2 MIXTURE OF SYMMETRIC φ-t MODELS
+DEPRECATED: TEST SUITE FOR K=2 MIXTURE MODEL
 ===============================================================================
+
+** THIS TEST MODULE IS DEPRECATED **
+
+The K=2 mixture model has been removed from production after empirical
+evaluation showed 0% selection rate (206 attempts, 0 selections).
+
+This test file is kept for:
+  - Historical reference
+  - Ensuring the deprecated module doesn't break if imported for
+    backward compatibility with cached results
+  - Research experimentation (not production)
+
+See: docs/CALIBRATION_SOLUTIONS_ANALYSIS.md for decision rationale.
+
+-------------------------------------------------------------------------------
+ORIGINAL DOCUMENTATION (HISTORICAL)
+-------------------------------------------------------------------------------
 
 This test suite validates:
 1. Identifiability constraints (σ_B ≥ 1.5 × σ_A)
@@ -17,9 +34,18 @@ Run with: python -m pytest scripts/tests/test_phi_t_mixture_k2.py -v
 """
 from __future__ import annotations
 
+import warnings
 import numpy as np
 import pytest
 from scipy.stats import kstest, t as student_t
+
+# Emit deprecation warning when tests are run
+warnings.warn(
+    "K=2 mixture tests are deprecated. The feature was removed after "
+    "206 attempts with 0 selections (0% success rate).",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 import sys
 import os

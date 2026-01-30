@@ -1963,25 +1963,20 @@ def render_tuning_summary(
         student_row.append(f"  ({student_pct:>4.1f}%)", style="dim")
         console.print(student_row)
         
-        # K=2 Mixture row (only if attempted)
+        # K=2 Mixture REMOVED (empirically falsified: 206 attempts, 0 selections)
+        # Display section kept for backward compatibility with cached results
+        # that may still have mixture_attempted=True
         if mixture_attempted_count > 0:
             console.print()
             mix_section = Text()
-            mix_section.append("    ◆ ", style="bright_yellow")
-            mix_section.append("K=2 Mixture Fallback", style="bright_yellow")
+            mix_section.append("    ◆ ", style="dim")
+            mix_section.append("K=2 Mixture (REMOVED)", style="dim")
             console.print(mix_section)
             
             mix_row = Text()
             mix_row.append("      ", style="")
-            mix_row.append(f"Attempted: {mixture_attempted_count}", style="dim")
-            mix_row.append("  →  ", style="dim")
-            if mixture_selected_count > 0:
-                mix_row.append(f"Selected: {mixture_selected_count}", style="bold bright_green")
-                success_rate = mixture_selected_count / mixture_attempted_count * 100
-                mix_row.append(f"  ({success_rate:.0f}% success)", style="dim")
-            else:
-                mix_row.append("Selected: 0", style="dim")
-                mix_row.append("  (none improved calibration)", style="dim")
+            mix_row.append(f"Legacy cached: {mixture_attempted_count}", style="dim")
+            mix_row.append("  (feature removed - 0% historical success)", style="dim")
             console.print(mix_row)
         
         # Adaptive ν Refinement row (only if attempted)

@@ -1,9 +1,30 @@
 #!/usr/bin/env python3
 """
-Verify K=2 Mixture Model Implementation against Acceptance Criteria.
+DEPRECATED: K=2 Mixture Model Implementation Verification
+
+This script verified the K=2 mixture model implementation which has been
+REMOVED from the system after empirical evaluation showed:
+  - 206 attempts across assets
+  - 0 selections (0% success rate)
+  - Model misspecification: returns are fat-tailed unimodal, not bimodal
+
+The HMM regime-switching + Student-t architecture already captures regime
+heterogeneity more effectively.
+
+See: docs/CALIBRATION_SOLUTIONS_ANALYSIS.md for decision rationale.
+
+This file is kept for historical reference only.
 """
 import sys
 import os
+import warnings
+
+warnings.warn(
+    "K=2 mixture model has been removed (206 attempts, 0 selections). "
+    "This verification script is deprecated.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 # Add scripts directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))

@@ -1,8 +1,34 @@
 #!/usr/bin/env python3
 """
 ===============================================================================
-K=2 MIXTURE OF SYMMETRIC φ-t MODELS FOR CALIBRATION IMPROVEMENT
+DEPRECATED: K=2 MIXTURE OF SYMMETRIC φ-t MODELS
 ===============================================================================
+
+** THIS MODULE IS NO LONGER USED IN PRODUCTION **
+
+Empirical evaluation showed 0% selection rate (206 attempts, 0 selections).
+The model was removed from the tuning pipeline because:
+  1. Returns are fat-tailed unimodal, not bimodal
+  2. HMM regime-switching + Student-t already captures regime heterogeneity
+  3. The GMM approach duplicates regime separation without state transitions
+
+This file is kept for:
+  - Historical reference
+  - Backward compatibility with cached results that may contain mixture data
+  - Research experimentation (not production)
+
+For production calibration, use:
+  - HMM regime detection (regime_used, regime_source)
+  - Student-t tail modeling (nu_hat)
+  - Adaptive ν refinement (adaptive_nu_refinement.py)
+  - Generalized Hyperbolic for skewed assets (gh_distribution.py)
+
+See: docs/CALIBRATION_SOLUTIONS_ANALYSIS.md for decision rationale.
+===============================================================================
+
+-------------------------------------------------------------------------------
+ORIGINAL DOCUMENTATION (HISTORICAL)
+-------------------------------------------------------------------------------
 
 This module implements an identifiability-safe K=2 mixture of symmetric φ-t
 models to address PIT calibration failures.

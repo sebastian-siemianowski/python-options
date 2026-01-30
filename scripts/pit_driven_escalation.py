@@ -483,19 +483,21 @@ def extract_escalation_from_result(result: Dict[str, Any]) -> EscalationResult:
         else:
             path.append("nu_refinement_improved")
     
-    # Check mixture
+    # Check mixture (DEPRECATED - K=2 mixture removed after 206 attempts, 0 selections)
+    # Kept for backward compatibility with cached results
     if global_result.get('mixture_attempted'):
         levels_attempted.append(3)
-        path.append("mixture_attempted")
+        path.append("mixture_attempted_legacy")
         if not global_result.get('mixture_selected'):
             levels_failed.append(3)
-            path.append("mixture_rejected")
+            path.append("mixture_rejected_legacy")
         else:
-            path.append("mixture_selected")
+            path.append("mixture_selected_legacy")
     
     # Determine final model name
+    # K=2 mixture check kept for backward compat with cached results
     if global_result.get('mixture_selected'):
-        final_model = "mixture"
+        final_model = "mixture_legacy"
     elif nu_ref.get('improvement_achieved'):
         final_model = "phi-t-refined"
     elif global_result.get('noise_model', '').startswith('phi_student_t'):
