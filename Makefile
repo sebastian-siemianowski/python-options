@@ -152,7 +152,7 @@ show-q:
 	@if [ -d src/quant/cache/tune ] && [ "$$(ls -A src/quant/cache/tune/*.json 2>/dev/null | head -1)" ]; then \
 		echo "=== Cached Kalman q Parameters (per-asset) ==="; \
 		echo "Directory: src/quant/cache/tune/"; \
-		.venv/bin/python -c "import sys; sys.path.insert(0, 'src/quant'); from kalman_cache import list_cached_symbols, get_cache_stats; symbols=list_cached_symbols(); stats=get_cache_stats(); print(f'Total assets: {stats[\"n_assets\"]}'); print(f'Total size: {stats[\"total_size_kb\"]:.1f} KB'); print('First 20 symbols:', ', '.join(symbols[:20]) + ('...' if len(symbols) > 20 else ''))"; \
+		.venv/bin/python -c "import sys; sys.path.insert(0, 'src'); from kalman_cache import list_cached_symbols, get_cache_stats; symbols=list_cached_symbols(); stats=get_cache_stats(); print(f'Total assets: {stats[\"n_assets\"]}'); print(f'Total size: {stats[\"total_size_kb\"]:.1f} KB'); print('First 20 symbols:', ', '.join(symbols[:20]) + ('...' if len(symbols) > 20 else ''))"; \
 	else \
 		echo "No cache files found. Run 'make tune' first."; \
 	fi
@@ -166,19 +166,19 @@ clear-q:
 # Cache management utilities
 cache-stats: .venv/.deps_installed
 	@echo "📊 Kalman tuning cache statistics:"
-	@.venv/bin/python -c "import sys; sys.path.insert(0, 'src/quant'); from kalman_cache import get_cache_stats; s=get_cache_stats(); print(f'  Assets:     {s[\"n_assets\"]}'); print(f'  Total Size: {s[\"total_size_kb\"]:.1f} KB'); print(f'  Avg Size:   {s[\"avg_size_kb\"]:.1f} KB'); print(f'  Directory:  {s[\"cache_dir\"]}')"
+	@.venv/bin/python -c "import sys; sys.path.insert(0, 'src'); from kalman_cache import get_cache_stats; s=get_cache_stats(); print(f'  Assets:     {s[\"n_assets\"]}'); print(f'  Total Size: {s[\"total_size_kb\"]:.1f} KB'); print(f'  Avg Size:   {s[\"avg_size_kb\"]:.1f} KB'); print(f'  Directory:  {s[\"cache_dir\"]}')"
 
 cache-migrate: .venv/.deps_installed
 	@echo "🔄 Migrating legacy cache to per-asset files..."
-	@.venv/bin/python -c "import sys; sys.path.insert(0, 'src/quant'); from kalman_cache import migrate_legacy_cache; migrate_legacy_cache()"
+	@.venv/bin/python -c "import sys; sys.path.insert(0, 'src'); from kalman_cache import migrate_legacy_cache; migrate_legacy_cache()"
 
 cache-list: .venv/.deps_installed
 	@echo "📋 Cached symbols:"
-	@.venv/bin/python -c "import sys; sys.path.insert(0, 'src/quant'); from kalman_cache import list_cached_symbols; symbols=list_cached_symbols(); print(f'  Total: {len(symbols)} assets'); print('  ' + ', '.join(symbols[:20]) + ('...' if len(symbols) > 20 else ''))"
+	@.venv/bin/python -c "import sys; sys.path.insert(0, 'src'); from kalman_cache import list_cached_symbols; symbols=list_cached_symbols(); print(f'  Total: {len(symbols)} assets'); print('  ' + ', '.join(symbols[:20]) + ('...' if len(symbols) > 20 else ''))"
 
 tests: .venv/.deps_installed
 	@echo "Running all tests..."
-	@.venv/bin/python -m unittest discover -s tests -p "test_*.py" -v
+	@.venv/bin/python -m unittest discover -s src/tests -p "test_*.py" -v
 
 # Manually (re)install requirements and refresh the dependency stamp
 doctor: .venv/bin/python

@@ -22,7 +22,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.fx_pln_jpy_signals import compute_directional_exhaustion_from_features
+from signals import compute_directional_exhaustion_from_features
 
 
 # =============================================================================

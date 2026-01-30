@@ -19,8 +19,8 @@ from datetime import datetime, timedelta
 import sys
 import os
 
-# Add scripts directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+# Add src directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from kalman_validation import (
     validate_drift_reasonableness,

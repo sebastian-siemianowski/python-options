@@ -7,7 +7,8 @@ Uses signals.py to compute features and expected returns.
 """
 
 import sys
-sys.path.insert(0, '/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts')
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 from signals import fetch_px_asset, compute_features

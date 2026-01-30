@@ -17,11 +17,10 @@ import json
 import numpy as np
 import pandas as pd
 
-# Add project paths
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tuning'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+# Add src directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tune_q_mle import optimize_q_mle, tune_asset_q, kalman_filter_drift
+from tune import optimize_q_mle, tune_asset_q, kalman_filter_drift
 from signals import _load_tuned_kalman_params, compute_features
 
 

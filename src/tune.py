@@ -931,7 +931,7 @@ def load_asset_list(assets_arg: Optional[str], assets_file: Optional[str]) -> Li
 
 # Import per-asset cache module
 try:
-    from quant.kalman_cache import (
+    from kalman_cache import (
         load_tuned_params as _load_per_asset,
         save_tuned_params as _save_per_asset,
         load_full_cache as _load_full_cache,

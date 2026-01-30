@@ -20,10 +20,10 @@ from datetime import datetime
 import numpy as np
 
 # Cache directory path (relative to this file's location)
-TUNE_CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache", "tune")
+TUNE_CACHE_DIR = os.path.join(os.path.dirname(__file__), "quant", "cache", "tune")
 
 # Legacy single-file cache path (for backward compatibility)
-LEGACY_CACHE_PATH = os.path.join(os.path.dirname(__file__), "cache", "kalman_q_cache.json")
+LEGACY_CACHE_PATH = os.path.join(os.path.dirname(__file__), "quant", "cache", "kalman_q_cache.json")
 
 
 class NumpyEncoder(json.JSONEncoder):

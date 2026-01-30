@@ -8,8 +8,8 @@ import sys
 import os
 import json
 
-# Add scripts directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'scripts'))
+# Add src directory to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from signals import _load_tuned_kalman_params
 
@@ -19,7 +19,7 @@ def test_load_tuned_params():
     print("Testing Model Selection Integration")
     print("=" * 80)
     
-    cache_dir = "scripts/quant/cache/tune"
+    cache_dir = "src/quant/cache/tune"
     
     if not os.path.isdir(cache_dir):
         print(f"❌ Cache directory not found: {cache_dir}")

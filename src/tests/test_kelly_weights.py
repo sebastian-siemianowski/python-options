@@ -6,11 +6,12 @@ Test Kelly portfolio weight computation with sample multi-asset data.
 """
 
 import sys
+import os
 import numpy as np
 import pandas as pd
 
-# Add scripts directory to path
-sys.path.insert(0, '/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts')
+# Add src directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from portfolio_kelly import compute_kelly_weights, compute_portfolio_statistics, build_multi_asset_portfolio
 

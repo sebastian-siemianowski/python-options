@@ -1637,7 +1637,7 @@ def _estimate_regime_drift_priors(ret: pd.Series, vol: pd.Series) -> Optional[Di
 # Falls back to legacy single-file cache if not available
 # =============================================================================
 try:
-    from quant.kalman_cache import load_tuned_params as _load_per_asset_cache
+    from kalman_cache import load_tuned_params as _load_per_asset_cache
     PER_ASSET_CACHE_AVAILABLE = True
 except ImportError:
     PER_ASSET_CACHE_AVAILABLE = False

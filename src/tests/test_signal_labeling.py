@@ -9,8 +9,8 @@ Tests compute_dynamic_thresholds and apply_confirmation_logic for Level-7 code q
 import sys
 import os
 
-# Add parent directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+# Add src directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from signals import compute_dynamic_thresholds, apply_confirmation_logic
 

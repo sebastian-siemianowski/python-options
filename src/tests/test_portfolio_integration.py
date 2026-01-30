@@ -15,8 +15,8 @@ import os
 import numpy as np
 import pandas as pd
 
-# Add parent directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+# Add src directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ewma_covariance import compute_ewma_covariance
 from portfolio_kelly import compute_kelly_weights, build_multi_asset_portfolio
