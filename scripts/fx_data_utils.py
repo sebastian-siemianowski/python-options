@@ -4278,21 +4278,46 @@ def _resolve_symbol_candidates(asset: str) -> List[str]:
     return deduped
 
 
-def drop_first_k_from_kalman_cache(k: int = 4, cache_path: str = 'cache/kalman_q_cache.json') -> List[str]:
+def drop_first_k_from_kalman_cache(k: int = 4, cache_path: str = 'scripts/quant/cache/tune') -> List[str]:
     """
     Remove the first k tickers from the Kalman q cache.
     
     Supports both:
+    - Per-asset cache directory (cache/tune/*.json) - preferred
     - Legacy single-file cache (kalman_q_cache.json)
-    - New per-asset cache (cache/tune/*.json)
+    
+    Args:
+        k: Number of tickers to remove
+        cache_path: Path to cache directory (per-asset) or legacy JSON file
     
     Returns the list of removed tickers (empty if none removed).
     Safe against missing/invalid cache and writes atomically.
     """
     removed = []
+    cache_path_obj = pathlib.Path(cache_path)
     
-    # Try per-asset cache first (preferred)
-    tune_cache_dir = pathlib.Path(cache_path).parent / 'tune'
+    # Determine if this is a directory (per-asset) or file (legacy)
+    if cache_path_obj.is_dir() or cache_path_obj.name == 'tune':
+        # Per-asset cache directory
+        tune_cache_dir = cache_path_obj if cache_path_obj.is_dir() else cache_path_obj.parent / 'tune'
+        if tune_cache_dir.exists():
+            json_files = sorted([f for f in tune_cache_dir.iterdir() 
+                                if f.suffix == '.json' and f.name != '.keep'])
+            files_to_remove = json_files[:max(0, int(k))]
+            for f in files_to_remove:
+                ticker = f.stem  # filename without .json
+                try:
+                    f.unlink()
+                    removed.append(ticker)
+                except Exception as e:
+                    print(f"Warning: Failed to remove {f}: {e}")
+            
+            if removed:
+                print(f"Removed {len(removed)} per-asset cache files")
+        return removed
+    
+    # Legacy per-asset cache fallback (if cache_path points to file)
+    tune_cache_dir = cache_path_obj.parent / 'tune'
     if tune_cache_dir.exists():
         json_files = sorted([f for f in tune_cache_dir.iterdir() 
                             if f.suffix == '.json' and f.name != '.keep'])

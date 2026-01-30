@@ -149,11 +149,12 @@ debt: .venv/.deps_installed
 	@.venv/bin/python scripts/debt_allocator.py $(ARGS)
 
 show-q:
-	@if [ -f scripts/quant/cache/kalman_q_cache.json ]; then \
-		echo "=== Cached Kalman q Parameters (JSON) ==="; \
-		cat scripts/quant/cache/kalman_q_cache.json; \
+	@if [ -d scripts/quant/cache/tune ] && [ "$$(ls -A scripts/quant/cache/tune/*.json 2>/dev/null | head -1)" ]; then \
+		echo "=== Cached Kalman q Parameters (per-asset) ==="; \
+		echo "Directory: scripts/quant/cache/tune/"; \
+		.venv/bin/python -c "import sys; sys.path.insert(0, 'scripts/quant'); from kalman_cache import list_cached_symbols, get_cache_stats; symbols=list_cached_symbols(); stats=get_cache_stats(); print(f'Total assets: {stats[\"n_assets\"]}'); print(f'Total size: {stats[\"total_size_kb\"]:.1f} KB'); print('First 20 symbols:', ', '.join(symbols[:20]) + ('...' if len(symbols) > 20 else ''))"; \
 	else \
-		echo "No cache file found. Run 'make tune' first."; \
+		echo "No cache files found. Run 'make tune' first."; \
 	fi
 
 clear-q:
@@ -219,10 +220,10 @@ refresh: .venv/.deps_installed
 	@.venv/bin/python scripts/refresh_data.py --days 5 --retries 5 --workers 12 --batch-size 16 $(ARGS)
 
 four:
-	@if [ ! -f scripts/quant/cache/kalman_q_cache.json ]; then \
-		echo "scripts/quant/cache/kalman_q_cache.json not found"; exit 1; \
+	@if [ ! -d scripts/quant/cache/tune ] || [ -z "$$(ls -A scripts/quant/cache/tune/*.json 2>/dev/null | head -1)" ]; then \
+		echo "No per-asset cache files found in scripts/quant/cache/tune/"; exit 1; \
 	fi
-	@PYTHONPATH=$(CURDIR) .venv/bin/python -c "from scripts.fx_data_utils import drop_first_k_from_kalman_cache; removed = drop_first_k_from_kalman_cache(4, 'scripts/quant/cache/kalman_q_cache.json'); print(f'Removed {len(removed)} entries: {', '.join(removed)}')"
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -c "from scripts.fx_data_utils import drop_first_k_from_kalman_cache; removed = drop_first_k_from_kalman_cache(4, 'scripts/quant/cache/tune'); print(f'Removed {len(removed)} entries: {chr(44).join(removed)}')"
 
 # List failed assets
 failed: .venv/.deps_installed

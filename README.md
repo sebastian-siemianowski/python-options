@@ -758,7 +758,11 @@ python-options/
 │   ├── debt_allocator.py       # Debt switch decision engine
 │   └── quant/
 │       └── cache/
-│           └── kalman_q_cache.json  # Tuned parameters
+│           ├── tune/           # Tuned parameters (per-asset)
+│           │   ├── AAPL.json
+│           │   ├── MSFT.json
+│           │   └── ...
+│           └── calibration/    # Calibration diagnostics
 │
 ├── data/                       # Price cache (CSV per symbol)
 ├── options.py                  # Options screener
