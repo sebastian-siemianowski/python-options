@@ -31,7 +31,7 @@ Enable PIT calibration verification with the `--pit-calibration` flag:
 
 ```bash
 # Run calibration test on PLNJPY
-python scripts/fx_pln_jpy_signals.py --assets="PLNJPY=X" --pit-calibration
+python scripts/signals.py --assets="PLNJPY=X" --pit-calibration
 
 # Or use make target with calibration
 make fx-plnjpy EXTRA_ARGS="--pit-calibration"

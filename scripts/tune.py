@@ -153,7 +153,7 @@ This file defines the epistemology of the system.
 
 ===============================================================================
 
-tune_q_mle.py
+tune.py
 
 Automatic per-asset Kalman drift parameter estimation via MLE with:
 - Bayesian Model Averaging across model classes
@@ -192,7 +192,7 @@ if REPO_ROOT not in sys.path:
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from fx_data_utils import fetch_px, _download_prices, get_default_asset_universe
+from data_utils import fetch_px, _download_prices, get_default_asset_universe
 
 # K=2 Mixture Model REMOVED - empirically falsified (206 attempts, 0 selections)
 # The HMM regime-switching + Student-t already captures regime heterogeneity.
@@ -286,7 +286,7 @@ except ImportError:
     CALIBRATED_TRUST_AVAILABLE = False
 
 # Import presentation layer for world-class UX output
-from fx_signals_presentation import (
+from signals_ux import (
     create_tuning_console,
     render_tuning_header,
     render_tuning_progress_start,

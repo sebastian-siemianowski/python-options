@@ -18,7 +18,7 @@ import sys
 # Ensure parent directory is in path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scripts.fx_data_utils import clean_price_cache, PRICE_CACHE_DIR_PATH
+from scripts.data_utils import clean_price_cache, PRICE_CACHE_DIR_PATH
 
 
 def main():

@@ -299,7 +299,7 @@ def compare_predictive_likelihood(
     Returns:
         LikelihoodComparisonResult with comparative log-likelihoods
     """
-    from fx_pln_jpy_signals import compute_features
+    from signals import compute_features
     
     log_px = np.log(px)
     dates = px.index
@@ -835,7 +835,7 @@ def run_full_validation_suite(
         Dictionary with all validation results
     """
     import os
-    from fx_pln_jpy_signals import compute_features
+    from signals import compute_features
     
     # Compute features (includes Kalman filtering)
     feats = compute_features(px)

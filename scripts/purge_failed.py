@@ -21,7 +21,7 @@ import sys
 # Ensure parent directory is in path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scripts.fx_data_utils import (
+from scripts.data_utils import (
     load_failed_assets,
     get_failed_asset_symbols,
     purge_failed_assets_from_cache,

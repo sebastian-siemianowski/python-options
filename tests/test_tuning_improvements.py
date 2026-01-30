@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Test script to validate tune_q_mle.py improvements and fx_pln_jpy_signals.py integration.
+Test script to validate tune.py improvements and signals.py integration.
 
 Tests:
 1. Walk-forward CV without look-ahead bias
 2. Robust outlier handling
 3. Adaptive prior calibration
 4. Intelligent parameter adjustment
-5. Cache loading in fx_pln_jpy_signals.py
+5. Cache loading in signals.py
 6. End-to-end integration
 """
 
@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tuning'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
 from tune_q_mle import optimize_q_mle, tune_asset_q, kalman_filter_drift
-from fx_pln_jpy_signals import _load_tuned_kalman_params, compute_features
+from signals import _load_tuned_kalman_params, compute_features
 
 
 def test_walk_forward_cv():
@@ -134,9 +134,9 @@ def test_adaptive_prior():
 
 
 def test_cache_integration():
-    """Test cache loading in fx_pln_jpy_signals.py."""
+    """Test cache loading in signals.py."""
     print("\n" + "="*80)
-    print("TEST 4: Cache Integration with fx_pln_jpy_signals.py")
+    print("TEST 4: Cache Integration with signals.py")
     print("="*80)
     
     # Create temporary cache
@@ -242,7 +242,7 @@ def run_all_tests():
     print("  - Walk-forward cross-validation without look-ahead bias")
     print("  - Robust outlier handling (Huber-like loss for 5-sigma+ events)")
     print("  - Adaptive prior calibration based on market characteristics")
-    print("  - Cache integration with fx_pln_jpy_signals.py")
+    print("  - Cache integration with signals.py")
     print("  - Kalman filter correctness")
     
     tests = [

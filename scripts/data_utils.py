@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fx_data_utils.py
+data_utils.py
 
 Data fetching and utility functions for FX signals.
 Separates data acquisition and currency conversion logic from signal computation.
@@ -1191,7 +1191,7 @@ def get_company_name(symbol: str) -> Optional[str]:
 
 
 # Default asset universe: comprehensive list of FX pairs, commodities, stocks, and ETFs
-# This centralized constant is used by fx_pln_jpy_signals.py and tuning/tune_q_mle.py
+# This centralized constant is used by signals.py and tuning/tune.py
 # Individual scripts can override via command-line arguments
 DEFAULT_ASSET_UNIVERSE = [
     # FX pairs

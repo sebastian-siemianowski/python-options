@@ -55,9 +55,9 @@ def verify():
         return False
 
     # 2. Integration with tune_q_mle
-    print('\n2. INTEGRATION WITH tune_q_mle.py')
+    print('\n2. INTEGRATION WITH tune.py')
     try:
-        from tune_q_mle import (
+        from tune import (
             MIXTURE_MODEL_AVAILABLE, MIXTURE_MODEL_ENABLED,
             MIXTURE_SIGMA_RATIO_MIN, MIXTURE_MIN_WEIGHT, MIXTURE_MAX_WEIGHT,
             MIXTURE_BIC_THRESHOLD, get_mixture_config
@@ -76,9 +76,9 @@ def verify():
         return False
 
     # 3. fx_signals_presentation integration
-    print('\n3. INTEGRATION WITH fx_signals_presentation.py')
+    print('\n3. INTEGRATION WITH signals_ux.py')
     try:
-        from fx_signals_presentation import render_calibration_report
+        from signals_ux import render_calibration_report
         print('   ✓ render_calibration_report() exists')
     except ImportError as e:
         print(f'   ✗ Import error: {e}')

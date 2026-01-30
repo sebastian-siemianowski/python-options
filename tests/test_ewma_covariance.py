@@ -16,7 +16,7 @@ from rich.table import Table
 from portfolio_utils import ewma_covariance, extract_pairwise_correlations
 
 # Import data fetching from existing utilities
-from fx_data_utils import _fetch_px_symbol
+from data_utils import _fetch_px_symbol
 
 
 def fetch_returns_for_assets(assets: list[str], start: str = "2020-01-01", end: str = None) -> pd.DataFrame:

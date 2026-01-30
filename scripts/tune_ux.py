@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-tune_pretty.py
+tune_ux.py
 
-World-class UX wrapper for tune_q_mle.py using the Rich presentation layer.
+World-class UX wrapper for tune.py using the Rich presentation layer.
 Provides beautiful, informative output while delegating to the core tuning logic.
 
 Usage:
-    python scripts/tune_pretty.py --dry-run --max-assets 5
-    python scripts/tune_pretty.py --force
-    python scripts/tune_pretty.py
+    python scripts/tune_ux.py --dry-run --max-assets 5
+    python scripts/tune_ux.py --force
+    python scripts/tune_ux.py
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 # Import core tuning functionality
-from tune_q_mle import (
+from tune import (
     load_asset_list,
     load_cache,
     save_cache_json,
@@ -52,7 +52,7 @@ except ImportError:
     PDDE_AVAILABLE = False
 
 # Import presentation layer
-from fx_signals_presentation import (
+from signals_ux import (
     create_tuning_console,
     render_tuning_header,
     render_tuning_progress_start,

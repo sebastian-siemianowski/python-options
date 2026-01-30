@@ -11,7 +11,7 @@ Features:
 Usage:
   make russell5000
   # or directly:
-  python scripts/build_russell5000.py [--out data/universes/russell5000_tickers.csv]
+  python scripts/russell5000.py [--out data/universes/russell5000_tickers.csv]
 """
 import argparse
 import os
@@ -337,8 +337,8 @@ def main():
         epilog="""
 Examples:
   make russell5000                        # Build with defaults
-  python scripts/build_russell5000.py     # Same as above
-  python scripts/build_russell5000.py --min_size 3000  # Build smaller universe
+  python scripts/russell5000.py     # Same as above
+  python scripts/russell5000.py --min_size 3000  # Build smaller universe
         """
     )
     parser.add_argument("--out", default=DEFAULT_OUT, help=f"Output CSV path (default: {DEFAULT_OUT})")

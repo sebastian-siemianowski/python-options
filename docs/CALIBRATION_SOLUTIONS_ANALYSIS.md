@@ -33,17 +33,17 @@ The following changes have been implemented based on the expert panel analysis:
 - Changed logic from AND to OR: `is_boundary OR is_flat` triggers refinement
 - Increased `likelihood_flatness_threshold` from 1.0 to 2.0
 
-#### 2. `scripts/tune_q_mle.py`
+#### 2. `scripts/tune.py`
 - **Relaxed BIC threshold** from 2.0 to 0.0 (any improvement accepted)
 - Added **dual selection criterion**: BIC improvement OR PIT improvement 10x
 - Added `MIXTURE_PIT_IMPROVEMENT_FACTOR = 10.0`
 
-#### 3. `scripts/tune_pretty.py`
+#### 3. `scripts/tune_ux.py`
 - Added `--force-escalation` flag to re-tune only assets needing escalation
 - Added `needs_escalation_retune()` helper function
 - Fixed mixture/ν-refinement counter tracking
 
-#### 4. `scripts/fx_signals_presentation.py`
+#### 4. `scripts/signals_ux.py`
 - Enhanced diagnostics in `calibration_failures.json`
 - Added escalation stats, model distribution, nu distribution
 - Updated configuration display to show new expanded parameters
@@ -172,7 +172,7 @@ From calibration_failures.json:
 - 208/436 assets fail (PIT p < 0.05)
 - mixture_attempted: false for ALL failing assets
 - nu_refinement_attempted: true for only 5 assets
-- Escalation code exists in tune_q_mle.py but conditions prevent execution
+- Escalation code exists in tune.py but conditions prevent execution
 
 ## Root Causes
 1. Mixture trigger requires `calibration_warning=True` but this is set AFTER model selection
@@ -200,7 +200,7 @@ From calibration_failures.json:
 
 ### Phase 4: Force Re-calibration
 1. Clear stale cache entries for failing assets
-2. Add `--force-escalation` flag to tune_pretty.py
+2. Add `--force-escalation` flag to tune_ux.py
 3. Re-run tuning with escalation forced
 
 ### Phase 5: Enhanced Diagnostics
@@ -230,7 +230,7 @@ From calibration_failures.json:
 
 ## Technical Implementation Plan
 
-### Step 1: Fix tune_q_mle.py Trigger Ordering
+### Step 1: Fix tune.py Trigger Ordering
 
 ```python
 # BEFORE (broken):
@@ -338,11 +338,11 @@ After implementation:
 
 ## Files to Modify
 
-1. `scripts/tune_q_mle.py` - Fix trigger ordering, expand ν grid
+1. `scripts/tune.py` - Fix trigger ordering, expand ν grid
 2. `scripts/phi_t_mixture_k2.py` - Relax BIC threshold
 3. `scripts/adaptive_nu_refinement.py` - Add refinement candidates for ν=4,6,8
-4. `scripts/fx_signals_presentation.py` - Enhanced diagnostics display
-5. `scripts/tune_pretty.py` - Add `--force-escalation` flag
+4. `scripts/signals_ux.py` - Enhanced diagnostics display
+5. `scripts/tune_ux.py` - Add `--force-escalation` flag
 
 ---
 
@@ -683,7 +683,7 @@ Where:
 
 ## Implementation
 
-### 1. Add TVVM flag to tune_q_mle.py
+### 1. Add TVVM flag to tune.py
 TVVM_ENABLED = True
 TVVM_GAMMA_DEFAULT = 0.5
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Test script to verify that fx_pln_jpy_signals.py correctly uses best_model_by_bic
-from tune_q_mle.py cache.
+Test script to verify that signals.py correctly uses best_model_by_bic
+from tune.py cache.
 """
 
 import sys
@@ -11,7 +11,7 @@ import json
 # Add scripts directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'scripts'))
 
-from fx_pln_jpy_signals import _load_tuned_kalman_params
+from signals import _load_tuned_kalman_params
 
 def test_load_tuned_params():
     """Test that _load_tuned_kalman_params loads model selection results."""
@@ -86,7 +86,7 @@ def test_load_tuned_params():
         print(f"\n✓ Model selection data loaded correctly")
     
     print("\n" + "=" * 80)
-    print("✓ All tests passed - fx_pln_jpy_signals.py correctly loads model selection")
+    print("✓ All tests passed - signals.py correctly loads model selection")
     print("=" * 80)
     return True
 

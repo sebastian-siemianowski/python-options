@@ -33,9 +33,9 @@ USAGE:
     - GH is selected if it improves PIT p-value AND BIC is within threshold
 
 INTEGRATION:
-    - tune_q_mle.py: Fits GH after other escalation methods fail
-    - tune_pretty.py: Displays GH selection statistics
-    - fx_pln_jpy_signals.py: Uses GH CDF for probability computation
+    - tune.py: Fits GH after other escalation methods fail
+    - tune_ux.py: Displays GH selection statistics
+    - signals.py: Uses GH CDF for probability computation
 
 ===============================================================================
 """

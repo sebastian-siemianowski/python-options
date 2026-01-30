@@ -229,7 +229,7 @@ def collect_predictions_walk_forward(
             'forecast_dates': array of forecast dates
         }
     """
-    from fx_pln_jpy_signals import compute_features, latest_signals
+    from signals import compute_features, latest_signals
     
     px_clean = px.dropna()
     if len(px_clean) < train_days + test_days + max(horizons):
@@ -394,7 +394,7 @@ def format_calibration_report(
     Returns:
         Formatted string report
     """
-    from fx_signals_presentation import format_horizon_label
+    from signals_ux import format_horizon_label
     
     lines = []
     lines.append(f"═══════════════════════════════════════════════════════")

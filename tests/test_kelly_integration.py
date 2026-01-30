@@ -3,16 +3,16 @@
 test_kelly_integration.py
 
 Integration test: Build Kelly portfolio from real asset signals.
-Uses fx_pln_jpy_signals.py to compute features and expected returns.
+Uses signals.py to compute features and expected returns.
 """
 
 import sys
 sys.path.insert(0, '/Users/sebastiansiemianowski/RubymineProjects/python-options/scripts')
 
 import pandas as pd
-from fx_pln_jpy_signals import fetch_px_asset, compute_features
+from signals import fetch_px_asset, compute_features
 from portfolio_kelly import build_multi_asset_portfolio
-from fx_signals_presentation import render_portfolio_allocation_table
+from signals_ux import render_portfolio_allocation_table
 
 
 def main():

@@ -452,7 +452,7 @@ make tune ARGS="--dry-run"             # Preview without executing
 ```
 
 **What happens internally:**
-1. Loads asset universe from `fx_data_utils.py`
+1. Loads asset universe from `data_utils.py`
 2. For each asset, for each of 5 regimes:
    - Fits 7 model classes (Gaussian, AR(1)-Gaussian, Student-t with ν ∈ {4,6,8,12,20})
    - Computes BIC, AIC, Hyvärinen score, PIT diagnostics
@@ -505,7 +505,7 @@ make stocks ARGS="--assets AAPL,MSFT"  # Specific assets only
 
 **What happens internally:**
 1. Runs `refresh_data.py` (updates last 5 days)
-2. Runs `fx_pln_jpy_signals.py` with caching enabled
+2. Runs `signals.py` with caching enabled
 3. For each asset:
    - Determines current regime r_t
    - Loads model posterior p(m|r_t) from cache
@@ -749,12 +749,12 @@ python-options/
 ├── Makefile                    # Command interface (start here)
 │
 ├── scripts/
-│   ├── tune_q_mle.py           # TUNING ENGINE: MLE + BMA
-│   ├── tune_pretty.py          # Tuning UX wrapper
-│   ├── fx_pln_jpy_signals.py   # SIGNAL ENGINE: Posterior predictive
-│   ├── fx_signals_presentation.py  # Rich console output
+│   ├── tune.py           # TUNING ENGINE: MLE + BMA
+│   ├── tune_ux.py          # Tuning UX wrapper
+│   ├── signals.py   # SIGNAL ENGINE: Posterior predictive
+│   ├── signals_ux.py  # Rich console output
 │   ├── refresh_data.py         # DATA ENGINE: Bulk download
-│   ├── fx_data_utils.py        # Data utilities + caching
+│   ├── data_utils.py        # Data utilities + caching
 │   ├── debt_allocator.py       # Debt switch decision engine
 │   └── quant/
 │       └── cache/

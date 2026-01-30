@@ -84,3 +84,6 @@ htmlcov/
 
 # Logs
 *.log
+/scripts/scripts/quant/cache/prices/AAPL.csv
+/scripts/scripts/quant/cache/fx_rates.json
+/scripts/scripts/quant/cache/prices/USDPLN_X.csv

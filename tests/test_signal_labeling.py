@@ -12,7 +12,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
-from fx_pln_jpy_signals import compute_dynamic_thresholds, apply_confirmation_logic
+from signals import compute_dynamic_thresholds, apply_confirmation_logic
 
 
 def test_compute_dynamic_thresholds_symmetric():

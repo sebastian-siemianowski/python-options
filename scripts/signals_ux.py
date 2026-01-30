@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fx_signals_presentation.py
+signals_ux.py
 
 Presentation layer for FX signals - handles all output formatting and display logic.
 Separates presentation concerns from core signal computation logic for better modularity.
@@ -1441,7 +1441,7 @@ SIMPLIFIED_COLUMN_DESCRIPTIONS = {
 # Apple Design Principles: Clarity, Deference, Depth
 # =============================================================================
 
-# Regime labels for display (imported from tune_q_mle or defined here for standalone use)
+# Regime labels for display (imported from tune or defined here for standalone use)
 TUNING_REGIME_LABELS = {
     0: "LOW_VOL_TREND",
     1: "HIGH_VOL_TREND",

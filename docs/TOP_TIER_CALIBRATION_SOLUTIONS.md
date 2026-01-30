@@ -334,7 +334,7 @@ Where:
 
 ## Implementation
 
-### 1. Add TVVM flag to tune_q_mle.py
+### 1. Add TVVM flag to tune.py
 TVVM_ENABLED = True
 TVVM_GAMMA_DEFAULT = 0.5
 

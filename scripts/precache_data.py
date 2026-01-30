@@ -23,7 +23,7 @@ from typing import List, Optional
 # Ensure parent directory is in path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scripts.fx_data_utils import (
+from scripts.data_utils import (
     DEFAULT_ASSET_UNIVERSE,
     download_prices_bulk,
     PRICE_CACHE_DIR_PATH,

@@ -51,10 +51,10 @@ backtest: .venv/.deps_installed
 	@bash ./backtest.sh $(ARGS)
 
 build-russell: .venv/.deps_installed
-	@.venv/bin/python scripts/build_russell2500.py --out data/universes/russell2500_tickers.csv
+	@.venv/bin/python scripts/russell2500.py --out data/universes/russell2500_tickers.csv
 
 russell5000: .venv/.deps_installed
-	@.venv/bin/python scripts/build_russell5000.py --out data/universes/russell5000_tickers.csv $(ARGS)
+	@.venv/bin/python scripts/russell5000.py --out data/universes/russell5000_tickers.csv $(ARGS)
 
 top50: .venv/.deps_installed
 	@.venv/bin/python top50_revenue_growth.py $(ARGS)
@@ -66,45 +66,45 @@ top100: .venv/.deps_installed
 	@.venv/bin/python scripts/top100.py $(ARGS)
 
 fx-plnjpy: .venv/.deps_installed
-	@.venv/bin/python scripts/fx_pln_jpy_signals.py $(ARGS) --cache-json scripts/quant/cache/fx_plnjpy.json
+	@.venv/bin/python scripts/signals.py $(ARGS) --cache-json scripts/quant/cache/fx_plnjpy.json
 
 # Diagnostics and validation convenience targets for FX signals
 fx-diagnostics: .venv/.deps_installed
 	@echo "Running full diagnostics (log-likelihood, parameter stability, OOS tests)..."
-	@.venv/bin/python scripts/fx_pln_jpy_signals.py --diagnostics $(ARGS)
+	@.venv/bin/python scripts/signals.py --diagnostics $(ARGS)
 
 fx-diagnostics-lite: .venv/.deps_installed
 	@echo "Running lightweight diagnostics (no OOS tests)..."
-	@.venv/bin/python scripts/fx_pln_jpy_signals.py --diagnostics_lite $(ARGS)
+	@.venv/bin/python scripts/signals.py --diagnostics_lite $(ARGS)
 
 fx-calibration: .venv/.deps_installed
 	@echo "Running PIT calibration verification..."
-	@.venv/bin/python scripts/fx_pln_jpy_signals.py --pit-calibration $(ARGS)
+	@.venv/bin/python scripts/signals.py --pit-calibration $(ARGS)
 
 fx-model-comparison: .venv/.deps_installed
 	@echo "Running structural model comparison (AIC/BIC)..."
-	@.venv/bin/python scripts/fx_pln_jpy_signals.py --model-comparison $(ARGS)
+	@.venv/bin/python scripts/signals.py --model-comparison $(ARGS)
 
 fx-validate-kalman: .venv/.deps_installed
 	@echo "Running Level-7 Kalman validation science..."
-	@.venv/bin/python scripts/fx_pln_jpy_signals.py --validate-kalman $(ARGS)
+	@.venv/bin/python scripts/signals.py --validate-kalman $(ARGS)
 
 fx-validate-kalman-plots: .venv/.deps_installed
 	@echo "Running Kalman validation with diagnostic plots..."
 	@mkdir -p plots/kalman_validation
-	@.venv/bin/python scripts/fx_pln_jpy_signals.py --validate-kalman --validation-plots $(ARGS)
+	@.venv/bin/python scripts/signals.py --validate-kalman --validation-plots $(ARGS)
 
 # Kalman q parameter tuning via MLE (with world-class UX)
 tune: .venv/.deps_installed
 	@mkdir -p cache
-	@.venv/bin/python scripts/tune_pretty.py $(ARGS)
+	@.venv/bin/python scripts/tune_ux.py $(ARGS)
 
 # Re-tune only assets that failed calibration without escalation attempt
 # This targets assets where neither mixture nor ν-refinement was tried
 # Use this after implementing new escalation logic to activate it
 escalate: .venv/.deps_installed
 	@echo "🔧 Re-tuning assets that need escalation (mixture/ν-refinement not attempted)..."
-	@.venv/bin/python scripts/tune_pretty.py --force-escalation $(ARGS)
+	@.venv/bin/python scripts/tune_ux.py --force-escalation $(ARGS)
 
 # Re-tune 4 random assets with calibration failures
 # Useful for testing calibration fixes incrementally
@@ -119,7 +119,7 @@ calibrate-four: .venv/.deps_installed
 		echo "✅ No calibration failures found. All assets are well-calibrated!"; \
 	else \
 		echo "🔧 Re-tuning: $$FAILED_ASSETS"; \
-		.venv/bin/python scripts/tune_pretty.py --assets "$$FAILED_ASSETS" --force $(ARGS); \
+		.venv/bin/python scripts/tune_ux.py --assets "$$FAILED_ASSETS" --force $(ARGS); \
 	fi
 
 # Re-tune only assets with calibration failures (PIT p-value < 0.05)
@@ -140,7 +140,7 @@ calibrate: .venv/.deps_installed
 	else \
 		ASSET_COUNT=$$(echo "$$FAILED_ASSETS" | tr ',' '\n' | wc -l | tr -d ' '); \
 		echo "🔧 Re-tuning $$ASSET_COUNT assets with calibration issues..."; \
-		.venv/bin/python scripts/tune_pretty.py --assets "$$FAILED_ASSETS" --force $(ARGS); \
+		.venv/bin/python scripts/tune_ux.py --assets "$$FAILED_ASSETS" --force $(ARGS); \
 	fi
 
 # FX Debt Allocation Engine - EURJPY balance sheet convexity control
@@ -203,11 +203,11 @@ stocks: .venv/.deps_installed
 
 # Render from cached results only (no network/compute)
 report: .venv/.deps_installed
-	@.venv/bin/python scripts/fx_pln_jpy_signals.py --from-cache --cache-json scripts/quant/cache/fx_plnjpy.json
+	@.venv/bin/python scripts/signals.py --from-cache --cache-json scripts/quant/cache/fx_plnjpy.json
 
 # Quick smoke: run only the first 20 assets
 top20: .venv/.deps_installed
-	@ASSETS=$$(PYTHONPATH=$(CURDIR) ./.venv/bin/python -c "import importlib.util, pathlib; fx=pathlib.Path('scripts/fx_data_utils.py'); spec=importlib.util.spec_from_file_location('fx_data_utils', fx); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); assets=sorted(list(getattr(mod,'DEFAULT_ASSET_UNIVERSE'))); print(','.join(assets[:20]))"); \
+	@ASSETS=$$(PYTHONPATH=$(CURDIR) ./.venv/bin/python -c "import importlib.util, pathlib; fx=pathlib.Path('scripts/data_utils.py'); spec=importlib.util.spec_from_file_location('fx_data_utils', fx); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); assets=sorted(list(getattr(mod,'DEFAULT_ASSET_UNIVERSE'))); print(','.join(assets[:20]))"); \
 	if [ -z "$$ASSETS" ]; then echo 'No assets resolved'; exit 1; fi; \
 	$(MAKE) fx-plnjpy ARGS="--assets $$ASSETS"
 
@@ -223,7 +223,7 @@ four:
 	@if [ ! -d scripts/quant/cache/tune ] || [ -z "$$(ls -A scripts/quant/cache/tune/*.json 2>/dev/null | head -1)" ]; then \
 		echo "No per-asset cache files found in scripts/quant/cache/tune/"; exit 1; \
 	fi
-	@PYTHONPATH=$(CURDIR) .venv/bin/python -c "from scripts.fx_data_utils import drop_first_k_from_kalman_cache; removed = drop_first_k_from_kalman_cache(4, 'scripts/quant/cache/tune'); print(f'Removed {len(removed)} entries: {chr(44).join(removed)}')"
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -c "from scripts.data_utils import drop_first_k_from_kalman_cache; removed = drop_first_k_from_kalman_cache(4, 'scripts/quant/cache/tune'); print(f'Removed {len(removed)} entries: {chr(44).join(removed)}')"
 
 # List failed assets
 failed: .venv/.deps_installed

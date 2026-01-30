@@ -10,7 +10,7 @@ Notes:
 - Runtime: fetching market caps for ~3000 tickers can take several minutes.
 
 Usage:
-  python scripts/build_russell2500.py [--out data/russell2500_tickers.csv]
+  python scripts/russell2500.py [--out data/russell2500_tickers.csv]
 
 """
 import argparse

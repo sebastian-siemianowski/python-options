@@ -594,7 +594,7 @@ def create_nu_fit_function(
         Fit function with signature: fit(asset, nu) -> Dict
     """
     # Import here to avoid circular dependency
-    from tune_q_mle import (
+    from tune import (
         PhiStudentTDriftModel,
         kalman_filter_drift_phi_student_t,
         compute_pit_ks_pvalue_student_t,
