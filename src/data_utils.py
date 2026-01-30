@@ -53,11 +53,11 @@ try:
 except Exception:
     pass  # Fallback: yfinance will use its defaults
 
-PRICE_CACHE_DIR = os.path.join("scripts", "quant", "cache", "prices")
+PRICE_CACHE_DIR = os.path.join("src", "quant", "cache", "prices")
 PRICE_CACHE_DIR_PATH = pathlib.Path(PRICE_CACHE_DIR)
 PRICE_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
 
-FAILED_CACHE_DIR = os.path.join("scripts", "quant", "cache", "failed")
+FAILED_CACHE_DIR = os.path.join("src", "quant", "cache", "failed")
 FAILED_CACHE_DIR_PATH = pathlib.Path(FAILED_CACHE_DIR)
 FAILED_CACHE_DIR_PATH.mkdir(parents=True, exist_ok=True)
 FAILED_ASSETS_FILE = FAILED_CACHE_DIR_PATH / "failed_assets.json"
@@ -2397,7 +2397,7 @@ def get_sector(symbol: str) -> str:
     return "Unspecified"
 
 # FX rate cache (JSON on disk) to avoid repeated network calls
-FX_RATE_CACHE_PATH = os.path.join("scripts", "quant", "cache", "fx_rates.json")
+FX_RATE_CACHE_PATH = os.path.join("src", "quant", "cache", "fx_rates.json")
 FX_RATE_CACHE_MAX_AGE_DAYS = 3  # Cache FX rates for 3 days to reduce rate limiting
 _FX_RATE_CACHE: Optional[Dict[str, dict]] = None
 

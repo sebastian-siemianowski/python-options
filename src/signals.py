@@ -425,7 +425,7 @@ except Exception:
 # Clamp to a reasonable range to avoid misuse
 EDGE_FLOOR = float(np.clip(EDGE_FLOOR, 0.0, 1.5))
 
-DEFAULT_CACHE_PATH = os.path.join("scripts", "quant", "cache", "fx_plnjpy.json")
+DEFAULT_CACHE_PATH = os.path.join("src", "quant", "cache", "fx_plnjpy.json")
 
 # ============================================================================
 # UPGRADE #3: Display Price Inertia (Presentation-Only)
@@ -1729,14 +1729,14 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/quant/ca
         print(f"   Top-level keys in cache: {list(raw_data.keys())[:10]}", file=sys.stderr)
         print(f"   → Fix: Run 'make tune ARGS=\"--assets {asset_symbol}\"' to regenerate\n", file=sys.stderr)
         return None
-    
+
     global_data = raw_data['global']
     regime_data = raw_data.get('regime', {})
-    
+
     # Validate BMA structure
     model_posterior = global_data.get('model_posterior', {})
     models = global_data.get('models', {})
-    
+
     if not models:
         # Invalid BMA structure - no models - ALWAYS warn user
         import sys
@@ -1744,11 +1744,11 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/quant/ca
         print(f"   Cache entry has 'global' key but no models inside", file=sys.stderr)
         print(f"   → Fix: Run 'make tune ARGS=\"--assets {asset_symbol}\"' to regenerate\n", file=sys.stderr)
         return None
-    
+
     # Helper to check if model is Student-t (phi_student_t_nu_* naming)
     def _is_student_t(model_name: str) -> bool:
         return model_name.startswith('phi_student_t_nu_')
-    
+
     # Extract representative params from highest-posterior model for Kalman filter
     # (The BMA path uses full model averaging, but Kalman filter needs single params)
     if model_posterior:
@@ -1765,18 +1765,18 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/quant/ca
             best_model = 'kalman_gaussian'
         else:
             best_model = next(iter(models), None)
-    
+
     if not best_model or best_model not in models:
         return None
     
     best_params = models[best_model]
-    
+
     # Extract params from best model
     q_val = best_params.get('q')
     c_val = best_params.get('c', 1.0)
     phi_val = best_params.get('phi')
     nu_val = best_params.get('nu')
-    
+
     # Derive noise_model from best model name
     # Normalize to standard categories for downstream processing
     if _is_student_t(best_model):
@@ -1785,19 +1785,19 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/quant/ca
         noise_model = 'kalman_phi_gaussian'
     else:
         noise_model = 'gaussian'
-    
+
     # Validate required params
     if q_val is None or not np.isfinite(q_val) or q_val <= 0:
         return None
     if c_val is None or not np.isfinite(c_val) or c_val <= 0:
         return None
-    
+
     result = {
         # Full BMA structure from tune.py
         'global': global_data,
         'regime': regime_data,
         'has_bma': True,
-        
+
         # Representative params from best model (for Kalman filter compatibility)
         'q': float(q_val),
         'c': float(c_val),
@@ -1805,7 +1805,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/quant/ca
         'nu': float(nu_val) if nu_val is not None and np.isfinite(nu_val) else None,
         'noise_model': noise_model,
         'best_model': best_model,
-        
+
         # Diagnostics from best model (for display compatibility)
         'bic': best_params.get('bic'),
         'aic': best_params.get('aic'),
@@ -1814,7 +1814,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/quant/ca
         'log_likelihood': best_params.get('log_likelihood'),
         'pit_ks_pvalue': best_params.get('pit_ks_pvalue'),
         'ks_statistic': best_params.get('ks_statistic'),
-        
+
         # Isotonic Recalibration Transport Map
         # This is the CORE calibration layer - applied BEFORE regimes see PIT
         'recalibration': global_data.get('recalibration'),
@@ -1822,7 +1822,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/quant/ca
         'pit_ks_pvalue_calibrated': global_data.get('pit_ks_pvalue_calibrated'),
         'calibration_diagnostics': global_data.get('calibration_diagnostics'),
         'failure_category': global_data.get('failure_category'),
-        
+
         # Model comparison: build from all models (includes Hyvärinen scores)
         'model_comparison': {
             m: {
@@ -1836,17 +1836,17 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/quant/ca
             for m, m_params in models.items()
             if isinstance(m_params, dict) and m_params.get('fit_success', False)
         },
-        
+
         # Model selection metadata from tune.py
         'model_selection_method': raw_data.get('meta', {}).get('model_selection_method', 'combined'),
         'bic_weight': raw_data.get('meta', {}).get('bic_weight', 0.5),
         'entropy_lambda': raw_data.get('meta', {}).get('entropy_lambda', 0.05),
-        
+
         # Global-level aggregates (from global block or computed)
         'hyvarinen_max': global_data.get('hyvarinen_max'),
         'combined_score_min': global_data.get('combined_score_min'),
         'bic_min': global_data.get('bic_min'),
-        
+
         # Calibrated Trust Authority
         # ARCHITECTURAL LAW: Trust = Calibration Authority − Bounded Regime Penalty
         # This is the SINGLE AUTHORITY for trust decisions
@@ -1854,25 +1854,25 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/quant/ca
         'effective_trust': global_data.get('effective_trust'),
         'calibration_trust': global_data.get('calibration_trust'),
         'regime_penalty': global_data.get('regime_penalty'),
-        
+
         # Calibration status and escalation tracking
         'calibration_warning': global_data.get('calibration_warning', False),
         'nu_refinement': global_data.get('nu_refinement', {}),
-        
+
         # K=2 mixture (DEPRECATED - kept for backward compatibility)
         'mixture_attempted': global_data.get('mixture_attempted', False),
         'mixture_selected': global_data.get('mixture_selected', False),
         'mixture_model': global_data.get('mixture_model'),
-        
+
         # GH distribution fallback
         'gh_attempted': global_data.get('gh_attempted', False),
         'gh_selected': global_data.get('gh_selected', False),
         'gh_model': global_data.get('gh_model'),
-        
+
         # TVVM (Time-Varying Volatility Multiplier)
         'tvvm_attempted': global_data.get('tvvm_attempted', False),
         'tvvm_selected': global_data.get('tvvm_selected', False),
-        
+
         # Metadata
         'source': 'tuned_cache_bma',
         'timestamp': raw_data.get('timestamp') or raw_data.get('meta', {}).get('timestamp'),
@@ -1887,18 +1887,18 @@ def _select_regime_params(
 ) -> Dict:
     """
     Select parameters using regime-first logic with global fallback.
-    
+
     REGIME-FIRST PARAMETER ROUTING:
-    
+
     1. If current_regime has tuned params AND not fallback → use regime params
     2. Otherwise → use global params
-    
+
     This is parameter routing ONLY. No epistemology changes.
-    
+
     Args:
         tuned_params: Full tuned params dict from _load_tuned_kalman_params()
         current_regime: Current regime index (0-4)
-        
+
     Returns:
         Dict with selected params {q, phi, nu, c, fallback, regime_meta, ...}
     """
@@ -1913,14 +1913,14 @@ def _select_regime_params(
             'source': 'defaults',
             'regime_used': None,
         }
-    
+
     regime_data = tuned_params.get('regime', {})
     global_data = tuned_params.get('global', {})
-    
+
     # Try to get regime-specific params
     # Handle both int keys and string keys (JSON converts to strings)
     regime_block = regime_data.get(current_regime) or regime_data.get(str(current_regime))
-    
+
     # Helper to safely convert to float with fallback for None values
     def _safe_float(val, default):
         if val is None:
@@ -1929,16 +1929,16 @@ def _select_regime_params(
             return float(val)
         except (TypeError, ValueError):
             return float(default)
-    
+
     def _extract_best_model_params(model_posterior: Dict, models: Dict) -> Dict:
         """Extract params from highest-posterior model."""
         if not models:
             return {}
-        
+
         # Helper to check if model is Student-t
         def _is_st(m: str) -> bool:
             return m.startswith('phi_student_t_nu_')
-        
+
         if model_posterior:
             best_model = max(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0))
         else:
@@ -1952,30 +1952,30 @@ def _select_regime_params(
                 best_model = 'kalman_gaussian'
             else:
                 best_model = next(iter(models), None)
-        
+
         if best_model and best_model in models:
             return models[best_model]
         return {}
-    
+
     # Check if regime has non-fallback data
     regime_meta = {}
     is_fallback = True
     if regime_block is not None and isinstance(regime_block, dict):
         regime_meta = regime_block.get('regime_meta', {})
         is_fallback = regime_meta.get('fallback', False) or regime_meta.get('borrowed_from_global', False)
-    
+
     if regime_block is not None and not is_fallback:
         # Use regime-specific BMA params
         model_posterior = regime_block.get('model_posterior', {})
         models = regime_block.get('models', {})
         best_params = _extract_best_model_params(model_posterior, models)
-        
+
         # Fallback to global if regime models empty
         if not best_params:
             global_model_posterior = global_data.get('model_posterior', {})
             global_models = global_data.get('models', {})
             best_params = _extract_best_model_params(global_model_posterior, global_models)
-        
+
         theta = {
             'q': _safe_float(best_params.get('q'), 1e-6),
             'phi': _safe_float(best_params.get('phi'), 0.95) if best_params.get('phi') is not None else 0.95,
@@ -2009,7 +2009,7 @@ def _select_regime_params(
         global_model_posterior = global_data.get('model_posterior', {})
         global_models = global_data.get('models', {})
         best_params = _extract_best_model_params(global_model_posterior, global_models)
-        
+
         return {
             'q': _safe_float(best_params.get('q'), 1e-6),
             'phi': _safe_float(best_params.get('phi'), 0.95) if best_params.get('phi') is not None else 0.95,
@@ -2157,11 +2157,11 @@ def _kalman_filter_drift(ret: pd.Series, vol: pd.Series, q: Optional[float] = No
 def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[str, pd.Series]:
     """
     Compute features from price series for signal generation.
-    
+
     Args:
         px: Price series
         asset_symbol: Asset symbol (e.g., "PLNJPY=X") for loading tuned Kalman parameters
-    
+
     Returns:
         Dictionary of computed features
     """
@@ -2237,7 +2237,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     # - constant_drift: μ = constant (fixed drift)
     # - ewma_drift: μ = EWMA of returns (adaptive)
     # - kalman_drift: μ from Kalman filter (state-space model)
-    
+
     # Load tuned parameters and model selection results
     tuned_params = None
     best_model = 'kalman_gaussian'
@@ -2254,35 +2254,35 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             # Get nu for Student-t models (phi_student_t_nu_* naming)
             if tuned_noise_model.startswith('phi_student_t_nu_'):
                 tuned_nu = tuned_params.get('nu')
-    
+
     # Print BMA model information
     if asset_symbol and tuned_params and tuned_params.get('has_bma'):
         model_posterior = tuned_params.get('model_posterior', {})
         global_data = tuned_params.get('global', {})
         global_models = global_data.get('models', {})
-        
+
         # Get model selection method from cache metadata
         model_selection_method = tuned_params.get('model_selection_method', 'combined')
         bic_weight = tuned_params.get('bic_weight', 0.5)
-        
+
         # Use Rich for world-class presentation
         from rich.table import Table
         from rich.panel import Panel
         from rich.text import Text
         from rich.columns import Columns
         from rich.console import Group
-        
+
         console = Console(force_terminal=True)
-        
+
         # Get company name and sector
         company_name = get_company_name(asset_symbol) or asset_symbol
         sector = get_sector(asset_symbol) or ""
-        
+
         # Model short names and descriptions
         # Include ALL possible ν values from adaptive refinement
         model_info = {
             'kalman_gaussian': {'short': 'Gaussian', 'icon': '📈', 'desc': 'Standard Kalman filter'},
-            'kalman_phi_gaussian': {'short': 'φ-Gaussian', 'icon': '🔄', 'desc': 'Autoregressive drift'}, 
+            'kalman_phi_gaussian': {'short': 'φ-Gaussian', 'icon': '🔄', 'desc': 'Autoregressive drift'},
             # Discrete nu grid Student-t models (original grid)
             'phi_student_t_nu_4': {'short': 'φ-T(ν=4)', 'icon': '📊', 'desc': 'Very heavy tails, ν=4'},
             'phi_student_t_nu_6': {'short': 'φ-T(ν=6)', 'icon': '📊', 'desc': 'Heavy tails, ν=6'},
@@ -2298,7 +2298,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             'phi_student_t_nu_16': {'short': 'φ-T(ν=16)', 'icon': '📊', 'desc': 'Light tails, ν=16 (refined)'},
             'phi_student_t_nu_25': {'short': 'φ-T(ν=25)', 'icon': '📊', 'desc': 'Near-Gaussian, ν=25 (refined)'},
         }
-        
+
         # Dynamic fallback: if model not in model_info, generate entry dynamically
         def get_model_info(model_name: str) -> dict:
             if model_name in model_info:
@@ -2312,7 +2312,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                     pass
             # Fallback
             return {'short': model_name[:14], 'icon': '?', 'desc': model_name}
-        
+
         # Model selection method description
         selection_method_info = {
             'bic': ('BIC-only', 'Traditional Bayesian Information Criterion'),
@@ -2320,10 +2320,10 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             'combined': (f'Combined (α={bic_weight:.1f})', 'BIC + Hyvärinen geometric mean'),
         }
         method_short, method_desc = selection_method_info.get(
-            model_selection_method, 
+            model_selection_method,
             ('Unknown', 'Model selection method')
         )
-        
+
         # Helper functions to describe parameters in human terms
         def describe_drift_speed(q_val):
             if q_val is None or not np.isfinite(q_val):
@@ -2338,7 +2338,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 return ("fast", "yellow")
             else:
                 return ("rapid", "red")
-        
+
         def describe_vol_scale(c_val):
             if c_val is None or not np.isfinite(c_val):
                 return ("normal", "white")
@@ -2352,7 +2352,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 return ("elevated", "yellow")
             else:
                 return ("amplified", "red")
-        
+
         def describe_persistence(phi_val):
             if phi_val is None or not np.isfinite(phi_val):
                 return ("n/a", "dim")
@@ -2366,7 +2366,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 return ("very strong", "cyan")
             else:
                 return ("near-unit", "blue")
-        
+
         def describe_tail_weight(nu_val):
             if nu_val is None or not np.isfinite(nu_val):
                 return ("normal", "white")
@@ -2378,25 +2378,25 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 return ("moderate", "green")
             else:
                 return ("light", "cyan")
-        
+
         # ═══════════════════════════════════════════════════════════════════════════════
         # EXTRAORDINARY APPLE-QUALITY MODEL PANEL
         # Design: Clean, premium, scannable, beautiful
         # ═══════════════════════════════════════════════════════════════════════════════
-        
+
         from rich.rule import Rule
         from rich.align import Align
-        
+
         # Get all models from posterior, sorted by weight descending
         all_models = sorted(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0), reverse=True)
-        
+
         # Get global-level aggregate scores
         global_hyv_max = tuned_params.get('hyvarinen_max')
         global_bic_min = tuned_params.get('bic_min')
-        
+
         console.print()
         console.print()
-        
+
         # ─────────────────────────────────────────────────────────────────────────────
         # ASSET HEADER - Cinematic, clean, CENTERED
         # ─────────────────────────────────────────────────────────────────────────────
@@ -2408,7 +2408,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         if sector:
             header_content.append(f"  ·  {sector}", style="dim italic")
         header_content.append("\n", style="")
-        
+
         header_panel = Panel(
             Align.center(header_content),
             box=box.ROUNDED,
@@ -2417,33 +2417,33 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         )
         console.print(Align.center(header_panel, width=55))
         console.print()
-        
+
         # ─────────────────────────────────────────────────────────────────────────────
         # WINNING MODEL - Hero section
         # ─────────────────────────────────────────────────────────────────────────────
         best_info = get_model_info(best_model)
         best_params = global_models.get(best_model, {})
         best_weight = model_posterior.get(best_model, 0.0)
-        
+
         # Get BIC/Hyvärinen from best model params (more reliable)
         best_bic = best_params.get('bic')
         best_hyv = best_params.get('hyvarinen_score')
-        
+
         winner_grid = Table.grid(padding=(0, 4))
         winner_grid.add_column(justify="center")
         winner_grid.add_column(justify="center")
         winner_grid.add_column(justify="center")
         winner_grid.add_column(justify="center")
-        
+
         def metric_text(value: str, label: str, color: str = "white") -> Text:
             t = Text()
             t.append(f"{value}\n", style=f"bold {color}")
             t.append(label, style="dim")
             return t
-        
+
         bic_str = f"{best_bic:.0f}" if best_bic and np.isfinite(best_bic) else "—"
         hyv_str = f"{best_hyv:.0f}" if best_hyv and np.isfinite(best_hyv) else "—"
-        
+
         winner_grid.add_row(
             metric_text(best_info['short'], "Model", "bright_green"),
             metric_text(f"{best_weight:.0%}", "Weight", "bright_cyan"),
@@ -2452,34 +2452,34 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         )
         console.print(Align.center(winner_grid))
         console.print()
-        
+
         # ─────────────────────────────────────────────────────────────────────────────
         # MODEL COMPARISON - Compact, scannable
         # ─────────────────────────────────────────────────────────────────────────────
         console.print(Rule(style="dim", characters="─"))
         console.print()
-        
+
         # Only show models with weight > 0.001% to reduce clutter
         visible_models = [m for m in all_models if model_posterior.get(m, 0) >= 0.0001]
-        
+
         for model_name in visible_models:
             p = model_posterior.get(model_name, 0.0)
             m_params = global_models.get(model_name, {})
             info = get_model_info(model_name)
             is_best = model_name == best_model
             is_significant = p >= 0.02  # 2% threshold for significant contribution
-            
+
             bic_val = m_params.get('bic')
             hyv_val = m_params.get('hyvarinen_score')
-            
+
             # Visual weight bar
             bar_width = 20
             filled = int(p * bar_width)
-            
+
             # Build row
             row = Text()
             row.append("    ", style="")
-            
+
             if is_best:
                 # Best model: bold green with filled bar
                 row.append("● ", style="bold bright_green")
@@ -2500,11 +2500,11 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 row.append(f"{info['short']:<14}", style="dim")
                 row.append(f"{p:>6.1%}  ", style="dim")
                 row.append("─" * bar_width, style="dim")
-            
+
             console.print(row)
-        
+
         console.print()
-        
+
         # ─────────────────────────────────────────────────────────────────────────────
         # PARAMETER ESTIMATES TABLE - All models, Apple-quality
         # ─────────────────────────────────────────────────────────────────────────────
@@ -2513,7 +2513,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         params_header.append("Parameter Estimates", style="bold white")
         console.print(params_header)
         console.print()
-        
+
         params_table = Table(
             show_header=True,
             header_style="dim",
@@ -2527,23 +2527,23 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         params_table.add_column("Vol (c)", justify="center", width=12)
         params_table.add_column("Persist (φ)", justify="center", width=12)
         params_table.add_column("Tails (ν)", justify="center", width=12)
-        
+
         for model_name in visible_models:
             m_params = global_models.get(model_name, {})
             info = get_model_info(model_name)
             is_best = model_name == best_model
-            
+
             if m_params.get('fit_success', False):
                 q = m_params.get('q', float('nan'))
                 c = m_params.get('c', float('nan'))
                 phi = m_params.get('phi')
                 nu = m_params.get('nu')
-                
+
                 drift_desc, drift_color = describe_drift_speed(q)
                 vol_desc, vol_color = describe_vol_scale(c)
                 persist_desc, persist_color = describe_persistence(phi) if phi else ("—", "dim")
                 tail_desc, tail_color = describe_tail_weight(nu) if nu else ("—", "dim")
-                
+
                 if is_best:
                     params_table.add_row(
                         f"[bold bright_green]{info['short']}[/bold bright_green]",
@@ -2568,20 +2568,20 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                     "[dim]—[/dim]",
                     "[dim]—[/dim]",
                 )
-        
+
         console.print(Padding(params_table, (0, 0, 0, 4)))
-        
+
         # ─────────────────────────────────────────────────────────────────────────────
         # CALIBRATION & TRUST - Shows calibration status and effective trust
         # ─────────────────────────────────────────────────────────────────────────────
         console.print()
-        
+
         calibration_header = Text()
         calibration_header.append("    ▸ ", style="bright_cyan")
         calibration_header.append("Calibration & Trust", style="bold white")
         console.print(calibration_header)
         console.print()
-        
+
         # Get calibration data from tuned params
         calibrated_trust_data = tuned_params.get('calibrated_trust', {})
         effective_trust = tuned_params.get('effective_trust')
@@ -2594,7 +2594,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         nu_refinement = tuned_params.get('nu_refinement', {})
         gh_selected = tuned_params.get('gh_selected', False)
         gh_model = tuned_params.get('gh_model', {})
-        
+
         # Trust decomposition table
         trust_table = Table(
             show_header=False,
@@ -2605,38 +2605,38 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         )
         trust_table.add_column("Label", style="dim", width=24)
         trust_table.add_column("Value", width=30)
-        
+
         # Calibration status
         if calibration_warning:
             cal_status = "[bold yellow]⚠ Warning[/bold yellow]"
         else:
             cal_status = "[bold green]✓ Passed[/bold green]"
         trust_table.add_row("PIT Calibration", cal_status)
-        
+
         # PIT p-values
         if pit_ks_pvalue is not None:
             pit_color = "red" if pit_ks_pvalue < 0.01 else "yellow" if pit_ks_pvalue < 0.05 else "green"
             pit_str = f"[{pit_color}]{pit_ks_pvalue:.4f}[/{pit_color}]"
             trust_table.add_row("  Raw PIT p-value", pit_str)
-        
+
         if pit_ks_pvalue_calibrated is not None:
             pit_cal_color = "red" if pit_ks_pvalue_calibrated < 0.01 else "yellow" if pit_ks_pvalue_calibrated < 0.05 else "green"
             pit_cal_str = f"[{pit_cal_color}]{pit_ks_pvalue_calibrated:.4f}[/{pit_cal_color}]"
             trust_table.add_row("  Calibrated PIT p-value", pit_cal_str)
-        
+
         # Isotonic recalibration
         if recalibration_applied:
             trust_table.add_row("  Isotonic Recalibration", "[green]✓ Applied[/green]")
         else:
             trust_table.add_row("  Isotonic Recalibration", "[dim]Not applied[/dim]")
-        
+
         # ν refinement
         if nu_refinement:
             nu_attempted = nu_refinement.get('refinement_attempted', False)
             nu_improved = nu_refinement.get('improvement_achieved', False)
             nu_original = nu_refinement.get('nu_original')
             nu_final = nu_refinement.get('nu_final')
-            
+
             if nu_attempted:
                 if nu_improved and nu_original != nu_final:
                     trust_table.add_row("  ν Refinement", f"[green]✓ Improved ν={nu_original}→{nu_final}[/green]")
@@ -2644,48 +2644,48 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                     trust_table.add_row("  ν Refinement", f"[dim]Attempted, no improvement[/dim]")
             else:
                 trust_table.add_row("  ν Refinement", "[dim]Not needed[/dim]")
-        
+
         # GH model
         if gh_selected and gh_model:
             gh_params = gh_model.get('parameters', {})
             gh_skew = gh_params.get('beta', 0)
             skew_dir = "right" if gh_skew > 0.1 else "left" if gh_skew < -0.1 else "symmetric"
             trust_table.add_row("  GH Skew Model", f"[cyan]✓ Selected ({skew_dir})[/cyan]")
-        
+
         # Trust decomposition (main feature)
         if effective_trust is not None and calibration_trust is not None:
             trust_table.add_row("", "")  # Spacer
             trust_table.add_row("[bold]Trust Authority[/bold]", "")
-            
+
             # Calibration trust
             cal_trust_color = "green" if calibration_trust > 0.8 else "yellow" if calibration_trust > 0.5 else "red"
             trust_table.add_row("  Calibration Trust", f"[{cal_trust_color}]{calibration_trust:.1%}[/{cal_trust_color}]")
-            
+
             # Regime penalty
             if regime_penalty is not None:
                 penalty_color = "dim" if regime_penalty < 0.1 else "yellow" if regime_penalty < 0.2 else "red"
                 regime_context = calibrated_trust_data.get('regime_context', 'normal')
                 trust_table.add_row("  Regime Penalty", f"[{penalty_color}]-{regime_penalty:.1%} ({regime_context})[/{penalty_color}]")
-            
+
             # Effective trust (final)
             eff_trust_color = "green" if effective_trust > 0.7 else "yellow" if effective_trust > 0.4 else "red"
             trust_table.add_row("  [bold]Effective Trust[/bold]", f"[bold {eff_trust_color}]{effective_trust:.1%}[/bold {eff_trust_color}]")
-            
+
             # Tail bias
             tail_bias = calibrated_trust_data.get('tail_bias')
             if tail_bias is not None:
                 bias_dir = "right" if tail_bias > 0.02 else "left" if tail_bias < -0.02 else "centered"
                 trust_table.add_row("  Tail Bias", f"[dim]{tail_bias:+.3f} ({bias_dir})[/dim]")
-        
+
         console.print(Padding(trust_table, (0, 0, 0, 4)))
-        
+
         console.print()
         console.print(Rule(style="dim", characters="─"))
         console.print()
     elif asset_symbol and tuned_params:
         # Old cache format warning
         print(f"\n\033[93m⚠️  {asset_symbol}: Old cache format — run tune.py\033[0m\n")
-    
+
     # Apply drift estimation based on best model selection
     # NOTE: In BMA architecture, "best_model" is used for Kalman filter params,
     # but actual predictions use weighted mixture over all models
@@ -2781,46 +2781,46 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         n_states=3,
         random_seed=42
     )
-    
+
     # Apply light regime-aware shrinkage to Kalman drift in extreme regimes
     # (Kalman already handles uncertainty; this adds regime-specific conservatism)
     if hmm_result_prelim is not None and "posterior_probs" in hmm_result_prelim:
         try:
             posterior_probs = hmm_result_prelim["posterior_probs"]
-            
+
             # Align posteriors with mu_kf index
             posterior_aligned = posterior_probs.reindex(mu_kf.index).ffill().fillna(0.333)
-            
+
             # Extract regime probabilities
             regime_names = hmm_result_prelim["regime_names"]
             calm_idx = [k for k, v in regime_names.items() if v == "calm"]
             crisis_idx = [k for k, v in regime_names.items() if v == "crisis"]
-            
+
             p_calm = posterior_aligned.iloc[:, calm_idx[0]].values if calm_idx else np.zeros(len(mu_kf))
             p_crisis = posterior_aligned.iloc[:, crisis_idx[0]].values if crisis_idx else np.zeros(len(mu_kf))
-            
+
             # Light shrinkage in crisis regimes (Kalman handles most uncertainty)
             # Shrink toward zero in extreme crisis to be conservative
             shrinkage = 0.3 * p_crisis  # 0-30% shrinkage based on crisis probability
             shrinkage = np.clip(shrinkage, 0.0, 0.5)
-            
+
             # Final drift: Kalman estimate with regime-aware shrinkage
             mu_final = pd.Series(
                 (1.0 - shrinkage) * mu_kf.values,  # shrink toward zero in crisis
                 index=mu_kf.index,
                 name="mu_final"
             )
-            
+
         except Exception:
             # Fallback: use Kalman estimate without regime adjustment
             mu_final = mu_kf.copy()
     else:
         # HMM not available: use pure Kalman estimate
         mu_final = mu_kf.copy()
-    
+
     # Robust fallback for NaNs
     mu_final = mu_final.fillna(0.0)
-    
+
     # Legacy aliases for backward compatibility
     mu_blend = 0.5 * mu_fast + 0.5 * mu_slow  # kept for diagnostics
     mu_post = mu_final  # primary drift estimate
@@ -3256,21 +3256,21 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
 
 def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_oos: bool = False, enable_pit_calibration: bool = False, enable_model_comparison: bool = False) -> Dict:
     """
-    Compute comprehensive diagnostics: log-likelihood monitoring, parameter stability, 
+    Compute comprehensive diagnostics: log-likelihood monitoring, parameter stability,
     and optionally out-of-sample tests, PIT calibration verification, and structural model comparison.
-    
+
     Args:
         px: Price series
         feats: Feature dictionary from compute_features
         enable_oos: If True, run expensive out-of-sample validation
         enable_pit_calibration: If True, run PIT calibration verification (expensive)
         enable_model_comparison: If True, run structural model comparison (AIC/BIC falsifiability)
-        
+
     Returns:
         Dictionary with all diagnostic metrics
     """
     diagnostics = {}
-    
+
     # 1. Log-likelihood monitoring from fitted models
     garch_params = feats.get("garch_params", {})
     if isinstance(garch_params, dict):
@@ -3278,7 +3278,7 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         diagnostics["garch_aic"] = garch_params.get("aic", float("nan"))
         diagnostics["garch_bic"] = garch_params.get("bic", float("nan"))
         diagnostics["garch_n_obs"] = garch_params.get("n_obs", 0)
-    
+
     # Pillar 1: Kalman filter drift diagnostics (with refinements)
     kalman_metadata = feats.get("kalman_metadata", {})
     if isinstance(kalman_metadata, dict):
@@ -3322,7 +3322,7 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         diagnostics["hmm_aic"] = hmm_result.get("aic", float("nan"))
         diagnostics["hmm_bic"] = hmm_result.get("bic", float("nan"))
         diagnostics["hmm_n_obs"] = hmm_result.get("n_obs", 0)
-    
+
     nu_info = feats.get("nu_info", {})
     if isinstance(nu_info, dict):
         diagnostics["student_t_log_likelihood"] = nu_info.get("ll", float("nan"))
@@ -3330,7 +3330,7 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
         diagnostics["student_t_n_obs"] = nu_info.get("n", 0)
         # Tier 2: Add standard error for posterior parameter variance tracking
         diagnostics["student_t_se_nu"] = nu_info.get("se_nu", float("nan"))
-    
+
     # 2. Parameter stability tracking (expensive, only if enough data)
     ret = feats.get("ret", pd.Series(dtype=float))
     if not ret.empty and len(ret) >= 600:
@@ -3338,7 +3338,7 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
             stability = track_parameter_stability(ret, window_days=252, step_days=126)
             if stability:
                 diagnostics["parameter_stability"] = stability
-                
+
                 # Summary statistics: recent drift magnitude
                 param_drift = stability.get("param_drift")
                 if param_drift is not None and not param_drift.empty:
@@ -3348,14 +3348,14 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
                         diagnostics[f"recent_{col}"] = float(val) if np.isfinite(val) else float("nan")
         except Exception:
             pass
-    
+
     # 3. Out-of-sample tests (very expensive, optional)
     if enable_oos and not px.empty and len(px) >= 800:
         try:
             oos_metrics = walk_forward_validation(px, train_days=504, test_days=21, horizons=[1, 21, 63])
             if oos_metrics:
                 diagnostics["out_of_sample"] = oos_metrics
-                
+
                 # Summary: hit rates for each horizon
                 for horizon_key, metrics in oos_metrics.items():
                     if isinstance(metrics, dict):
@@ -3363,12 +3363,12 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
                         diagnostics[f"oos_{horizon_key}_hit_rate"] = float(hit_rate)
         except Exception:
             pass
-    
+
     # 4. PIT calibration verification (Level-7: probability calibration test)
     if enable_pit_calibration and not px.empty and len(px) >= 1000:
         try:
             from pit_calibration import run_pit_calibration_test
-            
+
             # Run calibration test for key horizons
             calibration_results = run_pit_calibration_test(
                 px=px,
@@ -3378,10 +3378,10 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
                 test_days=21,
                 max_predictions=500
             )
-            
+
             if calibration_results:
                 diagnostics["pit_calibration"] = calibration_results
-                
+
                 # Summary: calibration status per horizon
                 for horizon, metrics in calibration_results.items():
                     diagnostics[f"pit_H{horizon}_ece"] = metrics.expected_calibration_error
@@ -3390,19 +3390,19 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
                     diagnostics[f"pit_H{horizon}_n_predictions"] = metrics.n_predictions
         except Exception as e:
             diagnostics["pit_calibration_error"] = str(e)
-    
+
     # 5. Structural model comparison (Level-7: formal falsifiability via AIC/BIC)
     if enable_model_comparison:
         try:
             from model_comparison import run_all_comparisons
-            
+
             # Get required inputs
             ret = feats.get("ret", pd.Series(dtype=float))
             vol = feats.get("vol", pd.Series(dtype=float))
             garch_params = feats.get("garch_params", {})
             nu_info = feats.get("nu_info", {})
             kalman_metadata = feats.get("kalman_metadata", {})
-            
+
             if not ret.empty and not vol.empty:
                 # Run all model comparisons
                 comparison_results = run_all_comparisons(
@@ -3412,9 +3412,9 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
                     student_t_params=nu_info if isinstance(nu_info, dict) else None,
                     kalman_metadata=kalman_metadata if isinstance(kalman_metadata, dict) else None,
                 )
-                
+
                 diagnostics["model_comparison"] = comparison_results
-                
+
                 # Summary: winner per category
                 for category, result in comparison_results.items():
                     if result is not None and hasattr(result, 'winner_aic'):
@@ -3423,18 +3423,18 @@ def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_o
                         diagnostics[f"model_comparison_{category}_recommendation"] = result.recommendation
         except Exception as e:
             diagnostics["model_comparison_error"] = str(e)
-    
+
     return diagnostics
 
 
 def infer_current_regime(feats: Dict[str, pd.Series], hmm_result: Optional[Dict] = None) -> Tuple[str, Dict[str, float]]:
     """
     Infer the current market regime using posterior inference from HMM.
-    
+
     Args:
         feats: Feature dictionary
         hmm_result: Result from fit_hmm_regimes(), or None to use threshold fallback
-        
+
     Returns:
         Tuple of (regime_label, regime_metadata_dict)
         regime_label: "calm", "trending", "crisis", or threshold-based fallback
@@ -3445,11 +3445,11 @@ def infer_current_regime(feats: Dict[str, pd.Series], hmm_result: Optional[Dict]
         try:
             regime_series = hmm_result["regime_series"]
             posterior_probs = hmm_result["posterior_probs"]
-            
+
             if not regime_series.empty:
                 current_regime = regime_series.iloc[-1]
                 current_probs = posterior_probs.iloc[-1].to_dict()
-                
+
                 return str(current_regime), {
                     "method": "hmm_posterior",
                     "probabilities": current_probs,
@@ -3457,14 +3457,14 @@ def infer_current_regime(feats: Dict[str, pd.Series], hmm_result: Optional[Dict]
                 }
         except Exception:
             pass
-    
+
     # Fallback to threshold-based regime detection (original logic)
     vol_regime = feats.get("vol_regime", pd.Series(dtype=float))
     trend_z = feats.get("trend_z", pd.Series(dtype=float))
-    
+
     vr = safe_last(vol_regime) if not vol_regime.empty else float("nan")
     tz = safe_last(trend_z) if not trend_z.empty else float("nan")
-    
+
     # Threshold-based classification
     if np.isfinite(vr) and vr > 1.8:
         if np.isfinite(tz) and tz > 0:
@@ -3484,7 +3484,7 @@ def infer_current_regime(feats: Dict[str, pd.Series], hmm_result: Optional[Dict]
         label = "trending"
     else:
         label = "Normal"
-    
+
     return label, {
         "method": "threshold_fallback",
         "vol_regime": float(vr) if np.isfinite(vr) else None,
@@ -3518,10 +3518,10 @@ REGIME_NAMES = {
 def assign_current_regime(feats: Dict[str, pd.Series], lookback: int = 21) -> int:
     """
     Assign current regime using SAME logic as tune.py's assign_regime_labels.
-    
+
     This ensures regime assignment is deterministic and consistent between tuning
     and inference. Uses only past data (no look-ahead).
-    
+
     Classification Logic (matches tune.py):
     - CRISIS_JUMP (4): vol_relative > 2.0 OR tail_indicator > 4.0
     - HIGH_VOL_TREND (1): vol_relative > 1.3 AND drift_abs > threshold
@@ -3529,66 +3529,66 @@ def assign_current_regime(feats: Dict[str, pd.Series], lookback: int = 21) -> in
     - LOW_VOL_TREND (0): vol_relative < 0.85 AND drift_abs > threshold
     - LOW_VOL_RANGE (2): vol_relative < 0.85 AND drift_abs <= threshold
     - Normal vol: based on drift threshold
-    
+
     Args:
         feats: Feature dictionary with 'ret' and 'vol' series
         lookback: Rolling window for feature computation (default 21 days)
-        
+
     Returns:
         Integer regime index (0-4)
     """
     # Extract returns and volatility
     ret_series = feats.get("ret", pd.Series(dtype=float))
     vol_series = feats.get("vol", pd.Series(dtype=float))
-    
+
     if not isinstance(ret_series, pd.Series) or ret_series.empty:
         return REGIME_LOW_VOL_RANGE  # Default
     if not isinstance(vol_series, pd.Series) or vol_series.empty:
         return REGIME_LOW_VOL_RANGE  # Default
-    
+
     # Current values
     vol_now = float(vol_series.iloc[-1]) if len(vol_series) > 0 else 0.0
     ret_now = float(ret_series.iloc[-1]) if len(ret_series) > 0 else 0.0
-    
+
     # Rolling mean absolute return (drift proxy)
     if len(ret_series) >= lookback:
         drift_abs = abs(float(ret_series.tail(lookback).mean()))
     else:
         drift_abs = abs(float(ret_series.mean()))
-    
+
     # Volatility relative to expanding median
     if len(vol_series) >= lookback:
         vol_median = float(vol_series.expanding(min_periods=min(lookback, len(vol_series))).median().iloc[-1])
     else:
         vol_median = float(vol_series.median())
-    
+
     vol_relative = vol_now / vol_median if vol_median > 1e-12 else 1.0
-    
+
     # Tail indicator: |return| / vol
     tail_indicator = abs(ret_now) / vol_now if vol_now > 1e-12 else 0.0
-    
+
     # Drift threshold (same as tune.py)
     drift_threshold = 0.0005  # ~0.05% daily drift threshold
-    
+
     # Classification logic (MUST match tune.py assign_regime_labels)
     # Crisis/Jump: extreme volatility or tail events
     if vol_relative > 2.0 or tail_indicator > 4.0:
         return REGIME_CRISIS_JUMP
-    
+
     # High volatility regimes
     if vol_relative > 1.3:
         if drift_abs > drift_threshold:
             return REGIME_HIGH_VOL_TREND
         else:
             return REGIME_HIGH_VOL_RANGE
-    
+
     # Low volatility regimes
     if vol_relative < 0.85:
         if drift_abs > drift_threshold:
             return REGIME_LOW_VOL_TREND
         else:
             return REGIME_LOW_VOL_RANGE
-    
+
     # Normal volatility (between 0.85 and 1.3)
     if drift_abs > drift_threshold * 1.5:
         return REGIME_HIGH_VOL_TREND if vol_relative > 1.0 else REGIME_LOW_VOL_TREND
@@ -3599,24 +3599,24 @@ def assign_current_regime(feats: Dict[str, pd.Series], lookback: int = 21) -> in
 def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = None) -> int:
     """
     Map a regime label (string) to a regime index (0-4) matching tune.py definitions.
-    
+
     Maps from infer_current_regime() output to tune.py regime indices.
-    
+
     Mapping logic:
     - "crisis" / "High-vol*" → CRISIS_JUMP (4) if vol_regime > 2.0 else HIGH_VOL_RANGE (3)
     - "trending" → HIGH_VOL_TREND (1) or LOW_VOL_TREND (0) based on vol_regime
     - "calm" / "Calm*" → LOW_VOL_RANGE (2) or LOW_VOL_TREND (0) based on drift
     - "Normal" → LOW_VOL_RANGE (2)
-    
+
     Args:
         regime_label: String regime label from infer_current_regime()
         regime_meta: Optional regime metadata dict with vol_regime, trend_z, etc.
-        
+
     Returns:
         Integer regime index (0-4)
     """
     label_lower = regime_label.lower() if regime_label else ""
-    
+
     # Extract vol_regime from metadata if available
     vol_regime = None
     trend_z = None
@@ -3625,11 +3625,11 @@ def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = N
         trend_z = regime_meta.get("trend_z")
         # Also check probabilities from HMM
         probs = regime_meta.get("probabilities", {})
-    
+
     # Crisis detection (highest priority)
     if "crisis" in label_lower:
         return REGIME_CRISIS_JUMP
-    
+
     # High volatility regimes
     if "high-vol" in label_lower or "high_vol" in label_lower:
         # Check if extreme crisis or just high vol trend/range
@@ -3639,7 +3639,7 @@ def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = N
             return REGIME_HIGH_VOL_TREND
         else:
             return REGIME_HIGH_VOL_RANGE
-    
+
     # Trending detection
     if "trending" in label_lower or "trend" in label_lower:
         # Determine if low or high vol based on metadata
@@ -3647,7 +3647,7 @@ def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = N
             return REGIME_HIGH_VOL_TREND
         else:
             return REGIME_LOW_VOL_TREND
-    
+
     # Calm/Low volatility regimes
     if "calm" in label_lower or "low" in label_lower:
         # Check if trending or ranging
@@ -3655,11 +3655,11 @@ def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = N
             return REGIME_LOW_VOL_TREND
         else:
             return REGIME_LOW_VOL_RANGE
-    
+
     # Normal / default
     if "normal" in label_lower:
         return REGIME_LOW_VOL_RANGE
-    
+
     # HMM-specific labels
     if label_lower in ("calm", "0"):
         return REGIME_LOW_VOL_RANGE
@@ -3667,7 +3667,7 @@ def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = N
         return REGIME_LOW_VOL_TREND
     elif label_lower in ("crisis", "2"):
         return REGIME_CRISIS_JUMP
-    
+
     # Default fallback
     return REGIME_LOW_VOL_RANGE
 
@@ -3675,17 +3675,17 @@ def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = N
 def extract_regime_features(feats: Dict[str, pd.Series]) -> Dict[str, float]:
     """
     Extract features for regime likelihood computation.
-    
+
     Features:
     - vol_level: EWMA volatility (normalized)
     - drift_strength: |μ| (absolute drift)
     - drift_persistence: φ from Kalman
     - return_autocorr: autocorrelation of returns
     - tail_indicator: |return| / EWMA_σ (tail measure)
-    
+
     Args:
         feats: Feature dictionary from compute_features()
-        
+
     Returns:
         Dictionary of regime features
     """
@@ -3697,21 +3697,21 @@ def extract_regime_features(feats: Dict[str, pd.Series]) -> Dict[str, float]:
         vol_level = vol_now / vol_median if vol_median > 1e-12 else 1.0
     else:
         vol_level = 1.0
-    
+
     # Drift strength (absolute value of filtered drift)
     mu_series = feats.get("mu_post", feats.get("mu_kf", feats.get("mu", pd.Series(dtype=float))))
     if isinstance(mu_series, pd.Series) and not mu_series.empty:
         drift_strength = abs(float(mu_series.iloc[-1]))
     else:
         drift_strength = 0.0
-    
+
     # Drift persistence (φ from Kalman metadata)
     km = feats.get("kalman_metadata", {}) or {}
     phi = km.get("phi_used") or km.get("kalman_phi")
     if phi is None or not np.isfinite(phi):
         phi = feats.get("phi_used")
     drift_persistence = float(phi) if phi is not None and np.isfinite(phi) else 0.95
-    
+
     # Return autocorrelation
     ret_series = feats.get("ret", pd.Series(dtype=float))
     if isinstance(ret_series, pd.Series) and len(ret_series) >= 21:
@@ -3723,14 +3723,14 @@ def extract_regime_features(feats: Dict[str, pd.Series]) -> Dict[str, float]:
             return_autocorr = 0.0
     else:
         return_autocorr = 0.0
-    
+
     # Tail indicator: |recent return| / σ
     if isinstance(ret_series, pd.Series) and not ret_series.empty and vol_now > 1e-12:
         recent_ret = abs(float(ret_series.iloc[-1]))
         tail_indicator = recent_ret / vol_now
     else:
         tail_indicator = 0.0
-    
+
     return {
         "vol_level": float(np.clip(vol_level, 0.1, 10.0)),
         "drift_strength": float(np.clip(drift_strength, 0.0, 0.01)),
@@ -3743,18 +3743,18 @@ def extract_regime_features(feats: Dict[str, pd.Series]) -> Dict[str, float]:
 def compute_regime_log_likelihoods(features: Dict[str, float]) -> np.ndarray:
     """
     Compute log-likelihood scores for each regime given features.
-    
+
     Uses Gaussian/logistic scoring based on regime characteristics:
-    
+
     LOW_VOL_TREND (0): low vol, high drift_strength, high persistence
     HIGH_VOL_TREND (1): high vol, high drift_strength, high persistence
     LOW_VOL_RANGE (2): low vol, low drift_strength, low persistence
     HIGH_VOL_RANGE (3): high vol, low drift_strength, low persistence
     CRISIS_JUMP (4): extreme vol, high tail_indicator
-    
+
     Args:
         features: Dictionary from extract_regime_features()
-        
+
     Returns:
         Array of log-likelihoods for regimes 0-4
     """
@@ -3763,33 +3763,33 @@ def compute_regime_log_likelihoods(features: Dict[str, float]) -> np.ndarray:
     persist = features["drift_persistence"]
     autocorr = features["return_autocorr"]
     tail = features["tail_indicator"]
-    
+
     # Define regime scoring functions (Gaussian scoring)
     # Higher score = more likely regime
-    
+
     log_L = np.zeros(5)
-    
+
     # Regime 0: LOW_VOL_TREND - low vol, high drift, high persistence
     log_L[0] = (
         -0.5 * ((vol - 0.7) / 0.3) ** 2      # vol centered at 0.7 (below median)
         - 0.5 * ((drift - 0.002) / 0.001) ** 2  # strong drift
         - 0.5 * ((persist - 0.98) / 0.02) ** 2  # high persistence
     )
-    
+
     # Regime 1: HIGH_VOL_TREND - high vol, high drift, high persistence
     log_L[1] = (
         -0.5 * ((vol - 1.5) / 0.4) ** 2      # vol above median
         - 0.5 * ((drift - 0.003) / 0.002) ** 2  # strong drift
         - 0.5 * ((persist - 0.95) / 0.03) ** 2  # high persistence
     )
-    
+
     # Regime 2: LOW_VOL_RANGE - low vol, low drift, mean reversion
     log_L[2] = (
         -0.5 * ((vol - 0.6) / 0.25) ** 2     # low vol
         - 0.5 * ((drift - 0.0003) / 0.0005) ** 2  # near-zero drift
         - 0.5 * ((persist - 0.85) / 0.1) ** 2   # moderate persistence (mean reversion)
     )
-    
+
     # Regime 3: HIGH_VOL_RANGE - high vol, low drift, choppy
     log_L[3] = (
         -0.5 * ((vol - 1.3) / 0.35) ** 2     # elevated vol
@@ -3797,13 +3797,13 @@ def compute_regime_log_likelihoods(features: Dict[str, float]) -> np.ndarray:
         - 0.5 * ((persist - 0.80) / 0.15) ** 2  # low persistence (whipsaw)
         - 0.5 * ((autocorr - (-0.1)) / 0.2) ** 2  # slight negative autocorr
     )
-    
+
     # Regime 4: CRISIS_JUMP - extreme vol, tail events
     log_L[4] = (
         -0.5 * ((vol - 2.5) / 0.5) ** 2      # extreme vol
         - 0.5 * ((tail - 3.0) / 1.0) ** 2    # high tail indicator
     )
-    
+
     return log_L
 
 
@@ -3814,27 +3814,27 @@ def compute_regime_probabilities(
 ) -> np.ndarray:
     """
     Compute regime probabilities via softmax of log-likelihoods.
-    
+
     P_regimes = softmax(logL_r)
-    
+
     With optional exponential smoothing over time.
-    
+
     Args:
         features: Dictionary from extract_regime_features()
         smoothing_alpha: EMA smoothing factor (0=full smooth, 1=no smooth)
         prev_probs: Previous regime probabilities for smoothing
-        
+
     Returns:
         Array of probabilities for regimes 0-4, summing to 1
     """
     log_L = compute_regime_log_likelihoods(features)
-    
+
     # Softmax for probabilities
     # Subtract max for numerical stability
     log_L_shifted = log_L - np.max(log_L)
     exp_L = np.exp(log_L_shifted)
     probs = exp_L / np.sum(exp_L)
-    
+
     # Exponential smoothing if previous probabilities available
     if prev_probs is not None:
         prev_probs = np.asarray(prev_probs)
@@ -3842,7 +3842,7 @@ def compute_regime_probabilities(
             probs = smoothing_alpha * probs + (1.0 - smoothing_alpha) * prev_probs
             # Renormalize after smoothing
             probs = probs / np.sum(probs)
-    
+
     return probs
 
 
@@ -3860,14 +3860,14 @@ def run_regime_specific_mc(
 ) -> np.ndarray:
     """
     Run posterior predictive MC for a specific regime.
-    
+
     This is a lightweight wrapper that generates r_samples for one regime
     using regime-specific parameters.
-    
+
     Args:
         regime: Regime index (0-4)
         mu_t, P_t, phi, q, sigma2_step, H, n_paths, nu, seed: MC parameters
-        
+
     Returns:
         Array of return samples
     """
@@ -3878,15 +3878,15 @@ def run_regime_specific_mc(
     q = float(max(q, 0.0)) if np.isfinite(q) else 0.0
     sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
     H = int(max(H, 1))
-    
+
     if nu is not None:
         if not np.isfinite(nu) or nu <= 2.0:
             nu = None
         else:
             nu = float(np.clip(nu, 2.1, 500.0))
-    
+
     rng = np.random.default_rng(seed)
-    
+
     # Sample drift posterior
     if P_t > 0:
         if nu is not None:
@@ -3901,14 +3901,14 @@ def run_regime_specific_mc(
     else:
         # No drift uncertainty: point estimate
         mu_paths = np.full(n_paths, mu_t, dtype=float)
-    
+
     # Propagate drift and accumulate noise
     cum_mu = np.zeros(n_paths, dtype=float)
     cum_eps = np.zeros(n_paths, dtype=float)
-    
+
     q_std = math.sqrt(q) if q > 0 else 0.0
     sigma_step = math.sqrt(sigma2_step)
-    
+
     for k in range(H):
         # --- Drift propagation: μ_{t+k+1} = φ·μ_{t+k} + η_{k+1} ---
         if q_std > 0:
@@ -3919,10 +3919,10 @@ def run_regime_specific_mc(
                 eta = rng.normal(loc=0.0, scale=q_std, size=n_paths)
         else:
             eta = np.zeros(n_paths, dtype=float)
-        
+
         mu_paths = phi * mu_paths + eta
         cum_mu += mu_paths
-        
+
         # --- Observation noise: ε_k ~ N(0, sigma_step) or t_ν ---
         # sigma_step = √sigma2_step is the PRIMITIVE per-step noise std
         if sigma_step > 0:
@@ -3934,9 +3934,9 @@ def run_regime_specific_mc(
                 eps_k = rng.normal(loc=0.0, scale=sigma_step, size=n_paths)
         else:
             eps_k = np.zeros(n_paths, dtype=float)
-        
+
         cum_eps += eps_k
-    
+
     return cum_mu + cum_eps
 
 
@@ -3948,31 +3948,31 @@ def compute_model_posteriors_from_combined_score(
 ) -> Tuple[Dict[str, float], Dict]:
     """
     Convert combined scores into normalized posterior weights with entropy floor.
-    
+
     This is the EPISTEMIC WEIGHTING step that ensures Hyvärinen scores
     directly influence signal generation.
-    
+
     The combined_score is the entropy-regularized standardized score where:
         combined_score = w_bic * BIC_std - (1-w_bic) * Hyv_std
-    
+
     Lower combined_score = better model.
-    
+
     To get normalized posteriors we use softmax over NEGATED scores:
         p(m) = exp(-combined_score_m / T) / Σ_k exp(-combined_score_k / T)
-    
+
     An entropy floor is applied to prevent belief collapse:
         w_m = max(w_m, min_weight_fraction / n_models)
-    
+
     This ensures dominated models retain some probability mass, preventing
     overconfident allocations during regime transitions.
-    
+
     Args:
         models: Dictionary mapping model_name -> model_params dict
                 Each model_params must have 'combined_score'
         temperature: Softmax temperature (1.0 = standard, <1 = sharper, >1 = smoother)
         min_weight_fraction: Minimum total mass to uniform (0.01 = 1%)
         epsilon: Small constant to prevent zero weights
-        
+
     Returns:
         Tuple of:
         - Dictionary mapping model_name -> posterior weight p(m)
@@ -3983,7 +3983,7 @@ def compute_model_posteriors_from_combined_score(
         "temperature": temperature,
         "min_weight_fraction": min_weight_fraction,
     }
-    
+
     # Extract valid models with combined scores
     valid_models = {}
     for model_name, model_params in models.items():
@@ -3991,28 +3991,28 @@ def compute_model_posteriors_from_combined_score(
             continue
         if not model_params.get('fit_success', True):
             continue
-        
+
         combined_score = model_params.get('combined_score')
         if combined_score is not None and np.isfinite(combined_score):
             valid_models[model_name] = combined_score
-    
+
     if not valid_models:
         return {}, metadata
-    
+
     # Convert to arrays for softmax
     model_names = list(valid_models.keys())
     scores = np.array([valid_models[m] for m in model_names])
     n_models = len(model_names)
-    
+
     # Softmax over NEGATED scores (lower score = better = higher weight)
     # With numerical stabilization
     neg_scores = -scores / temperature
     neg_scores = neg_scores - neg_scores.max()  # Numerical stability
-    
+
     weights = np.exp(neg_scores)
     weights = np.maximum(weights, epsilon)
     weights = weights / weights.sum()
-    
+
     # =========================================================================
     # ENTROPY FLOOR: Prevent belief collapse
     # =========================================================================
@@ -4023,7 +4023,7 @@ def compute_model_posteriors_from_combined_score(
     min_weight_per_model = min_weight_fraction / max(n_models, 1)
     weights = np.maximum(weights, min_weight_per_model)
     weights = weights / weights.sum()  # Re-normalize after floor
-    
+
     return dict(zip(model_names, weights)), metadata
 
 
@@ -4040,28 +4040,28 @@ def bayesian_model_average_mc(
 ) -> Tuple[np.ndarray, np.ndarray, Dict]:
     """
     Perform Bayesian Model Averaging using CURRENT REGIME's model posterior.
-    
+
     Implements the posterior predictive for current regime r_t:
-    
+
         p(x | D, r_t) = Σ_m p(x | r_t, m, θ_{r_t,m}) · p(m | r_t)
-    
+
     KEY DESIGN:
     - Determines CURRENT regime using same logic as tune.py (deterministic)
     - Uses that regime's model_posterior and models from tuning
     - Does NOT blend across regimes - uses single regime's BMA
     - Falls back to global if regime data unavailable
-    
+
     SOFT REGIME PROBABILITIES (for Trust Authority):
     - Hard regime assignment remains for parameter selection
     - Soft probabilities computed for trust modulation to avoid cliffs
     - Based on regime transition smoothing: current=0.7, adjacent=0.15 each
-    
+
     CONTRACT WITH tune.py:
     - Regime assignment uses SAME logic as assign_regime_labels()
     - Every regime contains model_posterior and models (even fallbacks)
     - Model posteriors are already temporally smoothed by tune
     - This function does NOT perform tuning, BIC/AIC, or temporal smoothing
-    
+
     CRITICAL RULES:
     - Do NOT perform tuning here
     - Do NOT recompute likelihoods
@@ -4069,7 +4069,7 @@ def bayesian_model_average_mc(
     - Do NOT apply temporal smoothing to model posteriors
     - Do NOT select best model - use full BMA mixture
     - Do NOT synthesize fake models - use hierarchical fallback to global
-    
+
     Args:
         feats: Feature dictionary with 'ret', 'vol', etc.
         regime_params: (Legacy - ignored if tuned_params provided)
@@ -4080,7 +4080,7 @@ def bayesian_model_average_mc(
         n_paths: Total MC paths to generate
         seed: Random seed for reproducibility
         tuned_params: Full tuned params from _load_tuned_kalman_params (BMA structure)
-        
+
     Returns:
         Tuple of:
         - r_samples: Samples from posterior predictive p(x | D, r_t)
@@ -4088,10 +4088,10 @@ def bayesian_model_average_mc(
         - metadata: Diagnostic information
     """
     rng = np.random.default_rng(seed)
-    
+
     # Check if we have new BMA structure with model posteriors
     has_bma = tuned_params is not None and tuned_params.get('has_bma', False)
-    
+
     # If no BMA structure available, this is old cache format - REJECT
     if not has_bma:
         # Print warning to stderr so user knows there's an issue
@@ -4105,7 +4105,7 @@ def bayesian_model_average_mc(
         print(f"\n⚠️  BMA STRUCTURE MISSING: {reason}", file=sys.stderr)
         print(f"   → Signals will show 0% for all horizons", file=sys.stderr)
         print(f"   → Fix: Run 'make tune' to regenerate cache\n", file=sys.stderr)
-        
+
         # Return uniform soft regime probs for trust (maximally uncertain)
         uniform_regime_probs = {i: 0.2 for i in range(5)}
         return np.array([0.0]), uniform_regime_probs, {
@@ -4114,7 +4114,7 @@ def bayesian_model_average_mc(
             "error": "Cache must be regenerated with tune.py for BMA support",
             "debug_reason": reason,
         }
-    
+
     # ========================================================================
     # DETERMINE CURRENT REGIME (DETERMINISTIC - SAME AS TUNE)
     # ========================================================================
@@ -4123,7 +4123,7 @@ def bayesian_model_average_mc(
     # ========================================================================
     current_regime = assign_current_regime(feats)
     regime_name = REGIME_NAMES.get(current_regime, f"REGIME_{current_regime}")
-    
+
     # ========================================================================
     # SOFT REGIME PROBABILITIES FOR TRUST AUTHORITY
     # ========================================================================
@@ -4149,11 +4149,11 @@ def bayesian_model_average_mc(
         3: [1, 4],        # high_vol → normal, crisis
         4: [3],           # crisis → high_vol
     }
-    
+
     # Soft probabilities: 70% current, 30% split among neighbors
     soft_regime_probs = {i: 0.0 for i in range(5)}
     soft_regime_probs[current_regime] = 0.70
-    
+
     neighbors = REGIME_ADJACENCY.get(current_regime, [])
     if neighbors:
         neighbor_share = 0.30 / len(neighbors)
@@ -4162,24 +4162,24 @@ def bayesian_model_average_mc(
     else:
         # No neighbors defined: keep all mass on current
         soft_regime_probs[current_regime] = 1.0
-    
+
     # Legacy one-hot array for backward compatibility
     regime_probs_array = np.zeros(5)
     regime_probs_array[current_regime] = 1.0
-    
+
     # ========================================================================
     # GET REGIME-SPECIFIC BMA DATA
     # ========================================================================
     global_data = tuned_params.get('global', {})
     regime_data = tuned_params.get('regime', {})
-    
+
     global_model_posterior = global_data.get('model_posterior', {})
     global_models = global_data.get('models', {})
-    
+
     # Get current regime's model_posterior and models
     regime_key = str(current_regime)  # JSON keys are strings
     r_data = regime_data.get(regime_key) or regime_data.get(current_regime)
-    
+
     if r_data is not None and isinstance(r_data, dict):
         model_posterior = r_data.get('model_posterior', {})
         models = r_data.get('models', {})
@@ -4191,13 +4191,13 @@ def bayesian_model_average_mc(
         models = global_models
         is_fallback = True
         regime_meta = {}
-    
+
     # If models still empty, use global
     if not models or not model_posterior:
         model_posterior = global_model_posterior
         models = global_models
         is_fallback = True
-    
+
     # If still empty after global fallback - cannot proceed
     if not models or not model_posterior:
         return np.array([0.0]), soft_regime_probs, {
@@ -4207,13 +4207,13 @@ def bayesian_model_average_mc(
             "current_regime": current_regime,
             "regime_name": regime_name,
         }
-    
+
     # ========================================================================
     # EPISTEMIC WEIGHTING: Recompute posteriors from combined_score
     # ========================================================================
     # This ensures Hyvärinen scores directly influence signal generation.
     # Even if cache has old posteriors, we recompute from combined_score.
-    # 
+    #
     # The combined_score integrates both:
     #   - BIC (model complexity penalty, consistency)
     #   - Hyvärinen score (proper scoring, robustness under misspecification)
@@ -4224,7 +4224,7 @@ def bayesian_model_average_mc(
     # EPISTEMIC WEIGHTING: Recompute posteriors from combined scores
     # ========================================================================
     recomputed_posterior, epistemic_meta = compute_model_posteriors_from_combined_score(models)
-    
+
     if not recomputed_posterior:
         # Cache is invalid - models are missing combined_score
         # This indicates the cache was generated with an old version and must be regenerated
@@ -4235,11 +4235,11 @@ def bayesian_model_average_mc(
             f"Cache must be regenerated with 'make tune --force' to include "
             f"entropy-regularized BIC+Hyvärinen combined scores."
         )
-    
+
     cached_posterior = model_posterior
     model_posterior = recomputed_posterior
     posteriors_recomputed = True
-    
+
     # ========================================================================
     # BAYESIAN MODEL AVERAGING: Draw samples from mixture over models
     # ========================================================================
@@ -4251,34 +4251,34 @@ def bayesian_model_average_mc(
     #     - Ensure minimum representation (MIN_MODEL_SAMPLES)
     # ========================================================================
     MIN_MODEL_SAMPLES = 20  # Minimum samples per model to preserve tail awareness
-    
+
     all_samples = []
     model_details = {}
-    
+
     for model_name, model_weight in model_posterior.items():
         model_params = models.get(model_name, {})
-        
+
         # Skip failed model fits
         if not model_params.get('fit_success', True):
             continue
-        
+
         # Extract model-specific parameters
         q_m = model_params.get('q', 1e-6)
         phi_m = model_params.get('phi')
         nu_m = model_params.get('nu')
         c_m = model_params.get('c', 1.0)
-        
+
         # Default phi for models without it
         if phi_m is None or not np.isfinite(phi_m):
             phi_m = 0.95 if 'phi' in model_name else 1.0
-        
+
         # Validate nu
         if nu_m is not None and (not np.isfinite(nu_m) or nu_m <= 2.0):
             nu_m = None
-        
+
         # Number of samples: proportional to weight but with minimum guarantee
         n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_paths))
-        
+
         # Generate samples from p(x | r_t, m, θ_m)
         model_samples = run_regime_specific_mc(
             regime=current_regime,
@@ -4292,7 +4292,7 @@ def bayesian_model_average_mc(
             nu=nu_m,
             seed=rng.integers(0, 2**31) if seed is not None else None
         )
-        
+
         all_samples.append(model_samples)
         model_details[model_name] = {
             "weight": float(model_weight),
@@ -4302,7 +4302,7 @@ def bayesian_model_average_mc(
             "nu": float(nu_m) if nu_m is not None else None,
             "c": float(c_m),
         }
-    
+
     # Concatenate all model samples
     if all_samples:
         r_samples = np.concatenate(all_samples)
@@ -4313,7 +4313,7 @@ def bayesian_model_average_mc(
             "current_regime": current_regime,
             "regime_name": regime_name,
         }
-    
+
     metadata = {
         "method": "bayesian_model_averaging",
         "has_bma": True,
@@ -4340,7 +4340,7 @@ def bayesian_model_average_mc(
         # Used by CalibratedTrust to avoid penalty cliffs at regime boundaries
         "soft_regime_probs": soft_regime_probs,
     }
-    
+
     # Return soft regime probs dict for trust authority (not legacy array)
     return r_samples, soft_regime_probs, metadata
 
@@ -4420,18 +4420,18 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     - Volatility evolves via GARCH(1,1) when available; else held constant.
     - Innovations are Student-t with global df (nu_hat) scaled to unit variance.
     - Jump-diffusion (Merton model): captures discontinuous gap risk via rare large moves.
-    
+
     Pillar 1 integration: Drift uncertainty from Kalman filter (var_kf) is propagated
     into process noise q, widening forecast confidence intervals when drift is uncertain.
-    
+
     Level-7 parameter uncertainty: if PARAM_UNC environment variable is set to
     'sample' (default) and garch_params contains a covariance matrix, we sample
     (omega, alpha, beta) per path from N(theta_hat, Cov) with constraints, which
     widens confidence during regime shifts and narrows during stability.
-    
+
     Stochastic volatility: Tracks full h_t (variance) trajectories across paths,
     enabling posterior uncertainty bands for volatility forecasts.
-    
+
     Level-7 jump-diffusion: Merton model adds discontinuous jumps to capture gap risk:
         dS/S = μ dt + σ dW + J dN
     Where:
@@ -4439,7 +4439,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         - dN: Poisson process with intensity λ (jump arrival rate)
         - J: jump size ~ N(μ_J, σ_J²) (typically negative for crash risk)
     Jump parameters calibrated from historical returns: count large moves (>3σ) as jumps.
-    
+
     Returns:
         Dictionary with:
             - 'returns': array of shape (H_max, n_paths) with cumulative log returns
@@ -4464,7 +4464,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     mu_now = float(mu_series.iloc[-1]) if len(mu_series) else 0.0
     vol_now = float(vol_series.iloc[-1]) if len(vol_series) else 0.0
     vol_now = float(max(vol_now, 1e-6))
-    
+
     # Pillar 1: Extract Kalman drift uncertainty for proper uncertainty propagation
     var_kf_series = feats.get("var_kf")
     if isinstance(var_kf_series, pd.Series) and not var_kf_series.empty:
@@ -4476,7 +4476,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     # Tail parameter (global nu) with posterior uncertainty
     nu_hat_series = feats.get("nu_hat")
     nu_info = feats.get("nu_info", {})
-    
+
     if isinstance(nu_hat_series, pd.Series) and not nu_hat_series.empty:
         nu_hat = float(nu_hat_series.iloc[-1])
     else:
@@ -4484,17 +4484,17 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         if not np.isfinite(nu_hat):
             nu_hat = 50.0
     nu_hat = float(np.clip(nu_hat, 4.5, 500.0))
-    
+
     # Extract standard error for ν (Tier 2: posterior parameter variance)
     se_nu = None
     if isinstance(nu_info, dict) and "se_nu" in nu_info:
         se_nu_val = nu_info.get("se_nu", float("nan"))
         if np.isfinite(se_nu_val) and se_nu_val > 0:
             se_nu = float(se_nu_val)
-    
+
     # Determine if ν sampling is enabled (Tier 2: propagate tail parameter uncertainty)
     nu_sample_mode = os.getenv("NU_SAMPLE", "true").strip().lower() == "true"
-    
+
     # Sample ν per path if uncertainty available and sampling enabled
     if nu_sample_mode and se_nu is not None and se_nu > 0:
         rng = np.random.default_rng()
@@ -4584,39 +4584,39 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     jump_mean = 0.0
     jump_std = 0.05
     enable_jumps = os.getenv("ENABLE_JUMPS", "true").strip().lower() == "true"
-    
+
     if enable_jumps:
         try:
             # Get historical returns for calibration
             ret_hist = feats.get("ret", pd.Series(dtype=float))
             vol_hist = feats.get("vol", pd.Series(dtype=float))
-            
+
             if isinstance(ret_hist, pd.Series) and isinstance(vol_hist, pd.Series) and len(ret_hist) >= 252:
                 # Align returns and volatility
                 df_jump = pd.concat([ret_hist, vol_hist], axis=1, join='inner').dropna()
                 if len(df_jump) >= 252:
                     df_jump.columns = ['ret', 'vol']
-                    
+
                     # Identify jumps: returns that exceed 3σ threshold (outliers)
                     # Standardize returns by conditional volatility
                     z_scores = df_jump['ret'] / df_jump['vol']
                     jump_threshold = 3.0
                     jump_mask = np.abs(z_scores) > jump_threshold
-                    
+
                     n_jumps = int(np.sum(jump_mask))
                     n_days = len(df_jump)
-                    
+
                     if n_jumps > 0:
                         # Jump intensity: λ = frequency of jumps per day
                         jump_intensity = float(n_jumps / n_days)
-                        
+
                         # Jump sizes: extract returns on jump days
                         jump_returns = df_jump.loc[jump_mask, 'ret'].values
-                        
+
                         # Jump mean and std (typically negative mean for crash risk)
                         jump_mean = float(np.mean(jump_returns))
                         jump_std = float(np.std(jump_returns))
-                        
+
                         # Floor jump std to avoid degenerate case
                         jump_std = float(max(jump_std, 0.01))
                     else:
@@ -4655,11 +4655,11 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
             else:
                 # Edge case: use raw draw for very low ν (shouldn't happen with clipping)
                 z[path_idx] = float(z_raw)
-        
+
         eps = z
         sigma_t = np.sqrt(np.maximum(h_t, 1e-12))
         e_t = sigma_t * eps
-        
+
         # Level-7 Jump-Diffusion: Add discontinuous jump component
         # Merton model: dS/S = μ dt + σ dW + J dN
         jump_component = np.zeros(n_paths, dtype=float)
@@ -4667,7 +4667,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
             # Poisson arrivals: number of jumps in this time step
             # For daily data, dt=1, so intensity per step = jump_intensity
             n_jumps = rng.poisson(lam=jump_intensity, size=n_paths)
-            
+
             # For paths with jumps, draw jump sizes from N(μ_J, σ_J²)
             # Total jump = sum of all jumps in this step (if multiple)
             for path_idx in range(n_paths):
@@ -4675,10 +4675,10 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
                     # Draw jump sizes (log returns)
                     jump_sizes = rng.normal(loc=jump_mean, scale=jump_std, size=int(n_jumps[path_idx]))
                     jump_component[path_idx] = float(np.sum(jump_sizes))
-        
+
         # Total return: continuous (drift + diffusion) + jumps
         r_t = mu_t + e_t + jump_component
-        
+
         # Accumulate log return
         if t == 0:
             cum[t, :] = r_t
@@ -4739,27 +4739,27 @@ def compute_dynamic_thresholds(
 ) -> Dict[str, float]:
     """
     Compute dynamic buy/sell thresholds with asymmetry and uncertainty adjustments.
-    
+
     Level-7 modularization: Separates threshold computation from signal generation
     for better testability and maintainability.
-    
+
     Args:
         skew: Return skewness (asymmetry measure)
         regime_meta: Regime detection metadata with method and probabilities
         sig_H: Forecast volatility at horizon H
         med_vol_last: Long-run median volatility
         H: Forecast horizon in days
-        
+
     Returns:
         Dictionary with buy_thr, sell_thr, and uncertainty metrics
     """
     # Base thresholds
     base_buy, base_sell = 0.58, 0.42
-    
+
     # Skew adjustment: shift thresholds based on return asymmetry
     g1 = float(np.clip(skew if np.isfinite(skew) else 0.0, -1.5, 1.5))
     skew_delta = 0.02 * float(np.tanh(abs(g1) / 0.75))
-    
+
     if g1 < 0:  # Negative skew (crash risk)
         buy_thr = base_buy + skew_delta
         sell_thr = base_sell + skew_delta
@@ -4768,7 +4768,7 @@ def compute_dynamic_thresholds(
         sell_thr = base_sell - skew_delta
     else:
         buy_thr, sell_thr = base_buy, base_sell
-    
+
     # Regime-based uncertainty (HMM posterior entropy or vol regime deviation)
     if regime_meta.get("method") == "hmm_posterior":
         # Use Shannon entropy of regime posteriors as uncertainty measure
@@ -4783,30 +4783,30 @@ def compute_dynamic_thresholds(
         # Fallback: use vol_regime deviation if available
         vol_regime = regime_meta.get("vol_regime", 1.0)
         u_regime = float(np.clip(abs(vol_regime - 1.0) / 1.5, 0.0, 1.0)) if np.isfinite(vol_regime) else 0.5
-    
+
     # Forecast uncertainty from realized vol vs historical
     med_sig_H = (med_vol_last * math.sqrt(H)) if (np.isfinite(med_vol_last) and med_vol_last > 0) else sig_H
     ratio = float(sig_H / med_sig_H) if med_sig_H > 0 else 1.0
     u_sig = float(np.clip(ratio - 1.0, 0.0, 1.0))
-    
+
     # Combined uncertainty: regime entropy dominates, forecast uncertainty refines
     U = float(np.clip(0.5 * u_regime + 0.5 * u_sig, 0.0, 1.0))
-    
+
     # Widen thresholds based on uncertainty
     widen_delta = 0.04 * U
     buy_thr += widen_delta
     sell_thr -= widen_delta
-    
+
     # Clamp to reasonable ranges
     buy_thr = float(np.clip(buy_thr, 0.55, 0.70))
     sell_thr = float(np.clip(sell_thr, 0.30, 0.45))
-    
+
     # Ensure minimum separation
     if buy_thr - sell_thr < 0.12:
         mid = 0.5
         sell_thr = min(sell_thr, mid - 0.06)
         buy_thr = max(buy_thr, mid + 0.06)
-    
+
     return {
         "buy_thr": float(buy_thr),
         "sell_thr": float(sell_thr),
@@ -4829,9 +4829,9 @@ def apply_confirmation_logic(
 ) -> str:
     """
     Apply 2-day confirmation with hysteresis to reduce signal churn.
-    
+
     Level-7 modularization: Separates confirmation logic from main signal flow.
-    
+
     Args:
         p_smoothed_now: Smoothed probability (current)
         p_smoothed_prev: Smoothed probability (previous)
@@ -4841,31 +4841,31 @@ def apply_confirmation_logic(
         sell_thr: Sell threshold
         edge: Composite edge score
         edge_floor: Minimum edge required to act
-        
+
     Returns:
         Signal label: "STRONG BUY", "BUY", "HOLD", "SELL", or "STRONG SELL"
     """
     # Hysteresis bands (slightly wider than base thresholds)
     buy_enter = buy_thr + 0.01
     sell_enter = sell_thr - 0.01
-    
+
     # Base label from 2-day confirmation (smoothed probabilities)
     label = "HOLD"
     if (p_smoothed_prev >= buy_enter) and (p_smoothed_now >= buy_enter):
         label = "BUY"
     elif (p_smoothed_prev <= sell_enter) and (p_smoothed_now <= sell_enter):
         label = "SELL"
-    
+
     # Strong tiers based on raw conviction and EU-based position strength
     if p_raw >= max(0.66, buy_thr + 0.06) and pos_strength >= 0.30:
         label = "STRONG BUY"
     if p_raw <= min(0.34, sell_thr - 0.06) and pos_strength >= 0.30:
         label = "STRONG SELL"
-    
+
     # Transaction-cost hurdle: force HOLD if absolute edge below floor
     if np.isfinite(edge) and abs(edge) < float(edge_floor):
         label = "HOLD"
-    
+
     return label
 
 
@@ -4890,17 +4890,17 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     return "HOLD"
 
 
-def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68, tuned_params: Optional[Dict] = None, asset_key: Optional[str] = None) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]: 
+def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68, tuned_params: Optional[Dict] = None, asset_key: Optional[str] = None) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]:
     """Compute signals using regime‑aware priors, tail‑aware probability mapping, and
     anti‑snap logic (two‑day confirmation + hysteresis + smoothing) without extra flags.
-    
+
     Uses Bayesian Model Averaging when tuned_params with BMA structure is provided.
-    
+
     CONTRACT WITH tune.py:
     - tuned_params contains model_posterior and models for each regime
     - Tune guarantees non-empty outputs via hierarchical borrowing
     - This function does NOT implement tuning or fallback logic
-    
+
     Args:
         feats: Feature dictionary from compute_features()
         horizons: List of forecast horizons in days
@@ -4909,7 +4909,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         ci: Confidence interval for bands
         tuned_params: Full tuned params from _load_tuned_kalman_params() with BMA structure
         asset_key: Optional asset identifier for display price inertia (Upgrade #3)
-    
+
     We build last‑two‑days estimates to avoid look‑ahead while adding stability.
     """
     idx = feats.get("px", pd.Series(dtype=float)).index
@@ -5005,7 +5005,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             return 0.5
         z = float(edge)
         nu_eff = nu_prob if is_student_world else nu_val
-        
+
         # GH model: use fitted GH CDF for probability mapping
         if is_gh_world and gh_cdf_func is not None:
             try:
@@ -5133,7 +5133,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # ========================================================================
         # UPGRADE #1: Trimmed Mean for Expected Return
         # ========================================================================
-        # Use 5th-95th percentile trimmed mean to prevent extreme tails from 
+        # Use 5th-95th percentile trimmed mean to prevent extreme tails from
         # dominating the displayed expected return.
         # This dramatically stabilizes price predictions while preserving
         # directionality and remaining distribution-aware.
@@ -5148,7 +5148,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         vH = float(np.var(sim_H, ddof=1)) if sim_H.size > 1 else 0.0  # keep full variance for stats
         sH = float(math.sqrt(max(vH, 1e-12)))
         z_stat = float(mH / sH) if sH > 0 else 0.0
-        
+
         # ========================================================================
         # Unified Posterior Predictive Monte-Carlo Probability
         # ========================================================================
@@ -5185,7 +5185,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             mu_t_mc = 0.0
         if not np.isfinite(mu_t_mc):
             mu_t_mc = 0.0
-        
+
         # Extract drift posterior variance (P_t) from Kalman filter
         var_kf_series_prob = feats.get("var_kf_smoothed", feats.get("var_kf", pd.Series(dtype=float)))
         if isinstance(var_kf_series_prob, pd.Series) and not var_kf_series_prob.empty:
@@ -5194,16 +5194,16 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             P_t_mc = 0.0
         if not np.isfinite(P_t_mc) or P_t_mc < 0:
             P_t_mc = 0.0
-        
+
         # ========================================================================
         # REGIME-FIRST PARAMETER ROUTING (STEP 1 & 2)
         # ========================================================================
         # Map current regime label to index and select parameters
         current_regime_idx = map_regime_label_to_index(reg, regime_meta)
-        
+
         # Get Kalman metadata which contains regime params
         km_mc = feats.get("kalman_metadata", {}) or {}
-        
+
         # Build tuned_params structure for _select_regime_params
         tuned_params_full = {
             'q': km_mc.get("process_noise_var", 1e-6),
@@ -5214,21 +5214,21 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             'regime': km_mc.get("regime_params", {}),
             'has_regime_params': km_mc.get("has_regime_params", False),
         }
-        
+
         # STEP 2: Select parameters using regime-first logic
         theta = _select_regime_params(tuned_params_full, current_regime_idx)
-        
+
         # STEP 3: Bind parameters ONLY from theta (no other access to params)
         q_mc = float(theta.get("q", 1e-6))
         phi_mc = float(theta.get("phi", 0.95))
         nu_mc = theta.get("nu")
         c_mc = float(theta.get("c", 1.0))
-        
+
         # STEP 6: Diagnostics pass-through (collapse warning annotation)
         collapse_warning = theta.get("collapse_warning", False)
         regime_source = theta.get("source", "unknown")
         regime_used = theta.get("regime_used", current_regime_idx)
-        
+
         # Validate nu and determine noise model for diagnostics
         noise_model_mc = km_mc.get("kalman_noise_model", "gaussian")
         if nu_mc is not None and (not np.isfinite(nu_mc) or nu_mc <= 2.0):
@@ -5237,7 +5237,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         is_student_t_mc = noise_model_mc and noise_model_mc.startswith('phi_student_t_nu_')
         if not is_student_t_mc or nu_mc is None:
             noise_model_mc = "gaussian"  # Fallback for diagnostics
-        
+
         # ========================================================================
         # VOLATILITY GEOMETRY: sigma2_step is the PRIMITIVE
         # ========================================================================
@@ -5256,10 +5256,10 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             sigma_now = sH / math.sqrt(H) if H > 0 and sH > 0 else 0.01
         if not np.isfinite(sigma_now) or sigma_now <= 0:
             sigma_now = 0.01
-        
+
         # sigma2_step is the PRIMITIVE per-step EWMA variance
         sigma2_step_mc = float(sigma_now ** 2)
-        
+
         # ========================================================================
         # EXPECTED UTILITY POSITION SIZING FROM POSTERIOR PREDICTIVE MC
         # ========================================================================
@@ -5272,7 +5272,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         #
         # This mixture is the ONLY distribution passed to the EU layer.
         # ========================================================================
-        
+
         # ========================================================================
         # BUILD REGIME PARAMS FOR BAYESIAN MODEL AVERAGING
         # ========================================================================
@@ -5282,7 +5282,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # ========================================================================
         regime_params = {}
         cached_regime_params = km_mc.get("regime_params", {})
-        
+
         for regime_idx in range(5):
             # Use _select_regime_params for each regime (consistent routing logic)
             regime_theta = _select_regime_params(tuned_params_full, regime_idx)
@@ -5293,7 +5293,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                 "c": regime_theta.get("c", c_mc),
                 "fallback": regime_theta.get("fallback", True),
             }
-        
+
         # Use Bayesian Model Averaging across regimes AND model classes
         r_samples, regime_probs, bma_meta = bayesian_model_average_mc(
             feats=feats,
@@ -5307,32 +5307,32 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             tuned_params=tuned_params,  # BMA structure from tune.py
         )
         r = np.asarray(r_samples, dtype=float)
-        
+
         # === Expected Utility sizing from posterior predictive MC ===
         # r_samples is the ONLY input to sizing - NO Kelly, NO mean/variance ratios
         # BMA mixture is the distribution, EU layer only sees r_samples
-        
+
         p_now = float(np.mean(r > 0.0))
-        
+
         gains = r[r > 0.0]
         losses = -r[r < 0.0]
-        
+
         E_gain = float(np.mean(gains)) if gains.size > 0 else 0.0
         E_loss = float(np.mean(losses)) if losses.size > 0 else 0.0
-        
+
         EU = p_now * E_gain - (1.0 - p_now) * E_loss
-        
+
         epsilon_eu = 1e-12
         max_position_size = 1.0
-        
+
         if EU > 0.0 and E_loss > 0.0:
             eu_position_size = EU / max(E_loss, epsilon_eu)
         else:
             eu_position_size = 0.0
-        
+
         # clip to risk limits
         eu_position_size = float(np.clip(eu_position_size, 0.0, max_position_size))
-        
+
         # Expected Utility metrics for logging/Signal
         expected_utility = EU
         expected_gain = E_gain
@@ -5340,7 +5340,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         gain_loss_ratio = E_gain / max(E_loss, epsilon_eu) if E_loss > epsilon_eu else (
             100.0 if E_gain > 0 else 1.0
         )
-        
+
         # For diagnostics: compute drift uncertainty propagated to horizon
         # (kept for Signal dataclass but NOT used for trading)
         if phi_mc is not None and np.isfinite(phi_mc) and abs(phi_mc) < 0.999:
@@ -5352,7 +5352,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         else:
             drift_var_factor = float(H)
         drift_uncertainty_H = drift_var_factor * P_t_mc
-        
+
         # Diagnostic probabilities (NOT used for trading, kept for analysis only)
         # These are stored in Signal for monitoring but p_now is the only trading probability
         p_empirical = float(np.mean(sim_H > 0.0))  # Raw empirical from simulation
@@ -5367,13 +5367,13 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             p_analytical = float(norm.cdf(z_predictive_diag))
         p_analytical = float(np.clip(p_analytical, 0.001, 0.999))
         p_posterior_predictive = p_analytical  # Alias for backward compatibility
-        
+
         # Expected log return and CI from simulation (percentile CI)
         # Define quantile bounds early for use in volatility CI as well
         q = float(np.clip(ci, 1e-6, 0.999999))
         lo_q = (1.0 - q) / 2.0
         hi_q = 1.0 - lo_q
-        
+
         # Stochastic volatility statistics (Level-7: full posterior uncertainty)
         vol_mean = float(np.mean(vol_H)) if vol_H.size > 0 else 0.0
         try:
@@ -5401,7 +5401,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         except Exception:
             ci_low = mH - 1.0 * sH
             ci_high = mH + 1.0 * sH
-        
+
         # ========================================================================
         # UPGRADE #2: EU-Aligned Expected Move
         # ========================================================================
@@ -5421,7 +5421,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         eu_magnitude = np.sqrt(abs(expected_utility)) if np.isfinite(expected_utility) else 0.0
         volatility_scale = sH if sH > 0 else 1e-6
         eu_aligned_return = float(eu_direction * eu_magnitude * volatility_scale)
-        
+
         # Blend: use EU-aligned return for direction-consistency, but preserve
         # reasonable magnitude from trimmed mean
         if abs(eu_aligned_return) > 1e-12 and abs(mH) > 1e-12:
@@ -5453,7 +5453,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         #   - Strong upside asymmetry → higher E[gain] → larger size
         #   - EU ≤ 0 → HOLD (no position)
         # ========================================================================
-        
+
         # ====================================================================
         # CALIBRATED TRUST AUTHORITY — SINGLE POINT OF TRUST DECISION
         # ====================================================================
@@ -5467,19 +5467,19 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         #   Mathematical transparency:      97/100
         #   Audit traceability:             97/100
         # ====================================================================
-        
+
         kalman_metadata = feats.get("kalman_metadata", {})
         pit_pvalue = kalman_metadata.get("pit_ks_pvalue")
-        
+
         # Try to use calibrated trust from tuned params (preferred path)
         calibrated_trust_data = feats.get("calibrated_trust")
-        
+
         if CALIBRATED_TRUST_AVAILABLE and calibrated_trust_data is not None:
             # Load pre-computed calibrated trust from tuning
             try:
                 trust = CalibratedTrust.from_dict(calibrated_trust_data)
                 drift_weight = compute_drift_weight(trust, min_weight=0.1, max_weight=1.0)
-                
+
                 # Store for diagnostics
                 feats["trust_audit"] = {
                     "calibration_trust": trust.calibration_trust,
@@ -5491,15 +5491,15 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             except Exception as e:
                 # Fallback to computing trust on-the-fly
                 calibrated_trust_data = None
-        
+
         if not CALIBRATED_TRUST_AVAILABLE or calibrated_trust_data is None:
             # Compute calibrated trust on-the-fly from available PIT data
             drift_weight = 1.0  # Default: trust EU sizing fully
-            
+
             if CALIBRATED_TRUST_AVAILABLE and pit_pvalue is not None:
                 # Build PIT samples if we have recalibration data
                 recal_data = feats.get("recalibration")
-                
+
                 if recal_data is not None:
                     # Use stored calibrated PIT
                     calibrated_pit = np.array(recal_data.get("calibrated_pit", []))
@@ -5508,7 +5508,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                         # This avoids penalty cliffs at regime boundaries
                         # regime_probs is now a Dict[int, float] from bayesian_model_average_mc
                         soft_regime_probs_for_trust = regime_probs if isinstance(regime_probs, dict) else {1: 1.0}
-                        
+
                         try:
                             trust = compute_calibrated_trust(
                                 raw_pit_values=calibrated_pit,
@@ -5516,7 +5516,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                                 config=TrustConfig(),
                             )
                             drift_weight = compute_drift_weight(trust, min_weight=0.1, max_weight=1.0)
-                            
+
                             feats["trust_audit"] = {
                                 "calibration_trust": trust.calibration_trust,
                                 "regime_penalty": trust.regime_penalty,
@@ -5527,13 +5527,13 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                             }
                         except Exception:
                             pass  # Fall through to legacy logic
-            
+
             # Legacy fallback: hard threshold (preserved for backward compatibility)
             if "trust_audit" not in feats:
                 if pit_pvalue is not None and np.isfinite(pit_pvalue) and pit_pvalue < 0.05:
                     # Calibration warning: model forecasts not well-calibrated
                     drift_weight = 0.3
-                
+
                 feats["trust_audit"] = {
                     "calibration_trust": pit_pvalue if pit_pvalue is not None else 0.5,
                     "regime_penalty": 0.0,
@@ -5541,7 +5541,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                     "drift_weight": drift_weight,
                     "source": "legacy_threshold",
                 }
-        
+
         # === FINAL POSITION STRENGTH (from Expected Utility ONLY) ===
         # pos_strength is the ONLY position sizing variable used downstream
         # NO Kelly, NO mean/variance ratios - r_samples is the ONLY input
@@ -5554,7 +5554,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # Enriched regime_meta with vol_regime for fallback path
         regime_meta_enriched = dict(regime_meta)
         regime_meta_enriched["vol_regime"] = vol_reg_now
-        
+
         threshold_result = compute_dynamic_thresholds(
             skew=skew_now,
             regime_meta=regime_meta_enriched,
@@ -5562,11 +5562,11 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             med_vol_last=med_vol_last,
             H=H
         )
-        
+
         buy_thr = threshold_result["buy_thr"]
         sell_thr = threshold_result["sell_thr"]
         U = threshold_result["uncertainty"]
-        
+
         thresholds[int(H)] = {
             "buy_thr": float(buy_thr),
             "sell_thr": float(sell_thr),
@@ -5594,12 +5594,12 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         exp_mult = float(np.exp(mu_H))
         ci_low_mult = float(np.exp(ci_low))
         ci_high_mult = float(np.exp(ci_high))
-        
+
         # Raw (unsmoothed) profit values
         raw_profit_pln = float(NOTIONAL_PLN) * (exp_mult - 1.0)
         raw_profit_ci_low_pln = float(NOTIONAL_PLN) * (ci_low_mult - 1.0)
         raw_profit_ci_high_pln = float(NOTIONAL_PLN) * (ci_high_mult - 1.0)
-        
+
         # ========================================================================
         # UPGRADE #3: Display Price Inertia (Presentation-Only)
         # ========================================================================
@@ -5740,15 +5740,15 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
     """
     Worker function to process a single asset in parallel.
     Only performs computation, no console output.
-    
+
     Args:
         args_tuple: (asset, args, horizons)
-        
+
     Returns:
         Dictionary with processed results or None if failed
     """
     asset, args, horizons = args_tuple
-    
+
     try:
         # Fetch price data
         try:
@@ -5759,22 +5759,22 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
                 "asset": asset,
                 "error": str(e)
             }
-        
+
         # De-duplicate by resolved symbol
         canon = extract_symbol_from_title(title)
         if not canon:
             canon = asset.strip().upper()
-        
+
         # Compute features and signals
         feats = compute_features(px, asset_symbol=asset)
         last_close = _to_float(px.iloc[-1])
-        
+
         # Load tuned params with BMA structure for model averaging
         tuned_params = _load_tuned_kalman_params(asset)
-        
+
         # Pass asset_key (canon) for display price inertia (Upgrade #3)
         sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci, tuned_params=tuned_params, asset_key=canon)
-        
+
         # Compute diagnostics if requested
         diagnostics = {}
         if args.diagnostics or args.diagnostics_lite or args.pit_calibration or args.model_comparison:
@@ -5782,7 +5782,7 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
             enable_pit = args.pit_calibration
             enable_model_comp = args.model_comparison
             diagnostics = compute_all_diagnostics(px, feats, enable_oos=enable_oos, enable_pit_calibration=enable_pit, enable_model_comparison=enable_model_comp)
-        
+
         return {
             "status": "success",
             "asset": asset,
@@ -5795,7 +5795,7 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
             "diagnostics": diagnostics,
             "last_close": last_close,
         }
-        
+
     except Exception as e:
         import traceback
         return {
@@ -5813,7 +5813,7 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
     """
     from rich.rule import Rule
     from rich.align import Align
-    
+
     console = Console(force_terminal=True, width=140)
     pending = list(dict.fromkeys(a.strip() for a in assets if a and a.strip()))
     successes: List[Dict] = []
@@ -5823,18 +5823,18 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
     # ═══════════════════════════════════════════════════════════════════════════════
     # EXTRAORDINARY APPLE-QUALITY PROCESSING UX
     # ═══════════════════════════════════════════════════════════════════════════════
-    
+
     console.print()
     console.print(Rule(style="dim"))
     console.print()
-    
+
     # Processing header
     header = Text()
     header.append("▸ ", style="bright_cyan")
     header.append("PROCESSING", style="bold white")
     console.print(header)
     console.print()
-    
+
     # Stats row
     n_workers = min(cpu_count(), len(pending))
     stats = Text()
@@ -5853,13 +5853,13 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
     attempt = 1
     while attempt <= max_retries and pending:
         n_workers = min(cpu_count(), len(pending))
-        
+
         # Pass indicator
         pass_text = Text()
         pass_text.append(f"    Pass {attempt}/{max_retries}", style="dim")
         pass_text.append(f"  ·  {len(pending)} pending", style="dim")
         console.print(pass_text)
-        
+
         work_items = [(asset, args, horizons) for asset in pending]
 
         # Prefetch prices in bulk on first attempt to reduce Yahoo rate limits
@@ -5900,7 +5900,7 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
                 next_pending.append(asset)
                 continue
 
-                
+
             canon = result.get("canon") or asset.strip().upper()
             if canon in processed_canon:
                 continue
@@ -5916,18 +5916,18 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
         # Pass result
         if pass_successes > 0:
             console.print(f"    [bright_green]✓[/bright_green] [dim]{pass_successes} succeeded[/dim]")
-        
+
         # Early exit: if all assets succeeded, skip remaining passes
         if not pending:
             break
 
         if pending and attempt < max_retries:
             console.print(f"    [yellow]○[/yellow] [dim]{len(pending)} retrying...[/dim]")
-        
+
         attempt += 1
 
     console.print()
-    
+
     # Final status
     if not pending:
         done = Text()
@@ -5941,11 +5941,11 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
         done.append("!", style="bold yellow")
         done.append(f"  {len(successes)} succeeded, {len(pending)} failed", style="white")
         console.print(done)
-    
+
     console.print()
     console.print(Rule(style="dim"))
     console.print()
-    
+
     return successes, failures
 
 
@@ -5964,9 +5964,9 @@ def main() -> None:
         horizons_cached = payload.get("horizons") or horizons
         assets_cached = payload.get("assets", [])
         summary_rows_cached = payload.get("summary_rows")
-        
+
         console = Console()
-        
+
         # Build summary rows from cache (skip detailed tables for compact display)
         if not summary_rows_cached:
             summary_rows_cached = []
@@ -6006,7 +6006,7 @@ def main() -> None:
                         row["sector"] = get_sector(sym) or "Other"
                     else:
                         row["sector"] = "Other"
-                
+
                 # Ensure horizon_signals have p_up and exp_ret (from assets_cached if needed)
                 horizon_signals = row.get("horizon_signals", {})
                 for h, sig_data in horizon_signals.items():
@@ -6020,7 +6020,7 @@ def main() -> None:
                                     if "exp_ret" not in sig_data:
                                         sig_data["exp_ret"] = float(sig.get("exp_ret", 0.0))
                                     break
-        
+
         try:
             render_sector_summary_tables(summary_rows_cached, horizons_cached)
             # Add high-conviction signals summary for short-term trading
@@ -6033,35 +6033,35 @@ def main() -> None:
     assets = [a.strip() for a in args.assets.split(",") if a.strip()]
 
     console = Console(force_terminal=True, width=140)
-    
+
     # ═══════════════════════════════════════════════════════════════════════════════
     # VALIDATION PHASE - Apple-quality UX
     # ═══════════════════════════════════════════════════════════════════════════════
     from rich.rule import Rule
-    
+
     console.print()
     console.print(Rule(style="dim"))
     console.print()
-    
+
     validation_header = Text()
     validation_header.append("▸ ", style="bright_cyan")
     validation_header.append("VALIDATION", style="bold white")
     console.print(validation_header)
     console.print()
-    
+
     validation_stats = Text()
     validation_stats.append("    ", style="")
     validation_stats.append(f"{len(assets)}", style="bold bright_cyan")
     validation_stats.append(" assets requested", style="dim")
     console.print(validation_stats)
     console.print()
-    
+
     for a in assets:
         try:
             _resolve_symbol_candidates(a)
         except Exception as e:
             console.print(f"    [yellow]⚠[/yellow] [dim]{a}: {e}[/dim]")
-    
+
     # Print symbol resolution table right after validation (before processing starts)
     print_symbol_tables()
 
@@ -6085,7 +6085,7 @@ def main() -> None:
         # Handle None or error results
         if result is None:
             continue
-            
+
         if result.get("status") == "error":
             asset = result.get("asset", "unknown")
             error = result.get("error", "unknown")
@@ -6095,10 +6095,10 @@ def main() -> None:
                 if traceback_info:
                     console.print(f"[dim]{traceback_info}[/dim]")
             continue
-        
+
         if result.get("status") != "success":
             continue
-        
+
         # Extract computed results from worker
         asset = result["asset"]
         canon = result["canon"]
@@ -6109,7 +6109,7 @@ def main() -> None:
         thresholds = result["thresholds"]
         diagnostics = result["diagnostics"]
         last_close = result["last_close"]
-        
+
         # De-duplicate check
         if canon in processed_syms:
             console.print(f"[yellow]Skipping duplicate:[/yellow] {title} (from input '{asset}')")
@@ -6130,7 +6130,7 @@ def main() -> None:
             render_detailed_signal_table(asset, title, sigs, px, confidence_level=args.ci, used_student_t_mapping=args.t_map, show_caption=show_caption)
             caption_printed = caption_printed or show_caption
             explanations = []
-        
+
         # Display diagnostics if computed (Level-7: model falsifiability)
         if diagnostics and (args.diagnostics or args.diagnostics_lite):
             from rich.table import Table
@@ -6138,13 +6138,13 @@ def main() -> None:
             diag_table = Table(title=f"📊 Diagnostics for {asset} — Model Falsifiability Metrics")
             diag_table.add_column("Metric", justify="left", style="cyan")
             diag_table.add_column("Value", justify="right")
-            
+
             # Log-likelihood monitoring
             if "garch_log_likelihood" in diagnostics:
                 diag_table.add_row("GARCH(1,1) Log-Likelihood", f"{diagnostics['garch_log_likelihood']:.2f}")
                 diag_table.add_row("GARCH(1,1) AIC", f"{diagnostics['garch_aic']:.2f}")
                 diag_table.add_row("GARCH(1,1) BIC", f"{diagnostics['garch_bic']:.2f}")
-            
+
             # Pillar 1: Kalman filter drift diagnostics (with refinements)
             if "kalman_log_likelihood" in diagnostics:
                 diag_table.add_row("Kalman Filter Log-Likelihood", f"{diagnostics['kalman_log_likelihood']:.2f}")
@@ -6152,7 +6152,7 @@ def main() -> None:
                     diag_table.add_row("Kalman Process Noise (q)", f"{diagnostics['kalman_process_noise_var']:.6f}")
                 if "kalman_n_obs" in diagnostics:
                     diag_table.add_row("Kalman Observations", f"{diagnostics['kalman_n_obs']}")
-                
+
                 # Refinement 1: q optimization results
                 if "kalman_q_optimal" in diagnostics and "kalman_q_heuristic" in diagnostics:
                     q_opt = diagnostics["kalman_q_optimal"]
@@ -6162,7 +6162,7 @@ def main() -> None:
                         ratio = q_opt / q_heur if q_heur > 0 else 1.0
                         opt_label = "optimized" if q_optimized else "heuristic"
                         diag_table.add_row(f"  q ({opt_label})", f"{q_opt:.6f} ({ratio:.2f}× heuristic)")
-                
+
                 # Refinement 2: Kalman gain (situational awareness)
                 if "kalman_gain_mean" in diagnostics and "kalman_gain_recent" in diagnostics:
                     gain_mean = diagnostics["kalman_gain_mean"]
@@ -6173,7 +6173,7 @@ def main() -> None:
                         diag_table.add_row(f"  Kalman Gain (mean)", f"{gain_mean:.4f} [{interpretation}]")
                     if np.isfinite(gain_recent):
                         diag_table.add_row(f"  Kalman Gain (recent)", f"{gain_recent:.4f}")
-                
+
                 # Refinement 3: Innovation whiteness (model adequacy)
                 if "innovation_ljung_box_pvalue" in diagnostics:
                     pvalue = diagnostics["innovation_ljung_box_pvalue"]
@@ -6183,7 +6183,7 @@ def main() -> None:
                         color = "green" if model_adequate else "red"
                         status = "PASS" if model_adequate else "FAIL"
                         diag_table.add_row(f"  Innovation Whiteness (Ljung-Box)", f"[{color}]{status}[/{color}] (p={pvalue:.3f}, lags={lags})")
-                
+
                 # Level-7 Refinement: Heteroskedastic process noise (q_t = c * σ_t²)
                 if "kalman_heteroskedastic_mode" in diagnostics:
                     hetero_mode = diagnostics.get("kalman_heteroskedastic_mode", False)
@@ -6202,7 +6202,7 @@ def main() -> None:
                             diag_table.add_row(f"  q_t range [min, max]", f"[{q_t_min:.6f}, {q_t_max:.6f}]")
                     elif not hetero_mode:
                         diag_table.add_row(f"  Process Noise Mode", f"Homoskedastic (constant q)")
-                
+
                 # Level-7+ Refinement: Robust Kalman filtering with Student-t innovations
                 if "kalman_robust_t_mode" in diagnostics:
                     robust_t = diagnostics.get("kalman_robust_t_mode", False)
@@ -6212,7 +6212,7 @@ def main() -> None:
                         diag_table.add_row(f"  Innovation ν (degrees of freedom)", f"{nu_robust:.2f}")
                     elif not robust_t:
                         diag_table.add_row(f"  Innovation Distribution", f"Gaussian (standard)")
-                
+
                 # Level-7+ Refinement: Regime-dependent drift priors
                 if "kalman_regime_prior_used" in diagnostics:
                     regime_prior_used = diagnostics.get("kalman_regime_prior_used", False)
@@ -6224,16 +6224,16 @@ def main() -> None:
                             diag_table.add_row(f"  E[μ | Regime={regime_current}]", f"{drift_prior:+.6f}")
                     else:
                         diag_table.add_row(f"  Drift Prior", f"Neutral (μ₀ = 0)")
-            
+
             if "hmm_log_likelihood" in diagnostics:
                 diag_table.add_row("HMM Regime Log-Likelihood", f"{diagnostics['hmm_log_likelihood']:.2f}")
                 diag_table.add_row("HMM AIC", f"{diagnostics['hmm_aic']:.2f}")
                 diag_table.add_row("HMM BIC", f"{diagnostics['hmm_bic']:.2f}")
-            
+
             if "student_t_log_likelihood" in diagnostics:
                 diag_table.add_row("Student-t Tail Log-Likelihood", f"{diagnostics['student_t_log_likelihood']:.2f}")
                 diag_table.add_row("Student-t Degrees of Freedom (ν)", f"{diagnostics['student_t_nu']:.2f}")
-                
+
                 # Tier 2: Display ν standard error (posterior parameter variance)
                 if "student_t_se_nu" in diagnostics:
                     se_nu = diagnostics["student_t_se_nu"]
@@ -6245,17 +6245,17 @@ def main() -> None:
                         diag_table.add_row("  SE(ν) [posterior uncertainty]", f"{se_nu:.3f} ({cv_nu*100:.1f}% CV, {uncertainty_level})")
                     else:
                         diag_table.add_row("  SE(ν) [posterior uncertainty]", f"{se_nu:.3f}")
-            
+
             # Tier 2: Parameter Uncertainty Summary (μ, σ, ν)
             param_unc_env = os.getenv("PARAM_UNC", "sample").strip().lower()
             nu_sample_env = os.getenv("NU_SAMPLE", "true").strip().lower()
-            
+
             param_unc_active = {
                 "μ (drift)": "Kalman var_kf → process noise q",
                 "σ (volatility)": f"GARCH sampling: {'✓ enabled' if param_unc_env == 'sample' else '✗ disabled'}",
                 "ν (tails)": f"Student-t sampling: {'✓ enabled' if nu_sample_env == 'true' else '✗ disabled'}"
             }
-            
+
             diag_table.add_row("", "")  # spacer
             diag_table.add_row("[bold cyan]Tier 2: Posterior Parameter Variance[/bold cyan]", "[bold]Status[/bold]")
             for param, status in param_unc_active.items():
@@ -6265,7 +6265,7 @@ def main() -> None:
                     diag_table.add_row(f"  {param}", f"[yellow]{status}[/yellow]")
                 else:
                     diag_table.add_row(f"  {param}", status)
-            
+
             # Parameter stability (recent drift z-scores)
             drift_cols = [k for k in diagnostics.keys() if k.startswith("recent_") and k.endswith("_drift_z")]
             if drift_cols:
@@ -6277,7 +6277,7 @@ def main() -> None:
                     if np.isfinite(val):
                         color = "green" if abs(val) < 2.0 else ("yellow" if abs(val) < 3.0 else "red")
                         diag_table.add_row(f"  {param_name}", f"[{color}]{val:+.2f}[/{color}]")
-            
+
             # Out-of-sample test results (if enabled)
             oos_keys = [k for k in diagnostics.keys() if k.startswith("oos_") and k.endswith("_hit_rate")]
             if oos_keys:
@@ -6289,10 +6289,10 @@ def main() -> None:
                     if np.isfinite(hit_rate):
                         color = "green" if hit_rate >= 0.55 else ("yellow" if hit_rate >= 0.50 else "red")
                         diag_table.add_row(f"  {horizon_label}", f"[{color}]{hit_rate*100:.1f}%[/{color}]")
-            
+
             console.print(diag_table)
             console.print("")  # blank line
-            
+
             # Display PIT calibration report if available
             if "pit_calibration" in diagnostics:
                 try:
@@ -6304,23 +6304,23 @@ def main() -> None:
                     console.print(calibration_report)
                 except Exception:
                     pass
-            
+
             # Display model comparison results if available
             if "model_comparison" in diagnostics and diagnostics["model_comparison"]:
                 from rich.table import Table
                 comparison_results = diagnostics["model_comparison"]
-                
+
                 # Create comparison table for each category
                 for category, result in comparison_results.items():
                     if result is None or not hasattr(result, 'winner_aic'):
                         continue
-                    
+
                     category_title = {
                         'volatility': 'Volatility Models',
                         'tails': 'Tail Distribution Models',
                         'drift': 'Drift Models'
                     }.get(category, category.title())
-                    
+
                     comp_table = Table(title=f"📊 Model Comparison: {category_title} — {asset}")
                     comp_table.add_column("Model", justify="left", style="cyan")
                     comp_table.add_column("Params", justify="right")
@@ -6330,10 +6330,10 @@ def main() -> None:
                     comp_table.add_column("Δ AIC", justify="right")
                     comp_table.add_column("Δ BIC", justify="right")
                     comp_table.add_column("Akaike Wt", justify="right")
-                    
+
                     for model in result.models:
                         name = model.name
-                        
+
                         # Highlight winners
                         if name == result.winner_aic and name == result.winner_bic:
                             name = f"[bold #00d700]{name}[/bold #00d700] ⭐"
@@ -6341,11 +6341,11 @@ def main() -> None:
                             name = f"[bold yellow]{name}[/bold yellow] (AIC)"
                         elif name == result.winner_bic:
                             name = f"[bold blue]{name}[/bold blue] (BIC)"
-                        
+
                         delta_aic = result.delta_aic.get(model.name, float('nan'))
                         delta_bic = result.delta_bic.get(model.name, float('nan'))
                         weight = result.akaike_weights.get(model.name, 0.0)
-                        
+
                         # Color code deltas (lower is better)
                         if np.isfinite(delta_aic):
                             if delta_aic < 2.0:
@@ -6356,7 +6356,7 @@ def main() -> None:
                                 delta_aic_str = f"[indian_red1]{delta_aic:+.1f}[/indian_red1]"
                         else:
                             delta_aic_str = "—"
-                        
+
                         if np.isfinite(delta_bic):
                             if delta_bic < 2.0:
                                 delta_bic_str = f"[#00d700]{delta_bic:+.1f}[/#00d700]"
@@ -6366,7 +6366,7 @@ def main() -> None:
                                 delta_bic_str = f"[indian_red1]{delta_bic:+.1f}[/indian_red1]"
                         else:
                             delta_bic_str = "—"
-                        
+
                         comp_table.add_row(
                             name,
                             str(model.n_params),
@@ -6377,7 +6377,7 @@ def main() -> None:
                             delta_bic_str,
                             f"{weight:.1%}" if np.isfinite(weight) else "—"
                         )
-                    
+
                     # Add recommendation row
                     comp_table.add_row("", "", "", "", "", "", "", "")
                     comp_table.add_row(
@@ -6390,10 +6390,10 @@ def main() -> None:
                         "",
                         ""
                     )
-                    
+
                     console.print(comp_table)
                     console.print(f"[dim]{result.recommendation}[/dim]\n")
-                
+
                 # Summary interpretation
                 console.print("[bold cyan]Model Comparison Interpretation:[/bold cyan]")
                 console.print("[dim]• Δ AIC/BIC < 2: Substantial support (competitive models)[/dim]")
@@ -6414,7 +6414,7 @@ def main() -> None:
                 )
                 from rich.table import Table
                 from rich.panel import Panel
-                
+
                 console = Console()
                 console.print("\n")
                 console.print(Panel.fit(
@@ -6422,20 +6422,20 @@ def main() -> None:
                     "[dim]Does my model behave like reality?[/dim]",
                     border_style="cyan"
                 ))
-                
+
                 # Extract required series from features
                 ret = feats.get("ret")
                 mu_kf = feats.get("mu_kf", feats.get("mu"))
                 var_kf = feats.get("var_kf", pd.Series(0.0, index=ret.index))
                 vol = feats.get("vol")
-                
+
                 if mu_kf is not None and ret is not None and vol is not None:
                     # Prepare plot directory if plots requested
                     plot_dir = None
                     if args.validation_plots:
                         plot_dir = "plots/kalman_validation"
                         os.makedirs(plot_dir, exist_ok=True)
-                    
+
                     # 1. Drift Reasonableness Validation
                     console.print("\n[bold yellow]1. Posterior Drift Reasonableness[/bold yellow]")
                     drift_result = validate_drift_reasonableness(
@@ -6443,12 +6443,12 @@ def main() -> None:
                         plot=args.validation_plots,
                         save_path=f"{plot_dir}/{asset}_drift_validation.png" if plot_dir else None
                     )
-                    
+
                     drift_table = Table(title="Drift Sanity Checks", show_header=True)
                     drift_table.add_column("Metric", style="cyan")
                     drift_table.add_column("Value", justify="right")
                     drift_table.add_column("Status", justify="center")
-                    
+
                     drift_table.add_row(
                         "Observations",
                         str(drift_result.observations),
@@ -6474,19 +6474,19 @@ def main() -> None:
                         f"{drift_result.noise_tracking_score:.4f}",
                         "✅" if drift_result.noise_tracking_score < 0.4 else "⚠️"
                     )
-                    
+
                     console.print(drift_table)
                     console.print(f"[dim]{drift_result.diagnostic_message}[/dim]\n")
-                    
+
                     # 2. Predictive Likelihood Improvement
                     console.print("[bold yellow]2. Predictive Likelihood Improvement[/bold yellow]")
                     ll_result = compare_predictive_likelihood(px, asset_name=asset)
-                    
+
                     ll_table = Table(title="Model Comparison (Out-of-Sample)", show_header=True)
                     ll_table.add_column("Model", style="cyan")
                     ll_table.add_column("Log-Likelihood", justify="right")
                     ll_table.add_column("Δ LL", justify="right")
-                    
+
                     ll_table.add_row("Kalman Filter", f"{ll_result.ll_kalman:.2f}", "—")
                     ll_table.add_row(
                         "Zero Drift (μ=0)",
@@ -6503,11 +6503,11 @@ def main() -> None:
                         f"{ll_result.ll_constant_drift:.2f}",
                         f"[#00d700]{ll_result.delta_ll_vs_constant:+.2f}[/#00d700]" if ll_result.delta_ll_vs_constant > 0 else f"[indian_red1]{ll_result.delta_ll_vs_constant:+.2f}[/indian_red1]"
                     )
-                    
+
                     console.print(ll_table)
                     console.print(f"[bold]Best Model:[/bold] {ll_result.best_model}")
                     console.print(f"[dim]{ll_result.diagnostic_message}[/dim]\n")
-                    
+
                     # 3. PIT Calibration Check
                     console.print("[bold yellow]3. Probability Integral Transform (PIT) Calibration[/bold yellow]")
                     pit_result = validate_pit_calibration(
@@ -6515,13 +6515,13 @@ def main() -> None:
                         plot=args.validation_plots,
                         save_path=f"{plot_dir}/{asset}_pit_calibration.png" if plot_dir else None
                     )
-                    
+
                     pit_table = Table(title="Forecast Calibration", show_header=True)
                     pit_table.add_column("Metric", style="cyan")
                     pit_table.add_column("Value", justify="right")
                     pit_table.add_column("Expected", justify="right")
                     pit_table.add_column("Status", justify="center")
-                    
+
                     pit_table.add_row(
                         "Observations",
                         str(pit_result.n_observations),
@@ -6552,22 +6552,22 @@ def main() -> None:
                         f"{expected_std:.4f}",
                         "✅" if abs(pit_result.pit_std - expected_std) < 0.05 else "⚠️"
                     )
-                    
+
                     console.print(pit_table)
                     console.print(f"[dim]{pit_result.diagnostic_message}[/dim]\n")
-                    
+
                     # 4. Stress-Regime Behavior
                     console.print("[bold yellow]4. Stress-Regime Behavior Analysis[/bold yellow]")
                     stress_result = analyze_stress_regime_behavior(
                         px, ret, mu_kf, var_kf, vol, asset_name=asset
                     )
-                    
+
                     stress_table = Table(title="Risk Intelligence", show_header=True)
                     stress_table.add_column("Metric", style="cyan")
                     stress_table.add_column("Normal", justify="right")
                     stress_table.add_column("Stress", justify="right")
                     stress_table.add_column("Ratio", justify="right")
-                    
+
                     stress_table.add_row(
                         "Drift Uncertainty σ(μ̂)",
                         f"{stress_result.avg_uncertainty_normal:.6f}",
@@ -6580,18 +6580,18 @@ def main() -> None:
                         f"{stress_result.avg_kelly_stress:.4f}",
                         f"[#00d700]{stress_result.kelly_reduction_ratio:.2f}×[/#00d700]" if stress_result.kelly_reduction_ratio < 0.9 else f"{stress_result.kelly_reduction_ratio:.2f}×"
                     )
-                    
+
                     console.print(stress_table)
-                    
+
                     if stress_result.stress_periods_detected:
                         console.print(f"\n[bold]Stress Periods Detected:[/bold] {len(stress_result.stress_periods_detected)}")
                         for i, (start, end) in enumerate(stress_result.stress_periods_detected[:5], 1):
                             console.print(f"  {i}. {start} → {end}")
                         if len(stress_result.stress_periods_detected) > 5:
                             console.print(f"  ... and {len(stress_result.stress_periods_detected) - 5} more")
-                    
+
                     console.print(f"\n[dim]{stress_result.diagnostic_message}[/dim]\n")
-                    
+
                     # Overall validation summary
                     all_passed = (
                         drift_result.validation_passed and
@@ -6599,7 +6599,7 @@ def main() -> None:
                         pit_result.calibration_passed and
                         stress_result.system_backed_off
                     )
-                    
+
                     if all_passed:
                         console.print(Panel.fit(
                             "[bold #00d700]✅ ALL VALIDATION CHECKS PASSED[/bold #00d700]\n"
@@ -6614,7 +6614,7 @@ def main() -> None:
                         ))
                 else:
                     console.print("[indian_red1]⚠️ Kalman filter data not available for validation[/indian_red1]")
-                    
+
             except Exception as e:
                 console.print(f"[indian_red1]⚠️ Validation failed: {e}[/indian_red1]")
                 import traceback
@@ -6675,7 +6675,7 @@ def main() -> None:
                 "description": "Volatility treated as latent stochastic process with posterior uncertainty. GARCH parameters sampled from N(theta_hat, Cov) per path. Full h_t trajectories tracked and volatility credible intervals reported per horizon."
             },
         }
-        
+
         # Add diagnostics to JSON if computed (Level-7 falsifiability)
         if diagnostics:
             # Filter out non-serializable objects (DataFrames) for JSON
@@ -6690,7 +6690,7 @@ def main() -> None:
                     # Nested dicts are OK if they contain serializable values
                     serializable_diagnostics[k] = v
             block["diagnostics"] = serializable_diagnostics
-        
+
         all_blocks.append(block)
 
         # Prepare CSV rows
@@ -6745,7 +6745,7 @@ def main() -> None:
         for asset, info in failures.items():
             fail_table.add_row(asset, str(info.get("display_name", asset)), str(info.get("attempts", "")), str(info.get("last_error", "")))
         Console().print(fail_table)
-        
+
         # Save failed assets to src/quant/cache/failed/ for later purging
         try:
             saved_path = save_failed_assets(failures, append=True)
@@ -6770,7 +6770,7 @@ def main() -> None:
             json.dump(payload, f, indent=2)
     except Exception as e:
         Console().print(f"[yellow]Warning:[/yellow] Could not write cache JSON: {e}")
-    
+
     if args.json:
         try:
             with open(args.json, "w") as f:
