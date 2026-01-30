@@ -420,6 +420,22 @@ def bulk_download_n_times(
                     result.append(f"{last_failed_count}", style="yellow")
                     result.append(" pending", style="dim")
                     console.print(result)
+                    
+                    # Show which symbols are pending (up to 10, then summarize)
+                    if last_failed_symbols:
+                        pending_line = Text()
+                        pending_line.append("      ", style="")
+                        pending_line.append("→ ", style="dim yellow")
+                        if len(last_failed_symbols) <= 10:
+                            # Show all pending symbols
+                            pending_line.append(", ".join(last_failed_symbols), style="yellow")
+                        else:
+                            # Show first 8 and count of remaining
+                            shown = last_failed_symbols[:8]
+                            remaining = len(last_failed_symbols) - 8
+                            pending_line.append(", ".join(shown), style="yellow")
+                            pending_line.append(f" +{remaining} more", style="dim yellow")
+                        console.print(pending_line)
             elif last_failed_count == 0:
                 # Early exit even in quiet mode
                 break
