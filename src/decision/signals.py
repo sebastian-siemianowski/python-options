@@ -4052,7 +4052,8 @@ def bayesian_model_average_mc(
     n_paths: int = 10000,
     seed: Optional[int] = None,
     tuned_params: Optional[Dict] = None,
-) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    asset_symbol: Optional[str] = None,
+) -> Tuple[np.ndarray, Dict[int, float], Dict]:
     """
     Perform Bayesian Model Averaging using CURRENT REGIME's model posterior.
 
@@ -4109,17 +4110,41 @@ def bayesian_model_average_mc(
 
     # If no BMA structure available, this is old cache format - REJECT
     if not has_bma:
-        # Print warning to stderr so user knows there's an issue
-        import sys
+        # Determine the reason for missing BMA structure
         if tuned_params is None:
             reason = "tuned_params is None (asset not in cache/tune/)"
+            error_type = "MISSING_CACHE"
         elif 'global' not in tuned_params:
             reason = "missing 'global' key (old cache format)"
+            error_type = "OLD_CACHE_FORMAT"
         else:
             reason = "has_bma is False or missing"
-        print(f"\n⚠️  BMA STRUCTURE MISSING: {reason}", file=sys.stderr)
-        print(f"   → Signals will show 0% for all horizons", file=sys.stderr)
-        print(f"   → Fix: Run 'make tune' to regenerate cache\n", file=sys.stderr)
+            error_type = "BMA_DISABLED"
+        
+        # Format asset display name
+        asset_display = asset_symbol if asset_symbol else "UNKNOWN"
+        
+        # Print improved warning with asset name
+        print(f"\n⚠️  BMA STRUCTURE MISSING for {asset_display}", file=sys.stderr)
+        print(f"   ├─ Reason: {reason}", file=sys.stderr)
+        print(f"   ├─ Impact: Signals will show 0% for all horizons", file=sys.stderr)
+        print(f"   └─ Fix: Run 'make tune --assets {asset_display}' to regenerate cache\n", file=sys.stderr)
+        
+        # Save failure to failed_assets.json for tracking
+        try:
+            if asset_symbol:
+                failure_info = {
+                    asset_symbol: {
+                        "display_name": asset_symbol,
+                        "attempts": 1,
+                        "last_error": f"BMA structure missing: {reason}",
+                        "error_type": error_type,
+                        "traceback": None,
+                    }
+                }
+                save_failed_assets(failure_info, append=True)
+        except Exception:
+            pass  # Don't fail signal generation due to logging error
 
         # Return uniform soft regime probs for trust (maximally uncertain)
         uniform_regime_probs = {i: 0.2 for i in range(5)}
@@ -4128,6 +4153,8 @@ def bayesian_model_average_mc(
             "reason": "no_bma_structure_old_cache_format",
             "error": "Cache must be regenerated with tune.py for BMA support",
             "debug_reason": reason,
+            "asset": asset_display,
+            "error_type": error_type,
         }
 
     # ========================================================================
@@ -5320,6 +5347,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             n_paths=10000,
             seed=None,
             tuned_params=tuned_params,  # BMA structure from tune.py
+            asset_symbol=asset_key,  # Pass asset identifier for error reporting
         )
         r = np.asarray(r_samples, dtype=float)
 
