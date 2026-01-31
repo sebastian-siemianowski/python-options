@@ -221,6 +221,23 @@ from ingestion.data_utils import fetch_px, _download_prices, get_default_asset_u
 # See: docs/CALIBRATION_SOLUTIONS_ANALYSIS.md for decision rationale.
 MIXTURE_MODEL_AVAILABLE = False
 
+# =============================================================================
+# TEMPORARILY DISABLED MODELS (can be re-enabled by setting to True)
+# =============================================================================
+# These models are disabled for simplification/debugging. Set to True to re-enable.
+
+# φ-NIG (Normal-Inverse Gaussian) - disabled for simplicity
+# NIG adds α/β asymmetry parameters but rarely improves calibration over Student-t
+PHI_NIG_ENABLED = False
+
+# φ-Skew-t (Fernández-Steel) - disabled for simplicity  
+# Skew-t adds γ skewness parameter but Hansen Skew-t is preferred
+PHI_SKEW_T_ENABLED = False
+
+# GMM (2-State Gaussian Mixture) - disabled for simplicity
+# GMM captures bimodality but HMM regime-switching handles this
+GMM_ENABLED = False
+
 # Import Adaptive ν Refinement for calibration improvement
 try:
     from calibration.adaptive_nu_refinement import (
@@ -1108,27 +1125,29 @@ def tune_asset_q(
         gmm_result = None
         gmm_diagnostics = None
         
-        try:
-            gmm_model, gmm_diag = fit_gmm_to_returns(returns, vol, min_obs=GMM_MIN_OBS)
-            
-            if gmm_model is not None and gmm_diag.get("fit_success", False):
-                # Check for degeneracy
-                if not gmm_model.is_degenerate:
-                    gmm_result = gmm_model.to_dict()
-                    gmm_diagnostics = gmm_diag
-                    _log(f"     ✓ GMM fitted: π=[{gmm_model.weights[0]:.2f}, {gmm_model.weights[1]:.2f}], "
-                         f"μ=[{gmm_model.means[0]:.3f}, {gmm_model.means[1]:.3f}], "
-                         f"sep={gmm_model.separation:.2f}")
+        # TEMPORARILY DISABLED - set GMM_ENABLED = True to re-enable
+        if GMM_ENABLED:
+            try:
+                gmm_model, gmm_diag = fit_gmm_to_returns(returns, vol, min_obs=GMM_MIN_OBS)
+                
+                if gmm_model is not None and gmm_diag.get("fit_success", False):
+                    # Check for degeneracy
+                    if not gmm_model.is_degenerate:
+                        gmm_result = gmm_model.to_dict()
+                        gmm_diagnostics = gmm_diag
+                        _log(f"     ✓ GMM fitted: π=[{gmm_model.weights[0]:.2f}, {gmm_model.weights[1]:.2f}], "
+                             f"μ=[{gmm_model.means[0]:.3f}, {gmm_model.means[1]:.3f}], "
+                             f"sep={gmm_model.separation:.2f}")
+                    else:
+                        _log(f"     ⚠️ GMM degenerate (one component dominates) - using single Gaussian fallback")
+                        gmm_diagnostics = {"fit_success": False, "reason": "degenerate"}
                 else:
-                    _log(f"     ⚠️ GMM degenerate (one component dominates) - using single Gaussian fallback")
-                    gmm_diagnostics = {"fit_success": False, "reason": "degenerate"}
-            else:
-                error_msg = gmm_diag.get("error", "unknown") if gmm_diag else "fit_returned_none"
-                _log(f"     ⚠️ GMM fit failed: {error_msg} - Monte Carlo will use single Gaussian")
-                gmm_diagnostics = gmm_diag or {"fit_success": False, "error": error_msg}
-        except Exception as gmm_err:
-            _log(f"     ⚠️ GMM fitting exception: {gmm_err}")
-            gmm_diagnostics = {"fit_success": False, "error": str(gmm_err)}
+                    error_msg = gmm_diag.get("error", "unknown") if gmm_diag else "fit_returned_none"
+                    _log(f"     ⚠️ GMM fit failed: {error_msg} - Monte Carlo will use single Gaussian")
+                    gmm_diagnostics = gmm_diag or {"fit_success": False, "error": error_msg}
+            except Exception as gmm_err:
+                _log(f"     ⚠️ GMM fitting exception: {gmm_err}")
+                gmm_diagnostics = {"fit_success": False, "error": str(gmm_err)}
         
         # =====================================================================
         # FIT HANSEN SKEW-T DISTRIBUTION (Regime-Conditional Asymmetric Tails)
@@ -1912,90 +1931,92 @@ def fit_all_models_for_regime(
     # Model naming: "phi_nig_alpha_{α}_beta_{β}"
     # =========================================================================
     
-    # Number of parameters: q, c, phi (α, β, δ are FIXED per sub-model)
-    n_params_nig = 3
-    
-    # Estimate baseline δ from data volatility
-    delta_baseline = float(np.std(returns)) * 0.5
-    delta_baseline = max(delta_baseline, 0.001)
-    
-    for alpha_fixed in NIG_ALPHA_GRID:
-        for beta_ratio in NIG_BETA_RATIO_GRID:
-            # Convert ratio to actual β (β = ratio * α, ensuring |β| < α)
-            beta_fixed = beta_ratio * alpha_fixed
-            
-            model_name = get_nig_model_name(alpha_fixed, beta_fixed)
-            
-            try:
-                # Optimize q, c, phi with FIXED α, β, δ
-                q_nig, c_nig, phi_nig, ll_cv_nig, diag_nig = PhiNIGDriftModel.optimize_params_fixed_nig(
-                    returns, vol,
-                    alpha=alpha_fixed,
-                    beta=beta_fixed,
-                    delta=delta_baseline,
-                    prior_log_q_mean=prior_log_q_mean,
-                    prior_lambda=prior_lambda
-                )
+    # TEMPORARILY DISABLED - set PHI_NIG_ENABLED = True to re-enable
+    if PHI_NIG_ENABLED:
+        # Number of parameters: q, c, phi (α, β, δ are FIXED per sub-model)
+        n_params_nig = 3
+        
+        # Estimate baseline δ from data volatility
+        delta_baseline = float(np.std(returns)) * 0.5
+        delta_baseline = max(delta_baseline, 0.001)
+        
+        for alpha_fixed in NIG_ALPHA_GRID:
+            for beta_ratio in NIG_BETA_RATIO_GRID:
+                # Convert ratio to actual β (β = ratio * α, ensuring |β| < α)
+                beta_fixed = beta_ratio * alpha_fixed
                 
-                # Run full filter with fixed NIG parameters
-                mu_nig, P_nig, ll_full_nig = PhiNIGDriftModel.filter_phi(
-                    returns, vol, q_nig, c_nig, phi_nig,
-                    alpha_fixed, beta_fixed, delta_baseline
-                )
+                model_name = get_nig_model_name(alpha_fixed, beta_fixed)
                 
-                # Compute PIT calibration using NIG CDF
-                ks_nig, pit_p_nig = PhiNIGDriftModel.pit_ks(
-                    returns, mu_nig, vol, P_nig, c_nig,
-                    alpha_fixed, beta_fixed, delta_baseline
-                )
-                
-                # Compute information criteria
-                aic_nig = compute_aic(ll_full_nig, n_params_nig)
-                bic_nig = compute_bic(ll_full_nig, n_params_nig, n_obs)
-                mean_ll_nig = ll_full_nig / max(n_obs, 1)
-                
-                # Compute Hyvärinen score (use Gaussian approximation for NIG)
-                # Full NIG Hyvärinen requires additional derivation
-                forecast_scale_nig = np.sqrt(c_nig * (vol ** 2) + P_nig)
-                hyvarinen_nig = compute_hyvarinen_score_gaussian(
-                    returns, mu_nig, forecast_scale_nig
-                )
-                
-                models[model_name] = {
-                    "q": float(q_nig),
-                    "c": float(c_nig),
-                    "phi": float(phi_nig),
-                    "nu": None,  # NIG doesn't use ν
-                    "nig_alpha": float(alpha_fixed),   # NIG tail parameter
-                    "nig_beta": float(beta_fixed),    # NIG asymmetry parameter
-                    "nig_delta": float(delta_baseline), # NIG scale parameter
-                    "log_likelihood": float(ll_full_nig),
-                    "mean_log_likelihood": float(mean_ll_nig),
-                    "cv_penalized_ll": float(ll_cv_nig),
-                    "bic": float(bic_nig),
-                    "aic": float(aic_nig),
-                    "hyvarinen_score": float(hyvarinen_nig),
-                    "n_params": int(n_params_nig),
-                    "ks_statistic": float(ks_nig),
-                    "pit_ks_pvalue": float(pit_p_nig),
-                    "fit_success": True,
-                    "diagnostics": diag_nig,
-                    "nig_params_fixed": True,  # Flag indicating NIG params were fixed
-                    "model_type": "phi_nig",
-                }
-            except Exception as e:
-                models[model_name] = {
-                    "fit_success": False,
-                    "error": str(e),
-                    "bic": float('inf'),
-                    "aic": float('inf'),
-                    "hyvarinen_score": float('-inf'),
-                    "nig_alpha": float(alpha_fixed),
-                    "nig_beta": float(beta_fixed),
-                    "nig_delta": float(delta_baseline),
-                    "nig_params_fixed": True,
-                    "model_type": "phi_nig",
-                }
+                try:
+                    # Optimize q, c, phi with FIXED α, β, δ
+                    q_nig, c_nig, phi_nig, ll_cv_nig, diag_nig = PhiNIGDriftModel.optimize_params_fixed_nig(
+                        returns, vol,
+                        alpha=alpha_fixed,
+                        beta=beta_fixed,
+                        delta=delta_baseline,
+                        prior_log_q_mean=prior_log_q_mean,
+                        prior_lambda=prior_lambda
+                    )
+                    
+                    # Run full filter with fixed NIG parameters
+                    mu_nig, P_nig, ll_full_nig = PhiNIGDriftModel.filter_phi(
+                        returns, vol, q_nig, c_nig, phi_nig,
+                        alpha_fixed, beta_fixed, delta_baseline
+                    )
+                    
+                    # Compute PIT calibration using NIG CDF
+                    ks_nig, pit_p_nig = PhiNIGDriftModel.pit_ks(
+                        returns, mu_nig, vol, P_nig, c_nig,
+                        alpha_fixed, beta_fixed, delta_baseline
+                    )
+                    
+                    # Compute information criteria
+                    aic_nig = compute_aic(ll_full_nig, n_params_nig)
+                    bic_nig = compute_bic(ll_full_nig, n_params_nig, n_obs)
+                    mean_ll_nig = ll_full_nig / max(n_obs, 1)
+                    
+                    # Compute Hyvärinen score (use Gaussian approximation for NIG)
+                    # Full NIG Hyvärinen requires additional derivation
+                    forecast_scale_nig = np.sqrt(c_nig * (vol ** 2) + P_nig)
+                    hyvarinen_nig = compute_hyvarinen_score_gaussian(
+                        returns, mu_nig, forecast_scale_nig
+                    )
+                    
+                    models[model_name] = {
+                        "q": float(q_nig),
+                        "c": float(c_nig),
+                        "phi": float(phi_nig),
+                        "nu": None,  # NIG doesn't use ν
+                        "nig_alpha": float(alpha_fixed),   # NIG tail parameter
+                        "nig_beta": float(beta_fixed),    # NIG asymmetry parameter
+                        "nig_delta": float(delta_baseline), # NIG scale parameter
+                        "log_likelihood": float(ll_full_nig),
+                        "mean_log_likelihood": float(mean_ll_nig),
+                        "cv_penalized_ll": float(ll_cv_nig),
+                        "bic": float(bic_nig),
+                        "aic": float(aic_nig),
+                        "hyvarinen_score": float(hyvarinen_nig),
+                        "n_params": int(n_params_nig),
+                        "ks_statistic": float(ks_nig),
+                        "pit_ks_pvalue": float(pit_p_nig),
+                        "fit_success": True,
+                        "diagnostics": diag_nig,
+                        "nig_params_fixed": True,  # Flag indicating NIG params were fixed
+                        "model_type": "phi_nig",
+                    }
+                except Exception as e:
+                    models[model_name] = {
+                        "fit_success": False,
+                        "error": str(e),
+                        "bic": float('inf'),
+                        "aic": float('inf'),
+                        "hyvarinen_score": float('-inf'),
+                        "nig_alpha": float(alpha_fixed),
+                        "nig_beta": float(beta_fixed),
+                        "nig_delta": float(delta_baseline),
+                        "nig_params_fixed": True,
+                        "model_type": "phi_nig",
+                    }
     
     return models
 
