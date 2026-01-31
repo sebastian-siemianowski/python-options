@@ -1057,6 +1057,11 @@ class Signal:
     expected_loss: float = 0.0        # E[-R_H | R_H < 0] (positive value)
     gain_loss_ratio: float = 1.0      # E[gain] / E[loss] - asymmetry
     eu_position_size: float = 0.0     # Position size from EU / max(E[loss], ε)
+    # Contaminated Student-t Mixture fields (regime-dependent tails):
+    cst_enabled: bool = False         # Whether contaminated mixture was used in MC
+    cst_nu_normal: Optional[float] = None   # ν for normal regime (lighter tails)
+    cst_nu_crisis: Optional[float] = None   # ν for crisis regime (heavier tails)
+    cst_epsilon: Optional[float] = None     # Crisis contamination probability
     # Diagnostics only (NOT used for trading decisions):
     drift_uncertainty: float = 0.0  # P_t × drift_var_factor: uncertainty in drift estimate propagated to horizon
     p_analytical: float = 0.5       # DIAGNOSTIC ONLY: analytical posterior predictive P(r>0|D) 
@@ -3974,6 +3979,11 @@ def run_regime_specific_mc(
     nig_alpha: Optional[float] = None,
     nig_beta: Optional[float] = None,
     nig_delta: Optional[float] = None,
+    hansen_lambda: Optional[float] = None,
+    # Contaminated Student-t parameters
+    cst_nu_normal: Optional[float] = None,
+    cst_nu_crisis: Optional[float] = None,
+    cst_epsilon: Optional[float] = None,
     seed: Optional[int] = None
 ) -> np.ndarray:
     """
@@ -3982,15 +3992,20 @@ def run_regime_specific_mc(
     This is a lightweight wrapper that generates r_samples for one regime
     using regime-specific parameters.
 
-    Supports four noise distributions:
-    1. Gaussian (nu=None, nig_alpha=None): Standard Kalman with Gaussian noise
-    2. Student-t (nu specified): Heavy tails, symmetric
+    Supports five noise distributions (in priority order):
+    1. Contaminated Student-t (cst_nu_normal, cst_nu_crisis, cst_epsilon specified):
+       Regime-dependent heavy tails: (1-ε)×t(ν_normal) + ε×t(ν_crisis)
+    2. Hansen Skew-t (nu + hansen_lambda specified): Asymmetric heavy tails
     3. NIG (nig_alpha, nig_beta, nig_delta specified): Semi-heavy tails, asymmetric
+    4. Student-t (nu specified): Heavy tails, symmetric
+    5. Gaussian (default): Light tails, symmetric
     
-    NIG (Normal-Inverse Gaussian) provides:
-        - α: Tail heaviness (smaller α = heavier tails)
-        - β: Asymmetry (β < 0 = left-skewed, β > 0 = right-skewed)
-        - δ: Scale parameter
+    Contaminated Student-t model:
+        p(r) = (1-ε) × t(r; ν_normal) + ε × t(r; ν_crisis)
+        
+    Where ε is the contamination probability (crisis mode), typically 5-15%.
+    This captures the intuition: "Most of the time markets are normal, but
+    occasionally we're in crisis mode with much heavier tails."
 
     Args:
         regime: Regime index (0-4)
@@ -4005,6 +4020,10 @@ def run_regime_specific_mc(
         nig_alpha: NIG tail parameter (None for Gaussian/Student-t)
         nig_beta: NIG asymmetry parameter (None for Gaussian/Student-t)
         nig_delta: NIG scale parameter (None for Gaussian/Student-t)
+        hansen_lambda: Hansen skewness parameter (None for symmetric)
+        cst_nu_normal: Contaminated-t normal regime ν
+        cst_nu_crisis: Contaminated-t crisis regime ν
+        cst_epsilon: Contaminated-t crisis probability
         seed: Random seed
 
     Returns:
@@ -4026,6 +4045,15 @@ def run_regime_specific_mc(
         except Exception:
             use_nig = False
     
+    # Check for Contaminated Student-t (highest priority for Student-t family)
+    use_contaminated_t = (
+        CONTAMINATED_ST_AVAILABLE and
+        cst_nu_normal is not None and
+        cst_nu_crisis is not None and
+        cst_epsilon is not None and
+        cst_epsilon > 0.001
+    )
+    
     # Input validation
     mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
     P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
@@ -4034,7 +4062,7 @@ def run_regime_specific_mc(
     sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
     H = int(max(H, 1))
 
-    if nu is not None and not use_nig:
+    if nu is not None and not use_nig and not use_contaminated_t:
         if not np.isfinite(nu) or nu <= 2.0:
             nu = None
         else:
@@ -4053,6 +4081,26 @@ def run_regime_specific_mc(
             scale_factor = np.sqrt(P_t / max(nig_var, 1e-10))
             nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
             mu_paths = mu_t + scale_factor * nig_delta * nig_samples
+        elif use_contaminated_t:
+            # Contaminated Student-t posterior for drift
+            # With probability ε, use crisis ν; else use normal ν
+            mu_samples = contaminated_student_t_rvs(
+                size=n_paths,
+                nu_normal=cst_nu_normal,
+                nu_crisis=cst_nu_crisis,
+                epsilon=cst_epsilon,
+                mu=0.0,
+                sigma=1.0,
+                random_state=rng
+            )
+            # Scale to have variance = P_t
+            # Contaminated-t has variance ≈ weighted average of component variances
+            # For t(ν): Var = ν/(ν-2) for ν > 2
+            var_normal = cst_nu_normal / (cst_nu_normal - 2) if cst_nu_normal > 2 else 10.0
+            var_crisis = cst_nu_crisis / (cst_nu_crisis - 2) if cst_nu_crisis > 2 else 10.0
+            mixture_var = (1 - cst_epsilon) * var_normal + cst_epsilon * var_crisis
+            t_scale = np.sqrt(P_t / mixture_var)
+            mu_paths = mu_t + t_scale * mu_samples
         elif nu is not None:
             # Student-t posterior for drift
             t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
@@ -4077,6 +4125,19 @@ def run_regime_specific_mc(
                 # NIG drift noise
                 nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
                 eta = q_std * nig_delta * nig_samples / np.sqrt(max(nig_var, 1e-10))
+            elif use_contaminated_t:
+                # Contaminated Student-t drift noise
+                eta_samples = contaminated_student_t_rvs(
+                    size=n_paths,
+                    nu_normal=cst_nu_normal,
+                    nu_crisis=cst_nu_crisis,
+                    epsilon=cst_epsilon,
+                    mu=0.0,
+                    sigma=1.0,
+                    random_state=rng
+                )
+                eta_scale = q_std / np.sqrt(mixture_var)
+                eta = eta_scale * eta_samples
             elif nu is not None:
                 eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
                 eta = eta_scale * rng.standard_t(df=nu, size=n_paths)
@@ -4094,6 +4155,19 @@ def run_regime_specific_mc(
                 # NIG observation noise
                 nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
                 eps_k = sigma_step * nig_delta * nig_samples / np.sqrt(max(nig_var, 1e-10))
+            elif use_contaminated_t:
+                # Contaminated Student-t observation noise
+                eps_samples = contaminated_student_t_rvs(
+                    size=n_paths,
+                    nu_normal=cst_nu_normal,
+                    nu_crisis=cst_nu_crisis,
+                    epsilon=cst_epsilon,
+                    mu=0.0,
+                    sigma=1.0,
+                    random_state=rng
+                )
+                eps_scale = sigma_step / np.sqrt(mixture_var)
+                eps_k = eps_scale * eps_samples
             elif nu is not None:
                 eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
                 eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
@@ -4538,6 +4612,11 @@ def bayesian_model_average_mc(
         "hyvarinen_max": regime_meta.get('hyvarinen_max'),
         "combined_score_min": regime_meta.get('combined_score_min'),
         "bic_min": regime_meta.get('bic_min'),
+        # Contaminated Student-t diagnostics
+        "contaminated_student_t_enabled": cst_enabled,
+        "cst_nu_normal": float(cst_nu_normal_global) if cst_nu_normal_global is not None else None,
+        "cst_nu_crisis": float(cst_nu_crisis_global) if cst_nu_crisis_global is not None else None,
+        "cst_epsilon": float(cst_epsilon_global) if cst_epsilon_global is not None else None,
         # SOFT REGIME PROBABILITIES FOR TRUST AUTHORITY
         # Used by CalibratedTrust to avoid penalty cliffs at regime boundaries
         "soft_regime_probs": soft_regime_probs,

@@ -401,6 +401,16 @@ from models import (
     HANSEN_LAMBDA_MAX,
     HANSEN_LAMBDA_DEFAULT,
     HANSEN_MLE_MIN_OBS,
+    # Contaminated Student-t Mixture (regime-dependent tails)
+    ContaminatedStudentTParams,
+    fit_contaminated_student_t_profile,
+    contaminated_student_t_rvs,
+    compare_contaminated_vs_single,
+    compute_crisis_probability_from_vol,
+    CST_NU_NORMAL_DEFAULT,
+    CST_NU_CRISIS_DEFAULT,
+    CST_EPSILON_DEFAULT,
+    CST_MIN_OBS,
     # Model classes
     GaussianDriftModel,
     PhiGaussianDriftModel,
@@ -1248,6 +1258,70 @@ def tune_asset_q(
         else:
             evt_diagnostics = {"fit_success": False, "error": "evt_not_available"}
         
+        # =====================================================================
+        # FIT CONTAMINATED STUDENT-T MIXTURE (Regime-Dependent Tails)
+        # =====================================================================
+        # The contaminated model captures distinct fat-tail behavior in normal
+        # versus stressed market conditions:
+        #
+        #   p(r) = (1-ε) × t(ν_normal) + ε × t(ν_crisis)
+        #
+        # Where:
+        #   - ν_normal: Degrees of freedom for calm periods (lighter tails)
+        #   - ν_crisis: Degrees of freedom for stress (heavier tails, ν_crisis < ν_normal)
+        #   - ε: Contamination probability (linked to vol_regime)
+        #
+        # CORE PRINCIPLE: "5% of the time we're in crisis mode with ν=4,
+        #                  95% of time we're normal with ν=12"
+        # =====================================================================
+        cst_result = None
+        cst_diagnostics = None
+        cst_comparison = None
+        
+        try:
+            if n_obs >= CST_MIN_OBS:
+                # Identify high-volatility observations for regime labeling
+                vol_threshold = np.percentile(vol, 80)
+                vol_regime_labels = (vol > vol_threshold).astype(int)
+                
+                # Fit contaminated Student-t mixture
+                cst_params, cst_diag = fit_contaminated_student_t_profile(
+                    returns,
+                    vol_regime_labels=vol_regime_labels,
+                )
+                
+                if cst_diag.get("fit_success", False):
+                    cst_result = cst_params.to_dict()
+                    cst_diagnostics = cst_diag
+                    
+                    # Compare with single Student-t
+                    best_nu = best_params.get("nu", CST_NU_NORMAL_DEFAULT)
+                    cst_comparison = compare_contaminated_vs_single(
+                        returns,
+                        cst_params,
+                        single_nu=best_nu if best_nu else CST_NU_NORMAL_DEFAULT
+                    )
+                    
+                    # Log result
+                    preference = "mixture" if cst_comparison.get("mixture_preferred_bic", False) else "single"
+                    _log(f"     ✓ Contaminated-t: ν_normal={cst_params.nu_normal:.0f}, "
+                         f"ν_crisis={cst_params.nu_crisis:.0f}, ε={cst_params.epsilon:.1%} "
+                         f"| ΔBIC={cst_diag.get('delta_bic', 0):.1f} [{preference}]")
+                else:
+                    error_msg = cst_diag.get("error", "unknown")
+                    _log(f"     ⚠️ Contaminated-t fit failed: {error_msg}")
+                    cst_diagnostics = cst_diag
+            else:
+                _log(f"     ⚠️ Contaminated-t skipped: insufficient data ({n_obs} < {CST_MIN_OBS})")
+                cst_diagnostics = {
+                    "fit_success": False,
+                    "error": "insufficient_data",
+                    "n_obs": n_obs,
+                }
+        except Exception as cst_err:
+            _log(f"     ⚠️ Contaminated-t fitting exception: {cst_err}")
+            cst_diagnostics = {"fit_success": False, "error": str(cst_err)}
+        
         # Build result structure - BMA-compatible format
         # signals.py expects: {"global": {...}, "has_bma": True}
         global_data = {
@@ -1286,6 +1360,10 @@ def tune_asset_q(
             "evt": evt_result,
             "evt_diagnostics": evt_diagnostics,
             "evt_student_t_consistency": evt_consistency,
+            # Contaminated Student-t Mixture for regime-dependent tails
+            "contaminated_student_t": cst_result,
+            "contaminated_student_t_diagnostics": cst_diagnostics,
+            "contaminated_vs_single_comparison": cst_comparison,
         }
         
         result = {

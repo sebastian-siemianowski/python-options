@@ -373,6 +373,16 @@ Examples:
                             tail_type = "H" if evt_xi > 0.2 else ("M" if evt_xi > 0.05 else "L")
                             model_str += f"+EVT{tail_type}"
                         
+                        # Check for Contaminated Student-t availability
+                        cst_data = global_result.get('contaminated_student_t')
+                        has_cst = (cst_data is not None and 
+                                   isinstance(cst_data, dict) and
+                                   cst_data.get('nu_normal') is not None and
+                                   cst_data.get('nu_crisis') is not None)
+                        if has_cst:
+                            cst_epsilon = cst_data.get('epsilon', 0.05)
+                            model_str += f"+CST{int(cst_epsilon*100)}%"
+                        
                         import math
                         details = f"{model_str}|q={q_val:.2e}|c={c_val:.3f}"
                         if phi_val is not None:
@@ -390,6 +400,11 @@ Examples:
                         # Add EVT xi for tail heaviness
                         if has_evt:
                             details += f"|ξ={evt_xi:.2f}"
+                        # Add Contaminated Student-t crisis ν
+                        if has_cst:
+                            cst_nu_normal = cst_data.get('nu_normal', 12)
+                            cst_nu_crisis = cst_data.get('nu_crisis', 4)
+                            details += f"|ν_c={int(cst_nu_crisis)}"
                         if math.isfinite(bic_val):
                             details += f"|bic={bic_val:.0f}"
                         
