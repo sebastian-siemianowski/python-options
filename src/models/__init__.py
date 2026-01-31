@@ -116,6 +116,27 @@ from models.hansen_skew_t import (
     HANSEN_MLE_MIN_OBS,
 )
 
+# Import Contaminated Student-t Mixture for regime-dependent tails
+from models.contaminated_student_t import (
+    ContaminatedStudentTParams,
+    contaminated_student_t_pdf,
+    contaminated_student_t_logpdf,
+    contaminated_student_t_rvs,
+    fit_contaminated_student_t_profile,
+    compute_contaminated_pit,
+    compare_contaminated_vs_single,
+    compute_crisis_probability_from_vol,
+    compute_crisis_probability_from_drawdown,
+    CST_NU_MIN,
+    CST_NU_MAX,
+    CST_NU_NORMAL_DEFAULT,
+    CST_NU_CRISIS_DEFAULT,
+    CST_EPSILON_MIN,
+    CST_EPSILON_MAX,
+    CST_EPSILON_DEFAULT,
+    CST_MIN_OBS,
+)
+
 # Re-export constants from phi_student_t (the canonical source for Student-t config)
 from models.phi_student_t import (
     PHI_SHRINKAGE_TAU_MIN,

@@ -340,6 +340,7 @@ from decision.signals_ux import (
     render_multi_asset_summary_table,
     render_sector_summary_tables,
     render_strong_signals_summary,
+    render_risk_temperature_summary,
     build_asset_display_label,
     extract_symbol_from_title,
     format_horizon_label,
@@ -429,6 +430,54 @@ except ImportError:
     EVT_THRESHOLD_PERCENTILE_DEFAULT = 0.90
     EVT_MIN_EXCEEDANCES = 30
     EVT_FALLBACK_MULTIPLIER = 1.5
+
+
+# =============================================================================
+# CONTAMINATED STUDENT-T DISTRIBUTION
+# =============================================================================
+# Regime-indexed contaminated Student-t mixture for crisis tail modeling.
+# Models returns as: (1-ε)·t(ν_normal) + ε·t(ν_crisis) where ε is contamination.
+# =============================================================================
+try:
+    from models import (
+        contaminated_student_t_rvs,
+        ContaminatedStudentTParams,
+    )
+    CONTAMINATED_ST_AVAILABLE = True
+except ImportError:
+    CONTAMINATED_ST_AVAILABLE = False
+    
+    # Fallback: simple contaminated sampling without the module
+    def contaminated_student_t_rvs(
+        size: int,
+        nu_normal: float,
+        nu_crisis: float,
+        epsilon: float,
+        loc: float = 0.0,
+        scale: float = 1.0,
+        random_state=None
+    ):
+        """Fallback contaminated student-t sampling."""
+        import numpy as np
+        if random_state is None:
+            rng = np.random.default_rng()
+        elif isinstance(random_state, np.random.Generator):
+            rng = random_state
+        else:
+            rng = np.random.default_rng(random_state)
+        
+        # Sample component indicators
+        from_crisis = rng.random(size) < epsilon
+        n_crisis = from_crisis.sum()
+        n_normal = size - n_crisis
+        
+        samples = np.empty(size)
+        if n_normal > 0:
+            samples[~from_crisis] = rng.standard_t(df=nu_normal, size=n_normal)
+        if n_crisis > 0:
+            samples[from_crisis] = rng.standard_t(df=nu_crisis, size=n_crisis)
+        
+        return loc + scale * samples
 
 
 # =============================================================================
@@ -1122,6 +1171,20 @@ class Signal:
     # DUAL-SIDED TREND EXHAUSTION (0-100% scale, multi-timeframe weighted EMA deviation):
     ue_up: float = 0.0    # Price above weighted EMA equilibrium (0-1 scale)
     ue_down: float = 0.0  # Price below weighted EMA equilibrium (0-1 scale)
+    # RISK TEMPERATURE MODULATION (cross-asset stress scaling):
+    risk_temperature: float = 0.0      # Global risk temperature (0-2 scale)
+    risk_scale_factor: float = 1.0     # Position scale factor from risk temperature
+    overnight_budget_applied: bool = False  # True if overnight budget constraint was applied
+    overnight_max_position: Optional[float] = None  # Max position from overnight budget
+    pos_strength_pre_risk_temp: float = 0.0  # Position strength before risk temperature scaling
+    # EVT (Extreme Value Theory) tail risk fields:
+    expected_loss_empirical: float = 0.0    # Empirical expected loss (before EVT)
+    evt_enabled: bool = False               # Whether EVT was used for tail estimation
+    evt_xi: Optional[float] = None          # GPD shape parameter ξ
+    evt_sigma: Optional[float] = None       # GPD scale parameter σ
+    evt_threshold: Optional[float] = None   # POT threshold
+    evt_n_exceedances: int = 0              # Number of threshold exceedances
+    evt_fit_method: Optional[str] = None    # EVT fitting method used
 
 
 
@@ -4483,11 +4546,31 @@ def bayesian_model_average_mc(
     # ========================================================================
     # GET REGIME-SPECIFIC BMA DATA
     # ========================================================================
-    global_data = tuned_params.get('global', {})
-    regime_data = tuned_params.get('regime', {})
+    global_data = tuned_params.get('global', {}) if tuned_params else {}
+    regime_data = tuned_params.get('regime', {}) if tuned_params else {}
+    
+    # Ensure regime_data is a dict (could be None from old cache)
+    if regime_data is None:
+        regime_data = {}
 
-    global_model_posterior = global_data.get('model_posterior', {})
-    global_models = global_data.get('models', {})
+    global_model_posterior = global_data.get('model_posterior', {}) if global_data else {}
+    global_models = global_data.get('models', {}) if global_data else {}
+
+    # ========================================================================
+    # EXTRACT AUGMENTATION LAYER DATA
+    # ========================================================================
+    # Hansen Skew-t data
+    hansen_data = global_data.get('hansen_skew_t', {})
+    hansen_lambda_global = hansen_data.get('lambda') if hansen_data else None
+    hansen_nu_global = hansen_data.get('nu') if hansen_data else None
+    hansen_skew_t_enabled = hansen_lambda_global is not None and abs(hansen_lambda_global) > 0.01
+    
+    # Contaminated Student-t data
+    cst_data = global_data.get('contaminated_student_t', {})
+    cst_nu_normal_global = cst_data.get('nu_normal') if cst_data else None
+    cst_nu_crisis_global = cst_data.get('nu_crisis') if cst_data else None
+    cst_epsilon_global = cst_data.get('epsilon') if cst_data else None
+    cst_enabled = cst_nu_normal_global is not None and cst_epsilon_global is not None and cst_epsilon_global > 0.001
 
     # Get current regime's model_posterior and models
     regime_key = str(current_regime)  # JSON keys are strings
@@ -6093,11 +6176,6 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                 # Update position strength
                 pos_strength = scaled_pos_strength
                 
-                # Log if risk temperature is elevated
-                if risk_temperature > 0.5:
-                    _log_verbose(f"Risk temperature elevated: {risk_temperature:.2f} "
-                                f"(scale={risk_scale_factor:.2f}, "
-                                f"overnight_budget={overnight_budget_applied})")
             except Exception as e:
                 # If risk temperature fails, continue with unscaled position
                 if os.getenv("DEBUG"):
@@ -6492,6 +6570,18 @@ def main() -> None:
             render_sector_summary_tables(summary_rows_cached, horizons_cached)
             # Add high-conviction signals summary for short-term trading
             render_strong_signals_summary(summary_rows_cached, horizons=[1, 3, 7])
+            
+            # Show risk temperature summary (computed once, applies to all assets)
+            if RISK_TEMPERATURE_AVAILABLE:
+                try:
+                    risk_temp_result = get_cached_risk_temperature(
+                        start_date="2020-01-01",
+                        notional=NOTIONAL_PLN,
+                        estimated_gap_risk=0.03,
+                    )
+                    render_risk_temperature_summary(risk_temp_result)
+                except Exception:
+                    pass  # Silently skip if risk temp fails
         except Exception as e:
             console.print(f"[yellow]Warning:[/yellow] Could not print summary tables from cache: {e}")
         return
@@ -7186,6 +7276,19 @@ def main() -> None:
         render_sector_summary_tables(summary_rows, horizons)
         # Add high-conviction signals summary for short-term trading
         render_strong_signals_summary(summary_rows, horizons=[1, 3, 7])
+        
+        # Show risk temperature summary (computed once, applies to all assets)
+        if RISK_TEMPERATURE_AVAILABLE:
+            try:
+                risk_temp_result = get_cached_risk_temperature(
+                    start_date="2020-01-01",
+                    notional=NOTIONAL_PLN,
+                    estimated_gap_risk=0.03,
+                )
+                render_risk_temperature_summary(risk_temp_result)
+            except Exception as rt_e:
+                if os.getenv("DEBUG"):
+                    Console().print(f"[dim]Risk temperature display skipped: {rt_e}[/dim]")
     except Exception as e:
         Console().print(f"[yellow]Warning:[/yellow] Could not print summary tables: {e}")
 

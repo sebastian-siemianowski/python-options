@@ -177,22 +177,130 @@ def _compute_zscore(
     Returns:
         Z-score of most recent value
     """
-    if len(values) < lookback // 2:
+    try:
+        # Handle empty or None input
+        if values is None:
+            return 0.0
+        
+        # Ensure we have a Series, not DataFrame
+        if isinstance(values, pd.DataFrame):
+            if values.shape[1] == 1:
+                values = values.iloc[:, 0]
+            else:
+                return 0.0
+        
+        # Drop any NaN values
+        values = values.dropna()
+        
+        if len(values) < lookback // 2:
+            return 0.0
+        
+        recent = values.iloc[-lookback:] if len(values) >= lookback else values
+        current = float(values.iloc[-1])
+        
+        mean = float(recent.mean())
+        std = float(recent.std())
+        
+        if std < 1e-10 or not np.isfinite(std):
+            return 0.0
+        
+        zscore = (current - mean) / std
+        
+        # Clip to reasonable range
+        return float(np.clip(zscore, -5.0, 5.0))
+    except Exception:
         return 0.0
-    
-    recent = values.iloc[-lookback:] if len(values) >= lookback else values
-    current = values.iloc[-1]
-    
-    mean = recent.mean()
-    std = recent.std()
-    
-    if std < 1e-10:
-        return 0.0
-    
-    return (current - mean) / std
 
 
-def _fetch_fx_data(
+# =============================================================================
+# MARKET DATA CACHING
+# =============================================================================
+
+_market_data_cache: Dict[str, Tuple[datetime, Dict[str, pd.Series]]] = {}
+MARKET_DATA_CACHE_TTL = 3600  # 1 hour cache for market data
+
+
+def _get_cached_or_fetch(
+    cache_key: str,
+    fetch_func,
+    start_date: str,
+    end_date: Optional[str] = None
+) -> Dict[str, pd.Series]:
+    """
+    Get cached market data or fetch fresh data.
+    """
+    now = datetime.now()
+    
+    if cache_key in _market_data_cache:
+        cached_time, cached_data = _market_data_cache[cache_key]
+        age_seconds = (now - cached_time).total_seconds()
+        
+        if age_seconds < MARKET_DATA_CACHE_TTL:
+            return cached_data
+    
+    # Fetch fresh data
+    data = fetch_func(start_date, end_date)
+    
+    # Cache it
+    _market_data_cache[cache_key] = (now, data)
+    
+    return data
+
+
+def _extract_close_series(df, ticker: str) -> Optional[pd.Series]:
+    """
+    Safely extract Close price series from yfinance DataFrame.
+    
+    Handles both single and multi-level column indices.
+    """
+    if df is None:
+        return None
+    
+    # Check if DataFrame is empty
+    try:
+        if df.empty:
+            return None
+    except ValueError:
+        # "The truth value of a Series is ambiguous" - handle it
+        if len(df) == 0:
+            return None
+    
+    try:
+        # Handle MultiIndex columns (yfinance returns this for single ticker sometimes)
+        if isinstance(df.columns, pd.MultiIndex):
+            if 'Close' in df.columns.get_level_values(0):
+                series = df['Close']
+                if isinstance(series, pd.DataFrame):
+                    series = series.iloc[:, 0]
+                return series.dropna()
+            elif ticker in df.columns.get_level_values(1):
+                # Try (Price, Ticker) format
+                for col in df.columns:
+                    if 'Close' in str(col) or 'close' in str(col).lower():
+                        return df[col].dropna()
+        
+        # Standard single-level columns
+        if 'Close' in df.columns:
+            series = df['Close']
+            if isinstance(series, pd.DataFrame):
+                series = series.iloc[:, 0]
+            return series.dropna()
+        
+        # Try lowercase
+        if 'close' in df.columns:
+            return df['close'].dropna()
+        
+        # Last resort: first column
+        if len(df.columns) > 0:
+            return df.iloc[:, 0].dropna()
+        
+    except Exception:
+        pass
+    
+    return None
+
+
+def _fetch_fx_data_impl(
     start_date: str,
     end_date: Optional[str] = None
 ) -> Dict[str, pd.Series]:
@@ -223,9 +331,12 @@ def _fetch_fx_data(
     
     for name, ticker in fx_pairs.items():
         try:
-            df = yf.download(ticker, start=start, end=end, progress=False)
-            if df is not None and not df.empty and 'Close' in df.columns:
-                result[name] = df['Close'].dropna()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+            series = _extract_close_series(df, ticker)
+            if series is not None and len(series) > 10:
+                result[name] = series
         except Exception as e:
             if os.getenv('DEBUG'):
                 print(f"Failed to fetch {ticker}: {e}")
@@ -233,7 +344,15 @@ def _fetch_fx_data(
     return result
 
 
-def _fetch_futures_data(
+def _fetch_fx_data(
+    start_date: str,
+    end_date: Optional[str] = None
+) -> Dict[str, pd.Series]:
+    """Cached wrapper for FX data fetch."""
+    return _get_cached_or_fetch("fx_data", _fetch_fx_data_impl, start_date, end_date)
+
+
+def _fetch_futures_data_impl(
     start_date: str,
     end_date: Optional[str] = None
 ) -> Dict[str, pd.Series]:
@@ -261,21 +380,32 @@ def _fetch_futures_data(
     
     for name, ticker in futures_tickers.items():
         try:
-            df = yf.download(ticker, start=start, end=end, progress=False)
-            if df is not None and not df.empty and 'Close' in df.columns:
-                result[name] = df['Close'].dropna()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+            series = _extract_close_series(df, ticker)
+            if series is not None and len(series) > 10:
+                result[name] = series
         except Exception:
             pass
     
     return result
 
 
-def _fetch_rates_data(
+def _fetch_futures_data(
+    start_date: str,
+    end_date: Optional[str] = None
+) -> Dict[str, pd.Series]:
+    """Cached wrapper for futures data fetch."""
+    return _get_cached_or_fetch("futures_data", _fetch_futures_data_impl, start_date, end_date)
+
+
+def _fetch_rates_data_impl(
     start_date: str,
     end_date: Optional[str] = None
 ) -> Dict[str, pd.Series]:
     """
-    Fetch rates data for stress indicators.
+    Fetch rates data for stress indicators (implementation).
     
     Returns dict with keys: '2Y10Y_SPREAD', 'TLT'
     """
@@ -292,21 +422,32 @@ def _fetch_rates_data(
     
     # TLT as long-duration proxy
     try:
-        df = yf.download('TLT', start=start, end=end, progress=False)
-        if df is not None and not df.empty:
-            result['TLT'] = df['Close'].dropna()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            df = yf.download('TLT', start=start, end=end, progress=False, auto_adjust=True)
+        series = _extract_close_series(df, 'TLT')
+        if series is not None and len(series) > 10:
+            result['TLT'] = series
     except Exception:
         pass
     
     return result
 
 
-def _fetch_commodity_data(
+def _fetch_rates_data(
+    start_date: str,
+    end_date: Optional[str] = None
+) -> Dict[str, pd.Series]:
+    """Cached wrapper for rates data fetch."""
+    return _get_cached_or_fetch("rates_data", _fetch_rates_data_impl, start_date, end_date)
+
+
+def _fetch_commodity_data_impl(
     start_date: str,
     end_date: Optional[str] = None
 ) -> Dict[str, pd.Series]:
     """
-    Fetch commodity data for stress indicators.
+    Fetch commodity data for stress indicators (implementation).
     
     Returns dict with keys: 'COPPER', 'GOLD'
     """
@@ -328,13 +469,24 @@ def _fetch_commodity_data(
     
     for name, ticker in commodity_tickers.items():
         try:
-            df = yf.download(ticker, start=start, end=end, progress=False)
-            if df is not None and not df.empty and 'Close' in df.columns:
-                result[name] = df['Close'].dropna()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+            series = _extract_close_series(df, ticker)
+            if series is not None and len(series) > 10:
+                result[name] = series
         except Exception:
             pass
     
     return result
+
+
+def _fetch_commodity_data(
+    start_date: str,
+    end_date: Optional[str] = None
+) -> Dict[str, pd.Series]:
+    """Cached wrapper for commodity data fetch."""
+    return _get_cached_or_fetch("commodity_data", _fetch_commodity_data_impl, start_date, end_date)
 
 
 def compute_fx_stress(fx_data: Dict[str, pd.Series]) -> StressCategory:
@@ -576,6 +728,9 @@ def compute_commodity_stress(commodity_data: Dict[str, pd.Series]) -> StressCate
     
     Key indicators:
     - Copper: Growth proxy (weakness = recession signal)
+    - Gold: Fear hedging (strength = risk-off)
+    - Silver: Industrial + precious hybrid (crash = panic)
+    - Oil: Energy demand (collapse = demand destruction)
     - Gold/Copper ratio: Fear hedging indicator
     """
     indicators = []
@@ -601,7 +756,71 @@ def compute_commodity_stress(commodity_data: Dict[str, pd.Series]) -> StressCate
             name="Copper_5d_return", value=0.0, zscore=0.0, contribution=0.0, data_available=False
         ))
     
-    # Gold/Copper ratio (rising = fear hedging)
+    # Gold as fear hedge (rising gold = risk-off)
+    if 'GOLD' in commodity_data and len(commodity_data['GOLD']) > 20:
+        px = commodity_data['GOLD']
+        ret_5d = (px.iloc[-1] / px.iloc[-5] - 1) if len(px) >= 5 else 0
+        ret_zscore = _compute_zscore(px.pct_change().dropna().rolling(5).sum().dropna())
+        
+        # Gold strength = fear hedging = stress
+        stress_contribution = max(0, ret_zscore * 1.2)
+        
+        indicators.append(StressIndicator(
+            name="Gold_5d_return",
+            value=ret_5d,
+            zscore=ret_zscore,
+            contribution=stress_contribution,
+            data_available=True
+        ))
+    else:
+        indicators.append(StressIndicator(
+            name="Gold_5d_return", value=0.0, zscore=0.0, contribution=0.0, data_available=False
+        ))
+    
+    # Silver as panic indicator (sharp drops = liquidation)
+    if 'SILVER' in commodity_data and len(commodity_data['SILVER']) > 20:
+        px = commodity_data['SILVER']
+        ret_5d = (px.iloc[-1] / px.iloc[-5] - 1) if len(px) >= 5 else 0
+        ret_zscore = _compute_zscore(px.pct_change().dropna().rolling(5).sum().dropna())
+        
+        # Silver crash = panic selling = high stress
+        # Silver also drops during risk-off (industrial demand)
+        stress_contribution = max(0, -ret_zscore * 1.8)  # Higher weight for crashes
+        
+        indicators.append(StressIndicator(
+            name="Silver_5d_return",
+            value=ret_5d,
+            zscore=ret_zscore,
+            contribution=stress_contribution,
+            data_available=True
+        ))
+    else:
+        indicators.append(StressIndicator(
+            name="Silver_5d_return", value=0.0, zscore=0.0, contribution=0.0, data_available=False
+        ))
+    
+    # Oil as demand indicator (collapse = demand destruction)
+    if 'OIL' in commodity_data and len(commodity_data['OIL']) > 20:
+        px = commodity_data['OIL']
+        ret_5d = (px.iloc[-1] / px.iloc[-5] - 1) if len(px) >= 5 else 0
+        ret_zscore = _compute_zscore(px.pct_change().dropna().rolling(5).sum().dropna())
+        
+        # Oil collapse = demand shock = stress
+        stress_contribution = max(0, -ret_zscore * 1.3)
+        
+        indicators.append(StressIndicator(
+            name="Oil_5d_return",
+            value=ret_5d,
+            zscore=ret_zscore,
+            contribution=stress_contribution,
+            data_available=True
+        ))
+    else:
+        indicators.append(StressIndicator(
+            name="Oil_5d_return", value=0.0, zscore=0.0, contribution=0.0, data_available=False
+        ))
+    
+    # Gold/Copper ratio (rising = fear hedging relative to growth)
     if 'GOLD' in commodity_data and 'COPPER' in commodity_data:
         gold = commodity_data['GOLD']
         copper = commodity_data['COPPER']
@@ -618,7 +837,7 @@ def compute_commodity_stress(commodity_data: Dict[str, pd.Series]) -> StressCate
             # Rising gold/copper = fear = stress
             indicators.append(StressIndicator(
                 name="Gold_Copper_ratio",
-                value=ratio.iloc[-1],
+                value=float(ratio.iloc[-1]),
                 zscore=ratio_zscore,
                 contribution=max(0, ratio_zscore * 0.8),
                 data_available=True
@@ -630,6 +849,37 @@ def compute_commodity_stress(commodity_data: Dict[str, pd.Series]) -> StressCate
     else:
         indicators.append(StressIndicator(
             name="Gold_Copper_ratio", value=0.0, zscore=0.0, contribution=0.0, data_available=False
+        ))
+    
+    # Gold/Silver ratio (rising = silver panic / fear extreme)
+    if 'GOLD' in commodity_data and 'SILVER' in commodity_data:
+        gold = commodity_data['GOLD']
+        silver = commodity_data['SILVER']
+        
+        # Align indices
+        common_idx = gold.index.intersection(silver.index)
+        if len(common_idx) > 20:
+            gold_aligned = gold.loc[common_idx]
+            silver_aligned = silver.loc[common_idx]
+            ratio = gold_aligned / silver_aligned
+            
+            ratio_zscore = _compute_zscore(ratio)
+            
+            # Rising gold/silver = silver crash / flight to gold = extreme stress
+            indicators.append(StressIndicator(
+                name="Gold_Silver_ratio",
+                value=float(ratio.iloc[-1]),
+                zscore=ratio_zscore,
+                contribution=max(0, ratio_zscore * 1.0),
+                data_available=True
+            ))
+        else:
+            indicators.append(StressIndicator(
+                name="Gold_Silver_ratio", value=0.0, zscore=0.0, contribution=0.0, data_available=False
+            ))
+    else:
+        indicators.append(StressIndicator(
+            name="Gold_Silver_ratio", value=0.0, zscore=0.0, contribution=0.0, data_available=False
         ))
     
     available_indicators = [ind for ind in indicators if ind.data_available]

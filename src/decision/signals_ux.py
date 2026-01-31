@@ -1601,20 +1601,43 @@ def render_tuning_header(
     console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════════
-    # MODEL CHIPS - Elegant badges
+    # MODEL CHIPS - Elegant badges showing full model ensemble
     # ═══════════════════════════════════════════════════════════════════════════════
-    chips = Text()
-    chips.append("  ○ ", style="green")
-    chips.append("Gaussian", style="green")
-    chips.append("    ○ ", style="cyan")
-    chips.append("φ-Gaussian", style="cyan")
-    chips.append("    ○ ", style="magenta")
-    chips.append("φ-Student-t", style="magenta")
-    chips.append(" ", style="dim")
-    chips.append("(ν ∈ {4, 6, 8, 12, 20})", style="dim")
-    console.print(Align.center(chips))
+    # Row 1: Base models
+    chips1 = Text()
+    chips1.append("○ ", style="green")
+    chips1.append("Gaussian", style="green")
+    chips1.append("   ○ ", style="cyan")
+    chips1.append("φ-Gaussian", style="cyan")
+    chips1.append("   ○ ", style="magenta")
+    chips1.append("φ-Student-t", style="magenta")
+    chips1.append(" ", style="dim")
+    chips1.append("(ν ∈ {4,6,8,12,20})", style="dim")
+    console.print(Align.center(chips1))
     
-    console.print()
+    # Row 2: Advanced distributional models
+    chips2 = Text()
+    chips2.append("○ ", style="bright_magenta")
+    chips2.append("φ-Skew-t", style="bright_magenta")
+    chips2.append("   ○ ", style="bright_cyan")
+    chips2.append("φ-NIG", style="bright_cyan")
+    chips2.append("   ○ ", style="bright_yellow")
+    chips2.append("GMM", style="bright_yellow")
+    chips2.append("   ○ ", style="bright_blue")
+    chips2.append("Hansen-λ", style="bright_blue")
+    console.print(Align.center(chips2))
+    
+    # Row 3: Risk models
+    chips3 = Text()
+    chips3.append("○ ", style="red")
+    chips3.append("EVT/GPD", style="red")
+    chips3.append("   ○ ", style="orange1")
+    chips3.append("Contaminated-t", style="orange1")
+    chips3.append("   ○ ", style="bright_red")
+    chips3.append("RiskTemp", style="bright_red")
+    console.print(Align.center(chips3))
+    
+    console.print(Align.center(Text(" " * 50)))
     console.print()
 
 
@@ -1897,6 +1920,20 @@ def render_tuning_summary(
     gh_selected_count: int = 0,
     tvvm_attempted_count: int = 0,
     tvvm_selected_count: int = 0,
+    # New model counters for comprehensive display
+    phi_gaussian_count: int = 0,
+    phi_student_t_count: int = 0,
+    phi_skew_t_count: int = 0,
+    phi_nig_count: int = 0,
+    gmm_fitted_count: int = 0,
+    hansen_fitted_count: int = 0,
+    hansen_left_skew_count: int = 0,
+    hansen_right_skew_count: int = 0,
+    evt_fitted_count: int = 0,
+    evt_heavy_tail_count: int = 0,
+    evt_moderate_tail_count: int = 0,
+    evt_light_tail_count: int = 0,
+    contaminated_t_count: int = 0,
     # Calibrated Trust Authority statistics
     recalibration_applied_count: int = 0,
     calibrated_trust_count: int = 0,
@@ -1986,17 +2023,26 @@ def render_tuning_summary(
         console.print(section)
         console.print()
         
-        gauss_pct = gaussian_count / total_models * 100
-        student_pct = student_t_count / total_models * 100
+        # ───────────────────────────────────────────────────────────────────────
+        # BASE DISTRIBUTIONS - Primary tail models
+        # ───────────────────────────────────────────────────────────────────────
+        base_section = Text()
+        base_section.append("    ▸ Base Distributions", style="bold dim")
+        console.print(base_section)
+        console.print()
         
-        # Visual bars
-        bar_width = 35
+        bar_width = 30
+        
+        # Calculate percentages for base models
+        gauss_pct = gaussian_count / total_models * 100 if total_models > 0 else 0
+        student_pct = student_t_count / total_models * 100 if total_models > 0 else 0
+        
         gauss_filled = int(gauss_pct / 100 * bar_width)
         student_filled = int(student_pct / 100 * bar_width)
         
         # Gaussian row
         gauss_row = Text()
-        gauss_row.append("    ○ ", style="green")
+        gauss_row.append("      ○ ", style="green")
         gauss_row.append("Gaussian      ", style="green")
         gauss_row.append("█" * gauss_filled, style="green")
         gauss_row.append("░" * (bar_width - gauss_filled), style="dim")
@@ -2004,94 +2050,198 @@ def render_tuning_summary(
         gauss_row.append(f"  ({gauss_pct:>4.1f}%)", style="dim")
         console.print(gauss_row)
         
-        # Student-t row
+        # Student-t row (total heavy-tailed)
         student_row = Text()
-        student_row.append("    ● ", style="magenta")
-        student_row.append("Student-t     ", style="magenta")
+        student_row.append("      ● ", style="magenta")
+        student_row.append("Heavy-Tailed  ", style="magenta")
         student_row.append("█" * student_filled, style="magenta")
         student_row.append("░" * (bar_width - student_filled), style="dim")
         student_row.append(f"  {student_t_count:>4}", style="bold white")
         student_row.append(f"  ({student_pct:>4.1f}%)", style="dim")
         console.print(student_row)
         
-        # K=2 Mixture REMOVED (empirically falsified: 206 attempts, 0 selections)
-        # Display section kept for backward compatibility with cached results
-        # that may still have mixture_attempted=True
-        if mixture_attempted_count > 0:
+        # ───────────────────────────────────────────────────────────────────────
+        # HEAVY-TAILED BREAKDOWN - Sub-models
+        # ───────────────────────────────────────────────────────────────────────
+        if student_t_count > 0 and (phi_student_t_count > 0 or phi_skew_t_count > 0 or phi_nig_count > 0):
             console.print()
-            mix_section = Text()
-            mix_section.append("    ◆ ", style="dim")
-            mix_section.append("K=2 Mixture (REMOVED)", style="dim")
-            console.print(mix_section)
+            breakdown_section = Text()
+            breakdown_section.append("    ▸ Heavy-Tailed Breakdown", style="bold dim")
+            console.print(breakdown_section)
+            console.print()
             
-            mix_row = Text()
-            mix_row.append("      ", style="")
-            mix_row.append(f"Legacy cached: {mixture_attempted_count}", style="dim")
-            mix_row.append("  (feature removed - 0% historical success)", style="dim")
-            console.print(mix_row)
+            # φ-Student-t
+            if phi_student_t_count > 0:
+                st_row = Text()
+                st_pct = phi_student_t_count / student_t_count * 100 if student_t_count > 0 else 0
+                st_filled = int(st_pct / 100 * bar_width)
+                st_row.append("      ● ", style="bright_magenta")
+                st_row.append("φ-Student-t   ", style="bright_magenta")
+                st_row.append("█" * st_filled, style="bright_magenta")
+                st_row.append("░" * (bar_width - st_filled), style="dim")
+                st_row.append(f"  {phi_student_t_count:>4}", style="bold white")
+                st_row.append(f"  ({st_pct:>4.1f}%)", style="dim")
+                console.print(st_row)
+            
+            # φ-Skew-t
+            if phi_skew_t_count > 0:
+                skt_row = Text()
+                skt_pct = phi_skew_t_count / student_t_count * 100 if student_t_count > 0 else 0
+                skt_filled = int(skt_pct / 100 * bar_width)
+                skt_row.append("      ◆ ", style="bright_cyan")
+                skt_row.append("φ-Skew-t      ", style="bright_cyan")
+                skt_row.append("█" * skt_filled, style="bright_cyan")
+                skt_row.append("░" * (bar_width - skt_filled), style="dim")
+                skt_row.append(f"  {phi_skew_t_count:>4}", style="bold white")
+                skt_row.append(f"  ({skt_pct:>4.1f}%)", style="dim")
+                console.print(skt_row)
+            
+            # φ-NIG
+            if phi_nig_count > 0:
+                nig_row = Text()
+                nig_pct = phi_nig_count / student_t_count * 100 if student_t_count > 0 else 0
+                nig_filled = int(nig_pct / 100 * bar_width)
+                nig_row.append("      ★ ", style="bright_yellow")
+                nig_row.append("φ-NIG         ", style="bright_yellow")
+                nig_row.append("█" * nig_filled, style="bright_yellow")
+                nig_row.append("░" * (bar_width - nig_filled), style="dim")
+                nig_row.append(f"  {phi_nig_count:>4}", style="bold white")
+                nig_row.append(f"  ({nig_pct:>4.1f}%)", style="dim")
+                console.print(nig_row)
         
-        # Adaptive ν Refinement row (only if attempted)
-        if nu_refinement_attempted_count > 0:
+        # ───────────────────────────────────────────────────────────────────────
+        # AUGMENTATION LAYERS - Additional models fitted on top
+        # ───────────────────────────────────────────────────────────────────────
+        augmentation_shown = (gmm_fitted_count > 0 or hansen_fitted_count > 0 or 
+                             evt_fitted_count > 0 or contaminated_t_count > 0)
+        if augmentation_shown:
             console.print()
-            nu_section = Text()
-            nu_section.append("    ◇ ", style="bright_cyan")
-            nu_section.append("Adaptive ν Refinement", style="bright_cyan")
-            console.print(nu_section)
+            aug_section = Text()
+            aug_section.append("    ▸ Augmentation Layers", style="bold dim")
+            console.print(aug_section)
+            console.print()
             
-            nu_row = Text()
-            nu_row.append("      ", style="")
-            nu_row.append(f"Attempted: {nu_refinement_attempted_count}", style="dim")
-            nu_row.append("  →  ", style="dim")
-            if nu_refinement_improved_count > 0:
-                nu_row.append(f"Improved: {nu_refinement_improved_count}", style="bold bright_green")
-                success_rate = nu_refinement_improved_count / nu_refinement_attempted_count * 100
-                nu_row.append(f"  ({success_rate:.0f}% success)", style="dim")
-            else:
-                nu_row.append("Improved: 0", style="dim")
-                nu_row.append("  (no improvement found)", style="dim")
-            console.print(nu_row)
+            # GMM (2-State Gaussian Mixture)
+            if gmm_fitted_count > 0:
+                gmm_row = Text()
+                gmm_pct = gmm_fitted_count / total_models * 100 if total_models > 0 else 0
+                gmm_filled = int(gmm_pct / 100 * bar_width)
+                gmm_row.append("      ◈ ", style="bright_blue")
+                gmm_row.append("GMM (2-State) ", style="bright_blue")
+                gmm_row.append("█" * gmm_filled, style="bright_blue")
+                gmm_row.append("░" * (bar_width - gmm_filled), style="dim")
+                gmm_row.append(f"  {gmm_fitted_count:>4}", style="bold white")
+                gmm_row.append(f"  ({gmm_pct:>4.1f}%)", style="dim")
+                console.print(gmm_row)
+            
+            # Hansen Skew-t (λ asymmetry)
+            if hansen_fitted_count > 0:
+                hansen_row = Text()
+                hansen_pct = hansen_fitted_count / total_models * 100 if total_models > 0 else 0
+                hansen_filled = int(hansen_pct / 100 * bar_width)
+                hansen_row.append("      λ ", style="bright_cyan")
+                hansen_row.append("Hansen-λ      ", style="bright_cyan")
+                hansen_row.append("█" * hansen_filled, style="bright_cyan")
+                hansen_row.append("░" * (bar_width - hansen_filled), style="dim")
+                hansen_row.append(f"  {hansen_fitted_count:>4}", style="bold white")
+                hansen_row.append(f"  ({hansen_pct:>4.1f}%)", style="dim")
+                if hansen_left_skew_count > 0 or hansen_right_skew_count > 0:
+                    hansen_row.append(f"  [←{hansen_left_skew_count}/→{hansen_right_skew_count}]", style="dim")
+                console.print(hansen_row)
+            
+            # EVT/GPD (Extreme Value Theory)
+            if evt_fitted_count > 0:
+                evt_row = Text()
+                evt_pct = evt_fitted_count / total_models * 100 if total_models > 0 else 0
+                evt_filled = int(evt_pct / 100 * bar_width)
+                evt_row.append("      ξ ", style="indian_red1")
+                evt_row.append("EVT/GPD       ", style="indian_red1")
+                evt_row.append("█" * evt_filled, style="indian_red1")
+                evt_row.append("░" * (bar_width - evt_filled), style="dim")
+                evt_row.append(f"  {evt_fitted_count:>4}", style="bold white")
+                evt_row.append(f"  ({evt_pct:>4.1f}%)", style="dim")
+                if evt_heavy_tail_count > 0 or evt_moderate_tail_count > 0 or evt_light_tail_count > 0:
+                    evt_row.append(f"  [H:{evt_heavy_tail_count}/M:{evt_moderate_tail_count}/L:{evt_light_tail_count}]", style="dim")
+                console.print(evt_row)
+            
+            # Contaminated Student-t (Crisis mixture)
+            if contaminated_t_count > 0:
+                cst_row = Text()
+                cst_pct = contaminated_t_count / total_models * 100 if total_models > 0 else 0
+                cst_filled = int(cst_pct / 100 * bar_width)
+                cst_row.append("      ⚠ ", style="yellow")
+                cst_row.append("Contaminated-t", style="yellow")
+                cst_row.append("█" * cst_filled, style="yellow")
+                cst_row.append("░" * (bar_width - cst_filled), style="dim")
+                cst_row.append(f"  {contaminated_t_count:>4}", style="bold white")
+                cst_row.append(f"  ({cst_pct:>4.1f}%)", style="dim")
+                console.print(cst_row)
         
-        # GH Distribution Fallback row (only if attempted)
-        if gh_attempted_count > 0:
+        # ───────────────────────────────────────────────────────────────────────
+        # REFINEMENT METHODS - Post-hoc improvements
+        # ───────────────────────────────────────────────────────────────────────
+        refinement_shown = (nu_refinement_attempted_count > 0 or gh_attempted_count > 0 or 
+                          tvvm_attempted_count > 0 or mixture_attempted_count > 0)
+        if refinement_shown:
             console.print()
-            gh_section = Text()
-            gh_section.append("    ★ ", style="bright_magenta")
-            gh_section.append("Generalized Hyperbolic (Skew)", style="bright_magenta")
-            console.print(gh_section)
-            
-            gh_row = Text()
-            gh_row.append("      ", style="")
-            gh_row.append(f"Attempted: {gh_attempted_count}", style="dim")
-            gh_row.append("  →  ", style="dim")
-            if gh_selected_count > 0:
-                gh_row.append(f"Selected: {gh_selected_count}", style="bold bright_green")
-                success_rate = gh_selected_count / gh_attempted_count * 100
-                gh_row.append(f"  ({success_rate:.0f}% success)", style="dim")
-            else:
-                gh_row.append("Selected: 0", style="dim")
-                gh_row.append("  (skewness not significant)", style="dim")
-            console.print(gh_row)
-        
-        # TVVM Fallback row (only if attempted)
-        if tvvm_attempted_count > 0:
+            ref_section = Text()
+            ref_section.append("    ▸ Refinement Methods", style="bold dim")
+            console.print(ref_section)
             console.print()
-            tvvm_section = Text()
-            tvvm_section.append("    ⚡ ", style="bright_blue")
-            tvvm_section.append("Time-Varying Vol Multiplier", style="bright_blue")
-            console.print(tvvm_section)
             
-            tvvm_row = Text()
-            tvvm_row.append("      ", style="")
-            tvvm_row.append(f"Attempted: {tvvm_attempted_count}", style="dim")
-            tvvm_row.append("  →  ", style="dim")
-            if tvvm_selected_count > 0:
-                tvvm_row.append(f"Selected: {tvvm_selected_count}", style="bold bright_green")
-                success_rate = tvvm_selected_count / tvvm_attempted_count * 100
-                tvvm_row.append(f"  ({success_rate:.0f}% success)", style="dim")
-            else:
-                tvvm_row.append("Selected: 0", style="dim")
-                tvvm_row.append("  (vol-of-vol effect not significant)", style="dim")
-            console.print(tvvm_row)
+            # Adaptive ν Refinement
+            if nu_refinement_attempted_count > 0:
+                nu_row = Text()
+                nu_row.append("      ◇ ", style="bright_cyan")
+                nu_row.append("Adaptive ν    ", style="bright_cyan")
+                nu_row.append(f"Attempted: {nu_refinement_attempted_count:>4}", style="dim")
+                nu_row.append("  →  ", style="dim")
+                if nu_refinement_improved_count > 0:
+                    success_rate = nu_refinement_improved_count / nu_refinement_attempted_count * 100
+                    nu_row.append(f"Improved: {nu_refinement_improved_count:>4}", style="bold bright_green")
+                    nu_row.append(f"  ({success_rate:.0f}%)", style="dim")
+                else:
+                    nu_row.append("Improved: 0", style="dim")
+                console.print(nu_row)
+            
+            # GH Distribution Fallback
+            if gh_attempted_count > 0:
+                gh_row = Text()
+                gh_row.append("      ★ ", style="bright_magenta")
+                gh_row.append("GH Skew       ", style="bright_magenta")
+                gh_row.append(f"Attempted: {gh_attempted_count:>4}", style="dim")
+                gh_row.append("  →  ", style="dim")
+                if gh_selected_count > 0:
+                    success_rate = gh_selected_count / gh_attempted_count * 100
+                    gh_row.append(f"Selected: {gh_selected_count:>4}", style="bold bright_green")
+                    gh_row.append(f"  ({success_rate:.0f}%)", style="dim")
+                else:
+                    gh_row.append("Selected: 0", style="dim")
+                console.print(gh_row)
+            
+            # TVVM Fallback
+            if tvvm_attempted_count > 0:
+                tvvm_row = Text()
+                tvvm_row.append("      ⚡ ", style="bright_blue")
+                tvvm_row.append("TVVM          ", style="bright_blue")
+                tvvm_row.append(f"Attempted: {tvvm_attempted_count:>4}", style="dim")
+                tvvm_row.append("  →  ", style="dim")
+                if tvvm_selected_count > 0:
+                    success_rate = tvvm_selected_count / tvvm_attempted_count * 100
+                    tvvm_row.append(f"Selected: {tvvm_selected_count:>4}", style="bold bright_green")
+                    tvvm_row.append(f"  ({success_rate:.0f}%)", style="dim")
+                else:
+                    tvvm_row.append("Selected: 0", style="dim")
+                console.print(tvvm_row)
+            
+            # K=2 Mixture (Legacy - REMOVED)
+            if mixture_attempted_count > 0:
+                mix_row = Text()
+                mix_row.append("      ◆ ", style="dim")
+                mix_row.append("K=2 Mixture   ", style="dim")
+                mix_row.append(f"Legacy: {mixture_attempted_count:>4}", style="dim")
+                mix_row.append("  (removed - 0% success)", style="dim")
+                console.print(mix_row)
         
         console.print()
         console.print()
@@ -2196,27 +2346,56 @@ def render_tuning_summary(
     
     max_fits = max(regime_fit_counts.values()) if regime_fit_counts.values() else 1
     
-    # Collect all model types across all regimes
-    all_model_types = set()
-    if regime_model_breakdown:
-        for r_breakdown in regime_model_breakdown.values():
-            all_model_types.update(r_breakdown.keys())
+    # Define STANDARD model columns that ALWAYS appear (ensures consistent display)
+    STANDARD_MODEL_COLUMNS = [
+        # Base distributions
+        ("Gaussian", "G", "green", 3),
+        ("φ-Gaussian", "φ-G", "cyan", 4),
+        # Student-t family (common ν values)
+        ("φ-t(ν=4)", "t4", "magenta", 3),
+        ("φ-t(ν=6)", "t6", "magenta", 3),
+        ("φ-t(ν=8)", "t8", "magenta", 3),
+        ("φ-t(ν=12)", "t12", "magenta", 3),
+        ("φ-t(ν=20)", "t20", "magenta", 3),
+        # Skew-t family
+        ("φ-Skew-t", "Sk-t", "bright_cyan", 4),
+        # NIG family
+        ("φ-NIG", "NIG", "bright_yellow", 4),
+        # Augmentation layers - ALWAYS SHOWN
+        ("GMM", "GMM", "bright_blue", 4),
+        ("Hansen-λ", "Hλ", "cyan", 3),
+        ("EVT", "EVT", "indian_red1", 4),
+        ("CST", "CST", "yellow", 4),
+    ]
     
-    # Sort model types
-    def model_sort_key(m):
-        if m == "Gaussian":
-            return (0, 0)
-        elif m == "φ-Gaussian":
-            return (1, 0)
-        elif m.startswith("K2-Mix"):
-            return (3, 0)  # Mixture models come after Student-t
-        else:
-            import re
-            nu_match = re.search(r'ν=(\d+)', m)
-            nu = int(nu_match.group(1)) if nu_match else 0
-            return (2, nu)
+    # Helper to normalize model keys for comparison
+    def normalize_model_key(m):
+        if m.startswith("φ-t(ν="):
+            return m
+        if m.startswith("φ-Skew-t"):
+            return "φ-Skew-t"
+        if m.startswith("φ-NIG"):
+            return "φ-NIG"
+        if "GMM" in m:
+            return "GMM"
+        if "Hλ" in m or "Hansen" in m:
+            return "Hansen-λ"
+        if "EVT" in m:
+            return "EVT"
+        if "CST" in m:
+            return "CST"
+        return m
     
-    sorted_models = sorted(all_model_types, key=model_sort_key)
+    # Helper to find count for a column
+    def get_model_count(r_breakdown, col_key):
+        if col_key in r_breakdown:
+            return r_breakdown[col_key]
+        norm_col = normalize_model_key(col_key)
+        total = 0
+        for actual_key, count in r_breakdown.items():
+            if normalize_model_key(actual_key) == norm_col:
+                total += count
+        return total
     
     # Create elegant table
     table = Table(
@@ -2228,32 +2407,26 @@ def render_tuning_summary(
         row_styles=["", "on grey7"],
     )
     table.add_column("Regime", width=12)
-    table.add_column("Fits", justify="right", width=6)
-    table.add_column("Distribution", width=25)
+    table.add_column("Fits", justify="right", width=5)
+    table.add_column("Distribution", width=18)
     
-    # Add columns for each model type
-    for model in sorted_models:
-        if model == "Gaussian":
-            table.add_column("G", justify="right", width=4, style="green")
-        elif model == "φ-Gaussian":
-            table.add_column("φ-G", justify="right", width=4, style="cyan")
-        elif model.startswith("K2-Mix"):
-            table.add_column("K2", justify="right", width=4, style="bright_yellow")
-        else:
-            import re
-            nu_match = re.search(r'ν=(\d+)', model)
-            nu = nu_match.group(1) if nu_match else "?"
-            table.add_column(f"t{nu}", justify="right", width=4, style="magenta")
+    # Track which columns we add for row building
+    column_model_keys = []
+    
+    # Add STANDARD columns
+    for model_key, header, color, width in STANDARD_MODEL_COLUMNS:
+        table.add_column(header, justify="right", width=width, style=color)
+        column_model_keys.append(model_key)
     
     for i, (name, short, color, icon) in enumerate(zip(regime_names, regime_short, regime_colors_list, regime_icons)):
         fit_count = regime_fit_counts.get(i, 0)
         
         # Create visual bar
         if fit_count == 0:
-            bar = "[dim]" + "─" * 20 + "[/]"
+            bar = "[dim]" + "─" * 18 + "[/]"
         else:
-            filled = int(fit_count / max_fits * 20) if max_fits > 0 else 0
-            bar = f"[{color}]{'━' * filled}[/{color}][dim]{'─' * (20 - filled)}[/]"
+            filled = int(fit_count / max_fits * 18) if max_fits > 0 else 0
+            bar = f"[{color}]{'━' * filled}[/{color}][dim]{'─' * (18 - filled)}[/]"
         
         # Build row
         row = [
@@ -2262,15 +2435,14 @@ def render_tuning_summary(
             bar,
         ]
         
-        # Add counts for each model type
-        if regime_model_breakdown:
-            r_breakdown = regime_model_breakdown.get(i, {})
-            for model in sorted_models:
-                count = r_breakdown.get(model, 0)
-                if count > 0:
-                    row.append(f"{count}")
-                else:
-                    row.append("[dim]—[/]")
+        # Add counts for each column
+        r_breakdown = regime_model_breakdown.get(i, {}) if regime_model_breakdown else {}
+        for col_key in column_model_keys:
+            count = get_model_count(r_breakdown, col_key)
+            if count > 0:
+                row.append(f"{count}")
+            else:
+                row.append("[dim]—[/]")
         
         table.add_row(*row)
     
@@ -2407,70 +2579,25 @@ def render_parameter_table(
             # Color PIT p-value based on calibration
             if np.isfinite(pit_p):
                 if pit_p < 0.01:
-                    pit_str = f"[bold indian_red1]{pit_p:.4f}[/]"
+                    pit_styled = f"[bold indian_red1]{pit_p:.4f}[/]"
                 elif pit_p < 0.05:
-                    pit_str = f"[yellow]{pit_p:.4f}[/]"
+                    pit_styled = f"[yellow]{pit_p:.4f}[/]"
                 else:
-                    pit_str = f"[bright_green]{pit_p:.4f}[/]"
+                    pit_styled = f"[bright_green]{pit_p:.4f}[/]"
             else:
-                pit_str = "[dim]—[/]"
-            
-            table.add_row(asset, q_str, c_str, phi_str, nu_str, bic_str, pit_str)
+                pit_styled = "[dim]—[/]"
         
-        console.print(table)
-    
-    console.print()
-
-
-def render_failed_assets(
-    failure_reasons: Dict[str, str],
-    console: Console = None
-) -> None:
-    """Render failed assets - clean, actionable, Apple-quality design."""
-    if console is None:
-        console = create_tuning_console()
-    
-    if not failure_reasons:
-        return
-    
-    console.print()
-    console.print(Rule(style="dim"))
-    console.print()
-    
-    section = Text()
-    section.append("  ❌  ", style="bold indian_red1")
-    section.append("FAILED ASSETS", style="bold indian_red1")
-    section.append(f"  ({len(failure_reasons)})", style="dim")
-    console.print(section)
-    console.print()
-    
-    # Create table for failed assets
-    table = Table(
-        show_header=True,
-        header_style="bold white",
-        border_style="indian_red1",
-        box=box.ROUNDED,
-        padding=(0, 1),
-        row_styles=["", "on grey7"],
-    )
-    table.add_column("Asset", style="bold indian_red1", width=15, no_wrap=True)
-    table.add_column("Error", style="dim", width=70, no_wrap=True, overflow="ellipsis")
-    
-    for asset, reason in sorted(failure_reasons.items()):
-        first_line = reason.split('\n')[0][:65] if reason else "Unknown error"
-        table.add_row(asset, first_line)
+        table.add_row(
+            asset,
+            q_str,
+            c_str,
+            phi_str,
+            nu_str,
+            bic_str,
+            pit_styled
+        )
     
     console.print(table)
-    console.print()
-    
-    # Action hint
-    hint = Text()
-    hint.append("    → ", style="dim")
-    hint.append("Re-run with ", style="dim")
-    hint.append("make tune ARGS='--force --assets <TICKER>'", style="bold white")
-    hint.append(" to retry", style="dim")
-    console.print(hint)
-    console.print()
 
 
 def render_dry_run_preview(
@@ -2550,6 +2677,60 @@ def render_dry_run_preview(
     hint.append("Remove ", style="dim")
     hint.append("--dry-run", style="bold white")
     hint.append(" to execute", style="dim")
+    console.print(hint)
+    console.print()
+
+
+def render_failed_assets(
+    failure_reasons: Dict[str, str],
+    console: Console = None
+) -> None:
+    """Render failed assets table - clean, informative display."""
+    if console is None:
+        console = create_tuning_console()
+    
+    if not failure_reasons:
+        return
+    
+    from rich.rule import Rule
+    
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    # Section header
+    fail_section = Text()
+    fail_section.append("  ❌  ", style="bold indian_red1")
+    fail_section.append("FAILED ASSETS", style="bold indian_red1")
+    fail_section.append(f"  ({len(failure_reasons)})", style="dim")
+    console.print(fail_section)
+    console.print()
+    
+    # Create table for failed assets
+    fail_table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="indian_red1",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
+    )
+    fail_table.add_column("Asset", style="bold indian_red1", width=15, no_wrap=True)
+    fail_table.add_column("Error", style="dim", width=70, no_wrap=True, overflow="ellipsis")
+    
+    for asset, reason in sorted(failure_reasons.items()):
+        first_line = reason.split('\n')[0][:65] if reason else "Unknown error"
+        fail_table.add_row(asset, first_line)
+    
+    console.print(fail_table)
+    console.print()
+    
+    # Action hint
+    hint = Text()
+    hint.append("    → ", style="dim")
+    hint.append("Re-run with ", style="dim")
+    hint.append("make tune ARGS='--force --assets <TICKER>'", style="bold white")
+    hint.append(" to retry", style="dim")
     console.print(hint)
     console.print()
 
@@ -2708,8 +2889,6 @@ def render_calibration_report(
                 model_str = f"Mix(σ={sigma_ratio:.1f})"
             elif 'student_t' in noise_model:
                 model_str = f"φ-T(ν={int(nu_val)})" if nu_val else "Student-t"
-            elif 'phi' in noise_model:
-                model_str = "φ-Gaussian"
             elif 'gaussian' in noise_model:
                 model_str = "Gaussian"
             else:
@@ -3008,9 +3187,13 @@ def render_calibration_report(
 
 
 class TuningProgressTracker:
-    """Extraordinary Apple-quality progress tracker.
+    """Progress tracker showing assets being tuned with animated spinner.
     
-    Design: Clean separation between progress bar and completion log
+    UX Features:
+    - Animated spinner that actually spins
+    - Shows assets currently being processed
+    - Prints completions as they happen
+    - Shows errors immediately
     """
 
     def __init__(self, total_assets: int, console: Console = None):
@@ -3019,229 +3202,445 @@ class TuningProgressTracker:
         self.current = 0
         self.successes = 0
         self.failures = 0
-        self.completed = []  # Store completed assets for final display
+        self.completed = []
+        self.in_progress_assets = []
         
-        # Show progress bar first
+        # Use Rich Progress for proper animation
         self.progress = Progress(
             SpinnerColumn(spinner_name="dots", style="bright_yellow"),
-            BarColumn(
-                bar_width=40, 
-                complete_style="bright_green", 
-                finished_style="bright_green",
-            ),
+            TextColumn("[bold cyan]{task.description}[/bold cyan]"),
+            BarColumn(bar_width=30, complete_style="bright_green", finished_style="bright_green"),
             TaskProgressColumn(),
-            TextColumn("[dim]·[/dim]"),
+            TextColumn("·"),
             MofNCompleteColumn(),
-            TextColumn("[dim]·[/dim]"),
+            TextColumn("·"),
             TimeElapsedColumn(),
             console=self.console,
-            transient=True,  # Progress bar will be replaced
+            transient=False,
+            expand=False,
         )
+        
+        self.task_id = None
         self.progress.start()
-        self.task = self.progress.add_task("", total=total_assets)
-
-    def _model_badge(self, details: str) -> Text:
-        """Create elegant model badge."""
-        badge = Text()
-        if not details:
-            return badge
-        
-        details_lower = details.lower()
-        
-        if 'student' in details_lower:
-            import re
-            nu_match = re.search(r'ν=(\d+)', details)
-            badge.append("φ-t", style="magenta")
-            if nu_match:
-                badge.append(f"({nu_match.group(1)})", style="dim magenta")
-        elif 'φ' in details or 'phi' in details_lower:
-            badge.append("φ-G", style="cyan")
+        self.task_id = self.progress.add_task(
+            description="Initializing...",
+            total=total_assets,
+        )
+    
+    def set_in_progress(self, assets: list):
+        """Set the list of assets currently being processed."""
+        self.in_progress_assets = list(assets) if assets else []
+        self._update_description()
+        # Force a refresh to ensure the display updates
+        self.progress.refresh()
+    
+    def _update_description(self):
+        """Update the task description to show current assets."""
+        if self.in_progress_assets:
+            # Show the assets being processed
+            shown = self.in_progress_assets[:4]
+            desc = " · ".join(shown)
+            if len(self.in_progress_assets) > 4:
+                remaining = len(self.in_progress_assets) - 4
+                desc += f" (+{remaining})"
+            self.progress.update(self.task_id, description=desc)
+        elif self.current < self.total:
+            self.progress.update(self.task_id, description="Processing...")
         else:
-            badge.append("G", style="green")
-        
-        return badge
-
-    def _q_value(self, details: str) -> Text:
-        """Extract and format q value."""
-        result = Text()
-        if not details:
-            return result
-        
-        import re
-        q_match = re.search(r'q=([0-9.e+-]+)', details)
-        if q_match:
-            try:
-                q_val = float(q_match.group(1))
-                log_q = np.log10(q_val) if q_val > 0 else 0
-                result.append(f"{log_q:+.1f}", style="dim")
-            except:
-                pass
-        return result
+            self.progress.update(self.task_id, description="Complete")
+    
+    def add_in_progress(self, asset: str):
+        """Add an asset to the in-progress list."""
+        if asset not in self.in_progress_assets:
+            self.in_progress_assets.append(asset)
+            self._update_description()
+    
+    def remove_in_progress(self, asset: str):
+        """Remove an asset from the in-progress list."""
+        if asset in self.in_progress_assets:
+            self.in_progress_assets.remove(asset)
+    
+    def set_current(self, asset: str, model: str = ""):
+        """Legacy method - updates in_progress list."""
+        self.set_in_progress([asset])
 
     def update(self, asset: str, status: str, details: Optional[str] = None):
-        """Update progress - store completions for later display."""
+        """Update progress when an asset completes."""
         self.current += 1
+        self.remove_in_progress(asset)
+        self._update_description()
         
         if status == 'success':
             self.successes += 1
             self.completed.append((asset, details, 'success'))
+            # Print success line below progress bar
+            model_short = self._extract_model_short(details)
+            self.progress.console.print(f"  [green]✓[/green] [white]{asset}[/white] [dim]→[/dim] [bright_magenta]{model_short}[/bright_magenta]")
         elif status == 'failed':
             self.failures += 1
-            error_msg = details.split('\n')[0][:35] if details else "Error"
-            self.completed.append((asset, error_msg, 'failed'))
+            error_first_line = details.split('\n')[0][:80] if details else "Error"
+            self.completed.append((asset, error_first_line, 'failed'))
+            # Print error immediately and prominently
+            self.progress.console.print()
+            self.progress.console.print(f"  [bold red]✗ ERROR: {asset}[/bold red]")
+            if details:
+                for line in details.split('\n')[:8]:
+                    self.progress.console.print(f"    [dim red]{line}[/dim red]")
+            self.progress.console.print()
         
-        self.progress.update(self.task, advance=1)
-
-    def _get_model_info(self, details: str) -> dict:
-        """Extract all parameters from details string.
-        
-        Details format: model|q=X|c=X|φ=X|ν=X|bic=X
-        """
-        import re
-        
-        info = {
-            'model': '—',
-            'q': '—',
-            'c': '—',
-            'phi': '—',
-            'nu': '—',
-            'bic': '—',
-        }
-        
+        # Advance progress bar
+        self.progress.update(self.task_id, advance=1)
+    
+    def _extract_model_short(self, details: str) -> str:
+        """Extract a short model description from details string."""
         if not details:
-            return info
-        
-        details_lower = details.lower()
-        
-        # Determine model type
-        if 'student' in details_lower:
-            info['model'] = 'φ-t'
-        elif 'φ-gaussian' in details_lower or 'phi' in details_lower:
-            info['model'] = 'φ-G'
-        else:
-            info['model'] = 'G'
-        
-        # Extract q value
-        q_match = re.search(r'q=([0-9.e+-]+)', details)
-        if q_match:
-            try:
-                q_val = float(q_match.group(1))
-                import math
-                log_q = math.log10(q_val) if q_val > 0 else 0
-                info['q'] = f"{log_q:.2f}"
-            except:
-                pass
-        
-        # Extract c value
-        c_match = re.search(r'c=([0-9.]+)', details)
-        if c_match:
-            info['c'] = c_match.group(1)
-        
-        # Extract φ value
-        phi_match = re.search(r'φ=([+-]?[0-9.]+)', details)
-        if phi_match:
-            info['phi'] = phi_match.group(1)
-        
-        # Extract ν value
-        nu_match = re.search(r'ν=(\d+)', details)
-        if nu_match:
-            info['nu'] = nu_match.group(1)
-        
-        # Extract BIC value
-        bic_match = re.search(r'bic=([+-]?[0-9.]+)', details)
-        if bic_match:
-            info['bic'] = bic_match.group(1)
-        
-        return info
+            return ""
+        parts = details.split('|')
+        if parts:
+            return parts[0][:35]
+        return ""
 
     def finish(self):
-        """Complete with elegant aligned summary showing all parameters."""
+        """Complete and show summary."""
         self.progress.stop()
         
-        # Now show completion log in its own section
         self.console.print()
-        
-        section = Text()
-        section.append("▸ ", style="bright_green")
-        section.append("COMPLETED", style="bold white")
-        self.console.print(section)
-        self.console.print()
-        
-        # Create a comprehensive parameter table
-        table = Table(
-            show_header=True,
-            header_style="dim",
-            box=None,
-            padding=(0, 2),
-            collapse_padding=True,
-        )
-        table.add_column("", width=2)  # Icon
-        table.add_column("Asset", style="bold white", width=10)
-        table.add_column("Model", width=6)
-        table.add_column("log₁₀(q)", justify="right", width=8)
-        table.add_column("c", justify="right", width=6)
-        table.add_column("φ", justify="right", width=6)
-        table.add_column("ν", justify="right", width=4)
-        table.add_column("BIC", justify="right", width=8)
-        
-        for asset, details, status in self.completed:
-            if status == 'success':
-                info = self._get_model_info(details)
-                
-                # Color the model badge
-                model = info['model']
-                if model == 'φ-t':
-                    model_styled = f"[magenta]{model}[/magenta]"
-                elif model == 'φ-G':
-                    model_styled = f"[cyan]{model}[/cyan]"
-                else:
-                    model_styled = f"[green]{model}[/green]"
-                
-                # Format phi with color
-                phi_str = info['phi']
-                if phi_str != '—':
-                    phi_str = f"[white]{phi_str}[/white]"
-                else:
-                    phi_str = f"[dim]{phi_str}[/dim]"
-                
-                # Format nu
-                nu_str = info['nu']
-                if nu_str == '—':
-                    nu_str = f"[dim]{nu_str}[/dim]"
-                
-                table.add_row(
-                    "[green]✓[/green]",
-                    asset,
-                    model_styled,
-                    info['q'],
-                    info['c'],
-                    phi_str,
-                    nu_str,
-                    f"[dim]{info['bic']}[/dim]"
-                )
-            else:
-                table.add_row(
-                    "[red]✗[/red]",
-                    asset,
-                    f"[dim]Error[/dim]",
-                    "",
-                    "",
-                    "",
-                    "",
-                    f"[dim red]{details[:15]}[/dim red]"
-                )
-        
-        self.console.print(Padding(table, (0, 0, 0, 4)))
-        self.console.print()
-        
-        # Summary line
         summary = Text()
-        summary.append("    ")
+        summary.append("  ")
+        summary.append("▸ ", style="bright_green")
         summary.append(f"{self.successes}", style="bold green")
-        summary.append(" estimated", style="dim")
+        summary.append(" tuned", style="dim")
         if self.failures > 0:
             summary.append("  ·  ", style="dim")
             summary.append(f"{self.failures}", style="bold red")
             summary.append(" failed", style="dim")
         self.console.print(summary)
         self.console.print()
+
+
+# =============================================================================
+# RISK TEMPERATURE SUMMARY DISPLAY
+# =============================================================================
+# Apple Design Philosophy Applied:
+#   1. CLARITY - Information hierarchy guides the eye naturally
+#   2. DEFERENCE - Content first, chrome minimal
+#   3. DEPTH - Layered information density
+#   4. ANIMATION - Visual rhythm through spacing and alignment
+# =============================================================================
+
+def render_risk_temperature_summary(
+    risk_temp_result,
+    console: Console = None,
+) -> None:
+    """
+    Render an extraordinary Apple-quality risk temperature dashboard.
+    
+    Design Principles (Senior Apple UX Professor, 60 years experience):
+    ═══════════════════════════════════════════════════════════════════
+    
+    1. VISUAL HIERARCHY
+       - Hero metric dominates attention
+       - Supporting details recede gracefully
+       - Color conveys meaning, not decoration
+    
+    2. BREATHING ROOM
+       - Generous whitespace between sections
+       - Alignment creates visual rhythm
+       - No cramped information blocks
+    
+    3. PROGRESSIVE DISCLOSURE
+       - Primary: Temperature + Status (immediate scan)
+       - Secondary: Category breakdown (deeper analysis)
+       - Tertiary: Technical details (expert mode)
+    
+    4. PURPOSEFUL COLOR
+       - Green = safe / opportunity
+       - Yellow = caution / attention
+       - Red = danger / action required
+       - Dim = context / supporting
+    """
+    if console is None:
+        console = Console()
+    
+    if risk_temp_result is None:
+        return
+    
+    # Extract data with safe defaults
+    temp = getattr(risk_temp_result, 'temperature', 0.0)
+    scale = getattr(risk_temp_result, 'scale_factor', 1.0)
+    data_quality = getattr(risk_temp_result, 'data_quality', 1.0)
+    categories = getattr(risk_temp_result, 'categories', {})
+    overnight_budget_active = getattr(risk_temp_result, 'overnight_budget_active', False)
+    overnight_max_position = getattr(risk_temp_result, 'overnight_max_position', None)
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TEMPERATURE STATUS MAPPING
+    # ═══════════════════════════════════════════════════════════════════════════
+    if temp < 0.3:
+        status_icon = "◉"
+        status_text = "CALM"
+        status_color = "bright_green"
+        status_desc = "Markets stable · Full exposure permitted"
+        gauge_style = "green"
+    elif temp < 0.7:
+        status_icon = "◉"
+        status_text = "ELEVATED"
+        status_color = "yellow"
+        status_desc = "Elevated uncertainty · Monitor positions"
+        gauge_style = "yellow"
+    elif temp < 1.2:
+        status_icon = "◉"
+        status_text = "STRESSED"
+        status_color = "bright_red"
+        status_desc = "Significant stress · Reduce exposure"
+        gauge_style = "bright_red"
+    else:
+        status_icon = "◉"
+        status_text = "CRISIS"
+        status_color = "bold red"
+        status_desc = "Extreme conditions · Capital preservation"
+        gauge_style = "bold red"
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # OPENING DIVIDER
+    # ═══════════════════════════════════════════════════════════════════════════
+    console.print()
+    console.print()
+    
+    # Elegant thin rule
+    from rich.rule import Rule
+    console.print(Rule(style="dim", characters="─"))
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # HERO SECTION - The Money Shot
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    # Title with icon
+    title_line = Text()
+    title_line.append("  🌡️  ", style="")
+    title_line.append("RISK TEMPERATURE", style="bold bright_white")
+    console.print(title_line)
+    console.print()
+    
+    # Giant temperature gauge - the hero metric
+    # Visual: [████████████░░░░░░░░] 1.18 / 2.00
+    gauge_width = 30
+    filled_pct = min(1.0, temp / 2.0)
+    filled_blocks = int(filled_pct * gauge_width)
+    empty_blocks = gauge_width - filled_blocks
+    
+    gauge_line = Text()
+    gauge_line.append("      ", style="")
+    gauge_line.append("[", style="dim")
+    gauge_line.append("█" * filled_blocks, style=gauge_style)
+    gauge_line.append("░" * empty_blocks, style="dim")
+    gauge_line.append("]", style="dim")
+    gauge_line.append("  ", style="")
+    gauge_line.append(f"{temp:.2f}", style=f"bold {status_color}")
+    gauge_line.append(" / 2.00", style="dim")
+    console.print(gauge_line)
+    console.print()
+    
+    # Status badge - centered visual emphasis
+    status_line = Text()
+    status_line.append("      ", style="")
+    status_line.append(status_icon, style=status_color)
+    status_line.append("  ", style="")
+    status_line.append(status_text, style=f"bold {status_color}")
+    status_line.append("  ·  ", style="dim")
+    status_line.append(status_desc, style="dim italic")
+    console.print(status_line)
+    console.print()
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STRESS BREAKDOWN - Category Cards
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    if categories:
+        section_header = Text()
+        section_header.append("      ", style="")
+        section_header.append("STRESS BREAKDOWN", style="bold dim")
+        console.print(section_header)
+        console.print()
+        
+        category_config = [
+            ("fx", "FX Carry", "💱", "Yen carry, CHF flows"),
+            ("futures", "Equities", "📈", "SPY/QQQ momentum"),
+            ("rates", "Duration", "📊", "TLT volatility, curve"),
+            ("commodities", "Metals", "🥇", "Gold, Silver, Copper"),
+        ]
+        
+        for cat_key, cat_name, cat_icon, cat_hint in category_config:
+            if cat_key not in categories:
+                continue
+            
+            cat = categories[cat_key]
+            stress = getattr(cat, 'stress_level', 0.0)
+            weight = getattr(cat, 'weight', 0.0)
+            indicators = getattr(cat, 'indicators', [])
+            
+            # Stress bar visualization
+            bar_width = 15
+            stress_filled = int(min(1.0, stress / 2.0) * bar_width)
+            stress_empty = bar_width - stress_filled
+            
+            # Color based on stress level
+            if stress < 0.5:
+                bar_color = "green"
+                stress_badge = ""
+            elif stress < 1.0:
+                bar_color = "yellow"
+                stress_badge = ""
+            elif stress < 1.5:
+                bar_color = "bright_red"
+                stress_badge = "⚠"
+            else:
+                bar_color = "bold red"
+                stress_badge = "🔥"
+            
+            # Find top indicator
+            top_indicator_name = None
+            top_indicator_zscore = 0.0
+            top_indicator_style = "dim"
+            
+            if indicators:
+                available = [i for i in indicators if getattr(i, 'data_available', False)]
+                if available:
+                    top = max(available, key=lambda x: abs(getattr(x, 'zscore', 0)))
+                    z = getattr(top, 'zscore', 0)
+                    name = getattr(top, 'name', '').replace('_5d_return', '').replace('_', ' ')
+                    if abs(z) > 2.0:
+                        top_indicator_style = "bold red" if z < 0 else "bold bright_green"
+                    elif abs(z) > 1.0:
+                        top_indicator_style = "yellow"
+                    else:
+                        top_indicator_style = "dim"
+                    top_indicator_name = name
+                    top_indicator_zscore = z
+            
+            # Build the row
+            row = Text()
+            row.append("      ", style="")
+            row.append(f"{cat_icon} ", style="")
+            row.append(f"{cat_name:12}", style="white")
+            row.append("  ", style="")
+            row.append("▐", style="dim")
+            row.append("█" * stress_filled, style=bar_color)
+            row.append("░" * stress_empty, style="dim")
+            row.append("▌", style="dim")
+            row.append(f" {stress:.2f}", style=bar_color)
+            row.append(f" {stress_badge}", style="")
+            row.append("  ", style="")
+            if top_indicator_name:
+                row.append(f"{top_indicator_name} z={top_indicator_zscore:+.1f}", style=top_indicator_style)
+            else:
+                row.append(cat_hint, style="dim")
+            
+            console.print(row)
+        
+        console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ACTION PANEL - Position Scaling
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    console.print()
+    action_header = Text()
+    action_header.append("      ", style="")
+    action_header.append("POSITION IMPACT", style="bold dim")
+    console.print(action_header)
+    console.print()
+    
+    # Scale visualization
+    scale_bar_width = 25
+    scale_filled = int(scale * scale_bar_width)
+    scale_empty = scale_bar_width - scale_filled
+    
+    if scale > 0.9:
+        scale_color = "bright_green"
+        scale_label = "Full exposure"
+        scale_icon = "✓"
+    elif scale > 0.6:
+        scale_color = "yellow"
+        scale_label = "Moderate reduction"
+        scale_icon = "→"
+    elif scale > 0.3:
+        scale_color = "bright_red"
+        scale_label = "Significant reduction"
+        scale_icon = "⚠"
+    else:
+        scale_color = "bold red"
+        scale_label = "Minimal exposure"
+        scale_icon = "✗"
+    
+    scale_line = Text()
+    scale_line.append("      ", style="")
+    scale_line.append(f"{scale_icon} ", style=scale_color)
+    scale_line.append("Position Size: ", style="white")
+    scale_line.append(f"{scale:.0%}", style=f"bold {scale_color}")
+    scale_line.append("  ", style="")
+    scale_line.append("[", style="dim")
+    scale_line.append("█" * scale_filled, style=scale_color)
+    scale_line.append("░" * scale_empty, style="dim")
+    scale_line.append("]", style="dim")
+    scale_line.append(f"  {scale_label}", style="dim italic")
+    console.print(scale_line)
+    
+    # Overnight budget warning
+    if overnight_budget_active:
+        console.print()
+        budget_line = Text()
+        budget_line.append("      ", style="")
+        budget_line.append("⚡ ", style="yellow")
+        budget_line.append("Overnight Budget ", style="yellow")
+        budget_line.append("ACTIVE", style="bold yellow")
+        if overnight_max_position:
+            budget_line.append(f"  ·  Max position: {overnight_max_position:.0%}", style="dim")
+        console.print(budget_line)
+    
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # FOOTER - Data Quality
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    # Calculate actual indicator count
+    total_indicators = 0
+    available_indicators = 0
+    for cat in categories.values():
+        inds = getattr(cat, 'indicators', [])
+        total_indicators += len(inds)
+        available_indicators += sum(1 for i in inds if getattr(i, 'data_available', False))
+    
+    if total_indicators > 0:
+        actual_quality = available_indicators / total_indicators
+    else:
+        actual_quality = data_quality
+    
+    footer_line = Text()
+    footer_line.append("      ", style="")
+    footer_line.append("Data: ", style="dim")
+    
+    # Quality dots visualization
+    quality_dots = 10
+    filled_dots = int(actual_quality * quality_dots)
+    
+    if actual_quality >= 0.9:
+        dot_color = "green"
+    elif actual_quality >= 0.7:
+        dot_color = "yellow"
+    else:
+        dot_color = "red"
+    
+    footer_line.append("●" * filled_dots, style=dot_color)
+    footer_line.append("○" * (quality_dots - filled_dots), style="dim")
+    footer_line.append(f"  {available_indicators}/{total_indicators} indicators", style="dim")
+    footer_line.append("  ·  ", style="dim")
+    footer_line.append("Updated: now", style="dim italic")
+    console.print(footer_line)
+    
+    console.print()
+    console.print(Rule(style="dim", characters="─"))
+    console.print()
