@@ -357,7 +357,8 @@ from tuning.reporting import render_calibration_issues_table
 # The BMA ensemble includes the following candidate distributions:
 #   - Gaussian:           μ, σ (baseline)
 #   - Symmetric Student-t: μ, σ, ν (fat tails)
-#   - φ-Skew-t:           μ, σ, ν, γ (fat tails + asymmetry)
+#   - φ-Skew-t:           μ, σ, ν, γ (fat tails + asymmetry, Fernández-Steel)
+#   - Hansen Skew-t:      μ, σ, ν, λ (fat tails + asymmetry, regime-conditional)
 #   - NIG:                μ, σ, α, β (semi-heavy tails + asymmetry)
 #   - GMM:                2-component Gaussian mixture (bimodality)
 #
@@ -387,6 +388,19 @@ from models import (
     is_gmm_model,
     GMM_MIN_OBS,
     GMM_MIN_SEPARATION,
+    # Hansen Skew-t (regime-conditional asymmetry)
+    HansenSkewTParams,
+    fit_hansen_skew_t_mle,
+    compare_symmetric_vs_hansen,
+    hansen_skew_t_rvs,
+    hansen_skew_t_cdf,
+    HANSEN_NU_MIN,
+    HANSEN_NU_MAX,
+    HANSEN_NU_DEFAULT,
+    HANSEN_LAMBDA_MIN,
+    HANSEN_LAMBDA_MAX,
+    HANSEN_LAMBDA_DEFAULT,
+    HANSEN_MLE_MIN_OBS,
     # Model classes
     GaussianDriftModel,
     PhiGaussianDriftModel,
@@ -1085,6 +1099,61 @@ def tune_asset_q(
             _log(f"     ⚠️ GMM fitting exception: {gmm_err}")
             gmm_diagnostics = {"fit_success": False, "error": str(gmm_err)}
         
+        # =====================================================================
+        # FIT HANSEN SKEW-T DISTRIBUTION (Regime-Conditional Asymmetric Tails)
+        # =====================================================================
+        # Hansen (1994) skew-t captures directional asymmetry via λ parameter:
+        #   - λ > 0: Right-skewed (recovery potential)
+        #   - λ < 0: Left-skewed (crash risk)
+        #   - λ = 0: Symmetric Student-t
+        #
+        # This is estimated globally and used as fallback when regime-specific
+        # estimation has insufficient data.
+        # =====================================================================
+        hansen_skew_t_result = None
+        hansen_skew_t_diagnostics = None
+        hansen_comparison = None
+        
+        try:
+            nu_hansen, lambda_hansen, ll_hansen, hansen_diag = fit_hansen_skew_t_mle(
+                returns,
+                nu_init=HANSEN_NU_DEFAULT,
+                lambda_init=HANSEN_LAMBDA_DEFAULT,
+                nu_bounds=(HANSEN_NU_MIN, HANSEN_NU_MAX),
+                lambda_bounds=(HANSEN_LAMBDA_MIN, HANSEN_LAMBDA_MAX)
+            )
+            
+            if hansen_diag.get("fit_success", False):
+                # Compute comparison with symmetric Student-t
+                best_nu = best_params.get("nu", HANSEN_NU_DEFAULT)
+                hansen_comparison = compare_symmetric_vs_hansen(
+                    returns, 
+                    nu_symmetric=best_nu if best_nu else HANSEN_NU_DEFAULT,
+                    nu_hansen=nu_hansen,
+                    lambda_hansen=lambda_hansen
+                )
+                
+                hansen_skew_t_result = {
+                    "nu": float(nu_hansen),
+                    "lambda": float(lambda_hansen),
+                    "log_likelihood": float(ll_hansen),
+                    "skew_direction": "left" if lambda_hansen < -0.01 else ("right" if lambda_hansen > 0.01 else "symmetric"),
+                }
+                hansen_skew_t_diagnostics = hansen_diag
+                
+                # Log the result with color-coded direction
+                skew_indicator = "←" if lambda_hansen < -0.01 else ("→" if lambda_hansen > 0.01 else "—")
+                preference = hansen_comparison.get("preference", "unknown")
+                _log(f"     ✓ Hansen Skew-t: ν={nu_hansen:.1f}, λ={lambda_hansen:+.3f} {skew_indicator} "
+                     f"| ΔAic={hansen_comparison.get('delta_aic', 0):.1f} [{preference}]")
+            else:
+                error_msg = hansen_diag.get("error", "unknown")
+                _log(f"     ⚠️ Hansen Skew-t fit failed: {error_msg}")
+                hansen_skew_t_diagnostics = hansen_diag
+        except Exception as hansen_err:
+            _log(f"     ⚠️ Hansen Skew-t fitting exception: {hansen_err}")
+            hansen_skew_t_diagnostics = {"fit_success": False, "error": str(hansen_err)}
+        
         # Build result structure - BMA-compatible format
         # signals.py expects: {"global": {...}, "has_bma": True}
         global_data = {
@@ -1115,6 +1184,10 @@ def tune_asset_q(
             # GMM parameters for Monte Carlo simulation
             "gmm": gmm_result,
             "gmm_diagnostics": gmm_diagnostics,
+            # Hansen Skew-t parameters for asymmetric tail modeling
+            "hansen_skew_t": hansen_skew_t_result,
+            "hansen_skew_t_diagnostics": hansen_skew_t_diagnostics,
+            "hansen_vs_symmetric_comparison": hansen_comparison,
         }
         
         result = {

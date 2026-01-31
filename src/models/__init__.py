@@ -11,6 +11,7 @@ This package contains the distributional models used in the tuning layer:
     - phi_skew_t.py: PhiSkewTDriftModel (Kalman with AR(1) drift, Skew-t noise)
     - phi_nig.py: PhiNIGDriftModel (Kalman with AR(1) drift, NIG noise)
     - gaussian_mixture.py: GaussianMixtureModel (2-State GMM for Monte Carlo)
+    - hansen_skew_t.py: Hansen's Skew-t distribution (regime-conditional asymmetry)
 
 DESIGN PHILOSOPHY:
     Each model class is SELF-CONTAINED with no cross-dependencies.
@@ -28,7 +29,8 @@ BMA ARCHITECTURE:
     The distributional models capture different aspects of return dynamics:
     - Gaussian: Baseline, symmetric, light tails
     - Student-t: Symmetric, heavy tails (controlled by ν)
-    - Skew-t: Asymmetric, heavy tails (Fernández-Steel γ parameter)
+    - Skew-t (Fernández-Steel): Asymmetric, heavy tails (γ parameter)
+    - Skew-t (Hansen): Asymmetric, heavy tails (λ parameter, regime-conditional)
     - NIG: Asymmetric, semi-heavy tails (α for tails, β for skewness)
     - GMM: Bimodal distribution (2 Gaussian components for momentum/reversal)
     
@@ -38,9 +40,10 @@ BMA ARCHITECTURE:
 USAGE:
     from models import GaussianDriftModel, PhiGaussianDriftModel, PhiStudentTDriftModel
     from models import PhiSkewTDriftModel, PhiNIGDriftModel, GaussianMixtureModel
+    from models import HansenSkewTParams, fit_hansen_skew_t_mle
     
     # Or import individual components
-    from models.gaussian_mixture import GaussianMixtureModel, fit_gmm_to_returns
+    from models.hansen_skew_t import hansen_skew_t_cdf, hansen_skew_t_rvs
 """
 
 from models.gaussian import GaussianDriftModel
@@ -87,6 +90,30 @@ from models.gaussian_mixture import (
     GMM_MIN_OBS,
     GMM_MIN_SEPARATION,
     GMM_DEGENERATE_THRESHOLD,
+)
+
+# Import Hansen's Skew-t for regime-conditional asymmetric tails
+from models.hansen_skew_t import (
+    HansenSkewTParams,
+    hansen_skew_t_pdf,
+    hansen_skew_t_logpdf,
+    hansen_skew_t_cdf,
+    hansen_skew_t_ppf,
+    hansen_skew_t_rvs,
+    fit_hansen_skew_t_mle,
+    compute_hansen_skew_t_pit,
+    compare_symmetric_vs_hansen,
+    hansen_skew_t_expected_shortfall,
+    get_hansen_skew_t_model_name,
+    is_hansen_skew_t_model,
+    parse_hansen_skew_t_model_name,
+    HANSEN_NU_MIN,
+    HANSEN_NU_MAX,
+    HANSEN_NU_DEFAULT,
+    HANSEN_LAMBDA_MIN,
+    HANSEN_LAMBDA_MAX,
+    HANSEN_LAMBDA_DEFAULT,
+    HANSEN_MLE_MIN_OBS,
 )
 
 # Re-export constants from phi_student_t (the canonical source for Student-t config)
@@ -142,4 +169,25 @@ __all__ = [
     'GMM_MIN_OBS',
     'GMM_MIN_SEPARATION',
     'GMM_DEGENERATE_THRESHOLD',
+    # Hansen Skew-t (regime-conditional asymmetry)
+    'HansenSkewTParams',
+    'hansen_skew_t_pdf',
+    'hansen_skew_t_logpdf',
+    'hansen_skew_t_cdf',
+    'hansen_skew_t_ppf',
+    'hansen_skew_t_rvs',
+    'fit_hansen_skew_t_mle',
+    'compute_hansen_skew_t_pit',
+    'compare_symmetric_vs_hansen',
+    'hansen_skew_t_expected_shortfall',
+    'get_hansen_skew_t_model_name',
+    'is_hansen_skew_t_model',
+    'parse_hansen_skew_t_model_name',
+    'HANSEN_NU_MIN',
+    'HANSEN_NU_MAX',
+    'HANSEN_NU_DEFAULT',
+    'HANSEN_LAMBDA_MIN',
+    'HANSEN_LAMBDA_MAX',
+    'HANSEN_LAMBDA_DEFAULT',
+    'HANSEN_MLE_MIN_OBS',
 ]

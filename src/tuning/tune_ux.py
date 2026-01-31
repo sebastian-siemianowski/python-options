@@ -352,6 +352,17 @@ Examples:
                         if has_gmm:
                             model_str += "+GMM"
                         
+                        # Check for Hansen Skew-t availability
+                        hansen_data = global_result.get('hansen_skew_t')
+                        has_hansen = (hansen_data is not None and 
+                                      isinstance(hansen_data, dict) and
+                                      hansen_data.get('lambda') is not None and
+                                      abs(hansen_data.get('lambda', 0)) > 0.01)
+                        if has_hansen:
+                            hansen_lambda = hansen_data.get('lambda', 0)
+                            hansen_dir = "←" if hansen_lambda < 0 else "→"
+                            model_str += f"+Hλ{hansen_dir}"
+                        
                         import math
                         details = f"{model_str}|q={q_val:.2e}|c={c_val:.3f}"
                         if phi_val is not None:
@@ -363,6 +374,9 @@ Examples:
                         gamma_val = global_result.get('gamma')
                         if gamma_val is not None and abs(gamma_val - 1.0) > 0.01:
                             details += f"|γ={gamma_val:.2f}"
+                        # Add Hansen lambda for asymmetric tails
+                        if has_hansen:
+                            details += f"|λ={hansen_lambda:+.2f}"
                         if math.isfinite(bic_val):
                             details += f"|bic={bic_val:.0f}"
                         

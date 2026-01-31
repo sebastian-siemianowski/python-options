@@ -35,18 +35,26 @@ The BMA ensemble includes multiple distributional models:
    - Heavy tails, symmetric
    - ν controls tail heaviness (smaller ν = heavier tails)
 
-3. SKEW-T (phi_skew_t_nu_{ν}_gamma_{γ}) — Proposal 5:
+3. SKEW-T (phi_skew_t_nu_{ν}_gamma_{γ}) — Fernández-Steel:
    - Heavy tails, asymmetric (Fernández-Steel parameterization)
    - γ < 1.0: Left-skewed (crash risk)
    - γ > 1.0: Right-skewed (euphoria risk)
 
-4. NIG (phi_nig_alpha_{α}_beta_{β}) — Solution 2:
+4. HANSEN SKEW-T — Regime-Conditional Asymmetry:
+   - Hansen (1994) parameterization with λ ∈ (-1, 1)
+   - λ < 0: Left-skewed (crash risk, heavier left tail)
+   - λ > 0: Right-skewed (recovery potential, heavier right tail)
+   - λ = 0: Reduces to symmetric Student-t
+   - Used for probability calculations and Monte Carlo sampling
+   - Financial meaning: captures regime-specific tail asymmetry
+
+5. NIG (phi_nig_alpha_{α}_beta_{β}) — Solution 2:
    - Semi-heavy tails (between Gaussian and Cauchy), asymmetric
    - α controls tail heaviness (smaller α = heavier tails)
    - β controls asymmetry (β < 0 = left-skewed, β > 0 = right-skewed)
    - Infinitely divisible (Lévy process compatible)
 
-5. GMM (2-State Gaussian Mixture) — Expert Panel Solution:
+6. GMM (2-State Gaussian Mixture) — Expert Panel Solution:
    - Bimodal distribution capturing momentum/reversal dynamics
    - Component 0 ("Momentum"): typically positive mean, moderate variance
    - Component 1 ("Reversal/Crisis"): typically negative mean, higher variance
@@ -85,7 +93,8 @@ tune.py outputs:
         "global": {
             "model_posterior": { "kalman_gaussian": p, "kalman_phi_gaussian": p, ... },
             "models": { "kalman_gaussian": {q, c, hyvarinen_score, bic, ...}, ... },
-            "gmm": { "weights": [π₁, π₂], "means": [μ₁, μ₂], "variances": [σ₁², σ₂²] }
+            "gmm": { "weights": [π₁, π₂], "means": [μ₁, μ₂], "variances": [σ₁², σ₂²] },
+            "hansen_skew_t": { "nu": ν, "lambda": λ, "skew_direction": "left"/"right"/"symmetric" }
         },
         "regime": {
             "0": { "model_posterior": {...}, "models": {...}, "regime_meta": {...} },
@@ -4474,6 +4483,14 @@ def bayesian_model_average_mc(
         "model_posterior": {m: float(w) for m, w in model_posterior.items()},
         "model_details": model_details,
         "n_total_samples": len(r_samples),
+        # Hansen Skew-t diagnostics
+        "hansen_skew_t_enabled": hansen_skew_t_enabled,
+        "hansen_lambda": float(hansen_lambda_global) if hansen_lambda_global is not None else None,
+        "hansen_nu": float(hansen_nu_global) if hansen_nu_global is not None else None,
+        "hansen_skew_direction": (
+            "left" if hansen_lambda_global and hansen_lambda_global < -0.01 else
+            ("right" if hansen_lambda_global and hansen_lambda_global > 0.01 else "symmetric")
+        ) if hansen_lambda_global is not None else "not_available",
         # Epistemic weighting diagnostics
         "posteriors_recomputed": posteriors_recomputed,
         "cached_posterior": {m: float(w) for m, w in cached_posterior.items()} if posteriors_recomputed else None,
