@@ -453,7 +453,7 @@ def render_detailed_signal_table(
         elif "BUY" in label_upper:
             signal_badge = "[bright_green]↑ BUY[/]"
         elif "SELL" in label_upper:
-            signal_badge = "[indian_red1]↓ SELL[/]"
+            signal_badge = "[indian_red1]↓ SELL[/indian_red1]"
         else:
             signal_badge = "[dim]— HOLD[/]"
 
@@ -2189,7 +2189,7 @@ def render_tuning_summary(
             console.print(ref_section)
             console.print()
             
-            # Adaptive ν Refinement
+            # Adaptive ν Refininement
             if nu_refinement_attempted_count > 0:
                 nu_row = Text()
                 nu_row.append("      ◇ ", style="bright_cyan")
@@ -3128,7 +3128,7 @@ def render_calibration_report(
             elif issue['pit_p'] < 0.05:
                 pit_styled = f"[yellow]{pit_str}[/]"
             else:
-                pit_styled = f"[dim]{pit_str}[/]"
+                pit_styled = f"[bright_green]{pit_str}[/]"
         else:
             pit_styled = "[dim]-[/]"
         
@@ -3334,306 +3334,174 @@ class TuningProgressTracker:
 #   5. PROGRESSIVE DISCLOSURE - Show only what's needed
 # =============================================================================
 
-def _create_gradient_bar(value: float, max_value: float, width: int, 
-                         low_color: str, mid_color: str, high_color: str) -> Text:
-    """Create a sophisticated gradient progress bar."""
-    pct = min(1.0, value / max_value)
-    filled = int(pct * width)
-    
-    bar = Text()
-    for i in range(width):
-        if i < filled:
-            # Gradient effect based on position
-            pos_pct = i / width
-            if pos_pct < 0.33:
-                color = low_color
-            elif pos_pct < 0.66:
-                color = mid_color
-            else:
-                color = high_color
-            bar.append("━", style=color)
-        else:
-            bar.append("━", style="bright_black")
-    return bar
-
-
-def _create_circular_gauge(value: float, max_value: float, color: str) -> Text:
-    """Create a circular-style gauge indicator."""
-    pct = min(1.0, value / max_value)
-    
-    # Use arc characters for circular feel
-    segments = ["○", "◔", "◑", "◕", "●"]
-    idx = int(pct * (len(segments) - 1))
-    
-    gauge = Text()
-    gauge.append(segments[idx], style=f"bold {color}")
-    return gauge
-
-
 def render_risk_temperature_summary(
     risk_temp_result,
     console: Console = None,
 ) -> None:
     """
-    Render an extraordinary Apple-quality risk temperature dashboard.
-    
-    This is a masterpiece of terminal UX design, crafted with 60 years
-    of Apple design philosophy and Rich library expertise.
+    Render a minimalist Apple-inspired risk temperature display.
+    Clean lines, no boxes, elegant typography.
     """
-    from rich.panel import Panel
-    from rich.columns import Columns
-    from rich.align import Align
-    from rich.rule import Rule
-    from rich.padding import Padding
-    
     if console is None:
         console = Console()
     
     if risk_temp_result is None:
         return
     
-    # ═══════════════════════════════════════════════════════════════════════════
-    # DATA EXTRACTION
-    # ═══════════════════════════════════════════════════════════════════════════
+    # Data extraction
     temp = getattr(risk_temp_result, 'temperature', 0.0)
     scale = getattr(risk_temp_result, 'scale_factor', 1.0)
-    data_quality = getattr(risk_temp_result, 'data_quality', 1.0)
     categories = getattr(risk_temp_result, 'categories', {})
     overnight_budget_active = getattr(risk_temp_result, 'overnight_budget_active', False)
     overnight_max_position = getattr(risk_temp_result, 'overnight_max_position', None)
     
-    # ═══════════════════════════════════════════════════════════════════════════
-    # STATUS DETERMINATION
-    # ═══════════════════════════════════════════════════════════════════════════
+    # Status determination
     if temp < 0.3:
-        status = "CALM"
+        status = "Calm"
         status_color = "green"
-        status_bg = "on bright_black"
-        accent = "bright_green"
-        status_emoji = "🟢"
         action_text = "Full exposure permitted"
-        border_style = "green"
     elif temp < 0.7:
-        status = "ELEVATED"
+        status = "Elevated"
         status_color = "yellow"
-        status_bg = "on bright_black"
-        accent = "yellow"
-        status_emoji = "🟡"
         action_text = "Monitor positions closely"
-        border_style = "yellow"
     elif temp < 1.2:
-        status = "STRESSED"
+        status = "Stressed"
         status_color = "bright_red"
-        status_bg = "on bright_black"
-        accent = "bright_red"
-        status_emoji = "🟠"
         action_text = "Reduce risk exposure"
-        border_style = "red"
     else:
-        status = "CRISIS"
+        status = "Crisis"
         status_color = "bold red"
-        status_bg = "on red"
-        accent = "bold red"
-        status_emoji = "🔴"
         action_text = "Capital preservation mode"
-        border_style = "bold red"
-    
-    # ═══════════════════════════════════════════════════════════════════════════
-    # BUILD THE MASTERPIECE
-    # ═══════════════════════════════════════════════════════════════════════════
     
     console.print()
+    console.print()
     
-    # ─────────────────────────────────────────────────────────────────────────
-    # HERO SECTION: Temperature Display
-    # ─────────────────────────────────────────────────────────────────────────
+    # Title
+    console.print("  [dim]Market Risk Temperature[/dim]")
+    console.print()
     
-    # Create the hero content
-    hero_content = Text()
-    hero_content.append("\n")
+    # Hero temperature with status
+    hero = Text()
+    hero.append("  ")
+    hero.append(f"{temp:.2f}", style=f"bold {status_color}")
+    hero.append("  ")
+    hero.append(status, style=f"{status_color}")
+    console.print(hero)
+    console.print()
     
-    # Large temperature value - THE HERO
-    hero_content.append("          ", style="")
-    hero_content.append(f"{temp:.2f}", style=f"bold {status_color}")
-    hero_content.append("  ", style="")
-    hero_content.append(status_emoji, style="")
-    hero_content.append("  ", style="")
-    hero_content.append(status, style=f"bold {status_color}")
-    hero_content.append("\n")
-    
-    # Elegant gauge bar
-    hero_content.append("          ", style="")
-    gauge_width = 40
+    # Main gauge bar
+    gauge = Text()
+    gauge.append("  ")
+    gauge_width = 48
     filled = int(min(1.0, temp / 2.0) * gauge_width)
     
-    # Create gradient effect
     for i in range(gauge_width):
         if i < filled:
-            # Smooth gradient from green → yellow → red
             segment_pct = i / gauge_width
             if segment_pct < 0.25:
-                hero_content.append("▰", style="bright_green")
+                gauge.append("━", style="bright_green")
             elif segment_pct < 0.5:
-                hero_content.append("▰", style="yellow")
+                gauge.append("━", style="yellow")
             elif segment_pct < 0.75:
-                hero_content.append("▰", style="bright_red")
+                gauge.append("━", style="bright_red")
             else:
-                hero_content.append("▰", style="bold red")
+                gauge.append("━", style="bold red")
         else:
-            hero_content.append("▱", style="bright_black")
+            gauge.append("━", style="bright_black")
     
-    hero_content.append("\n")
-    hero_content.append("          ", style="")
-    hero_content.append("0", style="dim")
-    hero_content.append(" " * 18, style="")
-    hero_content.append("1", style="dim")
-    hero_content.append(" " * 18, style="")
-    hero_content.append("2", style="dim")
-    hero_content.append("\n")
+    console.print(gauge)
     
-    # Action recommendation
-    hero_content.append("\n")
-    hero_content.append("          ", style="")
-    hero_content.append("→ ", style=accent)
-    hero_content.append(action_text, style="italic white")
-    hero_content.append("\n")
-    
-    hero_panel = Panel(
-        hero_content,
-        title="[bold white]🌡️  MARKET RISK TEMPERATURE[/bold white]",
-        title_align="left",
-        border_style=border_style,
-        padding=(0, 2),
-    )
-    console.print(hero_panel)
-    
+    # Scale labels
+    labels = Text()
+    labels.append("  ")
+    labels.append("0", style="dim")
+    labels.append(" " * 22)
+    labels.append("1", style="dim")
+    labels.append(" " * 22)
+    labels.append("2", style="dim")
+    console.print(labels)
     console.print()
     
-    # ─────────────────────────────────────────────────────────────────────────
-    # STRESS BREAKDOWN: Beautiful Category Cards
-    # ─────────────────────────────────────────────────────────────────────────
+    # Action text
+    console.print(f"  [dim italic]{action_text}[/dim italic]")
+    console.print()
     
+    # Category stress bars
     if categories:
         category_config = [
-            ("fx", "FX CARRY", "💱", "35%"),
-            ("futures", "EQUITIES", "📈", "25%"),
-            ("rates", "DURATION", "📊", "15%"),
-            ("commodities", "METALS", "🥇", "25%"),
+            ("fx", "FX Carry"),
+            ("futures", "Equities"),
+            ("rates", "Duration"),
+            ("commodities", "Metals"),
         ]
         
-        # Create category cards
-        cards = []
-        for cat_key, cat_label, cat_icon, cat_weight in category_config:
+        for cat_key, cat_label in category_config:
             if cat_key not in categories:
                 continue
             
             cat = categories[cat_key]
             stress = getattr(cat, 'stress_level', 0.0)
-            indicators = getattr(cat, 'indicators', [])
             
-            # Determine stress color
             if stress < 0.5:
                 stress_style = "bright_green"
-                stress_indicator = "●"
             elif stress < 1.0:
                 stress_style = "yellow"
-                stress_indicator = "●"
             elif stress < 1.5:
                 stress_style = "bright_red"
-                stress_indicator = "●"
             else:
                 stress_style = "bold red"
-                stress_indicator = "◉"
             
-            # Find top indicator
-            top_text = ""
-            if indicators:
-                available = [i for i in indicators if getattr(i, 'data_available', False)]
-                if available:
-                    top = max(available, key=lambda x: abs(getattr(x, 'zscore', 0)))
-                    z = getattr(top, 'zscore', 0)
-                    name = getattr(top, 'name', '').replace('_5d_return', '').replace('_', ' ').title()
-                    if len(name) > 12:
-                        name = name[:11] + "…"
-                    top_text = f"{name}"
-                    z_text = f"z={z:+.1f}"
+            line = Text()
+            line.append("  ")
+            line.append(f"{cat_label:<12}", style="dim")
             
-            # Build card content
-            card_text = Text()
-            card_text.append(f"{cat_icon} ", style="")
-            card_text.append(f"{cat_label}\n", style="bold white")
-            
-            # Mini gauge
-            mini_width = 12
+            mini_width = 16
             mini_filled = int(min(1.0, stress / 2.0) * mini_width)
-            card_text.append("  ", style="")
             for i in range(mini_width):
                 if i < mini_filled:
-                    card_text.append("▪", style=stress_style)
+                    line.append("━", style=stress_style)
                 else:
-                    card_text.append("▪", style="bright_black")
-            card_text.append(f" {stress:.1f}\n", style=stress_style)
+                    line.append("━", style="bright_black")
             
-            # Top indicator
-            if top_text:
-                card_text.append(f"  {top_text}\n", style="dim")
-                card_text.append(f"  {z_text}", style=stress_style if abs(z) > 1 else "dim")
-            else:
-                card_text.append(f"  [dim]wt: {cat_weight}[/dim]", style="")
-            
-            cards.append(Panel(
-                card_text,
-                border_style="bright_black",
-                padding=(0, 1),
-                width=20,
-            ))
+            line.append(f"  {stress:.2f}", style=stress_style)
+            console.print(line)
         
-        if cards:
-            console.print(Columns(cards, equal=True, expand=True))
-    
-    console.print()
-    
-    # ─────────────────────────────────────────────────────────────────────────
-    # POSITION IMPACT: Action Panel
-    # ─────────────────────────────────────────────────────────────────────────
-    
-    impact_content = Text()
+        console.print()
     
     # Position scaling
     if scale > 0.9:
         scale_style = "bright_green"
-        scale_icon = "✓"
         scale_text = "Full Allocation"
     elif scale > 0.6:
         scale_style = "yellow"
-        scale_icon = "↓"
         scale_text = "Reduced"
     elif scale > 0.3:
         scale_style = "bright_red"
-        scale_icon = "⚠"
         scale_text = "Significantly Reduced"
     else:
         scale_style = "bold red"
-        scale_icon = "✗"
         scale_text = "Minimal"
     
-    impact_content.append(f"  {scale_icon} ", style=scale_style)
-    impact_content.append("Position Size  ", style="white")
-    impact_content.append(f"{scale:.0%}", style=f"bold {scale_style}")
-    impact_content.append(f"  {scale_text}", style="dim italic")
+    pos_line = Text()
+    pos_line.append("  ")
+    pos_line.append("Position Size   ", style="dim")
+    pos_line.append(f"{scale:.0%}", style=f"bold {scale_style}")
+    pos_line.append(f"  {scale_text}", style="dim italic")
+    console.print(pos_line)
     
     # Overnight budget
     if overnight_budget_active:
-        impact_content.append("\n")
-        impact_content.append("  ⚡ ", style="yellow")
-        impact_content.append("Overnight Cap  ", style="white")
+        overnight_line = Text()
+        overnight_line.append("  ")
+        overnight_line.append("Overnight Cap   ", style="dim")
         if overnight_max_position:
-            impact_content.append(f"{overnight_max_position:.0%}", style="bold yellow")
-        impact_content.append("  Active", style="dim italic")
+            overnight_line.append(f"{overnight_max_position:.0%}", style="bold yellow")
+        overnight_line.append("  Active", style="dim italic")
+        console.print(overnight_line)
     
     # Data quality
     total_indicators = 0
-    available_indicators = 0
+    available_indicators =  0
     for cat in categories.values():
         inds = getattr(cat, 'indicators', [])
         total_indicators += len(inds)
@@ -3648,19 +3516,12 @@ def render_risk_temperature_summary(
         else:
             quality_style = "red"
         
-        impact_content.append("\n")
-        impact_content.append("  ◈ ", style=quality_style)
-        impact_content.append("Data Quality   ", style="white")
-        impact_content.append(f"{available_indicators}/{total_indicators}", style=quality_style)
-        impact_content.append("  indicators", style="dim italic")
+        quality_line = Text()
+        quality_line.append("  ")
+        quality_line.append("Data Quality    ", style="dim")
+        quality_line.append(f"{available_indicators}/{total_indicators}", style=quality_style)
+        quality_line.append("  indicators", style="dim italic")
+        console.print(quality_line)
     
-    impact_panel = Panel(
-        impact_content,
-        title="[dim]Position Impact[/dim]",
-        title_align="left",
-        border_style="bright_black",
-        padding=(0, 1),
-    )
-    console.print(impact_panel)
-    
+    console.print()
     console.print()

@@ -1133,3 +1133,28 @@ def clear_risk_temperature_cache():
     """Clear the risk temperature cache."""
     global _risk_temp_cache
     _risk_temp_cache = {}
+
+
+# =============================================================================
+# STANDALONE CLI
+# =============================================================================
+
+if __name__ == "__main__":
+    """Run risk temperature computation and display."""
+    import sys
+    sys.path.insert(0, 'src')
+    
+    from decision.signals_ux import render_risk_temperature_summary
+    from rich.console import Console
+    
+    console = Console()
+    
+    # Compute risk temperature
+    result = compute_risk_temperature(
+        start_date="2020-01-01",
+        notional=1_000_000,
+        estimated_gap_risk=0.03,
+    )
+    
+    # Render the display
+    render_risk_temperature_summary(result, console=console)

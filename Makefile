@@ -358,3 +358,6 @@ clean-cache: .venv/.deps_installed
 colors: .venv/.deps_installed
 	@.venv/bin/python src/show_colors.py
 
+# Market Risk Temperature - cross-asset stress indicator
+temp: .venv/.deps_installed
+	@.venv/bin/python src/decision/risk_temperature.py
