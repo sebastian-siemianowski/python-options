@@ -1,38 +1,102 @@
 SHELL := /bin/bash
 
 .PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune calibrate show-q clear-q tests report top20 data four purge failed setup
-# Usage:
-#   make setup                         # full setup: install deps + download all data (runs 3x for reliability)
-#   make run                           # runs with defaults (screener + backtest)
-#   make run ARGS="--tickers AAPL,MSFT --min_oi 200 --min_vol 50"
-#   make backtest                      # runs backtest-only convenience wrapper
-#   make backtest ARGS="--tickers AAPL,MSFT --bt_years 3"
-#   make doctor                        # (re)installs requirements into the venv
-#   make top50                         # runs the revenue growth screener
-#   make top50 ARGS=""                 # extra args (reserved)
-#   make build-russell                 # builds src/data/russell/russell2500_tickers.csv from public sources
-#   make russell5000                   # builds src/data/russell/russell5000_tickers.csv (5000 tickers, multiprocessing)
-#   make bagger50                      # ranks by highest 100× Bagger Score (adds 100× Score column)
-#   make bagger50 ARGS="--bagger_horizon 15"   # optional flags; also supports --top_n, --plain, --bagger_verbose
-#   make top100                        # runs the top100 screener (uses russell5000 universe)
-#   make fx-plnjpy                     # generate PLN/JPY FX signals (see README)
-#   make fx-diagnostics                # full diagnostics: log-likelihood, parameter stability, OOS tests (expensive)
-#   make fx-diagnostics-lite           # lightweight diagnostics: log-likelihood and parameter stability (no OOS)
-#   make fx-calibration                # PIT calibration verification (tests if probabilities match outcomes)
-#   make fx-model-comparison           # structural model comparison via AIC/BIC (GARCH vs EWMA, etc.)
-#   make fx-validate-kalman            # Level-7 Kalman validation science (drift, likelihood, PIT, stress)
-#   make fx-validate-kalman-plots      # Kalman validation with diagnostic plots saved to src/data/plots/kalman_validation/
-#   make tune                          # estimate optimal Kalman drift q parameters via MLE (caches results)
-#   make tune ARGS="--force"           # re-estimate q for all assets (ignore cache)
-#   make calibrate                     # re-tune only assets with PIT calibration failures (p < 0.05)
-#   make calibrate ARGS="--dry-run"    # preview assets that would be re-tuned
-#   make show-q                        # display cached q parameter estimates
-#   make clear-q                       # clear q parameter cache
-#   make tests                         # runs all tests in the tests/ directory
-#   make data                          # precaches securities data for faster screening/backtesting
-#   make failed                        # list assets that failed processing
-#   make purge                          # purge cached data for failed assets
-#   make purge ARGS="--all"             # purge cache AND clear the failed assets list
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                              MAKEFILE USAGE                                  ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  🚀 SETUP & INSTALLATION                                                     │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make setup              Full setup: venv + deps + download data (3 passes) │
+# │  make doctor             (Re)install requirements into virtual environment  │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  📊 OPTIONS SCREENER & BACKTEST                                              │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make run                Run screener + backtest with defaults               │
+# │  make run ARGS="--tickers AAPL,MSFT --min_oi 200"                            │
+# │  make backtest           Run backtest-only mode                              │
+# │  make backtest ARGS="--tickers AAPL,MSFT --bt_years 3"                       │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  📈 FX & ASSET SIGNALS                                                       │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make stocks             Download prices + generate signals for all assets   │
+# │  make fx-plnjpy          Generate PLN/JPY FX signals                         │
+# │  make report             Render from cached results (no network)             │
+# │  make top20              Quick smoke test: first 20 assets only              │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  🔬 DIAGNOSTICS & VALIDATION                                                 │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make fx-diagnostics     Full diagnostics (log-LL, stability, OOS tests)    │
+# │  make fx-diagnostics-lite Lightweight (no OOS tests)                         │
+# │  make fx-calibration     PIT calibration verification                        │
+# │  make fx-model-comparison Structural model comparison (AIC/BIC)              │
+# │  make fx-validate-kalman Level-7 Kalman validation science                   │
+# │  make fx-validate-kalman-plots  Validation with diagnostic plots             │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  🎛️  KALMAN TUNING & CALIBRATION                                             │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make tune               Estimate optimal Kalman q parameters via MLE        │
+# │  make tune ARGS="--force"  Re-estimate all (ignore cache)                    │
+# │  make calibrate          Re-tune only assets with PIT failures (p < 0.05)   │
+# │  make calibrate-four     Re-tune 4 random failing assets (for testing)      │
+# │  make escalate           Re-tune assets needing escalation (mixture/ν)      │
+# │  make show-q             Display cached q parameter estimates                │
+# │  make clear-q            Clear q parameter cache                             │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  📂 CACHE MANAGEMENT                                                         │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make cache-stats        Show tuning cache statistics                        │
+# │  make cache-list         List all cached symbols                             │
+# │  make cache-migrate      Migrate legacy cache to per-asset files             │
+# │  make four               Remove first 4 cached assets (for re-tuning)       │
+# │  make clear              Clear data cache and temporary files                │
+# │  make clean-cache        Remove empty rows from cached price data            │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  📥 DATA DOWNLOAD & MANAGEMENT                                               │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make data               Precache securities data (full history)             │
+# │  make refresh            Delete last 5 days + re-download (5 passes)        │
+# │  make failed             List assets that failed processing                  │
+# │  make purge              Purge cached data for failed assets                 │
+# │  make purge ARGS="--all"   Purge cache AND clear failed list                 │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  🔍 STOCK SCREENERS                                                          │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make top50              Revenue growth screener (Russell 2500)              │
+# │  make bagger50           100× Bagger Score ranking                           │
+# │  make bagger50 ARGS="--bagger_horizon 15"                                    │
+# │  make top100             Top 100 screener (Russell 5000 universe)            │
+# │  make build-russell      Build Russell 2500 tickers CSV                      │
+# │  make russell5000        Build Russell 5000 tickers CSV                      │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  💱 DEBT ALLOCATION                                                          │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make debt               EURJPY balance sheet convexity control              │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  🧪 TESTING                                                                  │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make tests              Run all tests in src/tests/                         │
+# └──────────────────────────────────────────────────────────────────────────────┘
 
 # Ensure virtual environment exists before running commands
 .venv/bin/python:
