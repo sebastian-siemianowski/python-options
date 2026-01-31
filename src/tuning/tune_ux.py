@@ -320,6 +320,14 @@ Examples:
                             sigma_ratio = mixture_model.get('sigma_ratio', 0)
                             weight = mixture_model.get('weight', 0)
                             model_str = f"K2-Mix(σ={sigma_ratio:.1f})"
+                        elif model_type.startswith('phi_skew_t_nu_'):
+                            # φ-Skew-t model with gamma parameter
+                            gamma_val = global_result.get('gamma')
+                            if gamma_val is not None and abs(gamma_val - 1.0) > 0.01:
+                                skew_dir = "L" if gamma_val < 1.0 else "R"
+                                model_str = f"Skew-t({skew_dir})"
+                            else:
+                                model_str = "Skew-t"
                         elif model_type.startswith('phi_student_t_nu_') and nu_val is not None:
                             model_str = "Student-t"
                         elif phi_val is not None:
@@ -334,6 +342,10 @@ Examples:
                         if nu_val is not None:
                             nu_indicator = f"ν={int(nu_val)}" + ("*" if nu_was_refined else "")
                             details += f"|{nu_indicator}"
+                        # Add gamma for skew-t models
+                        gamma_val = global_result.get('gamma')
+                        if gamma_val is not None and abs(gamma_val - 1.0) > 0.01:
+                            details += f"|γ={gamma_val:.2f}"
                         if math.isfinite(bic_val):
                             details += f"|bic={bic_val:.0f}"
                         

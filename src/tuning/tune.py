@@ -17,7 +17,8 @@ Where:
     r          = regime label (LOW_VOL_TREND, HIGH_VOL_TREND, LOW_VOL_RANGE,
                               HIGH_VOL_RANGE, CRISIS_JUMP)
     m          = model class (kalman_gaussian, kalman_phi_gaussian,
-                              phi_student_t_nu_{4,6,8,12,20})
+                              phi_student_t_nu_{4,6,8,12,20},
+                              phi_skew_t_nu_{ν}_gamma_{γ})
     θ_{r,m}    = parameters of model m in regime r
     p(m | r)   = posterior probability of model m in regime r
 
@@ -34,9 +35,20 @@ For EACH regime r:
        - phi_student_t_nu_8:    q, c, φ        (3 params, ν=8 FIXED)
        - phi_student_t_nu_12:   q, c, φ        (3 params, ν=12 FIXED)
        - phi_student_t_nu_20:   q, c, φ        (3 params, ν=20 FIXED)
+       - phi_skew_t_nu_{ν}_gamma_{γ}: q, c, φ  (3 params, ν and γ FIXED)
 
-    NOTE: Student-t uses DISCRETE ν GRID (not continuous optimization).
-    Each ν is treated as a separate sub-model in BMA.
+    NOTE: Student-t and Skew-t use DISCRETE grids (not continuous optimization).
+    Each (ν, γ) combination is treated as a separate sub-model in BMA.
+
+    SKEW-T ADDITION (Proposal 5 — φ-Skew-t with BMA):
+    The Fernández-Steel skew-t distribution captures asymmetric return distributions:
+       - γ = 1: Symmetric (reduces to Student-t)
+       - γ < 1: Left-skewed (heavier left tail) — crash risk
+       - γ > 1: Right-skewed (heavier right tail) — euphoria risk
+
+    CORE PRINCIPLE: "Skewness is a hypothesis, not a certainty."
+    Skew-t competes with symmetric alternatives; if data doesn't support
+    skewness, model weight collapses naturally toward symmetric models.
 
     2. Computes for each (r, m):
        - mean_log_likelihood

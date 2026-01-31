@@ -13,10 +13,34 @@ posterior predictive Monte Carlo with Bayesian Model Averaging:
 
 Where:
     r_t      = current regime (deterministically assigned, same logic as tune)
-    m        = model class (kalman_gaussian, kalman_phi_gaussian, phi_student_t_nu_{4,6,8,12,20})
+    m        = model class (kalman_gaussian, kalman_phi_gaussian, 
+                           phi_student_t_nu_{4,6,8,12,20},
+                           phi_skew_t_nu_{ν}_gamma_{γ})
     θ_{r,m}  = parameters from tuning layer
     p(m|r)   = posterior model probability from tuning layer
     x        = return at horizon H
+
+-------------------------------------------------------------------------------
+PHI-SKEW-T INTEGRATION (Proposal 5 — φ-Skew-t with BMA)
+-------------------------------------------------------------------------------
+
+The φ-Skew-t model (Fernández-Steel parameterization) extends Student-t with
+asymmetry parameter γ:
+
+    - γ = 1.0: Symmetric (reduces to Student-t)
+    - γ < 1.0: Left-skewed (heavier left tail) — crash risk during stress
+    - γ > 1.0: Right-skewed (heavier right tail) — euphoria/melt-up risk
+
+CORE PRINCIPLE: "Skewness is a hypothesis, not a certainty."
+
+φ-Skew-t competes with simpler distributions (Gaussian, Student-t) in the BMA
+ensemble. If data does not support skewness, model weight collapses naturally
+toward symmetric alternatives. This provides:
+
+    1. Asymmetric tail modeling when justified by data
+    2. Automatic fallback to symmetric models when skewness is not supported
+    3. Model uncertainty quantification across the entire distributional family
+    4. Proper propagation of skewness into Expected Utility and position sizing
 
 -------------------------------------------------------------------------------
 REGIME ASSIGNMENT — DETERMINISTIC, CONSISTENT WITH TUNE
