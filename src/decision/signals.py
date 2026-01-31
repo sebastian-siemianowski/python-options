@@ -1648,7 +1648,8 @@ try:
 except ImportError:
     # Try adding src directory to path if running from project root
     import sys
-    _src_dir = os.path.dirname(os.path.abspath(__file__))
+    # Get src/ directory (parent of decision/)
+    _src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if _src_dir not in sys.path:
         sys.path.insert(0, _src_dir)
     try:
@@ -1763,23 +1764,37 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
     # Helper to check if model is Student-t (phi_student_t_nu_* naming)
     def _is_student_t(model_name: str) -> bool:
         return model_name.startswith('phi_student_t_nu_')
+    
+    # Helper to check if a model fit successfully
+    def _is_valid_model(model_name: str) -> bool:
+        m_params = models.get(model_name, {})
+        return isinstance(m_params, dict) and m_params.get('fit_success', False)
 
     # Extract representative params from highest-posterior model for Kalman filter
     # (The BMA path uses full model averaging, but Kalman filter needs single params)
+    # IMPORTANT: Only consider models with fit_success=True
     if model_posterior:
-        best_model = max(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0))
+        # Filter to only successfully fitted models
+        valid_models = {m: p for m, p in model_posterior.items() if _is_valid_model(m)}
+        if valid_models:
+            best_model = max(valid_models.keys(), key=lambda m: valid_models.get(m, 0))
+        else:
+            # Fallback if no valid models in posterior (shouldn't happen)
+            best_model = None
     else:
         # Fallback order: any Student-t > phi_gaussian > gaussian
-        # First check for new naming (phi_student_t_nu_*)
-        student_t_models = [m for m in models if _is_student_t(m)]
+        # First check for new naming (phi_student_t_nu_*) - only if fit succeeded
+        student_t_models = [m for m in models if _is_student_t(m) and _is_valid_model(m)]
         if student_t_models:
             best_model = student_t_models[0]  # Pick first available Student-t
-        elif 'kalman_phi_gaussian' in models:
+        elif 'kalman_phi_gaussian' in models and _is_valid_model('kalman_phi_gaussian'):
             best_model = 'kalman_phi_gaussian'
-        elif 'kalman_gaussian' in models:
+        elif 'kalman_gaussian' in models and _is_valid_model('kalman_gaussian'):
             best_model = 'kalman_gaussian'
         else:
-            best_model = next(iter(models), None)
+            # Pick any valid model
+            valid_any = [m for m in models if _is_valid_model(m)]
+            best_model = valid_any[0] if valid_any else None
 
     if not best_model or best_model not in models:
         return None
