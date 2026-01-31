@@ -408,6 +408,27 @@ from models import (
     PhiNIGDriftModel,
 )
 
+# =============================================================================
+# EVT (EXTREME VALUE THEORY) FOR TAIL RISK MODELING
+# =============================================================================
+# Import GPD/POT for EVT-based expected loss estimation during tuning.
+# This allows pre-computing optimal threshold parameters per asset.
+# =============================================================================
+try:
+    from calibration.evt_tail import (
+        fit_gpd_pot,
+        compute_evt_expected_loss,
+        GPDFitResult,
+        EVT_THRESHOLD_PERCENTILE_DEFAULT,
+        EVT_MIN_EXCEEDANCES,
+        check_student_t_consistency,
+    )
+    EVT_AVAILABLE = True
+except ImportError:
+    EVT_AVAILABLE = False
+    EVT_THRESHOLD_PERCENTILE_DEFAULT = 0.90
+    EVT_MIN_EXCEEDANCES = 30
+
 # Import presentation layer for world-class UX output
 from decision.signals_ux import (
     create_tuning_console,
@@ -1154,6 +1175,79 @@ def tune_asset_q(
             _log(f"     ⚠️ Hansen Skew-t fitting exception: {hansen_err}")
             hansen_skew_t_diagnostics = {"fit_success": False, "error": str(hansen_err)}
         
+        # =====================================================================
+        # FIT EVT/GPD DISTRIBUTION (Extreme Value Theory for Tail Risk)
+        # =====================================================================
+        # The Pickands–Balkema–de Haan theorem provides theoretical foundation:
+        # exceedances over high threshold u converge to GPD distribution.
+        #
+        # This pre-computes optimal EVT parameters per asset for use in signals.py
+        # where EVT-corrected expected loss is used for position sizing.
+        #
+        # Key outputs:
+        #   - ξ (xi): GPD shape parameter (ξ > 0 = heavy tails, ξ = 1/ν for Student-t)
+        #   - σ (sigma): GPD scale parameter
+        #   - u (threshold): POT threshold (90th percentile default)
+        #   - CTE: Conditional Tail Expectation = E[Loss | Loss > u]
+        # =====================================================================
+        evt_result = None
+        evt_diagnostics = None
+        evt_consistency = None
+        
+        if EVT_AVAILABLE:
+            try:
+                # Compute losses (positive values)
+                losses = -returns[returns < 0]
+                
+                if len(losses) >= EVT_MIN_EXCEEDANCES:
+                    gpd_result = fit_gpd_pot(
+                        losses,
+                        threshold_percentile=EVT_THRESHOLD_PERCENTILE_DEFAULT,
+                        method='auto'
+                    )
+                    
+                    if gpd_result.fit_success:
+                        evt_result = gpd_result.to_dict()
+                        evt_diagnostics = {
+                            "fit_success": True,
+                            "n_losses": len(losses),
+                            "n_total_obs": n_obs,
+                        }
+                        
+                        # Check consistency with Student-t ν
+                        best_nu = best_params.get("nu")
+                        if best_nu is not None:
+                            evt_consistency = check_student_t_consistency(best_nu, gpd_result.xi)
+                            evt_diagnostics["student_t_consistency"] = evt_consistency
+                        
+                        # Log result
+                        xi = gpd_result.xi
+                        implied_nu = gpd_result.implied_student_t_nu
+                        tail_type = "heavy" if xi > 0.2 else ("moderate" if xi > 0.05 else "light")
+                        nu_str = f"(≈ν={implied_nu:.0f})" if implied_nu and implied_nu < 100 else ""
+                        _log(f"     ✓ EVT/GPD: ξ={xi:.3f} {nu_str} [{tail_type} tails], "
+                             f"CTE={gpd_result.cte:.4f}, n_exc={gpd_result.n_exceedances}")
+                    else:
+                        error_msg = gpd_result.diagnostics.get("error", "unknown")
+                        _log(f"     ⚠️ EVT/GPD fit failed: {error_msg}")
+                        evt_diagnostics = {
+                            "fit_success": False,
+                            "error": error_msg,
+                            "n_losses": len(losses),
+                        }
+                else:
+                    _log(f"     ⚠️ EVT/GPD skipped: insufficient losses ({len(losses)} < {EVT_MIN_EXCEEDANCES})")
+                    evt_diagnostics = {
+                        "fit_success": False,
+                        "error": "insufficient_losses",
+                        "n_losses": len(losses),
+                    }
+            except Exception as evt_err:
+                _log(f"     ⚠️ EVT/GPD fitting exception: {evt_err}")
+                evt_diagnostics = {"fit_success": False, "error": str(evt_err)}
+        else:
+            evt_diagnostics = {"fit_success": False, "error": "evt_not_available"}
+        
         # Build result structure - BMA-compatible format
         # signals.py expects: {"global": {...}, "has_bma": True}
         global_data = {
@@ -1188,6 +1282,10 @@ def tune_asset_q(
             "hansen_skew_t": hansen_skew_t_result,
             "hansen_skew_t_diagnostics": hansen_skew_t_diagnostics,
             "hansen_vs_symmetric_comparison": hansen_comparison,
+            # EVT/GPD parameters for tail risk modeling
+            "evt": evt_result,
+            "evt_diagnostics": evt_diagnostics,
+            "evt_student_t_consistency": evt_consistency,
         }
         
         result = {

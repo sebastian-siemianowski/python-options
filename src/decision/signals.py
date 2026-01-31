@@ -398,6 +398,40 @@ class StudentTDriftModel:
 
 
 # =============================================================================
+# EVT (EXTREME VALUE THEORY) FOR POSITION SIZING
+# =============================================================================
+# Import POT/GPD tail modeling for EVT-corrected expected loss estimation.
+# This provides principled extrapolation of tail losses beyond observed data.
+#
+# THEORETICAL FOUNDATION:
+#   Pickands–Balkema–de Haan theorem: exceedances over high threshold → GPD
+#   CTE = E[Loss | Loss > u] = u + σ/(1-ξ)  for ξ < 1
+#
+# INTEGRATION:
+#   - Used in Expected Utility calculation to replace naive E[loss]
+#   - Produces more conservative (larger) loss estimates for heavy-tailed assets
+#   - Falls back to empirical × 1.5 if GPD fitting fails
+# =============================================================================
+try:
+    from calibration.evt_tail import (
+        compute_evt_expected_loss,
+        compute_evt_var,
+        fit_gpd_pot,
+        GPDFitResult,
+        EVT_THRESHOLD_PERCENTILE_DEFAULT,
+        EVT_MIN_EXCEEDANCES,
+        EVT_FALLBACK_MULTIPLIER,
+        check_student_t_consistency,
+    )
+    EVT_AVAILABLE = True
+except ImportError:
+    EVT_AVAILABLE = False
+    EVT_THRESHOLD_PERCENTILE_DEFAULT = 0.90
+    EVT_MIN_EXCEEDANCES = 30
+    EVT_FALLBACK_MULTIPLIER = 1.5
+
+
+# =============================================================================
 # ISOTONIC RECALIBRATION HELPER
 # =============================================================================
 # This function loads a persisted transport map and applies it to PIT values.
@@ -5487,7 +5521,70 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         losses = -r[r < 0.0]
 
         E_gain = float(np.mean(gains)) if gains.size > 0 else 0.0
-        E_loss = float(np.mean(losses)) if losses.size > 0 else 0.0
+        E_loss_empirical = float(np.mean(losses)) if losses.size > 0 else 0.0
+
+        # ====================================================================
+        # EVT-CORRECTED EXPECTED LOSS (Expert Panel Solution 2)
+        # ====================================================================
+        # The Pickands–Balkema–de Haan theorem provides theoretical foundation:
+        # exceedances over high threshold u converge to GPD distribution.
+        #
+        # CTE = E[Loss | Loss > u] = u + σ/(1-ξ)  for ξ < 1
+        #
+        # This replaces the naive empirical mean with principled extrapolation
+        # that captures extreme tail behavior beyond observed MC samples.
+        #
+        # Key properties:
+        #   - EVT E[loss] ≥ empirical E[loss] (always more conservative)
+        #   - Heavy-tailed assets (ξ > 0.2) get larger loss estimates
+        #   - Light-tailed assets (ξ ≈ 0) get minimal adjustment
+        #   - Fallback to 1.5× empirical if GPD fitting fails
+        # ====================================================================
+        
+        # Initialize EVT diagnostics
+        evt_expected_loss = E_loss_empirical
+        evt_gpd_result = None
+        evt_enabled = False
+        evt_xi = None
+        evt_sigma = None
+        evt_threshold = None
+        evt_n_exceedances = 0
+        evt_fit_method = None
+        evt_consistency = None
+        
+        if EVT_AVAILABLE and losses.size >= EVT_MIN_EXCEEDANCES:
+            try:
+                # Compute EVT-corrected expected loss
+                evt_loss, emp_loss, gpd_result = compute_evt_expected_loss(
+                    r_samples=r,
+                    threshold_percentile=EVT_THRESHOLD_PERCENTILE_DEFAULT,
+                    fallback_multiplier=EVT_FALLBACK_MULTIPLIER
+                )
+                
+                evt_expected_loss = evt_loss
+                evt_gpd_result = gpd_result
+                evt_enabled = True
+                evt_xi = gpd_result.xi
+                evt_sigma = gpd_result.sigma
+                evt_threshold = gpd_result.threshold
+                evt_n_exceedances = gpd_result.n_exceedances
+                evt_fit_method = gpd_result.method
+                
+                # Check consistency with Student-t ν (if available)
+                if nu_mc is not None and gpd_result.fit_success:
+                    evt_consistency = check_student_t_consistency(nu_mc, gpd_result.xi)
+                    
+            except Exception as evt_err:
+                # EVT failed - fall back to empirical × multiplier
+                evt_expected_loss = E_loss_empirical * EVT_FALLBACK_MULTIPLIER
+                evt_fit_method = 'exception_fallback'
+        elif losses.size > 0:
+            # Insufficient data for EVT - use conservative fallback
+            evt_expected_loss = E_loss_empirical * EVT_FALLBACK_MULTIPLIER
+            evt_fit_method = 'insufficient_data_fallback'
+        
+        # Use EVT-corrected loss for position sizing
+        E_loss = evt_expected_loss
 
         EU = p_now * E_gain - (1.0 - p_now) * E_loss
 
@@ -5506,6 +5603,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         expected_utility = EU
         expected_gain = E_gain
         expected_loss = E_loss
+        expected_loss_empirical = E_loss_empirical  # Keep for comparison
         gain_loss_ratio = E_gain / max(E_loss, epsilon_eu) if E_loss > epsilon_eu else (
             100.0 if E_gain > 0 else 1.0
         )
@@ -5856,6 +5954,14 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             expected_loss=float(expected_loss),
             gain_loss_ratio=float(gain_loss_ratio),
             eu_position_size=float(eu_position_size),
+            # EVT (Extreme Value Theory) tail risk fields:
+            expected_loss_empirical=float(expected_loss_empirical),
+            evt_enabled=bool(evt_enabled),
+            evt_xi=float(evt_xi) if evt_xi is not None else None,
+            evt_sigma=float(evt_sigma) if evt_sigma is not None else None,
+            evt_threshold=float(evt_threshold) if evt_threshold is not None else None,
+            evt_n_exceedances=int(evt_n_exceedances),
+            evt_fit_method=str(evt_fit_method) if evt_fit_method is not None else None,
             # Diagnostics ONLY (NOT used for trading decisions):
             drift_uncertainty=float(drift_uncertainty_H),
             p_analytical=float(p_analytical),  # DIAGNOSTIC: analytical posterior predictive

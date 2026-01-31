@@ -363,6 +363,16 @@ Examples:
                             hansen_dir = "←" if hansen_lambda < 0 else "→"
                             model_str += f"+Hλ{hansen_dir}"
                         
+                        # Check for EVT availability
+                        evt_data = global_result.get('evt')
+                        has_evt = (evt_data is not None and 
+                                   isinstance(evt_data, dict) and
+                                   evt_data.get('fit_success', False))
+                        if has_evt:
+                            evt_xi = evt_data.get('xi', 0)
+                            tail_type = "H" if evt_xi > 0.2 else ("M" if evt_xi > 0.05 else "L")
+                            model_str += f"+EVT{tail_type}"
+                        
                         import math
                         details = f"{model_str}|q={q_val:.2e}|c={c_val:.3f}"
                         if phi_val is not None:
@@ -377,6 +387,9 @@ Examples:
                         # Add Hansen lambda for asymmetric tails
                         if has_hansen:
                             details += f"|λ={hansen_lambda:+.2f}"
+                        # Add EVT xi for tail heaviness
+                        if has_evt:
+                            details += f"|ξ={evt_xi:.2f}"
                         if math.isfinite(bic_val):
                             details += f"|bic={bic_val:.0f}"
                         
