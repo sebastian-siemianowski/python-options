@@ -432,6 +432,51 @@ except ImportError:
 
 
 # =============================================================================
+# RISK TEMPERATURE MODULATION LAYER (Expert Panel Solution 1 + 4)
+# =============================================================================
+# Risk temperature scales position sizes based on cross-asset stress indicators
+# WITHOUT modifying distributional beliefs (Kalman state, BMA weights, GARCH).
+#
+# DESIGN PRINCIPLE:
+#   "FX, futures, and commodities don't tell you WHERE to go.
+#    They tell you HOW FAST you're allowed to drive."
+#
+# INTEGRATION:
+#   - Computed AFTER EU-based sizing
+#   - Applied BEFORE final position output
+#   - Uses smooth sigmoid scaling (no cliff effects)
+#   - Overnight budget constraint when temp > 1.0
+#
+# STRESS CATEGORIES (weighted sum):
+#   - FX Stress (40%): AUDJPY, USDJPY z-scores — risk-on/off proxy
+#   - Futures Stress (30%): ES/NQ overnight returns — equity sentiment
+#   - Rates Stress (20%): TLT volatility — macro stress
+#   - Commodity Stress (10%): Copper, gold/copper ratio — growth fear
+#
+# SCALING FUNCTION:
+#   scale_factor(temp) = 1.0 / (1.0 + exp(3.0 × (temp - 1.0)))
+#
+# OVERNIGHT BUDGET:
+#   When temp > 1.0: cap position such that position × gap ≤ budget
+# =============================================================================
+try:
+    from decision.risk_temperature import (
+        compute_risk_temperature,
+        apply_risk_temperature_scaling,
+        get_cached_risk_temperature,
+        clear_risk_temperature_cache,
+        RiskTemperatureResult,
+        SIGMOID_THRESHOLD,
+        OVERNIGHT_BUDGET_ACTIVATION_TEMP,
+    )
+    RISK_TEMPERATURE_AVAILABLE = True
+except ImportError:
+    RISK_TEMPERATURE_AVAILABLE = False
+    SIGMOID_THRESHOLD = 1.0
+    OVERNIGHT_BUDGET_ACTIVATION_TEMP = 1.0
+
+
+# =============================================================================
 # ISOTONIC RECALIBRATION HELPER
 # =============================================================================
 # This function loads a persisted transport map and applies it to PIT values.
@@ -5997,6 +6042,67 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             # Extended below equilibrium: reduce short conviction
             pos_strength *= (1.0 - 0.5 * ue_down)
 
+        # =====================================================================
+        # RISK TEMPERATURE MODULATION (Expert Panel Solution 1 + 4)
+        # =====================================================================
+        # Scale position strength based on cross-asset stress indicators.
+        # This is the final modulation layer BEFORE position output.
+        #
+        # DESIGN: pos_strength_final = pos_strength_base × scale_factor(temp)
+        #
+        # Stress categories:
+        #   - FX (40%): AUDJPY, USDJPY, CHF — risk-on/off proxy
+        #   - Futures (30%): ES/NQ momentum — equity sentiment
+        #   - Rates (20%): TLT volatility — macro stress
+        #   - Commodities (10%): Copper, gold/copper — growth fear
+        #
+        # Scaling:
+        #   - temp = 0.0 → scale ≈ 0.95 (near-full exposure)
+        #   - temp = 1.0 → scale = 0.50 (half exposure)
+        #   - temp = 2.0 → scale ≈ 0.05 (near-zero exposure)
+        #
+        # Overnight budget: when temp > 1.0, cap position to limit gap risk
+        # =====================================================================
+        pos_strength_pre_risk_temp = pos_strength
+        risk_temperature = 0.0
+        risk_scale_factor = 1.0
+        overnight_budget_applied = False
+        overnight_max_position = None
+        
+        if RISK_TEMPERATURE_AVAILABLE:
+            try:
+                # Get cached risk temperature (avoids redundant API calls)
+                risk_temp_result = get_cached_risk_temperature(
+                    start_date="2020-01-01",
+                    notional=NOTIONAL_PLN,
+                    estimated_gap_risk=0.03,  # 3% default gap risk
+                )
+                
+                # Apply scaling
+                scaled_pos_strength, risk_meta = apply_risk_temperature_scaling(
+                    pos_strength,
+                    risk_temp_result,
+                )
+                
+                # Extract values for Signal dataclass
+                risk_temperature = risk_meta.get("risk_temperature", 0.0)
+                risk_scale_factor = risk_meta.get("scale_factor", 1.0)
+                overnight_budget_applied = risk_meta.get("overnight_budget_applied", False)
+                overnight_max_position = risk_meta.get("overnight_max_position")
+                
+                # Update position strength
+                pos_strength = scaled_pos_strength
+                
+                # Log if risk temperature is elevated
+                if risk_temperature > 0.5:
+                    _log_verbose(f"Risk temperature elevated: {risk_temperature:.2f} "
+                                f"(scale={risk_scale_factor:.2f}, "
+                                f"overnight_budget={overnight_budget_applied})")
+            except Exception as e:
+                # If risk temperature fails, continue with unscaled position
+                if os.getenv("DEBUG"):
+                    print(f"Risk temperature computation failed: {e}")
+
         sigs.append(Signal(
             horizon_days=int(H),
             score=float(edge_now),
@@ -6013,13 +6119,14 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             # All sizing is derived from the full posterior predictive
             # distribution (r_samples), not from point estimates.
             #
-            # pos_strength = drift_weight × eu_position_size
+            # pos_strength = drift_weight × eu_position_size × risk_scale_factor
             # where eu_position_size = EU / max(E[loss], ε)
             #
             # This ensures:
             # - Fat downside tails → smaller positions
             # - Strong upside asymmetry → larger positions
             # - EU ≤ 0 → HOLD (position_strength = 0)
+            # - High risk temperature → reduced exposure
             # ================================================================
             position_strength=float(pos_strength),
             vol_mean=float(vol_mean),
@@ -6033,6 +6140,12 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             expected_loss=float(expected_loss),
             gain_loss_ratio=float(gain_loss_ratio),
             eu_position_size=float(eu_position_size),
+            # Risk Temperature fields (Expert Panel Solution 1 + 4):
+            risk_temperature=float(risk_temperature),
+            risk_scale_factor=float(risk_scale_factor),
+            overnight_budget_applied=bool(overnight_budget_applied),
+            overnight_max_position=float(overnight_max_position) if overnight_max_position is not None else None,
+            pos_strength_pre_risk_temp=float(pos_strength_pre_risk_temp),
             # EVT (Extreme Value Theory) tail risk fields:
             expected_loss_empirical=float(expected_loss_empirical),
             evt_enabled=bool(evt_enabled),

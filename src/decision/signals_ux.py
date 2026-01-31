@@ -157,6 +157,57 @@ def extract_symbol_from_title(title: str) -> str:
     return ""
 
 
+def format_risk_temperature(temperature: float) -> str:
+    """Format risk temperature with color coding.
+    
+    Risk Temperature Levels:
+        0.0 - 0.5: Normal (green)
+        0.5 - 1.0: Elevated (yellow)
+        1.0 - 1.5: Stressed (orange)
+        1.5 - 2.0: Crisis (red)
+    """
+    if temperature is None or not isinstance(temperature, (int, float)):
+        return "[dim]·[/dim]"
+    
+    temp = float(temperature)
+    
+    if temp < 0.3:
+        # Very calm - show dot for minimal distraction
+        return "[dim]·[/dim]"
+    elif temp < 0.5:
+        # Normal - subtle green
+        return f"[green]{temp:.1f}[/green]"
+    elif temp < 1.0:
+        # Elevated - yellow warning
+        return f"[yellow]⚠{temp:.1f}[/yellow]"
+    elif temp < 1.5:
+        # Stressed - orange alert
+        return f"[orange1]🔥{temp:.1f}[/orange1]"
+    else:
+        # Crisis - red emergency
+        return f"[bold red]🚨{temp:.1f}[/bold red]"
+
+
+def format_risk_scale_factor(scale: float, temperature: float) -> str:
+    """Format risk scale factor showing position reduction.
+    
+    Shows the effective position multiplier after risk temperature scaling.
+    """
+    if scale is None or not isinstance(scale, (int, float)):
+        return "[dim]1.00[/dim]"
+    
+    scale = float(scale)
+    
+    if scale >= 0.95:
+        return f"[dim]{scale:.2f}[/dim]"  # Near full - don't distract
+    elif scale >= 0.70:
+        return f"[yellow]×{scale:.2f}[/yellow]"  # Modest reduction
+    elif scale >= 0.40:
+        return f"[orange1]×{scale:.2f}[/orange1]"  # Significant reduction
+    else:
+        return f"[bold red]×{scale:.2f}[/bold red]"  # Severe reduction
+
+
 def render_detailed_signal_table(
     asset_symbol: str,
     title: str,
