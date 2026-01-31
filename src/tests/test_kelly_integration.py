@@ -11,7 +11,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
-from signals import fetch_px_asset, compute_features
+from decision.signals import fetch_px_asset, compute_features
 from portfolio_kelly import build_multi_asset_portfolio
 from signals_ux import render_portfolio_allocation_table
 

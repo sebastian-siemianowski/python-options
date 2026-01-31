@@ -20,7 +20,7 @@ import pandas as pd
 # Add src directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pit_calibration import (
+from calibration.pit_calibration import (
     compute_pit_calibration,
     CalibrationMetrics,
 )

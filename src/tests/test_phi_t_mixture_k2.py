@@ -51,7 +51,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from phi_t_mixture_k2 import (
+from calibration.phi_t_mixture_k2 import (
     PhiTMixtureK2,
     PhiTMixtureK2Config,
     PhiTMixtureK2Result,
@@ -323,7 +323,7 @@ class TestCalibration:
         returns, vol, true_params = synthetic_mixture_data
         
         # Fit single model (using mean sigma)
-        from phi_t_mixture_k2 import PhiTMixtureK2
+        from calibration.phi_t_mixture_k2 import PhiTMixtureK2
         
         mixer = PhiTMixtureK2(PhiTMixtureK2Config())
         

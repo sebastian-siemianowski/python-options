@@ -20,8 +20,8 @@ import pandas as pd
 # Add src directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tune import optimize_q_mle, tune_asset_q, kalman_filter_drift
-from signals import _load_tuned_kalman_params, compute_features
+from tuning.tune import optimize_q_mle, tune_asset_q, kalman_filter_drift
+from decision.signals import _load_tuned_kalman_params, compute_features
 
 
 def test_walk_forward_cv():

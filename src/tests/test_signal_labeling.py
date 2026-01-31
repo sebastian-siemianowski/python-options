@@ -12,7 +12,7 @@ import os
 # Add src directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from signals import compute_dynamic_thresholds, apply_confirmation_logic
+from decision.signals import compute_dynamic_thresholds, apply_confirmation_logic
 
 
 def test_compute_dynamic_thresholds_symmetric():

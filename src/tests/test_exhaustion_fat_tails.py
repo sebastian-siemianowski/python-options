@@ -22,7 +22,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from signals import compute_directional_exhaustion_from_features
+from decision.signals import compute_directional_exhaustion_from_features
 
 
 # =============================================================================

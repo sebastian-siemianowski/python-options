@@ -17,7 +17,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from adaptive_nu_refinement import (
+from calibration.adaptive_nu_refinement import (
     AdaptiveNuConfig,
     DEFAULT_ADAPTIVE_NU_CONFIG,
     NuRefinementResult,

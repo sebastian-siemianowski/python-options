@@ -21,7 +21,7 @@ import pytest
 # Fix import path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from debt_allocator import (
+from debt.debt_allocator import (
     # Enums and data structures
     LatentState,
     ObservationVector,
