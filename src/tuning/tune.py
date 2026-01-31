@@ -2119,10 +2119,13 @@ def tune_asset_with_bma(
                 return None
             
             # Return result with explicit markers that regime tuning was skipped
+            # Note: tune_asset_q now returns {"has_bma": True, "global": {...}}
+            # We need to extract the inner global data
+            global_data = global_result.get('global', global_result)
             return {
                 "asset": asset,
                 "has_bma": True,  # CRITICAL: signals.py checks this flag to accept the cache
-                "global": global_result,
+                "global": global_data,
                 "regime": None,  # Explicitly None - no regime params available
                 "use_regime_tuning": False,
                 "regime_fallback": True,
@@ -2164,10 +2167,13 @@ def tune_asset_with_bma(
                 _log(f"     ⚠️  Global tuning also failed for {asset}")
                 return None
             
+            # Note: tune_asset_q now returns {"has_bma": True, "global": {...}}
+            # We need to extract the inner global data
+            global_data = global_result.get('global', global_result)
             return {
                 "asset": asset,
                 "has_bma": True,  # CRITICAL: signals.py checks this flag to accept the cache
-                "global": global_result,
+                "global": global_data,
                 "regime": None,
                 "use_regime_tuning": False,
                 "regime_fallback": True,
