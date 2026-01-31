@@ -10,6 +10,7 @@ This package contains the distributional models used in the tuning layer:
     - phi_student_t.py: PhiStudentTDriftModel (Kalman with AR(1) drift, Student-t noise)
     - phi_skew_t.py: PhiSkewTDriftModel (Kalman with AR(1) drift, Skew-t noise)
     - phi_nig.py: PhiNIGDriftModel (Kalman with AR(1) drift, NIG noise)
+    - gaussian_mixture.py: GaussianMixtureModel (2-State GMM for Monte Carlo)
 
 DESIGN PHILOSOPHY:
     Each model class is SELF-CONTAINED with no cross-dependencies.
@@ -29,16 +30,17 @@ BMA ARCHITECTURE:
     - Student-t: Symmetric, heavy tails (controlled by ν)
     - Skew-t: Asymmetric, heavy tails (Fernández-Steel γ parameter)
     - NIG: Asymmetric, semi-heavy tails (α for tails, β for skewness)
+    - GMM: Bimodal distribution (2 Gaussian components for momentum/reversal)
     
-    CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
+    CORE PRINCIPLE: "Heavy tails, asymmetry, and bimodality are hypotheses, not certainties."
     Complex distributions are introduced ONLY when supported by data.
 
 USAGE:
     from models import GaussianDriftModel, PhiGaussianDriftModel, PhiStudentTDriftModel
-    from models import PhiSkewTDriftModel, PhiNIGDriftModel
+    from models import PhiSkewTDriftModel, PhiNIGDriftModel, GaussianMixtureModel
     
     # Or import individual components
-    from models.phi_nig import PhiNIGDriftModel, NIG_ALPHA_GRID, NIG_BETA_RATIO_GRID
+    from models.gaussian_mixture import GaussianMixtureModel, fit_gmm_to_returns
 """
 
 from models.gaussian import GaussianDriftModel
@@ -75,6 +77,18 @@ from models.phi_nig import (
     parse_nig_model_name,
 )
 
+# Import 2-State Gaussian Mixture Model for Monte Carlo proposal distribution
+from models.gaussian_mixture import (
+    GaussianMixtureModel,
+    fit_gmm_to_returns,
+    compute_gmm_pit,
+    get_gmm_model_name,
+    is_gmm_model,
+    GMM_MIN_OBS,
+    GMM_MIN_SEPARATION,
+    GMM_DEGENERATE_THRESHOLD,
+)
+
 # Re-export constants from phi_student_t (the canonical source for Student-t config)
 from models.phi_student_t import (
     PHI_SHRINKAGE_TAU_MIN,
@@ -90,6 +104,7 @@ __all__ = [
     'PhiStudentTDriftModel',
     'PhiSkewTDriftModel',
     'PhiNIGDriftModel',
+    'GaussianMixtureModel',
     # Constants (from phi_student_t)
     'PHI_SHRINKAGE_TAU_MIN',
     'PHI_SHRINKAGE_GLOBAL_DEFAULT',
@@ -119,4 +134,12 @@ __all__ = [
     'is_nig_model',
     'get_nig_model_name',
     'parse_nig_model_name',
+    # GMM utilities
+    'fit_gmm_to_returns',
+    'compute_gmm_pit',
+    'get_gmm_model_name',
+    'is_gmm_model',
+    'GMM_MIN_OBS',
+    'GMM_MIN_SEPARATION',
+    'GMM_DEGENERATE_THRESHOLD',
 ]

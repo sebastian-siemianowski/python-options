@@ -320,6 +320,15 @@ Examples:
                             sigma_ratio = mixture_model.get('sigma_ratio', 0)
                             weight = mixture_model.get('weight', 0)
                             model_str = f"K2-Mix(σ={sigma_ratio:.1f})"
+                        elif model_type.startswith('phi_nig_'):
+                            # φ-NIG model with alpha/beta parameters
+                            nig_alpha = global_result.get('nig_alpha')
+                            nig_beta = global_result.get('nig_beta')
+                            if nig_beta is not None and abs(nig_beta) > 0.01:
+                                skew_dir = "L" if nig_beta < 0 else "R"
+                                model_str = f"NIG({skew_dir})"
+                            else:
+                                model_str = "NIG"
                         elif model_type.startswith('phi_skew_t_nu_'):
                             # φ-Skew-t model with gamma parameter
                             gamma_val = global_result.get('gamma')
@@ -334,6 +343,14 @@ Examples:
                             model_str = "φ-Gaussian"
                         else:
                             model_str = "Gaussian"
+                        
+                        # Check for GMM availability
+                        gmm_data = global_result.get('gmm')
+                        has_gmm = (gmm_data is not None and 
+                                   isinstance(gmm_data, dict) and 
+                                   not gmm_data.get('is_degenerate', False))
+                        if has_gmm:
+                            model_str += "+GMM"
                         
                         import math
                         details = f"{model_str}|q={q_val:.2e}|c={c_val:.3f}"

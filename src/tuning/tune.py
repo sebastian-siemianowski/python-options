@@ -359,8 +359,9 @@ from tuning.reporting import render_calibration_issues_table
 #   - Symmetric Student-t: μ, σ, ν (fat tails)
 #   - φ-Skew-t:           μ, σ, ν, γ (fat tails + asymmetry)
 #   - NIG:                μ, σ, α, β (semi-heavy tails + asymmetry)
+#   - GMM:                2-component Gaussian mixture (bimodality)
 #
-# CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
+# CORE PRINCIPLE: "Heavy tails, asymmetry, and bimodality are hypotheses, not certainties."
 # Complex distributions compete with simpler alternatives via BIC weights.
 # =============================================================================
 from models import (
@@ -378,6 +379,14 @@ from models import (
     is_nig_model,
     get_nig_model_name,
     parse_nig_model_name,
+    # GMM (2-State Gaussian Mixture)
+    GaussianMixtureModel,
+    fit_gmm_to_returns,
+    compute_gmm_pit,
+    get_gmm_model_name,
+    is_gmm_model,
+    GMM_MIN_OBS,
+    GMM_MIN_SEPARATION,
     # Model classes
     GaussianDriftModel,
     PhiGaussianDriftModel,
@@ -1037,6 +1046,45 @@ def tune_asset_q(
         best_model = min(bic_values.items(), key=lambda x: x[1])[0]
         best_params = models[best_model]
         
+        # =====================================================================
+        # FIT 2-STATE GAUSSIAN MIXTURE MODEL (GMM)
+        # =====================================================================
+        # GMM is fit to volatility-adjusted returns to capture bimodal behavior:
+        #   - Component 1: "Momentum" regime (typically positive mean)
+        #   - Component 2: "Reversal/Crisis" regime (typically negative mean)
+        #
+        # The GMM parameters are stored separately and used in Monte Carlo
+        # simulation to improve tail behavior in Expected Utility estimation.
+        #
+        # CORE PRINCIPLE: "Bimodality is a hypothesis, not a certainty."
+        # If GMM is degenerate (one component dominates), it falls back to
+        # single Gaussian behavior.
+        # =====================================================================
+        gmm_result = None
+        gmm_diagnostics = None
+        
+        try:
+            gmm_model, gmm_diag = fit_gmm_to_returns(returns, vol, min_obs=GMM_MIN_OBS)
+            
+            if gmm_model is not None and gmm_diag.get("fit_success", False):
+                # Check for degeneracy
+                if not gmm_model.is_degenerate:
+                    gmm_result = gmm_model.to_dict()
+                    gmm_diagnostics = gmm_diag
+                    _log(f"     ✓ GMM fitted: π=[{gmm_model.weights[0]:.2f}, {gmm_model.weights[1]:.2f}], "
+                         f"μ=[{gmm_model.means[0]:.3f}, {gmm_model.means[1]:.3f}], "
+                         f"sep={gmm_model.separation:.2f}")
+                else:
+                    _log(f"     ⚠️ GMM degenerate (one component dominates) - using single Gaussian fallback")
+                    gmm_diagnostics = {"fit_success": False, "reason": "degenerate"}
+            else:
+                error_msg = gmm_diag.get("error", "unknown") if gmm_diag else "fit_returned_none"
+                _log(f"     ⚠️ GMM fit failed: {error_msg} - Monte Carlo will use single Gaussian")
+                gmm_diagnostics = gmm_diag or {"fit_success": False, "error": error_msg}
+        except Exception as gmm_err:
+            _log(f"     ⚠️ GMM fitting exception: {gmm_err}")
+            gmm_diagnostics = {"fit_success": False, "error": str(gmm_err)}
+        
         # Build result structure - BMA-compatible format
         # signals.py expects: {"global": {...}, "has_bma": True}
         global_data = {
@@ -1064,6 +1112,9 @@ def tune_asset_q(
                 "aic": models[m].get("aic", float('inf')),
                 "fit_success": models[m].get("fit_success", False),
             } for m in models},
+            # GMM parameters for Monte Carlo simulation
+            "gmm": gmm_result,
+            "gmm_diagnostics": gmm_diagnostics,
         }
         
         result = {

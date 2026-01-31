@@ -46,7 +46,15 @@ The BMA ensemble includes multiple distributional models:
    - β controls asymmetry (β < 0 = left-skewed, β > 0 = right-skewed)
    - Infinitely divisible (Lévy process compatible)
 
-CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
+5. GMM (2-State Gaussian Mixture) — Expert Panel Solution:
+   - Bimodal distribution capturing momentum/reversal dynamics
+   - Component 0 ("Momentum"): typically positive mean, moderate variance
+   - Component 1 ("Reversal/Crisis"): typically negative mean, higher variance
+   - Fitted to volatility-adjusted returns during tuning
+   - Used as Monte Carlo proposal distribution for Gaussian models
+   - Improves tail behavior in Expected Utility estimation
+
+CORE PRINCIPLE: "Heavy tails, asymmetry, and bimodality are hypotheses, not certainties."
 
 All models compete via BIC weights. If extra parameters don't improve fit,
 model weight collapses naturally toward simpler alternatives.
@@ -76,7 +84,8 @@ tune.py outputs:
     {
         "global": {
             "model_posterior": { "kalman_gaussian": p, "kalman_phi_gaussian": p, ... },
-            "models": { "kalman_gaussian": {q, c, hyvarinen_score, bic, ...}, ... }
+            "models": { "kalman_gaussian": {q, c, hyvarinen_score, bic, ...}, ... },
+            "gmm": { "weights": [π₁, π₂], "means": [μ₁, μ₂], "variances": [σ₁², σ₂²] }
         },
         "regime": {
             "0": { "model_posterior": {...}, "models": {...}, "regime_meta": {...} },
