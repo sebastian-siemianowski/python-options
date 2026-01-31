@@ -15,32 +15,41 @@ Where:
     r_t      = current regime (deterministically assigned, same logic as tune)
     m        = model class (kalman_gaussian, kalman_phi_gaussian, 
                            phi_student_t_nu_{4,6,8,12,20},
-                           phi_skew_t_nu_{ν}_gamma_{γ})
+                           phi_skew_t_nu_{ν}_gamma_{γ},
+                           phi_nig_alpha_{α}_beta_{β})
     θ_{r,m}  = parameters from tuning layer
     p(m|r)   = posterior model probability from tuning layer
     x        = return at horizon H
 
 -------------------------------------------------------------------------------
-PHI-SKEW-T INTEGRATION (Proposal 5 — φ-Skew-t with BMA)
+DISTRIBUTIONAL MODEL ENSEMBLE
 -------------------------------------------------------------------------------
 
-The φ-Skew-t model (Fernández-Steel parameterization) extends Student-t with
-asymmetry parameter γ:
+The BMA ensemble includes multiple distributional models:
 
-    - γ = 1.0: Symmetric (reduces to Student-t)
-    - γ < 1.0: Left-skewed (heavier left tail) — crash risk during stress
-    - γ > 1.0: Right-skewed (heavier right tail) — euphoria/melt-up risk
+1. GAUSSIAN (kalman_gaussian, kalman_phi_gaussian):
+   - Light tails, symmetric
+   - Baseline model for stable markets
 
-CORE PRINCIPLE: "Skewness is a hypothesis, not a certainty."
+2. STUDENT-T (phi_student_t_nu_{4,6,8,12,20}):
+   - Heavy tails, symmetric
+   - ν controls tail heaviness (smaller ν = heavier tails)
 
-φ-Skew-t competes with simpler distributions (Gaussian, Student-t) in the BMA
-ensemble. If data does not support skewness, model weight collapses naturally
-toward symmetric alternatives. This provides:
+3. SKEW-T (phi_skew_t_nu_{ν}_gamma_{γ}) — Proposal 5:
+   - Heavy tails, asymmetric (Fernández-Steel parameterization)
+   - γ < 1.0: Left-skewed (crash risk)
+   - γ > 1.0: Right-skewed (euphoria risk)
 
-    1. Asymmetric tail modeling when justified by data
-    2. Automatic fallback to symmetric models when skewness is not supported
-    3. Model uncertainty quantification across the entire distributional family
-    4. Proper propagation of skewness into Expected Utility and position sizing
+4. NIG (phi_nig_alpha_{α}_beta_{β}) — Solution 2:
+   - Semi-heavy tails (between Gaussian and Cauchy), asymmetric
+   - α controls tail heaviness (smaller α = heavier tails)
+   - β controls asymmetry (β < 0 = left-skewed, β > 0 = right-skewed)
+   - Infinitely divisible (Lévy process compatible)
+
+CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
+
+All models compete via BIC weights. If extra parameters don't improve fit,
+model weight collapses naturally toward simpler alternatives.
 
 -------------------------------------------------------------------------------
 REGIME ASSIGNMENT — DETERMINISTIC, CONSISTENT WITH TUNE
@@ -3910,6 +3919,9 @@ def run_regime_specific_mc(
     H: int,
     n_paths: int = 5000,
     nu: Optional[float] = None,
+    nig_alpha: Optional[float] = None,
+    nig_beta: Optional[float] = None,
+    nig_delta: Optional[float] = None,
     seed: Optional[int] = None
 ) -> np.ndarray:
     """
@@ -3918,13 +3930,50 @@ def run_regime_specific_mc(
     This is a lightweight wrapper that generates r_samples for one regime
     using regime-specific parameters.
 
+    Supports four noise distributions:
+    1. Gaussian (nu=None, nig_alpha=None): Standard Kalman with Gaussian noise
+    2. Student-t (nu specified): Heavy tails, symmetric
+    3. NIG (nig_alpha, nig_beta, nig_delta specified): Semi-heavy tails, asymmetric
+    
+    NIG (Normal-Inverse Gaussian) provides:
+        - α: Tail heaviness (smaller α = heavier tails)
+        - β: Asymmetry (β < 0 = left-skewed, β > 0 = right-skewed)
+        - δ: Scale parameter
+
     Args:
         regime: Regime index (0-4)
-        mu_t, P_t, phi, q, sigma2_step, H, n_paths, nu, seed: MC parameters
+        mu_t: Current drift estimate
+        P_t: Drift posterior variance
+        phi: AR(1) persistence
+        q: Process noise variance
+        sigma2_step: Per-step observation variance
+        H: Forecast horizon
+        n_paths: Number of MC paths
+        nu: Degrees of freedom for Student-t (None for Gaussian/NIG)
+        nig_alpha: NIG tail parameter (None for Gaussian/Student-t)
+        nig_beta: NIG asymmetry parameter (None for Gaussian/Student-t)
+        nig_delta: NIG scale parameter (None for Gaussian/Student-t)
+        seed: Random seed
 
     Returns:
         Array of return samples
     """
+    # Import NIG sampling if needed
+    use_nig = (nig_alpha is not None and nig_beta is not None and nig_delta is not None)
+    if use_nig:
+        try:
+            from scipy.stats import norminvgauss
+            # Validate NIG parameters
+            nig_alpha = float(np.clip(nig_alpha, 0.5, 50.0))
+            nig_delta = float(max(nig_delta, 0.001))
+            max_beta = nig_alpha - 0.01
+            nig_beta = float(np.clip(nig_beta, -max_beta, max_beta))
+            # Convert to scipy parameterization
+            nig_a = nig_alpha * nig_delta
+            nig_b = nig_beta * nig_delta
+        except Exception:
+            use_nig = False
+    
     # Input validation
     mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
     P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
@@ -3933,7 +3982,7 @@ def run_regime_specific_mc(
     sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
     H = int(max(H, 1))
 
-    if nu is not None:
+    if nu is not None and not use_nig:
         if not np.isfinite(nu) or nu <= 2.0:
             nu = None
         else:
@@ -3943,17 +3992,23 @@ def run_regime_specific_mc(
 
     # Sample drift posterior
     if P_t > 0:
-        if nu is not None:
-            # Student-t posterior for drift: heavier tails under uncertainty
-            # t_ν(μ̂_t, scale) has variance scale² · ν/(ν-2)
-            # We want Var(μ_t) = P_t, so scale = √(P_t · (ν-2)/ν)
+        if use_nig:
+            # NIG posterior for drift
+            # Scale NIG to have variance = P_t
+            # NIG variance = δα²/(α²-β²)^(3/2), so we scale samples
+            gamma_nig = np.sqrt(max(nig_alpha**2 - nig_beta**2, 1e-10))
+            nig_var = nig_delta * nig_alpha**2 / (gamma_nig**3) if gamma_nig > 0 else nig_delta**2
+            scale_factor = np.sqrt(P_t / max(nig_var, 1e-10))
+            nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
+            mu_paths = mu_t + scale_factor * nig_delta * nig_samples
+        elif nu is not None:
+            # Student-t posterior for drift
             t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
             mu_paths = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
         else:
             # Gaussian posterior for drift
             mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
     else:
-        # No drift uncertainty: point estimate
         mu_paths = np.full(n_paths, mu_t, dtype=float)
 
     # Propagate drift and accumulate noise
@@ -3966,7 +4021,11 @@ def run_regime_specific_mc(
     for k in range(H):
         # --- Drift propagation: μ_{t+k+1} = φ·μ_{t+k} + η_{k+1} ---
         if q_std > 0:
-            if nu is not None:
+            if use_nig:
+                # NIG drift noise
+                nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
+                eta = q_std * nig_delta * nig_samples / np.sqrt(max(nig_var, 1e-10))
+            elif nu is not None:
                 eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
                 eta = eta_scale * rng.standard_t(df=nu, size=n_paths)
             else:
@@ -3977,11 +4036,13 @@ def run_regime_specific_mc(
         mu_paths = phi * mu_paths + eta
         cum_mu += mu_paths
 
-        # --- Observation noise: ε_k ~ N(0, sigma_step) or t_ν ---
-        # sigma_step = √sigma2_step is the PRIMITIVE per-step noise std
+        # --- Observation noise: ε_k ---
         if sigma_step > 0:
-            if nu is not None:
-                # Student-t observation noise: scale for target variance
+            if use_nig:
+                # NIG observation noise
+                nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
+                eps_k = sigma_step * nig_delta * nig_samples / np.sqrt(max(nig_var, 1e-10))
+            elif nu is not None:
                 eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
                 eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
             else:

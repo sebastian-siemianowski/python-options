@@ -9,6 +9,7 @@ This package contains the distributional models used in the tuning layer:
     - phi_gaussian.py: PhiGaussianDriftModel (Kalman with AR(1) drift, Gaussian noise)
     - phi_student_t.py: PhiStudentTDriftModel (Kalman with AR(1) drift, Student-t noise)
     - phi_skew_t.py: PhiSkewTDriftModel (Kalman with AR(1) drift, Skew-t noise)
+    - phi_nig.py: PhiNIGDriftModel (Kalman with AR(1) drift, NIG noise)
 
 DESIGN PHILOSOPHY:
     Each model class is SELF-CONTAINED with no cross-dependencies.
@@ -23,21 +24,21 @@ BMA ARCHITECTURE:
     
         p(M_k | data) ∝ exp(-0.5 * BIC_k)
     
-    The φ-Skew-t model (Fernández-Steel parameterization) captures:
-    - Fat tails via ν (degrees of freedom)
-    - Asymmetry via γ (skewness parameter)
+    The distributional models capture different aspects of return dynamics:
+    - Gaussian: Baseline, symmetric, light tails
+    - Student-t: Symmetric, heavy tails (controlled by ν)
+    - Skew-t: Asymmetric, heavy tails (Fernández-Steel γ parameter)
+    - NIG: Asymmetric, semi-heavy tails (α for tails, β for skewness)
     
-    CORE PRINCIPLE: "Skewness is a hypothesis, not a certainty."
-    Skewness is introduced ONLY when supported by data.
+    CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
+    Complex distributions are introduced ONLY when supported by data.
 
 USAGE:
     from models import GaussianDriftModel, PhiGaussianDriftModel, PhiStudentTDriftModel
-    from models import PhiSkewTDriftModel, SKEW_T_GAMMA_GRID
+    from models import PhiSkewTDriftModel, PhiNIGDriftModel
     
     # Or import individual components
-    from models.gaussian import GaussianDriftModel
-    from models.phi_student_t import PhiStudentTDriftModel, STUDENT_T_NU_GRID
-    from models.phi_skew_t import PhiSkewTDriftModel, SKEW_T_GAMMA_GRID
+    from models.phi_nig import PhiNIGDriftModel, NIG_ALPHA_GRID, NIG_BETA_RATIO_GRID
 """
 
 from models.gaussian import GaussianDriftModel
@@ -57,6 +58,23 @@ from models.phi_skew_t import (
     parse_skew_t_model_name,
 )
 
+# Import φ-NIG model for BMA ensemble (Normal-Inverse Gaussian)
+from models.phi_nig import (
+    PhiNIGDriftModel,
+    NIG_ALPHA_GRID,
+    NIG_BETA_RATIO_GRID,
+    NIG_ALPHA_MIN,
+    NIG_ALPHA_MAX,
+    NIG_ALPHA_DEFAULT,
+    NIG_BETA_DEFAULT,
+    NIG_DELTA_MIN,
+    NIG_DELTA_MAX,
+    NIG_DELTA_DEFAULT,
+    is_nig_model,
+    get_nig_model_name,
+    parse_nig_model_name,
+)
+
 # Re-export constants from phi_student_t (the canonical source for Student-t config)
 from models.phi_student_t import (
     PHI_SHRINKAGE_TAU_MIN,
@@ -71,6 +89,7 @@ __all__ = [
     'PhiGaussianDriftModel',
     'PhiStudentTDriftModel',
     'PhiSkewTDriftModel',
+    'PhiNIGDriftModel',
     # Constants (from phi_student_t)
     'PHI_SHRINKAGE_TAU_MIN',
     'PHI_SHRINKAGE_GLOBAL_DEFAULT',
@@ -86,4 +105,18 @@ __all__ = [
     'is_skew_t_model',
     'get_skew_t_model_name',
     'parse_skew_t_model_name',
+    # Constants (from phi_nig)
+    'NIG_ALPHA_GRID',
+    'NIG_BETA_RATIO_GRID',
+    'NIG_ALPHA_MIN',
+    'NIG_ALPHA_MAX',
+    'NIG_ALPHA_DEFAULT',
+    'NIG_BETA_DEFAULT',
+    'NIG_DELTA_MIN',
+    'NIG_DELTA_MAX',
+    'NIG_DELTA_DEFAULT',
+    # NIG utilities
+    'is_nig_model',
+    'get_nig_model_name',
+    'parse_nig_model_name',
 ]

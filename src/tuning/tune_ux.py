@@ -251,8 +251,8 @@ Examples:
 
                         global_result = result.get('global', result)
                         noise_model = global_result.get('noise_model', '')
-                        if noise_model.startswith('phi_student_t_nu_'):
-                            student_t_count += 1
+                        if noise_model.startswith('phi_student_t_nu_') or noise_model.startswith('phi_skew_t_nu_') or noise_model.startswith('phi_nig_'):
+                            student_t_count += 1  # Count all heavy-tailed models together
                         else:
                             gaussian_count += 1
 

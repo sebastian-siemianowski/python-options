@@ -18,7 +18,8 @@ Where:
                               HIGH_VOL_RANGE, CRISIS_JUMP)
     m          = model class (kalman_gaussian, kalman_phi_gaussian,
                               phi_student_t_nu_{4,6,8,12,20},
-                              phi_skew_t_nu_{ν}_gamma_{γ})
+                              phi_skew_t_nu_{ν}_gamma_{γ},
+                              phi_nig_alpha_{α}_beta_{β})
     θ_{r,m}    = parameters of model m in regime r
     p(m | r)   = posterior probability of model m in regime r
 
@@ -36,9 +37,10 @@ For EACH regime r:
        - phi_student_t_nu_12:   q, c, φ        (3 params, ν=12 FIXED)
        - phi_student_t_nu_20:   q, c, φ        (3 params, ν=20 FIXED)
        - phi_skew_t_nu_{ν}_gamma_{γ}: q, c, φ  (3 params, ν and γ FIXED)
+       - phi_nig_alpha_{α}_beta_{β}: q, c, φ   (3 params, α and β FIXED)
 
-    NOTE: Student-t and Skew-t use DISCRETE grids (not continuous optimization).
-    Each (ν, γ) combination is treated as a separate sub-model in BMA.
+    NOTE: Student-t, Skew-t, and NIG use DISCRETE grids (not continuous optimization).
+    Each parameter combination is treated as a separate sub-model in BMA.
 
     SKEW-T ADDITION (Proposal 5 — φ-Skew-t with BMA):
     The Fernández-Steel skew-t distribution captures asymmetric return distributions:
@@ -46,9 +48,17 @@ For EACH regime r:
        - γ < 1: Left-skewed (heavier left tail) — crash risk
        - γ > 1: Right-skewed (heavier right tail) — euphoria risk
 
-    CORE PRINCIPLE: "Skewness is a hypothesis, not a certainty."
-    Skew-t competes with symmetric alternatives; if data doesn't support
-    skewness, model weight collapses naturally toward symmetric models.
+    NIG ADDITION (Solution 2 — NIG as Parallel BMA Candidate):
+    The Normal-Inverse Gaussian distribution provides:
+       - α: Tail heaviness (smaller α = heavier tails, α→∞ = Gaussian)
+       - β: Asymmetry (-α < β < α; β=0 symmetric, β<0 left-skewed, β>0 right-skewed)
+    
+    NIG differs from Student-t/Skew-t by having semi-heavy tails (between
+    Gaussian and Cauchy) and being infinitely divisible (Lévy process compatible).
+
+    CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
+    All distributional models compete via BIC weights; if extra parameters don't
+    improve fit, model weight collapses toward simpler alternatives.
 
     2. Computes for each (r, m):
        - mean_log_likelihood
@@ -342,6 +352,16 @@ from tuning.reporting import render_calibration_issues_table
 # =============================================================================
 # Model classes are now in separate files under src/models/ for modularity.
 # Each model is SELF-CONTAINED with no cross-dependencies.
+#
+# BMA ARCHITECTURE:
+# The BMA ensemble includes the following candidate distributions:
+#   - Gaussian:           μ, σ (baseline)
+#   - Symmetric Student-t: μ, σ, ν (fat tails)
+#   - φ-Skew-t:           μ, σ, ν, γ (fat tails + asymmetry)
+#   - NIG:                μ, σ, α, β (semi-heavy tails + asymmetry)
+#
+# CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
+# Complex distributions compete with simpler alternatives via BIC weights.
 # =============================================================================
 from models import (
     # Constants
@@ -349,10 +369,20 @@ from models import (
     PHI_SHRINKAGE_GLOBAL_DEFAULT,
     PHI_SHRINKAGE_LAMBDA_DEFAULT,
     STUDENT_T_NU_GRID,
+    # NIG constants (Normal-Inverse Gaussian)
+    NIG_ALPHA_GRID,
+    NIG_BETA_RATIO_GRID,
+    NIG_ALPHA_DEFAULT,
+    NIG_BETA_DEFAULT,
+    NIG_DELTA_DEFAULT,
+    is_nig_model,
+    get_nig_model_name,
+    parse_nig_model_name,
     # Model classes
     GaussianDriftModel,
     PhiGaussianDriftModel,
     PhiStudentTDriftModel,
+    PhiNIGDriftModel,
 )
 
 # Import presentation layer for world-class UX output
@@ -462,6 +492,34 @@ def is_student_t_model(model_name: str) -> bool:
         return False
     model_lower = model_name.lower()
     return 'student_t' in model_lower or 'student-t' in model_lower
+
+
+def is_heavy_tailed_model(model_name: str) -> bool:
+    """
+    Check if a model name corresponds to any heavy-tailed distribution.
+    
+    Heavy-tailed models include:
+    - Student-t: 'phi_student_t_nu_{nu}'
+    - Skew-t: 'phi_skew_t_nu_{nu}_gamma_{gamma}'
+    - NIG: 'phi_nig_alpha_{alpha}_beta_{beta}'
+    
+    This is used for tail-aware signal generation and Monte Carlo sampling.
+    
+    Args:
+        model_name: Model identifier string
+        
+    Returns:
+        True if model has heavy tails, False otherwise
+    """
+    if not model_name:
+        return False
+    model_lower = model_name.lower()
+    return (
+        'student_t' in model_lower or 
+        'student-t' in model_lower or 
+        'skew_t' in model_lower or
+        'phi_nig' in model_lower
+    )
 
 
 # =============================================================================
@@ -1532,6 +1590,112 @@ def fit_all_models_for_regime(
                 "nu": float(nu_fixed),
                 "nu_fixed": True,
             }
+    
+    # =========================================================================
+    # Model 3: Phi-NIG with DISCRETE α and β GRID (Normal-Inverse Gaussian)
+    # =========================================================================
+    # NIG (Normal-Inverse Gaussian) distribution captures both:
+    #   - Semi-heavy tails via α parameter (smaller α = heavier tails)
+    #   - Asymmetry via β parameter (β < 0 = left-skewed, β > 0 = right-skewed)
+    #
+    # NIG is a 4-parameter family that includes Student-t-like behavior but
+    # with more flexible tail decay and native asymmetry support.
+    #
+    # CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
+    # NIG competes with simpler models via BIC — if the extra parameters don't
+    # improve fit, the model weight collapses toward Gaussian/Student-t.
+    #
+    # DISCRETE GRID APPROACH:
+    # Use discrete grids for α and β to avoid continuous optimization instability.
+    # Each (α, β) combination is a separate sub-model in BMA.
+    #
+    # Model naming: "phi_nig_alpha_{α}_beta_{β}"
+    # =========================================================================
+    
+    # Number of parameters: q, c, phi (α, β, δ are FIXED per sub-model)
+    n_params_nig = 3
+    
+    # Estimate baseline δ from data volatility
+    delta_baseline = float(np.std(returns)) * 0.5
+    delta_baseline = max(delta_baseline, 0.001)
+    
+    for alpha_fixed in NIG_ALPHA_GRID:
+        for beta_ratio in NIG_BETA_RATIO_GRID:
+            # Convert ratio to actual β (β = ratio * α, ensuring |β| < α)
+            beta_fixed = beta_ratio * alpha_fixed
+            
+            model_name = get_nig_model_name(alpha_fixed, beta_fixed)
+            
+            try:
+                # Optimize q, c, phi with FIXED α, β, δ
+                q_nig, c_nig, phi_nig, ll_cv_nig, diag_nig = PhiNIGDriftModel.optimize_params_fixed_nig(
+                    returns, vol,
+                    alpha=alpha_fixed,
+                    beta=beta_fixed,
+                    delta=delta_baseline,
+                    prior_log_q_mean=prior_log_q_mean,
+                    prior_lambda=prior_lambda
+                )
+                
+                # Run full filter with fixed NIG parameters
+                mu_nig, P_nig, ll_full_nig = PhiNIGDriftModel.filter_phi(
+                    returns, vol, q_nig, c_nig, phi_nig,
+                    alpha_fixed, beta_fixed, delta_baseline
+                )
+                
+                # Compute PIT calibration using NIG CDF
+                ks_nig, pit_p_nig = PhiNIGDriftModel.pit_ks(
+                    returns, mu_nig, vol, P_nig, c_nig,
+                    alpha_fixed, beta_fixed, delta_baseline
+                )
+                
+                # Compute information criteria
+                aic_nig = compute_aic(ll_full_nig, n_params_nig)
+                bic_nig = compute_bic(ll_full_nig, n_params_nig, n_obs)
+                mean_ll_nig = ll_full_nig / max(n_obs, 1)
+                
+                # Compute Hyvärinen score (use Gaussian approximation for NIG)
+                # Full NIG Hyvärinen requires additional derivation
+                forecast_scale_nig = np.sqrt(c_nig * (vol ** 2) + P_nig)
+                hyvarinen_nig = compute_hyvarinen_score_gaussian(
+                    returns, mu_nig, forecast_scale_nig
+                )
+                
+                models[model_name] = {
+                    "q": float(q_nig),
+                    "c": float(c_nig),
+                    "phi": float(phi_nig),
+                    "nu": None,  # NIG doesn't use ν
+                    "nig_alpha": float(alpha_fixed),   # NIG tail parameter
+                    "nig_beta": float(beta_fixed),    # NIG asymmetry parameter
+                    "nig_delta": float(delta_baseline), # NIG scale parameter
+                    "log_likelihood": float(ll_full_nig),
+                    "mean_log_likelihood": float(mean_ll_nig),
+                    "cv_penalized_ll": float(ll_cv_nig),
+                    "bic": float(bic_nig),
+                    "aic": float(aic_nig),
+                    "hyvarinen_score": float(hyvarinen_nig),
+                    "n_params": int(n_params_nig),
+                    "ks_statistic": float(ks_nig),
+                    "pit_ks_pvalue": float(pit_p_nig),
+                    "fit_success": True,
+                    "diagnostics": diag_nig,
+                    "nig_params_fixed": True,  # Flag indicating NIG params were fixed
+                    "model_type": "phi_nig",
+                }
+            except Exception as e:
+                models[model_name] = {
+                    "fit_success": False,
+                    "error": str(e),
+                    "bic": float('inf'),
+                    "aic": float('inf'),
+                    "hyvarinen_score": float('-inf'),
+                    "nig_alpha": float(alpha_fixed),
+                    "nig_beta": float(beta_fixed),
+                    "nig_delta": float(delta_baseline),
+                    "nig_params_fixed": True,
+                    "model_type": "phi_nig",
+                }
     
     return models
 
