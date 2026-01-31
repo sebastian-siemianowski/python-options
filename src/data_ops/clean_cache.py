@@ -5,8 +5,8 @@ clean_cache.py
 Clean cached price data by removing empty rows (dates before company existed).
 
 Usage:
-    python src/ingestion/clean_cache.py          # Clean all cached price files
-    python src/ingestion/clean_cache.py --quiet  # Clean without verbose output
+    python src/data_ops/clean_cache.py          # Clean all cached price files
+    python src/data_ops/clean_cache.py --quiet  # Clean without verbose output
 """
 
 from __future__ import annotations

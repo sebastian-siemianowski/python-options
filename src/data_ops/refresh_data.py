@@ -9,9 +9,9 @@ Refresh price data by:
 This ensures fresh data. The download is unreliable so we always run multiple passes.
 
 Usage:
-    python src/ingestion/refresh_data.py
-    python src/ingestion/refresh_data.py --days 5 --retries 5
-    python src/ingestion/refresh_data.py --days 3 --retries 3 --workers 2
+    python src/data_ops/refresh_data.py
+    python src/data_ops/refresh_data.py --days 5 --retries 5
+    python src/data_ops/refresh_data.py --days 3 --retries 3 --workers 2
 """
 
 from __future__ import annotations

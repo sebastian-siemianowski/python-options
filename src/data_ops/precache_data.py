@@ -6,10 +6,10 @@ Pre-download and cache price data for all assets in the default universe.
 This speeds up subsequent screening and backtesting by avoiding repeated API calls.
 
 Usage:
-    python src/ingestion/precache_data.py
-    python src/ingestion/precache_data.py --workers 2 --batch-size 16
-    python src/ingestion/precache_data.py --years 5  # fetch 5 years of history
-    python src/ingestion/precache_data.py --assets AAPL,MSFT,GOOGL  # specific assets only
+    python src/data_ops/precache_data.py
+    python src/data_ops/precache_data.py --workers 2 --batch-size 16
+    python src/data_ops/precache_data.py --years 5  # fetch 5 years of history
+    python src/data_ops/precache_data.py --assets AAPL,MSFT,GOOGL  # specific assets only
 """
 
 from __future__ import annotations

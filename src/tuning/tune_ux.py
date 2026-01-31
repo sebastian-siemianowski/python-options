@@ -384,6 +384,16 @@ Examples:
         console.print(Align.center(info))
         console.print()
 
+    # ========================================================================
+    # MERGE NEWLY TUNED ASSETS INTO CACHE BEFORE SAVING
+    # ========================================================================
+    # CRITICAL: processed_assets contains all newly tuned results.
+    # These must be merged into cache before saving, otherwise new results
+    # are lost and only old cached values persist.
+    # ========================================================================
+    if processed_assets:
+        cache.update(processed_assets)
+
     # Save updated cache
     if new_estimates > 0:
         save_cache_json(cache, args.cache_json)

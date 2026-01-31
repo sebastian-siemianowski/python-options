@@ -6,10 +6,10 @@ Purge cached price data for assets that have consistently failed to process.
 This helps clean up potentially corrupted or problematic cache files.
 
 Usage:
-    python src/ingestion/purge_failed.py          # Purge cache files for failed assets
-    python src/ingestion/purge_failed.py --list   # List failed assets without purging
-    python src/ingestion/purge_failed.py --clear  # Clear the failed assets list (keep cache)
-    python src/ingestion/purge_failed.py --all    # Purge cache AND clear the list
+    python src/data_ops/purge_failed.py          # Purge cache files for failed assets
+    python src/data_ops/purge_failed.py --list   # List failed assets without purging
+    python src/data_ops/purge_failed.py --clear  # Clear the failed assets list (keep cache)
+    python src/data_ops/purge_failed.py --all    # Purge cache AND clear the list
 """
 
 from __future__ import annotations

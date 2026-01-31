@@ -236,6 +236,10 @@ cache-migrate: .venv/.deps_installed
 	@echo "🔄 Migrating legacy cache to per-asset files..."
 	@.venv/bin/python -c "import sys; sys.path.insert(0, 'src'); from tuning.kalman_cache import migrate_legacy_cache; migrate_legacy_cache()"
 
+cache-migrate-bma: .venv/.deps_installed
+	@echo "🔄 Adding has_bma flag to cache files..."
+	@.venv/bin/python src/data_ops/migrate_has_bma.py
+
 cache-list: .venv/.deps_installed
 	@echo "📋 Cached symbols:"
 	@.venv/bin/python -c "import sys; sys.path.insert(0, 'src'); from tuning.kalman_cache import list_cached_symbols; symbols=list_cached_symbols(); print(f'  Total: {len(symbols)} assets'); print('  ' + ', '.join(symbols[:20]) + ('...' if len(symbols) > 20 else ''))"
@@ -262,7 +266,7 @@ clear:
 	@echo "Data cache cleared successfully!"
 
 stocks: .venv/.deps_installed
-	@.venv/bin/python src/ingestion/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
+	@.venv/bin/python src/data_ops/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
 	@$(MAKE) fx-plnjpy
 
 # Render from cached results only (no network/compute)
@@ -277,11 +281,11 @@ top20: .venv/.deps_installed
 
 # Precache securities data (full history) - runs 5 download passes for reliability
 data: .venv/.deps_installed
-	@.venv/bin/python src/ingestion/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
+	@.venv/bin/python src/data_ops/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
 
 # Refresh data: delete last 5 days from cache, then bulk re-download 5 times
 refresh: .venv/.deps_installed
-	@.venv/bin/python src/ingestion/refresh_data.py --days 5 --retries 5 --workers 12 --batch-size 16 $(ARGS)
+	@.venv/bin/python src/data_ops/refresh_data.py --days 5 --retries 5 --workers 12 --batch-size 16 $(ARGS)
 
 four:
 	@if [ ! -d src/data/tune ] || [ -z "$$(ls -A src/data/tune/*.json 2>/dev/null | head -1)" ]; then \
@@ -291,11 +295,11 @@ four:
 
 # List failed assets
 failed: .venv/.deps_installed
-	@.venv/bin/python src/ingestion/purge_failed.py --list
+	@.venv/bin/python src/data_ops/purge_failed.py --list
 
 # Purge cached data for failed assets
 purge: .venv/.deps_installed
-	@.venv/bin/python src/ingestion/purge_failed.py $(ARGS)
+	@.venv/bin/python src/data_ops/purge_failed.py $(ARGS)
 
 # Full setup: create venv, install dependencies, and download all data (runs 3x for reliability)
 setup:
@@ -314,22 +318,22 @@ setup:
 	@echo "============================================================"
 	@echo "STEP 3/4: Downloading price data (Pass 1 of 3)..."
 	@echo "============================================================"
-	@.venv/bin/python src/ingestion/precache_data.py --workers 2 --batch-size 16 || true
+	@.venv/bin/python src/data_ops/precache_data.py --workers 2 --batch-size 16 || true
 	@echo ""
 	@echo "============================================================"
 	@echo "STEP 3/4: Downloading price data (Pass 2 of 3)..."
 	@echo "============================================================"
-	@.venv/bin/python src/ingestion/precache_data.py --workers 2 --batch-size 16 || true
+	@.venv/bin/python src/data_ops/precache_data.py --workers 2 --batch-size 16 || true
 	@echo ""
 	@echo "============================================================"
 	@echo "STEP 3/4: Downloading price data (Pass 3 of 3)..."
 	@echo "============================================================"
-	@.venv/bin/python src/ingestion/precache_data.py --workers 2 --batch-size 16 || true
+	@.venv/bin/python src/data_ops/precache_data.py --workers 2 --batch-size 16 || true
 	@echo ""
 	@echo "============================================================"
 	@echo "STEP 3/4: Cleaning cached data (removing empty rows)..."
 	@echo "============================================================"
-	@.venv/bin/python src/ingestion/clean_cache.py
+	@.venv/bin/python src/data_ops/clean_cache.py
 	@echo ""
 	@echo "============================================================"
 	@echo "STEP 4/4: Setup complete!"
@@ -345,7 +349,7 @@ setup:
 
 # Clean cached price data by removing empty rows (dates before company existed)
 clean-cache: .venv/.deps_installed
-	@.venv/bin/python src/ingestion/clean_cache.py
+	@.venv/bin/python src/data_ops/clean_cache.py
 
 colors: .venv/.deps_installed
 	@.venv/bin/python src/show_colors.py

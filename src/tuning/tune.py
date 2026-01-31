@@ -967,8 +967,9 @@ def tune_asset_q(
         best_model = min(bic_values.items(), key=lambda x: x[1])[0]
         best_params = models[best_model]
         
-        # Build result structure
-        result = {
+        # Build result structure - BMA-compatible format
+        # signals.py expects: {"global": {...}, "has_bma": True}
+        global_data = {
             "asset": asset,
             "q": float(best_params.get("q", 1e-6)),
             "c": float(best_params.get("c", 1.0)),
@@ -985,12 +986,22 @@ def tune_asset_q(
             "calibration_warning": best_params.get("pit_ks_pvalue", 1.0) < 0.05,
             "n_obs": n_obs,
             "model_weights": model_weights,
+            "model_posterior": model_weights,  # BMA expects model_posterior
+            "models": models,  # Full model details for BMA
             "model_comparison": {m: {
                 "ll": models[m].get("log_likelihood", float('-inf')),
                 "bic": models[m].get("bic", float('inf')),
                 "aic": models[m].get("aic", float('inf')),
                 "fit_success": models[m].get("fit_success", False),
             } for m in models},
+        }
+        
+        result = {
+            "asset": asset,
+            "has_bma": True,  # CRITICAL: signals.py checks this flag
+            "global": global_data,  # BMA-compatible structure
+            "regime": None,  # No regime data for basic tuning
+            "use_regime_tuning": False,
             "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         
@@ -1151,11 +1162,25 @@ def save_cache_json(cache: Dict[str, Dict], cache_json: str) -> None:
         return
     
     # Fallback to legacy single-file cache (only if per-asset not available)
+    # Note: This should never run in normal operation since PER_ASSET_CACHE_AVAILABLE=True
+    # Skip if cache_json is a directory (new architecture)
+    if os.path.isdir(cache_json):
+        print(f"Warning: Legacy cache save skipped - {cache_json} is a directory")
+        return
+        
     os.makedirs(os.path.dirname(cache_json) if os.path.dirname(cache_json) else '.', exist_ok=True)
     json_temp = cache_json + '.tmp'
-    with open(json_temp, 'w') as f:
-        json.dump(cache, f, indent=2, cls=NumpyEncoder)
-    os.replace(json_temp, cache_json)
+    try:
+        with open(json_temp, 'w') as f:
+            json.dump(cache, f, indent=2, cls=NumpyEncoder)
+        os.replace(json_temp, cache_json)
+    finally:
+        # Clean up temp file if it exists
+        if os.path.exists(json_temp):
+            try:
+                os.remove(json_temp)
+            except Exception:
+                pass
 
 
 # =============================================================================
@@ -2096,6 +2121,7 @@ def tune_asset_with_bma(
             # Return result with explicit markers that regime tuning was skipped
             return {
                 "asset": asset,
+                "has_bma": True,  # CRITICAL: signals.py checks this flag to accept the cache
                 "global": global_result,
                 "regime": None,  # Explicitly None - no regime params available
                 "use_regime_tuning": False,
@@ -2140,6 +2166,7 @@ def tune_asset_with_bma(
             
             return {
                 "asset": asset,
+                "has_bma": True,  # CRITICAL: signals.py checks this flag to accept the cache
                 "global": global_result,
                 "regime": None,
                 "use_regime_tuning": False,
@@ -2202,11 +2229,16 @@ def tune_asset_with_bma(
                 collapse_warnings += 1
 
         # Build combined result with BMA structure
+        # Note: tune_asset_q now returns {"has_bma": True, "global": {...}}
+        # We need to extract the inner global data
+        global_data = global_result.get('global', global_result)  # Backward compatible
+        
         result = {
             "asset": asset,
+            "has_bma": True,  # CRITICAL: signals.py checks this flag to accept the cache
             "global": {
                 # Keep backward-compatible global result
-                **global_result,
+                **global_data,
                 # Add BMA global model posterior
                 "model_posterior": bma_result.get("global", {}).get("model_posterior", {}),
                 "models": bma_result.get("global", {}).get("models", {}),
@@ -2294,11 +2326,10 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float,
         )
 
         if fallback_result:
-            # Mark as fallback so downstream knows regime params are not available
-            fallback_result['use_regime_tuning'] = False
+            # tune_asset_q now returns BMA-compatible structure with global wrapper
+            # Just mark as fallback for diagnostic purposes
             fallback_result['regime_fallback'] = True
-            fallback_result['regime'] = None
-            fallback_result['regime_counts'] = None
+            fallback_result['regime_fallback_reason'] = 'tune_asset_with_bma_returned_none'
             return (asset, fallback_result, None, None)
         else:
             return (asset, None, "both regime and standard tuning failed", None)
