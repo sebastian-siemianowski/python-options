@@ -60,7 +60,7 @@ At its core, the system maintains a population of competing models—each repres
 ║   │   • Incremental cache updates                                               │     ║
 ║   │   • Currency conversion to PLN base                                         │     ║
 ║   │                                                                             │     ║
-║   │   Output: data/{SYMBOL}_1d.csv                                              │     ║
+║   │   Output: src/data/options/stock_prices/{SYMBOL}_1d.csv                                              │     ║
 ║   └──────────────────────────────────┬──────────────────────────────────────────┘     ║
 ║                                      │                                                ║
 ║                                      ▼                                                ║
@@ -91,7 +91,7 @@ At its core, the system maintains a population of competing models—each repres
 ║   │   │      • Normalize: p(m|r) = w(m|r) / Σw                              │   │     ║
 ║   │   └─────────────────────────────────────────────────────────────────────┘   │     ║
 ║   │                                                                             │     ║
-║   │   Output: scripts/quant/cache/kalman_q_cache.json                           │     ║
+║   │   Output: src/data/kalman_q_cache.json                           │     ║
 ║   │           {asset: {regime: {model: {q, φ, ν, BIC, p(m|r), ...}}}}           │     ║
 ║   └──────────────────────────────────┬──────────────────────────────────────────┘     ║
 ║                                      │                                                ║
@@ -211,7 +211,7 @@ make setup
 
 This will:
 1. Create `.venv/` virtual environment
-2. Install dependencies from `requirements.txt`
+2. Install dependencies from `src/setup/requirements.txt`
 3. Download 10 years of price data (3 passes for reliability)
 4. Clean cached data
 
@@ -358,10 +358,10 @@ make setup
 ```
 
 **What happens internally:**
-1. Creates `.venv/` via `setup_venv.sh`
-2. Upgrades pip and installs `requirements.txt`
-3. Runs `precache_data.py` **3 times** (Yahoo Finance is flaky)
-4. Runs `clean_cache.py` to remove empty rows
+1. Creates `.venv/` via `src/setup/setup_venv.sh`
+2. Upgrades pip and installs `src/setup/requirements.txt`
+3. Runs `ingestion/precache_data.py` **3 times** (Yahoo Finance is flaky)
+4. Runs `ingestion/clean_cache.py` to remove empty rows
 
 **Time:** 5-15 minutes  
 **Disk:** ~10GB for full price cache
@@ -391,10 +391,10 @@ make data ARGS="--batch-size 8"        # Smaller batches
 ```
 
 **Internals:**
-- Runs `refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16`
+- Runs `ingestion/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16`
 - 5 retry passes (Yahoo Finance rate-limits aggressively)
 - 12 parallel workers, 16 assets per batch
-- Output: `data/<SYMBOL>_1d.csv`
+- Output: `src/data/options/stock_prices/<SYMBOL>_1d.csv`
 
 #### `make refresh`
 
@@ -419,7 +419,7 @@ make clean-cache
 
 #### `make failed`
 
-Lists assets that failed to download (stored in `scripts/fx_failures.json`).
+Lists assets that failed to download (stored in `src/fx_failures.json`).
 
 ```bash
 make failed
@@ -452,14 +452,14 @@ make tune ARGS="--dry-run"             # Preview without executing
 ```
 
 **What happens internally:**
-1. Loads asset universe from `fx_data_utils.py`
+1. Loads asset universe from `ingestion/data_utils.py`
 2. For each asset, for each of 5 regimes:
    - Fits 7 model classes (Gaussian, AR(1)-Gaussian, Student-t with ν ∈ {4,6,8,12,20})
    - Computes BIC, AIC, Hyvärinen score, PIT diagnostics
    - Converts scores to posterior weights
    - Applies temporal smoothing against previous run
    - Applies hierarchical shrinkage toward global
-3. Saves to `scripts/quant/cache/kalman_q_cache.json`
+3. Saves to `src/data/kalman_q_cache.json`
 
 **Key ARGS:**
 | Argument | Description | Default |
@@ -504,8 +504,8 @@ make stocks ARGS="--assets AAPL,MSFT"  # Specific assets only
 ```
 
 **What happens internally:**
-1. Runs `refresh_data.py` (updates last 5 days)
-2. Runs `fx_pln_jpy_signals.py` with caching enabled
+1. Runs `ingestion/refresh_data.py` (updates last 5 days)
+2. Runs `signals.py` with caching enabled
 3. For each asset:
    - Determines current regime r_t
    - Loads model posterior p(m|r_t) from cache
@@ -590,7 +590,7 @@ Level-7 Kalman validation science:
 
 ```bash
 make fx-validate-kalman                        # Console output only
-make fx-validate-kalman-plots                  # Also saves plots to plots/kalman_validation/
+make fx-validate-kalman-plots                  # Also saves plots to src/data/plots/kalman_validation/
 ```
 
 #### `make tests`
@@ -620,7 +620,7 @@ make debt
 - Latent state inference (NORMAL → COMPRESSED → PRE_POLICY → POLICY)
 - Auditable, causal decision logic
 
-Output: `scripts/quant/cache/debt/`
+Output: `src/data/debt/`
 
 ---
 
@@ -640,7 +640,7 @@ make run ARGS="--min_oi 200 --min_vol 50"      # Filter thresholds
 
 **Output:**
 - `screener_results.csv`
-- `plots/<TICKER>_support_resistance.png`
+- `src/data/plots/<TICKER>_support_resistance.png`
 
 #### `make backtest`
 
@@ -663,7 +663,7 @@ make backtest ARGS="--tickers AAPL --bt_years 5"
 | `--bt_alloc_frac` | Equity fraction per trade | 0.1 |
 
 **Output:**
-- `backtests/<TICKER>_equity.csv`
+- `src/backtesting/equity_curves/<TICKER>_equity.csv`
 - `screener_results_backtest.csv`
 
 ---
@@ -699,7 +699,7 @@ make top100
 
 #### `make build-russell`
 
-Builds `data/universes/russell2500_tickers.csv` from public sources.
+Builds `src/data/russell/russell2500_tickers.csv` from public sources.
 
 ```bash
 make build-russell
@@ -727,8 +727,8 @@ make clear
 
 **Deletes:**
 - `__pycache__/`
-- `plots/*.png`
-- `data/meta/`
+- `src/data/plots/*.png`
+- `src/data/options/meta/`
 - `data/*.backup`
 
 #### `make colors`
@@ -748,13 +748,13 @@ python-options/
 │
 ├── Makefile                    # Command interface (start here)
 │
-├── scripts/
-│   ├── tune_q_mle.py           # TUNING ENGINE: MLE + BMA
-│   ├── tune_pretty.py          # Tuning UX wrapper
-│   ├── fx_pln_jpy_signals.py   # SIGNAL ENGINE: Posterior predictive
-│   ├── fx_signals_presentation.py  # Rich console output
-│   ├── refresh_data.py         # DATA ENGINE: Bulk download
-│   ├── fx_data_utils.py        # Data utilities + caching
+├── src/
+│   ├── tune.py           # TUNING ENGINE: MLE + BMA
+│   ├── tune_ux.py          # Tuning UX wrapper
+│   ├── signals.py   # SIGNAL ENGINE: Posterior predictive
+│   ├── signals_ux.py  # Rich console output
+│   ├── ingestion/refresh_data.py         # DATA ENGINE: Bulk download
+│   ├── ingestion/data_utils.py        # Data utilities + caching
 │   ├── debt_allocator.py       # Debt switch decision engine
 │   └── quant/
 │       └── cache/
@@ -766,8 +766,8 @@ python-options/
 │
 ├── data/                       # Price cache (CSV per symbol)
 ├── options.py                  # Options screener
-├── backtests/                  # Equity curves
-└── plots/                      # Generated charts
+├── src/backtesting/            # Backtesting module
+└── src/data/plots/                      # Generated charts
 ```
 
 ### Design Principles
@@ -1650,10 +1650,10 @@ Each asset records its escalation history:
 
 | File | Purpose |
 |------|---------|
-| `scripts/pit_driven_escalation.py` | Orchestration logic |
-| `scripts/adaptive_nu_refinement.py` | Level 2: ν refinement |
-| `scripts/phi_t_mixture_k2.py` | Level 3: K=2 mixture |
-| `scripts/quant/cache/calibration/calibration_failures.json` | Diagnostic output |
+| `src/pit_driven_escalation.py` | Orchestration logic |
+| `src/calibration/adaptive_nu_refinement.py` | Level 2: ν refinement |
+| `src/calibration/phi_t_mixture_k2.py` | Level 3: K=2 mixture |
+| `src/data/calibration/calibration_failures.json` | Diagnostic output |
 
 **View Escalation Summary**
 
@@ -1927,7 +1927,7 @@ make setup
 
 To wykona:
 1. Utworzenie środowiska wirtualnego `.venv/`
-2. Instalację zależności z `requirements.txt`
+2. Instalację zależności z `src/setup/requirements.txt`
 3. Pobranie 10 lat danych cenowych (3 przebiegi dla niezawodności)
 4. Wyczyszczenie danych w cache
 
