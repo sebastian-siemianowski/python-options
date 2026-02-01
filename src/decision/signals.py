@@ -6181,6 +6181,21 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                 if os.getenv("DEBUG"):
                     print(f"Risk temperature computation failed: {e}")
 
+        # ================================================================
+        # EXTRACT AUGMENTATION LAYER DATA FROM BMA METADATA
+        # ================================================================
+        # Hansen Skew-t (asymmetric return distribution)
+        hansen_enabled = bma_meta.get("hansen_skew_t_enabled", False)
+        hansen_lambda = bma_meta.get("hansen_lambda")
+        hansen_nu = bma_meta.get("hansen_nu")
+        hansen_skew_direction = bma_meta.get("hansen_skew_direction")
+        
+        # Contaminated Student-t (regime-dependent tails)
+        cst_enabled = bma_meta.get("contaminated_student_t_enabled", False)
+        cst_nu_normal = bma_meta.get("cst_nu_normal")
+        cst_nu_crisis = bma_meta.get("cst_nu_crisis")
+        cst_epsilon = bma_meta.get("cst_epsilon")
+
         sigs.append(Signal(
             horizon_days=int(H),
             score=float(edge_now),
@@ -6232,6 +6247,16 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             evt_threshold=float(evt_threshold) if evt_threshold is not None else None,
             evt_n_exceedances=int(evt_n_exceedances),
             evt_fit_method=str(evt_fit_method) if evt_fit_method is not None else None,
+            # Contaminated Student-t Mixture (regime-dependent tails):
+            cst_enabled=bool(cst_enabled),
+            cst_nu_normal=float(cst_nu_normal) if cst_nu_normal is not None else None,
+            cst_nu_crisis=float(cst_nu_crisis) if cst_nu_crisis is not None else None,
+            cst_epsilon=float(cst_epsilon) if cst_epsilon is not None else None,
+            # Hansen Skew-t (asymmetric return distribution):
+            hansen_enabled=bool(hansen_enabled),
+            hansen_lambda=float(hansen_lambda) if hansen_lambda is not None else None,
+            hansen_nu=float(hansen_nu) if hansen_nu is not None else None,
+            hansen_skew_direction=str(hansen_skew_direction) if hansen_skew_direction is not None else None,
             # Diagnostics ONLY (NOT used for trading decisions):
             drift_uncertainty=float(drift_uncertainty_H),
             p_analytical=float(p_analytical),  # DIAGNOSTIC: analytical posterior predictive
@@ -6686,6 +6711,11 @@ def main() -> None:
                 show_caption = not caption_printed
             render_detailed_signal_table(asset, title, sigs, px, confidence_level=args.ci, used_student_t_mapping=args.t_map, show_caption=show_caption)
             caption_printed = caption_printed or show_caption
+            
+            # Show augmentation layer summary if any are active (first signal)
+            if sigs:
+                render_augmentation_layers_summary(sigs[0])
+            
             explanations = []
 
         # Display diagnostics if computed (Level-7: model falsifiability)

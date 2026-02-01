@@ -598,6 +598,81 @@ def extract_market_context(features: Dict[str, pd.Series]) -> tuple[str, str, st
     return trend_desc, momentum_desc, volatility_desc
 
 
+def render_augmentation_layers_summary(
+    signal,  # Signal dataclass
+    console: Console = None,
+) -> None:
+    """Render compact augmentation layer summary for a signal.
+    
+    Shows which augmentation layers (Hansen-λ, EVT/GPD, Contaminated-t) are active
+    for the current signal computation.
+    
+    Args:
+        signal: Signal dataclass with augmentation layer fields
+        console: Rich Console for output
+    """
+    if console is None:
+        console = Console(force_terminal=True, width=120)
+    
+    # Check if any augmentation layer is active
+    hansen_active = getattr(signal, 'hansen_enabled', False)
+    evt_active = getattr(signal, 'evt_enabled', False)
+    cst_active = getattr(signal, 'cst_enabled', False)
+    
+    if not (hansen_active or evt_active or cst_active):
+        return  # No augmentation layers to display
+    
+    from rich.text import Text
+    
+    aug_text = Text()
+    aug_text.append("  ", style="dim")
+    aug_text.append("Augmentation", style="dim")
+    aug_text.append("  ", style="dim")
+    
+    layers = []
+    
+    # Hansen Skew-t
+    if hansen_active:
+        hansen_lambda = getattr(signal, 'hansen_lambda', None)
+        hansen_skew = getattr(signal, 'hansen_skew_direction', 'symmetric')
+        if hansen_lambda is not None:
+            skew_symbol = "←" if hansen_skew == "left" else ("→" if hansen_skew == "right" else "○")
+            layers.append(f"[cyan]Hλ={hansen_lambda:+.2f}{skew_symbol}[/cyan]")
+        else:
+            layers.append("[cyan]Hλ[/cyan]")
+    
+    # EVT/GPD
+    if evt_active:
+        evt_xi = getattr(signal, 'evt_xi', None)
+        if evt_xi is not None:
+            if evt_xi > 0.2:
+                tail_label = "heavy"
+                tail_style = "indian_red1"
+            elif evt_xi > 0.05:
+                tail_label = "moderate"
+                tail_style = "yellow"
+            else:
+                tail_label = "light"
+                tail_style = "bright_green"
+            layers.append(f"[{tail_style}]EVT(ξ={evt_xi:.2f},{tail_label})[/{tail_style}]")
+        else:
+            layers.append("[indian_red1]EVT[/indian_red1]")
+    
+    # Contaminated Student-t
+    if cst_active:
+        cst_epsilon = getattr(signal, 'cst_epsilon', None)
+        cst_nu_normal = getattr(signal, 'cst_nu_normal', None)
+        cst_nu_crisis = getattr(signal, 'cst_nu_crisis', None)
+        if cst_epsilon is not None and cst_nu_crisis is not None:
+            layers.append(f"[yellow]CST(ε={cst_epsilon:.0%},ν={cst_nu_crisis:.0f})[/yellow]")
+        else:
+            layers.append("[yellow]CST[/yellow]")
+    
+    if layers:
+        aug_text.append(" · ".join(layers))
+        console.print(aug_text)
+
+
 def generate_signal_explanation(
     edge_score: float,
     probability_up: float,
