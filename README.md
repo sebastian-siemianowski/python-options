@@ -789,6 +789,72 @@ python-options/
 
 ---
 
+## Risk Temperature Governance (February 2026)
+
+The system implements institutional-grade risk temperature governance based on the Chinese Quantitative Systems Professor's control theory approach. This layer modulates position sizing based on cross-asset stress indicators without touching distributional beliefs.
+
+### Governance Features
+
+| Feature | Description | Benefit |
+|---------|-------------|---------|
+| **Hysteresis Bands** | Asymmetric thresholds for regime transitions | Prevents oscillation at regime boundaries |
+| **Conservative Imputation** | Missing data at 75th percentile | Defensive degradation when data quality deteriorates |
+| **Rate Limiting** | Maximum temperature change of 0.3/day | Prevents whipsawing from single-day movements |
+| **Dynamic Gap Risk** | 95th percentile of trailing 60-day gaps | Adaptive overnight budget constraint |
+| **Complete Audit Trail** | Full attribution for reconstruction | Regulatory compliance and post-incident analysis |
+
+### Regime State Machine
+
+```
+States: Calm → Elevated → Stressed → Extreme
+
+Upward Thresholds (always allowed):
+    Calm → Elevated:     temp > 0.5
+    Elevated → Stressed: temp > 1.0
+    Stressed → Extreme:  temp > 1.5
+
+Downward Thresholds (with hysteresis gap):
+    Extreme → Stressed:  temp < 1.2   (gap of 0.3)
+    Stressed → Elevated: temp < 0.7   (gap of 0.3)
+    Elevated → Calm:     temp < 0.3   (gap of 0.2)
+```
+
+### Scale Factors by Regime
+
+| Regime | Scale Factor | Position Effect |
+|--------|-------------|-----------------|
+| Calm | 100% | Full allocation |
+| Elevated | 75% | Reduced exposure |
+| Stressed | 45% | Significantly reduced |
+| Extreme | 20% | Minimal / defensive |
+
+### Usage
+
+```python
+from decision.metals_risk_temperature import compute_governed_metals_risk_temperature
+
+# Compute with full governance
+result = compute_governed_metals_risk_temperature(start_date="2020-01-01")
+
+# Access governance information
+print(f"Temperature: {result.temperature:.2f}")
+print(f"Regime State: {result.regime_state}")
+print(f"Scale Factor: {result.scale_factor:.2%}")
+
+# Get complete audit trail
+audit_json = result.get_audit_json()
+human_readable = result.render_audit_trail()
+```
+
+### Key Files
+
+- `src/decision/regime_governance.py` — Core governance module
+- `src/decision/metals_risk_temperature.py` — Governed metals temperature
+- `src/decision/risk_temperature.py` — Main risk temperature with governance integration
+- `src/tests/test_regime_governance.py` — Comprehensive test suite
+
+---
+
 ## The Mathematics
 
 > *"The math always emerges from the underlying system—not the other way around."*

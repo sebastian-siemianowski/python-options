@@ -1116,6 +1116,10 @@ def apply_risk_temperature_scaling(
     
     This is the integration function called from signal.py.
     
+    GOVERNANCE ENHANCEMENT (February 2026):
+    - Uses regime-based scale factor when available
+    - Includes governance metadata in output
+    
     Args:
         pos_strength: Original position strength (post-EU, post-exhaustion)
         risk_temp_result: Computed risk temperature result
@@ -1145,6 +1149,12 @@ def apply_risk_temperature_scaling(
         "is_elevated": risk_temp_result.is_elevated,
         "is_stressed": risk_temp_result.is_stressed,
         "is_crisis": risk_temp_result.is_crisis,
+        # Governance metadata (February 2026)
+        "regime_state": getattr(risk_temp_result, 'regime_state', 'Unknown'),
+        "regime_transition_occurred": getattr(risk_temp_result, 'regime_transition_occurred', False),
+        "rate_limit_applied": getattr(risk_temp_result, 'rate_limit_applied', False),
+        "imputation_warning": getattr(risk_temp_result, 'imputation_warning', False),
+        "gap_risk_estimate": getattr(risk_temp_result, 'gap_risk_estimate', 0.03),
     }
     
     return scaled_strength, metadata

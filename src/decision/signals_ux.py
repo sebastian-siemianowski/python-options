@@ -3699,5 +3699,55 @@ def render_risk_temperature_summary(
         quality_line.append("  indicators", style="dim italic")
         console.print(quality_line)
     
+    # Governance status (February 2026 Enhancement)
+    regime_state = getattr(risk_temp_result, 'regime_state', None)
+    if regime_state:
+        console.print()
+        console.print("  [dim]Governance[/dim]")
+        console.print()
+        
+        # Regime state
+        regime_line = Text()
+        regime_line.append("  ")
+        regime_line.append("Regime State    ", style="dim")
+        regime_line.append(regime_state, style=status_color)
+        
+        regime_transition = getattr(risk_temp_result, 'regime_transition_occurred', False)
+        prev_regime = getattr(risk_temp_result, 'previous_regime_state', None)
+        if regime_transition and prev_regime:
+            regime_line.append("  ← ", style="dim")
+            regime_line.append(prev_regime, style="dim italic")
+        console.print(regime_line)
+        
+        # Rate limiting
+        rate_limited = getattr(risk_temp_result, 'rate_limit_applied', False)
+        if rate_limited:
+            rate_line = Text()
+            rate_line.append("  ")
+            rate_line.append("Rate Limited    ", style="dim")
+            rate_line.append("Yes", style="yellow")
+            raw_temp = getattr(risk_temp_result, 'raw_temperature', None)
+            if raw_temp is not None:
+                rate_line.append(f"  (raw: {raw_temp:.2f})", style="dim italic")
+            console.print(rate_line)
+        
+        # Imputation warning
+        imputation_warning = getattr(risk_temp_result, 'imputation_warning', False)
+        if imputation_warning:
+            imp_line = Text()
+            imp_line.append("  ")
+            imp_line.append("⚠️ Imputation   ", style="dim")
+            imputed_count = getattr(risk_temp_result, 'imputed_indicators', 0)
+            imp_line.append(f"{imputed_count} indicators imputed", style="yellow")
+            console.print(imp_line)
+        
+        # Gap risk
+        gap_risk = getattr(risk_temp_result, 'gap_risk_estimate', 0.03)
+        gap_line = Text()
+        gap_line.append("  ")
+        gap_line.append("Gap Risk        ", style="dim")
+        gap_line.append(f"{gap_risk:.1%}", style="white")
+        console.print(gap_line)
+    
     console.print()
     console.print()

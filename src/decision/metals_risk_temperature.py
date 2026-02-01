@@ -52,15 +52,41 @@ REFERENCES:
 
 from __future__ import annotations
 
+import json
+import logging
 import math
 import os
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+# Governance imports (February 2026 — Copilot Story QUANT-2025-MRT-001)
+try:
+    from decision.regime_governance import (
+        RegimeState,
+        RegimeStateManager,
+        ImputationManager,
+        DynamicGapRiskEstimator,
+        GovernedRiskTemperatureAudit,
+        IndicatorAuditRecord,
+        CategoryAuditRecord,
+        GapRiskAuditRecord,
+        apply_rate_limit,
+        create_governance_managers,
+        IMPUTATION_WARNING_THRESHOLD,
+        IMPUTATION_TEMPERATURE_FLOOR,
+        MAX_TEMP_CHANGE_PER_DAY,
+    )
+    GOVERNANCE_AVAILABLE = True
+except ImportError:
+    GOVERNANCE_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # METALS RISK TEMPERATURE CONSTANTS
@@ -89,6 +115,43 @@ TEMP_MAX = 2.0
 
 # Cache TTL for market data (seconds)
 CACHE_TTL_SECONDS = 3600  # 1 hour
+
+# =============================================================================
+# ANTICIPATORY ENHANCEMENT CONSTANTS (February 2026)
+# =============================================================================
+
+# Volatility Term Structure Inversion Detection
+VOL_TERM_STRUCTURE_SHORT_WINDOW = 5    # 5-day realized volatility
+VOL_TERM_STRUCTURE_LONG_WINDOW = 20    # 20-day realized volatility
+VOL_TERM_STRUCTURE_INVERSION_THRESHOLD = 1.5  # Short/Long ratio threshold
+VOL_TERM_STRUCTURE_MIN_METALS = 2      # Minimum metals required for signal
+VOL_TERM_STRUCTURE_STRESS_CONTRIBUTION = 0.3  # Additive stress when triggered
+
+# Robust Z-Score (MAD-based) - Used instead of standard z-score
+# Consistency constant for MAD to match std dev of normal distribution
+MAD_CONSISTENCY_CONSTANT = 1.4826
+
+# Data Infrastructure Hardening
+DATA_FAILOVER_LATENCY_THRESHOLD_SECONDS = 300  # 5 minutes
+DATA_PRICE_DIVERGENCE_THRESHOLD = 0.005  # 0.5% price divergence triggers alert
+DATA_DEGRADED_MODE_THRESHOLD = 0.6  # 60% indicators required, else degraded mode
+DATA_DEGRADED_MODE_TEMP_FLOOR = 1.0  # Temperature floor when in degraded mode
+
+# Enhanced Escalation Protocol with Hysteresis (Updated per Copilot Story)
+ESCALATION_NORMAL_TO_ELEVATED_TEMP = 0.7
+ESCALATION_ELEVATED_TO_STRESSED_TEMP = 1.2
+ESCALATION_STRESSED_TO_NORMAL_TEMP = 0.5
+ESCALATION_ELEVATED_TO_NORMAL_TEMP = 0.4
+ESCALATION_CONSECUTIVE_REQUIRED = 2  # Consecutive computations for upward transition
+ESCALATION_SUSTAINED_DAYS_STRESSED_TO_NORMAL = 5  # Business days
+ESCALATION_SUSTAINED_DAYS_ELEVATED_TO_NORMAL = 3  # Business days
+
+
+class AlertSeverity:
+    """Alert severity levels for routing to operations."""
+    INFO = "INFO"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
 
 
 # =============================================================================
@@ -149,8 +212,22 @@ class MetalsRiskTemperatureResult:
     status: str                              # Calm, Elevated, Stressed, Extreme
     action_text: str                         # Position recommendation
     
+    # Governance enhancement fields (February 2026)
+    regime_state: str = "Calm"               # Discrete regime from hysteresis
+    previous_regime_state: Optional[str] = None
+    regime_transition_occurred: bool = False
+    raw_temperature: Optional[float] = None  # Before rate limiting
+    rate_limit_applied: bool = False
+    imputed_indicators: int = 0
+    imputation_warning: bool = False
+    temperature_floor_applied: bool = False
+    gap_risk_estimate: float = 0.03
+    overnight_budget_active: bool = False
+    overnight_max_position: Optional[float] = None
+    audit_trail: Optional["GovernedRiskTemperatureAudit"] = None
+    
     def to_dict(self) -> Dict:
-        return {
+        result = {
             "temperature": float(self.temperature),
             "scale_factor": float(self.scale_factor),
             "status": self.status,
@@ -159,7 +236,32 @@ class MetalsRiskTemperatureResult:
             "data_quality": float(self.data_quality),
             "indicators": [ind.to_dict() for ind in self.indicators],
             "metals": {k: v.to_dict() for k, v in self.metals.items()},
+            # Governance fields
+            "regime_state": self.regime_state,
+            "previous_regime_state": self.previous_regime_state,
+            "regime_transition_occurred": self.regime_transition_occurred,
+            "raw_temperature": float(self.raw_temperature) if self.raw_temperature is not None else None,
+            "rate_limit_applied": self.rate_limit_applied,
+            "imputed_indicators": self.imputed_indicators,
+            "imputation_warning": self.imputation_warning,
+            "temperature_floor_applied": self.temperature_floor_applied,
+            "gap_risk_estimate": float(self.gap_risk_estimate),
+            "overnight_budget_active": self.overnight_budget_active,
+            "overnight_max_position": float(self.overnight_max_position) if self.overnight_max_position else None,
         }
+        return result
+    
+    def get_audit_json(self) -> Optional[str]:
+        """Get complete audit trail as JSON string."""
+        if self.audit_trail:
+            return self.audit_trail.to_json()
+        return None
+    
+    def render_audit_trail(self) -> Optional[str]:
+        """Get human-readable audit trail."""
+        if self.audit_trail:
+            return self.audit_trail.render_human_readable()
+        return None
     
     @property
     def is_elevated(self) -> bool:
@@ -178,39 +280,238 @@ class MetalsRiskTemperatureResult:
 # HELPER FUNCTIONS
 # =============================================================================
 
-def _compute_zscore(
+def _compute_robust_zscore(
     values: pd.Series,
-    lookback: int = ZSCORE_LOOKBACK_DAYS
-) -> float:
-    """Compute z-score of most recent value relative to rolling window."""
+    lookback: int = ZSCORE_LOOKBACK_DAYS,
+    return_audit: bool = False
+) -> float | Tuple[float, Dict]:
+    """
+    Compute ROBUST z-score using Median Absolute Deviation (MAD).
+    
+    Formula: z_robust = (x - median) / (1.4826 × MAD)
+    
+    The MAD estimator has a breakdown point of 50%, meaning up to half
+    the observations can be outliers without corrupting the estimate.
+    This prevents the crash itself from distorting the reference distribution.
+    
+    Args:
+        values: Time series of values
+        lookback: Lookback window for median/MAD calculation
+        return_audit: If True, return tuple of (zscore, audit_dict)
+        
+    Returns:
+        Robust z-score, or tuple (zscore, audit_dict) if return_audit=True
+    """
+    audit = {
+        "lookback_median": None,
+        "lookback_mad": None,
+        "lookback_mean": None,  # For comparison/audit
+        "lookback_std": None,   # For comparison/audit
+        "lookback_start": None,
+        "lookback_end": None,
+        "estimation_method": "MAD_robust",
+    }
+    
     try:
         if values is None:
-            return 0.0
+            return (0.0, audit) if return_audit else 0.0
         
         if isinstance(values, pd.DataFrame):
             if values.shape[1] == 1:
                 values = values.iloc[:, 0]
             else:
-                return 0.0
+                return (0.0, audit) if return_audit else 0.0
         
         values = values.dropna()
         
         if len(values) < lookback // 2:
-            return 0.0
+            return (0.0, audit) if return_audit else 0.0
         
         recent = values.iloc[-lookback:] if len(values) >= lookback else values
         current = float(values.iloc[-1])
         
+        # Robust estimation using MAD
+        median = float(recent.median())
+        mad = float((recent - median).abs().median())
+        
+        # Also compute standard stats for audit trail comparison
         mean = float(recent.mean())
         std = float(recent.std())
         
-        if std < 1e-10 or not np.isfinite(std):
-            return 0.0
+        # Record audit information
+        audit["lookback_median"] = median
+        audit["lookback_mad"] = mad
+        audit["lookback_mean"] = mean
+        audit["lookback_std"] = std
+        if hasattr(recent, 'index') and len(recent.index) > 0:
+            audit["lookback_start"] = str(recent.index[0])
+            audit["lookback_end"] = str(recent.index[-1])
         
-        zscore = (current - mean) / std
-        return float(np.clip(zscore, -5.0, 5.0))
+        # Use MAD for robust z-score computation
+        # Scale MAD by 1.4826 to match std dev of normal distribution
+        scaled_mad = MAD_CONSISTENCY_CONSTANT * mad
+        
+        if scaled_mad < 1e-10 or not np.isfinite(scaled_mad):
+            # Fallback to standard z-score if MAD is zero
+            if std < 1e-10 or not np.isfinite(std):
+                return (0.0, audit) if return_audit else 0.0
+            zscore = (current - mean) / std
+            audit["estimation_method"] = "std_fallback"
+        else:
+            zscore = (current - median) / scaled_mad
+        
+        result = float(np.clip(zscore, -5.0, 5.0))
+        
+        return (result, audit) if return_audit else result
     except Exception:
-        return 0.0
+        return (0.0, audit) if return_audit else 0.0
+
+
+def _compute_zscore(
+    values: pd.Series,
+    lookback: int = ZSCORE_LOOKBACK_DAYS,
+    return_audit: bool = False
+) -> float | Tuple[float, Dict]:
+    """
+    Compute z-score of most recent value relative to rolling window.
+    
+    NOTE: As of February 2026 Anticipatory Enhancement, this now uses
+    the robust MAD-based z-score computation for outlier resistance.
+    
+    Args:
+        values: Time series of values
+        lookback: Lookback window for calculation
+        return_audit: If True, return tuple of (zscore, audit_dict)
+        
+    Returns:
+        Z-score of most recent value, or tuple (zscore, audit_dict) if return_audit=True
+    """
+    return _compute_robust_zscore(values, lookback, return_audit)
+
+
+def _compute_volatility_term_structure(
+    prices: pd.Series,
+    short_window: int = VOL_TERM_STRUCTURE_SHORT_WINDOW,
+    long_window: int = VOL_TERM_STRUCTURE_LONG_WINDOW,
+) -> Tuple[float, float, float]:
+    """
+    Compute volatility term structure ratio for a single metal.
+    
+    Ratio = (5-day realized vol) / (20-day realized vol)
+    
+    When ratio > 1.5, short-term volatility exceeds long-term trend,
+    indicating volatility term structure inversion - a documented
+    precursor to crash events.
+    
+    Args:
+        prices: Price series for the metal
+        short_window: Short-term volatility window (default 5 days)
+        long_window: Long-term volatility window (default 20 days)
+        
+    Returns:
+        Tuple of (ratio, short_vol, long_vol)
+    """
+    try:
+        if prices is None or len(prices) < long_window + 5:
+            return 0.0, 0.0, 0.0
+        
+        returns = prices.pct_change().dropna()
+        
+        if len(returns) < long_window:
+            return 0.0, 0.0, 0.0
+        
+        # Compute annualized volatilities
+        short_vol = float(returns.iloc[-short_window:].std() * np.sqrt(252))
+        long_vol = float(returns.iloc[-long_window:].std() * np.sqrt(252))
+        
+        if long_vol < 1e-10:
+            return 0.0, short_vol, long_vol
+        
+        ratio = short_vol / long_vol
+        
+        return ratio, short_vol, long_vol
+    except Exception:
+        return 0.0, 0.0, 0.0
+
+
+def compute_volatility_term_structure_stress(
+    metals_data: Dict[str, pd.Series]
+) -> Tuple[MetalStressIndicator, Dict[str, Dict]]:
+    """
+    Compute volatility term structure inversion signal across all metals.
+    
+    LEADING INDICATOR: When 2+ metals simultaneously exhibit vol term
+    structure inversion (5-day vol / 20-day vol > 1.5), this historically
+    precedes crash events by 1-5 trading days.
+    
+    This is an ADDITIVE stress contribution (not weighted like other indicators)
+    that injects 0.3 into the temperature when triggered.
+    
+    Args:
+        metals_data: Dict of metal name -> price series
+        
+    Returns:
+        Tuple of (MetalStressIndicator, details_dict with per-metal breakdown)
+    """
+    metal_details = {}
+    inverted_metals = []
+    
+    for name in ['GOLD', 'SILVER', 'COPPER', 'PLATINUM', 'PALLADIUM']:
+        if name not in metals_data:
+            metal_details[name] = {
+                "ratio": None,
+                "short_vol": None,
+                "long_vol": None,
+                "inverted": False,
+                "data_available": False,
+            }
+            continue
+        
+        ratio, short_vol, long_vol = _compute_volatility_term_structure(
+            metals_data[name]
+        )
+        
+        is_inverted = ratio >= VOL_TERM_STRUCTURE_INVERSION_THRESHOLD
+        
+        metal_details[name] = {
+            "ratio": ratio,
+            "short_vol": short_vol,
+            "long_vol": long_vol,
+            "inverted": is_inverted,
+            "data_available": True,
+        }
+        
+        if is_inverted:
+            inverted_metals.append(name)
+    
+    # Signal triggers when >= 2 metals show inversion
+    signal_triggered = len(inverted_metals) >= VOL_TERM_STRUCTURE_MIN_METALS
+    
+    # Contribution is additive 0.3 when signal triggers
+    contribution = VOL_TERM_STRUCTURE_STRESS_CONTRIBUTION if signal_triggered else 0.0
+    
+    # Build interpretation
+    if signal_triggered:
+        interpretation = f"⚠️ INVERSION: {', '.join(inverted_metals)} ({len(inverted_metals)} metals)"
+    elif len(inverted_metals) == 1:
+        interpretation = f"Watch: {inverted_metals[0]} inverted"
+    else:
+        interpretation = "Normal term structure"
+    
+    # Compute average ratio for display
+    valid_ratios = [d["ratio"] for d in metal_details.values() if d["ratio"] is not None]
+    avg_ratio = sum(valid_ratios) / len(valid_ratios) if valid_ratios else 0.0
+    
+    indicator = MetalStressIndicator(
+        name="Vol Term Structure",
+        value=avg_ratio,
+        zscore=len(inverted_metals),  # Use count as "z-score" equivalent
+        contribution=contribution,
+        data_available=len(valid_ratios) >= 3,
+        interpretation=interpretation,
+    )
+    
+    return indicator, metal_details
 
 
 def _compute_volatility_percentile(
@@ -280,10 +581,312 @@ def _extract_close_series(df, ticker: str) -> Optional[pd.Series]:
 
 
 # =============================================================================
-# MARKET DATA FETCHING
+# MARKET DATA FETCHING — Multi-Source Federation (February 2026)
 # =============================================================================
 
 _metals_data_cache: Dict[str, Tuple[datetime, Dict[str, pd.Series]]] = {}
+
+# Track data source health and failover events
+_data_source_health: Dict[str, Dict] = {}
+
+
+@dataclass
+class DataSourceResult:
+    """Result from a data source fetch attempt."""
+    source: str
+    metal: str
+    series: Optional[pd.Series]
+    latency_seconds: float
+    success: bool
+    error_message: Optional[str] = None
+    
+
+@dataclass  
+class DataQualityReport:
+    """Comprehensive data quality report for audit trail."""
+    timestamp: str
+    metals_available: int
+    metals_total: int
+    data_quality_pct: float
+    degraded_mode: bool
+    degraded_mode_reason: Optional[str]
+    failover_events: List[Dict]
+    source_used: Dict[str, str]  # metal -> source
+    price_divergence_alerts: List[Dict]
+    
+
+def _fetch_from_yfinance(
+    ticker: str,
+    start: str,
+    end: str,
+    metal_name: str,
+) -> DataSourceResult:
+    """Fetch from yfinance (primary source)."""
+    import time
+    start_time = time.time()
+    
+    try:
+        import yfinance as yf
+        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+        
+        latency = time.time() - start_time
+        series = _extract_close_series(df, ticker)
+        
+        if series is not None and len(series) > 20:
+            return DataSourceResult(
+                source="yfinance",
+                metal=metal_name,
+                series=series,
+                latency_seconds=latency,
+                success=True,
+            )
+        else:
+            return DataSourceResult(
+                source="yfinance",
+                metal=metal_name,
+                series=None,
+                latency_seconds=latency,
+                success=False,
+                error_message="Insufficient data returned",
+            )
+    except Exception as e:
+        latency = time.time() - start_time
+        return DataSourceResult(
+            source="yfinance",
+            metal=metal_name,
+            series=None,
+            latency_seconds=latency,
+            success=False,
+            error_message=str(e),
+        )
+
+
+def _fetch_from_fred(
+    fred_series_id: str,
+    start: str,
+    end: str,
+    metal_name: str,
+) -> DataSourceResult:
+    """
+    Fetch from FRED (Federal Reserve Economic Data) as secondary source.
+    
+    This is a fallback when yfinance fails or exhibits latency issues.
+    FRED provides daily spot prices for gold and silver.
+    """
+    import time
+    start_time = time.time()
+    
+    try:
+        import pandas_datareader as pdr
+        
+        series = pdr.get_data_fred(fred_series_id, start=start, end=end)
+        latency = time.time() - start_time
+        
+        if series is not None and len(series) > 20:
+            # FRED returns DataFrame, convert to Series
+            if isinstance(series, pd.DataFrame):
+                series = series.iloc[:, 0]
+            series = series.dropna()
+            
+            return DataSourceResult(
+                source="FRED",
+                metal=metal_name,
+                series=series,
+                latency_seconds=latency,
+                success=True,
+            )
+        else:
+            return DataSourceResult(
+                source="FRED",
+                metal=metal_name,
+                series=None,
+                latency_seconds=latency,
+                success=False,
+                error_message="Insufficient data returned",
+            )
+    except ImportError:
+        return DataSourceResult(
+            source="FRED",
+            metal=metal_name,
+            series=None,
+            latency_seconds=time.time() - start_time,
+            success=False,
+            error_message="pandas_datareader not installed",
+        )
+    except Exception as e:
+        return DataSourceResult(
+            source="FRED",
+            metal=metal_name,
+            series=None,
+            latency_seconds=time.time() - start_time,
+            success=False,
+            error_message=str(e),
+        )
+
+
+def _check_price_divergence(
+    primary_series: pd.Series,
+    secondary_series: pd.Series,
+    threshold: float = DATA_PRICE_DIVERGENCE_THRESHOLD,
+) -> Tuple[bool, float]:
+    """
+    Check if prices from two sources diverge beyond threshold.
+    
+    Returns (divergence_detected, divergence_pct)
+    """
+    try:
+        # Align by date
+        common_idx = primary_series.index.intersection(secondary_series.index)
+        if len(common_idx) < 5:
+            return False, 0.0
+        
+        # Compare recent prices
+        primary_recent = float(primary_series.loc[common_idx].iloc[-1])
+        secondary_recent = float(secondary_series.loc[common_idx].iloc[-1])
+        
+        if primary_recent < 1e-10:
+            return False, 0.0
+        
+        divergence_pct = abs(primary_recent - secondary_recent) / primary_recent
+        divergence_detected = divergence_pct > threshold
+        
+        return divergence_detected, divergence_pct
+    except Exception:
+        return False, 0.0
+
+
+def _fetch_metals_data_with_failover(
+    start_date: str = "2020-01-01",
+    end_date: Optional[str] = None,
+) -> Tuple[Dict[str, pd.Series], DataQualityReport]:
+    """
+    Fetch metals data with multi-source federation and automatic failover.
+    
+    Primary source: yfinance
+    Secondary source: FRED (for gold/silver)
+    
+    Failover triggers:
+    - Primary source latency > 5 minutes
+    - Price divergence > 0.5% from secondary source
+    - Primary source returns error
+    
+    Returns:
+        Tuple of (metals_data dict, DataQualityReport)
+    """
+    end = end_date or datetime.now().strftime("%Y-%m-%d")
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=ZSCORE_LOOKBACK_DAYS + 30)
+    start = start_dt.strftime("%Y-%m-%d")
+    
+    # Define tickers for each source
+    yfinance_tickers = {
+        'GOLD': 'GC=F',
+        'SILVER': 'SI=F',
+        'COPPER': 'HG=F',
+        'PLATINUM': 'PL=F',
+        'PALLADIUM': 'PA=F',
+    }
+    
+    # FRED series IDs (only gold and silver available)
+    fred_series = {
+        'GOLD': 'GOLDAMGBD228NLBM',  # Gold Fixing Price London
+        'SILVER': 'SLVPRUSD',         # Silver Fixing Price
+    }
+    
+    result = {}
+    failover_events = []
+    source_used = {}
+    price_divergence_alerts = []
+    
+    for name, ticker in yfinance_tickers.items():
+        # Try primary source (yfinance)
+        primary_result = _fetch_from_yfinance(ticker, start, end, name)
+        
+        # Check if failover is needed
+        needs_failover = False
+        failover_reason = None
+        
+        if not primary_result.success:
+            needs_failover = True
+            failover_reason = f"Primary source failed: {primary_result.error_message}"
+        elif primary_result.latency_seconds > DATA_FAILOVER_LATENCY_THRESHOLD_SECONDS:
+            needs_failover = True
+            failover_reason = f"Primary source latency too high: {primary_result.latency_seconds:.1f}s"
+        
+        # Try secondary source if available and needed
+        if needs_failover and name in fred_series:
+            secondary_result = _fetch_from_fred(fred_series[name], start, end, name)
+            
+            if secondary_result.success:
+                failover_events.append({
+                    "metal": name,
+                    "from_source": "yfinance",
+                    "to_source": "FRED",
+                    "reason": failover_reason,
+                    "timestamp": datetime.now().isoformat(),
+                })
+                result[name] = secondary_result.series
+                source_used[name] = "FRED"
+                logger.warning(f"Data failover for {name}: {failover_reason}")
+                continue
+        
+        # Use primary result if available
+        if primary_result.success:
+            result[name] = primary_result.series
+            source_used[name] = "yfinance"
+            
+            # Cross-check with secondary source if available
+            if name in fred_series:
+                secondary_result = _fetch_from_fred(fred_series[name], start, end, name)
+                if secondary_result.success:
+                    diverged, divergence_pct = _check_price_divergence(
+                        primary_result.series,
+                        secondary_result.series,
+                    )
+                    if diverged:
+                        price_divergence_alerts.append({
+                            "metal": name,
+                            "primary_source": "yfinance",
+                            "secondary_source": "FRED",
+                            "divergence_pct": divergence_pct,
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                        logger.warning(
+                            f"Price divergence alert for {name}: "
+                            f"{divergence_pct:.2%} between yfinance and FRED"
+                        )
+        else:
+            source_used[name] = "unavailable"
+    
+    # Build data quality report
+    metals_available = len(result)
+    metals_total = len(yfinance_tickers)
+    data_quality_pct = metals_available / metals_total if metals_total > 0 else 0.0
+    
+    degraded_mode = data_quality_pct < DATA_DEGRADED_MODE_THRESHOLD
+    degraded_mode_reason = None
+    if degraded_mode:
+        degraded_mode_reason = (
+            f"Only {metals_available}/{metals_total} metals available "
+            f"({data_quality_pct:.0%} < {DATA_DEGRADED_MODE_THRESHOLD:.0%} threshold)"
+        )
+        logger.warning(f"DEGRADED MODE: {degraded_mode_reason}")
+    
+    quality_report = DataQualityReport(
+        timestamp=datetime.now().isoformat(),
+        metals_available=metals_available,
+        metals_total=metals_total,
+        data_quality_pct=data_quality_pct,
+        degraded_mode=degraded_mode,
+        degraded_mode_reason=degraded_mode_reason,
+        failover_events=failover_events,
+        source_used=source_used,
+        price_divergence_alerts=price_divergence_alerts,
+    )
+    
+    return result, quality_report
 
 
 def _fetch_metals_data(
@@ -787,6 +1390,180 @@ def compute_scale_factor(temperature: float) -> float:
     return scale
 
 
+# =============================================================================
+# ESCALATION PROTOCOL STATE (February 2026)
+# =============================================================================
+
+@dataclass
+class EscalationState:
+    """Track escalation protocol state for hysteresis."""
+    current_regime: str = "Normal"
+    consecutive_elevated_count: int = 0
+    consecutive_stressed_count: int = 0
+    days_below_normal_threshold: int = 0
+    days_below_elevated_threshold: int = 0
+    last_transition_timestamp: Optional[str] = None
+    last_computation_timestamp: Optional[str] = None
+    temperature_history: List[float] = field(default_factory=list)
+
+
+_escalation_state = EscalationState()
+
+
+def _update_escalation_state(
+    temperature: float,
+    current_state: EscalationState,
+) -> Tuple[str, bool, Optional[str]]:
+    """
+    Update escalation state with hysteresis logic.
+    
+    Escalation Protocol (per Copilot Story):
+    - Normal → Elevated: temp > 0.7 for 2 consecutive computations
+    - Elevated → Stressed: temp > 1.2 for 2 consecutive computations
+    - Stressed → Normal: temp < 0.5 sustained for 5 business days
+    - Elevated → Normal: temp < 0.4 sustained for 3 business days
+    
+    Returns:
+        Tuple of (new_regime, transition_occurred, alert_severity)
+    """
+    previous_regime = current_state.current_regime
+    new_regime = previous_regime
+    transition_occurred = False
+    alert_severity = None
+    
+    # Track consecutive counts
+    if temperature > ESCALATION_ELEVATED_TO_STRESSED_TEMP:
+        current_state.consecutive_stressed_count += 1
+        current_state.consecutive_elevated_count = 0
+    elif temperature > ESCALATION_NORMAL_TO_ELEVATED_TEMP:
+        current_state.consecutive_elevated_count += 1
+        current_state.consecutive_stressed_count = 0
+    else:
+        current_state.consecutive_elevated_count = 0
+        current_state.consecutive_stressed_count = 0
+    
+    # Track days below thresholds for downward transitions
+    if temperature < ESCALATION_STRESSED_TO_NORMAL_TEMP:
+        current_state.days_below_normal_threshold += 1
+    else:
+        current_state.days_below_normal_threshold = 0
+    
+    if temperature < ESCALATION_ELEVATED_TO_NORMAL_TEMP:
+        current_state.days_below_elevated_threshold += 1
+    else:
+        current_state.days_below_elevated_threshold = 0
+    
+    # Apply escalation rules
+    if previous_regime == "Normal":
+        if current_state.consecutive_elevated_count >= ESCALATION_CONSECUTIVE_REQUIRED:
+            new_regime = "Elevated"
+            transition_occurred = True
+            alert_severity = AlertSeverity.INFO
+    
+    elif previous_regime == "Elevated":
+        if current_state.consecutive_stressed_count >= ESCALATION_CONSECUTIVE_REQUIRED:
+            new_regime = "Stressed"
+            transition_occurred = True
+            alert_severity = AlertSeverity.WARNING
+        elif current_state.days_below_elevated_threshold >= ESCALATION_SUSTAINED_DAYS_ELEVATED_TO_NORMAL:
+            new_regime = "Normal"
+            transition_occurred = True
+            alert_severity = AlertSeverity.INFO
+    
+    elif previous_regime == "Stressed":
+        if temperature > 1.5:
+            new_regime = "Extreme"
+            transition_occurred = True
+            alert_severity = AlertSeverity.CRITICAL
+        elif current_state.days_below_normal_threshold >= ESCALATION_SUSTAINED_DAYS_STRESSED_TO_NORMAL:
+            new_regime = "Normal"
+            transition_occurred = True
+            alert_severity = AlertSeverity.INFO
+    
+    elif previous_regime == "Extreme":
+        if temperature < 1.2:  # Hysteresis for downward
+            new_regime = "Stressed"
+            transition_occurred = True
+            alert_severity = AlertSeverity.WARNING
+    
+    # Check for CRITICAL temperature threshold
+    if temperature > 1.5 and alert_severity != AlertSeverity.CRITICAL:
+        alert_severity = AlertSeverity.CRITICAL
+    elif temperature > 1.0 and alert_severity is None:
+        alert_severity = AlertSeverity.WARNING
+    
+    # Update state
+    if transition_occurred:
+        current_state.last_transition_timestamp = datetime.now().isoformat()
+    current_state.current_regime = new_regime
+    current_state.last_computation_timestamp = datetime.now().isoformat()
+    current_state.temperature_history.append(temperature)
+    if len(current_state.temperature_history) > 100:
+        current_state.temperature_history = current_state.temperature_history[-100:]
+    
+    return new_regime, transition_occurred, alert_severity
+
+
+def _generate_alert(
+    severity: str,
+    temperature: float,
+    regime_state: str,
+    primary_indicator: str,
+    action_text: str,
+    data_quality: float,
+    degraded_mode: bool = False,
+    degraded_reason: Optional[str] = None,
+    vol_term_structure_triggered: bool = False,
+) -> Dict:
+    """
+    Generate alert payload for routing to operations.
+    
+    Alert payloads include:
+    - Current temperature value
+    - Current regime state
+    - Primary contributing indicator
+    - Recommended action
+    - Data quality metric
+    """
+    alert = {
+        "severity": severity,
+        "timestamp": datetime.now().isoformat(),
+        "module": "metals_risk_temperature",
+        "temperature": temperature,
+        "regime_state": regime_state,
+        "primary_indicator": primary_indicator,
+        "recommended_action": action_text,
+        "data_quality_pct": data_quality,
+        "degraded_mode": degraded_mode,
+    }
+    
+    if degraded_mode and degraded_reason:
+        alert["degraded_mode_reason"] = degraded_reason
+        
+    if vol_term_structure_triggered:
+        alert["vol_term_structure_inversion"] = True
+        alert["message"] = (
+            f"ANTICIPATORY WARNING: Volatility term structure inversion detected. "
+            f"Temperature: {temperature:.2f}, Regime: {regime_state}"
+        )
+    elif severity == AlertSeverity.CRITICAL:
+        alert["message"] = (
+            f"CRITICAL: Metals risk temperature at {temperature:.2f} (Regime: {regime_state}). "
+            f"Action: {action_text}"
+        )
+    elif severity == AlertSeverity.WARNING:
+        alert["message"] = (
+            f"WARNING: Metals risk temperature elevated to {temperature:.2f} (Regime: {regime_state}). "
+            f"Action: {action_text}"
+        )
+    else:
+        alert["message"] = (
+            f"INFO: Metals regime transition to {regime_state}. Temperature: {temperature:.2f}"
+        )
+    
+    return alert
+
+
 def compute_metals_risk_temperature(
     start_date: str = "2020-01-01",
     end_date: Optional[str] = None,
@@ -889,6 +1666,169 @@ def clear_metals_risk_temperature_cache():
 
 
 # =============================================================================
+# ANTICIPATORY COMPUTATION (February 2026)
+# =============================================================================
+
+def compute_anticipatory_metals_risk_temperature(
+    start_date: str = "2020-01-01",
+    end_date: Optional[str] = None,
+) -> Tuple[MetalsRiskTemperatureResult, List[Dict], DataQualityReport]:
+    """
+    Compute ANTICIPATORY metals risk temperature with all February 2026 enhancements.
+    
+    This is the RECOMMENDED entry point for production use.
+    
+    ENHANCEMENTS INCLUDED:
+    1. Volatility Term Structure Inversion (leading indicator)
+    2. Robust MAD-based z-score computation
+    3. Multi-source data federation with failover
+    4. Degraded mode with temperature floor
+    5. Enhanced escalation protocol with hysteresis
+    6. Alert generation with severity routing
+    
+    Args:
+        start_date: Start date for historical data
+        end_date: End date (default: today)
+        
+    Returns:
+        Tuple of (MetalsRiskTemperatureResult, alerts_list, DataQualityReport)
+    """
+    global _escalation_state
+    
+    alerts = []
+    
+    # Fetch data with multi-source federation
+    metals_data, quality_report = _fetch_metals_data_with_failover(start_date, end_date)
+    
+    # Compute REACTIVE stress indicators (now using robust z-scores)
+    reactive_indicators = [
+        compute_copper_gold_stress(metals_data),
+        compute_silver_gold_stress(metals_data),
+        compute_gold_volatility_stress(metals_data),
+        compute_precious_industrial_stress(metals_data),
+        compute_platinum_gold_stress(metals_data),
+    ]
+    
+    # Compute ANTICIPATORY indicator: Volatility Term Structure
+    vol_ts_indicator, vol_ts_details = compute_volatility_term_structure_stress(metals_data)
+    
+    # Combine all indicators
+    all_indicators = reactive_indicators + [vol_ts_indicator]
+    
+    # Compute individual metal stress
+    metals = compute_individual_metal_stress(metals_data)
+    
+    # Aggregate temperature
+    # Base temperature from reactive indicators
+    reactive_temp = sum(ind.contribution for ind in reactive_indicators)
+    
+    # Add anticipatory contribution (additive, not weighted)
+    anticipatory_contribution = vol_ts_indicator.contribution
+    
+    raw_temperature = reactive_temp + anticipatory_contribution
+    temperature = max(TEMP_MIN, min(TEMP_MAX, raw_temperature))
+    
+    # Check for degraded mode
+    degraded_mode = quality_report.degraded_mode
+    temperature_floor_applied = False
+    
+    if degraded_mode:
+        if temperature < DATA_DEGRADED_MODE_TEMP_FLOOR:
+            temperature = DATA_DEGRADED_MODE_TEMP_FLOOR
+            temperature_floor_applied = True
+        
+        # Generate degraded mode alert
+        alerts.append(_generate_alert(
+            severity=AlertSeverity.WARNING,
+            temperature=temperature,
+            regime_state=_escalation_state.current_regime,
+            primary_indicator="DATA_QUALITY",
+            action_text="Reduce exposure due to data uncertainty",
+            data_quality=quality_report.data_quality_pct,
+            degraded_mode=True,
+            degraded_reason=quality_report.degraded_mode_reason,
+        ))
+    
+    # Update escalation state
+    previous_regime = _escalation_state.current_regime
+    new_regime, transition_occurred, alert_severity = _update_escalation_state(
+        temperature, _escalation_state
+    )
+    
+    # Compute scale factor
+    scale_factor = compute_scale_factor(temperature)
+    
+    # Determine status and action text based on escalation regime
+    status = new_regime
+    if new_regime == "Normal":
+        if temperature < 0.3:
+            status = "Calm"
+        action_text = "Full metals exposure permitted"
+    elif new_regime == "Elevated":
+        action_text = "Monitor metals positions closely"
+    elif new_regime == "Stressed":
+        action_text = "Reduce metals exposure significantly"
+    else:  # Extreme
+        action_text = "Defensive positioning - minimize metals exposure"
+    
+    # Find primary contributing indicator
+    max_contributor = max(all_indicators, key=lambda x: x.contribution)
+    
+    # Generate alerts based on severity
+    if alert_severity:
+        alerts.append(_generate_alert(
+            severity=alert_severity,
+            temperature=temperature,
+            regime_state=new_regime,
+            primary_indicator=max_contributor.name,
+            action_text=action_text,
+            data_quality=quality_report.data_quality_pct,
+            vol_term_structure_triggered=(vol_ts_indicator.contribution > 0),
+        ))
+    
+    # Special alert for vol term structure inversion even without regime change
+    if vol_ts_indicator.contribution > 0 and alert_severity != AlertSeverity.CRITICAL:
+        alerts.append(_generate_alert(
+            severity=AlertSeverity.WARNING,
+            temperature=temperature,
+            regime_state=new_regime,
+            primary_indicator="Vol Term Structure",
+            action_text="Anticipatory warning: volatility term structure inverted",
+            data_quality=quality_report.data_quality_pct,
+            vol_term_structure_triggered=True,
+        ))
+    
+    # Data quality
+    available_count = sum(1 for ind in all_indicators if ind.data_available)
+    data_quality = available_count / len(all_indicators) if all_indicators else 0.0
+    
+    result = MetalsRiskTemperatureResult(
+        temperature=temperature,
+        scale_factor=scale_factor,
+        indicators=all_indicators,
+        metals=metals,
+        computed_at=datetime.now().isoformat(),
+        data_quality=data_quality,
+        status=status,
+        action_text=action_text,
+        regime_state=new_regime,
+        previous_regime_state=previous_regime if transition_occurred else None,
+        regime_transition_occurred=transition_occurred,
+        raw_temperature=raw_temperature,
+        temperature_floor_applied=temperature_floor_applied,
+    )
+    
+    return result, alerts, quality_report
+
+
+def reset_escalation_state() -> None:
+    """Reset the escalation state to default."""
+    global _escalation_state
+    _escalation_state = EscalationState()
+    logger.info("Escalation state reset")
+
+
+# =============================================================================
 # RENDER FUNCTION (Minimalist Apple-like display)
 # =============================================================================
 
@@ -976,6 +1916,16 @@ def render_metals_risk_temperature(
     console.print("  [dim]Stress Indicators[/dim]")
     console.print()
     
+    # Define display names with consistent formatting
+    indicator_display_names = {
+        "Copper/Gold": "Copper/Gold",
+        "Silver/Gold": "Silver/Gold", 
+        "Gold Vol": "Gold Vol",
+        "Precious/Industrial": "Precious/Ind",
+        "Platinum/Gold": "Platinum/Gold",
+        "Vol Term Structure": "Vol TermStruct",
+    }
+    
     for ind in result.indicators:
         if not ind.data_available:
             continue
@@ -991,9 +1941,12 @@ def render_metals_risk_temperature(
         else:
             ind_style = "bold red"
         
+        # Get display name (shortened for alignment)
+        display_name = indicator_display_names.get(ind.name, ind.name)
+        
         line = Text()
         line.append("  ")
-        line.append(f"{ind.name:<18}", style="dim")
+        line.append(f"{display_name:<16}", style="dim")
         
         # Mini bar
         mini_width = 12
@@ -1092,8 +2045,112 @@ def render_metals_risk_temperature(
     quality_line.append("  indicators", style="dim italic")
     console.print(quality_line)
     
+    # Governance status (if available)
+    if hasattr(result, 'regime_state') and result.regime_state:
+        console.print()
+        console.print("  [dim]Governance[/dim]")
+        console.print()
+        
+        # Regime state
+        regime_line = Text()
+        regime_line.append("  ")
+        regime_line.append("Regime State    ", style="dim")
+        regime_line.append(result.regime_state, style=status_color)
+        if result.regime_transition_occurred:
+            regime_line.append("  ← ", style="dim")
+            regime_line.append(result.previous_regime_state or "Unknown", style="dim italic")
+        console.print(regime_line)
+        
+        # Temperature floor warning
+        if result.temperature_floor_applied:
+            floor_line = Text()
+            floor_line.append("  ")
+            floor_line.append("⚠️ Temp Floor   ", style="dim")
+            floor_line.append("Applied (degraded mode)", style="yellow")
+            console.print(floor_line)
+        
+        # Rate limiting
+        if result.rate_limit_applied:
+            rate_line = Text()
+            rate_line.append("  ")
+            rate_line.append("Rate Limited    ", style="dim")
+            rate_line.append("Yes", style="yellow")
+            if result.raw_temperature is not None:
+                rate_line.append(f"  (raw: {result.raw_temperature:.2f})", style="dim italic")
+            console.print(rate_line)
+        
+        # Imputation warning
+        if result.imputation_warning:
+            imp_line = Text()
+            imp_line.append("  ")
+            imp_line.append("⚠️ Imputation   ", style="dim")
+            imp_line.append(f"{result.imputed_indicators} indicators imputed", style="yellow")
+            console.print(imp_line)
+        
+        # Gap risk
+        gap_line = Text()
+        gap_line.append("  ")
+        gap_line.append("Gap Risk        ", style="dim")
+        gap_line.append(f"{result.gap_risk_estimate:.1%}", style="white")
+        console.print(gap_line)
+        
+        # Overnight budget
+        if result.overnight_budget_active:
+            overnight_line = Text()
+            overnight_line.append("  ")
+            overnight_line.append("Overnight Cap   ", style="dim")
+            if result.overnight_max_position:
+                overnight_line.append(f"{result.overnight_max_position:.0%}", style="yellow")
+            overnight_line.append("  Active", style="dim italic")
+            console.print(overnight_line)
+    
     console.print()
     console.print()
+
+
+def render_alerts(alerts: List[Dict], console=None) -> None:
+    """Render alerts with severity-based formatting."""
+    from rich.console import Console
+    from rich.text import Text
+    from rich.panel import Panel
+    
+    if console is None:
+        console = Console()
+    
+    if not alerts:
+        return
+    
+    console.print()
+    console.print("  [dim]Alerts[/dim]")
+    console.print()
+    
+    for alert in alerts:
+        severity = alert.get("severity", "INFO")
+        message = alert.get("message", "")
+        
+        if severity == AlertSeverity.CRITICAL:
+            style = "bold red"
+            icon = "🚨"
+        elif severity == AlertSeverity.WARNING:
+            style = "yellow"
+            icon = "⚠️"
+        else:
+            style = "dim"
+            icon = "ℹ️"
+        
+        alert_line = Text()
+        alert_line.append(f"  {icon} [{severity}] ", style=style)
+        alert_line.append(message, style=style)
+        console.print(alert_line)
+    
+    console.print()
+
+
+def reset_escalation_state() -> None:
+    """Reset the escalation state to default."""
+    global _escalation_state
+    _escalation_state = EscalationState()
+    logger.info("Escalation state reset")
 
 
 # =============================================================================
@@ -1102,12 +2159,57 @@ def render_metals_risk_temperature(
 
 if __name__ == "__main__":
     """Run metals risk temperature computation and display."""
+    import argparse
     from rich.console import Console
+    
+    parser = argparse.ArgumentParser(description="Metals Risk Temperature — Anticipatory Enhancement")
+    parser.add_argument("--basic", action="store_true", help="Use basic computation (no anticipatory features)")
+    parser.add_argument("--audit", action="store_true", help="Show full audit trail")
+    parser.add_argument("--reset", action="store_true", help="Reset escalation state")
+    parser.add_argument("--alerts", action="store_true", help="Show alerts")
+    parser.add_argument("--data-report", action="store_true", help="Show data quality report")
+    args = parser.parse_args()
     
     console = Console()
     
+    if args.reset:
+        reset_escalation_state()
+        console.print("[green]Escalation state reset[/green]")
+    
     # Compute metals risk temperature
-    result = compute_metals_risk_temperature(start_date="2020-01-01")
+    if args.basic:
+        result = compute_metals_risk_temperature(start_date="2020-01-01")
+        alerts = []
+        quality_report = None
+    else:
+        result, alerts, quality_report = compute_anticipatory_metals_risk_temperature(
+            start_date="2020-01-01"
+        )
     
     # Render the display
     render_metals_risk_temperature(result, console=console)
+    
+    # Show alerts if requested or if critical
+    if args.alerts or any(a.get("severity") == AlertSeverity.CRITICAL for a in alerts):
+        render_alerts(alerts, console=console)
+    
+    # Show data quality report if requested
+    if args.data_report and quality_report:
+        console.print()
+        console.print("  [dim]Data Quality Report[/dim]")
+        console.print()
+        console.print(f"    Metals Available: {quality_report.metals_available}/{quality_report.metals_total}")
+        console.print(f"    Data Quality: {quality_report.data_quality_pct:.0%}")
+        console.print(f"    Degraded Mode: {'Yes' if quality_report.degraded_mode else 'No'}")
+        if quality_report.failover_events:
+            console.print(f"    Failover Events: {len(quality_report.failover_events)}")
+            for event in quality_report.failover_events:
+                console.print(f"      - {event['metal']}: {event['from_source']} → {event['to_source']}")
+        if quality_report.price_divergence_alerts:
+            console.print(f"    Price Divergence Alerts: {len(quality_report.price_divergence_alerts)}")
+        console.print()
+    
+    # Show audit trail if requested
+    if args.audit and result.audit_trail:
+        console.print()
+        console.print(result.render_audit_trail())
