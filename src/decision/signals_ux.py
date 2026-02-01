@@ -669,8 +669,9 @@ def render_augmentation_layers_summary(
             layers.append("[yellow]CST[/yellow]")
     
     if layers:
-        aug_text.append(" · ".join(layers))
-        console.print(aug_text)
+        # Print with markup enabled - use console.print directly with markup=True
+        aug_line = "  [dim]Augmentation[/dim]  " + "  ".join(layers)
+        console.print(aug_line, markup=True)
 
 
 def generate_signal_explanation(

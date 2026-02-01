@@ -53,6 +53,14 @@ try:
 except ImportError:
     PDDE_AVAILABLE = False
 
+# Import Control Policy — Authority Boundary Layer (Counter-Proposal v1.0)
+try:
+    from calibration.control_policy import EscalationStatistics
+    CONTROL_POLICY_AVAILABLE = True
+except ImportError:
+    CONTROL_POLICY_AVAILABLE = False
+    EscalationStatistics = None
+
 # Import presentation layer
 from decision.signals_ux import (
     create_tuning_console,
@@ -67,6 +75,7 @@ from decision.signals_ux import (
     render_cache_update,
     render_end_of_run_summary,
     TuningProgressTracker,
+    AuditAwareTuningProgressTracker,
 )
 
 from concurrent.futures import ProcessPoolExecutor, as_completed

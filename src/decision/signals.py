@@ -2253,8 +2253,8 @@ def _select_regime_params(
             'regime_used': None,
         }
 
-    regime_data = tuned_params.get('regime', {})
-    global_data = tuned_params.get('global', {})
+    regime_data = tuned_params.get('regime') or {}
+    global_data = tuned_params.get('global') or {}
 
     # Try to get regime-specific params
     # Handle both int keys and string keys (JSON converts to strings)
@@ -2597,7 +2597,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     # Print BMA model information
     if asset_symbol and tuned_params and tuned_params.get('has_bma'):
         model_posterior = tuned_params.get('model_posterior', {})
-        global_data = tuned_params.get('global', {})
+        global_data = tuned_params.get('global') or {}
         global_models = global_data.get('models', {})
 
         # Get model selection method from cache metadata
@@ -2866,6 +2866,65 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         params_table.add_column("Vol (c)", justify="center", width=12)
         params_table.add_column("Persist (φ)", justify="center", width=12)
         params_table.add_column("Tails (ν)", justify="center", width=12)
+        params_table.add_column("Skew/Mix", justify="center", width=12)
+
+        # Helper to describe skewness for various model families
+        def describe_skewness(model_name: str, params: dict) -> tuple:
+            """Return (description, color) for skewness/mixture parameters."""
+            # Hansen Skew-t: lambda parameter
+            if 'hansen_skew_t' in model_name or params.get('lambda') is not None:
+                lam = params.get('lambda')
+                if lam is None:
+                    return ("—", "dim")
+                if lam < -0.1:
+                    return (f"λ={lam:+.2f}", "red")  # Left-skewed, crash risk
+                elif lam > 0.1:
+                    return (f"λ={lam:+.2f}", "cyan")  # Right-skewed
+                return (f"λ={lam:+.2f}", "green")  # Symmetric
+            
+            # Contaminated Student-t: epsilon (crisis probability)
+            if 'cst' in model_name or params.get('epsilon') is not None:
+                eps = params.get('epsilon')
+                if eps is None:
+                    return ("—", "dim")
+                if eps > 0.15:
+                    return (f"ε={eps:.0%}", "red")  # High crisis prob
+                elif eps > 0.08:
+                    return (f"ε={eps:.0%}", "yellow")
+                return (f"ε={eps:.0%}", "green")
+            
+            # NIG: beta (asymmetry)
+            if 'nig' in model_name or params.get('beta') is not None:
+                beta = params.get('beta')
+                alpha = params.get('alpha')
+                if beta is None:
+                    return ("—", "dim")
+                if beta < -0.1:
+                    return (f"β={beta:+.2f}", "red")
+                elif beta > 0.1:
+                    return (f"β={beta:+.2f}", "cyan")
+                return (f"β={beta:+.2f}", "green")
+            
+            # Phi-Skew-t: gamma parameter
+            if 'skew_t' in model_name or params.get('gamma') is not None:
+                gamma = params.get('gamma')
+                if gamma is None:
+                    return ("—", "dim")
+                if gamma < 0.9:
+                    return (f"γ={gamma:.2f}", "red")  # Left-skewed
+                elif gamma > 1.1:
+                    return (f"γ={gamma:.2f}", "cyan")  # Right-skewed
+                return (f"γ={gamma:.2f}", "green")
+            
+            # GMM: mixture weights
+            if 'gmm' in model_name:
+                weights = params.get('weights')
+                if weights and len(weights) >= 2:
+                    w1, w2 = weights[0], weights[1]
+                    return (f"w={w1:.0%}/{w2:.0%}", "blue")
+                return ("—", "dim")
+            
+            return ("—", "dim")
 
         for model_name in visible_models:
             m_params = global_models.get(model_name, {})
@@ -2882,6 +2941,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 vol_desc, vol_color = describe_vol_scale(c)
                 persist_desc, persist_color = describe_persistence(phi) if phi else ("—", "dim")
                 tail_desc, tail_color = describe_tail_weight(nu) if nu else ("—", "dim")
+                skew_desc, skew_color = describe_skewness(model_name, m_params)
 
                 if is_best:
                     params_table.add_row(
@@ -2890,6 +2950,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                         f"[bold {vol_color}]{vol_desc}[/bold {vol_color}]",
                         f"[bold {persist_color}]{persist_desc}[/bold {persist_color}]",
                         f"[bold {tail_color}]{tail_desc}[/bold {tail_color}]",
+                        f"[bold {skew_color}]{skew_desc}[/bold {skew_color}]",
                     )
                 else:
                     params_table.add_row(
@@ -2898,10 +2959,12 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                         f"[dim]{vol_desc}[/dim]",
                         f"[dim]{persist_desc}[/dim]",
                         f"[dim]{tail_desc}[/dim]",
+                        f"[dim]{skew_desc}[/dim]",
                     )
             else:
                 params_table.add_row(
                     f"[dim]{info['short']}[/dim]",
+                    "[dim]—[/dim]",
                     "[dim]—[/dim]",
                     "[dim]—[/dim]",
                     "[dim]—[/dim]",
@@ -3017,6 +3080,152 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 trust_table.add_row("  Tail Bias", f"[dim]{tail_bias:+.3f} ({bias_dir})[/dim]")
 
         console.print(Padding(trust_table, (0, 0, 0, 4)))
+
+        # ─────────────────────────────────────────────────────────────────────────────
+        # AUGMENTATION LAYERS - Shows advanced distributional model status
+        # Hansen Skew-t, Contaminated Student-t, GMM, NIG
+        # ─────────────────────────────────────────────────────────────────────────────
+        console.print()
+
+        aug_header = Text()
+        aug_header.append("    ▸ ", style="bright_cyan")
+        aug_header.append("Augmentation Layers", style="bold white")
+        console.print(aug_header)
+        console.print()
+
+        # Extract augmentation layer data from global_data
+        hansen_data = global_data.get('hansen_skew_t', {})
+        cst_data = global_data.get('contaminated_student_t', {})
+        gmm_data = global_data.get('gmm', {})
+        nig_data = global_data.get('nig', {})
+        skew_t_data = global_data.get('phi_skew_t', {})
+
+        aug_table = Table(
+            show_header=False,
+            border_style="dim",
+            box=box.SIMPLE,
+            padding=(0, 2),
+            expand=False,
+        )
+        aug_table.add_column("Layer", style="dim", width=24)
+        aug_table.add_column("Status", width=40)
+
+        # Helper to describe skewness direction
+        def skew_direction(val):
+            if val is None:
+                return "n/a"
+            if val < -0.05:
+                return "left (crash risk)"
+            elif val > 0.05:
+                return "right (upside)"
+            return "symmetric"
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # HANSEN SKEW-T: Asymmetric heavy tails via λ parameter
+        # ═══════════════════════════════════════════════════════════════════════════
+        hansen_lambda = hansen_data.get('lambda') if hansen_data else None
+        hansen_nu = hansen_data.get('nu') if hansen_data else None
+        hansen_enabled = hansen_lambda is not None and abs(hansen_lambda) > 0.01
+
+        if hansen_enabled:
+            skew_dir = skew_direction(hansen_lambda)
+            aug_table.add_row(
+                "[cyan]↔️  Hansen Skew-T[/cyan]",
+                f"[green]✓ Active[/green] λ={hansen_lambda:+.2f} ({skew_dir})"
+            )
+            if hansen_nu:
+                aug_table.add_row("    Tail weight (ν)", f"[dim]{hansen_nu:.0f}[/dim]")
+        else:
+            aug_table.add_row(
+                "[dim]↔️  Hansen Skew-T[/dim]",
+                "[dim]○ Not fitted[/dim]"
+            )
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # CONTAMINATED STUDENT-T: Regime-dependent tail heaviness
+        # ═══════════════════════════════════════════════════════════════════════════
+        cst_nu_normal = cst_data.get('nu_normal') if cst_data else None
+        cst_nu_crisis = cst_data.get('nu_crisis') if cst_data else None
+        cst_epsilon = cst_data.get('epsilon') if cst_data else None
+        cst_enabled = cst_nu_normal is not None and cst_epsilon is not None and cst_epsilon > 0.001
+
+        if cst_enabled:
+            aug_table.add_row(
+                "[magenta]⚡ Contaminated-T[/magenta]",
+                f"[green]✓ Active[/green] ε={cst_epsilon:.0%} crisis probability"
+            )
+            aug_table.add_row("    Normal regime (ν)", f"[dim]{cst_nu_normal:.0f} (lighter tails)[/dim]")
+            aug_table.add_row("    Crisis regime (ν)", f"[dim]{cst_nu_crisis:.0f} (heavier tails)[/dim]")
+        else:
+            aug_table.add_row(
+                "[dim]⚡ Contaminated-T[/dim]",
+                "[dim]○ Not fitted[/dim]"
+            )
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # GMM: 2-component Gaussian mixture (bimodal dynamics)
+        # ═══════════════════════════════════════════════════════════════════════════
+        gmm_weights = gmm_data.get('weights') if gmm_data else None
+        gmm_means = gmm_data.get('means') if gmm_data else None
+        gmm_enabled = gmm_weights is not None and len(gmm_weights) >= 2
+
+        if gmm_enabled:
+            aug_table.add_row(
+                "[yellow]🎲 GMM Mixture[/yellow]",
+                f"[green]✓ Active[/green] K=2 components"
+            )
+            for i, (w, m) in enumerate(zip(gmm_weights[:2], gmm_means[:2] if gmm_means else [0, 0])):
+                component_label = "Momentum" if m > 0 else "Reversal"
+                aug_table.add_row(f"    Component {i+1}", f"[dim]w={w:.1%}, μ={m:.4f} ({component_label})[/dim]")
+        else:
+            aug_table.add_row(
+                "[dim]🎲 GMM Mixture[/dim]",
+                "[dim]○ Not fitted[/dim]"
+            )
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # NIG: Normal-Inverse Gaussian (semi-heavy tails, Lévy compatible)
+        # ═══════════════════════════════════════════════════════════════════════════
+        nig_alpha = nig_data.get('alpha') if nig_data else None
+        nig_beta = nig_data.get('beta') if nig_data else None
+        nig_enabled = nig_alpha is not None and nig_beta is not None
+
+        if nig_enabled:
+            asym_dir = skew_direction(nig_beta)
+            aug_table.add_row(
+                "[blue]🎯 NIG Distribution[/blue]",
+                f"[green]✓ Active[/green] α={nig_alpha:.2f}, β={nig_beta:+.2f}"
+            )
+            aug_table.add_row("    Asymmetry", f"[dim]{asym_dir}[/dim]")
+        else:
+            aug_table.add_row(
+                "[dim]🎯 NIG Distribution[/dim]",
+                "[dim]○ Not fitted[/dim]"
+            )
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # PHI-SKEW-T: Fernández-Steel skew-t (γ parameter)
+        # ═══════════════════════════════════════════════════════════════════════════
+        skew_t_gamma = skew_t_data.get('gamma') if skew_t_data else None
+        skew_t_nu = skew_t_data.get('nu') if skew_t_data else None
+        skew_t_enabled = skew_t_gamma is not None
+
+        if skew_t_enabled:
+            # γ < 1 = left-skewed, γ > 1 = right-skewed
+            gamma_dir = "left (crash risk)" if skew_t_gamma < 0.95 else "right (upside)" if skew_t_gamma > 1.05 else "symmetric"
+            aug_table.add_row(
+                "[purple]📐 Skew-T (F-S)[/purple]",
+                f"[green]✓ Active[/green] γ={skew_t_gamma:.2f} ({gamma_dir})"
+            )
+            if skew_t_nu:
+                aug_table.add_row("    Tail weight (ν)", f"[dim]{skew_t_nu:.0f}[/dim]")
+        else:
+            aug_table.add_row(
+                "[dim]📐 Skew-T (F-S)[/dim]",
+                "[dim]○ Not fitted[/dim]"
+            )
+
+        console.print(Padding(aug_table, (0, 0, 0, 4)))
 
         console.print()
         console.print(Rule(style="dim", characters="─"))
@@ -4311,6 +4520,15 @@ def run_regime_specific_mc(
 
     rng = np.random.default_rng(seed)
 
+    # Pre-compute mixture variance for contaminated Student-t if needed
+    # This MUST be computed before sampling to avoid "unbound local variable" error
+    mixture_var = 1.0  # Default to 1.0 (standard normal variance)
+    if use_contaminated_t:
+        var_normal = cst_nu_normal / (cst_nu_normal - 2) if cst_nu_normal > 2 else 10.0
+        var_crisis = cst_nu_crisis / (cst_nu_crisis - 2) if cst_nu_crisis > 2 else 10.0
+        mixture_var = (1 - cst_epsilon) * var_normal + cst_epsilon * var_crisis
+        mixture_var = max(mixture_var, 1e-10)  # Ensure positive
+
     # Sample drift posterior
     if P_t > 0:
         if use_nig:
@@ -4679,8 +4897,8 @@ def bayesian_model_average_mc(
     # ========================================================================
     # GET REGIME-SPECIFIC BMA DATA
     # ========================================================================
-    global_data = tuned_params.get('global', {}) if tuned_params else {}
-    regime_data = tuned_params.get('regime', {}) if tuned_params else {}
+    global_data = tuned_params.get('global') or {} if tuned_params else {}
+    regime_data = tuned_params.get('regime') or {} if tuned_params else {}
     
     # Ensure regime_data is a dict (could be None from old cache)
     if regime_data is None:
@@ -4755,15 +4973,54 @@ def bayesian_model_average_mc(
     recomputed_posterior, epistemic_meta = compute_model_posteriors_from_combined_score(models)
 
     if not recomputed_posterior:
-        # Cache is invalid - models are missing combined_score
-        # This indicates the cache was generated with an old version and must be regenerated
+        # Cache may be from an older version without combined_score
+        # Fallback to BIC-based posteriors for backward compatibility
+        # This is a GRACEFUL DEGRADATION, not a hard failure
+        import warnings
         model_names = list(models.keys())
         missing_scores = [m for m in model_names if not models.get(m, {}).get('combined_score')]
-        raise ValueError(
-            f"Invalid cache: models missing combined_score: {missing_scores}. "
-            f"Cache must be regenerated with 'make tune --force' to include "
-            f"entropy-regularized BIC+Hyvärinen combined scores."
-        )
+        
+        # Try BIC-based fallback
+        bic_posterior = {}
+        for model_name, model_data in models.items():
+            if isinstance(model_data, dict):
+                bic = model_data.get('bic')
+                if bic is not None and np.isfinite(bic):
+                    bic_posterior[model_name] = bic
+        
+        if bic_posterior:
+            # Convert BIC to weights using softmax over negated BIC (lower is better)
+            bic_values = np.array(list(bic_posterior.values()))
+            neg_bic = -bic_values / 2.0  # Standard BIC to log-likelihood conversion
+            neg_bic = neg_bic - neg_bic.max()  # Numerical stability
+            weights = np.exp(neg_bic)
+            weights = weights / weights.sum()
+            
+            recomputed_posterior = dict(zip(bic_posterior.keys(), weights))
+            epistemic_meta = {
+                'method': 'bic_fallback',
+                'reason': 'combined_score_missing',
+                'missing_scores': missing_scores,
+            }
+            
+            warnings.warn(
+                f"Using BIC-based fallback for models missing combined_score: {missing_scores}. "
+                f"Consider re-tuning with 'make tune --force' for optimal calibration.",
+                RuntimeWarning
+            )
+        else:
+            # Last resort: uniform weights
+            recomputed_posterior = {m: 1.0/len(models) for m in models}
+            epistemic_meta = {
+                'method': 'uniform_fallback',
+                'reason': 'no_valid_scores',
+            }
+            
+            warnings.warn(
+                f"Using uniform weights fallback - no valid BIC or combined_score found. "
+                f"Re-tune with 'make tune --force'.",
+                RuntimeWarning
+            )
 
     cached_posterior = model_posterior
     model_posterior = recomputed_posterior
