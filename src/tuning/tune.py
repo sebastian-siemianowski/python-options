@@ -534,20 +534,9 @@ except ImportError:
     EVT_THRESHOLD_PERCENTILE_DEFAULT = 0.90
     EVT_MIN_EXCEEDANCES = 30
 
-# Import presentation layer for world-class UX output
-from decision.signals_ux import (
-    create_tuning_console,
-    render_tuning_header,
-    render_tuning_progress_start,
-    render_tuning_summary,
-    render_parameter_table,
-    render_failed_assets,
-    render_dry_run_preview,
-    render_cache_status,
-    render_cache_update,
-    TuningProgressTracker,
-    TUNING_REGIME_LABELS,
-)
+# Note: Tuning presentation functions (create_tuning_console, render_tuning_header, etc.)
+# are now defined in tune_ux.py to avoid circular imports. tune.py is the core tuning
+# logic module and should not depend on UX presentation functions.
 
 
 # =============================================================================
@@ -2861,8 +2850,7 @@ def tune_asset_with_bma(
 
     except Exception as e:
         import traceback
-        print(f"     ❌ {asset}: Failed - {e}")
-        # Always print full traceback - don't swallow exceptions
+        _log(f"     ❌ {asset}: Failed - {e}")
         traceback.print_exc()
         raise  # Re-raise so caller can handle it
 
