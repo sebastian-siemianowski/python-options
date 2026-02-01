@@ -3393,6 +3393,105 @@ class TuningProgressTracker:
         self.console.print()
 
 
+class AuditAwareTuningProgressTracker(TuningProgressTracker):
+    """
+    Extended progress tracker that separates display from audit state.
+    
+    Counter-Proposal v1.0: Audit-Safe Progress Tracking
+    
+    Problem: 'details' contains model identity, UX logs become quasi-state
+    Solution: Explicit audit record, separate from display string
+    
+    This prevents:
+    - UX logs becoming folklore
+    - Human operators trusting the wrong artifact
+    - Post-mortem ambiguity
+    
+    This is risk-committee-grade engineering.
+    """
+    
+    def __init__(self, total_assets: int, console: Console = None):
+        super().__init__(total_assets, console)
+        self.audit_records = []
+    
+    def update(
+        self,
+        asset: str,
+        status: str,
+        details: Optional[str] = None,
+        audit_record = None,
+    ):
+        """
+        Update with explicit audit record.
+        
+        The 'details' string is for display only.
+        The 'audit_record' is the authoritative state.
+        
+        Args:
+            asset: Asset symbol
+            status: 'success' | 'failed' | 'skipped'
+            details: Display string (for UX only, not authoritative)
+            audit_record: TuningAuditRecord (authoritative state)
+        """
+        # Store audit record (authoritative)
+        if audit_record is not None:
+            self.audit_records.append(audit_record)
+        
+        # Call parent for UX (display only)
+        super().update(asset, status, details)
+    
+    def export_audit_trail(self):
+        """Export full audit trail for compliance."""
+        return [
+            r.to_audit_dict() if hasattr(r, 'to_audit_dict') else r
+            for r in self.audit_records
+        ]
+    
+    def get_escalation_summary(self):
+        """
+        Get summary of escalation decisions across all assets.
+        
+        Returns:
+            Dict with escalation statistics
+        """
+        from collections import Counter
+        
+        decisions = []
+        for record in self.audit_records:
+            if hasattr(record, 'escalation_decisions'):
+                decisions.extend(record.escalation_decisions)
+            elif isinstance(record, dict):
+                decisions.extend(record.get('escalation_decisions', []))
+        
+        decision_counts = Counter(decisions)
+        
+        return {
+            'total_records': len(self.audit_records),
+            'decision_counts': dict(decision_counts),
+            'escalation_rate': sum(1 for r in self.audit_records 
+                                   if self._has_escalation(r)) / max(len(self.audit_records), 1),
+        }
+    
+    def _has_escalation(self, record):
+        """Check if record contains any escalation (not just HOLD_CURRENT)."""
+        if hasattr(record, 'escalation_decisions'):
+            decisions = record.escalation_decisions
+        elif isinstance(record, dict):
+            decisions = record.get('escalation_decisions', [])
+        else:
+            return False
+        
+        # Check for any decision that's not HOLD_CURRENT
+        for d in decisions:
+            if hasattr(d, 'name'):
+                if d.name != 'HOLD_CURRENT':
+                    return True
+            elif isinstance(d, str):
+                if d != 'hold_current' and d != 'HOLD_CURRENT':
+                    return True
+        return False
+
+
 # =============================================================================
 # RISK TEMPERATURE SUMMARY DISPLAY
 # =============================================================================

@@ -306,12 +306,30 @@ try:
         compute_calibrated_trust,
         compute_drift_weight,
         MAX_REGIME_PENALTY,
+        MAX_MODEL_PENALTY,
         DEFAULT_REGIME_PENALTY_SCHEDULE,
+        DEFAULT_MODEL_PENALTY_SCHEDULE,
         REGIME_NAMES,
     )
     CALIBRATED_TRUST_AVAILABLE = True
 except ImportError:
     CALIBRATED_TRUST_AVAILABLE = False
+
+# Control Policy — Authority Boundary Layer (Counter-Proposal v1.0)
+# ARCHITECTURAL LAW: Diagnostics RECOMMEND, Policy DECIDES, Models OBEY
+# This ensures explicit, auditable escalation decisions.
+try:
+    from calibration.control_policy import (
+        EscalationDecision,
+        CalibrationDiagnostics,
+        ControlPolicy,
+        DECISION_NAMES,
+        DEFAULT_CONTROL_POLICY,
+        create_diagnostics_from_result,
+    )
+    CONTROL_POLICY_AVAILABLE = True
+except ImportError:
+    CONTROL_POLICY_AVAILABLE = False
 
 # Context manager to suppress noisy HMM convergence messages
 import contextlib

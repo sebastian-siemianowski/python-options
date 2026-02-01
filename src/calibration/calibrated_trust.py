@@ -52,6 +52,10 @@ logger = logging.getLogger(__name__)
 # Rationale: Regime can reduce trust by at most 30%, preserving calibration authority
 MAX_REGIME_PENALTY = 0.30
 
+# Maximum model complexity penalty - architectural invariant
+# Rationale: Model complexity can reduce trust by at most 25%
+MAX_MODEL_PENALTY = 0.25
+
 # Minimum observations for reliable calibration trust estimate
 MIN_CALIBRATION_SAMPLES = 50
 
@@ -63,6 +67,28 @@ DEFAULT_REGIME_PENALTY_SCHEDULE = {
     2: 0.10,   # trending: moderate penalty - momentum may cause drift
     3: 0.20,   # high_vol: significant penalty - higher uncertainty
     4: 0.30,   # crisis: maximum penalty - extreme uncertainty
+}
+
+# Default model complexity penalty schedule (Counter-Proposal v1.0)
+# Exotic models signal structural instability → reduced position authority
+# This addresses: "GH improves fit but does not reduce authority"
+DEFAULT_MODEL_PENALTY_SCHEDULE = {
+    'gaussian': 0.00,
+    'kalman_gaussian': 0.00,
+    'phi_gaussian': 0.02,
+    'kalman_phi_gaussian': 0.02,
+    'phi_student_t': 0.05,
+    'phi_student_t_nu_4': 0.08,   # Heavy tails → higher uncertainty
+    'phi_student_t_nu_6': 0.06,
+    'phi_student_t_nu_8': 0.05,
+    'phi_student_t_nu_12': 0.04,
+    'phi_student_t_nu_20': 0.03,
+    'phi_skew_t': 0.10,
+    'phi_nig': 0.12,
+    'mixture': 0.15,
+    'mixture_k2': 0.15,
+    'gh': 0.20,                    # GH fallback → highest uncertainty
+    'tvvm': 0.18,
 }
 
 # Regime names for audit trail
@@ -163,14 +189,28 @@ class TrustConfig:
     
     The penalty schedule is policy (can evolve).
     The penalty cap is architectural (invariant).
+    
+    ARCHITECTURAL LAW (Counter-Proposal v1.0):
+        Trust = Calibration - RegimePenalty - ModelPenalty - CalibrationPenalty
+    
+    All penalties are:
+        - Additive (interpretable, auditable)
+        - Bounded (architectural invariant)
+        - Explicit (no hidden attenuation)
     """
-    # Penalty schedule (policy-governed, versioned)
+    # Regime penalty schedule (policy-governed, versioned)
     regime_penalty_schedule: Dict[int, float] = field(
         default_factory=lambda: DEFAULT_REGIME_PENALTY_SCHEDULE.copy()
     )
     
+    # Model complexity penalty schedule (Counter-Proposal v1.0)
+    # Exotic models signal structural instability → reduced authority
+    model_penalty_schedule: Dict[str, float] = field(
+        default_factory=lambda: DEFAULT_MODEL_PENALTY_SCHEDULE.copy()
+    )
+    
     # Schedule version for audit trail
-    schedule_version: str = "v1.0"
+    schedule_version: str = "v2.0"
     
     # Minimum samples for full trust (below this, apply sample penalty)
     min_samples: int = MIN_CALIBRATION_SAMPLES
@@ -182,6 +222,9 @@ class TrustConfig:
     adjust_for_tail_bias: bool = False
     tail_bias_penalty_rate: float = 0.1  # penalty per 0.1 tail bias
     
+    # Model penalty mode: 'none', 'additive'
+    model_penalty_mode: str = 'additive'
+    
     def validate(self) -> None:
         """Validate configuration against architectural invariants."""
         for regime, penalty in self.regime_penalty_schedule.items():
@@ -191,6 +234,31 @@ class TrustConfig:
                 )
             if penalty < 0:
                 raise ValueError(f"Regime {regime} penalty {penalty} is negative")
+        
+        for model, penalty in self.model_penalty_schedule.items():
+            if penalty > MAX_MODEL_PENALTY:
+                raise ValueError(
+                    f"Model {model} penalty {penalty} exceeds architectural cap {MAX_MODEL_PENALTY}"
+                )
+            if penalty < 0:
+                raise ValueError(f"Model {model} penalty {penalty} is negative")
+    
+    def get_model_penalty(self, model_type: str) -> float:
+        """
+        Get penalty for a model type.
+        
+        Handles partial matching for Student-t variants.
+        """
+        if model_type in self.model_penalty_schedule:
+            return self.model_penalty_schedule[model_type]
+        
+        # Check for Student-t variants
+        if 'student_t' in model_type.lower():
+            # Default Student-t penalty
+            return self.model_penalty_schedule.get('phi_student_t', 0.05)
+        
+        # Default penalty for unknown models
+        return 0.10
 
 
 # =============================================================================
@@ -202,18 +270,23 @@ def compute_calibrated_trust(
     regime_probs: Dict[int, float],
     isotonic_model: Optional[Callable] = None,
     config: Optional[TrustConfig] = None,
+    model_type: Optional[str] = None,
 ) -> CalibratedTrust:
     """
-    Compute calibrated trust with additive regime penalty.
+    Compute calibrated trust with additive regime and model penalties.
     
-    ARCHITECTURAL LAW:
-        Trust = Calibration Authority − Governed, Bounded Regime Penalty
+    ARCHITECTURAL LAW (Counter-Proposal v1.0):
+        Trust = Calibration Authority 
+              − Regime Penalty (bounded)
+              − Model Penalty (bounded)
+              − Sample Penalty (cold-start)
     
     Args:
         raw_pit_values: Raw PIT values from model (will be transported if isotonic_model provided)
         regime_probs: Dict mapping regime index to probability (must sum to ~1)
         isotonic_model: Optional isotonic transport function (calibrated PIT = f(raw PIT))
         config: Trust configuration (uses defaults if None)
+        model_type: Optional model identifier for complexity penalty
     
     Returns:
         CalibratedTrust: Immutable trust state with full audit trail
@@ -268,6 +341,13 @@ def compute_calibrated_trust(
     # Apply architectural cap
     regime_penalty = float(np.clip(regime_penalty_raw, 0.0, MAX_REGIME_PENALTY))
     
+    # --- Step 4b: Model complexity penalty (Counter-Proposal v1.0) ---
+    # Exotic models signal structural instability → reduced authority
+    model_penalty = 0.0
+    if model_type is not None and config.model_penalty_mode != 'none':
+        model_penalty = config.get_model_penalty(model_type)
+        model_penalty = float(np.clip(model_penalty, 0.0, MAX_MODEL_PENALTY))
+    
     # --- Step 5: Tail bias computation (calibrated space) ---
     tail_bias = float(np.mean(calibrated_pit) - 0.5)
     
@@ -278,8 +358,12 @@ def compute_calibrated_trust(
         tail_bias_penalty = float(np.clip(tail_bias_penalty, 0.0, 0.1))
     
     # --- Step 6: Effective trust (transparent composition) ---
-    total_penalty = regime_penalty + sample_penalty + tail_bias_penalty
-    total_penalty = float(np.clip(total_penalty, 0.0, MAX_REGIME_PENALTY + 0.3))  # Allow sample penalty on top
+    # ARCHITECTURAL LAW (Counter-Proposal v1.0): 
+    # Trust = Calibration - Regime - Model - Sample - TailBias
+    total_penalty = regime_penalty + model_penalty + sample_penalty + tail_bias_penalty
+    # Allow penalties to stack but cap total at reasonable level
+    max_total_penalty = MAX_REGIME_PENALTY + MAX_MODEL_PENALTY + 0.3  # sample + tail bias
+    total_penalty = float(np.clip(total_penalty, 0.0, max_total_penalty))
     
     effective_trust = float(np.clip(calibration_trust - total_penalty, 0.0, 1.0))
     
@@ -293,13 +377,17 @@ def compute_calibrated_trust(
     
     # --- Step 8: Build audit trail ---
     audit_decomposition = {
-        # Core decomposition
+        # Core decomposition (Counter-Proposal v1.0)
         "calibration_trust": calibration_trust,
         "regime_penalty": regime_penalty,
+        "model_penalty": model_penalty,
         "sample_penalty": sample_penalty,
         "tail_bias_penalty": tail_bias_penalty,
         "total_penalty": total_penalty,
         "effective_trust": effective_trust,
+        
+        # Model info
+        "model_type": model_type,
         
         # Diagnostics
         "ks_statistic": float(ks_statistic) if ks_statistic is not None else None,
@@ -314,6 +402,7 @@ def compute_calibrated_trust(
         
         # Policy metadata
         "penalty_cap": MAX_REGIME_PENALTY,
+        "model_penalty_cap": MAX_MODEL_PENALTY,
         "schedule_version": config.schedule_version,
         
         # Verification
@@ -554,6 +643,10 @@ __all__ = [
     
     # Verification
     "verify_trust_architecture",
+    
+    # Model penalty (Counter-Proposal v1.0)
+    "MAX_MODEL_PENALTY",
+    "DEFAULT_MODEL_PENALTY_SCHEDULE",
 ]
 
 
@@ -579,14 +672,21 @@ if __name__ == "__main__":
     
     # Demo usage
     print("\n" + "=" * 60)
-    print("Demo: Trust Computation")
+    print("Demo: Trust Computation with Model Penalty")
     print("=" * 60)
     
     # Simulate PIT values
     demo_pit = np.random.uniform(0, 1, 500)
     
-    # Compute trust in different regimes
-    for regime_name, regime_idx in [("Low Vol", 0), ("Normal", 1), ("Crisis", 4)]:
-        trust = compute_calibrated_trust(demo_pit, {regime_idx: 1.0})
-        print(f"\n{regime_name} Regime:")
-        print(trust)
+    # Compute trust in different regimes with different models
+    for model_name in ["gaussian", "phi_student_t_nu_6", "gh"]:
+        for regime_name, regime_idx in [("Normal", 1), ("Crisis", 4)]:
+            trust = compute_calibrated_trust(
+                demo_pit, 
+                {regime_idx: 1.0},
+                model_type=model_name,
+            )
+            print(f"\n{model_name} / {regime_name}:")
+            print(f"  Effective Trust: {trust.effective_trust:.1%}")
+            print(f"  Model Penalty: {trust.audit_decomposition.get('model_penalty', 0):.1%}")
+            print(f"  Regime Penalty: {trust.regime_penalty:.1%}")

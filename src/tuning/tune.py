@@ -316,13 +316,36 @@ try:
         compute_drift_weight,
         create_isotonic_transport,
         MAX_REGIME_PENALTY,
+        MAX_MODEL_PENALTY,
         DEFAULT_REGIME_PENALTY_SCHEDULE,
+        DEFAULT_MODEL_PENALTY_SCHEDULE,
         REGIME_NAMES,
         verify_trust_architecture,
     )
     CALIBRATED_TRUST_AVAILABLE = True
 except ImportError:
     CALIBRATED_TRUST_AVAILABLE = False
+
+# Import Control Policy — Authority Boundary Layer (Counter-Proposal v1.0)
+# ARCHITECTURAL LAW: Diagnostics RECOMMEND, Policy DECIDES, Models OBEY
+# This is the missing layer identified in the institutional audit.
+try:
+    from calibration.control_policy import (
+        EscalationDecision,
+        CalibrationDiagnostics,
+        ControlPolicy,
+        AdaptiveRefinementConfig,
+        TuningAuditRecord,
+        EscalationStatistics,
+        DECISION_NAMES,
+        DEFAULT_CONTROL_POLICY,
+        DEFAULT_REFINEMENT_CONFIG,
+        create_diagnostics_from_result,
+        verify_control_policy_architecture,
+    )
+    CONTROL_POLICY_AVAILABLE = True
+except ImportError:
+    CONTROL_POLICY_AVAILABLE = False
 
 # =============================================================================
 # IMPORT MODEL SELECTION UTILITIES FROM CALIBRATION

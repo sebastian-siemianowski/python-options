@@ -247,8 +247,12 @@ Examples:
             console=console
         )
         
-        # Create progress tracker
-        tracker = TuningProgressTracker(len(assets_to_process), console=console)
+        # Create progress tracker with audit trail support (Counter-Proposal v1.0)
+        # Use AuditAwareTuningProgressTracker to separate display from authoritative state
+        tracker = AuditAwareTuningProgressTracker(len(assets_to_process), console=console)
+        
+        # Initialize escalation statistics tracker if control policy is available
+        escalation_stats = EscalationStatistics() if CONTROL_POLICY_AVAILABLE else None
 
         # Prepare arguments for workers
         worker_args = []
