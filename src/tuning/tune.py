@@ -1408,6 +1408,56 @@ def tune_asset_q(
             _log(f"     ⚠️ Contaminated-t fitting exception: {cst_err}")
             cst_diagnostics = {"fit_success": False, "error": str(cst_err)}
         
+        # =====================================================================
+        # PIT-DRIVEN ESCALATION: ν-REFINEMENT (L1 → L2)
+        # =====================================================================
+        nu_refinement_result = None
+        nu_refinement_attempted = False
+        nu_refinement_improved = False
+        
+        if ADAPTIVE_NU_AVAILABLE and ADAPTIVE_NU_ENABLED:
+            pit_pvalue = best_params.get("pit_ks_pvalue", 1.0)
+            best_nu = best_params.get("nu")
+            is_student_t = best_model.startswith("phi_student_t") if best_model else False
+            pit_fails = pit_pvalue < ADAPTIVE_NU_PIT_THRESHOLD
+            pit_severe = pit_pvalue < ADAPTIVE_NU_PIT_SEVERE_THRESHOLD
+            
+            if is_student_t and best_nu and (pit_fails or pit_severe):
+                nu_refinement_attempted = True
+                try:
+                    candidates = ADAPTIVE_NU_CANDIDATES.get(float(best_nu), [])
+                    if candidates:
+                        _log(f"     🔄 ν-refinement: PIT p={pit_pvalue:.4f} → testing ν={candidates}")
+                        best_refined_nu = best_nu
+                        best_refined_pit = pit_pvalue
+                        
+                        for nu_candidate in candidates:
+                            model_key = f"phi_student_t_nu_{int(nu_candidate)}"
+                            if model_key in models and models[model_key].get("fit_success"):
+                                cand_pit = models[model_key].get("pit_ks_pvalue", 0)
+                                if cand_pit > best_refined_pit:
+                                    best_refined_nu = nu_candidate
+                                    best_refined_pit = cand_pit
+                                    best_params = models[model_key]
+                                    best_model = model_key
+                                    _log(f"        ✓ ν={nu_candidate}: PIT p={cand_pit:.4f} (improved)")
+                        
+                        if best_refined_pit > pit_pvalue:
+                            nu_refinement_improved = True
+                            _log(f"     ✓ ν-refinement SUCCESS: PIT {pit_pvalue:.4f}→{best_refined_pit:.4f}")
+                        
+                        nu_refinement_result = {
+                            "refinement_attempted": True,
+                            "nu_original": best_nu,
+                            "nu_final": best_refined_nu,
+                            "improvement_achieved": nu_refinement_improved,
+                            "pit_before": pit_pvalue,
+                            "pit_after": best_refined_pit,
+                        }
+                except Exception as nu_err:
+                    _log(f"     ⚠️ ν-refinement error: {nu_err}")
+                    nu_refinement_result = {"error": str(nu_err)}
+        
         # Build result structure - BMA-compatible format
         # signals.py expects: {"global": {...}, "has_bma": True}
         global_data = {
@@ -1450,6 +1500,10 @@ def tune_asset_q(
             "contaminated_student_t": cst_result,
             "contaminated_student_t_diagnostics": cst_diagnostics,
             "contaminated_vs_single_comparison": cst_comparison,
+            # PIT-driven ν-refinement results (L2 escalation)
+            "nu_refinement": nu_refinement_result,
+            "nu_refinement_attempted": nu_refinement_attempted,
+            "nu_refinement_improved": nu_refinement_improved,
         }
         
         result = {

@@ -240,6 +240,7 @@ def _get_status(fit_count: int, shrunk_count: int) -> str:
 
 
 def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: Console = None) -> None:
+    """Render PIT-Driven Distribution Escalation summary with hierarchical level breakdown."""
     if console is None:
         console = create_tuning_console()
     total = escalation_summary.get('total', 0)
@@ -250,7 +251,7 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
     console.print()
     section = Text()
     section.append("  🎯  ", style="bold bright_yellow")
-    section.append("PIT-DRIVEN ESCALATION", style="bold bright_white")
+    section.append("PIT CALIBRATION STATUS", style="bold bright_white")
     console.print(section)
     console.print()
     
@@ -267,100 +268,91 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
     status_row.append("  ·  ", style="dim")
     if warnings > 0:
         status_row.append(f"{warnings} warnings", style="yellow")
-        status_row.append("  ·  ", style="dim")
     if critical > 0:
+        status_row.append("  ·  ", style="dim")
         status_row.append(f"{critical} critical", style="indian_red1")
     console.print(status_row)
     console.print()
     
-    # Model distribution breakdown
-    model_counts = escalation_summary.get('model_counts', {})
+    # Model distribution by BIC selection
+    level_counts = escalation_summary.get('level_counts', {})
     
-    if model_counts:
-        console.print("    [dim]Model Distribution:[/dim]")
+    if level_counts:
+        console.print("    [dim]Model Selection (BIC-based, heavier tails when needed):[/dim]")
         console.print()
-        
-        gaussian = model_counts.get('gaussian', 0)
-        phi_gaussian = model_counts.get('phi-gaussian', 0)
-        phi_t = model_counts.get('phi-t', 0)
-        phi_t_refined = model_counts.get('phi-t-refined', 0)
-        mixture = model_counts.get('mixture', 0)
-        gh = model_counts.get('gh', 0)
-        tvvm = model_counts.get('tvvm', 0)
         
         bar_width = 25
         
-        # Gaussian (includes phi-gaussian)
-        gauss_total = gaussian + phi_gaussian
-        if total > 0 and gauss_total > 0:
-            gauss_pct = gauss_total / total * 100
-            gauss_filled = int(gauss_pct / 100 * bar_width)
-            gauss_row = Text()
-            gauss_row.append("      Gaussian        ", style="green")
-            gauss_row.append("█" * gauss_filled, style="green")
-            gauss_row.append("░" * (bar_width - gauss_filled), style="dim")
-            gauss_row.append(f"  {gauss_total:>4}  ({gauss_pct:>5.1f}%)", style="white")
-            if phi_gaussian > 0:
-                gauss_row.append(f"  [φ-Gauss: {phi_gaussian}]", style="dim")
-            console.print(gauss_row)
+        # Define levels with their display properties and disabled status
+        # (level_name, level_code, color, symbol, is_disabled)
+        levels = [
+            ('φ-Gaussian', 'L0', 'green', '○', False),
+            ('φ-Student-t', 'L1', 'magenta', '●', False),
+            ('φ-Student-t (ν-refined)', 'L2', 'bright_magenta', '◆', False),
+            ('K=2 Scale Mixture', 'L3', 'cyan', '◈', True),  # Disabled
+            ('EVT Tail Splice', 'L4', 'bright_red', '▲', False),
+        ]
         
-        # Student-t
-        student_total = phi_t + phi_t_refined
-        if total > 0:
-            student_pct = student_total / total * 100
-            student_filled = int(student_pct / 100 * bar_width)
-            student_row = Text()
-            student_row.append("      Student-t       ", style="magenta")
-            student_row.append("█" * student_filled, style="magenta")
-            student_row.append("░" * (bar_width - student_filled), style="dim")
-            student_row.append(f"  {student_total:>4}  ({student_pct:>5.1f}%)", style="white")
-            if phi_t_refined > 0:
-                student_row.append(f"  [{phi_t_refined} ν-refined]", style="dim")
-            console.print(student_row)
+        for level_name, level_code, color, symbol, is_disabled in levels:
+            count = level_counts.get(level_name, 0)
+            pct = count / total * 100 if total > 0 else 0
+            filled = int(pct / 100 * bar_width)
+            
+            row = Text()
+            row.append(f"      {symbol} ", style="dim" if is_disabled else color)
+            row.append(f"{level_code} ", style="dim")
+            
+            if is_disabled:
+                row.append(f"{level_name:<24}", style="dim")
+                row.append("░" * bar_width, style="dim")
+                row.append(f"  {count:>4}  ({pct:>5.1f}%)", style="dim")
+                row.append("  [disabled]", style="dim italic")
+            else:
+                row.append(f"{level_name:<24}", style=color if count > 0 else "dim")
+                row.append("█" * filled, style=color)
+                row.append("░" * (bar_width - filled), style="dim")
+                row.append(f"  {count:>4}  ({pct:>5.1f}%)", style="white" if count > 0 else "dim")
+                
+                # Add indicator for selected heavier-tailed models
+                if count > 0 and level_name != 'φ-Gaussian':
+                    row.append("  ↑ heavier tails", style="dim italic")
+            
+            console.print(row)
         
-        # Mixture
-        if mixture > 0:
-            mix_pct = mixture / total * 100
-            mix_filled = int(mix_pct / 100 * bar_width)
-            mix_row = Text()
-            mix_row.append("      K=2 Mixture     ", style="cyan")
-            mix_row.append("█" * mix_filled, style="cyan")
-            mix_row.append("░" * (bar_width - mix_filled), style="dim")
-            mix_row.append(f"  {mixture:>4}  ({mix_pct:>5.1f}%)", style="white")
-            console.print(mix_row)
+        console.print()
         
-        # GH
-        if gh > 0:
-            gh_pct = gh / total * 100
-            gh_filled = int(gh_pct / 100 * bar_width)
-            gh_row = Text()
-            gh_row.append("      Gen. Hyperbolic ", style="bright_cyan")
-            gh_row.append("█" * gh_filled, style="bright_cyan")
-            gh_row.append("░" * (bar_width - gh_filled), style="dim")
-            gh_row.append(f"  {gh:>4}  ({gh_pct:>5.1f}%)", style="white")
-            console.print(gh_row)
+        # Show how many assets needed heavier tails
+        escalations = escalation_summary.get('escalations_triggered', 0)
+        escalation_rate = escalation_summary.get('escalation_rate', 0)
+        if escalations > 0:
+            esc_row = Text()
+            esc_row.append("    Heavier tails selected: ", style="dim")
+            esc_row.append(f"{escalations}", style="bold bright_cyan")
+            esc_row.append(f" ({escalation_rate:.1f}% of assets)", style="dim")
+            console.print(esc_row)
         
-        # TVVM
-        if tvvm > 0:
-            tvvm_pct = tvvm / total * 100
-            tvvm_filled = int(tvvm_pct / 100 * bar_width)
-            tvvm_row = Text()
-            tvvm_row.append("      TVVM            ", style="yellow")
-            tvvm_row.append("█" * tvvm_filled, style="yellow")
-            tvvm_row.append("░" * (bar_width - tvvm_filled), style="dim")
-            tvvm_row.append(f"  {tvvm:>4}  ({tvvm_pct:>5.1f}%)", style="white")
-            console.print(tvvm_row)
+        # Show calibration issue summary
+        if critical > 0:
+            console.print()
+            issue_row = Text()
+            issue_row.append("    ⚠ ", style="indian_red1")
+            issue_row.append(f"{critical} assets with PIT p < 0.01", style="indian_red1")
+            issue_row.append(" — consider enabling additional escalation models", style="dim")
+            console.print(issue_row)
+        
+        console.print()
     
-    console.print()
-    
-    # Escalation attempts summary
+    # Escalation attempts and success rates (if any escalation was attempted)
     nu_attempts = escalation_summary.get('nu_refinement_attempts', 0)
     mix_attempts = escalation_summary.get('mixture_attempts', 0)
     gh_attempts = escalation_summary.get('gh_attempts', 0)
     tvvm_attempts = escalation_summary.get('tvvm_attempts', 0)
+    evt_attempts = escalation_summary.get('evt_attempts', 0)
     
-    if nu_attempts > 0 or mix_attempts > 0 or gh_attempts > 0 or tvvm_attempts > 0:
-        console.print("    [dim]Escalation Attempts:[/dim]")
+    has_attempts = nu_attempts > 0 or mix_attempts > 0 or gh_attempts > 0 or tvvm_attempts > 0 or evt_attempts > 0
+    
+    if has_attempts:
+        console.print("    [dim]PIT Improvement Attempts:[/dim]")
         console.print()
         
         # ν refinement
@@ -368,42 +360,52 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
             nu_successes = escalation_summary.get('nu_refinement_successes', 0)
             nu_rate = escalation_summary.get('nu_refinement_success_rate', 0)
             nu_row = Text()
-            nu_row.append("      ν-refinement:   ", style="dim")
-            nu_row.append(f"{nu_successes}/{nu_attempts}", style="white")
-            nu_row.append(f" ({nu_rate:.0f}% success)", style="dim")
+            nu_row.append("      ν-refinement:        ", style="dim")
+            nu_row.append(f"{nu_successes}/{nu_attempts}", style="bright_magenta" if nu_successes > 0 else "white")
+            nu_row.append(f" ({nu_rate:.0f}% improved PIT)", style="dim")
             console.print(nu_row)
         
-        # Mixture
+        # EVT Tail Splice (always show if EVT was fitted)
+        if evt_attempts > 0:
+            evt_successes = escalation_summary.get('evt_successes', 0)
+            evt_rate = escalation_summary.get('evt_success_rate', 0)
+            evt_row = Text()
+            evt_row.append("      EVT Tail Splice:     ", style="dim")
+            evt_row.append(f"{evt_successes}/{evt_attempts}", style="red" if evt_successes > 0 else "white")
+            evt_row.append(f" ({evt_rate:.0f}% heavy tails)", style="dim")
+            console.print(evt_row)
+        
+        # Mixture (show even if disabled to indicate it wasn't attempted)
         if mix_attempts > 0:
             mix_successes = escalation_summary.get('mixture_successes', 0)
             mix_rate = escalation_summary.get('mixture_success_rate', 0)
             mix_row = Text()
-            mix_row.append("      K=2 Mixture:    ", style="dim")
-            mix_row.append(f"{mix_successes}/{mix_attempts}", style="white")
-            mix_row.append(f" ({mix_rate:.0f}% success)", style="dim")
+            mix_row.append("      K=2 Mixture:         ", style="dim")
+            mix_row.append(f"{mix_successes}/{mix_attempts}", style="cyan" if mix_successes > 0 else "white")
+            mix_row.append(f" ({mix_rate:.0f}% improved PIT)", style="dim")
             console.print(mix_row)
         
-        # GH
+        # GH attempts (if available)
         if gh_attempts > 0:
             gh_successes = escalation_summary.get('gh_successes', 0)
             gh_rate = escalation_summary.get('gh_success_rate', 0)
             gh_row = Text()
-            gh_row.append("      GH Distribution:", style="dim")
-            gh_row.append(f"{gh_successes}/{gh_attempts}", style="white")
-            gh_row.append(f" ({gh_rate:.0f}% success)", style="dim")
+            gh_row.append("      Gen. Hyperbolic:     ", style="dim")
+            gh_row.append(f"{gh_successes}/{gh_attempts}", style="bright_cyan" if gh_successes > 0 else "white")
+            gh_row.append(f" ({gh_rate:.0f}% improved PIT)", style="dim")
             console.print(gh_row)
         
-        # TVVM
+        # TVVM attempts (if available)
         if tvvm_attempts > 0:
             tvvm_successes = escalation_summary.get('tvvm_successes', 0)
             tvvm_rate = escalation_summary.get('tvvm_success_rate', 0)
             tvvm_row = Text()
-            tvvm_row.append("      TVVM:           ", style="dim")
-            tvvm_row.append(f"{tvvm_successes}/{tvvm_attempts}", style="white")
-            tvvm_row.append(f" ({tvvm_rate:.0f}% success)", style="dim")
+            tvvm_row.append("      TVVM:                ", style="dim")
+            tvvm_row.append(f"{tvvm_successes}/{tvvm_attempts}", style="yellow" if tvvm_successes > 0 else "white")
+            tvvm_row.append(f" ({tvvm_rate:.0f}% improved PIT)", style="dim")
             console.print(tvvm_row)
-    
-    console.print()
+        
+        console.print()
 
 
 def render_tuning_summary(
@@ -1200,8 +1202,8 @@ Examples:
         pit_p = global_data.get('pit_ks_pvalue', 1.0)
         calibration_warning = global_data.get('calibration_warning', False)
         mixture_attempted = global_data.get('mixture_attempted', False)
-        nu_ref = global_data.get('nu_refinement', {})
-        nu_refinement_attempted = nu_ref.get('refinement_attempted', False)
+        nu_ref = global_data.get('nu_refinement') or {}
+        nu_refinement_attempted = nu_ref.get('refinement_attempted', False) or global_data.get('nu_refinement_attempted', False)
         
         # Asset needs re-tuning if:
         # 1. Has calibration warning (PIT < 0.05)
@@ -1317,10 +1319,10 @@ Examples:
                             mixture_selected_count += 1
                         
                         # Track adaptive ν refinement attempts and improvements
-                        nu_refinement = global_result.get('nu_refinement', {})
-                        if nu_refinement.get('refinement_attempted'):
+                        nu_refinement = global_result.get('nu_refinement') or {}
+                        if nu_refinement.get('refinement_attempted') or global_result.get('nu_refinement_attempted'):
                             nu_refinement_attempted_count += 1
-                        if nu_refinement.get('improvement_achieved'):
+                        if nu_refinement.get('improvement_achieved') or global_result.get('nu_refinement_improved'):
                             nu_refinement_improved_count += 1
                         
                         # Track GH distribution attempts and selections
@@ -1356,7 +1358,7 @@ Examples:
                         nu_val = global_result.get('nu')
                         bic_val = global_result.get('bic', float('nan'))
                         model_type = global_result.get('noise_model', 'gaussian')
-                        nu_was_refined = nu_refinement.get('improvement_achieved', False)
+                        nu_was_refined = nu_refinement.get('improvement_achieved', False) or global_result.get('nu_refinement_improved', False)
                         
                         # Build comprehensive details string for UX display
                         # Format: model|q|c|phi|nu|bic|trust
@@ -1751,10 +1753,10 @@ Examples:
             mixture_selected_count += 1
         
         # Count ν refinement attempts and improvements
-        nu_refinement = global_data.get('nu_refinement', {})
-        if nu_refinement.get('refinement_attempted'):
+        nu_refinement = global_data.get('nu_refinement') or {}
+        if nu_refinement.get('refinement_attempted') or global_data.get('nu_refinement_attempted'):
             nu_refinement_attempted_count += 1
-        if nu_refinement.get('improvement_achieved'):
+        if nu_refinement.get('improvement_achieved') or global_data.get('nu_refinement_improved'):
             nu_refinement_improved_count += 1
         
         # Count GH attempts and selections
