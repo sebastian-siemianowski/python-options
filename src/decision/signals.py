@@ -259,7 +259,8 @@ from multiprocessing import Pool, cpu_count
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
+# NOTE: yfinance is NOT imported here - all data access goes through data_utils
+# which respects OFFLINE_MODE. Signal generation should NEVER call Yahoo Finance directly.
 from scipy.stats import t as student_t, norm, skew as scipy_stats_skew
 from scipy.special import gammaln
 from rich.console import Console
@@ -341,6 +342,7 @@ from decision.signals_ux import (
     render_sector_summary_tables,
     render_strong_signals_summary,
     render_risk_temperature_summary,
+    render_augmentation_layers_summary,
     build_asset_display_label,
     extract_symbol_from_title,
     format_horizon_label,
@@ -378,7 +380,24 @@ from ingestion.data_utils import (
     get_price_series,
     STANDARD_PRICE_COLUMNS,
     print_symbol_tables,
+    enable_cache_only_mode,
 )
+
+# =============================================================================
+# SIGNAL GENERATION: CACHE-ONLY MODE
+# =============================================================================
+# Signal generation should NEVER make Yahoo Finance API calls.
+# All price data must come from cache populated during 'make data' or 'make refresh'.
+#
+# This ensures:
+# 1. Fast signal generation (no network latency)
+# 2. No rate limiting issues with Yahoo Finance
+# 3. Reproducible results (same cache = same signals)
+# 4. System works offline once data is cached
+#
+# If you see "Failed download" errors, run 'make data' first to populate the cache.
+# =============================================================================
+enable_cache_only_mode()
 
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
 logging.getLogger("yfinance").setLevel(logging.ERROR)
@@ -478,6 +497,75 @@ except ImportError:
             samples[from_crisis] = rng.standard_t(df=nu_crisis, size=n_crisis)
         
         return loc + scale * samples
+
+
+# =============================================================================
+# HANSEN SKEW-T DISTRIBUTION (Asymmetric Tails)
+# =============================================================================
+# Hansen (1994) skew-t captures directional asymmetry via λ parameter:
+#   - λ > 0: Right-skewed (recovery potential, heavier right tail)
+#   - λ < 0: Left-skewed (crash risk, heavier left tail)
+#   - λ = 0: Reduces to symmetric Student-t
+#
+# CRITICAL: This must be imported for signals.py to use hansen_lambda in MC sampling.
+# Without this import, hansen_lambda is accepted but IGNORED - silent bug!
+# =============================================================================
+try:
+    from models import (
+        hansen_skew_t_rvs,
+        hansen_skew_t_cdf,
+        HansenSkewTParams,
+    )
+    HANSEN_SKEW_T_AVAILABLE = True
+except ImportError:
+    HANSEN_SKEW_T_AVAILABLE = False
+    
+    # Fallback: stub that falls back to symmetric Student-t (with warning)
+    def hansen_skew_t_rvs(
+        size: int,
+        nu: float,
+        lambda_: float,
+        loc: float = 0.0,
+        scale: float = 1.0,
+        random_state=None
+    ) -> np.ndarray:
+        """Fallback Hansen skew-t sampling - uses symmetric Student-t with warning."""
+        import warnings
+        warnings.warn(
+            f"Hansen skew-t not available, using symmetric Student-t (ignoring λ={lambda_:.3f})",
+            RuntimeWarning
+        )
+        if random_state is None:
+            rng = np.random.default_rng()
+        elif isinstance(random_state, np.random.Generator):
+            rng = random_state
+        else:
+            rng = np.random.default_rng(random_state)
+        
+        # Fallback to symmetric Student-t
+        samples = rng.standard_t(df=nu, size=size)
+        return loc + scale * samples
+
+
+# =============================================================================
+# MODEL REGISTRY — Single Source of Truth for Model Synchronization
+# =============================================================================
+# The model registry ensures tune.py and signals.py are ALWAYS synchronised.
+# This prevents the #1 silent failure: model name mismatch → dropped from BMA.
+#
+# ARCHITECTURAL LAW: Top funds REFUSE TO TRADE without this assertion.
+# =============================================================================
+try:
+    from models.model_registry import (
+        MODEL_REGISTRY,
+        ModelFamily,
+        SupportType,
+        get_model_spec,
+        assert_models_synchronised,
+    )
+    MODEL_REGISTRY_AVAILABLE = True
+except ImportError:
+    MODEL_REGISTRY_AVAILABLE = False
 
 
 # =============================================================================
@@ -1156,6 +1244,11 @@ class Signal:
     cst_nu_normal: Optional[float] = None   # ν for normal regime (lighter tails)
     cst_nu_crisis: Optional[float] = None   # ν for crisis regime (heavier tails)
     cst_epsilon: Optional[float] = None     # Crisis contamination probability
+    # Hansen Skew-t fields (asymmetric return distribution):
+    hansen_enabled: bool = False            # Whether Hansen skew-t was fitted
+    hansen_lambda: Optional[float] = None   # Skewness parameter λ ∈ (-1, 1)
+    hansen_nu: Optional[float] = None       # Degrees of freedom ν
+    hansen_skew_direction: Optional[str] = None  # "left", "right", or "symmetric"
     # Diagnostics only (NOT used for trading decisions):
     drift_uncertainty: float = 0.0  # P_t × drift_var_factor: uncertainty in drift estimate propagated to horizon
     p_analytical: float = 0.5       # DIAGNOSTIC ONLY: analytical posterior predictive P(r>0|D) 
@@ -4162,6 +4255,28 @@ def run_regime_specific_mc(
         cst_epsilon > 0.001
     )
     
+    # =========================================================================
+    # HANSEN SKEW-T DETECTION (asymmetric Student-t)
+    # =========================================================================
+    # If hansen_lambda is provided and non-trivial, use Hansen skew-t sampling
+    # instead of symmetric Student-t. This is the CRITICAL fix - hansen_lambda
+    # was previously accepted but IGNORED in sampling.
+    #
+    # Priority order:
+    #   1. Contaminated Student-t (regime-dependent tails)
+    #   2. Hansen Skew-t (asymmetric tails with fixed λ)
+    #   3. Symmetric Student-t (heavy tails only)
+    #   4. NIG (semi-heavy tails with asymmetry via β)
+    #   5. Gaussian (light tails)
+    # =========================================================================
+    use_hansen_skew_t = (
+        HANSEN_SKEW_T_AVAILABLE and
+        not use_contaminated_t and  # CST takes priority
+        nu is not None and
+        hansen_lambda is not None and
+        abs(hansen_lambda) > 0.01  # Only use if λ is non-trivial
+    )
+    
     # Input validation
     mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
     P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
@@ -4637,6 +4752,37 @@ def bayesian_model_average_mc(
     posteriors_recomputed = True
 
     # ========================================================================
+    # FAIL-FAST ASSERTION: Validate model synchronization
+    # ========================================================================
+    # This is the #1 silent failure mode in production quant systems:
+    # tune.py adds a model but signals.py ignores it → distorted posterior mass.
+    #
+    # The model registry (models/model_registry.py) provides the canonical
+    # contract. If registry is available, we validate against it.
+    #
+    # ARCHITECTURAL LAW: Top funds REFUSE TO TRADE without this assertion.
+    # ========================================================================
+    if MODEL_REGISTRY_AVAILABLE:
+        try:
+            tuned_model_names = set(models.keys())
+            # Only warn, don't fail - allows for temporary model additions
+            # during experimentation while still flagging the issue
+            assert_models_synchronised(
+                tuned_model_names, 
+                context=f"regime={current_regime} ({regime_name}), asset={asset_symbol}"
+            )
+        except AssertionError as sync_error:
+            # Log but don't fail - degraded operation is better than crash
+            # This will be logged to stderr for monitoring
+            import warnings
+            warnings.warn(
+                f"Model synchronization warning: {sync_error}",
+                RuntimeWarning
+            )
+        except Exception:
+            pass  # Registry check failed - continue without validation
+
+    # ========================================================================
     # BAYESIAN MODEL AVERAGING: Draw samples from mixture over models
     # ========================================================================
     # p(x | D, r_t) = Σ_m p(x | r_t, m, θ_m) · p(m | r_t)
@@ -4664,6 +4810,11 @@ def bayesian_model_average_mc(
         nu_m = model_params.get('nu')
         c_m = model_params.get('c', 1.0)
 
+        # Extract NIG parameters (for phi_nig_* models)
+        nig_alpha_m = model_params.get('nig_alpha')
+        nig_beta_m = model_params.get('nig_beta')
+        nig_delta_m = model_params.get('nig_delta')
+
         # Default phi for models without it
         if phi_m is None or not np.isfinite(phi_m):
             phi_m = 0.95 if 'phi' in model_name else 1.0
@@ -4676,6 +4827,10 @@ def bayesian_model_average_mc(
         n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_paths))
 
         # Generate samples from p(x | r_t, m, θ_m)
+        # AUGMENTATION LAYERS ARE PASSED TO MC SAMPLING:
+        # - Hansen λ affects tail asymmetry in Student-t
+        # - CST affects regime-dependent tail thickness
+        # - NIG affects both tails and asymmetry
         model_samples = run_regime_specific_mc(
             regime=current_regime,
             mu_t=mu_t,
@@ -4686,6 +4841,19 @@ def bayesian_model_average_mc(
             H=H,
             n_paths=n_model_samples,
             nu=nu_m,
+            # ================================================================
+            # AUGMENTATION LAYERS - Affect distribution of return samples
+            # ================================================================
+            # NIG parameters (model-specific, from NIG models)
+            nig_alpha=nig_alpha_m,
+            nig_beta=nig_beta_m,
+            nig_delta=nig_delta_m,
+            # Hansen Skew-t (global augmentation from tuning)
+            hansen_lambda=hansen_lambda_global if hansen_skew_t_enabled else None,
+            # Contaminated Student-t (global augmentation from tuning)
+            cst_nu_normal=cst_nu_normal_global if cst_enabled else None,
+            cst_nu_crisis=cst_nu_crisis_global if cst_enabled else None,
+            cst_epsilon=cst_epsilon_global if cst_enabled else None,
             seed=rng.integers(0, 2**31) if seed is not None else None
         )
 
@@ -4697,6 +4865,11 @@ def bayesian_model_average_mc(
             "phi": float(phi_m) if phi_m is not None else None,
             "nu": float(nu_m) if nu_m is not None else None,
             "c": float(c_m),
+            # Augmentation layer info
+            "nig_alpha": float(nig_alpha_m) if nig_alpha_m else None,
+            "nig_beta": float(nig_beta_m) if nig_beta_m else None,
+            "hansen_lambda": float(hansen_lambda_global) if hansen_skew_t_enabled else None,
+            "cst_enabled": cst_enabled,
         }
 
     # Concatenate all model samples

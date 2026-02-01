@@ -608,8 +608,9 @@ Examples:
             for r, params in regime_data.items():
                 if isinstance(params, dict):
                     is_fallback = params.get('fallback', False) or params.get('regime_meta', {}).get('fallback', False)
+                    r_int = int(r)
+                    
                     if not is_fallback:
-                        r_int = int(r)
                         regime_fit_counts[r_int] += 1
                         
                         # Count base model breakdown per regime
@@ -617,32 +618,39 @@ Examples:
                             regime_model_breakdown[r_int][model_key] = 0
                         regime_model_breakdown[r_int][model_key] += 1
                         
-                        # Also count augmentation layers per regime (they apply to all regimes)
-                        if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False):
-                            if "GMM" not in regime_model_breakdown[r_int]:
-                                regime_model_breakdown[r_int]["GMM"] = 0
-                            regime_model_breakdown[r_int]["GMM"] += 1
-                        
-                        if hansen_data is not None and isinstance(hansen_data, dict):
-                            hansen_lambda = hansen_data.get('lambda')
-                            if hansen_lambda is not None and abs(hansen_lambda) > 0.01:
-                                if "Hansen-λ" not in regime_model_breakdown[r_int]:
-                                    regime_model_breakdown[r_int]["Hansen-λ"] = 0
-                                regime_model_breakdown[r_int]["Hansen-λ"] += 1
-                        
-                        if evt_data is not None and isinstance(evt_data, dict) and evt_data.get('fit_success', False):
-                            if "EVT" not in regime_model_breakdown[r_int]:
-                                regime_model_breakdown[r_int]["EVT"] = 0
-                            regime_model_breakdown[r_int]["EVT"] += 1
-                        
-                        if cst_data is not None and isinstance(cst_data, dict) and cst_data.get('nu_normal') is not None:
-                            if "CST" not in regime_model_breakdown[r_int]:
-                                regime_model_breakdown[r_int]["CST"] = 0
-                            regime_model_breakdown[r_int]["CST"] += 1
-                        
                         is_shrunk = params.get('shrinkage_applied', False) or params.get('regime_meta', {}).get('shrinkage_applied', False)
                         if is_shrunk:
                             regime_shrunk_counts[r_int] += 1
+                    
+                    # ==================================================================
+                    # AUGMENTATION LAYERS: Count per regime (global layers apply to all)
+                    # ==================================================================
+                    # These are fitted at the global level but apply to regime-specific
+                    # models, so count them for each regime that has any fit (fallback or not)
+                    # This ensures proper display in REGIME COVERAGE table
+                    # ==================================================================
+                    if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False):
+                        if "GMM" not in regime_model_breakdown[r_int]:
+                            regime_model_breakdown[r_int]["GMM"] = 0
+                        regime_model_breakdown[r_int]["GMM"] += 1
+                    
+                    if hansen_data is not None and isinstance(hansen_data, dict):
+                        hansen_lambda = hansen_data.get('lambda')
+                        if hansen_lambda is not None and abs(hansen_lambda) > 0.01:
+                            if "Hansen-λ" not in regime_model_breakdown[r_int]:
+                                regime_model_breakdown[r_int]["Hansen-λ"] = 0
+                            regime_model_breakdown[r_int]["Hansen-λ"] += 1
+                    
+                    if evt_data is not None and isinstance(evt_data, dict) and evt_data.get('fit_success', False):
+                        if "EVT" not in regime_model_breakdown[r_int]:
+                            regime_model_breakdown[r_int]["EVT"] = 0
+                        regime_model_breakdown[r_int]["EVT"] += 1
+                    
+                    if cst_data is not None and isinstance(cst_data, dict) and cst_data.get('nu_normal') is not None:
+                        if "CST" not in regime_model_breakdown[r_int]:
+                            regime_model_breakdown[r_int]["CST"] = 0
+                        regime_model_breakdown[r_int]["CST"] += 1
+                    
         if 'hierarchical_tuning' in data:
             if data['hierarchical_tuning'].get('collapse_warning', False):
                 collapse_warnings += 1

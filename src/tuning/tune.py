@@ -344,6 +344,61 @@ from calibration.model_selection import (
 )
 
 # =============================================================================
+# MODEL REGISTRY — Single Source of Truth
+# =============================================================================
+# The model registry ensures tune.py and signals.py are ALWAYS synchronised.
+# This prevents the #1 silent failure: model name mismatch → dropped from BMA.
+#
+# ARCHITECTURAL LAW: All model names MUST be generated via registry functions.
+# Never use string literals for model names except through the registry.
+# =============================================================================
+try:
+    from models.model_registry import (
+        MODEL_REGISTRY,
+        ModelFamily,
+        SupportType,
+        get_model_spec,
+        get_all_model_names,
+        get_base_model_names,
+        get_augmentation_model_names,
+        get_base_models_for_tuning,
+        get_augmentation_layers_for_tuning,
+        assert_models_synchronised,
+        extract_model_params_for_sampling,
+        # Name generators (CANONICAL model name construction)
+        make_gaussian_name,
+        make_phi_gaussian_name,
+        make_student_t_name,
+        make_hansen_skew_t_name,
+        make_nig_name,
+        make_cst_name,
+        # Grids
+        STUDENT_T_NU_GRID,
+        STUDENT_T_NU_REFINED_GRID,
+        HANSEN_LAMBDA_GRID,
+        HANSEN_NU_GRID,
+        CST_EPSILON_GRID,
+        CST_NU_PAIRS,
+    )
+    MODEL_REGISTRY_AVAILABLE = True
+except ImportError as e:
+    MODEL_REGISTRY_AVAILABLE = False
+    import warnings
+    warnings.warn(f"Model registry not available: {e}. Using legacy string-based model names.")
+    
+    # Fallback definitions for when registry is not available
+    def make_gaussian_name() -> str:
+        return "kalman_gaussian"
+    
+    def make_phi_gaussian_name() -> str:
+        return "kalman_phi_gaussian"
+    
+    def make_student_t_name(nu: int) -> str:
+        return f"phi_student_t_nu_{nu}"
+    
+    STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
+
+# =============================================================================
 # IMPORT DIAGNOSTICS & REPORTING
 # =============================================================================
 # Scoring functions, standardization, and CLI reporting are now in separate
@@ -2423,7 +2478,7 @@ def tune_regime_model_averaging(
         prior_log_q_mean=prior_log_q_mean,
         prior_lambda=prior_lambda,
         min_samples=MIN_REGIME_SAMPLES,
-        temporal_alpha=temporal_alpha,
+        temporal_alpha=DEFAULT_TEMPORAL_ALPHA,
         previous_posteriors=previous_posteriors,
         global_models=global_models,
         global_posterior=global_posterior,
@@ -2684,7 +2739,7 @@ def tune_asset_with_bma(
 
         # Count samples per regime
         regime_counts = {r: int(np.sum(regime_labels == r)) for r in range(5)}
-        _log(f"     Regime distribution: " + ", ".join([f"{REGIME_LABELS[r]}={c}" for r, c in regime_counts.items() if c > 0]))
+        _log(f"     Regime distribution: " + ", ".join([f"{REGIME_LABELS[r]}={c}" for r, c in sorted(regime_counts.items()) if c > 0]))
 
         # First get global params (for backward compatibility)
         _log(f"     🔧 Estimating global parameters...")

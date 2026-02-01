@@ -73,6 +73,43 @@ FAILED_ASSETS_FILE = FAILED_CACHE_DIR_PATH / "failed_assets.json"
 # ============================================================================
 OFFLINE_MODE = os.environ.get("OFFLINE_MODE", "").lower() in ("1", "true", "yes", "on")
 
+
+def enable_cache_only_mode():
+    """Enable cache-only mode - use only cached data, skip all Yahoo Finance API calls.
+    
+    This should be called before any price fetching during signal generation.
+    Signal generation should NEVER make API calls - all data should come from cache
+    populated during 'make data' or 'make refresh'.
+    
+    Design Principle:
+    - Data refresh phase (make data): fetches fresh data from Yahoo, stores in cache
+    - Tuning phase (make tune): reads from cache, computes model parameters
+    - Signal phase (make signal): reads from cache ONLY, generates trading signals
+    
+    This separation ensures:
+    1. Faster signal generation (no network latency)
+    2. No rate limiting issues with Yahoo Finance
+    3. Reproducible results (same cache = same signals)
+    4. System works offline once data is cached
+    """
+    global OFFLINE_MODE
+    OFFLINE_MODE = True
+
+
+def disable_cache_only_mode():
+    """Disable cache-only mode - allow Yahoo Finance API calls.
+    
+    Only use this during data refresh operations.
+    """
+    global OFFLINE_MODE
+    OFFLINE_MODE = False
+
+
+def is_cache_only_mode() -> bool:
+    """Check if cache-only mode is enabled."""
+    return OFFLINE_MODE
+
+
 # Symbols known to be problematic (delisted, frequently failing, etc.)
 # These will be skipped during bulk downloads to avoid noise
 KNOWN_PROBLEMATIC_SYMBOLS = {
@@ -3435,7 +3472,8 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
             # Check if cache is stale (doesn't extend close enough to the target end date)
             cache_max_date = pd.to_datetime(disk.index.max()).date()
             # Allow 3 days buffer for weekends/holidays, but require recent data
-            if (target_end - cache_max_date).days > 3:
+            # EXCEPTION: In OFFLINE_MODE (skip_downloads), accept stale cache
+            if (target_end - cache_max_date).days > 3 and not skip_downloads:
                 # Cache is stale - need to re-download
                 continue
             
