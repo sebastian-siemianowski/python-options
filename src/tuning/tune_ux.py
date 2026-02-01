@@ -253,10 +253,13 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
     section.append("PIT-DRIVEN ESCALATION", style="bold bright_white")
     console.print(section)
     console.print()
+    
+    # Calibration status row
     calibrated = escalation_summary.get('calibrated', 0)
     calibrated_pct = escalation_summary.get('calibrated_pct', 0)
     warnings = escalation_summary.get('warnings', 0)
     critical = escalation_summary.get('critical', 0)
+    
     status_row = Text()
     status_row.append("    Calibration: ", style="dim")
     status_row.append(f"{calibrated}", style="bold bright_green")
@@ -268,6 +271,138 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
     if critical > 0:
         status_row.append(f"{critical} critical", style="indian_red1")
     console.print(status_row)
+    console.print()
+    
+    # Model distribution breakdown
+    model_counts = escalation_summary.get('model_counts', {})
+    
+    if model_counts:
+        console.print("    [dim]Model Distribution:[/dim]")
+        console.print()
+        
+        gaussian = model_counts.get('gaussian', 0)
+        phi_gaussian = model_counts.get('phi-gaussian', 0)
+        phi_t = model_counts.get('phi-t', 0)
+        phi_t_refined = model_counts.get('phi-t-refined', 0)
+        mixture = model_counts.get('mixture', 0)
+        gh = model_counts.get('gh', 0)
+        tvvm = model_counts.get('tvvm', 0)
+        
+        bar_width = 25
+        
+        # Gaussian (includes phi-gaussian)
+        gauss_total = gaussian + phi_gaussian
+        if total > 0 and gauss_total > 0:
+            gauss_pct = gauss_total / total * 100
+            gauss_filled = int(gauss_pct / 100 * bar_width)
+            gauss_row = Text()
+            gauss_row.append("      Gaussian        ", style="green")
+            gauss_row.append("█" * gauss_filled, style="green")
+            gauss_row.append("░" * (bar_width - gauss_filled), style="dim")
+            gauss_row.append(f"  {gauss_total:>4}  ({gauss_pct:>5.1f}%)", style="white")
+            if phi_gaussian > 0:
+                gauss_row.append(f"  [φ-Gauss: {phi_gaussian}]", style="dim")
+            console.print(gauss_row)
+        
+        # Student-t
+        student_total = phi_t + phi_t_refined
+        if total > 0:
+            student_pct = student_total / total * 100
+            student_filled = int(student_pct / 100 * bar_width)
+            student_row = Text()
+            student_row.append("      Student-t       ", style="magenta")
+            student_row.append("█" * student_filled, style="magenta")
+            student_row.append("░" * (bar_width - student_filled), style="dim")
+            student_row.append(f"  {student_total:>4}  ({student_pct:>5.1f}%)", style="white")
+            if phi_t_refined > 0:
+                student_row.append(f"  [{phi_t_refined} ν-refined]", style="dim")
+            console.print(student_row)
+        
+        # Mixture
+        if mixture > 0:
+            mix_pct = mixture / total * 100
+            mix_filled = int(mix_pct / 100 * bar_width)
+            mix_row = Text()
+            mix_row.append("      K=2 Mixture     ", style="cyan")
+            mix_row.append("█" * mix_filled, style="cyan")
+            mix_row.append("░" * (bar_width - mix_filled), style="dim")
+            mix_row.append(f"  {mixture:>4}  ({mix_pct:>5.1f}%)", style="white")
+            console.print(mix_row)
+        
+        # GH
+        if gh > 0:
+            gh_pct = gh / total * 100
+            gh_filled = int(gh_pct / 100 * bar_width)
+            gh_row = Text()
+            gh_row.append("      Gen. Hyperbolic ", style="bright_cyan")
+            gh_row.append("█" * gh_filled, style="bright_cyan")
+            gh_row.append("░" * (bar_width - gh_filled), style="dim")
+            gh_row.append(f"  {gh:>4}  ({gh_pct:>5.1f}%)", style="white")
+            console.print(gh_row)
+        
+        # TVVM
+        if tvvm > 0:
+            tvvm_pct = tvvm / total * 100
+            tvvm_filled = int(tvvm_pct / 100 * bar_width)
+            tvvm_row = Text()
+            tvvm_row.append("      TVVM            ", style="yellow")
+            tvvm_row.append("█" * tvvm_filled, style="yellow")
+            tvvm_row.append("░" * (bar_width - tvvm_filled), style="dim")
+            tvvm_row.append(f"  {tvvm:>4}  ({tvvm_pct:>5.1f}%)", style="white")
+            console.print(tvvm_row)
+    
+    console.print()
+    
+    # Escalation attempts summary
+    nu_attempts = escalation_summary.get('nu_refinement_attempts', 0)
+    mix_attempts = escalation_summary.get('mixture_attempts', 0)
+    gh_attempts = escalation_summary.get('gh_attempts', 0)
+    tvvm_attempts = escalation_summary.get('tvvm_attempts', 0)
+    
+    if nu_attempts > 0 or mix_attempts > 0 or gh_attempts > 0 or tvvm_attempts > 0:
+        console.print("    [dim]Escalation Attempts:[/dim]")
+        console.print()
+        
+        # ν refinement
+        if nu_attempts > 0:
+            nu_successes = escalation_summary.get('nu_refinement_successes', 0)
+            nu_rate = escalation_summary.get('nu_refinement_success_rate', 0)
+            nu_row = Text()
+            nu_row.append("      ν-refinement:   ", style="dim")
+            nu_row.append(f"{nu_successes}/{nu_attempts}", style="white")
+            nu_row.append(f" ({nu_rate:.0f}% success)", style="dim")
+            console.print(nu_row)
+        
+        # Mixture
+        if mix_attempts > 0:
+            mix_successes = escalation_summary.get('mixture_successes', 0)
+            mix_rate = escalation_summary.get('mixture_success_rate', 0)
+            mix_row = Text()
+            mix_row.append("      K=2 Mixture:    ", style="dim")
+            mix_row.append(f"{mix_successes}/{mix_attempts}", style="white")
+            mix_row.append(f" ({mix_rate:.0f}% success)", style="dim")
+            console.print(mix_row)
+        
+        # GH
+        if gh_attempts > 0:
+            gh_successes = escalation_summary.get('gh_successes', 0)
+            gh_rate = escalation_summary.get('gh_success_rate', 0)
+            gh_row = Text()
+            gh_row.append("      GH Distribution:", style="dim")
+            gh_row.append(f"{gh_successes}/{gh_attempts}", style="white")
+            gh_row.append(f" ({gh_rate:.0f}% success)", style="dim")
+            console.print(gh_row)
+        
+        # TVVM
+        if tvvm_attempts > 0:
+            tvvm_successes = escalation_summary.get('tvvm_successes', 0)
+            tvvm_rate = escalation_summary.get('tvvm_success_rate', 0)
+            tvvm_row = Text()
+            tvvm_row.append("      TVVM:           ", style="dim")
+            tvvm_row.append(f"{tvvm_successes}/{tvvm_attempts}", style="white")
+            tvvm_row.append(f" ({tvvm_rate:.0f}% success)", style="dim")
+            console.print(tvvm_row)
+    
     console.print()
 
 
@@ -501,16 +636,26 @@ def render_tuning_summary(
         trust_row.append("  ·  Avg: ", style="dim")
         trust_row.append(f"{avg_effective_trust:.1%}", style="bold bright_white")
         console.print(trust_row)
+        
+        if low_trust_count > 0 or high_trust_count > 0:
+            trust_dist = Text()
+            trust_dist.append("      ", style="")
+            trust_dist.append("High (≥0.7): ", style="dim")
+            trust_dist.append(f"{high_trust_count}", style="bright_green")
+            trust_dist.append("  ·  Low (<0.3): ", style="dim")
+            trust_dist.append(f"{low_trust_count}", style="indian_red1")
+            console.print(trust_dist)
     else:
+        # Show PIT calibration statistics as a proxy for trust
         hint_row = Text()
-        hint_row.append("    ⚡ No trust data computed yet", style="dim yellow")
+        hint_row.append("    ⚡ Trust computed at signal time (based on PIT calibration)", style="dim")
         console.print(hint_row)
     console.print()
     console.print()
 
 
 def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> None:
-    """Render parameter table for tuned assets."""
+    """Render parameter table for tuned assets showing all parameters."""
     if console is None:
         console = create_tuning_console()
     if not cache:
@@ -519,13 +664,22 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
     def _model_label(data: dict) -> str:
         if 'global' in data:
             data = data['global']
+        phi_val = data.get('phi')
         noise_model = data.get('noise_model', 'gaussian')
-        if noise_model and noise_model.startswith('phi_student_t_nu_'):
+        if noise_model and 'student_t' in noise_model.lower() and phi_val is not None:
+            return 'Phi-Student-t'
+        if noise_model and 'student_t' in noise_model.lower():
             return 'Student-t'
-        if noise_model == 'kalman_phi_gaussian' or data.get('phi') is not None:
+        if noise_model == 'kalman_phi_gaussian' or phi_val is not None:
             return 'φ-Gaussian'
         return 'Gaussian'
     
+    def _get_q_for_sort(data):
+        if 'global' in data:
+            return data['global'].get('q', 0)
+        return data.get('q', 0)
+    
+    # Group by model type
     groups: Dict[str, List] = {}
     for asset, data in cache.items():
         model = _model_label(data)
@@ -539,7 +693,133 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
     section = Text()
     section.append("  📊  ", style="bold bright_cyan")
     section.append("TUNED PARAMETERS", style="bold bright_white")
+    section.append(f"  ({len(cache)} assets)", style="dim")
     console.print(section)
+    console.print()
+    
+    # Sort assets by model family, then by q descending
+    sorted_assets = sorted(
+        cache.items(),
+        key=lambda x: (_model_label(x[1]), -_get_q_for_sort(x[1]))
+    )
+    
+    # Create table
+    table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="dim",
+        box=box.SIMPLE,
+        padding=(0, 1),
+        collapse_padding=True,
+    )
+    
+    table.add_column("Asset", style="bold white", width=12, no_wrap=True)
+    table.add_column("Model", style="cyan", width=12, no_wrap=True)
+    table.add_column("log₁₀(q)", justify="right", width=8)
+    table.add_column("c", justify="right", width=6)
+    table.add_column("ν", justify="right", width=5)
+    table.add_column("φ", justify="right", width=7)
+    table.add_column("BIC", justify="right", width=9)
+    table.add_column("PIT p", justify="right", width=8)
+    table.add_column("Status", justify="center", width=8)
+    
+    last_group = None
+    row_count = 0
+    max_rows = 50  # Limit display for readability
+    
+    for asset, raw_data in sorted_assets:
+        if row_count >= max_rows:
+            break
+            
+        # Handle regime-conditional structure
+        if 'global' in raw_data:
+            data = raw_data['global']
+        else:
+            data = raw_data
+        
+        model = _model_label(raw_data)
+        
+        # Add group separator
+        if model != last_group:
+            if last_group is not None:
+                table.add_row("", "", "", "", "", "", "", "", "", style="dim")
+            last_group = model
+        
+        q_val = data.get('q', float('nan'))
+        c_val = data.get('c', 1.0)
+        nu_val = data.get('nu')
+        phi_val = data.get('phi')
+        bic_val = data.get('bic', float('nan'))
+        pit_p = data.get('pit_ks_pvalue', float('nan'))
+        
+        log10_q = np.log10(q_val) if q_val > 0 else float('nan')
+        
+        # Format values
+        q_str = f"{log10_q:.2f}" if np.isfinite(log10_q) else "-"
+        c_str = f"{c_val:.3f}" if np.isfinite(c_val) else "-"
+        nu_str = f"{nu_val:.1f}" if nu_val is not None else "-"
+        phi_str = f"{phi_val:+.3f}" if phi_val is not None else "-"
+        bic_str = f"{bic_val:.1f}" if np.isfinite(bic_val) else "-"
+        
+        # PIT p-value with color coding
+        if np.isfinite(pit_p):
+            if pit_p >= 0.10:
+                pit_str = f"[green]{pit_p:.4f}[/green]"
+                status = "[green]✓[/green]"
+            elif pit_p >= 0.05:
+                pit_str = f"[yellow]{pit_p:.4f}[/yellow]"
+                status = "[yellow]![/yellow]"
+            else:
+                pit_str = f"[red]{pit_p:.4f}[/red]"
+                status = "[red]✗[/red]"
+        else:
+            pit_str = "-"
+            status = "[dim]-[/dim]"
+        
+        # Model color
+        model_colors = {
+            'Gaussian': 'green',
+            'φ-Gaussian': 'cyan',
+            'Student-t': 'magenta',
+            'Phi-Student-t': 'bright_magenta',
+        }
+        model_style = model_colors.get(model, 'white')
+        
+        table.add_row(
+            asset,
+            f"[{model_style}]{model}[/{model_style}]",
+            q_str,
+            c_str,
+            nu_str,
+            phi_str,
+            bic_str,
+            pit_str,
+            status,
+        )
+        row_count += 1
+    
+    console.print(table)
+    
+    if len(cache) > max_rows:
+        console.print(f"\n    [dim]... and {len(cache) - max_rows} more assets (showing top {max_rows} by model group)[/dim]")
+    
+    console.print()
+    
+    # Legend
+    legend = Text()
+    legend.append("    ", style="")
+    legend.append("Legend: ", style="dim bold")
+    legend.append("log₁₀(q)", style="dim")
+    legend.append("=process noise  ", style="dim")
+    legend.append("c", style="dim")
+    legend.append("=observation scale  ", style="dim")
+    legend.append("ν", style="dim")
+    legend.append("=Student-t df  ", style="dim")
+    legend.append("φ", style="dim")
+    legend.append("=AR(1) persistence  ", style="dim")
+    legend.append("PIT p", style="dim")
+    legend.append("=calibration p-value", style="dim")
+    console.print(legend)
     console.print()
 
 

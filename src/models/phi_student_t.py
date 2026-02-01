@@ -457,8 +457,8 @@ class PhiStudentTDriftModel:
         n_obs_approx = len(returns)
         prior_scale_diag = 1.0 / max(n_obs_approx, 100)
         phi_lambda_eff_diag = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale_diag
-        phi_tau_diag = lambda_to_tau(phi_lambda_eff_diag)
-        phi_prior_diag = compute_phi_prior_diagnostics(
+        phi_tau_diag = _lambda_to_tau(phi_lambda_eff_diag)
+        phi_prior_diag = _compute_phi_prior_diagnostics(
             phi_r=phi_opt,
             phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
             tau=phi_tau_diag,
@@ -626,8 +626,8 @@ class PhiStudentTDriftModel:
             log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
             
             phi_lambda_effective = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale
-            phi_tau = lambda_to_tau(phi_lambda_effective)
-            log_prior_phi = phi_shrinkage_log_prior(
+            phi_tau = _lambda_to_tau(phi_lambda_effective)
+            log_prior_phi = _phi_shrinkage_log_prior(
                 phi_r=phi_clip,
                 phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
                 tau=phi_tau
@@ -686,8 +686,8 @@ class PhiStudentTDriftModel:
         n_obs_approx = len(returns)
         prior_scale_diag = 1.0 / max(n_obs_approx, 100)
         phi_lambda_eff_diag = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale_diag
-        phi_tau_diag = lambda_to_tau(phi_lambda_eff_diag)
-        phi_prior_diag = compute_phi_prior_diagnostics(
+        phi_tau_diag = _lambda_to_tau(phi_lambda_eff_diag)
+        phi_prior_diag = _compute_phi_prior_diagnostics(
             phi_r=phi_opt,
             phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
             tau=phi_tau_diag,
