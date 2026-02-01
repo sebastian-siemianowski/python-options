@@ -1938,7 +1938,7 @@ def render_pdde_escalation_summary(
     tvvm_successes = escalation_summary.get('tvvm_successes', 0)
     tvvm_rate = escalation_summary.get('tvvm_success_rate', 0)
     
-    if mixture_attempts > 0 or nu_attempts > 0 or gh_attempts > 0 or tvvm_attempts > 0:
+    if mixture_attempts > 0 or nu_attempts > 0 or gh_attempts > 0 or tvvm_attempted_count > 0:
         console.print(Text("    Escalation Effectiveness:", style="dim"))
         console.print()
         
@@ -2119,17 +2119,17 @@ def render_tuning_summary(
         # Gaussian row
         gauss_row = Text()
         gauss_row.append("      ○ ", style="green")
-        gauss_row.append("Gaussian      ", style="green")
+        gauss_row.append(f"{'Gaussian':<14} ", style="green")
         gauss_row.append("█" * gauss_filled, style="green")
         gauss_row.append("░" * (bar_width - gauss_filled), style="dim")
         gauss_row.append(f"  {gaussian_count:>4}", style="bold white")
         gauss_row.append(f"  ({gauss_pct:>4.1f}%)", style="dim")
         console.print(gauss_row)
         
-        # Student-t row (total heavy-tailed)
+        # Student-t row
         student_row = Text()
         student_row.append("      ● ", style="magenta")
-        student_row.append("Heavy-Tailed  ", style="magenta")
+        student_row.append(f"{'Student-t':<14} ", style="magenta")
         student_row.append("█" * student_filled, style="magenta")
         student_row.append("░" * (bar_width - student_filled), style="dim")
         student_row.append(f"  {student_t_count:>4}", style="bold white")
@@ -2137,121 +2137,128 @@ def render_tuning_summary(
         console.print(student_row)
         
         # ───────────────────────────────────────────────────────────────────────
-        # HEAVY-TAILED BREAKDOWN - Sub-models
+        # STUDENT-T BREAKDOWN - Sub-models (φ-Student-t, φ-Skew-t, φ-NIG)
+        # Always show all sub-models - these are ACTIVE models, not disabled
         # ───────────────────────────────────────────────────────────────────────
-        if student_t_count > 0 and (phi_student_t_count > 0 or phi_skew_t_count > 0 or phi_nig_count > 0):
-            console.print()
-            breakdown_section = Text()
-            breakdown_section.append("    ▸ Heavy-Tailed Breakdown", style="bold dim")
-            console.print(breakdown_section)
-            console.print()
-            
-            # φ-Student-t
-            if phi_student_t_count > 0:
-                st_row = Text()
-                st_pct = phi_student_t_count / student_t_count * 100 if student_t_count > 0 else 0
-                st_filled = int(st_pct / 100 * bar_width)
-                st_row.append("      ● ", style="bright_magenta")
-                st_row.append("φ-Student-t   ", style="bright_magenta")
-                st_row.append("█" * st_filled, style="bright_magenta")
-                st_row.append("░" * (bar_width - st_filled), style="dim")
-                st_row.append(f"  {phi_student_t_count:>4}", style="bold white")
-                st_row.append(f"  ({st_pct:>4.1f}%)", style="dim")
-                console.print(st_row)
-            
-            # φ-Skew-t
-            if phi_skew_t_count > 0:
-                skt_row = Text()
-                skt_pct = phi_skew_t_count / student_t_count * 100 if student_t_count > 0 else 0
-                skt_filled = int(skt_pct / 100 * bar_width)
-                skt_row.append("      ◆ ", style="bright_cyan")
-                skt_row.append("φ-Skew-t      ", style="bright_cyan")
-                skt_row.append("█" * skt_filled, style="bright_cyan")
-                skt_row.append("░" * (bar_width - skt_filled), style="dim")
-                skt_row.append(f"  {phi_skew_t_count:>4}", style="bold white")
-                skt_row.append(f"  ({skt_pct:>4.1f}%)", style="dim")
-                console.print(skt_row)
-            
-            # φ-NIG
-            if phi_nig_count > 0:
-                nig_row = Text()
-                nig_pct = phi_nig_count / student_t_count * 100 if student_t_count > 0 else 0
-                nig_filled = int(nig_pct / 100 * bar_width)
-                nig_row.append("      ★ ", style="bright_yellow")
-                nig_row.append("φ-NIG         ", style="bright_yellow")
-                nig_row.append("█" * nig_filled, style="bright_yellow")
-                nig_row.append("░" * (bar_width - nig_filled), style="dim")
-                nig_row.append(f"  {phi_nig_count:>4}", style="bold white")
-                nig_row.append(f"  ({nig_pct:>4.1f}%)", style="dim")
-                console.print(nig_row)
+        console.print()
+        breakdown_section = Text()
+        breakdown_section.append("    ▸ Student-t Variants", style="bold dim")
+        console.print(breakdown_section)
+        console.print()
+        
+        # φ-Student-t - ALWAYS active (fitted for every asset)
+        st_row = Text()
+        st_pct = phi_student_t_count / total_models * 100 if total_models > 0 else 0
+        st_filled = int(st_pct / 100 * bar_width)
+        st_row.append("      ● ", style="bright_magenta")
+        st_row.append(f"{'φ-Student-t':<14} ", style="bright_magenta")
+        st_row.append("█" * st_filled, style="bright_magenta")
+        st_row.append("░" * (bar_width - st_filled), style="dim")
+        st_row.append(f"  {phi_student_t_count:>4}", style="bold white")
+        st_row.append(f"  ({st_pct:>4.1f}%)", style="dim")
+        if phi_student_t_count == 0:
+            st_row.append("  [0 selected]", style="dim italic")
+        console.print(st_row)
+        
+        # φ-Skew-t - Currently disabled
+        skt_row = Text()
+        skt_pct = phi_skew_t_count / total_models * 100 if total_models > 0 else 0
+        skt_filled = int(skt_pct / 100 * bar_width)
+        skt_style = "bright_cyan" if phi_skew_t_count > 0 else "dim"
+        skt_row.append("      ◆ ", style=skt_style)
+        skt_row.append(f"{'φ-Skew-t':<14} ", style=skt_style)
+        skt_row.append("█" * skt_filled, style=skt_style)
+        skt_row.append("░" * (bar_width - skt_filled), style="dim")
+        skt_row.append(f"  {phi_skew_t_count:>4}", style="bold white" if phi_skew_t_count > 0 else "dim")
+        skt_row.append(f"  ({skt_pct:>4.1f}%)", style="dim")
+        if phi_skew_t_count == 0:
+            skt_row.append("  [disabled]", style="dim italic")
+        console.print(skt_row)
+        
+        # φ-NIG - Currently disabled
+        nig_row = Text()
+        nig_pct = phi_nig_count / total_models * 100 if total_models > 0 else 0
+        nig_filled = int(nig_pct / 100 * bar_width)
+        nig_style = "bright_yellow" if phi_nig_count > 0 else "dim"
+        nig_row.append("      ★ ", style=nig_style)
+        nig_row.append(f"{'φ-NIG':<14} ", style=nig_style)
+        nig_row.append("█" * nig_filled, style=nig_style)
+        nig_row.append("░" * (bar_width - nig_filled), style="dim")
+        nig_row.append(f"  {phi_nig_count:>4}", style="bold white" if phi_nig_count > 0 else "dim")
+        nig_row.append(f"  ({nig_pct:>4.1f}%)", style="dim")
+        if phi_nig_count == 0:
+            nig_row.append("  [disabled]", style="dim italic")
+        console.print(nig_row)
         
         # ───────────────────────────────────────────────────────────────────────
-        # AUGMENTATION LAYERS - Additional models fitted on top
+        # AUGMENTATION LAYERS - Always show all layers (even disabled ones)
         # ───────────────────────────────────────────────────────────────────────
-        augmentation_shown = (gmm_fitted_count > 0 or hansen_fitted_count > 0 or 
-                             evt_fitted_count > 0 or contaminated_t_count > 0)
-        if augmentation_shown:
-            console.print()
-            aug_section = Text()
-            aug_section.append("    ▸ Augmentation Layers", style="bold dim")
-            console.print(aug_section)
-            console.print()
-            
-            # GMM (2-State Gaussian Mixture)
-            if gmm_fitted_count > 0:
-                gmm_row = Text()
-                gmm_pct = gmm_fitted_count / total_models * 100 if total_models > 0 else 0
-                gmm_filled = int(gmm_pct / 100 * bar_width)
-                gmm_row.append("      ◈ ", style="bright_blue")
-                gmm_row.append("GMM (2-State) ", style="bright_blue")
-                gmm_row.append("█" * gmm_filled, style="bright_blue")
-                gmm_row.append("░" * (bar_width - gmm_filled), style="dim")
-                gmm_row.append(f"  {gmm_fitted_count:>4}", style="bold white")
-                gmm_row.append(f"  ({gmm_pct:>4.1f}%)", style="dim")
-                console.print(gmm_row)
-            
-            # Hansen Skew-t (λ asymmetry)
-            if hansen_fitted_count > 0:
-                hansen_row = Text()
-                hansen_pct = hansen_fitted_count / total_models * 100 if total_models > 0 else 0
-                hansen_filled = int(hansen_pct / 100 * bar_width)
-                hansen_row.append("      λ ", style="bright_cyan")
-                hansen_row.append("Hansen-λ      ", style="bright_cyan")
-                hansen_row.append("█" * hansen_filled, style="bright_cyan")
-                hansen_row.append("░" * (bar_width - hansen_filled), style="dim")
-                hansen_row.append(f"  {hansen_fitted_count:>4}", style="bold white")
-                hansen_row.append(f"  ({hansen_pct:>4.1f}%)", style="dim")
-                if hansen_left_skew_count > 0 or hansen_right_skew_count > 0:
-                    hansen_row.append(f"  [←{hansen_left_skew_count}/→{hansen_right_skew_count}]", style="dim")
-                console.print(hansen_row)
-            
-            # EVT/GPD (Extreme Value Theory)
-            if evt_fitted_count > 0:
-                evt_row = Text()
-                evt_pct = evt_fitted_count / total_models * 100 if total_models > 0 else 0
-                evt_filled = int(evt_pct / 100 * bar_width)
-                evt_row.append("      ξ ", style="indian_red1")
-                evt_row.append("EVT/GPD       ", style="indian_red1")
-                evt_row.append("█" * evt_filled, style="indian_red1")
-                evt_row.append("░" * (bar_width - evt_filled), style="dim")
-                evt_row.append(f"  {evt_fitted_count:>4}", style="bold white")
-                evt_row.append(f"  ({evt_pct:>4.1f}%)", style="dim")
-                if evt_heavy_tail_count > 0 or evt_moderate_tail_count > 0 or evt_light_tail_count > 0:
-                    evt_row.append(f"  [H:{evt_heavy_tail_count}/M:{evt_moderate_tail_count}/L:{evt_light_tail_count}]", style="dim")
-                console.print(evt_row)
-            
-            # Contaminated Student-t (Crisis mixture)
-            if contaminated_t_count > 0:
-                cst_row = Text()
-                cst_pct = contaminated_t_count / total_models * 100 if total_models > 0 else 0
-                cst_filled = int(cst_pct / 100 * bar_width)
-                cst_row.append("      ⚠ ", style="yellow")
-                cst_row.append("Contaminated-t", style="yellow")
-                cst_row.append("█" * cst_filled, style="yellow")
-                cst_row.append("░" * (bar_width - cst_filled), style="dim")
-                cst_row.append(f"  {contaminated_t_count:>4}", style="bold white")
-                cst_row.append(f"  ({cst_pct:>4.1f}%)", style="dim")
-                console.print(cst_row)
+        console.print()
+        aug_section = Text()
+        aug_section.append("    ▸ Augmentation Layers", style="bold dim")
+        console.print(aug_section)
+        console.print()
+        
+        # GMM (2-State Gaussian Mixture)
+        gmm_row = Text()
+        gmm_pct = gmm_fitted_count / total_models * 100 if total_models > 0 else 0
+        gmm_filled = int(gmm_pct / 100 * bar_width)
+        # GMM is the ONLY augmentation that can be disabled via GMM_ENABLED flag
+        gmm_row.append("      ◈ ", style="bright_blue")
+        gmm_row.append(f"{'GMM (2-State)':<14} ", style="bright_blue")
+        gmm_row.append("█" * gmm_filled, style="bright_blue")
+        gmm_row.append("░" * (bar_width - gmm_filled), style="dim")
+        gmm_row.append(f"  {gmm_fitted_count:>4}", style="bold white")
+        gmm_row.append(f"  ({gmm_pct:>4.1f}%)", style="dim")
+        if gmm_fitted_count == 0:
+            gmm_row.append("  [disabled]", style="dim italic")
+        console.print(gmm_row)
+        
+        # Hansen Skew-t (λ asymmetry) - ALWAYS active
+        hansen_row = Text()
+        hansen_pct = hansen_fitted_count / total_models * 100 if total_models > 0 else 0
+        hansen_filled = int(hansen_pct / 100 * bar_width)
+        hansen_row.append("      λ ", style="bright_cyan")
+        hansen_row.append(f"{'Hansen-λ':<14} ", style="bright_cyan")
+        hansen_row.append("█" * hansen_filled, style="bright_cyan")
+        hansen_row.append("░" * (bar_width - hansen_filled), style="dim")
+        hansen_row.append(f"  {hansen_fitted_count:>4}", style="bold white")
+        hansen_row.append(f"  ({hansen_pct:>4.1f}%)", style="dim")
+        if hansen_fitted_count > 0 and (hansen_left_skew_count > 0 or hansen_right_skew_count > 0):
+            hansen_row.append(f"  [←{hansen_left_skew_count}/→{hansen_right_skew_count}]", style="dim")
+        elif hansen_fitted_count == 0:
+            hansen_row.append("  [0 fitted]", style="dim italic")
+        console.print(hansen_row)
+        
+        # EVT/GPD (Extreme Value Theory) - ALWAYS active
+        evt_row = Text()
+        evt_pct = evt_fitted_count / total_models * 100 if total_models > 0 else 0
+        evt_filled = int(evt_pct / 100 * bar_width)
+        evt_row.append("      ξ ", style="indian_red1")
+        evt_row.append(f"{'EVT/GPD':<14} ", style="indian_red1")
+        evt_row.append("█" * evt_filled, style="indian_red1")
+        evt_row.append("░" * (bar_width - evt_filled), style="dim")
+        evt_row.append(f"  {evt_fitted_count:>4}", style="bold white")
+        evt_row.append(f"  ({evt_pct:>4.1f}%)", style="dim")
+        if evt_fitted_count > 0 and (evt_heavy_tail_count > 0 or evt_moderate_tail_count > 0 or evt_light_tail_count > 0):
+            evt_row.append(f"  [H:{evt_heavy_tail_count}/M:{evt_moderate_tail_count}/L:{evt_light_tail_count}]", style="dim")
+        elif evt_fitted_count == 0:
+            evt_row.append("  [0 fitted]", style="dim italic")
+        console.print(evt_row)
+        
+        # Contaminated Student-t (Crisis mixture) - ALWAYS active
+        cst_row = Text()
+        cst_pct = contaminated_t_count / total_models * 100 if total_models > 0 else 0
+        cst_filled = int(cst_pct / 100 * bar_width)
+        cst_row.append("      ⚠ ", style="yellow")
+        cst_row.append(f"{'Contaminated-t':<14} ", style="yellow")
+        cst_row.append("█" * cst_filled, style="yellow")
+        cst_row.append("░" * (bar_width - cst_filled), style="dim")
+        cst_row.append(f"  {contaminated_t_count:>4}", style="bold white")
+        cst_row.append(f"  ({cst_pct:>4.1f}%)", style="dim")
+        if contaminated_t_count == 0:
+            cst_row.append("  [0 fitted]", style="dim italic")
+        console.print(cst_row)
         
         # ───────────────────────────────────────────────────────────────────────
         # REFINEMENT METHODS - Post-hoc improvements
@@ -2269,7 +2276,7 @@ def render_tuning_summary(
             if nu_refinement_attempted_count > 0:
                 nu_row = Text()
                 nu_row.append("      ◇ ", style="bright_cyan")
-                nu_row.append("Adaptive ν    ", style="bright_cyan")
+                nu_row.append(f"{'Adaptive ν':<14} ", style="bright_cyan")
                 nu_row.append(f"Attempted: {nu_refinement_attempted_count:>4}", style="dim")
                 nu_row.append("  →  ", style="dim")
                 if nu_refinement_improved_count > 0:
@@ -2284,7 +2291,7 @@ def render_tuning_summary(
             if gh_attempted_count > 0:
                 gh_row = Text()
                 gh_row.append("      ★ ", style="bright_magenta")
-                gh_row.append("GH Skew       ", style="bright_magenta")
+                gh_row.append(f"{'GH Skew':<14} ", style="bright_magenta")
                 gh_row.append(f"Attempted: {gh_attempted_count:>4}", style="dim")
                 gh_row.append("  →  ", style="dim")
                 if gh_selected_count > 0:
@@ -2299,7 +2306,7 @@ def render_tuning_summary(
             if tvvm_attempted_count > 0:
                 tvvm_row = Text()
                 tvvm_row.append("      ⚡ ", style="bright_blue")
-                tvvm_row.append("TVVM          ", style="bright_blue")
+                tvvm_row.append(f"{'TVVM':<14} ", style="bright_blue")
                 tvvm_row.append(f"Attempted: {tvvm_attempted_count:>4}", style="dim")
                 tvvm_row.append("  →  ", style="dim")
                 if tvvm_selected_count > 0:
@@ -2314,7 +2321,7 @@ def render_tuning_summary(
             if mixture_attempted_count > 0:
                 mix_row = Text()
                 mix_row.append("      ◆ ", style="dim")
-                mix_row.append("K=2 Mixture   ", style="dim")
+                mix_row.append(f"{'K=2 Mixture':<14} ", style="dim")
                 mix_row.append(f"Legacy: {mixture_attempted_count:>4}", style="dim")
                 mix_row.append("  (removed - 0% success)", style="dim")
                 console.print(mix_row)
@@ -3670,8 +3677,7 @@ def render_risk_temperature_summary(
         overnight_line = Text()
         overnight_line.append("  ")
         overnight_line.append("Overnight Cap   ", style="dim")
-        if overnight_max_position:
-            overnight_line.append(f"{overnight_max_position:.0%}", style="bold yellow")
+        overnight_line.append(f"{overnight_max_position:.0%}", style="bold yellow")
         overnight_line.append("  Active", style="dim italic")
         console.print(overnight_line)
     
