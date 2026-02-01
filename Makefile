@@ -202,7 +202,7 @@ calibrate: .venv/.deps_installed
 		exit 1; \
 	fi
 	@echo "📊 Extracting assets with calibration failures..."
-	@FAILED_ASSETS=$$(.venv/bin/python src/extract_calibration_failures.py); \
+	@FAILED_ASSETS=$$(.venv/bin/python src/calibration/extract_calibration_failures.py); \
 	if [ -z "$$FAILED_ASSETS" ]; then \
 		echo "✅ No calibration failures found. All assets are well-calibrated!"; \
 	else \

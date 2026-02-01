@@ -509,6 +509,14 @@ def extract_escalation_from_result(result: Dict[str, Any]) -> EscalationResult:
     
     mixture_model = global_result.get('mixture_model', {})
     
+    # Extract EVT data
+    evt_data = global_result.get('evt') or {}
+    evt_diag = global_result.get('evt_diagnostics') or {}
+    evt_fitted = evt_diag.get('fit_success', False)
+    evt_xi = evt_data.get('xi')
+    evt_severity = evt_data.get('severity', '')
+    evt_significant = evt_fitted and evt_xi is not None and evt_severity.upper() in ['HIGH', 'MEDIUM']
+    
     return EscalationResult(
         final_model=final_model,
         escalation_level=level,
@@ -529,6 +537,10 @@ def extract_escalation_from_result(result: Dict[str, Any]) -> EscalationResult:
         nu_refinement_improved=nu_ref.get('improvement_achieved', False),
         nu_original=nu_ref.get('nu_original'),
         nu_final=nu_ref.get('nu_final'),
+        evt_fitted=evt_fitted,
+        evt_significant=evt_significant,
+        evt_xi=evt_xi,
+        evt_severity=evt_severity,
     )
 
 
@@ -585,6 +597,7 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
     student_t_refined_count = 0
     mixture_count = 0
     gh_count = 0
+    tvvm_count = 0
     
     # Escalation counters
     mixture_attempts = 0
@@ -593,6 +606,10 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
     nu_refinement_successes = 0
     gh_attempts = 0
     gh_successes = 0
+    tvvm_attempts = 0
+    tvvm_successes = 0
+    evt_attempts = 0
+    evt_successes = 0
     
     for asset, data in cache.items():
         global_data = data.get('global', data)
@@ -610,7 +627,7 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
         
         # Count model types
         noise_model = global_data.get('noise_model', '')
-        nu_ref = global_data.get('nu_refinement', {})
+        nu_ref = global_data.get('nu_refinement') or {}
         
         if global_data.get('tvvm_selected'):
             tvvm_count += 1
@@ -647,6 +664,17 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             tvvm_attempts += 1
             if global_data.get('tvvm_selected'):
                 tvvm_successes += 1
+        
+        # Count EVT tail splice attempts (EVT is always attempted when data is available)
+        evt_diag = global_data.get('evt_diagnostics') or {}
+        if evt_diag.get('fit_success'):
+            evt_attempts += 1
+            # EVT is considered successful if it provides valid tail parameters with significant severity
+            evt_data = global_data.get('evt') or {}
+            if evt_data.get('xi') is not None and evt_data.get('severity', '').upper() in ['HIGH', 'MEDIUM']:
+                evt_successes += 1
+    
+    escalations = student_t_count + student_t_refined_count + mixture_count + gh_count + tvvm_count
     
     return {
         'total': total,
@@ -672,7 +700,8 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             'gh': gh_count,
             'tvvm': tvvm_count,
         },
-        'escalations_triggered': student_t_count + student_t_refined_count + mixture_count + gh_count + tvvm_count,
+        'escalations_triggered': escalations,
+        'escalation_rate': escalations / total * 100 if total > 0 else 0,
         'mixture_attempts': mixture_attempts,
         'mixture_successes': mixture_successes,
         'mixture_success_rate': mixture_successes / mixture_attempts * 100 if mixture_attempts > 0 else 0,
@@ -685,6 +714,9 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
         'tvvm_attempts': tvvm_attempts,
         'tvvm_successes': tvvm_successes,
         'tvvm_success_rate': tvvm_successes / tvvm_attempts * 100 if tvvm_attempts > 0 else 0,
+        'evt_attempts': evt_attempts,
+        'evt_successes': evt_successes,
+        'evt_success_rate': evt_successes / evt_attempts * 100 if evt_attempts > 0 else 0,
     }
 
 
