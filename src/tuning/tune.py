@@ -17,7 +17,9 @@ Where:
     r          = regime label (LOW_VOL_TREND, HIGH_VOL_TREND, LOW_VOL_RANGE,
                               HIGH_VOL_RANGE, CRISIS_JUMP)
     m          = model class (kalman_gaussian, kalman_phi_gaussian,
-                              phi_student_t_nu_{4,6,8,12,20})
+                              phi_student_t_nu_{4,6,8,12,20},
+                              phi_skew_t_nu_{ν}_gamma_{γ},
+                              phi_nig_alpha_{α}_beta_{β})
     θ_{r,m}    = parameters of model m in regime r
     p(m | r)   = posterior probability of model m in regime r
 
@@ -34,9 +36,29 @@ For EACH regime r:
        - phi_student_t_nu_8:    q, c, φ        (3 params, ν=8 FIXED)
        - phi_student_t_nu_12:   q, c, φ        (3 params, ν=12 FIXED)
        - phi_student_t_nu_20:   q, c, φ        (3 params, ν=20 FIXED)
+       - phi_skew_t_nu_{ν}_gamma_{γ}: q, c, φ  (3 params, ν and γ FIXED)
+       - phi_nig_alpha_{α}_beta_{β}: q, c, φ   (3 params, α and β FIXED)
 
-    NOTE: Student-t uses DISCRETE ν GRID (not continuous optimization).
-    Each ν is treated as a separate sub-model in BMA.
+    NOTE: Student-t, Skew-t, and NIG use DISCRETE grids (not continuous optimization).
+    Each parameter combination is treated as a separate sub-model in BMA.
+
+    SKEW-T ADDITION (Proposal 5 — φ-Skew-t with BMA):
+    The Fernández-Steel skew-t distribution captures asymmetric return distributions:
+       - γ = 1: Symmetric (reduces to Student-t)
+       - γ < 1: Left-skewed (heavier left tail) — crash risk
+       - γ > 1: Right-skewed (heavier right tail) — euphoria risk
+
+    NIG ADDITION (Solution 2 — NIG as Parallel BMA Candidate):
+    The Normal-Inverse Gaussian distribution provides:
+       - α: Tail heaviness (smaller α = heavier tails, α→∞ = Gaussian)
+       - β: Asymmetry (-α < β < α; β=0 symmetric, β<0 left-skewed, β>0 right-skewed)
+    
+    NIG differs from Student-t/Skew-t by having semi-heavy tails (between
+    Gaussian and Cauchy) and being infinitely divisible (Lévy process compatible).
+
+    CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
+    All distributional models compete via BIC weights; if extra parameters don't
+    improve fit, model weight collapses toward simpler alternatives.
 
     2. Computes for each (r, m):
        - mean_log_likelihood
@@ -199,6 +221,23 @@ from ingestion.data_utils import fetch_px, _download_prices, get_default_asset_u
 # See: docs/CALIBRATION_SOLUTIONS_ANALYSIS.md for decision rationale.
 MIXTURE_MODEL_AVAILABLE = False
 
+# =============================================================================
+# TEMPORARILY DISABLED MODELS (can be re-enabled by setting to True)
+# =============================================================================
+# These models are disabled for simplification/debugging. Set to True to re-enable.
+
+# φ-NIG (Normal-Inverse Gaussian) - disabled for simplicity
+# NIG adds α/β asymmetry parameters but rarely improves calibration over Student-t
+PHI_NIG_ENABLED = False
+
+# φ-Skew-t (Fernández-Steel) - disabled for simplicity  
+# Skew-t adds γ skewness parameter but Hansen Skew-t is preferred
+PHI_SKEW_T_ENABLED = False
+
+# GMM (2-State Gaussian Mixture) - disabled for simplicity
+# GMM captures bimodality but HMM regime-switching handles this
+GMM_ENABLED = False
+
 # Import Adaptive ν Refinement for calibration improvement
 try:
     from calibration.adaptive_nu_refinement import (
@@ -277,13 +316,36 @@ try:
         compute_drift_weight,
         create_isotonic_transport,
         MAX_REGIME_PENALTY,
+        MAX_MODEL_PENALTY,
         DEFAULT_REGIME_PENALTY_SCHEDULE,
+        DEFAULT_MODEL_PENALTY_SCHEDULE,
         REGIME_NAMES,
         verify_trust_architecture,
     )
     CALIBRATED_TRUST_AVAILABLE = True
 except ImportError:
     CALIBRATED_TRUST_AVAILABLE = False
+
+# Import Control Policy — Authority Boundary Layer (Counter-Proposal v1.0)
+# ARCHITECTURAL LAW: Diagnostics RECOMMEND, Policy DECIDES, Models OBEY
+# This is the missing layer identified in the institutional audit.
+try:
+    from calibration.control_policy import (
+        EscalationDecision,
+        CalibrationDiagnostics,
+        ControlPolicy,
+        AdaptiveRefinementConfig,
+        TuningAuditRecord,
+        EscalationStatistics,
+        DECISION_NAMES,
+        DEFAULT_CONTROL_POLICY,
+        DEFAULT_REFINEMENT_CONFIG,
+        create_diagnostics_from_result,
+        verify_control_policy_architecture,
+    )
+    CONTROL_POLICY_AVAILABLE = True
+except ImportError:
+    CONTROL_POLICY_AVAILABLE = False
 
 # =============================================================================
 # IMPORT MODEL SELECTION UTILITIES FROM CALIBRATION
@@ -303,6 +365,61 @@ from calibration.model_selection import (
     DEFAULT_MODEL_SELECTION_METHOD,
     DEFAULT_BIC_WEIGHT,
 )
+
+# =============================================================================
+# MODEL REGISTRY — Single Source of Truth
+# =============================================================================
+# The model registry ensures tune.py and signals.py are ALWAYS synchronised.
+# This prevents the #1 silent failure: model name mismatch → dropped from BMA.
+#
+# ARCHITECTURAL LAW: All model names MUST be generated via registry functions.
+# Never use string literals for model names except through the registry.
+# =============================================================================
+try:
+    from models.model_registry import (
+        MODEL_REGISTRY,
+        ModelFamily,
+        SupportType,
+        get_model_spec,
+        get_all_model_names,
+        get_base_model_names,
+        get_augmentation_model_names,
+        get_base_models_for_tuning,
+        get_augmentation_layers_for_tuning,
+        assert_models_synchronised,
+        extract_model_params_for_sampling,
+        # Name generators (CANONICAL model name construction)
+        make_gaussian_name,
+        make_phi_gaussian_name,
+        make_student_t_name,
+        make_hansen_skew_t_name,
+        make_nig_name,
+        make_cst_name,
+        # Grids
+        STUDENT_T_NU_GRID,
+        STUDENT_T_NU_REFINED_GRID,
+        HANSEN_LAMBDA_GRID,
+        HANSEN_NU_GRID,
+        CST_EPSILON_GRID,
+        CST_NU_PAIRS,
+    )
+    MODEL_REGISTRY_AVAILABLE = True
+except ImportError as e:
+    MODEL_REGISTRY_AVAILABLE = False
+    import warnings
+    warnings.warn(f"Model registry not available: {e}. Using legacy string-based model names.")
+    
+    # Fallback definitions for when registry is not available
+    def make_gaussian_name() -> str:
+        return "kalman_gaussian"
+    
+    def make_phi_gaussian_name() -> str:
+        return "kalman_phi_gaussian"
+    
+    def make_student_t_name(nu: int) -> str:
+        return f"phi_student_t_nu_{nu}"
+    
+    STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
 
 # =============================================================================
 # IMPORT DIAGNOSTICS & REPORTING
@@ -330,6 +447,18 @@ from tuning.reporting import render_calibration_issues_table
 # =============================================================================
 # Model classes are now in separate files under src/models/ for modularity.
 # Each model is SELF-CONTAINED with no cross-dependencies.
+#
+# BMA ARCHITECTURE:
+# The BMA ensemble includes the following candidate distributions:
+#   - Gaussian:           μ, σ (baseline)
+#   - Symmetric Student-t: μ, σ, ν (fat tails)
+#   - φ-Skew-t:           μ, σ, ν, γ (fat tails + asymmetry, Fernández-Steel)
+#   - Hansen Skew-t:      μ, σ, ν, λ (fat tails + asymmetry, regime-conditional)
+#   - NIG:                μ, σ, α, β (semi-heavy tails + asymmetry)
+#   - GMM:                2-component Gaussian mixture (bimodality)
+#
+# CORE PRINCIPLE: "Heavy tails, asymmetry, and bimodality are hypotheses, not certainties."
+# Complex distributions compete with simpler alternatives via BIC weights.
 # =============================================================================
 from models import (
     # Constants
@@ -337,11 +466,73 @@ from models import (
     PHI_SHRINKAGE_GLOBAL_DEFAULT,
     PHI_SHRINKAGE_LAMBDA_DEFAULT,
     STUDENT_T_NU_GRID,
+    # NIG constants (Normal-Inverse Gaussian)
+    NIG_ALPHA_GRID,
+    NIG_BETA_RATIO_GRID,
+    NIG_ALPHA_DEFAULT,
+    NIG_BETA_DEFAULT,
+    NIG_DELTA_DEFAULT,
+    is_nig_model,
+    get_nig_model_name,
+    parse_nig_model_name,
+    # GMM (2-State Gaussian Mixture)
+    GaussianMixtureModel,
+    fit_gmm_to_returns,
+    compute_gmm_pit,
+    get_gmm_model_name,
+    is_gmm_model,
+    GMM_MIN_OBS,
+    GMM_MIN_SEPARATION,
+    # Hansen Skew-t (regime-conditional asymmetry)
+    HansenSkewTParams,
+    fit_hansen_skew_t_mle,
+    compare_symmetric_vs_hansen,
+    hansen_skew_t_rvs,
+    hansen_skew_t_cdf,
+    HANSEN_NU_MIN,
+    HANSEN_NU_MAX,
+    HANSEN_NU_DEFAULT,
+    HANSEN_LAMBDA_MIN,
+    HANSEN_LAMBDA_MAX,
+    HANSEN_LAMBDA_DEFAULT,
+    HANSEN_MLE_MIN_OBS,
+    # Contaminated Student-t Mixture (regime-dependent tails)
+    ContaminatedStudentTParams,
+    fit_contaminated_student_t_profile,
+    contaminated_student_t_rvs,
+    compare_contaminated_vs_single,
+    compute_crisis_probability_from_vol,
+    CST_NU_NORMAL_DEFAULT,
+    CST_NU_CRISIS_DEFAULT,
+    CST_EPSILON_DEFAULT,
+    CST_MIN_OBS,
     # Model classes
     GaussianDriftModel,
     PhiGaussianDriftModel,
     PhiStudentTDriftModel,
+    PhiNIGDriftModel,
 )
+
+# =============================================================================
+# EVT (EXTREME VALUE THEORY) FOR TAIL RISK MODELING
+# =============================================================================
+# Import GPD/POT for EVT-based expected loss estimation during tuning.
+# This allows pre-computing optimal threshold parameters per asset.
+# =============================================================================
+try:
+    from calibration.evt_tail import (
+        fit_gpd_pot,
+        compute_evt_expected_loss,
+        GPDFitResult,
+        EVT_THRESHOLD_PERCENTILE_DEFAULT,
+        EVT_MIN_EXCEEDANCES,
+        check_student_t_consistency,
+    )
+    EVT_AVAILABLE = True
+except ImportError:
+    EVT_AVAILABLE = False
+    EVT_THRESHOLD_PERCENTILE_DEFAULT = 0.90
+    EVT_MIN_EXCEEDANCES = 30
 
 # Import presentation layer for world-class UX output
 from decision.signals_ux import (
@@ -450,6 +641,34 @@ def is_student_t_model(model_name: str) -> bool:
         return False
     model_lower = model_name.lower()
     return 'student_t' in model_lower or 'student-t' in model_lower
+
+
+def is_heavy_tailed_model(model_name: str) -> bool:
+    """
+    Check if a model name corresponds to any heavy-tailed distribution.
+    
+    Heavy-tailed models include:
+    - Student-t: 'phi_student_t_nu_{nu}'
+    - Skew-t: 'phi_skew_t_nu_{nu}_gamma_{gamma}'
+    - NIG: 'phi_nig_alpha_{alpha}_beta_{beta}'
+    
+    This is used for tail-aware signal generation and Monte Carlo sampling.
+    
+    Args:
+        model_name: Model identifier string
+        
+    Returns:
+        True if model has heavy tails, False otherwise
+    """
+    if not model_name:
+        return False
+    model_lower = model_name.lower()
+    return (
+        'student_t' in model_lower or 
+        'student-t' in model_lower or 
+        'skew_t' in model_lower or
+        'phi_nig' in model_lower
+    )
 
 
 # =============================================================================
@@ -967,6 +1186,239 @@ def tune_asset_q(
         best_model = min(bic_values.items(), key=lambda x: x[1])[0]
         best_params = models[best_model]
         
+        # =====================================================================
+        # FIT 2-STATE GAUSSIAN MIXTURE MODEL (GMM)
+        # =====================================================================
+        # GMM is fit to volatility-adjusted returns to capture bimodal behavior:
+        #   - Component 1: "Momentum" regime (typically positive mean)
+        #   - Component 2: "Reversal/Crisis" regime (typically negative mean)
+        #
+        # The GMM parameters are stored separately and used in Monte Carlo
+        # simulation to improve tail behavior in Expected Utility estimation.
+        #
+        # CORE PRINCIPLE: "Bimodality is a hypothesis, not a certainty."
+        # If GMM is degenerate (one component dominates), it falls back to
+        # single Gaussian behavior.
+        # =====================================================================
+        gmm_result = None
+        gmm_diagnostics = None
+        
+        # TEMPORARILY DISABLED - set GMM_ENABLED = True to re-enable
+        if GMM_ENABLED:
+            try:
+                gmm_model, gmm_diag = fit_gmm_to_returns(returns, vol, min_obs=GMM_MIN_OBS)
+                
+                if gmm_model is not None and gmm_diag.get("fit_success", False):
+                    # Check for degeneracy
+                    if not gmm_model.is_degenerate:
+                        gmm_result = gmm_model.to_dict()
+                        gmm_diagnostics = gmm_diag
+                        _log(f"     ✓ GMM fitted: π=[{gmm_model.weights[0]:.2f}, {gmm_model.weights[1]:.2f}], "
+                             f"μ=[{gmm_model.means[0]:.3f}, {gmm_model.means[1]:.3f}], "
+                             f"sep={gmm_model.separation:.2f}")
+                    else:
+                        _log(f"     ⚠️ GMM degenerate (one component dominates) - using single Gaussian fallback")
+                        gmm_diagnostics = {"fit_success": False, "reason": "degenerate"}
+                else:
+                    error_msg = gmm_diag.get("error", "unknown") if gmm_diag else "fit_returned_none"
+                    _log(f"     ⚠️ GMM fit failed: {error_msg} - Monte Carlo will use single Gaussian")
+                    gmm_diagnostics = gmm_diag or {"fit_success": False, "error": error_msg}
+            except Exception as gmm_err:
+                _log(f"     ⚠️ GMM fitting exception: {gmm_err}")
+                gmm_diagnostics = {"fit_success": False, "error": str(gmm_err)}
+        
+        # =====================================================================
+        # FIT HANSEN SKEW-T DISTRIBUTION (Regime-Conditional Asymmetric Tails)
+        # =====================================================================
+        # Hansen (1994) skew-t captures directional asymmetry via λ parameter:
+        #   - λ > 0: Right-skewed (recovery potential)
+        #   - λ < 0: Left-skewed (crash risk)
+        #   - λ = 0: Symmetric Student-t
+        #
+        # This is estimated globally and used as fallback when regime-specific
+        # estimation has insufficient data.
+        # =====================================================================
+        hansen_skew_t_result = None
+        hansen_skew_t_diagnostics = None
+        hansen_comparison = None
+        
+        try:
+            nu_hansen, lambda_hansen, ll_hansen, hansen_diag = fit_hansen_skew_t_mle(
+                returns,
+                nu_init=HANSEN_NU_DEFAULT,
+                lambda_init=HANSEN_LAMBDA_DEFAULT,
+                nu_bounds=(HANSEN_NU_MIN, HANSEN_NU_MAX),
+                lambda_bounds=(HANSEN_LAMBDA_MIN, HANSEN_LAMBDA_MAX)
+            )
+            
+            if hansen_diag.get("fit_success", False):
+                # Compute comparison with symmetric Student-t
+                best_nu = best_params.get("nu", HANSEN_NU_DEFAULT)
+                hansen_comparison = compare_symmetric_vs_hansen(
+                    returns, 
+                    nu_symmetric=best_nu if best_nu else HANSEN_NU_DEFAULT,
+                    nu_hansen=nu_hansen,
+                    lambda_hansen=lambda_hansen
+                )
+                
+                hansen_skew_t_result = {
+                    "nu": float(nu_hansen),
+                    "lambda": float(lambda_hansen),
+                    "log_likelihood": float(ll_hansen),
+                    "skew_direction": "left" if lambda_hansen < -0.01 else ("right" if lambda_hansen > 0.01 else "symmetric"),
+                }
+                hansen_skew_t_diagnostics = hansen_diag
+                
+                # Log the result with color-coded direction
+                skew_indicator = "←" if lambda_hansen < -0.01 else ("→" if lambda_hansen > 0.01 else "—")
+                preference = hansen_comparison.get("preference", "unknown")
+                _log(f"     ✓ Hansen Skew-t: ν={nu_hansen:.1f}, λ={lambda_hansen:+.3f} {skew_indicator} "
+                     f"| ΔAic={hansen_comparison.get('delta_aic', 0):.1f} [{preference}]")
+            else:
+                error_msg = hansen_diag.get("error", "unknown")
+                _log(f"     ⚠️ Hansen Skew-t fit failed: {error_msg}")
+                hansen_skew_t_diagnostics = hansen_diag
+        except Exception as hansen_err:
+            _log(f"     ⚠️ Hansen Skew-t fitting exception: {hansen_err}")
+            hansen_skew_t_diagnostics = {"fit_success": False, "error": str(hansen_err)}
+        
+        # =====================================================================
+        # FIT EVT/GPD DISTRIBUTION (Extreme Value Theory for Tail Risk)
+        # =====================================================================
+        # The Pickands–Balkema–de Haan theorem provides theoretical foundation:
+        # exceedances over high threshold u converge to GPD distribution.
+        #
+        # This pre-computes optimal EVT parameters per asset for use in signals.py
+        # where EVT-corrected expected loss is used for position sizing.
+        #
+        # Key outputs:
+        #   - ξ (xi): GPD shape parameter (ξ > 0 = heavy tails, ξ = 1/ν for Student-t)
+        #   - σ (sigma): GPD scale parameter
+        #   - u (threshold): POT threshold (90th percentile default)
+        #   - CTE: Conditional Tail Expectation = E[Loss | Loss > u]
+        # =====================================================================
+        evt_result = None
+        evt_diagnostics = None
+        evt_consistency = None
+        
+        if EVT_AVAILABLE:
+            try:
+                # Compute losses (positive values)
+                losses = -returns[returns < 0]
+                
+                if len(losses) >= EVT_MIN_EXCEEDANCES:
+                    gpd_result = fit_gpd_pot(
+                        losses,
+                        threshold_percentile=EVT_THRESHOLD_PERCENTILE_DEFAULT,
+                        method='auto'
+                    )
+                    
+                    if gpd_result.fit_success:
+                        evt_result = gpd_result.to_dict()
+                        evt_diagnostics = {
+                            "fit_success": True,
+                            "n_losses": len(losses),
+                            "n_total_obs": n_obs,
+                        }
+                        
+                        # Check consistency with Student-t ν
+                        best_nu = best_params.get("nu")
+                        if best_nu is not None:
+                            evt_consistency = check_student_t_consistency(best_nu, gpd_result.xi)
+                            evt_diagnostics["student_t_consistency"] = evt_consistency
+                        
+                        # Log result
+                        xi = gpd_result.xi
+                        implied_nu = gpd_result.implied_student_t_nu
+                        tail_type = "heavy" if xi > 0.2 else ("moderate" if xi > 0.05 else "light")
+                        nu_str = f"(≈ν={implied_nu:.0f})" if implied_nu and implied_nu < 100 else ""
+                        _log(f"     ✓ EVT/GPD: ξ={xi:.3f} {nu_str} [{tail_type} tails], "
+                             f"CTE={gpd_result.cte:.4f}, n_exc={gpd_result.n_exceedances}")
+                    else:
+                        error_msg = gpd_result.diagnostics.get("error", "unknown")
+                        _log(f"     ⚠️ EVT/GPD fit failed: {error_msg}")
+                        evt_diagnostics = {
+                            "fit_success": False,
+                            "error": error_msg,
+                            "n_losses": len(losses),
+                        }
+                else:
+                    _log(f"     ⚠️ EVT/GPD skipped: insufficient losses ({len(losses)} < {EVT_MIN_EXCEEDANCES})")
+                    evt_diagnostics = {
+                        "fit_success": False,
+                        "error": "insufficient_losses",
+                        "n_losses": len(losses),
+                    }
+            except Exception as evt_err:
+                _log(f"     ⚠️ EVT/GPD fitting exception: {evt_err}")
+                evt_diagnostics = {"fit_success": False, "error": str(evt_err)}
+        else:
+            evt_diagnostics = {"fit_success": False, "error": "evt_not_available"}
+        
+        # =====================================================================
+        # FIT CONTAMINATED STUDENT-T MIXTURE (Regime-Dependent Tails)
+        # =====================================================================
+        # The contaminated model captures distinct fat-tail behavior in normal
+        # versus stressed market conditions:
+        #
+        #   p(r) = (1-ε) × t(ν_normal) + ε × t(ν_crisis)
+        #
+        # Where:
+        #   - ν_normal: Degrees of freedom for calm periods (lighter tails)
+        #   - ν_crisis: Degrees of freedom for stress (heavier tails, ν_crisis < ν_normal)
+        #   - ε: Contamination probability (linked to vol_regime)
+        #
+        # CORE PRINCIPLE: "5% of the time we're in crisis mode with ν=4,
+        #                  95% of time we're normal with ν=12"
+        # =====================================================================
+        cst_result = None
+        cst_diagnostics = None
+        cst_comparison = None
+        
+        try:
+            if n_obs >= CST_MIN_OBS:
+                # Identify high-volatility observations for regime labeling
+                vol_threshold = np.percentile(vol, 80)
+                vol_regime_labels = (vol > vol_threshold).astype(int)
+                
+                # Fit contaminated Student-t mixture
+                cst_params, cst_diag = fit_contaminated_student_t_profile(
+                    returns,
+                    vol_regime_labels=vol_regime_labels,
+                )
+                
+                if cst_diag.get("fit_success", False):
+                    cst_result = cst_params.to_dict()
+                    cst_diagnostics = cst_diag
+                    
+                    # Compare with single Student-t
+                    best_nu = best_params.get("nu", CST_NU_NORMAL_DEFAULT)
+                    cst_comparison = compare_contaminated_vs_single(
+                        returns,
+                        cst_params,
+                        single_nu=best_nu if best_nu else CST_NU_NORMAL_DEFAULT
+                    )
+                    
+                    # Log result
+                    preference = "mixture" if cst_comparison.get("mixture_preferred_bic", False) else "single"
+                    _log(f"     ✓ Contaminated-t: ν_normal={cst_params.nu_normal:.0f}, "
+                         f"ν_crisis={cst_params.nu_crisis:.0f}, ε={cst_params.epsilon:.1%} "
+                         f"| ΔBIC={cst_diag.get('delta_bic', 0):.1f} [{preference}]")
+                else:
+                    error_msg = cst_diag.get("error", "unknown")
+                    _log(f"     ⚠️ Contaminated-t fit failed: {error_msg}")
+                    cst_diagnostics = cst_diag
+            else:
+                _log(f"     ⚠️ Contaminated-t skipped: insufficient data ({n_obs} < {CST_MIN_OBS})")
+                cst_diagnostics = {
+                    "fit_success": False,
+                    "error": "insufficient_data",
+                    "n_obs": n_obs,
+                }
+        except Exception as cst_err:
+            _log(f"     ⚠️ Contaminated-t fitting exception: {cst_err}")
+            cst_diagnostics = {"fit_success": False, "error": str(cst_err)}
+        
         # Build result structure - BMA-compatible format
         # signals.py expects: {"global": {...}, "has_bma": True}
         global_data = {
@@ -994,6 +1446,21 @@ def tune_asset_q(
                 "aic": models[m].get("aic", float('inf')),
                 "fit_success": models[m].get("fit_success", False),
             } for m in models},
+            # GMM parameters for Monte Carlo simulation
+            "gmm": gmm_result,
+            "gmm_diagnostics": gmm_diagnostics,
+            # Hansen Skew-t parameters for asymmetric tail modeling
+            "hansen_skew_t": hansen_skew_t_result,
+            "hansen_skew_t_diagnostics": hansen_skew_t_diagnostics,
+            "hansen_vs_symmetric_comparison": hansen_comparison,
+            # EVT/GPD parameters for tail risk modeling
+            "evt": evt_result,
+            "evt_diagnostics": evt_diagnostics,
+            "evt_student_t_consistency": evt_consistency,
+            # Contaminated Student-t Mixture for regime-dependent tails
+            "contaminated_student_t": cst_result,
+            "contaminated_student_t_diagnostics": cst_diagnostics,
+            "contaminated_vs_single_comparison": cst_comparison,
         }
         
         result = {
@@ -1521,6 +1988,114 @@ def fit_all_models_for_regime(
                 "nu_fixed": True,
             }
     
+    # =========================================================================
+    # Model 3: Phi-NIG with DISCRETE α and β GRID (Normal-Inverse Gaussian)
+    # =========================================================================
+    # NIG (Normal-Inverse Gaussian) distribution captures both:
+    #   - Semi-heavy tails via α parameter (smaller α = heavier tails)
+    #   - Asymmetry via β parameter (β < 0 = left-skewed, β > 0 = right-skewed)
+    #
+    # NIG is a 4-parameter family that includes Student-t-like behavior but
+    # with more flexible tail decay and native asymmetry support.
+    #
+    # CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
+    # NIG competes with simpler models via BIC — if the extra parameters don't
+    # improve fit, the model weight collapses toward Gaussian/Student-t.
+    #
+    # DISCRETE GRID APPROACH:
+    # Use discrete grids for α and β to avoid continuous optimization instability.
+    # Each (α, β) combination is a separate sub-model in BMA.
+    #
+    # Model naming: "phi_nig_alpha_{α}_beta_{β}"
+    # =========================================================================
+    
+    # TEMPORARILY DISABLED - set PHI_NIG_ENABLED = True to re-enable
+    if PHI_NIG_ENABLED:
+        # Number of parameters: q, c, phi (α, β, δ are FIXED per sub-model)
+        n_params_nig = 3
+        
+        # Estimate baseline δ from data volatility
+        delta_baseline = float(np.std(returns)) * 0.5
+        delta_baseline = max(delta_baseline, 0.001)
+        
+        for alpha_fixed in NIG_ALPHA_GRID:
+            for beta_ratio in NIG_BETA_RATIO_GRID:
+                # Convert ratio to actual β (β = ratio * α, ensuring |β| < α)
+                beta_fixed = beta_ratio * alpha_fixed
+                
+                model_name = get_nig_model_name(alpha_fixed, beta_fixed)
+                
+                try:
+                    # Optimize q, c, phi with FIXED α, β, δ
+                    q_nig, c_nig, phi_nig, ll_cv_nig, diag_nig = PhiNIGDriftModel.optimize_params_fixed_nig(
+                        returns, vol,
+                        alpha=alpha_fixed,
+                        beta=beta_fixed,
+                        delta=delta_baseline,
+                        prior_log_q_mean=prior_log_q_mean,
+                        prior_lambda=prior_lambda
+                    )
+                    
+                    # Run full filter with fixed NIG parameters
+                    mu_nig, P_nig, ll_full_nig = PhiNIGDriftModel.filter_phi(
+                        returns, vol, q_nig, c_nig, phi_nig,
+                        alpha_fixed, beta_fixed, delta_baseline
+                    )
+                    
+                    # Compute PIT calibration using NIG CDF
+                    ks_nig, pit_p_nig = PhiNIGDriftModel.pit_ks(
+                        returns, mu_nig, vol, P_nig, c_nig,
+                        alpha_fixed, beta_fixed, delta_baseline
+                    )
+                    
+                    # Compute information criteria
+                    aic_nig = compute_aic(ll_full_nig, n_params_nig)
+                    bic_nig = compute_bic(ll_full_nig, n_params_nig, n_obs)
+                    mean_ll_nig = ll_full_nig / max(n_obs, 1)
+                    
+                    # Compute Hyvärinen score (use Gaussian approximation for NIG)
+                    # Full NIG Hyvärinen requires additional derivation
+                    forecast_scale_nig = np.sqrt(c_nig * (vol ** 2) + P_nig)
+                    hyvarinen_nig = compute_hyvarinen_score_gaussian(
+                        returns, mu_nig, forecast_scale_nig
+                    )
+                    
+                    models[model_name] = {
+                        "q": float(q_nig),
+                        "c": float(c_nig),
+                        "phi": float(phi_nig),
+                        "nu": None,  # NIG doesn't use ν
+                        "nig_alpha": float(alpha_fixed),   # NIG tail parameter
+                        "nig_beta": float(beta_fixed),    # NIG asymmetry parameter
+                        "nig_delta": float(delta_baseline), # NIG scale parameter
+                        "log_likelihood": float(ll_full_nig),
+                        "mean_log_likelihood": float(mean_ll_nig),
+                        "cv_penalized_ll": float(ll_cv_nig),
+                        "bic": float(bic_nig),
+                        "aic": float(aic_nig),
+                        "hyvarinen_score": float(hyvarinen_nig),
+                        "n_params": int(n_params_nig),
+                        "ks_statistic": float(ks_nig),
+                        "pit_ks_pvalue": float(pit_p_nig),
+                        "fit_success": True,
+                        "diagnostics": diag_nig,
+                        "nig_params_fixed": True,  # Flag indicating NIG params were fixed
+                        "model_type": "phi_nig",
+                    }
+                except Exception as e:
+                    models[model_name] = {
+                        "fit_success": False,
+                        "error": str(e),
+                        "bic": float('inf'),
+                        "aic": float('inf'),
+                        "hyvarinen_score": float('-inf'),
+                        "nig_alpha": float(alpha_fixed),
+                        "nig_beta": float(beta_fixed),
+                        "nig_delta": float(delta_baseline),
+                        "nig_params_fixed": True,
+                        "model_type": "phi_nig",
+                    }
+    
     return models
 
 
@@ -1926,7 +2501,7 @@ def tune_regime_model_averaging(
         prior_log_q_mean=prior_log_q_mean,
         prior_lambda=prior_lambda,
         min_samples=MIN_REGIME_SAMPLES,
-        temporal_alpha=temporal_alpha,
+        temporal_alpha=DEFAULT_TEMPORAL_ALPHA,
         previous_posteriors=previous_posteriors,
         global_models=global_models,
         global_posterior=global_posterior,
@@ -2187,7 +2762,7 @@ def tune_asset_with_bma(
 
         # Count samples per regime
         regime_counts = {r: int(np.sum(regime_labels == r)) for r in range(5)}
-        _log(f"     Regime distribution: " + ", ".join([f"{REGIME_LABELS[r]}={c}" for r, c in regime_counts.items() if c > 0]))
+        _log(f"     Regime distribution: " + ", ".join([f"{REGIME_LABELS[r]}={c}" for r, c in sorted(regime_counts.items()) if c > 0]))
 
         # First get global params (for backward compatibility)
         _log(f"     🔧 Estimating global parameters...")

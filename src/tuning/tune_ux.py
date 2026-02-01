@@ -18,7 +18,9 @@ import sys
 from typing import Dict, List, Optional
 from datetime import datetime
 
-# Suppress verbose tuning output - we use Rich animated progress instead
+# Suppress verbose tuning output by default to prevent mixing with Rich Live display
+# Errors are still captured and displayed prominently
+# Use --verbose to see all tuning messages
 os.environ['TUNING_QUIET'] = '1'
 
 # Add paths for imports
@@ -51,6 +53,14 @@ try:
 except ImportError:
     PDDE_AVAILABLE = False
 
+# Import Control Policy — Authority Boundary Layer (Counter-Proposal v1.0)
+try:
+    from calibration.control_policy import EscalationStatistics
+    CONTROL_POLICY_AVAILABLE = True
+except ImportError:
+    CONTROL_POLICY_AVAILABLE = False
+    EscalationStatistics = None
+
 # Import presentation layer
 from decision.signals_ux import (
     create_tuning_console,
@@ -65,6 +75,7 @@ from decision.signals_ux import (
     render_cache_update,
     render_end_of_run_summary,
     TuningProgressTracker,
+    AuditAwareTuningProgressTracker,
 )
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -106,12 +117,19 @@ Examples:
                        help='Regularization strength (default: 1.0, set to 0 to disable)')
     parser.add_argument('--lambda-regime', type=float, default=0.05,
                        help='Hierarchical shrinkage toward global (default: 0.05, set to 0 for original behavior)')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Show all tuning output including per-model details (may clutter display)')
 
     args = parser.parse_args()
 
     # Enable debug mode
     if args.debug:
         os.environ['DEBUG'] = '1'
+    
+    # Enable verbose mode - unset TUNING_QUIET to show all messages
+    if args.verbose:
+        os.environ.pop('TUNING_QUIET', None)
+        os.environ['TUNING_VERBOSE'] = '1'
 
     # Create console for rich output
     console = create_tuning_console()
@@ -156,6 +174,23 @@ Examples:
     gh_attempted_count = 0
     gh_selected_count = 0
     regime_tuning_count = 0
+    
+    # New model counters for comprehensive MODEL SELECTION display
+    phi_gaussian_count = 0
+    phi_student_t_count = 0
+    phi_skew_t_count = 0
+    phi_nig_count = 0
+    gmm_fitted_count = 0
+    hansen_fitted_count = 0
+    hansen_left_skew_count = 0
+    hansen_right_skew_count = 0
+    evt_fitted_count = 0
+    evt_heavy_tail_count = 0
+    evt_moderate_tail_count = 0
+    evt_light_tail_count = 0
+    contaminated_t_count = 0
+    tvvm_attempted_count = 0
+    tvvm_selected_count = 0
     
     # Calibrated Trust Authority statistics
     recalibration_applied_count = 0
@@ -221,8 +256,12 @@ Examples:
             console=console
         )
         
-        # Create progress tracker
-        tracker = TuningProgressTracker(len(assets_to_process), console=console)
+        # Create progress tracker with audit trail support (Counter-Proposal v1.0)
+        # Use AuditAwareTuningProgressTracker to separate display from authoritative state
+        tracker = AuditAwareTuningProgressTracker(len(assets_to_process), console=console)
+        
+        # Initialize escalation statistics tracker if control policy is available
+        escalation_stats = EscalationStatistics() if CONTROL_POLICY_AVAILABLE else None
 
         # Prepare arguments for workers
         worker_args = []
@@ -236,8 +275,21 @@ Examples:
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = {executor.submit(_tune_worker, arg): arg[0] for arg in worker_args}
 
+            # Track in-flight assets for display
+            in_flight = list(futures.values())
+            
+            # Show initial assets being processed
+            # Use all assets since they're all submitted at once
+            tracker.set_in_progress(in_flight)
+
             for future in as_completed(futures):
                 asset = futures[future]
+                if asset in in_flight:
+                    in_flight.remove(asset)
+                
+                # Update in-progress list as jobs complete
+                tracker.set_in_progress(in_flight)
+                
                 try:
                     asset_name, result, error, traceback_str = future.result()
 
@@ -251,8 +303,20 @@ Examples:
 
                         global_result = result.get('global', result)
                         noise_model = global_result.get('noise_model', '')
-                        if noise_model.startswith('phi_student_t_nu_'):
-                            student_t_count += 1
+                        
+                        # Count base distribution models
+                        if noise_model.startswith('phi_nig_'):
+                            phi_nig_count += 1
+                            student_t_count += 1  # Also count as heavy-tailed
+                        elif noise_model.startswith('phi_skew_t_nu_'):
+                            phi_skew_t_count += 1
+                            student_t_count += 1  # Also count as heavy-tailed
+                        elif noise_model.startswith('phi_student_t_nu_'):
+                            phi_student_t_count += 1
+                            student_t_count += 1  # Count all heavy-tailed models together
+                        elif noise_model == 'phi_gaussian' or 'phi' in noise_model.lower():
+                            phi_gaussian_count += 1
+                            gaussian_count += 1
                         else:
                             gaussian_count += 1
 
@@ -320,12 +384,82 @@ Examples:
                             sigma_ratio = mixture_model.get('sigma_ratio', 0)
                             weight = mixture_model.get('weight', 0)
                             model_str = f"K2-Mix(σ={sigma_ratio:.1f})"
+                        elif model_type.startswith('phi_nig_'):
+                            # φ-NIG model with alpha/beta parameters
+                            nig_alpha = global_result.get('nig_alpha')
+                            nig_beta = global_result.get('nig_beta')
+                            if nig_beta is not None and abs(nig_beta) > 0.01:
+                                skew_dir = "L" if nig_beta < 0 else "R"
+                                model_str = f"NIG({skew_dir})"
+                            else:
+                                model_str = "NIG"
+                        elif model_type.startswith('phi_skew_t_nu_'):
+                            # φ-Skew-t model with gamma parameter
+                            gamma_val = global_result.get('gamma')
+                            if gamma_val is not None and abs(gamma_val - 1.0) > 0.01:
+                                skew_dir = "L" if gamma_val < 1.0 else "R"
+                                model_str = f"Skew-t({skew_dir})"
+                            else:
+                                model_str = "Skew-t"
                         elif model_type.startswith('phi_student_t_nu_') and nu_val is not None:
                             model_str = "Student-t"
                         elif phi_val is not None:
                             model_str = "φ-Gaussian"
                         else:
                             model_str = "Gaussian"
+                        
+                        # Check for GMM availability
+                        gmm_data = global_result.get('gmm')
+                        has_gmm = (gmm_data is not None and 
+                                   isinstance(gmm_data, dict) and 
+                                   not gmm_data.get('is_degenerate', False))
+                        if has_gmm:
+                            model_str += "+GMM"
+                            gmm_fitted_count += 1
+                        
+                        # Check for Hansen Skew-t availability
+                        hansen_data = global_result.get('hansen_skew_t')
+                        has_hansen = (hansen_data is not None and 
+                                      isinstance(hansen_data, dict) and
+                                      hansen_data.get('lambda') is not None and
+                                      abs(hansen_data.get('lambda', 0)) > 0.01)
+                        if has_hansen:
+                            hansen_lambda = hansen_data.get('lambda', 0)
+                            hansen_dir = "←" if hansen_lambda < 0 else "→"
+                            model_str += f"+Hλ{hansen_dir}"
+                            hansen_fitted_count += 1
+                            if hansen_lambda < 0:
+                                hansen_left_skew_count += 1
+                            else:
+                                hansen_right_skew_count += 1
+                        
+                        # Check for EVT availability
+                        evt_data = global_result.get('evt')
+                        has_evt = (evt_data is not None and 
+                                   isinstance(evt_data, dict) and
+                                   evt_data.get('fit_success', False))
+                        if has_evt:
+                            evt_xi = evt_data.get('xi', 0)
+                            tail_type = "H" if evt_xi > 0.2 else ("M" if evt_xi > 0.05 else "L")
+                            model_str += f"+EVT{tail_type}"
+                            evt_fitted_count += 1
+                            if evt_xi > 0.2:
+                                evt_heavy_tail_count += 1
+                            elif evt_xi > 0.05:
+                                evt_moderate_tail_count += 1
+                            else:
+                                evt_light_tail_count += 1
+                        
+                        # Check for Contaminated Student-t availability
+                        cst_data = global_result.get('contaminated_student_t')
+                        has_cst = (cst_data is not None and 
+                                   isinstance(cst_data, dict) and
+                                   cst_data.get('nu_normal') is not None and
+                                   cst_data.get('nu_crisis') is not None)
+                        if has_cst:
+                            cst_epsilon = cst_data.get('epsilon', 0.05)
+                            model_str += f"+CST{int(cst_epsilon*100)}%"
+                            contaminated_t_count += 1
                         
                         import math
                         details = f"{model_str}|q={q_val:.2e}|c={c_val:.3f}"
@@ -334,6 +468,21 @@ Examples:
                         if nu_val is not None:
                             nu_indicator = f"ν={int(nu_val)}" + ("*" if nu_was_refined else "")
                             details += f"|{nu_indicator}"
+                        # Add gamma for skew-t models
+                        gamma_val = global_result.get('gamma')
+                        if gamma_val is not None and abs(gamma_val - 1.0) > 0.01:
+                            details += f"|γ={gamma_val:.2f}"
+                        # Add Hansen lambda for asymmetric tails
+                        if has_hansen:
+                            details += f"|λ={hansen_lambda:+.2f}"
+                        # Add EVT xi for tail heaviness
+                        if has_evt:
+                            details += f"|ξ={evt_xi:.2f}"
+                        # Add Contaminated Student-t crisis ν
+                        if has_cst:
+                            cst_nu_normal = cst_data.get('nu_normal', 12)
+                            cst_nu_crisis = cst_data.get('nu_crisis', 4)
+                            details += f"|ν_c={int(cst_nu_crisis)}"
                         if math.isfinite(bic_val):
                             details += f"|bic={bic_val:.0f}"
                         
@@ -356,20 +505,24 @@ Examples:
                     else:
                         failed += 1
                         error_msg = error or "tuning returned None"
-                        failure_reasons[asset_name] = error_msg
-                        # Store traceback for end-of-run summary
+                        # Build full error with traceback
+                        full_error = error_msg
                         if traceback_str:
-                            failure_reasons[asset_name] = f"{error_msg}\n{traceback_str}"
+                            full_error = f"{error_msg}\n{traceback_str}"
+                        failure_reasons[asset_name] = full_error
                         processing_log.append(f"❌ {asset_name}: {error_msg}")
-                        tracker.update(asset_name, 'failed', error_msg)
+                        # Pass full error to tracker so it's displayed
+                        tracker.update(asset_name, 'failed', full_error)
 
                 except Exception as e:
                     import traceback
                     failed += 1
                     tb_str = traceback.format_exc()
-                    failure_reasons[asset] = f"{str(e)}\n{tb_str}"
+                    full_error = f"{str(e)}\n{tb_str}"
+                    failure_reasons[asset] = full_error
                     processing_log.append(f"❌ {asset}: {str(e)}")
-                    tracker.update(asset, 'failed', str(e))
+                    # Pass full error to tracker so it's displayed
+                    tracker.update(asset, 'failed', full_error)
         
         tracker.finish()
     else:
@@ -412,13 +565,36 @@ Examples:
         noise_model = global_data.get('noise_model', 'gaussian')
         nu_val = global_data.get('nu')
         phi_val = global_data.get('phi')
+        gamma_val = global_data.get('gamma')
+        nig_alpha = global_data.get('nig_alpha')
+        nig_beta = global_data.get('nig_beta')
         mixture_selected = global_data.get('mixture_selected', False)
         mixture_model = global_data.get('mixture_model', {})
         
-        # Determine model category - check mixture first
+        # Get augmentation layer data
+        gmm_data = global_data.get('gmm')
+        hansen_data = global_data.get('hansen_skew_t')
+        evt_data = global_data.get('evt')
+        cst_data = global_data.get('contaminated_student_t')
+        
+        # Determine base model category
         if mixture_selected and mixture_model:
             sigma_ratio = mixture_model.get('sigma_ratio', 0)
             model_key = f"K2-Mix(σ={sigma_ratio:.1f})"
+        elif noise_model.startswith('phi_nig_'):
+            # φ-NIG model
+            if nig_beta is not None and abs(nig_beta) > 0.01:
+                skew_dir = "L" if nig_beta < 0 else "R"
+                model_key = f"φ-NIG({skew_dir})"
+            else:
+                model_key = "φ-NIG"
+        elif noise_model.startswith('phi_skew_t_nu_'):
+            # φ-Skew-t model
+            if gamma_val is not None and abs(gamma_val - 1.0) > 0.01:
+                skew_dir = "L" if gamma_val < 1.0 else "R"
+                model_key = f"φ-Skew-t({skew_dir})"
+            else:
+                model_key = "φ-Skew-t"
         elif noise_model.startswith('phi_student_t_nu_') and nu_val is not None:
             model_key = f"φ-t(ν={int(nu_val)})"
         elif noise_model == 'kalman_phi_gaussian' or phi_val is not None:
@@ -426,16 +602,31 @@ Examples:
         else:
             model_key = "Gaussian"
         
+        # Create augmentation suffix for tracking
+        aug_suffix = ""
+        if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False):
+            aug_suffix += "+GMM"
+        if hansen_data is not None and isinstance(hansen_data, dict):
+            hansen_lambda = hansen_data.get('lambda')
+            if hansen_lambda is not None and abs(hansen_lambda) > 0.01:
+                aug_suffix += "+Hλ"
+        if evt_data is not None and isinstance(evt_data, dict) and evt_data.get('fit_success', False):
+            aug_suffix += "+EVT"
+        if cst_data is not None and isinstance(cst_data, dict) and cst_data.get('nu_normal') is not None:
+            aug_suffix += "+CST"
+        
+        # Store both base model and augmented model for breakdown
         regime_data = data.get('regime')
         if regime_data is not None and isinstance(regime_data, dict):
             for r, params in regime_data.items():
                 if isinstance(params, dict):
                     is_fallback = params.get('fallback', False) or params.get('regime_meta', {}).get('fallback', False)
+                    r_int = int(r)
+                    
                     if not is_fallback:
-                        r_int = int(r)
                         regime_fit_counts[r_int] += 1
                         
-                        # Count model breakdown per regime
+                        # Count base model breakdown per regime
                         if model_key not in regime_model_breakdown[r_int]:
                             regime_model_breakdown[r_int][model_key] = 0
                         regime_model_breakdown[r_int][model_key] += 1
@@ -443,6 +634,36 @@ Examples:
                         is_shrunk = params.get('shrinkage_applied', False) or params.get('regime_meta', {}).get('shrinkage_applied', False)
                         if is_shrunk:
                             regime_shrunk_counts[r_int] += 1
+                    
+                    # ==================================================================
+                    # AUGMENTATION LAYERS: Count per regime (global layers apply to all)
+                    # ==================================================================
+                    # These are fitted at the global level but apply to regime-specific
+                    # models, so count them for each regime that has any fit (fallback or not)
+                    # This ensures proper display in REGIME COVERAGE table
+                    # ==================================================================
+                    if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False):
+                        if "GMM" not in regime_model_breakdown[r_int]:
+                            regime_model_breakdown[r_int]["GMM"] = 0
+                        regime_model_breakdown[r_int]["GMM"] += 1
+                    
+                    if hansen_data is not None and isinstance(hansen_data, dict):
+                        hansen_lambda = hansen_data.get('lambda')
+                        if hansen_lambda is not None and abs(hansen_lambda) > 0.01:
+                            if "Hansen-λ" not in regime_model_breakdown[r_int]:
+                                regime_model_breakdown[r_int]["Hansen-λ"] = 0
+                            regime_model_breakdown[r_int]["Hansen-λ"] += 1
+                    
+                    if evt_data is not None and isinstance(evt_data, dict) and evt_data.get('fit_success', False):
+                        if "EVT" not in regime_model_breakdown[r_int]:
+                            regime_model_breakdown[r_int]["EVT"] = 0
+                        regime_model_breakdown[r_int]["EVT"] += 1
+                    
+                    if cst_data is not None and isinstance(cst_data, dict) and cst_data.get('nu_normal') is not None:
+                        if "CST" not in regime_model_breakdown[r_int]:
+                            regime_model_breakdown[r_int]["CST"] = 0
+                        regime_model_breakdown[r_int]["CST"] += 1
+                    
         if 'hierarchical_tuning' in data:
             if data['hierarchical_tuning'].get('collapse_warning', False):
                 collapse_warnings += 1
@@ -460,6 +681,20 @@ Examples:
     calibration_warnings = 0
     gaussian_count = 0
     student_t_count = 0
+    # Reset new model counters for full cache computation
+    phi_gaussian_count = 0
+    phi_student_t_count = 0
+    phi_skew_t_count = 0
+    phi_nig_count = 0
+    gmm_fitted_count = 0
+    hansen_fitted_count = 0
+    hansen_left_skew_count = 0
+    hansen_right_skew_count = 0
+    evt_fitted_count = 0
+    evt_heavy_tail_count = 0
+    evt_moderate_tail_count = 0
+    evt_light_tail_count = 0
+    contaminated_t_count = 0
     # Reset trust statistics for full cache computation
     recalibration_applied_count = 0
     calibrated_trust_count = 0
@@ -470,12 +705,53 @@ Examples:
         
         # Count model types
         noise_model = global_data.get('noise_model', '')
-        if noise_model.startswith('phi_student_t_nu_'):
+        if noise_model.startswith('phi_nig_'):
+            phi_nig_count += 1
             student_t_count += 1
+        elif noise_model.startswith('phi_skew_t_nu_'):
+            phi_skew_t_count += 1
+            student_t_count += 1
+        elif noise_model.startswith('phi_student_t_nu_'):
+            phi_student_t_count += 1
+            student_t_count += 1
+        elif noise_model == 'phi_gaussian' or noise_model == 'kalman_phi_gaussian':
+            phi_gaussian_count += 1
+            gaussian_count += 1
         elif noise_model == 'generalized_hyperbolic':
             pass  # GH is separate
         elif 'gaussian' in noise_model.lower():
             gaussian_count += 1
+        
+        # Count augmentation layers from cache
+        gmm_data = global_data.get('gmm')
+        if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False):
+            gmm_fitted_count += 1
+        
+        hansen_data = global_data.get('hansen_skew_t')
+        if hansen_data is not None and isinstance(hansen_data, dict):
+            hansen_lambda = hansen_data.get('lambda')
+            if hansen_lambda is not None and abs(hansen_lambda) > 0.01:
+                hansen_fitted_count += 1
+                if hansen_lambda < 0:
+                    hansen_left_skew_count += 1
+                else:
+                    hansen_right_skew_count += 1
+        
+        evt_data = global_data.get('evt')
+        if evt_data is not None and isinstance(evt_data, dict) and evt_data.get('fit_success', False):
+            evt_fitted_count += 1
+            evt_xi = evt_data.get('xi', 0)
+            if evt_xi > 0.2:
+                evt_heavy_tail_count += 1
+            elif evt_xi > 0.05:
+                evt_moderate_tail_count += 1
+            else:
+                evt_light_tail_count += 1
+        
+        cst_data = global_data.get('contaminated_student_t')
+        if cst_data is not None and isinstance(cst_data, dict):
+            if cst_data.get('nu_normal') is not None and cst_data.get('nu_crisis') is not None:
+                contaminated_t_count += 1
         
         # Count calibration warnings
         if global_data.get('calibration_warning'):
@@ -544,6 +820,20 @@ Examples:
         gh_selected_count=gh_selected_count,
         tvvm_attempted_count=tvvm_attempted_count,
         tvvm_selected_count=tvvm_selected_count,
+        # New model counters
+        phi_gaussian_count=phi_gaussian_count,
+        phi_student_t_count=phi_student_t_count,
+        phi_skew_t_count=phi_skew_t_count,
+        phi_nig_count=phi_nig_count,
+        gmm_fitted_count=gmm_fitted_count,
+        hansen_fitted_count=hansen_fitted_count,
+        hansen_left_skew_count=hansen_left_skew_count,
+        hansen_right_skew_count=hansen_right_skew_count,
+        evt_fitted_count=evt_fitted_count,
+        evt_heavy_tail_count=evt_heavy_tail_count,
+        evt_moderate_tail_count=evt_moderate_tail_count,
+        evt_light_tail_count=evt_light_tail_count,
+        contaminated_t_count=contaminated_t_count,
         # Calibrated Trust Authority statistics
         recalibration_applied_count=recalibration_applied_count,
         calibrated_trust_count=calibrated_trust_count,

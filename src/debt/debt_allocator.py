@@ -96,6 +96,55 @@ DECISION_PERSISTENCE_FILE = f"{DEBT_CACHE_DIR}/debt_switch_decision.json"
 EURJPY_DATA_FILE = f"{DEBT_CACHE_DIR}/EURJPY_1d.csv"
 STATE_HISTORY_FILE = f"{DEBT_CACHE_DIR}/state_history.json"
 
+# Multi-currency support: AUD as alternative
+AUDJPY_DATA_FILE = f"{DEBT_CACHE_DIR}/AUDJPY_1d.csv"
+EURAUD_DATA_FILE = f"{DEBT_CACHE_DIR}/EURAUD_1d.csv"
+
+SUPPORTED_CURRENCY_PAIRS = {
+    "EURJPY": {
+        "yahoo_ticker": "EURJPY=X",
+        "data_file": EURJPY_DATA_FILE,
+        "description": "EUR/JPY - Japanese Yen debt",
+        "base_currency": "EUR",
+        "quote_currency": "JPY",
+        "debt_currency": "JPY",
+        "characteristics": {
+            "carry_yield": "low",
+            "volatility_regime": "moderate",
+            "central_bank_sensitivity": "high",
+            "commodity_correlation": "low",
+        }
+    },
+    "AUDJPY": {
+        "yahoo_ticker": "AUDJPY=X",
+        "data_file": AUDJPY_DATA_FILE,
+        "description": "AUD/JPY - AUD analysis cross",
+        "base_currency": "AUD",
+        "quote_currency": "JPY",
+        "debt_currency": "JPY",
+        "characteristics": {
+            "carry_yield": "high",
+            "volatility_regime": "high",
+            "central_bank_sensitivity": "high",
+            "commodity_correlation": "high",
+        }
+    },
+    "EURAUD": {
+        "yahoo_ticker": "EURAUD=X",
+        "data_file": EURAUD_DATA_FILE,
+        "description": "EUR/AUD - Australian Dollar debt",
+        "base_currency": "EUR",
+        "quote_currency": "AUD",
+        "debt_currency": "AUD",
+        "characteristics": {
+            "carry_yield": "moderate",
+            "volatility_regime": "high",
+            "central_bank_sensitivity": "high",
+            "commodity_correlation": "high",
+        }
+    },
+}
+
 # Minimum data requirements
 MIN_HISTORY_DAYS = 252  # 1 year of trading days minimum
 MIN_POSTERIOR_SAMPLES = 5000  # Monte Carlo samples for robust estimation
@@ -1775,12 +1824,448 @@ def _load_eurjpy_prices(data_path: str = EURJPY_DATA_FILE, force_refresh: bool =
         return None
 
 
+def _load_currency_pair_prices(
+    pair: str,
+    force_refresh: bool = True,
+    quiet: bool = False
+) -> Optional[pd.Series]:
+    """
+    Load prices for any supported currency pair.
+    
+    Args:
+        pair: Currency pair code (e.g., 'EURJPY', 'AUDJPY', 'EURAUD')
+        force_refresh: If True, download fresh data
+        quiet: Suppress verbose output
+        
+    Returns:
+        pd.Series with DatetimeIndex and prices, or None if unavailable
+    """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.text import Text
+    
+    if pair not in SUPPORTED_CURRENCY_PAIRS:
+        raise ValueError(f"Unsupported currency pair: {pair}. Supported: {list(SUPPORTED_CURRENCY_PAIRS.keys())}")
+    
+    config = SUPPORTED_CURRENCY_PAIRS[pair]
+    data_path = config["data_file"]
+    yahoo_ticker = config["yahoo_ticker"]
+    
+    path = Path(data_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    
+    console = Console(force_terminal=True, width=100, quiet=quiet)
+    
+    # Try to download fresh data from yfinance
+    if force_refresh:
+        try:
+            import yfinance as yf
+            
+            if not quiet:
+                with Progress(
+                    SpinnerColumn(spinner_name="dots", style="bright_cyan"),
+                    TextColumn(f"[bold white]Fetching {pair} data[/bold white]"),
+                    TextColumn("[dim]yfinance[/dim]"),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    task = progress.add_task("", total=None)
+                    ticker = yf.Ticker(yahoo_ticker)
+                    df = ticker.history(period="max")
+            else:
+                ticker = yf.Ticker(yahoo_ticker)
+                df = ticker.history(period="max")
+            
+            if df is not None and not df.empty and 'Close' in df.columns:
+                df_save = df.reset_index()
+                df_save.to_csv(path, index=False)
+                
+                if not quiet:
+                    data_text = Text()
+                    data_text.append("    ✓ ", style="bright_green")
+                    data_text.append(f"{len(df):,}", style="bold white")
+                    data_text.append(f" days of {pair} history\n", style="white")
+                    data_text.append("    ◎ ", style="dim")
+                    data_text.append("Cached to ", style="dim")
+                    data_text.append(str(path.name), style="dim italic")
+                    console.print(data_text)
+                    console.print()
+                
+                prices = df['Close'].dropna()
+                if len(prices) >= MIN_HISTORY_DAYS:
+                    return prices.sort_index()
+                else:
+                    if not quiet:
+                        console.print(f"[yellow]    ⚠ Only {len(prices)} days (need {MIN_HISTORY_DAYS})[/yellow]")
+                    
+        except ImportError:
+            if not quiet:
+                console.print("[yellow]    ⚠ yfinance not installed, using cache[/yellow]")
+        except Exception as e:
+            if not quiet:
+                console.print(f"[yellow]    ⚠ Download failed ({e}), using cache[/yellow]")
+    
+    # Fall back to cached data
+    try:
+        if path.exists():
+            df = pd.read_csv(path, parse_dates=['Date'], index_col='Date')
+            
+            if 'Close' in df.columns:
+                prices = df['Close']
+            elif 'Adj Close' in df.columns:
+                prices = df['Adj Close']
+            else:
+                if not quiet:
+                    console.print(f"[red]    ✗ No Close column in cached {pair} data[/red]")
+                return None
+            
+            prices = prices.dropna()
+            if len(prices) >= MIN_HISTORY_DAYS:
+                if not quiet:
+                    data_text = Text()
+                    data_text.append("    ✓ ", style="bright_green")
+                    data_text.append(f"{len(prices):,}", style="bold white")
+                    data_text.append(f" days of {pair} from cache\n", style="white")
+                    console.print(data_text)
+                return prices.sort_index()
+            else:
+                if not quiet:
+                    console.print(f"[yellow]    ⚠ Cached {pair} data has only {len(prices)} days[/yellow]")
+                return None
+        else:
+            if not quiet:
+                console.print(f"[red]    ✗ No cached {pair} data at {path}[/red]")
+            return None
+            
+    except Exception as e:
+        if not quiet:
+            console.print(f"[red]    ✗ Error loading cached {pair} data: {e}[/red]")
+        return None
+
+
 def _compute_log_returns(prices: pd.Series) -> pd.Series:
     """
     Compute log returns: X_t = log(EURJPY_t), ΔX = X_t - X_{t-1}
     """
     log_prices = np.log(prices)
     return log_prices.diff().dropna()
+
+
+# =============================================================================
+# MULTI-CURRENCY DATA LOADING
+# =============================================================================
+
+def _load_currency_pair_prices(
+    pair: str,
+    force_refresh: bool = True,
+    quiet: bool = False
+) -> Optional[pd.Series]:
+    """
+    Load prices for any supported currency pair.
+    
+    Args:
+        pair: Currency pair code (e.g., 'EURJPY', 'AUDJPY', 'EURAUD')
+        force_refresh: If True, download fresh data
+        quiet: Suppress verbose output
+        
+    Returns:
+        pd.Series with DatetimeIndex and prices, or None if unavailable
+    """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.text import Text
+    
+    if pair not in SUPPORTED_CURRENCY_PAIRS:
+        raise ValueError(f"Unsupported currency pair: {pair}. Supported: {list(SUPPORTED_CURRENCY_PAIRS.keys())}")
+    
+    config = SUPPORTED_CURRENCY_PAIRS[pair]
+    data_path = config["data_file"]
+    yahoo_ticker = config["yahoo_ticker"]
+    
+    path = Path(data_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    
+    console = Console(force_terminal=True, width=100, quiet=quiet)
+    
+    if force_refresh:
+        try:
+            import yfinance as yf
+            
+            if not quiet:
+                with Progress(
+                    SpinnerColumn(spinner_name="dots", style="bright_cyan"),
+                    TextColumn(f"[bold white]Fetching {pair} data[/bold white]"),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    task = progress.add_task("", total=None)
+                    ticker = yf.Ticker(yahoo_ticker)
+                    df = ticker.history(period="max")
+            else:
+                ticker = yf.Ticker(yahoo_ticker)
+                df = ticker.history(period="max")
+            
+            if df is not None and not df.empty and 'Close' in df.columns:
+                df_save = df.reset_index()
+                df_save.to_csv(path, index=False)
+                
+                if not quiet:
+                    data_text = Text()
+                    data_text.append("    ✓ ", style="bright_green")
+                    data_text.append(f"{len(df):,}", style="bold white")
+                    data_text.append(f" days of {pair} history\n", style="white")
+                    console.print(data_text)
+                
+                prices = df['Close'].dropna()
+                if len(prices) >= MIN_HISTORY_DAYS:
+                    return prices.sort_index()
+                    
+        except ImportError:
+            if not quiet:
+                console.print("[yellow]    ⚠ yfinance not installed[/yellow]")
+        except Exception as e:
+            if not quiet:
+                console.print(f"[yellow]    ⚠ Download failed: {e}[/yellow]")
+    
+    try:
+        if path.exists():
+            df = pd.read_csv(path, parse_dates=['Date'], index_col='Date')
+            
+            if 'Close' in df.columns:
+                prices = df['Close']
+            elif 'Adj Close' in df.columns:
+                prices = df['Adj Close']
+            else:
+                return None
+            
+            prices = prices.dropna()
+            if len(prices) >= MIN_HISTORY_DAYS:
+                return prices.sort_index()
+            return None
+        return None
+    except Exception:
+        return None
+
+
+# =============================================================================
+# MULTI-CURRENCY RISK METRICS
+# =============================================================================
+
+def _compute_risk_metrics(log_returns: pd.Series) -> Dict[str, float]:
+    """
+    Compute comprehensive risk metrics for a currency pair.
+    """
+    returns_arr = log_returns.values
+    
+    vol_daily = np.std(returns_arr)
+    vol_annual = vol_daily * np.sqrt(252)
+    
+    tail_risk_99 = np.percentile(returns_arr, 1)
+    
+    if len(returns_arr) >= 21:
+        recent_trend = np.sum(returns_arr[-21:])
+    else:
+        recent_trend = np.sum(returns_arr)
+    
+    skewness = stats.skew(returns_arr)
+    kurtosis = stats.kurtosis(returns_arr)
+    
+    return {
+        "volatility_annualized": vol_annual,
+        "tail_risk_99": tail_risk_99,
+        "recent_trend": recent_trend,
+        "skewness": skewness,
+        "kurtosis": kurtosis,
+    }
+
+
+def _compute_risk_score(
+    volatility: float,
+    tail_risk: float,
+    recent_trend: float,
+    state_posterior: Optional['StatePosterior'],
+    characteristics: Dict[str, str],
+) -> float:
+    """
+    Compute a 0-100 risk score for holding debt in a currency.
+    """
+    score = 0.0
+    
+    vol_contribution = min(30, volatility * 300)
+    score += vol_contribution
+    
+    tail_contribution = min(30, abs(tail_risk) * 600)
+    score += tail_contribution
+    
+    if state_posterior is not None:
+        state_risk = (
+            state_posterior.p_pre_policy * 20 +
+            state_posterior.p_policy * 25 +
+            state_posterior.p_compressed * 10
+        )
+        score += state_risk
+    
+    if characteristics.get("central_bank_sensitivity") == "high":
+        score += 5
+    if characteristics.get("commodity_correlation") == "high":
+        score += 5
+    if characteristics.get("volatility_regime") == "high":
+        score += 5
+    
+    return min(100, max(0, score))
+
+
+# =============================================================================
+# MULTI-CURRENCY DATA STRUCTURES
+# =============================================================================
+
+@dataclass
+class CurrencyPairAnalysis:
+    """Analysis results for a single currency pair."""
+    pair: str
+    decision: Optional['DebtSwitchDecision']
+    risk_score: float
+    volatility_annualized: float
+    tail_risk_99: float
+    recent_trend: float
+    carry_attractiveness: str
+    recommendation: str
+    characteristics: Dict[str, str]
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "pair": self.pair,
+            "decision": self.decision.to_dict() if self.decision else None,
+            "risk_score": self.risk_score,
+            "volatility_annualized": self.volatility_annualized,
+            "tail_risk_99": self.tail_risk_99,
+            "recent_trend": self.recent_trend,
+            "carry_attractiveness": self.carry_attractiveness,
+            "recommendation": self.recommendation,
+            "characteristics": self.characteristics,
+        }
+
+
+@dataclass
+class MultiCurrencyComparison:
+    """Comparison results across multiple currency pairs."""
+    analyses: Dict[str, CurrencyPairAnalysis]
+    recommended_pair: str
+    recommendation_basis: str
+    timestamp: str
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "analyses": {k: v.to_dict() for k, v in self.analyses.items()},
+            "recommended_pair": self.recommended_pair,
+            "recommendation_basis": self.recommendation_basis,
+            "timestamp": self.timestamp,
+        }
+
+
+def analyze_currency_pair(
+    pair: str,
+    force_refresh: bool = True,
+    use_dynamic_alpha: bool = True,
+    quiet: bool = True,
+) -> Optional[CurrencyPairAnalysis]:
+    """Analyze a single currency pair for debt allocation suitability."""
+    if pair not in SUPPORTED_CURRENCY_PAIRS:
+        return None
+    
+    config = SUPPORTED_CURRENCY_PAIRS[pair]
+    
+    prices = _load_currency_pair_prices(pair, force_refresh=force_refresh, quiet=quiet)
+    if prices is None:
+        return None
+    
+    log_returns = _compute_log_returns(prices)
+    if len(log_returns) < MIN_HISTORY_DAYS:
+        return None
+    
+    try:
+        observation, posterior, _ = _run_inference(log_returns, quiet=True)
+    except Exception:
+        return None
+    
+    decision = _make_decision(observation, posterior, use_dynamic_alpha=use_dynamic_alpha)
+    
+    metrics = _compute_risk_metrics(log_returns)
+    
+    risk_score = _compute_risk_score(
+        metrics["volatility_annualized"],
+        metrics["tail_risk_99"],
+        metrics["recent_trend"],
+        posterior,
+        config["characteristics"],
+    )
+    
+    carry = config["characteristics"].get("carry_yield", "moderate")
+    
+    if risk_score < 30:
+        recommendation = "preferred"
+    elif risk_score < 60:
+        recommendation = "acceptable"
+    else:
+        recommendation = "avoid"
+    
+    return CurrencyPairAnalysis(
+        pair=pair,
+        decision=decision,
+        risk_score=risk_score,
+        volatility_annualized=metrics["volatility_annualized"],
+        tail_risk_99=metrics["tail_risk_99"],
+        recent_trend=metrics["recent_trend"],
+        carry_attractiveness=carry,
+        recommendation=recommendation,
+        characteristics=config["characteristics"],
+    )
+
+
+def run_multi_currency_comparison(
+    pairs: Optional[List[str]] = None,
+    force_refresh: bool = True,
+    use_dynamic_alpha: bool = True,
+    quiet: bool = False,
+) -> Optional[MultiCurrencyComparison]:
+    """Run comparison analysis across multiple currency pairs."""
+    if pairs is None:
+        pairs = list(SUPPORTED_CURRENCY_PAIRS.keys())
+    
+    analyses = {}
+    for pair in pairs:
+        if not quiet:
+            print(f"  Analyzing {pair}...")
+        analysis = analyze_currency_pair(
+            pair,
+            force_refresh=force_refresh,
+            use_dynamic_alpha=use_dynamic_alpha,
+            quiet=quiet,
+        )
+        if analysis is not None:
+            analyses[pair] = analysis
+    
+    if not analyses:
+        return None
+    
+    candidates = [
+        (pair, a) for pair, a in analyses.items()
+        if a.decision is None or not a.decision.triggered
+    ]
+    
+    if candidates:
+        candidates.sort(key=lambda x: x[1].risk_score)
+        recommended_pair = candidates[0][0]
+        recommendation_basis = f"Lowest risk score ({candidates[0][1].risk_score:.1f})"
+    else:
+        sorted_analyses = sorted(analyses.items(), key=lambda x: x[1].risk_score)
+        recommended_pair = sorted_analyses[0][0]
+        recommendation_basis = f"All triggered - lowest risk ({sorted_analyses[0][1].risk_score:.1f})"
+    
+    return MultiCurrencyComparison(
+        analyses=analyses,
+        recommended_pair=recommended_pair,
+        recommendation_basis=recommendation_basis,
+        timestamp=datetime.now().isoformat(),
+    )
 
 
 # =============================================================================
@@ -3558,6 +4043,119 @@ def render_debt_switch_decision(
     console.print()
 
 
+def render_multi_currency_comparison(
+    comparison: MultiCurrencyComparison,
+    console: Optional[Console] = None,
+) -> None:
+    """Render multi-currency comparison with Apple-quality UX."""
+    from rich.rule import Rule
+    from rich.align import Align
+    from rich.text import Text
+    
+    if console is None:
+        console = Console(force_terminal=True, width=100)
+    
+    # Header
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    section = Text()
+    section.append("  📊  ", style="bold bright_cyan")
+    section.append("MULTI-CURRENCY COMPARISON", style="bold bright_white")
+    console.print(section)
+    console.print()
+    
+    # Create comparison table
+    table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="dim",
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
+    
+    table.add_column("Pair", width=10)
+    table.add_column("Risk Score", justify="right", width=12)
+    table.add_column("Ann. Vol", justify="right", width=10)
+    table.add_column("Tail Risk", justify="right", width=10)
+    table.add_column("Trend", justify="right", width=10)
+    table.add_column("Carry", width=10)
+    table.add_column("Recommendation", width=14)
+    table.add_column("State", width=12)
+    
+    for pair, analysis in comparison.analyses.items():
+        # Risk score color
+        if analysis.risk_score < 30:
+            risk_color = "bright_green"
+        elif analysis.risk_score < 60:
+            risk_color = "yellow"
+        else:
+            risk_color = "indian_red1"
+        
+        # Recommendation color
+        rec_colors = {"preferred": "bright_green", "acceptable": "yellow", "avoid": "indian_red1"}
+        rec_color = rec_colors.get(analysis.recommendation, "white")
+        
+        # Trend color
+        if analysis.recent_trend > 0:
+            trend_str = f"[bright_green]+{analysis.recent_trend:.2%}[/]"
+        else:
+            trend_str = f"[indian_red1]{analysis.recent_trend:.2%}[/]"
+        
+        # State
+        if analysis.decision:
+            state = analysis.decision.state_posterior.dominant_state.name
+            if analysis.decision.triggered:
+                state = f"[bold red]SWITCH[/]"
+            elif state in ("PRE_POLICY", "COMPRESSED"):
+                state = f"[yellow]{state}[/]"
+            else:
+                state = f"[dim]{state}[/]"
+        else:
+            state = "[dim]—[/]"
+        
+        # Mark recommended pair
+        pair_display = pair
+        if pair == comparison.recommended_pair:
+            pair_display = f"[bold bright_green]★ {pair}[/]"
+        
+        table.add_row(
+            pair_display,
+            f"[{risk_color}]{analysis.risk_score:.1f}[/]",
+            f"{analysis.volatility_annualized:.1%}",
+            f"{analysis.tail_risk_99:.2%}",
+            trend_str,
+            analysis.carry_attractiveness.capitalize(),
+            f"[{rec_color}]{analysis.recommendation.upper()}[/]",
+            state,
+        )
+    
+    console.print(Padding(table, (0, 0, 0, 4)))
+    console.print()
+    
+    # Recommendation
+    rec_text = Text()
+    rec_text.append("    ", style="")
+    rec_text.append("★ Recommended: ", style="bold bright_green")
+    rec_text.append(comparison.recommended_pair, style="bold white")
+    rec_text.append(f" ({comparison.recommendation_basis})", style="dim")
+    console.print(rec_text)
+    console.print()
+    
+    # Legend
+    legend = Text()
+    legend.append("    ", style="")
+    legend.append("Risk Score: ", style="dim")
+    legend.append("<30 preferred", style="bright_green")
+    legend.append(" · ", style="dim")
+    legend.append("30-60 acceptable", style="yellow")
+    legend.append(" · ", style="dim")
+    legend.append(">60 avoid", style="indian_red1")
+    console.print(legend)
+    console.print()
+
+
 # =============================================================================
 # CLI ENTRY POINT
 # =============================================================================
@@ -3567,7 +4165,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="FX Debt Allocation Engine (EURJPY)"
+        description="FX Debt Allocation Engine (Multi-Currency)"
     )
     parser.add_argument(
         '--data-path',
@@ -3583,7 +4181,7 @@ def main():
     parser.add_argument(
         '--no-refresh',
         action='store_true',
-        help='Skip data refresh, use cached EURJPY data only'
+        help='Skip data refresh, use cached data only'
     )
     parser.add_argument(
         '--json',
@@ -3600,6 +4198,28 @@ def main():
         action='store_true',
         help='Suppress verbose processing output'
     )
+    # Multi-currency options
+    parser.add_argument(
+        '--single',
+        action='store_true',
+        help='Analyze only EURJPY (skip multi-currency comparison)'
+    )
+    parser.add_argument(
+        '--aud',
+        action='store_true',
+        help='Analyze only EURAUD (AUD debt)'
+    )
+    parser.add_argument(
+        '--audjpy',
+        action='store_true',
+        help='Analyze only AUDJPY cross'
+    )
+    parser.add_argument(
+        '--pair',
+        type=str,
+        choices=list(SUPPORTED_CURRENCY_PAIRS.keys()),
+        help='Analyze only a specific currency pair'
+    )
     
     args = parser.parse_args()
     
@@ -3611,6 +4231,19 @@ def main():
     
     console = Console(force_terminal=True, width=100)
     
+    # Determine which mode to run
+    # DEFAULT is now multi-currency comparison
+    # Only run single-pair mode if explicitly requested
+    run_single_pair = args.single or args.aud or args.audjpy or args.pair
+    target_pair = "EURJPY"  # default for single mode
+    
+    if args.pair:
+        target_pair = args.pair
+    elif args.aud:
+        target_pair = "EURAUD"
+    elif args.audjpy:
+        target_pair = "AUDJPY"
+    
     # Show header - Apple-quality cinematic design
     if not args.json:
         console.print()
@@ -3621,7 +4254,11 @@ def main():
         header_text.append("\n", style="")
         header_text.append("D E B T   A L L O C A T I O N", style="bold white")
         header_text.append("\n", style="")
-        header_text.append("EURJPY Policy-Stress Engine", style="dim")
+        if not run_single_pair:
+            header_text.append("Multi-Currency Comparison Engine", style="dim")
+        else:
+            pair_config = SUPPORTED_CURRENCY_PAIRS.get(target_pair, {})
+            header_text.append(f"{target_pair} Policy-Stress Engine", style="dim")
         header_text.append("\n", style="")
         
         header_panel = Panel(
@@ -3641,29 +4278,69 @@ def main():
         features.append("◉ ", style="bright_green")
         features.append("Transition Φ", style="white")
         features.append("    ", style="")
+        if not run_single_pair:
+            features.append("◉ ", style="bright_green")
+            features.append("Multi-FX", style="white")
+            features.append("    ", style="")
         features.append("◎ ", style="dim")
-        features.append("v4.0.0", style="dim")
+        features.append("v4.2.0", style="dim")
         console.print(Align.center(features))
         console.print()
         console.print(Rule(style="dim"))
         console.print()
     
-    # Run engine with quiet mode (ONLY ONCE!)
-    decision = run_debt_allocation_engine(
-        data_path=args.data_path,
-        force_reevaluate=args.force,
-        force_refresh_data=not args.no_refresh,
-        use_dynamic_alpha=use_dynamic_alpha,
-        quiet=args.quiet or args.json,
-    )
-    
-    if args.json:
-        if decision is not None:
-            print(json.dumps(decision.to_dict(), indent=2, default=str))
+    # Run in appropriate mode
+    if not run_single_pair:
+        # DEFAULT: Multi-currency comparison mode
+        comparison = run_multi_currency_comparison(
+            force_refresh=not args.no_refresh,
+            use_dynamic_alpha=use_dynamic_alpha,
+            quiet=args.quiet or args.json,
+        )
+        
+        if args.json:
+            if comparison is not None:
+                print(json.dumps(comparison.to_dict(), indent=2, default=str))
+            else:
+                print(json.dumps({"error": "Multi-currency comparison failed"}, indent=2))
         else:
-            print(json.dumps({"error": "Engine cannot run"}, indent=2))
+            if comparison is not None:
+                # First show primary EURJPY decision
+                eurjpy_analysis = comparison.analyses.get("EURJPY")
+                if eurjpy_analysis and eurjpy_analysis.decision:
+                    render_debt_switch_decision(eurjpy_analysis.decision, console)
+                # Then show comparison
+                render_multi_currency_comparison(comparison, console)
+            else:
+                console.print("[red]Multi-currency comparison failed[/red]")
     else:
-        render_debt_switch_decision(decision, console)
+        # Single pair mode (only when explicitly requested)
+        if target_pair == "EURJPY":
+            # Use original engine for EURJPY (backward compatible)
+            decision = run_debt_allocation_engine(
+                data_path=args.data_path,
+                force_reevaluate=args.force,
+                force_refresh_data=not args.no_refresh,
+                use_dynamic_alpha=use_dynamic_alpha,
+                quiet=args.quiet or args.json,
+            )
+        else:
+            # Use new multi-currency analysis for other pairs
+            analysis = analyze_currency_pair(
+                target_pair,
+                force_refresh=not args.no_refresh,
+                use_dynamic_alpha=use_dynamic_alpha,
+                quiet=args.quiet or args.json,
+            )
+            decision = analysis.decision if analysis else None
+        
+        if args.json:
+            if decision is not None:
+                print(json.dumps(decision.to_dict(), indent=2, default=str))
+            else:
+                print(json.dumps({"error": "Engine cannot run"}, indent=2))
+        else:
+            render_debt_switch_decision(decision, console)
 
 
 if __name__ == '__main__':

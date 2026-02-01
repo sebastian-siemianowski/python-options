@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune calibrate show-q clear-q tests report top20 data four purge failed setup
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -87,9 +87,13 @@ SHELL := /bin/bash
 # └──────────────────────────────────────────────────────────────────────────────┘
 #
 # ┌──────────────────────────────────────────────────────────────────────────────┐
-# │  💱 DEBT ALLOCATION                                                          │
+# │  💱 DEBT ALLOCATION (Multi-Currency)                                         │
 # ├──────────────────────────────────────────────────────────────────────────────┤
-# │  make debt               EURJPY balance sheet convexity control              │
+# │  make debt               Compare all currencies: EURJPY, AUDJPY, EURAUD      │
+# │  make debt ARGS="--single"  Analyze only EURJPY (skip comparison)            │
+# │  make debt ARGS="--aud"     Analyze only EURAUD (AUD debt)                   │
+# │  make debt ARGS="--json"    Output as JSON                                   │
+# │  make debt ARGS="--no-refresh"  Use cached data only                         │
 # └──────────────────────────────────────────────────────────────────────────────┘
 #
 # ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -210,7 +214,7 @@ calibrate: .venv/.deps_installed
 # FX Debt Allocation Engine - EURJPY balance sheet convexity control
 debt: .venv/.deps_installed
 	@mkdir -p src/data/debt
-	@.venv/bin/python src/debt_allocator.py $(ARGS)
+	@.venv/bin/python src/debt/debt_allocator.py $(ARGS)
 
 show-q:
 	@if [ -d src/data/tune ] && [ "$$(ls -A src/data/tune/*.json 2>/dev/null | head -1)" ]; then \
@@ -354,3 +358,9 @@ clean-cache: .venv/.deps_installed
 colors: .venv/.deps_installed
 	@.venv/bin/python src/show_colors.py
 
+# Market Risk Temperature - cross-asset stress indicator
+temp: .venv/.deps_installed
+	@.venv/bin/python src/decision/risk_temperature.py
+# Metals Risk Temperature - cross-metal stress indicator
+metals: .venv/.deps_installed
+	@.venv/bin/python src/decision/metals_risk_temperature.py

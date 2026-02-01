@@ -90,3 +90,5 @@ htmlcov/
 # Logs
 *.log
 /src/backtesting/equity_curves/
+/src/data/tune-bak2/
+/src/data/tune-bak/

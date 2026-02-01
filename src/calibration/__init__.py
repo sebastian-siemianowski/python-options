@@ -9,9 +9,15 @@ This package provides calibration utilities for the tuning system:
     - pit_calibration: PIT uniformity tests
     - isotonic_recalibration: Probability transport operators
     - calibrated_trust: Trust authority with regime penalties
+    - control_policy: Authority boundary layer (diagnostics → decisions)
     - adaptive_nu_refinement: ν refinement for Student-t models
     - gh_distribution: Generalized Hyperbolic distribution
     - tvvm_model: Time-varying volatility multiplier
+
+ARCHITECTURAL HIERARCHY (Counter-Proposal v1.0):
+    1. Diagnostics RECOMMEND (immutable, read-only)
+    2. ControlPolicy DECIDES (explicit, auditable)
+    3. Models OBEY (execute the decision)
 """
 
 from calibration.model_selection import (

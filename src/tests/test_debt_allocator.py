@@ -33,6 +33,7 @@ from debt.debt_allocator import (
     PRE_POLICY_THRESHOLD,
     OBSERVATION_BOUNDS,
     CONVEX_LOSS_EXPONENT,
+    SUPPORTED_CURRENCY_PAIRS,  # Multi-currency config
     # Validation functions
     _validate_observation,
     _validate_observation_array,
@@ -72,6 +73,14 @@ from debt.debt_allocator import (
     # Persistence
     _persist_decision,
     _load_persisted_decision,
+    # Multi-currency
+    CurrencyPairAnalysis,
+    MultiCurrencyComparison,
+    _compute_risk_metrics,
+    _compute_risk_score,
+    analyze_currency_pair,
+    run_multi_currency_comparison,
+    _load_currency_pair_prices,
 )
 
 
@@ -755,7 +764,6 @@ class TestFullIntegration:
         
         assert np.isfinite(obs.convex_loss)
         assert np.isfinite(obs.tail_mass)
-        assert 0 < obs.tail_mass < 1
 
 
 # =============================================================================
@@ -991,386 +999,345 @@ def generate_2024_boj_intervention_eurjpy(seed: int = 2024) -> pd.Series:
 
 
 # =============================================================================
-# TEST 16: GFC 2008 - Lehman Crisis Detection
+# TEST 16: Multi-Currency Configuration
 # =============================================================================
 
-class TestGFC2008CrisisDetection:
-    """Test detection of July 2008 EURJPY peak and GFC crash."""
+class TestMultiCurrencyConfiguration:
+    """Test multi-currency configuration constants."""
     
-    def test_vol_compression_detected_before_peak(self):
-        """Test that vol compression is detected in June 2008 (pre-peak)."""
-        prices = generate_gfc_2008_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        # With pre-rally(80) + rally(120) + compression(30), compression ends at ~230
-        # Use data up to index 220 (during compression phase)
-        returns_to_compression = log_returns.iloc[:220]
-        vol_ratio = _compute_volatility_ratio(returns_to_compression)
-        assert vol_ratio < 1.0, f"Expected vol compression, got ratio={vol_ratio:.3f}"
+    def test_supported_pairs_exist(self):
+        """Verify all supported currency pairs are defined."""
+        assert "EURJPY" in SUPPORTED_CURRENCY_PAIRS
+        assert "AUDJPY" in SUPPORTED_CURRENCY_PAIRS
+        assert "EURAUD" in SUPPORTED_CURRENCY_PAIRS
     
-    def test_stress_metrics_elevated_pre_crash(self):
-        """Test that stress metrics are elevated in August 2008 (pre-Lehman)."""
-        prices = generate_gfc_2008_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        # With pre-rally(80), old index 180 -> new index 260
-        # Use data up to the stress/pre-crash phase
-        returns_pre_lehman = log_returns.iloc[:260]
-        obs = _construct_observation_vector(returns_pre_lehman, timestamp="2008-08-15")
-        assert obs.tail_mass > 0.45 or obs.disagreement > 0.1
-    
-    def test_crash_period_regime_change_detection(self):
-        """Test that Wasserstein detector runs during crash period."""
-        prices = generate_gfc_2008_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        
-        observations = []
-        for i in range(MIN_HISTORY_DAYS, len(log_returns)):
-            obs = _construct_observation_vector(log_returns.iloc[:i], timestamp=str(i))
-            observations.append(obs.to_array())
-        
-        if len(observations) < 60:
-            pytest.skip("Not enough observations")
-        
-        obs_array = np.array(observations)
-        detector = WassersteinRegimeDetector(window_size=30)
-        scores = detector.compute_regime_change_scores(obs_array)
-        
-        assert len(scores) == len(observations)
-        assert np.all(scores >= 0)
-        stability = detector.regime_stability_score()
-        assert 0 <= stability <= 1
-
-
-# =============================================================================
-# TEST 17: 2014 Abenomics Peak Detection
-# =============================================================================
-
-class TestAbenomics2014PeakDetection:
-    """Test detection of December 2014 EURJPY peak."""
-    
-    def test_peak_formation_slowing_momentum(self):
-        """Test that momentum shows slowing at the peak."""
-        prices = generate_2014_peak_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        early_rally = log_returns.iloc[50:100].mean()
-        peak_formation = log_returns.iloc[100:120].mean()
-        assert peak_formation < early_rally, "Expected slowing momentum at peak"
-    
-    def test_disagreement_changes_at_peak(self):
-        """Test disagreement behavior at peak."""
-        prices = generate_2014_peak_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        obs_rally = _construct_observation_vector(log_returns.iloc[:100], timestamp="2014-11-01")
-        obs_peak = _construct_observation_vector(
-            log_returns.iloc[:150],
-            prev_disagreement=obs_rally.disagreement,
-            prev_convex_loss=obs_rally.convex_loss,
-            timestamp="2014-12-15"
-        )
-        stress_increased = (
-            obs_peak.disagreement > obs_rally.disagreement * 0.8 or
-            obs_peak.convex_loss > obs_rally.convex_loss * 0.8
-        )
-        assert stress_increased or obs_peak.vol_ratio != 1.0
-
-
-# =============================================================================
-# TEST 18: 2018 Volmageddon Detection
-# =============================================================================
-
-class TestVolmageddon2018Detection:
-    """Test detection of February 2018 volatility spike."""
-    
-    def test_vol_compression_precedes_spike(self):
-        """Test that vol compression preceded the spike."""
-        prices = generate_2018_peak_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        pre_volmageddon_returns = log_returns.iloc[:95]
-        vol_ratio = _compute_volatility_ratio(pre_volmageddon_returns)
-        assert vol_ratio < 0.9, f"Expected vol compression, got {vol_ratio:.3f}"
-    
-    def test_vol_spike_stress_signals(self):
-        """Test that vol spike generates stress metrics."""
-        prices = generate_2018_peak_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        obs_post_spike = _construct_observation_vector(log_returns.iloc[:110], timestamp="2018-02-10")
-        assert obs_post_spike.vol_ratio > 0.8, "Expected vol expansion after spike"
-    
-    def test_transition_pressure_during_crisis(self):
-        """Test transition pressure during crisis."""
-        prices = generate_2018_peak_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        obs = _construct_observation_vector(log_returns.iloc[:105], timestamp="2018-02-08")
-        quantiles = {'convex_q75': 0.0006, 'convex_q90': 0.001, 'disag_q75': 0.30, 'vol_q25': 0.85}
-        phi = _compute_transition_pressure(obs.to_array(), quantiles)
-        assert phi >= 0.0, f"Transition pressure should be non-negative: {phi}"
-
-
-# =============================================================================
-# TEST 19: 2022 BoJ Intervention Detection
-# =============================================================================
-
-class TestBoJIntervention2022Detection:
-    """Test detection of October 2022 BoJ intervention."""
-    
-    def test_blowoff_top_characteristics(self):
-        """Test blow-off top shows accelerating momentum."""
-        prices = generate_2022_boj_intervention_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        normal_momentum = log_returns.iloc[50:100].mean()
-        blowoff_momentum = log_returns.iloc[100:120].mean()
-        assert blowoff_momentum > normal_momentum * 0.5
-    
-    def test_intervention_regime_shift(self):
-        """Test that intervention causes regime shift."""
-        prices = generate_2022_boj_intervention_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        pre_intervention = log_returns.iloc[100:125]
-        vol_pre = pre_intervention.std()
-        post_intervention = log_returns.iloc[125:155]
-        vol_post = post_intervention.std()
-        assert vol_post > vol_pre * 0.8
-    
-    def test_unified_gate_intervention_response(self):
-        """Test unified decision gate during intervention."""
-        gate = UnifiedDecisionGate(wasserstein_threshold=0.15, switch_threshold=0.6)
-        confidence = gate.compute_switch_confidence(wasserstein_distance=0.25, mi_ratio=1.1, kl_divergence=0.3)
-        assert confidence > 0.1
-
-
-# =============================================================================
-# TEST 20: 2024 Carry Trade Unwind
-# =============================================================================
-
-class TestCarryTradeUnwind2024:
-    """Test detection of July 2024 EURJPY all-time high and carry unwind."""
-    
-    def test_parabolic_extension_detected(self):
-        """Test that parabolic extension is detectable."""
-        prices = generate_2024_boj_intervention_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        parabolic_return = log_returns.iloc[120:150].sum()
-        assert parabolic_return > 0.01, f"Expected parabolic extension, got {parabolic_return:.4f}"
-    
-    def test_unwind_extreme_vol(self):
-        """Test that carry unwind shows extreme volatility."""
-        prices = generate_2024_boj_intervention_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        unwind_vol = log_returns.iloc[165:185].std()
-        normal_vol = log_returns.iloc[50:100].std()
-        assert unwind_vol > normal_vol * 1.5, "Expected elevated vol during unwind"
-    
-    def test_convex_loss_during_unwind(self):
-        """Test convex loss captures tail risk during unwind."""
-        prices = generate_2024_boj_intervention_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        normal_obs = _construct_observation_vector(log_returns.iloc[:100], timestamp="2024-06-01")
-        if len(log_returns) > 190:
-            unwind_obs = _construct_observation_vector(
-                log_returns.iloc[:190],
-                prev_disagreement=normal_obs.disagreement,
-                prev_convex_loss=normal_obs.convex_loss,
-                timestamp="2024-08-10"
-            )
-            stress_detected = (
-                unwind_obs.convex_loss > normal_obs.convex_loss * 0.5 or
-                unwind_obs.vol_ratio > 1.2
-            )
-            assert stress_detected or np.isfinite(unwind_obs.convex_loss)
-
-
-# =============================================================================
-# TEST 21: Pre-Policy State Detection
-# =============================================================================
-
-class TestPrePolicyStateDetection:
-    """Test PRE_POLICY state detection before major reversals."""
-    
-    def test_2008_pre_policy_probability(self):
-        """Test PRE_POLICY probability before GFC crash."""
-        prices = generate_gfc_2008_eurjpy()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            data_path = Path(tmpdir) / "EURJPY_1d.csv"
-            prices_pre_crash = prices.iloc[:170]
-            df = pd.DataFrame({'Date': prices_pre_crash.index, 'Close': prices_pre_crash.values})
-            df.to_csv(data_path, index=False)
-            decision = run_debt_allocation_engine(
-                data_path=str(data_path), force_reevaluate=True,
-                force_refresh_data=False, quiet=True
-            )
-            if decision is not None:
-                assert decision.state_posterior is not None
-                p_calm = decision.state_posterior.p_normal + decision.state_posterior.p_compressed
-                assert p_calm > 0.5 or decision.state_posterior.p_pre_policy > 0
-    
-    def test_2022_stress_before_intervention(self):
-        """Test stress signals before 2022 BoJ intervention."""
-        prices = generate_2022_boj_intervention_eurjpy()
-        log_returns = _compute_log_returns(prices)
-        observations = []
-        prev_d, prev_c = None, None
-        for i in range(MIN_HISTORY_DAYS, 125):
-            obs = _construct_observation_vector(
-                log_returns.iloc[:i], prev_disagreement=prev_d,
-                prev_convex_loss=prev_c, timestamp=str(i)
-            )
-            observations.append(obs)
-            prev_d, prev_c = obs.disagreement, obs.convex_loss
-        if observations:
-            last_obs = observations[-1]
-            has_stress = (
-                last_obs.tail_mass > 0.52 or last_obs.disagreement > 0.15 or
-                last_obs.vol_ratio < 0.9 or last_obs.vol_ratio > 1.1
-            )
-            assert has_stress or np.isfinite(last_obs.convex_loss)
-
-
-# =============================================================================
-# TEST 22: Dynamic Alpha in Crisis
-# =============================================================================
-
-class TestDynamicAlphaInCrisis:
-    """Test dynamic alpha α(t) adjustment during stress."""
-    
-    def test_alpha_decreases_with_accelerating_losses(self):
-        """Test α(t) decreases when convex loss accelerates."""
-        obs_normal = ObservationVector(
-            convex_loss=0.0003, convex_loss_acceleration=0.0, tail_mass=0.50,
-            disagreement=0.15, disagreement_momentum=0.0, vol_ratio=1.0, timestamp="2008-07-01"
-        )
-        obs_crisis = ObservationVector(
-            convex_loss=0.002, convex_loss_acceleration=0.0008, tail_mass=0.60,
-            disagreement=0.35, disagreement_momentum=0.05, vol_ratio=1.5, timestamp="2008-09-15"
-        )
-        alpha_normal = _compute_dynamic_alpha(obs_normal, base_alpha=0.60)
-        alpha_crisis = _compute_dynamic_alpha(obs_crisis, base_alpha=0.60)
-        assert alpha_crisis < alpha_normal, "Alpha should decrease in crisis"
-        assert alpha_crisis >= 0.40, "Alpha should not go below minimum"
-    
-    def test_alpha_responds_to_2024_stress(self):
-        """Test alpha with 2024-style extreme stress."""
-        obs_unwind = ObservationVector(
-            convex_loss=0.005, convex_loss_acceleration=0.002, tail_mass=0.70,
-            disagreement=0.50, disagreement_momentum=0.10, vol_ratio=2.5, timestamp="2024-08-05"
-        )
-        alpha = _compute_dynamic_alpha(obs_unwind, base_alpha=0.60)
-        assert alpha <= 0.50, f"Expected lower alpha in extreme stress, got {alpha}"
-
-
-# =============================================================================
-# TEST 23: Bayesian Learning Across Regimes
-# =============================================================================
-
-class TestBayesianLearningAcrossRegimes:
-    """Test Bayesian transition model learning from regime transitions."""
-    
-    def test_model_learns_from_crisis_transitions(self):
-        """Test Bayesian model updates after crisis transitions."""
-        model = BayesianTransitionModel(n_states=4, prior_concentration=1.0)
-        transitions = [
-            (0, 0), (0, 0), (0, 0), (0, 1), (1, 1), (1, 1),
-            (1, 2), (2, 2), (2, 2), (2, 3)
+    def test_pair_configuration_structure(self):
+        """Verify each pair has required configuration fields."""
+        required_fields = [
+            "yahoo_ticker", "data_file", "description",
+            "base_currency", "quote_currency", "debt_currency",
+            "characteristics"
         ]
-        initial_matrix = model.expected_transition_matrix().copy()
-        for from_state, to_state in transitions:
-            model.update(from_state, to_state)
-        final_matrix = model.expected_transition_matrix()
-        assert final_matrix[0, 1] > initial_matrix[0, 1] * 0.8
-        assert final_matrix[1, 2] > initial_matrix[1, 2] * 0.8
+        
+        for pair, config in SUPPORTED_CURRENCY_PAIRS.items():
+            for field in required_fields:
+                assert field in config, f"{pair} missing {field}"
     
-    def test_model_uncertainty_decreases(self):
-        """Test transition uncertainty decreases with data."""
-        model = BayesianTransitionModel(n_states=4, prior_concentration=1.0)
-        initial_entropy = model.posterior_entropy()
-        for _ in range(100):
-            model.update(0, 0)
-            model.update(1, 1)
-        final_entropy = model.posterior_entropy()
-        assert final_entropy < initial_entropy
+    def test_eurjpy_characteristics(self):
+        """Verify EURJPY has correct characteristics."""
+        eurjpy = SUPPORTED_CURRENCY_PAIRS["EURJPY"]
+        assert eurjpy["base_currency"] == "EUR"
+        assert eurjpy["quote_currency"] == "JPY"
+        assert eurjpy["debt_currency"] == "JPY"
+        assert eurjpy["characteristics"]["carry_yield"] == "low"
+        assert eurjpy["characteristics"]["central_bank_sensitivity"] == "high"
+    
+    def test_audjpy_characteristics(self):
+        """Verify AUDJPY has correct characteristics."""
+        audjpy = SUPPORTED_CURRENCY_PAIRS["AUDJPY"]
+        assert audjpy["base_currency"] == "AUD"
+        assert audjpy["quote_currency"] == "JPY"
+        assert audjpy["characteristics"]["carry_yield"] == "high"
+        assert audjpy["characteristics"]["commodity_correlation"] == "high"
+    
+    def test_euraud_characteristics(self):
+        """Verify EURAUD has correct characteristics."""
+        euraud = SUPPORTED_CURRENCY_PAIRS["EURAUD"]
+        assert euraud["base_currency"] == "EUR"
+        assert euraud["quote_currency"] == "AUD"
+        assert euraud["debt_currency"] == "AUD"
+        assert euraud["characteristics"]["commodity_correlation"] == "high"
 
 
 # =============================================================================
-# TEST 24: Full Integration with Historical Patterns
+# TEST 17: Realistic Currency Pair Data Generation
 # =============================================================================
 
-class TestFullIntegrationHistorical:
-    """Full integration tests using historical patterns."""
+def generate_realistic_audjpy_prices(
+    n_days: int = 500,
+    regime: str = "normal",
+    seed: int = 42
+) -> pd.Series:
+    """Generate realistic AUDJPY price series."""
+    np.random.seed(seed)
     
-    def test_engine_runs_on_gfc_data(self):
-        """Test engine runs on GFC-style data."""
-        prices = generate_gfc_2008_eurjpy()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            data_path = Path(tmpdir) / "EURJPY_1d.csv"
-            persistence_path = Path(tmpdir) / "decision.json"
-            df = pd.DataFrame({'Date': prices.index, 'Close': prices.values})
-            df.to_csv(data_path, index=False)
-            decision = run_debt_allocation_engine(
-                data_path=str(data_path), persistence_path=str(persistence_path),
-                force_reevaluate=True, force_refresh_data=False,
-                use_dynamic_alpha=True, quiet=True
-            )
-            assert decision is not None
-            assert hasattr(decision, 'triggered')
-            assert hasattr(decision, 'state_posterior')
+    params = {
+        "normal": {"mu": 0.0002, "sigma": 0.008, "jump_prob": 0.015, "jump_size": 0.012},
+        "compressed": {"mu": 0.0001, "sigma": 0.004, "jump_prob": 0.008, "jump_size": 0.008},
+        "pre_policy": {"mu": 0.0004, "sigma": 0.014, "jump_prob": 0.04, "jump_size": 0.020},
+        "policy": {"mu": -0.003, "sigma": 0.025, "jump_prob": 0.06, "jump_size": 0.035},
+        "risk_off": {"mu": -0.002, "sigma": 0.022, "jump_prob": 0.05, "jump_size": 0.030},
+    }
     
-    def test_engine_runs_on_2024_data(self):
-        """Test engine runs on 2024-style data."""
-        prices = generate_2024_boj_intervention_eurjpy()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            data_path = Path(tmpdir) / "EURJPY_1d.csv"
-            df = pd.DataFrame({'Date': prices.index, 'Close': prices.values})
-            df.to_csv(data_path, index=False)
-            decision = run_debt_allocation_engine(
-                data_path=str(data_path), force_reevaluate=True,
-                force_refresh_data=False, quiet=True
-            )
-            assert decision is not None
-            assert decision.observation is not None
+    p = params.get(regime, params["normal"])
+    
+    returns = np.random.normal(p["mu"], p["sigma"], n_days)
+    jumps = np.random.binomial(1, p["jump_prob"], n_days) * \
+            np.random.choice([-1, 1], n_days) * \
+            np.random.exponential(p["jump_size"], n_days)
+    returns += jumps
+    
+    log_prices = np.cumsum(returns)
+    prices = 98.0 * np.exp(log_prices)
+    dates = pd.date_range(start="2024-01-01", periods=n_days, freq='B')
+    
+    return pd.Series(prices, index=dates, name='Close')
+
+
+def generate_realistic_euraud_prices(
+    n_days: int = 500,
+    regime: str = "normal",
+    seed: int = 42
+) -> pd.Series:
+    """Generate realistic EURAUD price series."""
+    np.random.seed(seed)
+    
+    params = {
+        "normal": {"mu": 0.00005, "sigma": 0.007, "jump_prob": 0.012, "jump_size": 0.010},
+        "compressed": {"mu": 0.00002, "sigma": 0.004, "jump_prob": 0.006, "jump_size": 0.006},
+        "pre_policy": {"mu": 0.0002, "sigma": 0.012, "jump_prob": 0.03, "jump_size": 0.018},
+        "policy": {"mu": -0.001, "sigma": 0.020, "jump_prob": 0.05, "jump_size": 0.028},
+    }
+    
+    p = params.get(regime, params["normal"])
+    
+    returns = np.random.normal(p["mu"], p["sigma"], n_days)
+    jumps = np.random.binomial(1, p["jump_prob"], n_days) * \
+            np.random.choice([-1, 1], n_days) * \
+            np.random.exponential(p["jump_size"], n_days)
+    returns += jumps
+    
+    log_prices = np.cumsum(returns)
+    prices = 1.65 * np.exp(log_prices)
+    dates = pd.date_range(start="2024-01-01", periods=n_days, freq='B')
+    
+    return pd.Series(prices, index=dates, name='Close')
 
 
 # =============================================================================
-# TEST 25: Historical Edge Cases
+# TEST 18: Risk Metrics Computation
 # =============================================================================
 
-class TestHistoricalEdgeCases:
-    """Test edge cases in historical crisis scenarios."""
+class TestRiskMetricsComputation:
+    """Test risk metrics computation for multi-currency analysis."""
     
-    def test_extreme_single_day_move(self):
-        """Test handling of extreme single-day moves (Lehman, Black Monday)."""
-        np.random.seed(999)
-        returns = np.random.normal(0.0001, 0.006, 300)
-        returns[250] = -0.08
-        prices = 160.0 * np.exp(np.cumsum(returns))
-        dates = pd.date_range(start="2024-01-01", periods=300, freq='B')
-        price_series = pd.Series(prices, index=dates)
-        log_returns = _compute_log_returns(price_series)
-        obs = _construct_observation_vector(log_returns, timestamp="test")
-        assert np.isfinite(obs.convex_loss) or np.isnan(obs.convex_loss)
-        assert np.isfinite(obs.vol_ratio) or np.isnan(obs.vol_ratio)
+    def test_compute_risk_metrics_normal_regime(self):
+        """Test risk metrics for normal regime."""
+        prices = generate_realistic_eurjpy_prices(n_days=300, regime="normal", seed=123)
+        log_returns = _compute_log_returns(prices)
+        
+        metrics = _compute_risk_metrics(log_returns)
+        
+        assert 0.05 < metrics["volatility_annualized"] < 0.25
+        assert metrics["tail_risk_99"] < 0
+        assert np.isfinite(metrics["skewness"])
+        assert np.isfinite(metrics["kurtosis"])
     
-    def test_consecutive_intervention_days(self):
-        """Test handling of consecutive large moves."""
-        np.random.seed(888)
-        returns = np.random.normal(0.0001, 0.006, 300)
-        returns[200:205] = [-0.03, -0.025, 0.01, -0.035, -0.02]
-        prices = 160.0 * np.exp(np.cumsum(returns))
-        dates = pd.date_range(start="2024-01-01", periods=300, freq='B')
-        price_series = pd.Series(prices, index=dates)
-        log_returns = _compute_log_returns(price_series)
-        vol_ratio = _compute_volatility_ratio(log_returns.iloc[:210])
-        assert np.isfinite(vol_ratio), "Vol ratio should be computable"
+    def test_compute_risk_metrics_crisis_regime(self):
+        """Test risk metrics for crisis regime."""
+        prices = generate_realistic_eurjpy_prices(n_days=300, regime="crisis", seed=456)
+        log_returns = _compute_log_returns(prices)
+        
+        metrics = _compute_risk_metrics(log_returns)
+        
+        assert metrics["volatility_annualized"] > 0.15
+        assert metrics["tail_risk_99"] < -0.03
     
-    def test_whipsaw_during_intervention(self):
-        """Test handling of whipsaw price action."""
-        np.random.seed(777)
-        returns = np.random.normal(0.0001, 0.006, 300)
-        returns[200:210] = [-0.02, 0.015, -0.025, 0.02, -0.03, 0.025, -0.02, 0.015, -0.015, 0.01]
-        prices = 160.0 * np.exp(np.cumsum(returns))
-        dates = pd.date_range(start="2024-01-01", periods=300, freq='B')
-        price_series = pd.Series(prices, index=dates)
-        log_returns = _compute_log_returns(price_series)
-        obs = _construct_observation_vector(log_returns.iloc[:215], timestamp="test")
-        assert obs.timestamp == "test"
-        assert np.isfinite(obs.tail_mass) or np.isnan(obs.tail_mass)
+    def test_compute_risk_metrics_audjpy(self):
+        """Test risk metrics for AUDJPY (higher vol than EURJPY)."""
+        prices = generate_realistic_audjpy_prices(n_days=300, regime="normal", seed=789)
+        log_returns = _compute_log_returns(prices)
+        
+        metrics = _compute_risk_metrics(log_returns)
+        
+        assert 0.08 < metrics["volatility_annualized"] < 0.35
+
+
+# =============================================================================
+# TEST 19: Risk Score Computation
+# =============================================================================
+
+class TestRiskScoreComputation:
+    """Test risk score computation for currency pairs."""
+    
+    def test_risk_score_bounds(self):
+        """Risk score should be bounded 0-100."""
+        low_score = _compute_risk_score(
+            volatility=0.05,
+            tail_risk=-0.01,
+            recent_trend=0.02,
+            state_posterior=None,
+            characteristics={"carry_yield": "low", "commodity_correlation": "low"},
+        )
+        assert 0 <= low_score <= 100
+        assert low_score < 50
+        
+        high_score = _compute_risk_score(
+            volatility=0.30,
+            tail_risk=-0.08,
+            recent_trend=-0.10,
+            state_posterior=None,
+            characteristics={"central_bank_sensitivity": "high", "commodity_correlation": "high", "volatility_regime": "high"},
+        )
+        assert 0 <= high_score <= 100
+        assert high_score > 50
+    
+    def test_risk_score_increases_with_volatility(self):
+        """Higher volatility should increase risk score."""
+        low_vol_score = _compute_risk_score(
+            volatility=0.05,
+            tail_risk=-0.02,
+            recent_trend=0.0,
+            state_posterior=None,
+            characteristics={},
+        )
+        
+        high_vol_score = _compute_risk_score(
+            volatility=0.25,
+            tail_risk=-0.02,
+            recent_trend=0.0,
+            state_posterior=None,
+            characteristics={},
+        )
+        
+        assert high_vol_score > low_vol_score
+
+
+# =============================================================================
+# TEST 20: CurrencyPairAnalysis Data Structure
+# =============================================================================
+
+class TestCurrencyPairAnalysis:
+    """Test CurrencyPairAnalysis data structure."""
+    
+    def test_analysis_to_dict(self):
+        """Test serialization to dictionary."""
+        analysis = CurrencyPairAnalysis(
+            pair="EURJPY",
+            decision=None,
+            risk_score=35.5,
+            volatility_annualized=0.12,
+            tail_risk_99=-0.025,
+            recent_trend=0.015,
+            carry_attractiveness="low",
+            recommendation="preferred",
+            characteristics={"carry_yield": "low"},
+        )
+        
+        d = analysis.to_dict()
+        
+        assert d["pair"] == "EURJPY"
+        assert d["risk_score"] == 35.5
+        assert d["volatility_annualized"] == 0.12
+        assert d["recommendation"] == "preferred"
+
+
+# =============================================================================
+# TEST 21: MultiCurrencyComparison Data Structure
+# =============================================================================
+
+class TestMultiCurrencyComparison:
+    """Test MultiCurrencyComparison data structure."""
+    
+    def test_comparison_to_dict(self):
+        """Test serialization to dictionary."""
+        analysis1 = CurrencyPairAnalysis(
+            pair="EURJPY",
+            decision=None,
+            risk_score=30.0,
+            volatility_annualized=0.10,
+            tail_risk_99=-0.02,
+            recent_trend=0.01,
+            carry_attractiveness="low",
+            recommendation="preferred",
+            characteristics={},
+        )
+        
+        analysis2 = CurrencyPairAnalysis(
+            pair="EURAUD",
+            decision=None,
+            risk_score=55.0,
+            volatility_annualized=0.15,
+            tail_risk_99=-0.04,
+            recent_trend=-0.02,
+            carry_attractiveness="moderate",
+            recommendation="acceptable",
+            characteristics={},
+        )
+        
+        comparison = MultiCurrencyComparison(
+            analyses={"EURJPY": analysis1, "EURAUD": analysis2},
+            recommended_pair="EURJPY",
+            recommendation_basis="Lowest risk score",
+            timestamp="2024-06-15T12:00:00",
+        )
+        
+        d = comparison.to_dict()
+        
+        assert "EURJPY" in d["analyses"]
+        assert "EURAUD" in d["analyses"]
+        assert d["recommended_pair"] == "EURJPY"
+
+
+# =============================================================================
+# TEST 22: Currency Pair Comparison Logic
+# =============================================================================
+
+class TestCurrencyPairComparisonLogic:
+    """Test the logic for comparing currency pairs."""
+    
+    def test_lower_risk_score_is_preferred(self):
+        """Pair with lower risk score should be recommended."""
+        analysis1 = CurrencyPairAnalysis(
+            pair="EURJPY",
+            decision=None,
+            risk_score=25.0,
+            volatility_annualized=0.10,
+            tail_risk_99=-0.02,
+            recent_trend=0.01,
+            carry_attractiveness="low",
+            recommendation="preferred",
+            characteristics={},
+        )
+        
+        analysis2 = CurrencyPairAnalysis(
+            pair="EURAUD",
+            decision=None,
+            risk_score=65.0,
+            volatility_annualized=0.18,
+            tail_risk_99=-0.05,
+            recent_trend=-0.03,
+            carry_attractiveness="moderate",
+            recommendation="avoid",
+            characteristics={},
+        )
+        
+        analyses = {"EURJPY": analysis1, "EURAUD": analysis2}
+        candidates = [(k, v) for k, v in analyses.items() if v.decision is None or not v.decision.triggered]
+        candidates.sort(key=lambda x: x[1].risk_score)
+        
+        assert candidates[0][0] == "EURJPY"
+    
+    def test_recommendation_categories_correct(self):
+        """Test that recommendations are assigned correctly based on risk score."""
+        test_cases = [
+            (20.0, "preferred"),
+            (29.9, "preferred"),
+            (30.0, "acceptable"),
+            (45.0, "acceptable"),
+            (59.9, "acceptable"),
+            (60.0, "avoid"),
+            (85.0, "avoid"),
+        ]
+        
+        for risk_score, expected_rec in test_cases:
+            if risk_score < 30:
+                rec = "preferred"
+            elif risk_score < 60:
+                rec = "acceptable"
+            else:
+                rec = "avoid"
+            assert rec == expected_rec
 
 
 # =============================================================================

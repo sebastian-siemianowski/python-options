@@ -619,6 +619,19 @@ def main():
 
     if not args.quiet:
         render_complete_banner(len(all_symbols), failed_count)
+        
+        # Show Metals Risk Temperature after data refresh
+        try:
+            from decision.metals_risk_temperature import (
+                compute_metals_risk_temperature,
+                render_metals_risk_temperature,
+            )
+            metals_result = compute_metals_risk_temperature(start_date="2020-01-01")
+            render_metals_risk_temperature(metals_result, console=console)
+        except Exception as e:
+            # Silently skip if metals temperature computation fails
+            if os.getenv('DEBUG'):
+                console.print(f"[dim]Metals temperature unavailable: {e}[/dim]")
 
     sys.exit(0 if failed_count == 0 else 1)
 

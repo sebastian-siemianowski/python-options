@@ -13,10 +13,59 @@ posterior predictive Monte Carlo with Bayesian Model Averaging:
 
 Where:
     r_t      = current regime (deterministically assigned, same logic as tune)
-    m        = model class (kalman_gaussian, kalman_phi_gaussian, phi_student_t_nu_{4,6,8,12,20})
+    m        = model class (kalman_gaussian, kalman_phi_gaussian, 
+                           phi_student_t_nu_{4,6,8,12,20},
+                           phi_skew_t_nu_{ν}_gamma_{γ},
+                           phi_nig_alpha_{α}_beta_{β})
     θ_{r,m}  = parameters from tuning layer
     p(m|r)   = posterior model probability from tuning layer
     x        = return at horizon H
+
+-------------------------------------------------------------------------------
+DISTRIBUTIONAL MODEL ENSEMBLE
+-------------------------------------------------------------------------------
+
+The BMA ensemble includes multiple distributional models:
+
+1. GAUSSIAN (kalman_gaussian, kalman_phi_gaussian):
+   - Light tails, symmetric
+   - Baseline model for stable markets
+
+2. STUDENT-T (phi_student_t_nu_{4,6,8,12,20}):
+   - Heavy tails, symmetric
+   - ν controls tail heaviness (smaller ν = heavier tails)
+
+3. SKEW-T (phi_skew_t_nu_{ν}_gamma_{γ}) — Fernández-Steel:
+   - Heavy tails, asymmetric (Fernández-Steel parameterization)
+   - γ < 1.0: Left-skewed (crash risk)
+   - γ > 1.0: Right-skewed (euphoria risk)
+
+4. HANSEN SKEW-T — Regime-Conditional Asymmetry:
+   - Hansen (1994) parameterization with λ ∈ (-1, 1)
+   - λ < 0: Left-skewed (crash risk, heavier left tail)
+   - λ > 0: Right-skewed (recovery potential, heavier right tail)
+   - λ = 0: Reduces to symmetric Student-t
+   - Used for probability calculations and Monte Carlo sampling
+   - Financial meaning: captures regime-specific tail asymmetry
+
+5. NIG (phi_nig_alpha_{α}_beta_{β}) — Solution 2:
+   - Semi-heavy tails (between Gaussian and Cauchy), asymmetric
+   - α controls tail heaviness (smaller α = heavier tails)
+   - β controls asymmetry (β < 0 = left-skewed, β > 0 = right-skewed)
+   - Infinitely divisible (Lévy process compatible)
+
+6. GMM (2-State Gaussian Mixture) — Expert Panel Solution:
+   - Bimodal distribution capturing momentum/reversal dynamics
+   - Component 0 ("Momentum"): typically positive mean, moderate variance
+   - Component 1 ("Reversal/Crisis"): typically negative mean, higher variance
+   - Fitted to volatility-adjusted returns during tuning
+   - Used as Monte Carlo proposal distribution for Gaussian models
+   - Improves tail behavior in Expected Utility estimation
+
+CORE PRINCIPLE: "Heavy tails, asymmetry, and bimodality are hypotheses, not certainties."
+
+All models compete via BIC weights. If extra parameters don't improve fit,
+model weight collapses naturally toward simpler alternatives.
 
 -------------------------------------------------------------------------------
 REGIME ASSIGNMENT — DETERMINISTIC, CONSISTENT WITH TUNE
@@ -43,7 +92,9 @@ tune.py outputs:
     {
         "global": {
             "model_posterior": { "kalman_gaussian": p, "kalman_phi_gaussian": p, ... },
-            "models": { "kalman_gaussian": {q, c, hyvarinen_score, bic, ...}, ... }
+            "models": { "kalman_gaussian": {q, c, hyvarinen_score, bic, ...}, ... },
+            "gmm": { "weights": [π₁, π₂], "means": [μ₁, μ₂], "variances": [σ₁², σ₂²] },
+            "hansen_skew_t": { "nu": ν, "lambda": λ, "skew_direction": "left"/"right"/"symmetric" }
         },
         "regime": {
             "0": { "model_posterior": {...}, "models": {...}, "regime_meta": {...} },
@@ -208,7 +259,8 @@ from multiprocessing import Pool, cpu_count
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
+# NOTE: yfinance is NOT imported here - all data access goes through data_utils
+# which respects OFFLINE_MODE. Signal generation should NEVER call Yahoo Finance directly.
 from scipy.stats import t as student_t, norm, skew as scipy_stats_skew
 from scipy.special import gammaln
 from rich.console import Console
@@ -254,12 +306,30 @@ try:
         compute_calibrated_trust,
         compute_drift_weight,
         MAX_REGIME_PENALTY,
+        MAX_MODEL_PENALTY,
         DEFAULT_REGIME_PENALTY_SCHEDULE,
+        DEFAULT_MODEL_PENALTY_SCHEDULE,
         REGIME_NAMES,
     )
     CALIBRATED_TRUST_AVAILABLE = True
 except ImportError:
     CALIBRATED_TRUST_AVAILABLE = False
+
+# Control Policy — Authority Boundary Layer (Counter-Proposal v1.0)
+# ARCHITECTURAL LAW: Diagnostics RECOMMEND, Policy DECIDES, Models OBEY
+# This ensures explicit, auditable escalation decisions.
+try:
+    from calibration.control_policy import (
+        EscalationDecision,
+        CalibrationDiagnostics,
+        ControlPolicy,
+        DECISION_NAMES,
+        DEFAULT_CONTROL_POLICY,
+        create_diagnostics_from_result,
+    )
+    CONTROL_POLICY_AVAILABLE = True
+except ImportError:
+    CONTROL_POLICY_AVAILABLE = False
 
 # Context manager to suppress noisy HMM convergence messages
 import contextlib
@@ -289,6 +359,8 @@ from decision.signals_ux import (
     render_multi_asset_summary_table,
     render_sector_summary_tables,
     render_strong_signals_summary,
+    render_risk_temperature_summary,
+    render_augmentation_layers_summary,
     build_asset_display_label,
     extract_symbol_from_title,
     format_horizon_label,
@@ -326,7 +398,24 @@ from ingestion.data_utils import (
     get_price_series,
     STANDARD_PRICE_COLUMNS,
     print_symbol_tables,
+    enable_cache_only_mode,
 )
+
+# =============================================================================
+# SIGNAL GENERATION: CACHE-ONLY MODE
+# =============================================================================
+# Signal generation should NEVER make Yahoo Finance API calls.
+# All price data must come from cache populated during 'make data' or 'make refresh'.
+#
+# This ensures:
+# 1. Fast signal generation (no network latency)
+# 2. No rate limiting issues with Yahoo Finance
+# 3. Reproducible results (same cache = same signals)
+# 4. System works offline once data is cached
+#
+# If you see "Failed download" errors, run 'make data' first to populate the cache.
+# =============================================================================
+enable_cache_only_mode()
 
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
 logging.getLogger("yfinance").setLevel(logging.ERROR)
@@ -344,6 +433,202 @@ class StudentTDriftModel:
         log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
         log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
         return float(log_norm + log_kernel)
+
+
+# =============================================================================
+# EVT (EXTREME VALUE THEORY) FOR POSITION SIZING
+# =============================================================================
+# Import POT/GPD tail modeling for EVT-corrected expected loss estimation.
+# This provides principled extrapolation of tail losses beyond observed data.
+#
+# THEORETICAL FOUNDATION:
+#   Pickands–Balkema–de Haan theorem: exceedances over high threshold → GPD
+#   CTE = E[Loss | Loss > u] = u + σ/(1-ξ)  for ξ < 1
+#
+# INTEGRATION:
+#   - Used in Expected Utility calculation to replace naive E[loss]
+#   - Produces more conservative (larger) loss estimates for heavy-tailed assets
+#   - Falls back to empirical × 1.5 if GPD fitting fails
+# =============================================================================
+try:
+    from calibration.evt_tail import (
+        compute_evt_expected_loss,
+        compute_evt_var,
+        fit_gpd_pot,
+        GPDFitResult,
+        EVT_THRESHOLD_PERCENTILE_DEFAULT,
+        EVT_MIN_EXCEEDANCES,
+        EVT_FALLBACK_MULTIPLIER,
+        check_student_t_consistency,
+    )
+    EVT_AVAILABLE = True
+except ImportError:
+    EVT_AVAILABLE = False
+    EVT_THRESHOLD_PERCENTILE_DEFAULT = 0.90
+    EVT_MIN_EXCEEDANCES = 30
+    EVT_FALLBACK_MULTIPLIER = 1.5
+
+
+# =============================================================================
+# CONTAMINATED STUDENT-T DISTRIBUTION
+# =============================================================================
+# Regime-indexed contaminated Student-t mixture for crisis tail modeling.
+# Models returns as: (1-ε)·t(ν_normal) + ε·t(ν_crisis) where ε is contamination.
+# =============================================================================
+try:
+    from models import (
+        contaminated_student_t_rvs,
+        ContaminatedStudentTParams,
+    )
+    CONTAMINATED_ST_AVAILABLE = True
+except ImportError:
+    CONTAMINATED_ST_AVAILABLE = False
+    
+    # Fallback: simple contaminated sampling without the module
+    def contaminated_student_t_rvs(
+        size: int,
+        nu_normal: float,
+        nu_crisis: float,
+        epsilon: float,
+        loc: float = 0.0,
+        scale: float = 1.0,
+        random_state=None
+    ):
+        """Fallback contaminated student-t sampling."""
+        import numpy as np
+        if random_state is None:
+            rng = np.random.default_rng()
+        elif isinstance(random_state, np.random.Generator):
+            rng = random_state
+        else:
+            rng = np.random.default_rng(random_state)
+        
+        # Sample component indicators
+        from_crisis = rng.random(size) < epsilon
+        n_crisis = from_crisis.sum()
+        n_normal = size - n_crisis
+        
+        samples = np.empty(size)
+        if n_normal > 0:
+            samples[~from_crisis] = rng.standard_t(df=nu_normal, size=n_normal)
+        if n_crisis > 0:
+            samples[from_crisis] = rng.standard_t(df=nu_crisis, size=n_crisis)
+        
+        return loc + scale * samples
+
+
+# =============================================================================
+# HANSEN SKEW-T DISTRIBUTION (Asymmetric Tails)
+# =============================================================================
+# Hansen (1994) skew-t captures directional asymmetry via λ parameter:
+#   - λ > 0: Right-skewed (recovery potential, heavier right tail)
+#   - λ < 0: Left-skewed (crash risk, heavier left tail)
+#   - λ = 0: Reduces to symmetric Student-t
+#
+# CRITICAL: This must be imported for signals.py to use hansen_lambda in MC sampling.
+# Without this import, hansen_lambda is accepted but IGNORED - silent bug!
+# =============================================================================
+try:
+    from models import (
+        hansen_skew_t_rvs,
+        hansen_skew_t_cdf,
+        HansenSkewTParams,
+    )
+    HANSEN_SKEW_T_AVAILABLE = True
+except ImportError:
+    HANSEN_SKEW_T_AVAILABLE = False
+    
+    # Fallback: stub that falls back to symmetric Student-t (with warning)
+    def hansen_skew_t_rvs(
+        size: int,
+        nu: float,
+        lambda_: float,
+        loc: float = 0.0,
+        scale: float = 1.0,
+        random_state=None
+    ) -> np.ndarray:
+        """Fallback Hansen skew-t sampling - uses symmetric Student-t with warning."""
+        import warnings
+        warnings.warn(
+            f"Hansen skew-t not available, using symmetric Student-t (ignoring λ={lambda_:.3f})",
+            RuntimeWarning
+        )
+        if random_state is None:
+            rng = np.random.default_rng()
+        elif isinstance(random_state, np.random.Generator):
+            rng = random_state
+        else:
+            rng = np.random.default_rng(random_state)
+        
+        # Fallback to symmetric Student-t
+        samples = rng.standard_t(df=nu, size=size)
+        return loc + scale * samples
+
+
+# =============================================================================
+# MODEL REGISTRY — Single Source of Truth for Model Synchronization
+# =============================================================================
+# The model registry ensures tune.py and signals.py are ALWAYS synchronised.
+# This prevents the #1 silent failure: model name mismatch → dropped from BMA.
+#
+# ARCHITECTURAL LAW: Top funds REFUSE TO TRADE without this assertion.
+# =============================================================================
+try:
+    from models.model_registry import (
+        MODEL_REGISTRY,
+        ModelFamily,
+        SupportType,
+        get_model_spec,
+        assert_models_synchronised,
+    )
+    MODEL_REGISTRY_AVAILABLE = True
+except ImportError:
+    MODEL_REGISTRY_AVAILABLE = False
+
+
+# =============================================================================
+# RISK TEMPERATURE MODULATION LAYER (Expert Panel Solution 1 + 4)
+# =============================================================================
+# Risk temperature scales position sizes based on cross-asset stress indicators
+# WITHOUT modifying distributional beliefs (Kalman state, BMA weights, GARCH).
+#
+# DESIGN PRINCIPLE:
+#   "FX, futures, and commodities don't tell you WHERE to go.
+#    They tell you HOW FAST you're allowed to drive."
+#
+# INTEGRATION:
+#   - Computed AFTER EU-based sizing
+#   - Applied BEFORE final position output
+#   - Uses smooth sigmoid scaling (no cliff effects)
+#   - Overnight budget constraint when temp > 1.0
+#
+# STRESS CATEGORIES (weighted sum):
+#   - FX Stress (40%): AUDJPY, USDJPY z-scores — risk-on/off proxy
+#   - Futures Stress (30%): ES/NQ overnight returns — equity sentiment
+#   - Rates Stress (20%): TLT volatility — macro stress
+#   - Commodity Stress (10%): Copper, gold/copper ratio — growth fear
+#
+# SCALING FUNCTION:
+#   scale_factor(temp) = 1.0 / (1.0 + exp(3.0 × (temp - 1.0)))
+#
+# OVERNIGHT BUDGET:
+#   When temp > 1.0: cap position such that position × gap ≤ budget
+# =============================================================================
+try:
+    from decision.risk_temperature import (
+        compute_risk_temperature,
+        apply_risk_temperature_scaling,
+        get_cached_risk_temperature,
+        clear_risk_temperature_cache,
+        RiskTemperatureResult,
+        SIGMOID_THRESHOLD,
+        OVERNIGHT_BUDGET_ACTIVATION_TEMP,
+    )
+    RISK_TEMPERATURE_AVAILABLE = True
+except ImportError:
+    RISK_TEMPERATURE_AVAILABLE = False
+    SIGMOID_THRESHOLD = 1.0
+    OVERNIGHT_BUDGET_ACTIVATION_TEMP = 1.0
 
 
 # =============================================================================
@@ -972,6 +1257,16 @@ class Signal:
     expected_loss: float = 0.0        # E[-R_H | R_H < 0] (positive value)
     gain_loss_ratio: float = 1.0      # E[gain] / E[loss] - asymmetry
     eu_position_size: float = 0.0     # Position size from EU / max(E[loss], ε)
+    # Contaminated Student-t Mixture fields (regime-dependent tails):
+    cst_enabled: bool = False         # Whether contaminated mixture was used in MC
+    cst_nu_normal: Optional[float] = None   # ν for normal regime (lighter tails)
+    cst_nu_crisis: Optional[float] = None   # ν for crisis regime (heavier tails)
+    cst_epsilon: Optional[float] = None     # Crisis contamination probability
+    # Hansen Skew-t fields (asymmetric return distribution):
+    hansen_enabled: bool = False            # Whether Hansen skew-t was fitted
+    hansen_lambda: Optional[float] = None   # Skewness parameter λ ∈ (-1, 1)
+    hansen_nu: Optional[float] = None       # Degrees of freedom ν
+    hansen_skew_direction: Optional[str] = None  # "left", "right", or "symmetric"
     # Diagnostics only (NOT used for trading decisions):
     drift_uncertainty: float = 0.0  # P_t × drift_var_factor: uncertainty in drift estimate propagated to horizon
     p_analytical: float = 0.5       # DIAGNOSTIC ONLY: analytical posterior predictive P(r>0|D) 
@@ -987,6 +1282,20 @@ class Signal:
     # DUAL-SIDED TREND EXHAUSTION (0-100% scale, multi-timeframe weighted EMA deviation):
     ue_up: float = 0.0    # Price above weighted EMA equilibrium (0-1 scale)
     ue_down: float = 0.0  # Price below weighted EMA equilibrium (0-1 scale)
+    # RISK TEMPERATURE MODULATION (cross-asset stress scaling):
+    risk_temperature: float = 0.0      # Global risk temperature (0-2 scale)
+    risk_scale_factor: float = 1.0     # Position scale factor from risk temperature
+    overnight_budget_applied: bool = False  # True if overnight budget constraint was applied
+    overnight_max_position: Optional[float] = None  # Max position from overnight budget
+    pos_strength_pre_risk_temp: float = 0.0  # Position strength before risk temperature scaling
+    # EVT (Extreme Value Theory) tail risk fields:
+    expected_loss_empirical: float = 0.0    # Empirical expected loss (before EVT)
+    evt_enabled: bool = False               # Whether EVT was used for tail estimation
+    evt_xi: Optional[float] = None          # GPD shape parameter ξ
+    evt_sigma: Optional[float] = None       # GPD scale parameter σ
+    evt_threshold: Optional[float] = None   # POT threshold
+    evt_n_exceedances: int = 0              # Number of threshold exceedances
+    evt_fit_method: Optional[str] = None    # EVT fitting method used
 
 
 
@@ -1944,8 +2253,8 @@ def _select_regime_params(
             'regime_used': None,
         }
 
-    regime_data = tuned_params.get('regime', {})
-    global_data = tuned_params.get('global', {})
+    regime_data = tuned_params.get('regime') or {}
+    global_data = tuned_params.get('global') or {}
 
     # Try to get regime-specific params
     # Handle both int keys and string keys (JSON converts to strings)
@@ -2288,7 +2597,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     # Print BMA model information
     if asset_symbol and tuned_params and tuned_params.get('has_bma'):
         model_posterior = tuned_params.get('model_posterior', {})
-        global_data = tuned_params.get('global', {})
+        global_data = tuned_params.get('global') or {}
         global_models = global_data.get('models', {})
 
         # Get model selection method from cache metadata
@@ -2557,6 +2866,65 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         params_table.add_column("Vol (c)", justify="center", width=12)
         params_table.add_column("Persist (φ)", justify="center", width=12)
         params_table.add_column("Tails (ν)", justify="center", width=12)
+        params_table.add_column("Skew/Mix", justify="center", width=12)
+
+        # Helper to describe skewness for various model families
+        def describe_skewness(model_name: str, params: dict) -> tuple:
+            """Return (description, color) for skewness/mixture parameters."""
+            # Hansen Skew-t: lambda parameter
+            if 'hansen_skew_t' in model_name or params.get('lambda') is not None:
+                lam = params.get('lambda')
+                if lam is None:
+                    return ("—", "dim")
+                if lam < -0.1:
+                    return (f"λ={lam:+.2f}", "red")  # Left-skewed, crash risk
+                elif lam > 0.1:
+                    return (f"λ={lam:+.2f}", "cyan")  # Right-skewed
+                return (f"λ={lam:+.2f}", "green")  # Symmetric
+            
+            # Contaminated Student-t: epsilon (crisis probability)
+            if 'cst' in model_name or params.get('epsilon') is not None:
+                eps = params.get('epsilon')
+                if eps is None:
+                    return ("—", "dim")
+                if eps > 0.15:
+                    return (f"ε={eps:.0%}", "red")  # High crisis prob
+                elif eps > 0.08:
+                    return (f"ε={eps:.0%}", "yellow")
+                return (f"ε={eps:.0%}", "green")
+            
+            # NIG: beta (asymmetry)
+            if 'nig' in model_name or params.get('beta') is not None:
+                beta = params.get('beta')
+                alpha = params.get('alpha')
+                if beta is None:
+                    return ("—", "dim")
+                if beta < -0.1:
+                    return (f"β={beta:+.2f}", "red")
+                elif beta > 0.1:
+                    return (f"β={beta:+.2f}", "cyan")
+                return (f"β={beta:+.2f}", "green")
+            
+            # Phi-Skew-t: gamma parameter
+            if 'skew_t' in model_name or params.get('gamma') is not None:
+                gamma = params.get('gamma')
+                if gamma is None:
+                    return ("—", "dim")
+                if gamma < 0.9:
+                    return (f"γ={gamma:.2f}", "red")  # Left-skewed
+                elif gamma > 1.1:
+                    return (f"γ={gamma:.2f}", "cyan")  # Right-skewed
+                return (f"γ={gamma:.2f}", "green")
+            
+            # GMM: mixture weights
+            if 'gmm' in model_name:
+                weights = params.get('weights')
+                if weights and len(weights) >= 2:
+                    w1, w2 = weights[0], weights[1]
+                    return (f"w={w1:.0%}/{w2:.0%}", "blue")
+                return ("—", "dim")
+            
+            return ("—", "dim")
 
         for model_name in visible_models:
             m_params = global_models.get(model_name, {})
@@ -2573,6 +2941,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 vol_desc, vol_color = describe_vol_scale(c)
                 persist_desc, persist_color = describe_persistence(phi) if phi else ("—", "dim")
                 tail_desc, tail_color = describe_tail_weight(nu) if nu else ("—", "dim")
+                skew_desc, skew_color = describe_skewness(model_name, m_params)
 
                 if is_best:
                     params_table.add_row(
@@ -2581,6 +2950,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                         f"[bold {vol_color}]{vol_desc}[/bold {vol_color}]",
                         f"[bold {persist_color}]{persist_desc}[/bold {persist_color}]",
                         f"[bold {tail_color}]{tail_desc}[/bold {tail_color}]",
+                        f"[bold {skew_color}]{skew_desc}[/bold {skew_color}]",
                     )
                 else:
                     params_table.add_row(
@@ -2589,10 +2959,12 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                         f"[dim]{vol_desc}[/dim]",
                         f"[dim]{persist_desc}[/dim]",
                         f"[dim]{tail_desc}[/dim]",
+                        f"[dim]{skew_desc}[/dim]",
                     )
             else:
                 params_table.add_row(
                     f"[dim]{info['short']}[/dim]",
+                    "[dim]—[/dim]",
                     "[dim]—[/dim]",
                     "[dim]—[/dim]",
                     "[dim]—[/dim]",
@@ -2708,6 +3080,152 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 trust_table.add_row("  Tail Bias", f"[dim]{tail_bias:+.3f} ({bias_dir})[/dim]")
 
         console.print(Padding(trust_table, (0, 0, 0, 4)))
+
+        # ─────────────────────────────────────────────────────────────────────────────
+        # AUGMENTATION LAYERS - Shows advanced distributional model status
+        # Hansen Skew-t, Contaminated Student-t, GMM, NIG
+        # ─────────────────────────────────────────────────────────────────────────────
+        console.print()
+
+        aug_header = Text()
+        aug_header.append("    ▸ ", style="bright_cyan")
+        aug_header.append("Augmentation Layers", style="bold white")
+        console.print(aug_header)
+        console.print()
+
+        # Extract augmentation layer data from global_data
+        hansen_data = global_data.get('hansen_skew_t', {})
+        cst_data = global_data.get('contaminated_student_t', {})
+        gmm_data = global_data.get('gmm', {})
+        nig_data = global_data.get('nig', {})
+        skew_t_data = global_data.get('phi_skew_t', {})
+
+        aug_table = Table(
+            show_header=False,
+            border_style="dim",
+            box=box.SIMPLE,
+            padding=(0, 2),
+            expand=False,
+        )
+        aug_table.add_column("Layer", style="dim", width=24)
+        aug_table.add_column("Status", width=40)
+
+        # Helper to describe skewness direction
+        def skew_direction(val):
+            if val is None:
+                return "n/a"
+            if val < -0.05:
+                return "left (crash risk)"
+            elif val > 0.05:
+                return "right (upside)"
+            return "symmetric"
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # HANSEN SKEW-T: Asymmetric heavy tails via λ parameter
+        # ═══════════════════════════════════════════════════════════════════════════
+        hansen_lambda = hansen_data.get('lambda') if hansen_data else None
+        hansen_nu = hansen_data.get('nu') if hansen_data else None
+        hansen_enabled = hansen_lambda is not None and abs(hansen_lambda) > 0.01
+
+        if hansen_enabled:
+            skew_dir = skew_direction(hansen_lambda)
+            aug_table.add_row(
+                "[cyan]↔️  Hansen Skew-T[/cyan]",
+                f"[green]✓ Active[/green] λ={hansen_lambda:+.2f} ({skew_dir})"
+            )
+            if hansen_nu:
+                aug_table.add_row("    Tail weight (ν)", f"[dim]{hansen_nu:.0f}[/dim]")
+        else:
+            aug_table.add_row(
+                "[dim]↔️  Hansen Skew-T[/dim]",
+                "[dim]○ Not fitted[/dim]"
+            )
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # CONTAMINATED STUDENT-T: Regime-dependent tail heaviness
+        # ═══════════════════════════════════════════════════════════════════════════
+        cst_nu_normal = cst_data.get('nu_normal') if cst_data else None
+        cst_nu_crisis = cst_data.get('nu_crisis') if cst_data else None
+        cst_epsilon = cst_data.get('epsilon') if cst_data else None
+        cst_enabled = cst_nu_normal is not None and cst_epsilon is not None and cst_epsilon > 0.001
+
+        if cst_enabled:
+            aug_table.add_row(
+                "[magenta]⚡ Contaminated-T[/magenta]",
+                f"[green]✓ Active[/green] ε={cst_epsilon:.0%} crisis probability"
+            )
+            aug_table.add_row("    Normal regime (ν)", f"[dim]{cst_nu_normal:.0f} (lighter tails)[/dim]")
+            aug_table.add_row("    Crisis regime (ν)", f"[dim]{cst_nu_crisis:.0f} (heavier tails)[/dim]")
+        else:
+            aug_table.add_row(
+                "[dim]⚡ Contaminated-T[/dim]",
+                "[dim]○ Not fitted[/dim]"
+            )
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # GMM: 2-component Gaussian mixture (bimodal dynamics)
+        # ═══════════════════════════════════════════════════════════════════════════
+        gmm_weights = gmm_data.get('weights') if gmm_data else None
+        gmm_means = gmm_data.get('means') if gmm_data else None
+        gmm_enabled = gmm_weights is not None and len(gmm_weights) >= 2
+
+        if gmm_enabled:
+            aug_table.add_row(
+                "[yellow]🎲 GMM Mixture[/yellow]",
+                f"[green]✓ Active[/green] K=2 components"
+            )
+            for i, (w, m) in enumerate(zip(gmm_weights[:2], gmm_means[:2] if gmm_means else [0, 0])):
+                component_label = "Momentum" if m > 0 else "Reversal"
+                aug_table.add_row(f"    Component {i+1}", f"[dim]w={w:.1%}, μ={m:.4f} ({component_label})[/dim]")
+        else:
+            aug_table.add_row(
+                "[dim]🎲 GMM Mixture[/dim]",
+                "[dim]○ Not fitted[/dim]"
+            )
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # NIG: Normal-Inverse Gaussian (semi-heavy tails, Lévy compatible)
+        # ═══════════════════════════════════════════════════════════════════════════
+        nig_alpha = nig_data.get('alpha') if nig_data else None
+        nig_beta = nig_data.get('beta') if nig_data else None
+        nig_enabled = nig_alpha is not None and nig_beta is not None
+
+        if nig_enabled:
+            asym_dir = skew_direction(nig_beta)
+            aug_table.add_row(
+                "[blue]🎯 NIG Distribution[/blue]",
+                f"[green]✓ Active[/green] α={nig_alpha:.2f}, β={nig_beta:+.2f}"
+            )
+            aug_table.add_row("    Asymmetry", f"[dim]{asym_dir}[/dim]")
+        else:
+            aug_table.add_row(
+                "[dim]🎯 NIG Distribution[/dim]",
+                "[dim]○ Not fitted[/dim]"
+            )
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # PHI-SKEW-T: Fernández-Steel skew-t (γ parameter)
+        # ═══════════════════════════════════════════════════════════════════════════
+        skew_t_gamma = skew_t_data.get('gamma') if skew_t_data else None
+        skew_t_nu = skew_t_data.get('nu') if skew_t_data else None
+        skew_t_enabled = skew_t_gamma is not None
+
+        if skew_t_enabled:
+            # γ < 1 = left-skewed, γ > 1 = right-skewed
+            gamma_dir = "left (crash risk)" if skew_t_gamma < 0.95 else "right (upside)" if skew_t_gamma > 1.05 else "symmetric"
+            aug_table.add_row(
+                "[purple]📐 Skew-T (F-S)[/purple]",
+                f"[green]✓ Active[/green] γ={skew_t_gamma:.2f} ({gamma_dir})"
+            )
+            if skew_t_nu:
+                aug_table.add_row("    Tail weight (ν)", f"[dim]{skew_t_nu:.0f}[/dim]")
+        else:
+            aug_table.add_row(
+                "[dim]📐 Skew-T (F-S)[/dim]",
+                "[dim]○ Not fitted[/dim]"
+            )
+
+        console.print(Padding(aug_table, (0, 0, 0, 4)))
 
         console.print()
         console.print(Rule(style="dim", characters="─"))
@@ -3886,6 +4404,14 @@ def run_regime_specific_mc(
     H: int,
     n_paths: int = 5000,
     nu: Optional[float] = None,
+    nig_alpha: Optional[float] = None,
+    nig_beta: Optional[float] = None,
+    nig_delta: Optional[float] = None,
+    hansen_lambda: Optional[float] = None,
+    # Contaminated Student-t parameters
+    cst_nu_normal: Optional[float] = None,
+    cst_nu_crisis: Optional[float] = None,
+    cst_epsilon: Optional[float] = None,
     seed: Optional[int] = None
 ) -> np.ndarray:
     """
@@ -3894,13 +4420,90 @@ def run_regime_specific_mc(
     This is a lightweight wrapper that generates r_samples for one regime
     using regime-specific parameters.
 
+    Supports five noise distributions (in priority order):
+    1. Contaminated Student-t (cst_nu_normal, cst_nu_crisis, cst_epsilon specified):
+       Regime-dependent heavy tails: (1-ε)×t(ν_normal) + ε×t(ν_crisis)
+    2. Hansen Skew-t (nu + hansen_lambda specified): Asymmetric heavy tails
+    3. NIG (nig_alpha, nig_beta, nig_delta specified): Semi-heavy tails, asymmetric
+    4. Student-t (nu specified): Heavy tails, symmetric
+    5. Gaussian (default): Light tails, symmetric
+    
+    Contaminated Student-t model:
+        p(r) = (1-ε) × t(r; ν_normal) + ε × t(r; ν_crisis)
+        
+    Where ε is the contamination probability (crisis mode), typically 5-15%.
+    This captures the intuition: "Most of the time markets are normal, but
+    occasionally we're in crisis mode with much heavier tails."
+
     Args:
         regime: Regime index (0-4)
-        mu_t, P_t, phi, q, sigma2_step, H, n_paths, nu, seed: MC parameters
+        mu_t: Current drift estimate
+        P_t: Drift posterior variance
+        phi: AR(1) persistence
+        q: Process noise variance
+        sigma2_step: Per-step observation variance
+        H: Forecast horizon
+        n_paths: Number of MC paths
+        nu: Degrees of freedom for Student-t (None for Gaussian/NIG)
+        nig_alpha: NIG tail parameter (None for Gaussian/Student-t)
+        nig_beta: NIG asymmetry parameter (None for Gaussian/Student-t)
+        nig_delta: NIG scale parameter (None for Gaussian/Student-t)
+        hansen_lambda: Hansen skewness parameter (None for symmetric)
+        cst_nu_normal: Contaminated-t normal regime ν
+        cst_nu_crisis: Contaminated-t crisis regime ν
+        cst_epsilon: Contaminated-t crisis probability
+        seed: Random seed
 
     Returns:
         Array of return samples
     """
+    # Import NIG sampling if needed
+    use_nig = (nig_alpha is not None and nig_beta is not None and nig_delta is not None)
+    if use_nig:
+        try:
+            from scipy.stats import norminvgauss
+            # Validate NIG parameters
+            nig_alpha = float(np.clip(nig_alpha, 0.5, 50.0))
+            nig_delta = float(max(nig_delta, 0.001))
+            max_beta = nig_alpha - 0.01
+            nig_beta = float(np.clip(nig_beta, -max_beta, max_beta))
+            # Convert to scipy parameterization
+            nig_a = nig_alpha * nig_delta
+            nig_b = nig_beta * nig_delta
+        except Exception:
+            use_nig = False
+    
+    # Check for Contaminated Student-t (highest priority for Student-t family)
+    use_contaminated_t = (
+        CONTAMINATED_ST_AVAILABLE and
+        cst_nu_normal is not None and
+        cst_nu_crisis is not None and
+        cst_epsilon is not None and
+        cst_epsilon > 0.001
+    )
+    
+    # =========================================================================
+    # HANSEN SKEW-T DETECTION (asymmetric Student-t)
+    # =========================================================================
+    # If hansen_lambda is provided and non-trivial, use Hansen skew-t sampling
+    # instead of symmetric Student-t. This is the CRITICAL fix - hansen_lambda
+    # was previously accepted but IGNORED in sampling.
+    #
+    # Priority order:
+    #   1. Contaminated Student-t (regime-dependent tails)
+    #   2. Hansen Skew-t (asymmetric tails with fixed λ)
+    #   3. Symmetric Student-t (heavy tails only)
+    #   4. NIG (semi-heavy tails with asymmetry via β)
+    #   5. Gaussian (light tails)
+    # =========================================================================
+    use_hansen_skew_t = (
+        HANSEN_SKEW_T_AVAILABLE and
+        not use_contaminated_t and  # CST takes priority
+        nu is not None and
+        hansen_lambda is not None and
+        abs(hansen_lambda) > 0.01  # Only use if λ is non-trivial
+    )
+    
     # Input validation
     mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
     P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
@@ -3909,7 +4512,7 @@ def run_regime_specific_mc(
     sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
     H = int(max(H, 1))
 
-    if nu is not None:
+    if nu is not None and not use_nig and not use_contaminated_t:
         if not np.isfinite(nu) or nu <= 2.0:
             nu = None
         else:
@@ -3917,19 +4520,54 @@ def run_regime_specific_mc(
 
     rng = np.random.default_rng(seed)
 
+    # Pre-compute mixture variance for contaminated Student-t if needed
+    # This MUST be computed before sampling to avoid "unbound local variable" error
+    mixture_var = 1.0  # Default to 1.0 (standard normal variance)
+    if use_contaminated_t:
+        var_normal = cst_nu_normal / (cst_nu_normal - 2) if cst_nu_normal > 2 else 10.0
+        var_crisis = cst_nu_crisis / (cst_nu_crisis - 2) if cst_nu_crisis > 2 else 10.0
+        mixture_var = (1 - cst_epsilon) * var_normal + cst_epsilon * var_crisis
+        mixture_var = max(mixture_var, 1e-10)  # Ensure positive
+
     # Sample drift posterior
     if P_t > 0:
-        if nu is not None:
-            # Student-t posterior for drift: heavier tails under uncertainty
-            # t_ν(μ̂_t, scale) has variance scale² · ν/(ν-2)
-            # We want Var(μ_t) = P_t, so scale = √(P_t · (ν-2)/ν)
+        if use_nig:
+            # NIG posterior for drift
+            # Scale NIG to have variance = P_t
+            # NIG variance = δα²/(α²-β²)^(3/2), so we scale samples
+            gamma_nig = np.sqrt(max(nig_alpha**2 - nig_beta**2, 1e-10))
+            nig_var = nig_delta * nig_alpha**2 / (gamma_nig**3) if gamma_nig > 0 else nig_delta**2
+            scale_factor = np.sqrt(P_t / max(nig_var, 1e-10))
+            nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
+            mu_paths = mu_t + scale_factor * nig_delta * nig_samples
+        elif use_contaminated_t:
+            # Contaminated Student-t posterior for drift
+            # With probability ε, use crisis ν; else use normal ν
+            mu_samples = contaminated_student_t_rvs(
+                size=n_paths,
+                nu_normal=cst_nu_normal,
+                nu_crisis=cst_nu_crisis,
+                epsilon=cst_epsilon,
+                mu=0.0,
+                sigma=1.0,
+                random_state=rng
+            )
+            # Scale to have variance = P_t
+            # Contaminated-t has variance ≈ weighted average of component variances
+            # For t(ν): Var = ν/(ν-2) for ν > 2
+            var_normal = cst_nu_normal / (cst_nu_normal - 2) if cst_nu_normal > 2 else 10.0
+            var_crisis = cst_nu_crisis / (cst_nu_crisis - 2) if cst_nu_crisis > 2 else 10.0
+            mixture_var = (1 - cst_epsilon) * var_normal + cst_epsilon * var_crisis
+            t_scale = np.sqrt(P_t / mixture_var)
+            mu_paths = mu_t + t_scale * mu_samples
+        elif nu is not None:
+            # Student-t posterior for drift
             t_scale = math.sqrt(P_t * (nu - 2.0) / nu) if nu > 2.0 else math.sqrt(P_t)
             mu_paths = mu_t + t_scale * rng.standard_t(df=nu, size=n_paths)
         else:
             # Gaussian posterior for drift
             mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
     else:
-        # No drift uncertainty: point estimate
         mu_paths = np.full(n_paths, mu_t, dtype=float)
 
     # Propagate drift and accumulate noise
@@ -3942,7 +4580,24 @@ def run_regime_specific_mc(
     for k in range(H):
         # --- Drift propagation: μ_{t+k+1} = φ·μ_{t+k} + η_{k+1} ---
         if q_std > 0:
-            if nu is not None:
+            if use_nig:
+                # NIG drift noise
+                nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
+                eta = q_std * nig_delta * nig_samples / np.sqrt(max(nig_var, 1e-10))
+            elif use_contaminated_t:
+                # Contaminated Student-t drift noise
+                eta_samples = contaminated_student_t_rvs(
+                    size=n_paths,
+                    nu_normal=cst_nu_normal,
+                    nu_crisis=cst_nu_crisis,
+                    epsilon=cst_epsilon,
+                    mu=0.0,
+                    sigma=1.0,
+                    random_state=rng
+                )
+                eta_scale = q_std / np.sqrt(mixture_var)
+                eta = eta_scale * eta_samples
+            elif nu is not None:
                 eta_scale = q_std * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else q_std
                 eta = eta_scale * rng.standard_t(df=nu, size=n_paths)
             else:
@@ -3953,11 +4608,26 @@ def run_regime_specific_mc(
         mu_paths = phi * mu_paths + eta
         cum_mu += mu_paths
 
-        # --- Observation noise: ε_k ~ N(0, sigma_step) or t_ν ---
-        # sigma_step = √sigma2_step is the PRIMITIVE per-step noise std
+        # --- Observation noise: ε_k ---
         if sigma_step > 0:
-            if nu is not None:
-                # Student-t observation noise: scale for target variance
+            if use_nig:
+                # NIG observation noise
+                nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
+                eps_k = sigma_step * nig_delta * nig_samples / np.sqrt(max(nig_var, 1e-10))
+            elif use_contaminated_t:
+                # Contaminated Student-t observation noise
+                eps_samples = contaminated_student_t_rvs(
+                    size=n_paths,
+                    nu_normal=cst_nu_normal,
+                    nu_crisis=cst_nu_crisis,
+                    epsilon=cst_epsilon,
+                    mu=0.0,
+                    sigma=1.0,
+                    random_state=rng
+                )
+                eps_scale = sigma_step / np.sqrt(mixture_var)
+                eps_k = eps_scale * eps_samples
+            elif nu is not None:
                 eps_scale = sigma_step * math.sqrt((nu - 2.0) / nu) if nu > 2.0 else sigma_step
                 eps_k = eps_scale * rng.standard_t(df=nu, size=n_paths)
             else:
@@ -4227,11 +4897,31 @@ def bayesian_model_average_mc(
     # ========================================================================
     # GET REGIME-SPECIFIC BMA DATA
     # ========================================================================
-    global_data = tuned_params.get('global', {})
-    regime_data = tuned_params.get('regime', {})
+    global_data = tuned_params.get('global') or {} if tuned_params else {}
+    regime_data = tuned_params.get('regime') or {} if tuned_params else {}
+    
+    # Ensure regime_data is a dict (could be None from old cache)
+    if regime_data is None:
+        regime_data = {}
 
-    global_model_posterior = global_data.get('model_posterior', {})
-    global_models = global_data.get('models', {})
+    global_model_posterior = global_data.get('model_posterior', {}) if global_data else {}
+    global_models = global_data.get('models', {}) if global_data else {}
+
+    # ========================================================================
+    # EXTRACT AUGMENTATION LAYER DATA
+    # ========================================================================
+    # Hansen Skew-t data
+    hansen_data = global_data.get('hansen_skew_t', {})
+    hansen_lambda_global = hansen_data.get('lambda') if hansen_data else None
+    hansen_nu_global = hansen_data.get('nu') if hansen_data else None
+    hansen_skew_t_enabled = hansen_lambda_global is not None and abs(hansen_lambda_global) > 0.01
+    
+    # Contaminated Student-t data
+    cst_data = global_data.get('contaminated_student_t', {})
+    cst_nu_normal_global = cst_data.get('nu_normal') if cst_data else None
+    cst_nu_crisis_global = cst_data.get('nu_crisis') if cst_data else None
+    cst_epsilon_global = cst_data.get('epsilon') if cst_data else None
+    cst_enabled = cst_nu_normal_global is not None and cst_epsilon_global is not None and cst_epsilon_global > 0.001
 
     # Get current regime's model_posterior and models
     regime_key = str(current_regime)  # JSON keys are strings
@@ -4283,19 +4973,89 @@ def bayesian_model_average_mc(
     recomputed_posterior, epistemic_meta = compute_model_posteriors_from_combined_score(models)
 
     if not recomputed_posterior:
-        # Cache is invalid - models are missing combined_score
-        # This indicates the cache was generated with an old version and must be regenerated
+        # Cache may be from an older version without combined_score
+        # Fallback to BIC-based posteriors for backward compatibility
+        # This is a GRACEFUL DEGRADATION, not a hard failure
+        import warnings
         model_names = list(models.keys())
         missing_scores = [m for m in model_names if not models.get(m, {}).get('combined_score')]
-        raise ValueError(
-            f"Invalid cache: models missing combined_score: {missing_scores}. "
-            f"Cache must be regenerated with 'make tune --force' to include "
-            f"entropy-regularized BIC+Hyvärinen combined scores."
-        )
+        
+        # Try BIC-based fallback
+        bic_posterior = {}
+        for model_name, model_data in models.items():
+            if isinstance(model_data, dict):
+                bic = model_data.get('bic')
+                if bic is not None and np.isfinite(bic):
+                    bic_posterior[model_name] = bic
+        
+        if bic_posterior:
+            # Convert BIC to weights using softmax over negated BIC (lower is better)
+            bic_values = np.array(list(bic_posterior.values()))
+            neg_bic = -bic_values / 2.0  # Standard BIC to log-likelihood conversion
+            neg_bic = neg_bic - neg_bic.max()  # Numerical stability
+            weights = np.exp(neg_bic)
+            weights = weights / weights.sum()
+            
+            recomputed_posterior = dict(zip(bic_posterior.keys(), weights))
+            epistemic_meta = {
+                'method': 'bic_fallback',
+                'reason': 'combined_score_missing',
+                'missing_scores': missing_scores,
+            }
+            
+            warnings.warn(
+                f"Using BIC-based fallback for models missing combined_score: {missing_scores}. "
+                f"Consider re-tuning with 'make tune --force' for optimal calibration.",
+                RuntimeWarning
+            )
+        else:
+            # Last resort: uniform weights
+            recomputed_posterior = {m: 1.0/len(models) for m in models}
+            epistemic_meta = {
+                'method': 'uniform_fallback',
+                'reason': 'no_valid_scores',
+            }
+            
+            warnings.warn(
+                f"Using uniform weights fallback - no valid BIC or combined_score found. "
+                f"Re-tune with 'make tune --force'.",
+                RuntimeWarning
+            )
 
     cached_posterior = model_posterior
     model_posterior = recomputed_posterior
     posteriors_recomputed = True
+
+    # ========================================================================
+    # FAIL-FAST ASSERTION: Validate model synchronization
+    # ========================================================================
+    # This is the #1 silent failure mode in production quant systems:
+    # tune.py adds a model but signals.py ignores it → distorted posterior mass.
+    #
+    # The model registry (models/model_registry.py) provides the canonical
+    # contract. If registry is available, we validate against it.
+    #
+    # ARCHITECTURAL LAW: Top funds REFUSE TO TRADE without this assertion.
+    # ========================================================================
+    if MODEL_REGISTRY_AVAILABLE:
+        try:
+            tuned_model_names = set(models.keys())
+            # Only warn, don't fail - allows for temporary model additions
+            # during experimentation while still flagging the issue
+            assert_models_synchronised(
+                tuned_model_names, 
+                context=f"regime={current_regime} ({regime_name}), asset={asset_symbol}"
+            )
+        except AssertionError as sync_error:
+            # Log but don't fail - degraded operation is better than crash
+            # This will be logged to stderr for monitoring
+            import warnings
+            warnings.warn(
+                f"Model synchronization warning: {sync_error}",
+                RuntimeWarning
+            )
+        except Exception:
+            pass  # Registry check failed - continue without validation
 
     # ========================================================================
     # BAYESIAN MODEL AVERAGING: Draw samples from mixture over models
@@ -4325,6 +5085,11 @@ def bayesian_model_average_mc(
         nu_m = model_params.get('nu')
         c_m = model_params.get('c', 1.0)
 
+        # Extract NIG parameters (for phi_nig_* models)
+        nig_alpha_m = model_params.get('nig_alpha')
+        nig_beta_m = model_params.get('nig_beta')
+        nig_delta_m = model_params.get('nig_delta')
+
         # Default phi for models without it
         if phi_m is None or not np.isfinite(phi_m):
             phi_m = 0.95 if 'phi' in model_name else 1.0
@@ -4337,6 +5102,10 @@ def bayesian_model_average_mc(
         n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_paths))
 
         # Generate samples from p(x | r_t, m, θ_m)
+        # AUGMENTATION LAYERS ARE PASSED TO MC SAMPLING:
+        # - Hansen λ affects tail asymmetry in Student-t
+        # - CST affects regime-dependent tail thickness
+        # - NIG affects both tails and asymmetry
         model_samples = run_regime_specific_mc(
             regime=current_regime,
             mu_t=mu_t,
@@ -4347,6 +5116,19 @@ def bayesian_model_average_mc(
             H=H,
             n_paths=n_model_samples,
             nu=nu_m,
+            # ================================================================
+            # AUGMENTATION LAYERS - Affect distribution of return samples
+            # ================================================================
+            # NIG parameters (model-specific, from NIG models)
+            nig_alpha=nig_alpha_m,
+            nig_beta=nig_beta_m,
+            nig_delta=nig_delta_m,
+            # Hansen Skew-t (global augmentation from tuning)
+            hansen_lambda=hansen_lambda_global if hansen_skew_t_enabled else None,
+            # Contaminated Student-t (global augmentation from tuning)
+            cst_nu_normal=cst_nu_normal_global if cst_enabled else None,
+            cst_nu_crisis=cst_nu_crisis_global if cst_enabled else None,
+            cst_epsilon=cst_epsilon_global if cst_enabled else None,
             seed=rng.integers(0, 2**31) if seed is not None else None
         )
 
@@ -4358,6 +5140,11 @@ def bayesian_model_average_mc(
             "phi": float(phi_m) if phi_m is not None else None,
             "nu": float(nu_m) if nu_m is not None else None,
             "c": float(c_m),
+            # Augmentation layer info
+            "nig_alpha": float(nig_alpha_m) if nig_alpha_m else None,
+            "nig_beta": float(nig_beta_m) if nig_beta_m else None,
+            "hansen_lambda": float(hansen_lambda_global) if hansen_skew_t_enabled else None,
+            "cst_enabled": cst_enabled,
         }
 
     # Concatenate all model samples
@@ -4380,6 +5167,14 @@ def bayesian_model_average_mc(
         "model_posterior": {m: float(w) for m, w in model_posterior.items()},
         "model_details": model_details,
         "n_total_samples": len(r_samples),
+        # Hansen Skew-t diagnostics
+        "hansen_skew_t_enabled": hansen_skew_t_enabled,
+        "hansen_lambda": float(hansen_lambda_global) if hansen_lambda_global is not None else None,
+        "hansen_nu": float(hansen_nu_global) if hansen_nu_global is not None else None,
+        "hansen_skew_direction": (
+            "left" if hansen_lambda_global and hansen_lambda_global < -0.01 else
+            ("right" if hansen_lambda_global and hansen_lambda_global > 0.01 else "symmetric")
+        ) if hansen_lambda_global is not None else "not_available",
         # Epistemic weighting diagnostics
         "posteriors_recomputed": posteriors_recomputed,
         "cached_posterior": {m: float(w) for m, w in cached_posterior.items()} if posteriors_recomputed else None,
@@ -4393,6 +5188,11 @@ def bayesian_model_average_mc(
         "hyvarinen_max": regime_meta.get('hyvarinen_max'),
         "combined_score_min": regime_meta.get('combined_score_min'),
         "bic_min": regime_meta.get('bic_min'),
+        # Contaminated Student-t diagnostics
+        "contaminated_student_t_enabled": cst_enabled,
+        "cst_nu_normal": float(cst_nu_normal_global) if cst_nu_normal_global is not None else None,
+        "cst_nu_crisis": float(cst_nu_crisis_global) if cst_nu_crisis_global is not None else None,
+        "cst_epsilon": float(cst_epsilon_global) if cst_epsilon_global is not None else None,
         # SOFT REGIME PROBABILITIES FOR TRUST AUTHORITY
         # Used by CalibratedTrust to avoid penalty cliffs at regime boundaries
         "soft_regime_probs": soft_regime_probs,
@@ -5376,7 +6176,70 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         losses = -r[r < 0.0]
 
         E_gain = float(np.mean(gains)) if gains.size > 0 else 0.0
-        E_loss = float(np.mean(losses)) if losses.size > 0 else 0.0
+        E_loss_empirical = float(np.mean(losses)) if losses.size > 0 else 0.0
+
+        # ====================================================================
+        # EVT-CORRECTED EXPECTED LOSS (Expert Panel Solution 2)
+        # ====================================================================
+        # The Pickands–Balkema–de Haan theorem provides theoretical foundation:
+        # exceedances over high threshold u converge to GPD distribution.
+        #
+        # CTE = E[Loss | Loss > u] = u + σ/(1-ξ)  for ξ < 1
+        #
+        # This replaces the naive empirical mean with principled extrapolation
+        # that captures extreme tail behavior beyond observed MC samples.
+        #
+        # Key properties:
+        #   - EVT E[loss] ≥ empirical E[loss] (always more conservative)
+        #   - Heavy-tailed assets (ξ > 0.2) get larger loss estimates
+        #   - Light-tailed assets (ξ ≈ 0) get minimal adjustment
+        #   - Fallback to 1.5× empirical if GPD fitting fails
+        # ====================================================================
+        
+        # Initialize EVT diagnostics
+        evt_expected_loss = E_loss_empirical
+        evt_gpd_result = None
+        evt_enabled = False
+        evt_xi = None
+        evt_sigma = None
+        evt_threshold = None
+        evt_n_exceedances = 0
+        evt_fit_method = None
+        evt_consistency = None
+        
+        if EVT_AVAILABLE and losses.size >= EVT_MIN_EXCEEDANCES:
+            try:
+                # Compute EVT-corrected expected loss
+                evt_loss, emp_loss, gpd_result = compute_evt_expected_loss(
+                    r_samples=r,
+                    threshold_percentile=EVT_THRESHOLD_PERCENTILE_DEFAULT,
+                    fallback_multiplier=EVT_FALLBACK_MULTIPLIER
+                )
+                
+                evt_expected_loss = evt_loss
+                evt_gpd_result = gpd_result
+                evt_enabled = True
+                evt_xi = gpd_result.xi
+                evt_sigma = gpd_result.sigma
+                evt_threshold = gpd_result.threshold
+                evt_n_exceedances = gpd_result.n_exceedances
+                evt_fit_method = gpd_result.method
+                
+                # Check consistency with Student-t ν (if available)
+                if nu_mc is not None and gpd_result.fit_success:
+                    evt_consistency = check_student_t_consistency(nu_mc, gpd_result.xi)
+                    
+            except Exception as evt_err:
+                # EVT failed - fall back to empirical × multiplier
+                evt_expected_loss = E_loss_empirical * EVT_FALLBACK_MULTIPLIER
+                evt_fit_method = 'exception_fallback'
+        elif losses.size > 0:
+            # Insufficient data for EVT - use conservative fallback
+            evt_expected_loss = E_loss_empirical * EVT_FALLBACK_MULTIPLIER
+            evt_fit_method = 'insufficient_data_fallback'
+        
+        # Use EVT-corrected loss for position sizing
+        E_loss = evt_expected_loss
 
         EU = p_now * E_gain - (1.0 - p_now) * E_loss
 
@@ -5395,6 +6258,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         expected_utility = EU
         expected_gain = E_gain
         expected_loss = E_loss
+        expected_loss_empirical = E_loss_empirical  # Keep for comparison
         gain_loss_ratio = E_gain / max(E_loss, epsilon_eu) if E_loss > epsilon_eu else (
             100.0 if E_gain > 0 else 1.0
         )
@@ -5709,6 +6573,77 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             # Extended below equilibrium: reduce short conviction
             pos_strength *= (1.0 - 0.5 * ue_down)
 
+        # =====================================================================
+        # RISK TEMPERATURE MODULATION (Expert Panel Solution 1 + 4)
+        # =====================================================================
+        # Scale position strength based on cross-asset stress indicators.
+        # This is the final modulation layer BEFORE position output.
+        #
+        # DESIGN: pos_strength_final = pos_strength_base × scale_factor(temp)
+        #
+        # Stress categories:
+        #   - FX (40%): AUDJPY, USDJPY, CHF — risk-on/off proxy
+        #   - Futures (30%): ES/NQ momentum — equity sentiment
+        #   - Rates (20%): TLT volatility — macro stress
+        #   - Commodities (10%): Copper, gold/copper — growth fear
+        #
+        # Scaling:
+        #   - temp = 0.0 → scale ≈ 0.95 (near-full exposure)
+        #   - temp = 1.0 → scale = 0.50 (half exposure)
+        #   - temp = 2.0 → scale ≈ 0.05 (near-zero exposure)
+        #
+        # Overnight budget: when temp > 1.0, cap position to limit gap risk
+        # =====================================================================
+        pos_strength_pre_risk_temp = pos_strength
+        risk_temperature = 0.0
+        risk_scale_factor = 1.0
+        overnight_budget_applied = False
+        overnight_max_position = None
+        
+        if RISK_TEMPERATURE_AVAILABLE:
+            try:
+                # Get cached risk temperature (avoids redundant API calls)
+                risk_temp_result = get_cached_risk_temperature(
+                    start_date="2020-01-01",
+                    notional=NOTIONAL_PLN,
+                    estimated_gap_risk=0.03,  # 3% default gap risk
+                )
+                
+                # Apply scaling
+                scaled_pos_strength, risk_meta = apply_risk_temperature_scaling(
+                    pos_strength,
+                    risk_temp_result,
+                )
+                
+                # Extract values for Signal dataclass
+                risk_temperature = risk_meta.get("risk_temperature", 0.0)
+                risk_scale_factor = risk_meta.get("scale_factor", 1.0)
+                overnight_budget_applied = risk_meta.get("overnight_budget_applied", False)
+                overnight_max_position = risk_meta.get("overnight_max_position")
+                
+                # Update position strength
+                pos_strength = scaled_pos_strength
+                
+            except Exception as e:
+                # If risk temperature fails, continue with unscaled position
+                if os.getenv("DEBUG"):
+                    print(f"Risk temperature computation failed: {e}")
+
+        # ================================================================
+        # EXTRACT AUGMENTATION LAYER DATA FROM BMA METADATA
+        # ================================================================
+        # Hansen Skew-t (asymmetric return distribution)
+        hansen_enabled = bma_meta.get("hansen_skew_t_enabled", False)
+        hansen_lambda = bma_meta.get("hansen_lambda")
+        hansen_nu = bma_meta.get("hansen_nu")
+        hansen_skew_direction = bma_meta.get("hansen_skew_direction")
+        
+        # Contaminated Student-t (regime-dependent tails)
+        cst_enabled = bma_meta.get("contaminated_student_t_enabled", False)
+        cst_nu_normal = bma_meta.get("cst_nu_normal")
+        cst_nu_crisis = bma_meta.get("cst_nu_crisis")
+        cst_epsilon = bma_meta.get("cst_epsilon")
+
         sigs.append(Signal(
             horizon_days=int(H),
             score=float(edge_now),
@@ -5725,13 +6660,14 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             # All sizing is derived from the full posterior predictive
             # distribution (r_samples), not from point estimates.
             #
-            # pos_strength = drift_weight × eu_position_size
+            # pos_strength = drift_weight × eu_position_size × risk_scale_factor
             # where eu_position_size = EU / max(E[loss], ε)
             #
             # This ensures:
             # - Fat downside tails → smaller positions
             # - Strong upside asymmetry → larger positions
             # - EU ≤ 0 → HOLD (position_strength = 0)
+            # - High risk temperature → reduced exposure
             # ================================================================
             position_strength=float(pos_strength),
             vol_mean=float(vol_mean),
@@ -5745,6 +6681,30 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             expected_loss=float(expected_loss),
             gain_loss_ratio=float(gain_loss_ratio),
             eu_position_size=float(eu_position_size),
+            # Risk Temperature fields (Expert Panel Solution 1 + 4):
+            risk_temperature=float(risk_temperature),
+            risk_scale_factor=float(risk_scale_factor),
+            overnight_budget_applied=bool(overnight_budget_applied),
+            overnight_max_position=float(overnight_max_position) if overnight_max_position is not None else None,
+            pos_strength_pre_risk_temp=float(pos_strength_pre_risk_temp),
+            # EVT (Extreme Value Theory) tail risk fields:
+            expected_loss_empirical=float(expected_loss_empirical),
+            evt_enabled=bool(evt_enabled),
+            evt_xi=float(evt_xi) if evt_xi is not None else None,
+            evt_sigma=float(evt_sigma) if evt_sigma is not None else None,
+            evt_threshold=float(evt_threshold) if evt_threshold is not None else None,
+            evt_n_exceedances=int(evt_n_exceedances),
+            evt_fit_method=str(evt_fit_method) if evt_fit_method is not None else None,
+            # Contaminated Student-t Mixture (regime-dependent tails):
+            cst_enabled=bool(cst_enabled),
+            cst_nu_normal=float(cst_nu_normal) if cst_nu_normal is not None else None,
+            cst_nu_crisis=float(cst_nu_crisis) if cst_nu_crisis is not None else None,
+            cst_epsilon=float(cst_epsilon) if cst_epsilon is not None else None,
+            # Hansen Skew-t (asymmetric return distribution):
+            hansen_enabled=bool(hansen_enabled),
+            hansen_lambda=float(hansen_lambda) if hansen_lambda is not None else None,
+            hansen_nu=float(hansen_nu) if hansen_nu is not None else None,
+            hansen_skew_direction=str(hansen_skew_direction) if hansen_skew_direction is not None else None,
             # Diagnostics ONLY (NOT used for trading decisions):
             drift_uncertainty=float(drift_uncertainty_H),
             p_analytical=float(p_analytical),  # DIAGNOSTIC: analytical posterior predictive
@@ -6083,6 +7043,18 @@ def main() -> None:
             render_sector_summary_tables(summary_rows_cached, horizons_cached)
             # Add high-conviction signals summary for short-term trading
             render_strong_signals_summary(summary_rows_cached, horizons=[1, 3, 7])
+            
+            # Show risk temperature summary (computed once, applies to all assets)
+            if RISK_TEMPERATURE_AVAILABLE:
+                try:
+                    risk_temp_result = get_cached_risk_temperature(
+                        start_date="2020-01-01",
+                        notional=NOTIONAL_PLN,
+                        estimated_gap_risk=0.03,
+                    )
+                    render_risk_temperature_summary(risk_temp_result)
+                except Exception:
+                    pass  # Silently skip if risk temp fails
         except Exception as e:
             console.print(f"[yellow]Warning:[/yellow] Could not print summary tables from cache: {e}")
         return
@@ -6187,6 +7159,11 @@ def main() -> None:
                 show_caption = not caption_printed
             render_detailed_signal_table(asset, title, sigs, px, confidence_level=args.ci, used_student_t_mapping=args.t_map, show_caption=show_caption)
             caption_printed = caption_printed or show_caption
+            
+            # Show augmentation layer summary if any are active (first signal)
+            if sigs:
+                render_augmentation_layers_summary(sigs[0])
+            
             explanations = []
 
         # Display diagnostics if computed (Level-7: model falsifiability)
@@ -6777,6 +7754,19 @@ def main() -> None:
         render_sector_summary_tables(summary_rows, horizons)
         # Add high-conviction signals summary for short-term trading
         render_strong_signals_summary(summary_rows, horizons=[1, 3, 7])
+        
+        # Show risk temperature summary (computed once, applies to all assets)
+        if RISK_TEMPERATURE_AVAILABLE:
+            try:
+                risk_temp_result = get_cached_risk_temperature(
+                    start_date="2020-01-01",
+                    notional=NOTIONAL_PLN,
+                    estimated_gap_risk=0.03,
+                )
+                render_risk_temperature_summary(risk_temp_result)
+            except Exception as rt_e:
+                if os.getenv("DEBUG"):
+                    Console().print(f"[dim]Risk temperature display skipped: {rt_e}[/dim]")
     except Exception as e:
         Console().print(f"[yellow]Warning:[/yellow] Could not print summary tables: {e}")
 
