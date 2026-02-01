@@ -62,10 +62,12 @@ import pandas as pd
 # =============================================================================
 
 # Stress category weights (sum to 1.0)
-FX_STRESS_WEIGHT = 0.40
-FUTURES_STRESS_WEIGHT = 0.30
-RATES_STRESS_WEIGHT = 0.20
-COMMODITY_STRESS_WEIGHT = 0.10
+# Updated January 2026 to include dedicated Metals category
+FX_STRESS_WEIGHT = 0.35
+FUTURES_STRESS_WEIGHT = 0.25
+RATES_STRESS_WEIGHT = 0.15
+COMMODITY_STRESS_WEIGHT = 0.10  # Energy/Agriculture focus
+METALS_STRESS_WEIGHT = 0.15     # Dedicated precious/industrial metals
 
 # Z-score calculation lookback
 ZSCORE_LOOKBACK_DAYS = 60
@@ -894,6 +896,69 @@ def compute_commodity_stress(commodity_data: Dict[str, pd.Series]) -> StressCate
     )
 
 
+def compute_metals_stress(start_date: str = "2020-01-01", end_date: Optional[str] = None) -> StressCategory:
+    """
+    Compute metals stress category using dedicated metals risk temperature module.
+    
+    Integrates the Chinese Professors' Panel Hybrid Solution:
+    - Copper/Gold ratio (economic health bellwether)
+    - Silver/Gold ratio (speculative intensity)
+    - Gold volatility (fear gauge)
+    - Precious vs Industrial spread
+    - Platinum/Gold ratio
+    
+    Returns a StressCategory compatible with main risk temperature aggregation.
+    """
+    try:
+        from decision.metals_risk_temperature import (
+            compute_metals_risk_temperature,
+            MetalsRiskTemperatureResult,
+        )
+        
+        metals_result = compute_metals_risk_temperature(start_date=start_date, end_date=end_date)
+        
+        # Convert metals indicators to StressIndicator format
+        indicators = []
+        for ind in metals_result.indicators:
+            indicators.append(StressIndicator(
+                name=ind.name,
+                value=ind.value,
+                zscore=ind.zscore,
+                contribution=ind.contribution,
+                data_available=ind.data_available,
+            ))
+        
+        # Use the metals temperature directly as stress level
+        stress_level = metals_result.temperature
+        
+        return StressCategory(
+            name="Metals_Stress",
+            weight=METALS_STRESS_WEIGHT,
+            indicators=indicators,
+            stress_level=min(stress_level, 2.0),
+            weighted_contribution=METALS_STRESS_WEIGHT * min(stress_level, 2.0)
+        )
+    except ImportError:
+        # Fallback if metals module not available
+        return StressCategory(
+            name="Metals_Stress",
+            weight=METALS_STRESS_WEIGHT,
+            indicators=[],
+            stress_level=0.0,
+            weighted_contribution=0.0
+        )
+    except Exception as e:
+        if os.getenv('DEBUG'):
+            print(f"Metals stress computation failed: {e}")
+        return StressCategory(
+            name="Metals_Stress",
+            weight=METALS_STRESS_WEIGHT,
+            indicators=[],
+            stress_level=0.0,
+            weighted_contribution=0.0
+        )
+
+
 def compute_scale_factor(temperature: float) -> float:
     """
     Compute position scale factor from risk temperature using smooth sigmoid.
@@ -990,12 +1055,14 @@ def compute_risk_temperature(
     futures_stress = compute_futures_stress(futures_data)
     rates_stress = compute_rates_stress(rates_data)
     commodity_stress = compute_commodity_stress(commodity_data)
+    metals_stress = compute_metals_stress(start_date, end_date)
     
     categories = {
         "fx": fx_stress,
         "futures": futures_stress,
         "rates": rates_stress,
         "commodities": commodity_stress,
+        "metals": metals_stress,
     }
     
     # Aggregate temperature (weighted sum of category stress levels)
@@ -1003,7 +1070,8 @@ def compute_risk_temperature(
         fx_stress.weighted_contribution +
         futures_stress.weighted_contribution +
         rates_stress.weighted_contribution +
-        commodity_stress.weighted_contribution
+        commodity_stress.weighted_contribution +
+        metals_stress.weighted_contribution
     )
     
     # Clip to valid range
@@ -1022,7 +1090,8 @@ def compute_risk_temperature(
         fx_stress.indicators +
         futures_stress.indicators +
         rates_stress.indicators +
-        commodity_stress.indicators
+        commodity_stress.indicators +
+        metals_stress.indicators
     )
     available_count = sum(1 for ind in all_indicators if ind.data_available)
     data_quality = available_count / len(all_indicators) if all_indicators else 0.0

@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune calibrate show-q clear-q tests report top20 data four purge failed setup
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -361,3 +361,6 @@ colors: .venv/.deps_installed
 # Market Risk Temperature - cross-asset stress indicator
 temp: .venv/.deps_installed
 	@.venv/bin/python src/decision/risk_temperature.py
+# Metals Risk Temperature - cross-metal stress indicator
+metals: .venv/.deps_installed
+	@.venv/bin/python src/decision/metals_risk_temperature.py

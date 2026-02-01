@@ -3432,7 +3432,8 @@ def render_risk_temperature_summary(
             ("fx", "FX Carry"),
             ("futures", "Equities"),
             ("rates", "Duration"),
-            ("commodities", "Metals"),
+            ("commodities", "Energy"),
+            ("metals", "Metals"),
         ]
         
         for cat_key, cat_label in category_config:
