@@ -283,18 +283,46 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
         
         bar_width = 25
         
-        # Define levels with their display properties and disabled status
-        # (level_name, level_code, color, symbol, is_disabled)
+        # Get escalation attempt stats
+        nu_attempts = escalation_summary.get('nu_refinement_attempts', 0)
+        nu_successes = escalation_summary.get('nu_refinement_successes', 0)
+        nu_rate = escalation_summary.get('nu_refinement_success_rate', 0)
+        
+        evt_attempts = escalation_summary.get('evt_attempts', 0)
+        evt_successes = escalation_summary.get('evt_successes', 0)
+        evt_rate = escalation_summary.get('evt_success_rate', 0)
+        
+        gh_attempts = escalation_summary.get('gh_attempts', 0)
+        gh_successes = escalation_summary.get('gh_successes', 0)
+        gh_rate = escalation_summary.get('gh_success_rate', 0)
+        
+        tvvm_attempts = escalation_summary.get('tvvm_attempts', 0)
+        tvvm_successes = escalation_summary.get('tvvm_successes', 0)
+        tvvm_rate = escalation_summary.get('tvvm_success_rate', 0)
+        
+        mix_attempts = escalation_summary.get('mixture_attempts', 0)
+        mix_successes = escalation_summary.get('mixture_successes', 0)
+        mix_rate = escalation_summary.get('mixture_success_rate', 0)
+        
+        # Define levels with their display properties
+        # (level_name, level_code, color, symbol, is_disabled, count_override, attempts, successes, rate, rate_label)
         levels = [
-            ('φ-Gaussian', 'L0', 'green', '○', False),
-            ('φ-Student-t', 'L1', 'magenta', '●', False),
-            ('φ-Student-t (ν-refined)', 'L2', 'bright_magenta', '◆', False),
-            ('K=2 Scale Mixture', 'L3', 'cyan', '◈', True),  # Disabled
-            ('EVT Tail Splice', 'L4', 'bright_red', '▲', False),
+            ('φ-Gaussian', 'L0', 'green', '○', False, None, 0, 0, 0, None),
+            ('φ-Student-t', 'L1', 'magenta', '●', False, None, 0, 0, 0, None),
+            ('φ-Student-t (ν-refined)', 'L2', 'bright_magenta', '◆', False, None, nu_attempts, nu_successes, nu_rate, 'improved'),
+            ('EVT Tail Splice', 'L3', 'bright_red', '▲', False, None, evt_attempts, evt_successes, evt_rate, 'heavy'),
+            ('Generalized Hyperbolic', 'L4', 'bright_cyan', '★', False, gh_successes, gh_attempts, gh_successes, gh_rate, 'improved'),
+            ('TVVM', 'L5', 'yellow', '⚡', False, tvvm_successes, tvvm_attempts, tvvm_successes, tvvm_rate, 'improved'),
+            # Disabled models at the bottom
+            ('K=2 Scale Mixture', 'LD', 'dim', '◈', True, None, mix_attempts, mix_successes, mix_rate, 'improved'),
         ]
         
-        for level_name, level_code, color, symbol, is_disabled in levels:
-            count = level_counts.get(level_name, 0)
+        for level_name, level_code, color, symbol, is_disabled, count_override, attempts, successes, rate, rate_label in levels:
+            # Use count_override if provided, otherwise get from level_counts
+            if count_override is not None:
+                count = count_override
+            else:
+                count = level_counts.get(level_name, 0)
             pct = count / total * 100 if total > 0 else 0
             filled = int(pct / 100 * bar_width)
             
@@ -302,19 +330,30 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
             row.append(f"      {symbol} ", style="dim" if is_disabled else color)
             row.append(f"{level_code} ", style="dim")
             
+            # Display name - show "adaptive ν" instead of "ν-refined"
+            display_name = level_name
+            if level_name == 'φ-Student-t (ν-refined)':
+                display_name = 'φ-Student-t (adaptive ν)'
+            
             if is_disabled:
-                row.append(f"{level_name:<24}", style="dim")
+                row.append(f"{display_name:<26}", style="dim")
                 row.append("░" * bar_width, style="dim")
                 row.append(f"  {count:>4}  ({pct:>5.1f}%)", style="dim")
+                # Add PIT attempt stats for disabled levels too
+                if attempts > 0:
+                    row.append(f"  [{successes}/{attempts} {rate:.0f}%]", style="dim italic")
                 row.append("  [disabled]", style="dim italic")
             else:
-                row.append(f"{level_name:<24}", style=color if count > 0 else "dim")
+                row.append(f"{display_name:<26}", style=color if count > 0 else "dim")
                 row.append("█" * filled, style=color)
                 row.append("░" * (bar_width - filled), style="dim")
                 row.append(f"  {count:>4}  ({pct:>5.1f}%)", style="white" if count > 0 else "dim")
                 
-                # Add indicator for selected heavier-tailed models
-                if count > 0 and level_name != 'φ-Gaussian':
+                # Add PIT improvement stats if attempts were made
+                if attempts > 0:
+                    rate_str = f"  [{successes}/{attempts} {rate:.0f}% {rate_label}]"
+                    row.append(rate_str, style="dim italic")
+                elif count > 0 and level_name != 'φ-Gaussian':
                     row.append("  ↑ heavier tails", style="dim italic")
             
             console.print(row)
@@ -339,71 +378,6 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
             issue_row.append(f"{critical} assets with PIT p < 0.01", style="indian_red1")
             issue_row.append(" — consider enabling additional escalation models", style="dim")
             console.print(issue_row)
-        
-        console.print()
-    
-    # Escalation attempts and success rates (if any escalation was attempted)
-    nu_attempts = escalation_summary.get('nu_refinement_attempts', 0)
-    mix_attempts = escalation_summary.get('mixture_attempts', 0)
-    gh_attempts = escalation_summary.get('gh_attempts', 0)
-    tvvm_attempts = escalation_summary.get('tvvm_attempts', 0)
-    evt_attempts = escalation_summary.get('evt_attempts', 0)
-    
-    has_attempts = nu_attempts > 0 or mix_attempts > 0 or gh_attempts > 0 or tvvm_attempts > 0 or evt_attempts > 0
-    
-    if has_attempts:
-        console.print("    [dim]PIT Improvement Attempts:[/dim]")
-        console.print()
-        
-        # ν refinement
-        if nu_attempts > 0:
-            nu_successes = escalation_summary.get('nu_refinement_successes', 0)
-            nu_rate = escalation_summary.get('nu_refinement_success_rate', 0)
-            nu_row = Text()
-            nu_row.append("      ν-refinement:        ", style="dim")
-            nu_row.append(f"{nu_successes}/{nu_attempts}", style="bright_magenta" if nu_successes > 0 else "white")
-            nu_row.append(f" ({nu_rate:.0f}% improved PIT)", style="dim")
-            console.print(nu_row)
-        
-        # EVT Tail Splice (always show if EVT was fitted)
-        if evt_attempts > 0:
-            evt_successes = escalation_summary.get('evt_successes', 0)
-            evt_rate = escalation_summary.get('evt_success_rate', 0)
-            evt_row = Text()
-            evt_row.append("      EVT Tail Splice:     ", style="dim")
-            evt_row.append(f"{evt_successes}/{evt_attempts}", style="red" if evt_successes > 0 else "white")
-            evt_row.append(f" ({evt_rate:.0f}% heavy tails)", style="dim")
-            console.print(evt_row)
-        
-        # Mixture (show even if disabled to indicate it wasn't attempted)
-        if mix_attempts > 0:
-            mix_successes = escalation_summary.get('mixture_successes', 0)
-            mix_rate = escalation_summary.get('mixture_success_rate', 0)
-            mix_row = Text()
-            mix_row.append("      K=2 Mixture:         ", style="dim")
-            mix_row.append(f"{mix_successes}/{mix_attempts}", style="cyan" if mix_successes > 0 else "white")
-            mix_row.append(f" ({mix_rate:.0f}% improved PIT)", style="dim")
-            console.print(mix_row)
-        
-        # GH attempts (if available)
-        if gh_attempts > 0:
-            gh_successes = escalation_summary.get('gh_successes', 0)
-            gh_rate = escalation_summary.get('gh_success_rate', 0)
-            gh_row = Text()
-            gh_row.append("      Gen. Hyperbolic:     ", style="dim")
-            gh_row.append(f"{gh_successes}/{gh_attempts}", style="bright_cyan" if gh_successes > 0 else "white")
-            gh_row.append(f" ({gh_rate:.0f}% improved PIT)", style="dim")
-            console.print(gh_row)
-        
-        # TVVM attempts (if available)
-        if tvvm_attempts > 0:
-            tvvm_successes = escalation_summary.get('tvvm_successes', 0)
-            tvvm_rate = escalation_summary.get('tvvm_success_rate', 0)
-            tvvm_row = Text()
-            tvvm_row.append("      TVVM:                ", style="dim")
-            tvvm_row.append(f"{tvvm_successes}/{tvvm_attempts}", style="yellow" if tvvm_successes > 0 else "white")
-            tvvm_row.append(f" ({tvvm_rate:.0f}% improved PIT)", style="dim")
-            console.print(tvvm_row)
         
         console.print()
 
@@ -631,28 +605,181 @@ def render_tuning_summary(
     console.print(section)
     console.print()
     
-    if calibrated_trust_count > 0:
+    if calibrated_trust_count > 0 or recalibration_applied_count > 0:
+        # Isotonic Recalibration subsection
+        recal_section = Text()
+        recal_section.append("    ◈ ", style="bright_cyan")
+        recal_section.append("Isotonic Recalibration", style="bright_cyan")
+        console.print(recal_section)
+        
+        recal_row = Text()
+        recal_row.append("      Applied: ", style="dim")
+        recal_row.append(f"{recalibration_applied_count if recalibration_applied_count > 0 else calibrated_trust_count}", style="bold bright_white")
+        recal_row.append(" assets", style="dim")
+        console.print(recal_row)
+        console.print()
+        
+        # Trust Distribution subsection
+        trust_section = Text()
+        trust_section.append("    ◉ ", style="bright_magenta")
+        trust_section.append("Trust Distribution", style="bright_magenta")
+        console.print(trust_section)
+        
         trust_row = Text()
         trust_row.append("      Computed: ", style="dim")
-        trust_row.append(f"{calibrated_trust_count}", style="bold white")
+        trust_row.append(f"{calibrated_trust_count}", style="bold bright_white")
         trust_row.append("  ·  Avg: ", style="dim")
         trust_row.append(f"{avg_effective_trust:.1%}", style="bold bright_white")
         console.print(trust_row)
         
         if low_trust_count > 0 or high_trust_count > 0:
             trust_dist = Text()
-            trust_dist.append("      ", style="")
-            trust_dist.append("High (≥0.7): ", style="dim")
+            trust_dist.append("      High (≥70%): ", style="dim")
             trust_dist.append(f"{high_trust_count}", style="bright_green")
-            trust_dist.append("  ·  Low (<0.3): ", style="dim")
+            trust_dist.append("  ·  Low (<30%): ", style="dim")
             trust_dist.append(f"{low_trust_count}", style="indian_red1")
             console.print(trust_dist)
     else:
-        # Show PIT calibration statistics as a proxy for trust
+        # Show hint when no trust data available
         hint_row = Text()
         hint_row.append("    ⚡ Trust computed at signal time (based on PIT calibration)", style="dim")
         console.print(hint_row)
     console.print()
+    console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # REGIME COVERAGE - Show regime distribution with model breakdown
+    # ═══════════════════════════════════════════════════════════════════════════════
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    section = Text()
+    section.append("  🎯  ", style="bold bright_cyan")
+    section.append("REGIME COVERAGE", style="bold bright_white")
+    console.print(section)
+    console.print()
+    
+    # Regime names and colors
+    regime_names = ["LOW_VOL_TREND", "HIGH_VOL_TREND", "LOW_VOL_RANGE", "HIGH_VOL_RANGE", "CRISIS_JUMP"]
+    regime_short = ["LV Trend", "HV Trend", "LV Range", "HV Range", "Crisis"]
+    regime_colors_list = ["bright_cyan", "yellow", "bright_green", "orange1", "indian_red1"]
+    regime_icons = ["◇", "◆", "○", "●", "⚠"]
+    
+    max_fits = max(regime_fit_counts.values()) if regime_fit_counts.values() else 1
+    
+    # Define STANDARD model columns that ALWAYS appear
+    STANDARD_MODEL_COLUMNS = [
+        ("Gaussian", "G", "green", 3),
+        ("φ-Gaussian", "φ-G", "cyan", 4),
+        ("φ-t(ν=4)", "t4", "magenta", 3),
+        ("φ-t(ν=6)", "t6", "magenta", 3),
+        ("φ-t(ν=8)", "t8", "magenta", 3),
+        ("φ-t(ν=12)", "t12", "magenta", 3),
+        ("φ-t(ν=20)", "t20", "magenta", 3),
+        ("φ-Skew-t", "Sk-t", "bright_cyan", 4),
+        ("φ-NIG", "NIG", "bright_yellow", 4),
+        ("GMM", "GMM", "bright_blue", 4),
+        ("Hansen-λ", "Hλ", "cyan", 3),
+        ("EVT", "EVT", "indian_red1", 4),
+        ("CST", "CST", "yellow", 4),
+    ]
+    
+    # Helper to normalize model keys for comparison
+    def normalize_model_key(m):
+        if m.startswith("φ-t(ν="):
+            return m
+        if m.startswith("φ-Skew-t"):
+            return "φ-Skew-t"
+        if m.startswith("φ-NIG"):
+            return "φ-NIG"
+        if "GMM" in m:
+            return "GMM"
+        if "Hλ" in m or "Hansen" in m:
+            return "Hansen-λ"
+        if "EVT" in m:
+            return "EVT"
+        if "CST" in m:
+            return "CST"
+        return m
+    
+    # Helper to find count for a column
+    def get_model_count(r_breakdown, col_key):
+        if col_key in r_breakdown:
+            return r_breakdown[col_key]
+        norm_col = normalize_model_key(col_key)
+        total = 0
+        for actual_key, count in r_breakdown.items():
+            if normalize_model_key(actual_key) == norm_col:
+                total += count
+        return total
+    
+    # Create elegant table
+    table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="dim",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
+    )
+    table.add_column("Regime", width=12)
+    table.add_column("Fits", justify="right", width=5)
+    table.add_column("Distribution", width=18)
+    
+    # Track which columns we add for row building
+    column_model_keys = []
+    
+    # Add STANDARD columns
+    for model_key, header, color, width in STANDARD_MODEL_COLUMNS:
+        table.add_column(header, justify="right", width=width, style=color)
+        column_model_keys.append(model_key)
+    
+    for i, (name, short, color, icon) in enumerate(zip(regime_names, regime_short, regime_colors_list, regime_icons)):
+        fit_count = regime_fit_counts.get(i, 0)
+        
+        # Create visual bar
+        if fit_count == 0:
+            bar = "[dim]" + "─" * 18 + "[/]"
+        else:
+            filled = int(fit_count / max_fits * 18) if max_fits > 0 else 0
+            bar = f"[{color}]{'━' * filled}[/{color}][dim]{'─' * (18 - filled)}[/]"
+        
+        # Build row
+        row = [
+            f"[{color}]{icon} {short}[/{color}]",
+            f"[bold]{fit_count}[/]" if fit_count > 0 else "[dim]0[/]",
+            bar,
+        ]
+        
+        # Add counts for each column
+        r_breakdown = regime_model_breakdown.get(i, {}) if regime_model_breakdown else {}
+        for col_key in column_model_keys:
+            count = get_model_count(r_breakdown, col_key)
+            if count > 0:
+                row.append(f"{count}")
+            else:
+                row.append("[dim]—[/]")
+        
+        table.add_row(*row)
+    
+    console.print(table)
+    console.print()
+    
+    # Warnings
+    if collapse_warnings > 0 or calibration_warnings > 0:
+        warnings_text = Text()
+        warnings_text.append("    ", style="")
+        if collapse_warnings > 0:
+            warnings_text.append("⚠ ", style="yellow")
+            warnings_text.append(f"{collapse_warnings} collapse", style="dim")
+            if calibration_warnings > 0:
+                warnings_text.append("   ·   ", style="dim")
+        if calibration_warnings > 0:
+            warnings_text.append("⚠ ", style="yellow")
+            warnings_text.append(f"{calibration_warnings} calibration", style="dim")
+        console.print(warnings_text)
+        console.print()
+    
     console.print()
 
 
@@ -845,27 +972,137 @@ def render_dry_run_preview(assets: List[str], max_display: int = 20, console: Co
 
 
 def render_failed_assets(failure_reasons: Dict[str, str], console: Console = None) -> None:
-    """Render failed assets table."""
+    """Render beautiful failed assets table with error categorization."""
     if console is None:
         console = create_tuning_console()
     if not failure_reasons:
         return
+    
     console.print()
     console.print(Rule(style="dim"))
     console.print()
+    
+    # Section header
     fail_section = Text()
     fail_section.append("  ❌  ", style="bold indian_red1")
     fail_section.append("FAILED ASSETS", style="bold indian_red1")
-    fail_section.append(f"  ({len(failure_reasons)})", style="dim")
+    fail_section.append(f"  ({len(failure_reasons)} assets)", style="dim")
     console.print(fail_section)
     console.print()
-    fail_table = Table(show_header=True, header_style="bold white", border_style="indian_red1", box=box.ROUNDED, padding=(0, 1))
-    fail_table.add_column("Asset", style="bold indian_red1", width=15, no_wrap=True)
-    fail_table.add_column("Error", style="dim", width=70, no_wrap=True, overflow="ellipsis")
-    for asset, reason in sorted(failure_reasons.items()):
-        first_line = reason.split('\n')[0][:65] if reason else "Unknown error"
-        fail_table.add_row(asset, first_line)
-    console.print(fail_table)
+    
+    # Categorize errors
+    error_categories = {
+        'data': [],      # Data fetch/availability issues
+        'numeric': [],   # Numerical errors (NaN, convergence)
+        'timeout': [],   # Timeout errors
+        'api': [],       # API/rate limit errors
+        'other': [],     # Other errors
+    }
+    
+    for asset, reason in failure_reasons.items():
+        reason_lower = reason.lower() if reason else ""
+        
+        # Categorize the error
+        if any(x in reason_lower for x in ['no data', 'empty', 'missing', 'not found', 'unavailable', 'insufficient']):
+            category = 'data'
+            error_type = "Data unavailable"
+        elif any(x in reason_lower for x in ['nan', 'inf', 'convergence', 'singular', 'numeric', 'overflow']):
+            category = 'numeric'
+            error_type = "Numeric error"
+        elif any(x in reason_lower for x in ['timeout', 'timed out']):
+            category = 'timeout'
+            error_type = "Timeout"
+        elif any(x in reason_lower for x in ['rate limit', 'api', '429', '403', 'forbidden']):
+            category = 'api'
+            error_type = "API error"
+        else:
+            category = 'other'
+            error_type = "Error"
+        
+        # Extract first meaningful line of error
+        first_line = reason.split('\n')[0][:55] if reason else "Unknown error"
+        
+        error_categories[category].append({
+            'asset': asset,
+            'error_type': error_type,
+            'details': first_line,
+            'full_reason': reason,
+        })
+    
+    # Summary of error types
+    summary = Text()
+    summary.append("    ", style="")
+    category_labels = [
+        ('data', 'Data', 'yellow'),
+        ('numeric', 'Numeric', 'bright_red'),
+        ('timeout', 'Timeout', 'orange1'),
+        ('api', 'API', 'bright_magenta'),
+        ('other', 'Other', 'dim'),
+    ]
+    first = True
+    for cat_key, cat_label, cat_color in category_labels:
+        count = len(error_categories[cat_key])
+        if count > 0:
+            if not first:
+                summary.append("   ·   ", style="dim")
+            summary.append(f"{count}", style=f"bold {cat_color}")
+            summary.append(f" {cat_label}", style="dim")
+            first = False
+    console.print(summary)
+    console.print()
+    
+    # Create detailed table
+    table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="indian_red1",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
+    )
+    
+    table.add_column("Asset", style="bold indian_red1", width=16, no_wrap=True)
+    table.add_column("Category", justify="center", width=12)
+    table.add_column("Error Details", style="dim", width=55, overflow="ellipsis")
+    
+    # Sort by category then by asset name
+    all_failures = []
+    for cat_key, cat_label, cat_color in category_labels:
+        for item in sorted(error_categories[cat_key], key=lambda x: x['asset']):
+            all_failures.append((item, cat_label, cat_color))
+    
+    # Display up to 30 failures
+    for item, cat_label, cat_color in all_failures[:30]:
+        table.add_row(
+            item['asset'],
+            f"[{cat_color}]{cat_label}[/{cat_color}]",
+            item['details'],
+        )
+    
+    console.print(table)
+    
+    # Show truncation notice if needed
+    if len(all_failures) > 30:
+        truncated = Text()
+        truncated.append("    ... ", style="dim")
+        truncated.append(f"{len(all_failures) - 30} more failures not shown", style="dim italic")
+        console.print(truncated)
+    
+    console.print()
+    
+    # Actionable hint
+    hint = Text()
+    hint.append("    ", style="")
+    hint.append("💡 ", style="bright_yellow")
+    hint.append("Retry failed assets: ", style="dim")
+    hint.append("make tune ARGS='--force --assets ", style="bright_cyan")
+    # Show first few failed assets
+    failed_list = list(failure_reasons.keys())[:5]
+    hint.append(",".join(failed_list), style="bright_cyan")
+    if len(failure_reasons) > 5:
+        hint.append(",...", style="bright_cyan")
+    hint.append("'", style="bright_cyan")
+    console.print(hint)
     console.print()
 
 
@@ -885,32 +1122,118 @@ def render_end_of_run_summary(
 
 def render_calibration_report(cache: Dict, failure_reasons: Dict[str, str], console: Console = None) -> None:
     """Render calibration report showing assets with issues."""
+    import numpy as np
+    
     if console is None:
         console = create_tuning_console()
     
     issues = []
-    for asset, reason in (failure_reasons or {}).items():
-        issues.append({'asset': asset, 'issue_type': 'FAILED', 'severity': 'critical'})
     
+    # 1. Failed assets
+    for asset, reason in (failure_reasons or {}).items():
+        issues.append({
+            'asset': asset,
+            'issue_type': 'FAILED',
+            'severity': 'critical',
+            'pit_p': None,
+            'ks_stat': None,
+            'kurtosis': None,
+            'model': '-',
+            'q': None,
+            'phi': None,
+            'nu': None,
+            'details': reason[:100] if reason else ''
+        })
+    
+    # 2. Calibration warnings from cache
     for asset, raw_data in (cache or {}).items():
         if 'global' in raw_data:
             data = raw_data['global']
         else:
             data = raw_data
+        
         pit_p = data.get('pit_ks_pvalue')
+        ks_stat = data.get('ks_statistic')
+        kurtosis = data.get('std_residual_kurtosis') or data.get('excess_kurtosis')
         calibration_warning = data.get('calibration_warning', False)
+        noise_model = data.get('noise_model', '')
+        q_val = data.get('q')
+        phi_val = data.get('phi')
+        nu_val = data.get('nu')
+        
+        # Check for ν refinement
+        nu_refinement = data.get('nu_refinement') or {}
+        nu_refinement_attempted = nu_refinement.get('refinement_attempted', False)
+        nu_refinement_improved = nu_refinement.get('improvement_achieved', False)
+        
+        has_issue = False
+        issue_type = []
+        severity = 'ok'
+        
         if calibration_warning or (pit_p is not None and pit_p < 0.05):
-            issues.append({'asset': asset, 'issue_type': 'PIT < 0.05', 'severity': 'warning', 'pit_p': pit_p})
+            has_issue = True
+            if nu_refinement_attempted and nu_refinement_improved:
+                issue_type.append('PIT < 0.05 (ν-ref)')
+            elif nu_refinement_attempted:
+                issue_type.append('PIT < 0.05 (ν-tried)')
+            else:
+                issue_type.append('PIT < 0.05')
+            severity = 'warning'
+        
+        if pit_p is not None and pit_p < 0.01:
+            severity = 'critical'
+        
+        if kurtosis is not None and kurtosis > 6:
+            has_issue = True
+            issue_type.append('High Kurt')
+            if severity != 'critical':
+                severity = 'warning'
+        
+        if has_issue:
+            if 'student_t' in noise_model:
+                model_str = f"φ-T(ν={int(nu_val)})" if nu_val else "Student-t"
+            elif 'gaussian' in noise_model:
+                model_str = "Gaussian"
+            else:
+                model_str = noise_model[:12] if noise_model else '-'
+            
+            issues.append({
+                'asset': asset,
+                'issue_type': ', '.join(issue_type),
+                'severity': severity,
+                'pit_p': pit_p,
+                'ks_stat': ks_stat,
+                'kurtosis': kurtosis,
+                'model': model_str,
+                'q': q_val,
+                'phi': phi_val,
+                'nu': nu_val,
+                'details': '',
+            })
+    
+    # Sort by severity (critical first), then by PIT p-value
+    severity_order = {'critical': 0, 'warning': 1, 'ok': 2}
+    issues.sort(key=lambda x: (severity_order.get(x['severity'], 2), x.get('pit_p') or 1.0))
     
     total_assets = len(cache) if cache else 0
+    critical_count = sum(1 for i in issues if i['severity'] == 'critical')
+    warning_count = sum(1 for i in issues if i['severity'] == 'warning')
+    failed_count = sum(1 for i in issues if i['issue_type'] == 'FAILED')
     
     console.print()
     console.print(Rule(style="dim"))
     console.print()
     
+    # Section header
+    section = Text()
+    section.append("  ⚠️  ", style="bold bright_yellow")
+    section.append("CALIBRATION ISSUES", style="bold bright_white")
+    console.print(section)
+    console.print()
+    
     if not issues:
         success_text = Text()
-        success_text.append("  ✓ ", style="bold bright_green")
+        success_text.append("    ✓ ", style="bold bright_green")
         success_text.append("All ", style="white")
         success_text.append(f"{total_assets}", style="bold bright_cyan")
         success_text.append(" assets passed calibration checks", style="white")
@@ -918,10 +1241,120 @@ def render_calibration_report(cache: Dict, failure_reasons: Dict[str, str], cons
         console.print()
         return
     
-    issues_header = Text()
-    issues_header.append("  ⚠️  ", style="bold yellow")
-    issues_header.append(f"{len(issues)} assets with calibration issues", style="bold yellow")
-    console.print(issues_header)
+    # Summary stats
+    summary = Text()
+    summary.append("    ", style="")
+    if critical_count > 0:
+        summary.append(f"{critical_count}", style="bold indian_red1")
+        summary.append(" critical", style="dim")
+        summary.append("   ·   ", style="dim")
+    if warning_count > 0:
+        summary.append(f"{warning_count}", style="bold yellow")
+        summary.append(" warnings", style="dim")
+        summary.append("   ·   ", style="dim")
+    if failed_count > 0:
+        summary.append(f"{failed_count}", style="bold red")
+        summary.append(" failed", style="dim")
+        summary.append("   ·   ", style="dim")
+    summary.append(f"{total_assets}", style="white")
+    summary.append(" total assets", style="dim")
+    console.print(summary)
+    console.print()
+    
+    # Limit display to 50 worst issues
+    display_issues = issues[:50]
+    
+    # Create issues table
+    table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="dim",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
+    )
+    
+    table.add_column("Asset", justify="left", width=20, no_wrap=True)
+    table.add_column("Issue", justify="left", width=18)
+    table.add_column("PIT p", justify="right", width=8)
+    table.add_column("KS", justify="right", width=6)
+    table.add_column("Kurt", justify="right", width=6)
+    table.add_column("Model", justify="left", width=12)
+    table.add_column("log₁₀(q)", justify="right", width=9)
+    table.add_column("φ", justify="right", width=6)
+    
+    for issue in display_issues:
+        if issue['severity'] == 'critical':
+            severity_style = "bold indian_red1"
+            asset_style = "indian_red1"
+        elif issue['severity'] == 'warning':
+            severity_style = "yellow"
+            asset_style = "yellow"
+        else:
+            severity_style = "dim"
+            asset_style = "white"
+        
+        pit_str = f"{issue['pit_p']:.4f}" if issue['pit_p'] is not None else "-"
+        ks_str = f"{issue['ks_stat']:.3f}" if issue['ks_stat'] is not None else "-"
+        kurt_str = f"{issue['kurtosis']:.1f}" if issue['kurtosis'] is not None else "-"
+        
+        if issue['q'] is not None and issue['q'] > 0:
+            log_q_str = f"{np.log10(issue['q']):.2f}"
+        else:
+            log_q_str = "-"
+        
+        phi_str = f"{issue['phi']:.3f}" if issue['phi'] is not None else "-"
+        
+        if issue['pit_p'] is not None:
+            if issue['pit_p'] < 0.01:
+                pit_styled = f"[bold indian_red1]{pit_str}[/]"
+            elif issue['pit_p'] < 0.05:
+                pit_styled = f"[yellow]{pit_str}[/]"
+            else:
+                pit_styled = f"[bright_green]{pit_str}[/]"
+        else:
+            pit_styled = "[dim]-[/]"
+        
+        if issue['kurtosis'] is not None:
+            if issue['kurtosis'] > 10:
+                kurt_styled = f"[bold indian_red1]{kurt_str}[/]"
+            elif issue['kurtosis'] > 6:
+                kurt_styled = f"[yellow]{kurt_str}[/]"
+            else:
+                kurt_styled = f"[dim]{kurt_str}[/]"
+        else:
+            kurt_styled = "[dim]-[/]"
+        
+        table.add_row(
+            f"[{asset_style}]{issue['asset']}[/]",
+            f"[{severity_style}]{issue['issue_type']}[/]",
+            pit_styled,
+            f"[dim]{ks_str}[/]",
+            kurt_styled,
+            f"[dim]{issue['model']}[/]",
+            f"[dim]{log_q_str}[/]",
+            f"[dim]{phi_str}[/]",
+        )
+    
+    console.print(table)
+    console.print()
+    
+    # Show truncation notice if needed
+    if len(issues) > 50:
+        truncated = Text()
+        truncated.append("    ... ", style="dim")
+        truncated.append(f"{len(issues) - 50} more issues not shown", style="dim italic")
+        console.print(truncated)
+        console.print()
+    
+    # Legend
+    legend = Text()
+    legend.append("    ", style="")
+    legend.append("PIT p < 0.05", style="yellow")
+    legend.append(" = model may be miscalibrated   ·   ", style="dim")
+    legend.append("Kurt > 6", style="yellow")
+    legend.append(" = heavy tails not fully captured", style="dim")
+    console.print(legend)
     console.print()
 
 
