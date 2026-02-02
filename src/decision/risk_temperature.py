@@ -137,6 +137,12 @@ class RiskTemperatureResult:
     overnight_max_position: Optional[float]  # Max position if budget active
     computed_at: str                      # ISO timestamp
     data_quality: float                   # Fraction of indicators with data
+    # Crash risk fields (February 2026 - from metals module)
+    crash_risk_pct: float = 0.0           # Crash probability [0, 1]
+    crash_risk_level: str = "Low"         # Risk level label
+    vol_inversion_count: int = 0          # Number of metals with vol inversion
+    inverted_metals: Optional[List[str]] = None  # List of inverted metal names
+    metals_momentum: Optional[Dict[str, float]] = None  # Metal name -> 5d return
     
     def to_dict(self) -> Dict:
         return {
@@ -147,6 +153,11 @@ class RiskTemperatureResult:
             "computed_at": self.computed_at,
             "data_quality": float(self.data_quality),
             "categories": {k: v.to_dict() for k, v in self.categories.items()},
+            "crash_risk_pct": float(self.crash_risk_pct),
+            "crash_risk_level": self.crash_risk_level,
+            "vol_inversion_count": self.vol_inversion_count,
+            "inverted_metals": self.inverted_metals,
+            "metals_momentum": self.metals_momentum,
         }
     
     @property
@@ -896,7 +907,7 @@ def compute_commodity_stress(commodity_data: Dict[str, pd.Series]) -> StressCate
     )
 
 
-def compute_metals_stress(start_date: str = "2020-01-01", end_date: Optional[str] = None) -> StressCategory:
+def compute_metals_stress(start_date: str = "2020-01-01", end_date: Optional[str] = None) -> Tuple[StressCategory, Dict]:
     """
     Compute metals stress category using dedicated metals risk temperature module.
     
@@ -907,15 +918,30 @@ def compute_metals_stress(start_date: str = "2020-01-01", end_date: Optional[str
     - Precious vs Industrial spread
     - Platinum/Gold ratio
     
-    Returns a StressCategory compatible with main risk temperature aggregation.
+    Returns:
+        Tuple of (StressCategory, crash_risk_data_dict)
+        crash_risk_data_dict contains:
+            - crash_risk_pct: float
+            - crash_risk_level: str
+            - vol_inversion_count: int
+            - inverted_metals: List[str]
+            - metals_momentum: Dict[str, float]
     """
+    default_crash_data = {
+        "crash_risk_pct": 0.0,
+        "crash_risk_level": "Low",
+        "vol_inversion_count": 0,
+        "inverted_metals": None,
+        "metals_momentum": None,
+    }
+    
     try:
         from decision.metals_risk_temperature import (
-            compute_metals_risk_temperature,
+            compute_anticipatory_metals_risk_temperature,
             MetalsRiskTemperatureResult,
         )
         
-        metals_result = compute_metals_risk_temperature(start_date=start_date, end_date=end_date)
+        metals_result, _, _ = compute_anticipatory_metals_risk_temperature(start_date=start_date, end_date=end_date)
         
         # Convert metals indicators to StressIndicator format
         indicators = []
@@ -931,13 +957,47 @@ def compute_metals_stress(start_date: str = "2020-01-01", end_date: Optional[str
         # Use the metals temperature directly as stress level
         stress_level = metals_result.temperature
         
-        return StressCategory(
+        # Extract crash risk data
+        crash_risk_pct = getattr(metals_result, 'crash_risk_pct', 0.0)
+        crash_risk_level = getattr(metals_result, 'crash_risk_level', 'Low')
+        vol_inversion_count = getattr(metals_result, 'vol_inversion_count', 0)
+        
+        # Extract inverted metals list from vol term structure indicator interpretation
+        inverted_metals = None
+        for ind in metals_result.indicators:
+            if ind.name == "Vol Term Structure" and vol_inversion_count > 0:
+                interp = getattr(ind, 'interpretation', '')
+                if "(" in interp and ")" in interp:
+                    metals_str = interp[interp.find("(")+1:interp.find(")")]
+                    inverted_metals = [m.strip() for m in metals_str.split(",")]
+                break
+        
+        # Extract momentum data from individual metals
+        metals_momentum = {}
+        for metal_key, metal_data in metals_result.metals.items():
+            if hasattr(metal_data, 'data_available') and metal_data.data_available:
+                ret_5d = getattr(metal_data, 'return_5d', 0.0)
+                name = getattr(metal_data, 'name', metal_key.capitalize())
+                metals_momentum[name] = ret_5d
+        
+        crash_data = {
+            "crash_risk_pct": crash_risk_pct,
+            "crash_risk_level": crash_risk_level,
+            "vol_inversion_count": vol_inversion_count,
+            "inverted_metals": inverted_metals,
+            "metals_momentum": metals_momentum if metals_momentum else None,
+        }
+        
+        stress_category = StressCategory(
             name="Metals_Stress",
             weight=METALS_STRESS_WEIGHT,
             indicators=indicators,
             stress_level=min(stress_level, 2.0),
             weighted_contribution=METALS_STRESS_WEIGHT * min(stress_level, 2.0)
         )
+        
+        return stress_category, crash_data
+        
     except ImportError:
         # Fallback if metals module not available
         return StressCategory(
@@ -946,7 +1006,7 @@ def compute_metals_stress(start_date: str = "2020-01-01", end_date: Optional[str
             indicators=[],
             stress_level=0.0,
             weighted_contribution=0.0
-        )
+        ), default_crash_data
     except Exception as e:
         if os.getenv('DEBUG'):
             print(f"Metals stress computation failed: {e}")
@@ -956,7 +1016,7 @@ def compute_metals_stress(start_date: str = "2020-01-01", end_date: Optional[str
             indicators=[],
             stress_level=0.0,
             weighted_contribution=0.0
-        )
+        ), default_crash_data
 
 
 def compute_scale_factor(temperature: float) -> float:
@@ -1055,7 +1115,7 @@ def compute_risk_temperature(
     futures_stress = compute_futures_stress(futures_data)
     rates_stress = compute_rates_stress(rates_data)
     commodity_stress = compute_commodity_stress(commodity_data)
-    metals_stress = compute_metals_stress(start_date, end_date)
+    metals_stress, crash_data = compute_metals_stress(start_date, end_date)
     
     categories = {
         "fx": fx_stress,
@@ -1104,6 +1164,11 @@ def compute_risk_temperature(
         overnight_max_position=overnight_max,
         computed_at=datetime.now().isoformat(),
         data_quality=data_quality,
+        crash_risk_pct=crash_data.get("crash_risk_pct", 0.0),
+        crash_risk_level=crash_data.get("crash_risk_level", "Low"),
+        vol_inversion_count=crash_data.get("vol_inversion_count", 0),
+        inverted_metals=crash_data.get("inverted_metals"),
+        metals_momentum=crash_data.get("metals_momentum"),
     )
 
 
