@@ -393,9 +393,10 @@ def render_crash_risk_assessment(
         lines.append(explain_row)
     
     if momentum_data:
+        # Show all metals with any notable move (>= 1%)
         significant_moves = [
             (name, ret) for name, ret in momentum_data.items()
-            if abs(ret) >= 0.02  # Only show >= 2% moves
+            if abs(ret) >= 0.01  # Show >= 1% moves
         ]
         
         if significant_moves:
@@ -405,7 +406,8 @@ def render_crash_risk_assessment(
             mom_row.append(prefix, style="")
             mom_row.append("Momentum: ", style="bold cyan")
             
-            sorted_moves = sorted(significant_moves, key=lambda x: abs(x[1]), reverse=True)[:3]
+            # Show all metals, sorted by magnitude
+            sorted_moves = sorted(significant_moves, key=lambda x: abs(x[1]), reverse=True)
             for idx, (name, ret) in enumerate(sorted_moves):
                 if idx > 0:
                     mom_row.append("  ", style="")  # Spacing between items
