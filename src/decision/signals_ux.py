@@ -1320,6 +1320,11 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
             profit_pln = signal_data.get("profit_pln", 0.0)
             label = signal_data.get("label", "HOLD")
             
+            # Skip EXIT signals - these indicate untrusted beliefs
+            # EXIT signals should not appear in trading recommendations
+            if label.upper() == "EXIT":
+                continue
+            
             # Calculate strength score for sorting
             distance_from_neutral = abs(p_up - 0.5)
             strength = distance_from_neutral + abs(exp_ret) * 0.5
