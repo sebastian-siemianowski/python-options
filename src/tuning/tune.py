@@ -348,6 +348,23 @@ except ImportError:
     CONTROL_POLICY_AVAILABLE = False
 
 # =============================================================================
+# IMPORT ASYMMETRIC PIT VIOLATION PENALTY MODULE (February 2026)
+# =============================================================================
+# PIT must only act as a penalty, never as a reward.
+# This module provides regime-conditional, one-sided PIT penalties.
+# =============================================================================
+try:
+    from calibration.pit_penalty import (
+        apply_pit_penalties_to_weights,
+        compute_model_pit_penalty,
+        PITViolationResult,
+        PITPenaltyReport,
+    )
+    PIT_PENALTY_AVAILABLE = True
+except ImportError:
+    PIT_PENALTY_AVAILABLE = False
+
+# =============================================================================
 # IMPORT MODEL SELECTION UTILITIES FROM CALIBRATION
 # =============================================================================
 # AIC, BIC, kurtosis, and model weight functions are now in src/calibration/
