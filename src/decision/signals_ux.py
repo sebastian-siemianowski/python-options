@@ -225,6 +225,7 @@ def render_crash_risk_assessment(
     - Signals summary
     
     Design: Apple-quality minimalist display with clear visual hierarchy.
+    Premium gauge visualization with actionable guidance.
     
     Args:
         crash_risk_pct: Crash probability (0.0 to 1.0)
@@ -244,105 +245,153 @@ def render_crash_risk_assessment(
     # Determine styling based on risk level
     CRASH_STYLES = {
         "Extreme": {
-            "style": "bold red on white",
-            "bar_style": "bold red",
-            "icon": "🔴",
-            "desc": "Imminent correction likely — reduce exposure immediately",
+            "style": "bold red",
+            "label_style": "bold red",
+            "border_style": "red",
+            "desc": "Imminent correction likely",
+            "action": "REDUCE EXPOSURE IMMEDIATELY",
+            "action_style": "bold red",
         },
         "High": {
             "style": "bold red",
-            "bar_style": "red",
-            "icon": "🟠",
-            "desc": "Significant downside risk — consider hedging positions",
+            "label_style": "bold red",
+            "border_style": "red",
+            "desc": "Significant downside risk",
+            "action": "Consider hedging positions",
+            "action_style": "bold yellow",
         },
         "Elevated": {
             "style": "bold yellow",
-            "bar_style": "yellow",
-            "icon": "🟡",
-            "desc": "Above-average drawdown risk — tighten stops",
+            "label_style": "bold yellow",
+            "border_style": "yellow",
+            "desc": "Above-average drawdown risk",
+            "action": "Tighten stops, review positions",
+            "action_style": "yellow",
         },
         "Moderate": {
             "style": "yellow",
-            "bar_style": "yellow",
-            "icon": "🟡",
-            "desc": "Mild caution advised — normal volatility expected",
+            "label_style": "yellow",
+            "border_style": "bright_black",
+            "desc": "Mild caution advised",
+            "action": "Monitor closely",
+            "action_style": "dim",
         },
         "Low": {
-            "style": "dim",
-            "bar_style": "bright_green",
-            "icon": "🟢",
+            "style": "bright_green",
+            "label_style": "bright_green",
+            "border_style": "bright_black",
             "desc": "Normal market conditions",
+            "action": "Business as usual",
+            "action_style": "dim",
         },
     }
     
     style_config = CRASH_STYLES.get(crash_risk_level, CRASH_STYLES["Low"])
-    crash_style = style_config["style"]
-    crash_icon = style_config["icon"]
-    crash_desc = style_config["desc"]
     
-    # Section header
-    console.print()
-    console.print("  [dim]━━━ Crash Risk Assessment ━━━[/dim]")
-    console.print()
+    # Build the panel content
+    lines = []
     
-    # Main crash risk display with visual gauge
-    crash_line = Text()
-    crash_line.append("  ")
-    crash_line.append(f"{crash_icon} ", style="")
-    crash_line.append(f"{crash_risk_pct:.0%}", style=crash_style)
-    crash_line.append(f"  {crash_risk_level}", style=crash_style)
-    console.print(crash_line)
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # GAUGE VISUALIZATION - Premium semicircular-style risk meter
+    # ═══════════════════════════════════════════════════════════════════════════════
     
-    # Gradient progress bar
-    crash_bar = Text()
-    crash_bar.append("  ")
-    bar_width = 40
-    filled = int(min(1.0, crash_risk_pct / 0.60) * bar_width)  # 60% = full bar
+    # Scale labels row
+    scale_row = Text()
+    scale_row.append("     0%", style="bright_green")
+    scale_row.append("        ", style="dim")
+    scale_row.append("20%", style="green")
+    scale_row.append("        ", style="dim")
+    scale_row.append("40%", style="yellow")
+    scale_row.append("        ", style="dim")
+    scale_row.append("60%", style="red")
+    lines.append(scale_row)
     
-    # Create gradient bar: green → yellow → red
-    threshold_25 = int(bar_width * 0.25)
-    threshold_50 = int(bar_width * 0.50)
+    # Gauge track with position indicator
+    gauge_width = 44
+    filled_pos = int(min(1.0, crash_risk_pct / 0.60) * gauge_width)
     
-    for i in range(bar_width):
-        if i < filled:
-            if i < threshold_25:
-                crash_bar.append("█", style="bright_green")
-            elif i < threshold_50:
-                crash_bar.append("█", style="yellow")
-            else:
-                crash_bar.append("█", style="red")
+    gauge_row = Text()
+    gauge_row.append("     ", style="")  # Left padding
+    
+    # Build gradient gauge with needle position
+    for i in range(gauge_width):
+        pct_at_pos = (i / gauge_width) * 0.60
+        
+        # Determine segment color based on position
+        if pct_at_pos < 0.15:
+            seg_style = "bright_green"
+        elif pct_at_pos < 0.25:
+            seg_style = "green"
+        elif pct_at_pos < 0.40:
+            seg_style = "yellow"
+        elif pct_at_pos < 0.50:
+            seg_style = "orange1"
         else:
-            crash_bar.append("░", style="bright_black")
-    console.print(crash_bar)
+            seg_style = "red"
+        
+        # Draw filled vs unfilled
+        if i < filled_pos:
+            gauge_row.append("━", style=f"bold {seg_style}")
+        elif i == filled_pos:
+            # Needle position - prominent marker
+            gauge_row.append("┃", style="bold white")
+        else:
+            gauge_row.append("─", style="bright_black")
     
-    # Risk description
-    desc_line = Text()
-    desc_line.append("  ")
-    desc_line.append(crash_desc, style="dim italic")
-    console.print(desc_line)
-    console.print()
+    lines.append(gauge_row)
     
-    # Vol inversion breakdown
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # MAIN RISK READOUT - Large, prominent display
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    # Percentage and level
+    main_row = Text()
+    main_row.append("\n     ", style="")
+    main_row.append(f"{crash_risk_pct:>5.0%}", style=f"bold {style_config['label_style']}")
+    main_row.append("  ", style="")
+    main_row.append(f"{crash_risk_level.upper()}", style=style_config['style'])
+    lines.append(main_row)
+    
+    # Description
+    desc_row = Text()
+    desc_row.append("     ", style="")
+    desc_row.append(style_config['desc'], style="dim italic")
+    lines.append(desc_row)
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # ACTIONABLE GUIDANCE - What to do
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    if crash_risk_pct >= 0.20:  # Only show action for elevated+ levels
+        action_row = Text()
+        action_row.append("\n     ", style="")
+        action_row.append("→ ", style="bold white")
+        action_row.append(style_config['action'], style=style_config['action_style'])
+        lines.append(action_row)
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # CONTRIBUTING FACTORS - Vol spike + Momentum
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    factors_shown = False
+    
     if vol_inversion_count > 0:
-        inversion_line = Text()
-        inversion_line.append("  ")
-        inversion_line.append("⚡ Vol Spike:  ", style="bold yellow")
-        
+        factors_shown = True
+        vol_row = Text()
+        vol_row.append("\n     ", style="")
+        vol_row.append("Vol Spike: ", style="bold yellow")
         if inverted_metals:
-            inversion_line.append(", ".join(inverted_metals), style="bright_white")
+            vol_row.append(", ".join(inverted_metals), style="yellow")
         else:
-            inversion_line.append(f"{vol_inversion_count} metals", style="bright_white")
-        console.print(inversion_line)
+            vol_row.append(f"{vol_inversion_count} metals", style="yellow")
+        lines.append(vol_row)
         
-        # Technical explanation
-        explain_line = Text()
-        explain_line.append("  ")
-        explain_line.append("              ", style="")  # Indent to align
-        explain_line.append("Short-term vol >> Long-term vol = stress accumulating", style="dim italic")
-        console.print(explain_line)
-        console.print()
+        # Compact explanation
+        explain_row = Text()
+        explain_row.append("       ", style="")
+        explain_row.append("Short-term vol exceeding long-term = stress building", style="dim italic")
+        lines.append(explain_row)
     
-    # Momentum summary (if provided)
     if momentum_data:
         significant_moves = [
             (name, ret) for name, ret in momentum_data.items()
@@ -350,19 +399,42 @@ def render_crash_risk_assessment(
         ]
         
         if significant_moves:
-            mom_line = Text()
-            mom_line.append("  ")
-            mom_line.append("📊 Momentum:   ", style="bold cyan")
+            factors_shown = True
+            prefix = "\n     " if not vol_inversion_count else "\n     "
+            mom_row = Text()
+            mom_row.append(prefix, style="")
+            mom_row.append("Momentum: ", style="bold cyan")
             
-            signals_parts = []
-            for name, ret in sorted(significant_moves, key=lambda x: abs(x[1]), reverse=True)[:4]:
+            sorted_moves = sorted(significant_moves, key=lambda x: abs(x[1]), reverse=True)[:3]
+            for idx, (name, ret) in enumerate(sorted_moves):
+                if idx > 0:
+                    mom_row.append("  ", style="")  # Spacing between items
                 arrow = "↑" if ret >= 0 else "↓"
-                signals_parts.append(f"{name} {arrow}{ret:+.1%}")
+                style = "green" if ret >= 0 else "red"
+                mom_row.append(f"{name} {arrow}{ret:+.1%}", style=style)
             
-            mom_line.append("  ".join(signals_parts), style="white")
-            console.print(mom_line)
-            console.print()
+            lines.append(mom_row)
     
+    # Combine all lines
+    content = Text()
+    for i, line in enumerate(lines):
+        if i > 0:
+            content.append("\n")
+        content.append_text(line)
+    
+    # Create panel with appropriate border style
+    panel = Panel(
+        content,
+        title="[bold]Crash Risk Assessment[/bold]",
+        title_align="left",
+        border_style=style_config['border_style'],
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
+    
+    console.print()
+    console.print(panel)
+    console.print()
     console.print()
 
 

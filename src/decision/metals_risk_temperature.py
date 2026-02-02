@@ -2042,142 +2042,54 @@ def render_metals_risk_temperature(
     console.print(f"  [dim italic]{result.action_text}[/dim italic]")
     console.print()
     
-    # Crash Risk Display (prominent section)
+    # Crash Risk Display (using shared component from signals_ux)
     crash_risk_pct = getattr(result, 'crash_risk_pct', 0.0)
     crash_risk_level = getattr(result, 'crash_risk_level', 'Low')
     vol_inversion_count = getattr(result, 'vol_inversion_count', 0)
     
     if crash_risk_pct > 0.02:  # Only show if above baseline
-        # Determine crash risk style and icon
-        if crash_risk_level == "Extreme":
-            crash_style = "bold red on white"
-            crash_bar_style = "bold red"
-            crash_icon = "🔴"
-            crash_desc = "Imminent correction likely"
-        elif crash_risk_level == "High":
-            crash_style = "bold red"
-            crash_bar_style = "red"
-            crash_icon = "🟠"
-            crash_desc = "Significant downside risk"
-        elif crash_risk_level == "Elevated":
-            crash_style = "bold yellow"
-            crash_bar_style = "yellow"
-            crash_icon = "🟡"
-            crash_desc = "Above-average drawdown risk"
-        elif crash_risk_level == "Moderate":
-            crash_style = "yellow"
-            crash_bar_style = "yellow"
-            crash_icon = "🟡"
-            crash_desc = "Mild caution advised"
-        else:
-            crash_style = "dim"
-            crash_bar_style = "bright_green"
-            crash_icon = "🟢"
-            crash_desc = "Normal market conditions"
-        
-        # Section header
-        console.print("  [dim]━━━ Crash Risk Assessment ━━━[/dim]")
-        console.print()
-        
-        # Main crash risk line with visual gauge
-        crash_line = Text()
-        crash_line.append("  ")
-        crash_line.append(f"{crash_icon} ", style="")
-        crash_line.append(f"{crash_risk_pct:.0%}", style=crash_style)
-        crash_line.append(f"  {crash_risk_level}", style=crash_style)
-        console.print(crash_line)
-        
-        # Crash risk bar (gradient visual)
-        crash_bar = Text()
-        crash_bar.append("  ")
-        bar_width = 40
-        filled = int(min(1.0, crash_risk_pct / 0.60) * bar_width)  # 60% = full bar
-        
-        # Create gradient bar: green → yellow → red
-        for i in range(bar_width):
-            threshold_25 = bar_width * 0.25
-            threshold_50 = bar_width * 0.50
-            if i < filled:
-                if i < threshold_25:
-                    crash_bar.append("█", style="bright_green")
-                elif i < threshold_50:
-                    crash_bar.append("█", style="yellow")
-                else:
-                    crash_bar.append("█", style="red")
-            else:
-                crash_bar.append("░", style="bright_black")
-        console.print(crash_bar)
-        
-        # Risk description
-        desc_line = Text()
-        desc_line.append("  ")
-        desc_line.append(crash_desc, style="dim italic")
-        console.print(desc_line)
-        console.print()
-        
-        # Vol inversion breakdown (if any)
+        # Extract inverted metals from vol indicator
+        inverted_metals = None
         if vol_inversion_count > 0:
-            # Find which metals have vol inversion from indicators
-            vol_indicator = None
             for ind in result.indicators:
-                if ind.name == "Vol Term Structure":
-                    vol_indicator = ind
+                if ind.name == "Vol Term Structure" and ind.interpretation:
+                    interp = ind.interpretation
+                    if "(" in interp and ")" in interp:
+                        metals_str = interp[interp.find("(")+1:interp.find(")")]
+                        inverted_metals = [m.strip() for m in metals_str.split(",")]
                     break
-            
-            inversion_line = Text()
-            inversion_line.append("  ")
-            inversion_line.append("⚡ Vol Spike:  ", style="bold yellow")
-            
-            # Parse inverted metals from the interpretation
-            if vol_indicator and vol_indicator.interpretation:
-                # Extract metal names from interpretation like "⚠️ VOL SPIKE in 4 metals (GOLD, SILVER, PLATINUM, PALLADIUM)"
-                interp = vol_indicator.interpretation
-                if "(" in interp and ")" in interp:
-                    metals_str = interp[interp.find("(")+1:interp.find(")")]
-                    inversion_line.append(metals_str, style="bright_white")
-                else:
-                    inversion_line.append(f"{vol_inversion_count} metals", style="bright_white")
-            else:
-                inversion_line.append(f"{vol_inversion_count} metals", style="bright_white")
-            console.print(inversion_line)
-            
-            # Explanation line
-            explain_line = Text()
-            explain_line.append("  ")
-            explain_line.append("         ", style="")  # Indent to align
-            explain_line.append("Short-term vol >> Long-term vol = stress accumulating", style="dim italic")
-            console.print(explain_line)
-            console.print()
         
-        # Momentum summary (extracted from metals data)
-        momentum_signals = []
+        # Extract momentum data from metals
+        momentum_data = {}
         for metal_key in ['gold', 'silver', 'copper', 'platinum', 'palladium']:
             if metal_key in result.metals:
                 metal = result.metals[metal_key]
                 if metal.data_available:
-                    mom = getattr(metal, 'momentum_signal', '')
-                    ret_5d = metal.return_5d
-                    if "Strong" in mom or ret_5d < -0.03:
-                        momentum_signals.append((metal.name, ret_5d, "down" if ret_5d < 0 else "up"))
-                    elif ret_5d > 0.03:
-                        momentum_signals.append((metal.name, ret_5d, "up"))
+                    momentum_data[metal.name] = metal.return_5d
         
-        if momentum_signals:
-            mom_line = Text()
-            mom_line.append("  ")
-            mom_line.append("📊 Momentum:   ", style="bold cyan")
-            
-            signals_parts = []
-            for name, ret, direction in momentum_signals:
-                style = "bright_green" if direction == "up" else "indian_red1"
-                arrow = "↑" if direction == "up" else "↓"
-                signals_parts.append(f"{name} {arrow}{ret:+.1%}")
-            
-            mom_line.append("  ".join(signals_parts[:3]), style="white")  # Show max 3
-            console.print(mom_line)
+        # Use the shared crash risk assessment component
+        try:
+            from decision.signals_ux import render_crash_risk_assessment
+        except ImportError:
+            try:
+                # Fallback for running as script
+                from signals_ux import render_crash_risk_assessment
+            except ImportError:
+                render_crash_risk_assessment = None
+        
+        if render_crash_risk_assessment:
+            render_crash_risk_assessment(
+                crash_risk_pct=crash_risk_pct,
+                crash_risk_level=crash_risk_level,
+                vol_inversion_count=vol_inversion_count,
+                inverted_metals=inverted_metals,
+                momentum_data=momentum_data if momentum_data else None,
+                console=console,
+            )
+        else:
+            # Fallback: minimal display if signals_ux is not available
+            console.print(f"  [bold]Crash Risk: {crash_risk_pct:.0%} ({crash_risk_level})[/bold]")
             console.print()
-        
-        console.print()
     
     # Ratio-based stress indicators
     console.print("  [dim]Stress Indicators[/dim]  [dim italic](z-score = deviation from normal)[/dim italic]")
