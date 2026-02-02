@@ -1541,6 +1541,11 @@ def _update_escalation_state(
     - Stressed → Normal: temp < 0.5 sustained for 5 business days
     - Elevated → Normal: temp < 0.4 sustained for 3 business days
     
+    EMERGENCY OVERRIDE (February 2026):
+    - If temperature >= 1.5, immediately escalate to Extreme (no hysteresis)
+    - If temperature >= 1.2, immediately escalate to at least Stressed
+    - This ensures major market events (e.g., silver crash) are captured immediately
+    
     Returns:
         Tuple of (new_regime, transition_occurred, alert_severity)
     """
@@ -1548,6 +1553,41 @@ def _update_escalation_state(
     new_regime = previous_regime
     transition_occurred = False
     alert_severity = None
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # EMERGENCY OVERRIDE: Bypass hysteresis for extreme conditions
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # Major market crashes (e.g., "biggest silver crash in history") should
+    # immediately reflect in regime state, not wait for 2 consecutive computations.
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    if temperature >= 1.5:
+        # Immediate escalation to Extreme
+        if previous_regime != "Extreme":
+            new_regime = "Extreme"
+            transition_occurred = True
+            alert_severity = AlertSeverity.CRITICAL
+            current_state.current_regime = new_regime
+            current_state.last_transition_timestamp = datetime.now().isoformat()
+            current_state.last_computation_timestamp = datetime.now().isoformat()
+            current_state.temperature_history.append(temperature)
+            return new_regime, transition_occurred, alert_severity
+    
+    elif temperature >= 1.2:
+        # Immediate escalation to at least Stressed
+        if previous_regime in ("Normal", "Elevated"):
+            new_regime = "Stressed"
+            transition_occurred = True
+            alert_severity = AlertSeverity.WARNING
+            current_state.current_regime = new_regime
+            current_state.last_transition_timestamp = datetime.now().isoformat()
+            current_state.last_computation_timestamp = datetime.now().isoformat()
+            current_state.temperature_history.append(temperature)
+            return new_regime, transition_occurred, alert_severity
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # Normal hysteresis logic for non-extreme conditions
+    # ═══════════════════════════════════════════════════════════════════════════════
     
     # Track consecutive counts
     if temperature > ESCALATION_ELEVATED_TO_STRESSED_TEMP:
@@ -1925,6 +1965,33 @@ def compute_anticipatory_metals_risk_temperature(
         avg_vol_ratio=avg_vol_ratio,
     )
     
+    # Compute dynamic gap risk based on metals volatility
+    # Gap risk = expected overnight gap based on current volatility regime
+    # Base: 3% in normal conditions, scales with temperature and crash risk
+    gap_risk_base = 0.03
+    gap_risk_vol_adjustment = 0.0
+    
+    # Adjust based on average metal volatility
+    metal_vols = [m.volatility for m in metals.values() if m.data_available and m.volatility > 0]
+    if metal_vols:
+        avg_metal_vol = sum(metal_vols) / len(metal_vols)
+        # If average vol > 20%, increase gap risk
+        if avg_metal_vol > 0.30:
+            gap_risk_vol_adjustment = 0.04  # Add 4% for extreme vol
+        elif avg_metal_vol > 0.25:
+            gap_risk_vol_adjustment = 0.03  # Add 3% for high vol
+        elif avg_metal_vol > 0.20:
+            gap_risk_vol_adjustment = 0.02  # Add 2% for elevated vol
+    
+    # Temperature-based adjustment
+    gap_risk_temp_adjustment = max(0, (temperature - 1.0) * 0.03)  # +3% per temp unit above 1.0
+    
+    # Crash risk-based adjustment
+    gap_risk_crash_adjustment = crash_risk_pct * 0.05  # Up to 5% for extreme crash risk
+    
+    # Combine all adjustments
+    gap_risk_estimate = min(0.15, gap_risk_base + gap_risk_vol_adjustment + gap_risk_temp_adjustment + gap_risk_crash_adjustment)
+    
     # Data quality
     available_count = sum(1 for ind in all_indicators if ind.data_available)
     data_quality = available_count / len(all_indicators) if all_indicators else 0.0
@@ -1946,6 +2013,7 @@ def compute_anticipatory_metals_risk_temperature(
         crash_risk_pct=crash_risk_pct,
         crash_risk_level=crash_risk_level,
         vol_inversion_count=vol_inversion_count,
+        gap_risk_estimate=gap_risk_estimate,
     )
     
     return result, alerts, quality_report
@@ -1956,6 +2024,257 @@ def reset_escalation_state() -> None:
     global _escalation_state
     _escalation_state = EscalationState()
     logger.info("Escalation state reset")
+
+
+# =============================================================================
+# CRASH RISK ASSESSMENT RENDERING (Self-contained in metals module)
+# =============================================================================
+# This is the canonical render function for crash risk assessment.
+# risk_temperature.py and signals_ux.py should import this function
+# rather than implementing their own rendering.
+# =============================================================================
+
+def render_crash_risk_assessment(
+    crash_risk_pct: float,
+    crash_risk_level: str,
+    vol_inversion_count: int = 0,
+    inverted_metals: Optional[List[str]] = None,
+    momentum_data: Optional[Dict[str, float]] = None,
+    console = None,
+) -> None:
+    """
+    Render a comprehensive crash risk assessment panel.
+    
+    This is the canonical component for displaying crash risk across different views:
+    - Main risk temperature summary
+    - Metals risk temperature
+    - Tune UX output
+    - Signals summary
+    
+    Design: Apple-quality minimalist display with clear visual hierarchy.
+    Premium gauge visualization with actionable guidance.
+    
+    Args:
+        crash_risk_pct: Crash probability (0.0 to 1.0)
+        crash_risk_level: Level string ("Low", "Moderate", "Elevated", "High", "Extreme")
+        vol_inversion_count: Number of metals with vol term structure inversion
+        inverted_metals: List of metal names that show inversion
+        momentum_data: Dict of metal_name -> 5d return for momentum display
+        console: Rich console instance
+    """
+    try:
+        from rich.console import Console
+        from rich.text import Text
+        from rich.panel import Panel
+        from rich import box
+    except ImportError:
+        # Fallback to plain text
+        print(f"Crash Risk: {crash_risk_pct:.0%} ({crash_risk_level})")
+        return
+    
+    if console is None:
+        console = Console()
+    
+    # Skip if risk is trivial
+    if crash_risk_pct <= 0.02:
+        return
+    
+    # Determine styling based on risk level
+    CRASH_STYLES = {
+        "Extreme": {
+            "style": "bold red",
+            "label_style": "bold red",
+            "border_style": "red",
+            "desc": "Imminent correction likely",
+            "action": "REDUCE EXPOSURE IMMEDIATELY",
+            "action_style": "bold red",
+        },
+        "High": {
+            "style": "bold red",
+            "label_style": "bold red",
+            "border_style": "red",
+            "desc": "Significant downside risk",
+            "action": "Consider hedging positions",
+            "action_style": "bold yellow",
+        },
+        "Elevated": {
+            "style": "bold yellow",
+            "label_style": "bold yellow",
+            "border_style": "yellow",
+            "desc": "Above-average drawdown risk",
+            "action": "Tighten stops, review positions",
+            "action_style": "yellow",
+        },
+        "Moderate": {
+            "style": "yellow",
+            "label_style": "yellow",
+            "border_style": "bright_black",
+            "desc": "Mild caution advised",
+            "action": "Monitor closely",
+            "action_style": "dim",
+        },
+        "Low": {
+            "style": "bright_green",
+            "label_style": "bright_green",
+            "border_style": "bright_black",
+            "desc": "Normal market conditions",
+            "action": "Business as usual",
+            "action_style": "dim",
+        },
+    }
+    
+    style_config = CRASH_STYLES.get(crash_risk_level, CRASH_STYLES["Low"])
+    
+    # Build the panel content
+    lines = []
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # GAUGE VISUALIZATION - Premium semicircular-style risk meter
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    # Scale labels row
+    scale_row = Text()
+    scale_row.append("     0%", style="bright_green")
+    scale_row.append("        ", style="dim")
+    scale_row.append("20%", style="green")
+    scale_row.append("        ", style="dim")
+    scale_row.append("40%", style="yellow")
+    scale_row.append("        ", style="dim")
+    scale_row.append("60%", style="red")
+    lines.append(scale_row)
+    
+    # Gauge track with position indicator
+    gauge_width = 44
+    filled_pos = int(min(1.0, crash_risk_pct / 0.60) * gauge_width)
+    
+    gauge_row = Text()
+    gauge_row.append("     ", style="")  # Left padding
+    
+    # Build gradient gauge with needle position
+    for i in range(gauge_width):
+        pct_at_pos = (i / gauge_width) * 0.60
+        
+        # Determine segment color based on position
+        if pct_at_pos < 0.15:
+            seg_style = "bright_green"
+        elif pct_at_pos < 0.25:
+            seg_style = "green"
+        elif pct_at_pos < 0.40:
+            seg_style = "yellow"
+        elif pct_at_pos < 0.50:
+            seg_style = "orange1"
+        else:
+            seg_style = "red"
+        
+        # Draw filled vs unfilled
+        if i < filled_pos:
+            gauge_row.append("━", style=f"bold {seg_style}")
+        elif i == filled_pos:
+            # Needle position - prominent marker
+            gauge_row.append("┃", style="bold white")
+        else:
+            gauge_row.append("─", style="bright_black")
+    
+    lines.append(gauge_row)
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # MAIN RISK READOUT - Large, prominent display
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    # Percentage and level
+    main_row = Text()
+    main_row.append("\n     ", style="")
+    main_row.append(f"{crash_risk_pct:>5.0%}", style=f"bold {style_config['label_style']}")
+    main_row.append("  ", style="")
+    main_row.append(f"{crash_risk_level.upper()}", style=style_config['style'])
+    lines.append(main_row)
+    
+    # Description
+    desc_row = Text()
+    desc_row.append("     ", style="")
+    desc_row.append(style_config['desc'], style="dim italic")
+    lines.append(desc_row)
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # ACTIONABLE GUIDANCE - What to do
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    if crash_risk_pct >= 0.20:  # Only show action for elevated+ levels
+        action_row = Text()
+        action_row.append("\n     ", style="")
+        action_row.append("→ ", style="bold white")
+        action_row.append(style_config['action'], style=style_config['action_style'])
+        lines.append(action_row)
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # CONTRIBUTING FACTORS - Vol spike + Momentum
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    factors_shown = False
+    
+    if vol_inversion_count > 0:
+        factors_shown = True
+        vol_row = Text()
+        vol_row.append("\n     ", style="")
+        vol_row.append("Vol Spike: ", style="bold yellow")
+        if inverted_metals:
+            vol_row.append(", ".join(inverted_metals), style="yellow")
+        else:
+            vol_row.append(f"{vol_inversion_count} metals", style="yellow")
+        lines.append(vol_row)
+        
+        # Compact explanation
+        explain_row = Text()
+        explain_row.append("       ", style="")
+        explain_row.append("Short-term vol exceeding long-term = stress building", style="dim italic")
+        lines.append(explain_row)
+    
+    if momentum_data:
+        # Show all metals with any notable move (>= 1%)
+        significant_moves = [
+            (name, ret) for name, ret in momentum_data.items()
+            if abs(ret) >= 0.01  # Show >= 1% moves
+        ]
+        
+        if significant_moves:
+            factors_shown = True
+            prefix = "\n     " if not vol_inversion_count else "\n     "
+            mom_row = Text()
+            mom_row.append(prefix, style="")
+            mom_row.append("Momentum: ", style="bold cyan")
+            
+            # Show all metals, sorted by magnitude
+            sorted_moves = sorted(significant_moves, key=lambda x: abs(x[1]), reverse=True)
+            for idx, (name, ret) in enumerate(sorted_moves):
+                if idx > 0:
+                    mom_row.append("  ", style="")  # Spacing between items
+                arrow = "↑" if ret >= 0 else "↓"
+                style = "green" if ret >= 0 else "red"
+                mom_row.append(f"{name} {arrow}{ret:+.1%}", style=style)
+            
+            lines.append(mom_row)
+    
+    # Combine all lines
+    content = Text()
+    for i, line in enumerate(lines):
+        if i > 0:
+            content.append("\n")
+        content.append_text(line)
+    
+    # Create panel with appropriate border style
+    panel = Panel(
+        content,
+        title="[bold]Crash Risk Assessment[/bold]",
+        title_align="left",
+        border_style=style_config['border_style'],
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
+    
+    console.print()
+    console.print(panel)
+    console.print()
+    console.print()
 
 
 # =============================================================================
@@ -2042,7 +2361,7 @@ def render_metals_risk_temperature(
     console.print(f"  [dim italic]{result.action_text}[/dim italic]")
     console.print()
     
-    # Crash Risk Display (using shared component from signals_ux)
+    # Crash Risk Display (using our own render_crash_risk_assessment function)
     crash_risk_pct = getattr(result, 'crash_risk_pct', 0.0)
     crash_risk_level = getattr(result, 'crash_risk_level', 'Low')
     vol_inversion_count = getattr(result, 'vol_inversion_count', 0)
@@ -2067,29 +2386,15 @@ def render_metals_risk_temperature(
                 if metal.data_available:
                     momentum_data[metal.name] = metal.return_5d
         
-        # Use the shared crash risk assessment component
-        try:
-            from decision.signals_ux import render_crash_risk_assessment
-        except ImportError:
-            try:
-                # Fallback for running as script
-                from signals_ux import render_crash_risk_assessment
-            except ImportError:
-                render_crash_risk_assessment = None
-        
-        if render_crash_risk_assessment:
-            render_crash_risk_assessment(
-                crash_risk_pct=crash_risk_pct,
-                crash_risk_level=crash_risk_level,
-                vol_inversion_count=vol_inversion_count,
-                inverted_metals=inverted_metals,
-                momentum_data=momentum_data if momentum_data else None,
-                console=console,
-            )
-        else:
-            # Fallback: minimal display if signals_ux is not available
-            console.print(f"  [bold]Crash Risk: {crash_risk_pct:.0%} ({crash_risk_level})[/bold]")
-            console.print()
+        # Use our own render_crash_risk_assessment (defined above in this module)
+        render_crash_risk_assessment(
+            crash_risk_pct=crash_risk_pct,
+            crash_risk_level=crash_risk_level,
+            vol_inversion_count=vol_inversion_count,
+            inverted_metals=inverted_metals,
+            momentum_data=momentum_data if momentum_data else None,
+            console=console,
+        )
     
     # Ratio-based stress indicators
     console.print("  [dim]Stress Indicators[/dim]  [dim italic](z-score = deviation from normal)[/dim italic]")
@@ -2303,7 +2608,7 @@ def render_metals_risk_temperature(
         # Gap risk
         gap_line = Text()
         gap_line.append("  ")
-        gap_line.append("Gap Risk        ", style="dim")
+        gap_line.append("Overnight Exposure  ", style="dim")
         gap_line.append(f"{result.gap_risk_estimate:.1%}", style="white")
         console.print(gap_line)
         

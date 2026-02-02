@@ -375,7 +375,6 @@ from decision.signals_ux import (
     render_multi_asset_summary_table,
     render_sector_summary_tables,
     render_strong_signals_summary,
-    render_risk_temperature_summary,
     render_augmentation_layers_summary,
     build_asset_display_label,
     extract_symbol_from_title,
@@ -383,6 +382,10 @@ from decision.signals_ux import (
     DETAILED_COLUMN_DESCRIPTIONS,
     SIMPLIFIED_COLUMN_DESCRIPTIONS,
 )
+
+# Import render_risk_temperature_summary from risk_temperature module
+# (Temperature modules own their own rendering - no duplication in signals_ux)
+from decision.risk_temperature import render_risk_temperature_summary
 
 # Import data utilities and helper functions
 from ingestion.data_utils import (

@@ -211,7 +211,32 @@ def format_risk_scale_factor(scale: float, temperature: float) -> str:
         return f"[bold red]×{scale:.2f}[/bold red]"  # Severe reduction
 
 
-def render_crash_risk_assessment(
+# =============================================================================
+# BACKWARD COMPATIBILITY: Re-export from canonical temperature modules
+# =============================================================================
+# Temperature-related rendering is now owned by the temperature modules.
+# These re-exports maintain backward compatibility for any code that imports
+# from signals_ux.py.
+# =============================================================================
+
+# Re-export render_crash_risk_assessment from metals_risk_temperature
+try:
+    from decision.metals_risk_temperature import render_crash_risk_assessment
+except ImportError:
+    # Fallback stub if metals module not available
+    def render_crash_risk_assessment(*args, **kwargs):
+        pass
+
+# Re-export render_risk_temperature_summary from risk_temperature
+try:
+    from decision.risk_temperature import render_risk_temperature_summary
+except ImportError:
+    # Fallback stub if risk_temperature module not available
+    def render_risk_temperature_summary(*args, **kwargs):
+        pass
+
+
+def render_detailed_signal_table(
     crash_risk_pct: float,
     crash_risk_level: str,
     vol_inversion_count: int = 0,
@@ -1802,276 +1827,7 @@ SIMPLIFIED_COLUMN_DESCRIPTIONS = {
 
 
 # =============================================================================
-# RISK TEMPERATURE SUMMARY DISPLAY
+# NOTE: render_risk_temperature_summary is now imported from risk_temperature.py
+# at the top of this file for backward compatibility.
+# The canonical implementation lives in decision/risk_temperature.py.
 # =============================================================================
-# Apple Design Philosophy - Senior Professor Edition (60 Years Experience)
-#
-# "Design is not just what it looks like and feels like.
-#  Design is how it works." - Steve Jobs
-#
-# PRINCIPLES:
-#   1. VISUAL HIERARCHY - The eye should travel naturally
-#   2. NEGATIVE SPACE - Breathing room creates elegance
-#   3. PURPOSEFUL COLOR - Every color carries meaning
-#   4. GRID ALIGNMENT - Invisible structure, visible harmony
-#   5. PROGRESSIVE DISCLOSURE - Show only what's needed
-# =============================================================================
-
-def render_risk_temperature_summary(
-    risk_temp_result,
-    console: Console = None,
-) -> None:
-    """
-    Render a minimalist Apple-inspired risk temperature display.
-    Clean lines, no boxes, elegant typography.
-    """
-    if console is None:
-        console = Console()
-    
-    if risk_temp_result is None:
-        return
-    
-    # Data extraction
-    temp = getattr(risk_temp_result, 'temperature', 0.0)
-    scale = getattr(risk_temp_result, 'scale_factor', 1.0)
-    categories = getattr(risk_temp_result, 'categories', {})
-    overnight_budget_active = getattr(risk_temp_result, 'overnight_budget_active', False)
-    overnight_max_position = getattr(risk_temp_result, 'overnight_max_position', None)
-    
-    # Status determination
-    if temp < 0.3:
-        status = "Calm"
-        status_color = "green"
-        action_text = "Full exposure permitted"
-    elif temp < 0.7:
-        status = "Elevated"
-        status_color = "yellow"
-        action_text = "Monitor positions closely"
-    elif temp < 1.2:
-        status = "Stressed"
-        status_color = "bright_red"
-        action_text = "Reduce risk exposure"
-    else:
-        status = "Crisis"
-        status_color = "bold red"
-        action_text = "Capital preservation mode"
-    
-    console.print()
-    console.print()
-    
-    # Title
-    console.print("  [dim]Market Risk Temperature[/dim]")
-    console.print()
-    
-    # Hero temperature with status
-    hero = Text()
-    hero.append("  ")
-    hero.append(f"{temp:.2f}", style=f"bold {status_color}")
-    hero.append("  ")
-    hero.append(status, style=f"{status_color}")
-    console.print(hero)
-    console.print()
-    
-    # Main gauge bar
-    gauge = Text()
-    gauge.append("  ")
-    gauge_width = 48
-    filled = int(min(1.0, temp / 2.0) * gauge_width)
-    
-    for i in range(gauge_width):
-        if i < filled:
-            segment_pct = i / gauge_width
-            if segment_pct < 0.25:
-                gauge.append("━", style="bright_green")
-            elif segment_pct < 0.5:
-                gauge.append("━", style="yellow")
-            elif segment_pct < 0.75:
-                gauge.append("━", style="bright_red")
-            else:
-                gauge.append("━", style="bold red")
-        else:
-            gauge.append("━", style="bright_black")
-    
-    console.print(gauge)
-    
-    # Scale labels
-    labels = Text()
-    labels.append("  ")
-    labels.append("0", style="dim")
-    labels.append(" " * 22)
-    labels.append("1", style="dim")
-    labels.append(" " * 22)
-    labels.append("2", style="dim")
-    console.print(labels)
-    console.print()
-    
-    # Action text
-    console.print(f"  [dim italic]{action_text}[/dim italic]")
-    console.print()
-    
-    # Crash Risk Assessment (if available from metals module)
-    crash_risk_pct = getattr(risk_temp_result, 'crash_risk_pct', 0.0)
-    crash_risk_level = getattr(risk_temp_result, 'crash_risk_level', 'Low')
-    vol_inversion_count = getattr(risk_temp_result, 'vol_inversion_count', 0)
-    inverted_metals = getattr(risk_temp_result, 'inverted_metals', None)
-    metals_momentum = getattr(risk_temp_result, 'metals_momentum', None)
-    
-    if crash_risk_pct > 0.02:  # Only show if above baseline
-        render_crash_risk_assessment(
-            crash_risk_pct=crash_risk_pct,
-            crash_risk_level=crash_risk_level,
-            vol_inversion_count=vol_inversion_count,
-            inverted_metals=inverted_metals,
-            momentum_data=metals_momentum,
-            console=console,
-        )
-    
-    # Category stress bars
-    if categories:
-        category_config = [
-            ("fx", "FX Carry"),
-            ("futures", "Equities"),
-            ("rates", "Duration"),
-            ("commodities", "Energy"),
-            ("metals", "Metals"),
-        ]
-        
-        for cat_key, cat_label in category_config:
-            if cat_key not in categories:
-                continue
-            
-            cat = categories[cat_key]
-            stress = getattr(cat, 'stress_level', 0.0)
-            
-            if stress < 0.5:
-                stress_style = "bright_green"
-            elif stress < 1.0:
-                stress_style = "yellow"
-            elif stress < 1.5:
-                stress_style = "bright_red"
-            else:
-                stress_style = "bold red"
-            
-            line = Text()
-            line.append("  ")
-            line.append(f"{cat_label:<12}", style="dim")
-            
-            mini_width = 16
-            mini_filled = int(min(1.0, stress / 2.0) * mini_width)
-            for i in range(mini_width):
-                if i < mini_filled:
-                    line.append("━", style=stress_style)
-                else:
-                    line.append("━", style="bright_black")
-            
-            line.append(f"  {stress:.2f}", style=stress_style)
-            console.print(line)
-        
-        console.print()
-    
-    # Position scaling
-    if scale > 0.9:
-        scale_style = "bright_green"
-        scale_text = "Full Allocation"
-    elif scale > 0.6:
-        scale_style = "yellow"
-        scale_text = "Reduced"
-    elif scale > 0.3:
-        scale_style = "bright_red"
-        scale_text = "Significantly Reduced"
-    else:
-        scale_style = "bold red"
-        scale_text = "Minimal"
-    
-    pos_line = Text()
-    pos_line.append("  ")
-    pos_line.append("Position Size   ", style="dim")
-    pos_line.append(f"{scale:.0%}", style=f"bold {scale_style}")
-    pos_line.append(f"  {scale_text}", style="dim italic")
-    console.print(pos_line)
-    
-    # Overnight budget
-    if overnight_budget_active:
-        overnight_line = Text()
-        overnight_line.append("  ")
-        overnight_line.append("Overnight Cap   ", style="dim")
-        overnight_line.append(f"{overnight_max_position:.0%}", style="bold yellow")
-        overnight_line.append("  Active", style="dim italic")
-        console.print(overnight_line)
-    
-    # Data quality
-    total_indicators = 0
-    available_indicators =  0
-    for cat in categories.values():
-        inds = getattr(cat, 'indicators', [])
-        total_indicators += len(inds)
-        available_indicators += sum(1 for i in inds if getattr(i, 'data_available', False))
-    
-    if total_indicators > 0:
-        quality_pct = available_indicators / total_indicators
-        if quality_pct >= 0.9:
-            quality_style = "green"
-        elif quality_pct >= 0.7:
-            quality_style = "yellow"
-        else:
-            quality_style = "red"
-        
-        quality_line = Text()
-        quality_line.append("  ")
-        quality_line.append("Data Quality    ", style="dim")
-        quality_line.append(f"{available_indicators}/{total_indicators}", style=quality_style)
-        quality_line.append("  indicators", style="dim italic")
-        console.print(quality_line)
-    
-    # Governance status (February 2026 Enhancement)
-    regime_state = getattr(risk_temp_result, 'regime_state', None)
-    if regime_state:
-        console.print()
-        console.print("  [dim]Governance[/dim]")
-        console.print()
-        
-        # Regime state
-        regime_line = Text()
-        regime_line.append("  ")
-        regime_line.append("Regime State    ", style="dim")
-        regime_line.append(regime_state, style=status_color)
-        
-        regime_transition = getattr(risk_temp_result, 'regime_transition_occurred', False)
-        prev_regime = getattr(risk_temp_result, 'previous_regime_state', None)
-        if regime_transition and prev_regime:
-            regime_line.append("  ← ", style="dim")
-            regime_line.append(prev_regime, style="dim italic")
-        console.print(regime_line)
-        
-        # Rate limiting
-        rate_limited = getattr(risk_temp_result, 'rate_limit_applied', False)
-        if rate_limited:
-            rate_line = Text()
-            rate_line.append("  ")
-            rate_line.append("Rate Limited    ", style="dim")
-            rate_line.append("Yes", style="yellow")
-            raw_temp = getattr(risk_temp_result, 'raw_temperature', None)
-            if raw_temp is not None:
-                rate_line.append(f"  (raw: {raw_temp:.2f})", style="dim italic")
-            console.print(rate_line)
-        
-        # Imputation warning
-        imputation_warning = getattr(risk_temp_result, 'imputation_warning', False)
-        if imputation_warning:
-            imp_line = Text()
-            imp_line.append("  ")
-            imp_line.append("⚠️ Imputation   ", style="dim")
-            imputed_count = getattr(risk_temp_result, 'imputed_indicators', 0)
-            imp_line.append(f"{imputed_count} indicators imputed", style="yellow")
-            console.print(imp_line)
-        
-        # Gap risk
-        gap_risk = getattr(risk_temp_result, 'gap_risk_estimate', 0.03)
-        gap_line = Text()
-        gap_line.append("  ")
-        gap_line.append("Gap Risk        ", style="dim")
-        gap_line.append(f"{gap_risk:.1%}", style="white")
-        console.print(gap_line)
-    
-    console.print()
-    console.print()

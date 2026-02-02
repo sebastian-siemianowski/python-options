@@ -1280,6 +1280,241 @@ def clear_risk_temperature_cache():
 
 
 # =============================================================================
+# RISK TEMPERATURE RENDERING (Self-contained in temperature module)
+# =============================================================================
+# All temperature-related output is owned by the temperature modules.
+# This ensures no duplication with signals.py or signals_ux.py.
+# =============================================================================
+
+def render_risk_temperature_summary(
+    risk_temp_result: RiskTemperatureResult,
+    console = None,
+) -> None:
+    """
+    Render a minimalist Apple-inspired risk temperature display.
+    Clean lines, no boxes, elegant typography.
+    
+    This is the canonical rendering function for RiskTemperatureResult.
+    signals.py and signals_ux.py should import this function rather than
+    implementing their own rendering.
+    """
+    try:
+        from rich.console import Console
+        from rich.text import Text
+    except ImportError:
+        # Fallback to plain text if Rich not available
+        print(f"Risk Temperature: {risk_temp_result.temperature:.2f}")
+        return
+    
+    if console is None:
+        console = Console()
+    
+    if risk_temp_result is None:
+        return
+    
+    # Data extraction
+    temp = getattr(risk_temp_result, 'temperature', 0.0)
+    scale = getattr(risk_temp_result, 'scale_factor', 1.0)
+    categories = getattr(risk_temp_result, 'categories', {})
+    overnight_budget_active = getattr(risk_temp_result, 'overnight_budget_active', False)
+    overnight_max_position = getattr(risk_temp_result, 'overnight_max_position', None)
+    
+    # Status determination
+    if temp < 0.3:
+        status = "Calm"
+        status_color = "green"
+        action_text = "Full exposure permitted"
+    elif temp < 0.7:
+        status = "Elevated"
+        status_color = "yellow"
+        action_text = "Monitor positions closely"
+    elif temp < 1.2:
+        status = "Stressed"
+        status_color = "bright_red"
+        action_text = "Reduce risk exposure"
+    else:
+        status = "Crisis"
+        status_color = "bold red"
+        action_text = "Capital preservation mode"
+    
+    console.print()
+    console.print()
+    
+    # Title
+    console.print("  [dim]Market Risk Temperature[/dim]")
+    console.print()
+    
+    # Hero temperature with status
+    hero = Text()
+    hero.append("  ")
+    hero.append(f"{temp:.2f}", style=f"bold {status_color}")
+    hero.append("  ")
+    hero.append(status, style=f"{status_color}")
+    console.print(hero)
+    console.print()
+    
+    # Main gauge bar
+    gauge = Text()
+    gauge.append("  ")
+    gauge_width = 48
+    filled = int(min(1.0, temp / 2.0) * gauge_width)
+    
+    for i in range(gauge_width):
+        if i < filled:
+            segment_pct = i / gauge_width
+            if segment_pct < 0.25:
+                gauge.append("━", style="bright_green")
+            elif segment_pct < 0.5:
+                gauge.append("━", style="yellow")
+            elif segment_pct < 0.75:
+                gauge.append("━", style="bright_red")
+            else:
+                gauge.append("━", style="bold red")
+        else:
+            gauge.append("━", style="bright_black")
+    
+    console.print(gauge)
+    
+    # Scale labels
+    labels = Text()
+    labels.append("  ")
+    labels.append("0", style="dim")
+    labels.append(" " * 22)
+    labels.append("1", style="dim")
+    labels.append(" " * 22)
+    labels.append("2", style="dim")
+    console.print(labels)
+    console.print()
+    
+    # Action text
+    console.print(f"  [dim italic]{action_text}[/dim italic]")
+    console.print()
+    
+    # Crash Risk Assessment (if available from metals module)
+    crash_risk_pct = getattr(risk_temp_result, 'crash_risk_pct', 0.0)
+    crash_risk_level = getattr(risk_temp_result, 'crash_risk_level', 'Low')
+    vol_inversion_count = getattr(risk_temp_result, 'vol_inversion_count', 0)
+    inverted_metals = getattr(risk_temp_result, 'inverted_metals', None)
+    metals_momentum = getattr(risk_temp_result, 'metals_momentum', None)
+    
+    if crash_risk_pct > 0.02:  # Only show if above baseline
+        try:
+            from decision.metals_risk_temperature import render_crash_risk_assessment
+            render_crash_risk_assessment(
+                crash_risk_pct=crash_risk_pct,
+                crash_risk_level=crash_risk_level,
+                vol_inversion_count=vol_inversion_count,
+                inverted_metals=inverted_metals,
+                momentum_data=metals_momentum,
+                console=console,
+            )
+        except ImportError:
+            # Minimal fallback
+            console.print(f"  [bold]Crash Risk: {crash_risk_pct:.0%} ({crash_risk_level})[/bold]")
+            console.print()
+    
+    # Category stress bars
+    if categories:
+        category_config = [
+            ("fx", "FX Carry"),
+            ("futures", "Equities"),
+            ("rates", "Duration"),
+            ("commodities", "Energy"),
+            ("metals", "Metals"),
+        ]
+        
+        for cat_key, cat_label in category_config:
+            if cat_key not in categories:
+                continue
+            
+            cat = categories[cat_key]
+            stress = getattr(cat, 'stress_level', 0.0)
+            
+            if stress < 0.5:
+                stress_style = "bright_green"
+            elif stress < 1.0:
+                stress_style = "yellow"
+            elif stress < 1.5:
+                stress_style = "bright_red"
+            else:
+                stress_style = "bold red"
+            
+            line = Text()
+            line.append("  ")
+            line.append(f"{cat_label:<12}", style="dim")
+            
+            mini_width = 16
+            mini_filled = int(min(1.0, stress / 2.0) * mini_width)
+            for i in range(mini_width):
+                if i < mini_filled:
+                    line.append("━", style=stress_style)
+                else:
+                    line.append("━", style="bright_black")
+            
+            line.append(f"  {stress:.2f}", style=stress_style)
+            console.print(line)
+        
+        console.print()
+    
+    # Position scaling
+    if scale > 0.9:
+        scale_style = "bright_green"
+        scale_text = "Full Allocation"
+    elif scale > 0.6:
+        scale_style = "yellow"
+        scale_text = "Reduced"
+    elif scale > 0.3:
+        scale_style = "bright_red"
+        scale_text = "Significantly Reduced"
+    else:
+        scale_style = "bold red"
+        scale_text = "Minimal"
+    
+    pos_line = Text()
+    pos_line.append("  ")
+    pos_line.append("Position Size   ", style="dim")
+    pos_line.append(f"{scale:.0%}", style=f"bold {scale_style}")
+    pos_line.append(f"  {scale_text}", style="dim italic")
+    console.print(pos_line)
+    
+    # Overnight budget
+    if overnight_budget_active:
+        overnight_line = Text()
+        overnight_line.append("  ")
+        overnight_line.append("Overnight Cap   ", style="dim")
+        overnight_line.append(f"{overnight_max_position:.0%}", style="bold yellow")
+        overnight_line.append("  Active", style="dim italic")
+        console.print(overnight_line)
+    
+    # Data quality
+    total_indicators = 0
+    available_indicators = 0
+    for cat in categories.values():
+        inds = getattr(cat, 'indicators', [])
+        total_indicators += len(inds)
+        available_indicators += sum(1 for i in inds if getattr(i, 'data_available', False))
+    
+    if total_indicators > 0:
+        quality_pct = available_indicators / total_indicators
+        if quality_pct >= 0.9:
+            quality_style = "green"
+        elif quality_pct >= 0.7:
+            quality_style = "yellow"
+        else:
+            quality_style = "red"
+        
+        quality_line = Text()
+        quality_line.append("  ")
+        quality_line.append("Data Quality    ", style="dim")
+        quality_line.append(f"{available_indicators}/{total_indicators}", style=quality_style)
+        quality_line.append("  indicators", style="dim italic")
+        console.print(quality_line)
+    
+    console.print()
+    console.print()
+
+
+# =============================================================================
 # STANDALONE CLI
 # =============================================================================
 
@@ -1288,7 +1523,6 @@ if __name__ == "__main__":
     import sys
     sys.path.insert(0, 'src')
     
-    from decision.signals_ux import render_risk_temperature_summary
     from rich.console import Console
     
     console = Console()
@@ -1300,5 +1534,5 @@ if __name__ == "__main__":
         estimated_gap_risk=0.03,
     )
     
-    # Render the display
+    # Render the display (using our own function, not signals_ux)
     render_risk_temperature_summary(result, console=console)
