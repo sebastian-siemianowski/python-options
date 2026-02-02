@@ -208,6 +208,164 @@ def format_risk_scale_factor(scale: float, temperature: float) -> str:
         return f"[bold red]×{scale:.2f}[/bold red]"  # Severe reduction
 
 
+def render_crash_risk_assessment(
+    crash_risk_pct: float,
+    crash_risk_level: str,
+    vol_inversion_count: int = 0,
+    inverted_metals: Optional[List[str]] = None,
+    momentum_data: Optional[Dict[str, float]] = None,
+    console: Console = None,
+) -> None:
+    """
+    Render a comprehensive crash risk assessment panel.
+    
+    This is a reusable component for displaying crash risk across different views:
+    - Main risk temperature summary
+    - Tune UX output
+    - Signals summary
+    
+    Design: Apple-quality minimalist display with clear visual hierarchy.
+    
+    Args:
+        crash_risk_pct: Crash probability (0.0 to 1.0)
+        crash_risk_level: Level string ("Low", "Moderate", "Elevated", "High", "Extreme")
+        vol_inversion_count: Number of metals with vol term structure inversion
+        inverted_metals: List of metal names that show inversion
+        momentum_data: Dict of metal_name -> 5d return for momentum display
+        console: Rich console instance
+    """
+    if console is None:
+        console = Console()
+    
+    # Skip if risk is trivial
+    if crash_risk_pct <= 0.02:
+        return
+    
+    # Determine styling based on risk level
+    CRASH_STYLES = {
+        "Extreme": {
+            "style": "bold red on white",
+            "bar_style": "bold red",
+            "icon": "🔴",
+            "desc": "Imminent correction likely — reduce exposure immediately",
+        },
+        "High": {
+            "style": "bold red",
+            "bar_style": "red",
+            "icon": "🟠",
+            "desc": "Significant downside risk — consider hedging positions",
+        },
+        "Elevated": {
+            "style": "bold yellow",
+            "bar_style": "yellow",
+            "icon": "🟡",
+            "desc": "Above-average drawdown risk — tighten stops",
+        },
+        "Moderate": {
+            "style": "yellow",
+            "bar_style": "yellow",
+            "icon": "🟡",
+            "desc": "Mild caution advised — normal volatility expected",
+        },
+        "Low": {
+            "style": "dim",
+            "bar_style": "bright_green",
+            "icon": "🟢",
+            "desc": "Normal market conditions",
+        },
+    }
+    
+    style_config = CRASH_STYLES.get(crash_risk_level, CRASH_STYLES["Low"])
+    crash_style = style_config["style"]
+    crash_icon = style_config["icon"]
+    crash_desc = style_config["desc"]
+    
+    # Section header
+    console.print()
+    console.print("  [dim]━━━ Crash Risk Assessment ━━━[/dim]")
+    console.print()
+    
+    # Main crash risk display with visual gauge
+    crash_line = Text()
+    crash_line.append("  ")
+    crash_line.append(f"{crash_icon} ", style="")
+    crash_line.append(f"{crash_risk_pct:.0%}", style=crash_style)
+    crash_line.append(f"  {crash_risk_level}", style=crash_style)
+    console.print(crash_line)
+    
+    # Gradient progress bar
+    crash_bar = Text()
+    crash_bar.append("  ")
+    bar_width = 40
+    filled = int(min(1.0, crash_risk_pct / 0.60) * bar_width)  # 60% = full bar
+    
+    # Create gradient bar: green → yellow → red
+    threshold_25 = int(bar_width * 0.25)
+    threshold_50 = int(bar_width * 0.50)
+    
+    for i in range(bar_width):
+        if i < filled:
+            if i < threshold_25:
+                crash_bar.append("█", style="bright_green")
+            elif i < threshold_50:
+                crash_bar.append("█", style="yellow")
+            else:
+                crash_bar.append("█", style="red")
+        else:
+            crash_bar.append("░", style="bright_black")
+    console.print(crash_bar)
+    
+    # Risk description
+    desc_line = Text()
+    desc_line.append("  ")
+    desc_line.append(crash_desc, style="dim italic")
+    console.print(desc_line)
+    console.print()
+    
+    # Vol inversion breakdown
+    if vol_inversion_count > 0:
+        inversion_line = Text()
+        inversion_line.append("  ")
+        inversion_line.append("⚡ Vol Spike:  ", style="bold yellow")
+        
+        if inverted_metals:
+            inversion_line.append(", ".join(inverted_metals), style="bright_white")
+        else:
+            inversion_line.append(f"{vol_inversion_count} metals", style="bright_white")
+        console.print(inversion_line)
+        
+        # Technical explanation
+        explain_line = Text()
+        explain_line.append("  ")
+        explain_line.append("              ", style="")  # Indent to align
+        explain_line.append("Short-term vol >> Long-term vol = stress accumulating", style="dim italic")
+        console.print(explain_line)
+        console.print()
+    
+    # Momentum summary (if provided)
+    if momentum_data:
+        significant_moves = [
+            (name, ret) for name, ret in momentum_data.items()
+            if abs(ret) >= 0.02  # Only show >= 2% moves
+        ]
+        
+        if significant_moves:
+            mom_line = Text()
+            mom_line.append("  ")
+            mom_line.append("📊 Momentum:   ", style="bold cyan")
+            
+            signals_parts = []
+            for name, ret in sorted(significant_moves, key=lambda x: abs(x[1]), reverse=True)[:4]:
+                arrow = "↑" if ret >= 0 else "↓"
+                signals_parts.append(f"{name} {arrow}{ret:+.1%}")
+            
+            mom_line.append("  ".join(signals_parts), style="white")
+            console.print(mom_line)
+            console.print()
+    
+    console.print()
+
+
 def render_detailed_signal_table(
     asset_symbol: str,
     title: str,
@@ -1668,6 +1826,23 @@ def render_risk_temperature_summary(
     # Action text
     console.print(f"  [dim italic]{action_text}[/dim italic]")
     console.print()
+    
+    # Crash Risk Assessment (if available from metals module)
+    crash_risk_pct = getattr(risk_temp_result, 'crash_risk_pct', 0.0)
+    crash_risk_level = getattr(risk_temp_result, 'crash_risk_level', 'Low')
+    vol_inversion_count = getattr(risk_temp_result, 'vol_inversion_count', 0)
+    inverted_metals = getattr(risk_temp_result, 'inverted_metals', None)
+    metals_momentum = getattr(risk_temp_result, 'metals_momentum', None)
+    
+    if crash_risk_pct > 0.02:  # Only show if above baseline
+        render_crash_risk_assessment(
+            crash_risk_pct=crash_risk_pct,
+            crash_risk_level=crash_risk_level,
+            vol_inversion_count=vol_inversion_count,
+            inverted_metals=inverted_metals,
+            momentum_data=metals_momentum,
+            console=console,
+        )
     
     # Category stress bars
     if categories:

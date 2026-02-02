@@ -188,14 +188,21 @@ class MetalStressCategory:
     volatility: float         # 20-day realized volatility
     stress_level: float       # Metal-specific stress ∈ [0, 2]
     data_available: bool
+    # Momentum fields (added Feb 2026)
+    return_1d: float = 0.0    # 1-day return
+    return_21d: float = 0.0   # 21-day (1-month) return
+    momentum_signal: str = "" # "↑ Strong", "↗ Rising", "→ Flat", "↘ Falling", "↓ Weak"
     
     def to_dict(self) -> Dict:
         return {
             "name": self.name,
             "price": float(self.price) if self.price else None,
             "return_5d": float(self.return_5d),
+            "return_1d": float(self.return_1d),
+            "return_21d": float(self.return_21d),
             "volatility": float(self.volatility),
             "stress_level": float(self.stress_level),
+            "momentum_signal": self.momentum_signal,
             "data_available": self.data_available,
         }
 
@@ -225,6 +232,10 @@ class MetalsRiskTemperatureResult:
     overnight_budget_active: bool = False
     overnight_max_position: Optional[float] = None
     audit_trail: Optional["GovernedRiskTemperatureAudit"] = None
+    # Crash risk fields (February 2026)
+    crash_risk_pct: float = 0.0
+    crash_risk_level: str = "Low"
+    vol_inversion_count: int = 0
     
     def to_dict(self) -> Dict:
         result = {
@@ -248,6 +259,10 @@ class MetalsRiskTemperatureResult:
             "gap_risk_estimate": float(self.gap_risk_estimate),
             "overnight_budget_active": self.overnight_budget_active,
             "overnight_max_position": float(self.overnight_max_position) if self.overnight_max_position else None,
+            # Crash risk fields
+            "crash_risk_pct": float(self.crash_risk_pct),
+            "crash_risk_level": self.crash_risk_level,
+            "vol_inversion_count": self.vol_inversion_count,
         }
         return result
     
@@ -490,13 +505,15 @@ def compute_volatility_term_structure_stress(
     # Contribution is additive 0.3 when signal triggers
     contribution = VOL_TERM_STRUCTURE_STRESS_CONTRIBUTION if signal_triggered else 0.0
     
-    # Build interpretation
+    # Build interpretation - more understandable language
     if signal_triggered:
-        interpretation = f"⚠️ INVERSION: {', '.join(inverted_metals)} ({len(inverted_metals)} metals)"
+        # Vol term structure inversion = short-term vol >> long-term vol = crash warning
+        metals_list = ', '.join(inverted_metals)
+        interpretation = f"⚠️ VOL SPIKE in {len(inverted_metals)} metals ({metals_list})"
     elif len(inverted_metals) == 1:
-        interpretation = f"Watch: {inverted_metals[0]} inverted"
+        interpretation = f"Watch: {inverted_metals[0]} vol elevated"
     else:
-        interpretation = "Normal term structure"
+        interpretation = "Normal"
     
     # Compute average ratio for display
     valid_ratios = [d["ratio"] for d in metal_details.values() if d["ratio"] is not None]
@@ -512,6 +529,63 @@ def compute_volatility_term_structure_stress(
     )
     
     return indicator, metal_details
+
+
+def compute_crash_risk(
+    vol_inversion_count: int,
+    temperature: float,
+    avg_vol_ratio: float = 1.0,
+) -> Tuple[float, str]:
+    """
+    Compute crash risk probability and level based on multiple signals.
+    
+    METHODOLOGY:
+    - Vol term structure inversion is the PRIMARY crash predictor
+    - Each inverted metal adds crash probability
+    - Temperature above 1.0 adds additional risk
+    - High vol ratio amplifies risk
+    
+    Returns:
+        Tuple of (crash_risk_pct, crash_risk_level)
+    """
+    base_risk_by_count = {0: 0.02, 1: 0.05, 2: 0.15, 3: 0.25, 4: 0.40, 5: 0.55}
+    base_risk = base_risk_by_count.get(vol_inversion_count, 0.55)
+    
+    # Temperature multiplier
+    if temperature > 1.5:
+        temp_multiplier = 1.5
+    elif temperature > 1.0:
+        temp_multiplier = 1.25
+    elif temperature > 0.7:
+        temp_multiplier = 1.1
+    else:
+        temp_multiplier = 1.0
+    
+    # Vol ratio amplifier
+    if avg_vol_ratio > 2.5:
+        vol_multiplier = 1.4
+    elif avg_vol_ratio > 2.0:
+        vol_multiplier = 1.2
+    elif avg_vol_ratio > 1.5:
+        vol_multiplier = 1.1
+    else:
+        vol_multiplier = 1.0
+    
+    crash_risk_pct = min(0.75, base_risk * temp_multiplier * vol_multiplier)
+    
+    # Determine risk level
+    if crash_risk_pct >= 0.40:
+        crash_risk_level = "Extreme"
+    elif crash_risk_pct >= 0.25:
+        crash_risk_level = "High"
+    elif crash_risk_pct >= 0.15:
+        crash_risk_level = "Elevated"
+    elif crash_risk_pct >= 0.05:
+        crash_risk_level = "Moderate"
+    else:
+        crash_risk_level = "Low"
+    
+    return crash_risk_pct, crash_risk_level
 
 
 def _compute_volatility_percentile(
@@ -1319,10 +1393,39 @@ def compute_platinum_gold_stress(metals_data: Dict[str, pd.Series]) -> MetalStre
         )
 
 
+def _compute_momentum_signal(ret_1d: float, ret_5d: float, ret_21d: float) -> str:
+    """
+    Compute a human-readable momentum signal from multi-timeframe returns.
+    
+    Logic:
+    - Strong Up (↑): 21d > +5% and 5d > +1%
+    - Rising (↗): 5d > +2% or (21d > 0 and 5d > 0)
+    - Flat (→): Small moves across timeframes
+    - Falling (↘): 5d < -2% or (21d < 0 and 5d < 0)
+    - Strong Down (↓): 21d < -5% and 5d < -1%
+    """
+    # Thresholds
+    strong_threshold_21d = 0.05   # 5%
+    strong_threshold_5d = 0.01   # 1%
+    rising_threshold = 0.02      # 2%
+    flat_threshold = 0.01        # 1%
+    
+    if ret_21d > strong_threshold_21d and ret_5d > strong_threshold_5d:
+        return "↑ Strong"
+    elif ret_21d < -strong_threshold_21d and ret_5d < -strong_threshold_5d:
+        return "↓ Weak"
+    elif ret_5d > rising_threshold or (ret_21d > 0 and ret_5d > 0):
+        return "↗ Rising"
+    elif ret_5d < -rising_threshold or (ret_21d < 0 and ret_5d < 0):
+        return "↘ Falling"
+    else:
+        return "→ Flat"
+
+
 def compute_individual_metal_stress(
     metals_data: Dict[str, pd.Series]
 ) -> Dict[str, MetalStressCategory]:
-    """Compute stress metrics for each individual metal."""
+    """Compute stress metrics for each individual metal including momentum."""
     metals = {}
     
     for name in ['GOLD', 'SILVER', 'COPPER', 'PLATINUM', 'PALLADIUM']:
@@ -1333,7 +1436,10 @@ def compute_individual_metal_stress(
                 return_5d=0.0,
                 volatility=0.0,
                 stress_level=0.0,
-                data_available=False
+                data_available=False,
+                return_1d=0.0,
+                return_21d=0.0,
+                momentum_signal="No data",
             )
             continue
         
@@ -1341,11 +1447,14 @@ def compute_individual_metal_stress(
             prices = metals_data[name]
             current_price = float(prices.iloc[-1])
             
+            # 1-day return
+            ret_1d = (prices.iloc[-1] / prices.iloc[-2] - 1) if len(prices) >= 2 else 0.0
+            
             # 5-day return
-            if len(prices) >= 5:
-                ret_5d = (prices.iloc[-1] / prices.iloc[-5] - 1)
-            else:
-                ret_5d = 0.0
+            ret_5d = (prices.iloc[-1] / prices.iloc[-5] - 1) if len(prices) >= 5 else 0.0
+            
+            # 21-day (1 month) return
+            ret_21d = (prices.iloc[-1] / prices.iloc[-21] - 1) if len(prices) >= 21 else 0.0
             
             # 20-day realized volatility (annualized)
             returns = prices.pct_change().dropna()
@@ -1353,6 +1462,9 @@ def compute_individual_metal_stress(
                 vol_20d = float(returns.iloc[-20:].std() * np.sqrt(252))
             else:
                 vol_20d = 0.0
+            
+            # Compute momentum signal
+            momentum_signal = _compute_momentum_signal(float(ret_1d), float(ret_5d), float(ret_21d))
             
             # Volatility percentile as stress
             vol_pct = _compute_volatility_percentile(prices)
@@ -1362,9 +1474,12 @@ def compute_individual_metal_stress(
                 name=name.title(),
                 price=current_price,
                 return_5d=float(ret_5d),
+                return_1d=float(ret_1d),
+                return_21d=float(ret_21d),
                 volatility=vol_20d,
                 stress_level=min(stress, 2.0),
-                data_available=True
+                momentum_signal=momentum_signal,
+                data_available=True,
             )
         except Exception:
             metals[name.lower()] = MetalStressCategory(
@@ -1373,7 +1488,10 @@ def compute_individual_metal_stress(
                 return_5d=0.0,
                 volatility=0.0,
                 stress_level=0.0,
-                data_available=False
+                data_available=False,
+                return_1d=0.0,
+                return_21d=0.0,
+                momentum_signal="Error",
             )
     
     return metals
@@ -1798,6 +1916,15 @@ def compute_anticipatory_metals_risk_temperature(
             vol_term_structure_triggered=True,
         ))
     
+    # Compute crash risk based on vol term structure inversion
+    vol_inversion_count = int(vol_ts_indicator.zscore)  # zscore holds the count
+    avg_vol_ratio = vol_ts_indicator.value if vol_ts_indicator.value > 0 else 1.0
+    crash_risk_pct, crash_risk_level = compute_crash_risk(
+        vol_inversion_count=vol_inversion_count,
+        temperature=temperature,
+        avg_vol_ratio=avg_vol_ratio,
+    )
+    
     # Data quality
     available_count = sum(1 for ind in all_indicators if ind.data_available)
     data_quality = available_count / len(all_indicators) if all_indicators else 0.0
@@ -1816,6 +1943,9 @@ def compute_anticipatory_metals_risk_temperature(
         regime_transition_occurred=transition_occurred,
         raw_temperature=raw_temperature,
         temperature_floor_applied=temperature_floor_applied,
+        crash_risk_pct=crash_risk_pct,
+        crash_risk_level=crash_risk_level,
+        vol_inversion_count=vol_inversion_count,
     )
     
     return result, alerts, quality_report
@@ -1912,18 +2042,155 @@ def render_metals_risk_temperature(
     console.print(f"  [dim italic]{result.action_text}[/dim italic]")
     console.print()
     
+    # Crash Risk Display (prominent section)
+    crash_risk_pct = getattr(result, 'crash_risk_pct', 0.0)
+    crash_risk_level = getattr(result, 'crash_risk_level', 'Low')
+    vol_inversion_count = getattr(result, 'vol_inversion_count', 0)
+    
+    if crash_risk_pct > 0.02:  # Only show if above baseline
+        # Determine crash risk style and icon
+        if crash_risk_level == "Extreme":
+            crash_style = "bold red on white"
+            crash_bar_style = "bold red"
+            crash_icon = "🔴"
+            crash_desc = "Imminent correction likely"
+        elif crash_risk_level == "High":
+            crash_style = "bold red"
+            crash_bar_style = "red"
+            crash_icon = "🟠"
+            crash_desc = "Significant downside risk"
+        elif crash_risk_level == "Elevated":
+            crash_style = "bold yellow"
+            crash_bar_style = "yellow"
+            crash_icon = "🟡"
+            crash_desc = "Above-average drawdown risk"
+        elif crash_risk_level == "Moderate":
+            crash_style = "yellow"
+            crash_bar_style = "yellow"
+            crash_icon = "🟡"
+            crash_desc = "Mild caution advised"
+        else:
+            crash_style = "dim"
+            crash_bar_style = "bright_green"
+            crash_icon = "🟢"
+            crash_desc = "Normal market conditions"
+        
+        # Section header
+        console.print("  [dim]━━━ Crash Risk Assessment ━━━[/dim]")
+        console.print()
+        
+        # Main crash risk line with visual gauge
+        crash_line = Text()
+        crash_line.append("  ")
+        crash_line.append(f"{crash_icon} ", style="")
+        crash_line.append(f"{crash_risk_pct:.0%}", style=crash_style)
+        crash_line.append(f"  {crash_risk_level}", style=crash_style)
+        console.print(crash_line)
+        
+        # Crash risk bar (gradient visual)
+        crash_bar = Text()
+        crash_bar.append("  ")
+        bar_width = 40
+        filled = int(min(1.0, crash_risk_pct / 0.60) * bar_width)  # 60% = full bar
+        
+        # Create gradient bar: green → yellow → red
+        for i in range(bar_width):
+            threshold_25 = bar_width * 0.25
+            threshold_50 = bar_width * 0.50
+            if i < filled:
+                if i < threshold_25:
+                    crash_bar.append("█", style="bright_green")
+                elif i < threshold_50:
+                    crash_bar.append("█", style="yellow")
+                else:
+                    crash_bar.append("█", style="red")
+            else:
+                crash_bar.append("░", style="bright_black")
+        console.print(crash_bar)
+        
+        # Risk description
+        desc_line = Text()
+        desc_line.append("  ")
+        desc_line.append(crash_desc, style="dim italic")
+        console.print(desc_line)
+        console.print()
+        
+        # Vol inversion breakdown (if any)
+        if vol_inversion_count > 0:
+            # Find which metals have vol inversion from indicators
+            vol_indicator = None
+            for ind in result.indicators:
+                if ind.name == "Vol Term Structure":
+                    vol_indicator = ind
+                    break
+            
+            inversion_line = Text()
+            inversion_line.append("  ")
+            inversion_line.append("⚡ Vol Spike:  ", style="bold yellow")
+            
+            # Parse inverted metals from the interpretation
+            if vol_indicator and vol_indicator.interpretation:
+                # Extract metal names from interpretation like "⚠️ VOL SPIKE in 4 metals (GOLD, SILVER, PLATINUM, PALLADIUM)"
+                interp = vol_indicator.interpretation
+                if "(" in interp and ")" in interp:
+                    metals_str = interp[interp.find("(")+1:interp.find(")")]
+                    inversion_line.append(metals_str, style="bright_white")
+                else:
+                    inversion_line.append(f"{vol_inversion_count} metals", style="bright_white")
+            else:
+                inversion_line.append(f"{vol_inversion_count} metals", style="bright_white")
+            console.print(inversion_line)
+            
+            # Explanation line
+            explain_line = Text()
+            explain_line.append("  ")
+            explain_line.append("         ", style="")  # Indent to align
+            explain_line.append("Short-term vol >> Long-term vol = stress accumulating", style="dim italic")
+            console.print(explain_line)
+            console.print()
+        
+        # Momentum summary (extracted from metals data)
+        momentum_signals = []
+        for metal_key in ['gold', 'silver', 'copper', 'platinum', 'palladium']:
+            if metal_key in result.metals:
+                metal = result.metals[metal_key]
+                if metal.data_available:
+                    mom = getattr(metal, 'momentum_signal', '')
+                    ret_5d = metal.return_5d
+                    if "Strong" in mom or ret_5d < -0.03:
+                        momentum_signals.append((metal.name, ret_5d, "down" if ret_5d < 0 else "up"))
+                    elif ret_5d > 0.03:
+                        momentum_signals.append((metal.name, ret_5d, "up"))
+        
+        if momentum_signals:
+            mom_line = Text()
+            mom_line.append("  ")
+            mom_line.append("📊 Momentum:   ", style="bold cyan")
+            
+            signals_parts = []
+            for name, ret, direction in momentum_signals:
+                style = "bright_green" if direction == "up" else "indian_red1"
+                arrow = "↑" if direction == "up" else "↓"
+                signals_parts.append(f"{name} {arrow}{ret:+.1%}")
+            
+            mom_line.append("  ".join(signals_parts[:3]), style="white")  # Show max 3
+            console.print(mom_line)
+            console.print()
+        
+        console.print()
+    
     # Ratio-based stress indicators
-    console.print("  [dim]Stress Indicators[/dim]")
+    console.print("  [dim]Stress Indicators[/dim]  [dim italic](z-score = deviation from normal)[/dim italic]")
     console.print()
     
     # Define display names with consistent formatting
     indicator_display_names = {
-        "Copper/Gold": "Copper/Gold",
-        "Silver/Gold": "Silver/Gold", 
-        "Gold Vol": "Gold Vol",
-        "Precious/Industrial": "Precious/Ind",
-        "Platinum/Gold": "Platinum/Gold",
-        "Vol Term Structure": "Vol TermStruct",
+        "Copper/Gold": "Cu/Au Ratio",      # Industrial vs safe-haven
+        "Silver/Gold": "Ag/Au Ratio",      # Speculative intensity
+        "Gold Vol": "Gold Volatility",     # Fear gauge
+        "Precious/Industrial": "Prec/Ind",  # Sector rotation
+        "Platinum/Gold": "Pt/Au Ratio",    # Industrial precious
+        "Vol Term Structure": "Vol Spike",  # Short-term vs long-term vol
     }
     
     for ind in result.indicators:
@@ -1963,9 +2230,20 @@ def render_metals_risk_temperature(
     
     console.print()
     
-    # Individual metals stress
+    # Individual metals stress with momentum
     console.print("  [dim]Individual Metals[/dim]")
     console.print()
+    
+    # Header row
+    header = Text()
+    header.append("  ")
+    header.append(f"{'Metal':<12}", style="dim")
+    header.append(f"{'Stress':<14}", style="dim")
+    header.append(f"{'Price':<11}", style="dim")
+    header.append(f"{'5d':<8}", style="dim")
+    header.append(f"{'21d':<8}", style="dim")
+    header.append("Trend", style="dim")
+    console.print(header)
     
     for metal_key in ['gold', 'silver', 'copper', 'platinum', 'palladium']:
         if metal_key not in result.metals:
@@ -1986,7 +2264,7 @@ def render_metals_risk_temperature(
         
         line = Text()
         line.append("  ")
-        line.append(f"{metal.name:<12}", style="dim")
+        line.append(f"{metal.name:<12}", style="white")
         
         # Mini bar
         mini_width = 12
@@ -1996,17 +2274,40 @@ def render_metals_risk_temperature(
                 line.append("━", style=metal_style)
             else:
                 line.append("━", style="bright_black")
+        line.append("  ")
         
-        # Price and return
+        # Price
         if metal.price:
             if metal.price >= 1000:
                 price_str = f"${metal.price:,.0f}"
             else:
                 price_str = f"${metal.price:.2f}"
-            
-            ret_style = "bright_green" if metal.return_5d >= 0 else "indian_red1"
-            line.append(f"  {price_str}", style="white")
-            line.append(f"  {metal.return_5d:+.1%}", style=ret_style)
+            line.append(f"{price_str:<11}", style="white")
+        else:
+            line.append(f"{'--':<11}", style="dim")
+        
+        # 5-day return
+        ret_5d_style = "bright_green" if metal.return_5d >= 0 else "indian_red1"
+        line.append(f"{metal.return_5d:+.1%}".ljust(8), style=ret_5d_style)
+        
+        # 21-day return
+        ret_21d = getattr(metal, 'return_21d', 0.0)
+        ret_21d_style = "bright_green" if ret_21d >= 0 else "indian_red1"
+        line.append(f"{ret_21d:+.1%}".ljust(8), style=ret_21d_style)
+        
+        # Momentum signal
+        momentum = getattr(metal, 'momentum_signal', '')
+        if "Strong" in momentum and "↑" in momentum:
+            mom_style = "bold bright_green"
+        elif "Rising" in momentum or "↗" in momentum:
+            mom_style = "bright_green"
+        elif "Weak" in momentum or "↓" in momentum:
+            mom_style = "bold indian_red1"
+        elif "Falling" in momentum or "↘" in momentum:
+            mom_style = "indian_red1"
+        else:
+            mom_style = "dim"
+        line.append(momentum if momentum else "→ Flat", style=mom_style)
         
         console.print(line)
     

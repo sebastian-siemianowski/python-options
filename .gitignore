@@ -92,3 +92,5 @@ htmlcov/
 /src/backtesting/equity_curves/
 /src/data/tune-bak2/
 /src/data/tune-bak/
+/src/data/tune-latest/
+/src/data/tune2/

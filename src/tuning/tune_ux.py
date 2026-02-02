@@ -175,6 +175,8 @@ def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: 
     chips3.append("Contaminated-t", style="orange1")
     chips3.append("   ○ ", style="bright_red")
     chips3.append("RiskTemp", style="bright_red")
+    chips3.append("   ○ ", style="bright_green")
+    chips3.append("AIGF-NF", style="bright_green")
     console.print(Align.center(chips3))
     console.print(Align.center(Text(" " * 50)))
     console.print()
@@ -2273,6 +2275,20 @@ Examples:
                 render_pdde_escalation_summary(escalation_summary, console=console)
         except Exception:
             pass  # Silently skip if PDDE summary fails
+
+    # Render Market Risk Temperature with Crash Risk Assessment
+    try:
+        from decision.risk_temperature import get_cached_risk_temperature
+        from decision.signals_ux import render_risk_temperature_summary
+        
+        risk_temp_result = get_cached_risk_temperature(
+            start_date="2020-01-01",
+            notional=1_000_000,
+            estimated_gap_risk=0.03,
+        )
+        render_risk_temperature_summary(risk_temp_result, console=console)
+    except Exception:
+        pass  # Silently skip if risk temperature fails
 
     # Render parameter table
     if cache:
