@@ -484,6 +484,26 @@ except ImportError:
     EVT_MIN_EXCEEDANCES = 30
     EVT_FALLBACK_MULTIPLIER = 1.5
 
+# =============================================================================
+# AIGF-NF (Adaptive Implicit Generative Filter - Normalizing Flow)
+# =============================================================================
+# AIGF-NF is an advanced generative model for return distribution modeling.
+# =============================================================================
+try:
+    from models import (
+        AIGFNFModel,
+        AIGFNFConfig,
+        DEFAULT_AIGF_NF_CONFIG,
+        is_aigf_nf_model,
+    )
+    AIGF_NF_AVAILABLE = True
+except ImportError:
+    AIGF_NF_AVAILABLE = False
+    
+    def is_aigf_nf_model(name: str) -> bool:
+        """Fallback stub - always returns False when module unavailable."""
+        return False
+
 
 # =============================================================================
 # CONTAMINATED STUDENT-T DISTRIBUTION
@@ -1312,6 +1332,13 @@ class Signal:
     evt_threshold: Optional[float] = None   # POT threshold
     evt_n_exceedances: int = 0              # Number of threshold exceedances
     evt_fit_method: Optional[str] = None    # EVT fitting method used
+    # PIT Violation EXIT Signal (February 2026):
+    # When belief cannot be trusted, the only correct signal is EXIT.
+    pit_exit_triggered: bool = False        # True if PIT violation requires EXIT
+    pit_exit_reason: Optional[str] = None   # Human-readable exit reason
+    pit_violation_severity: float = 0.0     # V ∈ [0, 1], 0 = no violation
+    pit_penalty_effective: float = 1.0      # P ∈ (0, 1], 1 = no penalty
+    pit_selected_model: Optional[str] = None  # Model that triggered the EXIT check
 
 
 
@@ -6723,6 +6750,74 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         cst_nu_normal = bma_meta.get("cst_nu_normal")
         cst_nu_crisis = bma_meta.get("cst_nu_crisis")
         cst_epsilon = bma_meta.get("cst_epsilon")
+
+        # ================================================================
+        # PIT VIOLATION EXIT SIGNAL (February 2026)
+        # ================================================================
+        # CORE DESIGN CONSTRAINT: "If the selected belief cannot be trusted,
+        # the only correct signal is EXIT."
+        #
+        # This is BELIEF GOVERNANCE, not forecasting. EXIT means:
+        # - Close existing positions
+        # - Do not open new positions
+        # - Await recalibration or regime change
+        #
+        # EXIT does NOT mean the stock will fall or another model is correct.
+        # It means: "I no longer trust my belief about this stock."
+        # ================================================================
+        pit_exit_triggered = False
+        pit_exit_reason = None
+        pit_violation_severity = 0.0
+        pit_penalty_effective = 1.0
+        pit_selected_model = None
+        
+        if PIT_PENALTY_AVAILABLE:
+            # Get selected model from BMA metadata
+            pit_selected_model = bma_meta.get("dominant_model")
+            if pit_selected_model is None:
+                # Fallback to noise model from kalman metadata
+                pit_selected_model = kalman_metadata.get("kalman_noise_model", "unknown")
+            
+            # Get PIT p-value for selected model
+            # PREFER calibrated PIT p-value if isotonic recalibration was applied
+            # Otherwise fall back to raw PIT p-value
+            pit_pvalue_calibrated = kalman_metadata.get("pit_ks_pvalue_calibrated")
+            pit_pvalue_raw = kalman_metadata.get("pit_ks_pvalue")
+            
+            if pit_pvalue_calibrated is not None and pit_pvalue_calibrated > 0:
+                # Use calibrated PIT - recalibration "fixed" the distribution
+                pit_pvalue_for_exit = pit_pvalue_calibrated
+            else:
+                # No recalibration applied - use raw PIT
+                pit_pvalue_for_exit = pit_pvalue_raw
+            
+            # Get regime for threshold selection
+            pit_regime = regime_used if regime_used is not None else -1
+            
+            # Compute PIT violation penalty for selected model
+            if pit_pvalue_for_exit is not None:
+                n_samples_for_pit = len(feats.get("returns", feats.get("px", [])))
+                pit_result = compute_model_pit_penalty(
+                    model_name=pit_selected_model,
+                    pit_pvalue=pit_pvalue_for_exit,
+                    regime=pit_regime,
+                    n_samples=n_samples_for_pit,
+                )
+                
+                pit_violation_severity = pit_result.violation_severity
+                pit_penalty_effective = pit_result.effective_penalty
+                pit_exit_triggered = pit_result.triggers_exit
+                
+                if pit_exit_triggered:
+                    pit_exit_reason = (
+                        f"Critical PIT violation: p={pit_pvalue_for_exit:.4f} "
+                        f"< p_crit={pit_result.p_critical:.4f}, "
+                        f"penalty={pit_penalty_effective:.3f} < {PIT_EXIT_THRESHOLD:.2f}"
+                    )
+                    # Override label to EXIT
+                    label = "EXIT"
+                    # Set position strength to 0 - no trading allowed
+                    pos_strength = 0.0
 
         sigs.append(Signal(
             horizon_days=int(H),

@@ -61,6 +61,17 @@ except ImportError:
     CONTROL_POLICY_AVAILABLE = False
     EscalationStatistics = None
 
+# Import PIT Penalty — Asymmetric Calibration Governance (February 2026)
+try:
+    from calibration.pit_penalty import (
+        get_pit_critical_stocks,
+        PIT_EXIT_THRESHOLD,
+        PIT_CRITICAL_THRESHOLDS,
+    )
+    PIT_PENALTY_AVAILABLE = True
+except ImportError:
+    PIT_PENALTY_AVAILABLE = False
+
 # Rich imports for presentation layer
 import json
 import multiprocessing
