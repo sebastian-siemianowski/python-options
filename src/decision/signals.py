@@ -331,6 +331,22 @@ try:
 except ImportError:
     CONTROL_POLICY_AVAILABLE = False
 
+# PIT Violation Penalty — Asymmetric Calibration Governance (February 2026)
+# CORE DESIGN CONSTRAINT: PIT must only act as a PENALTY, never a reward.
+# When belief cannot be trusted, the only correct signal is EXIT.
+try:
+    from calibration.pit_penalty import (
+        check_exit_signal_required,
+        compute_model_pit_penalty,
+        PITViolationResult,
+        PITPenaltyReport,
+        PIT_EXIT_THRESHOLD,
+        PIT_CRITICAL_THRESHOLDS,
+    )
+    PIT_PENALTY_AVAILABLE = True
+except ImportError:
+    PIT_PENALTY_AVAILABLE = False
+
 # Context manager to suppress noisy HMM convergence messages
 import contextlib
 import io
@@ -6784,6 +6800,12 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             # DUAL-SIDED TREND EXHAUSTION (market-space fragility):
             ue_up=float(ue_up),
             ue_down=float(ue_down),
+            # PIT Violation EXIT Signal (February 2026):
+            pit_exit_triggered=bool(pit_exit_triggered),
+            pit_exit_reason=pit_exit_reason,
+            pit_violation_severity=float(pit_violation_severity),
+            pit_penalty_effective=float(pit_penalty_effective),
+            pit_selected_model=pit_selected_model,
         ))
 
     return sigs, thresholds

@@ -112,8 +112,11 @@ def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln
     if isinstance(signal_label, str):
         label_upper = signal_label.upper()
         
+        # EXIT signal: PIT violation triggered (February 2026)
+        if label_upper == "EXIT":
+            return f"[bold red on dark_red]🚨 EXIT[/bold red on dark_red]"
         # Strong signals: ▲▲▼▼
-        if label_upper.startswith("STRONG BUY"):
+        elif label_upper.startswith("STRONG BUY"):
             return f"[bold #00d700]▲▲{pct_return:+.1f}%[/bold #00d700]"
         elif label_upper.startswith("STRONG SELL"):
             return f"[bold indian_red1]▼▼{pct_return:+.1f}%[/bold indian_red1]"

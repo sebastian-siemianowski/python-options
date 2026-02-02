@@ -2512,6 +2512,19 @@ def fit_regime_model_posterior(
         # Best model by combined score (lowest = best for standardized scores)
         best_model_by_combined = min(models.items(), key=lambda kv: kv[1].get('combined_score', float('inf')))[0] if models else None
         
+        # Build PIT penalty metadata
+        pit_penalty_meta = None
+        if pit_penalty_report is not None:
+            pit_penalty_meta = {
+                "n_violated": pit_penalty_report.n_violated,
+                "n_exit_triggered": pit_penalty_report.n_exit_triggered,
+                "selection_diverged": pit_penalty_report.selection_diverged,
+                "best_model_by_fit": pit_penalty_report.best_model_by_fit,
+                "best_model_after_penalty": pit_penalty_report.best_model_after_penalty,
+                "max_penalty_model": pit_penalty_report.max_penalty_model,
+                "max_penalty_value": float(pit_penalty_report.max_penalty_value),
+            }
+        
         regime_results[regime] = {
             "model_posterior": model_posterior,
             "models": models,
@@ -2531,6 +2544,9 @@ def fit_regime_model_posterior(
                 "bic_weight": bic_weight if model_selection_method == 'combined' else None,
                 "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
                 "smoothing_applied": prev_posterior is not None and temporal_alpha > 0,
+                # PIT Penalty metadata (February 2026)
+                "pit_penalty_applied": pit_penalty_report is not None,
+                "pit_penalty": pit_penalty_meta,
             }
         }
     
