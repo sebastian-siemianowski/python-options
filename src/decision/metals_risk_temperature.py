@@ -2095,14 +2095,14 @@ def render_metals_risk_temperature(
     console.print("  [dim]Stress Indicators[/dim]  [dim italic](z-score = deviation from normal)[/dim italic]")
     console.print()
     
-    # Define display names with consistent formatting
+    # Define display names with full metal names
     indicator_display_names = {
-        "Copper/Gold": "Cu/Au Ratio",      # Industrial vs safe-haven
-        "Silver/Gold": "Ag/Au Ratio",      # Speculative intensity
-        "Gold Vol": "Gold Volatility",     # Fear gauge
-        "Precious/Industrial": "Prec/Ind",  # Sector rotation
-        "Platinum/Gold": "Pt/Au Ratio",    # Industrial precious
-        "Vol Term Structure": "Vol Spike",  # Short-term vs long-term vol
+        "Copper/Gold": "Copper/Gold",           # Industrial vs safe-haven
+        "Silver/Gold": "Silver/Gold",           # Speculative intensity
+        "Gold Vol": "Gold Volatility",          # Fear gauge
+        "Precious/Industrial": "Precious/Ind",  # Sector rotation
+        "Platinum/Gold": "Platinum/Gold",       # Industrial precious
+        "Vol Term Structure": "Vol Spike",      # Short-term vs long-term vol
     }
     
     for ind in result.indicators:
@@ -2120,12 +2120,12 @@ def render_metals_risk_temperature(
         else:
             ind_style = "bold red"
         
-        # Get display name (shortened for alignment)
+        # Get display name
         display_name = indicator_display_names.get(ind.name, ind.name)
         
         line = Text()
         line.append("  ")
-        line.append(f"{display_name:<16}", style="dim")
+        line.append(f"{display_name:<18}", style="dim")
         
         # Mini bar
         mini_width = 12
