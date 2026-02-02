@@ -1046,25 +1046,48 @@ def render_simplified_signal_table(
 
 
 def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[int], title_override: str = None, asset_col_width: int = None, console: Console = None) -> None:
-    """Render world-class compact signal heatmap table."""
+    """Render world-class compact signal heatmap table.
+    
+    Split into two tables:
+    1. Active signals (non-EXIT) - sorted alphabetically by Asset
+    2. EXIT signals (belief withdrawn) - sorted alphabetically by Asset
+    """
     if not summary_rows:
         return
 
-    # Sort: SELL first, then HOLD, then BUY, then STRONG BUY
-    def signal_sort_key(row: Dict) -> int:
-        nearest_label = row.get("nearest_label", "HOLD")
-        label_upper = str(nearest_label).upper()
-        if "SELL" in label_upper:
-            return 0
-        elif "HOLD" in label_upper:
-            return 1
-        elif "STRONG" in label_upper and "BUY" in label_upper:
-            return 3
-        elif "BUY" in label_upper:
-            return 2
-        return 1
-
-    sorted_rows = sorted(summary_rows, key=signal_sort_key)
+    # Separate rows into EXIT and non-EXIT categories
+    exit_rows = []
+    active_rows = []
+    
+    for row in summary_rows:
+        horizon_signals = row.get("horizon_signals", {})
+        # Check if ANY horizon has EXIT signal
+        has_exit = False
+        for horizon in horizons:
+            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
+            label = signal_data.get("label", "HOLD")
+            if str(label).upper() == "EXIT":
+                has_exit = True
+                break
+        
+        if has_exit:
+            exit_rows.append(row)
+        else:
+            active_rows.append(row)
+    
+    # Sort both lists alphabetically by asset label
+    def asset_sort_key(row: Dict) -> str:
+        label = row.get("asset_label", "")
+        # Extract just the company name for sorting (before the ticker)
+        if isinstance(label, str):
+            # Remove Rich markup tags
+            import re
+            plain = re.sub(r"\[/?[^\]]+\]", "", label)
+            return plain.lower()
+        return ""
+    
+    active_rows = sorted(active_rows, key=asset_sort_key)
+    exit_rows = sorted(exit_rows, key=asset_sort_key)
 
     # Compact asset column width
     import re
@@ -1073,86 +1096,99 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
             return 0
         return len(re.sub(r"\[/?[^\]]+\]", "", text))
     if asset_col_width is None:
-        longest_asset = max((_plain_len(r.get("asset_label", "")) for r in sorted_rows), default=0)
+        longest_asset = max((_plain_len(r.get("asset_label", "")) for r in summary_rows), default=0)
         asset_col_width = max(40, min(52, longest_asset + 4))
 
     if console is None:
         console = Console(force_terminal=True, width=200)
     
-    # Clean table with vertical columns
-    table = Table(
-        title=title_override,
-        show_header=True,
-        header_style="bold white",
-        border_style="dim",
-        box=box.ROUNDED,
-        padding=(0, 1),
-        collapse_padding=False,
-        row_styles=["", "on grey7"],  # Alternating row colors
-    )
-    # Asset column - generous width for full names
-    table.add_column("Asset", justify="left", style="white", width=asset_col_width, no_wrap=True, overflow="ellipsis")
-    # Exhaustion columns
-    table.add_column("↑", justify="right", width=3, style="indian_red1")  # Overbought
-    table.add_column("↓", justify="right", width=3, style="bright_green")  # Oversold
+    # Helper function to render a single table
+    def _render_table(rows: List[Dict], table_title: str, title_style: str, border_style: str) -> None:
+        if not rows:
+            return
+            
+        table = Table(
+            title=table_title,
+            title_style=title_style,
+            show_header=True,
+            header_style="bold white",
+            border_style=border_style,
+            box=box.ROUNDED,
+            padding=(0, 1),
+            collapse_padding=False,
+            row_styles=["", "on grey7"],
+        )
+        # Asset column
+        table.add_column("Asset", justify="left", style="white", width=asset_col_width, no_wrap=True, overflow="ellipsis")
+        # Exhaustion columns
+        table.add_column("↑", justify="right", width=3, style="indian_red1")
+        table.add_column("↓", justify="right", width=3, style="bright_green")
+        
+        # Horizon columns
+        horizon_labels = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
+        for horizon in horizons:
+            label = horizon_labels.get(horizon, f"{horizon}d")
+            table.add_column(label, justify="center", width=11, no_wrap=True)
+
+        for row in rows:
+            asset_label = row.get("asset_label", "Unknown")
+            horizon_signals = row.get("horizon_signals", {})
+            
+            # Compute max UE↑ and UE↓
+            max_ue_up = 0.0
+            max_ue_down = 0.0
+            for horizon in horizons:
+                signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
+                ue_up = signal_data.get("ue_up", 0.0) or 0.0
+                ue_down = signal_data.get("ue_down", 0.0) or 0.0
+                if ue_up > max_ue_up:
+                    max_ue_up = ue_up
+                if ue_down > max_ue_down:
+                    max_ue_down = ue_down
+            
+            # Format UE↑
+            ue_up_pct = int(max_ue_up * 100)
+            if ue_up_pct < 5:
+                ue_up_display = "[dim]·[/dim]"
+            elif max_ue_up >= 0.6:
+                ue_up_display = f"[indian_red1]{ue_up_pct}[/indian_red1]"
+            elif max_ue_up >= 0.3:
+                ue_up_display = f"[yellow]{ue_up_pct}[/yellow]"
+            else:
+                ue_up_display = f"[dim]{ue_up_pct}[/dim]"
+
+            # Format UE↓
+            ue_down_pct = int(max_ue_down * 100)
+            if ue_down_pct < 5:
+                ue_down_display = "[dim]·[/dim]"
+            elif max_ue_down >= 0.6:
+                ue_down_display = f"[#00d700]{ue_down_pct}[/#00d700]"
+            elif max_ue_down >= 0.3:
+                ue_down_display = f"[cyan]{ue_down_pct}[/cyan]"
+            else:
+                ue_down_display = f"[dim]{ue_down_pct}[/dim]"
+            
+            cells = []
+            for horizon in horizons:
+                signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
+                label = signal_data.get("label", "HOLD")
+                profit_pln = signal_data.get("profit_pln", 0.0)
+                cells.append(format_profit_with_signal(label, profit_pln))
+            
+            table.add_row(asset_label, ue_up_display, ue_down_display, *cells)
+
+        console.print(table)
+        console.print()
     
-    # Horizon columns - slightly wider for readability
-    horizon_labels = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
-    for horizon in horizons:
-        label = horizon_labels.get(horizon, f"{horizon}d")
-        table.add_column(label, justify="center", width=11, no_wrap=True)
-
-    for row in sorted_rows:
-        asset_label = row.get("asset_label", "Unknown")
-        horizon_signals = row.get("horizon_signals", {})
-        
-        # Compute max UE↑ and UE↓ across all horizons for this asset
-        max_ue_up = 0.0
-        max_ue_down = 0.0
-        for horizon in horizons:
-            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
-            ue_up = signal_data.get("ue_up", 0.0) or 0.0
-            ue_down = signal_data.get("ue_down", 0.0) or 0.0
-            if ue_up > max_ue_up:
-                max_ue_up = ue_up
-            if ue_down > max_ue_down:
-                max_ue_down = ue_down
-        
-        # Format UE↑ as percentage (0-100%) with color coding
-        # Show dot if value is not meaningful (< 5%)
-        ue_up_pct = int(max_ue_up * 100)
-        if ue_up_pct < 5:
-            ue_up_display = "[dim]·[/dim]"
-        elif max_ue_up >= 0.6:
-            ue_up_display = f"[indian_red1]{ue_up_pct}[/indian_red1]"
-        elif max_ue_up >= 0.3:
-            ue_up_display = f"[yellow]{ue_up_pct}[/yellow]"
-        else:
-            ue_up_display = f"[dim]{ue_up_pct}[/dim]"
-
-        # Format UE↓ as percentage (0-100%) with color coding
-        # Show dot if value is not meaningful (< 5%)
-        ue_down_pct = int(max_ue_down * 100)
-        if ue_down_pct < 5:
-            ue_down_display = "[dim]·[/dim]"
-        elif max_ue_down >= 0.6:
-            ue_down_display = f"[#00d700]{ue_down_pct}[/#00d700]"
-        elif max_ue_down >= 0.3:
-            ue_down_display = f"[cyan]{ue_down_pct}[/cyan]"
-        else:
-            ue_down_display = f"[dim]{ue_down_pct}[/dim]"
-        
-        cells = []
-        for horizon in horizons:
-            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
-            label = signal_data.get("label", "HOLD")
-            profit_pln = signal_data.get("profit_pln", 0.0)
-            cells.append(format_profit_with_signal(label, profit_pln))
-        
-        table.add_row(asset_label, ue_up_display, ue_down_display, *cells)
-
-    console.print(table)
-    console.print()
+    # Render active signals table first (if any)
+    if active_rows:
+        active_title = title_override if title_override else f"Active Signals ({len(active_rows)} assets)"
+        _render_table(active_rows, active_title, "bold bright_white", "dim")
+    
+    # Render EXIT signals table (if any)
+    if exit_rows:
+        exit_title = f"EXIT — Belief Withdrawn ({len(exit_rows)} assets)"
+        _render_table(exit_rows, exit_title, "bold red", "red")
 
 
 def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) -> None:
