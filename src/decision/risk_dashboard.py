@@ -140,26 +140,19 @@ def compute_and_render_unified_risk(
         return compute_market_temperature(start_date=start_date)
     
     # Compute all three temperature modules in parallel
+    # NOTE: We don't use _SuppressOutput with parallel execution because
+    # FD-level stdout/stderr redirection is not thread-safe and causes
+    # data corruption in yfinance downloads (February 2026 fix)
     if use_parallel and max_workers > 1:
-        if suppress_output:
-            with _SuppressOutput():
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    future_risk = executor.submit(compute_risk)
-                    future_metals = executor.submit(compute_metals)
-                    future_market = executor.submit(compute_market)
-                    
-                    risk_result = future_risk.result()
-                    metals_result, alerts, quality_report = future_metals.result()
-                    market_result = future_market.result()
-        else:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_risk = executor.submit(compute_risk)
-                future_metals = executor.submit(compute_metals)
-                future_market = executor.submit(compute_market)
-                
-                risk_result = future_risk.result()
-                metals_result, alerts, quality_report = future_metals.result()
-                market_result = future_market.result()
+        # Parallel execution - no output suppression to avoid thread safety issues
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_risk = executor.submit(compute_risk)
+            future_metals = executor.submit(compute_metals)
+            future_market = executor.submit(compute_market)
+            
+            risk_result = future_risk.result()
+            metals_result, alerts, quality_report = future_metals.result()
+            market_result = future_market.result()
     else:
         # Sequential fallback
         if suppress_output:

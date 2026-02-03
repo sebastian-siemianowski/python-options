@@ -741,7 +741,11 @@ CURRENCY_PAIRS = {
 }
 
 
+# Thread-safe cache for market data
+import threading
 _market_data_cache: Dict[str, Tuple[datetime, Any]] = {}
+_cache_lock = threading.Lock()  # Thread lock for cache operations
+_yfinance_lock = threading.Lock()  # Thread lock for yfinance downloads (not thread-safe)
 
 
 class _SuppressOutput:
@@ -774,62 +778,72 @@ def _fetch_etf_data(
     start_date: str,
     end_date: Optional[str] = None
 ) -> Dict[str, pd.Series]:
-    """Fetch key ETF data for market assessment."""
+    """Fetch key ETF data for market assessment (thread-safe)."""
     cache_key = f"etf_{start_date}_{end_date}"
     now = datetime.now()
     
-    if cache_key in _market_data_cache:
-        cached_time, cached_data = _market_data_cache[cache_key]
-        if (now - cached_time).total_seconds() < CACHE_TTL_SECONDS:
-            return cached_data
-    
-    try:
-        import yfinance as yf
-    except ImportError:
-        warnings.warn("yfinance not available")
-        return {}
-    
-    end = end_date or datetime.now().strftime("%Y-%m-%d")
-    start_dt = datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=ZSCORE_LOOKBACK_DAYS + 30)
-    start = start_dt.strftime("%Y-%m-%d")
-    
-    etf_tickers = {
-        'SPY': 'SPY',      # S&P 500
-        'QQQ': 'QQQ',      # Nasdaq 100
-        'IWM': 'IWM',      # Russell 2000
-        'IWD': 'IWD',      # Russell 1000 Value
-        'IWF': 'IWF',      # Russell 1000 Growth
-        'VTI': 'VTI',      # Total Market
-        'VIX': '^VIX',     # Volatility Index
-        # Sector ETFs (SPDR Select Sector)
-        'XLK': 'XLK',      # Technology
-        'XLF': 'XLF',      # Financials
-        'XLV': 'XLV',      # Healthcare
-        'XLY': 'XLY',      # Consumer Discretionary
-        'XLP': 'XLP',      # Consumer Staples
-        'XLE': 'XLE',      # Energy
-        'XLI': 'XLI',      # Industrials
-        'XLB': 'XLB',      # Materials
-        'XLU': 'XLU',      # Utilities
-        'XLRE': 'XLRE',    # Real Estate
-        'XLC': 'XLC',      # Communication Services
-    }
-    
-    result = {}
-    
-    for name, ticker in etf_tickers.items():
+    # Thread-safe: Lock the entire fetch operation to prevent duplicate work
+    with _cache_lock:
+        # Check cache first (inside lock to prevent race)
+        if cache_key in _market_data_cache:
+            cached_time, cached_data = _market_data_cache[cache_key]
+            if (now - cached_time).total_seconds() < CACHE_TTL_SECONDS:
+                return cached_data
+        
+        # Not in cache, need to fetch
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
-            series = _extract_close_series(df, ticker)
-            if series is not None and len(series) > 20:
-                result[name] = series
-        except Exception as e:
-            logger.debug(f"Failed to fetch {ticker}: {e}")
-    
-    _market_data_cache[cache_key] = (now, result)
-    return result
+            import yfinance as yf
+        except ImportError:
+            warnings.warn("yfinance not available")
+            return {}
+        
+        end = end_date or datetime.now().strftime("%Y-%m-%d")
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=ZSCORE_LOOKBACK_DAYS + 30)
+        start = start_dt.strftime("%Y-%m-%d")
+        
+        etf_tickers = {
+            'SPY': 'SPY',      # S&P 500
+            'QQQ': 'QQQ',      # Nasdaq 100
+            'IWM': 'IWM',      # Russell 2000
+            'IWD': 'IWD',      # Russell 1000 Value
+            'IWF': 'IWF',      # Russell 1000 Growth
+            'VTI': 'VTI',      # Total Market
+            'VIX': '^VIX',     # Volatility Index
+            # Sector ETFs (SPDR Select Sector)
+            'XLK': 'XLK',      # Technology
+            'XLF': 'XLF',      # Financials
+            'XLV': 'XLV',      # Healthcare
+            'XLY': 'XLY',      # Consumer Discretionary
+            'XLP': 'XLP',      # Consumer Staples
+            'XLE': 'XLE',      # Energy
+            'XLI': 'XLI',      # Industrials
+            'XLB': 'XLB',      # Materials
+            'XLU': 'XLU',      # Utilities
+            'XLRE': 'XLRE',    # Real Estate
+            'XLC': 'XLC',      # Communication Services
+        }
+        
+        result = {}
+        
+        for name, ticker in etf_tickers.items():
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    # Use Ticker object to avoid global state issues in yf.download
+                    ticker_obj = yf.Ticker(ticker)
+                    df = ticker_obj.history(start=start, end=end, auto_adjust=True)
+                
+                # history() returns a simple DataFrame with Close column (not MultiIndex)
+                if df is not None and not df.empty and 'Close' in df.columns:
+                    series = df['Close'].dropna()
+                    if len(series) > 20:
+                        result[name] = series
+            except Exception as e:
+                logger.debug(f"Failed to fetch {ticker}: {e}")
+        
+        # Update cache (still inside lock)
+        _market_data_cache[cache_key] = (now, result)
+        return result
 
 
 def _fetch_stock_sample_data(
@@ -838,14 +852,16 @@ def _fetch_stock_sample_data(
     end_date: Optional[str] = None,
     cache_key_prefix: str = "stocks"
 ) -> Dict[str, pd.Series]:
-    """Fetch price data for a sample of stocks."""
+    """Fetch price data for a sample of stocks (thread-safe)."""
     cache_key = f"{cache_key_prefix}_{start_date}_{end_date}_{len(tickers)}"
     now = datetime.now()
     
-    if cache_key in _market_data_cache:
-        cached_time, cached_data = _market_data_cache[cache_key]
-        if (now - cached_time).total_seconds() < CACHE_TTL_SECONDS:
-            return cached_data
+    # Thread-safe cache check
+    with _cache_lock:
+        if cache_key in _market_data_cache:
+            cached_time, cached_data = _market_data_cache[cache_key]
+            if (now - cached_time).total_seconds() < CACHE_TTL_SECONDS:
+                return cached_data
     
     try:
         import yfinance as yf
@@ -860,9 +876,11 @@ def _fetch_stock_sample_data(
     
     # Batch download for efficiency (threads=False to avoid output issues)
     try:
-        with warnings.catch_warnings(), _SuppressOutput():
+        with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            df = yf.download(tickers, start=start, end=end, progress=False, auto_adjust=True, threads=False)
+            # Thread-safe yfinance download
+            with _yfinance_lock:
+                df = yf.download(tickers, start=start, end=end, progress=False, auto_adjust=True, threads=False)
         
         if df is not None and not df.empty:
             # Handle multi-ticker DataFrame
@@ -884,7 +902,9 @@ def _fetch_stock_sample_data(
     except Exception as e:
         logger.debug(f"Batch download failed: {e}")
     
-    _market_data_cache[cache_key] = (now, result)
+    # Thread-safe cache update
+    with _cache_lock:
+        _market_data_cache[cache_key] = (now, result)
     return result
 
 
@@ -1289,14 +1309,16 @@ def _fetch_currency_data(
     start_date: str,
     end_date: Optional[str] = None
 ) -> Dict[str, pd.Series]:
-    """Fetch currency pair data for FX market assessment."""
+    """Fetch currency pair data for FX market assessment (thread-safe)."""
     cache_key = f"currency_{start_date}_{end_date}"
     now = datetime.now()
     
-    if cache_key in _market_data_cache:
-        cached_time, cached_data = _market_data_cache[cache_key]
-        if (now - cached_time).total_seconds() < CACHE_TTL_SECONDS:
-            return cached_data
+    # Thread-safe cache check
+    with _cache_lock:
+        if cache_key in _market_data_cache:
+            cached_time, cached_data = _market_data_cache[cache_key]
+            if (now - cached_time).total_seconds() < CACHE_TTL_SECONDS:
+                return cached_data
     
     try:
         import yfinance as yf
@@ -1313,14 +1335,20 @@ def _fetch_currency_data(
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
-            series = _extract_close_series(df, ticker)
-            if series is not None and len(series) > 20:
-                result[ticker] = series
+                # Use Ticker object to avoid global state issues
+                ticker_obj = yf.Ticker(ticker)
+                df = ticker_obj.history(start=start, end=end, auto_adjust=True)
+            
+            if df is not None and not df.empty and 'Close' in df.columns:
+                series = df['Close'].dropna()
+                if len(series) > 20:
+                    result[ticker] = series
         except Exception:
             pass
     
-    _market_data_cache[cache_key] = (now, result)
+    # Thread-safe cache update
+    with _cache_lock:
+        _market_data_cache[cache_key] = (now, result)
     return result
 
 
