@@ -387,6 +387,16 @@ from decision.signals_ux import (
 # (Temperature modules own their own rendering - no duplication in signals_ux)
 from decision.risk_temperature import render_risk_temperature_summary
 
+# Import unified risk dashboard (replaces fragmented risk temperature summary)
+# February 2026: Single dashboard combining cross-asset, metals, and equity risk
+# Uses parallel processing with maximum CPU cores for speed
+try:
+    from decision.risk_dashboard import compute_and_render_unified_risk
+    UNIFIED_RISK_DASHBOARD_AVAILABLE = True
+except ImportError:
+    UNIFIED_RISK_DASHBOARD_AVAILABLE = False
+    compute_and_render_unified_risk = None  # stub to avoid NameError
+
 # Import data utilities and helper functions
 from ingestion.data_utils import (
     norm_cdf,
@@ -7278,8 +7288,28 @@ def main() -> None:
             # Add high-conviction signals summary for short-term trading
             render_strong_signals_summary(summary_rows_cached, horizons=[1, 3, 7])
             
-            # Show risk temperature summary (computed once, applies to all assets)
-            if RISK_TEMPERATURE_AVAILABLE:
+            # Show unified risk dashboard (replaces fragmented risk temperature display)
+            if UNIFIED_RISK_DASHBOARD_AVAILABLE:
+                try:
+                    compute_and_render_unified_risk(
+                        start_date="2020-01-01",
+                        suppress_output=True,
+                        console=Console(),
+                        use_parallel=True,  # Use maximum processors for speed
+                    )
+                except Exception:
+                    # Fallback to legacy
+                    if RISK_TEMPERATURE_AVAILABLE:
+                        try:
+                            risk_temp_result = get_cached_risk_temperature(
+                                start_date="2020-01-01",
+                                notional=NOTIONAL_PLN,
+                                estimated_gap_risk=0.03,
+                            )
+                            render_risk_temperature_summary(risk_temp_result)
+                        except Exception:
+                            pass
+            elif RISK_TEMPERATURE_AVAILABLE:
                 try:
                     risk_temp_result = get_cached_risk_temperature(
                         start_date="2020-01-01",
@@ -8006,8 +8036,31 @@ def main() -> None:
         # Add high-conviction signals summary for short-term trading
         render_strong_signals_summary(summary_rows, horizons=[1, 3, 7])
         
-        # Show risk temperature summary (computed once, applies to all assets)
-        if RISK_TEMPERATURE_AVAILABLE:
+        # Show unified risk dashboard (replaces fragmented risk temperature display)
+        # February 2026: Full risk dashboard matching `make risk` output
+        if UNIFIED_RISK_DASHBOARD_AVAILABLE:
+            try:
+                compute_and_render_unified_risk(
+                    start_date="2020-01-01",
+                    suppress_output=True,
+                    console=Console(),
+                    use_parallel=True,  # Use maximum processors for speed
+                )
+            except Exception as rd_e:
+                if os.getenv("DEBUG"):
+                    Console().print(f"[dim]Unified risk dashboard error: {rd_e}[/dim]")
+                # Fallback to legacy risk temperature summary
+                if RISK_TEMPERATURE_AVAILABLE:
+                    try:
+                        risk_temp_result = get_cached_risk_temperature(
+                            start_date="2020-01-01",
+                            notional=NOTIONAL_PLN,
+                            estimated_gap_risk=0.03,
+                        )
+                        render_risk_temperature_summary(risk_temp_result)
+                    except Exception:
+                        pass
+        elif RISK_TEMPERATURE_AVAILABLE:
             try:
                 risk_temp_result = get_cached_risk_temperature(
                     start_date="2020-01-01",

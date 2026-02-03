@@ -577,21 +577,44 @@ def _extract_close_series(df, ticker: str) -> Optional[pd.Series]:
     try:
         if isinstance(df.columns, pd.MultiIndex):
             if 'Close' in df.columns.get_level_values(0):
-                series = df['Close']
-                if isinstance(series, pd.DataFrame):
-                    series = series.iloc[:, 0]
-                return series.dropna()
+                # Check if it's a multi-ticker DataFrame
+                close_df = df['Close']
+                if isinstance(close_df, pd.DataFrame):
+                    # Try to get the specific ticker's column
+                    if ticker in close_df.columns:
+                        return close_df[ticker].dropna()
+                    # Try without special characters (e.g., ^VIX -> VIX)
+                    ticker_clean = ticker.replace('^', '').replace('=X', '')
+                    if ticker_clean in close_df.columns:
+                        return close_df[ticker_clean].dropna()
+                    # Fallback to first column only if single column
+                    if len(close_df.columns) == 1:
+                        return close_df.iloc[:, 0].dropna()
+                    # For multi-column, don't fallback - return None to avoid wrong data
+                    return None
+                else:
+                    # It's already a Series
+                    return close_df.dropna()
         
         if 'Close' in df.columns:
             series = df['Close']
             if isinstance(series, pd.DataFrame):
-                series = series.iloc[:, 0]
+                # Same logic for multi-ticker case
+                if ticker in series.columns:
+                    return series[ticker].dropna()
+                ticker_clean = ticker.replace('^', '').replace('=X', '')
+                if ticker_clean in series.columns:
+                    return series[ticker_clean].dropna()
+                if len(series.columns) == 1:
+                    return series.iloc[:, 0].dropna()
+                return None
             return series.dropna()
         
         if 'close' in df.columns:
             return df['close'].dropna()
         
-        if len(df.columns) > 0:
+        # Only use first column fallback for single-column DataFrames
+        if len(df.columns) == 1:
             return df.iloc[:, 0].dropna()
     except Exception:
         pass

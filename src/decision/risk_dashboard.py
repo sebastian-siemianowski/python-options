@@ -87,13 +87,26 @@ def compute_and_render_unified_risk(
     suppress_output: bool = True,
     console: Console = None,
     output_json: bool = False,
+    use_parallel: bool = True,
 ) -> Dict[str, Any]:
     """
     Compute and render unified risk dashboard from all temperature modules.
     
     This function directly calls the render functions from each module,
     ensuring all data is displayed in a unified view.
+    
+    February 2026: Added parallel computation using maximum processors for speed.
+    
+    Args:
+        start_date: Start date for historical data
+        suppress_output: Whether to suppress stdout/stderr during computation
+        console: Rich console for output
+        output_json: Return JSON dict instead of rendering
+        use_parallel: Use parallel processing for speed (default: True)
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import multiprocessing
+    
     from decision.risk_temperature import (
         compute_risk_temperature,
         render_risk_temperature_summary,
@@ -113,16 +126,51 @@ def compute_and_render_unified_risk(
     if console is None:
         console = Console()
     
-    # Compute all three temperature modules
-    if suppress_output:
-        with _SuppressOutput():
+    # Use maximum available processors
+    max_workers = min(3, multiprocessing.cpu_count())  # 3 modules max
+    
+    # Define computation functions
+    def compute_risk():
+        return compute_risk_temperature(start_date=start_date)
+    
+    def compute_metals():
+        return compute_anticipatory_metals_risk_temperature(start_date=start_date)
+    
+    def compute_market():
+        return compute_market_temperature(start_date=start_date)
+    
+    # Compute all three temperature modules in parallel
+    if use_parallel and max_workers > 1:
+        if suppress_output:
+            with _SuppressOutput():
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_risk = executor.submit(compute_risk)
+                    future_metals = executor.submit(compute_metals)
+                    future_market = executor.submit(compute_market)
+                    
+                    risk_result = future_risk.result()
+                    metals_result, alerts, quality_report = future_metals.result()
+                    market_result = future_market.result()
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_risk = executor.submit(compute_risk)
+                future_metals = executor.submit(compute_metals)
+                future_market = executor.submit(compute_market)
+                
+                risk_result = future_risk.result()
+                metals_result, alerts, quality_report = future_metals.result()
+                market_result = future_market.result()
+    else:
+        # Sequential fallback
+        if suppress_output:
+            with _SuppressOutput():
+                risk_result = compute_risk_temperature(start_date=start_date)
+                metals_result, alerts, quality_report = compute_anticipatory_metals_risk_temperature(start_date=start_date)
+                market_result = compute_market_temperature(start_date=start_date)
+        else:
             risk_result = compute_risk_temperature(start_date=start_date)
             metals_result, alerts, quality_report = compute_anticipatory_metals_risk_temperature(start_date=start_date)
             market_result = compute_market_temperature(start_date=start_date)
-    else:
-        risk_result = compute_risk_temperature(start_date=start_date)
-        metals_result, alerts, quality_report = compute_anticipatory_metals_risk_temperature(start_date=start_date)
-        market_result = compute_market_temperature(start_date=start_date)
     
     # If JSON output requested, return combined dict
     if output_json:

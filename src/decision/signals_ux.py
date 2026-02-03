@@ -1142,16 +1142,25 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
                 crash_risk_score = 0
             crash_risk_score = int(crash_risk_score)
             
-            # Format crash risk display with color coding
-            if crash_risk_score < 20:
-                crash_risk_display = f"[dim]{crash_risk_score}[/dim]"
-            elif crash_risk_score < 40:
-                crash_risk_display = f"[white]{crash_risk_score}[/white]"
-            elif crash_risk_score < 60:
+            # Format crash risk display with intuitive color coding
+            # Low risk = calm colors, High risk = alarming colors
+            if crash_risk_score < 15:
+                # Very low risk - dim/invisible
+                crash_risk_display = f"[dim]·[/dim]"
+            elif crash_risk_score < 30:
+                # Low risk - calm green
+                crash_risk_display = f"[bright_green]{crash_risk_score}[/bright_green]"
+            elif crash_risk_score < 50:
+                # Moderate risk - yellow warning
                 crash_risk_display = f"[yellow]{crash_risk_score}[/yellow]"
-            elif crash_risk_score < 80:
+            elif crash_risk_score < 70:
+                # Elevated risk - orange alert
                 crash_risk_display = f"[orange1]{crash_risk_score}[/orange1]"
+            elif crash_risk_score < 85:
+                # High risk - red
+                crash_risk_display = f"[red]{crash_risk_score}[/red]"
             else:
+                # Extreme risk - bold red with emphasis
                 crash_risk_display = f"[bold red]{crash_risk_score}[/bold red]"
             
             # Compute max UE↑ and UE↓
