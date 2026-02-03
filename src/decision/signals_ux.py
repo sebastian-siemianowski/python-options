@@ -1120,6 +1120,8 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         )
         # Asset column
         table.add_column("Asset", justify="left", style="white", width=asset_col_width, no_wrap=True, overflow="ellipsis")
+        # Crash Risk column (0-100 momentum-based multi-factor)
+        table.add_column("Crash", justify="right", width=5, style="red")
         # Exhaustion columns
         table.add_column("↑", justify="right", width=3, style="indian_red1")
         table.add_column("↓", justify="right", width=3, style="bright_green")
@@ -1133,6 +1135,24 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         for row in rows:
             asset_label = row.get("asset_label", "Unknown")
             horizon_signals = row.get("horizon_signals", {})
+            
+            # Get crash risk score (0-100) and format display
+            crash_risk_score = row.get("crash_risk_score", 0)
+            if crash_risk_score is None:
+                crash_risk_score = 0
+            crash_risk_score = int(crash_risk_score)
+            
+            # Format crash risk display with color coding
+            if crash_risk_score < 20:
+                crash_risk_display = f"[dim]{crash_risk_score}[/dim]"
+            elif crash_risk_score < 40:
+                crash_risk_display = f"[white]{crash_risk_score}[/white]"
+            elif crash_risk_score < 60:
+                crash_risk_display = f"[yellow]{crash_risk_score}[/yellow]"
+            elif crash_risk_score < 80:
+                crash_risk_display = f"[orange1]{crash_risk_score}[/orange1]"
+            else:
+                crash_risk_display = f"[bold red]{crash_risk_score}[/bold red]"
             
             # Compute max UE↑ and UE↓
             max_ue_up = 0.0
@@ -1175,7 +1195,7 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
                 profit_pln = signal_data.get("profit_pln", 0.0)
                 cells.append(format_profit_with_signal(label, profit_pln))
             
-            table.add_row(asset_label, ue_up_display, ue_down_display, *cells)
+            table.add_row(asset_label, crash_risk_display, ue_up_display, ue_down_display, *cells)
 
         console.print(table)
         console.print()
@@ -1264,8 +1284,10 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
     exhaust_legend = Table.grid(padding=(0, 4))
     exhaust_legend.add_column(justify="center")
     exhaust_legend.add_column(justify="center")
+    exhaust_legend.add_column(justify="center")
     
     exhaust_legend.add_row(
+        Text.assemble(("CR", "bold yellow"), (" Crash Risk (0-100)", "dim")),
         Text.assemble(("↑%", "bold indian_red1"), (" Overbought (above EMA)", "dim")),
         Text.assemble(("↓%", "bold bright_green"), (" Oversold (below EMA)", "dim")),
     )

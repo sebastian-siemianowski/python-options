@@ -695,6 +695,28 @@ except ImportError:
 
 
 # =============================================================================
+# ASSET-LEVEL CRASH RISK (February 2026 - Chinese Staff Professor Panel)
+# =============================================================================
+# Computes per-asset crash risk using multi-factor momentum analysis.
+# Uses multiprocessing for parallel computation across assets.
+# =============================================================================
+try:
+    from decision.asset_crash_risk import (
+        compute_asset_crash_risk,
+        compute_crash_risk_bulk,
+        AssetCrashRiskResult,
+        CrashRiskFactors,
+        format_crash_risk_display,
+        get_cached_crash_risk,
+        cache_crash_risk,
+        clear_crash_risk_cache,
+    )
+    ASSET_CRASH_RISK_AVAILABLE = True
+except ImportError:
+    ASSET_CRASH_RISK_AVAILABLE = False
+
+
+# =============================================================================
 # ISOTONIC RECALIBRATION HELPER
 # =============================================================================
 # This function loads a persisted transport map and applies it to PIT values.
@@ -7233,6 +7255,10 @@ def main() -> None:
                     else:
                         row["sector"] = "Other"
 
+                # Ensure crash_risk_score exists (default 0 for old cache format)
+                if "crash_risk_score" not in row:
+                    row["crash_risk_score"] = 0
+
                 # Ensure horizon_signals have p_up and exp_ret (from assets_cached if needed)
                 horizon_signals = row.get("horizon_signals", {})
                 for h, sig_data in horizon_signals.items():
@@ -7877,11 +7903,26 @@ def main() -> None:
             for s in sigs
         }
         nearest_label = sigs[0].label if sigs else "HOLD"
+        
+        # Compute crash risk for this asset (uses momentum-based multi-factor model)
+        crash_risk_score = 0
+        if ASSET_CRASH_RISK_AVAILABLE and px is not None and len(px) > 50:
+            try:
+                # Get volume if available in features
+                volume_series = feats.get("volume") if feats else None
+                crash_result = compute_asset_crash_risk(px, volume_series, canon)
+                crash_risk_score = crash_result.crash_risk_score
+                # Cache for potential reuse
+                cache_crash_risk(canon, crash_result)
+            except Exception:
+                crash_risk_score = 0
+        
         summary_rows.append({
             "asset_label": asset_label,
             "horizon_signals": horizon_signals,
             "nearest_label": nearest_label,
             "sector": get_sector(canon),
+            "crash_risk_score": crash_risk_score,
         })
 
         # Prepare JSON block
@@ -7900,6 +7941,8 @@ def main() -> None:
             "edgeworth_damped": True,
             "kelly_rule": "half",
             "decision_thresholds": thresholds,
+            # crash risk score (0-100, momentum-based multi-factor)
+            "crash_risk_score": crash_risk_score,
             # volatility modeling metadata
             "vol_source": feats.get("vol_source", "garch11"),
             "garch_params": feats.get("garch_params", {}),
