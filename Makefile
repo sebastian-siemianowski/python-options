@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -84,6 +84,16 @@ SHELL := /bin/bash
 # │  make top100             Top 100 screener (Russell 5000 universe)            │
 # │  make build-russell      Build Russell 2500 tickers CSV                      │
 # │  make russell5000        Build Russell 5000 tickers CSV                      │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  🌡️  RISK DASHBOARD (Unified Risk Temperature)                               │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make risk               Unified risk dashboard (cross-asset + metals + mkt)│
+# │  make risk ARGS="--json" Output as JSON                                      │
+# │  make temp               Cross-asset risk temperature only                   │
+# │  make metals             Metals risk temperature only                        │
+# │  make market             Equity market temperature only                      │
 # └──────────────────────────────────────────────────────────────────────────────┘
 #
 # ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -358,14 +368,25 @@ clean-cache: .venv/.deps_installed
 colors: .venv/.deps_installed
 	@.venv/bin/python src/show_colors.py
 
-# Market Risk Temperature - cross-asset stress indicator
+# ═══════════════════════════════════════════════════════════════════════════════
+# UNIFIED RISK DASHBOARD
+# ═══════════════════════════════════════════════════════════════════════════════
+# Combines all risk temperature modules into a single view:
+#   - Cross-asset stress indicators (risk_temperature)
+#   - Metals crash risk and overnight exposure (metals_risk_temperature)
+#   - US equity market momentum and sector rotation (market_temperature)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Unified Risk Dashboard - combined view of all risk indicators
+risk: .venv/.deps_installed
+	@.venv/bin/python src/decision/risk_dashboard.py $(ARGS)
+
+# Individual temperature modules (for legacy/debugging)
 temp: .venv/.deps_installed
 	@.venv/bin/python src/decision/risk_temperature.py
-# Metals Risk Temperature - cross-metal stress indicator
+
 metals: .venv/.deps_installed
 	@.venv/bin/python src/decision/metals_risk_temperature.py
 
-# Market Temperature - comprehensive US equity market assessment
-# Analyzes Top 100, S&P 500, Russell 2000 with crash risk, momentum, breadth
-risk: .venv/.deps_installed
+market: .venv/.deps_installed
 	@.venv/bin/python src/decision/market_temperature.py $(ARGS)

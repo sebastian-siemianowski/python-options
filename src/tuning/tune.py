@@ -2191,8 +2191,8 @@ def fit_all_models_for_regime(
     # Model naming: "aigf_nf"
     # =========================================================================
     
-    # AIGF-NF is ALWAYS enabled as a base model in BMA
-    AIGF_NF_ENABLED = True
+    # AIGF-NF is DISABLED - set to True to re-enable
+    AIGF_NF_ENABLED = False
     
     if AIGF_NF_ENABLED:
         model_name = get_aigf_nf_model_name()
