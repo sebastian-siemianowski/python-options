@@ -644,25 +644,6 @@ SECTOR_ETFS = {
 # MARKET DATA CACHE
 # =============================================================================
 
-# =============================================================================
-# SECTOR ETFs - For sector-by-sector breakdown (February 2026)
-# =============================================================================
-# SPDR Select Sector ETFs tracking S&P 500 sectors
-SECTOR_ETFS = {
-    "XLK": "Technology",
-    "XLF": "Financials",
-    "XLV": "Healthcare",
-    "XLY": "Cons. Disc.",
-    "XLP": "Cons. Staples",
-    "XLE": "Energy",
-    "XLI": "Industrials",
-    "XLB": "Materials",
-    "XLU": "Utilities",
-    "XLRE": "Real Estate",
-    "XLC": "Comm. Svcs",
-}
-
-
 _market_data_cache: Dict[str, Tuple[datetime, Any]] = {}
 
 

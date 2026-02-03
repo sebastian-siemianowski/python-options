@@ -365,6 +365,24 @@ except ImportError:
     PIT_PENALTY_AVAILABLE = False
 
 # =============================================================================
+# IMPORT UNIFIED RISK CONTEXT (February 2026)
+# =============================================================================
+# Unified risk context for signal-risk architecture integration.
+# Provides copula-based tail dependence and smooth scale factors.
+# =============================================================================
+try:
+    from calibration.copula_correlation import (
+        compute_unified_risk_context,
+        UnifiedRiskContext,
+        compute_smooth_scale_factor,
+        COPULA_CORRELATION_AVAILABLE,
+    )
+    UNIFIED_RISK_AVAILABLE = True
+except ImportError:
+    UNIFIED_RISK_AVAILABLE = False
+    COPULA_CORRELATION_AVAILABLE = False
+
+# =============================================================================
 # IMPORT MODEL SELECTION UTILITIES FROM CALIBRATION
 # =============================================================================
 # AIC, BIC, kurtosis, and model weight functions are now in src/calibration/

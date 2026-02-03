@@ -248,11 +248,12 @@ def compute_and_render_unified_risk(
         box=box.SIMPLE,
         padding=(0, 1),
     )
-    summary_table.add_column("Module", justify="left", width=15)
-    summary_table.add_column("Temp", justify="center", width=8)
-    summary_table.add_column("Scale", justify="center", width=8)
-    summary_table.add_column("Status", justify="left", width=12)
-    summary_table.add_column("Crash Risk", justify="center", width=12)
+    summary_table.add_column("Module", justify="left", width=14)
+    summary_table.add_column("Temp", justify="center", width=6)
+    summary_table.add_column("Scale", justify="center", width=7)
+    summary_table.add_column("Status", justify="left", width=10)
+    summary_table.add_column("Crash", justify="right", width=6)
+    summary_table.add_column("Level", justify="left", width=10)
     
     def temp_style(t: float) -> str:
         if t < 0.3: return "bright_green"
@@ -260,33 +261,45 @@ def compute_and_render_unified_risk(
         elif t < 1.2: return "bright_red"
         return "bold red"
     
+    def crash_style(level: str) -> str:
+        if level == "Extreme": return "bold red"
+        elif level == "High": return "red"
+        elif level == "Elevated": return "yellow"
+        return "green"
+    
     # Risk Temperature row
     r_crash = getattr(risk_result, 'crash_risk_pct', 0.0)
     r_crash_level = getattr(risk_result, 'crash_risk_level', 'Low')
+    r_status = getattr(risk_result, 'status', 'Normal') or "Normal"
     summary_table.add_row(
         "Cross-Asset",
         Text(f"{risk_result.temperature:.2f}", style=temp_style(risk_result.temperature)),
         f"{risk_result.scale_factor:.0%}",
-        getattr(risk_result, 'status', 'Normal') or "Normal",
-        f"{r_crash:.0%} ({r_crash_level})" if r_crash > 0.01 else "—",
+        Text(r_status, style=temp_style(risk_result.temperature)),
+        Text(f"{r_crash:.0%}", style=crash_style(r_crash_level)),
+        Text(r_crash_level, style=crash_style(r_crash_level)),
     )
     
     # Metals Temperature row
+    m_crash_level = metals_result.crash_risk_level
     summary_table.add_row(
         "Metals",
         Text(f"{metals_result.temperature:.2f}", style=temp_style(metals_result.temperature)),
         f"{metals_result.scale_factor:.0%}",
-        metals_result.regime_state,
-        f"{metals_result.crash_risk_pct:.0%} ({metals_result.crash_risk_level})",
+        Text(metals_result.regime_state, style=temp_style(metals_result.temperature)),
+        Text(f"{metals_result.crash_risk_pct:.0%}", style=crash_style(m_crash_level)),
+        Text(m_crash_level, style=crash_style(m_crash_level)),
     )
     
     # Market Temperature row
+    mk_crash_level = market_result.crash_risk_level
     summary_table.add_row(
         "Equity Market",
         Text(f"{market_result.temperature:.2f}", style=temp_style(market_result.temperature)),
         f"{market_result.scale_factor:.0%}",
-        market_result.status,
-        f"{market_result.crash_risk_pct:.0%} ({market_result.crash_risk_level})",
+        Text(market_result.status, style=temp_style(market_result.temperature)),
+        Text(f"{market_result.crash_risk_pct:.0%}", style=crash_style(mk_crash_level)),
+        Text(mk_crash_level, style=crash_style(mk_crash_level)),
     )
     
     console.print(summary_table)
@@ -326,6 +339,17 @@ def compute_and_render_unified_risk(
             else:
                 stress_style = "bold red"
             
+            # Compute crash risk score (0-100) from stress level
+            crash_risk_score = int(min(100, (stress / 2.0) * 100))
+            if crash_risk_score >= 70:
+                risk_style = "bold red"
+            elif crash_risk_score >= 50:
+                risk_style = "red"
+            elif crash_risk_score >= 30:
+                risk_style = "yellow"
+            else:
+                risk_style = "green"
+            
             line = Text()
             line.append("  ")
             line.append(f"{cat_label:<12}", style="dim")
@@ -339,6 +363,10 @@ def compute_and_render_unified_risk(
                     line.append("━", style="bright_black")
             
             line.append(f"  {stress:.2f}", style=stress_style)
+            
+            # Add crash risk score
+            line.append(f"  Risk: ", style="dim")
+            line.append(f"{crash_risk_score}", style=risk_style)
             
             # Show top indicator
             indicators = getattr(cat, 'indicators', [])
@@ -417,8 +445,9 @@ def compute_and_render_unified_risk(
     metals_table.add_column("1D", justify="right", width=8)
     metals_table.add_column("5D", justify="right", width=8)
     metals_table.add_column("21D", justify="right", width=8)
-    metals_table.add_column("Vol", justify="right", width=8)
-    metals_table.add_column("Momentum", justify="left", width=16)
+    metals_table.add_column("Vol", justify="right", width=6)
+    metals_table.add_column("Momentum", justify="left", width=12)
+    metals_table.add_column("Risk", justify="right", width=6)
     
     for name, metal in metals_result.metals.items():
         if not metal.data_available:
@@ -448,6 +477,26 @@ def compute_and_render_unified_risk(
         else:
             mom_style = "dim"
         
+        # Compute individual crash risk score (0-100)
+        stress = getattr(metal, 'stress_level', 0.0)
+        vol = metal.volatility
+        ret_5d = metal.return_5d
+        
+        # Components: stress (0-40), volatility (0-30), drawdown (0-30)
+        stress_pts = (stress / 2.0) * 40
+        vol_pts = min(vol / 1.5, 1.0) * 30
+        drawdown_pts = min(max(0, -ret_5d) / 0.30, 1.0) * 30
+        metal_crash_risk = int(min(100, stress_pts + vol_pts + drawdown_pts))
+        
+        if metal_crash_risk >= 70:
+            metal_risk_style = "bold red"
+        elif metal_crash_risk >= 50:
+            metal_risk_style = "red"
+        elif metal_crash_risk >= 30:
+            metal_risk_style = "yellow"
+        else:
+            metal_risk_style = "green"
+        
         metals_table.add_row(
             metal.name,
             price_str,
@@ -456,6 +505,7 @@ def compute_and_render_unified_risk(
             Text(f"{metal.return_21d:+.1%}", style=ret_21d_style),
             f"{metal.volatility:.0%}",
             Text(momentum, style=mom_style),
+            Text(f"{metal_crash_risk}", style=metal_risk_style),
         )
     
     console.print(metals_table)
@@ -497,8 +547,9 @@ def compute_and_render_unified_risk(
     univ_table.add_column("1D", justify="right", width=8)
     univ_table.add_column("5D", justify="right", width=8)
     univ_table.add_column("21D", justify="right", width=8)
-    univ_table.add_column("Vol", justify="right", width=8)
-    univ_table.add_column("Momentum", justify="left", width=18)
+    univ_table.add_column("Vol", justify="right", width=6)
+    univ_table.add_column("Momentum", justify="left", width=12)
+    univ_table.add_column("Risk", justify="right", width=6)
     
     for name, univ in market_result.universes.items():
         if not univ.data_available:
@@ -522,6 +573,28 @@ def compute_and_render_unified_risk(
         else:
             mom_style = "dim"
         
+        # Compute individual crash risk score (0-100)
+        stress = getattr(univ, 'stress_level', 0.0)
+        vol_pctl = univ.volatility_percentile
+        vol_inverted = univ.vol_inverted
+        ret_5d = univ.return_5d
+        
+        # Components: stress (0-30), vol_pctl (0-25), vol_inversion (0-20), drawdown (0-25)
+        stress_pts = (stress / 2.0) * 30
+        vol_pts = vol_pctl * 25
+        inversion_pts = 20 if vol_inverted else 0
+        drawdown_pts = min(max(0, -ret_5d) / 0.15, 1.0) * 25
+        univ_crash_risk = int(min(100, stress_pts + vol_pts + inversion_pts + drawdown_pts))
+        
+        if univ_crash_risk >= 70:
+            univ_risk_style = "bold red"
+        elif univ_crash_risk >= 50:
+            univ_risk_style = "red"
+        elif univ_crash_risk >= 30:
+            univ_risk_style = "yellow"
+        else:
+            univ_risk_style = "green"
+        
         univ_table.add_row(
             univ.name,
             Text(f"{univ.return_1d:+.1%}", style=ret_1d_style),
@@ -529,10 +602,88 @@ def compute_and_render_unified_risk(
             Text(f"{univ.return_21d:+.1%}", style=ret_21d_style),
             Text(f"{univ.volatility_20d:.0%}", style=vol_style),
             Text(momentum, style=mom_style),
+            Text(f"{univ_crash_risk}", style=univ_risk_style),
         )
     
     console.print(univ_table)
     console.print()
+    
+    # Sector-by-Sector Breakdown (February 2026)
+    sectors = getattr(market_result, 'sectors', {})
+    
+    # Debug: Show sector count
+    available_sectors = [s for s in sectors.values() if s.data_available] if sectors else []
+    
+    if available_sectors:
+        console.print("  [dim]Sector Breakdown[/dim]")
+        console.print()
+        
+        sector_table = Table(
+            show_header=True,
+            header_style="bold white",
+            border_style="dim",
+            box=box.SIMPLE,
+            padding=(0, 1),
+        )
+        sector_table.add_column("Sector", justify="left", width=14)
+        sector_table.add_column("1D", justify="right", width=8)
+        sector_table.add_column("5D", justify="right", width=8)
+        sector_table.add_column("21D", justify="right", width=8)
+        sector_table.add_column("Vol", justify="right", width=6)
+        sector_table.add_column("Momentum", justify="left", width=12)
+        sector_table.add_column("Risk", justify="right", width=6)
+        
+        # Sort sectors by risk score (highest first)
+        sorted_sectors = sorted(
+            sectors.values(),
+            key=lambda s: s.risk_score if s.data_available else -1,
+            reverse=True
+        )
+        
+        for sector in sorted_sectors:
+            if not sector.data_available:
+                continue
+            
+            ret_1d_style = "bright_green" if sector.return_1d >= 0 else "indian_red1"
+            ret_5d_style = "bright_green" if sector.return_5d >= 0 else "indian_red1"
+            ret_21d_style = "bright_green" if sector.return_21d >= 0 else "indian_red1"
+            
+            vol_style = "red" if sector.volatility_percentile > 0.8 else ("yellow" if sector.volatility_percentile > 0.6 else "white")
+            
+            momentum = sector.momentum_signal
+            if "Strong" in momentum and "↑" in momentum:
+                mom_style = "bold bright_green"
+            elif "Rising" in momentum or "↗" in momentum:
+                mom_style = "bright_green"
+            elif "Weak" in momentum or "↓" in momentum:
+                mom_style = "bold indian_red1"
+            elif "Falling" in momentum or "↘" in momentum:
+                mom_style = "indian_red1"
+            else:
+                mom_style = "dim"
+            
+            risk_score = sector.risk_score
+            if risk_score >= 70:
+                risk_style = "bold red"
+            elif risk_score >= 50:
+                risk_style = "red"
+            elif risk_score >= 30:
+                risk_style = "yellow"
+            else:
+                risk_style = "green"
+            
+            sector_table.add_row(
+                sector.name,
+                Text(f"{sector.return_1d:+.1%}", style=ret_1d_style),
+                Text(f"{sector.return_5d:+.1%}", style=ret_5d_style),
+                Text(f"{sector.return_21d:+.1%}", style=ret_21d_style),
+                Text(f"{sector.volatility_20d:.0%}", style=vol_style),
+                Text(momentum, style=mom_style),
+                Text(f"{risk_score}", style=risk_style),
+            )
+        
+        console.print(sector_table)
+        console.print()
     
     # Market Breadth
     console.print("  [dim]Market Breadth[/dim]")
@@ -566,11 +717,13 @@ def compute_and_render_unified_risk(
     console.print(interp_line)
     console.print()
     
-    # Correlation Stress
-    console.print("  [dim]Correlation Stress[/dim]")
+    # Correlation Stress (with copula-based tail dependence)
+    console.print("  [dim]Correlation & Tail Dependence[/dim]")
     console.print()
     
     corr = market_result.correlation
+    
+    # Traditional correlation
     corr_line = Text()
     corr_line.append("  ")
     corr_line.append("Avg Correlation: ", style="dim")
@@ -582,9 +735,44 @@ def compute_and_render_unified_risk(
     else:
         c_style = "green"
     corr_line.append(f"{corr.avg_correlation:.0%}", style=c_style)
-    corr_line.append("   ", style="")
-    corr_line.append(corr.interpretation, style="dim italic")
+    
+    # Show method used
+    method = getattr(corr, 'method', 'pearson')
+    corr_line.append(f"  ({method})", style="dim italic")
     console.print(corr_line)
+    
+    # Copula-based tail dependence (if available)
+    lower_tail = getattr(corr, 'lower_tail_dependence_avg', 0.0)
+    crash_contagion = getattr(corr, 'crash_contagion_risk', 0.0)
+    
+    if lower_tail > 0.01 or crash_contagion > 0.01:
+        tail_line = Text()
+        tail_line.append("  ")
+        tail_line.append("Lower Tail Dep: ", style="dim")
+        
+        if lower_tail >= 0.45:
+            t_style = "bold red"
+        elif lower_tail >= 0.25:
+            t_style = "yellow"
+        else:
+            t_style = "green"
+        tail_line.append(f"{lower_tail:.0%}", style=t_style)
+        
+        tail_line.append("   Crash Contagion: ", style="dim")
+        if crash_contagion >= 0.5:
+            cc_style = "bold red"
+        elif crash_contagion >= 0.25:
+            cc_style = "yellow"
+        else:
+            cc_style = "green"
+        tail_line.append(f"{crash_contagion:.0%}", style=cc_style)
+        console.print(tail_line)
+    
+    # Interpretation
+    interp_line2 = Text()
+    interp_line2.append("  ")
+    interp_line2.append(corr.interpretation, style="dim italic")
+    console.print(interp_line2)
     console.print()
     
     # Market momentum summary
