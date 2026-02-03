@@ -234,6 +234,35 @@ class SectorMetrics:
 
 
 @dataclass
+class CurrencyMetrics:
+    """Metrics for a currency pair (e.g., EUR/USD, GBP/USD)."""
+    name: str
+    ticker: str
+    rate: float = 0.0
+    return_1d: float = 0.0
+    return_5d: float = 0.0
+    return_21d: float = 0.0
+    volatility_20d: float = 0.0
+    momentum_signal: str = "→ Flat"
+    risk_score: int = 0
+    data_available: bool = False
+    
+    def to_dict(self) -> Dict:
+        return {
+            "name": self.name,
+            "ticker": self.ticker,
+            "rate": self.rate,
+            "return_1d": self.return_1d,
+            "return_5d": self.return_5d,
+            "return_21d": self.return_21d,
+            "volatility_20d": self.volatility_20d,
+            "momentum_signal": self.momentum_signal,
+            "risk_score": self.risk_score,
+            "data_available": self.data_available,
+        }
+
+
+@dataclass
 class MarketBreadthMetrics:
     """Aggregated market breadth analysis."""
     pct_above_50ma: float = 0.5
@@ -307,6 +336,9 @@ class MarketTemperatureResult:
     # Sector-by-sector breakdown (February 2026)
     sectors: Dict[str, SectorMetrics] = field(default_factory=dict)
     
+    # Currency pairs breakdown (February 2026)
+    currencies: Dict[str, CurrencyMetrics] = field(default_factory=dict)
+    
     def to_dict(self) -> Dict:
         return {
             "temperature": float(self.temperature),
@@ -326,6 +358,8 @@ class MarketTemperatureResult:
             "sector_rotation_signal": self.sector_rotation_signal,
             "exit_signal": self.exit_signal,
             "exit_reason": self.exit_reason,
+            "sectors": {k: v.to_dict() for k, v in self.sectors.items()},
+            "currencies": {k: v.to_dict() for k, v in self.currencies.items()},
         }
     
     @property
@@ -660,6 +694,27 @@ SECTOR_ETFS = {
     "XLU": "Utilities",
     "XLRE": "Real Estate",
     "XLC": "Comm. Svcs",
+}
+
+# =============================================================================
+# CURRENCY PAIRS - For FX market breakdown (February 2026)
+# =============================================================================
+# Major currency pairs and cryptocurrencies with Yahoo Finance tickers
+CURRENCY_PAIRS = {
+    # Major FX pairs
+    "EURUSD=X": "EUR/USD",
+    "GBPUSD=X": "GBP/USD",
+    "USDJPY=X": "USD/JPY",
+    "USDCHF=X": "USD/CHF",
+    "AUDUSD=X": "AUD/USD",
+    "USDCAD=X": "USD/CAD",
+    "NZDUSD=X": "NZD/USD",
+    "EURJPY=X": "EUR/JPY",
+    "GBPJPY=X": "GBP/JPY",
+    "AUDJPY=X": "AUD/JPY",
+    # Cryptocurrencies
+    "BTC-USD": "BTC/USD",
+    "ETH-USD": "ETH/USD",
 }
 
 
@@ -1207,6 +1262,106 @@ def _compute_sector_metrics(etf_data: Dict[str, pd.Series]) -> Dict[str, SectorM
     return sectors
 
 
+def _fetch_currency_data(
+    start_date: str,
+    end_date: Optional[str] = None
+) -> Dict[str, pd.Series]:
+    """Fetch currency pair data for FX market assessment."""
+    cache_key = f"currency_{start_date}_{end_date}"
+    now = datetime.now()
+    
+    if cache_key in _market_data_cache:
+        cached_time, cached_data = _market_data_cache[cache_key]
+        if (now - cached_time).total_seconds() < CACHE_TTL_SECONDS:
+            return cached_data
+    
+    try:
+        import yfinance as yf
+    except ImportError:
+        return {}
+    
+    end = end_date or datetime.now().strftime("%Y-%m-%d")
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=ZSCORE_LOOKBACK_DAYS + 30)
+    start = start_dt.strftime("%Y-%m-%d")
+    
+    result = {}
+    
+    for ticker in CURRENCY_PAIRS.keys():
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+            series = _extract_close_series(df, ticker)
+            if series is not None and len(series) > 20:
+                result[ticker] = series
+        except Exception:
+            pass
+    
+    _market_data_cache[cache_key] = (now, result)
+    return result
+
+
+def _compute_currency_metrics(currency_data: Dict[str, pd.Series]) -> Dict[str, CurrencyMetrics]:
+    """Compute metrics for each currency pair."""
+    currencies = {}
+    
+    for ticker, pair_name in CURRENCY_PAIRS.items():
+        if ticker not in currency_data:
+            currencies[pair_name] = CurrencyMetrics(
+                name=pair_name,
+                ticker=ticker,
+                data_available=False,
+            )
+            continue
+        
+        prices = currency_data[ticker]
+        if prices is None or len(prices) < 30:
+            currencies[pair_name] = CurrencyMetrics(
+                name=pair_name,
+                ticker=ticker,
+                data_available=False,
+            )
+            continue
+        
+        try:
+            rate = float(prices.iloc[-1])
+            returns = _compute_returns(prices)
+            ret_1d = returns.get('1d', 0.0)
+            ret_5d = returns.get('5d', 0.0)
+            ret_21d = returns.get('21d', 0.0)
+            
+            daily_returns = prices.pct_change().dropna()
+            vol_20d = float(daily_returns.iloc[-20:].std() * np.sqrt(252)) if len(daily_returns) >= 20 else 0.0
+            
+            momentum = _compute_momentum_signal(ret_5d, ret_21d)
+            
+            # Risk score: vol (0-50) + recent moves (0-50)
+            vol_pts = min(vol_20d / 0.15, 1.0) * 50
+            move_pts = min(abs(ret_5d) / 0.05, 1.0) * 50
+            risk_score = int(min(100, vol_pts + move_pts))
+            
+            currencies[pair_name] = CurrencyMetrics(
+                name=pair_name,
+                ticker=ticker,
+                rate=rate,
+                return_1d=ret_1d,
+                return_5d=ret_5d,
+                return_21d=ret_21d,
+                volatility_20d=vol_20d,
+                momentum_signal=momentum,
+                risk_score=risk_score,
+                data_available=True,
+            )
+        except Exception:
+            currencies[pair_name] = CurrencyMetrics(
+                name=pair_name,
+                ticker=ticker,
+                data_available=False,
+            )
+    
+    return currencies
+
+
 # =============================================================================
 # MAIN COMPUTATION
 # =============================================================================
@@ -1330,6 +1485,10 @@ def compute_market_temperature(
     # Compute sector-by-sector metrics
     sectors = _compute_sector_metrics(etf_data)
     
+    # Compute currency pair metrics
+    currency_data = _fetch_currency_data(start_date, end_date)
+    currencies = _compute_currency_metrics(currency_data)
+    
     # Data quality
     data_quality = sum(1 for u in universes.values() if u.data_available) / max(1, len(universes))
     
@@ -1352,6 +1511,7 @@ def compute_market_temperature(
         exit_signal=exit_signal,
         exit_reason=exit_reason,
         sectors=sectors,
+        currencies=currencies,
     )
 
 

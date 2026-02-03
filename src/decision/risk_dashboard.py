@@ -685,6 +685,85 @@ def compute_and_render_unified_risk(
         console.print(sector_table)
         console.print()
     
+    # Currency Pairs Breakdown (February 2026)
+    currencies = getattr(market_result, 'currencies', {})
+    available_currencies = [c for c in currencies.values() if c.data_available] if currencies else []
+    
+    if available_currencies:
+        console.print("  [dim]Currency Pairs[/dim]")
+        console.print()
+        
+        currency_table = Table(
+            show_header=True,
+            header_style="bold white",
+            border_style="dim",
+            box=box.SIMPLE,
+            padding=(0, 1),
+        )
+        currency_table.add_column("Pair", justify="left", width=10)
+        currency_table.add_column("Rate", justify="right", width=10)
+        currency_table.add_column("1D", justify="right", width=8)
+        currency_table.add_column("5D", justify="right", width=8)
+        currency_table.add_column("21D", justify="right", width=8)
+        currency_table.add_column("Momentum", justify="left", width=12)
+        currency_table.add_column("Risk", justify="right", width=6)
+        
+        # Sort currencies by risk score (highest first)
+        sorted_currencies = sorted(
+            available_currencies,
+            key=lambda c: c.risk_score,
+            reverse=True
+        )
+        
+        for currency in sorted_currencies:
+            ret_1d_style = "bright_green" if currency.return_1d >= 0 else "indian_red1"
+            ret_5d_style = "bright_green" if currency.return_5d >= 0 else "indian_red1"
+            ret_21d_style = "bright_green" if currency.return_21d >= 0 else "indian_red1"
+            
+            momentum = currency.momentum_signal
+            if "Strong" in momentum and "↑" in momentum:
+                mom_style = "bold bright_green"
+            elif "Rising" in momentum or "↗" in momentum:
+                mom_style = "bright_green"
+            elif "Weak" in momentum or "↓" in momentum:
+                mom_style = "bold indian_red1"
+            elif "Falling" in momentum or "↘" in momentum:
+                mom_style = "indian_red1"
+            else:
+                mom_style = "dim"
+            
+            risk_score = currency.risk_score
+            if risk_score >= 70:
+                risk_style = "bold red"
+            elif risk_score >= 50:
+                risk_style = "red"
+            elif risk_score >= 30:
+                risk_style = "yellow"
+            else:
+                risk_style = "green"
+            
+            # Format rate based on pair convention
+            if "BTC" in currency.name or "ETH" in currency.name:
+                # Crypto - show as currency with comma separator
+                rate_str = f"${currency.rate:,.0f}"
+            elif "JPY" in currency.name:
+                rate_str = f"{currency.rate:.2f}"
+            else:
+                rate_str = f"{currency.rate:.4f}"
+            
+            currency_table.add_row(
+                currency.name,
+                rate_str,
+                Text(f"{currency.return_1d:+.1%}", style=ret_1d_style),
+                Text(f"{currency.return_5d:+.1%}", style=ret_5d_style),
+                Text(f"{currency.return_21d:+.1%}", style=ret_21d_style),
+                Text(momentum, style=mom_style),
+                Text(f"{risk_score}", style=risk_style),
+            )
+        
+        console.print(currency_table)
+        console.print()
+    
     # Market Breadth
     console.print("  [dim]Market Breadth[/dim]")
     console.print()
