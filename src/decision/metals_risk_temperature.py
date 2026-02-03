@@ -971,6 +971,9 @@ def _fetch_metals_data(
     Fetch all metals price data.
     
     Returns dict with keys: 'GOLD', 'SILVER', 'COPPER', 'PLATINUM', 'PALLADIUM'
+    
+    February 2026: Updated to use yf.Ticker().history() instead of yf.download()
+    to avoid data scrambling issues with concurrent/cached downloads.
     """
     cache_key = f"metals_{start_date}_{end_date}"
     now = datetime.now()
@@ -1004,10 +1007,15 @@ def _fetch_metals_data(
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
-            series = _extract_close_series(df, ticker)
-            if series is not None and len(series) > 20:
-                result[name] = series
+                # Use Ticker.history() to avoid global state issues in yf.download()
+                ticker_obj = yf.Ticker(ticker)
+                df = ticker_obj.history(start=start, end=end, auto_adjust=True)
+            
+            # history() returns simple DataFrame with 'Close' column
+            if df is not None and not df.empty and 'Close' in df.columns:
+                series = df['Close'].dropna()
+                if len(series) > 20:
+                    result[name] = series
         except Exception as e:
             if os.getenv('DEBUG'):
                 print(f"Failed to fetch {ticker}: {e}")

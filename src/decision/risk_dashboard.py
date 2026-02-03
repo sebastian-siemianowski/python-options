@@ -79,6 +79,155 @@ class _SuppressOutput:
 
 
 # =============================================================================
+# ACTIONABLE GUIDANCE HELPERS
+# =============================================================================
+
+def _render_cross_asset_guidance(console: Console, risk_result) -> None:
+    """Render actionable guidance for Cross-Asset stress indicators."""
+    categories = getattr(risk_result, 'categories', {})
+    if not categories:
+        return
+    
+    high_stress = []
+    for cat_key, cat in categories.items():
+        stress = getattr(cat, 'stress_level', 0.0)
+        if stress >= 1.5:
+            high_stress.append((cat_key, stress, "CRITICAL"))
+        elif stress >= 1.0:
+            high_stress.append((cat_key, stress, "HIGH"))
+    
+    if not high_stress:
+        console.print("  [dim]📊 Guidance:[/dim] [bright_green]All stress indicators normal.[/bright_green]")
+        console.print("     [dim]→ Full position sizing permitted. Monitor for changes.[/dim]")
+        return
+    
+    console.print("  [dim]⚠️  Guidance:[/dim]")
+    
+    guidance_map = {
+        'fx': {
+            'HIGH': "→ FX volatility elevated. Consider hedging currency exposure.",
+            'CRITICAL': "→ FX STRESS CRITICAL. Reduce unhedged international positions immediately.",
+        },
+        'futures': {
+            'HIGH': "→ Equity futures stressed. Tighten stops on equity positions.",
+            'CRITICAL': "→ EQUITY STRESS CRITICAL. Reduce equity exposure by 50%. Avoid new longs.",
+        },
+        'rates': {
+            'HIGH': "→ Duration risk elevated. Review bond positions for rate sensitivity.",
+            'CRITICAL': "→ RATES STRESS CRITICAL. Exit long-duration bonds. Cash is safer.",
+        },
+        'commodities': {
+            'HIGH': "→ Energy/Commodity stress. Review exposure to energy-sensitive sectors.",
+            'CRITICAL': "→ COMMODITY STRESS CRITICAL. Avoid energy longs. Consider commodity hedges.",
+        },
+        'metals': {
+            'HIGH': "→ Metals volatility elevated. Gold may signal flight-to-safety.",
+            'CRITICAL': "→ METALS STRESS CRITICAL. Consider gold allocation for tail protection.",
+        },
+    }
+    
+    for cat_key, stress, level in high_stress:
+        if cat_key in guidance_map and level in guidance_map[cat_key]:
+            style = "bold red" if level == "CRITICAL" else "yellow"
+            console.print(f"     [{style}]{guidance_map[cat_key][level]}[/{style}]")
+
+
+def _render_metals_guidance(console: Console, metals_result) -> None:
+    """Render actionable guidance for Metals risk indicators."""
+    temp = metals_result.temperature
+    crash_risk = getattr(metals_result, 'crash_risk_pct', 0.0)
+    vol_inversions = getattr(metals_result, 'vol_inversion_count', 0)
+    
+    console.print()
+    console.print("  [dim]📊 Guidance:[/dim]")
+    
+    warnings_issued = False
+    
+    if vol_inversions >= 2:
+        console.print("     [bold red]→ VOLATILITY INVERSION detected in multiple metals.[/bold red]")
+        console.print("       [dim]Short-term vol exceeds long-term = stress building. Reduce overnight exposure.[/dim]")
+        warnings_issued = True
+    
+    if crash_risk >= 0.30:
+        console.print(f"     [bold red]→ CRASH RISK ELEVATED ({crash_risk:.0%}). Position for downside protection.[/bold red]")
+        console.print("       [dim]Consider: tighter stops, reduced size, or put options.[/dim]")
+        warnings_issued = True
+    elif crash_risk >= 0.15:
+        console.print(f"     [yellow]→ Crash risk moderate ({crash_risk:.0%}). Monitor closely for deterioration.[/yellow]")
+        warnings_issued = True
+    
+    metals = getattr(metals_result, 'metals', {})
+    for name, metal in metals.items():
+        if not getattr(metal, 'data_available', False):
+            continue
+        ret_5d = getattr(metal, 'return_5d', 0.0)
+        if abs(ret_5d) > 0.10:
+            direction = "surged" if ret_5d > 0 else "plunged"
+            console.print(f"     [yellow]→ {name} {direction} {ret_5d:+.1%} in 5 days. Unusual move - investigate catalyst.[/yellow]")
+            warnings_issued = True
+    
+    if temp >= 1.5:
+        console.print("     [bold red]→ EXTREME REGIME: Exit discretionary metals positions. Systematic only.[/bold red]")
+        warnings_issued = True
+    elif temp >= 1.0:
+        console.print("     [yellow]→ Stressed regime: Reduce metals position sizes by 50%.[/yellow]")
+        warnings_issued = True
+    
+    if not warnings_issued:
+        console.print("     [bright_green]→ Metals regime normal. Standard position sizing permitted.[/bright_green]")
+
+
+def _render_equity_guidance(console: Console, market_result) -> None:
+    """Render actionable guidance for Equity Market indicators."""
+    crash_risk = getattr(market_result, 'crash_risk_pct', 0.0)
+    breadth = getattr(market_result, 'breadth', None)
+    correlation = getattr(market_result, 'correlation', None)
+    
+    console.print()
+    console.print("  [dim]📊 Guidance:[/dim]")
+    
+    warnings_issued = False
+    
+    if breadth:
+        pct_above_50ma = getattr(breadth, 'pct_above_50ma', 0.5)
+        if pct_above_50ma < 0.25:
+            console.print(f"     [bold red]→ BREADTH CRITICAL: Only {pct_above_50ma:.0%} of stocks above 50-day MA.[/bold red]")
+            console.print("       [dim]Market held up by few leaders. Distribution phase likely. Raise cash.[/dim]")
+            warnings_issued = True
+        elif pct_above_50ma < 0.40:
+            console.print(f"     [yellow]→ Breadth narrowing: {pct_above_50ma:.0%} above 50-day MA. Watch for breakdown.[/yellow]")
+            warnings_issued = True
+    
+    if correlation:
+        avg_corr = getattr(correlation, 'avg_correlation', 0.0)
+        if avg_corr > 0.75:
+            console.print(f"     [bold red]→ CORRELATION SPIKE: Avg correlation {avg_corr:.0%} = systemic risk.[/bold red]")
+            console.print("       [dim]Diversification failing. All assets moving together. Reduce gross exposure.[/dim]")
+            warnings_issued = True
+        elif avg_corr > 0.60:
+            console.print(f"     [yellow]→ Correlations elevated ({avg_corr:.0%}). Diversification benefits reduced.[/yellow]")
+            warnings_issued = True
+    
+    if getattr(market_result, 'exit_signal', False):
+        reason = getattr(market_result, 'exit_reason', 'Multiple factors')
+        console.print(f"     [bold red]→ EXIT SIGNAL ACTIVE: {reason}[/bold red]")
+        console.print("       [dim]Consider moving to cash/bonds until conditions normalize.[/dim]")
+        warnings_issued = True
+    
+    if crash_risk >= 0.30:
+        console.print(f"     [bold red]→ Equity crash risk elevated ({crash_risk:.0%}). Hedge tail risk.[/bold red]")
+        warnings_issued = True
+    
+    scale = market_result.scale_factor
+    if scale < 0.50:
+        console.print(f"     [yellow]→ Position scale reduced to {scale:.0%}. Size all new positions at {scale:.0%} of normal.[/yellow]")
+        warnings_issued = True
+    
+    if not warnings_issued:
+        console.print("     [bright_green]→ Market conditions normal. Full position sizing permitted.[/bright_green]")
+
+
+# =============================================================================
 # COMPUTE AND RENDER UNIFIED RISK DASHBOARD
 # =============================================================================
 
@@ -116,6 +265,7 @@ def compute_and_render_unified_risk(
         compute_anticipatory_metals_risk_temperature,
         render_metals_risk_temperature,
         MetalsRiskTemperatureResult,
+        clear_metals_risk_temperature_cache,
     )
     from decision.market_temperature import (
         compute_market_temperature,
@@ -128,6 +278,9 @@ def compute_and_render_unified_risk(
     
     # Use maximum available processors
     max_workers = min(3, multiprocessing.cpu_count())  # 3 modules max
+    
+    # Clear caches to ensure fresh data (avoid stale/scrambled data from previous runs)
+    clear_metals_risk_temperature_cache()
     
     # Define computation functions
     def compute_risk():
@@ -360,7 +513,7 @@ def compute_and_render_unified_risk(
             ("fx", "FX Carry"),
             ("futures", "Equities"),
             ("rates", "Duration"),
-            ("commodities", "Energy"),
+            ("commodities", "Commodities"),  # Includes Oil, Copper, Gold, Silver
             ("metals", "Metals"),
         ]
         
@@ -564,6 +717,10 @@ def compute_and_render_unified_risk(
         crash_style = "bold red" if metals_result.crash_risk_level == "Extreme" else ("red" if metals_result.crash_risk_level == "High" else "yellow")
         gov_line.append(f"{metals_result.crash_risk_pct:.0%}", style=crash_style)
     console.print(gov_line)
+    
+    # Add metals actionable guidance
+    _render_metals_guidance(console, metals_result)
+    
     console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════
@@ -919,6 +1076,10 @@ def compute_and_render_unified_risk(
         rot_style = "yellow"
     summary_line.append(rot, style=rot_style)
     console.print(summary_line)
+    
+    # Add equity market actionable guidance
+    _render_equity_guidance(console, market_result)
+    
     console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════

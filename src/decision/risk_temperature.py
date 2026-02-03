@@ -321,6 +321,8 @@ def _fetch_fx_data_impl(
     Fetch FX data for stress indicators.
     
     Returns dict with keys: 'AUDJPY', 'USDJPY', 'USDCHF'
+    
+    February 2026: Updated to use yf.Ticker().history() to avoid data scrambling.
     """
     try:
         import yfinance as yf
@@ -346,10 +348,14 @@ def _fetch_fx_data_impl(
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
-            series = _extract_close_series(df, ticker)
-            if series is not None and len(series) > 10:
-                result[name] = series
+                # Use Ticker.history() to avoid global state issues
+                ticker_obj = yf.Ticker(ticker)
+                df = ticker_obj.history(start=start, end=end, auto_adjust=True)
+            
+            if df is not None and not df.empty and 'Close' in df.columns:
+                series = df['Close'].dropna()
+                if len(series) > 10:
+                    result[name] = series
         except Exception as e:
             if os.getenv('DEBUG'):
                 print(f"Failed to fetch {ticker}: {e}")
@@ -373,6 +379,8 @@ def _fetch_futures_data_impl(
     Fetch equity futures data for stress indicators.
     
     Returns dict with keys: 'ES', 'NQ'
+    
+    February 2026: Updated to use yf.Ticker().history() to avoid data scrambling.
     """
     try:
         import yfinance as yf
@@ -395,10 +403,14 @@ def _fetch_futures_data_impl(
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
-            series = _extract_close_series(df, ticker)
-            if series is not None and len(series) > 10:
-                result[name] = series
+                # Use Ticker.history() to avoid global state issues
+                ticker_obj = yf.Ticker(ticker)
+                df = ticker_obj.history(start=start, end=end, auto_adjust=True)
+            
+            if df is not None and not df.empty and 'Close' in df.columns:
+                series = df['Close'].dropna()
+                if len(series) > 10:
+                    result[name] = series
         except Exception:
             pass
     
@@ -421,6 +433,8 @@ def _fetch_rates_data_impl(
     Fetch rates data for stress indicators (implementation).
     
     Returns dict with keys: '2Y10Y_SPREAD', 'TLT'
+    
+    February 2026: Updated to use yf.Ticker().history() to avoid data scrambling.
     """
     try:
         import yfinance as yf
@@ -437,10 +451,14 @@ def _fetch_rates_data_impl(
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            df = yf.download('TLT', start=start, end=end, progress=False, auto_adjust=True)
-        series = _extract_close_series(df, 'TLT')
-        if series is not None and len(series) > 10:
-            result['TLT'] = series
+            # Use Ticker.history() to avoid global state issues
+            ticker_obj = yf.Ticker('TLT')
+            df = ticker_obj.history(start=start, end=end, auto_adjust=True)
+        
+        if df is not None and not df.empty and 'Close' in df.columns:
+            series = df['Close'].dropna()
+            if len(series) > 10:
+                result['TLT'] = series
     except Exception:
         pass
     
@@ -463,6 +481,8 @@ def _fetch_commodity_data_impl(
     Fetch commodity data for stress indicators (implementation).
     
     Returns dict with keys: 'COPPER', 'GOLD'
+    
+    February 2026: Updated to use yf.Ticker().history() to avoid data scrambling.
     """
     try:
         import yfinance as yf
@@ -476,6 +496,8 @@ def _fetch_commodity_data_impl(
     commodity_tickers = {
         'COPPER': 'HG=F',    # Copper futures
         'GOLD': 'GC=F',      # Gold futures
+        'SILVER': 'SI=F',    # Silver futures
+        'OIL': 'CL=F',       # Crude Oil futures (WTI)
     }
     
     result = {}
@@ -484,10 +506,14 @@ def _fetch_commodity_data_impl(
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
-            series = _extract_close_series(df, ticker)
-            if series is not None and len(series) > 10:
-                result[name] = series
+                # Use Ticker.history() to avoid global state issues
+                ticker_obj = yf.Ticker(ticker)
+                df = ticker_obj.history(start=start, end=end, auto_adjust=True)
+            
+            if df is not None and not df.empty and 'Close' in df.columns:
+                series = df['Close'].dropna()
+                if len(series) > 10:
+                    result[name] = series
         except Exception:
             pass
     
