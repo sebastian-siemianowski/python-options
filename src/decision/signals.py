@@ -331,6 +331,22 @@ try:
 except ImportError:
     CONTROL_POLICY_AVAILABLE = False
 
+# PIT Violation Penalty — Asymmetric Calibration Governance (February 2026)
+# CORE DESIGN CONSTRAINT: PIT must only act as a PENALTY, never a reward.
+# When belief cannot be trusted, the only correct signal is EXIT.
+try:
+    from calibration.pit_penalty import (
+        check_exit_signal_required,
+        compute_model_pit_penalty,
+        PITViolationResult,
+        PITPenaltyReport,
+        PIT_EXIT_THRESHOLD,
+        PIT_CRITICAL_THRESHOLDS,
+    )
+    PIT_PENALTY_AVAILABLE = True
+except ImportError:
+    PIT_PENALTY_AVAILABLE = False
+
 # Context manager to suppress noisy HMM convergence messages
 import contextlib
 import io
@@ -359,7 +375,6 @@ from decision.signals_ux import (
     render_multi_asset_summary_table,
     render_sector_summary_tables,
     render_strong_signals_summary,
-    render_risk_temperature_summary,
     render_augmentation_layers_summary,
     build_asset_display_label,
     extract_symbol_from_title,
@@ -367,6 +382,20 @@ from decision.signals_ux import (
     DETAILED_COLUMN_DESCRIPTIONS,
     SIMPLIFIED_COLUMN_DESCRIPTIONS,
 )
+
+# Import render_risk_temperature_summary from risk_temperature module
+# (Temperature modules own their own rendering - no duplication in signals_ux)
+from decision.risk_temperature import render_risk_temperature_summary
+
+# Import unified risk dashboard (replaces fragmented risk temperature summary)
+# February 2026: Single dashboard combining cross-asset, metals, and equity risk
+# Uses parallel processing with maximum CPU cores for speed
+try:
+    from decision.risk_dashboard import compute_and_render_unified_risk
+    UNIFIED_RISK_DASHBOARD_AVAILABLE = True
+except ImportError:
+    UNIFIED_RISK_DASHBOARD_AVAILABLE = False
+    compute_and_render_unified_risk = None  # stub to avoid NameError
 
 # Import data utilities and helper functions
 from ingestion.data_utils import (
@@ -467,6 +496,26 @@ except ImportError:
     EVT_THRESHOLD_PERCENTILE_DEFAULT = 0.90
     EVT_MIN_EXCEEDANCES = 30
     EVT_FALLBACK_MULTIPLIER = 1.5
+
+# =============================================================================
+# AIGF-NF (Adaptive Implicit Generative Filter - Normalizing Flow)
+# =============================================================================
+# AIGF-NF is an advanced generative model for return distribution modeling.
+# =============================================================================
+try:
+    from models import (
+        AIGFNFModel,
+        AIGFNFConfig,
+        DEFAULT_AIGF_NF_CONFIG,
+        is_aigf_nf_model,
+    )
+    AIGF_NF_AVAILABLE = True
+except ImportError:
+    AIGF_NF_AVAILABLE = False
+    
+    def is_aigf_nf_model(name: str) -> bool:
+        """Fallback stub - always returns False when module unavailable."""
+        return False
 
 
 # =============================================================================
@@ -629,6 +678,52 @@ except ImportError:
     RISK_TEMPERATURE_AVAILABLE = False
     SIGMOID_THRESHOLD = 1.0
     OVERNIGHT_BUDGET_ACTIVATION_TEMP = 1.0
+
+# =============================================================================
+# UNIFIED RISK CONTEXT (February 2026)
+# =============================================================================
+# Integrates all temperature modules (risk, metals, market) with copula-based
+# tail dependence for institutional-grade crash risk estimation.
+#
+# PROFESSOR CHEN WEI-LIN (Score: 9.0/10):
+#   "Copula models capture tail dependencies that Pearson correlation misses."
+#
+# PROFESSOR ZHANG XIN-YU (Score: 9.0/10):
+#   "Unified architecture ensures risk signals translate to position sizing."
+# =============================================================================
+try:
+    from calibration.copula_correlation import (
+        compute_unified_risk_context,
+        UnifiedRiskContext,
+        compute_smooth_scale_factor,
+        COPULA_CORRELATION_AVAILABLE,
+    )
+    UNIFIED_RISK_CONTEXT_AVAILABLE = True
+except ImportError:
+    UNIFIED_RISK_CONTEXT_AVAILABLE = False
+    COPULA_CORRELATION_AVAILABLE = False
+
+
+# =============================================================================
+# ASSET-LEVEL CRASH RISK (February 2026 - Chinese Staff Professor Panel)
+# =============================================================================
+# Computes per-asset crash risk using multi-factor momentum analysis.
+# Uses multiprocessing for parallel computation across assets.
+# =============================================================================
+try:
+    from decision.asset_crash_risk import (
+        compute_asset_crash_risk,
+        compute_crash_risk_bulk,
+        AssetCrashRiskResult,
+        CrashRiskFactors,
+        format_crash_risk_display,
+        get_cached_crash_risk,
+        cache_crash_risk,
+        clear_crash_risk_cache,
+    )
+    ASSET_CRASH_RISK_AVAILABLE = True
+except ImportError:
+    ASSET_CRASH_RISK_AVAILABLE = False
 
 
 # =============================================================================
@@ -1296,6 +1391,13 @@ class Signal:
     evt_threshold: Optional[float] = None   # POT threshold
     evt_n_exceedances: int = 0              # Number of threshold exceedances
     evt_fit_method: Optional[str] = None    # EVT fitting method used
+    # PIT Violation EXIT Signal (February 2026):
+    # When belief cannot be trusted, the only correct signal is EXIT.
+    pit_exit_triggered: bool = False        # True if PIT violation requires EXIT
+    pit_exit_reason: Optional[str] = None   # Human-readable exit reason
+    pit_violation_severity: float = 0.0     # V ∈ [0, 1], 0 = no violation
+    pit_penalty_effective: float = 1.0      # P ∈ (0, 1], 1 = no penalty
+    pit_selected_model: Optional[str] = None  # Model that triggered the EXIT check
 
 
 
@@ -6708,6 +6810,74 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         cst_nu_crisis = bma_meta.get("cst_nu_crisis")
         cst_epsilon = bma_meta.get("cst_epsilon")
 
+        # ================================================================
+        # PIT VIOLATION EXIT SIGNAL (February 2026)
+        # ================================================================
+        # CORE DESIGN CONSTRAINT: "If the selected belief cannot be trusted,
+        # the only correct signal is EXIT."
+        #
+        # This is BELIEF GOVERNANCE, not forecasting. EXIT means:
+        # - Close existing positions
+        # - Do not open new positions
+        # - Await recalibration or regime change
+        #
+        # EXIT does NOT mean the stock will fall or another model is correct.
+        # It means: "I no longer trust my belief about this stock."
+        # ================================================================
+        pit_exit_triggered = False
+        pit_exit_reason = None
+        pit_violation_severity = 0.0
+        pit_penalty_effective = 1.0
+        pit_selected_model = None
+        
+        if PIT_PENALTY_AVAILABLE:
+            # Get selected model from BMA metadata
+            pit_selected_model = bma_meta.get("dominant_model")
+            if pit_selected_model is None:
+                # Fallback to noise model from kalman metadata
+                pit_selected_model = kalman_metadata.get("kalman_noise_model", "unknown")
+            
+            # Get PIT p-value for selected model
+            # PREFER calibrated PIT p-value if isotonic recalibration was applied
+            # Otherwise fall back to raw PIT p-value
+            pit_pvalue_calibrated = kalman_metadata.get("pit_ks_pvalue_calibrated")
+            pit_pvalue_raw = kalman_metadata.get("pit_ks_pvalue")
+            
+            if pit_pvalue_calibrated is not None and pit_pvalue_calibrated > 0:
+                # Use calibrated PIT - recalibration "fixed" the distribution
+                pit_pvalue_for_exit = pit_pvalue_calibrated
+            else:
+                # No recalibration applied - use raw PIT
+                pit_pvalue_for_exit = pit_pvalue_raw
+            
+            # Get regime for threshold selection
+            pit_regime = regime_used if regime_used is not None else -1
+            
+            # Compute PIT violation penalty for selected model
+            if pit_pvalue_for_exit is not None:
+                n_samples_for_pit = len(feats.get("returns", feats.get("px", [])))
+                pit_result = compute_model_pit_penalty(
+                    model_name=pit_selected_model,
+                    pit_pvalue=pit_pvalue_for_exit,
+                    regime=pit_regime,
+                    n_samples=n_samples_for_pit,
+                )
+                
+                pit_violation_severity = pit_result.violation_severity
+                pit_penalty_effective = pit_result.effective_penalty
+                pit_exit_triggered = pit_result.triggers_exit
+                
+                if pit_exit_triggered:
+                    pit_exit_reason = (
+                        f"Critical PIT violation: p={pit_pvalue_for_exit:.4f} "
+                        f"< p_crit={pit_result.p_critical:.4f}, "
+                        f"penalty={pit_penalty_effective:.3f} < {PIT_EXIT_THRESHOLD:.2f}"
+                    )
+                    # Override label to EXIT
+                    label = "EXIT"
+                    # Set position strength to 0 - no trading allowed
+                    pos_strength = 0.0
+
         sigs.append(Signal(
             horizon_days=int(H),
             score=float(edge_now),
@@ -6784,6 +6954,12 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             # DUAL-SIDED TREND EXHAUSTION (market-space fragility):
             ue_up=float(ue_up),
             ue_down=float(ue_down),
+            # PIT Violation EXIT Signal (February 2026):
+            pit_exit_triggered=bool(pit_exit_triggered),
+            pit_exit_reason=pit_exit_reason,
+            pit_violation_severity=float(pit_violation_severity),
+            pit_penalty_effective=float(pit_penalty_effective),
+            pit_selected_model=pit_selected_model,
         ))
 
     return sigs, thresholds
@@ -7089,6 +7265,10 @@ def main() -> None:
                     else:
                         row["sector"] = "Other"
 
+                # Ensure crash_risk_score exists (default 0 for old cache format)
+                if "crash_risk_score" not in row:
+                    row["crash_risk_score"] = 0
+
                 # Ensure horizon_signals have p_up and exp_ret (from assets_cached if needed)
                 horizon_signals = row.get("horizon_signals", {})
                 for h, sig_data in horizon_signals.items():
@@ -7108,8 +7288,28 @@ def main() -> None:
             # Add high-conviction signals summary for short-term trading
             render_strong_signals_summary(summary_rows_cached, horizons=[1, 3, 7])
             
-            # Show risk temperature summary (computed once, applies to all assets)
-            if RISK_TEMPERATURE_AVAILABLE:
+            # Show unified risk dashboard (replaces fragmented risk temperature display)
+            if UNIFIED_RISK_DASHBOARD_AVAILABLE:
+                try:
+                    compute_and_render_unified_risk(
+                        start_date="2020-01-01",
+                        suppress_output=True,
+                        console=Console(),
+                        use_parallel=True,  # Use maximum processors for speed
+                    )
+                except Exception:
+                    # Fallback to legacy
+                    if RISK_TEMPERATURE_AVAILABLE:
+                        try:
+                            risk_temp_result = get_cached_risk_temperature(
+                                start_date="2020-01-01",
+                                notional=NOTIONAL_PLN,
+                                estimated_gap_risk=0.03,
+                            )
+                            render_risk_temperature_summary(risk_temp_result)
+                        except Exception:
+                            pass
+            elif RISK_TEMPERATURE_AVAILABLE:
                 try:
                     risk_temp_result = get_cached_risk_temperature(
                         start_date="2020-01-01",
@@ -7733,11 +7933,26 @@ def main() -> None:
             for s in sigs
         }
         nearest_label = sigs[0].label if sigs else "HOLD"
+        
+        # Compute crash risk for this asset (uses momentum-based multi-factor model)
+        crash_risk_score = 0
+        if ASSET_CRASH_RISK_AVAILABLE and px is not None and len(px) > 50:
+            try:
+                # Get volume if available in features
+                volume_series = feats.get("volume") if feats else None
+                crash_result = compute_asset_crash_risk(px, volume_series, canon)
+                crash_risk_score = crash_result.crash_risk_score
+                # Cache for potential reuse
+                cache_crash_risk(canon, crash_result)
+            except Exception:
+                crash_risk_score = 0
+        
         summary_rows.append({
             "asset_label": asset_label,
             "horizon_signals": horizon_signals,
             "nearest_label": nearest_label,
             "sector": get_sector(canon),
+            "crash_risk_score": crash_risk_score,
         })
 
         # Prepare JSON block
@@ -7756,6 +7971,8 @@ def main() -> None:
             "edgeworth_damped": True,
             "kelly_rule": "half",
             "decision_thresholds": thresholds,
+            # crash risk score (0-100, momentum-based multi-factor)
+            "crash_risk_score": crash_risk_score,
             # volatility modeling metadata
             "vol_source": feats.get("vol_source", "garch11"),
             "garch_params": feats.get("garch_params", {}),
@@ -7819,8 +8036,31 @@ def main() -> None:
         # Add high-conviction signals summary for short-term trading
         render_strong_signals_summary(summary_rows, horizons=[1, 3, 7])
         
-        # Show risk temperature summary (computed once, applies to all assets)
-        if RISK_TEMPERATURE_AVAILABLE:
+        # Show unified risk dashboard (replaces fragmented risk temperature display)
+        # February 2026: Full risk dashboard matching `make risk` output
+        if UNIFIED_RISK_DASHBOARD_AVAILABLE:
+            try:
+                compute_and_render_unified_risk(
+                    start_date="2020-01-01",
+                    suppress_output=True,
+                    console=Console(),
+                    use_parallel=True,  # Use maximum processors for speed
+                )
+            except Exception as rd_e:
+                if os.getenv("DEBUG"):
+                    Console().print(f"[dim]Unified risk dashboard error: {rd_e}[/dim]")
+                # Fallback to legacy risk temperature summary
+                if RISK_TEMPERATURE_AVAILABLE:
+                    try:
+                        risk_temp_result = get_cached_risk_temperature(
+                            start_date="2020-01-01",
+                            notional=NOTIONAL_PLN,
+                            estimated_gap_risk=0.03,
+                        )
+                        render_risk_temperature_summary(risk_temp_result)
+                    except Exception:
+                        pass
+        elif RISK_TEMPERATURE_AVAILABLE:
             try:
                 risk_temp_result = get_cached_risk_temperature(
                     start_date="2020-01-01",

@@ -348,6 +348,41 @@ except ImportError:
     CONTROL_POLICY_AVAILABLE = False
 
 # =============================================================================
+# IMPORT ASYMMETRIC PIT VIOLATION PENALTY MODULE (February 2026)
+# =============================================================================
+# PIT must only act as a penalty, never as a reward.
+# This module provides regime-conditional, one-sided PIT penalties.
+# =============================================================================
+try:
+    from calibration.pit_penalty import (
+        apply_pit_penalties_to_weights,
+        compute_model_pit_penalty,
+        PITViolationResult,
+        PITPenaltyReport,
+    )
+    PIT_PENALTY_AVAILABLE = True
+except ImportError:
+    PIT_PENALTY_AVAILABLE = False
+
+# =============================================================================
+# IMPORT UNIFIED RISK CONTEXT (February 2026)
+# =============================================================================
+# Unified risk context for signal-risk architecture integration.
+# Provides copula-based tail dependence and smooth scale factors.
+# =============================================================================
+try:
+    from calibration.copula_correlation import (
+        compute_unified_risk_context,
+        UnifiedRiskContext,
+        compute_smooth_scale_factor,
+        COPULA_CORRELATION_AVAILABLE,
+    )
+    UNIFIED_RISK_AVAILABLE = True
+except ImportError:
+    UNIFIED_RISK_AVAILABLE = False
+    COPULA_CORRELATION_AVAILABLE = False
+
+# =============================================================================
 # IMPORT MODEL SELECTION UTILITIES FROM CALIBRATION
 # =============================================================================
 # AIC, BIC, kurtosis, and model weight functions are now in src/calibration/
@@ -2174,8 +2209,8 @@ def fit_all_models_for_regime(
     # Model naming: "aigf_nf"
     # =========================================================================
     
-    # AIGF-NF is ALWAYS enabled as a base model in BMA
-    AIGF_NF_ENABLED = True
+    # AIGF-NF is DISABLED - set to True to re-enable
+    AIGF_NF_ENABLED = False
     
     if AIGF_NF_ENABLED:
         model_name = get_aigf_nf_model_name()
@@ -2488,6 +2523,49 @@ def fit_regime_model_posterior(
                 models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
         
         # =====================================================================
+        # Step 3b: Apply Asymmetric PIT Violation Penalties (February 2026)
+        # =====================================================================
+        # CORE DESIGN CONSTRAINT: PIT must only act as a PENALTY, never a reward.
+        # Good PIT → neutral (P=1.0, no effect)
+        # Bad PIT → penalized (P<1.0, model demoted)
+        # =====================================================================
+        pit_penalty_report = None
+        weights_pre_pit = raw_weights.copy()
+        
+        if PIT_PENALTY_AVAILABLE:
+            # Extract PIT p-values for each model
+            model_pit_pvalues = {
+                m: models[m].get('pit_ks_pvalue') for m in models
+            }
+            
+            # Apply asymmetric PIT penalties
+            raw_weights, pit_penalty_report = apply_pit_penalties_to_weights(
+                raw_weights=raw_weights,
+                model_pit_pvalues=model_pit_pvalues,
+                regime=regime,
+                n_samples=n_samples,
+            )
+            
+            # Store PIT penalty info in each model
+            for m in models:
+                if pit_penalty_report and m in pit_penalty_report.model_penalties:
+                    penalty_result = pit_penalty_report.model_penalties[m]
+                    models[m]['pit_violation_severity'] = float(penalty_result.violation_severity)
+                    models[m]['pit_penalty_raw'] = float(penalty_result.raw_penalty)
+                    models[m]['pit_penalty_effective'] = float(penalty_result.effective_penalty)
+                    models[m]['pit_triggers_exit'] = penalty_result.triggers_exit
+                    models[m]['model_weight_pre_pit'] = float(weights_pre_pit.get(m, 0.0))
+                    models[m]['model_weight_post_pit'] = float(raw_weights.get(m, 0.0))
+            
+            # Log if PIT penalty changed model selection
+            if pit_penalty_report and pit_penalty_report.selection_diverged:
+                _log(f"     ⚠️  PIT penalty changed selection: {pit_penalty_report.best_model_by_fit} → {pit_penalty_report.best_model_after_penalty}")
+            
+            # Count and log violations
+            if pit_penalty_report and pit_penalty_report.n_violated > 0:
+                _log(f"     → PIT violations: {pit_penalty_report.n_violated} models penalized")
+        
+        # =====================================================================
         # Step 4: Apply temporal smoothing
         # =====================================================================
         smoothed_weights = apply_temporal_smoothing(raw_weights, prev_posterior, temporal_alpha)
@@ -2512,6 +2590,19 @@ def fit_regime_model_posterior(
         # Best model by combined score (lowest = best for standardized scores)
         best_model_by_combined = min(models.items(), key=lambda kv: kv[1].get('combined_score', float('inf')))[0] if models else None
         
+        # Build PIT penalty metadata
+        pit_penalty_meta = None
+        if pit_penalty_report is not None:
+            pit_penalty_meta = {
+                "n_violated": pit_penalty_report.n_violated,
+                "n_exit_triggered": pit_penalty_report.n_exit_triggered,
+                "selection_diverged": pit_penalty_report.selection_diverged,
+                "best_model_by_fit": pit_penalty_report.best_model_by_fit,
+                "best_model_after_penalty": pit_penalty_report.best_model_after_penalty,
+                "max_penalty_model": pit_penalty_report.max_penalty_model,
+                "max_penalty_value": float(pit_penalty_report.max_penalty_value),
+            }
+        
         regime_results[regime] = {
             "model_posterior": model_posterior,
             "models": models,
@@ -2531,6 +2622,9 @@ def fit_regime_model_posterior(
                 "bic_weight": bic_weight if model_selection_method == 'combined' else None,
                 "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
                 "smoothing_applied": prev_posterior is not None and temporal_alpha > 0,
+                # PIT Penalty metadata (February 2026)
+                "pit_penalty_applied": pit_penalty_report is not None,
+                "pit_penalty": pit_penalty_meta,
             }
         }
     

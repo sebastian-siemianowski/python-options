@@ -61,6 +61,17 @@ except ImportError:
     CONTROL_POLICY_AVAILABLE = False
     EscalationStatistics = None
 
+# Import PIT Penalty — Asymmetric Calibration Governance (February 2026)
+try:
+    from calibration.pit_penalty import (
+        get_pit_critical_stocks,
+        PIT_EXIT_THRESHOLD,
+        PIT_CRITICAL_THRESHOLDS,
+    )
+    PIT_PENALTY_AVAILABLE = True
+except ImportError:
+    PIT_PENALTY_AVAILABLE = False
+
 # Rich imports for presentation layer
 import json
 import multiprocessing
@@ -1357,6 +1368,62 @@ def render_calibration_report(cache: Dict, failure_reasons: Dict[str, str], cons
     legend.append("Kurt > 6", style="yellow")
     legend.append(" = heavy tails not fully captured", style="dim")
     console.print(legend)
+    console.print()
+    
+    # PIT EXIT summary (February 2026)
+    if PIT_PENALTY_AVAILABLE:
+        render_pit_exit_summary(cache, console=console)
+
+
+def render_pit_exit_summary(cache: Dict, console: Console = None) -> None:
+    """
+    Render summary of stocks that would trigger PIT EXIT signals.
+    
+    EXIT signals indicate that the model's belief cannot be trusted,
+    requiring position closure and no new positions.
+    """
+    if console is None:
+        console = create_tuning_console()
+    
+    if not PIT_PENALTY_AVAILABLE:
+        return
+    
+    # Get critical stocks using strict threshold (p < 0.01 triggers EXIT)
+    critical_stocks = get_pit_critical_stocks(cache, threshold=0.01)
+    
+    if not critical_stocks:
+        return
+    
+    console.print()
+    
+    # Section header
+    exit_header = Text()
+    exit_header.append("  🚨 ", style="bold red")
+    exit_header.append("PIT EXIT SIGNALS", style="bold red")
+    exit_header.append(f"  ({len(critical_stocks)} stocks)", style="dim")
+    console.print(exit_header)
+    console.print()
+    
+    # Explanation
+    explanation = Text()
+    explanation.append("    ", style="")
+    explanation.append("These stocks have critical PIT violations. ", style="dim italic")
+    explanation.append("Signal = EXIT", style="bold red")
+    explanation.append(" (close positions, no new trades).", style="dim italic")
+    console.print(explanation)
+    console.print()
+    
+    # List stocks in rows of 8
+    for i in range(0, len(critical_stocks), 8):
+        row_stocks = critical_stocks[i:i+8]
+        row_text = Text()
+        row_text.append("    ", style="")
+        for j, stock in enumerate(row_stocks):
+            if j > 0:
+                row_text.append("  ", style="")
+            row_text.append(stock, style="bold indian_red1")
+        console.print(row_text)
+    
     console.print()
 
 

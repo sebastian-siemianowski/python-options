@@ -112,8 +112,11 @@ def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln
     if isinstance(signal_label, str):
         label_upper = signal_label.upper()
         
+        # EXIT signal: PIT violation triggered (February 2026)
+        if label_upper == "EXIT":
+            return f"[bold red]EXIT[/bold red]"
         # Strong signals: ▲▲▼▼
-        if label_upper.startswith("STRONG BUY"):
+        elif label_upper.startswith("STRONG BUY"):
             return f"[bold #00d700]▲▲{pct_return:+.1f}%[/bold #00d700]"
         elif label_upper.startswith("STRONG SELL"):
             return f"[bold indian_red1]▼▼{pct_return:+.1f}%[/bold indian_red1]"
@@ -208,7 +211,32 @@ def format_risk_scale_factor(scale: float, temperature: float) -> str:
         return f"[bold red]×{scale:.2f}[/bold red]"  # Severe reduction
 
 
-def render_crash_risk_assessment(
+# =============================================================================
+# BACKWARD COMPATIBILITY: Re-export from canonical temperature modules
+# =============================================================================
+# Temperature-related rendering is now owned by the temperature modules.
+# These re-exports maintain backward compatibility for any code that imports
+# from signals_ux.py.
+# =============================================================================
+
+# Re-export render_crash_risk_assessment from metals_risk_temperature
+try:
+    from decision.metals_risk_temperature import render_crash_risk_assessment
+except ImportError:
+    # Fallback stub if metals module not available
+    def render_crash_risk_assessment(*args, **kwargs):
+        pass
+
+# Re-export render_risk_temperature_summary from risk_temperature
+try:
+    from decision.risk_temperature import render_risk_temperature_summary
+except ImportError:
+    # Fallback stub if risk_temperature module not available
+    def render_risk_temperature_summary(*args, **kwargs):
+        pass
+
+
+def render_detailed_signal_table(
     crash_risk_pct: float,
     crash_risk_level: str,
     vol_inversion_count: int = 0,
@@ -1018,25 +1046,48 @@ def render_simplified_signal_table(
 
 
 def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[int], title_override: str = None, asset_col_width: int = None, console: Console = None) -> None:
-    """Render world-class compact signal heatmap table."""
+    """Render world-class compact signal heatmap table.
+    
+    Split into two tables:
+    1. Active signals (non-EXIT) - sorted alphabetically by Asset
+    2. EXIT signals (belief withdrawn) - sorted alphabetically by Asset
+    """
     if not summary_rows:
         return
 
-    # Sort: SELL first, then HOLD, then BUY, then STRONG BUY
-    def signal_sort_key(row: Dict) -> int:
-        nearest_label = row.get("nearest_label", "HOLD")
-        label_upper = str(nearest_label).upper()
-        if "SELL" in label_upper:
-            return 0
-        elif "HOLD" in label_upper:
-            return 1
-        elif "STRONG" in label_upper and "BUY" in label_upper:
-            return 3
-        elif "BUY" in label_upper:
-            return 2
-        return 1
-
-    sorted_rows = sorted(summary_rows, key=signal_sort_key)
+    # Separate rows into EXIT and non-EXIT categories
+    exit_rows = []
+    active_rows = []
+    
+    for row in summary_rows:
+        horizon_signals = row.get("horizon_signals", {})
+        # Check if ANY horizon has EXIT signal
+        has_exit = False
+        for horizon in horizons:
+            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
+            label = signal_data.get("label", "HOLD")
+            if str(label).upper() == "EXIT":
+                has_exit = True
+                break
+        
+        if has_exit:
+            exit_rows.append(row)
+        else:
+            active_rows.append(row)
+    
+    # Sort both lists alphabetically by asset label
+    def asset_sort_key(row: Dict) -> str:
+        label = row.get("asset_label", "")
+        # Extract just the company name for sorting (before the ticker)
+        if isinstance(label, str):
+            # Remove Rich markup tags
+            import re
+            plain = re.sub(r"\[/?[^\]]+\]", "", label)
+            return plain.lower()
+        return ""
+    
+    active_rows = sorted(active_rows, key=asset_sort_key)
+    exit_rows = sorted(exit_rows, key=asset_sort_key)
 
     # Compact asset column width
     import re
@@ -1045,86 +1096,128 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
             return 0
         return len(re.sub(r"\[/?[^\]]+\]", "", text))
     if asset_col_width is None:
-        longest_asset = max((_plain_len(r.get("asset_label", "")) for r in sorted_rows), default=0)
+        longest_asset = max((_plain_len(r.get("asset_label", "")) for r in summary_rows), default=0)
         asset_col_width = max(40, min(52, longest_asset + 4))
 
     if console is None:
         console = Console(force_terminal=True, width=200)
     
-    # Clean table with vertical columns
-    table = Table(
-        title=title_override,
-        show_header=True,
-        header_style="bold white",
-        border_style="dim",
-        box=box.ROUNDED,
-        padding=(0, 1),
-        collapse_padding=False,
-        row_styles=["", "on grey7"],  # Alternating row colors
-    )
-    # Asset column - generous width for full names
-    table.add_column("Asset", justify="left", style="white", width=asset_col_width, no_wrap=True, overflow="ellipsis")
-    # Exhaustion columns
-    table.add_column("↑", justify="right", width=3, style="indian_red1")  # Overbought
-    table.add_column("↓", justify="right", width=3, style="bright_green")  # Oversold
+    # Helper function to render a single table
+    def _render_table(rows: List[Dict], table_title: str, title_style: str, border_style: str) -> None:
+        if not rows:
+            return
+            
+        table = Table(
+            title=table_title,
+            title_style=title_style,
+            show_header=True,
+            header_style="bold white",
+            border_style=border_style,
+            box=box.ROUNDED,
+            padding=(0, 1),
+            collapse_padding=False,
+            row_styles=["", "on grey7"],
+        )
+        # Asset column
+        table.add_column("Asset", justify="left", style="white", width=asset_col_width, no_wrap=True, overflow="ellipsis")
+        # Crash Risk column (0-100 momentum-based multi-factor)
+        table.add_column("Crash", justify="right", width=5, style="red")
+        # Exhaustion columns
+        table.add_column("↑", justify="right", width=3, style="indian_red1")
+        table.add_column("↓", justify="right", width=3, style="bright_green")
+        
+        # Horizon columns
+        horizon_labels = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
+        for horizon in horizons:
+            label = horizon_labels.get(horizon, f"{horizon}d")
+            table.add_column(label, justify="center", width=11, no_wrap=True)
+
+        for row in rows:
+            asset_label = row.get("asset_label", "Unknown")
+            horizon_signals = row.get("horizon_signals", {})
+            
+            # Get crash risk score (0-100) and format display
+            crash_risk_score = row.get("crash_risk_score", 0)
+            if crash_risk_score is None:
+                crash_risk_score = 0
+            crash_risk_score = int(crash_risk_score)
+            
+            # Format crash risk display with intuitive color coding
+            # Low risk = calm colors, High risk = alarming colors
+            if crash_risk_score < 15:
+                # Very low risk - dim/invisible
+                crash_risk_display = f"[dim]·[/dim]"
+            elif crash_risk_score < 30:
+                # Low risk - calm green
+                crash_risk_display = f"[bright_green]{crash_risk_score}[/bright_green]"
+            elif crash_risk_score < 50:
+                # Moderate risk - yellow warning
+                crash_risk_display = f"[yellow]{crash_risk_score}[/yellow]"
+            elif crash_risk_score < 70:
+                # Elevated risk - orange alert
+                crash_risk_display = f"[orange1]{crash_risk_score}[/orange1]"
+            elif crash_risk_score < 85:
+                # High risk - red
+                crash_risk_display = f"[red]{crash_risk_score}[/red]"
+            else:
+                # Extreme risk - bold red with emphasis
+                crash_risk_display = f"[bold red]{crash_risk_score}[/bold red]"
+            
+            # Compute max UE↑ and UE↓
+            max_ue_up = 0.0
+            max_ue_down = 0.0
+            for horizon in horizons:
+                signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
+                ue_up = signal_data.get("ue_up", 0.0) or 0.0
+                ue_down = signal_data.get("ue_down", 0.0) or 0.0
+                if ue_up > max_ue_up:
+                    max_ue_up = ue_up
+                if ue_down > max_ue_down:
+                    max_ue_down = ue_down
+            
+            # Format UE↑
+            ue_up_pct = int(max_ue_up * 100)
+            if ue_up_pct < 5:
+                ue_up_display = "[dim]·[/dim]"
+            elif max_ue_up >= 0.6:
+                ue_up_display = f"[indian_red1]{ue_up_pct}[/indian_red1]"
+            elif max_ue_up >= 0.3:
+                ue_up_display = f"[yellow]{ue_up_pct}[/yellow]"
+            else:
+                ue_up_display = f"[dim]{ue_up_pct}[/dim]"
+
+            # Format UE↓
+            ue_down_pct = int(max_ue_down * 100)
+            if ue_down_pct < 5:
+                ue_down_display = "[dim]·[/dim]"
+            elif max_ue_down >= 0.6:
+                ue_down_display = f"[#00d700]{ue_down_pct}[/#00d700]"
+            elif max_ue_down >= 0.3:
+                ue_down_display = f"[cyan]{ue_down_pct}[/cyan]"
+            else:
+                ue_down_display = f"[dim]{ue_down_pct}[/dim]"
+            
+            cells = []
+            for horizon in horizons:
+                signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
+                label = signal_data.get("label", "HOLD")
+                profit_pln = signal_data.get("profit_pln", 0.0)
+                cells.append(format_profit_with_signal(label, profit_pln))
+            
+            table.add_row(asset_label, crash_risk_display, ue_up_display, ue_down_display, *cells)
+
+        console.print(table)
+        console.print()
     
-    # Horizon columns - slightly wider for readability
-    horizon_labels = {1: "1d", 3: "3d", 7: "1w", 21: "1m", 63: "3m", 126: "6m", 252: "12m"}
-    for horizon in horizons:
-        label = horizon_labels.get(horizon, f"{horizon}d")
-        table.add_column(label, justify="center", width=11, no_wrap=True)
-
-    for row in sorted_rows:
-        asset_label = row.get("asset_label", "Unknown")
-        horizon_signals = row.get("horizon_signals", {})
-        
-        # Compute max UE↑ and UE↓ across all horizons for this asset
-        max_ue_up = 0.0
-        max_ue_down = 0.0
-        for horizon in horizons:
-            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
-            ue_up = signal_data.get("ue_up", 0.0) or 0.0
-            ue_down = signal_data.get("ue_down", 0.0) or 0.0
-            if ue_up > max_ue_up:
-                max_ue_up = ue_up
-            if ue_down > max_ue_down:
-                max_ue_down = ue_down
-        
-        # Format UE↑ as percentage (0-100%) with color coding
-        # Show dot if value is not meaningful (< 5%)
-        ue_up_pct = int(max_ue_up * 100)
-        if ue_up_pct < 5:
-            ue_up_display = "[dim]·[/dim]"
-        elif max_ue_up >= 0.6:
-            ue_up_display = f"[indian_red1]{ue_up_pct}[/indian_red1]"
-        elif max_ue_up >= 0.3:
-            ue_up_display = f"[yellow]{ue_up_pct}[/yellow]"
-        else:
-            ue_up_display = f"[dim]{ue_up_pct}[/dim]"
-
-        # Format UE↓ as percentage (0-100%) with color coding
-        # Show dot if value is not meaningful (< 5%)
-        ue_down_pct = int(max_ue_down * 100)
-        if ue_down_pct < 5:
-            ue_down_display = "[dim]·[/dim]"
-        elif max_ue_down >= 0.6:
-            ue_down_display = f"[#00d700]{ue_down_pct}[/#00d700]"
-        elif max_ue_down >= 0.3:
-            ue_down_display = f"[cyan]{ue_down_pct}[/cyan]"
-        else:
-            ue_down_display = f"[dim]{ue_down_pct}[/dim]"
-        
-        cells = []
-        for horizon in horizons:
-            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
-            label = signal_data.get("label", "HOLD")
-            profit_pln = signal_data.get("profit_pln", 0.0)
-            cells.append(format_profit_with_signal(label, profit_pln))
-        
-        table.add_row(asset_label, ue_up_display, ue_down_display, *cells)
-
-    console.print(table)
-    console.print()
+    # Render active signals table first (if any)
+    if active_rows:
+        active_title = title_override if title_override else f"Active Signals ({len(active_rows)} assets)"
+        _render_table(active_rows, active_title, "bold bright_white", "dim")
+    
+    # Render EXIT signals table (if any)
+    if exit_rows:
+        exit_title = f"EXIT — Belief Withdrawn ({len(exit_rows)} assets)"
+        _render_table(exit_rows, exit_title, "bold red", "red")
 
 
 def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) -> None:
@@ -1200,8 +1293,10 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
     exhaust_legend = Table.grid(padding=(0, 4))
     exhaust_legend.add_column(justify="center")
     exhaust_legend.add_column(justify="center")
+    exhaust_legend.add_column(justify="center")
     
     exhaust_legend.add_row(
+        Text.assemble(("CR", "bold yellow"), (" Crash Risk (0-100)", "dim")),
         Text.assemble(("↑%", "bold indian_red1"), (" Overbought (above EMA)", "dim")),
         Text.assemble(("↓%", "bold bright_green"), (" Oversold (below EMA)", "dim")),
     )
@@ -1316,6 +1411,11 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
             exp_ret = signal_data.get("exp_ret", 0.0)
             profit_pln = signal_data.get("profit_pln", 0.0)
             label = signal_data.get("label", "HOLD")
+            
+            # Skip EXIT signals - these indicate untrusted beliefs
+            # EXIT signals should not appear in trading recommendations
+            if label.upper() == "EXIT":
+                continue
             
             # Calculate strength score for sorting
             distance_from_neutral = abs(p_up - 0.5)
@@ -1794,276 +1894,7 @@ SIMPLIFIED_COLUMN_DESCRIPTIONS = {
 
 
 # =============================================================================
-# RISK TEMPERATURE SUMMARY DISPLAY
+# NOTE: render_risk_temperature_summary is now imported from risk_temperature.py
+# at the top of this file for backward compatibility.
+# The canonical implementation lives in decision/risk_temperature.py.
 # =============================================================================
-# Apple Design Philosophy - Senior Professor Edition (60 Years Experience)
-#
-# "Design is not just what it looks like and feels like.
-#  Design is how it works." - Steve Jobs
-#
-# PRINCIPLES:
-#   1. VISUAL HIERARCHY - The eye should travel naturally
-#   2. NEGATIVE SPACE - Breathing room creates elegance
-#   3. PURPOSEFUL COLOR - Every color carries meaning
-#   4. GRID ALIGNMENT - Invisible structure, visible harmony
-#   5. PROGRESSIVE DISCLOSURE - Show only what's needed
-# =============================================================================
-
-def render_risk_temperature_summary(
-    risk_temp_result,
-    console: Console = None,
-) -> None:
-    """
-    Render a minimalist Apple-inspired risk temperature display.
-    Clean lines, no boxes, elegant typography.
-    """
-    if console is None:
-        console = Console()
-    
-    if risk_temp_result is None:
-        return
-    
-    # Data extraction
-    temp = getattr(risk_temp_result, 'temperature', 0.0)
-    scale = getattr(risk_temp_result, 'scale_factor', 1.0)
-    categories = getattr(risk_temp_result, 'categories', {})
-    overnight_budget_active = getattr(risk_temp_result, 'overnight_budget_active', False)
-    overnight_max_position = getattr(risk_temp_result, 'overnight_max_position', None)
-    
-    # Status determination
-    if temp < 0.3:
-        status = "Calm"
-        status_color = "green"
-        action_text = "Full exposure permitted"
-    elif temp < 0.7:
-        status = "Elevated"
-        status_color = "yellow"
-        action_text = "Monitor positions closely"
-    elif temp < 1.2:
-        status = "Stressed"
-        status_color = "bright_red"
-        action_text = "Reduce risk exposure"
-    else:
-        status = "Crisis"
-        status_color = "bold red"
-        action_text = "Capital preservation mode"
-    
-    console.print()
-    console.print()
-    
-    # Title
-    console.print("  [dim]Market Risk Temperature[/dim]")
-    console.print()
-    
-    # Hero temperature with status
-    hero = Text()
-    hero.append("  ")
-    hero.append(f"{temp:.2f}", style=f"bold {status_color}")
-    hero.append("  ")
-    hero.append(status, style=f"{status_color}")
-    console.print(hero)
-    console.print()
-    
-    # Main gauge bar
-    gauge = Text()
-    gauge.append("  ")
-    gauge_width = 48
-    filled = int(min(1.0, temp / 2.0) * gauge_width)
-    
-    for i in range(gauge_width):
-        if i < filled:
-            segment_pct = i / gauge_width
-            if segment_pct < 0.25:
-                gauge.append("━", style="bright_green")
-            elif segment_pct < 0.5:
-                gauge.append("━", style="yellow")
-            elif segment_pct < 0.75:
-                gauge.append("━", style="bright_red")
-            else:
-                gauge.append("━", style="bold red")
-        else:
-            gauge.append("━", style="bright_black")
-    
-    console.print(gauge)
-    
-    # Scale labels
-    labels = Text()
-    labels.append("  ")
-    labels.append("0", style="dim")
-    labels.append(" " * 22)
-    labels.append("1", style="dim")
-    labels.append(" " * 22)
-    labels.append("2", style="dim")
-    console.print(labels)
-    console.print()
-    
-    # Action text
-    console.print(f"  [dim italic]{action_text}[/dim italic]")
-    console.print()
-    
-    # Crash Risk Assessment (if available from metals module)
-    crash_risk_pct = getattr(risk_temp_result, 'crash_risk_pct', 0.0)
-    crash_risk_level = getattr(risk_temp_result, 'crash_risk_level', 'Low')
-    vol_inversion_count = getattr(risk_temp_result, 'vol_inversion_count', 0)
-    inverted_metals = getattr(risk_temp_result, 'inverted_metals', None)
-    metals_momentum = getattr(risk_temp_result, 'metals_momentum', None)
-    
-    if crash_risk_pct > 0.02:  # Only show if above baseline
-        render_crash_risk_assessment(
-            crash_risk_pct=crash_risk_pct,
-            crash_risk_level=crash_risk_level,
-            vol_inversion_count=vol_inversion_count,
-            inverted_metals=inverted_metals,
-            momentum_data=metals_momentum,
-            console=console,
-        )
-    
-    # Category stress bars
-    if categories:
-        category_config = [
-            ("fx", "FX Carry"),
-            ("futures", "Equities"),
-            ("rates", "Duration"),
-            ("commodities", "Energy"),
-            ("metals", "Metals"),
-        ]
-        
-        for cat_key, cat_label in category_config:
-            if cat_key not in categories:
-                continue
-            
-            cat = categories[cat_key]
-            stress = getattr(cat, 'stress_level', 0.0)
-            
-            if stress < 0.5:
-                stress_style = "bright_green"
-            elif stress < 1.0:
-                stress_style = "yellow"
-            elif stress < 1.5:
-                stress_style = "bright_red"
-            else:
-                stress_style = "bold red"
-            
-            line = Text()
-            line.append("  ")
-            line.append(f"{cat_label:<12}", style="dim")
-            
-            mini_width = 16
-            mini_filled = int(min(1.0, stress / 2.0) * mini_width)
-            for i in range(mini_width):
-                if i < mini_filled:
-                    line.append("━", style=stress_style)
-                else:
-                    line.append("━", style="bright_black")
-            
-            line.append(f"  {stress:.2f}", style=stress_style)
-            console.print(line)
-        
-        console.print()
-    
-    # Position scaling
-    if scale > 0.9:
-        scale_style = "bright_green"
-        scale_text = "Full Allocation"
-    elif scale > 0.6:
-        scale_style = "yellow"
-        scale_text = "Reduced"
-    elif scale > 0.3:
-        scale_style = "bright_red"
-        scale_text = "Significantly Reduced"
-    else:
-        scale_style = "bold red"
-        scale_text = "Minimal"
-    
-    pos_line = Text()
-    pos_line.append("  ")
-    pos_line.append("Position Size   ", style="dim")
-    pos_line.append(f"{scale:.0%}", style=f"bold {scale_style}")
-    pos_line.append(f"  {scale_text}", style="dim italic")
-    console.print(pos_line)
-    
-    # Overnight budget
-    if overnight_budget_active:
-        overnight_line = Text()
-        overnight_line.append("  ")
-        overnight_line.append("Overnight Cap   ", style="dim")
-        overnight_line.append(f"{overnight_max_position:.0%}", style="bold yellow")
-        overnight_line.append("  Active", style="dim italic")
-        console.print(overnight_line)
-    
-    # Data quality
-    total_indicators = 0
-    available_indicators =  0
-    for cat in categories.values():
-        inds = getattr(cat, 'indicators', [])
-        total_indicators += len(inds)
-        available_indicators += sum(1 for i in inds if getattr(i, 'data_available', False))
-    
-    if total_indicators > 0:
-        quality_pct = available_indicators / total_indicators
-        if quality_pct >= 0.9:
-            quality_style = "green"
-        elif quality_pct >= 0.7:
-            quality_style = "yellow"
-        else:
-            quality_style = "red"
-        
-        quality_line = Text()
-        quality_line.append("  ")
-        quality_line.append("Data Quality    ", style="dim")
-        quality_line.append(f"{available_indicators}/{total_indicators}", style=quality_style)
-        quality_line.append("  indicators", style="dim italic")
-        console.print(quality_line)
-    
-    # Governance status (February 2026 Enhancement)
-    regime_state = getattr(risk_temp_result, 'regime_state', None)
-    if regime_state:
-        console.print()
-        console.print("  [dim]Governance[/dim]")
-        console.print()
-        
-        # Regime state
-        regime_line = Text()
-        regime_line.append("  ")
-        regime_line.append("Regime State    ", style="dim")
-        regime_line.append(regime_state, style=status_color)
-        
-        regime_transition = getattr(risk_temp_result, 'regime_transition_occurred', False)
-        prev_regime = getattr(risk_temp_result, 'previous_regime_state', None)
-        if regime_transition and prev_regime:
-            regime_line.append("  ← ", style="dim")
-            regime_line.append(prev_regime, style="dim italic")
-        console.print(regime_line)
-        
-        # Rate limiting
-        rate_limited = getattr(risk_temp_result, 'rate_limit_applied', False)
-        if rate_limited:
-            rate_line = Text()
-            rate_line.append("  ")
-            rate_line.append("Rate Limited    ", style="dim")
-            rate_line.append("Yes", style="yellow")
-            raw_temp = getattr(risk_temp_result, 'raw_temperature', None)
-            if raw_temp is not None:
-                rate_line.append(f"  (raw: {raw_temp:.2f})", style="dim italic")
-            console.print(rate_line)
-        
-        # Imputation warning
-        imputation_warning = getattr(risk_temp_result, 'imputation_warning', False)
-        if imputation_warning:
-            imp_line = Text()
-            imp_line.append("  ")
-            imp_line.append("⚠️ Imputation   ", style="dim")
-            imputed_count = getattr(risk_temp_result, 'imputed_indicators', 0)
-            imp_line.append(f"{imputed_count} indicators imputed", style="yellow")
-            console.print(imp_line)
-        
-        # Gap risk
-        gap_risk = getattr(risk_temp_result, 'gap_risk_estimate', 0.03)
-        gap_line = Text()
-        gap_line.append("  ")
-        gap_line.append("Gap Risk        ", style="dim")
-        gap_line.append(f"{gap_risk:.1%}", style="white")
-        console.print(gap_line)
-    
-    console.print()
-    console.print()

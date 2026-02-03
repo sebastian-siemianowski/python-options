@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -47,6 +47,7 @@ SHELL := /bin/bash
 # ├──────────────────────────────────────────────────────────────────────────────┤
 # │  make tune               Estimate optimal Kalman q parameters via MLE        │
 # │  make tune ARGS="--force"  Re-estimate all (ignore cache)                    │
+# │  make retune             Refresh data, backup tune folder, run tune          │
 # │  make calibrate          Re-tune only assets with PIT failures (p < 0.05)   │
 # │  make calibrate-four     Re-tune 4 random failing assets (for testing)      │
 # │  make escalate           Re-tune assets needing escalation (mixture/ν)      │
@@ -84,6 +85,16 @@ SHELL := /bin/bash
 # │  make top100             Top 100 screener (Russell 5000 universe)            │
 # │  make build-russell      Build Russell 2500 tickers CSV                      │
 # │  make russell5000        Build Russell 5000 tickers CSV                      │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  🌡️  RISK DASHBOARD (Unified Risk Temperature)                               │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make risk               Unified risk dashboard (cross-asset + metals + mkt)│
+# │  make risk ARGS="--json" Output as JSON                                      │
+# │  make temp               Cross-asset risk temperature only                   │
+# │  make metals             Metals risk temperature only                        │
+# │  make market             Equity market temperature only                      │
 # └──────────────────────────────────────────────────────────────────────────────┘
 #
 # ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -166,6 +177,35 @@ fx-validate-kalman-plots: .venv/.deps_installed
 tune: .venv/.deps_installed
 	@mkdir -p cache
 	@.venv/bin/python src/tuning/tune_ux.py $(ARGS)
+
+# Full retune: refresh data, backup existing tune folder, then run tune
+# Backup folder is named with timestamp: tune-bak/tune_YYYYMMDD_HHMMSS
+retune: .venv/.deps_installed
+	@echo "═══════════════════════════════════════════════════════════════════════════"
+	@echo "  🔄 RETUNE: Refresh Data → Backup Tune → Run Tune"
+	@echo "═══════════════════════════════════════════════════════════════════════════"
+	@echo ""
+	@echo "📥 Step 1/3: Refreshing market data..."
+	@$(MAKE) refresh
+	@echo ""
+	@echo "📦 Step 2/3: Backing up existing tune folder..."
+	@if [ -d src/data/tune ] && [ -n "$$(ls -A src/data/tune 2>/dev/null)" ]; then \
+		BACKUP_NAME="tune_$$(date +%Y%m%d_%H%M%S)"; \
+		mkdir -p src/data/tune-bak; \
+		mv src/data/tune "src/data/tune-bak/$$BACKUP_NAME"; \
+		echo "  ✅ Backed up to: src/data/tune-bak/$$BACKUP_NAME"; \
+		mkdir -p src/data/tune; \
+	else \
+		echo "  ℹ️  No existing tune folder to backup (or empty)"; \
+		mkdir -p src/data/tune; \
+	fi
+	@echo ""
+	@echo "🎛️  Step 3/3: Running tune..."
+	@$(MAKE) tune $(ARGS)
+	@echo ""
+	@echo "═══════════════════════════════════════════════════════════════════════════"
+	@echo "  ✅ RETUNE COMPLETE"
+	@echo "═══════════════════════════════════════════════════════════════════════════"
 
 # Re-tune only assets that failed calibration without escalation attempt
 # This targets assets where neither mixture nor ν-refinement was tried
@@ -358,14 +398,25 @@ clean-cache: .venv/.deps_installed
 colors: .venv/.deps_installed
 	@.venv/bin/python src/show_colors.py
 
-# Market Risk Temperature - cross-asset stress indicator
+# ═══════════════════════════════════════════════════════════════════════════════
+# UNIFIED RISK DASHBOARD
+# ═══════════════════════════════════════════════════════════════════════════════
+# Combines all risk temperature modules into a single view:
+#   - Cross-asset stress indicators (risk_temperature)
+#   - Metals crash risk and overnight exposure (metals_risk_temperature)
+#   - US equity market momentum and sector rotation (market_temperature)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Unified Risk Dashboard - combined view of all risk indicators
+risk: .venv/.deps_installed
+	@.venv/bin/python src/decision/risk_dashboard.py $(ARGS)
+
+# Individual temperature modules (for legacy/debugging)
 temp: .venv/.deps_installed
 	@.venv/bin/python src/decision/risk_temperature.py
-# Metals Risk Temperature - cross-metal stress indicator
+
 metals: .venv/.deps_installed
 	@.venv/bin/python src/decision/metals_risk_temperature.py
 
-# Market Temperature - comprehensive US equity market assessment
-# Analyzes Top 100, S&P 500, Russell 2000 with crash risk, momentum, breadth
-risk: .venv/.deps_installed
+market: .venv/.deps_installed
 	@.venv/bin/python src/decision/market_temperature.py $(ARGS)
