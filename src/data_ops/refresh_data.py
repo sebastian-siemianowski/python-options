@@ -356,119 +356,166 @@ def bulk_download_n_times(
                 pass_header.append("  +fallback", style="yellow")
             console.print(pass_header)
         
-        try:
-            # Create progress bar for this pass
-            if not quiet:
-                progress_ctx = Progress(
-                    SpinnerColumn(spinner_name="dots", style="cyan"),
-                    BarColumn(bar_width=40, complete_style="cyan", finished_style="green"),
-                    TextColumn("[bold]{task.percentage:>5.1f}%[/bold]"),
-                    TextColumn("[dim]·[/dim]"),
-                    MofNCompleteColumn(),
-                    TextColumn("[dim]·[/dim]"),
-                    TimeElapsedColumn(),
-                    console=console,
-                    transient=True,
+        # =====================================================================
+        # INNER RETRY LOOP: Keep retrying pending symbols until all are done
+        # or we've exhausted retries within this pass (max 3 inner retries)
+        # =====================================================================
+        symbols_to_try = all_symbols.copy()
+        max_inner_retries = 3
+        inner_retry = 0
+        
+        while symbols_to_try and inner_retry < max_inner_retries:
+            inner_retry += 1
+            
+            if not quiet and inner_retry > 1:
+                retry_header = Text()
+                retry_header.append("      ")
+                retry_header.append(f"retry {inner_retry}/{max_inner_retries}", style="dim yellow")
+                retry_header.append(f"  ({len(symbols_to_try)} pending)", style="dim")
+                console.print(retry_header)
+            
+            try:
+                # Create progress bar for this attempt
+                if not quiet:
+                    progress_ctx = Progress(
+                        SpinnerColumn(spinner_name="dots", style="cyan"),
+                        BarColumn(bar_width=40, complete_style="cyan", finished_style="green"),
+                        TextColumn("[bold]{task.percentage:>5.1f}%[/bold]"),
+                        TextColumn("[dim]·[/dim]"),
+                        MofNCompleteColumn(),
+                        TextColumn("[dim]·[/dim]"),
+                        TimeElapsedColumn(),
+                        console=console,
+                        transient=True,
+                    )
+                    progress_ctx.start()
+                    progress_task = progress_ctx.add_task("", total=len(symbols_to_try))
+                
+                # Skip individual fallback on all passes except the last one
+                # force_online=True ensures OFFLINE_MODE is ignored for make data
+                results = download_prices_bulk(
+                    symbols=symbols_to_try,
+                    start=start_str,
+                    end=end_str,
+                    chunk_size=batch_size,
+                    progress=not quiet,
+                    log_fn=rich_log if not quiet else None,
+                    skip_individual_fallback=not is_final_pass,
+                    max_workers=workers,
+                    force_online=True,  # Always try to download for make data
                 )
-                progress_ctx.start()
-                progress_task = progress_ctx.add_task("", total=len(all_symbols))
-            
-            # Skip individual fallback on all passes except the last one
-            # force_online=True ensures OFFLINE_MODE is ignored for make data
-            results = download_prices_bulk(
-                symbols=all_symbols,
-                start=start_str,
-                end=end_str,
-                chunk_size=batch_size,
-                progress=not quiet,
-                log_fn=rich_log if not quiet else None,
-                skip_individual_fallback=not is_final_pass,
-                max_workers=workers,
-                force_online=True,  # Always try to download for make data
-            )
-            
-            if not quiet and progress_ctx is not None:
-                progress_ctx.stop()
-            
-            failed_symbols = []
-            for sym in all_symbols:
-                if sym not in results or results.get(sym) is None or len(results.get(sym, [])) == 0:
-                    failed_symbols.append(sym)
-            
-            successful = len(all_symbols) - len(failed_symbols)
-            last_failed_count = len(failed_symbols)
-            last_failed_symbols = failed_symbols
-            
-            tracker.end_pass(successful, last_failed_count)
-            
-            if not quiet:
-                # Show pass results - elegant inline
-                result = Text()
-                result.append("    ")
-                if last_failed_count == 0:
-                    result.append("✓ ", style="green")
-                    result.append(f"{successful}/{len(all_symbols)}", style="bold green")
-                    result.append(" complete", style="dim")
-                    console.print(result)
-                    # Early exit: all symbols succeeded, skip remaining passes
-                    break
-                else:
-                    result.append("● ", style="yellow")
-                    result.append(f"{successful}", style="green")
-                    result.append(" ok", style="dim")
-                    result.append("  ·  ", style="dim")
-                    result.append(f"{last_failed_count}", style="yellow")
-                    result.append(" pending", style="dim")
+                
+                if not quiet and progress_ctx is not None:
+                    progress_ctx.stop()
+                
+                # Find symbols that still failed
+                still_pending = []
+                for sym in symbols_to_try:
+                    if sym not in results or results.get(sym) is None or len(results.get(sym, [])) == 0:
+                        still_pending.append(sym)
+                
+                # Update symbols_to_try for next inner retry
+                symbols_to_try = still_pending
+                
+                if not quiet:
+                    successful_this_attempt = len(all_symbols) - len(still_pending)
+                    result = Text()
+                    result.append("    ")
+                    if not still_pending:
+                        result.append("✓ ", style="green")
+                        result.append(f"{successful_this_attempt}/{len(all_symbols)}", style="bold green")
+                        result.append(" complete", style="dim")
+                    else:
+                        result.append("● ", style="yellow")
+                        result.append(f"{successful_this_attempt}", style="green")
+                        result.append(" ok", style="dim")
+                        result.append("  ·  ", style="dim")
+                        result.append(f"{len(still_pending)}", style="yellow")
+                        result.append(" pending", style="dim")
                     console.print(result)
                     
                     # Show which symbols are pending (up to 10, then summarize)
-                    if last_failed_symbols:
+                    if still_pending and inner_retry < max_inner_retries:
                         pending_line = Text()
                         pending_line.append("      ", style="")
                         pending_line.append("→ ", style="dim yellow")
-                        if len(last_failed_symbols) <= 10:
-                            # Show all pending symbols
-                            pending_line.append(", ".join(last_failed_symbols), style="yellow")
+                        if len(still_pending) <= 10:
+                            pending_line.append(", ".join(still_pending), style="yellow")
                         else:
-                            # Show first 8 and count of remaining
-                            shown = last_failed_symbols[:8]
-                            remaining = len(last_failed_symbols) - 8
+                            shown = still_pending[:8]
+                            remaining = len(still_pending) - 8
                             pending_line.append(", ".join(shown), style="yellow")
                             pending_line.append(f" +{remaining} more", style="dim yellow")
                         console.print(pending_line)
-            elif last_failed_count == 0:
-                # Early exit even in quiet mode
-                break
-
-            # Wait between passes (with countdown)
-            if pass_num < num_passes:
-                if not quiet:
-                    wait_time = 5
-                    with Progress(
-                        SpinnerColumn(spinner_name="dots", style="dim"),
-                        TextColumn("[dim]Next pass in[/dim]"),
-                        TextColumn("[cyan]{task.completed}s[/cyan]"),
-                        console=console,
-                        transient=True,
-                    ) as progress:
-                        task = progress.add_task("", total=wait_time)
-                        for i in range(wait_time):
-                            time.sleep(1)
-                            progress.update(task, completed=wait_time - i - 1)
-                else:
-                    time.sleep(5)
                 
-        except Exception as e:
-            # Stop progress bar on error
-            if not quiet and progress_ctx:
-                try:
-                    progress_ctx.stop()
-                except Exception:
-                    pass
+                # If no more pending, we're done with this pass
+                if not still_pending:
+                    break
+                
+                # Brief pause before inner retry
+                if inner_retry < max_inner_retries:
+                    time.sleep(2)
+                    
+            except Exception as e:
+                if not quiet and progress_ctx:
+                    try:
+                        progress_ctx.stop()
+                    except Exception:
+                        pass
+                if not quiet:
+                    console.print(f"    [red]✗ Error:[/red] [dim]{e}[/dim]")
+                # Continue to next inner retry
+                time.sleep(2)
+        
+        # End of inner retry loop - record results for this pass
+        failed_symbols = symbols_to_try  # Whatever is still pending after all inner retries
+        successful = len(all_symbols) - len(failed_symbols)
+        last_failed_count = len(failed_symbols)
+        last_failed_symbols = failed_symbols
+        
+        tracker.end_pass(successful, last_failed_count)
+        
+        # Check if we're done
+        if last_failed_count == 0:
             if not quiet:
-                console.print(f"    [red]✗ Error:[/red] [dim]{e}[/dim]")
-            tracker.end_pass(0, len(all_symbols))
-            if pass_num < num_passes:
+                console.print()
+                done_msg = Text()
+                done_msg.append("    ")
+                done_msg.append("✓ ", style="bold green")
+                done_msg.append("All symbols downloaded!", style="green")
+                console.print(done_msg)
+            break
+        
+        # Show final pending list for this pass
+        if not quiet and last_failed_symbols:
+            pending_line = Text()
+            pending_line.append("      ", style="")
+            pending_line.append("→ ", style="dim yellow")
+            if len(last_failed_symbols) <= 10:
+                pending_line.append(", ".join(last_failed_symbols), style="yellow")
+            else:
+                shown = last_failed_symbols[:8]
+                remaining = len(last_failed_symbols) - 8
+                pending_line.append(", ".join(shown), style="yellow")
+                pending_line.append(f" +{remaining} more", style="dim yellow")
+            console.print(pending_line)
+
+        # Wait between passes (with countdown)
+        if pass_num < num_passes:
+            if not quiet:
+                wait_time = 5
+                with Progress(
+                    SpinnerColumn(spinner_name="dots", style="dim"),
+                    TextColumn("[dim]Next pass in[/dim]"),
+                    TextColumn("[cyan]{task.completed}s[/cyan]"),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    task = progress.add_task("", total=wait_time)
+                    for i in range(wait_time):
+                        time.sleep(1)
+                        progress.update(task, completed=wait_time - i - 1)
+            else:
                 time.sleep(5)
     
     # ═══════════════════════════════════════════════════════════════════════════════
