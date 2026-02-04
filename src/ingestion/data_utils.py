@@ -646,14 +646,13 @@ COMPANY_NAMES: Dict[str, str] = {
     "ETH-USD": "Ethereum (ETH/USD)",
     "SOL-USD": "Solana (SOL/USD)",
     
-    # Major Market Indices
-    "^SPX": "S&P 500 Index",
+    # Major Market Indices (using symbols with good historical data)
+    "^GSPC": "S&P 500 Index",
     "^VIX": "CBOE Volatility Index (VIX)",
-    "^XSP": "S&P 500 Mini Index",
     "^RUT": "Russell 2000 Index",
     "^NDX": "Nasdaq-100 Index",
-    "^DJX": "Dow Jones Industrial Average Index",
-    "^XND": "Nasdaq-100 Mini Index",
+    "^DJI": "Dow Jones Industrial Average",
+    "^IXIC": "Nasdaq Composite Index",
     
     # Major ETFs
     "SPY": "SPDR S&P 500 ETF Trust",
@@ -1211,8 +1210,10 @@ COMPANY_NAMES: Dict[str, str] = {
 # =============================================================================
 
 # Major Market Indices (Yahoo Finance symbols with ^ prefix)
+# Note: Only indices with good historical data are included
+# ^DJX and ^XND excluded - options indices with insufficient history
 MARKET_INDICES = {
-    "^SPX": {
+    "^GSPC": {
         "name": "S&P 500",
         "description": "S&P 500 Index",
         "category": "index",
@@ -1220,11 +1221,6 @@ MARKET_INDICES = {
     "^VIX": {
         "name": "VIX",
         "description": "CBOE Volatility Index",
-        "category": "index",
-    },
-    "^XSP": {
-        "name": "S&P 500 Mini",
-        "description": "S&P 500 Mini Index",
         "category": "index",
     },
     "^RUT": {
@@ -1237,14 +1233,14 @@ MARKET_INDICES = {
         "description": "Nasdaq-100 Index",
         "category": "index",
     },
-    "^DJX": {
+    "^DJI": {
         "name": "Dow Jones",
-        "description": "Dow Jones Industrial Average Index",
+        "description": "Dow Jones Industrial Average",
         "category": "index",
     },
-    "^XND": {
-        "name": "Nasdaq-100 Mini",
-        "description": "Nasdaq-100 Mini Index",
+    "^IXIC": {
+        "name": "Nasdaq Composite",
+        "description": "Nasdaq Composite Index",
         "category": "index",
     },
 }
@@ -1744,13 +1740,14 @@ DEFAULT_ASSET_UNIVERSE = [
     # -------------------------
     # Indices (Major Market Indices)
     # -------------------------
-    "^SPX",   # S&P 500 Index
+    # Note: Using indices with good historical data
+    # ^DJX and ^XND excluded - options indices with insufficient history
+    "^GSPC",  # S&P 500 Index
     "^VIX",   # CBOE Volatility Index
-    "^XSP",   # S&P 500 Mini Index
     "^RUT",   # Russell 2000 Index
     "^NDX",   # Nasdaq-100 Index
-    "^DJX",   # Dow Jones Industrial Average Index
-    "^XND",   # Nasdaq-100 Mini Index
+    "^DJI",   # Dow Jones Industrial Average
+    "^IXIC",  # Nasdaq Composite Index
 
     # -------------------------
     # Broad Market ETFs
@@ -2857,8 +2854,8 @@ SECTOR_MAP = {
         "BAL"
     },
     "Indices": {
-        # Major Market Indices
-        "^SPX", "^VIX", "^XSP", "^RUT", "^NDX", "^DJX", "^XND",
+        # Major Market Indices (using symbols with good historical data)
+        "^GSPC", "^VIX", "^RUT", "^NDX", "^DJI", "^IXIC",
         # Sector ETFs (SPDR Select Sector)
         "XLE", "XLK", "XLC", "XLB", "XLP", "XLU", "XLI", "XLF", "XLV", "XLRE", "XLY",
     },
