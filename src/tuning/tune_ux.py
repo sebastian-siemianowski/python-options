@@ -783,16 +783,13 @@ def render_tuning_summary(
     max_fits = max(regime_fit_counts.values()) if regime_fit_counts.values() else 1
     
     # Define STANDARD model columns that ALWAYS appear
-    # Clear separation: Base models (non-momentum), Momentum models, Student-t variants, Augmentation layers
+    # Pure Gaussian and φ-Gaussian are DISABLED (February 2026) - only momentum versions shown
     # Format: (model_key, header, color, min_width)
     STANDARD_MODEL_COLUMNS = [
-        # Base models (non-momentum)
-        ("Gaussian", "G", "green", 4),
-        ("φ-Gaussian", "φG", "cyan", 4),
-        # Momentum models  
+        # Momentum models (Gaussian-based) - momentum versions replace pure base models
         ("Gaussian+Mom", "G+M", "bright_green", 5),
         ("φ-Gaussian+Mom", "φG+M", "bright_cyan", 5),
-        # Student-t by ν
+        # Student-t by ν (non-momentum - still enabled as they have value)
         ("φ-t(ν=4)", "t4", "magenta", 4),
         ("φ-t(ν=6)", "t6", "magenta", 4),
         ("φ-t(ν=8)", "t8", "magenta", 4),
@@ -800,10 +797,6 @@ def render_tuning_summary(
         ("φ-t(ν=20)", "t20", "magenta", 4),
         # Momentum Student-t
         ("φ-Student-t+Mom", "t+M", "bright_magenta", 5),
-        # Other variants (disabled - show only if enabled)
-        # ("φ-Skew-t", "Sk-t", "bright_cyan", 4),
-        # ("φ-NIG", "NIG", "bright_yellow", 4),
-        # ("GMM", "GMM", "bright_blue", 4),
         # Augmentation layers
         ("Hansen-λ", "Hλ", "cyan", 5),
         ("EVT", "EVT", "indian_red1", 5),
