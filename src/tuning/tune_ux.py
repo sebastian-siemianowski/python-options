@@ -122,7 +122,7 @@ def _human_number(n: int) -> str:
     return str(n)
 
 
-def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: float, console: Console = None) -> None:
+def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: float, console: Console = None, momentum_enabled: bool = True) -> None:
     if console is None:
         console = create_tuning_console()
     console.clear()
@@ -189,6 +189,19 @@ def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: 
     chips3.append("   ○ ", style="bright_green")
     chips3.append("AIGF-NF", style="bright_green")
     console.print(Align.center(chips3))
+    # Momentum augmentation status
+    chips4 = Text()
+    if momentum_enabled:
+        chips4.append("○ ", style="bright_yellow")
+        chips4.append("Momentum", style="bright_yellow")
+        chips4.append(" ", style="dim")
+        chips4.append("(BMA augmentation)", style="dim")
+    else:
+        chips4.append("○ ", style="dim")
+        chips4.append("Momentum", style="dim")
+        chips4.append(" ", style="dim")
+        chips4.append("(disabled)", style="dim")
+    console.print(Align.center(chips4))
     console.print(Align.center(Text(" " * 50)))
     console.print()
 
@@ -413,7 +426,15 @@ def render_tuning_summary(
     evt_moderate_tail_count: int = 0, evt_light_tail_count: int = 0,
     contaminated_t_count: int = 0, recalibration_applied_count: int = 0,
     calibrated_trust_count: int = 0, avg_effective_trust: float = 0.0,
-    low_trust_count: int = 0, high_trust_count: int = 0, console: Console = None
+    low_trust_count: int = 0, high_trust_count: int = 0,
+    # Momentum augmentation counts (specific breakdown)
+    momentum_gaussian_count: int = 0,  # Gaussian with momentum (no phi)
+    momentum_phi_gaussian_count: int = 0,  # φ-Gaussian with momentum
+    momentum_phi_student_t_count: int = 0,  # φ-Student-t with momentum
+    momentum_total_count: int = 0,
+    # Legacy parameter for backward compatibility
+    momentum_student_t_count: int = 0,
+    console: Console = None
 ) -> None:
     """Render tuning summary with model selection breakdown."""
     if console is None:
@@ -466,84 +487,161 @@ def render_tuning_summary(
         console.print(section)
         console.print()
         
+        # Calculate non-momentum counts (base models only)
+        non_mom_gaussian = gaussian_count - momentum_gaussian_count - momentum_phi_gaussian_count
+        non_mom_phi_gaussian = phi_gaussian_count - momentum_phi_gaussian_count
+        non_mom_phi_student_t = phi_student_t_count - momentum_phi_student_t_count
+        
+        # Ensure non-negative
+        non_mom_gaussian = max(0, non_mom_gaussian)
+        non_mom_phi_gaussian = max(0, non_mom_phi_gaussian)
+        non_mom_phi_student_t = max(0, non_mom_phi_student_t)
+        
+        bar_width = 30
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # BASE MODELS (Non-Momentum) - Gaussian/φ-Gaussian DISABLED
+        # ═══════════════════════════════════════════════════════════════════
         base_section = Text()
-        base_section.append("    ▸ Base Distributions", style="bold dim")
+        base_section.append("    ▸ Base Models (Non-Momentum)", style="bold dim")
         console.print(base_section)
         console.print()
         
-        bar_width = 30
-        gauss_pct = gaussian_count / total_models * 100 if total_models > 0 else 0
-        student_pct = student_t_count / total_models * 100 if total_models > 0 else 0
-        gauss_filled = int(gauss_pct / 100 * bar_width)
-        student_filled = int(student_pct / 100 * bar_width)
-        
+        # Gaussian (non-momentum) - DISABLED
+        gauss_pct = non_mom_gaussian / total_models * 100 if total_models > 0 else 0
         gauss_row = Text()
-        gauss_row.append("      ○ ", style="green")
-        gauss_row.append(f"{'Gaussian':<14} ", style="green")
-        gauss_row.append("█" * gauss_filled, style="green")
-        gauss_row.append("░" * (bar_width - gauss_filled), style="dim")
-        gauss_row.append(f"  {gaussian_count:>4}", style="bold white")
+        gauss_row.append("      ○ ", style="dim")
+        gauss_row.append(f"{'Gaussian':<18} ", style="dim")
+        gauss_row.append("░" * bar_width, style="dim")
+        gauss_row.append(f"  {non_mom_gaussian:>4}", style="dim")
         gauss_row.append(f"  ({gauss_pct:>4.1f}%)", style="dim")
+        gauss_row.append("  [disabled]", style="dim italic")
         console.print(gauss_row)
         
-        student_row = Text()
-        student_row.append("      ● ", style="magenta")
-        student_row.append(f"{'Student-t':<14} ", style="magenta")
-        student_row.append("█" * student_filled, style="magenta")
-        student_row.append("░" * (bar_width - student_filled), style="dim")
-        student_row.append(f"  {student_t_count:>4}", style="bold white")
-        student_row.append(f"  ({student_pct:>4.1f}%)", style="dim")
-        console.print(student_row)
+        # φ-Gaussian (non-momentum) - DISABLED
+        phi_g_pct = non_mom_phi_gaussian / total_models * 100 if total_models > 0 else 0
+        phi_g_row = Text()
+        phi_g_row.append("      ◇ ", style="dim")
+        phi_g_row.append(f"{'φ-Gaussian':<18} ", style="dim")
+        phi_g_row.append("░" * bar_width, style="dim")
+        phi_g_row.append(f"  {non_mom_phi_gaussian:>4}", style="dim")
+        phi_g_row.append(f"  ({phi_g_pct:>4.1f}%)", style="dim")
+        phi_g_row.append("  [disabled]", style="dim italic")
+        console.print(phi_g_row)
         
-        # Student-t variants
+        # φ-Student-t (non-momentum) - ENABLED
+        phi_st_pct = non_mom_phi_student_t / total_models * 100 if total_models > 0 else 0
+        phi_st_filled = int(phi_st_pct / 100 * bar_width)
+        phi_st_style = "magenta" if non_mom_phi_student_t > 0 else "dim"
+        phi_st_row = Text()
+        phi_st_row.append("      ● ", style=phi_st_style)
+        phi_st_row.append(f"{'φ-Student-t':<18} ", style=phi_st_style)
+        phi_st_row.append("█" * phi_st_filled, style=phi_st_style)
+        phi_st_row.append("░" * (bar_width - phi_st_filled), style="dim")
+        phi_st_row.append(f"  {non_mom_phi_student_t:>4}", style="bold white" if non_mom_phi_student_t > 0 else "dim")
+        phi_st_row.append(f"  ({phi_st_pct:>4.1f}%)", style="dim")
+        console.print(phi_st_row)
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # MOMENTUM MODELS
+        # ═══════════════════════════════════════════════════════════════════
         console.print()
-        breakdown_section = Text()
-        breakdown_section.append("    ▸ Student-t Variants", style="bold dim")
-        console.print(breakdown_section)
+        mom_section = Text()
+        mom_section.append("    ▸ Momentum Models", style="bold dim")
+        console.print(mom_section)
         console.print()
         
-        st_pct = phi_student_t_count / total_models * 100 if total_models > 0 else 0
-        st_filled = int(st_pct / 100 * bar_width)
-        st_row = Text()
-        st_row.append("      ● ", style="bright_magenta")
-        st_row.append(f"{'φ-Student-t':<14} ", style="bright_magenta")
-        st_row.append("█" * st_filled, style="bright_magenta")
-        st_row.append("░" * (bar_width - st_filled), style="dim")
-        st_row.append(f"  {phi_student_t_count:>4}", style="bold white")
-        st_row.append(f"  ({st_pct:>4.1f}%)", style="dim")
-        if phi_student_t_count == 0:
-            st_row.append("  [0 selected]", style="dim italic")
-        console.print(st_row)
+        # Gaussian+Momentum (no phi)
+        mom_g_pct = momentum_gaussian_count / total_models * 100 if total_models > 0 else 0
+        mom_g_filled = int(mom_g_pct / 100 * bar_width)
+        mom_g_style = "bright_green" if momentum_gaussian_count > 0 else "dim"
+        mom_g_row = Text()
+        mom_g_row.append("      ○ ", style=mom_g_style)
+        mom_g_row.append(f"{'Gaussian+Momentum':<22} ", style=mom_g_style)
+        mom_g_row.append("█" * mom_g_filled, style=mom_g_style)
+        mom_g_row.append("░" * (bar_width - mom_g_filled), style="dim")
+        mom_g_row.append(f"  {momentum_gaussian_count:>4}", style="bold white" if momentum_gaussian_count > 0 else "dim")
+        mom_g_row.append(f"  ({mom_g_pct:>4.1f}%)", style="dim")
+        console.print(mom_g_row)
         
-        skt_pct = phi_skew_t_count / total_models * 100 if total_models > 0 else 0
-        skt_filled = int(skt_pct / 100 * bar_width)
-        skt_style = "bright_cyan" if phi_skew_t_count > 0 else "dim"
-        skt_row = Text()
-        skt_row.append("      ◆ ", style=skt_style)
-        skt_row.append(f"{'φ-Skew-t':<14} ", style=skt_style)
-        skt_row.append("█" * skt_filled, style=skt_style)
-        skt_row.append("░" * (bar_width - skt_filled), style="dim")
-        skt_row.append(f"  {phi_skew_t_count:>4}", style="bold white" if phi_skew_t_count > 0 else "dim")
-        skt_row.append(f"  ({skt_pct:>4.1f}%)", style="dim")
-        if phi_skew_t_count == 0:
-            skt_row.append("  [disabled]", style="dim italic")
-        console.print(skt_row)
+        # φ-Gaussian+Momentum
+        mom_phi_g_pct = momentum_phi_gaussian_count / total_models * 100 if total_models > 0 else 0
+        mom_phi_g_filled = int(mom_phi_g_pct / 100 * bar_width)
+        mom_phi_g_style = "bright_cyan" if momentum_phi_gaussian_count > 0 else "dim"
+        mom_phi_g_row = Text()
+        mom_phi_g_row.append("      ◇ ", style=mom_phi_g_style)
+        mom_phi_g_row.append(f"{'φ-Gaussian+Momentum':<22} ", style=mom_phi_g_style)
+        mom_phi_g_row.append("█" * mom_phi_g_filled, style=mom_phi_g_style)
+        mom_phi_g_row.append("░" * (bar_width - mom_phi_g_filled), style="dim")
+        mom_phi_g_row.append(f"  {momentum_phi_gaussian_count:>4}", style="bold white" if momentum_phi_gaussian_count > 0 else "dim")
+        mom_phi_g_row.append(f"  ({mom_phi_g_pct:>4.1f}%)", style="dim")
+        console.print(mom_phi_g_row)
         
-        nig_pct = phi_nig_count / total_models * 100 if total_models > 0 else 0
-        nig_filled = int(nig_pct / 100 * bar_width)
-        nig_style = "bright_yellow" if phi_nig_count > 0 else "dim"
-        nig_row = Text()
-        nig_row.append("      ★ ", style=nig_style)
-        nig_row.append(f"{'φ-NIG':<14} ", style=nig_style)
-        nig_row.append("█" * nig_filled, style=nig_style)
-        nig_row.append("░" * (bar_width - nig_filled), style="dim")
-        nig_row.append(f"  {phi_nig_count:>4}", style="bold white" if phi_nig_count > 0 else "dim")
-        nig_row.append(f"  ({nig_pct:>4.1f}%)", style="dim")
-        if phi_nig_count == 0:
-            nig_row.append("  [disabled]", style="dim italic")
-        console.print(nig_row)
+        # φ-Student-t+Momentum
+        mom_phi_st_pct = momentum_phi_student_t_count / total_models * 100 if total_models > 0 else 0
+        mom_phi_st_filled = int(mom_phi_st_pct / 100 * bar_width)
+        mom_phi_st_style = "bright_magenta" if momentum_phi_student_t_count > 0 else "dim"
+        mom_phi_st_row = Text()
+        mom_phi_st_row.append("      ● ", style=mom_phi_st_style)
+        mom_phi_st_row.append(f"{'φ-Student-t+Momentum':<22} ", style=mom_phi_st_style)
+        mom_phi_st_row.append("█" * mom_phi_st_filled, style=mom_phi_st_style)
+        mom_phi_st_row.append("░" * (bar_width - mom_phi_st_filled), style="dim")
+        mom_phi_st_row.append(f"  {momentum_phi_student_t_count:>4}", style="bold white" if momentum_phi_student_t_count > 0 else "dim")
+        mom_phi_st_row.append(f"  ({mom_phi_st_pct:>4.1f}%)", style="dim")
+        console.print(mom_phi_st_row)
         
-        # Augmentation layers
+        # Momentum summary
+        if momentum_total_count > 0:
+            console.print()
+            mom_sum_row = Text()
+            mom_sum_row.append("      ─────────────────────────────────────────────────────────", style="dim")
+            console.print(mom_sum_row)
+            mom_total_row = Text()
+            mom_total_row.append("      Total Momentum: ", style="dim")
+            mom_total_row.append(f"{momentum_total_count}", style="bold bright_yellow")
+            mom_total_pct = momentum_total_count / total_models * 100 if total_models > 0 else 0
+            mom_total_row.append(f" ({mom_total_pct:.1f}%)", style="dim")
+            console.print(mom_total_row)
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # OTHER VARIANTS (φ-Skew-t, φ-NIG) - only show if any exist
+        # ═══════════════════════════════════════════════════════════════════
+        if phi_skew_t_count > 0 or phi_nig_count > 0:
+            console.print()
+            other_section = Text()
+            other_section.append("    ▸ Other Variants", style="bold dim")
+            console.print(other_section)
+            console.print()
+            
+            # φ-Skew-t
+            skt_pct = phi_skew_t_count / total_models * 100 if total_models > 0 else 0
+            skt_filled = int(skt_pct / 100 * bar_width)
+            skt_style = "bright_cyan" if phi_skew_t_count > 0 else "dim"
+            skt_row = Text()
+            skt_row.append("      ◆ ", style=skt_style)
+            skt_row.append(f"{'φ-Skew-t':<18} ", style=skt_style)
+            skt_row.append("█" * skt_filled, style=skt_style)
+            skt_row.append("░" * (bar_width - skt_filled), style="dim")
+            skt_row.append(f"  {phi_skew_t_count:>4}", style="bold white" if phi_skew_t_count > 0 else "dim")
+            skt_row.append(f"  ({skt_pct:>4.1f}%)", style="dim")
+            console.print(skt_row)
+            
+            # φ-NIG
+            nig_pct = phi_nig_count / total_models * 100 if total_models > 0 else 0
+            nig_filled = int(nig_pct / 100 * bar_width)
+            nig_style = "bright_yellow" if phi_nig_count > 0 else "dim"
+            nig_row = Text()
+            nig_row.append("      ★ ", style=nig_style)
+            nig_row.append(f"{'φ-NIG':<18} ", style=nig_style)
+            nig_row.append("█" * nig_filled, style=nig_style)
+            nig_row.append("░" * (bar_width - nig_filled), style="dim")
+            nig_row.append(f"  {phi_nig_count:>4}", style="bold white" if phi_nig_count > 0 else "dim")
+            nig_row.append(f"  ({nig_pct:>4.1f}%)", style="dim")
+            console.print(nig_row)
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # AUGMENTATION LAYERS
+        # ═══════════════════════════════════════════════════════════════════
         console.print()
         aug_section = Text()
         aug_section.append("    ▸ Augmentation Layers", style="bold dim")
@@ -681,30 +779,52 @@ def render_tuning_summary(
     max_fits = max(regime_fit_counts.values()) if regime_fit_counts.values() else 1
     
     # Define STANDARD model columns that ALWAYS appear
+    # Pure Gaussian and φ-Gaussian are DISABLED (February 2026) - only momentum versions shown
+    # Format: (model_key, header, color, min_width)
     STANDARD_MODEL_COLUMNS = [
-        ("Gaussian", "G", "green", 3),
-        ("φ-Gaussian", "φ-G", "cyan", 4),
-        ("φ-t(ν=4)", "t4", "magenta", 3),
-        ("φ-t(ν=6)", "t6", "magenta", 3),
-        ("φ-t(ν=8)", "t8", "magenta", 3),
-        ("φ-t(ν=12)", "t12", "magenta", 3),
-        ("φ-t(ν=20)", "t20", "magenta", 3),
-        ("φ-Skew-t", "Sk-t", "bright_cyan", 4),
-        ("φ-NIG", "NIG", "bright_yellow", 4),
-        ("GMM", "GMM", "bright_blue", 4),
-        ("Hansen-λ", "Hλ", "cyan", 3),
-        ("EVT", "EVT", "indian_red1", 4),
-        ("CST", "CST", "yellow", 4),
+        # Momentum models (Gaussian-based) - momentum versions replace pure base models
+        ("Gaussian+Mom", "G+M", "bright_green", 5),
+        ("φ-Gaussian+Mom", "φG+M", "bright_cyan", 5),
+        # Student-t by ν (non-momentum - still enabled as they have value)
+        ("φ-t(ν=4)", "t4", "magenta", 4),
+        ("φ-t(ν=6)", "t6", "magenta", 4),
+        ("φ-t(ν=8)", "t8", "magenta", 4),
+        ("φ-t(ν=12)", "t12", "magenta", 4),
+        ("φ-t(ν=20)", "t20", "magenta", 4),
+        # Momentum Student-t
+        ("φ-Student-t+Mom", "t+M", "bright_magenta", 5),
+        # Augmentation layers
+        ("Hansen-λ", "Hλ", "cyan", 5),
+        ("EVT", "EVT", "indian_red1", 5),
+        ("CST", "CST", "yellow", 5),
     ]
     
     # Helper to normalize model keys for comparison
     def normalize_model_key(m):
+        # Check momentum models first (before base model checks)
+        # φ-Student-t+Mom (momentum Student-t)
+        if "Student-t+Mom" in m or "φ-Student-t+Mom" in m:
+            return "φ-Student-t+Mom"
+        if "+Mom" in m and ("Student" in m or "t(" in m or "phi_student" in m.lower()):
+            return "φ-Student-t+Mom"
+        # φ-Gaussian+Mom (momentum phi-gaussian)
+        if "φ-Gaussian+Mom" in m or "phi_gaussian" in m.lower() and "_momentum" in m.lower():
+            return "φ-Gaussian+Mom"
+        # Gaussian+Mom (momentum gaussian, no phi)
+        if "Gaussian+Mom" in m or ("kalman_gaussian_momentum" in m.lower() and "phi" not in m.lower()):
+            return "Gaussian+Mom"
+        if "+Mom" in m and "Student" not in m and "t(" not in m:
+            if "φ" in m or "phi" in m.lower():
+                return "φ-Gaussian+Mom"
+            return "Gaussian+Mom"
+        # Student-t variants by ν
         if m.startswith("φ-t(ν="):
             return m
         if m.startswith("φ-Skew-t"):
             return "φ-Skew-t"
         if m.startswith("φ-NIG"):
             return "φ-NIG"
+        # Augmentation layers
         if "GMM" in m:
             return "GMM"
         if "Hλ" in m or "Hansen" in m:
@@ -1683,6 +1803,12 @@ Examples:
     tvvm_attempted_count = 0
     tvvm_selected_count = 0
     
+    # Momentum augmentation counters (specific breakdown)
+    momentum_count = 0
+    momentum_gaussian_count = 0  # Gaussian with momentum (no phi)
+    momentum_phi_gaussian_count = 0  # φ-Gaussian with momentum
+    momentum_phi_student_t_count = 0  # φ-Student-t with momentum
+    
     # Calibrated Trust Authority statistics
     recalibration_applied_count = 0
     calibrated_trust_count = 0
@@ -1810,6 +1936,12 @@ Examples:
                             gaussian_count += 1
                         else:
                             gaussian_count += 1
+                        
+                        # Count momentum augmentation
+                        best_model = global_result.get('best_model', '')
+                        is_momentum = global_result.get('is_momentum_model', False) or '_momentum' in str(best_model)
+                        if is_momentum:
+                            momentum_count += 1
 
                         if global_result.get('calibration_warning'):
                             calibration_warnings += 1
@@ -1898,6 +2030,11 @@ Examples:
                             model_str = "φ-Gaussian"
                         else:
                             model_str = "Gaussian"
+                        
+                        # Check for momentum augmentation
+                        is_momentum_model = global_result.get('is_momentum_model', False)
+                        if is_momentum_model or (model_type and '_momentum' in str(model_type)):
+                            model_str += "+Momentum"
                         
                         # Check for GMM availability
                         gmm_data = global_result.get('gmm')
@@ -2053,7 +2190,7 @@ Examples:
     for asset, data in cache.items():
         # Get the global noise model for this asset
         global_data = data.get('global', data)
-        noise_model = global_data.get('noise_model', 'gaussian')
+        noise_model = global_data.get('noise_model', 'gaussian') or 'gaussian'
         nu_val = global_data.get('nu')
         phi_val = global_data.get('phi')
         gamma_val = global_data.get('gamma')
@@ -2068,27 +2205,32 @@ Examples:
         evt_data = global_data.get('evt')
         cst_data = global_data.get('contaminated_student_t')
         
+        # Detect momentum and strip suffix for base model determination
+        is_momentum_model = '_momentum' in noise_model
+        base_noise_model = noise_model.replace('_momentum', '')
+        
         # Determine base model category
         if mixture_selected and mixture_model:
             sigma_ratio = mixture_model.get('sigma_ratio', 0)
             model_key = f"K2-Mix(σ={sigma_ratio:.1f})"
-        elif noise_model.startswith('phi_nig_'):
-            # φ-NIG model
+        elif base_noise_model.startswith('phi_nig_'):
+            # φ-NIG model with alpha/beta parameters
             if nig_beta is not None and abs(nig_beta) > 0.01:
                 skew_dir = "L" if nig_beta < 0 else "R"
                 model_key = f"φ-NIG({skew_dir})"
             else:
                 model_key = "φ-NIG"
-        elif noise_model.startswith('phi_skew_t_nu_'):
-            # φ-Skew-t model
+        elif base_noise_model.startswith('phi_skew_t_nu_'):
+            # φ-Skew-t model with gamma parameter
+            gamma_val = global_data.get('gamma')
             if gamma_val is not None and abs(gamma_val - 1.0) > 0.01:
                 skew_dir = "L" if gamma_val < 1.0 else "R"
                 model_key = f"φ-Skew-t({skew_dir})"
             else:
                 model_key = "φ-Skew-t"
-        elif noise_model.startswith('phi_student_t_nu_') and nu_val is not None:
+        elif base_noise_model.startswith('phi_student_t_nu_') and nu_val is not None:
             model_key = f"φ-t(ν={int(nu_val)})"
-        elif noise_model == 'kalman_phi_gaussian' or phi_val is not None:
+        elif base_noise_model == 'kalman_phi_gaussian' or phi_val is not None:
             model_key = "φ-Gaussian"
         else:
             model_key = "Gaussian"
@@ -2117,10 +2259,25 @@ Examples:
                     if not is_fallback:
                         regime_fit_counts[r_int] += 1
                         
-                        # Count base model breakdown per regime
-                        if model_key not in regime_model_breakdown[r_int]:
-                            regime_model_breakdown[r_int][model_key] = 0
-                        regime_model_breakdown[r_int][model_key] += 1
+                        # Count model breakdown per regime
+                        # Use EITHER base model key OR momentum model key (not both) for cleaner accounting
+                        if is_momentum_model:
+                            # Use momentum model key instead of base model key
+                            if model_key.startswith("φ-t(ν=") or "Student" in model_key:
+                                effective_key = "φ-Student-t+Mom"
+                            elif model_key == "φ-Gaussian":
+                                effective_key = "φ-Gaussian+Mom"
+                            elif model_key == "Gaussian":
+                                effective_key = "Gaussian+Mom"
+                            else:
+                                effective_key = "Gaussian+Mom"
+                        else:
+                            # Use base model key for non-momentum models
+                            effective_key = model_key
+                        
+                        if effective_key not in regime_model_breakdown[r_int]:
+                            regime_model_breakdown[r_int][effective_key] = 0
+                        regime_model_breakdown[r_int][effective_key] += 1
                         
                         is_shrunk = params.get('shrinkage_applied', False) or params.get('regime_meta', {}).get('shrinkage_applied', False)
                         if is_shrunk:
@@ -2186,6 +2343,10 @@ Examples:
     evt_moderate_tail_count = 0
     evt_light_tail_count = 0
     contaminated_t_count = 0
+    # Reset momentum counters for full cache computation
+    momentum_count = 0
+    momentum_gaussian_count = 0
+    momentum_student_t_count = 0
     # Reset trust statistics for full cache computation
     recalibration_applied_count = 0
     calibrated_trust_count = 0
@@ -2195,23 +2356,37 @@ Examples:
         global_data = data.get('global', data)
         
         # Count model types
-        noise_model = global_data.get('noise_model', '')
+        noise_model = global_data.get('noise_model', '') or ''
+        
+        # Detect if this is a momentum model (noise_model ends with _momentum)
+        is_momentum = '_momentum' in noise_model
+        
+        # Count by model type - handle momentum suffix properly
         if noise_model.startswith('phi_nig_'):
             phi_nig_count += 1
             student_t_count += 1
         elif noise_model.startswith('phi_skew_t_nu_'):
             phi_skew_t_count += 1
             student_t_count += 1
-        elif noise_model.startswith('phi_student_t_nu_'):
+        elif 'phi_student_t_nu_' in noise_model:
+            # phi_student_t_nu_8 or phi_student_t_nu_8_momentum
             phi_student_t_count += 1
             student_t_count += 1
-        elif noise_model == 'phi_gaussian' or noise_model == 'kalman_phi_gaussian':
+            if is_momentum:
+                momentum_phi_student_t_count += 1
+                momentum_count += 1
+        elif noise_model in ('phi_gaussian', 'kalman_phi_gaussian', 'kalman_phi_gaussian_momentum'):
             phi_gaussian_count += 1
             gaussian_count += 1
-        elif noise_model == 'generalized_hyperbolic':
-            pass  # GH is separate
+            if is_momentum:
+                momentum_phi_gaussian_count += 1
+                momentum_count += 1
         elif 'gaussian' in noise_model.lower():
+            # kalman_gaussian or kalman_gaussian_momentum
             gaussian_count += 1
+            if is_momentum:
+                momentum_gaussian_count += 1
+                momentum_count += 1
         
         # Count augmentation layers from cache
         gmm_data = global_data.get('gmm')
@@ -2243,6 +2418,8 @@ Examples:
         if cst_data is not None and isinstance(cst_data, dict):
             if cst_data.get('nu_normal') is not None and cst_data.get('nu_crisis') is not None:
                 contaminated_t_count += 1
+        
+        # Note: Momentum counting is done above in the model classification section
         
         # Count calibration warnings
         if global_data.get('calibration_warning'):
@@ -2331,6 +2508,11 @@ Examples:
         avg_effective_trust=avg_effective_trust,
         low_trust_count=low_trust_count,
         high_trust_count=high_trust_count,
+        # Momentum augmentation counts (specific breakdown)
+        momentum_gaussian_count=momentum_gaussian_count,
+        momentum_phi_gaussian_count=momentum_phi_gaussian_count,
+        momentum_phi_student_t_count=momentum_phi_student_t_count,
+        momentum_total_count=momentum_count,
         console=console,
     )
 

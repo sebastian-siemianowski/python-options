@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/python-3.7+-blue.svg" alt="Python 3.7+">
   <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="macOS">
   <img src="https://img.shields.io/badge/assets-100+-green.svg" alt="100+ Assets">
-  <img src="https://img.shields.io/badge/models-7_per_regime-orange.svg" alt="7 Models">
+  <img src="https://img.shields.io/badge/models-14_per_regime-orange.svg" alt="14 Models">
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@
 
 Most trading systems choose a single model and pretend it's correct. This system doesn't.
 
-Instead, it maintains **7 competing models** across **5 market regimes**, letting Bayesian inference continuously update which models are most credible given recent data. Signals emerge from the **full posterior predictive distribution**—not from any single "best guess."
+Instead, it maintains **14 competing models** (7 base + 7 momentum-augmented) across **5 market regimes**, letting Bayesian inference continuously update which models are most credible given recent data. Signals emerge from the **full posterior predictive distribution**—not from any single "best guess."
 
 The result: **calibrated uncertainty**. When the system says "62% probability of positive return," it means that historically, 62% of such predictions were correct.
 
@@ -76,7 +76,8 @@ At its core, the system maintains a population of competing models—each repres
 ║   │   │                        kalman_phi_gaussian,                         │   │     ║
 ║   │   │                        phi_student_t_nu_4,  phi_student_t_nu_6,     │   │     ║
 ║   │   │                        phi_student_t_nu_8,  phi_student_t_nu_12,    │   │     ║
-║   │   │                        phi_student_t_nu_20}:                        │   │     ║
+║   │   │                        phi_student_t_nu_20,                         │   │     ║
+║   │   │                        + momentum-augmented variants}:              │   │     ║
 ║   │   │                                                                     │   │     ║
 ║   │   │      1. Fit θ = {q, c, φ} via MLE with regularization prior         │   │     ║
 ║   │   │      2. Compute log-likelihood ℓ(θ)                                 │   │     ║
@@ -165,7 +166,7 @@ All prices are converted to a common base currency (PLN) for portfolio-level ana
 
 ### Model Universe
 
-The Tuning Engine fits **7 model classes** per regime:
+The Tuning Engine fits **7 base model classes** per regime, plus **7 momentum-augmented variants** (14 total):
 
 | Model | Parameters | Use Case |
 |-------|------------|----------|
@@ -178,6 +179,46 @@ The Tuning Engine fits **7 model classes** per regime:
 | `phi_student_t_nu_20` | q, c, φ | Almost Gaussian (ν=20) |
 
 Student-t models use a **discrete ν grid** (not continuous optimization). Each ν is a separate sub-model in BMA, allowing the posterior to express uncertainty about tail thickness.
+
+### Momentum Augmentation (February 2026)
+
+Each base model also has a **momentum-augmented variant** that competes in BMA:
+
+| Momentum Model | Base Model | Purpose |
+|----------------|------------|---------|
+| `kalman_gaussian_momentum` | `kalman_gaussian` | Gaussian + momentum signals |
+| `kalman_phi_gaussian_momentum` | `kalman_phi_gaussian` | φ-Gaussian + momentum signals |
+| `phi_student_t_nu_4_momentum` | `phi_student_t_nu_4` | Student-t ν=4 + momentum |
+| `phi_student_t_nu_6_momentum` | `phi_student_t_nu_6` | Student-t ν=6 + momentum |
+| `phi_student_t_nu_8_momentum` | `phi_student_t_nu_8` | Student-t ν=8 + momentum |
+| `phi_student_t_nu_12_momentum` | `phi_student_t_nu_12` | Student-t ν=12 + momentum |
+| `phi_student_t_nu_20_momentum` | `phi_student_t_nu_20` | Student-t ν=20 + momentum |
+
+**Design Philosophy:**
+
+> "Momentum is a hypothesis, not a certainty."
+
+Momentum-augmented models use a **compositional wrapper architecture**:
+- Base Kalman filter equations remain **unchanged**
+- Momentum features computed separately (lookbacks: 5, 10, 20, 60 days)
+- Adjustment applied **post-filter** based on sign confirmation
+- Prior penalty (0.3×) ensures momentum must **earn** its BMA weight
+
+**Key Benefits:**
+- **Identifiability preserved** — No momentum parameters inside filter
+- **Easily disabled** — `--disable-momentum` flag for ablation testing
+- **BMA learns utility** — If momentum doesn't help, weight collapses to base models
+
+```bash
+# Normal tuning (momentum enabled by default)
+make tune
+
+# Disable momentum for ablation testing
+make tune ARGS="--disable-momentum"
+
+# Custom momentum prior penalty
+make tune ARGS="--momentum-penalty 0.5"
+```
 
 ### Regime Classification
 

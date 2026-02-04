@@ -88,9 +88,10 @@ SHELL := /bin/bash
 # └──────────────────────────────────────────────────────────────────────────────┘
 #
 # ┌──────────────────────────────────────────────────────────────────────────────┐
-# │  🌡️  RISK DASHBOARD (Unified Risk Temperature)                               │
+# │  🌡️  RISK DASHBOARD (Unified Risk + Market Direction)                        │
 # ├──────────────────────────────────────────────────────────────────────────────┤
-# │  make risk               Unified risk dashboard (cross-asset + metals + mkt)│
+# │  make risk               Full dashboard: cross-asset + metals + equity +     │
+# │                          market direction (indices, universes, sectors)      │
 # │  make risk ARGS="--json" Output as JSON                                      │
 # │  make temp               Cross-asset risk temperature only                   │
 # │  make metals             Metals risk temperature only                        │
@@ -287,6 +288,43 @@ cache-migrate-bma: .venv/.deps_installed
 cache-list: .venv/.deps_installed
 	@echo "📋 Cached symbols:"
 	@.venv/bin/python -c "import sys; sys.path.insert(0, 'src'); from tuning.kalman_cache import list_cached_symbols; symbols=list_cached_symbols(); print(f'  Total: {len(symbols)} assets'); print('  ' + ', '.join(symbols[:20]) + ('...' if len(symbols) > 20 else ''))"
+
+# =============================================================================
+# ONLINE BAYESIAN PARAMETER UPDATES (February 2026)
+# =============================================================================
+# These targets manage the online parameter estimation system that adapts
+# Kalman filter parameters in real-time using Sequential Monte Carlo.
+#
+# Uses multiprocessing (not threads) for CPU-bound particle filter operations.
+#
+# WORKFLOW:
+#   1. make tune          - Estimate batch parameters (batch priors)
+#   2. make online        - Run online updates using cached prices
+#   3. make signal        - Generate signals with adaptive parameters
+# =============================================================================
+
+# Run online parameter updates for all tuned assets
+# Uses cached price data and persists state to src/data/online_update/
+# Default: uses all CPU cores for parallel processing
+online: .venv/.deps_installed
+	@echo "🔄 Running Online Bayesian Parameter Updates (multiprocessing)..."
+	@mkdir -p src/data/online_update
+	@.venv/bin/python src/tests/run_online_update.py $(ARGS)
+
+# Show online update cache statistics
+online-stats: .venv/.deps_installed
+	@echo "📊 Online Update Cache Statistics:"
+	@.venv/bin/python src/tests/online_stats.py
+
+# Clear online update cache
+online-clear: .venv/.deps_installed
+	@echo "🗑️  Clearing online update cache..."
+	@.venv/bin/python -c "import sys; sys.path.insert(0, 'src'); from calibration.online_update import clear_persisted_states; count = clear_persisted_states(); print('  Deleted', count, 'state files')"
+
+# Verify online update is working
+online-test: .venv/.deps_installed
+	@echo "🧪 Testing Online Bayesian Parameter Updates..."
+	@.venv/bin/python src/tests/verify_online_update.py
 
 tests: .venv/.deps_installed
 	@echo "Running all tests..."

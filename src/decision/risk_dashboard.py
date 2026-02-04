@@ -1083,6 +1083,217 @@ def compute_and_render_unified_risk(
     console.print()
     
     # ═══════════════════════════════════════════════════════════════════════════
+    # SECTION 4: MARKET DIRECTION (Indices + Universes + Sectors)
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    console.print(Rule(" Market Direction ", style="bright_cyan"))
+    console.print()
+    
+    # Fetch market direction data
+    try:
+        from ingestion.data_utils import get_market_direction_summary
+        direction_summary = get_market_direction_summary(force_refresh=False)
+        
+        if "error" not in direction_summary:
+            # Market Trend Header
+            market_trend = direction_summary.get("market_trend", "Unknown")
+            if market_trend == "Bullish":
+                trend_style = "bold bright_green"
+            elif market_trend == "Bearish":
+                trend_style = "bold red"
+            else:
+                trend_style = "yellow"
+            
+            console.print(f"  [dim]Overall Market Trend:[/dim] [{trend_style}]{market_trend}[/{trend_style}]")
+            console.print()
+            
+            # Indices Table (if available)
+            indices_df = direction_summary.get("indices")
+            if indices_df is not None and not indices_df.empty:
+                console.print("  [dim]Major Indices[/dim]")
+                console.print()
+                
+                indices_table = Table(
+                    show_header=True,
+                    header_style="bold white",
+                    border_style="dim",
+                    box=box.SIMPLE,
+                    padding=(0, 1),
+                )
+                indices_table.add_column("Index", justify="left", width=16)
+                indices_table.add_column("1D", justify="right", width=8)
+                indices_table.add_column("1W", justify="right", width=8)
+                indices_table.add_column("1M", justify="right", width=8)
+                indices_table.add_column("Vol", justify="right", width=6)
+                indices_table.add_column("Trend", justify="left", width=12)
+                
+                for _, row in indices_df.iterrows():
+                    name = str(row.get("name", row["symbol"]))[:16]
+                    r1 = row.get("ret_1d")
+                    r5 = row.get("ret_5d")
+                    r21 = row.get("ret_21d")
+                    vol = row.get("volatility")
+                    trend = str(row.get("trend", ""))
+                    
+                    r1_style = "bright_green" if r1 and r1 >= 0 else "indian_red1"
+                    r5_style = "bright_green" if r5 and r5 >= 0 else "indian_red1"
+                    r21_style = "bright_green" if r21 and r21 >= 0 else "indian_red1"
+                    
+                    if "Rising" in trend:
+                        trend_style = "bright_green"
+                    elif "Falling" in trend:
+                        trend_style = "indian_red1"
+                    else:
+                        trend_style = "dim"
+                    
+                    indices_table.add_row(
+                        name,
+                        Text(f"{r1:+.1f}%" if r1 is not None else "N/A", style=r1_style),
+                        Text(f"{r5:+.1f}%" if r5 is not None else "N/A", style=r5_style),
+                        Text(f"{r21:+.1f}%" if r21 is not None else "N/A", style=r21_style),
+                        f"{vol:.0f}%" if vol is not None else "N/A",
+                        Text(trend, style=trend_style),
+                    )
+                
+                console.print(indices_table)
+                console.print()
+            
+            # Market Universe ETFs Table
+            universes_df = direction_summary.get("universes")
+            if universes_df is not None and not universes_df.empty:
+                console.print("  [dim]Market Universe ETFs[/dim]")
+                console.print()
+                
+                universes_table = Table(
+                    show_header=True,
+                    header_style="bold white",
+                    border_style="dim",
+                    box=box.SIMPLE,
+                    padding=(0, 1),
+                )
+                universes_table.add_column("Universe", justify="left", width=16)
+                universes_table.add_column("1D", justify="right", width=8)
+                universes_table.add_column("1W", justify="right", width=8)
+                universes_table.add_column("1M", justify="right", width=8)
+                universes_table.add_column("Vol", justify="right", width=6)
+                universes_table.add_column("Trend", justify="left", width=12)
+                
+                for _, row in universes_df.iterrows():
+                    name = str(row.get("name", row["symbol"]))[:16]
+                    r1 = row.get("ret_1d")
+                    r5 = row.get("ret_5d")
+                    r21 = row.get("ret_21d")
+                    vol = row.get("volatility")
+                    trend = str(row.get("trend", ""))
+                    
+                    r1_style = "bright_green" if r1 and r1 >= 0 else "indian_red1"
+                    r5_style = "bright_green" if r5 and r5 >= 0 else "indian_red1"
+                    r21_style = "bright_green" if r21 and r21 >= 0 else "indian_red1"
+                    
+                    if "Rising" in trend:
+                        trend_style = "bright_green"
+                    elif "Falling" in trend:
+                        trend_style = "indian_red1"
+                    else:
+                        trend_style = "dim"
+                    
+                    universes_table.add_row(
+                        name,
+                        Text(f"{r1:+.1f}%" if r1 is not None else "N/A", style=r1_style),
+                        Text(f"{r5:+.1f}%" if r5 is not None else "N/A", style=r5_style),
+                        Text(f"{r21:+.1f}%" if r21 is not None else "N/A", style=r21_style),
+                        f"{vol:.0f}%" if vol is not None else "N/A",
+                        Text(trend, style=trend_style),
+                    )
+                
+                console.print(universes_table)
+                console.print()
+            
+            # Sector ETFs Table (sorted by momentum)
+            sectors_df = direction_summary.get("sectors")
+            if sectors_df is not None and not sectors_df.empty:
+                console.print("  [dim]Sector ETFs (sorted by momentum)[/dim]")
+                console.print()
+                
+                sectors_table = Table(
+                    show_header=True,
+                    header_style="bold white",
+                    border_style="dim",
+                    box=box.SIMPLE,
+                    padding=(0, 1),
+                )
+                sectors_table.add_column("Sector", justify="left", width=16)
+                sectors_table.add_column("1D", justify="right", width=8)
+                sectors_table.add_column("1W", justify="right", width=8)
+                sectors_table.add_column("1M", justify="right", width=8)
+                sectors_table.add_column("Vol", justify="right", width=6)
+                sectors_table.add_column("Trend", justify="left", width=12)
+                
+                for _, row in sectors_df.iterrows():
+                    name = str(row.get("name", row["symbol"]))[:16]
+                    r1 = row.get("ret_1d")
+                    r5 = row.get("ret_5d")
+                    r21 = row.get("ret_21d")
+                    vol = row.get("volatility")
+                    trend = str(row.get("trend", ""))
+                    
+                    r1_style = "bright_green" if r1 and r1 >= 0 else "indian_red1"
+                    r5_style = "bright_green" if r5 and r5 >= 0 else "indian_red1"
+                    r21_style = "bright_green" if r21 and r21 >= 0 else "indian_red1"
+                    
+                    if "Rising" in trend:
+                        trend_style = "bright_green"
+                    elif "Falling" in trend:
+                        trend_style = "indian_red1"
+                    else:
+                        trend_style = "dim"
+                    
+                    sectors_table.add_row(
+                        name,
+                        Text(f"{r1:+.1f}%" if r1 is not None else "N/A", style=r1_style),
+                        Text(f"{r5:+.1f}%" if r5 is not None else "N/A", style=r5_style),
+                        Text(f"{r21:+.1f}%" if r21 is not None else "N/A", style=r21_style),
+                        f"{vol:.0f}%" if vol is not None else "N/A",
+                        Text(trend, style=trend_style),
+                    )
+                
+                console.print(sectors_table)
+                console.print()
+            
+            # Leaders and Laggards
+            leaders = direction_summary.get("leaders", [])
+            laggards = direction_summary.get("laggards", [])
+            
+            if leaders or laggards:
+                ll_line = Text()
+                ll_line.append("  ")
+                
+                if leaders:
+                    ll_line.append("Leaders: ", style="dim")
+                    for i, leader in enumerate(leaders[:3]):
+                        if i > 0:
+                            ll_line.append(", ", style="dim")
+                        ret = leader.get('ret_21d', 0) or 0
+                        ll_line.append(f"{leader['name']} ({ret:+.1f}%)", style="bright_green")
+                
+                if laggards:
+                    ll_line.append("   Laggards: ", style="dim")
+                    for i, laggard in enumerate(laggards[:3]):
+                        if i > 0:
+                            ll_line.append(", ", style="dim")
+                        ret = laggard.get('ret_21d', 0) or 0
+                        ll_line.append(f"{laggard['name']} ({ret:+.1f}%)", style="indian_red1")
+                
+                console.print(ll_line)
+                console.print()
+        else:
+            console.print(f"  [dim]Market direction data unavailable: {direction_summary.get('error', 'Unknown error')}[/dim]")
+            console.print()
+    except Exception as e:
+        console.print(f"  [dim]Market direction unavailable: {str(e)}[/dim]")
+        console.print()
+    
+    # ═══════════════════════════════════════════════════════════════════════════
     # FOOTER: DATA QUALITY & TIMESTAMP
     # ═══════════════════════════════════════════════════════════════════════════
     

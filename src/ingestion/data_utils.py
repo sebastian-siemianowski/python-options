@@ -646,12 +646,21 @@ COMPANY_NAMES: Dict[str, str] = {
     "ETH-USD": "Ethereum (ETH/USD)",
     "SOL-USD": "Solana (SOL/USD)",
     
+    # Major Market Indices (using symbols with good historical data)
+    "^GSPC": "S&P 500 Index",
+    "^VIX": "CBOE Volatility Index (VIX)",
+    "^RUT": "Russell 2000 Index",
+    "^NDX": "Nasdaq-100 Index",
+    "^DJI": "Dow Jones Industrial Average",
+    "^IXIC": "Nasdaq Composite Index",
+    
     # Major ETFs
     "SPY": "SPDR S&P 500 ETF Trust",
     "VOO": "Vanguard S&P 500 ETF",
     "QQQ": "Invesco QQQ Trust (Nasdaq-100)",
     "IWM": "iShares Russell 2000 ETF",
     "DIA": "SPDR Dow Jones Industrial Average ETF",
+    "OEF": "iShares S&P 100 ETF (Mega-Cap 100)",
     "GLD": "SPDR Gold Shares ETF",
     "SLV": "iShares Silver Trust ETF",
     "SMH": "VanEck Semiconductor ETF",
@@ -665,6 +674,7 @@ COMPANY_NAMES: Dict[str, str] = {
     "XLU": "Utilities Select Sector SPDR Fund",
     "XLB": "Materials Select Sector SPDR Fund",
     "XLRE": "Real Estate Select Sector SPDR Fund",
+    "XLC": "Communication Services Select Sector SPDR Fund",
     
     # VanEck ETFs
     "AFK": "VanEck Africa Index ETF",
@@ -1192,6 +1202,493 @@ COMPANY_NAMES: Dict[str, str] = {
 }
 
 
+# =============================================================================
+# MARKET UNIVERSES — Broad Market Index ETFs (February 2026)
+# =============================================================================
+# These ETFs represent the major market universes for market direction analysis.
+# Used to determine where the overall market is heading.
+# =============================================================================
+
+# Major Market Indices (Yahoo Finance symbols with ^ prefix)
+# Note: Only indices with good historical data are included
+# ^DJX and ^XND excluded - options indices with insufficient history
+MARKET_INDICES = {
+    "^GSPC": {
+        "name": "S&P 500",
+        "description": "S&P 500 Index",
+        "category": "index",
+    },
+    "^VIX": {
+        "name": "VIX",
+        "description": "CBOE Volatility Index",
+        "category": "index",
+    },
+    "^RUT": {
+        "name": "Russell 2000",
+        "description": "Russell 2000 Index",
+        "category": "index",
+    },
+    "^NDX": {
+        "name": "Nasdaq-100",
+        "description": "Nasdaq-100 Index",
+        "category": "index",
+    },
+    "^DJI": {
+        "name": "Dow Jones",
+        "description": "Dow Jones Industrial Average",
+        "category": "index",
+    },
+    "^IXIC": {
+        "name": "Nasdaq Composite",
+        "description": "Nasdaq Composite Index",
+        "category": "index",
+    },
+}
+
+MARKET_UNIVERSE_ETFS = {
+    # Broad Market Indices
+    "OEF": {
+        "name": "Mega-Cap 100",
+        "description": "iShares S&P 100 ETF - Top 100 largest US companies",
+        "category": "broad_market",
+    },
+    "SPY": {
+        "name": "S&P 500",
+        "description": "SPDR S&P 500 ETF - 500 largest US companies",
+        "category": "broad_market",
+    },
+    "IWM": {
+        "name": "Russell 2000",
+        "description": "iShares Russell 2000 ETF - Small-cap US stocks",
+        "category": "broad_market",
+    },
+    "QQQ": {
+        "name": "Growth (QQQ)",
+        "description": "Invesco QQQ Trust - Nasdaq-100 growth stocks",
+        "category": "broad_market",
+    },
+    "DIA": {
+        "name": "Dow Jones",
+        "description": "SPDR Dow Jones Industrial Average ETF",
+        "category": "broad_market",
+    },
+}
+
+# =============================================================================
+# SECTOR ETFs — SPDR Select Sector ETFs (February 2026)
+# =============================================================================
+# These are the 11 GICS sector ETFs for sector rotation analysis.
+# Used to identify which sectors are leading/lagging the market.
+# =============================================================================
+
+SECTOR_ETFS = {
+    # Energy
+    "XLE": {
+        "name": "Energy",
+        "description": "Energy Select Sector SPDR Fund",
+        "category": "sector",
+        "gics_sector": "Energy",
+    },
+    # Technology
+    "XLK": {
+        "name": "Technology",
+        "description": "Technology Select Sector SPDR Fund",
+        "category": "sector",
+        "gics_sector": "Information Technology",
+    },
+    # Communication Services
+    "XLC": {
+        "name": "Comm. Svcs",
+        "description": "Communication Services Select Sector SPDR Fund",
+        "category": "sector",
+        "gics_sector": "Communication Services",
+    },
+    # Materials
+    "XLB": {
+        "name": "Materials",
+        "description": "Materials Select Sector SPDR Fund",
+        "category": "sector",
+        "gics_sector": "Materials",
+    },
+    # Consumer Staples
+    "XLP": {
+        "name": "Cons. Staples",
+        "description": "Consumer Staples Select Sector SPDR Fund",
+        "category": "sector",
+        "gics_sector": "Consumer Staples",
+    },
+    # Utilities
+    "XLU": {
+        "name": "Utilities",
+        "description": "Utilities Select Sector SPDR Fund",
+        "category": "sector",
+        "gics_sector": "Utilities",
+    },
+    # Industrials
+    "XLI": {
+        "name": "Industrials",
+        "description": "Industrial Select Sector SPDR Fund",
+        "category": "sector",
+        "gics_sector": "Industrials",
+    },
+    # Financials
+    "XLF": {
+        "name": "Financials",
+        "description": "Financial Select Sector SPDR Fund",
+        "category": "sector",
+        "gics_sector": "Financials",
+    },
+    # Health Care
+    "XLV": {
+        "name": "Healthcare",
+        "description": "Health Care Select Sector SPDR Fund",
+        "category": "sector",
+        "gics_sector": "Health Care",
+    },
+    # Real Estate
+    "XLRE": {
+        "name": "Real Estate",
+        "description": "Real Estate Select Sector SPDR Fund",
+        "category": "sector",
+        "gics_sector": "Real Estate",
+    },
+    # Consumer Discretionary
+    "XLY": {
+        "name": "Cons. Disc.",
+        "description": "Consumer Discretionary Select Sector SPDR Fund",
+        "category": "sector",
+        "gics_sector": "Consumer Discretionary",
+    },
+}
+
+# Combined list of all market analysis symbols (indices + ETFs + sectors)
+MARKET_ANALYSIS_ETFS = list(MARKET_INDICES.keys()) + list(MARKET_UNIVERSE_ETFS.keys()) + list(SECTOR_ETFS.keys())
+
+
+def get_index_symbols() -> List[str]:
+    """Get list of major market index symbols."""
+    return list(MARKET_INDICES.keys())
+
+
+def get_market_universe_symbols() -> List[str]:
+    """Get list of broad market universe ETF symbols."""
+    return list(MARKET_UNIVERSE_ETFS.keys())
+
+
+def get_sector_etf_symbols() -> List[str]:
+    """Get list of sector ETF symbols."""
+    return list(SECTOR_ETFS.keys())
+
+
+def get_all_market_analysis_symbols() -> List[str]:
+    """Get all indices, market universe ETFs, and sector ETF symbols for analysis."""
+    return MARKET_ANALYSIS_ETFS.copy()
+
+
+def get_market_etf_info(symbol: str) -> Optional[Dict[str, str]]:
+    """
+    Get information about a market index, universe ETF, or sector ETF.
+    
+    Args:
+        symbol: Symbol (e.g., "^SPX", "SPY", "XLK")
+        
+    Returns:
+        Dictionary with name, description, category, etc. or None if not found.
+    """
+    symbol = symbol.upper()
+    if symbol in MARKET_INDICES:
+        return MARKET_INDICES[symbol].copy()
+    if symbol in MARKET_UNIVERSE_ETFS:
+        return MARKET_UNIVERSE_ETFS[symbol].copy()
+    if symbol in SECTOR_ETFS:
+        return SECTOR_ETFS[symbol].copy()
+    return None
+
+
+def fetch_market_direction_data(
+    days: int = 252,
+    force_online: bool = False,
+) -> Dict[str, pd.DataFrame]:
+    """
+    Fetch price data for all market universe and sector ETFs.
+    
+    Args:
+        days: Number of trading days of history to fetch
+        force_online: If True, bypass cache and fetch fresh data
+        
+    Returns:
+        Dictionary mapping symbol -> DataFrame with OHLCV data
+    """
+    import warnings
+    symbols = get_all_market_analysis_symbols()
+    result = {}
+    
+    for symbol in symbols:
+        try:
+            df = None
+            
+            # Try cache first unless force_online
+            if not force_online:
+                df = _load_disk_prices(symbol)
+            
+            # Fetch from Yahoo if no cache or force_online
+            if df is None or df.empty:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    df = yf.download(symbol, period=f"{days}d", progress=False, auto_adjust=True)
+            
+            if df is not None and not df.empty:
+                result[symbol] = df
+        except Exception:
+            continue
+    
+    return result
+
+
+def compute_market_returns(
+    price_data: Dict[str, pd.DataFrame],
+    periods: List[int] = [1, 5, 21],
+) -> pd.DataFrame:
+    """
+    Compute returns for multiple periods across all market ETFs.
+    
+    Args:
+        price_data: Dictionary from fetch_market_direction_data()
+        periods: List of periods in days (e.g., [1, 5, 21] for 1D, 1W, 1M)
+        
+    Returns:
+        DataFrame with returns for each symbol and period
+    """
+    records = []
+    
+    for symbol, df in price_data.items():
+        try:
+            # Get close prices - handle both Series and DataFrame
+            if "Close" in df.columns:
+                close = df["Close"]
+            elif "Adj Close" in df.columns:
+                close = df["Adj Close"]
+            else:
+                continue
+            
+            # If it's a DataFrame with one column, convert to Series
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            
+            # Convert to numeric and drop NaN
+            close = close.astype(float).dropna()
+            if len(close) < max(periods) + 1:
+                continue
+            
+            # Get ETF info
+            info = get_market_etf_info(symbol) or {"name": symbol, "category": "unknown"}
+            
+            record = {
+                "symbol": symbol,
+                "name": info.get("name", symbol),
+                "category": info.get("category", "unknown"),
+                "last_price": float(close.iloc[-1]),
+            }
+            
+            # Compute returns for each period
+            for period in periods:
+                if len(close) > period:
+                    ret = (close.iloc[-1] / close.iloc[-period-1] - 1) * 100
+                    record[f"ret_{period}d"] = float(ret)
+                else:
+                    record[f"ret_{period}d"] = None
+            
+            # Compute volatility (21-day annualized)
+            if len(close) > 21:
+                log_ret = np.log(close / close.shift(1)).dropna()
+                vol = float(log_ret.tail(21).std() * np.sqrt(252) * 100)
+                record["volatility"] = vol
+            else:
+                record["volatility"] = None
+            
+            records.append(record)
+        except Exception:
+            continue
+    
+    return pd.DataFrame(records)
+
+
+def get_market_direction_summary(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    """
+    Get a summary of market direction across universes and sectors.
+    
+    This is the main entry point for market direction analysis.
+    
+    Args:
+        force_refresh: If True, fetch fresh data from Yahoo Finance
+        
+    Returns:
+        Dictionary with:
+        - 'universes': DataFrame of broad market universe returns
+        - 'sectors': DataFrame of sector ETF returns
+        - 'leaders': Top 3 performing sectors
+        - 'laggards': Bottom 3 performing sectors
+        - 'market_trend': Overall market trend assessment
+        - 'timestamp': When data was fetched
+    """
+    from datetime import datetime
+    
+    # Fetch data
+    price_data = fetch_market_direction_data(days=252, force_online=force_refresh)
+    
+    if not price_data:
+        return {
+            "error": "Failed to fetch market data",
+            "timestamp": datetime.now().isoformat(),
+        }
+    
+    # Compute returns
+    returns_df = compute_market_returns(price_data, periods=[1, 5, 21])
+    
+    if returns_df.empty:
+        return {
+            "error": "Failed to compute returns",
+            "timestamp": datetime.now().isoformat(),
+        }
+    
+    # Split into indices, universes and sectors
+    indices = returns_df[returns_df["category"] == "index"].copy()
+    universes = returns_df[returns_df["category"] == "broad_market"].copy()
+    sectors = returns_df[returns_df["category"] == "sector"].copy()
+    
+    # Determine trend direction based on 21-day return
+    def get_trend(ret_21d, vol):
+        if ret_21d is None or vol is None:
+            return "→ Flat"
+        # Normalize by volatility
+        if abs(ret_21d) < vol * 0.3:
+            return "→ Flat"
+        elif ret_21d > 0:
+            return "↗ Rising"
+        else:
+            return "↘ Falling"
+    
+    if not indices.empty:
+        indices["trend"] = indices.apply(
+            lambda r: get_trend(r.get("ret_21d"), r.get("volatility")), axis=1
+        )
+    universes["trend"] = universes.apply(
+        lambda r: get_trend(r.get("ret_21d"), r.get("volatility")), axis=1
+    )
+    sectors["trend"] = sectors.apply(
+        lambda r: get_trend(r.get("ret_21d"), r.get("volatility")), axis=1
+    )
+    
+    # Compute momentum score (weighted average of returns)
+    def momentum_score(row):
+        r1 = row.get("ret_1d", 0) or 0
+        r5 = row.get("ret_5d", 0) or 0
+        r21 = row.get("ret_21d", 0) or 0
+        return r1 * 0.2 + r5 * 0.3 + r21 * 0.5
+    
+    sectors["momentum"] = sectors.apply(momentum_score, axis=1)
+    
+    # Sort sectors by momentum
+    sectors_sorted = sectors.sort_values("momentum", ascending=False)
+    
+    # Leaders and laggards
+    leaders = sectors_sorted.head(3)[["symbol", "name", "ret_1d", "ret_5d", "ret_21d", "trend"]].to_dict("records")
+    laggards = sectors_sorted.tail(3)[["symbol", "name", "ret_1d", "ret_5d", "ret_21d", "trend"]].to_dict("records")
+    
+    # Overall market trend (based on SPY)
+    spy_row = universes[universes["symbol"] == "SPY"]
+    if not spy_row.empty:
+        spy_ret = spy_row.iloc[0].get("ret_21d", 0) or 0
+        if spy_ret > 5:
+            market_trend = "Bullish"
+        elif spy_ret < -5:
+            market_trend = "Bearish"
+        else:
+            market_trend = "Neutral"
+    else:
+        market_trend = "Unknown"
+    
+    return {
+        "indices": indices,
+        "universes": universes,
+        "sectors": sectors_sorted,
+        "leaders": leaders,
+        "laggards": laggards,
+        "market_trend": market_trend,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+def print_market_direction_report(force_refresh: bool = False) -> None:
+    """
+    Print a formatted market direction report to console.
+    
+    Args:
+        force_refresh: If True, fetch fresh data from Yahoo Finance
+    """
+    summary = get_market_direction_summary(force_refresh=force_refresh)
+    
+    if "error" in summary:
+        print(f"Error: {summary['error']}")
+        return
+    
+    print("=" * 80)
+    print("MARKET DIRECTION ANALYSIS")
+    print(f"As of: {summary['timestamp']}")
+    print(f"Overall Market Trend: {summary['market_trend']}")
+    print("=" * 80)
+    
+    # Helper function to print a section
+    def print_section(title: str, df: pd.DataFrame):
+        print(f"\n{title}")
+        print("-" * 80)
+        print(f"{'Name':<20} {'1D':>8} {'1W':>8} {'1M':>8} {'Vol':>6} {'Trend':<15}")
+        print("-" * 80)
+        
+        for _, row in df.iterrows():
+            name = row.get("name", row["symbol"])[:20]
+            r1 = row.get("ret_1d")
+            r5 = row.get("ret_5d")
+            r21 = row.get("ret_21d")
+            vol = row.get("volatility")
+            trend = row.get("trend", "")
+            
+            r1_str = f"{r1:+.1f}%" if r1 is not None else "N/A"
+            r5_str = f"{r5:+.1f}%" if r5 is not None else "N/A"
+            r21_str = f"{r21:+.1f}%" if r21 is not None else "N/A"
+            vol_str = f"{vol:.0f}%" if vol is not None else "N/A"
+            
+            print(f"{name:<20} {r1_str:>8} {r5_str:>8} {r21_str:>8} {vol_str:>6} {trend:<15}")
+    
+    # Indices
+    indices = summary.get("indices")
+    if indices is not None and not indices.empty:
+        print_section("📊 MAJOR INDICES", indices)
+    
+    # Market Universe ETFs
+    universes = summary["universes"]
+    if not universes.empty:
+        print_section("📊 MARKET UNIVERSE ETFs", universes)
+    
+    # Sectors
+    sectors = summary["sectors"]
+    if not sectors.empty:
+        print_section("📈 SECTOR PERFORMANCE (sorted by momentum)", sectors)
+    
+    # Leaders and Laggards
+    print("\n🏆 SECTOR LEADERS")
+    for i, leader in enumerate(summary["leaders"], 1):
+        print(f"  {i}. {leader['name']}: {leader.get('ret_21d', 0):+.1f}% (1M)")
+    
+    print("\n📉 SECTOR LAGGARDS")
+    for i, laggard in enumerate(summary["laggards"], 1):
+        print(f"  {i}. {laggard['name']}: {laggard.get('ret_21d', 0):+.1f}% (1M)")
+    
+    print("\n" + "=" * 80)
+
+
 def get_company_name(symbol: str) -> Optional[str]:
     """
     Get the display name for a symbol from the internal dictionary.
@@ -1241,12 +1738,43 @@ DEFAULT_ASSET_UNIVERSE = [
     "MSTR",  # MicroStrategy
 
     # -------------------------
-    # Major Indices and Broad Market ETFs
+    # Indices (Major Market Indices)
+    # -------------------------
+    # Note: Using indices with good historical data
+    # ^DJX and ^XND excluded - options indices with insufficient history
+    "^GSPC",  # S&P 500 Index
+    "^VIX",   # CBOE Volatility Index
+    "^RUT",   # Russell 2000 Index
+    "^NDX",   # Nasdaq-100 Index
+    "^DJI",   # Dow Jones Industrial Average
+    "^IXIC",  # Nasdaq Composite Index
+
+    # -------------------------
+    # Broad Market ETFs
     # -------------------------
     "SPY",   # SPDR S&P 500 ETF
     "VOO",   # Vanguard S&P 500 ETF
+    "QQQ",   # Invesco QQQ Trust (Nasdaq-100)
+    "IWM",   # iShares Russell 2000 ETF
+    "OEF",   # iShares S&P 100 ETF (Mega-Cap 100)
+    "DIA",   # SPDR Dow Jones Industrial Average ETF
     "GLD",   # Gold ETF
     "SLV",   # Silver ETF
+
+    # -------------------------
+    # Sector ETFs (SPDR Select Sector)
+    # -------------------------
+    "XLE",   # Energy Select Sector SPDR
+    "XLK",   # Technology Select Sector SPDR
+    "XLC",   # Communication Services Select Sector SPDR
+    "XLB",   # Materials Select Sector SPDR
+    "XLP",   # Consumer Staples Select Sector SPDR
+    "XLU",   # Utilities Select Sector SPDR
+    "XLI",   # Industrial Select Sector SPDR
+    "XLF",   # Financial Select Sector SPDR
+    "XLV",   # Health Care Select Sector SPDR
+    "XLRE",  # Real Estate Select Sector SPDR
+    "XLY",   # Consumer Discretionary Select Sector SPDR
 
     # -------------------------
     # S&P 100 Companies by Sector
@@ -2325,8 +2853,15 @@ SECTOR_MAP = {
         "PLNJPY=X", "GC=F", "SI=F", "BTC-USD", "BTCUSD=X", "MSTR", "XAGUSD", "SGLP", "SGLP.L", "GLDE", "GLDW", "GLDM", "SLVI",
         "BAL"
     },
+    "Indices": {
+        # Major Market Indices (using symbols with good historical data)
+        "^GSPC", "^VIX", "^RUT", "^NDX", "^DJI", "^IXIC",
+        # Sector ETFs (SPDR Select Sector)
+        "XLE", "XLK", "XLC", "XLB", "XLP", "XLU", "XLI", "XLF", "XLV", "XLRE", "XLY",
+    },
     "Indices / Broad ETFs": {
-        "SPY", "VOO", "GLD", "SLV", "SMH", "SOXX", "QQQ", "MOAT", "MOO", "MOTI", "ITA"
+        "SPY", "VOO", "GLD", "SLV", "SMH", "SOXX", "QQQ", "MOAT", "MOO", "MOTI", "ITA",
+        "IWM", "OEF", "DIA",
     },
     "Information Technology": {
         "AAPL", "ACN", "ADBE", "AMD", "AVGO", "CRM", "CSCO", "IBM", "INTC", "INTU", "MSFT", "NOW", "NVDA", "ORCL", "PLTR", "QCOM", "TXN", "GOOG", "GOOGL", "META", "NFLX", "AMZN",

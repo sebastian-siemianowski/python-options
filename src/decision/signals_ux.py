@@ -1225,10 +1225,33 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
     if not summary_rows:
         return
 
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # SECTOR CONSOLIDATION MAP
+    # Combine related/overlapping sectors into single display categories
+    # ═══════════════════════════════════════════════════════════════════════════════
+    SECTOR_CONSOLIDATION = {
+        # Combine all index-related categories
+        "Indices / Broad ETFs": "Indices & ETFs",
+        "Indices": "Indices & ETFs",
+        # Combine nuclear/critical materials
+        "Nuclear": "Critical Materials & Nuclear",
+        "Critical Materials": "Critical Materials & Nuclear",
+        # Combine AI-related categories
+        "AI Utility / Infrastructure": "AI & Infrastructure",
+        "AI Software / Data Platforms": "AI & Infrastructure", 
+        "AI Hardware / Edge Compute": "AI & Infrastructure",
+        "AI Power Semiconductors": "AI & Infrastructure",
+        # Keep these separate but with cleaner names
+        "Semiconductor Equipment": "Semiconductors",
+        "FX / Commodities / Crypto": "FX, Commodities & Crypto",
+    }
+
     buckets: Dict[str, List[Dict]] = {}
     for row in summary_rows:
         sector = row.get("sector", "") or ""
         sector = sector.strip() if sector else "Other"
+        # Apply consolidation mapping
+        sector = SECTOR_CONSOLIDATION.get(sector, sector)
         buckets.setdefault(sector, []).append(row)
 
     import re
