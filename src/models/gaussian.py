@@ -23,50 +23,79 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import kstest, norm
 
+# Numba wrappers for JIT-compiled filters (optional performance enhancement)
+try:
+    from .numba_wrappers import (
+        is_numba_available,
+        run_gaussian_filter,
+        run_phi_gaussian_filter,
+    )
+    _USE_NUMBA = is_numba_available()
+except ImportError:
+    _USE_NUMBA = False
+    run_gaussian_filter = None
+    run_phi_gaussian_filter = None
+
 
 class GaussianDriftModel:
     """Encapsulates Gaussian Kalman drift model logic for modular reuse."""
 
     @staticmethod
     def filter(returns: np.ndarray, vol: np.ndarray, q: float, c: float = 1.0) -> Tuple[np.ndarray, np.ndarray, float]:
-        """Run Kalman filter for drift estimation with fixed process noise q and observation variance scale c."""
+        """
+        Optimized Kalman filter for drift estimation.
+        
+        Performance optimizations (February 2026):
+        - Pre-compute R array once
+        - Pre-compute log_2pi constant
+        - Use np.empty instead of np.zeros
+        - Ensure contiguous array access
+        """
         n = len(returns)
+        
+        # Convert to contiguous float64 arrays once
+        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
 
         q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, 'item') else float(q)
         c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, 'item') else float(c)
+        
+        # Pre-compute constants
+        log_2pi = np.log(2 * np.pi)
+        
+        # Pre-compute R array (vectorized)
+        R = c_val * (vol * vol)
 
         mu = 0.0
         P = 1e-4
 
-        mu_filtered = np.zeros(n)
-        P_filtered = np.zeros(n)
+        mu_filtered = np.empty(n, dtype=np.float64)
+        P_filtered = np.empty(n, dtype=np.float64)
         log_likelihood = 0.0
 
         for t in range(n):
-            mu_pred = float(mu)
-            P_pred = float(P) + q_val
+            mu_pred = mu
+            P_pred = P + q_val
 
-            vol_t = vol[t]
-            vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
-            R = c_val * (vol_scalar ** 2)
+            S = P_pred + R[t]
+            if S <= 1e-12:
+                S = 1e-12
 
-            K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
+            K = P_pred / S
+            innovation = returns[t] - mu_pred
 
-            ret_t = returns[t]
-            r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
-            innovation = r_val - mu_pred
-
-            mu = float(mu_pred + K * innovation)
-            P = float((1.0 - K) * P_pred)
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
 
             mu_filtered[t] = mu
             P_filtered[t] = P
 
-            forecast_var = P_pred + R
-            if forecast_var > 1e-12:
-                log_likelihood += -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
+            # Inlined log-likelihood
+            log_likelihood += -0.5 * (log_2pi + np.log(S) + (innovation * innovation) / S)
 
-        return mu_filtered, P_filtered, log_likelihood
+        return mu_filtered, P_filtered, float(log_likelihood)
 
     @staticmethod
     def filter_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:

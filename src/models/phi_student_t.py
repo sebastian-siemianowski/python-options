@@ -199,56 +199,92 @@ class PhiStudentTDriftModel:
             except Exception:
                 pass  # Fall through to Python implementation
         
-        return cls._filter_phi_python(returns, vol, q, c, phi, nu)
+        return cls._filter_phi_python_optimized(returns, vol, q, c, phi, nu)
     
     @classmethod
-    def _filter_phi_python(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
-        """Pure Python implementation of φ-Student-t filter (for fallback and testing)."""
+    def _filter_phi_python_optimized(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        Optimized pure Python φ-Student-t filter with reduced overhead.
+        
+        Performance optimizations (February 2026):
+        - Pre-compute constants outside the loop (log_norm_const, phi_sq, nu_adjust, inv_nu)
+        - Pre-compute R array once (c * vol**2)
+        - Use np.empty instead of np.zeros
+        - Inline logpdf calculation to avoid function call overhead
+        - Ensure contiguous array access
+        """
         n = len(returns)
+        
+        # Convert to contiguous float64 arrays once
+        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        
+        # Extract scalar values once
         q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
         c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
         phi_val = float(np.clip(phi, -0.999, 0.999))
         nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
-
+        
+        # Pre-compute constants (computed once, used n times)
+        phi_sq = phi_val * phi_val
+        nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
+        
+        # Pre-compute log-pdf constants (avoids gammaln call in loop)
+        log_norm_const = gammaln((nu_val + 1.0) / 2.0) - gammaln(nu_val / 2.0) - 0.5 * np.log(nu_val * np.pi)
+        neg_exp = -((nu_val + 1.0) / 2.0)
+        inv_nu = 1.0 / nu_val
+        
+        # Pre-compute R values (vectorized)
+        R = c_val * (vol * vol)
+        
+        # Allocate output arrays
+        mu_filtered = np.empty(n, dtype=np.float64)
+        P_filtered = np.empty(n, dtype=np.float64)
+        
+        # State initialization
         mu = 0.0
         P = 1e-4
-        mu_filtered = np.zeros(n)
-        P_filtered = np.zeros(n)
         log_likelihood = 0.0
-
+        
+        # Main filter loop (optimized)
         for t in range(n):
+            # Prediction step
             mu_pred = phi_val * mu
-            P_pred = (phi_val ** 2) * P + q_val
-
-            vol_t = vol[t]
-            vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
-            R = c_val * (vol_scalar ** 2)
-
-            ret_t = returns[t]
-            r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
-            innovation = r_val - mu_pred
-
-            S = P_pred + R
+            P_pred = phi_sq * P + q_val
+            
+            # Observation update
+            S = P_pred + R[t]
             if S <= 1e-12:
                 S = 1e-12
-            nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
+            
+            innovation = returns[t] - mu_pred
             K = nu_adjust * P_pred / S
-
+            
+            # State update
             mu = mu_pred + K * innovation
             P = (1.0 - K) * P_pred
             if P < 1e-12:
                 P = 1e-12
-
+            
+            # Store filtered values
             mu_filtered[t] = mu
             P_filtered[t] = P
-
+            
+            # Inlined log-pdf calculation (avoids function call + gammaln per step)
             forecast_scale = np.sqrt(S)
             if forecast_scale > 1e-12:
-                ll_t = cls.logpdf(r_val, nu_val, mu_pred, forecast_scale)
+                z = innovation / forecast_scale
+                ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
-
+        
         return mu_filtered, P_filtered, float(log_likelihood)
+    
+    @classmethod
+    def _filter_phi_python(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Pure Python implementation of φ-Student-t filter (for fallback and testing)."""
+        # Delegate to optimized version
+        return cls._filter_phi_python_optimized(returns, vol, q, c, phi, nu)
 
     @classmethod
     def _filter_phi_with_trajectory(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
@@ -813,15 +849,41 @@ class PhiStudentTDriftModel:
         log_c_min = np.log10(c_min)
         log_c_max = np.log10(c_max)
 
+        # Optimized grid search with parallel evaluation (February 2026)
+        # Use coarser grid (3x2x3 = 18) with parallel execution
+        lq_grid = np.linspace(log_q_min, log_q_max, 3)
+        lc_grid = np.linspace(log_c_min, log_c_max, 2)
+        lp_grid = np.array([phi_min, 0.0, phi_max * 0.5])
+        
+        # Generate all grid points
+        grid_points = [(lq, lc, lp) 
+                       for lq in lq_grid 
+                       for lc in lc_grid 
+                       for lp in lp_grid]
+        
+        def _eval_point(point):
+            lq, lc, lp = point
+            val = neg_pen_ll(np.array([lq, lc, lp]))
+            return val, point
+        
         grid_best = (adaptive_prior_mean, np.log10(0.9), 0.0)
         best_neg = float('inf')
-        for lq in np.linspace(log_q_min, log_q_max, 4):
-            for lc in np.linspace(log_c_min, log_c_max, 3):
-                for lp in np.linspace(phi_min, phi_max, 5):
-                    val = neg_pen_ll(np.array([lq, lc, lp]))
-                    if val < best_neg:
-                        best_neg = val
-                        grid_best = (lq, lc, lp)
+        
+        # Use 4 threads for parallel evaluation
+        try:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                results = list(executor.map(_eval_point, grid_points))
+            for val, point in results:
+                if val < best_neg:
+                    best_neg = val
+                    grid_best = point
+        except Exception:
+            # Fallback to sequential if parallel fails
+            for point in grid_points:
+                val = neg_pen_ll(np.array(point))
+                if val < best_neg:
+                    best_neg = val
+                    grid_best = point
         
         bounds = [(log_q_min, log_q_max), (log_c_min, log_c_max), (phi_min, phi_max)]
         start_points = [

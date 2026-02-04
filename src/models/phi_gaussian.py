@@ -108,43 +108,60 @@ def _compute_phi_prior_diagnostics(
 
 
 def _kalman_filter_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:
-    """Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t."""
+    """
+    Optimized Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t.
+    
+    Performance optimizations (February 2026):
+    - Pre-compute phi_sq and R array once
+    - Pre-compute log_2pi constant
+    - Use np.empty instead of np.zeros
+    - Ensure contiguous array access
+    """
     n = len(returns)
+    
+    # Convert to contiguous float64 arrays once
+    returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+    vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+    
+    # Extract scalar values once
     q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
     c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
     phi_val = float(np.clip(phi, -0.999, 0.999))
+    
+    # Pre-compute constants
+    phi_sq = phi_val * phi_val
+    log_2pi = np.log(2 * np.pi)
+    
+    # Pre-compute R array (vectorized)
+    R = c_val * (vol * vol)
 
     mu = 0.0
     P = 1e-4
-    mu_filtered = np.zeros(n)
-    P_filtered = np.zeros(n)
+    mu_filtered = np.empty(n, dtype=np.float64)
+    P_filtered = np.empty(n, dtype=np.float64)
     log_likelihood = 0.0
 
     for t in range(n):
         mu_pred = phi_val * mu
-        P_pred = (phi_val ** 2) * P + q_val
+        P_pred = phi_sq * P + q_val
 
-        vol_t = vol[t]
-        vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
-        R = c_val * (vol_scalar ** 2)
-
-        ret_t = returns[t]
-        r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
-        innovation = r_val - mu_pred
-
-        S = P_pred + R
+        S = P_pred + R[t]
         if S <= 1e-12:
             S = 1e-12
+        
+        innovation = returns[t] - mu_pred
         K = P_pred / S
 
         mu = mu_pred + K * innovation
         P = (1.0 - K) * P_pred
-        P = float(max(P, 1e-12))
+        if P < 1e-12:
+            P = 1e-12
 
         mu_filtered[t] = mu
         P_filtered[t] = P
 
-        log_likelihood += -0.5 * (np.log(2 * np.pi * S) + (innovation ** 2) / S)
+        # Inlined log-likelihood
+        log_likelihood += -0.5 * (log_2pi + np.log(S) + (innovation * innovation) / S)
 
     return mu_filtered, P_filtered, float(log_likelihood)
 
