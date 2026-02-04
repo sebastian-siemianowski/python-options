@@ -1823,6 +1823,12 @@ Examples:
                             gaussian_count += 1
                         else:
                             gaussian_count += 1
+                        
+                        # Count momentum augmentation
+                        best_model = global_result.get('best_model', '')
+                        is_momentum = global_result.get('is_momentum_model', False) or '_momentum' in str(best_model)
+                        if is_momentum:
+                            momentum_count += 1
 
                         if global_result.get('calibration_warning'):
                             calibration_warnings += 1
