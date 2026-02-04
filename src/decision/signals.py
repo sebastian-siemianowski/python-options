@@ -2226,8 +2226,19 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         return None
 
     # Helper to check if model is Student-t (phi_student_t_nu_* naming)
+    # Also handles momentum-augmented variants (phi_student_t_nu_*_momentum)
     def _is_student_t(model_name: str) -> bool:
-        return model_name.startswith('phi_student_t_nu_')
+        # Strip momentum suffix if present
+        base_name = model_name[:-9] if model_name.endswith('_momentum') else model_name
+        return base_name.startswith('phi_student_t_nu_')
+    
+    # Helper to check if model is momentum-augmented
+    def _is_momentum_augmented(model_name: str) -> bool:
+        return model_name.endswith('_momentum')
+    
+    # Helper to get base model name (strip _momentum suffix)
+    def _get_base_model_name(model_name: str) -> str:
+        return model_name[:-9] if model_name.endswith('_momentum') else model_name
     
     # Helper to check if a model fit successfully
     def _is_valid_model(model_name: str) -> bool:

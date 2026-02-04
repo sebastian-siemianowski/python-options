@@ -122,7 +122,7 @@ def _human_number(n: int) -> str:
     return str(n)
 
 
-def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: float, console: Console = None) -> None:
+def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: float, console: Console = None, momentum_enabled: bool = True) -> None:
     if console is None:
         console = create_tuning_console()
     console.clear()
@@ -189,6 +189,19 @@ def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: 
     chips3.append("   ○ ", style="bright_green")
     chips3.append("AIGF-NF", style="bright_green")
     console.print(Align.center(chips3))
+    # Momentum augmentation status
+    chips4 = Text()
+    if momentum_enabled:
+        chips4.append("○ ", style="bright_yellow")
+        chips4.append("Momentum", style="bright_yellow")
+        chips4.append(" ", style="dim")
+        chips4.append("(BMA augmentation)", style="dim")
+    else:
+        chips4.append("○ ", style="dim")
+        chips4.append("Momentum", style="dim")
+        chips4.append(" ", style="dim")
+        chips4.append("(disabled)", style="dim")
+    console.print(Align.center(chips4))
     console.print(Align.center(Text(" " * 50)))
     console.print()
 

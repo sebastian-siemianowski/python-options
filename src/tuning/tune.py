@@ -238,6 +238,15 @@ PHI_SKEW_T_ENABLED = False
 # GMM captures bimodality but HMM regime-switching handles this
 GMM_ENABLED = False
 
+# =============================================================================
+# MOMENTUM AUGMENTATION (February 2026)
+# =============================================================================
+# Momentum-augmented models compete as conditional hypotheses in BMA.
+# Momentum enters model selection, not filter equations - preserves identifiability.
+# Set to False to disable momentum augmentation entirely.
+# =============================================================================
+MOMENTUM_AUGMENTATION_ENABLED = True
+
 # Import Adaptive ν Refinement for calibration improvement
 try:
     from calibration.adaptive_nu_refinement import (
@@ -554,6 +563,34 @@ from models import (
     get_aigf_nf_model_name,
     is_aigf_nf_model,
 )
+
+# =============================================================================
+# MOMENTUM AUGMENTATION MODULE (February 2026)
+# =============================================================================
+# Momentum-augmented drift models using compositional wrapper architecture.
+# Momentum enters model selection via BMA, not filter equations.
+# =============================================================================
+try:
+    from models.momentum_augmented import (
+        MomentumConfig,
+        MomentumAugmentedDriftModel,
+        DEFAULT_MOMENTUM_CONFIG,
+        DISABLED_MOMENTUM_CONFIG,
+        compute_momentum_features,
+        compute_momentum_signal,
+        get_momentum_augmented_model_name,
+        is_momentum_augmented_model,
+        get_base_model_name,
+        compute_momentum_model_bic_adjustment,
+        compute_ablation_result,
+        MomentumAblationResult,
+        MOMENTUM_BMA_PRIOR_PENALTY,
+    )
+    MOMENTUM_AUGMENTATION_AVAILABLE = True
+except ImportError as e:
+    MOMENTUM_AUGMENTATION_AVAILABLE = False
+    import warnings
+    warnings.warn(f"Momentum augmentation not available: {e}")
 
 # =============================================================================
 # EVT (EXTREME VALUE THEORY) FOR TAIL RISK MODELING
@@ -2283,6 +2320,225 @@ def fit_all_models_for_regime(
                 "model_type": "aigf_nf",
             }
     
+    # =========================================================================
+    # Model 5: MOMENTUM-AUGMENTED MODELS (February 2026)
+    # =========================================================================
+    # Momentum-augmented variants of base models compete as conditional
+    # hypotheses in BMA. Momentum enters model selection, not filter equations.
+    #
+    # DESIGN PHILOSOPHY:
+    #   "Momentum is a hypothesis, not a certainty."
+    #   Momentum-augmented models receive a prior penalty in BMA.
+    #   They must earn their weight through superior predictive likelihood.
+    #
+    # MODELS:
+    #   - kalman_gaussian_momentum
+    #   - kalman_phi_gaussian_momentum
+    #   - phi_student_t_nu_{nu}_momentum (for each nu in grid)
+    #
+    # BIC ADJUSTMENT:
+    #   Momentum models receive a prior penalty implemented as BIC adjustment.
+    #   This prevents slow drift toward momentum dominance in noisy assets.
+    # =========================================================================
+    
+    if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
+        # Create momentum wrapper
+        momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
+        momentum_wrapper.precompute_momentum(returns)
+        
+        # Momentum-augmented Gaussian
+        base_name = "kalman_gaussian"
+        mom_name = get_momentum_augmented_model_name(base_name)
+        
+        if base_name in models and models[base_name].get("fit_success", False):
+            try:
+                base_model = models[base_name]
+                q_mom = base_model["q"]
+                c_mom = base_model["c"]
+                
+                # Run filter with momentum augmentation
+                mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
+                    returns, vol, q_mom, c_mom, phi=1.0, base_model='gaussian'
+                )
+                
+                # Compute PIT calibration
+                ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_mom)
+                
+                # Compute information criteria with prior penalty
+                n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN]
+                aic_mom = compute_aic(ll_mom, n_params_mom)
+                bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
+                bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
+                mean_ll_mom = ll_mom / max(n_obs, 1)
+                
+                # Compute Hyvärinen score
+                forecast_std_mom = np.sqrt(c_mom * (vol ** 2) + P_mom)
+                hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
+                
+                models[mom_name] = {
+                    "q": float(q_mom),
+                    "c": float(c_mom),
+                    "phi": None,
+                    "nu": None,
+                    "log_likelihood": float(ll_mom),
+                    "mean_log_likelihood": float(mean_ll_mom),
+                    "cv_penalized_ll": float(ll_mom),
+                    "bic": float(bic_mom),
+                    "bic_raw": float(bic_raw_mom),
+                    "aic": float(aic_mom),
+                    "hyvarinen_score": float(hyvarinen_mom),
+                    "n_params": int(n_params_mom),
+                    "ks_statistic": float(ks_mom),
+                    "pit_ks_pvalue": float(pit_p_mom),
+                    "fit_success": True,
+                    "momentum_augmented": True,
+                    "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                    "base_model": base_name,
+                    "diagnostics": momentum_wrapper.get_diagnostics(),
+                }
+            except Exception as e:
+                models[mom_name] = {
+                    "fit_success": False,
+                    "error": str(e),
+                    "bic": float('inf'),
+                    "aic": float('inf'),
+                    "hyvarinen_score": float('-inf'),
+                    "momentum_augmented": True,
+                    "base_model": base_name,
+                }
+        
+        # Momentum-augmented Phi-Gaussian
+        base_name = "kalman_phi_gaussian"
+        mom_name = get_momentum_augmented_model_name(base_name)
+        
+        if base_name in models and models[base_name].get("fit_success", False):
+            try:
+                base_model = models[base_name]
+                q_mom = base_model["q"]
+                c_mom = base_model["c"]
+                phi_mom = base_model["phi"]
+                
+                # Run filter with momentum augmentation
+                mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
+                    returns, vol, q_mom, c_mom, phi=phi_mom, base_model='phi_gaussian'
+                )
+                
+                # Compute PIT calibration
+                ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_mom)
+                
+                # Compute information criteria with prior penalty
+                n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.PHI_GAUSSIAN]
+                aic_mom = compute_aic(ll_mom, n_params_mom)
+                bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
+                bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
+                mean_ll_mom = ll_mom / max(n_obs, 1)
+                
+                # Compute Hyvärinen score
+                forecast_std_mom = np.sqrt(c_mom * (vol ** 2) + P_mom)
+                hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
+                
+                models[mom_name] = {
+                    "q": float(q_mom),
+                    "c": float(c_mom),
+                    "phi": float(phi_mom),
+                    "nu": None,
+                    "log_likelihood": float(ll_mom),
+                    "mean_log_likelihood": float(mean_ll_mom),
+                    "cv_penalized_ll": float(ll_mom),
+                    "bic": float(bic_mom),
+                    "bic_raw": float(bic_raw_mom),
+                    "aic": float(aic_mom),
+                    "hyvarinen_score": float(hyvarinen_mom),
+                    "n_params": int(n_params_mom),
+                    "ks_statistic": float(ks_mom),
+                    "pit_ks_pvalue": float(pit_p_mom),
+                    "fit_success": True,
+                    "momentum_augmented": True,
+                    "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                    "base_model": base_name,
+                    "diagnostics": momentum_wrapper.get_diagnostics(),
+                }
+            except Exception as e:
+                models[mom_name] = {
+                    "fit_success": False,
+                    "error": str(e),
+                    "bic": float('inf'),
+                    "aic": float('inf'),
+                    "hyvarinen_score": float('-inf'),
+                    "momentum_augmented": True,
+                    "base_model": base_name,
+                }
+        
+        # Momentum-augmented Student-t (for each nu in grid)
+        for nu_fixed in STUDENT_T_NU_GRID:
+            base_name = f"phi_student_t_nu_{nu_fixed}"
+            mom_name = get_momentum_augmented_model_name(base_name)
+            
+            if base_name in models and models[base_name].get("fit_success", False):
+                try:
+                    base_model = models[base_name]
+                    q_mom = base_model["q"]
+                    c_mom = base_model["c"]
+                    phi_mom = base_model["phi"]
+                    
+                    # Run filter with momentum augmentation
+                    mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
+                        returns, vol, q_mom, c_mom, phi=phi_mom, nu=nu_fixed, 
+                        base_model='phi_student_t'
+                    )
+                    
+                    # Compute PIT calibration
+                    ks_mom, pit_p_mom = PhiStudentTDriftModel.pit_ks(
+                        returns, mu_mom, vol, P_mom, c_mom, nu_fixed
+                    )
+                    
+                    # Compute information criteria with prior penalty
+                    n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T]
+                    aic_mom = compute_aic(ll_mom, n_params_mom)
+                    bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
+                    bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
+                    mean_ll_mom = ll_mom / max(n_obs, 1)
+                    
+                    # Compute Hyvärinen score (Student-t)
+                    forecast_scale_mom = np.sqrt(c_mom * (vol ** 2) + P_mom)
+                    hyvarinen_mom = compute_hyvarinen_score_student_t(
+                        returns, mu_mom, forecast_scale_mom, nu_fixed
+                    )
+                    
+                    models[mom_name] = {
+                        "q": float(q_mom),
+                        "c": float(c_mom),
+                        "phi": float(phi_mom),
+                        "nu": float(nu_fixed),
+                        "log_likelihood": float(ll_mom),
+                        "mean_log_likelihood": float(mean_ll_mom),
+                        "cv_penalized_ll": float(ll_mom),
+                        "bic": float(bic_mom),
+                        "bic_raw": float(bic_raw_mom),
+                        "aic": float(aic_mom),
+                        "hyvarinen_score": float(hyvarinen_mom),
+                        "n_params": int(n_params_mom),
+                        "ks_statistic": float(ks_mom),
+                        "pit_ks_pvalue": float(pit_p_mom),
+                        "fit_success": True,
+                        "momentum_augmented": True,
+                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                        "base_model": base_name,
+                        "nu_fixed": True,
+                        "diagnostics": momentum_wrapper.get_diagnostics(),
+                    }
+                except Exception as e:
+                    models[mom_name] = {
+                        "fit_success": False,
+                        "error": str(e),
+                        "bic": float('inf'),
+                        "aic": float('inf'),
+                        "hyvarinen_score": float('-inf'),
+                        "momentum_augmented": True,
+                        "base_model": base_name,
+                        "nu": float(nu_fixed),
+                    }
+    
     return models
 
 
@@ -3264,6 +3520,10 @@ Examples:
     print(f"Prior on φ: φ ~ N(0, τ) with λ_φ=0.05 (explicit Gaussian shrinkage)")
     print(f"Hierarchical shrinkage: λ_regime={args.lambda_regime:.3f}")
     print("Models: Gaussian, φ-Gaussian, φ-Student-t (ν ∈ {4, 6, 8, 12, 20})")
+    if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
+        print(f"Momentum: ENABLED (prior penalty={args.momentum_penalty:.2f})")
+    else:
+        print("Momentum: DISABLED")
     print("Selection: BIC + Hyvärinen combined scoring")
     print("Regime-conditional: Fits (q, c, φ) per regime; ν is discrete grid (not optimized)")
 
