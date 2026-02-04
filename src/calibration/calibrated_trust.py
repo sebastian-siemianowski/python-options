@@ -72,17 +72,35 @@ DEFAULT_REGIME_PENALTY_SCHEDULE = {
 # Default model complexity penalty schedule (Counter-Proposal v1.0)
 # Exotic models signal structural instability → reduced position authority
 # This addresses: "GH improves fit but does not reduce authority"
+# Includes momentum-augmented variants (February 2026)
 DEFAULT_MODEL_PENALTY_SCHEDULE = {
+    # Base Gaussian family
     'gaussian': 0.00,
     'kalman_gaussian': 0.00,
     'phi_gaussian': 0.02,
     'kalman_phi_gaussian': 0.02,
+    # Momentum-augmented Gaussian (base penalty + 0.01 momentum premium)
+    'gaussian_momentum': 0.01,
+    'phi_gaussian_momentum': 0.03,
+    'momentum_gaussian': 0.01,
+    'momentum_phi_gaussian': 0.03,
+    # Base Student-t family
     'phi_student_t': 0.05,
     'phi_student_t_nu_4': 0.08,   # Heavy tails → higher uncertainty
     'phi_student_t_nu_6': 0.06,
     'phi_student_t_nu_8': 0.05,
     'phi_student_t_nu_12': 0.04,
     'phi_student_t_nu_20': 0.03,
+    # Momentum-augmented Student-t (base penalty + 0.01 momentum premium)
+    'phi_student_t_momentum': 0.06,
+    'phi_student_t_momentum_nu_4': 0.09,
+    'phi_student_t_momentum_nu_6': 0.07,
+    'phi_student_t_momentum_nu_8': 0.06,
+    'phi_student_t_momentum_nu_12': 0.05,
+    'phi_student_t_momentum_nu_20': 0.04,
+    'momentum_phi_student_t': 0.06,
+    'momentum_student_t': 0.06,
+    # Advanced distributions
     'phi_skew_t': 0.10,
     'phi_nig': 0.12,
     'mixture': 0.15,
@@ -247,15 +265,29 @@ class TrustConfig:
         """
         Get penalty for a model type.
         
-        Handles partial matching for Student-t variants.
+        Handles partial matching for Student-t and momentum variants.
         """
         if model_type in self.model_penalty_schedule:
             return self.model_penalty_schedule[model_type]
         
-        # Check for Student-t variants
-        if 'student_t' in model_type.lower():
-            # Default Student-t penalty
+        model_lower = model_type.lower()
+        is_momentum = 'momentum' in model_lower or '+mom' in model_lower
+        
+        # Check for Student-t variants (including momentum)
+        if 'student_t' in model_lower:
+            if is_momentum:
+                return self.model_penalty_schedule.get('phi_student_t_momentum', 0.06)
             return self.model_penalty_schedule.get('phi_student_t', 0.05)
+        
+        # Check for Gaussian variants (including momentum)
+        if 'gaussian' in model_lower:
+            if is_momentum:
+                if 'phi' in model_lower:
+                    return self.model_penalty_schedule.get('momentum_phi_gaussian', 0.03)
+                return self.model_penalty_schedule.get('momentum_gaussian', 0.01)
+            if 'phi' in model_lower:
+                return self.model_penalty_schedule.get('phi_gaussian', 0.02)
+            return self.model_penalty_schedule.get('gaussian', 0.00)
         
         # Default penalty for unknown models
         return 0.10

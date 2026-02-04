@@ -176,6 +176,16 @@ class EscalationResult:
     nu_original: Optional[float] = None
     nu_final: Optional[float] = None
     
+    # Momentum-specific (February 2026)
+    momentum_enabled: bool = False
+    momentum_weight: Optional[float] = None
+    
+    # EVT-specific (if applicable)
+    evt_fitted: bool = False
+    evt_significant: bool = False
+    evt_xi: Optional[float] = None
+    evt_severity: str = ""
+    
     # Justification
     justification: str = "diagnostic-driven"
     
@@ -222,6 +232,14 @@ class EscalationResult:
             'nu_refinement_improved': self.nu_refinement_improved,
             'nu_original': float(self.nu_original) if self.nu_original else None,
             'nu_final': float(self.nu_final) if self.nu_final else None,
+            # Momentum fields (February 2026)
+            'momentum_enabled': self.momentum_enabled,
+            'momentum_weight': float(self.momentum_weight) if self.momentum_weight else None,
+            # EVT fields
+            'evt_fitted': self.evt_fitted,
+            'evt_significant': self.evt_significant,
+            'evt_xi': float(self.evt_xi) if self.evt_xi is not None else None,
+            'evt_severity': self.evt_severity,
             'justification': self.justification,
             'timestamp': self.timestamp,
         }
@@ -411,6 +429,14 @@ class PDDEOrchestrator:
         nu_refinement_attempts = sum(1 for r in results.values() if r.nu_refinement_attempted)
         nu_refinement_successes = sum(1 for r in results.values() if r.nu_refinement_improved)
         
+        # Momentum statistics (February 2026)
+        momentum_enabled_count = sum(1 for r in results.values() if r.momentum_enabled)
+        momentum_calibrated = sum(1 for r in results.values() if r.momentum_enabled and r.is_calibrated)
+        
+        # EVT statistics
+        evt_fitted_count = sum(1 for r in results.values() if r.evt_fitted)
+        evt_significant_count = sum(1 for r in results.values() if r.evt_significant)
+        
         return {
             'total': total,
             'calibrated': calibrated,
@@ -427,6 +453,15 @@ class PDDEOrchestrator:
             'nu_refinement_attempts': nu_refinement_attempts,
             'nu_refinement_successes': nu_refinement_successes,
             'nu_refinement_success_rate': nu_refinement_successes / nu_refinement_attempts * 100 if nu_refinement_attempts > 0 else 0,
+            # Momentum statistics (February 2026)
+            'momentum_enabled': momentum_enabled_count,
+            'momentum_enabled_pct': momentum_enabled_count / total * 100 if total > 0 else 0,
+            'momentum_calibrated': momentum_calibrated,
+            'momentum_calibration_rate': momentum_calibrated / momentum_enabled_count * 100 if momentum_enabled_count > 0 else 0,
+            # EVT statistics
+            'evt_fitted': evt_fitted_count,
+            'evt_significant': evt_significant_count,
+            'evt_significant_pct': evt_significant_count / total * 100 if total > 0 else 0,
         }
 
 
@@ -494,20 +529,31 @@ def extract_escalation_from_result(result: Dict[str, Any]) -> EscalationResult:
         else:
             path.append("mixture_selected_legacy")
     
-    # Determine final model name
+    # Determine final model name (including momentum variants - February 2026)
+    noise_model = global_result.get('noise_model', '')
+    is_momentum = global_result.get('momentum_enabled', False) or 'momentum' in noise_model.lower() or '+mom' in noise_model.lower()
+    momentum_suffix = '+Momentum' if is_momentum else ''
+    
     # K=2 mixture check kept for backward compat with cached results
     if global_result.get('mixture_selected'):
         final_model = "mixture_legacy"
     elif nu_ref.get('improvement_achieved'):
-        final_model = "phi-t-refined"
-    elif global_result.get('noise_model', '').startswith('phi_student_t'):
-        final_model = "phi-t"
-    elif global_result.get('noise_model') == 'kalman_phi_gaussian':
-        final_model = "phi-gaussian"
+        final_model = f"phi-t-refined{momentum_suffix}"
+    elif noise_model.startswith('phi_student_t') or 'student_t' in noise_model.lower():
+        final_model = f"phi-t{momentum_suffix}"
+    elif noise_model == 'kalman_phi_gaussian' or 'phi_gaussian' in noise_model.lower():
+        final_model = f"phi-gaussian{momentum_suffix}"
     else:
-        final_model = "gaussian"
+        if is_momentum:
+            final_model = f"gaussian{momentum_suffix}"
+        else:
+            final_model = "gaussian"
     
     mixture_model = global_result.get('mixture_model', {})
+    
+    # Extract momentum data (February 2026)
+    momentum_data = global_result.get('momentum', {})
+    momentum_weight = momentum_data.get('weight') or global_result.get('momentum_weight')
     
     # Extract EVT data
     evt_data = global_result.get('evt') or {}
@@ -537,6 +583,10 @@ def extract_escalation_from_result(result: Dict[str, Any]) -> EscalationResult:
         nu_refinement_improved=nu_ref.get('improvement_achieved', False),
         nu_original=nu_ref.get('nu_original'),
         nu_final=nu_ref.get('nu_final'),
+        # Momentum fields (February 2026)
+        momentum_enabled=is_momentum,
+        momentum_weight=momentum_weight,
+        # EVT fields
         evt_fitted=evt_fitted,
         evt_significant=evt_significant,
         evt_xi=evt_xi,
@@ -590,7 +640,7 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
     warnings = 0
     critical = 0
     
-    # Model type counters
+    # Model type counters (base models)
     gaussian_count = 0
     phi_gaussian_count = 0
     student_t_count = 0
@@ -598,6 +648,11 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
     mixture_count = 0
     gh_count = 0
     tvvm_count = 0
+    
+    # Momentum model counters (February 2026)
+    momentum_gaussian_count = 0
+    momentum_phi_gaussian_count = 0
+    momentum_student_t_count = 0
     
     # Escalation counters
     mixture_attempts = 0
@@ -625,9 +680,10 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
         else:
             critical += 1
         
-        # Count model types
+        # Count model types (including momentum variants)
         noise_model = global_data.get('noise_model', '')
         nu_ref = global_data.get('nu_refinement') or {}
+        is_momentum = global_data.get('momentum_enabled', False) or 'momentum' in noise_model.lower() or '+mom' in noise_model.lower()
         
         if global_data.get('tvvm_selected'):
             tvvm_count += 1
@@ -637,11 +693,18 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             mixture_count += 1
         elif nu_ref.get('improvement_achieved'):
             student_t_refined_count += 1
-        elif noise_model.startswith('phi_student_t'):
+        elif noise_model.startswith('phi_student_t') or 'student_t' in noise_model.lower():
+            if is_momentum:
+                momentum_student_t_count += 1
             student_t_count += 1
-        elif noise_model == 'kalman_phi_gaussian' or global_data.get('phi') is not None:
+        elif noise_model == 'kalman_phi_gaussian' or 'phi_gaussian' in noise_model.lower() or global_data.get('phi') is not None:
+            if is_momentum:
+                momentum_phi_gaussian_count += 1
+                momentum_gaussian_count += 1  # Also count in momentum_gaussian for backwards compat
             phi_gaussian_count += 1
         else:
+            if is_momentum:
+                momentum_gaussian_count += 1
             gaussian_count += 1
         
         # Count escalation attempts
@@ -683,10 +746,12 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
         'warnings': warnings,
         'critical': critical,
         'level_counts': {
-            'φ-Gaussian': phi_gaussian_count + gaussian_count - momentum_gaussian_count,
-            'φ-Gaussian+Mom': momentum_gaussian_count,
+            'Gaussian': gaussian_count - momentum_gaussian_count,
+            'Gaussian+Momentum': momentum_gaussian_count - momentum_phi_gaussian_count,
+            'φ-Gaussian': phi_gaussian_count - momentum_phi_gaussian_count,
+            'φ-Gaussian+Momentum': momentum_phi_gaussian_count,
             'φ-Student-t': student_t_count - momentum_student_t_count,
-            'φ-Student-t+Mom': momentum_student_t_count,
+            'φ-Student-t+Momentum': momentum_student_t_count,
             'φ-Student-t (ν-refined)': student_t_refined_count,
             'K=2 Scale Mixture': mixture_count,
             'Generalized Hyperbolic': gh_count,
@@ -694,13 +759,22 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             'EVT Tail Splice': 0,
         },
         'model_counts': {
-            'gaussian': gaussian_count,
-            'phi-gaussian': phi_gaussian_count,
-            'phi-t': student_t_count,
+            'gaussian': gaussian_count - momentum_gaussian_count,
+            'gaussian_momentum': momentum_gaussian_count - momentum_phi_gaussian_count,
+            'phi-gaussian': phi_gaussian_count - momentum_phi_gaussian_count,
+            'phi-gaussian_momentum': momentum_phi_gaussian_count,
+            'phi-t': student_t_count - momentum_student_t_count,
+            'phi-t_momentum': momentum_student_t_count,
             'phi-t-refined': student_t_refined_count,
             'mixture': mixture_count,
             'gh': gh_count,
             'tvvm': tvvm_count,
+        },
+        'momentum_counts': {
+            'total_momentum': momentum_gaussian_count + momentum_student_t_count,
+            'gaussian_momentum': momentum_gaussian_count,
+            'phi_gaussian_momentum': momentum_phi_gaussian_count,
+            'student_t_momentum': momentum_student_t_count,
         },
         'escalations_triggered': escalations,
         'escalation_rate': escalations / total * 100 if total > 0 else 0,

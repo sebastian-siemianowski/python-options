@@ -345,14 +345,33 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
         
         # Define levels with their display properties
         # (level_name, level_code, color, symbol, is_disabled, count_override, attempts, successes, rate, rate_label)
+        # Note: Momentum models are now the primary models (February 2026)
+        
+        # Get momentum counts from level_counts
+        gaussian_mom_count = level_counts.get('Gaussian+Momentum', 0)
+        phi_gaussian_mom_count = level_counts.get('φ-Gaussian+Momentum', 0)
+        phi_student_t_mom_count = level_counts.get('φ-Student-t+Momentum', 0)
+        total_momentum = gaussian_mom_count + phi_gaussian_mom_count + phi_student_t_mom_count
+        
+        # Get base model counts (non-momentum) - these are now disabled
+        gaussian_base_count = level_counts.get('Gaussian', 0)
+        phi_gaussian_base_count = level_counts.get('φ-Gaussian', 0)
+        phi_student_t_base_count = level_counts.get('φ-Student-t', 0)
+        
         levels = [
-            ('φ-Gaussian', 'L0', 'green', '○', False, None, 0, 0, 0, None),
-            ('φ-Student-t', 'L1', 'magenta', '●', False, None, 0, 0, 0, None),
+            # Momentum models (primary - enabled)
+            ('Gaussian+Momentum', 'M0', 'bright_green', '○', False, gaussian_mom_count, 0, 0, 0, None),
+            ('φ-Gaussian+Momentum', 'M1', 'bright_cyan', '◇', False, phi_gaussian_mom_count, 0, 0, 0, None),
+            ('φ-Student-t+Momentum', 'M2', 'bright_magenta', '●', False, phi_student_t_mom_count, 0, 0, 0, None),
+            # Base Student-t (still enabled for non-momentum selection)
+            ('φ-Student-t', 'L1', 'magenta', '●', False, phi_student_t_base_count, 0, 0, 0, None),
             ('φ-Student-t (ν-refined)', 'L2', 'bright_magenta', '◆', False, None, nu_attempts, nu_successes, nu_rate, 'improved'),
             ('EVT Tail Splice', 'L3', 'bright_red', '▲', False, None, evt_attempts, evt_successes, evt_rate, 'heavy'),
             ('Generalized Hyperbolic', 'L4', 'bright_cyan', '★', False, gh_successes, gh_attempts, gh_successes, gh_rate, 'improved'),
             ('TVVM', 'L5', 'yellow', '⚡', False, tvvm_successes, tvvm_attempts, tvvm_successes, tvvm_rate, 'improved'),
             # Disabled models at the bottom
+            ('Gaussian', 'LD', 'dim', '○', True, gaussian_base_count, 0, 0, 0, None),
+            ('φ-Gaussian', 'LD', 'dim', '◇', True, phi_gaussian_base_count, 0, 0, 0, None),
             ('K=2 Scale Mixture', 'LD', 'dim', '◈', True, None, mix_attempts, mix_successes, mix_rate, 'improved'),
         ]
         
@@ -392,12 +411,25 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
                 if attempts > 0:
                     rate_str = f"  [{successes}/{attempts} {rate:.0f}% {rate_label}]"
                     row.append(rate_str, style="dim italic")
-                elif count > 0 and level_name != 'φ-Gaussian':
-                    row.append("  ↑ heavier tails", style="dim italic")
+                elif count > 0:
+                    # Add appropriate annotation based on model type
+                    if 'Momentum' in level_name:
+                        row.append("  ↑ momentum augmented", style="dim italic")
+                    elif 'Student-t' in level_name and 'base' not in level_name.lower():
+                        row.append("  ↑ heavier tails", style="dim italic")
             
             console.print(row)
         
         console.print()
+        
+        # Show momentum model summary (February 2026)
+        if total_momentum > 0:
+            momentum_pct = total_momentum / total * 100 if total > 0 else 0
+            mom_summary = Text()
+            mom_summary.append("    Momentum models: ", style="dim")
+            mom_summary.append(f"{total_momentum}", style="bold bright_yellow")
+            mom_summary.append(f" ({momentum_pct:.1f}% of assets)", style="dim")
+            console.print(mom_summary)
         
         # Show how many assets needed heavier tails
         escalations = escalation_summary.get('escalations_triggered', 0)
@@ -2069,10 +2101,6 @@ Examples:
                             hansen_dir = "←" if hansen_lambda < 0 else "→"
                             model_str += f"+Hλ{hansen_dir}"
                             hansen_fitted_count += 1
-                            if hansen_lambda < 0:
-                                hansen_left_skew_count += 1
-                            else:
-                                hansen_right_skew_count += 1
                         
                         # Check for EVT availability
                         evt_data = global_result.get('evt')
