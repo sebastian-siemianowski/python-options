@@ -4,6 +4,9 @@ __pycache__/
 *$py.class
 *.so
 
+# Numba JIT cache
+.numba_cache/
+
 # Virtual environment
 .venv/
 venv/

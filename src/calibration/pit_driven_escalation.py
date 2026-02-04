@@ -683,8 +683,10 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
         'warnings': warnings,
         'critical': critical,
         'level_counts': {
-            'φ-Gaussian': phi_gaussian_count + gaussian_count,
-            'φ-Student-t': student_t_count,
+            'φ-Gaussian': phi_gaussian_count + gaussian_count - momentum_gaussian_count,
+            'φ-Gaussian+Mom': momentum_gaussian_count,
+            'φ-Student-t': student_t_count - momentum_student_t_count,
+            'φ-Student-t+Mom': momentum_student_t_count,
             'φ-Student-t (ν-refined)': student_t_refined_count,
             'K=2 Scale Mixture': mixture_count,
             'Generalized Hyperbolic': gh_count,

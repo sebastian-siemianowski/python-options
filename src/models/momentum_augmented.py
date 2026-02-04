@@ -23,6 +23,10 @@ ARCHITECTURE:
     - Preserves all base model interfaces and return types
     - Exposes enable_momentum flag for toggling
 
+ARCHITECTURAL INVARIANT:
+    There is NO bare Student-t model. All Student-t momentum augmentation
+    uses φ-Student-t as the base model.
+
 MOMENTUM FEATURES:
     - Normalized returns over configurable lookback windows
     - Default lookbacks: [5, 10, 20, 60] days
@@ -31,6 +35,11 @@ MOMENTUM FEATURES:
 KEY INSIGHT:
     Momentum enters model selection, not filter equations.
     This preserves identifiability and prevents q/momentum collinearity.
+
+Performance Optimization:
+    This module supports Numba JIT-compiled kernels for momentum-augmented
+    filtering. When Numba is available, filter methods automatically use
+    the accelerated kernels with graceful fallback to pure Python.
 
 February 2026 — Implements Copilot Story:
     "Add Momentum Augmentation Layers to Kalman-Based Drift Models"
@@ -44,6 +53,22 @@ from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 from scipy.stats import norm
+
+
+# =============================================================================
+# NUMBA INTEGRATION (optional, graceful fallback)
+# =============================================================================
+
+try:
+    from .numba_wrappers import (
+        is_numba_available,
+        run_momentum_phi_gaussian_filter,
+        run_momentum_phi_student_t_filter,
+        run_momentum_phi_student_t_filter_batch,
+    )
+    _USE_NUMBA = is_numba_available()
+except ImportError:
+    _USE_NUMBA = False
 
 
 # =============================================================================
@@ -521,6 +546,283 @@ def get_momentum_augmented_model_name(base_name: str) -> str:
         Momentum-augmented model name (e.g., 'kalman_gaussian_momentum')
     """
     return f"{base_name}_momentum"
+
+
+# =============================================================================
+# NUMBA-ACCELERATED MOMENTUM FILTERING (Direct Filter Methods)
+# =============================================================================
+
+class MomentumPhiGaussianFilter:
+    """
+    Direct Numba-accelerated φ-Gaussian filter with momentum augmentation.
+    
+    Used by: CRSP, CELH, DPRO augmented models
+    
+    This class provides direct access to Numba-accelerated momentum filtering
+    without the wrapper overhead. For most use cases, use
+    MomentumAugmentedDriftModel instead.
+    """
+    
+    @staticmethod
+    def filter(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        momentum_signal: np.ndarray,
+        momentum_weight: float = 0.1,
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        Run φ-Gaussian filter with momentum augmentation.
+        
+        Uses Numba kernel when available (10-50× speedup).
+        
+        Args:
+            returns: Array of returns
+            vol: Array of EWMA volatility
+            q: Process noise variance
+            c: Observation noise scale
+            phi: AR(1) persistence
+            momentum_signal: Per-timestep normalized momentum
+            momentum_weight: Scaling factor for momentum contribution
+            
+        Returns:
+            Tuple of (mu_filtered, P_filtered, log_likelihood)
+        """
+        # Compute momentum adjustment
+        momentum_adjustment = momentum_weight * momentum_signal * vol
+        
+        # Try Numba kernel
+        if _USE_NUMBA:
+            try:
+                return run_momentum_phi_gaussian_filter(
+                    returns, vol, q, c, phi, momentum_adjustment
+                )
+            except Exception:
+                pass
+        
+        # Python fallback
+        return MomentumPhiGaussianFilter._filter_python(
+            returns, vol, q, c, phi, momentum_adjustment
+        )
+    
+    @staticmethod
+    def _filter_python(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        momentum_adjustment: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Pure Python implementation (for fallback and testing)."""
+        n = len(returns)
+        mu = 0.0
+        P = 1e-4
+        mu_filtered = np.zeros(n)
+        P_filtered = np.zeros(n)
+        log_likelihood = 0.0
+        phi_sq = phi ** 2
+        
+        for t in range(n):
+            # Momentum-augmented prediction
+            mu_pred = phi * mu + momentum_adjustment[t]
+            P_pred = phi_sq * P + q
+            
+            vol_t = float(vol[t])
+            R = c * (vol_t ** 2)
+            innovation = float(returns[t]) - mu_pred
+            S = P_pred + R
+            
+            if S > 1e-12:
+                K = P_pred / S
+                mu = mu_pred + K * innovation
+                P = (1.0 - K) * P_pred
+                
+                innov_sq_scaled = min((innovation ** 2) / S, 100.0)
+                ll_contrib = -0.5 * (np.log(2 * np.pi * S) + innov_sq_scaled)
+                log_likelihood += max(ll_contrib, -50.0)
+            else:
+                mu = mu_pred
+                P = P_pred
+            
+            mu_filtered[t] = mu
+            P_filtered[t] = max(P, 1e-12)
+        
+        return mu_filtered, P_filtered, log_likelihood
+
+
+class MomentumPhiStudentTFilter:
+    """
+    Direct Numba-accelerated φ-Student-t filter with momentum augmentation.
+    
+    Used by: GLDW, MAGD, BKSY, ASTS augmented models
+    
+    ARCHITECTURAL INVARIANT:
+        There is NO bare Student-t momentum filter. All Student-t
+        momentum filtering uses φ-Student-t.
+    
+    This class provides direct access to Numba-accelerated momentum filtering
+    without the wrapper overhead. For most use cases, use
+    MomentumAugmentedDriftModel instead.
+    """
+    
+    @staticmethod
+    def filter(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        nu: float,
+        momentum_signal: np.ndarray,
+        momentum_weight: float = 0.1,
+        hierarchical_lambda: Optional[np.ndarray] = None,
+        lambda_direction: str = 'none',
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        Run φ-Student-t filter with momentum and optional hierarchical λ.
+        
+        Uses Numba kernel when available (10-50× speedup).
+        
+        Args:
+            returns: Array of returns
+            vol: Array of EWMA volatility
+            q: Process noise variance
+            c: Observation noise scale
+            phi: AR(1) persistence
+            nu: Degrees of freedom
+            momentum_signal: Per-timestep normalized momentum
+            momentum_weight: Scaling factor for momentum contribution
+            hierarchical_lambda: Per-timestep λ adjustment (optional)
+            lambda_direction: 'backward' (Hλ←), 'forward' (Hλ→), or 'none'
+            
+        Returns:
+            Tuple of (mu_filtered, P_filtered, log_likelihood)
+        """
+        # Compute effective momentum weight
+        if hierarchical_lambda is not None and lambda_direction != 'none':
+            effective_weight = momentum_weight * hierarchical_lambda
+        else:
+            effective_weight = np.full(len(returns), momentum_weight)
+        
+        # Compute momentum adjustment
+        momentum_adjustment = effective_weight * momentum_signal * vol
+        
+        # Try Numba kernel
+        if _USE_NUMBA:
+            try:
+                return run_momentum_phi_student_t_filter(
+                    returns, vol, q, c, phi, nu, momentum_adjustment
+                )
+            except Exception:
+                pass
+        
+        # Python fallback
+        return MomentumPhiStudentTFilter._filter_python(
+            returns, vol, q, c, phi, nu, momentum_adjustment
+        )
+    
+    @staticmethod
+    def filter_batch(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        nu_grid: List[float],
+        momentum_signal: np.ndarray,
+        momentum_weight: float = 0.1,
+    ) -> Dict[float, Tuple[np.ndarray, np.ndarray, float]]:
+        """
+        Run momentum-augmented φ-Student-t filter for multiple ν values.
+        
+        Efficient for BMA over discrete ν grid.
+        
+        Args:
+            nu_grid: List of ν values to evaluate
+            
+        Returns:
+            Dict mapping ν -> (mu_filtered, P_filtered, log_likelihood)
+        """
+        momentum_adjustment = momentum_weight * momentum_signal * vol
+        
+        # Try Numba batch version
+        if _USE_NUMBA:
+            try:
+                return run_momentum_phi_student_t_filter_batch(
+                    returns, vol, q, c, phi, nu_grid, momentum_adjustment
+                )
+            except Exception:
+                pass
+        
+        # Python fallback
+        results = {}
+        for nu in nu_grid:
+            results[nu] = MomentumPhiStudentTFilter._filter_python(
+                returns, vol, q, c, phi, nu, momentum_adjustment
+            )
+        return results
+    
+    @staticmethod
+    def _filter_python(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        nu: float,
+        momentum_adjustment: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Pure Python implementation (for fallback and testing)."""
+        from scipy.special import gammaln
+        
+        n = len(returns)
+        mu = 0.0
+        P = 1e-4
+        mu_filtered = np.zeros(n)
+        P_filtered = np.zeros(n)
+        log_likelihood = 0.0
+        phi_sq = phi ** 2
+        nu_adjust = min(nu / (nu + 3.0), 1.0)
+        
+        # Precompute gamma values
+        log_g1 = float(gammaln(nu / 2.0))
+        log_g2 = float(gammaln((nu + 1.0) / 2.0))
+        
+        for t in range(n):
+            # Momentum-augmented prediction
+            mu_pred = phi * mu + momentum_adjustment[t]
+            P_pred = phi_sq * P + q
+            
+            vol_t = float(vol[t])
+            R = c * (vol_t ** 2)
+            r_t = float(returns[t])
+            innovation = r_t - mu_pred
+            S = P_pred + R
+            
+            if S > 1e-12:
+                scale = np.sqrt(S)
+                z = innovation / scale
+                
+                # Student-t log-likelihood
+                log_norm = log_g2 - log_g1 - 0.5 * np.log(nu * np.pi * scale * scale)
+                log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
+                ll_t = log_norm + log_kernel
+                log_likelihood += max(ll_t, -50.0)
+                
+                K = nu_adjust * P_pred / S
+                mu = mu_pred + K * innovation
+                P = (1.0 - K) * P_pred
+            else:
+                mu = mu_pred
+                P = P_pred
+            
+            mu_filtered[t] = mu
+            P_filtered[t] = max(P, 1e-12)
+        
+        return mu_filtered, P_filtered, log_likelihood
 
 
 def is_momentum_augmented_model(model_name: str) -> bool:

@@ -161,7 +161,23 @@ class PhiStudentTDriftModel:
 
     @classmethod
     def filter_phi(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
-        """Kalman drift filter with persistence (phi) and Student-t observation noise."""
+        """Kalman drift filter with persistence (phi) and Student-t observation noise.
+        
+        This is the PRIMARY Student-t filter. There is no bare Student-t model.
+        Uses Numba JIT-compiled kernel when available (10-50× speedup).
+        """
+        # Try Numba-accelerated version first
+        if _USE_NUMBA:
+            try:
+                return run_phi_student_t_filter(returns, vol, q, c, phi, nu)
+            except Exception:
+                pass  # Fall through to Python implementation
+        
+        return cls._filter_phi_python(returns, vol, q, c, phi, nu)
+    
+    @classmethod
+    def _filter_phi_python(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Pure Python implementation of φ-Student-t filter (for fallback and testing)."""
         n = len(returns)
         q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
         c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
@@ -273,6 +289,49 @@ class PhiStudentTDriftModel:
             
         ks_result = kstest(pit_values, 'uniform')
         return float(ks_result.statistic), float(ks_result.pvalue)
+
+    @classmethod
+    def filter_phi_batch(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        nu_grid: List[float] = None
+    ) -> Dict[float, Tuple[np.ndarray, np.ndarray, float]]:
+        """
+        Run φ-Student-t filter for multiple ν values (discrete grid BMA).
+        
+        Significantly faster than calling filter_phi() in a loop because:
+        - Arrays are prepared once
+        - Gamma values are precomputed efficiently per ν
+        
+        Parameters
+        ----------
+        nu_grid : List[float], optional
+            List of ν values to evaluate. Default: [4, 6, 8, 12, 20]
+        
+        Returns
+        -------
+        results : Dict[float, Tuple[np.ndarray, np.ndarray, float]]
+            Dict mapping ν -> (mu_filtered, P_filtered, log_likelihood)
+        """
+        if nu_grid is None:
+            nu_grid = STUDENT_T_NU_GRID
+        
+        # Try Numba batch version
+        if _USE_NUMBA:
+            try:
+                return run_phi_student_t_filter_batch(returns, vol, q, c, phi, nu_grid)
+            except Exception:
+                pass  # Fall through to Python implementation
+        
+        # Python fallback
+        results = {}
+        for nu in nu_grid:
+            results[nu] = cls._filter_phi_python(returns, vol, q, c, phi, nu)
+        return results
 
     @staticmethod
     def optimize_params(

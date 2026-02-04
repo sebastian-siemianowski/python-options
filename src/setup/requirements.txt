@@ -7,3 +7,4 @@ tqdm
 rich
 lxml
 hmmlearn
+numba
