@@ -2316,6 +2316,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         'nu': float(nu_val) if nu_val is not None and np.isfinite(nu_val) else None,
         'noise_model': noise_model,
         'best_model': best_model,
+        'is_momentum_model': is_momentum_model,
 
         # Diagnostics from best model (for display compatibility)
         'bic': best_params.get('bic'),
