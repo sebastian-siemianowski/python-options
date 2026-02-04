@@ -555,39 +555,39 @@ def render_tuning_summary(
         console.print(mom_section)
         console.print()
         
-        # Gaussian+Mom (no phi)
+        # Gaussian+Momentum (no phi)
         mom_g_pct = momentum_gaussian_count / total_models * 100 if total_models > 0 else 0
         mom_g_filled = int(mom_g_pct / 100 * bar_width)
         mom_g_style = "bright_green" if momentum_gaussian_count > 0 else "dim"
         mom_g_row = Text()
         mom_g_row.append("      ○ ", style=mom_g_style)
-        mom_g_row.append(f"{'Gaussian+Mom':<18} ", style=mom_g_style)
+        mom_g_row.append(f"{'Gaussian+Momentum':<22} ", style=mom_g_style)
         mom_g_row.append("█" * mom_g_filled, style=mom_g_style)
         mom_g_row.append("░" * (bar_width - mom_g_filled), style="dim")
         mom_g_row.append(f"  {momentum_gaussian_count:>4}", style="bold white" if momentum_gaussian_count > 0 else "dim")
         mom_g_row.append(f"  ({mom_g_pct:>4.1f}%)", style="dim")
         console.print(mom_g_row)
         
-        # φ-Gaussian+Mom
+        # φ-Gaussian+Momentum
         mom_phi_g_pct = momentum_phi_gaussian_count / total_models * 100 if total_models > 0 else 0
         mom_phi_g_filled = int(mom_phi_g_pct / 100 * bar_width)
         mom_phi_g_style = "bright_cyan" if momentum_phi_gaussian_count > 0 else "dim"
         mom_phi_g_row = Text()
         mom_phi_g_row.append("      ◇ ", style=mom_phi_g_style)
-        mom_phi_g_row.append(f"{'φ-Gaussian+Mom':<18} ", style=mom_phi_g_style)
+        mom_phi_g_row.append(f"{'φ-Gaussian+Momentum':<22} ", style=mom_phi_g_style)
         mom_phi_g_row.append("█" * mom_phi_g_filled, style=mom_phi_g_style)
         mom_phi_g_row.append("░" * (bar_width - mom_phi_g_filled), style="dim")
         mom_phi_g_row.append(f"  {momentum_phi_gaussian_count:>4}", style="bold white" if momentum_phi_gaussian_count > 0 else "dim")
         mom_phi_g_row.append(f"  ({mom_phi_g_pct:>4.1f}%)", style="dim")
         console.print(mom_phi_g_row)
         
-        # φ-Student-t+Mom
+        # φ-Student-t+Momentum
         mom_phi_st_pct = momentum_phi_student_t_count / total_models * 100 if total_models > 0 else 0
         mom_phi_st_filled = int(mom_phi_st_pct / 100 * bar_width)
         mom_phi_st_style = "bright_magenta" if momentum_phi_student_t_count > 0 else "dim"
         mom_phi_st_row = Text()
         mom_phi_st_row.append("      ● ", style=mom_phi_st_style)
-        mom_phi_st_row.append(f"{'φ-Student-t+Mom':<18} ", style=mom_phi_st_style)
+        mom_phi_st_row.append(f"{'φ-Student-t+Momentum':<22} ", style=mom_phi_st_style)
         mom_phi_st_row.append("█" * mom_phi_st_filled, style=mom_phi_st_style)
         mom_phi_st_row.append("░" * (bar_width - mom_phi_st_filled), style="dim")
         mom_phi_st_row.append(f"  {momentum_phi_student_t_count:>4}", style="bold white" if momentum_phi_student_t_count > 0 else "dim")
@@ -2038,7 +2038,7 @@ Examples:
                         # Check for momentum augmentation
                         is_momentum_model = global_result.get('is_momentum_model', False)
                         if is_momentum_model or (model_type and '_momentum' in str(model_type)):
-                            model_str += "+Mom"
+                            model_str += "+Momentum"
                         
                         # Check for GMM availability
                         gmm_data = global_result.get('gmm')
