@@ -399,6 +399,29 @@ except ImportError:
     PIT_PENALTY_AVAILABLE = False
 
 # =============================================================================
+# IMPORT FILTER RESULT CACHE (February 2026)
+# =============================================================================
+# Deterministic cache for Kalman filter results to eliminate redundant executions
+# during CV optimization and regime-conditional tuning.
+# Cache sits ABOVE Numba dispatch - works regardless of Numba availability.
+# =============================================================================
+try:
+    from models.filter_cache import (
+        get_filter_cache,
+        clear_filter_cache,
+        get_cache_stats,
+        reset_cache_stats,
+        set_filter_cache_enabled,
+        FilterCacheKey,
+        FilterCacheValue,
+        compute_cv_likelihood_from_cache,
+        FILTER_CACHE_ENABLED,
+    )
+    FILTER_CACHE_AVAILABLE = True
+except ImportError:
+    FILTER_CACHE_AVAILABLE = False
+
+# =============================================================================
 # IMPORT UNIFIED RISK CONTEXT (February 2026)
 # =============================================================================
 # Unified risk context for signal-risk architecture integration.
@@ -1670,7 +1693,7 @@ try:
         save_tuned_params as _save_per_asset,
         load_full_cache as _load_full_cache,
         list_cached_symbols,
-        get_cache_stats,
+        get_cache_stats as get_kalman_cache_stats,
         TUNE_CACHE_DIR,
     )
     PER_ASSET_CACHE_AVAILABLE = True
@@ -3208,6 +3231,12 @@ def tune_asset_with_bma(
     MIN_DATA_FOR_REGIME = 100
     MIN_DATA_FOR_GLOBAL = 20
     
+    # Reset filter cache for this asset to avoid cross-asset contamination
+    # and collect fresh statistics for this tuning run
+    if FILTER_CACHE_AVAILABLE:
+        clear_filter_cache()
+        reset_cache_stats()
+    
     try:
         # Fetch price data
         try:
@@ -3407,6 +3436,20 @@ def tune_asset_with_bma(
 
         if collapse_warnings > 0:
             _log(f"     ⚠️  Collapse warnings: regime parameters too close to global")
+
+        # Report filter cache statistics
+        if FILTER_CACHE_AVAILABLE:
+            cache_stats = get_cache_stats()
+            if cache_stats.hits > 0 or cache_stats.misses > 0:
+                _log(f"     📊 {cache_stats.summary()}")
+            # Add cache stats to result for analysis
+            result["filter_cache_stats"] = {
+                "hits": cache_stats.hits,
+                "misses": cache_stats.misses,
+                "hit_rate": cache_stats.hit_rate,
+                "fold_slice_reuses": cache_stats.fold_slice_reuses,
+                "warm_starts": cache_stats.warm_starts,
+            }
 
         return result
 

@@ -41,6 +41,19 @@ from tuning.tune import (
     REGIME_LABELS,
 )
 
+# Import Filter Cache for statistics reporting
+try:
+    from models.filter_cache import (
+        get_filter_cache,
+        get_cache_stats,
+        reset_cache_stats,
+        clear_filter_cache,
+        FILTER_CACHE_ENABLED,
+    )
+    FILTER_CACHE_AVAILABLE = True
+except ImportError:
+    FILTER_CACHE_AVAILABLE = False
+
 # Import PIT-Driven Distribution Escalation
 try:
     from calibration.pit_driven_escalation import (

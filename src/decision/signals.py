@@ -347,6 +347,21 @@ try:
 except ImportError:
     PIT_PENALTY_AVAILABLE = False
 
+# Filter Result Cache — Deterministic Kalman Filter Reuse (February 2026)
+# Enables caching of filter results during signal generation to avoid
+# redundant computations when same parameters are used across horizons.
+try:
+    from models.filter_cache import (
+        get_filter_cache,
+        get_cache_stats,
+        reset_cache_stats,
+        clear_filter_cache,
+        FILTER_CACHE_ENABLED,
+    )
+    FILTER_CACHE_AVAILABLE = True
+except ImportError:
+    FILTER_CACHE_AVAILABLE = False
+
 # Context manager to suppress noisy HMM convergence messages
 import contextlib
 import io

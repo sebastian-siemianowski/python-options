@@ -35,6 +35,32 @@ from scipy.stats import kstest
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
+# Filter cache for deterministic result reuse
+try:
+    from .filter_cache import (
+        cached_phi_student_t_filter,
+        get_filter_cache,
+        FilterCacheKey,
+        FILTER_CACHE_ENABLED,
+    )
+    _CACHE_AVAILABLE = True
+except ImportError:
+    _CACHE_AVAILABLE = False
+    FILTER_CACHE_ENABLED = False
+
+# Numba wrappers for JIT-compiled filters (optional performance enhancement)
+try:
+    from .numba_wrappers import (
+        is_numba_available,
+        run_phi_student_t_filter,
+        run_student_t_filter_batch as run_phi_student_t_filter_batch,
+    )
+    _USE_NUMBA = is_numba_available()
+except ImportError:
+    _USE_NUMBA = False
+    run_phi_student_t_filter = None
+    run_phi_student_t_filter_batch = None
+
 
 # =============================================================================
 # φ SHRINKAGE PRIOR CONSTANTS (self-contained, no external dependencies)
@@ -223,6 +249,93 @@ class PhiStudentTDriftModel:
                     log_likelihood += ll_t
 
         return mu_filtered, P_filtered, float(log_likelihood)
+
+    @classmethod
+    def _filter_phi_with_trajectory(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
+        """
+        Pure Python φ-Student-t filter with per-timestep likelihood trajectory.
+        
+        Enables fold-aware CV likelihood slicing without re-execution.
+        Returns (mu_filtered, P_filtered, total_log_likelihood, loglik_trajectory).
+        """
+        n = len(returns)
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+        nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
+
+        mu = 0.0
+        P = 1e-4
+        mu_filtered = np.zeros(n)
+        P_filtered = np.zeros(n)
+        loglik_trajectory = np.zeros(n)
+        log_likelihood = 0.0
+
+        for t in range(n):
+            mu_pred = phi_val * mu
+            P_pred = (phi_val ** 2) * P + q_val
+
+            vol_t = vol[t]
+            vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
+            R = c_val * (vol_scalar ** 2)
+
+            ret_t = returns[t]
+            r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
+            innovation = r_val - mu_pred
+
+            S = P_pred + R
+            if S <= 1e-12:
+                S = 1e-12
+            nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
+            K = nu_adjust * P_pred / S
+
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
+
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+
+            forecast_scale = np.sqrt(S)
+            ll_t = 0.0
+            if forecast_scale > 1e-12:
+                ll_t = cls.logpdf(r_val, nu_val, mu_pred, forecast_scale)
+                if not np.isfinite(ll_t):
+                    ll_t = 0.0
+            
+            loglik_trajectory[t] = ll_t
+            log_likelihood += ll_t
+
+        return mu_filtered, P_filtered, float(log_likelihood), loglik_trajectory
+
+    @classmethod
+    def filter_with_trajectory(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        nu: float,
+        regime_id: str = "global",
+        use_cache: bool = True
+    ) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
+        """
+        Kalman filter with per-timestep likelihood trajectory.
+        
+        Enables fold-aware CV likelihood slicing without re-execution.
+        Uses deterministic result cache when available.
+        
+        Returns (mu_filtered, P_filtered, total_log_likelihood, loglik_trajectory).
+        """
+        if use_cache and _CACHE_AVAILABLE and FILTER_CACHE_ENABLED:
+            return cached_phi_student_t_filter(
+                returns, vol, q, c, phi, nu,
+                filter_fn=cls._filter_phi_with_trajectory,
+                regime_id=regime_id
+            )
+        return cls._filter_phi_with_trajectory(returns, vol, q, c, phi, nu)
 
     @staticmethod
     def pit_ks(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float, nu: float) -> Tuple[float, float]:

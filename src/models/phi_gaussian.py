@@ -28,6 +28,19 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import kstest, norm
 
+# Filter cache for deterministic result reuse
+try:
+    from .filter_cache import (
+        cached_phi_gaussian_filter,
+        get_filter_cache,
+        FilterCacheKey,
+        FILTER_CACHE_ENABLED,
+    )
+    _CACHE_AVAILABLE = True
+except ImportError:
+    _CACHE_AVAILABLE = False
+    FILTER_CACHE_ENABLED = False
+
 
 # =============================================================================
 # φ SHRINKAGE PRIOR CONSTANTS (self-contained, no external dependencies)
@@ -123,6 +136,55 @@ def _kalman_filter_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float,
     return mu_filtered, P_filtered, float(log_likelihood)
 
 
+def _kalman_filter_phi_with_trajectory(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
+    """
+    Kalman filter with per-timestep likelihood trajectory for fold slicing.
+    
+    Returns (mu_filtered, P_filtered, total_log_likelihood, loglik_trajectory).
+    """
+    n = len(returns)
+    q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+    c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+    phi_val = float(np.clip(phi, -0.999, 0.999))
+
+    mu = 0.0
+    P = 1e-4
+    mu_filtered = np.zeros(n)
+    P_filtered = np.zeros(n)
+    loglik_trajectory = np.zeros(n)
+    log_likelihood = 0.0
+
+    for t in range(n):
+        mu_pred = phi_val * mu
+        P_pred = (phi_val ** 2) * P + q_val
+
+        vol_t = vol[t]
+        vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
+        R = c_val * (vol_scalar ** 2)
+
+        ret_t = returns[t]
+        r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
+        innovation = r_val - mu_pred
+
+        S = P_pred + R
+        if S <= 1e-12:
+            S = 1e-12
+        K = P_pred / S
+
+        mu = mu_pred + K * innovation
+        P = (1.0 - K) * P_pred
+        P = float(max(P, 1e-12))
+
+        mu_filtered[t] = mu
+        P_filtered[t] = P
+
+        ll_t = -0.5 * (np.log(2 * np.pi * S) + (innovation ** 2) / S)
+        loglik_trajectory[t] = ll_t
+        log_likelihood += ll_t
+
+    return mu_filtered, P_filtered, float(log_likelihood), loglik_trajectory
+
+
 class PhiGaussianDriftModel:
     """Encapsulates Gaussian Kalman drift with persistence φ for modular reuse."""
 
@@ -130,6 +192,32 @@ class PhiGaussianDriftModel:
     def filter(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:
         """Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t."""
         return _kalman_filter_phi(returns, vol, q, c, phi)
+
+    @staticmethod
+    def filter_with_trajectory(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        regime_id: str = "global",
+        use_cache: bool = True
+    ) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
+        """
+        Kalman filter with per-timestep likelihood trajectory.
+        
+        Enables fold-aware CV likelihood slicing without re-execution.
+        Uses deterministic result cache when available.
+        
+        Returns (mu_filtered, P_filtered, total_log_likelihood, loglik_trajectory).
+        """
+        if use_cache and _CACHE_AVAILABLE and FILTER_CACHE_ENABLED:
+            return cached_phi_gaussian_filter(
+                returns, vol, q, c, phi,
+                filter_fn=_kalman_filter_phi_with_trajectory,
+                regime_id=regime_id
+            )
+        return _kalman_filter_phi_with_trajectory(returns, vol, q, c, phi)
 
     @classmethod
     def optimize_params(
