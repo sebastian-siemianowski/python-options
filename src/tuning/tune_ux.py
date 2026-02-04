@@ -500,40 +500,36 @@ def render_tuning_summary(
         bar_width = 30
         
         # ═══════════════════════════════════════════════════════════════════
-        # BASE MODELS (Non-Momentum)
+        # BASE MODELS (Non-Momentum) - Gaussian/φ-Gaussian DISABLED
         # ═══════════════════════════════════════════════════════════════════
         base_section = Text()
         base_section.append("    ▸ Base Models (Non-Momentum)", style="bold dim")
         console.print(base_section)
         console.print()
         
-        # Gaussian (non-momentum)
+        # Gaussian (non-momentum) - DISABLED
         gauss_pct = non_mom_gaussian / total_models * 100 if total_models > 0 else 0
-        gauss_filled = int(gauss_pct / 100 * bar_width)
-        gauss_style = "green" if non_mom_gaussian > 0 else "dim"
         gauss_row = Text()
-        gauss_row.append("      ○ ", style=gauss_style)
-        gauss_row.append(f"{'Gaussian':<18} ", style=gauss_style)
-        gauss_row.append("█" * gauss_filled, style=gauss_style)
-        gauss_row.append("░" * (bar_width - gauss_filled), style="dim")
-        gauss_row.append(f"  {non_mom_gaussian:>4}", style="bold white" if non_mom_gaussian > 0 else "dim")
+        gauss_row.append("      ○ ", style="dim")
+        gauss_row.append(f"{'Gaussian':<18} ", style="dim")
+        gauss_row.append("░" * bar_width, style="dim")
+        gauss_row.append(f"  {non_mom_gaussian:>4}", style="dim")
         gauss_row.append(f"  ({gauss_pct:>4.1f}%)", style="dim")
+        gauss_row.append("  [disabled]", style="dim italic")
         console.print(gauss_row)
         
-        # φ-Gaussian (non-momentum)
+        # φ-Gaussian (non-momentum) - DISABLED
         phi_g_pct = non_mom_phi_gaussian / total_models * 100 if total_models > 0 else 0
-        phi_g_filled = int(phi_g_pct / 100 * bar_width)
-        phi_g_style = "cyan" if non_mom_phi_gaussian > 0 else "dim"
         phi_g_row = Text()
-        phi_g_row.append("      ◇ ", style=phi_g_style)
-        phi_g_row.append(f"{'φ-Gaussian':<18} ", style=phi_g_style)
-        phi_g_row.append("█" * phi_g_filled, style=phi_g_style)
-        phi_g_row.append("░" * (bar_width - phi_g_filled), style="dim")
-        phi_g_row.append(f"  {non_mom_phi_gaussian:>4}", style="bold white" if non_mom_phi_gaussian > 0 else "dim")
+        phi_g_row.append("      ◇ ", style="dim")
+        phi_g_row.append(f"{'φ-Gaussian':<18} ", style="dim")
+        phi_g_row.append("░" * bar_width, style="dim")
+        phi_g_row.append(f"  {non_mom_phi_gaussian:>4}", style="dim")
         phi_g_row.append(f"  ({phi_g_pct:>4.1f}%)", style="dim")
+        phi_g_row.append("  [disabled]", style="dim italic")
         console.print(phi_g_row)
         
-        # φ-Student-t (non-momentum)
+        # φ-Student-t (non-momentum) - ENABLED
         phi_st_pct = non_mom_phi_student_t / total_models * 100 if total_models > 0 else 0
         phi_st_filled = int(phi_st_pct / 100 * bar_width)
         phi_st_style = "magenta" if non_mom_phi_student_t > 0 else "dim"
