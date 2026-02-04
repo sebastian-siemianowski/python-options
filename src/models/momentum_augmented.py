@@ -329,6 +329,12 @@ class MomentumAugmentedDriftModel:
             mu_filtered, P_filtered = self._apply_momentum_augmentation(
                 mu_filtered, P_filtered
             )
+            
+            # Recompute log-likelihood with momentum-adjusted uncertainty
+            # The forecast variance is c * vol^2 + P, where P is now adjusted
+            ll = self._compute_adjusted_log_likelihood(
+                returns, mu_filtered, vol, P_filtered, c, nu, base_model
+            )
         
         # Store diagnostics
         self._diagnostics = {
@@ -348,6 +354,68 @@ class MomentumAugmentedDriftModel:
             })
         
         return mu_filtered, P_filtered, ll
+    
+    def _compute_adjusted_log_likelihood(
+        self,
+        returns: np.ndarray,
+        mu_filtered: np.ndarray,
+        vol: np.ndarray,
+        P_filtered: np.ndarray,
+        c: float,
+        nu: Optional[float],
+        base_model: str,
+    ) -> float:
+        """
+        Recompute log-likelihood with momentum-adjusted uncertainty.
+        
+        Args:
+            returns: Array of returns
+            mu_filtered: Filtered drift estimates (momentum-adjusted)
+            vol: Array of EWMA volatility
+            P_filtered: Filtered uncertainty (momentum-adjusted)
+            c: Observation noise scale
+            nu: Degrees of freedom (only for Student-t)
+            base_model: Model type
+            
+        Returns:
+            Adjusted log-likelihood
+        """
+        from scipy.special import gammaln
+        
+        n = len(returns)
+        log_likelihood = 0.0
+        
+        for t in range(n):
+            # Forecast variance includes both observation noise and state uncertainty
+            # The momentum adjustment affects P, which affects the forecast variance
+            vol_t = float(vol[t])
+            P_t = float(P_filtered[t])
+            forecast_var = c * (vol_t ** 2) + P_t
+            
+            if forecast_var < 1e-12:
+                forecast_var = 1e-12
+            
+            r_t = float(returns[t])
+            mu_t = float(mu_filtered[t])
+            innovation = r_t - mu_t
+            
+            if base_model in ('gaussian', 'phi_gaussian'):
+                # Gaussian log-likelihood
+                ll_t = -0.5 * (np.log(2 * np.pi * forecast_var) + (innovation ** 2) / forecast_var)
+            else:
+                # Student-t log-likelihood
+                if nu is None:
+                    nu = 8.0  # Default
+                scale = np.sqrt(forecast_var)
+                z = innovation / scale
+                log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
+                log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
+                ll_t = log_norm + log_kernel
+            
+            if np.isfinite(ll_t):
+                log_likelihood += ll_t
+        
+        return log_likelihood
     
     def _apply_momentum_augmentation(
         self,

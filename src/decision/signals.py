@@ -2284,12 +2284,18 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
 
     # Derive noise_model from best model name
     # Normalize to standard categories for downstream processing
+    # Handle momentum-augmented models by getting their base model type
+    base_model_for_noise = _get_base_model_name(best_model)
+    
     if _is_student_t(best_model):
-        noise_model = best_model  # Keep actual model name (e.g., phi_student_t_nu_6)
-    elif 'phi' in best_model:
+        noise_model = base_model_for_noise  # Use base model name (e.g., phi_student_t_nu_6)
+    elif 'phi' in base_model_for_noise:
         noise_model = 'kalman_phi_gaussian'
     else:
         noise_model = 'gaussian'
+    
+    # Track if momentum model was selected
+    is_momentum_model = _is_momentum_augmented(best_model)
 
     # Validate required params
     if q_val is None or not np.isfinite(q_val) or q_val <= 0:
