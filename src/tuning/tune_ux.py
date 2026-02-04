@@ -1912,6 +1912,11 @@ Examples:
                         else:
                             model_str = "Gaussian"
                         
+                        # Check for momentum augmentation
+                        is_momentum_model = global_result.get('is_momentum_model', False)
+                        if is_momentum_model or (model_type and '_momentum' in str(model_type)):
+                            model_str += "+Mom"
+                        
                         # Check for GMM availability
                         gmm_data = global_result.get('gmm')
                         has_gmm = (gmm_data is not None and 
