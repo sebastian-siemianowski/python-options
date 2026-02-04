@@ -996,6 +996,96 @@ def _update_exhaustion_state(
     return state["cum_log"], state["days_in_regime"]
 
 
+def compute_momentum_score(
+    px_series: pd.Series,
+    feats: Optional[Dict[str, pd.Series]] = None,
+) -> int:
+    """
+    Compute momentum score from -100 (strong negative) to +100 (strong positive).
+    
+    Uses multi-timeframe momentum with volatility normalization:
+    - Short-term (21d): Weight 0.4
+    - Medium-term (63d): Weight 0.35
+    - Long-term (126d): Weight 0.25
+    
+    Args:
+        px_series: Price series
+        feats: Optional features dict containing pre-computed momentum
+        
+    Returns:
+        Integer momentum score from -100 to +100
+    """
+    if px_series is None or len(px_series) < 30:
+        return 0
+    
+    try:
+        # Get momentum from features if available
+        if feats is not None:
+            mom21 = feats.get("mom21")
+            mom63 = feats.get("mom63")
+            mom126 = feats.get("mom126")
+            
+            def get_last(s):
+                if s is None:
+                    return None
+                if isinstance(s, pd.Series) and len(s) > 0:
+                    return float(s.iloc[-1])
+                return None
+            
+            m21 = get_last(mom21)
+            m63 = get_last(mom63)
+            m126 = get_last(mom126)
+        else:
+            m21 = m63 = m126 = None
+        
+        # Compute from price series if not in features
+        if m21 is None and len(px_series) >= 21:
+            ret21 = (px_series.iloc[-1] / px_series.iloc[-21]) - 1
+            vol21 = px_series.pct_change().iloc[-21:].std() * np.sqrt(252)
+            m21 = ret21 / max(vol21, 0.01) if vol21 > 0 else ret21 * 10
+        
+        if m63 is None and len(px_series) >= 63:
+            ret63 = (px_series.iloc[-1] / px_series.iloc[-63]) - 1
+            vol63 = px_series.pct_change().iloc[-63:].std() * np.sqrt(252)
+            m63 = ret63 / max(vol63, 0.01) if vol63 > 0 else ret63 * 10
+            
+        if m126 is None and len(px_series) >= 126:
+            ret126 = (px_series.iloc[-1] / px_series.iloc[-126]) - 1
+            vol126 = px_series.pct_change().iloc[-126:].std() * np.sqrt(252)
+            m126 = ret126 / max(vol126, 0.01) if vol126 > 0 else ret126 * 10
+        
+        # Compute weighted momentum score
+        weights = []
+        values = []
+        
+        if m21 is not None and np.isfinite(m21):
+            weights.append(0.40)
+            values.append(m21)
+        if m63 is not None and np.isfinite(m63):
+            weights.append(0.35)
+            values.append(m63)
+        if m126 is not None and np.isfinite(m126):
+            weights.append(0.25)
+            values.append(m126)
+        
+        if not values:
+            return 0
+        
+        # Normalize weights
+        total_weight = sum(weights)
+        weighted_mom = sum(w * v for w, v in zip(weights, values)) / total_weight
+        
+        # Scale to -100 to +100
+        # Typical vol-normalized momentum ranges from -3 to +3
+        # Scale factor: multiply by 33 to get approximately -100 to +100
+        scaled = weighted_mom * 33
+        
+        return int(np.clip(scaled, -100, 100))
+        
+    except Exception:
+        return 0
+
+
 def compute_directional_exhaustion_from_features(
     feats: Dict[str, pd.Series],
     lookback_short: int = 9,
@@ -8246,12 +8336,16 @@ def main() -> None:
             except Exception:
                 crash_risk_score = 0
         
+        # Compute momentum score for this asset (-100 to +100)
+        momentum_score = compute_momentum_score(px, feats)
+        
         summary_rows.append({
             "asset_label": asset_label,
             "horizon_signals": horizon_signals,
             "nearest_label": nearest_label,
             "sector": get_sector(canon),
             "crash_risk_score": crash_risk_score,
+            "momentum_score": momentum_score,
         })
 
         # Prepare JSON block

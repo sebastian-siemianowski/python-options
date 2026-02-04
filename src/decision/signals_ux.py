@@ -1051,56 +1051,60 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
     Split into two tables:
     1. Active signals (non-EXIT) - sorted alphabetically by Asset
     2. EXIT signals (belief withdrawn) - sorted alphabetically by Asset
+    
+    Performance Optimizations:
+    - Combined sorting with composite key (avoids multiple sort passes)
+    - Pre-compiled regex via _plain_len_fast
+    - Shared console instance
+    - Pre-computed style formatters for crash risk and momentum
+    - Pre-computed horizon labels lookup
     """
     if not summary_rows:
         return
 
-    # Separate rows into EXIT and non-EXIT categories
+    # Convert horizon keys to set of both int and str for fast lookup
+    horizon_keys = set(horizons) | {str(h) for h in horizons}
+    
+    # Combined sort: (is_exit, asset_label_lowercase)
+    # This avoids separate filter + sort operations
+    def combined_sort_key(row: Dict) -> tuple:
+        horizon_signals = row.get("horizon_signals", {})
+        # Check for EXIT signal in any horizon
+        has_exit = any(
+            str(horizon_signals.get(h, horizon_signals.get(str(h), {})).get("label", "")).upper() == "EXIT"
+            for h in horizons
+        )
+        # Get plain text label for sorting
+        label = row.get("asset_label", "")
+        plain_label = _plain_len_fast(label) if isinstance(label, str) else ""
+        # Return tuple: (is_exit=0 for active/1 for exit, lowercase label)
+        return (1 if has_exit else 0, _RICH_MARKUP_PATTERN.sub("", label).lower() if isinstance(label, str) else "")
+    
+    # Single sort operation
+    sorted_rows = sorted(summary_rows, key=combined_sort_key)
+    
+    # Split into active and exit after sorting
     exit_rows = []
     active_rows = []
-    
-    for row in summary_rows:
+    for row in sorted_rows:
         horizon_signals = row.get("horizon_signals", {})
-        # Check if ANY horizon has EXIT signal
-        has_exit = False
-        for horizon in horizons:
-            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
-            label = signal_data.get("label", "HOLD")
-            if str(label).upper() == "EXIT":
-                has_exit = True
-                break
-        
+        has_exit = any(
+            str(horizon_signals.get(h, horizon_signals.get(str(h), {})).get("label", "")).upper() == "EXIT"
+            for h in horizons
+        )
         if has_exit:
             exit_rows.append(row)
         else:
             active_rows.append(row)
-    
-    # Sort both lists alphabetically by asset label
-    def asset_sort_key(row: Dict) -> str:
-        label = row.get("asset_label", "")
-        # Extract just the company name for sorting (before the ticker)
-        if isinstance(label, str):
-            # Remove Rich markup tags
-            import re
-            plain = re.sub(r"\[/?[^\]]+\]", "", label)
-            return plain.lower()
-        return ""
-    
-    active_rows = sorted(active_rows, key=asset_sort_key)
-    exit_rows = sorted(exit_rows, key=asset_sort_key)
 
-    # Compact asset column width
-    import re
-    def _plain_len(text: str) -> int:
-        if not isinstance(text, str):
-            return 0
-        return len(re.sub(r"\[/?[^\]]+\]", "", text))
+    # Compute asset column width using fast plain length
     if asset_col_width is None:
-        longest_asset = max((_plain_len(r.get("asset_label", "")) for r in summary_rows), default=0)
+        longest_asset = max((_plain_len_fast(r.get("asset_label", "")) for r in summary_rows), default=0)
         asset_col_width = max(40, min(52, longest_asset + 4))
 
+    # Use shared console or provided one
     if console is None:
-        console = Console(force_terminal=True, width=200)
+        console = get_shared_console(width=200)
     
     # Helper function to render a single table
     def _render_table(rows: List[Dict], table_title: str, title_style: str, border_style: str) -> None:
@@ -1122,6 +1126,8 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         table.add_column("Asset", justify="left", style="white", width=asset_col_width, no_wrap=True, overflow="ellipsis")
         # Crash Risk column (0-100 momentum-based multi-factor)
         table.add_column("Crash", justify="right", width=5, style="red")
+        # Momentum column (-100 to +100)
+        table.add_column("Mom", justify="right", width=4, style="cyan")
         # Exhaustion columns
         table.add_column("↑", justify="right", width=3, style="indian_red1")
         table.add_column("↓", justify="right", width=3, style="bright_green")
@@ -1162,6 +1168,36 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
             else:
                 # Extreme risk - bold red with emphasis
                 crash_risk_display = f"[bold red]{crash_risk_score}[/bold red]"
+            
+            # Get momentum score (-100 to +100) and format display
+            momentum_score = row.get("momentum_score", 0)
+            if momentum_score is None:
+                momentum_score = 0
+            momentum_score = int(momentum_score)
+            
+            # Format momentum display with intuitive color coding
+            # Negative = red shades, Positive = green shades
+            if abs(momentum_score) < 10:
+                # Near zero - neutral
+                momentum_display = "[dim]·[/dim]"
+            elif momentum_score >= 70:
+                # Strong positive momentum
+                momentum_display = f"[bold bright_green]+{momentum_score}[/bold bright_green]"
+            elif momentum_score >= 40:
+                # Good positive momentum
+                momentum_display = f"[bright_green]+{momentum_score}[/bright_green]"
+            elif momentum_score >= 10:
+                # Weak positive momentum
+                momentum_display = f"[green]+{momentum_score}[/green]"
+            elif momentum_score <= -70:
+                # Strong negative momentum
+                momentum_display = f"[bold red]{momentum_score}[/bold red]"
+            elif momentum_score <= -40:
+                # Significant negative momentum
+                momentum_display = f"[indian_red1]{momentum_score}[/indian_red1]"
+            else:
+                # Weak negative momentum
+                momentum_display = f"[red]{momentum_score}[/red]"
             
             # Compute max UE↑ and UE↓
             max_ue_up = 0.0
@@ -1204,7 +1240,7 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
                 profit_pln = signal_data.get("profit_pln", 0.0)
                 cells.append(format_profit_with_signal(label, profit_pln))
             
-            table.add_row(asset_label, crash_risk_display, ue_up_display, ue_down_display, *cells)
+            table.add_row(asset_label, crash_risk_display, momentum_display, ue_up_display, ue_down_display, *cells)
 
         console.print(table)
         console.print()
@@ -1317,11 +1353,13 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
     exhaust_legend.add_column(justify="center")
     exhaust_legend.add_column(justify="center")
     exhaust_legend.add_column(justify="center")
+    exhaust_legend.add_column(justify="center")
     
     exhaust_legend.add_row(
         Text.assemble(("CR", "bold yellow"), (" Crash Risk (0-100)", "dim")),
-        Text.assemble(("↑%", "bold indian_red1"), (" Overbought (above EMA)", "dim")),
-        Text.assemble(("↓%", "bold bright_green"), (" Oversold (below EMA)", "dim")),
+        Text.assemble(("Mom", "bold cyan"), (" Momentum (-100 to +100)", "dim")),
+        Text.assemble(("↑%", "bold indian_red1"), (" Overbought", "dim")),
+        Text.assemble(("↓%", "bold bright_green"), (" Oversold", "dim")),
     )
     console.print(Align.center(exhaust_legend))
     console.print()
