@@ -13,11 +13,18 @@ This package provides calibration utilities for the tuning system:
     - adaptive_nu_refinement: ν refinement for Student-t models
     - gh_distribution: Generalized Hyperbolic distribution
     - tvvm_model: Time-varying volatility multiplier
+    - online_update: Online Bayesian Parameter Updates (SMC)
 
 ARCHITECTURAL HIERARCHY (Counter-Proposal v1.0):
     1. Diagnostics RECOMMEND (immutable, read-only)
     2. ControlPolicy DECIDES (explicit, auditable)
     3. Models OBEY (execute the decision)
+    
+ONLINE BAYESIAN PARAMETER UPDATES (February 2026):
+    Professor Liu Xiaoming (Score: 9/10):
+    "Markets evolve continuously—volatility clusters, correlations break down,
+     regime transitions occur mid-day. Online updating transforms the Kalman filter
+     from a static estimator to a living, adaptive system."
 """
 
 from calibration.model_selection import (
