@@ -1327,12 +1327,17 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
     console.print()
     console.print(Rule(style="dim"))
 
-    # Sort sectors alphabetically but put "Other" at the end
+    # Sort sectors: Indices & ETFs first, then alphabetically, "Other" at the end
     def sector_sort_key(item):
         sector_name = item[0]
+        # Indices & ETFs always first
+        if sector_name in ("Indices & ETFs", "Indices", "Indices / Broad ETFs"):
+            return ("0", sector_name)
+        # Other/Unspecified always last
         if sector_name in ("Other", "Unspecified"):
             return ("~", sector_name)
-        return ("", sector_name)
+        # Everything else alphabetically
+        return ("1", sector_name)
 
     sector_num = 0
     for sector, rows in sorted(buckets.items(), key=sector_sort_key):
