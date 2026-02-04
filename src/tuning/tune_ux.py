@@ -784,29 +784,30 @@ def render_tuning_summary(
     
     # Define STANDARD model columns that ALWAYS appear
     # Clear separation: Base models (non-momentum), Momentum models, Student-t variants, Augmentation layers
+    # Format: (model_key, header, color, min_width)
     STANDARD_MODEL_COLUMNS = [
         # Base models (non-momentum)
-        ("Gaussian", "G", "green", 3),
-        ("φ-Gaussian", "φG", "cyan", 3),
+        ("Gaussian", "G", "green", 4),
+        ("φ-Gaussian", "φG", "cyan", 4),
         # Momentum models  
-        ("Gaussian+Mom", "G+M", "bright_green", 4),
+        ("Gaussian+Mom", "G+M", "bright_green", 5),
         ("φ-Gaussian+Mom", "φG+M", "bright_cyan", 5),
         # Student-t by ν
-        ("φ-t(ν=4)", "t4", "magenta", 3),
-        ("φ-t(ν=6)", "t6", "magenta", 3),
-        ("φ-t(ν=8)", "t8", "magenta", 3),
-        ("φ-t(ν=12)", "t12", "magenta", 3),
-        ("φ-t(ν=20)", "t20", "magenta", 3),
+        ("φ-t(ν=4)", "t4", "magenta", 4),
+        ("φ-t(ν=6)", "t6", "magenta", 4),
+        ("φ-t(ν=8)", "t8", "magenta", 4),
+        ("φ-t(ν=12)", "t12", "magenta", 4),
+        ("φ-t(ν=20)", "t20", "magenta", 4),
         # Momentum Student-t
-        ("φ-Student-t+Mom", "t+M", "bright_magenta", 4),
-        # Other variants
-        ("φ-Skew-t", "Sk-t", "bright_cyan", 4),
-        ("φ-NIG", "NIG", "bright_yellow", 4),
+        ("φ-Student-t+Mom", "t+M", "bright_magenta", 5),
+        # Other variants (disabled - show only if enabled)
+        # ("φ-Skew-t", "Sk-t", "bright_cyan", 4),
+        # ("φ-NIG", "NIG", "bright_yellow", 4),
+        # ("GMM", "GMM", "bright_blue", 4),
         # Augmentation layers
-        ("GMM", "GMM", "bright_blue", 4),
-        ("Hansen-λ", "Hλ", "cyan", 3),
-        ("EVT", "EVT", "indian_red1", 4),
-        ("CST", "CST", "yellow", 4),
+        ("Hansen-λ", "Hλ", "cyan", 5),
+        ("EVT", "EVT", "indian_red1", 5),
+        ("CST", "CST", "yellow", 5),
     ]
     
     # Helper to normalize model keys for comparison
@@ -2200,7 +2201,7 @@ Examples:
     for asset, data in cache.items():
         # Get the global noise model for this asset
         global_data = data.get('global', data)
-        noise_model = global_data.get('noise_model', 'gaussian')
+        noise_model = global_data.get('noise_model', 'gaussian') or 'gaussian'
         nu_val = global_data.get('nu')
         phi_val = global_data.get('phi')
         gamma_val = global_data.get('gamma')
@@ -2215,27 +2216,32 @@ Examples:
         evt_data = global_data.get('evt')
         cst_data = global_data.get('contaminated_student_t')
         
+        # Detect momentum and strip suffix for base model determination
+        is_momentum_model = '_momentum' in noise_model
+        base_noise_model = noise_model.replace('_momentum', '')
+        
         # Determine base model category
         if mixture_selected and mixture_model:
             sigma_ratio = mixture_model.get('sigma_ratio', 0)
             model_key = f"K2-Mix(σ={sigma_ratio:.1f})"
-        elif noise_model.startswith('phi_nig_'):
-            # φ-NIG model
+        elif base_noise_model.startswith('phi_nig_'):
+            # φ-NIG model with alpha/beta parameters
             if nig_beta is not None and abs(nig_beta) > 0.01:
                 skew_dir = "L" if nig_beta < 0 else "R"
                 model_key = f"φ-NIG({skew_dir})"
             else:
                 model_key = "φ-NIG"
-        elif noise_model.startswith('phi_skew_t_nu_'):
-            # φ-Skew-t model
+        elif base_noise_model.startswith('phi_skew_t_nu_'):
+            # φ-Skew-t model with gamma parameter
+            gamma_val = global_data.get('gamma')
             if gamma_val is not None and abs(gamma_val - 1.0) > 0.01:
                 skew_dir = "L" if gamma_val < 1.0 else "R"
                 model_key = f"φ-Skew-t({skew_dir})"
             else:
                 model_key = "φ-Skew-t"
-        elif noise_model.startswith('phi_student_t_nu_') and nu_val is not None:
+        elif base_noise_model.startswith('phi_student_t_nu_') and nu_val is not None:
             model_key = f"φ-t(ν={int(nu_val)})"
-        elif noise_model == 'kalman_phi_gaussian' or phi_val is not None:
+        elif base_noise_model == 'kalman_phi_gaussian' or phi_val is not None:
             model_key = "φ-Gaussian"
         else:
             model_key = "Gaussian"
@@ -2264,35 +2270,25 @@ Examples:
                     if not is_fallback:
                         regime_fit_counts[r_int] += 1
                         
-                        # Count base model breakdown per regime
-                        if model_key not in regime_model_breakdown[r_int]:
-                            regime_model_breakdown[r_int][model_key] = 0
-                        regime_model_breakdown[r_int][model_key] += 1
-                        
-                        # Count momentum augmentation per regime
-                        # Momentum models have noise_model ending in '_momentum' (e.g., kalman_gaussian_momentum)
-                        is_mom = (global_data.get('is_momentum_model', False) or 
-                                  '_momentum' in str(noise_model) or 
-                                  '_momentum' in str(global_data.get('best_model', '')) or 
-                                  '+Mom' in str(global_data.get('best_model', '')))
-                        if is_mom:
-                            # Determine the correct momentum model key based on base model
+                        # Count model breakdown per regime
+                        # Use EITHER base model key OR momentum model key (not both) for cleaner accounting
+                        if is_momentum_model:
+                            # Use momentum model key instead of base model key
                             if model_key.startswith("φ-t(ν=") or "Student" in model_key:
-                                # φ-Student-t+Mom
-                                mom_model_key = "φ-Student-t+Mom"
-                            elif model_key == "φ-Gaussian" or "phi_gaussian" in str(noise_model).lower():
-                                # φ-Gaussian+Mom
-                                mom_model_key = "φ-Gaussian+Mom"
+                                effective_key = "φ-Student-t+Mom"
+                            elif model_key == "φ-Gaussian":
+                                effective_key = "φ-Gaussian+Mom"
                             elif model_key == "Gaussian":
-                                # Gaussian+Mom (no phi)
-                                mom_model_key = "Gaussian+Mom"
+                                effective_key = "Gaussian+Mom"
                             else:
-                                # Default to Gaussian+Mom if unclear
-                                mom_model_key = "Gaussian+Mom"
-                            
-                            if mom_model_key not in regime_model_breakdown[r_int]:
-                                regime_model_breakdown[r_int][mom_model_key] = 0
-                            regime_model_breakdown[r_int][mom_model_key] += 1
+                                effective_key = "Gaussian+Mom"
+                        else:
+                            # Use base model key for non-momentum models
+                            effective_key = model_key
+                        
+                        if effective_key not in regime_model_breakdown[r_int]:
+                            regime_model_breakdown[r_int][effective_key] = 0
+                        regime_model_breakdown[r_int][effective_key] += 1
                         
                         is_shrunk = params.get('shrinkage_applied', False) or params.get('regime_meta', {}).get('shrinkage_applied', False)
                         if is_shrunk:
