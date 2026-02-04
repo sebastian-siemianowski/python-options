@@ -53,7 +53,7 @@ try:
     from .numba_wrappers import (
         is_numba_available,
         run_phi_student_t_filter,
-        run_student_t_filter_batch as run_phi_student_t_filter_batch,
+        run_phi_student_t_filter_batch,
     )
     _USE_NUMBA = is_numba_available()
 except ImportError:

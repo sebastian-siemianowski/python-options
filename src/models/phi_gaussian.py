@@ -41,6 +41,19 @@ except ImportError:
     _CACHE_AVAILABLE = False
     FILTER_CACHE_ENABLED = False
 
+# Numba wrappers for JIT-compiled filters (optional performance enhancement)
+try:
+    from .numba_wrappers import (
+        is_numba_available,
+        run_phi_gaussian_filter,
+        run_gaussian_filter,
+    )
+    _USE_NUMBA = is_numba_available()
+except ImportError:
+    _USE_NUMBA = False
+    run_phi_gaussian_filter = None
+    run_gaussian_filter = None
+
 
 # =============================================================================
 # φ SHRINKAGE PRIOR CONSTANTS (self-contained, no external dependencies)
@@ -190,7 +203,23 @@ class PhiGaussianDriftModel:
 
     @staticmethod
     def filter(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:
-        """Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t."""
+        """
+        Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t.
+        
+        Uses Numba JIT-compiled kernel when available for 10-50x speedup.
+        Falls back to pure Python implementation if Numba is unavailable.
+        """
+        if _USE_NUMBA:
+            try:
+                return run_phi_gaussian_filter(returns, vol, q, c, phi)
+            except Exception:
+                # Graceful fallback on any Numba execution error
+                pass
+        return _kalman_filter_phi(returns, vol, q, c, phi)
+
+    @staticmethod
+    def filter_python(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Pure Python implementation (for testing and fallback)."""
         return _kalman_filter_phi(returns, vol, q, c, phi)
 
     @staticmethod
