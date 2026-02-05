@@ -2317,6 +2317,14 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
 
     global_data = raw_data['global']
     regime_data = raw_data.get('regime', {})
+    
+    # Guard against malformed cache where global_data is None
+    if not isinstance(global_data, dict):
+        import sys
+        print(f"\n⚠️  CACHE STRUCTURE ERROR for {asset_symbol}:", file=sys.stderr)
+        print(f"   'global' key exists but contains {type(global_data).__name__} instead of dict", file=sys.stderr)
+        print(f"   → Fix: Run 'make tune ARGS=\"--assets {asset_symbol}\"' to regenerate\n", file=sys.stderr)
+        return None
 
     # Validate BMA structure
     model_posterior = global_data.get('model_posterior', {})
