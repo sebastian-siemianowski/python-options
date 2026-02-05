@@ -2490,6 +2490,16 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         'tvvm_attempted': global_data.get('tvvm_attempted', False),
         'tvvm_selected': global_data.get('tvvm_selected', False),
 
+        # Elite Tuning diagnostics (v2.0 - February 2026)
+        # Stability-aware model selection with fragility penalties
+        'elite_tuning_enabled': raw_data.get('meta', {}).get('elite_tuning_enabled', False),
+        'elite_tuning_preset': raw_data.get('meta', {}).get('elite_tuning_preset'),
+        'elite_diagnostics': best_params.get('diagnostics', {}).get('elite_diagnostics', {}),
+        'elite_fragility_index': best_params.get('diagnostics', {}).get('elite_diagnostics', {}).get('fragility_index'),
+        'elite_is_ridge': best_params.get('diagnostics', {}).get('elite_diagnostics', {}).get('is_ridge_optimum', False),
+        'elite_basin_score': best_params.get('diagnostics', {}).get('elite_diagnostics', {}).get('basin_score'),
+        'elite_fragility_penalty': best_params.get('elite_fragility_penalty', 0.0),
+
         # Metadata
         'source': 'tuned_cache_bma',
         'timestamp': raw_data.get('timestamp') or raw_data.get('meta', {}).get('timestamp'),
@@ -3787,6 +3797,13 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 "entropy_lambda": tuned_params.get("entropy_lambda", 0.05) if tuned_params else 0.05,
                 "model_posterior": tuned_params.get("model_posterior", {}) if tuned_params else {},
                 "best_model": tuned_params.get("best_model") if tuned_params else best_model,
+                # Elite Tuning diagnostics (v2.0 - February 2026)
+                # Stability-aware model selection synced with BIC/Hyvarinen
+                "elite_tuning_enabled": tuned_params.get("elite_tuning_enabled", False) if tuned_params else False,
+                "elite_fragility_index": tuned_params.get("elite_fragility_index") if tuned_params else None,
+                "elite_is_ridge": tuned_params.get("elite_is_ridge", False) if tuned_params else False,
+                "elite_basin_score": tuned_params.get("elite_basin_score") if tuned_params else None,
+                "elite_fragility_penalty": tuned_params.get("elite_fragility_penalty", 0.0) if tuned_params else 0.0,
             }
         else:
             # Fallback: use EWMA blend if Kalman fails
@@ -6956,6 +6973,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             try:
                 trust = CalibratedTrust.from_dict(calibrated_trust_data)
                 drift_weight = compute_drift_weight(trust, min_weight=0.1, max_weight=1.0)
+                
+                # v2.0: Check if elite fragility penalty was included in cached trust
+                elite_penalty_from_cache = trust.audit_decomposition.get('elite_fragility_penalty', 0.0)
 
                 # Store for diagnostics
                 feats["trust_audit"] = {
@@ -6964,6 +6984,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                     "effective_trust": trust.effective_trust,
                     "drift_weight": drift_weight,
                     "source": "cached_trust",
+                    # v2.0: Elite fragility impact on signals
+                    "elite_fragility_penalty": elite_penalty_from_cache,
+                    "elite_diagnostics_used": elite_penalty_from_cache > 0,
                 }
             except Exception as e:
                 # Fallback to computing trust on-the-fly
@@ -6986,11 +7009,25 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                         # regime_probs is now a Dict[int, float] from bayesian_model_average_mc
                         soft_regime_probs_for_trust = regime_probs if isinstance(regime_probs, dict) else {1: 1.0}
 
+                        # Extract elite diagnostics for fragility penalty (v2.0 - February 2026)
+                        # This directly affects BUY/SELL/HOLD/EXIT signal strength
+                        elite_diag_for_trust = None
+                        if kalman_metadata:
+                            fragility_idx = kalman_metadata.get('elite_fragility_index')
+                            if fragility_idx is not None:
+                                elite_diag_for_trust = {
+                                    'fragility_index': fragility_idx,
+                                    'is_ridge_optimum': kalman_metadata.get('elite_is_ridge', False),
+                                    'basin_score': kalman_metadata.get('elite_basin_score', 1.0),
+                                    'drift_ratio': kalman_metadata.get('elite_drift_ratio', 0.0),
+                                }
+
                         try:
                             trust = compute_calibrated_trust(
                                 raw_pit_values=calibrated_pit,
                                 regime_probs=soft_regime_probs_for_trust,
                                 config=TrustConfig(),
+                                elite_diagnostics=elite_diag_for_trust,  # v2.0: affects signals
                             )
                             drift_weight = compute_drift_weight(trust, min_weight=0.1, max_weight=1.0)
 
@@ -7001,6 +7038,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                                 "drift_weight": drift_weight,
                                 "source": "computed_on_fly_soft_regime",
                                 "soft_regime_probs": soft_regime_probs_for_trust,
+                                # v2.0: Elite fragility impact on signals
+                                "elite_fragility_penalty": trust.audit_decomposition.get('elite_fragility_penalty', 0.0),
+                                "elite_diagnostics_used": elite_diag_for_trust is not None,
                             }
                         except Exception:
                             pass  # Fall through to legacy logic

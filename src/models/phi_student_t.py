@@ -74,6 +74,178 @@ PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
 
 
+# =============================================================================
+# ELITE TUNING CONFIGURATION (v2.0 - February 2026)
+# =============================================================================
+# Plateau-optimal parameter selection with:
+# - Directional curvature awareness (φ-q coupling more dangerous)
+# - Ridge vs basin detection
+# - Drift vs noise decomposition in coherence
+# =============================================================================
+
+ELITE_TUNING_ENABLED = True  # Master switch for elite tuning diagnostics
+CURVATURE_PENALTY_WEIGHT = 0.1
+COHERENCE_PENALTY_WEIGHT = 0.05
+HESSIAN_EPSILON = 1e-4
+MAX_CONDITION_NUMBER = 1e6
+
+
+def _compute_curvature_penalty(
+    objective_fn,
+    optimal_params: np.ndarray,
+    bounds: list,
+    epsilon: float = 1e-4,
+    max_condition_number: float = 1e6
+) -> Tuple[float, float, Dict]:
+    """
+    Compute curvature penalty from local Hessian approximation.
+    
+    Returns:
+        - penalty: Soft penalty based on condition number
+        - condition_number: κ(H)
+        - diagnostics: Dict with eigenvalues and curvature details
+    """
+    n = len(optimal_params)
+    H = np.zeros((n, n))
+    f_x = objective_fn(optimal_params)
+    
+    # Compute Hessian via finite differences
+    for i in range(n):
+        x_plus = optimal_params.copy()
+        x_minus = optimal_params.copy()
+        
+        step = epsilon
+        if bounds:
+            lo, hi = bounds[i]
+            step = min(epsilon, (hi - optimal_params[i]) / 2, (optimal_params[i] - lo) / 2)
+            step = max(step, 1e-8)
+        
+        x_plus[i] += step
+        x_minus[i] -= step
+        
+        f_plus = objective_fn(x_plus)
+        f_minus = objective_fn(x_minus)
+        
+        H[i, i] = (f_plus - 2 * f_x + f_minus) / (step ** 2)
+    
+    # Off-diagonal elements
+    for i in range(n):
+        for j in range(i + 1, n):
+            x_pp = optimal_params.copy()
+            x_pm = optimal_params.copy()
+            x_mp = optimal_params.copy()
+            x_mm = optimal_params.copy()
+            
+            step_i = step_j = epsilon
+            if bounds:
+                lo_i, hi_i = bounds[i]
+                lo_j, hi_j = bounds[j]
+                step_i = min(epsilon, (hi_i - optimal_params[i]) / 2, (optimal_params[i] - lo_i) / 2)
+                step_j = min(epsilon, (hi_j - optimal_params[j]) / 2, (optimal_params[j] - lo_j) / 2)
+                step_i = max(step_i, 1e-8)
+                step_j = max(step_j, 1e-8)
+            
+            x_pp[i] += step_i; x_pp[j] += step_j
+            x_pm[i] += step_i; x_pm[j] -= step_j
+            x_mp[i] -= step_i; x_mp[j] += step_j
+            x_mm[i] -= step_i; x_mm[j] -= step_j
+            
+            f_pp = objective_fn(x_pp)
+            f_pm = objective_fn(x_pm)
+            f_mp = objective_fn(x_mp)
+            f_mm = objective_fn(x_mm)
+            
+            H[i, j] = (f_pp - f_pm - f_mp + f_mm) / (4 * step_i * step_j)
+            H[j, i] = H[i, j]
+    
+    # Compute condition number
+    try:
+        eigenvalues = np.linalg.eigvalsh(H)
+        eigenvalues = np.real(eigenvalues)
+        eigenvalues = eigenvalues[np.isfinite(eigenvalues)]
+        
+        if len(eigenvalues) == 0:
+            return 0.0, 1.0, {'error': 'no_valid_eigenvalues'}
+        
+        abs_eig = np.abs(eigenvalues)
+        max_eig = np.max(abs_eig)
+        min_eig = np.max([np.min(abs_eig[abs_eig > 1e-12]), 1e-12])
+        condition_number = max_eig / min_eig
+        
+        if condition_number > max_condition_number:
+            penalty = np.log(condition_number / max_condition_number)
+        else:
+            penalty = 0.0
+        
+        return penalty, condition_number, {
+            'eigenvalues': eigenvalues.tolist(),
+            'max_eigenvalue': float(max_eig),
+            'min_eigenvalue': float(min_eig),
+            'penalty': float(penalty)
+        }
+    except np.linalg.LinAlgError:
+        return 0.0, float('inf'), {'error': 'linalg_error'}
+
+
+def _compute_fragility_index(
+    condition_number: float,
+    coherence_variance: np.ndarray,
+    plateau_score: float = 0.5,
+    basin_score: float = 1.0,
+    drift_ratio: float = 0.0
+) -> Tuple[float, Dict[str, float]]:
+    """
+    Compute unified fragility index (PURE PARAMETER FRAGILITY v2.0).
+    
+    Components:
+        1. Curvature fragility: Sharp optima are fragile
+        2. Coherence fragility: Inconsistent parameters are fragile
+        3. Plateau fragility: Narrow plateaus are fragile
+        4. Basin fragility: Ridges are more fragile than basins
+        5. Drift fragility: Drifting parameters are unstable
+    """
+    components = {}
+    
+    # 1. Curvature fragility
+    if condition_number > 0 and np.isfinite(condition_number):
+        curvature_fragility = min(np.log10(max(condition_number, 1)) / 10, 1.0)
+    else:
+        curvature_fragility = 0.5
+    components['curvature'] = curvature_fragility
+    
+    # 2. Coherence fragility
+    if len(coherence_variance) > 0:
+        coherence_fragility = min(np.mean(coherence_variance) * 10, 1.0)
+    else:
+        coherence_fragility = 0.5
+    components['coherence'] = coherence_fragility
+    
+    # 3. Plateau fragility
+    plateau_fragility = 1.0 - min(plateau_score, 1.0)
+    components['plateau'] = plateau_fragility
+    
+    # 4. Basin fragility (v2.0)
+    basin_fragility = 1.0 - min(basin_score, 1.0)
+    components['basin'] = basin_fragility
+    
+    # 5. Drift fragility (v2.0)
+    drift_fragility = min(drift_ratio * 2, 1.0)
+    components['drift'] = drift_fragility
+    
+    # Weighted combination (v2.0 weights)
+    weights = {
+        'curvature': 0.25,
+        'coherence': 0.15,
+        'plateau': 0.20,
+        'basin': 0.25,
+        'drift': 0.15,
+    }
+    
+    fragility_index = sum(weights[k] * components[k] for k in weights)
+    
+    return fragility_index, components
+
+
 def _phi_shrinkage_log_prior(
     phi_r: float,
     phi_global: float,
@@ -917,6 +1089,47 @@ class PhiStudentTDriftModel:
             phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
             ll_opt = -best_neg
 
+        # =====================================================================
+        # ELITE TUNING: Curvature and Fragility Analysis (February 2026)
+        # =====================================================================
+        elite_diagnostics = {}
+        if ELITE_TUNING_ENABLED:
+            optimal_params = np.array([lq_opt, lc_opt, phi_opt])
+            param_ranges = np.array([log_q_max - log_q_min, log_c_max - log_c_min, phi_max - phi_min])
+            
+            # Compute curvature penalty (prefer flat regions)
+            try:
+                curvature_penalty, condition_number, curv_diag = _compute_curvature_penalty(
+                    neg_pen_ll, optimal_params, bounds, HESSIAN_EPSILON, MAX_CONDITION_NUMBER
+                )
+                elite_diagnostics['curvature'] = curv_diag
+                elite_diagnostics['condition_number'] = float(condition_number)
+            except Exception:
+                curvature_penalty = 0.0
+                condition_number = 1.0
+                elite_diagnostics['curvature'] = {'error': 'computation_failed'}
+            
+            # Compute coherence (fold-to-fold stability)
+            # Note: Would need fold_optimal_params from per-fold optimization
+            # For now, we provide placeholder indicating single-optimum result
+            elite_diagnostics['coherence'] = {
+                'coherence_penalty': 0.0,
+                'n_folds_with_separate_optima': 0,
+                'note': 'coherence computed at tune.py level with per-fold optima'
+            }
+            
+            # Compute fragility index
+            try:
+                fragility_index, frag_components = _compute_fragility_index(
+                    condition_number, np.array([]), 0.0
+                )
+                elite_diagnostics['fragility_index'] = float(fragility_index)
+                elite_diagnostics['fragility_components'] = frag_components
+                elite_diagnostics['fragility_warning'] = fragility_index > 0.5
+            except Exception:
+                elite_diagnostics['fragility_index'] = 0.5
+                elite_diagnostics['fragility_warning'] = False
+        
         n_obs_approx = len(returns)
         prior_scale_diag = 1.0 / max(n_obs_approx, 100)
         phi_lambda_eff_diag = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale_diag
@@ -943,6 +1156,8 @@ class PhiStudentTDriftModel:
             'rv_ratio': float(rv_ratio),
             'n_folds': int(len(fold_splits)),
             'optimization_successful': best_res is not None and (best_res.success if best_res else False),
+            'elite_tuning_enabled': ELITE_TUNING_ENABLED,
+            'elite_diagnostics': elite_diagnostics if ELITE_TUNING_ENABLED else None,
             **phi_prior_diag,
         }
 

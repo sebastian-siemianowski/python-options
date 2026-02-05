@@ -135,6 +135,164 @@ def _human_number(n: int) -> str:
     return str(n)
 
 
+def render_elite_tuning_summary(
+    cache: Dict[str, Dict],
+    console: Console = None
+) -> None:
+    """
+    Render Elite Tuning diagnostics summary (v2.0).
+    
+    This shows aggregate stability metrics from plateau-optimal parameter selection:
+    - Average fragility index across assets
+    - Distribution of Hessian condition numbers
+    - Ridge vs basin detection results
+    - Drift vs noise decomposition
+    - Assets with fragility warnings
+    """
+    if console is None:
+        console = create_tuning_console()
+    
+    if not cache:
+        return
+    
+    # Collect elite diagnostics from all assets
+    fragility_indices = []
+    condition_numbers = []
+    fragility_warnings = []
+    ridge_warnings = []
+    drift_dominated = []
+    basin_scores = []
+    elite_tuning_count = 0
+    
+    for asset, raw_data in cache.items():
+        data = raw_data.get('global', raw_data) if 'global' in raw_data else raw_data
+        
+        # Check for elite diagnostics in the result
+        diags = data.get('diagnostics', {})
+        if isinstance(diags, dict):
+            elite = diags.get('elite_diagnostics', {})
+            if elite:
+                elite_tuning_count += 1
+                
+                if 'fragility_index' in elite:
+                    fragility_indices.append(elite['fragility_index'])
+                    if elite.get('fragility_warning', False):
+                        fragility_warnings.append(asset)
+                
+                if 'condition_number' in elite:
+                    cn = elite['condition_number']
+                    if cn is not None and np.isfinite(cn):
+                        condition_numbers.append(cn)
+                
+                # v2.0: Ridge detection
+                if elite.get('is_ridge_optimum', False):
+                    ridge_warnings.append(asset)
+                
+                if 'basin_score' in elite:
+                    bs = elite['basin_score']
+                    if np.isfinite(bs):
+                        basin_scores.append(bs)
+                
+                # v2.0: Drift analysis
+                drift_comp = elite.get('drift_component', [])
+                noise_comp = elite.get('noise_component', [])
+                if drift_comp and noise_comp:
+                    total_var = sum(drift_comp) + sum(noise_comp)
+                    if total_var > 1e-12:
+                        drift_ratio = sum(drift_comp) / total_var
+                        if drift_ratio > 0.6:  # Drift-dominated
+                            drift_dominated.append(asset)
+    
+    if elite_tuning_count == 0:
+        return
+    
+    # Calculate statistics
+    avg_fragility = np.mean(fragility_indices) if fragility_indices else 0.0
+    median_condition = np.median(condition_numbers) if condition_numbers else 1.0
+    avg_basin_score = np.mean(basin_scores) if basin_scores else 1.0
+    pct_low_fragility = sum(1 for f in fragility_indices if f < 0.3) / len(fragility_indices) * 100 if fragility_indices else 0
+    pct_high_fragility = len(fragility_warnings) / len(fragility_indices) * 100 if fragility_indices else 0
+    pct_ridges = len(ridge_warnings) / elite_tuning_count * 100 if elite_tuning_count > 0 else 0
+    pct_drift = len(drift_dominated) / elite_tuning_count * 100 if elite_tuning_count > 0 else 0
+    
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    section = Text()
+    section.append("  🎯  ", style="bold bright_cyan")
+    section.append("ELITE TUNING DIAGNOSTICS", style="bold bright_white")
+    section.append(f"  (v2.0 Plateau-Optimal Selection)", style="dim")
+    console.print(section)
+    console.print()
+    
+    # Fragility summary
+    fragility_text = Text()
+    fragility_text.append("    Fragility Index (avg): ", style="dim")
+    frag_color = "bright_green" if avg_fragility < 0.3 else "yellow" if avg_fragility < 0.5 else "indian_red1"
+    fragility_text.append(f"{avg_fragility:.3f}", style=f"bold {frag_color}")
+    console.print(fragility_text)
+    
+    # Condition number summary
+    cond_text = Text()
+    cond_text.append("    Hessian Condition (median): ", style="dim")
+    cond_color = "bright_green" if median_condition < 1e4 else "yellow" if median_condition < 1e6 else "indian_red1"
+    cond_text.append(f"{median_condition:.1e}", style=f"bold {cond_color}")
+    console.print(cond_text)
+    
+    # v2.0: Basin score (ridge detection)
+    basin_text = Text()
+    basin_text.append("    Basin Score (avg): ", style="dim")
+    basin_color = "bright_green" if avg_basin_score > 0.5 else "yellow" if avg_basin_score > 0.3 else "indian_red1"
+    basin_text.append(f"{avg_basin_score:.3f}", style=f"bold {basin_color}")
+    if pct_ridges > 0:
+        basin_text.append(f"  ({pct_ridges:.0f}% ridge optima)", style="dim italic")
+    console.print(basin_text)
+    
+    # Stability breakdown
+    stability_text = Text()
+    stability_text.append("    Parameter Stability: ", style="dim")
+    stability_text.append(f"{pct_low_fragility:.0f}%", style="bold bright_green")
+    stability_text.append(" stable  ·  ", style="dim")
+    stability_text.append(f"{100 - pct_low_fragility - pct_high_fragility:.0f}%", style="bold yellow")
+    stability_text.append(" moderate  ·  ", style="dim")
+    stability_text.append(f"{pct_high_fragility:.0f}%", style="bold indian_red1")
+    stability_text.append(" fragile", style="dim")
+    console.print(stability_text)
+    
+    # v2.0: Drift analysis
+    if pct_drift > 0:
+        drift_text = Text()
+        drift_text.append("    Drift Analysis: ", style="dim")
+        drift_text.append(f"{pct_drift:.0f}%", style="bold yellow")
+        drift_text.append(" drift-dominated (⚠ persistent parameter drift)", style="dim italic")
+        console.print(drift_text)
+    
+    # Fragility warnings
+    if fragility_warnings:
+        console.print()
+        warn_text = Text()
+        warn_text.append("    ⚠ ", style="yellow")
+        warn_text.append(f"{len(fragility_warnings)} high fragility: ", style="dim")
+        displayed = fragility_warnings[:5]
+        warn_text.append(", ".join(displayed), style="yellow")
+        if len(fragility_warnings) > 5:
+            warn_text.append(f" + {len(fragility_warnings) - 5} more", style="dim")
+        console.print(warn_text)
+    
+    # Ridge warnings (v2.0)
+    if ridge_warnings:
+        ridge_text = Text()
+        ridge_text.append("    ⚠ ", style="indian_red1")
+        ridge_text.append(f"{len(ridge_warnings)} ridge optima: ", style="dim")
+        displayed = ridge_warnings[:5]
+        ridge_text.append(", ".join(displayed), style="indian_red1")
+        if len(ridge_warnings) > 5:
+            ridge_text.append(f" + {len(ridge_warnings) - 5} more", style="dim")
+        console.print(ridge_text)
+    
+    console.print()
+
+
 def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: float, console: Console = None, momentum_enabled: bool = True) -> None:
     if console is None:
         console = create_tuning_console()
@@ -2556,6 +2714,9 @@ Examples:
         momentum_total_count=momentum_count,
         console=console,
     )
+
+    # Render Elite Tuning diagnostics summary (plateau-optimal parameter selection)
+    render_elite_tuning_summary(cache, console=console)
 
     # Render PDDE escalation summary if available
     if PDDE_AVAILABLE and cache:

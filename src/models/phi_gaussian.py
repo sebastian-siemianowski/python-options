@@ -22,7 +22,7 @@ This prevents unit-root instability and small-sample hallucinations.
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List, Callable
 
 import numpy as np
 from scipy.optimize import minimize
@@ -53,6 +53,28 @@ except ImportError:
     _USE_NUMBA = False
     run_phi_gaussian_filter = None
     run_gaussian_filter = None
+
+
+# =============================================================================
+# ELITE TUNING CONFIGURATION (February 2026)
+# =============================================================================
+# Import from phi_student_t to maintain consistency
+# =============================================================================
+try:
+    from .phi_student_t import (
+        ELITE_TUNING_ENABLED,
+        CURVATURE_PENALTY_WEIGHT,
+        COHERENCE_PENALTY_WEIGHT,
+        HESSIAN_EPSILON,
+        MAX_CONDITION_NUMBER,
+        _compute_curvature_penalty,
+        _compute_coherence_penalty,
+        _compute_fragility_index,
+    )
+    _ELITE_TUNING_AVAILABLE = True
+except ImportError:
+    _ELITE_TUNING_AVAILABLE = False
+    ELITE_TUNING_ENABLED = False
 
 
 # =============================================================================
@@ -498,6 +520,36 @@ class PhiGaussianDriftModel:
             phi_optimal = grid_best_phi
             ll_optimal = -best_neg_ll
 
+        # =====================================================================
+        # ELITE TUNING: Curvature and Fragility Analysis (February 2026)
+        # =====================================================================
+        elite_diagnostics = {}
+        if _ELITE_TUNING_AVAILABLE and ELITE_TUNING_ENABLED:
+            optimal_params = np.array([np.log10(q_optimal), np.log10(c_optimal), phi_optimal])
+            
+            try:
+                curvature_penalty, condition_number, curv_diag = _compute_curvature_penalty(
+                    negative_penalized_ll_cv_phi, optimal_params, bounds, 
+                    HESSIAN_EPSILON, MAX_CONDITION_NUMBER
+                )
+                elite_diagnostics['curvature'] = curv_diag
+                elite_diagnostics['condition_number'] = float(condition_number)
+            except Exception:
+                curvature_penalty = 0.0
+                condition_number = 1.0
+                elite_diagnostics['curvature'] = {'error': 'computation_failed'}
+            
+            try:
+                fragility_index, frag_components = _compute_fragility_index(
+                    condition_number, np.array([]), 0.0
+                )
+                elite_diagnostics['fragility_index'] = float(fragility_index)
+                elite_diagnostics['fragility_components'] = frag_components
+                elite_diagnostics['fragility_warning'] = fragility_index > 0.5
+            except Exception:
+                elite_diagnostics['fragility_index'] = 0.5
+                elite_diagnostics['fragility_warning'] = False
+
         # Compute φ shrinkage prior diagnostics for auditability
         n_obs_approx = len(returns)
         prior_scale_diag = 1.0 / max(n_obs_approx, 100)
@@ -522,6 +574,8 @@ class PhiGaussianDriftModel:
             'rv_ratio': float(rv_ratio),
             'n_folds': int(len(fold_splits)),
             'optimization_successful': best_result is not None and (best_result.success if best_result else False),
+            'elite_tuning_enabled': _ELITE_TUNING_AVAILABLE and ELITE_TUNING_ENABLED,
+            'elite_diagnostics': elite_diagnostics if (_ELITE_TUNING_AVAILABLE and ELITE_TUNING_ENABLED) else None,
             # φ shrinkage prior diagnostics (auditability)
             **phi_prior_diag,
         }

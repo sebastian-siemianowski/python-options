@@ -8,6 +8,7 @@ Separates presentation concerns from core signal computation logic for better mo
 
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional, Any
 
 import numpy as np
@@ -25,6 +26,16 @@ from rich.padding import Padding
 from rich.rule import Rule
 from rich.align import Align
 from contextlib import contextmanager
+
+# Pre-compiled regex for stripping Rich markup (performance optimization)
+_RICH_MARKUP_PATTERN = re.compile(r"\[/?[^\]]+\]")
+
+
+def _plain_len_fast(text: str) -> int:
+    """Fast plain text length calculation with pre-compiled regex."""
+    if not isinstance(text, str):
+        return 0
+    return len(_RICH_MARKUP_PATTERN.sub("", text))
 
 
 def convert_to_float(x) -> float:
