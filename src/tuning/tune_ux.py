@@ -550,9 +550,11 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
             display_name = level_name
             if level_name == 'φ-Student-t (ν-refined)':
                 display_name = 'φ-Student-t (adaptive ν)'
+            elif level_name == 'φ-Student-t+Mom (ν-refined)':
+                display_name = 'φ-Student-t+Mom (adaptive ν)'
             
             if is_disabled:
-                row.append(f"{display_name:<26}", style="dim")
+                row.append(f"{display_name:<28}", style="dim")
                 row.append("░" * bar_width, style="dim")
                 row.append(f"  {count:>4}  ({pct:>5.1f}%)", style="dim")
                 # Add PIT attempt stats for disabled levels too
@@ -560,18 +562,18 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
                     row.append(f"  [{successes}/{attempts} {rate:.0f}%]", style="dim italic")
                 row.append("  [disabled]", style="dim italic")
             else:
-                row.append(f"{display_name:<26}", style=color if count > 0 else "dim")
+                row.append(f"{display_name:<28}", style=color if count > 0 else "dim")
                 row.append("█" * filled, style=color)
                 row.append("░" * (bar_width - filled), style="dim")
                 row.append(f"  {count:>4}  ({pct:>5.1f}%)", style="white" if count > 0 else "dim")
                 
                 # Add PIT improvement stats if attempts were made
-                if attempts > 0:
+                if attempts > 0 and rate_label:
                     rate_str = f"  [{successes}/{attempts} {rate:.0f}% {rate_label}]"
                     row.append(rate_str, style="dim italic")
                 elif count > 0:
                     # Add appropriate annotation based on model type
-                    if 'Momentum' in level_name:
+                    if 'Momentum' in level_name or '+Mom' in level_name:
                         row.append("  ↑ momentum augmented", style="dim italic")
                     elif 'Student-t' in level_name and 'base' not in level_name.lower():
                         row.append("  ↑ heavier tails", style="dim italic")
