@@ -393,6 +393,11 @@ class MomentumAugmentedDriftModel:
         """
         Recompute log-likelihood with momentum-adjusted uncertainty.
         
+        Performance optimizations (February 2026):
+        - Pre-compute constants outside loop
+        - Vectorize where possible
+        - Avoid redundant gammaln calls
+        
         Args:
             returns: Array of returns
             mu_filtered: Filtered drift estimates (momentum-adjusted)
@@ -408,39 +413,47 @@ class MomentumAugmentedDriftModel:
         from scipy.special import gammaln
         
         n = len(returns)
-        log_likelihood = 0.0
         
-        for t in range(n):
-            # Forecast variance includes both observation noise and state uncertainty
-            # The momentum adjustment affects P, which affects the forecast variance
-            vol_t = float(vol[t])
-            P_t = float(P_filtered[t])
-            forecast_var = c * (vol_t ** 2) + P_t
-            
-            if forecast_var < 1e-12:
-                forecast_var = 1e-12
-            
-            r_t = float(returns[t])
-            mu_t = float(mu_filtered[t])
-            innovation = r_t - mu_t
-            
-            if base_model in ('gaussian', 'phi_gaussian'):
-                # Gaussian log-likelihood
-                ll_t = -0.5 * (np.log(2 * np.pi * forecast_var) + (innovation ** 2) / forecast_var)
-            else:
-                # Student-t log-likelihood
-                if nu is None:
-                    nu = 8.0  # Default
-                scale = np.sqrt(forecast_var)
-                z = innovation / scale
-                log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
-                log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
-                ll_t = log_norm + log_kernel
-            
-            if np.isfinite(ll_t):
-                log_likelihood += ll_t
+        # Convert to contiguous arrays
+        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        mu_filtered = np.ascontiguousarray(mu_filtered.flatten(), dtype=np.float64)
+        P_filtered = np.ascontiguousarray(P_filtered.flatten(), dtype=np.float64)
         
-        return log_likelihood
+        # Pre-compute R array
+        R = c * (vol * vol)
+        
+        # Compute forecast variance array
+        forecast_var = R + P_filtered
+        forecast_var = np.maximum(forecast_var, 1e-12)
+        
+        # Compute innovations
+        innovations = returns - mu_filtered
+        
+        if base_model in ('gaussian', 'phi_gaussian'):
+            # Vectorized Gaussian log-likelihood
+            log_2pi = np.log(2 * np.pi)
+            ll_array = -0.5 * (log_2pi + np.log(forecast_var) + (innovations * innovations) / forecast_var)
+            ll_array = np.where(np.isfinite(ll_array), ll_array, 0.0)
+            return float(np.sum(ll_array))
+        else:
+            # Student-t log-likelihood
+            if nu is None:
+                nu = 8.0  # Default
+            
+            # Pre-compute constants (avoid gammaln in loop)
+            log_norm_const = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi)
+            neg_half_nu_plus_1 = -((nu + 1.0) / 2.0)
+            inv_nu = 1.0 / nu
+            
+            # Vectorized Student-t log-likelihood
+            scale = np.sqrt(forecast_var)
+            z = innovations / scale
+            log_scale = np.log(scale)
+            log_kernel = neg_half_nu_plus_1 * np.log(1.0 + (z * z) * inv_nu)
+            ll_array = log_norm_const - log_scale + log_kernel
+            ll_array = np.where(np.isfinite(ll_array), ll_array, 0.0)
+            return float(np.sum(ll_array))
     
     def _apply_momentum_augmentation(
         self,

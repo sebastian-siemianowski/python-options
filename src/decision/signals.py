@@ -347,6 +347,21 @@ try:
 except ImportError:
     PIT_PENALTY_AVAILABLE = False
 
+# Filter Result Cache — Deterministic Kalman Filter Reuse (February 2026)
+# Enables caching of filter results during signal generation to avoid
+# redundant computations when same parameters are used across horizons.
+try:
+    from models.filter_cache import (
+        get_filter_cache,
+        get_cache_stats,
+        reset_cache_stats,
+        clear_filter_cache,
+        FILTER_CACHE_ENABLED,
+    )
+    FILTER_CACHE_AVAILABLE = True
+except ImportError:
+    FILTER_CACHE_AVAILABLE = False
+
 # Context manager to suppress noisy HMM convergence messages
 import contextlib
 import io
@@ -979,6 +994,96 @@ def _update_exhaustion_state(
 
     state_by_h[horizon] = state
     return state["cum_log"], state["days_in_regime"]
+
+
+def compute_momentum_score(
+    px_series: pd.Series,
+    feats: Optional[Dict[str, pd.Series]] = None,
+) -> int:
+    """
+    Compute momentum score from -100 (strong negative) to +100 (strong positive).
+    
+    Uses multi-timeframe momentum with volatility normalization:
+    - Short-term (21d): Weight 0.4
+    - Medium-term (63d): Weight 0.35
+    - Long-term (126d): Weight 0.25
+    
+    Args:
+        px_series: Price series
+        feats: Optional features dict containing pre-computed momentum
+        
+    Returns:
+        Integer momentum score from -100 to +100
+    """
+    if px_series is None or len(px_series) < 30:
+        return 0
+    
+    try:
+        # Get momentum from features if available
+        if feats is not None:
+            mom21 = feats.get("mom21")
+            mom63 = feats.get("mom63")
+            mom126 = feats.get("mom126")
+            
+            def get_last(s):
+                if s is None:
+                    return None
+                if isinstance(s, pd.Series) and len(s) > 0:
+                    return float(s.iloc[-1])
+                return None
+            
+            m21 = get_last(mom21)
+            m63 = get_last(mom63)
+            m126 = get_last(mom126)
+        else:
+            m21 = m63 = m126 = None
+        
+        # Compute from price series if not in features
+        if m21 is None and len(px_series) >= 21:
+            ret21 = (px_series.iloc[-1] / px_series.iloc[-21]) - 1
+            vol21 = px_series.pct_change().iloc[-21:].std() * np.sqrt(252)
+            m21 = ret21 / max(vol21, 0.01) if vol21 > 0 else ret21 * 10
+        
+        if m63 is None and len(px_series) >= 63:
+            ret63 = (px_series.iloc[-1] / px_series.iloc[-63]) - 1
+            vol63 = px_series.pct_change().iloc[-63:].std() * np.sqrt(252)
+            m63 = ret63 / max(vol63, 0.01) if vol63 > 0 else ret63 * 10
+            
+        if m126 is None and len(px_series) >= 126:
+            ret126 = (px_series.iloc[-1] / px_series.iloc[-126]) - 1
+            vol126 = px_series.pct_change().iloc[-126:].std() * np.sqrt(252)
+            m126 = ret126 / max(vol126, 0.01) if vol126 > 0 else ret126 * 10
+        
+        # Compute weighted momentum score
+        weights = []
+        values = []
+        
+        if m21 is not None and np.isfinite(m21):
+            weights.append(0.40)
+            values.append(m21)
+        if m63 is not None and np.isfinite(m63):
+            weights.append(0.35)
+            values.append(m63)
+        if m126 is not None and np.isfinite(m126):
+            weights.append(0.25)
+            values.append(m126)
+        
+        if not values:
+            return 0
+        
+        # Normalize weights
+        total_weight = sum(weights)
+        weighted_mom = sum(w * v for w, v in zip(weights, values)) / total_weight
+        
+        # Scale to -100 to +100
+        # Typical vol-normalized momentum ranges from -3 to +3
+        # Scale factor: multiply by 33 to get approximately -100 to +100
+        scaled = weighted_mom * 33
+        
+        return int(np.clip(scaled, -100, 100))
+        
+    except Exception:
+        return 0
 
 
 def compute_directional_exhaustion_from_features(
@@ -2212,6 +2317,14 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
 
     global_data = raw_data['global']
     regime_data = raw_data.get('regime', {})
+    
+    # Guard against malformed cache where global_data is None
+    if not isinstance(global_data, dict):
+        import sys
+        print(f"\n⚠️  CACHE STRUCTURE ERROR for {asset_symbol}:", file=sys.stderr)
+        print(f"   'global' key exists but contains {type(global_data).__name__} instead of dict", file=sys.stderr)
+        print(f"   → Fix: Run 'make tune ARGS=\"--assets {asset_symbol}\"' to regenerate\n", file=sys.stderr)
+        return None
 
     # Validate BMA structure
     model_posterior = global_data.get('model_posterior', {})
@@ -2275,6 +2388,10 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         return None
     
     best_params = models[best_model]
+    
+    # Ensure best_params is a valid dict (guard against malformed cache data)
+    if not isinstance(best_params, dict):
+        return None
 
     # Extract params from best model
     q_val = best_params.get('q')
@@ -2384,6 +2501,16 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         # TVVM (Time-Varying Volatility Multiplier)
         'tvvm_attempted': global_data.get('tvvm_attempted', False),
         'tvvm_selected': global_data.get('tvvm_selected', False),
+
+        # Elite Tuning diagnostics (v2.0 - February 2026)
+        # Stability-aware model selection with fragility penalties
+        'elite_tuning_enabled': raw_data.get('meta', {}).get('elite_tuning_enabled', False),
+        'elite_tuning_preset': raw_data.get('meta', {}).get('elite_tuning_preset'),
+        'elite_diagnostics': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}) if best_params else {},
+        'elite_fragility_index': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}).get('fragility_index') if best_params else None,
+        'elite_is_ridge': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}).get('is_ridge_optimum', False) if best_params else False,
+        'elite_basin_score': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}).get('basin_score') if best_params else None,
+        'elite_fragility_penalty': best_params.get('elite_fragility_penalty', 0.0) if best_params else 0.0,
 
         # Metadata
         'source': 'tuned_cache_bma',
@@ -3682,6 +3809,13 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
                 "entropy_lambda": tuned_params.get("entropy_lambda", 0.05) if tuned_params else 0.05,
                 "model_posterior": tuned_params.get("model_posterior", {}) if tuned_params else {},
                 "best_model": tuned_params.get("best_model") if tuned_params else best_model,
+                # Elite Tuning diagnostics (v2.0 - February 2026)
+                # Stability-aware model selection synced with BIC/Hyvarinen
+                "elite_tuning_enabled": tuned_params.get("elite_tuning_enabled", False) if tuned_params else False,
+                "elite_fragility_index": tuned_params.get("elite_fragility_index") if tuned_params else None,
+                "elite_is_ridge": tuned_params.get("elite_is_ridge", False) if tuned_params else False,
+                "elite_basin_score": tuned_params.get("elite_basin_score") if tuned_params else None,
+                "elite_fragility_penalty": tuned_params.get("elite_fragility_penalty", 0.0) if tuned_params else 0.0,
             }
         else:
             # Fallback: use EWMA blend if Kalman fails
@@ -6851,6 +6985,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             try:
                 trust = CalibratedTrust.from_dict(calibrated_trust_data)
                 drift_weight = compute_drift_weight(trust, min_weight=0.1, max_weight=1.0)
+                
+                # v2.0: Check if elite fragility penalty was included in cached trust
+                elite_penalty_from_cache = trust.audit_decomposition.get('elite_fragility_penalty', 0.0)
 
                 # Store for diagnostics
                 feats["trust_audit"] = {
@@ -6859,6 +6996,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                     "effective_trust": trust.effective_trust,
                     "drift_weight": drift_weight,
                     "source": "cached_trust",
+                    # v2.0: Elite fragility impact on signals
+                    "elite_fragility_penalty": elite_penalty_from_cache,
+                    "elite_diagnostics_used": elite_penalty_from_cache > 0,
                 }
             except Exception as e:
                 # Fallback to computing trust on-the-fly
@@ -6881,11 +7021,25 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                         # regime_probs is now a Dict[int, float] from bayesian_model_average_mc
                         soft_regime_probs_for_trust = regime_probs if isinstance(regime_probs, dict) else {1: 1.0}
 
+                        # Extract elite diagnostics for fragility penalty (v2.0 - February 2026)
+                        # This directly affects BUY/SELL/HOLD/EXIT signal strength
+                        elite_diag_for_trust = None
+                        if kalman_metadata:
+                            fragility_idx = kalman_metadata.get('elite_fragility_index')
+                            if fragility_idx is not None:
+                                elite_diag_for_trust = {
+                                    'fragility_index': fragility_idx,
+                                    'is_ridge_optimum': kalman_metadata.get('elite_is_ridge', False),
+                                    'basin_score': kalman_metadata.get('elite_basin_score', 1.0),
+                                    'drift_ratio': kalman_metadata.get('elite_drift_ratio', 0.0),
+                                }
+
                         try:
                             trust = compute_calibrated_trust(
                                 raw_pit_values=calibrated_pit,
                                 regime_probs=soft_regime_probs_for_trust,
                                 config=TrustConfig(),
+                                elite_diagnostics=elite_diag_for_trust,  # v2.0: affects signals
                             )
                             drift_weight = compute_drift_weight(trust, min_weight=0.1, max_weight=1.0)
 
@@ -6896,6 +7050,9 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                                 "drift_weight": drift_weight,
                                 "source": "computed_on_fly_soft_regime",
                                 "soft_regime_probs": soft_regime_probs_for_trust,
+                                # v2.0: Elite fragility impact on signals
+                                "elite_fragility_penalty": trust.audit_decomposition.get('elite_fragility_penalty', 0.0),
+                                "elite_diagnostics_used": elite_diag_for_trust is not None,
                             }
                         except Exception:
                             pass  # Fall through to legacy logic
@@ -8231,12 +8388,16 @@ def main() -> None:
             except Exception:
                 crash_risk_score = 0
         
+        # Compute momentum score for this asset (-100 to +100)
+        momentum_score = compute_momentum_score(px, feats)
+        
         summary_rows.append({
             "asset_label": asset_label,
             "horizon_signals": horizon_signals,
             "nearest_label": nearest_label,
             "sector": get_sector(canon),
             "crash_risk_score": crash_risk_score,
+            "momentum_score": momentum_score,
         })
 
         # Prepare JSON block

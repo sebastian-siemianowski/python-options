@@ -8,6 +8,7 @@ Separates presentation concerns from core signal computation logic for better mo
 
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional, Any
 
 import numpy as np
@@ -25,6 +26,16 @@ from rich.padding import Padding
 from rich.rule import Rule
 from rich.align import Align
 from contextlib import contextmanager
+
+# Pre-compiled regex for stripping Rich markup (performance optimization)
+_RICH_MARKUP_PATTERN = re.compile(r"\[/?[^\]]+\]")
+
+
+def _plain_len_fast(text: str) -> int:
+    """Fast plain text length calculation with pre-compiled regex."""
+    if not isinstance(text, str):
+        return 0
+    return len(_RICH_MARKUP_PATTERN.sub("", text))
 
 
 def convert_to_float(x) -> float:
@@ -1051,56 +1062,60 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
     Split into two tables:
     1. Active signals (non-EXIT) - sorted alphabetically by Asset
     2. EXIT signals (belief withdrawn) - sorted alphabetically by Asset
+    
+    Performance Optimizations:
+    - Combined sorting with composite key (avoids multiple sort passes)
+    - Pre-compiled regex via _plain_len_fast
+    - Shared console instance
+    - Pre-computed style formatters for crash risk and momentum
+    - Pre-computed horizon labels lookup
     """
     if not summary_rows:
         return
 
-    # Separate rows into EXIT and non-EXIT categories
+    # Convert horizon keys to set of both int and str for fast lookup
+    horizon_keys = set(horizons) | {str(h) for h in horizons}
+    
+    # Combined sort: (is_exit, asset_label_lowercase)
+    # This avoids separate filter + sort operations
+    def combined_sort_key(row: Dict) -> tuple:
+        horizon_signals = row.get("horizon_signals", {})
+        # Check for EXIT signal in any horizon
+        has_exit = any(
+            str(horizon_signals.get(h, horizon_signals.get(str(h), {})).get("label", "")).upper() == "EXIT"
+            for h in horizons
+        )
+        # Get plain text label for sorting
+        label = row.get("asset_label", "")
+        plain_label = _plain_len_fast(label) if isinstance(label, str) else ""
+        # Return tuple: (is_exit=0 for active/1 for exit, lowercase label)
+        return (1 if has_exit else 0, _RICH_MARKUP_PATTERN.sub("", label).lower() if isinstance(label, str) else "")
+    
+    # Single sort operation
+    sorted_rows = sorted(summary_rows, key=combined_sort_key)
+    
+    # Split into active and exit after sorting
     exit_rows = []
     active_rows = []
-    
-    for row in summary_rows:
+    for row in sorted_rows:
         horizon_signals = row.get("horizon_signals", {})
-        # Check if ANY horizon has EXIT signal
-        has_exit = False
-        for horizon in horizons:
-            signal_data = horizon_signals.get(horizon) or horizon_signals.get(str(horizon)) or {}
-            label = signal_data.get("label", "HOLD")
-            if str(label).upper() == "EXIT":
-                has_exit = True
-                break
-        
+        has_exit = any(
+            str(horizon_signals.get(h, horizon_signals.get(str(h), {})).get("label", "")).upper() == "EXIT"
+            for h in horizons
+        )
         if has_exit:
             exit_rows.append(row)
         else:
             active_rows.append(row)
-    
-    # Sort both lists alphabetically by asset label
-    def asset_sort_key(row: Dict) -> str:
-        label = row.get("asset_label", "")
-        # Extract just the company name for sorting (before the ticker)
-        if isinstance(label, str):
-            # Remove Rich markup tags
-            import re
-            plain = re.sub(r"\[/?[^\]]+\]", "", label)
-            return plain.lower()
-        return ""
-    
-    active_rows = sorted(active_rows, key=asset_sort_key)
-    exit_rows = sorted(exit_rows, key=asset_sort_key)
 
-    # Compact asset column width
-    import re
-    def _plain_len(text: str) -> int:
-        if not isinstance(text, str):
-            return 0
-        return len(re.sub(r"\[/?[^\]]+\]", "", text))
+    # Compute asset column width using fast plain length
     if asset_col_width is None:
-        longest_asset = max((_plain_len(r.get("asset_label", "")) for r in summary_rows), default=0)
+        longest_asset = max((_plain_len_fast(r.get("asset_label", "")) for r in summary_rows), default=0)
         asset_col_width = max(40, min(52, longest_asset + 4))
 
+    # Use shared console or provided one
     if console is None:
-        console = Console(force_terminal=True, width=200)
+        console = get_shared_console(width=200)
     
     # Helper function to render a single table
     def _render_table(rows: List[Dict], table_title: str, title_style: str, border_style: str) -> None:
@@ -1122,6 +1137,8 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
         table.add_column("Asset", justify="left", style="white", width=asset_col_width, no_wrap=True, overflow="ellipsis")
         # Crash Risk column (0-100 momentum-based multi-factor)
         table.add_column("Crash", justify="right", width=5, style="red")
+        # Momentum column (-100 to +100)
+        table.add_column("Mom", justify="right", width=4, style="cyan")
         # Exhaustion columns
         table.add_column("↑", justify="right", width=3, style="indian_red1")
         table.add_column("↓", justify="right", width=3, style="bright_green")
@@ -1162,6 +1179,36 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
             else:
                 # Extreme risk - bold red with emphasis
                 crash_risk_display = f"[bold red]{crash_risk_score}[/bold red]"
+            
+            # Get momentum score (-100 to +100) and format display
+            momentum_score = row.get("momentum_score", 0)
+            if momentum_score is None:
+                momentum_score = 0
+            momentum_score = int(momentum_score)
+            
+            # Format momentum display with intuitive color coding
+            # Negative = red shades, Positive = green shades
+            if abs(momentum_score) < 10:
+                # Near zero - neutral
+                momentum_display = "[dim]·[/dim]"
+            elif momentum_score >= 70:
+                # Strong positive momentum
+                momentum_display = f"[bold bright_green]+{momentum_score}[/bold bright_green]"
+            elif momentum_score >= 40:
+                # Good positive momentum
+                momentum_display = f"[bright_green]+{momentum_score}[/bright_green]"
+            elif momentum_score >= 10:
+                # Weak positive momentum
+                momentum_display = f"[green]+{momentum_score}[/green]"
+            elif momentum_score <= -70:
+                # Strong negative momentum
+                momentum_display = f"[bold red]{momentum_score}[/bold red]"
+            elif momentum_score <= -40:
+                # Significant negative momentum
+                momentum_display = f"[indian_red1]{momentum_score}[/indian_red1]"
+            else:
+                # Weak negative momentum
+                momentum_display = f"[red]{momentum_score}[/red]"
             
             # Compute max UE↑ and UE↓
             max_ue_up = 0.0
@@ -1204,7 +1251,7 @@ def render_multi_asset_summary_table(summary_rows: List[Dict], horizons: List[in
                 profit_pln = signal_data.get("profit_pln", 0.0)
                 cells.append(format_profit_with_signal(label, profit_pln))
             
-            table.add_row(asset_label, crash_risk_display, ue_up_display, ue_down_display, *cells)
+            table.add_row(asset_label, crash_risk_display, momentum_display, ue_up_display, ue_down_display, *cells)
 
         console.print(table)
         console.print()
@@ -1317,22 +1364,29 @@ def render_sector_summary_tables(summary_rows: List[Dict], horizons: List[int]) 
     exhaust_legend.add_column(justify="center")
     exhaust_legend.add_column(justify="center")
     exhaust_legend.add_column(justify="center")
+    exhaust_legend.add_column(justify="center")
     
     exhaust_legend.add_row(
         Text.assemble(("CR", "bold yellow"), (" Crash Risk (0-100)", "dim")),
-        Text.assemble(("↑%", "bold indian_red1"), (" Overbought (above EMA)", "dim")),
-        Text.assemble(("↓%", "bold bright_green"), (" Oversold (below EMA)", "dim")),
+        Text.assemble(("Mom", "bold cyan"), (" Momentum (-100 to +100)", "dim")),
+        Text.assemble(("↑%", "bold indian_red1"), (" Overbought", "dim")),
+        Text.assemble(("↓%", "bold bright_green"), (" Oversold", "dim")),
     )
     console.print(Align.center(exhaust_legend))
     console.print()
     console.print(Rule(style="dim"))
 
-    # Sort sectors alphabetically but put "Other" at the end
+    # Sort sectors: Indices & ETFs first, then alphabetically, "Other" at the end
     def sector_sort_key(item):
         sector_name = item[0]
+        # Indices & ETFs always first
+        if sector_name in ("Indices & ETFs", "Indices", "Indices / Broad ETFs"):
+            return ("0", sector_name)
+        # Other/Unspecified always last
         if sector_name in ("Other", "Unspecified"):
             return ("~", sector_name)
-        return ("", sector_name)
+        # Everything else alphabetically
+        return ("1", sector_name)
 
     sector_num = 0
     for sector, rows in sorted(buckets.items(), key=sector_sort_key):
@@ -1418,6 +1472,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
     # Thresholds for "high conviction"
     BUY_THRESHOLD = 0.62   # P(r>0) >= 62% for strong buy
     SELL_THRESHOLD = 0.38  # P(r>0) <= 38% for strong sell
+    MIN_EXPECTED_MOVE = 0.02  # Minimum 2% expected move to be actionable
     
     # Collect strong signals
     strong_buys = []
@@ -1440,11 +1495,12 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
             if label.upper() == "EXIT":
                 continue
             
-            # Calculate strength score for sorting
+            # Calculate strength score for display
             distance_from_neutral = abs(p_up - 0.5)
             strength = distance_from_neutral + abs(exp_ret) * 0.5
             
-            if p_up >= BUY_THRESHOLD:
+            # Strong buy: P >= 62% AND expected return >= +2%
+            if p_up >= BUY_THRESHOLD and exp_ret >= MIN_EXPECTED_MOVE:
                 strong_buys.append({
                     "asset": asset_label,
                     "sector": sector,
@@ -1454,7 +1510,8 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
                     "profit_pln": profit_pln,
                     "strength": strength,
                 })
-            elif p_up <= SELL_THRESHOLD:
+            # Strong sell: P <= 38% AND expected return <= -2%
+            elif p_up <= SELL_THRESHOLD and exp_ret <= -MIN_EXPECTED_MOVE:
                 strong_sells.append({
                     "asset": asset_label,
                     "sector": sector,
@@ -1465,9 +1522,9 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
                     "strength": strength,
                 })
     
-    # Sort by strength descending
-    strong_buys.sort(key=lambda x: x["strength"], reverse=True)
-    strong_sells.sort(key=lambda x: x["strength"], reverse=True)
+    # Sort by expected return first (highest for buys, most negative for sells), then by probability
+    strong_buys.sort(key=lambda x: (-x["exp_ret"], -x["p_up"]))
+    strong_sells.sort(key=lambda x: (x["exp_ret"], x["p_up"]))
     
     # Limit to top 20 each
     strong_buys = strong_buys[:20]
@@ -1528,8 +1585,8 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
         buy_table.add_column("Asset", justify="left", width=50, no_wrap=True)
         buy_table.add_column("Sector", justify="left", width=30, no_wrap=True, style="dim")
         buy_table.add_column("Horizon", justify="center", width=10)
+        buy_table.add_column("E[return] ↓", justify="right", width=12)  # Primary sort
         buy_table.add_column("P(r>0)", justify="right", width=8)
-        buy_table.add_column("E[return]", justify="right", width=10)
         buy_table.add_column("Profit", justify="right", width=10)
         buy_table.add_column("Strength", justify="left", width=12)
         
@@ -1555,8 +1612,8 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
                 sig["asset"],
                 sig["sector"][:28] if sig["sector"] else "",
                 horizon_label,
-                f"[bold bright_green]{p_pct:.1f}%[/]",
-                f"[bright_green]{exp_ret_pct:+.2f}%[/]",
+                f"[bold bright_green]{exp_ret_pct:+.2f}%[/]",  # E[return] first (sorted)
+                f"[bright_green]{p_pct:.1f}%[/]",              # P(r>0) second
                 f"[bright_green]{profit_str}[/]",
                 f"[green]{bar_str}[/]",
             )
@@ -1588,8 +1645,8 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
         sell_table.add_column("Asset", justify="left", width=50, no_wrap=True)
         sell_table.add_column("Sector", justify="left", width=30, no_wrap=True, style="dim")
         sell_table.add_column("Horizon", justify="center", width=10)
+        sell_table.add_column("E[return] ↓", justify="right", width=12)  # Primary sort (most negative first)
         sell_table.add_column("P(r>0)", justify="right", width=8)
-        sell_table.add_column("E[return]", justify="right", width=10)
         sell_table.add_column("Profit", justify="right", width=10)
         sell_table.add_column("Strength", justify="left", width=12)
         
@@ -1615,8 +1672,8 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
                 sig["asset"],
                 sig["sector"][:28] if sig["sector"] else "",
                 horizon_label,
-                f"[bold indian_red1]{p_pct:.1f}%[/]",
-                f"[indian_red1]{exp_ret_pct:+.2f}%[/]",
+                f"[bold indian_red1]{exp_ret_pct:+.2f}%[/]",  # E[return] first (sorted, most negative)
+                f"[indian_red1]{p_pct:.1f}%[/]",              # P(r>0) second
                 f"[indian_red1]{profit_str}[/]",
                 f"[red]{bar_str}[/]",
             )
@@ -1632,12 +1689,12 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
     footer = Text(justify="center")
     footer.append("Thresholds: ", style="dim")
     footer.append("BUY ", style="bright_green")
-    footer.append(f"P ≥ {BUY_THRESHOLD*100:.0f}%", style="dim")
+    footer.append(f"P ≥ {BUY_THRESHOLD*100:.0f}%, E ≥ +{MIN_EXPECTED_MOVE*100:.0f}%", style="dim")
     footer.append("  ·  ", style="dim")
     footer.append("SELL ", style="indian_red1")
-    footer.append(f"P ≤ {SELL_THRESHOLD*100:.0f}%", style="dim")
+    footer.append(f"P ≤ {SELL_THRESHOLD*100:.0f}%, E ≤ -{MIN_EXPECTED_MOVE*100:.0f}%", style="dim")
     footer.append("  ·  ", style="dim")
-    footer.append("Sorted by signal strength", style="dim italic")
+    footer.append("Sorted by E[return], then probability", style="dim italic")
     console.print(Align.center(footer))
     console.print()
 

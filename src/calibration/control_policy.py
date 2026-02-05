@@ -240,17 +240,35 @@ class ControlPolicy:
     })
     
     # Model trust penalties (additive)
+    # Includes momentum-augmented variants (February 2026)
     trust_penalty_by_model: Dict[str, float] = field(default_factory=lambda: {
+        # Base Gaussian family
         'gaussian': 0.00,
         'kalman_gaussian': 0.00,
         'phi_gaussian': 0.02,
         'kalman_phi_gaussian': 0.02,
+        # Momentum-augmented Gaussian (same base penalty + 0.01 momentum premium)
+        'gaussian_momentum': 0.01,
+        'phi_gaussian_momentum': 0.03,
+        'momentum_gaussian': 0.01,
+        'momentum_phi_gaussian': 0.03,
+        # Base Student-t family
         'phi_student_t': 0.05,
         'phi_student_t_nu_4': 0.08,
         'phi_student_t_nu_6': 0.06,
         'phi_student_t_nu_8': 0.05,
         'phi_student_t_nu_12': 0.04,
         'phi_student_t_nu_20': 0.03,
+        # Momentum-augmented Student-t (base penalty + 0.01 momentum premium)
+        'phi_student_t_momentum': 0.06,
+        'phi_student_t_momentum_nu_4': 0.09,
+        'phi_student_t_momentum_nu_6': 0.07,
+        'phi_student_t_momentum_nu_8': 0.06,
+        'phi_student_t_momentum_nu_12': 0.05,
+        'phi_student_t_momentum_nu_20': 0.04,
+        'momentum_phi_student_t': 0.06,
+        'momentum_student_t': 0.06,
+        # Advanced distributions
         'phi_skew_t': 0.10,
         'phi_nig': 0.12,
         'mixture': 0.15,
@@ -371,9 +389,24 @@ class ControlPolicy:
         # Model complexity penalty
         model_penalty = self.trust_penalty_by_model.get(model_type, 0.10)
         
-        # Check for Student-t variants
+        # Check for Student-t variants (including momentum)
         if model_penalty == 0.10 and 'student_t' in model_type.lower():
-            model_penalty = 0.05
+            if 'momentum' in model_type.lower() or '+mom' in model_type.lower():
+                model_penalty = 0.06  # Momentum Student-t
+            else:
+                model_penalty = 0.05  # Base Student-t
+        
+        # Check for momentum Gaussian variants
+        if model_penalty == 0.10 and 'gaussian' in model_type.lower():
+            if 'momentum' in model_type.lower() or '+mom' in model_type.lower():
+                if 'phi' in model_type.lower():
+                    model_penalty = 0.03  # Momentum φ-Gaussian
+                else:
+                    model_penalty = 0.01  # Momentum Gaussian
+            elif 'phi' in model_type.lower():
+                model_penalty = 0.02  # Base φ-Gaussian
+            else:
+                model_penalty = 0.00  # Base Gaussian
         
         # Regime penalty
         regime_penalty = self.trust_penalty_by_regime.get(regime_id, 0.02)

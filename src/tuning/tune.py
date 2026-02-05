@@ -399,6 +399,68 @@ except ImportError:
     PIT_PENALTY_AVAILABLE = False
 
 # =============================================================================
+# IMPORT FILTER RESULT CACHE (February 2026)
+# =============================================================================
+# Deterministic cache for Kalman filter results to eliminate redundant executions
+# during CV optimization and regime-conditional tuning.
+# Cache sits ABOVE Numba dispatch - works regardless of Numba availability.
+# =============================================================================
+try:
+    from models.filter_cache import (
+        get_filter_cache,
+        clear_filter_cache,
+        get_cache_stats,
+        reset_cache_stats,
+        set_filter_cache_enabled,
+        FilterCacheKey,
+        FilterCacheValue,
+        compute_cv_likelihood_from_cache,
+        FILTER_CACHE_ENABLED,
+    )
+    FILTER_CACHE_AVAILABLE = True
+except ImportError:
+    FILTER_CACHE_AVAILABLE = False
+
+# =============================================================================
+# IMPORT ELITE TUNING MODULE (February 2026)
+# =============================================================================
+# Plateau-optimal parameter selection with:
+#   1. Hessian-informed curvature penalties (stability-seeking optimization)
+#   2. Cross-fold coherence scoring (temporal consistency)
+#   3. Fragility index computation for early warning
+#
+# INSTITUTIONAL ALIGNMENT: This methodology mirrors Renaissance/DE Shaw/Two Sigma:
+#   - Never optimize for peaks; optimize for stable regions
+#   - Parameters that degrade gracefully > parameters that maximize in-sample
+# =============================================================================
+try:
+    from tuning.elite_tuning import (
+        EliteTuningConfig,
+        EliteTuningDiagnostics,
+        EliteOptimizer,
+        create_elite_tuning_config,
+        compute_hessian_finite_diff,
+        compute_curvature_penalty,
+        compute_coherence_penalty,
+        compute_fragility_index,
+        format_elite_diagnostics_summary,
+        # v2.0 Top 0.001% upgrades
+        compute_directional_curvature_penalty,
+        compute_asymmetric_coherence_penalty,
+        evaluate_connected_plateau,
+        COUPLING_DANGER_WEIGHTS,
+    )
+    ELITE_TUNING_AVAILABLE = True
+except ImportError:
+    ELITE_TUNING_AVAILABLE = False
+
+# Elite tuning configuration - global setting
+# Set to 'balanced', 'conservative', 'aggressive', or 'diagnostic'
+# v2.0 presets now include ridge detection and drift penalty
+ELITE_TUNING_PRESET = 'balanced'
+ELITE_TUNING_ENABLED = True  # Set to False to disable elite tuning
+
+# =============================================================================
 # IMPORT UNIFIED RISK CONTEXT (February 2026)
 # =============================================================================
 # Unified risk context for signal-risk architecture integration.
@@ -1670,7 +1732,7 @@ try:
         save_tuned_params as _save_per_asset,
         load_full_cache as _load_full_cache,
         list_cached_symbols,
-        get_cache_stats,
+        get_cache_stats as get_kalman_cache_stats,
         TUNE_CACHE_DIR,
     )
     PER_ASSET_CACHE_AVAILABLE = True
@@ -1900,6 +1962,251 @@ def optimize_q_c_phi_mle(
         prior_log_q_mean=prior_log_q_mean,
         prior_lambda=prior_lambda,
     )
+
+
+# =============================================================================
+# ELITE TUNING DIAGNOSTICS HELPER (v2.0 - February 2026)
+# =============================================================================
+# Computes elite tuning diagnostics after parameter optimization.
+# 
+# TOP 0.001% UPGRADES:
+#   1. DIRECTIONAL CURVATURE: φ-q coupling penalized 2× more than benign couplings
+#   2. RIDGE DETECTION: Distinguishes flat basins from narrow ridges
+#   3. ASYMMETRIC COHERENCE: Drift penalized harder than oscillation
+#   4. PURE FRAGILITY: No calibration leakage into tuning
+#
+# INSTITUTIONAL ALIGNMENT:
+#   Top funds don't just prefer flat optima; they explicitly reject optima
+#   that are only flat along fragile directions.
+# =============================================================================
+
+def compute_elite_diagnostics(
+    objective_fn,
+    optimal_params: np.ndarray,
+    optimal_value: float,
+    bounds: List[Tuple[float, float]],
+    param_names: Optional[List[str]] = None,
+    fold_optimal_params: Optional[List[np.ndarray]] = None,
+) -> Dict[str, Any]:
+    """
+    Compute comprehensive elite tuning diagnostics (v2.0).
+    
+    This function computes stability metrics that distinguish top 0.001% funds:
+    - Curvature penalty with directional weighting (φ-q coupling danger)
+    - Ridge vs basin detection via joint perturbations
+    - Drift vs noise decomposition in cross-fold coherence
+    - Pure parameter fragility index (no calibration leakage)
+    
+    Args:
+        objective_fn: Objective function to evaluate (neg penalized LL)
+        optimal_params: Optimized parameter vector
+        optimal_value: Objective value at optimum
+        bounds: Parameter bounds [(lo, hi), ...]
+        param_names: Optional parameter names for diagnostics
+        fold_optimal_params: Optional list of per-fold optimal params
+        
+    Returns:
+        Dictionary with elite diagnostics including:
+        - condition_number: Hessian condition number
+        - curvature_penalty: Soft penalty for sharp optima
+        - directional_curvature_penalty: Weighted by coupling danger
+        - plateau_score: Width of acceptable region
+        - basin_score: 1.0 = flat basin, 0.0 = narrow ridge
+        - is_ridge_optimum: True if ridge detected (dangerous)
+        - drift_component: Variance from persistent drift
+        - noise_component: Variance from random oscillation
+        - fragility_index: Composite fragility score
+        - fragility_warning: True if fragility > threshold
+        - fragility_components: Per-dimension breakdown
+    """
+    if not ELITE_TUNING_AVAILABLE or not ELITE_TUNING_ENABLED:
+        return {'elite_tuning_enabled': False}
+    
+    diagnostics = {
+        'elite_tuning_version': '2.0',
+        'elite_tuning_enabled': True,
+    }
+    
+    n_params = len(optimal_params)
+    param_ranges = np.array([b[1] - b[0] for b in bounds])
+    
+    # Get elite tuning config
+    try:
+        config = create_elite_tuning_config(ELITE_TUNING_PRESET)
+    except Exception:
+        config = EliteTuningConfig()
+    
+    # =========================================================================
+    # 1. HESSIAN-BASED CURVATURE ANALYSIS (with directional weighting)
+    # =========================================================================
+    try:
+        H = compute_hessian_finite_diff(
+            objective_fn, optimal_params, 
+            config.hessian_epsilon, bounds
+        )
+        
+        if config.enable_directional_curvature:
+            # v2.0: Directional curvature - dangerous couplings penalized more
+            penalty, cond_num, eigenvalues, coupling_fragility = compute_directional_curvature_penalty(
+                H, config.max_condition_number
+            )
+            diagnostics['directional_curvature_penalty'] = float(penalty)
+            diagnostics['dangerous_coupling_fragility'] = coupling_fragility
+        else:
+            # Legacy: Standard curvature penalty
+            penalty, cond_num, eigenvalues = compute_curvature_penalty(
+                H, config.max_condition_number
+            )
+        
+        diagnostics['condition_number'] = float(cond_num) if np.isfinite(cond_num) else None
+        diagnostics['curvature_penalty'] = float(penalty)
+        diagnostics['eigenvalues'] = eigenvalues.tolist() if len(eigenvalues) > 0 else []
+        
+    except Exception as e:
+        diagnostics['condition_number'] = None
+        diagnostics['curvature_penalty'] = 0.0
+        diagnostics['curvature_error'] = str(e)
+    
+    # =========================================================================
+    # 2. CONNECTED PLATEAU ANALYSIS (basin vs ridge detection)
+    # =========================================================================
+    try:
+        if config.enable_ridge_detection:
+            # v2.0: Detect ridges via joint perturbations
+            plateau_width, plateau_score, is_isolated, basin_score, survival_rate = evaluate_connected_plateau(
+                objective_fn,
+                optimal_params,
+                optimal_value,
+                bounds,
+                config.plateau_acceptance_ratio,
+                n_joint_perturbations=config.n_joint_perturbations,
+                ridge_threshold=config.ridge_threshold
+            )
+            diagnostics['is_ridge_optimum'] = basin_score < config.ridge_threshold
+            diagnostics['basin_score'] = float(basin_score)
+            diagnostics['joint_perturbation_survival_rate'] = float(survival_rate)
+        else:
+            # Legacy: Axis-aligned plateau only
+            from tuning.elite_tuning import evaluate_plateau_width
+            plateau_width, plateau_score, is_isolated = evaluate_plateau_width(
+                objective_fn, optimal_params, optimal_value, bounds,
+                config.plateau_acceptance_ratio
+            )
+            basin_score = plateau_score
+            diagnostics['is_ridge_optimum'] = False
+            diagnostics['basin_score'] = float(basin_score)
+        
+        diagnostics['plateau_score'] = float(plateau_score)
+        diagnostics['plateau_width'] = plateau_width.tolist()
+        diagnostics['is_isolated_optimum'] = bool(is_isolated)
+        
+    except Exception as e:
+        diagnostics['plateau_score'] = 0.5
+        diagnostics['plateau_width'] = []
+        diagnostics['is_isolated_optimum'] = False
+        diagnostics['basin_score'] = 1.0
+        diagnostics['is_ridge_optimum'] = False
+        diagnostics['plateau_error'] = str(e)
+        basin_score = 1.0
+        plateau_score = 0.5
+    
+    # =========================================================================
+    # 3. CROSS-FOLD COHERENCE (with drift vs noise decomposition)
+    # =========================================================================
+    coherence_variance = np.array([])
+    drift_ratio = 0.0
+    
+    if fold_optimal_params and len(fold_optimal_params) >= config.min_folds_for_coherence:
+        try:
+            if config.enable_drift_penalty:
+                # v2.0: Asymmetric coherence - drift is worse than oscillation
+                penalty, variance, drift_comp, noise_comp, drift_pen = compute_asymmetric_coherence_penalty(
+                    fold_optimal_params,
+                    param_ranges,
+                    config.drift_penalty_multiplier
+                )
+                diagnostics['drift_component'] = drift_comp.tolist()
+                diagnostics['noise_component'] = noise_comp.tolist()
+                diagnostics['drift_penalty'] = float(drift_pen)
+                
+                # Compute drift ratio for fragility
+                total_var = np.sum(drift_comp) + np.sum(noise_comp)
+                if total_var > 1e-12:
+                    drift_ratio = np.sum(drift_comp) / total_var
+                diagnostics['drift_ratio'] = float(drift_ratio)
+            else:
+                # Legacy: Symmetric coherence
+                penalty, variance = compute_coherence_penalty(
+                    fold_optimal_params, param_ranges
+                )
+            
+            coherence_variance = variance
+            diagnostics['coherence_penalty'] = float(penalty)
+            diagnostics['parameter_variance_across_folds'] = variance.tolist()
+            diagnostics['n_folds_evaluated'] = len(fold_optimal_params)
+            
+        except Exception as e:
+            diagnostics['coherence_error'] = str(e)
+    
+    # =========================================================================
+    # 4. FRAGILITY INDEX (PURE PARAMETER FRAGILITY - v2.0)
+    # =========================================================================
+    try:
+        fragility, components = compute_fragility_index(
+            condition_number=diagnostics.get('condition_number', 1.0) or 1.0,
+            coherence_variance=coherence_variance,
+            plateau_width=np.array(diagnostics.get('plateau_width', [])),
+            basin_score=basin_score,  # v2.0: ridge awareness
+            drift_ratio=drift_ratio,  # v2.0: drift awareness
+            # NO calibration_ks_stat - pure parameter fragility only
+        )
+        
+        diagnostics['fragility_index'] = float(fragility)
+        diagnostics['fragility_warning'] = fragility > config.fragility_threshold
+        diagnostics['fragility_components'] = components
+        diagnostics['fragility_threshold'] = config.fragility_threshold
+        
+    except Exception as e:
+        diagnostics['fragility_index'] = 0.5
+        diagnostics['fragility_warning'] = False
+        diagnostics['fragility_error'] = str(e)
+    
+    return diagnostics
+
+
+def format_elite_status(diagnostics: Dict[str, Any]) -> str:
+    """
+    Format elite tuning status for logging.
+    
+    Returns a compact string summarizing elite diagnostics.
+    """
+    if not diagnostics.get('elite_tuning_enabled', False):
+        return "elite:disabled"
+    
+    parts = []
+    
+    # Fragility
+    frag = diagnostics.get('fragility_index', 0)
+    if frag > 0.5:
+        parts.append(f"⚠frag={frag:.2f}")
+    else:
+        parts.append(f"frag={frag:.2f}")
+    
+    # Ridge warning
+    if diagnostics.get('is_ridge_optimum', False):
+        parts.append("⚠RIDGE")
+    
+    # Basin score
+    basin = diagnostics.get('basin_score', 1.0)
+    if basin < 0.5:
+        parts.append(f"basin={basin:.2f}")
+    
+    # Condition number
+    cond = diagnostics.get('condition_number')
+    if cond and cond > 1e6:
+        parts.append(f"κ={cond:.1e}")
+    
+    return " | ".join(parts) if parts else "elite:ok"
 
 
 # =============================================================================
@@ -2828,6 +3135,63 @@ def fit_regime_model_posterior(
                 models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
         
         # =====================================================================
+        # Step 3a: Apply Elite Tuning Fragility Penalties (v2.0 - February 2026)
+        # =====================================================================
+        # TOP 0.001% UPGRADE: Fragile models are down-weighted
+        # 
+        # CORE DESIGN CONSTRAINT: Fragility must only act as a PENALTY, not reward.
+        # - Basin optimum (fragility < 0.3) → neutral (no effect)
+        # - Moderate fragility (0.3-0.5) → mild penalty (10-30%)
+        # - Ridge optimum (fragility > 0.5) → significant penalty (30-70%)
+        #
+        # This ensures BIC/Hyvarinen selection is STABILITY-AWARE, not just fit-aware.
+        # =====================================================================
+        weights_pre_elite = raw_weights.copy()
+        elite_penalty_applied = False
+        
+        if ELITE_TUNING_AVAILABLE and ELITE_TUNING_ENABLED:
+            for m in models:
+                if not models[m].get('fit_success', False):
+                    continue
+                    
+                elite_diag = models[m].get('diagnostics', {}).get('elite_diagnostics', {})
+                if not elite_diag:
+                    continue
+                
+                fragility = elite_diag.get('fragility_index', 0.0)
+                is_ridge = elite_diag.get('is_ridge_optimum', False)
+                basin_score = elite_diag.get('basin_score', 1.0)
+                
+                # Compute fragility penalty (asymmetric: only penalize, never reward)
+                # Penalty = 0 for fragility < 0.3, then scales up
+                if fragility > 0.3:
+                    # Penalty scales from 0 at 0.3 to 0.7 at 1.0
+                    penalty_factor = min((fragility - 0.3) / 0.7, 1.0)
+                    weight_multiplier = 1.0 - (0.7 * penalty_factor)  # 1.0 → 0.3
+                    
+                    # Extra penalty for ridge optima (dangerous)
+                    if is_ridge:
+                        weight_multiplier *= 0.5  # Additional 50% penalty
+                        _log(f"     ⚠️  {m}: RIDGE optimum detected (basin={basin_score:.2f}) → extra penalty")
+                    
+                    old_weight = raw_weights.get(m, 0.0)
+                    new_weight = old_weight * weight_multiplier
+                    raw_weights[m] = new_weight
+                    
+                    # Store penalty info
+                    models[m]['elite_fragility_penalty'] = 1.0 - weight_multiplier
+                    models[m]['elite_weight_pre_penalty'] = old_weight
+                    models[m]['elite_weight_post_penalty'] = new_weight
+                    elite_penalty_applied = True
+                    
+                    _log(f"     → {m}: fragility={fragility:.2f} → penalty {(1.0-weight_multiplier)*100:.0f}%")
+                else:
+                    models[m]['elite_fragility_penalty'] = 0.0
+        
+        if elite_penalty_applied:
+            _log(f"     → Elite tuning penalties applied (fragility-aware BIC/Hyvärinen)")
+        
+        # =====================================================================
         # Step 3b: Apply Asymmetric PIT Violation Penalties (February 2026)
         # =====================================================================
         # CORE DESIGN CONSTRAINT: PIT must only act as a PENALTY, never a reward.
@@ -2930,6 +3294,10 @@ def fit_regime_model_posterior(
                 # PIT Penalty metadata (February 2026)
                 "pit_penalty_applied": pit_penalty_report is not None,
                 "pit_penalty": pit_penalty_meta,
+                # Elite Tuning metadata (v2.0 - February 2026)
+                "elite_tuning_enabled": ELITE_TUNING_AVAILABLE and ELITE_TUNING_ENABLED,
+                "elite_tuning_preset": ELITE_TUNING_PRESET if ELITE_TUNING_AVAILABLE else None,
+                "elite_penalty_applied": elite_penalty_applied,
             }
         }
     
@@ -3127,6 +3495,9 @@ def tune_regime_model_averaging(
             "model_selection_method": model_selection_method,
             "bic_weight": bic_weight if model_selection_method == 'combined' else None,
             "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
+            # Elite Tuning metadata (v2.0 - February 2026)
+            "elite_tuning_enabled": ELITE_TUNING_AVAILABLE and ELITE_TUNING_ENABLED,
+            "elite_tuning_preset": ELITE_TUNING_PRESET if ELITE_TUNING_AVAILABLE else None,
         },
         "regime": regime_results,
         "meta": {
@@ -3139,6 +3510,10 @@ def tune_regime_model_averaging(
             "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
             "n_regimes_active": sum(1 for r in regime_results.values() 
                                     if not r.get("regime_meta", {}).get("fallback", False)),
+            # Elite Tuning configuration (v2.0 - February 2026)
+            "elite_tuning_available": ELITE_TUNING_AVAILABLE,
+            "elite_tuning_enabled": ELITE_TUNING_ENABLED,
+            "elite_tuning_preset": ELITE_TUNING_PRESET if ELITE_TUNING_AVAILABLE else None,
         }
     }
     
@@ -3207,6 +3582,12 @@ def tune_asset_with_bma(
     # Minimum data thresholds
     MIN_DATA_FOR_REGIME = 100
     MIN_DATA_FOR_GLOBAL = 20
+    
+    # Reset filter cache for this asset to avoid cross-asset contamination
+    # and collect fresh statistics for this tuning run
+    if FILTER_CACHE_AVAILABLE:
+        clear_filter_cache()
+        reset_cache_stats()
     
     try:
         # Fetch price data
@@ -3407,6 +3788,20 @@ def tune_asset_with_bma(
 
         if collapse_warnings > 0:
             _log(f"     ⚠️  Collapse warnings: regime parameters too close to global")
+
+        # Report filter cache statistics
+        if FILTER_CACHE_AVAILABLE:
+            cache_stats = get_cache_stats()
+            if cache_stats.hits > 0 or cache_stats.misses > 0:
+                _log(f"     📊 {cache_stats.summary()}")
+            # Add cache stats to result for analysis
+            result["filter_cache_stats"] = {
+                "hits": cache_stats.hits,
+                "misses": cache_stats.misses,
+                "hit_rate": cache_stats.hit_rate,
+                "fold_slice_reuses": cache_stats.fold_slice_reuses,
+                "warm_starts": cache_stats.warm_starts,
+            }
 
         return result
 

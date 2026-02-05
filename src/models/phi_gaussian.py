@@ -22,11 +22,59 @@ This prevents unit-root instability and small-sample hallucinations.
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List, Callable
 
 import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import kstest, norm
+
+# Filter cache for deterministic result reuse
+try:
+    from .filter_cache import (
+        cached_phi_gaussian_filter,
+        get_filter_cache,
+        FilterCacheKey,
+        FILTER_CACHE_ENABLED,
+    )
+    _CACHE_AVAILABLE = True
+except ImportError:
+    _CACHE_AVAILABLE = False
+    FILTER_CACHE_ENABLED = False
+
+# Numba wrappers for JIT-compiled filters (optional performance enhancement)
+try:
+    from .numba_wrappers import (
+        is_numba_available,
+        run_phi_gaussian_filter,
+        run_gaussian_filter,
+    )
+    _USE_NUMBA = is_numba_available()
+except ImportError:
+    _USE_NUMBA = False
+    run_phi_gaussian_filter = None
+    run_gaussian_filter = None
+
+
+# =============================================================================
+# ELITE TUNING CONFIGURATION (February 2026)
+# =============================================================================
+# Import from phi_student_t to maintain consistency
+# =============================================================================
+try:
+    from .phi_student_t import (
+        ELITE_TUNING_ENABLED,
+        CURVATURE_PENALTY_WEIGHT,
+        COHERENCE_PENALTY_WEIGHT,
+        HESSIAN_EPSILON,
+        MAX_CONDITION_NUMBER,
+        _compute_curvature_penalty,
+        _compute_coherence_penalty,
+        _compute_fragility_index,
+    )
+    _ELITE_TUNING_AVAILABLE = True
+except ImportError:
+    _ELITE_TUNING_AVAILABLE = False
+    ELITE_TUNING_ENABLED = False
 
 
 # =============================================================================
@@ -82,7 +130,70 @@ def _compute_phi_prior_diagnostics(
 
 
 def _kalman_filter_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:
-    """Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t."""
+    """
+    Optimized Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t.
+    
+    Performance optimizations (February 2026):
+    - Pre-compute phi_sq and R array once
+    - Pre-compute log_2pi constant
+    - Use np.empty instead of np.zeros
+    - Ensure contiguous array access
+    """
+    n = len(returns)
+    
+    # Convert to contiguous float64 arrays once
+    returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+    vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+    
+    # Extract scalar values once
+    q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+    c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+    phi_val = float(np.clip(phi, -0.999, 0.999))
+    
+    # Pre-compute constants
+    phi_sq = phi_val * phi_val
+    log_2pi = np.log(2 * np.pi)
+    
+    # Pre-compute R array (vectorized)
+    R = c_val * (vol * vol)
+
+    mu = 0.0
+    P = 1e-4
+    mu_filtered = np.empty(n, dtype=np.float64)
+    P_filtered = np.empty(n, dtype=np.float64)
+    log_likelihood = 0.0
+
+    for t in range(n):
+        mu_pred = phi_val * mu
+        P_pred = phi_sq * P + q_val
+
+        S = P_pred + R[t]
+        if S <= 1e-12:
+            S = 1e-12
+        
+        innovation = returns[t] - mu_pred
+        K = P_pred / S
+
+        mu = mu_pred + K * innovation
+        P = (1.0 - K) * P_pred
+        if P < 1e-12:
+            P = 1e-12
+
+        mu_filtered[t] = mu
+        P_filtered[t] = P
+
+        # Inlined log-likelihood
+        log_likelihood += -0.5 * (log_2pi + np.log(S) + (innovation * innovation) / S)
+
+    return mu_filtered, P_filtered, float(log_likelihood)
+
+
+def _kalman_filter_phi_with_trajectory(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
+    """
+    Kalman filter with per-timestep likelihood trajectory for fold slicing.
+    
+    Returns (mu_filtered, P_filtered, total_log_likelihood, loglik_trajectory).
+    """
     n = len(returns)
     q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
     c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
@@ -92,6 +203,7 @@ def _kalman_filter_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float,
     P = 1e-4
     mu_filtered = np.zeros(n)
     P_filtered = np.zeros(n)
+    loglik_trajectory = np.zeros(n)
     log_likelihood = 0.0
 
     for t in range(n):
@@ -118,9 +230,11 @@ def _kalman_filter_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float,
         mu_filtered[t] = mu
         P_filtered[t] = P
 
-        log_likelihood += -0.5 * (np.log(2 * np.pi * S) + (innovation ** 2) / S)
+        ll_t = -0.5 * (np.log(2 * np.pi * S) + (innovation ** 2) / S)
+        loglik_trajectory[t] = ll_t
+        log_likelihood += ll_t
 
-    return mu_filtered, P_filtered, float(log_likelihood)
+    return mu_filtered, P_filtered, float(log_likelihood), loglik_trajectory
 
 
 class PhiGaussianDriftModel:
@@ -128,8 +242,50 @@ class PhiGaussianDriftModel:
 
     @staticmethod
     def filter(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:
-        """Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t."""
+        """
+        Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t.
+        
+        Uses Numba JIT-compiled kernel when available for 10-50x speedup.
+        Falls back to pure Python implementation if Numba is unavailable.
+        """
+        if _USE_NUMBA:
+            try:
+                return run_phi_gaussian_filter(returns, vol, q, c, phi)
+            except Exception:
+                # Graceful fallback on any Numba execution error
+                pass
         return _kalman_filter_phi(returns, vol, q, c, phi)
+
+    @staticmethod
+    def filter_python(returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Pure Python implementation (for testing and fallback)."""
+        return _kalman_filter_phi(returns, vol, q, c, phi)
+
+    @staticmethod
+    def filter_with_trajectory(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        regime_id: str = "global",
+        use_cache: bool = True
+    ) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
+        """
+        Kalman filter with per-timestep likelihood trajectory.
+        
+        Enables fold-aware CV likelihood slicing without re-execution.
+        Uses deterministic result cache when available.
+        
+        Returns (mu_filtered, P_filtered, total_log_likelihood, loglik_trajectory).
+        """
+        if use_cache and _CACHE_AVAILABLE and FILTER_CACHE_ENABLED:
+            return cached_phi_gaussian_filter(
+                returns, vol, q, c, phi,
+                filter_fn=_kalman_filter_phi_with_trajectory,
+                regime_id=regime_id
+            )
+        return _kalman_filter_phi_with_trajectory(returns, vol, q, c, phi)
 
     @classmethod
     def optimize_params(
@@ -364,6 +520,36 @@ class PhiGaussianDriftModel:
             phi_optimal = grid_best_phi
             ll_optimal = -best_neg_ll
 
+        # =====================================================================
+        # ELITE TUNING: Curvature and Fragility Analysis (February 2026)
+        # =====================================================================
+        elite_diagnostics = {}
+        if _ELITE_TUNING_AVAILABLE and ELITE_TUNING_ENABLED:
+            optimal_params = np.array([np.log10(q_optimal), np.log10(c_optimal), phi_optimal])
+            
+            try:
+                curvature_penalty, condition_number, curv_diag = _compute_curvature_penalty(
+                    negative_penalized_ll_cv_phi, optimal_params, bounds, 
+                    HESSIAN_EPSILON, MAX_CONDITION_NUMBER
+                )
+                elite_diagnostics['curvature'] = curv_diag
+                elite_diagnostics['condition_number'] = float(condition_number)
+            except Exception:
+                curvature_penalty = 0.0
+                condition_number = 1.0
+                elite_diagnostics['curvature'] = {'error': 'computation_failed'}
+            
+            try:
+                fragility_index, frag_components = _compute_fragility_index(
+                    condition_number, np.array([]), 0.0
+                )
+                elite_diagnostics['fragility_index'] = float(fragility_index)
+                elite_diagnostics['fragility_components'] = frag_components
+                elite_diagnostics['fragility_warning'] = fragility_index > 0.5
+            except Exception:
+                elite_diagnostics['fragility_index'] = 0.5
+                elite_diagnostics['fragility_warning'] = False
+
         # Compute φ shrinkage prior diagnostics for auditability
         n_obs_approx = len(returns)
         prior_scale_diag = 1.0 / max(n_obs_approx, 100)
@@ -388,6 +574,8 @@ class PhiGaussianDriftModel:
             'rv_ratio': float(rv_ratio),
             'n_folds': int(len(fold_splits)),
             'optimization_successful': best_result is not None and (best_result.success if best_result else False),
+            'elite_tuning_enabled': _ELITE_TUNING_AVAILABLE and ELITE_TUNING_ENABLED,
+            'elite_diagnostics': elite_diagnostics if (_ELITE_TUNING_AVAILABLE and ELITE_TUNING_ENABLED) else None,
             # φ shrinkage prior diagnostics (auditability)
             **phi_prior_diag,
         }

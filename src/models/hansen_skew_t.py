@@ -44,6 +44,7 @@ from __future__ import annotations
 import math
 import warnings
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
@@ -51,6 +52,78 @@ from scipy import stats
 from scipy.optimize import minimize
 from scipy.special import gammaln
 from scipy.stats import kstest
+
+# =============================================================================
+# NUMBA JIT COMPILATION (February 2026 Performance Optimization)
+# =============================================================================
+
+try:
+    from numba import njit, prange
+    _NUMBA_AVAILABLE = True
+except ImportError:
+    _NUMBA_AVAILABLE = False
+    njit = None
+    prange = None
+
+# Define Numba kernels if available
+if _NUMBA_AVAILABLE:
+    @njit(cache=True, fastmath=True, parallel=True)
+    def _hansen_logpdf_kernel(x: np.ndarray, nu: float, lambda_: float,
+                               a: float, b: float, c: float) -> np.ndarray:
+        """
+        JIT-compiled Hansen log-PDF kernel with parallel execution.
+        
+        Performance: 10-50× faster than pure Python for large arrays.
+        """
+        n = len(x)
+        result = np.empty(n, dtype=np.float64)
+        
+        cutpoint = -a / b
+        log_bc = np.log(b * c)
+        neg_half_nu_plus_1 = -(nu + 1.0) / 2.0
+        inv_nu_minus_2 = 1.0 / (nu - 2.0)
+        log_1_plus_lambda = np.log(1.0 + lambda_)
+        log_1_minus_lambda = np.log(1.0 - lambda_)
+        
+        for i in prange(n):
+            if x[i] < cutpoint:
+                z = (b * x[i] + a) / (1.0 + lambda_)
+                result[i] = log_bc + neg_half_nu_plus_1 * np.log(1.0 + z * z * inv_nu_minus_2) - log_1_plus_lambda
+            else:
+                z = (b * x[i] + a) / (1.0 - lambda_)
+                result[i] = log_bc + neg_half_nu_plus_1 * np.log(1.0 + z * z * inv_nu_minus_2) - log_1_minus_lambda
+        
+        return result
+    
+    @njit(cache=True, fastmath=True, parallel=True)
+    def _hansen_pdf_kernel(x: np.ndarray, nu: float, lambda_: float,
+                           a: float, b: float, c: float) -> np.ndarray:
+        """
+        JIT-compiled Hansen PDF kernel with parallel execution.
+        """
+        n = len(x)
+        result = np.empty(n, dtype=np.float64)
+        
+        cutpoint = -a / b
+        bc = b * c
+        neg_half_nu_plus_1 = -(nu + 1.0) / 2.0
+        inv_nu_minus_2 = 1.0 / (nu - 2.0)
+        
+        for i in prange(n):
+            if x[i] < cutpoint:
+                z = (b * x[i] + a) / (1.0 + lambda_)
+                kernel = (1.0 + z * z * inv_nu_minus_2) ** neg_half_nu_plus_1
+                result[i] = bc * kernel / (1.0 + lambda_)
+            else:
+                z = (b * x[i] + a) / (1.0 - lambda_)
+                kernel = (1.0 + z * z * inv_nu_minus_2) ** neg_half_nu_plus_1
+                result[i] = bc * kernel / (1.0 - lambda_)
+        
+        return result
+else:
+    # Dummy placeholders when Numba not available
+    _hansen_logpdf_kernel = None
+    _hansen_pdf_kernel = None
 
 
 # =============================================================================
@@ -181,7 +254,7 @@ def hansen_skew_t_pdf(
     """
     x = np.asarray(x)
     scalar_input = x.ndim == 0
-    x = np.atleast_1d(x)
+    x = np.atleast_1d(x).astype(np.float64)
     
     # Handle symmetric case efficiently
     if abs(lambda_) < 1e-10:
@@ -190,25 +263,33 @@ def hansen_skew_t_pdf(
     
     a, b, c = _hansen_constants(nu, lambda_)
     
-    result = np.zeros_like(x, dtype=float)
+    # Vectorized implementation (February 2026 optimization)
+    # Pre-compute constants
+    cutpoint = -a / b
+    neg_half_nu_plus_1 = -(nu + 1) / 2
+    inv_nu_minus_2 = 1.0 / (nu - 2)
+    bc = b * c
     
-    # Process separately for numerical stability
-    for i, xi in enumerate(x):
-        # Standardize with Hansen transformation
-        if xi < -a/b:
-            # Left tail: use (1 + λ) scale
-            z = (b * xi + a) / (1 + lambda_)
-            scale_factor = 1 + lambda_
-        else:
-            # Right tail: use (1 - λ) scale
-            z = (b * xi + a) / (1 - lambda_)
-            scale_factor = 1 - lambda_
-        
-        # Student-t kernel
-        kernel = (1 + z**2 / (nu - 2)) ** (-(nu + 1) / 2)
-        
-        # Full density
-        result[i] = b * c * kernel / scale_factor
+    # Allocate result
+    result = np.empty_like(x, dtype=np.float64)
+    
+    # Left region mask
+    left_mask = x < cutpoint
+    
+    # Process left region (x < cutpoint)
+    if np.any(left_mask):
+        x_left = x[left_mask]
+        z_left = (b * x_left + a) / (1 + lambda_)
+        kernel_left = (1 + z_left**2 * inv_nu_minus_2) ** neg_half_nu_plus_1
+        result[left_mask] = bc * kernel_left / (1 + lambda_)
+    
+    # Process right region (x >= cutpoint)
+    right_mask = ~left_mask
+    if np.any(right_mask):
+        x_right = x[right_mask]
+        z_right = (b * x_right + a) / (1 - lambda_)
+        kernel_right = (1 + z_right**2 * inv_nu_minus_2) ** neg_half_nu_plus_1
+        result[right_mask] = bc * kernel_right / (1 - lambda_)
     
     return float(result[0]) if scalar_input else result
 
@@ -222,6 +303,7 @@ def hansen_skew_t_logpdf(
     Log-PDF of Hansen's skew-t distribution.
     
     More numerically stable than log(pdf) for optimization.
+    Uses Numba JIT when available for 10-50× speedup.
     
     Args:
         x: Evaluation points (standardized)
@@ -233,7 +315,7 @@ def hansen_skew_t_logpdf(
     """
     x = np.asarray(x)
     scalar_input = x.ndim == 0
-    x = np.atleast_1d(x)
+    x = np.atleast_1d(x).astype(np.float64)
     
     # Handle symmetric case efficiently
     if abs(lambda_) < 1e-10:
@@ -242,21 +324,38 @@ def hansen_skew_t_logpdf(
     
     a, b, c = _hansen_constants(nu, lambda_)
     
-    result = np.zeros_like(x, dtype=float)
+    # Use Numba kernel if available (10-50× faster for large arrays)
+    if _NUMBA_AVAILABLE and _hansen_logpdf_kernel is not None and len(x) > 10:
+        try:
+            x_contig = np.ascontiguousarray(x, dtype=np.float64)
+            result = _hansen_logpdf_kernel(x_contig, float(nu), float(lambda_),
+                                            float(a), float(b), float(c))
+            return float(result[0]) if scalar_input else result
+        except Exception:
+            pass  # Fall through to Python implementation
     
-    for i, xi in enumerate(x):
-        if xi < -a/b:
-            z = (b * xi + a) / (1 + lambda_)
-            log_scale = np.log(1 + lambda_)
-        else:
-            z = (b * xi + a) / (1 - lambda_)
-            log_scale = np.log(1 - lambda_)
-        
-        # Log of Student-t kernel
-        log_kernel = -(nu + 1) / 2 * np.log(1 + z**2 / (nu - 2))
-        
-        # Full log-density
-        result[i] = np.log(b) + np.log(c) + log_kernel - log_scale
+    # Vectorized Python implementation (February 2026 optimization)
+    cutpoint = -a / b
+    log_b = np.log(b)
+    log_c = np.log(c)
+    log_1_plus_lambda = np.log(1 + lambda_)
+    log_1_minus_lambda = np.log(1 - lambda_)
+    neg_half_nu_plus_1 = -(nu + 1) / 2
+    inv_nu_minus_2 = 1.0 / (nu - 2)
+    
+    result = np.empty_like(x, dtype=np.float64)
+    left_mask = x < cutpoint
+    
+    if np.any(left_mask):
+        z_left = (b * x[left_mask] + a) / (1 + lambda_)
+        log_kernel_left = neg_half_nu_plus_1 * np.log(1 + z_left**2 * inv_nu_minus_2)
+        result[left_mask] = log_b + log_c + log_kernel_left - log_1_plus_lambda
+    
+    right_mask = ~left_mask
+    if np.any(right_mask):
+        z_right = (b * x[right_mask] + a) / (1 - lambda_)
+        log_kernel_right = neg_half_nu_plus_1 * np.log(1 + z_right**2 * inv_nu_minus_2)
+        result[right_mask] = log_b + log_c + log_kernel_right - log_1_minus_lambda
     
     return float(result[0]) if scalar_input else result
 

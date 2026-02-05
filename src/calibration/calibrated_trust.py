@@ -56,6 +56,11 @@ MAX_REGIME_PENALTY = 0.30
 # Rationale: Model complexity can reduce trust by at most 25%
 MAX_MODEL_PENALTY = 0.25
 
+# Maximum elite tuning fragility penalty - architectural invariant (v2.0 February 2026)
+# Rationale: Fragile parameters (ridges, high curvature) reduce position authority
+# This directly affects BUY/SELL/HOLD/EXIT decisions through position sizing
+MAX_ELITE_FRAGILITY_PENALTY = 0.35
+
 # Minimum observations for reliable calibration trust estimate
 MIN_CALIBRATION_SAMPLES = 50
 
@@ -72,17 +77,35 @@ DEFAULT_REGIME_PENALTY_SCHEDULE = {
 # Default model complexity penalty schedule (Counter-Proposal v1.0)
 # Exotic models signal structural instability → reduced position authority
 # This addresses: "GH improves fit but does not reduce authority"
+# Includes momentum-augmented variants (February 2026)
 DEFAULT_MODEL_PENALTY_SCHEDULE = {
+    # Base Gaussian family
     'gaussian': 0.00,
     'kalman_gaussian': 0.00,
     'phi_gaussian': 0.02,
     'kalman_phi_gaussian': 0.02,
+    # Momentum-augmented Gaussian (base penalty + 0.01 momentum premium)
+    'gaussian_momentum': 0.01,
+    'phi_gaussian_momentum': 0.03,
+    'momentum_gaussian': 0.01,
+    'momentum_phi_gaussian': 0.03,
+    # Base Student-t family
     'phi_student_t': 0.05,
     'phi_student_t_nu_4': 0.08,   # Heavy tails → higher uncertainty
     'phi_student_t_nu_6': 0.06,
     'phi_student_t_nu_8': 0.05,
     'phi_student_t_nu_12': 0.04,
     'phi_student_t_nu_20': 0.03,
+    # Momentum-augmented Student-t (base penalty + 0.01 momentum premium)
+    'phi_student_t_momentum': 0.06,
+    'phi_student_t_momentum_nu_4': 0.09,
+    'phi_student_t_momentum_nu_6': 0.07,
+    'phi_student_t_momentum_nu_8': 0.06,
+    'phi_student_t_momentum_nu_12': 0.05,
+    'phi_student_t_momentum_nu_20': 0.04,
+    'momentum_phi_student_t': 0.06,
+    'momentum_student_t': 0.06,
+    # Advanced distributions
     'phi_skew_t': 0.10,
     'phi_nig': 0.12,
     'mixture': 0.15,
@@ -190,13 +213,18 @@ class TrustConfig:
     The penalty schedule is policy (can evolve).
     The penalty cap is architectural (invariant).
     
-    ARCHITECTURAL LAW (Counter-Proposal v1.0):
-        Trust = Calibration - RegimePenalty - ModelPenalty - CalibrationPenalty
+    ARCHITECTURAL LAW (Counter-Proposal v2.0 - February 2026):
+        Trust = Calibration - RegimePenalty - ModelPenalty - EliteFragilityPenalty - SamplePenalty
     
     All penalties are:
         - Additive (interpretable, auditable)
         - Bounded (architectural invariant)
         - Explicit (no hidden attenuation)
+    
+    Elite Fragility Penalty (v2.0):
+        Fragile parameter optima (ridges, high curvature, drift-dominated) directly
+        reduce position authority. This maps elite tuning diagnostics to actual
+        BUY/SELL/HOLD/EXIT signal strength.
     """
     # Regime penalty schedule (policy-governed, versioned)
     regime_penalty_schedule: Dict[int, float] = field(
@@ -210,7 +238,7 @@ class TrustConfig:
     )
     
     # Schedule version for audit trail
-    schedule_version: str = "v2.0"
+    schedule_version: str = "v2.1"  # Updated for elite fragility integration
     
     # Minimum samples for full trust (below this, apply sample penalty)
     min_samples: int = MIN_CALIBRATION_SAMPLES
@@ -224,6 +252,29 @@ class TrustConfig:
     
     # Model penalty mode: 'none', 'additive'
     model_penalty_mode: str = 'additive'
+    
+    # =========================================================================
+    # ELITE TUNING FRAGILITY PENALTY (v2.0 - February 2026)
+    # =========================================================================
+    # Fragile parameters reduce position authority (affects actual signals)
+    # This is the CORE integration between tuning diagnostics and signal generation
+    # =========================================================================
+    enable_elite_fragility_penalty: bool = True
+    
+    # Base fragility penalty rate: penalty = fragility_index * rate
+    # Default: fragility of 0.5 → 10% penalty, fragility of 1.0 → 20% penalty
+    elite_fragility_rate: float = 0.20
+    
+    # Ridge optimum bonus penalty (on top of fragility)
+    # Ridges are particularly dangerous - they look stable but collapse
+    elite_ridge_penalty: float = 0.15
+    
+    # Drift-dominated bonus penalty
+    # Persistent parameter drift indicates structural instability
+    elite_drift_penalty: float = 0.10
+    
+    # Threshold below which fragility is ignored (stable basins)
+    elite_fragility_threshold: float = 0.30
     
     def validate(self) -> None:
         """Validate configuration against architectural invariants."""
@@ -247,15 +298,29 @@ class TrustConfig:
         """
         Get penalty for a model type.
         
-        Handles partial matching for Student-t variants.
+        Handles partial matching for Student-t and momentum variants.
         """
         if model_type in self.model_penalty_schedule:
             return self.model_penalty_schedule[model_type]
         
-        # Check for Student-t variants
-        if 'student_t' in model_type.lower():
-            # Default Student-t penalty
+        model_lower = model_type.lower()
+        is_momentum = 'momentum' in model_lower or '+mom' in model_lower
+        
+        # Check for Student-t variants (including momentum)
+        if 'student_t' in model_lower:
+            if is_momentum:
+                return self.model_penalty_schedule.get('phi_student_t_momentum', 0.06)
             return self.model_penalty_schedule.get('phi_student_t', 0.05)
+        
+        # Check for Gaussian variants (including momentum)
+        if 'gaussian' in model_lower:
+            if is_momentum:
+                if 'phi' in model_lower:
+                    return self.model_penalty_schedule.get('momentum_phi_gaussian', 0.03)
+                return self.model_penalty_schedule.get('momentum_gaussian', 0.01)
+            if 'phi' in model_lower:
+                return self.model_penalty_schedule.get('phi_gaussian', 0.02)
+            return self.model_penalty_schedule.get('gaussian', 0.00)
         
         # Default penalty for unknown models
         return 0.10
@@ -271,15 +336,22 @@ def compute_calibrated_trust(
     isotonic_model: Optional[Callable] = None,
     config: Optional[TrustConfig] = None,
     model_type: Optional[str] = None,
+    elite_diagnostics: Optional[Dict[str, Any]] = None,
 ) -> CalibratedTrust:
     """
-    Compute calibrated trust with additive regime and model penalties.
+    Compute calibrated trust with additive penalties including elite tuning fragility.
     
-    ARCHITECTURAL LAW (Counter-Proposal v1.0):
+    ARCHITECTURAL LAW (Counter-Proposal v2.0 - February 2026):
         Trust = Calibration Authority 
-              − Regime Penalty (bounded)
-              − Model Penalty (bounded)
+              − Regime Penalty (bounded at 30%)
+              − Model Penalty (bounded at 25%)
+              − Elite Fragility Penalty (bounded at 35%) ← NEW
               − Sample Penalty (cold-start)
+    
+    The elite fragility penalty directly affects BUY/SELL/HOLD/EXIT signals:
+        - Fragile parameters → reduced position authority
+        - Ridge optima → additional penalty (collapse risk)
+        - Drift-dominated → additional penalty (structural instability)
     
     Args:
         raw_pit_values: Raw PIT values from model (will be transported if isotonic_model provided)
@@ -287,6 +359,11 @@ def compute_calibrated_trust(
         isotonic_model: Optional isotonic transport function (calibrated PIT = f(raw PIT))
         config: Trust configuration (uses defaults if None)
         model_type: Optional model identifier for complexity penalty
+        elite_diagnostics: Optional dict with elite tuning diagnostics:
+            - fragility_index: float in [0, 1]
+            - is_ridge_optimum: bool
+            - basin_score: float in [0, 1]  
+            - drift_ratio: float in [0, 1]
     
     Returns:
         CalibratedTrust: Immutable trust state with full audit trail
@@ -348,6 +425,52 @@ def compute_calibrated_trust(
         model_penalty = config.get_model_penalty(model_type)
         model_penalty = float(np.clip(model_penalty, 0.0, MAX_MODEL_PENALTY))
     
+    # --- Step 4c: Elite Tuning Fragility Penalty (v2.0 - February 2026) ---
+    # =========================================================================
+    # THIS DIRECTLY AFFECTS BUY/SELL/HOLD/EXIT SIGNALS
+    # =========================================================================
+    # Fragile parameters (ridges, high curvature, drift-dominated) reduce
+    # position authority. This is the core integration between tuning
+    # diagnostics and actual trading decisions.
+    #
+    # Penalty components:
+    #   1. Base fragility: fragility_index * rate (if above threshold)
+    #   2. Ridge bonus: additional penalty for ridge optima
+    #   3. Drift bonus: additional penalty for drift-dominated instability
+    # =========================================================================
+    elite_fragility_penalty = 0.0
+    elite_penalty_components = {}
+    
+    if elite_diagnostics is not None and config.enable_elite_fragility_penalty:
+        fragility_index = elite_diagnostics.get('fragility_index', 0.0)
+        is_ridge = elite_diagnostics.get('is_ridge_optimum', False)
+        basin_score = elite_diagnostics.get('basin_score', 1.0)
+        drift_ratio = elite_diagnostics.get('drift_ratio', 0.0)
+        
+        # Only apply penalty if fragility exceeds threshold (stable basins are fine)
+        if fragility_index > config.elite_fragility_threshold:
+            # Base fragility penalty (linear scaling above threshold)
+            excess_fragility = fragility_index - config.elite_fragility_threshold
+            base_penalty = excess_fragility * config.elite_fragility_rate / (1.0 - config.elite_fragility_threshold)
+            elite_penalty_components['base_fragility'] = base_penalty
+            elite_fragility_penalty += base_penalty
+        
+        # Ridge bonus penalty (ridges look stable but collapse catastrophically)
+        if is_ridge or basin_score < 0.3:
+            ridge_penalty = config.elite_ridge_penalty
+            elite_penalty_components['ridge_bonus'] = ridge_penalty
+            elite_fragility_penalty += ridge_penalty
+        
+        # Drift bonus penalty (persistent parameter drift = structural instability)
+        if drift_ratio > 0.5:
+            drift_penalty = (drift_ratio - 0.5) * 2 * config.elite_drift_penalty
+            elite_penalty_components['drift_bonus'] = drift_penalty
+            elite_fragility_penalty += drift_penalty
+        
+        # Apply architectural cap
+        elite_fragility_penalty = float(np.clip(elite_fragility_penalty, 0.0, MAX_ELITE_FRAGILITY_PENALTY))
+        elite_penalty_components['total'] = elite_fragility_penalty
+    
     # --- Step 5: Tail bias computation (calibrated space) ---
     tail_bias = float(np.mean(calibrated_pit) - 0.5)
     
@@ -358,11 +481,11 @@ def compute_calibrated_trust(
         tail_bias_penalty = float(np.clip(tail_bias_penalty, 0.0, 0.1))
     
     # --- Step 6: Effective trust (transparent composition) ---
-    # ARCHITECTURAL LAW (Counter-Proposal v1.0): 
-    # Trust = Calibration - Regime - Model - Sample - TailBias
-    total_penalty = regime_penalty + model_penalty + sample_penalty + tail_bias_penalty
+    # ARCHITECTURAL LAW (Counter-Proposal v2.0 - February 2026): 
+    # Trust = Calibration - Regime - Model - EliteFragility - Sample - TailBias
+    total_penalty = regime_penalty + model_penalty + elite_fragility_penalty + sample_penalty + tail_bias_penalty
     # Allow penalties to stack but cap total at reasonable level
-    max_total_penalty = MAX_REGIME_PENALTY + MAX_MODEL_PENALTY + 0.3  # sample + tail bias
+    max_total_penalty = MAX_REGIME_PENALTY + MAX_MODEL_PENALTY + MAX_ELITE_FRAGILITY_PENALTY + 0.3  # sample + tail bias
     total_penalty = float(np.clip(total_penalty, 0.0, max_total_penalty))
     
     effective_trust = float(np.clip(calibration_trust - total_penalty, 0.0, 1.0))
@@ -377,10 +500,12 @@ def compute_calibrated_trust(
     
     # --- Step 8: Build audit trail ---
     audit_decomposition = {
-        # Core decomposition (Counter-Proposal v1.0)
+        # Core decomposition (Counter-Proposal v2.0)
         "calibration_trust": calibration_trust,
         "regime_penalty": regime_penalty,
         "model_penalty": model_penalty,
+        "elite_fragility_penalty": elite_fragility_penalty,  # NEW: affects signals
+        "elite_penalty_components": elite_penalty_components,  # NEW: breakdown
         "sample_penalty": sample_penalty,
         "tail_bias_penalty": tail_bias_penalty,
         "total_penalty": total_penalty,
@@ -388,6 +513,12 @@ def compute_calibrated_trust(
         
         # Model info
         "model_type": model_type,
+        
+        # Elite diagnostics (for signal audit)
+        "elite_diagnostics_used": elite_diagnostics is not None,
+        "elite_fragility_index": elite_diagnostics.get('fragility_index') if elite_diagnostics else None,
+        "elite_is_ridge": elite_diagnostics.get('is_ridge_optimum') if elite_diagnostics else None,
+        "elite_basin_score": elite_diagnostics.get('basin_score') if elite_diagnostics else None,
         
         # Diagnostics
         "ks_statistic": float(ks_statistic) if ks_statistic is not None else None,
