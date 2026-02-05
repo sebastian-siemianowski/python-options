@@ -1472,6 +1472,7 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
     # Thresholds for "high conviction"
     BUY_THRESHOLD = 0.62   # P(r>0) >= 62% for strong buy
     SELL_THRESHOLD = 0.38  # P(r>0) <= 38% for strong sell
+    MIN_EXPECTED_MOVE = 0.02  # Minimum 2% expected move to be actionable
     
     # Collect strong signals
     strong_buys = []
@@ -1494,11 +1495,12 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
             if label.upper() == "EXIT":
                 continue
             
-            # Calculate strength score for sorting
+            # Calculate strength score for display
             distance_from_neutral = abs(p_up - 0.5)
             strength = distance_from_neutral + abs(exp_ret) * 0.5
             
-            if p_up >= BUY_THRESHOLD:
+            # Strong buy: P >= 62% AND expected return >= +2%
+            if p_up >= BUY_THRESHOLD and exp_ret >= MIN_EXPECTED_MOVE:
                 strong_buys.append({
                     "asset": asset_label,
                     "sector": sector,
@@ -1508,7 +1510,8 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
                     "profit_pln": profit_pln,
                     "strength": strength,
                 })
-            elif p_up <= SELL_THRESHOLD:
+            # Strong sell: P <= 38% AND expected return <= -2%
+            elif p_up <= SELL_THRESHOLD and exp_ret <= -MIN_EXPECTED_MOVE:
                 strong_sells.append({
                     "asset": asset_label,
                     "sector": sector,
@@ -1519,9 +1522,9 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
                     "strength": strength,
                 })
     
-    # Sort by strength descending
-    strong_buys.sort(key=lambda x: x["strength"], reverse=True)
-    strong_sells.sort(key=lambda x: x["strength"], reverse=True)
+    # Sort by expected return first (highest for buys, most negative for sells), then by probability
+    strong_buys.sort(key=lambda x: (-x["exp_ret"], -x["p_up"]))
+    strong_sells.sort(key=lambda x: (x["exp_ret"], x["p_up"]))
     
     # Limit to top 20 each
     strong_buys = strong_buys[:20]
@@ -1582,8 +1585,8 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
         buy_table.add_column("Asset", justify="left", width=50, no_wrap=True)
         buy_table.add_column("Sector", justify="left", width=30, no_wrap=True, style="dim")
         buy_table.add_column("Horizon", justify="center", width=10)
+        buy_table.add_column("E[return] ↓", justify="right", width=12)  # Primary sort
         buy_table.add_column("P(r>0)", justify="right", width=8)
-        buy_table.add_column("E[return]", justify="right", width=10)
         buy_table.add_column("Profit", justify="right", width=10)
         buy_table.add_column("Strength", justify="left", width=12)
         
@@ -1609,8 +1612,8 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
                 sig["asset"],
                 sig["sector"][:28] if sig["sector"] else "",
                 horizon_label,
-                f"[bold bright_green]{p_pct:.1f}%[/]",
-                f"[bright_green]{exp_ret_pct:+.2f}%[/]",
+                f"[bold bright_green]{exp_ret_pct:+.2f}%[/]",  # E[return] first (sorted)
+                f"[bright_green]{p_pct:.1f}%[/]",              # P(r>0) second
                 f"[bright_green]{profit_str}[/]",
                 f"[green]{bar_str}[/]",
             )
@@ -1642,8 +1645,8 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
         sell_table.add_column("Asset", justify="left", width=50, no_wrap=True)
         sell_table.add_column("Sector", justify="left", width=30, no_wrap=True, style="dim")
         sell_table.add_column("Horizon", justify="center", width=10)
+        sell_table.add_column("E[return] ↓", justify="right", width=12)  # Primary sort (most negative first)
         sell_table.add_column("P(r>0)", justify="right", width=8)
-        sell_table.add_column("E[return]", justify="right", width=10)
         sell_table.add_column("Profit", justify="right", width=10)
         sell_table.add_column("Strength", justify="left", width=12)
         
@@ -1669,8 +1672,8 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
                 sig["asset"],
                 sig["sector"][:28] if sig["sector"] else "",
                 horizon_label,
-                f"[bold indian_red1]{p_pct:.1f}%[/]",
-                f"[indian_red1]{exp_ret_pct:+.2f}%[/]",
+                f"[bold indian_red1]{exp_ret_pct:+.2f}%[/]",  # E[return] first (sorted, most negative)
+                f"[indian_red1]{p_pct:.1f}%[/]",              # P(r>0) second
                 f"[indian_red1]{profit_str}[/]",
                 f"[red]{bar_str}[/]",
             )
@@ -1686,12 +1689,12 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
     footer = Text(justify="center")
     footer.append("Thresholds: ", style="dim")
     footer.append("BUY ", style="bright_green")
-    footer.append(f"P ≥ {BUY_THRESHOLD*100:.0f}%", style="dim")
+    footer.append(f"P ≥ {BUY_THRESHOLD*100:.0f}%, E ≥ +{MIN_EXPECTED_MOVE*100:.0f}%", style="dim")
     footer.append("  ·  ", style="dim")
     footer.append("SELL ", style="indian_red1")
-    footer.append(f"P ≤ {SELL_THRESHOLD*100:.0f}%", style="dim")
+    footer.append(f"P ≤ {SELL_THRESHOLD*100:.0f}%, E ≤ -{MIN_EXPECTED_MOVE*100:.0f}%", style="dim")
     footer.append("  ·  ", style="dim")
-    footer.append("Sorted by signal strength", style="dim italic")
+    footer.append("Sorted by E[return], then probability", style="dim italic")
     console.print(Align.center(footer))
     console.print()
 

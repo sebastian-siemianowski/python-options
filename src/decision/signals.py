@@ -2380,6 +2380,10 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         return None
     
     best_params = models[best_model]
+    
+    # Ensure best_params is a valid dict (guard against malformed cache data)
+    if not isinstance(best_params, dict):
+        return None
 
     # Extract params from best model
     q_val = best_params.get('q')
@@ -2494,11 +2498,11 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         # Stability-aware model selection with fragility penalties
         'elite_tuning_enabled': raw_data.get('meta', {}).get('elite_tuning_enabled', False),
         'elite_tuning_preset': raw_data.get('meta', {}).get('elite_tuning_preset'),
-        'elite_diagnostics': best_params.get('diagnostics', {}).get('elite_diagnostics', {}),
-        'elite_fragility_index': best_params.get('diagnostics', {}).get('elite_diagnostics', {}).get('fragility_index'),
-        'elite_is_ridge': best_params.get('diagnostics', {}).get('elite_diagnostics', {}).get('is_ridge_optimum', False),
-        'elite_basin_score': best_params.get('diagnostics', {}).get('elite_diagnostics', {}).get('basin_score'),
-        'elite_fragility_penalty': best_params.get('elite_fragility_penalty', 0.0),
+        'elite_diagnostics': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}) if best_params else {},
+        'elite_fragility_index': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}).get('fragility_index') if best_params else None,
+        'elite_is_ridge': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}).get('is_ridge_optimum', False) if best_params else False,
+        'elite_basin_score': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}).get('basin_score') if best_params else None,
+        'elite_fragility_penalty': best_params.get('elite_fragility_penalty', 0.0) if best_params else 0.0,
 
         # Metadata
         'source': 'tuned_cache_bma',
