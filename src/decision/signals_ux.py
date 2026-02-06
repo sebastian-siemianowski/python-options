@@ -1526,9 +1526,9 @@ def render_strong_signals_summary(summary_rows: List[Dict], horizons: List[int] 
     strong_buys.sort(key=lambda x: (-x["exp_ret"], -x["p_up"]))
     strong_sells.sort(key=lambda x: (x["exp_ret"], x["p_up"]))
     
-    # Limit to top 20 each
-    strong_buys = strong_buys[:20]
-    strong_sells = strong_sells[:20]
+    # Limit to top 40 each
+    strong_buys = strong_buys[:40]
+    strong_sells = strong_sells[:40]
     
     # Only render if we have signals
     if not strong_buys and not strong_sells:

@@ -501,6 +501,7 @@ def save_high_conviction_signals(
     fetch_options: bool = True,
     fetch_prices: bool = True,
     max_workers: int = MAX_WORKERS,
+    max_signals: int = 40,
 ) -> Dict[str, int]:
     """
     Save high conviction BUY and SELL signals to separate directories.
@@ -517,6 +518,7 @@ def save_high_conviction_signals(
         fetch_options: Whether to fetch options chain data
         fetch_prices: Whether to fetch historical price data
         max_workers: Number of parallel workers for data fetching
+        max_signals: Maximum number of signals per category (buy/sell), default 40
         
     Returns:
         Dict with counts: {"buy": N, "sell": M, "errors": E}
@@ -610,9 +612,14 @@ def save_high_conviction_signals(
                     except Exception as e:
                         error_count += 1
     
-    # Sort signals
+    # Sort signals by expected return (best first)
     buy_signals.sort(key=lambda x: (-x["expected_return_pct"], -x["probability_up"]))
     sell_signals.sort(key=lambda x: (x["expected_return_pct"], x["probability_up"]))
+    
+    # Limit to max_signals per category
+    if max_signals and max_signals > 0:
+        buy_signals = buy_signals[:max_signals]
+        sell_signals = sell_signals[:max_signals]
     
     # Write individual signal files
     buy_files = []
