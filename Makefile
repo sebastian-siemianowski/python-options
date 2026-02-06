@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -29,6 +29,9 @@ SHELL := /bin/bash
 # │  make fx-plnjpy          Generate PLN/JPY FX signals                         │
 # │  make report             Render from cached results (no network)             │
 # │  make top20              Quick smoke test: first 20 assets only              │
+# │  make chain              Options chain analysis for high conviction signals  │
+# │  make chain-force        Force re-tune all volatility models                 │
+# │  make chain-dry          Preview options pipeline (no processing)            │
 # └──────────────────────────────────────────────────────────────────────────────┘
 #
 # ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -350,6 +353,25 @@ clear:
 stocks: .venv/.deps_installed
 	@.venv/bin/python src/data_ops/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
 	@$(MAKE) fx-plnjpy
+
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  🔗 OPTIONS CHAIN ANALYSIS (Hierarchical Bayesian Framework)                 │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make chain              Analyze options for high conviction signals         │
+# │  make chain-force        Force re-tune all volatility models                 │
+# │  make chain-dry          Preview options pipeline (no processing)            │
+# └──────────────────────────────────────────────────────────────────────────────┘
+
+# Options signal pipeline - reads from src/data/high_conviction/
+# Does NOT depend on stocks - reads from stored high conviction data
+chain: .venv/.deps_installed
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -m src.decision.option_signal $(ARGS)
+
+chain-force: .venv/.deps_installed
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -m src.decision.option_signal --force $(ARGS)
+
+chain-dry: .venv/.deps_installed
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -m src.decision.option_signal --dry-run $(ARGS)
 
 # Render from cached results only (no network/compute)
 report: .venv/.deps_installed

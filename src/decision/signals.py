@@ -398,6 +398,15 @@ from decision.signals_ux import (
     SIMPLIFIED_COLUMN_DESCRIPTIONS,
 )
 
+# Import high conviction signal storage with options data
+# February 2026: Saves strong buy/sell signals to src/data/high_conviction/
+try:
+    from decision.high_conviction_storage import save_high_conviction_signals
+    HIGH_CONVICTION_STORAGE_AVAILABLE = True
+except ImportError:
+    HIGH_CONVICTION_STORAGE_AVAILABLE = False
+    save_high_conviction_signals = None
+
 # Import render_risk_temperature_summary from risk_temperature module
 # (Temperature modules own their own rendering - no duplication in signals_ux)
 from decision.risk_temperature import render_risk_temperature_summary
@@ -7756,6 +7765,24 @@ def main() -> None:
             # Add high-conviction signals summary for short-term trading
             render_strong_signals_summary(summary_rows_cached, horizons=[1, 3, 7])
             
+            # Save high conviction signals to src/data/high_conviction/ with options data
+            if HIGH_CONVICTION_STORAGE_AVAILABLE:
+                try:
+                    result = save_high_conviction_signals(
+                        summary_rows_cached, 
+                        horizons=[1, 3, 7],
+                        fetch_options=True,
+                        fetch_prices=True,
+                    )
+                    if result.get("buy", 0) > 0 or result.get("sell", 0) > 0:
+                        Console().print(
+                            f"\n[dim]💾 Saved {result['buy']} buy + {result['sell']} sell signals "
+                            f"to src/data/high_conviction/[/dim]"
+                        )
+                except Exception as hc_e:
+                    if os.getenv("DEBUG"):
+                        Console().print(f"[dim]High conviction storage error: {hc_e}[/dim]")
+            
             # Show unified risk dashboard (replaces fragmented risk temperature display)
             if UNIFIED_RISK_DASHBOARD_AVAILABLE:
                 try:
@@ -8507,6 +8534,24 @@ def main() -> None:
         render_sector_summary_tables(summary_rows, horizons)
         # Add high-conviction signals summary for short-term trading
         render_strong_signals_summary(summary_rows, horizons=[1, 3, 7])
+        
+        # Save high conviction signals to src/data/high_conviction/ with options data
+        if HIGH_CONVICTION_STORAGE_AVAILABLE:
+            try:
+                result = save_high_conviction_signals(
+                    summary_rows, 
+                    horizons=[1, 3, 7],
+                    fetch_options=True,
+                    fetch_prices=True,
+                )
+                if result.get("buy", 0) > 0 or result.get("sell", 0) > 0:
+                    Console().print(
+                        f"\n[dim]💾 Saved {result['buy']} buy + {result['sell']} sell signals "
+                        f"to src/data/high_conviction/[/dim]"
+                    )
+            except Exception as hc_e:
+                if os.getenv("DEBUG"):
+                    Console().print(f"[dim]High conviction storage error: {hc_e}[/dim]")
         
         # Show unified risk dashboard (replaces fragmented risk temperature display)
         # February 2026: Full risk dashboard matching `make risk` output

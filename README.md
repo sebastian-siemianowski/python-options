@@ -560,6 +560,35 @@ make stocks ARGS="--assets AAPL,MSFT"  # Specific assets only
 - Expected log return
 - Confidence indicators
 
+#### `make chain`
+
+**Options chain signal generator.** Analyzes options chains for high conviction equity signals.
+
+```bash
+make chain                              # Full options pipeline
+make chain ARGS="--force"               # Force re-tuning
+make chain ARGS="--dry-run"             # Preview without processing
+```
+
+**What happens internally:**
+1. Loads high conviction signals from `src/data/high_conviction/`
+2. For each signal, applies hierarchical Bayesian volatility tuning
+3. Filters options by liquidity (spread, OI, volume)
+4. Stratifies by expiry (near/short/medium/long)
+5. Scores contracts using confidence-bounded expected returns
+6. Generates strategy recommendations
+
+**Output:**
+- `src/data/options_signals/calls/` — Call recommendations from STRONG BUY signals
+- `src/data/options_signals/puts/` — Put recommendations from STRONG SELL signals
+- Rich console tables with ranked options by expected return
+
+**Architecture:**
+- Hierarchical Bayesian framework with equity signal priors
+- Confidence-bounded envelopes on all recommendations
+- Liquidity-first filtering (untradeable options never enter evaluation)
+- Expiry stratification with differentiated conviction thresholds
+
 #### `make report`
 
 Renders signals from cache without network calls. Use when offline.
