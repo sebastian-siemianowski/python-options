@@ -1382,10 +1382,7 @@ def run_options_signal_pipeline(
         "errors": errors,
     }
     
-    # Render options tables
-    render_options_summary_tables(call_results, put_results, console)
-    
-    # Render pipeline summary
+    # Render pipeline summary FIRST (before tables)
     render_pipeline_summary(stats, console)
     
     # Output directory info
@@ -1394,6 +1391,9 @@ def run_options_signal_pipeline(
     console.print(f"    Calls: [green]{len(call_results)} tickers with recommendations[/]")
     console.print(f"    Puts:  [red]{len(put_results)} tickers with recommendations[/]")
     console.print()
+    
+    # Render options tables AFTER summary
+    render_options_summary_tables(call_results, put_results, console)
     
     return stats
 
