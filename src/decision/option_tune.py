@@ -73,10 +73,59 @@ from scipy.special import gammaln
 
 
 # =============================================================================
+# IMPORT OPTIONS MODEL REGISTRY AND MODELS
+# =============================================================================
+# These models implement momentum-coupled volatility estimation matching
+# the architecture of equity tune.py model competition.
+# =============================================================================
+import sys
+import os as _os
+
+# Ensure src is in path for imports
+_src_dir = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+
+try:
+    from models.options import (
+        # Registry
+        OPTION_MODEL_REGISTRY,
+        OptionModelFamily,
+        get_option_model_spec,
+        get_all_option_model_names,
+        get_option_models_for_tuning,
+        make_option_momentum_gaussian_name,
+        make_option_momentum_phi_gaussian_name,
+        make_option_momentum_student_t_name,
+        OPTION_STUDENT_T_NU_GRID,
+        # Momentum Bridge
+        MomentumBridge,
+        MomentumDistributionType,
+        MomentumParameters,
+        extract_momentum_parameters,
+        compute_sabr_priors_from_momentum,
+        compute_ensemble_weights_from_momentum,
+        # Models
+        OptionMomentumGaussianModel,
+        OptionMomentumPhiGaussianModel,
+        OptionMomentumPhiStudentTModel,
+    )
+    OPTION_MODEL_REGISTRY_AVAILABLE = True
+except ImportError as e:
+    OPTION_MODEL_REGISTRY_AVAILABLE = False
+    _import_error = str(e)
+    warnings.warn(f"Options model registry not available: {e}")
+    OPTION_STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
+    _import_error = str(e)
+else:
+    _import_error = None
+
+
+# =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-# Volatility model registry
+# Volatility model registry (legacy - kept for backward compatibility)
 VOL_MODEL_CLASSES = [
     "constant_vol",
     "mean_reverting_vol",
@@ -84,6 +133,15 @@ VOL_MODEL_CLASSES = [
     "regime_skew_vol",
     "variance_swap_anchor",
 ]
+
+# NEW: Momentum-coupled volatility models (preferred)
+MOMENTUM_VOL_MODEL_CLASSES = [
+    "option_momentum_gaussian",
+    "option_momentum_phi_gaussian",
+] + [f"option_momentum_phi_student_t_nu_{nu}" for nu in OPTION_STUDENT_T_NU_GRID]
+
+# Enable momentum models by default
+USE_MOMENTUM_MODELS = True
 
 # Prior configuration (matching equity tune.py structure)
 DEFAULT_VOL_PRIOR_MEAN = 0.25  # 25% annualized vol prior
@@ -1023,9 +1081,58 @@ def tune_options_volatility(
     if skew_data is None:
         skew_data = np.zeros_like(iv_data)
     
+    # Extract momentum parameters from equity signal
+    momentum_params = None
+    if equity_signal is not None and OPTION_MODEL_REGISTRY_AVAILABLE:
+        try:
+            momentum_params = extract_momentum_parameters(equity_signal)
+        except Exception:
+            momentum_params = None
+    
     # Fit all model classes
     global_models = {}
     
+    # =========================================================================
+    # MOMENTUM-COUPLED MODELS (preferred when available)
+    # =========================================================================
+    if USE_MOMENTUM_MODELS and OPTION_MODEL_REGISTRY_AVAILABLE:
+        # 1. Momentum Gaussian — constant vol with momentum prior
+        try:
+            model = OptionMomentumGaussianModel(prior_mean=prior_vol_mean)
+            result = model.fit(iv_data, weights, momentum_params)
+            global_models[make_option_momentum_gaussian_name()] = model.to_dict(result)
+        except Exception as e:
+            global_models[make_option_momentum_gaussian_name()] = {
+                "fit_success": False, "error": str(e), "model_class": "option_momentum_gaussian"
+            }
+        
+        # 2. Momentum Phi-Gaussian — mean-reverting vol
+        try:
+            model = OptionMomentumPhiGaussianModel(prior_sigma_bar=prior_vol_mean)
+            result = model.fit(iv_data, weights, momentum_params)
+            global_models[make_option_momentum_phi_gaussian_name()] = model.to_dict(result)
+        except Exception as e:
+            global_models[make_option_momentum_phi_gaussian_name()] = {
+                "fit_success": False, "error": str(e), "model_class": "option_momentum_phi_gaussian"
+            }
+        
+        # 3. Momentum Phi-Student-t — regime-switching with heavy tails
+        for nu in OPTION_STUDENT_T_NU_GRID:
+            model_name = make_option_momentum_student_t_name(nu)
+            try:
+                model = OptionMomentumPhiStudentTModel(nu=nu, prior_sigma=prior_vol_mean)
+                result = model.fit(
+                    iv_data, regime_labels, weights, skew_data, momentum_params
+                )
+                global_models[model_name] = model.to_dict(result)
+            except Exception as e:
+                global_models[model_name] = {
+                    "fit_success": False, "error": str(e), "model_class": model_name
+                }
+    
+    # =========================================================================
+    # LEGACY MODELS (kept for backward compatibility)
+    # =========================================================================
     # 1. Constant volatility
     global_models["constant_vol"] = _fit_constant_vol(
         iv_data, weights, prior_vol_mean, prior_lambda
@@ -1291,8 +1398,394 @@ def save_option_tune_cache(cache: Dict[str, Dict]) -> None:
 
 
 # =============================================================================
-# CLI
+# CLI - STANDALONE OPTIONS TUNING PIPELINE
 # =============================================================================
+
+def run_options_tuning_pipeline(
+    force_retune: bool = False,
+    max_workers: int = 8,
+    dry_run: bool = False,
+) -> Dict[str, int]:
+    """
+    Run the full options volatility tuning pipeline.
+    
+    This is the main entry point for `make options-tune`.
+    
+    Reads high conviction signals from src/data/high_conviction/
+    Tunes volatility models for each ticker
+    Saves results to src/data/option_tune/
+    
+    Args:
+        force_retune: Force re-tuning even if cached
+        max_workers: Number of parallel workers
+        dry_run: Preview only, don't process
+        
+    Returns:
+        Summary dict with counts
+    """
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
+    from rich.text import Text
+    from rich.align import Align
+    from rich import box
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    import json
+    
+    console = Console()
+    
+    # High conviction directory
+    HIGH_CONVICTION_DIR = os.path.join(
+        os.path.dirname(__file__), "..", "data", "high_conviction"
+    )
+    
+    # Clean header
+    console.print()
+    header_text = Text()
+    header_text.append("OPTIONS VOLATILITY TUNING", style="bold bright_white")
+    header_text.append("  —  ", style="dim")
+    header_text.append("Bayesian Model Averaging", style="dim italic")
+    
+    console.print(Panel(
+        Align.center(header_text),
+        box=box.DOUBLE,
+        border_style="bright_magenta",
+        padding=(0, 2),
+    ))
+    console.print()
+    
+    # Configuration section
+    config_table = Table(
+        show_header=False,
+        box=None,
+        padding=(0, 2),
+        expand=False,
+    )
+    config_table.add_column("Key", style="dim", width=20)
+    config_table.add_column("Value", style="white")
+    
+    # Show momentum model availability
+    if OPTION_MODEL_REGISTRY_AVAILABLE and USE_MOMENTUM_MODELS:
+        model_list = "[bright_cyan]Mom-Gaussian, Mom-φ-Gaussian, Mom-φ-t(ν=4,6,8,12,20)[/] + legacy"
+        config_table.add_row("Models", model_list)
+    else:
+        config_table.add_row("Models", "[bright_magenta]constant, mean_reverting, regime, regime_skew, variance_swap[/]")
+        if not OPTION_MODEL_REGISTRY_AVAILABLE:
+            config_table.add_row("Momentum", f"[red]DISABLED[/] [dim]({_import_error or 'import failed'})[/]")
+    
+    config_table.add_row("Selection", f"Combined BIC + Hyvärinen (α={DEFAULT_BIC_WEIGHT})")
+    config_table.add_row("Temporal Smoothing", f"α={DEFAULT_TEMPORAL_ALPHA}")
+    if force_retune:
+        config_table.add_row("Mode", "[yellow]Force re-tune[/]")
+    
+    console.print(config_table)
+    console.print()
+    
+    # Check if high conviction directory exists
+    if not os.path.exists(HIGH_CONVICTION_DIR):
+        console.print("  [red]ERROR:[/] High conviction directory not found")
+        console.print("  [dim]Run `make stocks` first to generate equity signals.[/]")
+        return {"error": "no_high_conviction_data", "processed": 0}
+    
+    # Load existing tune cache
+    tune_cache = load_option_tune_cache()
+    
+    # Find all signal files with options data
+    signal_files = []
+    for subdir in ["buy", "sell"]:
+        dir_path = os.path.join(HIGH_CONVICTION_DIR, subdir)
+        if os.path.exists(dir_path):
+            for filename in os.listdir(dir_path):
+                if filename.endswith(".json") and filename != "manifest.json":
+                    signal_files.append(os.path.join(dir_path, filename))
+    
+    # Count by type
+    buy_count = sum(1 for f in signal_files if "/buy/" in f)
+    sell_count = sum(1 for f in signal_files if "/sell/" in f)
+    
+    # Status line
+    status_parts = []
+    status_parts.append(f"[dim]Cache:[/] [bold]{len(tune_cache)}[/] tuned")
+    status_parts.append(f"[dim]Signals:[/] [green]{buy_count} buy[/] · [red]{sell_count} sell[/]")
+    console.print("  " + "    ".join(status_parts))
+    console.print()
+    
+    if not signal_files:
+        console.print("  [yellow]No high conviction signals found.[/] Run `make stocks` first.")
+        return {"processed": 0, "tuned": 0, "cached": 0, "errors": 0}
+    
+    if dry_run:
+        console.print("  [bold yellow]DRY RUN[/] — No processing")
+        console.print()
+        for f in signal_files[:10]:
+            console.print(f"  [dim]Would tune:[/] {os.path.basename(f)}")
+        if len(signal_files) > 10:
+            console.print(f"  [dim]... and {len(signal_files) - 10} more[/]")
+        return {"processed": 0, "tuned": 0, "cached": 0, "errors": 0, "dry_run": True}
+    
+    # Process signals
+    tuned_count = 0
+    cached_count = 0
+    error_count = 0
+    skipped_count = 0
+    
+    # Track unique tickers
+    tickers_seen = set()
+    tickers_tuned = []
+    tickers_cached = []
+    tickers_error = []
+    
+    console.print("  [bold]Tuning volatility models...[/]")
+    console.print()
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=40),
+        MofNCompleteColumn(),
+        TextColumn("·"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        task = progress.add_task("Tuning options", total=len(signal_files))
+        
+        for signal_path in signal_files:
+            filename = os.path.basename(signal_path)
+            ticker = filename.split("_")[0]
+            
+            progress.update(task, advance=1)
+            
+            # Skip if already seen this ticker
+            if ticker in tickers_seen and not force_retune:
+                skipped_count += 1
+                continue
+            tickers_seen.add(ticker)
+            
+            # Check cache
+            safe_ticker = ticker.replace("^", "_").replace("=", "_").replace(".", "_")
+            if safe_ticker in tune_cache and not force_retune:
+                cached_count += 1
+                tickers_cached.append(ticker)
+                continue
+            
+            # Load signal data
+            try:
+                with open(signal_path, 'r') as f:
+                    signal_data = json.load(f)
+            except Exception as e:
+                error_count += 1
+                tickers_error.append(ticker)
+                continue
+            
+            # Extract options chain and price history
+            options_chain = signal_data.get("options_chain", {})
+            price_history = signal_data.get("price_history", {})
+            
+            # Skip if no valid options data
+            if options_chain.get("skipped") or options_chain.get("error"):
+                skipped_count += 1
+                continue
+            
+            if not options_chain.get("options"):
+                skipped_count += 1
+                continue
+            
+            # Build equity signal dict for prior
+            equity_signal = {
+                "probability_up": signal_data.get("probability_up", 0.5),
+                "expected_return_pct": signal_data.get("expected_return_pct", 0),
+                "signal_type": signal_data.get("signal_type", "HOLD"),
+            }
+            
+            # Tune volatility models
+            try:
+                result = tune_ticker_options(
+                    ticker=ticker,
+                    options_chain=options_chain,
+                    price_history=price_history,
+                    equity_signal=equity_signal,
+                )
+                
+                if result and result.get("global", {}).get("model_posterior"):
+                    tune_cache[safe_ticker] = result
+                    tuned_count += 1
+                    tickers_tuned.append(ticker)
+                else:
+                    error_count += 1
+                    tickers_error.append(ticker)
+                    
+            except Exception as e:
+                error_count += 1
+                tickers_error.append(ticker)
+    
+    # Save updated cache
+    save_option_tune_cache(tune_cache)
+    
+    # Summary
+    console.print()
+    
+    # Build summary line
+    summary_parts = []
+    if tickers_tuned:
+        summary_parts.append(f"[green]Tuned:[/] {', '.join(tickers_tuned[:10])}" + 
+                           (f" +{len(tickers_tuned)-10}" if len(tickers_tuned) > 10 else ""))
+    if tickers_cached:
+        summary_parts.append(f"[cyan]Cached:[/] {len(tickers_cached)}")
+    if tickers_error:
+        summary_parts.append(f"[red]Errors:[/] {', '.join(tickers_error[:5])}" +
+                           (f" +{len(tickers_error)-5}" if len(tickers_error) > 5 else ""))
+    
+    console.print("  " + "  ·  ".join(summary_parts))
+    console.print()
+    
+    # Display model selection summary
+    _render_tuning_summary(tune_cache, console)
+    
+    stats = {
+        "processed": len(signal_files),
+        "tuned": tuned_count,
+        "cached": cached_count,
+        "skipped": skipped_count,
+        "errors": error_count,
+        "total_in_cache": len(tune_cache),
+    }
+    
+    return stats
+
+
+def _render_tuning_summary(tune_cache: Dict[str, Dict], console) -> None:
+    """Render summary of tuned volatility models."""
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich import box
+    
+    if not tune_cache:
+        return
+    
+    # Build comprehensive model list including momentum models
+    all_model_classes = set(VOL_MODEL_CLASSES)
+    if USE_MOMENTUM_MODELS:
+        all_model_classes.update(MOMENTUM_VOL_MODEL_CLASSES)
+    
+    # Count model selections AND compute average weights
+    model_counts = {m: 0 for m in all_model_classes}
+    model_avg_weights = {m: [] for m in all_model_classes}
+    total_with_results = 0
+    momentum_selected = 0
+    legacy_selected = 0
+    
+    for ticker, result in tune_cache.items():
+        global_result = result.get("global", {})
+        posterior = global_result.get("model_posterior", {})
+        
+        if posterior:
+            total_with_results += 1
+            # Find winning model
+            best_model = max(posterior.items(), key=lambda x: x[1])[0]
+            if best_model not in model_counts:
+                model_counts[best_model] = 0
+            model_counts[best_model] += 1
+            
+            # Track momentum vs legacy
+            if best_model.startswith("option_momentum"):
+                momentum_selected += 1
+            else:
+                legacy_selected += 1
+            
+            # Collect weights for all models
+            for m, w in posterior.items():
+                if m not in model_avg_weights:
+                    model_avg_weights[m] = []
+                model_avg_weights[m].append(w)
+    
+    if total_with_results == 0:
+        return
+    
+    # Compute average weights
+    avg_weights = {}
+    for m, weights in model_avg_weights.items():
+        if weights:
+            avg_weights[m] = sum(weights) / len(weights)
+        else:
+            avg_weights[m] = 0.0
+    
+    # Summary panel - show ALL models
+    summary_table = Table(
+        show_header=True,
+        header_style="bold",
+        box=box.SIMPLE,
+        padding=(0, 1),
+    )
+    summary_table.add_column("Model", style="white", width=32)
+    summary_table.add_column("Won", justify="right", style="bright_magenta", width=5)
+    summary_table.add_column("Avg Wt", justify="right", style="cyan", width=7)
+    summary_table.add_column("Bar", style="magenta", width=20)
+    
+    model_display_names = {
+        # Legacy models
+        "constant_vol": "Constant Volatility",
+        "mean_reverting_vol": "Mean-Reverting Volatility",
+        "regime_vol": "Regime Volatility",
+        "regime_skew_vol": "Regime + Skew Volatility",
+        "variance_swap_anchor": "Variance Swap Anchor",
+        # Momentum models - full names
+        "option_momentum_gaussian": "Momentum Gaussian",
+        "option_momentum_phi_gaussian": "Momentum φ-Gaussian",
+        "option_momentum_phi_student_t_nu_4": "Momentum φ-Student-t (ν=4)",
+        "option_momentum_phi_student_t_nu_6": "Momentum φ-Student-t (ν=6)",
+        "option_momentum_phi_student_t_nu_8": "Momentum φ-Student-t (ν=8)",
+        "option_momentum_phi_student_t_nu_12": "Momentum φ-Student-t (ν=12)",
+        "option_momentum_phi_student_t_nu_20": "Momentum φ-Student-t (ν=20)",
+    }
+    
+    # Sort by average weight (show all models)
+    sorted_models = sorted(
+        [(m, model_counts.get(m, 0), avg_weights.get(m, 0)) for m in avg_weights.keys()], 
+        key=lambda x: (-x[2], -x[1])  # Sort by avg weight, then by wins
+    )
+    
+    for model, count, avg_w in sorted_models:
+        pct = avg_w * 100
+        bar_len = int(pct / 5)  # Max 20 chars
+        bar = "█" * bar_len + "░" * (20 - bar_len)
+        
+        # Style momentum models differently
+        if model.startswith("option_momentum"):
+            style = "bright_cyan"
+            marker = "●"
+        else:
+            style = "white"
+            marker = "○"
+        
+        summary_table.add_row(
+            f"[{style}]{marker} {model_display_names.get(model, model[:16])}[/]",
+            str(count) if count > 0 else "[dim]—[/]",
+            f"{pct:.1f}%",
+            bar,
+        )
+    
+    console.print(Panel(
+        summary_table,
+        title="[bold]Volatility Model Competition[/]",
+        subtitle=f"[dim]{len(avg_weights)} models competing  ·  {total_with_results} tickers[/]",
+        border_style="magenta",
+        box=box.ROUNDED,
+        padding=(0, 1),
+    ))
+    
+    # Show momentum vs legacy summary
+    mom_pct = momentum_selected / total_with_results * 100 if total_with_results > 0 else 0
+    console.print(f"  [bright_cyan]● Momentum models:[/] {momentum_selected} wins ({mom_pct:.1f}%)  ·  [dim]○ Legacy models:[/] {legacy_selected} wins")
+    
+    console.print()
+    
+    # Display cache directory info
+    console.print(f"  [dim]Cache directory:[/] [bold]{OPTION_TUNE_CACHE_DIR}[/]")
+    console.print(f"  [dim]Total tickers tuned:[/] [bold]{len(tune_cache)}[/]")
+    console.print()
+
 
 if __name__ == "__main__":
     import argparse
@@ -1300,18 +1793,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Tune volatility models for high conviction options"
     )
-    parser.add_argument("--force", action="store_true", help="Force re-tuning")
+    parser.add_argument("--force", action="store_true", help="Force re-tuning all tickers")
+    parser.add_argument("--workers", type=int, default=8, help="Number of parallel workers")
+    parser.add_argument("--dry-run", action="store_true", help="Preview only, don't process")
     parser.add_argument("--debug", action="store_true", help="Debug output")
     
     args = parser.parse_args()
     
-    print("=" * 80)
-    print("OPTIONS VOLATILITY TUNING — BAYESIAN MODEL AVERAGING")
-    print("=" * 80)
-    print()
-    print("Models: constant_vol, mean_reverting_vol, regime_vol, regime_skew_vol, variance_swap_anchor")
-    print("Selection: Combined BIC + Hyvärinen scoring")
-    print("Hierarchical: Equity signal → volatility prior")
-    print()
-    print("This module is invoked by option_signal.py during `make chain`")
-    print("To run the full options pipeline: make chain")
+    result = run_options_tuning_pipeline(
+        force_retune=args.force,
+        max_workers=args.workers,
+        dry_run=args.dry_run,
+    )
