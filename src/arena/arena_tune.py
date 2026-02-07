@@ -153,6 +153,7 @@ class ModelScore:
         fec_score: Forecast Entropy Consistency (0-1)
         dig_score: Directional Information Gain (0-1)
         advanced_score: Combined CSS+FEC+DIG score
+        final_score: Ultimate score (0-100 scale)
         fit_params: Fitted parameters
         fit_time_ms: Fitting time in milliseconds
     """
@@ -171,6 +172,7 @@ class ModelScore:
     fec_score: Optional[float] = None
     dig_score: Optional[float] = None
     advanced_score: Optional[float] = None
+    final_score: Optional[float] = None
     fit_params: Dict[str, float] = field(default_factory=dict)
     fit_time_ms: float = 0.0
     
@@ -192,6 +194,7 @@ class ModelScore:
             "fec_score": self.fec_score,
             "dig_score": self.dig_score,
             "advanced_score": self.advanced_score,
+            "final_score": self.final_score,
             "fit_params": self.fit_params,
             "fit_time_ms": self.fit_time_ms,
         }
@@ -623,17 +626,46 @@ def compute_advanced_scoring_metrics(
         css_score = np.mean(css_scores) if css_scores else 0.5
         
         # FEC: Forecast Entropy Consistency
+        # Measures if model's confidence is rational relative to realized outcomes
+        # NOT just correlation with vol (which is trivially 1.0 for vol-scaled models)
         sigma_clean = sigma_pred[warmup:]
-        sigma_safe = np.maximum(sigma_clean, 1e-8)
-        forecast_entropy = 0.5 * np.log(2 * np.pi * np.e * sigma_safe**2)
-        vol_safe = np.maximum(vol_clean, 1e-8)
-        market_entropy = 0.5 * np.log(2 * np.pi * np.e * vol_safe**2)
-        valid_mask = np.isfinite(forecast_entropy) & np.isfinite(market_entropy)
-        if np.sum(valid_mask) > 50:
-            corr = np.corrcoef(forecast_entropy[valid_mask], market_entropy[valid_mask])[0, 1]
-            fec_score = (corr + 1) / 2 if np.isfinite(corr) else 0.5
+        returns_clean = returns[warmup:]
+        
+        # Compute realized squared errors
+        errors = returns_clean - mu_pred[warmup:]
+        realized_var = errors ** 2
+        predicted_var = sigma_clean ** 2
+        
+        # FEC Component 1: Variance ratio consistency
+        # Good models should have predicted_var close to realized_var on average
+        var_ratio = np.mean(predicted_var) / (np.mean(realized_var) + 1e-10)
+        var_ratio_score = 1.0 - min(1.0, abs(np.log(var_ratio + 1e-10)) / 2.0)
+        
+        # FEC Component 2: Time-varying calibration
+        # Does predicted variance increase when realized variance increases?
+        window = 20
+        if len(realized_var) > window * 2:
+            rolling_realized = np.array([np.mean(realized_var[max(0,i-window):i+1]) 
+                                         for i in range(len(realized_var))])
+            rolling_predicted = np.array([np.mean(predicted_var[max(0,i-window):i+1]) 
+                                          for i in range(len(predicted_var))])
+            valid = (rolling_realized > 1e-12) & (rolling_predicted > 1e-12)
+            if np.sum(valid) > 50:
+                corr = np.corrcoef(rolling_realized[valid], rolling_predicted[valid])[0, 1]
+                corr_score = (corr + 1) / 2 if np.isfinite(corr) else 0.5
+            else:
+                corr_score = 0.5
         else:
-            fec_score = 0.5
+            corr_score = 0.5
+        
+        # FEC Component 3: Overconfidence penalty
+        # Penalize if model is often overconfident (predicted var < realized var)
+        overconfident_pct = np.mean(predicted_var < realized_var * 0.5)
+        underconfident_pct = np.mean(predicted_var > realized_var * 2.0)
+        confidence_score = 1.0 - (overconfident_pct * 0.6 + underconfident_pct * 0.4)
+        
+        fec_score = 0.3 * var_ratio_score + 0.4 * corr_score + 0.3 * confidence_score
+        fec_score = float(np.clip(fec_score, 0, 1))
         
         # DIG: Directional Information Gain
         mu_clean = mu_pred[warmup:]
@@ -659,6 +691,80 @@ def compute_advanced_scoring_metrics(
         
     except Exception:
         return None, None, None, None
+
+
+def compute_final_score(
+    bic: float,
+    crps: float,
+    hyvarinen: float,
+    pit_calibrated: bool,
+    css: float,
+    fec: float,
+    dig: float,
+    bic_range: Tuple[float, float],
+    crps_range: Tuple[float, float],
+    hyv_range: Tuple[float, float],
+) -> float:
+    """
+    Compute Final Score on 0-100 scale.
+    
+    Combines all metrics into a single definitive score:
+    - BIC (25%): Model parsimony and fit quality
+    - CRPS (20%): Probabilistic forecast accuracy
+    - Hyvarinen (15%): Robustness to misspecification
+    - PIT (15%): Calibration pass/fail (hard gate)
+    - CSS (10%): Stress stability
+    - FEC (8%): Entropy consistency
+    - DIG (7%): Directional information
+    
+    Returns:
+        Final score from 0.00 to 100.00
+    """
+    # Normalize BIC (lower is better) to 0-1
+    bic_min, bic_max = bic_range
+    if bic_max > bic_min:
+        bic_norm = 1.0 - (bic - bic_min) / (bic_max - bic_min)
+    else:
+        bic_norm = 0.5
+    bic_norm = np.clip(bic_norm, 0, 1)
+    
+    # Normalize CRPS (lower is better) to 0-1
+    crps_min, crps_max = crps_range
+    if crps_max > crps_min and crps is not None:
+        crps_norm = 1.0 - (crps - crps_min) / (crps_max - crps_min)
+    else:
+        crps_norm = 0.5
+    crps_norm = np.clip(crps_norm, 0, 1)
+    
+    # Normalize Hyvarinen (higher is better for well-specified models)
+    hyv_min, hyv_max = hyv_range
+    if hyv_max > hyv_min and hyvarinen is not None:
+        hyv_norm = (hyvarinen - hyv_min) / (hyv_max - hyv_min)
+    else:
+        hyv_norm = 0.5
+    hyv_norm = np.clip(hyv_norm, 0, 1)
+    
+    # PIT: Binary gate with soft penalty
+    pit_score = 1.0 if pit_calibrated else 0.3
+    
+    # CSS, FEC, DIG already 0-1
+    css_norm = css if css is not None else 0.5
+    fec_norm = fec if fec is not None else 0.5
+    dig_norm = dig if dig is not None else 0.5
+    
+    # Weighted combination
+    final = (
+        0.25 * bic_norm +
+        0.20 * crps_norm +
+        0.15 * hyv_norm +
+        0.15 * pit_score +
+        0.10 * css_norm +
+        0.08 * fec_norm +
+        0.07 * dig_norm
+    )
+    
+    # Scale to 0-100
+    return round(final * 100, 2)
 
 
 # =============================================================================
@@ -1049,17 +1155,26 @@ def compute_combined_scores(
     config: ArenaConfig,
 ) -> List[ModelScore]:
     """
-    Compute combined scores for all models.
+    Compute combined scores and final scores for all models.
     
     Args:
         scores: List of model scores
         config: Arena configuration
         
     Returns:
-        Updated scores with combined_score field
+        Updated scores with combined_score and final_score fields
     """
     if not scores:
         return scores
+    
+    # Compute global ranges for final score normalization
+    all_bics = [s.bic for s in scores if s.bic is not None]
+    all_crps = [s.crps for s in scores if s.crps is not None]
+    all_hyv = [s.hyvarinen_score for s in scores if s.hyvarinen_score is not None]
+    
+    bic_range = (min(all_bics), max(all_bics)) if all_bics else (0, 1)
+    crps_range = (min(all_crps), max(all_crps)) if all_crps else (0, 1)
+    hyv_range = (min(all_hyv), max(all_hyv)) if all_hyv else (0, 1)
     
     # Group by symbol
     by_symbol: Dict[str, List[ModelScore]] = {}
@@ -1073,11 +1188,11 @@ def compute_combined_scores(
         # Get BIC range for normalization
         bics = [s.bic for s in symbol_scores]
         bic_min, bic_max = min(bics), max(bics)
-        bic_range = bic_max - bic_min if bic_max > bic_min else 1.0
+        bic_norm_range = bic_max - bic_min if bic_max > bic_min else 1.0
         
         for score in symbol_scores:
             # BIC score (lower is better, so invert)
-            bic_norm = 1.0 - (score.bic - bic_min) / bic_range
+            bic_norm = 1.0 - (score.bic - bic_min) / bic_norm_range
             
             # PIT score (binary + p-value)
             pit_score = 0.5 * float(score.pit_calibrated) + 0.5 * score.pit_pvalue
@@ -1090,6 +1205,20 @@ def compute_combined_scores(
                 weights["bic"] * bic_norm +
                 weights["hyvarinen"] * hyv_score +
                 weights["pit"] * pit_score
+            )
+            
+            # Compute Final Score (0-100)
+            score.final_score = compute_final_score(
+                bic=score.bic,
+                crps=score.crps if score.crps else 0.02,
+                hyvarinen=score.hyvarinen_score if score.hyvarinen_score else 0,
+                pit_calibrated=score.pit_calibrated,
+                css=score.css_score,
+                fec=score.fec_score,
+                dig=score.dig_score,
+                bic_range=bic_range,
+                crps_range=crps_range,
+                hyv_range=hyv_range,
             )
     
     return scores
@@ -1150,8 +1279,8 @@ def determine_promotion_candidates(
     Determine which experimental models qualify for promotion.
     
     Criteria:
-    1. Beat best standard model by >promotion_threshold (5%)
-    2. PIT calibrated on ALL symbols
+    1. Final Score beats best standard by >5 points (on 100-point scale)
+    2. PIT calibration pass rate >= 75%
     3. No category where it ranks last
     
     Args:
@@ -1167,38 +1296,43 @@ def determine_promotion_candidates(
     # Get experimental model names
     experimental_names = set(EXPERIMENTAL_MODELS.keys())
     
-    # Compute average scores per model
-    model_avg: Dict[str, float] = {}
-    model_pit_all_pass: Dict[str, bool] = {}
+    # Compute average final scores per model
+    model_avg_final: Dict[str, float] = {}
+    model_pit_rate: Dict[str, float] = {}
     
     for model_name in set(s.model_name for s in scores):
         model_scores = [s for s in scores if s.model_name == model_name]
         if model_scores:
-            avg_combined = np.mean([s.combined_score for s in model_scores if s.combined_score])
-            model_avg[model_name] = avg_combined
-            model_pit_all_pass[model_name] = all(s.pit_calibrated for s in model_scores)
+            # Use final_score for promotion criteria
+            final_scores = [s.final_score for s in model_scores if s.final_score is not None]
+            if final_scores:
+                model_avg_final[model_name] = np.mean(final_scores)
+            else:
+                model_avg_final[model_name] = 0.0
+            # Compute PIT pass rate (not all-or-nothing)
+            model_pit_rate[model_name] = np.mean([float(s.pit_calibrated) for s in model_scores])
     
-    # Find best standard model score
-    standard_scores = [
-        model_avg[m] for m in STANDARD_MOMENTUM_MODELS 
-        if m in model_avg
+    # Find best standard model final score
+    standard_final_scores = [
+        model_avg_final[m] for m in STANDARD_MOMENTUM_MODELS 
+        if m in model_avg_final
     ]
-    best_standard = max(standard_scores) if standard_scores else 0.5
+    best_standard_final = max(standard_final_scores) if standard_final_scores else 50.0
     
     # Check each experimental model
     for exp_name in experimental_names:
-        if exp_name not in model_avg:
+        if exp_name not in model_avg_final:
             continue
         
-        exp_score = model_avg[exp_name]
-        exp_pit_pass = model_pit_all_pass.get(exp_name, False)
+        exp_final = model_avg_final[exp_name]
+        exp_pit_rate = model_pit_rate.get(exp_name, 0.0)
         
-        # Criterion 1: Beat best standard by threshold
-        improvement = (exp_score - best_standard) / best_standard if best_standard > 0 else 0
-        beats_threshold = improvement > config.promotion_threshold
+        # Criterion 1: Final Score beats best standard by >5 points
+        score_gap = exp_final - best_standard_final
+        beats_threshold = score_gap > 5.0
         
-        # Criterion 2: PIT calibrated everywhere
-        pit_pass = exp_pit_pass
+        # Criterion 2: PIT calibrated on >= 75% of symbols
+        pit_pass = exp_pit_rate >= 0.75
         
         # Criterion 3: Not last in any category
         not_last_anywhere = True
@@ -1434,7 +1568,7 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     def get_model_stats(model_name):
         model_scores = [s for s in result.scores if s.model_name == model_name]
         if not model_scores:
-            return None, None, None, None, None, None, None, None, None, None
+            return None, None, None, None, None, None, None, None, None, None, None
         avg_score = np.mean([s.combined_score for s in model_scores if s.combined_score])
         avg_bic = np.mean([s.bic for s in model_scores])
         avg_crps = np.mean([s.crps for s in model_scores if s.crps is not None]) if any(s.crps for s in model_scores) else None
@@ -1445,22 +1579,23 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         avg_fec = np.mean([s.fec_score for s in model_scores if s.fec_score is not None]) if any(s.fec_score for s in model_scores) else None
         avg_dig = np.mean([s.dig_score for s in model_scores if s.dig_score is not None]) if any(s.dig_score for s in model_scores) else None
         avg_adv = np.mean([s.advanced_score for s in model_scores if s.advanced_score is not None]) if any(s.advanced_score for s in model_scores) else None
-        return avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv
+        avg_final = np.mean([s.final_score for s in model_scores if s.final_score is not None]) if any(s.final_score for s in model_scores) else None
+        return avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv, avg_final
     
     # =========================================================================
     # STANDARD MODELS
     # =========================================================================
     console.print()
     console.print("[bold blue]STANDARD MODELS[/bold blue] [dim](Production Baselines)[/dim]")
-    console.print(f"[dim]{'─' * 130}[/dim]")
-    console.print(f"[dim]{'Rank':<6}{'Model':<32}{'Score':>7}{'BIC':>9}{'CRPS':>8}{'Hyv':>9}{'PIT':>6}{'CSS':>6}{'FEC':>6}{'DIG':>6}{'Adv':>6}{'Time':>9}[/dim]")
-    console.print(f"[dim]{'─' * 130}[/dim]")
+    console.print(f"[dim]{'─' * 142}[/dim]")
+    console.print(f"[dim]{'Rank':<6}{'Model':<30}{'FINAL':>7}{'BIC':>9}{'CRPS':>7}{'Hyv':>8}{'PIT':>6}{'CSS':>5}{'FEC':>5}{'DIG':>5}{'Time':>8}[/dim]")
+    console.print(f"[dim]{'─' * 142}[/dim]")
     
     for i, model_name in enumerate(standard_models, 1):
-        avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv = get_model_stats(model_name)
+        avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv, avg_final = get_model_stats(model_name)
         
         pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
-        score_str = f"{avg_score:.4f}" if avg_score else "-"
+        final_str = f"{avg_final:.2f}" if avg_final is not None else "-"
         bic_str = f"{avg_bic:.0f}" if avg_bic else "-"
         crps_str = f"{avg_crps:.4f}" if avg_crps else "-"
         hyv_str = f"{avg_hyv:.1f}" if avg_hyv else "-"
@@ -1468,8 +1603,6 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         css_str = f"{avg_css:.2f}" if avg_css is not None else "-"
         fec_str = f"{avg_fec:.2f}" if avg_fec is not None else "-"
         dig_str = f"{avg_dig:.2f}" if avg_dig is not None else "-"
-        adv_str = f"{avg_adv:.2f}" if avg_adv is not None else "-"
-        time_str = f"{avg_time:.0f}ms" if avg_time else "-"
         
         # Color for top models
         if i == 1:
@@ -1479,29 +1612,29 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         else:
             style = "white"
         
-        console.print(f"[{style}]#{i:<5}{model_name:<32}{score_str:>7}{bic_str:>9}{crps_str:>8}{hyv_str:>9}{pit_str:>6}{css_str:>6}{fec_str:>6}{dig_str:>6}{adv_str:>6}{time_str:>9}[/{style}]")
+        console.print(f"[{style}]#{i:<5}{model_name:<30}{final_str:>7}{bic_str:>9}{crps_str:>7}{hyv_str:>8}{pit_str:>6}{css_str:>5}{fec_str:>5}{dig_str:>5}{time_str:>8}[/{style}]")
     
     # =========================================================================
     # EXPERIMENTAL MODELS
     # =========================================================================
     console.print()
     console.print("[bold magenta]EXPERIMENTAL MODELS[/bold magenta] [dim](Candidates for Promotion)[/dim]")
-    console.print(f"[dim]{'─' * 140}[/dim]")
+    console.print(f"[dim]{'─' * 142}[/dim]")
     
     if experimental_models:
-        console.print(f"[dim]{'Rank':<6}{'Model':<32}{'Score':>7}{'BIC':>9}{'CRPS':>8}{'Hyv':>9}{'PIT':>6}{'CSS':>6}{'FEC':>6}{'DIG':>6}{'Adv':>6}{'Time':>9}{'vs STD':>8}[/dim]")
-        console.print(f"[dim]{'─' * 140}[/dim]")
+        console.print(f"[dim]{'Rank':<6}{'Model':<30}{'FINAL':>7}{'BIC':>9}{'CRPS':>7}{'Hyv':>8}{'PIT':>6}{'CSS':>5}{'FEC':>5}{'DIG':>5}{'Time':>8}{'vs STD':>8}[/dim]")
+        console.print(f"[dim]{'─' * 142}[/dim]")
         
-        # Get best standard score for comparison
-        best_std_score = None
+        # Get best standard final score for comparison
+        best_std_final = None
         if standard_models:
-            best_std_score, _, _, _, _, _, _, _, _, _ = get_model_stats(standard_models[0])
+            _, _, _, _, _, _, _, _, _, _, best_std_final = get_model_stats(standard_models[0])
         
         for i, model_name in enumerate(experimental_models, 1):
-            avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv = get_model_stats(model_name)
+            avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv, avg_final = get_model_stats(model_name)
             
             pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
-            score_str = f"{avg_score:.4f}" if avg_score else "-"
+            final_str = f"{avg_final:.2f}" if avg_final is not None else "-"
             bic_str = f"{avg_bic:.0f}" if avg_bic else "-"
             crps_str = f"{avg_crps:.4f}" if avg_crps else "-"
             hyv_str = f"{avg_hyv:.1f}" if avg_hyv else "-"
@@ -1509,27 +1642,26 @@ def _display_results(result: ArenaResult, console: Console) -> None:
             css_str = f"{avg_css:.2f}" if avg_css is not None else "-"
             fec_str = f"{avg_fec:.2f}" if avg_fec is not None else "-"
             dig_str = f"{avg_dig:.2f}" if avg_dig is not None else "-"
-            adv_str = f"{avg_adv:.2f}" if avg_adv is not None else "-"
             
-            # Gap vs standard
-            if best_std_score and avg_score:
-                gap_pct = ((avg_score - best_std_score) / best_std_score) * 100
+            # Gap vs standard (using final score)
+            if best_std_final and avg_final:
+                gap_pct = avg_final - best_std_final
                 if gap_pct > 0:
-                    gap_str = f"[green]+{gap_pct:.1f}%[/green]"
+                    gap_str = f"[green]+{gap_pct:.1f}[/green]"
                 else:
-                    gap_str = f"[red]{gap_pct:.1f}%[/red]"
+                    gap_str = f"[red]{gap_pct:.1f}[/red]"
             else:
                 gap_str = "-"
             
             # Style based on performance
-            if avg_score and best_std_score and avg_score > best_std_score:
+            if avg_final and best_std_final and avg_final > best_std_final:
                 style = "bold green"
                 rank_str = f"*#{i}"
             else:
                 style = "white"
                 rank_str = f"#{i}"
             
-            console.print(f"[{style}]{rank_str:<6}{model_name:<32}{score_str:>7}{bic_str:>9}{crps_str:>8}{hyv_str:>9}{pit_str:>6}{css_str:>6}{fec_str:>6}{dig_str:>6}{adv_str:>6}{time_str:>9}[/{style}]  {gap_str}")
+            console.print(f"[{style}]{rank_str:<6}{model_name:<30}{final_str:>7}{bic_str:>9}{crps_str:>7}{hyv_str:>8}{pit_str:>6}{css_str:>5}{fec_str:>5}{dig_str:>5}{time_str:>8}[/{style}]  {gap_str}")
     else:
         console.print("[dim]  No experimental models enabled[/dim]")
     
@@ -1537,8 +1669,8 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     # HEAD-TO-HEAD (only if experimental models exist)
     # =========================================================================
     if experimental_models and standard_models:
-        best_std_score, _, _, _, best_std_pit, _, best_std_css, best_std_fec, best_std_dig, best_std_adv = get_model_stats(standard_models[0])
-        best_exp_score, _, _, _, best_exp_pit, _, best_exp_css, best_exp_fec, best_exp_dig, best_exp_adv = get_model_stats(experimental_models[0])
+        _, _, _, _, best_std_pit, _, _, _, _, _, best_std_final = get_model_stats(standard_models[0])
+        _, _, _, _, best_exp_pit, _, _, _, _, _, best_exp_final = get_model_stats(experimental_models[0])
         
         console.print()
         console.print("[bold]HEAD-TO-HEAD[/bold]")
@@ -1548,17 +1680,17 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         exp_pit = "PASS" if best_exp_pit == 1.0 else f"{best_exp_pit*100:.0f}%"
         
         console.print(f"  [blue]Standard:[/blue]     {standard_models[0]}")
-        console.print(f"                  Score: {best_std_score:.4f}  PIT: {std_pit}")
+        console.print(f"                  Final: {best_std_final:.2f}/100  PIT: {std_pit}")
         console.print(f"  [magenta]Experimental:[/magenta] {experimental_models[0]}")
-        console.print(f"                  Score: {best_exp_score:.4f}  PIT: {exp_pit}")
+        console.print(f"                  Final: {best_exp_final:.2f}/100  PIT: {exp_pit}")
         
-        gap = ((best_exp_score - best_std_score) / best_std_score * 100) if best_std_score else 0
+        gap = best_exp_final - best_std_final if best_std_final and best_exp_final else 0
         if gap > 5:
-            console.print(f"  [bold green]>>> EXPERIMENTAL WINS by {gap:.1f}%[/bold green]")
+            console.print(f"  [bold green]>>> EXPERIMENTAL WINS by +{gap:.1f} points[/bold green]")
         elif gap > 0:
-            console.print(f"  [yellow]>>> Experimental leads by {gap:.1f}% (needs >5%)[/yellow]")
+            console.print(f"  [yellow]>>> Experimental leads by +{gap:.1f} points (needs >5)[/yellow]")
         else:
-            console.print(f"  [blue]>>> Standard leads by {abs(gap):.1f}%[/blue]")
+            console.print(f"  [blue]>>> Standard leads by {abs(gap):.1f} points[/blue]")
     
     # =========================================================================
     # PROMOTION STATUS
@@ -1568,11 +1700,15 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         console.print("[bold green]PROMOTION CANDIDATES[/bold green]")
         console.print(f"[dim]{'─' * 60}[/dim]")
         for m in result.promotion_candidates:
-            console.print(f"  [green]>[/green] {m}")
-        console.print("[dim]  Ready for panel review[/dim]")
+            # Get model stats for display
+            _, _, _, _, pit_rate, _, _, _, _, _, final = get_model_stats(m)
+            pit_str = f"{pit_rate*100:.0f}%" if pit_rate else "-"
+            final_str = f"{final:.2f}" if final else "-"
+            console.print(f"  [green]>[/green] {m} [dim](Final: {final_str}, PIT: {pit_str})[/dim]")
+        console.print("[dim]  Ready for production deployment[/dim]")
     else:
         console.print("[yellow]NO PROMOTION CANDIDATES[/yellow]")
-        console.print("[dim]  Criteria: >5% vs standard, 100% PIT pass, no category failures[/dim]")
+        console.print("[dim]  Criteria: Final Score >5pts vs standard, PIT >=75%, no category failures[/dim]")
     
     # =========================================================================
     # SUMMARY
