@@ -1278,10 +1278,12 @@ def determine_promotion_candidates(
     """
     Determine which experimental models qualify for promotion.
     
-    Criteria:
+    Criteria (ALL must pass):
     1. Final Score beats best standard by >5 points (on 100-point scale)
     2. PIT calibration pass rate >= 75%
-    3. No category where it ranks last
+    3. CSS (Calibration Stability Under Stress) >= 0.65 [HARD GATE]
+    4. FEC (Forecast Entropy Consistency) >= 0.75 [HARD GATE]
+    5. No category where it ranks last
     
     Args:
         scores: All scores
@@ -1296,9 +1298,11 @@ def determine_promotion_candidates(
     # Get experimental model names
     experimental_names = set(EXPERIMENTAL_MODELS.keys())
     
-    # Compute average final scores per model
+    # Compute average scores per model
     model_avg_final: Dict[str, float] = {}
     model_pit_rate: Dict[str, float] = {}
+    model_avg_css: Dict[str, float] = {}
+    model_avg_fec: Dict[str, float] = {}
     
     for model_name in set(s.model_name for s in scores):
         model_scores = [s for s in scores if s.model_name == model_name]
@@ -1311,6 +1315,12 @@ def determine_promotion_candidates(
                 model_avg_final[model_name] = 0.0
             # Compute PIT pass rate (not all-or-nothing)
             model_pit_rate[model_name] = np.mean([float(s.pit_calibrated) for s in model_scores])
+            # Compute average CSS
+            css_scores = [s.css_score for s in model_scores if s.css_score is not None]
+            model_avg_css[model_name] = np.mean(css_scores) if css_scores else 0.0
+            # Compute average FEC
+            fec_scores = [s.fec_score for s in model_scores if s.fec_score is not None]
+            model_avg_fec[model_name] = np.mean(fec_scores) if fec_scores else 0.0
     
     # Find best standard model final score
     standard_final_scores = [
@@ -1326,6 +1336,8 @@ def determine_promotion_candidates(
         
         exp_final = model_avg_final[exp_name]
         exp_pit_rate = model_pit_rate.get(exp_name, 0.0)
+        exp_css = model_avg_css.get(exp_name, 0.0)
+        exp_fec = model_avg_fec.get(exp_name, 0.0)
         
         # Criterion 1: Final Score beats best standard by >5 points
         score_gap = exp_final - best_standard_final
@@ -1334,7 +1346,13 @@ def determine_promotion_candidates(
         # Criterion 2: PIT calibrated on >= 75% of symbols
         pit_pass = exp_pit_rate >= 0.75
         
-        # Criterion 3: Not last in any category
+        # Criterion 3: CSS >= 0.65 [HARD GATE]
+        css_pass = exp_css >= 0.65
+        
+        # Criterion 4: FEC >= 0.75 [HARD GATE]
+        fec_pass = exp_fec >= 0.75
+        
+        # Criterion 5: Not last in any category
         not_last_anywhere = True
         for cat_key, cat_ranking in rankings.items():
             if cat_key == "overall":
@@ -1344,7 +1362,8 @@ def determine_promotion_candidates(
                     not_last_anywhere = False
                     break
         
-        if beats_threshold and pit_pass and not_last_anywhere:
+        # ALL criteria must pass
+        if beats_threshold and pit_pass and css_pass and fec_pass and not_last_anywhere:
             candidates.append(exp_name)
     
     return candidates
@@ -1708,7 +1727,7 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         console.print("[dim]  Ready for production deployment[/dim]")
     else:
         console.print("[yellow]NO PROMOTION CANDIDATES[/yellow]")
-        console.print("[dim]  Criteria: Final Score >5pts vs standard, PIT >=75%, no category failures[/dim]")
+        console.print("[dim]  Criteria: Final >5pts, PIT >=75%, CSS >=0.65, FEC >=0.75[/dim]")
     
     # =========================================================================
     # SUMMARY

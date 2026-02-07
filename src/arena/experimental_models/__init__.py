@@ -1,11 +1,15 @@
 """
-Arena Experimental Models - Top DTCWT models + Next-Gen evolutions.
+Arena Experimental Models - Top DTCWT models that pass all hard gates.
 10,000ms hard time limit enforced.
 
-Current Champions (sorted by Final Score):
-- dtcwt_deep_triple_boost: FINAL 67.11 (+10.6)
-- dtcwt_deep_double_boost: FINAL 63.00 (+6.5)
-- dtcwt_quad_boost: FINAL 61.10 (+4.6)
+Promotion Hard Gates:
+- CSS >= 0.65 (Calibration Stability Under Stress)
+- FEC >= 0.75 (Forecast Entropy Consistency)
+
+Current Champions (passing all gates):
+- dtcwt_deep_triple_boost: FINAL 63.94, CSS 0.75, FEC 0.81
+- dtcwt_deep_double_boost: FINAL 59.61, CSS 0.75, FEC 0.81
+- dualtree_complex_wavelet: FINAL 55.93, CSS 0.77, FEC 0.81
 """
 
 from .base import ExperimentalModelSpec, ExperimentalModelFamily, BaseExperimentalModel
@@ -13,23 +17,19 @@ from .base import ExperimentalModelSpec, ExperimentalModelFamily, BaseExperiment
 # Champion model
 from .m14_dualtree_complex_wavelet import DualTreeComplexWaveletKalmanModel
 
-# Gen2 DTCWT evolution models
+# Gen2 DTCWT evolution models (CSS >= 0.65 and FEC >= 0.75 only)
 from .m80_dtcwt_gen2 import (
-    DTCWTTripleBoostModel,
-    DTCWTQuadBoostModel,
     DTCWTDeepDoubleBoostModel,
     DTCWTDeepTripleBoostModel,
 )
 
 
 EXPERIMENTAL_MODELS = {
-    # Original champion (+1.6)
+    # Original champion (CSS 0.77, FEC 0.81)
     "dualtree_complex_wavelet": DualTreeComplexWaveletKalmanModel,
-    # Gen2 DTCWT evolution (all positive vs STD)
-    "dtcwt_triple_boost": DTCWTTripleBoostModel,          # +2.9
-    "dtcwt_quad_boost": DTCWTQuadBoostModel,              # +4.6
-    "dtcwt_deep_double_boost": DTCWTDeepDoubleBoostModel, # +6.5
-    "dtcwt_deep_triple_boost": DTCWTDeepTripleBoostModel, # +10.6
+    # Gen2 DTCWT evolution (passing CSS >= 0.65 and FEC >= 0.75)
+    "dtcwt_deep_double_boost": DTCWTDeepDoubleBoostModel,  # CSS 0.75, FEC 0.81
+    "dtcwt_deep_triple_boost": DTCWTDeepTripleBoostModel,  # CSS 0.75, FEC 0.81
 }
 
 EXPERIMENTAL_MODEL_SPECS = {name: ExperimentalModelSpec(
