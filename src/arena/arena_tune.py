@@ -610,20 +610,8 @@ def compute_pit_score(
 # PARALLEL PROCESSING HELPERS
 # =============================================================================
 
-def _fit_single_symbol_wrapper(args: Tuple) -> List[Dict]:
-    """Wrapper for multiprocessing - fits all models for a single symbol."""
-    symbol, returns, vol, category_value, config_dict = args
-    
-    # Recreate minimal config
-    class MinConfig:
-        def __init__(self, d):
-            self.test_standard = d.get('test_standard', True)
-            self.test_experimental = d.get('test_experimental', True)
-            self.verbose = d.get('verbose', False)
-    
-    config = MinConfig(config_dict)
-    
-    # Compute regime labels
+def _compute_regime_labels(returns: np.ndarray, vol: np.ndarray) -> np.ndarray:
+    """Compute regime labels for returns series."""
     n = len(returns)
     regime_labels = np.zeros(n, dtype=int)
     window = 60
@@ -645,58 +633,76 @@ def _fit_single_symbol_wrapper(args: Tuple) -> List[Dict]:
             regime_labels[t] = 2
         else:
             regime_labels[t] = 3
+    return regime_labels
+
+
+def _fit_single_model_wrapper(args: Tuple) -> Dict:
+    """Wrapper for multiprocessing - fits ONE model for ONE symbol."""
+    symbol, model_name, model_type, returns, vol, regime_labels, category_value = args
+    
+    try:
+        if model_type == "standard":
+            result = fit_standard_model(model_name, returns, vol, regime_labels)
+            fit_params = result["fit_params"]
+        else:
+            result = fit_experimental_model(model_name, returns, vol, regime_labels)
+            fit_params = result.get("fit_params", result)
+        
+        pit_pvalue, pit_calibrated = compute_pit_score(returns, vol, fit_params, model_name)
+        crps, hyvarinen = compute_scoring_metrics(returns, vol, fit_params, model_name)
+        
+        return {
+            "model_name": model_name,
+            "symbol": symbol,
+            "category": category_value,
+            "log_likelihood": result.get("log_likelihood", 0),
+            "bic": result.get("bic", 0),
+            "aic": result.get("aic", 0),
+            "crps": crps,
+            "pit_pvalue": pit_pvalue,
+            "pit_calibrated": pit_calibrated,
+            "hyvarinen_score": hyvarinen,
+            "fit_params": fit_params,
+            "fit_time_ms": result.get("fit_time_ms", 0),
+            "success": True,
+        }
+    except Exception as e:
+        return {
+            "model_name": model_name,
+            "symbol": symbol,
+            "category": category_value,
+            "success": False,
+            "error": str(e),
+        }
+
+
+def _fit_single_symbol_wrapper(args: Tuple) -> List[Dict]:
+    """Wrapper for multiprocessing - fits all models for a single symbol (fallback)."""
+    symbol, returns, vol, category_value, config_dict = args
+    
+    class MinConfig:
+        def __init__(self, d):
+            self.test_standard = d.get('test_standard', True)
+            self.test_experimental = d.get('test_experimental', True)
+            self.verbose = d.get('verbose', False)
+    
+    config = MinConfig(config_dict)
+    regime_labels = _compute_regime_labels(returns, vol)
     
     results = []
     
-    # Fit standard models
     if config.test_standard:
         for model_name in STANDARD_MOMENTUM_MODELS:
-            try:
-                result = fit_standard_model(model_name, returns, vol, regime_labels)
-                pit_pvalue, pit_calibrated = compute_pit_score(returns, vol, result["fit_params"], model_name)
-                crps, hyvarinen = compute_scoring_metrics(returns, vol, result["fit_params"], model_name)
-                results.append({
-                    "model_name": model_name,
-                    "symbol": symbol,
-                    "category": category_value,
-                    "log_likelihood": result["log_likelihood"],
-                    "bic": result["bic"],
-                    "aic": result["aic"],
-                    "crps": crps,
-                    "pit_pvalue": pit_pvalue,
-                    "pit_calibrated": pit_calibrated,
-                    "hyvarinen_score": hyvarinen,
-                    "fit_params": result["fit_params"],
-                    "fit_time_ms": result["fit_time_ms"],
-                })
-            except Exception as e:
-                pass
+            r = _fit_single_model_wrapper((symbol, model_name, "standard", returns, vol, regime_labels, category_value))
+            if r.get("success", False):
+                results.append(r)
     
-    # Fit experimental models
     if config.test_experimental:
         enabled_models = get_enabled_experimental_models()
         for model_name in enabled_models:
-            try:
-                result = fit_experimental_model(model_name, returns, vol, regime_labels)
-                fit_params = result.get("fit_params", result)
-                pit_pvalue, pit_calibrated = compute_pit_score(returns, vol, fit_params, model_name)
-                crps, hyvarinen = compute_scoring_metrics(returns, vol, fit_params, model_name)
-                results.append({
-                    "model_name": model_name,
-                    "symbol": symbol,
-                    "category": category_value,
-                    "log_likelihood": result.get("log_likelihood", 0),
-                    "bic": result.get("bic", 0),
-                    "aic": result.get("aic", 0),
-                    "crps": crps,
-                    "pit_pvalue": pit_pvalue,
-                    "pit_calibrated": pit_calibrated,
-                    "hyvarinen_score": hyvarinen,
-                    "fit_params": fit_params,
-                    "fit_time_ms": result.get("fit_time_ms", 0),
-                })
-            except Exception as e:
-                pass
+            r = _fit_single_model_wrapper((symbol, model_name, "experimental", returns, vol, regime_labels, category_value))
+            if r.get("success", False):
+                results.append(r)
     
     return results
 
@@ -706,39 +712,53 @@ def fit_all_symbols_parallel(
     config: 'ArenaConfig',
     n_workers: int = None,
 ) -> List['ModelScore']:
-    """Fit all models for all symbols using multiprocessing."""
+    """Fit all models for all symbols using multiprocessing at (symbol, model) granularity."""
     if n_workers is None:
         n_workers = max(1, N_CPUS - 1)
     
-    config_dict = {
-        'test_standard': config.test_standard,
-        'test_experimental': config.test_experimental,
-        'verbose': config.verbose,
-    }
+    # Build list of ALL (symbol, model) combinations for true parallelism
+    tasks = []
     
-    args_list = []
+    # Precompute volatility and regime labels for each symbol
+    symbol_data = {}
     for symbol, dataset in datasets.items():
         vol = compute_ewma_vol(dataset.returns)
-        args_list.append((
-            symbol,
-            dataset.returns,
-            vol,
-            dataset.category.value,
-            config_dict,
-        ))
+        regime_labels = _compute_regime_labels(dataset.returns, vol)
+        symbol_data[symbol] = {
+            'returns': dataset.returns,
+            'vol': vol,
+            'regime_labels': regime_labels,
+            'category': dataset.category.value,
+        }
+    
+    # Create tasks for standard models
+    if config.test_standard:
+        for symbol in datasets.keys():
+            sd = symbol_data[symbol]
+            for model_name in STANDARD_MOMENTUM_MODELS:
+                tasks.append((symbol, model_name, "standard", sd['returns'], sd['vol'], sd['regime_labels'], sd['category']))
+    
+    # Create tasks for experimental models
+    if config.test_experimental:
+        enabled_models = get_enabled_experimental_models()
+        for symbol in datasets.keys():
+            sd = symbol_data[symbol]
+            for model_name in enabled_models:
+                tasks.append((symbol, model_name, "experimental", sd['returns'], sd['vol'], sd['regime_labels'], sd['category']))
     
     all_results = []
     
+    # Execute all tasks in parallel
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        futures = {executor.submit(_fit_single_symbol_wrapper, args): args[0] for args in args_list}
+        futures = {executor.submit(_fit_single_model_wrapper, task): task for task in tasks}
         
         for future in as_completed(futures):
-            symbol = futures[future]
             try:
-                results = future.result()
-                all_results.extend(results)
+                result = future.result()
+                if result.get("success", False):
+                    all_results.append(result)
             except Exception as e:
-                print(f"Error processing {symbol}: {e}")
+                pass
     
     # Convert to ModelScore objects
     scores = []
@@ -1081,15 +1101,20 @@ def run_arena_competition(
         disabled = load_disabled_models()
         enabled_exp = get_enabled_experimental_models()
         
+        # Calculate total parallel tasks
+        n_std = len(STANDARD_MOMENTUM_MODELS) if config.test_standard else 0
+        n_exp = len(enabled_exp) if config.test_experimental else 0
+        n_total_tasks = len(config.symbols) * (n_std + n_exp)
+        
         # Clean header
         console.print()
         console.print("[bold cyan]ARENA MODEL COMPETITION[/bold cyan]")
         console.print(f"[dim]{'─' * 60}[/dim]")
-        console.print(f"  Symbols: [bold]{len(config.symbols)}[/bold]  |  "
-                     f"Standard: [bold]{len(STANDARD_MOMENTUM_MODELS)}[/bold]  |  "
-                     f"Experimental: [bold]{len(enabled_exp)}/{len(EXPERIMENTAL_MODELS)}[/bold]")
+        console.print(f"  Symbols: [bold]{len(config.symbols)}[/bold]    "
+                     f"Standard: [bold]{n_std}[/bold]    "
+                     f"Experimental: [bold]{n_exp}[/bold]")
         if parallel:
-            console.print(f"  [dim]Parallel: {n_workers} workers[/dim]")
+            console.print(f"  [dim]Parallel: {n_workers} workers x {n_total_tasks} tasks (model-level)[/dim]")
         if disabled:
             console.print(f"  [dim]Disabled: {', '.join(disabled.keys())}[/dim]")
         console.print()
@@ -1265,31 +1290,33 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     def get_model_stats(model_name):
         model_scores = [s for s in result.scores if s.model_name == model_name]
         if not model_scores:
-            return None, None, None, None, None
+            return None, None, None, None, None, None
         avg_score = np.mean([s.combined_score for s in model_scores if s.combined_score])
         avg_bic = np.mean([s.bic for s in model_scores])
         avg_crps = np.mean([s.crps for s in model_scores if s.crps is not None]) if any(s.crps for s in model_scores) else None
         avg_hyv = np.mean([s.hyvarinen_score for s in model_scores if s.hyvarinen_score is not None]) if any(s.hyvarinen_score for s in model_scores) else None
         pit_rate = np.mean([float(s.pit_calibrated) for s in model_scores])
-        return avg_score, avg_bic, avg_crps, avg_hyv, pit_rate
+        avg_time = np.mean([s.fit_time_ms for s in model_scores])
+        return avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time
     
     # =========================================================================
     # STANDARD MODELS
     # =========================================================================
     console.print()
     console.print("[bold blue]STANDARD MODELS[/bold blue] [dim](Production Baselines)[/dim]")
-    console.print(f"[dim]{'─' * 90}[/dim]")
-    console.print(f"[dim]{'Rank':<6}{'Model':<35}{'Score':>8}{'BIC':>10}{'CRPS':>10}{'Hyv':>10}{'PIT':>8}[/dim]")
-    console.print(f"[dim]{'─' * 90}[/dim]")
+    console.print(f"[dim]{'─' * 100}[/dim]")
+    console.print(f"[dim]{'Rank':<6}{'Model':<35}{'Score':>8}{'BIC':>10}{'CRPS':>10}{'Hyv':>10}{'PIT':>8}{'Time':>10}[/dim]")
+    console.print(f"[dim]{'─' * 100}[/dim]")
     
     for i, model_name in enumerate(standard_models, 1):
-        avg_score, avg_bic, avg_crps, avg_hyv, pit_rate = get_model_stats(model_name)
+        avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time = get_model_stats(model_name)
         
         pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
         score_str = f"{avg_score:.4f}" if avg_score else "-"
         bic_str = f"{avg_bic:.0f}" if avg_bic else "-"
         crps_str = f"{avg_crps:.4f}" if avg_crps else "-"
         hyv_str = f"{avg_hyv:.1f}" if avg_hyv else "-"
+        time_str = f"{avg_time:.0f}ms" if avg_time else "-"
         
         # Color for top models
         if i == 1:
@@ -1299,32 +1326,33 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         else:
             style = "white"
         
-        console.print(f"[{style}]#{i:<5}{model_name:<35}{score_str:>8}{bic_str:>10}{crps_str:>10}{hyv_str:>10}{pit_str:>8}[/{style}]")
+        console.print(f"[{style}]#{i:<5}{model_name:<35}{score_str:>8}{bic_str:>10}{crps_str:>10}{hyv_str:>10}{pit_str:>8}{time_str:>10}[/{style}]")
     
     # =========================================================================
     # EXPERIMENTAL MODELS
     # =========================================================================
     console.print()
     console.print("[bold magenta]EXPERIMENTAL MODELS[/bold magenta] [dim](Candidates for Promotion)[/dim]")
-    console.print(f"[dim]{'─' * 100}[/dim]")
+    console.print(f"[dim]{'─' * 110}[/dim]")
     
     if experimental_models:
-        console.print(f"[dim]{'Rank':<6}{'Model':<35}{'Score':>8}{'BIC':>10}{'CRPS':>10}{'Hyv':>10}{'PIT':>8}{'vs STD':>10}[/dim]")
-        console.print(f"[dim]{'─' * 100}[/dim]")
+        console.print(f"[dim]{'Rank':<6}{'Model':<35}{'Score':>8}{'BIC':>10}{'CRPS':>10}{'Hyv':>10}{'PIT':>8}{'Time':>10}{'vs STD':>10}[/dim]")
+        console.print(f"[dim]{'─' * 110}[/dim]")
         
         # Get best standard score for comparison
         best_std_score = None
         if standard_models:
-            best_std_score, _, _, _, _ = get_model_stats(standard_models[0])
+            best_std_score, _, _, _, _, _ = get_model_stats(standard_models[0])
         
         for i, model_name in enumerate(experimental_models, 1):
-            avg_score, avg_bic, avg_crps, avg_hyv, pit_rate = get_model_stats(model_name)
+            avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time = get_model_stats(model_name)
             
             pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
             score_str = f"{avg_score:.4f}" if avg_score else "-"
             bic_str = f"{avg_bic:.0f}" if avg_bic else "-"
             crps_str = f"{avg_crps:.4f}" if avg_crps else "-"
             hyv_str = f"{avg_hyv:.1f}" if avg_hyv else "-"
+            time_str = f"{avg_time:.0f}ms" if avg_time else "-"
             
             # Gap vs standard
             if best_std_score and avg_score:
@@ -1344,7 +1372,7 @@ def _display_results(result: ArenaResult, console: Console) -> None:
                 style = "white"
                 rank_str = f"#{i}"
             
-            console.print(f"[{style}]{rank_str:<6}{model_name:<35}{score_str:>8}{bic_str:>10}{crps_str:>10}{hyv_str:>10}{pit_str:>8}[/{style}]  {gap_str}")
+            console.print(f"[{style}]{rank_str:<6}{model_name:<35}{score_str:>8}{bic_str:>10}{crps_str:>10}{hyv_str:>10}{pit_str:>8}{time_str:>10}[/{style}]  {gap_str}")
     else:
         console.print("[dim]  No experimental models enabled[/dim]")
     
@@ -1352,8 +1380,8 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     # HEAD-TO-HEAD (only if experimental models exist)
     # =========================================================================
     if experimental_models and standard_models:
-        best_std_score, _, _, _, best_std_pit = get_model_stats(standard_models[0])
-        best_exp_score, _, _, _, best_exp_pit = get_model_stats(experimental_models[0])
+        best_std_score, _, _, _, best_std_pit, _ = get_model_stats(standard_models[0])
+        best_exp_score, _, _, _, best_exp_pit, _ = get_model_stats(experimental_models[0])
         
         console.print()
         console.print("[bold]HEAD-TO-HEAD[/bold]")

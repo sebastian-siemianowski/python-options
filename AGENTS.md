@@ -105,16 +105,15 @@ Isolated sandbox for testing experimental models against production baselines.
 `kalman_gaussian_momentum`, `kalman_phi_gaussian_momentum`, `phi_student_t_nu_{4,6,8,12,20}_momentum`
 
 ### Experimental Models (`src/arena/experimental_models/`)
-**6 PROMOTION CANDIDATES** - All beat standard and pass PIT calibration:
+**5 PROMOTION CANDIDATES** - All beat standard and pass PIT calibration:
 
-| Model | vs Standard | PIT | Description |
-|-------|------------|-----|-------------|
-| `dualtree_complex_wavelet` | +129.5% | PASS | Dual-Tree Complex Wavelet Transform |
-| `synchrosqueezed_wavelet` | +31.5% | PASS | Synchrosqueezing Transform |
-| `wavelet_packet_kalman` | +31.4% | PASS | Wavelet Packet Decomposition |
-| `wavelet_kalman` | +21.1% | PASS | Multi-scale Haar Decomposition |
-| `wavelet_packet_bestbasis` | +1.4% | PASS | Entropy-based Best Basis |
-| `online_bayesian_ma` | +0.0% | PASS | Bayesian Model Averaging |
+| Model | vs Standard | Time | PIT | Description |
+|-------|------------|------|-----|-------------|
+| `dualtree_complex_wavelet` | +132.5% | 1037ms | PASS | Dual-Tree Complex Wavelet Transform |
+| `wavelet_packet_kalman` | +32.6% | 1945ms | PASS | Wavelet Packet Decomposition |
+| `wavelet_kalman` | +21.9% | 3188ms | PASS | Multi-scale Haar Decomposition |
+| `wavelet_packet_bestbasis` | +1.5% | 1503ms | PASS | Entropy-based Best Basis |
+| `online_bayesian_ma` | +0.0% | 74ms | PASS | Bayesian Model Averaging |
 
 ### Scoring System (`src/arena/scoring/`)
 Combined score using proper scoring rules:
