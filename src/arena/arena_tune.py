@@ -469,6 +469,83 @@ def fit_experimental_model(
 
 
 # =============================================================================
+# SCORING METRICS (CRPS, Hyvarinen)
+# =============================================================================
+
+def compute_scoring_metrics(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    fit_params: Dict[str, float],
+    model_name: str,
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Compute CRPS and Hyvarinen scores for a fitted model.
+    
+    Args:
+        returns: Log returns
+        vol: EWMA volatility
+        fit_params: Fitted model parameters
+        model_name: Name of the model
+        
+    Returns:
+        (crps, hyvarinen) - scores, None if computation fails
+    """
+    crps = None
+    hyvarinen = None
+    
+    if not CRPS_AVAILABLE:
+        return None, None
+    
+    try:
+        n = len(returns)
+        
+        # Generate predictions using fitted parameters
+        q = fit_params.get("q", 1e-6)
+        c = fit_params.get("c", 1.0)
+        phi = fit_params.get("phi", 0.0)
+        nu = fit_params.get("nu", None)
+        
+        # Simple one-step ahead predictions
+        mu_pred = np.zeros(n)
+        sigma_pred = np.zeros(n)
+        
+        for t in range(1, n):
+            mu_pred[t] = phi * returns[t-1] if abs(phi) > 0 else 0.0
+            sigma_pred[t] = c * vol[t] if vol[t] > 0 else c * 0.01
+        
+        # Skip warmup period
+        obs = returns[60:]
+        mu = mu_pred[60:]
+        sigma = np.maximum(sigma_pred[60:], 1e-6)
+        
+        if len(obs) < 50:
+            return None, None
+        
+        # Compute CRPS
+        if "student_t" in model_name or nu is not None:
+            nu_val = nu if nu else 8.0
+            from .scoring.crps import compute_crps_student_t
+            crps_result = compute_crps_student_t(obs, mu, sigma, nu_val)
+        else:
+            from .scoring.crps import compute_crps_gaussian
+            crps_result = compute_crps_gaussian(obs, mu, sigma)
+        
+        crps = crps_result.crps
+        
+        # Compute Hyvarinen
+        if "student_t" in model_name or nu is not None:
+            nu_val = nu if nu else 8.0
+            hyvarinen = compute_hyvarinen_score_student_t(obs, mu, sigma, nu_val)
+        else:
+            hyvarinen = compute_hyvarinen_score_gaussian(obs, mu, sigma)
+        
+    except Exception:
+        pass
+    
+    return crps, hyvarinen
+
+
+# =============================================================================
 # PIT CALIBRATION
 # =============================================================================
 
@@ -584,6 +661,11 @@ def fit_all_models_for_symbol(
                     returns, vol, result["fit_params"], model_name
                 )
                 
+                # Compute CRPS and Hyvarinen
+                crps, hyvarinen = compute_scoring_metrics(
+                    returns, vol, result["fit_params"], model_name
+                )
+                
                 score = ModelScore(
                     model_name=model_name,
                     symbol=dataset.symbol,
@@ -591,8 +673,10 @@ def fit_all_models_for_symbol(
                     log_likelihood=result["log_likelihood"],
                     bic=result["bic"],
                     aic=result["aic"],
+                    crps=crps,
                     pit_pvalue=pit_pvalue,
                     pit_calibrated=pit_calibrated,
+                    hyvarinen_score=hyvarinen,
                     fit_params=result["fit_params"],
                     fit_time_ms=result["fit_time_ms"],
                 )
@@ -609,9 +693,17 @@ def fit_all_models_for_symbol(
             try:
                 result = fit_experimental_model(model_name, returns, vol, regime_labels)
                 
+                # Get fit params from result
+                fit_params = result.get("fit_params", result)
+                
                 # Compute PIT
                 pit_pvalue, pit_calibrated = compute_pit_score(
-                    returns, vol, result.get("fit_params", result), model_name
+                    returns, vol, fit_params, model_name
+                )
+                
+                # Compute CRPS and Hyvarinen
+                crps, hyvarinen = compute_scoring_metrics(
+                    returns, vol, fit_params, model_name
                 )
                 
                 score = ModelScore(
@@ -621,8 +713,10 @@ def fit_all_models_for_symbol(
                     log_likelihood=result["log_likelihood"],
                     bic=result["bic"],
                     aic=result.get("aic", result["bic"]),
+                    crps=crps,
                     pit_pvalue=pit_pvalue,
                     pit_calibrated=pit_calibrated,
+                    hyvarinen_score=hyvarinen,
                     fit_params=result.get("fit_params", {}),
                     fit_time_ms=result.get("fit_time_ms", 0),
                 )
@@ -1022,11 +1116,13 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     def get_model_stats(model_name):
         model_scores = [s for s in result.scores if s.model_name == model_name]
         if not model_scores:
-            return None, None, None
+            return None, None, None, None, None
         avg_score = np.mean([s.combined_score for s in model_scores if s.combined_score])
-        pit_rate = np.mean([float(s.pit_calibrated) for s in model_scores])
         avg_bic = np.mean([s.bic for s in model_scores])
-        return avg_score, pit_rate, avg_bic
+        avg_crps = np.mean([s.crps for s in model_scores if s.crps is not None]) if any(s.crps for s in model_scores) else None
+        avg_hyv = np.mean([s.hyvarinen_score for s in model_scores if s.hyvarinen_score is not None]) if any(s.hyvarinen_score for s in model_scores) else None
+        pit_rate = np.mean([float(s.pit_calibrated) for s in model_scores])
+        return avg_score, avg_bic, avg_crps, avg_hyv, pit_rate
     
     # =========================================================================
     # STANDARD MODELS TABLE
@@ -1038,14 +1134,16 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         title_style="bold blue",
         border_style="blue",
     )
-    std_table.add_column("Rank", style="cyan", justify="center", width=6)
-    std_table.add_column("Model", style="white", min_width=35)
-    std_table.add_column("Score", justify="right", width=10)
-    std_table.add_column("BIC", justify="right", width=12)
-    std_table.add_column("PIT", justify="center", width=8)
+    std_table.add_column("Rank", style="cyan", justify="center", width=4)
+    std_table.add_column("Model", style="white", min_width=30)
+    std_table.add_column("Score", justify="right", width=8)
+    std_table.add_column("BIC", justify="right", width=10)
+    std_table.add_column("CRPS", justify="right", width=8)
+    std_table.add_column("Hyv", justify="right", width=8)
+    std_table.add_column("PIT", justify="center", width=6)
     
     for i, model_name in enumerate(standard_models, 1):
-        avg_score, pit_rate, avg_bic = get_model_stats(model_name)
+        avg_score, avg_bic, avg_crps, avg_hyv, pit_rate = get_model_stats(model_name)
         
         # Highlight top 3
         if i == 1:
@@ -1067,7 +1165,9 @@ def _display_results(result: ArenaResult, console: Console) -> None:
             rank_str,
             model_name,
             f"{avg_score:.4f}" if avg_score else "-",
-            f"{avg_bic:.1f}" if avg_bic else "-",
+            f"{avg_bic:.0f}" if avg_bic else "-",
+            f"{avg_crps:.4f}" if avg_crps else "-",
+            f"{avg_hyv:.2f}" if avg_hyv else "-",
             pit_str,
             style=row_style,
         )
@@ -1084,20 +1184,22 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         title_style="bold magenta",
         border_style="magenta",
     )
-    exp_table.add_column("Rank", style="cyan", justify="center", width=6)
-    exp_table.add_column("Model", style="white", min_width=35)
-    exp_table.add_column("Score", justify="right", width=10)
-    exp_table.add_column("BIC", justify="right", width=12)
-    exp_table.add_column("PIT", justify="center", width=8)
-    exp_table.add_column("vs Best STD", justify="right", width=12)
+    exp_table.add_column("Rank", style="cyan", justify="center", width=4)
+    exp_table.add_column("Model", style="white", min_width=30)
+    exp_table.add_column("Score", justify="right", width=8)
+    exp_table.add_column("BIC", justify="right", width=10)
+    exp_table.add_column("CRPS", justify="right", width=8)
+    exp_table.add_column("Hyv", justify="right", width=8)
+    exp_table.add_column("PIT", justify="center", width=6)
+    exp_table.add_column("vs STD", justify="right", width=8)
     
     # Get best standard score for comparison
     best_std_score = None
     if standard_models:
-        best_std_score, _, _ = get_model_stats(standard_models[0])
+        best_std_score, _, _, _, _ = get_model_stats(standard_models[0])
     
     for i, model_name in enumerate(experimental_models, 1):
-        avg_score, pit_rate, avg_bic = get_model_stats(model_name)
+        avg_score, avg_bic, avg_crps, avg_hyv, pit_rate = get_model_stats(model_name)
         
         # Compute gap vs best standard
         if best_std_score and avg_score:
@@ -1123,7 +1225,9 @@ def _display_results(result: ArenaResult, console: Console) -> None:
             rank_str,
             model_name,
             f"{avg_score:.4f}" if avg_score else "-",
-            f"{avg_bic:.1f}" if avg_bic else "-",
+            f"{avg_bic:.0f}" if avg_bic else "-",
+            f"{avg_crps:.4f}" if avg_crps else "-",
+            f"{avg_hyv:.2f}" if avg_hyv else "-",
             pit_str,
             gap_str,
             style=row_style,
@@ -1138,8 +1242,12 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     
     # Build comparison panel
     if best_std_score and experimental_models:
-        best_exp_score, best_exp_pit, _ = get_model_stats(experimental_models[0])
-        best_std_pit = get_model_stats(standard_models[0])[1] if standard_models else 0
+        best_exp_stats = get_model_stats(experimental_models[0])
+        best_std_stats = get_model_stats(standard_models[0]) if standard_models else (None, None, None, None, 0)
+        
+        best_exp_score = best_exp_stats[0]
+        best_exp_pit = best_exp_stats[4]
+        best_std_pit = best_std_stats[4] if best_std_stats else 0
         
         comparison_lines = [
             "[bold]Head-to-Head Comparison[/bold]",
