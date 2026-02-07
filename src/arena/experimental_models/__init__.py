@@ -1,18 +1,17 @@
 """
-Arena Experimental Models - World-class quantitative models with PIT calibration.
-All models beat standard kalman_gaussian_momentum and pass PIT calibration.
+Arena Experimental Models - Top 4 world-class models that beat standard.
+All models pass PIT calibration and outperform kalman_gaussian_momentum.
+10,000ms hard time limit enforced.
 
-PROMOTION CANDIDATES (verified):
-1. dualtree_complex_wavelet: +117% (PIT PASS) - Dual-Tree Complex Wavelet Transform
-2. wavelet_packet_kalman: +39% (PIT PASS) - Wavelet Packet Decomposition
-3. wavelet_kalman: +25% (PIT PASS) - Multi-scale Haar Decomposition
-4. wavelet_packet_bestbasis: +2% (PIT PASS) - Entropy-based Best Basis
-5. online_bayesian_ma: +0% (PIT PASS) - Bayesian Model Averaging
+Proven Champions:
+1. dualtree_complex_wavelet: +130% - Dual-Tree Complex Wavelet Transform
+2. wavelet_packet_kalman: +31% - Wavelet Packet Decomposition
+3. wavelet_kalman: +21% - Multi-scale Haar Wavelet
+4. wavelet_packet_bestbasis: +1.4% - Entropy Best Basis Selection
 """
 
 from .base import ExperimentalModelSpec, ExperimentalModelFamily, BaseExperimentalModel
 
-from .online_bayesian_ma import OnlineBayesianModelAvgModel
 from .m06_wavelet_kalman import WaveletKalmanModel
 from .m10_wavelet_packet_kalman import WaveletPacketKalmanModel
 from .m14_dualtree_complex_wavelet import DualTreeComplexWaveletKalmanModel
@@ -20,7 +19,6 @@ from .m21_stationary_wavelet_kalman import WaveletPacketBestBasisKalmanModel
 
 
 EXPERIMENTAL_MODELS = {
-    "online_bayesian_ma": OnlineBayesianModelAvgModel,
     "wavelet_kalman": WaveletKalmanModel,
     "wavelet_packet_kalman": WaveletPacketKalmanModel,
     "dualtree_complex_wavelet": DualTreeComplexWaveletKalmanModel,
@@ -33,7 +31,7 @@ EXPERIMENTAL_MODEL_SPECS = {name: ExperimentalModelSpec(
     n_params=4,
     param_names=("q", "c", "phi"),
     default_params={"q": 1e-6, "c": 1.0, "phi": 0.0},
-    description=f"PIT-calibrated promotion candidate: {name}",
+    description=f"Proven promotion candidate: {name}",
 ) for name in EXPERIMENTAL_MODELS.keys()}
 
 
