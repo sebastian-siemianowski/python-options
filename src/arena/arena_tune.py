@@ -149,6 +149,10 @@ class ModelScore:
         pit_calibrated: Whether PIT test passed
         hyvarinen_score: Hyvarinen score (if computed)
         combined_score: Weighted combined score
+        css_score: Calibration Stability Under Stress (0-1)
+        fec_score: Forecast Entropy Consistency (0-1)
+        dig_score: Directional Information Gain (0-1)
+        advanced_score: Combined CSS+FEC+DIG score
         fit_params: Fitted parameters
         fit_time_ms: Fitting time in milliseconds
     """
@@ -163,6 +167,10 @@ class ModelScore:
     pit_calibrated: bool = False
     hyvarinen_score: Optional[float] = None
     combined_score: Optional[float] = None
+    css_score: Optional[float] = None
+    fec_score: Optional[float] = None
+    dig_score: Optional[float] = None
+    advanced_score: Optional[float] = None
     fit_params: Dict[str, float] = field(default_factory=dict)
     fit_time_ms: float = 0.0
     
@@ -180,6 +188,10 @@ class ModelScore:
             "pit_calibrated": self.pit_calibrated,
             "hyvarinen_score": self.hyvarinen_score,
             "combined_score": self.combined_score,
+            "css_score": self.css_score,
+            "fec_score": self.fec_score,
+            "dig_score": self.dig_score,
+            "advanced_score": self.advanced_score,
             "fit_params": self.fit_params,
             "fit_time_ms": self.fit_time_ms,
         }
@@ -549,6 +561,106 @@ def compute_scoring_metrics(
     return crps, hyvarinen
 
 
+def compute_advanced_scoring_metrics(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    fit_params: Dict[str, float],
+    model_name: str,
+) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+    """
+    Compute CSS, FEC, DIG advanced scoring metrics.
+    """
+    from scipy.stats import norm, kstest
+    
+    n = len(returns)
+    warmup = 60
+    
+    if n - warmup < 100:
+        return None, None, None, None
+    
+    try:
+        q = fit_params.get("q", 1e-6) if isinstance(fit_params, dict) else 1e-6
+        c = fit_params.get("c", 1.0) if isinstance(fit_params, dict) else 1.0
+        phi = fit_params.get("phi", 0.0) if isinstance(fit_params, dict) else 0.0
+        
+        mu_pred = np.zeros(n)
+        sigma_pred = np.zeros(n)
+        pit_values = np.zeros(n)
+        
+        for t in range(1, n):
+            mu_pred[t] = phi * returns[t-1] if abs(phi) > 0 else 0.0
+            sigma_pred[t] = c * vol[t] if vol[t] > 0 else c * 0.01
+            if sigma_pred[t] > 1e-10:
+                z = (returns[t] - mu_pred[t]) / sigma_pred[t]
+                pit_values[t] = norm.cdf(z)
+            else:
+                pit_values[t] = 0.5
+        
+        pit_clean = pit_values[warmup:]
+        vol_clean = vol[warmup:]
+        
+        if len(vol_clean) < 100:
+            return None, None, None, None
+            
+        vol_pctiles = np.percentile(vol_clean, [25, 75, 95])
+        
+        # CSS: Calibration Stability Under Stress
+        css_scores = []
+        regimes = [
+            (0, vol_pctiles[0]),
+            (vol_pctiles[0], vol_pctiles[1]),
+            (vol_pctiles[1], vol_pctiles[2]),
+            (vol_pctiles[2], np.max(vol_clean)+1),
+        ]
+        for low, high in regimes:
+            mask = (vol_clean >= low) & (vol_clean < high)
+            if np.sum(mask) >= 20:
+                regime_pit = pit_clean[mask]
+                regime_pit_valid = regime_pit[(regime_pit > 0.001) & (regime_pit < 0.999)]
+                if len(regime_pit_valid) >= 10:
+                    _, pval = kstest(regime_pit_valid, 'uniform')
+                    css_scores.append(min(1.0, pval / 0.05))
+        css_score = np.mean(css_scores) if css_scores else 0.5
+        
+        # FEC: Forecast Entropy Consistency
+        sigma_clean = sigma_pred[warmup:]
+        sigma_safe = np.maximum(sigma_clean, 1e-8)
+        forecast_entropy = 0.5 * np.log(2 * np.pi * np.e * sigma_safe**2)
+        vol_safe = np.maximum(vol_clean, 1e-8)
+        market_entropy = 0.5 * np.log(2 * np.pi * np.e * vol_safe**2)
+        valid_mask = np.isfinite(forecast_entropy) & np.isfinite(market_entropy)
+        if np.sum(valid_mask) > 50:
+            corr = np.corrcoef(forecast_entropy[valid_mask], market_entropy[valid_mask])[0, 1]
+            fec_score = (corr + 1) / 2 if np.isfinite(corr) else 0.5
+        else:
+            fec_score = 0.5
+        
+        # DIG: Directional Information Gain
+        mu_clean = mu_pred[warmup:]
+        prob_positive = norm.cdf(0, loc=-mu_clean, scale=np.maximum(sigma_clean, 1e-8))
+        prob_positive = np.clip(prob_positive, 0.001, 0.999)
+        actual_positive = (returns[warmup:] > 0).astype(float)
+        predicted_direction = (prob_positive > 0.5).astype(float)
+        hit_rate = np.mean(predicted_direction == actual_positive)
+        kl_divs = []
+        for p in prob_positive:
+            model_p = np.array([1-p, p])
+            baseline = np.array([0.5, 0.5])
+            kl = np.sum(model_p * np.log(model_p / baseline))
+            if np.isfinite(kl):
+                kl_divs.append(kl)
+        kl_divergence = np.mean(kl_divs) if kl_divs else 0.0
+        kl_score = min(1.0, kl_divergence / 0.1)
+        hit_score = min(1.0, max(0, hit_rate - 0.5) / 0.1)
+        dig_score = 0.7 * kl_score + 0.3 * hit_score
+        
+        advanced_score = 0.4 * css_score + 0.35 * fec_score + 0.25 * dig_score
+        return float(css_score), float(fec_score), float(dig_score), float(advanced_score)
+        
+    except Exception:
+        return None, None, None, None
+
+
 # =============================================================================
 # PIT CALIBRATION
 # =============================================================================
@@ -646,10 +758,13 @@ def _fit_single_model_wrapper(args: Tuple) -> Dict:
             fit_params = result["fit_params"]
         else:
             result = fit_experimental_model(model_name, returns, vol, regime_labels)
-            fit_params = result.get("fit_params", result)
+            fit_params = result.get("fit_params", {})
+            if not fit_params:
+                fit_params = {"q": result.get("q", 1e-6), "c": result.get("c", 1.0), "phi": result.get("phi", 0.0)}
         
         pit_pvalue, pit_calibrated = compute_pit_score(returns, vol, fit_params, model_name)
         crps, hyvarinen = compute_scoring_metrics(returns, vol, fit_params, model_name)
+        css, fec, dig, adv = compute_advanced_scoring_metrics(returns, vol, fit_params, model_name)
         
         return {
             "model_name": model_name,
@@ -662,6 +777,10 @@ def _fit_single_model_wrapper(args: Tuple) -> Dict:
             "pit_pvalue": pit_pvalue,
             "pit_calibrated": pit_calibrated,
             "hyvarinen_score": hyvarinen,
+            "css_score": css,
+            "fec_score": fec,
+            "dig_score": dig,
+            "advanced_score": adv,
             "fit_params": fit_params,
             "fit_time_ms": result.get("fit_time_ms", 0),
             "success": True,
@@ -748,8 +867,9 @@ def fit_all_symbols_parallel(
     
     all_results = []
     
-    # Execute all tasks in parallel
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+    # Execute all tasks in parallel using fork context for fresh processes
+    mp_context = mp.get_context('fork')
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_context) as executor:
         futures = {executor.submit(_fit_single_model_wrapper, task): task for task in tasks}
         
         for future in as_completed(futures):
@@ -775,6 +895,10 @@ def fit_all_symbols_parallel(
             pit_pvalue=r["pit_pvalue"],
             pit_calibrated=r["pit_calibrated"],
             hyvarinen_score=r["hyvarinen_score"],
+            css_score=r.get("css_score"),
+            fec_score=r.get("fec_score"),
+            dig_score=r.get("dig_score"),
+            advanced_score=r.get("advanced_score"),
             fit_params=r["fit_params"],
             fit_time_ms=r["fit_time_ms"],
         )
@@ -838,6 +962,11 @@ def fit_all_models_for_symbol(
                     returns, vol, result["fit_params"], model_name
                 )
                 
+                # Compute CSS, FEC, DIG (advanced metrics)
+                css, fec, dig, adv = compute_advanced_scoring_metrics(
+                    returns, vol, result["fit_params"], model_name
+                )
+                
                 score = ModelScore(
                     model_name=model_name,
                     symbol=dataset.symbol,
@@ -849,6 +978,10 @@ def fit_all_models_for_symbol(
                     pit_pvalue=pit_pvalue,
                     pit_calibrated=pit_calibrated,
                     hyvarinen_score=hyvarinen,
+                    css_score=css,
+                    fec_score=fec,
+                    dig_score=dig,
+                    advanced_score=adv,
                     fit_params=result["fit_params"],
                     fit_time_ms=result["fit_time_ms"],
                 )
@@ -867,6 +1000,8 @@ def fit_all_models_for_symbol(
                 
                 # Get fit params from result
                 fit_params = result.get("fit_params", result)
+                if not isinstance(fit_params, dict):
+                    fit_params = {}
                 
                 # Compute PIT
                 pit_pvalue, pit_calibrated = compute_pit_score(
@@ -875,6 +1010,11 @@ def fit_all_models_for_symbol(
                 
                 # Compute CRPS and Hyvarinen
                 crps, hyvarinen = compute_scoring_metrics(
+                    returns, vol, fit_params, model_name
+                )
+                
+                # Compute CSS, FEC, DIG (advanced metrics)
+                css, fec, dig, adv = compute_advanced_scoring_metrics(
                     returns, vol, fit_params, model_name
                 )
                 
@@ -889,6 +1029,10 @@ def fit_all_models_for_symbol(
                     pit_pvalue=pit_pvalue,
                     pit_calibrated=pit_calibrated,
                     hyvarinen_score=hyvarinen,
+                    css_score=css,
+                    fec_score=fec,
+                    dig_score=dig,
+                    advanced_score=adv,
                     fit_params=result.get("fit_params", {}),
                     fit_time_ms=result.get("fit_time_ms", 0),
                 )
@@ -1290,32 +1434,41 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     def get_model_stats(model_name):
         model_scores = [s for s in result.scores if s.model_name == model_name]
         if not model_scores:
-            return None, None, None, None, None, None
+            return None, None, None, None, None, None, None, None, None, None
         avg_score = np.mean([s.combined_score for s in model_scores if s.combined_score])
         avg_bic = np.mean([s.bic for s in model_scores])
         avg_crps = np.mean([s.crps for s in model_scores if s.crps is not None]) if any(s.crps for s in model_scores) else None
         avg_hyv = np.mean([s.hyvarinen_score for s in model_scores if s.hyvarinen_score is not None]) if any(s.hyvarinen_score for s in model_scores) else None
         pit_rate = np.mean([float(s.pit_calibrated) for s in model_scores])
         avg_time = np.mean([s.fit_time_ms for s in model_scores])
-        return avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time
+        avg_css = np.mean([s.css_score for s in model_scores if s.css_score is not None]) if any(s.css_score for s in model_scores) else None
+        avg_fec = np.mean([s.fec_score for s in model_scores if s.fec_score is not None]) if any(s.fec_score for s in model_scores) else None
+        avg_dig = np.mean([s.dig_score for s in model_scores if s.dig_score is not None]) if any(s.dig_score for s in model_scores) else None
+        avg_adv = np.mean([s.advanced_score for s in model_scores if s.advanced_score is not None]) if any(s.advanced_score for s in model_scores) else None
+        return avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv
     
     # =========================================================================
     # STANDARD MODELS
     # =========================================================================
     console.print()
     console.print("[bold blue]STANDARD MODELS[/bold blue] [dim](Production Baselines)[/dim]")
-    console.print(f"[dim]{'─' * 100}[/dim]")
-    console.print(f"[dim]{'Rank':<6}{'Model':<35}{'Score':>8}{'BIC':>10}{'CRPS':>10}{'Hyv':>10}{'PIT':>8}{'Time':>10}[/dim]")
-    console.print(f"[dim]{'─' * 100}[/dim]")
+    console.print(f"[dim]{'─' * 130}[/dim]")
+    console.print(f"[dim]{'Rank':<6}{'Model':<32}{'Score':>7}{'BIC':>9}{'CRPS':>8}{'Hyv':>9}{'PIT':>6}{'CSS':>6}{'FEC':>6}{'DIG':>6}{'Adv':>6}{'Time':>9}[/dim]")
+    console.print(f"[dim]{'─' * 130}[/dim]")
     
     for i, model_name in enumerate(standard_models, 1):
-        avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time = get_model_stats(model_name)
+        avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv = get_model_stats(model_name)
         
         pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
         score_str = f"{avg_score:.4f}" if avg_score else "-"
         bic_str = f"{avg_bic:.0f}" if avg_bic else "-"
         crps_str = f"{avg_crps:.4f}" if avg_crps else "-"
         hyv_str = f"{avg_hyv:.1f}" if avg_hyv else "-"
+        time_str = f"{avg_time:.0f}ms" if avg_time else "-"
+        css_str = f"{avg_css:.2f}" if avg_css is not None else "-"
+        fec_str = f"{avg_fec:.2f}" if avg_fec is not None else "-"
+        dig_str = f"{avg_dig:.2f}" if avg_dig is not None else "-"
+        adv_str = f"{avg_adv:.2f}" if avg_adv is not None else "-"
         time_str = f"{avg_time:.0f}ms" if avg_time else "-"
         
         # Color for top models
@@ -1326,26 +1479,26 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         else:
             style = "white"
         
-        console.print(f"[{style}]#{i:<5}{model_name:<35}{score_str:>8}{bic_str:>10}{crps_str:>10}{hyv_str:>10}{pit_str:>8}{time_str:>10}[/{style}]")
+        console.print(f"[{style}]#{i:<5}{model_name:<32}{score_str:>7}{bic_str:>9}{crps_str:>8}{hyv_str:>9}{pit_str:>6}{css_str:>6}{fec_str:>6}{dig_str:>6}{adv_str:>6}{time_str:>9}[/{style}]")
     
     # =========================================================================
     # EXPERIMENTAL MODELS
     # =========================================================================
     console.print()
     console.print("[bold magenta]EXPERIMENTAL MODELS[/bold magenta] [dim](Candidates for Promotion)[/dim]")
-    console.print(f"[dim]{'─' * 110}[/dim]")
+    console.print(f"[dim]{'─' * 140}[/dim]")
     
     if experimental_models:
-        console.print(f"[dim]{'Rank':<6}{'Model':<35}{'Score':>8}{'BIC':>10}{'CRPS':>10}{'Hyv':>10}{'PIT':>8}{'Time':>10}{'vs STD':>10}[/dim]")
-        console.print(f"[dim]{'─' * 110}[/dim]")
+        console.print(f"[dim]{'Rank':<6}{'Model':<32}{'Score':>7}{'BIC':>9}{'CRPS':>8}{'Hyv':>9}{'PIT':>6}{'CSS':>6}{'FEC':>6}{'DIG':>6}{'Adv':>6}{'Time':>9}{'vs STD':>8}[/dim]")
+        console.print(f"[dim]{'─' * 140}[/dim]")
         
         # Get best standard score for comparison
         best_std_score = None
         if standard_models:
-            best_std_score, _, _, _, _, _ = get_model_stats(standard_models[0])
+            best_std_score, _, _, _, _, _, _, _, _, _ = get_model_stats(standard_models[0])
         
         for i, model_name in enumerate(experimental_models, 1):
-            avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time = get_model_stats(model_name)
+            avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv = get_model_stats(model_name)
             
             pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
             score_str = f"{avg_score:.4f}" if avg_score else "-"
@@ -1353,6 +1506,10 @@ def _display_results(result: ArenaResult, console: Console) -> None:
             crps_str = f"{avg_crps:.4f}" if avg_crps else "-"
             hyv_str = f"{avg_hyv:.1f}" if avg_hyv else "-"
             time_str = f"{avg_time:.0f}ms" if avg_time else "-"
+            css_str = f"{avg_css:.2f}" if avg_css is not None else "-"
+            fec_str = f"{avg_fec:.2f}" if avg_fec is not None else "-"
+            dig_str = f"{avg_dig:.2f}" if avg_dig is not None else "-"
+            adv_str = f"{avg_adv:.2f}" if avg_adv is not None else "-"
             
             # Gap vs standard
             if best_std_score and avg_score:
@@ -1372,7 +1529,7 @@ def _display_results(result: ArenaResult, console: Console) -> None:
                 style = "white"
                 rank_str = f"#{i}"
             
-            console.print(f"[{style}]{rank_str:<6}{model_name:<35}{score_str:>8}{bic_str:>10}{crps_str:>10}{hyv_str:>10}{pit_str:>8}{time_str:>10}[/{style}]  {gap_str}")
+            console.print(f"[{style}]{rank_str:<6}{model_name:<32}{score_str:>7}{bic_str:>9}{crps_str:>8}{hyv_str:>9}{pit_str:>6}{css_str:>6}{fec_str:>6}{dig_str:>6}{adv_str:>6}{time_str:>9}[/{style}]  {gap_str}")
     else:
         console.print("[dim]  No experimental models enabled[/dim]")
     
@@ -1380,8 +1537,8 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     # HEAD-TO-HEAD (only if experimental models exist)
     # =========================================================================
     if experimental_models and standard_models:
-        best_std_score, _, _, _, best_std_pit, _ = get_model_stats(standard_models[0])
-        best_exp_score, _, _, _, best_exp_pit, _ = get_model_stats(experimental_models[0])
+        best_std_score, _, _, _, best_std_pit, _, best_std_css, best_std_fec, best_std_dig, best_std_adv = get_model_stats(standard_models[0])
+        best_exp_score, _, _, _, best_exp_pit, _, best_exp_css, best_exp_fec, best_exp_dig, best_exp_adv = get_model_stats(experimental_models[0])
         
         console.print()
         console.print("[bold]HEAD-TO-HEAD[/bold]")

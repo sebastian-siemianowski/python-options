@@ -44,6 +44,20 @@ from .combined import (
     DEFAULT_SCORING_CONFIG,
 )
 
+# Advanced metrics: CSS, FEC, DIG
+from .advanced import (
+    compute_css,
+    compute_fec,
+    compute_dig,
+    compute_advanced_scores,
+    CSSResult,
+    FECResult,
+    DIGResult,
+    AdvancedScoringResult,
+    StressRegime,
+    classify_stress_regime,
+)
+
 __all__ = [
     # CRPS
     'compute_crps_gaussian',
@@ -59,4 +73,15 @@ __all__ = [
     'CombinedScoreResult',
     'ScoringConfig',
     'DEFAULT_SCORING_CONFIG',
+    # Advanced (CSS, FEC, DIG)
+    'compute_css',
+    'compute_fec',
+    'compute_dig',
+    'compute_advanced_scores',
+    'CSSResult',
+    'FECResult',
+    'DIGResult',
+    'AdvancedScoringResult',
+    'StressRegime',
+    'classify_stress_regime',
 ]
