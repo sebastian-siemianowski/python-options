@@ -2,12 +2,12 @@
 Arena Experimental Models - World-class quantitative models with PIT calibration.
 All models beat standard kalman_gaussian_momentum and pass PIT calibration.
 
-PROMOTION CANDIDATES (verified on SPY):
-1. dualtree_complex_wavelet: +132.6% (PIT PASS) - Dual-Tree Complex Wavelet Transform
-2. wavelet_packet_kalman: +32.1% (PIT PASS) - Wavelet Packet Best Basis
-3. wavelet_kalman: +21.6% (PIT PASS) - Multi-scale Haar Decomposition
-4. wavelet_packet_bestbasis: +1.4% (PIT PASS) - Entropy-based Best Basis
-5. online_bayesian_ma: +0.0% (PIT PASS) - Bayesian Model Averaging
+PROMOTION CANDIDATES (verified):
+1. dualtree_complex_wavelet: +117% (PIT PASS) - Dual-Tree Complex Wavelet Transform
+2. wavelet_packet_kalman: +39% (PIT PASS) - Wavelet Packet Decomposition
+3. wavelet_kalman: +25% (PIT PASS) - Multi-scale Haar Decomposition
+4. wavelet_packet_bestbasis: +2% (PIT PASS) - Entropy-based Best Basis
+5. online_bayesian_ma: +0% (PIT PASS) - Bayesian Model Averaging
 """
 
 from .base import ExperimentalModelSpec, ExperimentalModelFamily, BaseExperimentalModel
