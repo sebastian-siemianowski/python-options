@@ -200,6 +200,8 @@ Examples:
     tune_parser.add_argument("--standard-only", action="store_true", help="Only test standard models")
     tune_parser.add_argument("--experimental-only", action="store_true", help="Only test experimental models")
     tune_parser.add_argument("--quiet", "-q", action="store_true", help="Quiet mode")
+    tune_parser.add_argument("--no-parallel", action="store_true", help="Disable parallel processing")
+    tune_parser.add_argument("--workers", type=int, help="Number of parallel workers")
     
     # Results command
     results_parser = subparsers.add_parser("results", help="Show latest results")

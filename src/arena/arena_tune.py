@@ -33,6 +33,7 @@ Date: February 2026
 import json
 import os
 import sys
+import multiprocessing as mp
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,9 @@ from typing import Dict, List, Optional, Tuple, Any
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
+
+# Get CPU count for parallel processing
+N_CPUS = mp.cpu_count()
 
 # Rich for presentation
 try:
@@ -603,6 +607,163 @@ def compute_pit_score(
 
 
 # =============================================================================
+# PARALLEL PROCESSING HELPERS
+# =============================================================================
+
+def _fit_single_symbol_wrapper(args: Tuple) -> List[Dict]:
+    """Wrapper for multiprocessing - fits all models for a single symbol."""
+    symbol, returns, vol, category_value, config_dict = args
+    
+    # Recreate minimal config
+    class MinConfig:
+        def __init__(self, d):
+            self.test_standard = d.get('test_standard', True)
+            self.test_experimental = d.get('test_experimental', True)
+            self.verbose = d.get('verbose', False)
+    
+    config = MinConfig(config_dict)
+    
+    # Compute regime labels
+    n = len(returns)
+    regime_labels = np.zeros(n, dtype=int)
+    window = 60
+    for t in range(window, n):
+        recent_vol = vol[t]
+        vol_median = np.median(vol[max(0,t-252):t])
+        drift = np.mean(returns[t-window:t])
+        is_trending = abs(drift) > 0.0005
+        is_high_vol = recent_vol > 1.3 * vol_median
+        is_low_vol = recent_vol < 0.85 * vol_median
+        is_crisis = recent_vol > 2.0 * vol_median
+        if is_crisis:
+            regime_labels[t] = 4
+        elif is_low_vol and is_trending:
+            regime_labels[t] = 0
+        elif is_high_vol and is_trending:
+            regime_labels[t] = 1
+        elif is_low_vol and not is_trending:
+            regime_labels[t] = 2
+        else:
+            regime_labels[t] = 3
+    
+    results = []
+    
+    # Fit standard models
+    if config.test_standard:
+        for model_name in STANDARD_MOMENTUM_MODELS:
+            try:
+                result = fit_standard_model(model_name, returns, vol, regime_labels)
+                pit_pvalue, pit_calibrated = compute_pit_score(returns, vol, result["fit_params"], model_name)
+                crps, hyvarinen = compute_scoring_metrics(returns, vol, result["fit_params"], model_name)
+                results.append({
+                    "model_name": model_name,
+                    "symbol": symbol,
+                    "category": category_value,
+                    "log_likelihood": result["log_likelihood"],
+                    "bic": result["bic"],
+                    "aic": result["aic"],
+                    "crps": crps,
+                    "pit_pvalue": pit_pvalue,
+                    "pit_calibrated": pit_calibrated,
+                    "hyvarinen_score": hyvarinen,
+                    "fit_params": result["fit_params"],
+                    "fit_time_ms": result["fit_time_ms"],
+                })
+            except Exception as e:
+                pass
+    
+    # Fit experimental models
+    if config.test_experimental:
+        enabled_models = get_enabled_experimental_models()
+        for model_name in enabled_models:
+            try:
+                result = fit_experimental_model(model_name, returns, vol, regime_labels)
+                fit_params = result.get("fit_params", result)
+                pit_pvalue, pit_calibrated = compute_pit_score(returns, vol, fit_params, model_name)
+                crps, hyvarinen = compute_scoring_metrics(returns, vol, fit_params, model_name)
+                results.append({
+                    "model_name": model_name,
+                    "symbol": symbol,
+                    "category": category_value,
+                    "log_likelihood": result.get("log_likelihood", 0),
+                    "bic": result.get("bic", 0),
+                    "aic": result.get("aic", 0),
+                    "crps": crps,
+                    "pit_pvalue": pit_pvalue,
+                    "pit_calibrated": pit_calibrated,
+                    "hyvarinen_score": hyvarinen,
+                    "fit_params": fit_params,
+                    "fit_time_ms": result.get("fit_time_ms", 0),
+                })
+            except Exception as e:
+                pass
+    
+    return results
+
+
+def fit_all_symbols_parallel(
+    datasets: Dict[str, 'ArenaDataset'],
+    config: 'ArenaConfig',
+    n_workers: int = None,
+) -> List['ModelScore']:
+    """Fit all models for all symbols using multiprocessing."""
+    if n_workers is None:
+        n_workers = max(1, N_CPUS - 1)
+    
+    config_dict = {
+        'test_standard': config.test_standard,
+        'test_experimental': config.test_experimental,
+        'verbose': config.verbose,
+    }
+    
+    args_list = []
+    for symbol, dataset in datasets.items():
+        vol = compute_ewma_vol(dataset.returns)
+        args_list.append((
+            symbol,
+            dataset.returns,
+            vol,
+            dataset.category.value,
+            config_dict,
+        ))
+    
+    all_results = []
+    
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        futures = {executor.submit(_fit_single_symbol_wrapper, args): args[0] for args in args_list}
+        
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                results = future.result()
+                all_results.extend(results)
+            except Exception as e:
+                print(f"Error processing {symbol}: {e}")
+    
+    # Convert to ModelScore objects
+    scores = []
+    for r in all_results:
+        from .arena_config import CapCategory
+        score = ModelScore(
+            model_name=r["model_name"],
+            symbol=r["symbol"],
+            category=CapCategory(r["category"]),
+            log_likelihood=r["log_likelihood"],
+            bic=r["bic"],
+            aic=r["aic"],
+            crps=r["crps"],
+            pit_pvalue=r["pit_pvalue"],
+            pit_calibrated=r["pit_calibrated"],
+            hyvarinen_score=r["hyvarinen_score"],
+            fit_params=r["fit_params"],
+            fit_time_ms=r["fit_time_ms"],
+        )
+        scores.append(score)
+    
+    return scores
+
+
+# =============================================================================
 # COMPETITION RUNNER
 # =============================================================================
 
@@ -610,16 +771,7 @@ def fit_all_models_for_symbol(
     dataset: ArenaDataset,
     config: ArenaConfig,
 ) -> List[ModelScore]:
-    """
-    Fit all models (standard + experimental) for a single symbol.
-    
-    Args:
-        dataset: Arena dataset for the symbol
-        config: Arena configuration
-        
-    Returns:
-        List of ModelScore objects
-    """
+    """Fit all models (standard + experimental) for a single symbol."""
     returns = dataset.returns
     vol = compute_ewma_vol(returns)
     
@@ -903,17 +1055,10 @@ def determine_promotion_candidates(
 def run_arena_competition(
     config: Optional[ArenaConfig] = None,
     symbols: Optional[List[str]] = None,
+    parallel: bool = True,
+    n_workers: int = None,
 ) -> ArenaResult:
-    """
-    Run full arena competition.
-    
-    Args:
-        config: Arena configuration (uses default if None)
-        symbols: Specific symbols to test (uses config.symbols if None)
-        
-    Returns:
-        ArenaResult with complete competition results
-    """
+    """Run full arena competition with optional parallel processing."""
     config = config or DEFAULT_ARENA_CONFIG
     config.validate()
     
@@ -923,6 +1068,10 @@ def run_arena_competition(
     # Create results directory
     results_dir = Path(config.arena_results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Determine number of workers
+    if n_workers is None:
+        n_workers = max(1, N_CPUS - 1)
     
     # Load data
     if RICH_AVAILABLE:
@@ -939,6 +1088,8 @@ def run_arena_competition(
         console.print(f"  Symbols: [bold]{len(config.symbols)}[/bold]  |  "
                      f"Standard: [bold]{len(STANDARD_MOMENTUM_MODELS)}[/bold]  |  "
                      f"Experimental: [bold]{len(enabled_exp)}/{len(EXPERIMENTAL_MODELS)}[/bold]")
+        if parallel:
+            console.print(f"  [dim]Parallel: {n_workers} workers[/dim]")
         if disabled:
             console.print(f"  [dim]Disabled: {', '.join(disabled.keys())}[/dim]")
         console.print()
@@ -948,10 +1099,15 @@ def run_arena_competition(
     if not datasets:
         raise ValueError("No data loaded for competition")
     
-    # Run competition
+    # Run competition - use parallel or sequential based on flag
     all_scores: List[ModelScore] = []
     
-    if RICH_AVAILABLE:
+    if parallel and len(datasets) > 1:
+        # Parallel processing using multiprocessing
+        if RICH_AVAILABLE:
+            console.print(f"  [dim]Running parallel competition...[/dim]")
+        all_scores = fit_all_symbols_parallel(datasets, config, n_workers)
+    elif RICH_AVAILABLE:
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),

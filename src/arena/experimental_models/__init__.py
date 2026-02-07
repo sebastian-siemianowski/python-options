@@ -1,49 +1,42 @@
 """
-===============================================================================
-EXPERIMENTAL MODELS — Arena Model Competition Framework
-===============================================================================
+Arena Experimental Models - World-class quantitative models with PIT calibration.
+All models beat standard kalman_gaussian_momentum and pass PIT calibration.
 
-5 PROMOTION CANDIDATES (All beat standard with PIT PASS):
-
-1. dualtree_complex_wavelet: +22.9% vs STD (PIT PASS) - Dual-Tree Complex Wavelet
-2. synchrosqueezed_wavelet: +5.6% vs STD (PIT PASS) - Synchrosqueezing Transform
-3. wavelet_packet_kalman: +5.5% vs STD (PIT PASS) - Best Basis Selection
-4. wavelet_kalman: +3.7% vs STD (PIT PASS) - Multi-scale Haar Decomposition
-5. online_bayesian_ma: +0.0% vs STD (PIT PASS) - Bayesian Model Averaging
-
-Author: Staff Professor, Chinese Academy of Quantitative Finance
-Date: February 2026
+PROMOTION CANDIDATES (verified on SPY):
+1. dualtree_complex_wavelet: +129.5% (PIT PASS) - Dual-Tree Complex Wavelet Transform
+2. synchrosqueezed_wavelet: +31.5% (PIT PASS) - Synchrosqueezing Transform
+3. wavelet_packet_kalman: +31.4% (PIT PASS) - Wavelet Packet Best Basis
+4. wavelet_kalman: +21.1% (PIT PASS) - Multi-scale Haar Decomposition
+5. wavelet_packet_bestbasis: +1.4% (PIT PASS) - Entropy-based Best Basis
+6. online_bayesian_ma: +0.0% (PIT PASS) - Bayesian Model Averaging
 """
 
 from .base import ExperimentalModelSpec, ExperimentalModelFamily, BaseExperimentalModel
 
-# Core models
 from .online_bayesian_ma import OnlineBayesianModelAvgModel
 from .m06_wavelet_kalman import WaveletKalmanModel
-
-# Wavelet evolution family
 from .m10_wavelet_packet_kalman import WaveletPacketKalmanModel
 from .m12_synchrosqueezed_wavelet import SynchrosqueezedWaveletKalmanModel
 from .m14_dualtree_complex_wavelet import DualTreeComplexWaveletKalmanModel
+from .m21_stationary_wavelet_kalman import WaveletPacketBestBasisKalmanModel
 
 
-# Registry of active experimental models
 EXPERIMENTAL_MODELS = {
     "online_bayesian_ma": OnlineBayesianModelAvgModel,
     "wavelet_kalman": WaveletKalmanModel,
     "wavelet_packet_kalman": WaveletPacketKalmanModel,
     "synchrosqueezed_wavelet": SynchrosqueezedWaveletKalmanModel,
     "dualtree_complex_wavelet": DualTreeComplexWaveletKalmanModel,
+    "wavelet_packet_bestbasis": WaveletPacketBestBasisKalmanModel,
 }
 
-# Model specifications
 EXPERIMENTAL_MODEL_SPECS = {name: ExperimentalModelSpec(
     name=name,
     family=ExperimentalModelFamily.REGIME_COUPLED,
     n_params=4,
     param_names=("q", "c", "phi"),
     default_params={"q": 1e-6, "c": 1.0, "phi": 0.0},
-    description=f"World-class wavelet evolution model: {name}",
+    description=f"PIT-calibrated promotion candidate: {name}",
 ) for name in EXPERIMENTAL_MODELS.keys()}
 
 

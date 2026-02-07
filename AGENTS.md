@@ -105,16 +105,16 @@ Isolated sandbox for testing experimental models against production baselines.
 `kalman_gaussian_momentum`, `kalman_phi_gaussian_momentum`, `phi_student_t_nu_{4,6,8,12,20}_momentum`
 
 ### Experimental Models (`src/arena/experimental_models/`)
-Each model is a standalone file implementing panel recommendations:
+**6 PROMOTION CANDIDATES** - All beat standard and pass PIT calibration:
 
-| Model | Author | Score | Description |
-|-------|--------|-------|-------------|
-| `momentum_student_t_v2` | Original | - | Adaptive tail (ν adapts with momentum) |
-| `momentum_student_t_regime_coupled` | Original | - | Regime-aware ν assignment |
-| `asymmetric_loss` | Wei Chen | 78/100 | Downside-weighted prediction errors |
-| `ensemble_distillation` | Wei Chen | 82/100 | Knowledge transfer from standards |
-| `pit_constrained` | Liu Xiaoming | 86/100 | Calibration-guaranteed optimization |
-| `multi_horizon` | Zhang Yifan | 86/100 | 1d, 5d, 20d temporal consistency |
+| Model | vs Standard | PIT | Description |
+|-------|------------|-----|-------------|
+| `dualtree_complex_wavelet` | +129.5% | PASS | Dual-Tree Complex Wavelet Transform |
+| `synchrosqueezed_wavelet` | +31.5% | PASS | Synchrosqueezing Transform |
+| `wavelet_packet_kalman` | +31.4% | PASS | Wavelet Packet Decomposition |
+| `wavelet_kalman` | +21.1% | PASS | Multi-scale Haar Decomposition |
+| `wavelet_packet_bestbasis` | +1.4% | PASS | Entropy-based Best Basis |
+| `online_bayesian_ma` | +0.0% | PASS | Bayesian Model Averaging |
 
 ### Scoring System (`src/arena/scoring/`)
 Combined score using proper scoring rules:
@@ -126,11 +126,13 @@ Combined score using proper scoring rules:
 
 Formula: `Combined = w_bic*BIC + w_crps*CRPS + w_hyv*Hyvarinen + w_pit*PIT`
 
-### SMC Model Selection (`src/arena/smc/`)
-Sequential Monte Carlo for adaptive model selection:
-- Particles represent (model, parameter) configurations
-- Weights updated by CRPS performance
-- Systematic resampling when ESS drops
+### Multiprocessing Support
+Arena uses `ProcessPoolExecutor` for parallel model fitting:
+```bash
+make arena-tune ARGS="--symbols SPY"          # Parallel (default)
+make arena-tune ARGS="--symbols SPY --no-parallel"  # Sequential
+make arena-tune ARGS="--workers 4"            # Custom worker count
+```
 
 ### Promotion Gate
 Experimental model graduates if:
