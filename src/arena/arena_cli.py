@@ -64,8 +64,6 @@ def cmd_results(args):
     import json
     
     from rich.console import Console
-    from rich.table import Table
-    from rich import box
     
     results_dir = Path("src/data/arena/results")
     if not results_dir.exists():
@@ -83,26 +81,33 @@ def cmd_results(args):
         data = json.load(f)
     
     console = Console()
-    console.print(f"\n[bold]Latest Arena Results[/bold] ({latest.name})")
-    console.print(f"Timestamp: {data['timestamp']}\n")
+    console.print()
+    console.print("[bold]ARENA RESULTS[/bold]")
+    console.print(f"[dim]{'─' * 50}[/dim]")
+    console.print(f"  File: {latest.name}")
+    console.print(f"  Time: {data['timestamp'][:19]}")
+    console.print()
     
-    # Rankings table
-    table = Table(title="Overall Rankings", box=box.ROUNDED)
-    table.add_column("Rank", justify="right")
-    table.add_column("Model")
-    
+    # Rankings
+    console.print("[bold]RANKINGS[/bold]")
+    console.print(f"[dim]{'─' * 50}[/dim]")
     for i, model in enumerate(data["rankings"].get("overall", [])[:10], 1):
-        table.add_row(f"#{i}", model)
-    
-    console.print(table)
+        if i == 1:
+            console.print(f"  [bold green]#{i}  {model}[/bold green]")
+        elif i <= 3:
+            console.print(f"  [green]#{i}  {model}[/green]")
+        else:
+            console.print(f"  #{i}  {model}")
     
     # Promotion candidates
+    console.print()
     if data.get("promotion_candidates"):
-        console.print("\n[bold green]Promotion Candidates:[/bold green]")
+        console.print("[bold green]PROMOTION CANDIDATES[/bold green]")
+        console.print(f"[dim]{'─' * 50}[/dim]")
         for m in data["promotion_candidates"]:
-            console.print(f"  > {m}")
+            console.print(f"  [green]>[/green] {m}")
     else:
-        console.print("\n[yellow]No promotion candidates[/yellow]")
+        console.print("[yellow]No promotion candidates[/yellow]")
 
 
 def cmd_disabled(args):
@@ -115,8 +120,6 @@ def cmd_disabled(args):
     from arena.experimental_models import EXPERIMENTAL_MODELS
     
     from rich.console import Console
-    from rich.table import Table
-    from rich import box
     
     console = Console()
     disabled = load_disabled_models()
@@ -137,39 +140,35 @@ def cmd_disabled(args):
         return
     
     # Show disabled models
+    console.print()
     if not disabled:
-        console.print("[green]No models are disabled. All experimental models will run.[/green]")
-        console.print(f"\nEnabled models ({len(EXPERIMENTAL_MODELS)}):")
+        console.print("[green]All experimental models enabled[/green]")
+        console.print(f"[dim]{'─' * 50}[/dim]")
         for name in EXPERIMENTAL_MODELS.keys():
             console.print(f"  [green]>[/green] {name}")
         return
     
-    console.print(f"\n[bold red]DISABLED MODELS ({len(disabled)})[/bold red]\n")
-    
-    table = Table(box=box.ROUNDED, border_style="red")
-    table.add_column("Model", style="red")
-    table.add_column("Disabled At")
-    table.add_column("Reason")
-    table.add_column("Gap")
+    console.print(f"[bold red]DISABLED MODELS ({len(disabled)})[/bold red]")
+    console.print(f"[dim]{'─' * 60}[/dim]")
+    console.print(f"[dim]{'Model':<40}{'Gap':>10}{'Date':>12}[/dim]")
+    console.print(f"[dim]{'─' * 60}[/dim]")
     
     for name, info in disabled.items():
-        table.add_row(
-            name,
-            info.get("disabled_at", "")[:10],
-            info.get("reason", ""),
-            f"{info.get('score_gap', 0)*100:.1f}%",
-        )
-    
-    console.print(table)
+        gap = info.get('score_gap', 0) * 100
+        date = info.get("disabled_at", "")[:10]
+        console.print(f"[red]{name:<40}{gap:>9.1f}%{date:>12}[/red]")
     
     # Show enabled models
     enabled = [n for n in EXPERIMENTAL_MODELS.keys() if n not in disabled]
     if enabled:
-        console.print(f"\n[green]ENABLED MODELS ({len(enabled)})[/green]")
+        console.print()
+        console.print(f"[green]ENABLED MODELS ({len(enabled)})[/green]")
+        console.print(f"[dim]{'─' * 40}[/dim]")
         for name in enabled:
             console.print(f"  [green]>[/green] {name}")
     
-    console.print("\n[dim]Use --enable MODEL to re-enable, or --clear to re-enable all[/dim]")
+    console.print()
+    console.print("[dim]Use --enable MODEL or --clear to re-enable[/dim]")
 
 
 def main():

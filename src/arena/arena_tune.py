@@ -932,21 +932,16 @@ def run_arena_competition(
         disabled = load_disabled_models()
         enabled_exp = get_enabled_experimental_models()
         
-        # Build header info
-        header_lines = [
-            "[bold cyan]ARENA MODEL COMPETITION[/bold cyan]",
-            f"Symbols: {len(config.symbols)} | "
-            f"Standard: {len(STANDARD_MOMENTUM_MODELS)} | "
-            f"Experimental: {len(enabled_exp)}/{len(EXPERIMENTAL_MODELS)}",
-        ]
-        
+        # Clean header
+        console.print()
+        console.print("[bold cyan]ARENA MODEL COMPETITION[/bold cyan]")
+        console.print(f"[dim]{'─' * 60}[/dim]")
+        console.print(f"  Symbols: [bold]{len(config.symbols)}[/bold]  |  "
+                     f"Standard: [bold]{len(STANDARD_MOMENTUM_MODELS)}[/bold]  |  "
+                     f"Experimental: [bold]{len(enabled_exp)}/{len(EXPERIMENTAL_MODELS)}[/bold]")
         if disabled:
-            header_lines.append(f"[dim]Disabled: {', '.join(disabled.keys())}[/dim]")
-        
-        console.print(Panel.fit(
-            "\n".join(header_lines),
-            border_style="cyan"
-        ))
+            console.print(f"  [dim]Disabled: {', '.join(disabled.keys())}[/dim]")
+        console.print()
     
     datasets = load_arena_data(config)
     
@@ -1091,20 +1086,18 @@ def _disable_failed_models(
     # Display disabled models
     if console and disabled_count > 0:
         console.print()
-        console.print(Panel.fit(
-            f"[bold red]MODELS DISABLED[/bold red]\n\n"
-            f"The following {disabled_count} model(s) have been disabled for future runs:\n" +
-            "\n".join(f"  [red]x[/red] {name} ({gap*100:.1f}% vs best standard)" 
-                     for name, gap in disabled_models_info) +
-            "\n\n[dim]Use 'make arena-enable MODEL=name' to re-enable.[/dim]",
-            border_style="red"
-        ))
+        console.print("[bold red]MODELS DISABLED[/bold red]")
+        console.print(f"[dim]{'─' * 60}[/dim]")
+        for name, gap in disabled_models_info:
+            console.print(f"  [red]x[/red] {name} [dim]({gap*100:.1f}%)[/dim]")
+        console.print()
+        console.print("[dim]  Use 'make arena-enable MODEL=name' to re-enable[/dim]")
     
     return disabled_count
 
 
 def _display_results(result: ArenaResult, console: Console) -> None:
-    """Display competition results with clear standard vs experimental distinction."""
+    """Display competition results with clean, aligned formatting."""
     
     overall_ranking = result.rankings.get("overall", [])
     
@@ -1125,194 +1118,130 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         return avg_score, avg_bic, avg_crps, avg_hyv, pit_rate
     
     # =========================================================================
-    # STANDARD MODELS TABLE
+    # STANDARD MODELS
     # =========================================================================
     console.print()
-    std_table = Table(
-        title="[bold blue]STANDARD MODELS[/bold blue] (Production Baselines)",
-        box=box.ROUNDED,
-        title_style="bold blue",
-        border_style="blue",
-    )
-    std_table.add_column("Rank", style="cyan", justify="center", width=4)
-    std_table.add_column("Model", style="white", min_width=30)
-    std_table.add_column("Score", justify="right", width=8)
-    std_table.add_column("BIC", justify="right", width=10)
-    std_table.add_column("CRPS", justify="right", width=8)
-    std_table.add_column("Hyv", justify="right", width=8)
-    std_table.add_column("PIT", justify="center", width=6)
+    console.print("[bold blue]STANDARD MODELS[/bold blue] [dim](Production Baselines)[/dim]")
+    console.print(f"[dim]{'─' * 90}[/dim]")
+    console.print(f"[dim]{'Rank':<6}{'Model':<35}{'Score':>8}{'BIC':>10}{'CRPS':>10}{'Hyv':>10}{'PIT':>8}[/dim]")
+    console.print(f"[dim]{'─' * 90}[/dim]")
     
     for i, model_name in enumerate(standard_models, 1):
         avg_score, avg_bic, avg_crps, avg_hyv, pit_rate = get_model_stats(model_name)
         
-        # Highlight top 3
+        pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
+        score_str = f"{avg_score:.4f}" if avg_score else "-"
+        bic_str = f"{avg_bic:.0f}" if avg_bic else "-"
+        crps_str = f"{avg_crps:.4f}" if avg_crps else "-"
+        hyv_str = f"{avg_hyv:.1f}" if avg_hyv else "-"
+        
+        # Color for top models
         if i == 1:
-            rank_str = "#1"
-            row_style = "bold green"
-        elif i == 2:
-            rank_str = "#2"
-            row_style = "green"
-        elif i == 3:
-            rank_str = "#3"
-            row_style = "dim green"
+            style = "bold green"
+        elif i <= 3:
+            style = "green"
         else:
-            rank_str = f"#{i}"
-            row_style = None
+            style = "white"
         
-        pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
-        
-        std_table.add_row(
-            rank_str,
-            model_name,
-            f"{avg_score:.4f}" if avg_score else "-",
-            f"{avg_bic:.0f}" if avg_bic else "-",
-            f"{avg_crps:.4f}" if avg_crps else "-",
-            f"{avg_hyv:.2f}" if avg_hyv else "-",
-            pit_str,
-            style=row_style,
-        )
-    
-    console.print(std_table)
+        console.print(f"[{style}]#{i:<5}{model_name:<35}{score_str:>8}{bic_str:>10}{crps_str:>10}{hyv_str:>10}{pit_str:>8}[/{style}]")
     
     # =========================================================================
-    # EXPERIMENTAL MODELS TABLE
+    # EXPERIMENTAL MODELS
     # =========================================================================
     console.print()
-    exp_table = Table(
-        title="[bold magenta]EXPERIMENTAL MODELS[/bold magenta] (Candidates for Promotion)",
-        box=box.ROUNDED,
-        title_style="bold magenta",
-        border_style="magenta",
-    )
-    exp_table.add_column("Rank", style="cyan", justify="center", width=4)
-    exp_table.add_column("Model", style="white", min_width=30)
-    exp_table.add_column("Score", justify="right", width=8)
-    exp_table.add_column("BIC", justify="right", width=10)
-    exp_table.add_column("CRPS", justify="right", width=8)
-    exp_table.add_column("Hyv", justify="right", width=8)
-    exp_table.add_column("PIT", justify="center", width=6)
-    exp_table.add_column("vs STD", justify="right", width=8)
+    console.print("[bold magenta]EXPERIMENTAL MODELS[/bold magenta] [dim](Candidates for Promotion)[/dim]")
+    console.print(f"[dim]{'─' * 100}[/dim]")
     
-    # Get best standard score for comparison
-    best_std_score = None
-    if standard_models:
-        best_std_score, _, _, _, _ = get_model_stats(standard_models[0])
-    
-    for i, model_name in enumerate(experimental_models, 1):
-        avg_score, avg_bic, avg_crps, avg_hyv, pit_rate = get_model_stats(model_name)
+    if experimental_models:
+        console.print(f"[dim]{'Rank':<6}{'Model':<35}{'Score':>8}{'BIC':>10}{'CRPS':>10}{'Hyv':>10}{'PIT':>8}{'vs STD':>10}[/dim]")
+        console.print(f"[dim]{'─' * 100}[/dim]")
         
-        # Compute gap vs best standard
-        if best_std_score and avg_score:
-            gap_pct = ((avg_score - best_std_score) / best_std_score) * 100
-            if gap_pct > 0:
-                gap_str = f"[green]+{gap_pct:.1f}%[/green]"
+        # Get best standard score for comparison
+        best_std_score = None
+        if standard_models:
+            best_std_score, _, _, _, _ = get_model_stats(standard_models[0])
+        
+        for i, model_name in enumerate(experimental_models, 1):
+            avg_score, avg_bic, avg_crps, avg_hyv, pit_rate = get_model_stats(model_name)
+            
+            pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
+            score_str = f"{avg_score:.4f}" if avg_score else "-"
+            bic_str = f"{avg_bic:.0f}" if avg_bic else "-"
+            crps_str = f"{avg_crps:.4f}" if avg_crps else "-"
+            hyv_str = f"{avg_hyv:.1f}" if avg_hyv else "-"
+            
+            # Gap vs standard
+            if best_std_score and avg_score:
+                gap_pct = ((avg_score - best_std_score) / best_std_score) * 100
+                if gap_pct > 0:
+                    gap_str = f"[green]+{gap_pct:.1f}%[/green]"
+                else:
+                    gap_str = f"[red]{gap_pct:.1f}%[/red]"
             else:
-                gap_str = f"[red]{gap_pct:.1f}%[/red]"
-        else:
-            gap_str = "-"
-        
-        # Highlight if beating standard
-        if avg_score and best_std_score and avg_score > best_std_score:
-            rank_str = f"*#{i}"
-            row_style = "bold green"
-        else:
-            rank_str = f"#{i}"
-            row_style = None
-        
-        pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
-        
-        exp_table.add_row(
-            rank_str,
-            model_name,
-            f"{avg_score:.4f}" if avg_score else "-",
-            f"{avg_bic:.0f}" if avg_bic else "-",
-            f"{avg_crps:.4f}" if avg_crps else "-",
-            f"{avg_hyv:.2f}" if avg_hyv else "-",
-            pit_str,
-            gap_str,
-            style=row_style,
-        )
-    
-    console.print(exp_table)
+                gap_str = "-"
+            
+            # Style based on performance
+            if avg_score and best_std_score and avg_score > best_std_score:
+                style = "bold green"
+                rank_str = f"*#{i}"
+            else:
+                style = "white"
+                rank_str = f"#{i}"
+            
+            console.print(f"[{style}]{rank_str:<6}{model_name:<35}{score_str:>8}{bic_str:>10}{crps_str:>10}{hyv_str:>10}{pit_str:>8}[/{style}]  {gap_str}")
+    else:
+        console.print("[dim]  No experimental models enabled[/dim]")
     
     # =========================================================================
-    # HEAD-TO-HEAD COMPARISON
+    # HEAD-TO-HEAD (only if experimental models exist)
     # =========================================================================
-    console.print()
-    
-    # Build comparison panel
-    if best_std_score and experimental_models:
-        best_exp_stats = get_model_stats(experimental_models[0])
-        best_std_stats = get_model_stats(standard_models[0]) if standard_models else (None, None, None, None, 0)
+    if experimental_models and standard_models:
+        best_std_score, _, _, _, best_std_pit = get_model_stats(standard_models[0])
+        best_exp_score, _, _, _, best_exp_pit = get_model_stats(experimental_models[0])
         
-        best_exp_score = best_exp_stats[0]
-        best_exp_pit = best_exp_stats[4]
-        best_std_pit = best_std_stats[4] if best_std_stats else 0
+        console.print()
+        console.print("[bold]HEAD-TO-HEAD[/bold]")
+        console.print(f"[dim]{'─' * 60}[/dim]")
         
-        comparison_lines = [
-            "[bold]Head-to-Head Comparison[/bold]",
-            "",
-            f"  [blue]Best Standard:[/blue]     {standard_models[0] if standard_models else 'N/A'}",
-            f"                        Score: {best_std_score:.4f}  |  PIT: {'PASS' if best_std_pit == 1.0 else f'{best_std_pit*100:.0f}%'}",
-            "",
-            f"  [magenta]Best Experimental:[/magenta]  {experimental_models[0] if experimental_models else 'N/A'}",
-            f"                        Score: {best_exp_score:.4f}  |  PIT: {'PASS' if best_exp_pit == 1.0 else f'{best_exp_pit*100:.0f}%'}",
-            "",
-        ]
+        std_pit = "PASS" if best_std_pit == 1.0 else f"{best_std_pit*100:.0f}%"
+        exp_pit = "PASS" if best_exp_pit == 1.0 else f"{best_exp_pit*100:.0f}%"
         
-        # Determine winner
+        console.print(f"  [blue]Standard:[/blue]     {standard_models[0]}")
+        console.print(f"                  Score: {best_std_score:.4f}  PIT: {std_pit}")
+        console.print(f"  [magenta]Experimental:[/magenta] {experimental_models[0]}")
+        console.print(f"                  Score: {best_exp_score:.4f}  PIT: {exp_pit}")
+        
         gap = ((best_exp_score - best_std_score) / best_std_score * 100) if best_std_score else 0
         if gap > 5:
-            comparison_lines.append(f"  [bold green]EXPERIMENTAL WINS by {gap:.1f}%[/bold green]")
+            console.print(f"  [bold green]>>> EXPERIMENTAL WINS by {gap:.1f}%[/bold green]")
         elif gap > 0:
-            comparison_lines.append(f"  [yellow]Experimental leads by {gap:.1f}% (needs >5% for promotion)[/yellow]")
+            console.print(f"  [yellow]>>> Experimental leads by {gap:.1f}% (needs >5%)[/yellow]")
         else:
-            comparison_lines.append(f"  [blue]Standard leads by {abs(gap):.1f}%[/blue]")
-        
-        console.print(Panel(
-            "\n".join(comparison_lines),
-            border_style="cyan",
-            padding=(0, 2),
-        ))
+            console.print(f"  [blue]>>> Standard leads by {abs(gap):.1f}%[/blue]")
     
     # =========================================================================
-    # PROMOTION CANDIDATES
+    # PROMOTION STATUS
     # =========================================================================
+    console.print()
     if result.promotion_candidates:
-        console.print(Panel.fit(
-            "[bold green]PROMOTION CANDIDATES[/bold green]\n\n" +
-            "The following experimental models beat all criteria:\n" +
-            "\n".join(f"  [green]>[/green] {m}" for m in result.promotion_candidates) +
-            "\n\n[dim]Ready for panel review and production deployment.[/dim]",
-            border_style="green"
-        ))
+        console.print("[bold green]PROMOTION CANDIDATES[/bold green]")
+        console.print(f"[dim]{'─' * 60}[/dim]")
+        for m in result.promotion_candidates:
+            console.print(f"  [green]>[/green] {m}")
+        console.print("[dim]  Ready for panel review[/dim]")
     else:
-        console.print(Panel.fit(
-            "[yellow]No Promotion Candidates[/yellow]\n\n"
-            "[dim]Criteria for promotion:[/dim]\n"
-            "  - Beat best standard model by >5%\n"
-            "  - 100% PIT calibration pass rate\n"
-            "  - Not last in any category",
-            border_style="yellow"
-        ))
+        console.print("[yellow]NO PROMOTION CANDIDATES[/yellow]")
+        console.print("[dim]  Criteria: >5% vs standard, 100% PIT pass, no category failures[/dim]")
     
     # =========================================================================
     # SUMMARY
     # =========================================================================
     console.print()
-    summary_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
-    summary_table.add_column("Metric", style="dim")
-    summary_table.add_column("Value", style="bold")
-    
-    summary_table.add_row("Symbols Tested", str(result.summary['n_symbols']))
-    summary_table.add_row("Standard Models", str(result.summary['n_standard_models']))
-    summary_table.add_row("Experimental Models", str(result.summary['n_experimental_models']))
-    summary_table.add_row("Total Fits", str(result.summary['n_total_fits']))
-    summary_table.add_row("Avg Fit Time", f"{result.summary['avg_fit_time_ms']:.1f}ms")
-    summary_table.add_row("Overall PIT Pass Rate", f"{result.summary['pit_pass_rate']:.1%}")
-    
-    console.print(Panel(
-        summary_table,
-        title="[bold]Summary[/bold]",
-        border_style="blue",
-    ))
+    console.print("[bold]SUMMARY[/bold]")
+    console.print(f"[dim]{'─' * 40}[/dim]")
+    console.print(f"  Symbols:        {result.summary['n_symbols']}")
+    console.print(f"  Standard:       {result.summary['n_standard_models']}")
+    console.print(f"  Experimental:   {result.summary['n_experimental_models']}")
+    console.print(f"  Total Fits:     {result.summary['n_total_fits']}")
+    console.print(f"  Avg Fit Time:   {result.summary['avg_fit_time_ms']:.1f}ms")
+    console.print(f"  PIT Pass Rate:  {result.summary['pit_pass_rate']:.1%}")
