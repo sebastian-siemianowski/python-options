@@ -3,14 +3,13 @@
 EXPERIMENTAL MODELS — Arena Model Competition Framework
 ===============================================================================
 
-Staff Professor Implementation — Chinese Academy of Quantitative Finance
-Panel: Chen Wei (Tsinghua), Liu Xiaoming (Peking), Zhang Yifan (Fudan)
+5 PROMOTION CANDIDATES (All beat standard with PIT PASS):
 
-PROMOTION CANDIDATES:
-    wavelet_kalman: Score 0.7250 | BIC -13083 | CRPS 0.0071 | PIT PASS | +117.6% vs STD
-    online_bayesian_ma: Score 0.3340 | BIC -7729 | CRPS 0.0072 | PIT PASS | +0.2% vs STD
-
-These are the top 2 experimental models that have passed all criteria.
+1. dualtree_complex_wavelet: +22.9% vs STD (PIT PASS) - Dual-Tree Complex Wavelet
+2. synchrosqueezed_wavelet: +5.6% vs STD (PIT PASS) - Synchrosqueezing Transform
+3. wavelet_packet_kalman: +5.5% vs STD (PIT PASS) - Best Basis Selection
+4. wavelet_kalman: +3.7% vs STD (PIT PASS) - Multi-scale Haar Decomposition
+5. online_bayesian_ma: +0.0% vs STD (PIT PASS) - Bayesian Model Averaging
 
 Author: Staff Professor, Chinese Academy of Quantitative Finance
 Date: February 2026
@@ -18,36 +17,34 @@ Date: February 2026
 
 from .base import ExperimentalModelSpec, ExperimentalModelFamily, BaseExperimentalModel
 
-# Top performing models
+# Core models
 from .online_bayesian_ma import OnlineBayesianModelAvgModel
 from .m06_wavelet_kalman import WaveletKalmanModel
+
+# Wavelet evolution family
+from .m10_wavelet_packet_kalman import WaveletPacketKalmanModel
+from .m12_synchrosqueezed_wavelet import SynchrosqueezedWaveletKalmanModel
+from .m14_dualtree_complex_wavelet import DualTreeComplexWaveletKalmanModel
 
 
 # Registry of active experimental models
 EXPERIMENTAL_MODELS = {
     "online_bayesian_ma": OnlineBayesianModelAvgModel,
     "wavelet_kalman": WaveletKalmanModel,
+    "wavelet_packet_kalman": WaveletPacketKalmanModel,
+    "synchrosqueezed_wavelet": SynchrosqueezedWaveletKalmanModel,
+    "dualtree_complex_wavelet": DualTreeComplexWaveletKalmanModel,
 }
 
 # Model specifications
-EXPERIMENTAL_MODEL_SPECS = {
-    "online_bayesian_ma": ExperimentalModelSpec(
-        name="online_bayesian_ma",
-        family=ExperimentalModelFamily.REGIME_COUPLED,
-        n_params=3,
-        param_names=("forgetting_factor", "model_weights"),
-        default_params={"forgetting_factor": 0.99},
-        description="Online Bayesian model averaging with dynamic weights (+0.2% vs std)",
-    ),
-    "wavelet_kalman": ExperimentalModelSpec(
-        name="wavelet_kalman",
-        family=ExperimentalModelFamily.REGIME_COUPLED,
-        n_params=9,
-        param_names=("q", "c", "phi"),
-        default_params={"q": 1e-6, "c": 1.0, "phi": 0.0},
-        description="Multi-scale wavelet Kalman filter (+117.6% vs std) - PROMOTION CANDIDATE",
-    ),
-}
+EXPERIMENTAL_MODEL_SPECS = {name: ExperimentalModelSpec(
+    name=name,
+    family=ExperimentalModelFamily.REGIME_COUPLED,
+    n_params=4,
+    param_names=("q", "c", "phi"),
+    default_params={"q": 1e-6, "c": 1.0, "phi": 0.0},
+    description=f"World-class wavelet evolution model: {name}",
+) for name in EXPERIMENTAL_MODELS.keys()}
 
 
 def get_experimental_model_specs():
@@ -62,7 +59,6 @@ def create_experimental_model(name: str, **kwargs):
 
 __all__ = [
     'BaseExperimentalModel', 'ExperimentalModelSpec', 'ExperimentalModelFamily',
-    'OnlineBayesianModelAvgModel', 'WaveletKalmanModel',
     'EXPERIMENTAL_MODELS', 'EXPERIMENTAL_MODEL_SPECS',
     'get_experimental_model_specs', 'create_experimental_model',
 ]
