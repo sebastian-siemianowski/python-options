@@ -30,8 +30,6 @@ from .experimental_models import (
     EXPERIMENTAL_MODEL_SPECS,
     ExperimentalModelSpec,
     ExperimentalModelFamily,
-    MomentumStudentTV2,
-    MomentumStudentTRegimeCoupled,
     get_experimental_model_specs,
     create_experimental_model,
 )
