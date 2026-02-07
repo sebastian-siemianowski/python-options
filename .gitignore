@@ -109,3 +109,5 @@ htmlcov/
 /src/data/option_tune/
 /src/data/options_signals/
 /src/data/old_options/
+/src/data/options_data/
+/src/data/arena/

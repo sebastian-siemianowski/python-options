@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -116,6 +116,27 @@ SHELL := /bin/bash
 # │  🧪 TESTING                                                                  │
 # ├──────────────────────────────────────────────────────────────────────────────┤
 # │  make tests              Run all tests in src/tests/                         │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  🏟️  ARENA — Experimental Model Competition                                  │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make arena              Full competition: data + tune + results             │
+# │  make arena-data         Download benchmark data (12 symbols)                │
+# │  make arena-tune         Run model competition (standard + experimental)     │
+# │  make arena-results      Show latest competition results                     │
+# │                                                                              │
+# │  Benchmark Universe:                                                         │
+# │    Small Cap: UPST, AFRM, IONQ                                              │
+# │    Mid Cap:   CRWD, DKNG, SNAP                                              │
+# │    Large Cap: AAPL, NVDA, TSLA                                              │
+# │    Index:     SPY, QQQ, IWM                                                 │
+# │                                                                              │
+# │  Experimental models compete against standard momentum models:               │
+# │    - momentum_gaussian, momentum_phi_gaussian                                │
+# │    - momentum_phi_student_t_nu_{4,6,8,12,20}                                │
+# │                                                                              │
+# │  Models must beat standard by >5% to qualify for promotion.                  │
 # └──────────────────────────────────────────────────────────────────────────────┘
 
 # Ensure virtual environment exists before running commands
@@ -472,6 +493,52 @@ clean-cache: .venv/.deps_installed
 
 colors: .venv/.deps_installed
 	@.venv/bin/python src/show_colors.py
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARENA — Experimental Model Competition (February 2026)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Isolated sandbox for testing experimental models against production baselines.
+# Experimental models must beat standard momentum models by >5% to graduate.
+#
+# Benchmark Universe (12 symbols):
+#   Small Cap: UPST, AFRM, IONQ
+#   Mid Cap:   CRWD, DKNG, SNAP
+#   Large Cap: AAPL, NVDA, TSLA
+#   Index:     SPY, QQQ, IWM
+#
+# Standard Models (baselines):
+#   - kalman_gaussian_momentum, kalman_phi_gaussian_momentum
+#   - phi_student_t_nu_{4,6,8,12,20}_momentum
+#
+# Experimental Models (in src/arena/arena_models.py):
+#   - momentum_student_t_v2 (adaptive tail coupling)
+#   - momentum_student_t_regime_coupled (regime-aware ν)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Full arena workflow: download data + run competition + show results
+arena: .venv/.deps_installed
+	@echo "═══════════════════════════════════════════════════════════════════════════"
+	@echo "  🏟️  ARENA — Experimental Model Competition"
+	@echo "═══════════════════════════════════════════════════════════════════════════"
+	@$(MAKE) arena-data
+	@$(MAKE) arena-tune
+	@$(MAKE) arena-results
+
+# Download benchmark data for arena (3 small cap, 3 mid cap, 3 large cap, 3 index)
+arena-data: .venv/.deps_installed
+	@echo "Downloading arena benchmark data..."
+	@mkdir -p src/data/arena
+	@.venv/bin/python src/arena/arena_cli.py data $(ARGS)
+
+# Run arena model competition (standard + experimental models)
+arena-tune: .venv/.deps_installed
+	@echo "Running arena model competition..."
+	@mkdir -p src/data/arena/results
+	@.venv/bin/python src/arena/arena_cli.py tune $(ARGS)
+
+# Show latest arena competition results
+arena-results: .venv/.deps_installed
+	@.venv/bin/python src/arena/arena_cli.py results
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UNIFIED RISK DASHBOARD
