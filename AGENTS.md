@@ -95,19 +95,48 @@ make arena-results # Show latest competition results
 
 Isolated sandbox for testing experimental models against production baselines.
 
-**Benchmark Universe (12 symbols)**:
+### Benchmark Universe (12 symbols)
 - Small Cap: UPST, AFRM, IONQ
 - Mid Cap: CRWD, DKNG, SNAP  
 - Large Cap: AAPL, NVDA, TSLA
 - Index: SPY, QQQ, IWM
 
-**Standard Models (baselines)**: `kalman_gaussian_momentum`, `kalman_phi_gaussian_momentum`, `phi_student_t_nu_{4,6,8,12,20}_momentum`
+### Standard Models (Baselines)
+`kalman_gaussian_momentum`, `kalman_phi_gaussian_momentum`, `phi_student_t_nu_{4,6,8,12,20}_momentum`
 
-**Experimental Models (in `arena_models.py`)**:
-- `momentum_student_t_v2` — Adaptive tail (ν adapts with momentum strength)
-- `momentum_student_t_regime_coupled` — Regime-aware ν assignment
+### Experimental Models (`src/arena/experimental_models/`)
+Each model is a standalone file implementing panel recommendations:
 
-**Promotion Gate**: Experimental model must beat best standard by >5%, pass PIT on all symbols, no category failures.
+| Model | Author | Score | Description |
+|-------|--------|-------|-------------|
+| `momentum_student_t_v2` | Original | - | Adaptive tail (ν adapts with momentum) |
+| `momentum_student_t_regime_coupled` | Original | - | Regime-aware ν assignment |
+| `asymmetric_loss` | Wei Chen | 78/100 | Downside-weighted prediction errors |
+| `ensemble_distillation` | Wei Chen | 82/100 | Knowledge transfer from standards |
+| `pit_constrained` | Liu Xiaoming | 86/100 | Calibration-guaranteed optimization |
+| `multi_horizon` | Zhang Yifan | 86/100 | 1d, 5d, 20d temporal consistency |
+
+### Scoring System (`src/arena/scoring/`)
+Combined score using proper scoring rules:
+
+- **CRPS**: Continuous Ranked Probability Score (calibration + sharpness)
+- **BIC**: Bayesian Information Criterion (complexity penalty)
+- **Hyvarinen**: Robust to model misspecification
+- **PIT**: Probability Integral Transform (calibration quality)
+
+Formula: `Combined = w_bic*BIC + w_crps*CRPS + w_hyv*Hyvarinen + w_pit*PIT`
+
+### SMC Model Selection (`src/arena/smc/`)
+Sequential Monte Carlo for adaptive model selection:
+- Particles represent (model, parameter) configurations
+- Weights updated by CRPS performance
+- Systematic resampling when ESS drops
+
+### Promotion Gate
+Experimental model graduates if:
+1. Combined score > best standard by >5%
+2. PIT p-value > 0.05 on ALL symbols
+3. Consistent across cap categories
 
 ## Code Conventions
 

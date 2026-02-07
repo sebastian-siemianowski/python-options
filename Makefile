@@ -515,16 +515,16 @@ colors: .venv/.deps_installed
 #   - momentum_student_t_regime_coupled (regime-aware ν)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Full arena workflow: download data + run competition + show results
+# Full arena workflow: run competition + show results (use arena-data to refresh data)
 arena: .venv/.deps_installed
 	@echo "═══════════════════════════════════════════════════════════════════════════"
-	@echo "  🏟️  ARENA — Experimental Model Competition"
+	@echo "  ARENA — Experimental Model Competition"
 	@echo "═══════════════════════════════════════════════════════════════════════════"
-	@$(MAKE) arena-data
 	@$(MAKE) arena-tune
 	@$(MAKE) arena-results
 
 # Download benchmark data for arena (3 small cap, 3 mid cap, 3 large cap, 3 index)
+# Run this explicitly when you need fresh data: make arena-data
 arena-data: .venv/.deps_installed
 	@echo "Downloading arena benchmark data..."
 	@mkdir -p src/data/arena
@@ -539,6 +539,24 @@ arena-tune: .venv/.deps_installed
 # Show latest arena competition results
 arena-results: .venv/.deps_installed
 	@.venv/bin/python src/arena/arena_cli.py results
+
+# Show disabled experimental models
+arena-disabled: .venv/.deps_installed
+	@.venv/bin/python src/arena/arena_cli.py disabled
+
+# Re-enable a disabled model (usage: make arena-enable MODEL=model_name)
+arena-enable: .venv/.deps_installed
+	@if [ -z "$(MODEL)" ]; then \
+		echo "Usage: make arena-enable MODEL=model_name"; \
+		echo "Available disabled models:"; \
+		.venv/bin/python src/arena/arena_cli.py disabled; \
+	else \
+		.venv/bin/python src/arena/arena_cli.py disabled --enable $(MODEL); \
+	fi
+
+# Re-enable all disabled models
+arena-enable-all: .venv/.deps_installed
+	@.venv/bin/python src/arena/arena_cli.py disabled --clear
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UNIFIED RISK DASHBOARD

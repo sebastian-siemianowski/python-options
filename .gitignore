@@ -110,4 +110,5 @@ htmlcov/
 /src/data/options_signals/
 /src/data/old_options/
 /src/data/options_data/
+# Arena data files (results and downloaded data, not code)
 /src/data/arena/

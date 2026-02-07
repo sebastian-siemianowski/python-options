@@ -63,6 +63,10 @@ from .arena_config import (
     SYMBOL_CATEGORIES,
     CapCategory,
     get_category_weights,
+    load_disabled_models,
+    disable_model,
+    get_enabled_experimental_models,
+    is_model_disabled,
 )
 from .arena_data import (
     load_arena_data,
@@ -101,6 +105,24 @@ try:
 except ImportError:
     MODEL_SELECTION_AVAILABLE = False
 
+# Import CRPS scoring (new)
+try:
+    from .scoring import (
+        compute_crps_gaussian,
+        compute_crps_student_t,
+        compute_combined_score,
+        CRPSResult,
+        CombinedScoreResult,
+        ScoringConfig,
+    )
+    from .scoring.hyvarinen import (
+        compute_hyvarinen_score_gaussian,
+        compute_hyvarinen_score_student_t,
+    )
+    CRPS_AVAILABLE = True
+except ImportError:
+    CRPS_AVAILABLE = False
+
 
 # =============================================================================
 # DATA STRUCTURES
@@ -118,9 +140,10 @@ class ModelScore:
         log_likelihood: Fitted log-likelihood
         bic: Bayesian Information Criterion
         aic: Akaike Information Criterion
+        crps: Continuous Ranked Probability Score (lower is better)
         pit_pvalue: PIT uniformity test p-value
         pit_calibrated: Whether PIT test passed
-        hyvarinen_score: Hyvärinen score (if computed)
+        hyvarinen_score: Hyvarinen score (if computed)
         combined_score: Weighted combined score
         fit_params: Fitted parameters
         fit_time_ms: Fitting time in milliseconds
@@ -131,8 +154,9 @@ class ModelScore:
     log_likelihood: float
     bic: float
     aic: float
-    pit_pvalue: float
-    pit_calibrated: bool
+    crps: Optional[float] = None
+    pit_pvalue: float = 0.0
+    pit_calibrated: bool = False
     hyvarinen_score: Optional[float] = None
     combined_score: Optional[float] = None
     fit_params: Dict[str, float] = field(default_factory=dict)
@@ -147,6 +171,7 @@ class ModelScore:
             "log_likelihood": self.log_likelihood,
             "bic": self.bic,
             "aic": self.aic,
+            "crps": self.crps,
             "pit_pvalue": self.pit_pvalue,
             "pit_calibrated": self.pit_calibrated,
             "hyvarinen_score": self.hyvarinen_score,
@@ -576,9 +601,11 @@ def fit_all_models_for_symbol(
                 if config.verbose:
                     print(f"  Error fitting {model_name} on {dataset.symbol}: {e}")
     
-    # Fit experimental models
+    # Fit experimental models (skip disabled ones)
     if config.test_experimental:
-        for model_name in EXPERIMENTAL_MODELS.keys():
+        enabled_models = get_enabled_experimental_models()
+        
+        for model_name in enabled_models:
             try:
                 result = fit_experimental_model(model_name, returns, vol, regime_labels)
                 
@@ -806,11 +833,24 @@ def run_arena_competition(
     # Load data
     if RICH_AVAILABLE:
         console = Console()
-        console.print(Panel.fit(
-            "[bold cyan]ARENA MODEL COMPETITION[/bold cyan]\n"
+        
+        # Check disabled models
+        disabled = load_disabled_models()
+        enabled_exp = get_enabled_experimental_models()
+        
+        # Build header info
+        header_lines = [
+            "[bold cyan]ARENA MODEL COMPETITION[/bold cyan]",
             f"Symbols: {len(config.symbols)} | "
-            f"Standard Models: {len(STANDARD_MOMENTUM_MODELS)} | "
-            f"Experimental: {len(EXPERIMENTAL_MODELS)}",
+            f"Standard: {len(STANDARD_MOMENTUM_MODELS)} | "
+            f"Experimental: {len(enabled_exp)}/{len(EXPERIMENTAL_MODELS)}",
+        ]
+        
+        if disabled:
+            header_lines.append(f"[dim]Disabled: {', '.join(disabled.keys())}[/dim]")
+        
+        console.print(Panel.fit(
+            "\n".join(header_lines),
             border_style="cyan"
         ))
     
@@ -879,6 +919,9 @@ def run_arena_competition(
     if RICH_AVAILABLE:
         _display_results(result, console)
     
+    # Automatically disable experimental models that failed against best standard
+    disabled_count = _disable_failed_models(result, config, console if RICH_AVAILABLE else None)
+    
     # Save results
     result_path = results_dir / f"arena_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     result.save(str(result_path))
@@ -887,6 +930,83 @@ def run_arena_competition(
         console.print(f"\n[dim]Results saved to: {result_path}[/dim]")
     
     return result
+
+
+def _disable_failed_models(
+    result: ArenaResult,
+    config: ArenaConfig,
+    console: Optional[Console] = None,
+) -> int:
+    """
+    Disable experimental models that failed against the best standard model.
+    
+    Args:
+        result: Arena competition result
+        config: Arena configuration
+        console: Optional Rich console for output
+        
+    Returns:
+        Number of models disabled
+    """
+    overall_ranking = result.rankings.get("overall", [])
+    
+    # Separate standard and experimental models
+    standard_models = [m for m in overall_ranking if m in STANDARD_MOMENTUM_MODELS]
+    experimental_models = [m for m in overall_ranking if m in EXPERIMENTAL_MODELS]
+    
+    if not standard_models or not experimental_models:
+        return 0
+    
+    # Get best standard model score
+    best_std_name = standard_models[0]
+    std_scores = [s for s in result.scores if s.model_name == best_std_name]
+    if not std_scores:
+        return 0
+    
+    best_std_score = np.mean([s.combined_score for s in std_scores if s.combined_score])
+    
+    disabled_count = 0
+    disabled_models_info = []
+    
+    for model_name in experimental_models:
+        # Skip already disabled models
+        if is_model_disabled(model_name):
+            continue
+        
+        # Get experimental model score
+        exp_scores = [s for s in result.scores if s.model_name == model_name]
+        if not exp_scores:
+            continue
+        
+        exp_score = np.mean([s.combined_score for s in exp_scores if s.combined_score])
+        
+        # Calculate gap
+        if best_std_score and exp_score:
+            gap = (exp_score - best_std_score) / best_std_score
+            
+            # Disable if failed (negative gap)
+            if gap < 0:
+                disable_model(
+                    model_name=model_name,
+                    best_std_model=best_std_name,
+                    score_gap=gap,
+                )
+                disabled_count += 1
+                disabled_models_info.append((model_name, gap))
+    
+    # Display disabled models
+    if console and disabled_count > 0:
+        console.print()
+        console.print(Panel.fit(
+            f"[bold red]MODELS DISABLED[/bold red]\n\n"
+            f"The following {disabled_count} model(s) have been disabled for future runs:\n" +
+            "\n".join(f"  [red]x[/red] {name} ({gap*100:.1f}% vs best standard)" 
+                     for name, gap in disabled_models_info) +
+            "\n\n[dim]Use 'make arena-enable MODEL=name' to re-enable.[/dim]",
+            border_style="red"
+        ))
+    
+    return disabled_count
 
 
 def _display_results(result: ArenaResult, console: Console) -> None:

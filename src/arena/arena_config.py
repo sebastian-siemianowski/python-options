@@ -178,3 +178,129 @@ def get_category_weights(symbol: str) -> Dict[str, float]:
     """Get scoring weights for a symbol based on its category."""
     category = SYMBOL_CATEGORIES.get(symbol, CapCategory.MID_CAP)
     return CATEGORY_SCORING_WEIGHTS[category]
+
+
+# =============================================================================
+# DISABLED MODELS — Models that have failed against standard baselines
+# =============================================================================
+
+import json
+from pathlib import Path
+from datetime import datetime
+
+DISABLED_MODELS_FILE = "src/data/arena/disabled_models.json"
+
+
+def load_disabled_models() -> Dict[str, Dict]:
+    """
+    Load list of disabled experimental models.
+    
+    Returns:
+        Dict mapping model_name to disable info:
+        {
+            "model_name": {
+                "disabled_at": "2026-02-07T10:30:00",
+                "reason": "Failed against kalman_gaussian_momentum by -45.2%",
+                "best_std_model": "kalman_gaussian_momentum",
+                "score_gap": -0.452
+            }
+        }
+    """
+    filepath = Path(DISABLED_MODELS_FILE)
+    if not filepath.exists():
+        return {}
+    
+    try:
+        with open(filepath, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_disabled_models(disabled: Dict[str, Dict]) -> None:
+    """Save disabled models to file."""
+    filepath = Path(DISABLED_MODELS_FILE)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(filepath, 'w') as f:
+        json.dump(disabled, f, indent=2)
+
+
+def disable_model(
+    model_name: str,
+    best_std_model: str,
+    score_gap: float,
+    reason: str = None,
+) -> None:
+    """
+    Disable an experimental model that failed against standards.
+    
+    Args:
+        model_name: Name of the model to disable
+        best_std_model: Name of the best standard model it failed against
+        score_gap: Score gap (negative means failed)
+        reason: Optional reason string
+    """
+    disabled = load_disabled_models()
+    
+    if reason is None:
+        reason = f"Failed against {best_std_model} by {score_gap*100:.1f}%"
+    
+    disabled[model_name] = {
+        "disabled_at": datetime.now().isoformat(),
+        "reason": reason,
+        "best_std_model": best_std_model,
+        "score_gap": score_gap,
+    }
+    
+    save_disabled_models(disabled)
+
+
+def enable_model(model_name: str) -> bool:
+    """
+    Re-enable a previously disabled model.
+    
+    Args:
+        model_name: Name of the model to re-enable
+        
+    Returns:
+        True if model was re-enabled, False if it wasn't disabled
+    """
+    disabled = load_disabled_models()
+    
+    if model_name in disabled:
+        del disabled[model_name]
+        save_disabled_models(disabled)
+        return True
+    
+    return False
+
+
+def is_model_disabled(model_name: str) -> bool:
+    """Check if a model is disabled."""
+    disabled = load_disabled_models()
+    return model_name in disabled
+
+
+def get_enabled_experimental_models() -> list:
+    """Get list of experimental models that are not disabled."""
+    from .experimental_models import EXPERIMENTAL_MODELS
+    
+    disabled = load_disabled_models()
+    return [name for name in EXPERIMENTAL_MODELS.keys() if name not in disabled]
+
+
+def clear_disabled_models() -> int:
+    """
+    Clear all disabled models (re-enable all).
+    
+    Returns:
+        Number of models that were re-enabled
+    """
+    disabled = load_disabled_models()
+    count = len(disabled)
+    
+    if count > 0:
+        save_disabled_models({})
+    
+    return count
