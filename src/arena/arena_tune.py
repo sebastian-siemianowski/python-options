@@ -1760,36 +1760,41 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         console.print("[dim]  Requirements: Score gap ≥3, CSS ≥0.65, FEC ≥0.75, PIT ≥75%[/dim]")
     
     # =========================================================================
-    # ARCHIVED MODELS (Safe Storage) - Compact view
+    # ARCHIVED MODELS (Safe Storage) - Match standard models format
     # =========================================================================
     if SAFE_STORAGE_MODELS:
         console.print()
         console.print("[bold]  Archived Models[/bold] [dim](Safe Storage)[/dim]")
         console.print()
-        console.print(f"[dim]  {'':3} {'Model':<28} {'Score':>6} {'Hyv':>7} {'CSS':>4} {'FEC':>4} {'Gap':>6}[/dim]")
-        console.print(f"[dim]  {'─' * 66}[/dim]")
+        console.print(f"[dim]  {'':4} {'Model':<30} {'Score':>7} {'BIC':>8} {'CRPS':>7} {'Hyv':>8} {'PIT':>5} {'CSS':>5} {'FEC':>5} {'Time':>7} {'Gap':>7}[/dim]")
+        console.print(f"[dim]  {'─' * 104}[/dim]")
         
         for i, (name, m) in enumerate(SAFE_STORAGE_MODELS.items(), 1):
-            display_name = name[:27] + "…" if len(name) > 28 else name
-            final_str = f"{m['final']:.1f}"
-            hyv_str = f"{m['hyv']:.0f}"
+            display_name = name[:28] + "…" if len(name) > 29 else name
+            final_str = f"{m['final']:.2f}"
+            bic_str = f"{m['bic']:.0f}"
+            crps_str = f"{m['crps']:.4f}"
+            hyv_str = f"{m['hyv']:.1f}"
+            pit_str = m['pit']
             css_str = f"{m['css']:.2f}"
             fec_str = f"{m['fec']:.2f}"
+            time_ms = m.get('time_ms', 0)
+            time_str = f"{time_ms}ms" if time_ms else "-"
             vs_std = m['vs_std']
             
             # Parse vs_std to color it
             try:
                 gap_val = float(vs_std.replace('%', '').replace('+', ''))
                 if gap_val >= 8:
-                    gap_color = "[green]"
+                    gap_color = "green"
                 elif gap_val >= 5:
-                    gap_color = "[cyan]"
+                    gap_color = "cyan"
                 else:
-                    gap_color = "[dim]"
+                    gap_color = "dim"
             except:
-                gap_color = "[dim]"
+                gap_color = "dim"
             
-            console.print(f"  [yellow]◆{i:>2}[/yellow] {display_name:<28} {final_str:>6} {hyv_str:>7} {css_str:>4} {fec_str:>4} {gap_color}{vs_std:>6}[/{gap_color.replace('[', '[/')}]" if gap_color != "[dim]" else f"  [yellow]◆{i:>2}[/yellow] {display_name:<28} {final_str:>6} {hyv_str:>7} {css_str:>4} {fec_str:>4} [dim]{vs_std:>6}[/dim]")
+            console.print(f"  [yellow]◆{i:>2}[/yellow]  {display_name:<30} {final_str:>7} {bic_str:>8} {crps_str:>7} {hyv_str:>8} {pit_str:>5} {css_str:>5} {fec_str:>5} {time_str:>7}  [{gap_color}]{vs_std:>6}[/{gap_color}]")
     
     # =========================================================================
     # SUMMARY FOOTER - Minimal
