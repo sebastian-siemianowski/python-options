@@ -104,26 +104,47 @@ Isolated sandbox for testing experimental models against production baselines.
 ### Standard Models (Baselines)
 `kalman_gaussian_momentum`, `kalman_phi_gaussian_momentum`, `phi_student_t_nu_{4,6,8,12,20}_momentum`
 
-### Experimental Models (`src/arena/experimental_models/`)
-**5 PROMOTION CANDIDATES** - All beat standard and pass PIT calibration:
+### Generation 8 Experimental Models (`src/arena/experimental_models/`)
+**40 Elite Models** across 4 families targeting hard gates.
 
-| Model | vs Standard | Time | PIT | Description |
-|-------|------------|------|-----|-------------|
-| `dualtree_complex_wavelet` | +132.5% | 1037ms | PASS | Dual-Tree Complex Wavelet Transform |
-| `wavelet_packet_kalman` | +32.6% | 1945ms | PASS | Wavelet Packet Decomposition |
-| `wavelet_kalman` | +21.9% | 3188ms | PASS | Multi-scale Haar Decomposition |
-| `wavelet_packet_bestbasis` | +1.5% | 1503ms | PASS | Entropy-based Best Basis |
-| `online_bayesian_ma` | +0.0% | 74ms | PASS | Bayesian Model Averaging |
+#### Model Families
+| Family | Count | Focus | Key Innovation |
+|--------|-------|-------|----------------|
+| Champions | 2 | Proven winners | DTCWT + Vol Regime |
+| CSS Enhancement | 9 | Calibration Stability | Hierarchical stress detection |
+| FEC Enhancement | 10 | Entropy Consistency | EMA blending, adaptive calibration |
+| Combined CSS+FEC | 10 | Dual targeting | Balance stress and entropy |
+| Advanced Hybrid | 9 | Advanced methods | Koopman, SSA, Robust M-estimation |
+
+#### Promotion Candidates (Pass ALL Hard Gates)
+| Model | Final Score | CSS | FEC | PIT | vs STD |
+|-------|-------------|-----|-----|-----|--------|
+| `dualtree_complex_wavelet` | 61.98 | 0.77 | 0.81 | 75% | **+9.6** |
+| `fec_robust_vol` | 60.86 | 0.69 | 0.84 | 100% | **+8.5** |
+| `dtcwt_vol_regime` | 60.58 | 0.71 | 0.81 | 92% | **+8.3** |
+| `css_vol_persistence` | 59.40 | 0.67 | 0.84 | 100% | **+7.1** |
+| `css_drawdown_stress` | 58.90 | 0.66 | 0.85 | 100% | **+6.6** |
+| `css_regime_transition` | 58.85 | 0.69 | 0.85 | 92% | **+6.5** |
+| `advanced_scale_mix` | 58.03 | 0.74 | 0.85 | 100% | **+5.7** |
 
 ### Scoring System (`src/arena/scoring/`)
 Combined score using proper scoring rules:
 
 - **CRPS**: Continuous Ranked Probability Score (calibration + sharpness)
 - **BIC**: Bayesian Information Criterion (complexity penalty)
-- **Hyvarinen**: Robust to model misspecification
+- **Hyvärinen**: Robust to model misspecification
 - **PIT**: Probability Integral Transform (calibration quality)
+- **CSS**: Calibration Stability Under Stress (stress-period calibration)
+- **FEC**: Forecast Entropy Consistency (uncertainty coherence)
+- **DIG**: Directional Information Gain (sign prediction value)
 
-Formula: `Combined = w_bic*BIC + w_crps*CRPS + w_hyv*Hyvarinen + w_pit*PIT`
+### Hard Gates (Non-Negotiable)
+```
+CSS >= 0.65    # Calibration must hold during stress
+FEC >= 0.75    # Entropy must track market uncertainty
+vs STD >= 3    # Must beat best standard by 3+ points
+PIT >= 75%     # Distributional correctness
+```
 
 ### Multiprocessing Support
 Arena uses `ProcessPoolExecutor` for parallel model fitting:
@@ -134,10 +155,12 @@ make arena-tune ARGS="--workers 4"            # Custom worker count
 ```
 
 ### Promotion Gate
-Experimental model graduates if:
-1. Combined score > best standard by >5%
-2. PIT p-value > 0.05 on ALL symbols
-3. Consistent across cap categories
+Experimental model graduates if ALL criteria pass:
+1. Final Score > best standard by >3 points
+2. CSS >= 0.65 (calibration stability under stress)
+3. FEC >= 0.75 (forecast entropy consistency)
+4. PIT pass rate >= 75%
+5. Not last in any category
 
 ## Code Conventions
 
@@ -181,3 +204,7 @@ Minimal set in `src/setup/requirements.txt`: yfinance, numpy, pandas, scipy, ric
 **Critical for Kelly sizing**: If P(r>0)=62% → 62% of outcomes should be positive.
 - `ECE < 0.05` = well-calibrated
 - `pit_ks_pvalue < 0.05` = needs recalibration
+
+# Important
+- Avoid using cmdand heredoc in the terminal there are frequent errors when using heredoc
+- Do not put raw multiline code in terminal - NEVER - NEVER

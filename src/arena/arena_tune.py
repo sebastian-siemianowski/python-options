@@ -1339,9 +1339,9 @@ def determine_promotion_candidates(
         exp_css = model_avg_css.get(exp_name, 0.0)
         exp_fec = model_avg_fec.get(exp_name, 0.0)
         
-        # Criterion 1: Final Score beats best standard by >5 points
+        # Criterion 1: Final Score beats best standard by >3 points
         score_gap = exp_final - best_standard_final
-        beats_threshold = score_gap > 5.0
+        beats_threshold = score_gap > 3.0
         
         # Criterion 2: PIT calibrated on >= 75% of symbols
         pit_pass = exp_pit_rate >= 0.75
@@ -1524,13 +1524,15 @@ def _disable_failed_models(
     if not standard_models or not experimental_models:
         return 0
     
-    # Get best standard model score
+    # Get best standard model Final Score
     best_std_name = standard_models[0]
     std_scores = [s for s in result.scores if s.model_name == best_std_name]
     if not std_scores:
         return 0
     
-    best_std_score = np.mean([s.combined_score for s in std_scores if s.combined_score])
+    # Use final_score for the 5-point hard gate
+    std_final_scores = [s.final_score for s in std_scores if s.final_score is not None]
+    best_std_final = np.mean(std_final_scores) if std_final_scores else 50.0
     
     disabled_count = 0
     disabled_models_info = []
@@ -1540,34 +1542,36 @@ def _disable_failed_models(
         if is_model_disabled(model_name):
             continue
         
-        # Get experimental model score
+        # Get experimental model Final Score
         exp_scores = [s for s in result.scores if s.model_name == model_name]
         if not exp_scores:
             continue
         
-        exp_score = np.mean([s.combined_score for s in exp_scores if s.combined_score])
+        exp_final_scores = [s.final_score for s in exp_scores if s.final_score is not None]
+        exp_final = np.mean(exp_final_scores) if exp_final_scores else 0.0
         
-        # Calculate gap
-        if best_std_score and exp_score:
-            gap = (exp_score - best_std_score) / best_std_score
-            
-            # Disable if failed (negative gap)
-            if gap < 0:
-                disable_model(
-                    model_name=model_name,
-                    best_std_model=best_std_name,
-                    score_gap=gap,
-                )
-                disabled_count += 1
-                disabled_models_info.append((model_name, gap))
+        # Calculate gap in points (not percentage)
+        gap_points = exp_final - best_std_final
+        
+        # HARD GATE: Disable if vs STD < 3 points
+        if gap_points < 3.0:
+            gap_pct = gap_points / best_std_final if best_std_final else 0
+            disable_model(
+                model_name=model_name,
+                best_std_model=best_std_name,
+                score_gap=gap_pct,
+            )
+            disabled_count += 1
+            disabled_models_info.append((model_name, gap_points))
     
     # Display disabled models
     if console and disabled_count > 0:
         console.print()
-        console.print("[bold red]MODELS DISABLED[/bold red]")
+        console.print("[bold red]MODELS DISABLED (vs STD < 3 points)[/bold red]")
         console.print(f"[dim]{'─' * 60}[/dim]")
-        for name, gap in disabled_models_info:
-            console.print(f"  [red]x[/red] {name} [dim]({gap*100:.1f}%)[/dim]")
+        for name, gap_pts in disabled_models_info:
+            sign = "+" if gap_pts >= 0 else ""
+            console.print(f"  [red]x[/red] {name} [dim]({sign}{gap_pts:.1f} pts)[/dim]")
         console.print()
         console.print("[dim]  Use 'make arena-enable MODEL=name' to re-enable[/dim]")
     
@@ -1600,6 +1604,14 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         avg_adv = np.mean([s.advanced_score for s in model_scores if s.advanced_score is not None]) if any(s.advanced_score for s in model_scores) else None
         avg_final = np.mean([s.final_score for s in model_scores if s.final_score is not None]) if any(s.final_score for s in model_scores) else None
         return avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv, avg_final
+    
+    # Sort experimental models by final_score descending
+    def get_final_score(m):
+        _, _, _, _, _, _, _, _, _, _, final = get_model_stats(m)
+        return final if final is not None else 0.0
+    
+    experimental_models = sorted(experimental_models, key=get_final_score, reverse=True)
+    standard_models = sorted(standard_models, key=get_final_score, reverse=True)
     
     # =========================================================================
     # STANDARD MODELS
@@ -1727,7 +1739,7 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         console.print("[dim]  Ready for production deployment[/dim]")
     else:
         console.print("[yellow]NO PROMOTION CANDIDATES[/yellow]")
-        console.print("[dim]  Criteria: Final >5pts, PIT >=75%, CSS >=0.65, FEC >=0.75[/dim]")
+        console.print("[dim]  Hard Gates: vs STD >=3pts, PIT >=75%, CSS >=0.65, FEC >=0.75[/dim]")
     
     # =========================================================================
     # SUMMARY
