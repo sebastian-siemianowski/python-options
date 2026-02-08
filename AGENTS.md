@@ -104,21 +104,21 @@ Isolated sandbox for testing experimental models against production baselines.
 ### Standard Models (Baselines)
 `kalman_gaussian_momentum`, `kalman_phi_gaussian_momentum`, `phi_student_t_nu_{4,6,8,12,20}_momentum`
 
-### Generation 9 Experimental Models (`src/arena/experimental_models/`)
-**5 Elite Winners** - Top performers from arena competition (Feb 2026).
+### Generation 10 Experimental Models (`src/arena/experimental_models/`)
+**65 Models** - Implemented by panel of three Chinese professors (Feb 2026).
 
-#### Top 5 Winners (Pass ALL Hard Gates)
-| Model | Final Score | CSS | FEC | PIT | vs STD |
-|-------|-------------|-----|-----|-----|--------|
-| `dtcwt_vol_regime` | 67.84 | 0.77 | 0.81 | 92% | **+10.6** |
-| `dtcwt_qshift` | 67.69 | 0.44 | 0.79 | PASS | **+10.4** |
-| `dualtree_complex_wavelet` | 67.02 | 0.77 | 0.81 | 75% | **+9.8** |
-| `entropy_matching` | 66.02 | 0.73 | 0.85 | PASS | **+8.8** |
-| `dtcwt_adaptive_levels` | 65.83 | 0.61 | 0.83 | PASS | **+8.6** |
+#### Model Batches
+| Batch | Focus | Models | Example |
+|-------|-------|--------|---------|
+| Base (Gen9) | Previous Winners | 5 | `dualtree_complex_wavelet`, `dtcwt_vol_regime` |
+| Batch 1 | DTCWT Evolution | 10 | `dtcwt_deep_scale`, `dtcwt_phase_regime` |
+| Batch 2 | Stress Resilience | 10 | `stress_hierarchical_deep`, `stress_tail_risk` |
+| Batch 3 | Entropy Targeting | 10 | `entropy_tracking`, `entropy_variance_target` |
+| Batch 4 | Regime Adaptation | 10 | `regime_smooth_transition`, `regime_multi_horizon` |
+| Batch 5 | Robust Estimation | 10 | `robust_huber`, `robust_tukey`, `robust_mad` |
+| Batch 6 | Hybrid Elite | 10 | `elite_hybrid_alpha`, `elite_ultimate` |
 
 Safe storage: `src/arena/safe_storage/` (backup of winning model code)
-| `combined_hybrid_stress` | 63.57 | 0.62 | 0.83 | PASS | **+7.1** |
-| `combined_calib_constrained` | 62.99 | 0.61 | 0.83 | PASS | **+6.5** |
 
 ### Scoring System (`src/arena/scoring/`)
 Combined score using proper scoring rules:
@@ -128,6 +128,7 @@ Combined score using proper scoring rules:
 - **Hyvärinen**: Robust to model misspecification
 - **PIT**: Probability Integral Transform (calibration quality)
 - **CSS**: Calibration Stability Under Stress (stress-period calibration)
+
 - **FEC**: Forecast Entropy Consistency (uncertainty coherence)
 - **DIG**: Directional Information Gain (sign prediction value)
 
