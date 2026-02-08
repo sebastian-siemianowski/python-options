@@ -105,27 +105,16 @@ Isolated sandbox for testing experimental models against production baselines.
 `kalman_gaussian_momentum`, `kalman_phi_gaussian_momentum`, `phi_student_t_nu_{4,6,8,12,20}_momentum`
 
 ### Generation 8 Experimental Models (`src/arena/experimental_models/`)
-**40 Elite Models** across 4 families targeting hard gates.
-
-#### Model Families
-| Family | Count | Focus | Key Innovation |
-|--------|-------|-------|----------------|
-| Champions | 2 | Proven winners | DTCWT + Vol Regime |
-| CSS Enhancement | 9 | Calibration Stability | Hierarchical stress detection |
-| FEC Enhancement | 10 | Entropy Consistency | EMA blending, adaptive calibration |
-| Combined CSS+FEC | 10 | Dual targeting | Balance stress and entropy |
-| Advanced Hybrid | 9 | Advanced methods | Koopman, SSA, Robust M-estimation |
+**5 Elite Models** - All promotion candidates passing hard gates.
 
 #### Promotion Candidates (Pass ALL Hard Gates)
 | Model | Final Score | CSS | FEC | PIT | vs STD |
 |-------|-------------|-----|-----|-----|--------|
-| `dualtree_complex_wavelet` | 61.98 | 0.77 | 0.81 | 75% | **+9.6** |
-| `fec_robust_vol` | 60.86 | 0.69 | 0.84 | 100% | **+8.5** |
-| `dtcwt_vol_regime` | 60.58 | 0.71 | 0.81 | 92% | **+8.3** |
-| `css_vol_persistence` | 59.40 | 0.67 | 0.84 | 100% | **+7.1** |
-| `css_drawdown_stress` | 58.90 | 0.66 | 0.85 | 100% | **+6.6** |
-| `css_regime_transition` | 58.85 | 0.69 | 0.85 | 92% | **+6.5** |
-| `advanced_scale_mix` | 58.03 | 0.74 | 0.85 | 100% | **+5.7** |
+| `dualtree_complex_wavelet` | 66.44 | 0.77 | 0.81 | 75% | **+10.0** |
+| `dtcwt_vol_regime` | 65.80 | 0.75 | 0.83 | 75% | **+9.3** |
+| `fec_variance_target` | 64.27 | 0.64 | 0.85 | PASS | **+7.8** |
+| `combined_hybrid_stress` | 63.57 | 0.62 | 0.83 | PASS | **+7.1** |
+| `combined_calib_constrained` | 62.99 | 0.61 | 0.83 | PASS | **+6.5** |
 
 ### Scoring System (`src/arena/scoring/`)
 Combined score using proper scoring rules:
