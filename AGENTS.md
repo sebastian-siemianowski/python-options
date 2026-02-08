@@ -104,15 +104,19 @@ Isolated sandbox for testing experimental models against production baselines.
 ### Standard Models (Baselines)
 `kalman_gaussian_momentum`, `kalman_phi_gaussian_momentum`, `phi_student_t_nu_{4,6,8,12,20}_momentum`
 
-### Generation 8 Experimental Models (`src/arena/experimental_models/`)
-**5 Elite Models** - All promotion candidates passing hard gates.
+### Generation 9 Experimental Models (`src/arena/experimental_models/`)
+**5 Elite Winners** - Top performers from arena competition (Feb 2026).
 
-#### Promotion Candidates (Pass ALL Hard Gates)
+#### Top 5 Winners (Pass ALL Hard Gates)
 | Model | Final Score | CSS | FEC | PIT | vs STD |
 |-------|-------------|-----|-----|-----|--------|
-| `dualtree_complex_wavelet` | 66.44 | 0.77 | 0.81 | 75% | **+10.0** |
-| `dtcwt_vol_regime` | 65.80 | 0.75 | 0.83 | 75% | **+9.3** |
-| `fec_variance_target` | 64.27 | 0.64 | 0.85 | PASS | **+7.8** |
+| `dtcwt_vol_regime` | 67.84 | 0.77 | 0.81 | 92% | **+10.6** |
+| `dtcwt_qshift` | 67.69 | 0.44 | 0.79 | PASS | **+10.4** |
+| `dualtree_complex_wavelet` | 67.02 | 0.77 | 0.81 | 75% | **+9.8** |
+| `entropy_matching` | 66.02 | 0.73 | 0.85 | PASS | **+8.8** |
+| `dtcwt_adaptive_levels` | 65.83 | 0.61 | 0.83 | PASS | **+8.6** |
+
+Safe storage: `src/arena/safe_storage/` (backup of winning model code)
 | `combined_hybrid_stress` | 63.57 | 0.62 | 0.83 | PASS | **+7.1** |
 | `combined_calib_constrained` | 62.99 | 0.61 | 0.83 | PASS | **+6.5** |
 

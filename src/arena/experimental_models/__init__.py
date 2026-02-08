@@ -1,18 +1,33 @@
-"""Arena Experimental Models - 5 Elite Models (Promotion Candidates)"""
+"""Arena Experimental Models - Top 5 Elite Winners (Generation 9)
+
+Winners from arena competition (Feb 2026):
+1. dtcwt_vol_regime         67.84  +10.6 vs STD
+2. dtcwt_qshift             67.69  +10.4 vs STD  
+3. dualtree_complex_wavelet 67.02  +9.8 vs STD
+4. entropy_matching         66.02  +8.8 vs STD
+5. dtcwt_adaptive_levels    65.83  +8.6 vs STD
+"""
 
 from .base import ExperimentalModelSpec, ExperimentalModelFamily, BaseExperimentalModel
 
 from .m14_dualtree_complex_wavelet import DualTreeComplexWaveletKalmanModel
 from .m85_dtcwt_gen3_batch5 import DTCWTVolRegimeModel
-from .m99_gen8_fec_batch2 import FECVarianceTargetModel
-from .m100_gen8_combined_batch3 import CombinedCalibConstrainedModel, CombinedHybridStressModel
+
+from .gen9_batch1_dtcwt import (
+    DTCWTQShiftModel,
+    DTCWTAdaptiveLevelsModel,
+)
+
+from .gen9_batch3_entropy import (
+    EntropyMatchingModel,
+)
 
 EXPERIMENTAL_MODELS = {
-    "dualtree_complex_wavelet": DualTreeComplexWaveletKalmanModel,
     "dtcwt_vol_regime": DTCWTVolRegimeModel,
-    "combined_calib_constrained": CombinedCalibConstrainedModel,
-    "combined_hybrid_stress": CombinedHybridStressModel,
-    "fec_variance_target": FECVarianceTargetModel,
+    "dtcwt_qshift": DTCWTQShiftModel,
+    "dualtree_complex_wavelet": DualTreeComplexWaveletKalmanModel,
+    "entropy_matching": EntropyMatchingModel,
+    "dtcwt_adaptive_levels": DTCWTAdaptiveLevelsModel,
 }
 
 EXPERIMENTAL_MODEL_SPECS = {name: ExperimentalModelSpec(
@@ -21,7 +36,7 @@ EXPERIMENTAL_MODEL_SPECS = {name: ExperimentalModelSpec(
     n_params=4,
     param_names=("q", "c", "phi", "cw"),
     default_params={"q": 1e-6, "c": 1.0, "phi": 0.0, "cw": 1.0},
-    description=f"Elite model: {name}",
+    description=f"Gen9 elite winner: {name}",
 ) for name in EXPERIMENTAL_MODELS.keys()}
 
 def get_experimental_model_specs():
@@ -33,7 +48,7 @@ def create_experimental_model(name, **kwargs):
     return EXPERIMENTAL_MODELS[name](**kwargs)
 
 __all__ = [
-    'BaseExperimentalModel', 'ExperimentalModelSpec', 'ExperimentalModelFamily',
-    'EXPERIMENTAL_MODELS', 'EXPERIMENTAL_MODEL_SPECS',
-    'get_experimental_model_specs', 'create_experimental_model',
+    "BaseExperimentalModel", "ExperimentalModelSpec", "ExperimentalModelFamily",
+    "EXPERIMENTAL_MODELS", "EXPERIMENTAL_MODEL_SPECS",
+    "get_experimental_model_specs", "create_experimental_model",
 ]
