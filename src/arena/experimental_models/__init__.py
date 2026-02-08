@@ -1,4 +1,9 @@
-"""Arena Experimental Models Registry - Empty (models moved to safe_storage)"""
+"""
+Arena Experimental Models Registry
+
+All experimental models have been promoted to safe storage.
+No active experimental models.
+"""
 
 from typing import Dict, Any, Type, List
 from dataclasses import dataclass
@@ -6,7 +11,7 @@ from enum import Enum
 
 
 class ExperimentalModelFamily(Enum):
-    SAFE_STORAGE = "safe_storage"
+    ELITE_HYBRID = "elite_hybrid"
 
 
 @dataclass
@@ -19,14 +24,16 @@ class ExperimentalModelSpec:
     model_class: Type
 
 
-# No experimental models - all promoted models are in safe_storage
+# No experimental models - all promoted to safe storage
 EXPERIMENTAL_MODELS: Dict[str, Type] = {}
+
+
 EXPERIMENTAL_MODEL_SPECS: Dict[str, ExperimentalModelSpec] = {}
 
 
 def get_experimental_model(name):
     if name not in EXPERIMENTAL_MODELS:
-        raise ValueError(f"Unknown model: {name}. All models are now in safe_storage.")
+        raise ValueError(f"Unknown model: {name}")
     return EXPERIMENTAL_MODELS[name]
 
 
@@ -36,7 +43,7 @@ def get_experimental_model_specs():
 
 def create_experimental_model(name, **kwargs):
     if name not in EXPERIMENTAL_MODELS:
-        raise ValueError(f"Unknown model: {name}. All models are now in safe_storage.")
+        raise ValueError(f"Unknown model: {name}")
     return EXPERIMENTAL_MODELS[name](**kwargs)
 
 

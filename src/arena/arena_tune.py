@@ -1580,7 +1580,7 @@ def _disable_failed_models(
 
 
 def _display_results(result: ArenaResult, console: Console) -> None:
-    """Display competition results with clean, aligned formatting."""
+    """Display competition results with elegant Apple-style formatting."""
     
     # Import safe storage models for filtering
     try:
@@ -1623,165 +1623,178 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     experimental_models = sorted(experimental_models, key=get_final_score, reverse=True)
     standard_models = sorted(standard_models, key=get_final_score, reverse=True)
     
+    # Get best standard final score for comparison
+    best_std_final = None
+    if standard_models:
+        _, _, _, _, _, _, _, _, _, _, best_std_final = get_model_stats(standard_models[0])
+    
     # =========================================================================
-    # STANDARD MODELS
+    # ELEGANT HEADER
     # =========================================================================
     console.print()
-    console.print("[bold blue]STANDARD MODELS[/bold blue] [dim](Production Baselines)[/dim]")
-    console.print(f"[dim]{'─' * 142}[/dim]")
-    console.print(f"[dim]{'Rank':<6}{'Model':<30}{'FINAL':>7}{'BIC':>9}{'CRPS':>7}{'Hyv':>8}{'PIT':>6}{'CSS':>5}{'FEC':>5}{'DIG':>5}{'Time':>8}[/dim]")
-    console.print(f"[dim]{'─' * 142}[/dim]")
+    console.print("[dim]                                                                              [/dim]")
+    console.print("[bold white]  A R E N A[/bold white]")
+    console.print("[dim]  Model Competition Framework[/dim]")
+    console.print()
+    
+    # Summary line
+    n_std = len(standard_models)
+    n_exp = len(experimental_models)
+    n_safe = len(SAFE_STORAGE_MODELS)
+    console.print(f"[dim]  {result.summary['n_symbols']} symbols  ·  {n_std} standard  ·  {n_exp} experimental  ·  {n_safe} archived[/dim]")
+    console.print()
+    
+    # =========================================================================
+    # STANDARD MODELS - Clean table
+    # =========================================================================
+    console.print("[bold]  Standard Models[/bold]")
+    console.print()
+    
+    # Header row
+    header = f"[dim]  {'':3} {'Model':<28} {'Score':>6} {'BIC':>8} {'CRPS':>6} {'Hyv':>7} {'PIT':>5} {'CSS':>4} {'FEC':>4} {'Time':>6}[/dim]"
+    console.print(header)
+    console.print(f"[dim]  {'─' * 92}[/dim]")
     
     for i, model_name in enumerate(standard_models, 1):
         avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv, avg_final = get_model_stats(model_name)
         
-        pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
-        final_str = f"{avg_final:.2f}" if avg_final is not None else "-"
-        bic_str = f"{avg_bic:.0f}" if avg_bic else "-"
-        crps_str = f"{avg_crps:.4f}" if avg_crps else "-"
-        hyv_str = f"{avg_hyv:.1f}" if avg_hyv else "-"
-        time_str = f"{avg_time:.0f}ms" if avg_time else "-"
-        css_str = f"{avg_css:.2f}" if avg_css is not None else "-"
-        fec_str = f"{avg_fec:.2f}" if avg_fec is not None else "-"
-        dig_str = f"{avg_dig:.2f}" if avg_dig is not None else "-"
+        # Format values
+        final_str = f"{avg_final:.1f}" if avg_final is not None else "–"
+        bic_str = f"{avg_bic:.0f}" if avg_bic else "–"
+        crps_str = f"{avg_crps:.4f}" if avg_crps else "–"
+        hyv_str = f"{avg_hyv:.0f}" if avg_hyv else "–"
+        pit_str = "✓" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
+        time_str = f"{avg_time/1000:.1f}s" if avg_time and avg_time >= 1000 else f"{avg_time:.0f}ms" if avg_time else "–"
+        css_str = f"{avg_css:.2f}" if avg_css is not None else "–"
+        fec_str = f"{avg_fec:.2f}" if avg_fec is not None else "–"
         
-        # Color for top models
+        # Rank indicator
         if i == 1:
-            style = "bold green"
+            rank_style = "[bold cyan]"
+            rank_end = "[/bold cyan]"
+            rank_char = "◆"
         elif i <= 3:
-            style = "green"
+            rank_style = "[cyan]"
+            rank_end = "[/cyan]"
+            rank_char = "◇"
         else:
-            style = "white"
+            rank_style = "[dim]"
+            rank_end = "[/dim]"
+            rank_char = " "
         
-        console.print(f"[{style}]#{i:<5}{model_name:<30}{final_str:>7}{bic_str:>9}{crps_str:>7}{hyv_str:>8}{pit_str:>6}{css_str:>5}{fec_str:>5}{dig_str:>5}{time_str:>8}[/{style}]")
+        # Truncate model name if needed
+        display_name = model_name[:27] + "…" if len(model_name) > 28 else model_name
+        
+        row = f"  {rank_style}{rank_char}{i:>2}{rank_end} {display_name:<28} {final_str:>6} {bic_str:>8} {crps_str:>6} {hyv_str:>7} {pit_str:>5} {css_str:>4} {fec_str:>4} {time_str:>6}"
+        console.print(row)
     
     # =========================================================================
     # EXPERIMENTAL MODELS
     # =========================================================================
     console.print()
-    console.print("[bold magenta]EXPERIMENTAL MODELS[/bold magenta] [dim](Candidates for Promotion)[/dim]")
-    console.print(f"[dim]{'─' * 142}[/dim]")
+    console.print("[bold]  Experimental Models[/bold]")
+    console.print()
     
     if experimental_models:
-        console.print(f"[dim]{'Rank':<6}{'Model':<30}{'FINAL':>7}{'BIC':>9}{'CRPS':>7}{'Hyv':>8}{'PIT':>6}{'CSS':>5}{'FEC':>5}{'DIG':>5}{'Time':>8}{'vs STD':>8}[/dim]")
-        console.print(f"[dim]{'─' * 142}[/dim]")
-        
-        # Get best standard final score for comparison
-        best_std_final = None
-        if standard_models:
-            _, _, _, _, _, _, _, _, _, _, best_std_final = get_model_stats(standard_models[0])
+        # Header row with vs STD
+        header = f"[dim]  {'':3} {'Model':<28} {'Score':>6} {'BIC':>8} {'CRPS':>6} {'Hyv':>7} {'PIT':>5} {'CSS':>4} {'FEC':>4} {'Time':>6} {'Gap':>6}[/dim]"
+        console.print(header)
+        console.print(f"[dim]  {'─' * 100}[/dim]")
         
         for i, model_name in enumerate(experimental_models, 1):
             avg_score, avg_bic, avg_crps, avg_hyv, pit_rate, avg_time, avg_css, avg_fec, avg_dig, avg_adv, avg_final = get_model_stats(model_name)
             
-            pit_str = "PASS" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
-            final_str = f"{avg_final:.2f}" if avg_final is not None else "-"
-            bic_str = f"{avg_bic:.0f}" if avg_bic else "-"
-            crps_str = f"{avg_crps:.4f}" if avg_crps else "-"
-            hyv_str = f"{avg_hyv:.1f}" if avg_hyv else "-"
-            time_str = f"{avg_time:.0f}ms" if avg_time else "-"
-            css_str = f"{avg_css:.2f}" if avg_css is not None else "-"
-            fec_str = f"{avg_fec:.2f}" if avg_fec is not None else "-"
-            dig_str = f"{avg_dig:.2f}" if avg_dig is not None else "-"
+            # Format values
+            final_str = f"{avg_final:.1f}" if avg_final is not None else "–"
+            bic_str = f"{avg_bic:.0f}" if avg_bic else "–"
+            crps_str = f"{avg_crps:.4f}" if avg_crps else "–"
+            hyv_str = f"{avg_hyv:.0f}" if avg_hyv else "–"
+            pit_str = "✓" if pit_rate == 1.0 else f"{pit_rate*100:.0f}%"
+            time_str = f"{avg_time/1000:.1f}s" if avg_time and avg_time >= 1000 else f"{avg_time:.0f}ms" if avg_time else "–"
+            css_str = f"{avg_css:.2f}" if avg_css is not None else "–"
+            fec_str = f"{avg_fec:.2f}" if avg_fec is not None else "–"
             
-            # Gap vs standard (using final score)
+            # Gap vs standard
             if best_std_final and avg_final:
-                gap_pct = avg_final - best_std_final
-                if gap_pct > 0:
-                    gap_str = f"[green]+{gap_pct:.1f}[/green]"
+                gap = avg_final - best_std_final
+                if gap >= 3:
+                    gap_str = f"[green]+{gap:.1f}[/green]"
+                    rank_style = "[bold green]"
+                    rank_end = "[/bold green]"
+                    rank_char = "●"
+                elif gap > 0:
+                    gap_str = f"[yellow]+{gap:.1f}[/yellow]"
+                    rank_style = "[yellow]"
+                    rank_end = "[/yellow]"
+                    rank_char = "○"
                 else:
-                    gap_str = f"[red]{gap_pct:.1f}[/red]"
+                    gap_str = f"[dim]{gap:.1f}[/dim]"
+                    rank_style = "[dim]"
+                    rank_end = "[/dim]"
+                    rank_char = " "
             else:
-                gap_str = "-"
+                gap_str = "–"
+                rank_style = "[dim]"
+                rank_end = "[/dim]"
+                rank_char = " "
             
-            # Style based on performance
-            if avg_final and best_std_final and avg_final > best_std_final:
-                style = "bold green"
-                rank_str = f"*#{i}"
-            else:
-                style = "white"
-                rank_str = f"#{i}"
+            # Truncate model name
+            display_name = model_name[:27] + "…" if len(model_name) > 28 else model_name
             
-            console.print(f"[{style}]{rank_str:<6}{model_name:<30}{final_str:>7}{bic_str:>9}{crps_str:>7}{hyv_str:>8}{pit_str:>6}{css_str:>5}{fec_str:>5}{dig_str:>5}{time_str:>8}[/{style}]  {gap_str}")
+            row = f"  {rank_style}{rank_char}{i:>2}{rank_end} {display_name:<28} {final_str:>6} {bic_str:>8} {crps_str:>6} {hyv_str:>7} {pit_str:>5} {css_str:>4} {fec_str:>4} {time_str:>6} {gap_str:>6}"
+            console.print(row)
     else:
-        console.print("[dim]  No experimental models enabled[/dim]")
+        console.print("[dim]  No experimental models active[/dim]")
     
     # =========================================================================
-    # HEAD-TO-HEAD (only if experimental models exist)
-    # =========================================================================
-    if experimental_models and standard_models:
-        _, _, _, _, best_std_pit, _, _, _, _, _, best_std_final = get_model_stats(standard_models[0])
-        _, _, _, _, best_exp_pit, _, _, _, _, _, best_exp_final = get_model_stats(experimental_models[0])
-        
-        console.print()
-        console.print("[bold]HEAD-TO-HEAD[/bold]")
-        console.print(f"[dim]{'─' * 60}[/dim]")
-        
-        std_pit = "PASS" if best_std_pit == 1.0 else f"{best_std_pit*100:.0f}%"
-        exp_pit = "PASS" if best_exp_pit == 1.0 else f"{best_exp_pit*100:.0f}%"
-        
-        console.print(f"  [blue]Standard:[/blue]     {standard_models[0]}")
-        console.print(f"                  Final: {best_std_final:.2f}/100  PIT: {std_pit}")
-        console.print(f"  [magenta]Experimental:[/magenta] {experimental_models[0]}")
-        console.print(f"                  Final: {best_exp_final:.2f}/100  PIT: {exp_pit}")
-        
-        gap = best_exp_final - best_std_final if best_std_final and best_exp_final else 0
-        if gap > 5:
-            console.print(f"  [bold green]>>> EXPERIMENTAL WINS by +{gap:.1f} points[/bold green]")
-        elif gap > 0:
-            console.print(f"  [yellow]>>> Experimental leads by +{gap:.1f} points (needs >5)[/yellow]")
-        else:
-            console.print(f"  [blue]>>> Standard leads by {abs(gap):.1f} points[/blue]")
-    
-    # =========================================================================
-    # PROMOTION STATUS
+    # PROMOTION STATUS - Compact
     # =========================================================================
     console.print()
     if result.promotion_candidates:
-        console.print("[bold green]PROMOTION CANDIDATES[/bold green]")
-        console.print(f"[dim]{'─' * 60}[/dim]")
+        console.print("[bold green]  Promotion Ready[/bold green]")
         for m in result.promotion_candidates:
-            # Get model stats for display
             _, _, _, _, pit_rate, _, _, _, _, _, final = get_model_stats(m)
-            pit_str = f"{pit_rate*100:.0f}%" if pit_rate else "-"
-            final_str = f"{final:.2f}" if final else "-"
-            console.print(f"  [green]>[/green] {m} [dim](Final: {final_str}, PIT: {pit_str})[/dim]")
-        console.print("[dim]  Ready for production deployment[/dim]")
+            console.print(f"[green]  → {m}[/green] [dim](Score: {final:.1f})[/dim]")
     else:
-        console.print("[yellow]NO PROMOTION CANDIDATES[/yellow]")
-        console.print("[dim]  Hard Gates: vs STD >=3pts, PIT >=75%, CSS >=0.65, FEC >=0.75[/dim]")
+        console.print("[dim]  No promotion candidates[/dim]")
+        console.print("[dim]  Requirements: Score gap ≥3, CSS ≥0.65, FEC ≥0.75, PIT ≥75%[/dim]")
     
     # =========================================================================
-    # SUMMARY
-    # =========================================================================
-    console.print()
-    console.print("[bold]SUMMARY[/bold]")
-    console.print(f"[dim]{'─' * 40}[/dim]")
-    console.print(f"  Symbols:        {result.summary['n_symbols']}")
-    console.print(f"  Standard:       {result.summary['n_standard_models']}")
-    console.print(f"  Experimental:   {result.summary['n_experimental_models']}")
-    console.print(f"  Total Fits:     {result.summary['n_total_fits']}")
-    console.print(f"  Avg Fit Time:   {result.summary['avg_fit_time_ms']:.1f}ms")
-    console.print(f"  PIT Pass Rate:  {result.summary['pit_pass_rate']:.1%}")
-    
-    # =========================================================================
-    # SAFE STORAGE MODELS (Archived Competition Winners)
+    # ARCHIVED MODELS (Safe Storage) - Compact view
     # =========================================================================
     if SAFE_STORAGE_MODELS:
         console.print()
-        console.print("[bold yellow]SAFE STORAGE MODELS[/bold yellow] [dim](Archived Competition Winners)[/dim]")
-        console.print(f"[dim]{'─' * 120}[/dim]")
-        console.print(f"[dim]{'Rank':<6}{'Model':<30}{'FINAL':>7}{'BIC':>9}{'CRPS':>7}{'Hyv':>8}{'PIT':>6}{'CSS':>5}{'FEC':>5}{'vs STD':>8}{'Status':<12}[/dim]")
-        console.print(f"[dim]{'─' * 120}[/dim]")
+        console.print("[bold]  Archived Models[/bold] [dim](Safe Storage)[/dim]")
+        console.print()
+        console.print(f"[dim]  {'':3} {'Model':<28} {'Score':>6} {'Hyv':>7} {'CSS':>4} {'FEC':>4} {'Gap':>6}[/dim]")
+        console.print(f"[dim]  {'─' * 66}[/dim]")
         
-        for i, (model_name, m) in enumerate(SAFE_STORAGE_MODELS.items(), 1):
-            final_str = f"{m['final']:.2f}"
-            bic_str = f"{m['bic']:.0f}"
-            crps_str = f"{m['crps']:.4f}"
-            hyv_str = f"{m['hyv']:.1f}"
-            pit_str = m['pit']
+        for i, (name, m) in enumerate(SAFE_STORAGE_MODELS.items(), 1):
+            display_name = name[:27] + "…" if len(name) > 28 else name
+            final_str = f"{m['final']:.1f}"
+            hyv_str = f"{m['hyv']:.0f}"
             css_str = f"{m['css']:.2f}"
             fec_str = f"{m['fec']:.2f}"
             vs_std = m['vs_std']
             
-            console.print(f"[yellow]#{i:<5}{model_name:<30}{final_str:>7}{bic_str:>9}{crps_str:>7}{hyv_str:>8}{pit_str:>6}{css_str:>5}{fec_str:>5}{vs_std:>8}  ARCHIVED[/yellow]")
+            # Parse vs_std to color it
+            try:
+                gap_val = float(vs_std.replace('%', '').replace('+', ''))
+                if gap_val >= 8:
+                    gap_color = "[green]"
+                elif gap_val >= 5:
+                    gap_color = "[cyan]"
+                else:
+                    gap_color = "[dim]"
+            except:
+                gap_color = "[dim]"
+            
+            console.print(f"  [yellow]◆{i:>2}[/yellow] {display_name:<28} {final_str:>6} {hyv_str:>7} {css_str:>4} {fec_str:>4} {gap_color}{vs_std:>6}[/{gap_color.replace('[', '[/')}]" if gap_color != "[dim]" else f"  [yellow]◆{i:>2}[/yellow] {display_name:<28} {final_str:>6} {hyv_str:>7} {css_str:>4} {fec_str:>4} [dim]{vs_std:>6}[/dim]")
+    
+    # =========================================================================
+    # SUMMARY FOOTER - Minimal
+    # =========================================================================
+    console.print()
+    console.print(f"[dim]  {result.summary['n_total_fits']} fits  ·  {result.summary['avg_fit_time_ms']:.0f}ms avg  ·  {result.summary['pit_pass_rate']:.0%} PIT pass[/dim]")
+    console.print()
+

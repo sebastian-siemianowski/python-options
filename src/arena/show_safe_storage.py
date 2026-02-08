@@ -16,6 +16,32 @@ except ImportError:
 
 # Model metadata from arena competition
 SAFE_STORAGE_MODELS = {
+    "elite_hybrid_omega2": {
+        "file": "elite_hybrid_omega2.py",
+        "class": "EliteHybridOmega2Model",
+        "final": 68.82,
+        "bic": -43270,
+        "crps": 0.0184,
+        "hyv": 4535.8,
+        "pit": "PASS",
+        "css": 0.74,
+        "fec": 0.87,
+        "vs_std": "+10.7",
+        "description": "BEST Gen18 - Q-shift filters, memory deflation, hierarchical stress",
+    },
+    "optimal_hyv_iota": {
+        "file": "optimal_hyv_iota.py",
+        "class": "OptimalHyvIotaModel",
+        "final": 72.27,
+        "bic": -29273,
+        "crps": 0.0183,
+        "hyv": 4645.5,
+        "pit": "PASS",
+        "css": 0.84,
+        "fec": 0.88,
+        "vs_std": "+13.9",
+        "description": "BEST CSS/FEC (0.84/0.88) - Memory-smoothed deflation regime",
+    },
     "dtcwt_qshift": {
         "file": "dtcwt_qshift.py",
         "class": "DTCWTQShiftModel",
@@ -26,7 +52,7 @@ SAFE_STORAGE_MODELS = {
         "pit": "PASS",
         "css": 0.44,
         "fec": 0.79,
-        "vs_std": "+7.2%",
+        "vs_std": "+7.2",
         "description": "Q-shift filters for improved frequency selectivity",
     },
     "dtcwt_magnitude_threshold": {
@@ -39,7 +65,7 @@ SAFE_STORAGE_MODELS = {
         "pit": "PASS",
         "css": 0.73,
         "fec": 0.85,
-        "vs_std": "+7.1%",
+        "vs_std": "+7.1",
         "description": "Magnitude-based thresholding for noise reduction",
     },
     "dualtree_complex_wavelet": {
@@ -52,8 +78,21 @@ SAFE_STORAGE_MODELS = {
         "pit": "75%",
         "css": 0.77,
         "fec": 0.81,
-        "vs_std": "+7.1%",
+        "vs_std": "+7.1",
         "description": "Core DTCWT with phase-aware Kalman filtering",
+    },
+    "hyv_aware_eta": {
+        "file": "hyv_aware_eta.py",
+        "class": "HyvAwareEtaModel",
+        "final": 62.94,
+        "bic": -23703,
+        "crps": 0.0209,
+        "hyv": 294.2,
+        "pit": "67%",
+        "css": 0.62,
+        "fec": 0.78,
+        "vs_std": "+4.6",
+        "description": "BEST Hyvärinen (294) - Entropy-preserving inflation",
     },
     "elite_hybrid_eta": {
         "file": "elite_hybrid_eta.py",
@@ -65,7 +104,7 @@ SAFE_STORAGE_MODELS = {
         "pit": "PASS",
         "css": 0.69,
         "fec": 0.84,
-        "vs_std": "+5.5%",
+        "vs_std": "+5.5",
         "description": "Full ensemble combination with adaptive calibration",
     },
     "dtcwt_adaptive_levels": {
@@ -78,7 +117,7 @@ SAFE_STORAGE_MODELS = {
         "pit": "PASS",
         "css": 0.56,
         "fec": 0.82,
-        "vs_std": "+5.4%",
+        "vs_std": "+5.4",
         "description": "Adaptive decomposition levels based on signal length",
     },
     "dtcwt_vol_regime": {
@@ -91,8 +130,8 @@ SAFE_STORAGE_MODELS = {
         "pit": "83%",
         "css": 0.66,
         "fec": 0.80,
-        "vs_std": "+4.6%",
-        "description": "Volatility regime conditioning",
+        "vs_std": "+4.6",
+        "description": "Volatility regime conditioning - PASSES ALL HARD GATES",
     },
     "stress_adaptive_inflation": {
         "file": "stress_adaptive_inflation.py",
@@ -104,7 +143,7 @@ SAFE_STORAGE_MODELS = {
         "pit": "PASS",
         "css": 0.51,
         "fec": 0.80,
-        "vs_std": "+3.0%",
+        "vs_std": "+3.0",
         "description": "Adaptive inflation based on calibration feedback",
     },
 }

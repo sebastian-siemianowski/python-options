@@ -517,9 +517,7 @@ colors: .venv/.deps_installed
 
 # Full arena workflow: run competition + show results (use arena-data to refresh data)
 arena: .venv/.deps_installed
-	@echo "═══════════════════════════════════════════════════════════════════════════"
-	@echo "  ARENA — Experimental Model Competition"
-	@echo "═══════════════════════════════════════════════════════════════════════════"
+	@echo ""
 	@$(MAKE) arena-tune
 	@$(MAKE) arena-results
 
@@ -532,7 +530,6 @@ arena-data: .venv/.deps_installed
 
 # Run arena model competition (standard + experimental models)
 arena-tune: .venv/.deps_installed
-	@echo "Running arena model competition..."
 	@mkdir -p src/data/arena/results
 	@.venv/bin/python src/arena/arena_cli.py tune $(ARGS)
 

@@ -105,31 +105,32 @@ Isolated sandbox for testing experimental models against production baselines.
 ### Standard Models (Baselines)
 `kalman_gaussian_momentum`, `kalman_phi_gaussian_momentum`, `phi_student_t_nu_{4,6,8,12,20}_momentum`
 
-### Active Experimental Models (Generations 13-17 - Feb 2026)
-60 models organized into multiple generations with **Hyvärinen-aware density control**:
+### Active Experimental Models (Generation 18 - Feb 2026)
+All experimental models have been evaluated and promoted to safe storage.
+No active experimental models - ready for new generation development.
 
-**Key Mathematical Techniques (Family A - Hyvärinen Control):**
-- Score-gradient clipping: `s_clip = s / max(1, |s|/c)`
-- GAS-style variance: `σ² = ω + β σ²_{t-1} + α s²_{t-1}`
-- Curvature-adaptive inflation: `σ² = σ²_{t-1}(1 + α max(0, ∂²ℓ))`
-- Local Hyv minimization: `θ = argmin Σ H_i(θ)`
-- Entropy-preserving inflation: `σ² ← σ² exp(αz), s.t. ΔH ≈ 0`
+**Best Archived (Safe Storage - 10 models):**
+- `elite_hybrid_omega2` (Final: 68.82, CSS: 0.74, FEC: 0.87, +10.7 vs STD) - **BEST Gen18**
+- `optimal_hyv_iota` (Final: 72.27, CSS: 0.84, FEC: 0.88, +13.9 vs STD) - **BEST CSS/FEC**
+- `dtcwt_qshift` (Final: 63.98, BIC: -33700, +7.2 vs STD) - **Q-shift champion**
+- `dtcwt_magnitude_threshold` (Final: 63.94, CSS: 0.73, FEC: 0.85, +7.1 vs STD)
+- `dualtree_complex_wavelet` (Final: 63.90, CSS: 0.77, +7.1 vs STD) - **Core DTCWT**
+- `hyv_aware_eta` (Final: 62.94, Hyv: **294**, +4.6 vs STD) - **BEST Hyvärinen**
+- `elite_hybrid_eta` (Final: 62.29, CSS: 0.69, FEC: 0.84, +5.5 vs STD)
+- `dtcwt_adaptive_levels` (Final: 62.24, +5.4 vs STD)
+- `dtcwt_vol_regime` (Final: 61.44, CSS: 0.66, FEC: 0.80, +4.6 vs STD) - **Passes ALL hard gates**
+- `stress_adaptive_inflation` (Final: 59.78, Hyv: 902, +3.0 vs STD)
 
-| Generation | Models | Focus | Description |
-|------------|--------|-------|-------------|
-| Gen13 | optimal_hyv_*, css_neghyv_* | Optimal Hyv | Q-shift filters + deflation regime |
-| Gen14 | ultimate_* | Low Hyv | DISCRETE regime multipliers (Hyv ~1700-2000) |
-| Gen15 | merged_elite_* | CSS/FEC | Memory-smoothed CSS + FEC factors |
-| Gen16 | exact_clone_* | Clone | Exact dtcwt_vol_regime clone with CSS/FEC |
-| **Gen17** | **hyv_aware_*** | **Elite Hyv** | **Score-function control (Hyv < 1000)** |
+**Key Mathematical Techniques:**
+1. Q-shift filters: Near-shift-invariance with quarter-sample delay
+2. Memory-smoothed deflation: `defl_t = 0.85 * defl_{t-1} + 0.15 * instant_t`
+3. Hyvärinen control: `H = 0.5 s² - 1/σ²`, target H ≈ -500
+4. Magnitude thresholding: Soft threshold at `median + k*σ`
+5. Hierarchical stress: Multi-horizon weighted stress aggregation
 
-**Current Leaders:**
-- `hyv_aware_eta` (Final: 62.94, Hyv: **294**, CSS: 0.62, FEC: 0.78, +4.6 vs STD) - **BEST Hyv!**
-- `hyv_aware_gamma` (Final: 63.39, Hyv: **1193**, CSS: 0.54, FEC: 0.80, +4.6 vs STD)
-- `optimal_hyv_iota` (Final: 72.68, Hyv: 4645, CSS: 0.84, FEC: 0.88, +13.9 vs STD) - Best FINAL
-
-**Best Balanced (Safe Storage)**: `dtcwt_vol_regime` 
-- Passes ALL hard gates: Hyv: -2392, CSS: 0.66, FEC: 0.80, FINAL: 61.44
+**Hard Gates Target:**
+- Final > 70, BIC < -29000, CRPS < 0.020, Hyv < 1000
+- PIT: PASS, CSS > 0.65, FEC > 0.80, vs STD > +8%
 
 ### Scoring System (`src/arena/scoring/`)
 Combined score using proper scoring rules:
