@@ -1581,11 +1581,20 @@ def _disable_failed_models(
 def _display_results(result: ArenaResult, console: Console) -> None:
     """Display competition results with clean, aligned formatting."""
     
+    # Import safe storage models for filtering
+    try:
+        from arena.show_safe_storage import SAFE_STORAGE_MODELS
+        safe_storage_model_names = set(SAFE_STORAGE_MODELS.keys())
+    except ImportError:
+        SAFE_STORAGE_MODELS = {}
+        safe_storage_model_names = set()
+    
     overall_ranking = result.rankings.get("overall", [])
     
     # Separate standard and experimental models
     standard_models = [m for m in overall_ranking if m in STANDARD_MOMENTUM_MODELS]
-    experimental_models = [m for m in overall_ranking if m in EXPERIMENTAL_MODELS]
+    # Exclude safe storage models from experimental display
+    experimental_models = [m for m in overall_ranking if m in EXPERIMENTAL_MODELS and m not in safe_storage_model_names]
     
     # Compute model statistics
     def get_model_stats(model_name):
@@ -1753,3 +1762,25 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     console.print(f"  Total Fits:     {result.summary['n_total_fits']}")
     console.print(f"  Avg Fit Time:   {result.summary['avg_fit_time_ms']:.1f}ms")
     console.print(f"  PIT Pass Rate:  {result.summary['pit_pass_rate']:.1%}")
+    
+    # =========================================================================
+    # SAFE STORAGE MODELS (Archived Competition Winners)
+    # =========================================================================
+    if SAFE_STORAGE_MODELS:
+        console.print()
+        console.print("[bold yellow]SAFE STORAGE MODELS[/bold yellow] [dim](Archived Competition Winners)[/dim]")
+        console.print(f"[dim]{'─' * 120}[/dim]")
+        console.print(f"[dim]{'Rank':<6}{'Model':<30}{'FINAL':>7}{'BIC':>9}{'CRPS':>7}{'Hyv':>8}{'PIT':>6}{'CSS':>5}{'FEC':>5}{'vs STD':>8}{'Status':<12}[/dim]")
+        console.print(f"[dim]{'─' * 120}[/dim]")
+        
+        for i, (model_name, m) in enumerate(SAFE_STORAGE_MODELS.items(), 1):
+            final_str = f"{m['final']:.2f}"
+            bic_str = f"{m['bic']:.0f}"
+            crps_str = f"{m['crps']:.4f}"
+            hyv_str = f"{m['hyv']:.1f}"
+            pit_str = m['pit']
+            css_str = f"{m['css']:.2f}"
+            fec_str = f"{m['fec']:.2f}"
+            vs_std = m['vs_std']
+            
+            console.print(f"[yellow]#{i:<5}{model_name:<30}{final_str:>7}{bic_str:>9}{crps_str:>7}{hyv_str:>8}{pit_str:>6}{css_str:>5}{fec_str:>5}{vs_std:>8}  ARCHIVED[/yellow]")

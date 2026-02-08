@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -539,6 +539,10 @@ arena-tune: .venv/.deps_installed
 # Show latest arena competition results
 arena-results: .venv/.deps_installed
 	@.venv/bin/python src/arena/arena_cli.py results
+
+# Show models in safe storage (archived competition winners)
+arena-safe-storage: .venv/.deps_installed
+	@.venv/bin/python src/arena/show_safe_storage.py
 
 # Show disabled experimental models
 arena-disabled: .venv/.deps_installed

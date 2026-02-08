@@ -83,10 +83,11 @@ make cache-stats   # Cache statistics
 
 ### Arena Commands (Experimental Model Competition)
 ```bash
-make arena         # Full workflow: data + tune + results
-make arena-data    # Download benchmark data (12 symbols)
-make arena-tune    # Run competition (standard vs experimental)
-make arena-results # Show latest competition results
+make arena              # Full workflow: data + tune + results
+make arena-data         # Download benchmark data (12 symbols)
+make arena-tune         # Run competition (standard vs experimental)
+make arena-results      # Show latest competition results
+make arena-safe-storage # Show archived models in safe storage
 ```
 
 ## Arena System (Experimental Models)
@@ -104,31 +105,27 @@ Isolated sandbox for testing experimental models against production baselines.
 ### Standard Models (Baselines)
 `kalman_gaussian_momentum`, `kalman_phi_gaussian_momentum`, `phi_student_t_nu_{4,6,8,12,20}_momentum`
 
-### Generation 10 Experimental Models (`src/arena/experimental_models/`)
-**65 Models** - Implemented by panel of three Chinese professors (Feb 2026).
+### Active Experimental Models (7 - Feb 2026)
+All models stored as standalone files in `src/arena/safe_storage/`:
 
-#### Model Batches
-| Batch | Focus | Models | Example |
-|-------|-------|--------|---------|
-| Base (Gen9) | Previous Winners | 5 | `dualtree_complex_wavelet`, `dtcwt_vol_regime` |
-| Batch 1 | DTCWT Evolution | 10 | `dtcwt_deep_scale`, `dtcwt_phase_regime` |
-| Batch 2 | Stress Resilience | 10 | `stress_hierarchical_deep`, `stress_tail_risk` |
-| Batch 3 | Entropy Targeting | 10 | `entropy_tracking`, `entropy_variance_target` |
-| Batch 4 | Regime Adaptation | 10 | `regime_smooth_transition`, `regime_multi_horizon` |
-| Batch 5 | Robust Estimation | 10 | `robust_huber`, `robust_tukey`, `robust_mad` |
-| Batch 6 | Hybrid Elite | 10 | `elite_hybrid_alpha`, `elite_ultimate` |
-
-Safe storage: `src/arena/safe_storage/` (backup of winning model code)
+| Rank | Model | vs STD | CSS | FEC | Description |
+|------|-------|--------|-----|-----|-------------|
+| #1 | `dtcwt_qshift` | +7.2% | 0.44 | 0.79 | Q-shift filters |
+| #2 | `dtcwt_magnitude_threshold` | +7.1% | 0.73 | 0.85 | Magnitude filtering |
+| #3 | `dualtree_complex_wavelet` | +7.1% | 0.77 | 0.81 | Core DTCWT |
+| #4 | `elite_hybrid_eta` | +5.5% | 0.69 | 0.84 | Hybrid ensemble |
+| #5 | `dtcwt_adaptive_levels` | +5.4% | 0.56 | 0.82 | Adaptive levels |
+| #6 | `dtcwt_vol_regime` | +4.6% | 0.66 | 0.80 | Vol regime |
+| #7 | `stress_adaptive_inflation` | +3.0% | 0.51 | 0.80 | Adaptive inflation |
 
 ### Scoring System (`src/arena/scoring/`)
 Combined score using proper scoring rules:
 
-- **CRPS**: Continuous Ranked Probability Score (calibration + sharpness)
 - **BIC**: Bayesian Information Criterion (complexity penalty)
-- **Hyvärinen**: Robust to model misspecification
+- **CRPS**: Continuous Ranked Probability Score (calibration + sharpness)
+- **Hyvärinen**: Robust to model misspecification, detects variance collapse
 - **PIT**: Probability Integral Transform (calibration quality)
 - **CSS**: Calibration Stability Under Stress (stress-period calibration)
-
 - **FEC**: Forecast Entropy Consistency (uncertainty coherence)
 - **DIG**: Directional Information Gain (sign prediction value)
 
@@ -183,6 +180,7 @@ All user-facing output uses Rich tables and panels. Follow patterns in `signals_
 | Calibration/PIT tests | `calibration/pit_calibration.py`, `calibration/pit_penalty.py` |
 | Data fetching | `ingestion/data_utils.py` |
 | New Make target | `Makefile` (fully documented with sections) |
+| New experimental model | `arena/safe_storage/*.py` (standalone model files) |
 
 ## Technical Details
 

@@ -1,11 +1,16 @@
-"""Arena Experimental Models - Generation 10 (60 models)
+"""Arena Experimental Models - 7 Core Models (Feb 2026)
 
-Panel of Three Chinese Professors Evaluation:
-- Professor Wei Chen (Tsinghua): 95/100
-- Professor Liu Xiaoming (PKU): 93/100
-- Professor Zhang Yifan (Fudan): 92/100
+After extensive arena competition, only 7 proven models remain active.
+All models are stored as standalone files in safe_storage/.
 
-Staff Professor Decision: Implement 60 models in 6 batches.
+Active Models (vs STD > 3):
+1. dtcwt_qshift (+7.2%) - Q-shift filters for improved frequency selectivity
+2. dtcwt_magnitude_threshold (+7.1%) - Magnitude-based noise reduction
+3. dualtree_complex_wavelet (+7.1%) - Core DTCWT with phase-aware filtering
+4. elite_hybrid_eta (+5.5%) - Full ensemble combination
+5. dtcwt_adaptive_levels (+5.4%) - Adaptive decomposition levels
+6. dtcwt_vol_regime (+4.6%) - Volatility regime conditioning
+7. stress_adaptive_inflation (+3.0%) - Calibration-based inflation
 
 Hard Gates:
 - CSS >= 0.65 (Calibration Stability Under Stress)
@@ -15,131 +20,80 @@ Hard Gates:
 - 10000ms time limit
 """
 
+import sys
+import os
+
+# Add safe_storage to path for imports
+_safe_storage_path = os.path.join(os.path.dirname(__file__), '..', 'safe_storage')
+if _safe_storage_path not in sys.path:
+    sys.path.insert(0, _safe_storage_path)
+
 from .base import ExperimentalModelSpec, ExperimentalModelFamily, BaseExperimentalModel
 
-from .m14_dualtree_complex_wavelet import DualTreeComplexWaveletKalmanModel
-from .m85_dtcwt_gen3_batch5 import DTCWTVolRegimeModel
-
-from .gen9_batch1_dtcwt import DTCWTQShiftModel, DTCWTAdaptiveLevelsModel
-from .gen9_batch3_entropy import EntropyMatchingModel
-
-from .gen10_batch1_dtcwt import (
-    DTCWTDeepScaleModel, DTCWTAdaptiveScaleWeightModel, DTCWTPhaseRegimeModel,
-    DTCWTMagnitudeThresholdModel, DTCWTDirectionalFilterModel, DTCWTCrossScaleCorrelationModel,
-    DTCWTEnergyConcentrationModel, DTCWTTemporalSmoothingModel, DTCWTBandpassFilterModel,
-    DTCWTHybridScaleModel,
-)
-
-from .gen10_batch2_stress import (
-    StressHierarchicalDeepModel, StressDrawdownIntegrationModel, StressRegimePersistenceModel,
-    StressVolAccelerationModel, StressTailRiskModel, StressReturnMagnitudeModel,
-    StressClusteringModel, StressExponentialWeightedModel, StressAdaptiveInflationModel,
-    StressCombinedEliteModel,
-)
-
-from .gen10_batch3_entropy import (
-    EntropyTrackingModel, EntropyBlendedVolModel, EntropyCalibrationFeedbackModel,
-    EntropyRobustVolModel, EntropyDoubleEMAModel, EntropyMedianVolModel,
-    EntropyVarianceTargetModel, EntropyQuantileModel, EntropyStableInflationModel,
-    EntropyCombinedEliteModel,
-)
-
-from .gen10_batch4_regime import (
-    RegimeSmoothTransitionModel, RegimeAdaptiveParamsModel, RegimeMultiHorizonModel,
-    RegimePersistenceModel, RegimeVolClusterModel, RegimeTrendAwareModel,
-    RegimeStabilityModel, RegimeEnhancedModel, RegimeCalibrationModel,
-    RegimeCombinedEliteModel,
-)
-
-from .gen10_batch5_robust import (
-    RobustHuberModel, RobustTukeyModel, RobustWinsorizedModel, RobustTrimmedModel,
-    RobustMADModel, RobustIQRModel, RobustAdaptiveModel, RobustExponentialModel,
-    RobustHybridModel, RobustCombinedEliteModel,
-)
-
-from .gen10_batch6_elite import (
-    EliteHybridAlphaModel, EliteHybridBetaModel, EliteHybridGammaModel,
-    EliteHybridDeltaModel, EliteHybridEpsilonModel, EliteHybridZetaModel,
-    EliteHybridEtaModel, EliteHybridThetaModel, EliteHybridIotaModel,
-    EliteUltimateModel,
-)
+# Import models from safe_storage
+from ..safe_storage.dtcwt_qshift import DTCWTQShiftModel
+from ..safe_storage.dtcwt_magnitude_threshold import DTCWTMagnitudeThresholdModel
+from ..safe_storage.dualtree_complex_wavelet import DualTreeComplexWaveletKalmanModel
+from ..safe_storage.elite_hybrid_eta import EliteHybridEtaModel
+from ..safe_storage.dtcwt_adaptive_levels import DTCWTAdaptiveLevelsModel
+from ..safe_storage.dtcwt_vol_regime import DTCWTVolRegimeModel
+from ..safe_storage.stress_adaptive_inflation import StressAdaptiveInflationModel
 
 EXPERIMENTAL_MODELS = {
-    "dualtree_complex_wavelet": DualTreeComplexWaveletKalmanModel,
-    "dtcwt_vol_regime": DTCWTVolRegimeModel,
     "dtcwt_qshift": DTCWTQShiftModel,
-    "dtcwt_adaptive_levels": DTCWTAdaptiveLevelsModel,
-    "entropy_matching": EntropyMatchingModel,
-    "dtcwt_deep_scale": DTCWTDeepScaleModel,
-    "dtcwt_adaptive_scale_weight": DTCWTAdaptiveScaleWeightModel,
-    "dtcwt_phase_regime": DTCWTPhaseRegimeModel,
     "dtcwt_magnitude_threshold": DTCWTMagnitudeThresholdModel,
-    "dtcwt_directional_filter": DTCWTDirectionalFilterModel,
-    "dtcwt_cross_scale_correlation": DTCWTCrossScaleCorrelationModel,
-    "dtcwt_energy_concentration": DTCWTEnergyConcentrationModel,
-    "dtcwt_temporal_smoothing": DTCWTTemporalSmoothingModel,
-    "dtcwt_bandpass_filter": DTCWTBandpassFilterModel,
-    "dtcwt_hybrid_scale": DTCWTHybridScaleModel,
-    "stress_hierarchical_deep": StressHierarchicalDeepModel,
-    "stress_drawdown_integration": StressDrawdownIntegrationModel,
-    "stress_regime_persistence": StressRegimePersistenceModel,
-    "stress_vol_acceleration": StressVolAccelerationModel,
-    "stress_tail_risk": StressTailRiskModel,
-    "stress_return_magnitude": StressReturnMagnitudeModel,
-    "stress_clustering": StressClusteringModel,
-    "stress_exponential_weighted": StressExponentialWeightedModel,
-    "stress_adaptive_inflation": StressAdaptiveInflationModel,
-    "stress_combined_elite": StressCombinedEliteModel,
-    "entropy_tracking": EntropyTrackingModel,
-    "entropy_blended_vol": EntropyBlendedVolModel,
-    "entropy_calibration_feedback": EntropyCalibrationFeedbackModel,
-    "entropy_robust_vol": EntropyRobustVolModel,
-    "entropy_double_ema": EntropyDoubleEMAModel,
-    "entropy_median_vol": EntropyMedianVolModel,
-    "entropy_variance_target": EntropyVarianceTargetModel,
-    "entropy_quantile": EntropyQuantileModel,
-    "entropy_stable_inflation": EntropyStableInflationModel,
-    "entropy_combined_elite": EntropyCombinedEliteModel,
-    "regime_smooth_transition": RegimeSmoothTransitionModel,
-    "regime_adaptive_params": RegimeAdaptiveParamsModel,
-    "regime_multi_horizon": RegimeMultiHorizonModel,
-    "regime_persistence": RegimePersistenceModel,
-    "regime_vol_cluster": RegimeVolClusterModel,
-    "regime_trend_aware": RegimeTrendAwareModel,
-    "regime_stability": RegimeStabilityModel,
-    "regime_enhanced": RegimeEnhancedModel,
-    "regime_calibration": RegimeCalibrationModel,
-    "regime_combined_elite": RegimeCombinedEliteModel,
-    "robust_huber": RobustHuberModel,
-    "robust_tukey": RobustTukeyModel,
-    "robust_winsorized": RobustWinsorizedModel,
-    "robust_trimmed": RobustTrimmedModel,
-    "robust_mad": RobustMADModel,
-    "robust_iqr": RobustIQRModel,
-    "robust_adaptive": RobustAdaptiveModel,
-    "robust_exponential": RobustExponentialModel,
-    "robust_hybrid": RobustHybridModel,
-    "robust_combined_elite": RobustCombinedEliteModel,
-    "elite_hybrid_alpha": EliteHybridAlphaModel,
-    "elite_hybrid_beta": EliteHybridBetaModel,
-    "elite_hybrid_gamma": EliteHybridGammaModel,
-    "elite_hybrid_delta": EliteHybridDeltaModel,
-    "elite_hybrid_epsilon": EliteHybridEpsilonModel,
-    "elite_hybrid_zeta": EliteHybridZetaModel,
+    "dualtree_complex_wavelet": DualTreeComplexWaveletKalmanModel,
     "elite_hybrid_eta": EliteHybridEtaModel,
-    "elite_hybrid_theta": EliteHybridThetaModel,
-    "elite_hybrid_iota": EliteHybridIotaModel,
-    "elite_ultimate": EliteUltimateModel,
+    "dtcwt_adaptive_levels": DTCWTAdaptiveLevelsModel,
+    "dtcwt_vol_regime": DTCWTVolRegimeModel,
+    "stress_adaptive_inflation": StressAdaptiveInflationModel,
 }
 
-EXPERIMENTAL_MODEL_SPECS = {name: ExperimentalModelSpec(
-    name=name,
-    family=ExperimentalModelFamily.REGIME_COUPLED,
-    n_params=4,
-    param_names=("q", "c", "phi", "cw"),
-    default_params={"q": 1e-6, "c": 1.0, "phi": 0.0, "cw": 1.0},
-    description=f"Gen10 experimental model: {name}",
-) for name in EXPERIMENTAL_MODELS.keys()}
+# Model specs with scores from arena competition
+EXPERIMENTAL_MODEL_SPECS = {
+    "dtcwt_qshift": ExperimentalModelSpec(
+        name="dtcwt_qshift", family=ExperimentalModelFamily.REGIME_COUPLED,
+        n_params=4, param_names=("q", "c", "phi", "cw"),
+        default_params={"q": 1e-6, "c": 1.0, "phi": 0.0, "cw": 1.0},
+        description="Q-shift DTCWT (+7.2% vs STD, CSS: 0.44, FEC: 0.79)",
+    ),
+    "dtcwt_magnitude_threshold": ExperimentalModelSpec(
+        name="dtcwt_magnitude_threshold", family=ExperimentalModelFamily.REGIME_COUPLED,
+        n_params=4, param_names=("q", "c", "phi", "cw"),
+        default_params={"q": 1e-6, "c": 1.0, "phi": 0.0, "cw": 1.0},
+        description="Magnitude thresholding (+7.1% vs STD, CSS: 0.73, FEC: 0.85)",
+    ),
+    "dualtree_complex_wavelet": ExperimentalModelSpec(
+        name="dualtree_complex_wavelet", family=ExperimentalModelFamily.REGIME_COUPLED,
+        n_params=4, param_names=("q", "c", "phi", "cw"),
+        default_params={"q": 1e-6, "c": 1.0, "phi": 0.0, "cw": 1.0},
+        description="Core DTCWT (+7.1% vs STD, CSS: 0.77, FEC: 0.81)",
+    ),
+    "elite_hybrid_eta": ExperimentalModelSpec(
+        name="elite_hybrid_eta", family=ExperimentalModelFamily.REGIME_COUPLED,
+        n_params=4, param_names=("q", "c", "phi", "cw"),
+        default_params={"q": 1e-6, "c": 1.0, "phi": 0.0, "cw": 1.0},
+        description="Hybrid ensemble (+5.5% vs STD, CSS: 0.69, FEC: 0.84)",
+    ),
+    "dtcwt_adaptive_levels": ExperimentalModelSpec(
+        name="dtcwt_adaptive_levels", family=ExperimentalModelFamily.REGIME_COUPLED,
+        n_params=4, param_names=("q", "c", "phi", "cw"),
+        default_params={"q": 1e-6, "c": 1.0, "phi": 0.0, "cw": 1.0},
+        description="Adaptive levels (+5.4% vs STD, CSS: 0.56, FEC: 0.82)",
+    ),
+    "dtcwt_vol_regime": ExperimentalModelSpec(
+        name="dtcwt_vol_regime", family=ExperimentalModelFamily.REGIME_COUPLED,
+        n_params=4, param_names=("q", "c", "phi", "cw"),
+        default_params={"q": 1e-6, "c": 1.0, "phi": 0.0, "cw": 1.0},
+        description="Vol regime conditioning (+4.6% vs STD, CSS: 0.66, FEC: 0.80)",
+    ),
+    "stress_adaptive_inflation": ExperimentalModelSpec(
+        name="stress_adaptive_inflation", family=ExperimentalModelFamily.REGIME_COUPLED,
+        n_params=4, param_names=("q", "c", "phi", "cw"),
+        default_params={"q": 1e-6, "c": 1.0, "phi": 0.0, "cw": 1.0},
+        description="Adaptive inflation (+3.0% vs STD, CSS: 0.51, FEC: 0.80)",
+    ),
+}
 
 
 def get_experimental_model_specs():
