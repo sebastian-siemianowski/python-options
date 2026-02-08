@@ -1303,6 +1303,7 @@ def determine_promotion_candidates(
     model_pit_rate: Dict[str, float] = {}
     model_avg_css: Dict[str, float] = {}
     model_avg_fec: Dict[str, float] = {}
+    model_avg_hyv: Dict[str, float] = {}
     
     for model_name in set(s.model_name for s in scores):
         model_scores = [s for s in scores if s.model_name == model_name]
