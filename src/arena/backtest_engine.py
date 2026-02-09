@@ -14,6 +14,8 @@ import pandas as pd
 try:
     from rich.console import Console
     from rich.panel import Panel
+    from rich.table import Table
+    from rich import box
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
@@ -518,12 +520,14 @@ def _aggregate_diagnostics(ticker_results):
         return FinancialDiagnostics(), BehavioralDiagnostics()
     
     results = list(ticker_results.values())
+    n_tickers = len(results)
     
     # Filter out infinite profit factors
     pf_values = [r.financial.profit_factor for r in results if r.financial.profit_factor < np.inf]
     
     financial = FinancialDiagnostics(
-        cumulative_pnl=sum(r.financial.cumulative_pnl for r in results),
+        # Average PnL per ticker (more meaningful than sum)
+        cumulative_pnl=np.mean([r.financial.cumulative_pnl for r in results]),
         cagr=np.mean([r.financial.cagr for r in results]),
         sharpe_ratio=np.mean([r.financial.sharpe_ratio for r in results]),
         sortino_ratio=np.mean([r.financial.sortino_ratio for r in results]),
@@ -605,56 +609,157 @@ def run_backtest_arena(model_names=None, config=None):
     console = Console() if RICH_AVAILABLE else None
     results = {}
     
+    # Clean header
     if console:
-        console.print(Panel.fit(
-            f"[bold cyan]Structural Backtest Arena[/bold cyan]\n"
-            f"Models: {len(model_names)} | Tickers: {data_bundle.n_tickers}",
-            border_style="cyan"
-        ))
+        console.print()
+        console.print("[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]")
+        console.print()
+        console.print("  [bold white]STRUCTURAL BACKTEST ARENA[/bold white]")
+        console.print("  [dim]Behavioral validation · Court of Law[/dim]")
+        console.print()
+        console.print(f"  [dim]Models[/dim]  [white]{len(model_names)}[/white]")
+        console.print(f"  [dim]Tickers[/dim] [white]{data_bundle.n_tickers}[/white]")
+        console.print()
+        console.print("[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]")
     
     for model_name in model_names:
-        if console:
-            console.print(f"\n[bold]> {model_name}[/bold]")
-        
         try:
             result = run_structural_backtest(model_name, data_bundle, config)
             results[model_name] = result
-            
-            if console:
-                color_map = {
-                    "APPROVED": "green",
-                    "RESTRICTED": "yellow",
-                    "QUARANTINED": "orange3",
-                    "REJECTED": "red",
-                }
-                color = color_map.get(result.decision.value, "white")
-                console.print(f"  Decision: [{color}]{result.decision.value}[/{color}]")
-                console.print(f"  Rationale: {result.decision_rationale[0] if result.decision_rationale else 'N/A'}")
-                console.print(f"  Max DD: {result.aggregate_financial.max_drawdown*100:.1f}%")
-                console.print(f"  Sharpe: {result.aggregate_financial.sharpe_ratio:.2f}")
-                console.print(f"  Regime Stability: {result.aggregate_behavioral.regime_stability:.2f}")
-        
         except Exception as e:
             if console:
-                console.print(f"  [red]Error: {e}[/red]")
+                console.print(f"\n  [red]✗ {model_name}: {e}[/red]")
     
     # Save results
     _save_backtest_results(results, config)
     
-    # Summary
-    if console:
-        console.print("\n" + "=" * 60)
-        console.print("[bold]SUMMARY[/bold]")
-        approved = sum(1 for r in results.values() if r.decision == DecisionOutcome.APPROVED)
-        restricted = sum(1 for r in results.values() if r.decision == DecisionOutcome.RESTRICTED)
-        quarantined = sum(1 for r in results.values() if r.decision == DecisionOutcome.QUARANTINED)
-        rejected = sum(1 for r in results.values() if r.decision == DecisionOutcome.REJECTED)
-        console.print(f"[green]APPROVED: {approved}[/green]")
-        console.print(f"[yellow]RESTRICTED: {restricted}[/yellow]")
-        console.print(f"[orange3]QUARANTINED: {quarantined}[/orange3]")
-        console.print(f"[red]REJECTED: {rejected}[/red]")
+    # Display results for each model
+    if console and results:
+        for name, result in results.items():
+            _display_model_results(console, name, result)
+        
+        # Final summary
+        _display_final_summary(console, results)
     
     return results
+
+
+def _display_model_results(console, name: str, result):
+    """Display results for a single model with Apple-like clean UX."""
+    
+    # Decision colors and icons
+    decision_styles = {
+        "APPROVED": ("green", "✓"),
+        "RESTRICTED": ("yellow", "◐"),
+        "QUARANTINED": ("orange3", "◑"),
+        "REJECTED": ("red", "✗"),
+    }
+    color, icon = decision_styles.get(result.decision.value, ("white", "?"))
+    
+    fin = result.aggregate_financial
+    beh = result.aggregate_behavioral
+    cross = result.cross_asset
+    
+    console.print()
+    console.print(f"  [bold white]{name}[/bold white]")
+    console.print(f"  [{color}]{icon} {result.decision.value}[/{color}]  [dim]{result.decision_rationale[0] if result.decision_rationale else ''}[/dim]")
+    console.print()
+    
+    # Financial metrics - properly aligned two column layout
+    console.print("  [bold dim]FINANCIAL[/bold dim]")
+    console.print()
+    
+    # Format values with color
+    pnl_color = "green" if fin.cumulative_pnl >= 0 else "red"
+    cagr_color = "green" if fin.cagr >= 0 else "red"
+    sharpe_color = "green" if fin.sharpe_ratio >= 0 else "red"
+    
+    # Column 1: 18 chars label, 14 chars value | Column 2: 14 chars label, 10 chars value
+    console.print(f"  [dim]PnL[/dim]              [{pnl_color}]${fin.cumulative_pnl:>11,.0f}[/{pnl_color}]    [dim]CAGR[/dim]           [{cagr_color}]{fin.cagr*100:>8.1f}%[/{cagr_color}]")
+    console.print(f"  [dim]Sharpe[/dim]           [{sharpe_color}]{fin.sharpe_ratio:>12.2f}[/{sharpe_color}]    [dim]Sortino[/dim]        [{sharpe_color}]{fin.sortino_ratio:>8.2f}[/{sharpe_color}]")
+    console.print(f"  [dim]Max Drawdown[/dim]     [red]{fin.max_drawdown*100:>11.1f}%[/red]    [dim]DD Duration[/dim]    {fin.max_drawdown_duration_days:>7}d")
+    console.print(f"  [dim]Profit Factor[/dim]    {fin.profit_factor:>12.2f}    [dim]Hit Rate[/dim]       {fin.hit_rate*100:>7.1f}%")
+    console.print(f"  [dim]Total Trades[/dim]     {fin.total_trades:>12,}")
+    console.print()
+    
+    # Behavioral metrics
+    console.print("  [bold dim]BEHAVIORAL[/bold dim]")
+    console.print()
+    
+    stability_color = "green" if beh.regime_stability >= 0.5 else "yellow" if beh.regime_stability >= 0.3 else "red"
+    
+    console.print(f"  [dim]Regime Stability[/dim] [{stability_color}]{beh.regime_stability:>12.2f}[/{stability_color}]    [dim]Volatility[/dim]     {beh.return_volatility*100:>7.1f}%")
+    console.print(f"  [dim]Turnover[/dim]         {beh.turnover_mean:>12.2f}    [dim]Tail Clusters[/dim]  {beh.tail_loss_clustering:>8}")
+    console.print(f"  [dim]Concentration[/dim]    {beh.exposure_concentration:>12.2f}    [dim]Leverage Sens[/dim]  {beh.leverage_sensitivity:>8.2f}")
+    console.print()
+    
+    # Cross-Asset metrics  
+    console.print("  [bold dim]CROSS-ASSET[/bold dim]")
+    console.print()
+    console.print(f"  [dim]Dispersion[/dim]       {cross.performance_dispersion:>12.2f}    [dim]DD Correlation[/dim] {cross.drawdown_correlation:>8.2f}")
+    console.print(f"  [dim]Crisis Amp[/dim]       {cross.crisis_amplification:>12.2f}")
+    console.print()
+    
+    # Sector fragility - compact format
+    if cross.sector_fragility:
+        console.print("  [bold dim]SECTOR RISK[/bold dim]")
+        console.print()
+        
+        # Group sectors by risk level
+        high_risk = [(s, f) for s, f in cross.sector_fragility.items() if f > 0.7]
+        moderate = [(s, f) for s, f in cross.sector_fragility.items() if 0.4 < f <= 0.7]
+        low_risk = [(s, f) for s, f in cross.sector_fragility.items() if f <= 0.4]
+        
+        if high_risk:
+            sectors = ", ".join([s for s, _ in sorted(high_risk, key=lambda x: -x[1])])
+            console.print(f"  [red]● High[/red]       {sectors}")
+        if moderate:
+            sectors = ", ".join([s for s, _ in sorted(moderate, key=lambda x: -x[1])])
+            console.print(f"  [yellow]● Moderate[/yellow]   {sectors}")
+        if low_risk:
+            sectors = ", ".join([s for s, _ in sorted(low_risk, key=lambda x: -x[1])[:5]])
+            if len(low_risk) > 5:
+                sectors += f" [dim]+{len(low_risk)-5} more[/dim]"
+            console.print(f"  [green]● Low[/green]       {sectors}")
+        console.print()
+    
+    # Warnings - compact
+    if result.warnings:
+        n_warnings = len(result.warnings)
+        console.print(f"  [dim]⚠ {n_warnings} warning{'s' if n_warnings > 1 else ''}[/dim]")
+        console.print()
+    
+    console.print("[dim]────────────────────────────────────────────────────────────────────────────────[/dim]")
+
+
+def _display_final_summary(console, results):
+    """Display final summary with Apple-like clean aesthetic."""
+    
+    approved = sum(1 for r in results.values() if r.decision == DecisionOutcome.APPROVED)
+    restricted = sum(1 for r in results.values() if r.decision == DecisionOutcome.RESTRICTED)
+    quarantined = sum(1 for r in results.values() if r.decision == DecisionOutcome.QUARANTINED)
+    rejected = sum(1 for r in results.values() if r.decision == DecisionOutcome.REJECTED)
+    total = len(results)
+    
+    console.print()
+    console.print("  [bold white]SUMMARY[/bold white]")
+    console.print()
+    
+    # Summary bar
+    if approved > 0:
+        console.print(f"  [green]✓ Approved[/green]     {approved}")
+    if restricted > 0:
+        console.print(f"  [yellow]◐ Restricted[/yellow]   {restricted}")
+    if quarantined > 0:
+        console.print(f"  [orange3]◑ Quarantined[/orange3]  {quarantined}")
+    if rejected > 0:
+        console.print(f"  [red]✗ Rejected[/red]     {rejected}")
+    
+    console.print()
+    console.print(f"  [dim]Total: {total} model{'s' if total > 1 else ''}[/dim]")
+    console.print()
+    console.print("[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]")
+    console.print()
 
 
 def _save_backtest_results(results, config):

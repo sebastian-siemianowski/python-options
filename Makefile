@@ -622,10 +622,6 @@ arena-backtest-tune: .venv/.deps_installed
 
 # Execute structural backtests and apply behavioral safety rules
 arena-backtest: .venv/.deps_installed
-	@echo ""
-	@echo "════════════════════════════════════════════════════════════════════════════"
-	@echo "  STRUCTURAL BACKTEST ARENA — Court of Law"
-	@echo "════════════════════════════════════════════════════════════════════════════"
 	@mkdir -p src/arena/data/backtest_results
 	@.venv/bin/python src/arena/backtest_cli.py run $(ARGS)
 
