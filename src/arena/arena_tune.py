@@ -1584,10 +1584,11 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     
     # Import safe storage models for filtering
     try:
-        from arena.show_safe_storage import SAFE_STORAGE_MODELS
+        from arena.show_safe_storage import SAFE_STORAGE_MODELS, ARCHIVED_MODELS
         safe_storage_model_names = set(SAFE_STORAGE_MODELS.keys())
     except ImportError:
         SAFE_STORAGE_MODELS = {}
+        ARCHIVED_MODELS = {}
         safe_storage_model_names = set()
     
     overall_ranking = result.rankings.get("overall", [])
@@ -1641,7 +1642,8 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     n_std = len(standard_models)
     n_exp = len(experimental_models)
     n_safe = len(SAFE_STORAGE_MODELS)
-    console.print(f"[dim]  {result.summary['n_symbols']} symbols  ·  {n_std} standard  ·  {n_exp} experimental  ·  {n_safe} archived[/dim]")
+    n_arch = len(ARCHIVED_MODELS)
+    console.print(f"[dim]  {result.summary['n_symbols']} symbols  ·  {n_std} standard  ·  {n_exp} experimental  ·  {n_safe} candidates  ·  {n_arch} archived[/dim]")
     console.print()
     
     # =========================================================================
@@ -1760,11 +1762,11 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         console.print("[dim]  Requirements: Score gap ≥3, CSS ≥0.65, FEC ≥0.75, PIT ≥75%[/dim]")
     
     # =========================================================================
-    # ARCHIVED MODELS (Safe Storage) - Match standard models format
+    # PROMOTION CANDIDATES (Safe Storage) - Match standard models format
     # =========================================================================
     if SAFE_STORAGE_MODELS:
         console.print()
-        console.print("[bold]  Archived Models[/bold] [dim](Safe Storage)[/dim]")
+        console.print("[bold]  Promotion Candidates[/bold] [dim](Safe Storage)[/dim]")
         console.print()
         console.print(f"[dim]  {'':4} {'Model':<30} {'Score':>7} {'BIC':>8} {'CRPS':>7} {'Hyv':>8} {'PIT':>5} {'CSS':>5} {'FEC':>5} {'Time':>7} {'Gap':>7}[/dim]")
         console.print(f"[dim]  {'─' * 104}[/dim]")
@@ -1795,6 +1797,31 @@ def _display_results(result: ArenaResult, console: Console) -> None:
                 gap_color = "dim"
             
             console.print(f"  [yellow]◆{i:>2}[/yellow]  {display_name:<30} {final_str:>7} {bic_str:>8} {crps_str:>7} {hyv_str:>8} {pit_str:>5} {css_str:>5} {fec_str:>5} {time_str:>7}  [{gap_color}]{vs_std:>6}[/{gap_color}]")
+    
+    # =========================================================================
+    # ARCHIVED MODELS (Retired) - No longer promotion candidates
+    # =========================================================================
+    if ARCHIVED_MODELS:
+        console.print()
+        console.print("[bold]  Archived Models[/bold] [dim](Retired)[/dim]")
+        console.print()
+        console.print(f"[dim]  {'':4} {'Model':<30} {'Score':>7} {'BIC':>8} {'CRPS':>7} {'Hyv':>8} {'PIT':>5} {'CSS':>5} {'FEC':>5} {'Time':>7} {'Gap':>7}[/dim]")
+        console.print(f"[dim]  {'─' * 104}[/dim]")
+        
+        for i, (name, m) in enumerate(sorted(ARCHIVED_MODELS.items(), key=lambda x: x[1]['final'], reverse=True), 1):
+            display_name = name[:28] + "…" if len(name) > 29 else name
+            final_str = f"{m['final']:.2f}"
+            bic_str = f"{m['bic']:.0f}"
+            crps_str = f"{m['crps']:.4f}"
+            hyv_str = f"{m['hyv']:.1f}"
+            pit_str = m['pit']
+            css_str = f"{m['css']:.2f}"
+            fec_str = f"{m['fec']:.2f}"
+            time_ms = m.get('time_ms', 0)
+            time_str = f"{time_ms}ms" if time_ms else "-"
+            vs_std = m['vs_std']
+            
+            console.print(f"  [dim]▪{i:>2}  {display_name:<30} {final_str:>7} {bic_str:>8} {crps_str:>7} {hyv_str:>8} {pit_str:>5} {css_str:>5} {fec_str:>5} {time_str:>7}  {vs_std:>6}[/dim]")
     
     # =========================================================================
     # SUMMARY FOOTER - Minimal
