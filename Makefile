@@ -138,6 +138,26 @@ SHELL := /bin/bash
 # │                                                                              │
 # │  Models must beat standard by >5% to qualify for promotion.                  │
 # └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  ⚖️  STRUCTURAL BACKTEST ARENA — Behavioral Validation Layer                 │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make arena-backtest-data     Download 50-ticker multi-sector universe       │
+# │  make arena-backtest-tune     Tune parameters (fairness, not optimization)   │
+# │  make arena-backtest          Run behavioral backtests + safety rules        │
+# │  make arena-backtest-results  Show latest backtest results                   │
+# │                                                                              │
+# │  NON-OPTIMIZATION CONSTITUTION:                                              │
+# │    - Financial metrics are OBSERVATIONAL ONLY                                │
+# │    - Decisions based on BEHAVIORAL SAFETY, not raw performance               │
+# │    - One-way flow: Tuning → Backtest → Integration Trial                     │
+# │                                                                              │
+# │  Decision Outcomes: APPROVED | RESTRICTED | QUARANTINED | REJECTED           │
+# │                                                                              │
+# │  Universe Coverage (50 tickers):                                             │
+# │    Technology, Finance, Defence, Healthcare, Industrials,                    │
+# │    Energy, Materials, Consumer, Communication                                │
+# └──────────────────────────────────────────────────────────────────────────────┘
 
 # Ensure virtual environment exists before running commands
 .venv/bin/python:
@@ -566,6 +586,52 @@ arena-enable: .venv/.deps_installed
 # Re-enable all disabled models
 arena-enable-all: .venv/.deps_installed
 	@.venv/bin/python src/arena/arena_cli.py disabled --clear
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STRUCTURAL BACKTEST ARENA — Behavioral Validation Layer
+# ═══════════════════════════════════════════════════════════════════════════════
+# A "court of law" for models — behavioral validation with full diagnostics.
+# Financial metrics are OBSERVATIONAL ONLY — never used for optimization.
+#
+# NON-OPTIMIZATION CONSTITUTION:
+#   1. Separation of Powers: Backtest tuning isolated from production tuning
+#   2. One-Way Flow: Tuning → Backtest → Integration Trial (no reverse)
+#   3. Behavior Over Performance: Diagnostics inform safety, not returns
+#   4. Representativeness: 50 tickers across sectors/caps/regimes
+#
+# Decision Outcomes: APPROVED | RESTRICTED | QUARANTINED | REJECTED
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Download backtest data for the 50-ticker canonical universe
+arena-backtest-data: .venv/.deps_installed
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════════════════"
+	@echo "  STRUCTURAL BACKTEST DATA PIPELINE"
+	@echo "════════════════════════════════════════════════════════════════════════════"
+	@mkdir -p src/arena/data/backtest_data
+	@.venv/bin/python src/arena/backtest_cli.py data $(ARGS)
+
+# Tune backtest-specific parameters (for FAIRNESS, not optimization)
+arena-backtest-tune: .venv/.deps_installed
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════════════════"
+	@echo "  BACKTEST PARAMETER TUNING (for fairness, not optimization)"
+	@echo "════════════════════════════════════════════════════════════════════════════"
+	@mkdir -p src/arena/backtest_tuned_params
+	@.venv/bin/python src/arena/backtest_cli.py tune $(ARGS)
+
+# Execute structural backtests and apply behavioral safety rules
+arena-backtest: .venv/.deps_installed
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════════════════"
+	@echo "  STRUCTURAL BACKTEST ARENA — Court of Law"
+	@echo "════════════════════════════════════════════════════════════════════════════"
+	@mkdir -p src/arena/data/backtest_results
+	@.venv/bin/python src/arena/backtest_cli.py run $(ARGS)
+
+# Show latest structural backtest results
+arena-backtest-results: .venv/.deps_installed
+	@.venv/bin/python src/arena/backtest_cli.py results
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UNIFIED RISK DASHBOARD

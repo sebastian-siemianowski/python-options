@@ -171,6 +171,65 @@ Experimental model graduates if ALL criteria pass:
 4. PIT pass rate >= 75%
 5. Not last in any category
 
+## Structural Backtest Arena (Behavioral Validation)
+
+**Location**: `src/arena/backtest_*.py`
+
+A "court of law" for models — behavioral validation with full diagnostics.
+Financial metrics are OBSERVATIONAL ONLY, never used for optimization.
+
+### Non-Optimization Constitution
+1. **Separation of Powers**: Backtest tuning isolated from production tuning
+2. **One-Way Flow**: Tuning → Backtest → Integration Trial (no reverse dependency)
+3. **Behavior Over Performance**: Diagnostics inform safety decisions
+4. **Representativeness**: 50 tickers across sectors, caps, and regimes
+
+### Backtest Universe (50 tickers)
+Covers all major sectors and market caps:
+- Technology: AAPL, MSFT, NVDA, GOOGL, CRM, ADBE, CRWD, NET
+- Finance: JPM, BAC, GS, MS, SCHW, AFRM
+- Defence: LMT, RTX, NOC, GD
+- Healthcare: JNJ, UNH, PFE, ABBV, MRNA
+- Industrials: CAT, DE, BA, UPS, GE
+- Energy: XOM, CVX, COP, SLB, OXY
+- Materials: LIN, FCX, NEM, NUE
+- Consumer: AMZN, TSLA, HD, NKE, SBUX, PG, KO, PEP, COST
+- Communication: META, NFLX, DIS, SNAP
+
+### Diagnostics (Read-Only)
+**Financial** (observational):
+- Cumulative PnL, CAGR, Sharpe, Sortino
+- Max drawdown, drawdown duration
+- Profit factor, hit rate
+
+**Behavioral** (primary for decisions):
+- Equity curve convexity
+- Tail loss clustering
+- Regime stability
+- Leverage sensitivity
+- Turnover distribution
+
+**Cross-Asset**:
+- Performance dispersion across tickers
+- Drawdown correlation
+- Sector-specific fragility
+- Crisis-period amplification
+
+### Decision Outcomes
+- `APPROVED` — Passed all behavioral safety gates
+- `RESTRICTED` — Passed with caveats (sector/regime limits)
+- `QUARANTINED` — Needs observation period before retry
+- `REJECTED` — Failed behavioral gates, no promotion
+
+### Key Files
+| File | Purpose |
+|------|---------|
+| `backtest_config.py` | Universe definition, thresholds, constitution |
+| `backtest_data.py` | Data pipeline for 50-ticker universe |
+| `backtest_tune.py` | Parameter tuning for fairness (not optimization) |
+| `backtest_engine.py` | Backtest execution and decision logic |
+| `backtest_cli.py` | Command-line interface |
+
 ## Code Conventions
 
 ### Import Structure

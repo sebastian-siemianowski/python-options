@@ -114,3 +114,4 @@ htmlcov/
 /src/data/arena/
 /src/arena/data/
 /src/arena/disabled/
+/src/arena/backtest_tuned_params/
