@@ -1,5 +1,8 @@
 # AGENTS.md - AI Coding Agent Guidelines
 
+# Important - do not use cmd and heredoc in the terminal there are frequent errors when using heredoc
+# Do not put raw multiline code in terminal - NEVER - NEVER
+
 ## Project Overview
 
 A **quantitative signal engine** using Bayesian Model Averaging (BMA) with Kalman filtering. Generates trading signals for 100+ assets with calibrated uncertainty estimates.
