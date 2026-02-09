@@ -273,7 +273,7 @@ class BacktestConfig:
     lookback_years: int = 5
     min_observations: int = 252 * 3  # 3 years minimum
     initial_capital: float = 100_000.0
-    transaction_cost_bps: float = 10.0  # 10 bps
+    transaction_cost_bps: float = 2.0  # 2 bps (reduced for behavioral testing)
     
     # Diagnostic thresholds (WARNING triggers, not hard gates)
     max_drawdown_warning: float = 0.30       # 30% drawdown triggers warning

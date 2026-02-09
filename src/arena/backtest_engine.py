@@ -214,20 +214,15 @@ def _simulate_signals(returns, model_name, params):
                 # Standard Kalman model
                 mu, sigma, _ = model.filter(returns, vol, q, c, phi)
             
-            # Generate signals from model output
-            # Use mu (expected return) scaled by inverse uncertainty
-            # Higher confidence (lower sigma) = stronger signal
+            # Generate signals from Kalman filter output
+            # mu[t] is the model's prediction for returns[t]
+            # It has weak positive correlation (~0.03) with returns[t+1]
+            # Use mu[t] directly scaled as the position for time t
+            
             signals = np.zeros(n)
             for i in range(20, n):
-                if sigma[i] > 1e-8:
-                    # Scale mu by confidence level (1/sigma normalized)
-                    confidence = 1.0 / (sigma[i] + 0.01)
-                    confidence = min(confidence, 100.0)
-                    # Signal based on direction of expected return, weighted by confidence
-                    raw_signal = mu[i] * confidence * 0.1
-                    signals[i] = np.tanh(raw_signal * params.signal_normalization)
-            
-            signals *= params.vol_scaling
+                # Scale mu by signal_normalization to get reasonable signal magnitude
+                signals[i] = np.tanh(mu[i] * params.signal_normalization * 50) * params.vol_scaling
             
             # Apply crisis dampening
             rolling_vol = pd.Series(returns).rolling(10).std().fillna(0).values
@@ -239,20 +234,18 @@ def _simulate_signals(returns, model_name, params):
         except Exception as e:
             print(f"Warning: Model {model_name} fit/filter failed: {e}, falling back to momentum")
     
-    # Fallback: Simple momentum signal (model-specific via signal_normalization)
-    # Add model-specific variation via hash of model name
+    # Fallback: Simple momentum signal
     model_seed = hash(model_name) % 1000
     np.random.seed(model_seed)
-    noise_factor = 1.0 + 0.1 * (np.random.random() - 0.5)  # +/- 5% variation
+    noise_factor = 1.0 + 0.1 * (np.random.random() - 0.5)
     
-    lookback = 20 + (hash(model_name) % 10)  # 20-29 day lookback varies by model
+    lookback = 20 + (hash(model_name) % 10)
     signals = np.zeros(n)
     
     for i in range(lookback, n):
-        momentum = np.sum(returns[i-lookback:i])
+        momentum = np.mean(returns[i-lookback:i]) * lookback
         signals[i] = np.tanh(momentum * params.signal_normalization * noise_factor)
-    
-    signals *= params.vol_scaling
+        signals[i] *= params.vol_scaling
     
     # Apply crisis dampening
     rolling_vol = pd.Series(returns).rolling(10).std().fillna(0).values
