@@ -1590,8 +1590,17 @@ def run_arena_competition(
     symbols: Optional[List[str]] = None,
     parallel: bool = True,
     n_workers: int = None,
+    skip_disable: bool = False,
 ) -> ArenaResult:
-    """Run full arena competition with optional parallel processing."""
+    """Run full arena competition with optional parallel processing.
+    
+    Args:
+        config: Arena configuration
+        symbols: List of symbols to test (overrides config)
+        parallel: Use parallel processing
+        n_workers: Number of workers (default: CPU count - 1)
+        skip_disable: If True, skip disabling underperforming models
+    """
     config = config or DEFAULT_ARENA_CONFIG
     config.validate()
     
@@ -1703,7 +1712,9 @@ def run_arena_competition(
         _display_results(result, console)
     
     # Automatically disable experimental models that failed against best standard
-    disabled_count = _disable_failed_models(result, config, console if RICH_AVAILABLE else None)
+    # Skip if skip_disable is True (e.g., for safe storage testing)
+    if not skip_disable:
+        disabled_count = _disable_failed_models(result, config, console if RICH_AVAILABLE else None)
     
     # Save results
     result_path = results_dir / f"arena_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -1797,9 +1808,10 @@ def _disable_failed_models(
 def _display_results(result: ArenaResult, console: Console) -> None:
     """Display competition results with elegant Apple-style formatting."""
     
-    # Import safe storage models for filtering
+    # Import safe storage models for filtering - use function for dynamic loading
     try:
-        from arena.show_safe_storage import SAFE_STORAGE_MODELS, ARCHIVED_MODELS
+        from arena.show_safe_storage import get_safe_storage_models, ARCHIVED_MODELS
+        SAFE_STORAGE_MODELS = get_safe_storage_models()
         safe_storage_model_names = set(SAFE_STORAGE_MODELS.keys())
     except ImportError:
         SAFE_STORAGE_MODELS = {}
@@ -1979,14 +1991,17 @@ def _display_results(result: ArenaResult, console: Console) -> None:
     # =========================================================================
     # PROMOTION CANDIDATES (Safe Storage) - Match standard models format
     # =========================================================================
-    if SAFE_STORAGE_MODELS:
+    # Reload fresh data each time (not cached)
+    SAFE_STORAGE_MODELS_DISPLAY = get_safe_storage_models()
+    
+    if SAFE_STORAGE_MODELS_DISPLAY:
         console.print()
         console.print("[bold]  Promotion Candidates[/bold] [dim](Safe Storage)[/dim]")
         console.print()
         console.print(f"[dim]  {'':4} {'Model':<30} {'Score':>7} {'BIC':>8} {'CRPS':>7} {'Hyv':>8} {'PIT':>5} {'CSS':>5} {'FEC':>5} {'Time':>7} {'Gap':>7}[/dim]")
         console.print(f"[dim]  {'─' * 104}[/dim]")
         
-        for i, (name, m) in enumerate(sorted(SAFE_STORAGE_MODELS.items(), key=lambda x: x[1]['final'], reverse=True), 1):
+        for i, (name, m) in enumerate(sorted(SAFE_STORAGE_MODELS_DISPLAY.items(), key=lambda x: x[1]['final'], reverse=True), 1):
             display_name = name[:28] + "…" if len(name) > 29 else name
             final_str = f"{m['final']:.2f}"
             bic_str = f"{m['bic']:.0f}"
@@ -1996,7 +2011,7 @@ def _display_results(result: ArenaResult, console: Console) -> None:
             css_str = f"{m['css']:.2f}"
             fec_str = f"{m['fec']:.2f}"
             time_ms = m.get('time_ms', 0)
-            time_str = f"{time_ms}ms" if time_ms else "-"
+            time_str = f"{time_ms/1000:.1f}s" if time_ms else "-"
             vs_std = m['vs_std']
             
             # Parse vs_std to color it
