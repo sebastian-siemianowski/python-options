@@ -525,12 +525,13 @@ arena: .venv/.deps_installed
 # Run this explicitly when you need fresh data: make arena-data
 arena-data: .venv/.deps_installed
 	@echo "Downloading arena benchmark data..."
-	@mkdir -p src/data/arena
+	@mkdir -p src/arena/data
 	@.venv/bin/python src/arena/arena_cli.py data $(ARGS)
 
 # Run arena model competition (standard + experimental models)
 arena-tune: .venv/.deps_installed
-	@mkdir -p src/data/arena/results
+	@mkdir -p src/arena/data/results
+	@mkdir -p src/arena/disabled
 	@.venv/bin/python src/arena/arena_cli.py tune $(ARGS)
 
 # Show latest arena competition results

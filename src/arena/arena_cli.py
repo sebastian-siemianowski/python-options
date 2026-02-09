@@ -65,7 +65,7 @@ def cmd_results(args):
     
     from rich.console import Console
     
-    results_dir = Path("src/data/arena/results")
+    results_dir = Path("src/arena/data/results")
     if not results_dir.exists():
         print("No arena results found. Run 'make arena-tune' first.")
         return

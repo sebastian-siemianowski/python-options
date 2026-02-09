@@ -66,7 +66,7 @@ class SMCConfig:
     pit_hard_constraint: bool = True
     pit_threshold: float = 0.05
     save_history: bool = True
-    state_file: str = "src/data/arena/smc_state.json"
+    state_file: str = "src/arena/data/smc_state.json"
     
     def get_temperature(self, step: int, n_steps: int) -> float:
         """Get temperature for given step."""

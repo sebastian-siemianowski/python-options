@@ -112,3 +112,5 @@ htmlcov/
 /src/data/options_data/
 # Arena data files (results and downloaded data, not code)
 /src/data/arena/
+/src/arena/data/
+/src/arena/disabled/

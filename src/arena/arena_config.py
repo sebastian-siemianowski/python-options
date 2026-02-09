@@ -121,8 +121,8 @@ class ArenaConfig:
     verbose: bool = True
     
     # Output paths
-    arena_data_dir: str = "src/data/arena"
-    arena_results_dir: str = "src/data/arena/results"
+    arena_data_dir: str = "src/arena/data"
+    arena_results_dir: str = "src/arena/data/results"
     
     def get_symbols_by_category(self, category: CapCategory) -> List[str]:
         """Get symbols for a specific market cap category."""
@@ -188,7 +188,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-DISABLED_MODELS_FILE = "src/data/arena/disabled_models.json"
+DISABLED_MODELS_FILE = "src/arena/disabled/disabled_models.json"
 
 
 def load_disabled_models() -> Dict[str, Dict]:
