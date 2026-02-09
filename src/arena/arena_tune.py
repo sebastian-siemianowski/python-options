@@ -1769,7 +1769,7 @@ def _display_results(result: ArenaResult, console: Console) -> None:
         console.print(f"[dim]  {'':4} {'Model':<30} {'Score':>7} {'BIC':>8} {'CRPS':>7} {'Hyv':>8} {'PIT':>5} {'CSS':>5} {'FEC':>5} {'Time':>7} {'Gap':>7}[/dim]")
         console.print(f"[dim]  {'─' * 104}[/dim]")
         
-        for i, (name, m) in enumerate(SAFE_STORAGE_MODELS.items(), 1):
+        for i, (name, m) in enumerate(sorted(SAFE_STORAGE_MODELS.items(), key=lambda x: x[1]['final'], reverse=True), 1):
             display_name = name[:28] + "…" if len(name) > 29 else name
             final_str = f"{m['final']:.2f}"
             bic_str = f"{m['bic']:.0f}"
