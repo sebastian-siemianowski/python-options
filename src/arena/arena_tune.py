@@ -456,35 +456,71 @@ def fit_standard_model(
 # EXPERIMENTAL MODEL FITTING
 # =============================================================================
 
+class ModelTimeoutError(Exception):
+    """Raised when model fitting exceeds timeout."""
+    pass
+
+
+def _timeout_handler(signum, frame):
+    """Signal handler for timeout."""
+    raise ModelTimeoutError("Model fitting timed out")
+
+
 def fit_experimental_model(
     model_name: str,
     returns: np.ndarray,
     vol: np.ndarray,
     regime_labels: np.ndarray,
+    timeout_seconds: int = 15,
 ) -> Dict[str, Any]:
     """
-    Fit an experimental model.
+    Fit an experimental model with timeout protection.
     
     Args:
         model_name: Experimental model name
         returns: Log returns
         vol: EWMA volatility
         regime_labels: Regime assignments
+        timeout_seconds: Maximum time allowed for fitting (default 15s)
         
     Returns:
         Dictionary with fitted parameters and diagnostics
+        
+    Raises:
+        ModelTimeoutError: If fitting exceeds timeout
+        Exception: If model fitting fails for any other reason
     """
     import time
+    import signal
+    
     start_time = time.time()
     
-    model = create_experimental_model(model_name)
-    result = model.fit(returns, vol)
+    # Set up timeout using signal (Unix only, but macOS supports it)
+    old_handler = None
+    try:
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(timeout_seconds)
+    except (ValueError, AttributeError):
+        # signal.alarm not available (e.g., Windows or in subprocess)
+        pass
     
-    fit_time_ms = (time.time() - start_time) * 1000
-    result["fit_time_ms"] = fit_time_ms
-    result["model_name"] = model_name
-    
-    return result
+    try:
+        model = create_experimental_model(model_name)
+        result = model.fit(returns, vol)
+        
+        fit_time_ms = (time.time() - start_time) * 1000
+        result["fit_time_ms"] = fit_time_ms
+        result["model_name"] = model_name
+        
+        return result
+    finally:
+        # Cancel the alarm and restore old handler
+        try:
+            signal.alarm(0)
+            if old_handler is not None:
+                signal.signal(signal.SIGALRM, old_handler)
+        except (ValueError, AttributeError):
+            pass
 
 
 # =============================================================================
@@ -858,6 +894,33 @@ def _fit_single_model_wrapper(args: Tuple) -> Dict:
     """Wrapper for multiprocessing - fits ONE model for ONE symbol."""
     symbol, model_name, model_type, returns, vol, regime_labels, category_value = args
     
+    # Re-seed numpy random state in subprocess to avoid shared state issues
+    import os
+    import sys
+    import numpy as np
+    import faulthandler
+    import traceback
+    import tempfile
+    
+    # Enable faulthandler to get traceback on segfaults
+    try:
+        crash_file = os.path.join(tempfile.gettempdir(), f'arena_crash_{model_name}_{symbol}.log')
+        with open(crash_file, 'w') as f:
+            f.write(f"Starting {model_name} on {symbol}\n")
+        faulthandler.enable(file=sys.stderr, all_threads=True)
+    except:
+        pass
+    
+    np.random.seed(int.from_bytes(os.urandom(4), byteorder='little'))
+    
+    # Limit numpy threads to avoid resource contention
+    try:
+        os.environ['OMP_NUM_THREADS'] = '1'
+        os.environ['MKL_NUM_THREADS'] = '1'
+        os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    except:
+        pass
+    
     try:
         if model_type == "standard":
             result = fit_standard_model(model_name, returns, vol, regime_labels)
@@ -891,13 +954,44 @@ def _fit_single_model_wrapper(args: Tuple) -> Dict:
             "fit_time_ms": result.get("fit_time_ms", 0),
             "success": True,
         }
-    except Exception as e:
+    except ModelTimeoutError as e:
+        print(f"⏱️  TIMEOUT: {model_name} on {symbol} (>15s)", file=sys.stderr)
         return {
             "model_name": model_name,
             "symbol": symbol,
             "category": category_value,
             "success": False,
-            "error": str(e),
+            "error": f"TIMEOUT: {str(e)}",
+            "error_type": "timeout",
+        }
+    except MemoryError as e:
+        print(f"💾 MEMORY: {model_name} on {symbol} - out of memory", file=sys.stderr)
+        return {
+            "model_name": model_name,
+            "symbol": symbol,
+            "category": category_value,
+            "success": False,
+            "error": f"MemoryError: {str(e)[:50]}",
+            "error_type": "memory",
+        }
+    except Exception as e:
+        error_type = type(e).__name__
+        tb = traceback.format_exc()
+        # Write crash info to temp file for debugging
+        try:
+            crash_file = os.path.join(tempfile.gettempdir(), f'arena_crash_{model_name}_{symbol}.log')
+            with open(crash_file, 'w') as f:
+                f.write(f"Model: {model_name}\nSymbol: {symbol}\nError: {error_type}\n{tb}\n")
+        except:
+            pass
+        print(f"❌ FAILED: {model_name} on {symbol} - {error_type}: {str(e)[:100]}", file=sys.stderr)
+        return {
+            "model_name": model_name,
+            "symbol": symbol,
+            "category": category_value,
+            "success": False,
+            "error": f"{error_type}: {str(e)}",
+            "error_type": error_type,
         }
 
 
@@ -938,8 +1032,18 @@ def fit_all_symbols_parallel(
     n_workers: int = None,
 ) -> List['ModelScore']:
     """Fit all models for all symbols using multiprocessing at (symbol, model) granularity."""
+    import platform
+    import tempfile
+    import os
+    from concurrent.futures import TimeoutError as FuturesTimeoutError
+    
     if n_workers is None:
-        n_workers = max(1, N_CPUS - 1)
+        n_workers = max(1, min(N_CPUS - 1, 4))  # Limit to 4 workers to reduce memory pressure
+    
+    # Set thread limits before spawning processes
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
     
     # Build list of ALL (symbol, model) combinations for true parallelism
     tasks = []
@@ -972,19 +1076,128 @@ def fit_all_symbols_parallel(
                 tasks.append((symbol, model_name, "experimental", sd['returns'], sd['vol'], sd['regime_labels'], sd['category']))
     
     all_results = []
+    failed_models = []
+    timeout_models = []
+    crash_models = []
     
-    # Execute all tasks in parallel using fork context for fresh processes
+    # Use 'fork' context
     mp_context = mp.get_context('fork')
-    with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_context) as executor:
-        futures = {executor.submit(_fit_single_model_wrapper, task): task for task in tasks}
+    
+    # Track currently running tasks to identify crashes
+    running_tasks = {}  # future -> task
+    completed_tasks = set()
+    
+    # Process in smaller batches to limit crash impact
+    batch_size = max(n_workers * 2, 12)
+    total_batches = (len(tasks) + batch_size - 1) // batch_size
+    
+    print(f"🚀 Processing {len(tasks)} tasks in {total_batches} batches with {n_workers} workers", file=sys.stderr)
+    
+    for batch_idx, batch_start in enumerate(range(0, len(tasks), batch_size)):
+        batch_tasks = tasks[batch_start:batch_start + batch_size]
+        batch_num = batch_idx + 1
+        batch_completed = []
+        batch_pending = set(range(len(batch_tasks)))
         
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                if result.get("success", False):
-                    all_results.append(result)
-            except Exception as e:
-                pass
+        try:
+            with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_context) as executor:
+                # Submit all tasks in batch
+                futures = {}
+                for i, task in enumerate(batch_tasks):
+                    future = executor.submit(_fit_single_model_wrapper, task)
+                    futures[future] = (i, task)
+                
+                # Collect results with timeout
+                for future in as_completed(futures, timeout=180):  # 3 min timeout for batch
+                    i, task = futures[future]
+                    model_name = task[1]
+                    symbol = task[0]
+                    
+                    try:
+                        result = future.result(timeout=30)
+                        batch_pending.discard(i)
+                        batch_completed.append(i)
+                        
+                        if result.get("success", False):
+                            all_results.append(result)
+                        else:
+                            error_type = result.get("error_type", "unknown")
+                            if error_type == "timeout":
+                                timeout_models.append((model_name, symbol, result.get("error", "")))
+                            else:
+                                failed_models.append((model_name, symbol, result.get("error", "")))
+                    
+                    except FuturesTimeoutError:
+                        batch_pending.discard(i)
+                        timeout_models.append((model_name, symbol, "Timeout waiting for result"))
+                        print(f"⏱️  TIMEOUT: {model_name} on {symbol}", file=sys.stderr)
+                    
+                    except Exception as e:
+                        batch_pending.discard(i)
+                        error_name = type(e).__name__
+                        
+                        if "BrokenProcessPool" in error_name:
+                            # A process crashed - check crash logs
+                            crash_file = os.path.join(tempfile.gettempdir(), f'arena_crash_{model_name}_{symbol}.log')
+                            crash_info = ""
+                            if os.path.exists(crash_file):
+                                try:
+                                    with open(crash_file, 'r') as f:
+                                        crash_info = f.read()[:200]
+                                except:
+                                    pass
+                            
+                            crash_models.append((model_name, symbol, crash_info or "Process crashed"))
+                            print(f"💥 CRASH: {model_name} on {symbol} - process terminated", file=sys.stderr)
+                            if crash_info:
+                                print(f"   Crash log: {crash_info[:100]}", file=sys.stderr)
+                        else:
+                            failed_models.append((model_name, symbol, f"{error_name}: {str(e)[:60]}"))
+                            print(f"❌ ERROR: {model_name} on {symbol} - {error_name}", file=sys.stderr)
+        
+        except Exception as pool_error:
+            # Pool crashed - identify which tasks didn't complete
+            error_name = type(pool_error).__name__
+            print(f"⚠️  Pool crashed in batch {batch_num}/{total_batches}: {error_name}", file=sys.stderr)
+            
+            # Tasks that were pending when pool crashed need to be retried sequentially
+            pending_tasks = [batch_tasks[i] for i in batch_pending if i not in batch_completed]
+            
+            if pending_tasks:
+                print(f"   Retrying {len(pending_tasks)} pending tasks sequentially...", file=sys.stderr)
+                
+                for task in pending_tasks:
+                    symbol, model_name = task[0], task[1]
+                    try:
+                        result = _fit_single_model_wrapper(task)
+                        if result.get("success", False):
+                            all_results.append(result)
+                        else:
+                            failed_models.append((model_name, symbol, result.get("error", "")))
+                    except Exception as e:
+                        error_msg = f"{type(e).__name__}: {str(e)[:60]}"
+                        failed_models.append((model_name, symbol, error_msg))
+                        print(f"   ❌ {model_name} on {symbol}: {error_msg}", file=sys.stderr)
+    
+    # Print summary
+    print(f"\n📊 Results: {len(all_results)} succeeded", file=sys.stderr)
+    
+    if timeout_models:
+        print(f"⏱️  {len(timeout_models)} timed out", file=sys.stderr)
+    
+    if crash_models:
+        print(f"💥 {len(crash_models)} crashed:", file=sys.stderr)
+        for model, sym, info in crash_models[:5]:
+            print(f"   - {model} on {sym}", file=sys.stderr)
+        if len(crash_models) > 5:
+            print(f"   ... and {len(crash_models) - 5} more", file=sys.stderr)
+    
+    if failed_models:
+        print(f"❌ {len(failed_models)} failed:", file=sys.stderr)
+        for model, sym, err in failed_models[:5]:
+            print(f"   - {model} on {sym}: {err[:50]}", file=sys.stderr)
+        if len(failed_models) > 5:
+            print(f"   ... and {len(failed_models) - 5} more", file=sys.stderr)
     
     # Convert to ModelScore objects
     scores = []
@@ -1093,8 +1306,8 @@ def fit_all_models_for_symbol(
                 )
                 scores.append(score)
             except Exception as e:
-                if config.verbose:
-                    print(f"  Error fitting {model_name} on {dataset.symbol}: {e}")
+                error_type = type(e).__name__
+                print(f"❌ FAILED: {model_name} on {dataset.symbol} - {error_type}: {str(e)[:80]}", file=sys.stderr)
     
     # Fit experimental models (skip disabled ones)
     if config.test_experimental:
@@ -1143,9 +1356,11 @@ def fit_all_models_for_symbol(
                     fit_time_ms=result.get("fit_time_ms", 0),
                 )
                 scores.append(score)
+            except ModelTimeoutError as e:
+                print(f"⏱️  TIMEOUT: {model_name} on {dataset.symbol} (>15s)", file=sys.stderr)
             except Exception as e:
-                if config.verbose:
-                    print(f"  Error fitting {model_name} on {dataset.symbol}: {e}")
+                error_type = type(e).__name__
+                print(f"❌ FAILED: {model_name} on {dataset.symbol} - {error_type}: {str(e)[:80]}", file=sys.stderr)
     
     return scores
 
