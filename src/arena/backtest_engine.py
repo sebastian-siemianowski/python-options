@@ -182,10 +182,14 @@ def _get_model_instance(model_name: str):
 
 def _simulate_signals(returns, model_name, params):
     """
-    Generate trading signals using the actual model.
+    Generate trading signals using the actual model via signal geometry layer.
     
-    Attempts to load and run the model from backtest_models/.
-    Falls back to simple momentum if model not found or errors.
+    NEW CONTRACT:
+        model.filter() → mu, sigma (distributional geometry)
+        signal_geometry → SignalFields → ActionDecision → position
+    
+    This respects what models actually know instead of forcing them
+    to pretend they are directional forecasters.
     """
     n = len(returns)
     
@@ -198,6 +202,14 @@ def _simulate_signals(returns, model_name, params):
     
     if model is not None and hasattr(model, 'filter') and has_fitted_params:
         try:
+            # Import signal geometry layer
+            from .signal_geometry import (
+                SignalFields, 
+                SignalGeometryEngine, 
+                SignalGeometryConfig,
+                create_signal_fields_from_kalman
+            )
+            
             # Compute volatility estimate for the model
             vol = pd.Series(returns).rolling(20).std().fillna(0.01).values
             vol = np.maximum(vol, 0.001)
@@ -216,17 +228,36 @@ def _simulate_signals(returns, model_name, params):
                 # Standard Kalman model
                 mu, sigma, _ = model.filter(returns, vol, q, c, phi)
             
-            # Generate signals from Kalman filter output
-            # mu[t] is the model's prediction for returns[t]
-            # It has weak positive correlation (~0.03) with returns[t+1]
-            # Use mu[t] directly scaled as the position for time t
+            # =========================================================
+            # NEW: Use signal geometry layer instead of raw mu → signal
+            # =========================================================
+            
+            # Use default config (has all parameters properly configured)
+            engine = SignalGeometryEngine()
             
             signals = np.zeros(n)
             for i in range(20, n):
-                # Scale mu by signal_normalization to get reasonable signal magnitude
-                signals[i] = np.tanh(mu[i] * params.signal_normalization * 50) * params.vol_scaling
+                # Create SignalFields from Kalman output at this point
+                # Use a lookback window for context
+                start_idx = max(0, i - 50)
+                
+                fields = create_signal_fields_from_kalman(
+                    mu=mu[start_idx:i+1],
+                    sigma=sigma[start_idx:i+1],
+                    returns=returns[start_idx:i+1],
+                    model_name=model_name
+                )
+                
+                # Get action decision from geometry engine
+                decision = engine.evaluate(fields)
+                
+                # Convert to position signal
+                raw_signal = decision.position_signal
+                
+                # Apply vol scaling from tuned params
+                signals[i] = raw_signal * params.vol_scaling
             
-            # Apply crisis dampening
+            # Apply crisis dampening (still useful as a safety layer)
             rolling_vol = pd.Series(returns).rolling(10).std().fillna(0).values
             high_vol_mask = rolling_vol > np.percentile(rolling_vol, 90)
             signals[high_vol_mask] *= params.crisis_dampening
@@ -234,7 +265,9 @@ def _simulate_signals(returns, model_name, params):
             return np.clip(signals, -1, 1)
             
         except Exception as e:
-            print(f"Warning: Model {model_name} fit/filter failed: {e}, falling back to momentum")
+            print(f"Warning: Model {model_name} signal geometry failed: {e}, falling back to momentum")
+            import traceback
+            traceback.print_exc()
     
     # Fallback: Simple momentum signal
     model_seed = hash(model_name) % 1000
