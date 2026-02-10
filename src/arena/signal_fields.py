@@ -327,11 +327,21 @@ def create_signal_fields_from_kalman(
     sigma_mean = np.mean(sigma_hist) + 1e-10
     
     # =========================================================================
-    # DIRECTION: Normalized state estimate
+    # DIRECTION: Based on MU MOMENTUM (change in mu), NOT mu level!
     # =========================================================================
-    # Use z-score of mu, mapped through tanh for [-1, +1]
-    mu_zscore = (mu_last - mu_mean) / mu_std
-    direction = float(np.tanh(mu_zscore * 0.3))  # Gentle mapping
+    # Analysis showed: Following mu momentum has Sharpe 1.293 vs 0.294 for level
+    if n >= 5:
+        # Compute mu change (momentum)
+        mu_change = mu[-1] - mu[-2]
+        
+        # Normalize by recent mu change volatility
+        mu_changes = np.diff(mu[-20:]) if n >= 20 else np.diff(mu[-5:])
+        mu_change_std = np.std(mu_changes) + 1e-10
+        
+        # Direction = normalized mu change
+        direction = float(np.tanh(mu_change / mu_change_std * 1.5))
+    else:
+        direction = 0.0
     
     # =========================================================================
     # ASYMMETRY: Skewness of recent predictions vs realizations
@@ -339,27 +349,31 @@ def create_signal_fields_from_kalman(
     if len(returns_hist) >= 20:
         residuals = returns_hist - mu_hist[-len(returns_hist):]
         skew = np.mean(residuals**3) / (np.std(residuals)**3 + 1e-10)
-        asymmetry = float(np.clip(skew / 2, -1, 1))  # Normalize
+        asymmetry = float(np.clip(skew / 2, -1, 1))
     else:
         asymmetry = 0.0
     
     # =========================================================================
-    # BELIEF MOMENTUM: Trend in mu
+    # BELIEF MOMENTUM: Trend in mu (longer term)
     # =========================================================================
     if n >= 10:
         mu_recent = mu[-10:]
         mu_trend = np.polyfit(range(10), mu_recent, 1)[0]
-        # Normalize by mu_std
         belief_momentum = float(np.tanh(mu_trend / (mu_std + 1e-10) * 50))
     else:
         belief_momentum = 0.0
     
     # =========================================================================
-    # CONFIDENCE: SNR of state estimate
+    # CONFIDENCE: Based on consistency of mu momentum direction
     # =========================================================================
-    snr = abs(mu_last) / (sigma_last + 1e-10)
-    confidence = float(np.tanh(snr * 2))  # High SNR = high confidence
-    
+    if n >= 10:
+        mu_changes = np.diff(mu[-10:])
+        # Confidence = how consistently mu is moving in same direction
+        same_sign = np.sum(np.sign(mu_changes) == np.sign(mu_changes[-1]))
+        consistency = same_sign / len(mu_changes)
+        confidence = float(consistency)
+    else:
+        confidence = 0.5
     # =========================================================================
     # STABILITY: Consistency of sigma (low CV = stable)
     # =========================================================================
@@ -424,7 +438,7 @@ def create_signal_fields_from_kalman(
         raw_values={
             'mu_last': float(mu_last),
             'sigma_last': float(sigma_last),
-            'snr': float(snr),
+            'mu_change': float(mu[-1] - mu[-2]) if n >= 5 else 0.0,
         }
     )
 

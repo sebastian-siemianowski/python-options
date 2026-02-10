@@ -19,9 +19,9 @@ class TradeAction(Enum):
 
 @dataclass
 class GeometryConfig:
-    min_direction_strength: float = 0.30
+    min_direction_strength: float = 0.50
     strong_direction: float = 0.50
-    min_confidence: float = 0.35
+    min_confidence: float = 0.60
     high_confidence: float = 0.50
     min_stability: float = -0.10
     max_risk: float = 0.50

@@ -182,16 +182,13 @@ def _get_model_instance(model_name: str):
 
 def _simulate_signals(returns, model_name, params):
     """
-    Generate trading signals using the proper SignalFields → SignalGeometry flow.
+    Generate trading signals using SignalFields → SignalGeometry flow.
     
-    NEW ARCHITECTURE:
-        1. Model.filter() → mu, sigma (distributional estimates)
-        2. create_signal_fields_from_kalman() → SignalFields (epistemic measures)
-        3. SignalGeometryEngine.evaluate() → GeometryDecision (trading action)
+    ARCHITECTURE:
+        1. Model.filter() → mu, sigma (Kalman state estimates)
+        2. create_signal_fields_from_kalman() → SignalFields (accuracy-based)
+        3. SignalGeometryEngine.evaluate() → GeometryDecision (action + sizing)
         4. decision.position_signal → actual position
-    
-    Models are NOT traders. They are distributional geometry estimators.
-    The SignalGeometry layer interprets epistemic fields into actions.
     """
     n = len(returns)
     
@@ -204,7 +201,7 @@ def _simulate_signals(returns, model_name, params):
     
     if model is not None and hasattr(model, 'filter') and has_fitted_params:
         try:
-            # Import the proper signal fields and geometry
+            # Import signal modules
             from .signal_fields import SignalFields, create_signal_fields_from_kalman
             from .signal_geometry import SignalGeometryEngine, GeometryConfig
             
@@ -227,10 +224,10 @@ def _simulate_signals(returns, model_name, params):
                 mu, sigma, _ = model.filter(returns, vol, q, c, phi)
             
             # =========================================================
-            # NEW: SignalFields → SignalGeometry flow
+            # SignalFields → SignalGeometry flow
             # =========================================================
             
-            # Create geometry engine with configured thresholds
+            # Create geometry engine
             engine = SignalGeometryEngine()
             
             signals = np.zeros(n)
@@ -238,7 +235,7 @@ def _simulate_signals(returns, model_name, params):
                 # Get lookback window
                 start_idx = max(0, i - 100)
                 
-                # STEP 1: Convert Kalman outputs to SignalFields
+                # STEP 1: Create signal fields
                 fields = create_signal_fields_from_kalman(
                     mu=mu[start_idx:i+1],
                     sigma=sigma[start_idx:i+1],
@@ -246,16 +243,16 @@ def _simulate_signals(returns, model_name, params):
                     model_name=model_name
                 )
                 
-                # STEP 2: SignalGeometry interprets fields into decision
+                # STEP 2: Geometry evaluates fields
                 decision = engine.evaluate(fields)
                 
-                # STEP 3: Extract position signal from decision
+                # STEP 3: Extract position signal
                 signals[i] = decision.position_signal
             
             return np.clip(signals, -1, 1)
             
         except Exception as e:
-            print(f"Warning: Model {model_name} signal generation failed: {e}, falling back")
+            print(f"Warning: Model {model_name} signal failed: {e}, falling back")
             import traceback
             traceback.print_exc()
     
