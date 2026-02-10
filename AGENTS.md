@@ -1,7 +1,10 @@
 # AGENTS.md - AI Coding Agent Guidelines
 
-# Important - do not use cmd and heredoc in the terminal there are frequent errors when using heredoc
-# Do not put raw multiline code in terminal - NEVER - NEVER
+# ⚠️ TERMINAL RULES - CRITICAL
+# 1. NEVER use heredoc (<<EOF or <<'EOF') in terminal - causes garbled output
+# 2. NEVER put multiline code directly in terminal commands
+# 3. For multiline code: CREATE A FILE first, then run the file
+# 4. For shell scripts: Write to a .sh file, then execute it
 
 ## Project Overview
 
@@ -277,3 +280,33 @@ Minimal set in `src/setup/requirements.txt`: yfinance, numpy, pandas, scipy, ric
 # Important
 - Avoid using cmdand heredoc in the terminal there are frequent errors when using heredoc
 - Do not put raw multiline code in terminal - NEVER - NEVER
+
+### Signal Geometry Layer
+
+**Location**: `src/arena/signal_fields.py`, `src/arena/signal_geometry.py`
+
+The SignalFields → SignalGeometry architecture separates model outputs from trading decisions:
+
+1. **Model.filter()** → mu, sigma (distributional estimates)
+2. **SignalFields** → epistemic measures (direction, confidence, stability)
+3. **SignalGeometry** → trading actions (entry, sizing, exit)
+
+**Critical Insight (Feb 2026)**:
+- Use **mu MOMENTUM** (change in mu), NOT mu level for direction
+- Analysis showed: mu momentum Sharpe = 1.293 vs mu level Sharpe = 0.294
+- Strong filtering destroys edge — be selective but not too aggressive
+
+**Optimal Thresholds (Feb 2026)**:
+```
+min_direction_strength: 0.50  # Only strong momentum changes
+min_confidence: 0.60          # High consistency required
+Result: Sortino +4.63, Max DD 3.8%, near breakeven PnL
+```
+
+**Key Files**:
+| File | Purpose |
+|------|---------|
+| `signal_fields.py` | Convert Kalman outputs to epistemic fields |
+| `signal_geometry.py` | Gate + size trades based on field quality |
+
+## Code Conventions
