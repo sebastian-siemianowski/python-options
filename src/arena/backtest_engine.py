@@ -182,14 +182,16 @@ def _get_model_instance(model_name: str):
 
 def _simulate_signals(returns, model_name, params):
     """
-    Generate trading signals using the actual model via signal geometry layer.
+    Generate trading signals using the proper SignalFields → SignalGeometry flow.
     
-    NEW CONTRACT:
-        model.filter() → mu, sigma (distributional geometry)
-        signal_geometry → SignalFields → ActionDecision → position
+    NEW ARCHITECTURE:
+        1. Model.filter() → mu, sigma (distributional estimates)
+        2. create_signal_fields_from_kalman() → SignalFields (epistemic measures)
+        3. SignalGeometryEngine.evaluate() → GeometryDecision (trading action)
+        4. decision.position_signal → actual position
     
-    This respects what models actually know instead of forcing them
-    to pretend they are directional forecasters.
+    Models are NOT traders. They are distributional geometry estimators.
+    The SignalGeometry layer interprets epistemic fields into actions.
     """
     n = len(returns)
     
@@ -202,13 +204,9 @@ def _simulate_signals(returns, model_name, params):
     
     if model is not None and hasattr(model, 'filter') and has_fitted_params:
         try:
-            # Import signal geometry layer
-            from .signal_geometry import (
-                SignalFields, 
-                SignalGeometryEngine, 
-                SignalGeometryConfig,
-                create_signal_fields_from_kalman
-            )
+            # Import the proper signal fields and geometry
+            from .signal_fields import SignalFields, create_signal_fields_from_kalman
+            from .signal_geometry import SignalGeometryEngine, GeometryConfig
             
             # Compute volatility estimate for the model
             vol = pd.Series(returns).rolling(20).std().fillna(0.01).values
@@ -229,18 +227,18 @@ def _simulate_signals(returns, model_name, params):
                 mu, sigma, _ = model.filter(returns, vol, q, c, phi)
             
             # =========================================================
-            # NEW: Use signal geometry layer instead of raw mu → signal
+            # NEW: SignalFields → SignalGeometry flow
             # =========================================================
             
-            # Use default config (has all parameters properly configured)
+            # Create geometry engine with configured thresholds
             engine = SignalGeometryEngine()
             
             signals = np.zeros(n)
-            for i in range(20, n):
-                # Create SignalFields from Kalman output at this point
-                # Use a lookback window for context
-                start_idx = max(0, i - 50)
+            for i in range(30, n):
+                # Get lookback window
+                start_idx = max(0, i - 100)
                 
+                # STEP 1: Convert Kalman outputs to SignalFields
                 fields = create_signal_fields_from_kalman(
                     mu=mu[start_idx:i+1],
                     sigma=sigma[start_idx:i+1],
@@ -248,24 +246,16 @@ def _simulate_signals(returns, model_name, params):
                     model_name=model_name
                 )
                 
-                # Get action decision from geometry engine
+                # STEP 2: SignalGeometry interprets fields into decision
                 decision = engine.evaluate(fields)
                 
-                # Convert to position signal
-                raw_signal = decision.position_signal
-                
-                # Apply vol scaling from tuned params
-                signals[i] = raw_signal * params.vol_scaling
-            
-            # Apply crisis dampening (still useful as a safety layer)
-            rolling_vol = pd.Series(returns).rolling(10).std().fillna(0).values
-            high_vol_mask = rolling_vol > np.percentile(rolling_vol, 90)
-            signals[high_vol_mask] *= params.crisis_dampening
+                # STEP 3: Extract position signal from decision
+                signals[i] = decision.position_signal
             
             return np.clip(signals, -1, 1)
             
         except Exception as e:
-            print(f"Warning: Model {model_name} signal geometry failed: {e}, falling back to momentum")
+            print(f"Warning: Model {model_name} signal generation failed: {e}, falling back")
             import traceback
             traceback.print_exc()
     
