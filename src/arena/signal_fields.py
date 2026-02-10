@@ -223,37 +223,41 @@ class SignalFields:
     def composite_direction(self) -> float:
         """
         Weighted combination of directional signals.
-        This is what the signal geometry layer primarily uses.
+        IMPROVED: Weight direction (which now includes accuracy) most heavily.
         """
-        # Weight direction most, then asymmetry, then momentum
+        # Direction now incorporates accuracy, so weight it heavily
+        # Momentum confirms, asymmetry provides edge direction
         return (
-            0.50 * self.direction +
-            0.30 * self.asymmetry +
-            0.20 * self.belief_momentum
+            0.60 * self.direction +
+            0.25 * self.belief_momentum +
+            0.15 * self.asymmetry
         )
     
     @property
     def composite_confidence(self) -> float:
         """
         Weighted combination of confidence signals.
-        Used for position sizing.
+        IMPROVED: Also consider regime fit.
         """
+        # High confidence when: accurate predictions, stable environment, good fit
+        regime_boost = max(0, self.regime_fit) * 0.2
         return (
-            0.60 * self.confidence +
-            0.40 * self.stability
+            0.50 * self.confidence +
+            0.30 * max(0, self.stability) +
+            regime_boost
         )
     
     @property
     def composite_risk(self) -> float:
         """
         Combined risk indicator.
-        Higher = more risk.
+        IMPROVED: Weight left tail more (downside protection).
         """
         return (
-            0.40 * self.tail_risk_left +
-            0.20 * self.tail_risk_right +
+            0.50 * self.tail_risk_left +      # Downside matters more
+            0.15 * self.tail_risk_right +
             0.20 * abs(self.transition_pressure) +
-            0.20 * abs(self.volatility_state)
+            0.15 * max(0, self.volatility_state)  # Only penalize high vol
         )
     
     def to_dict(self) -> Dict[str, Any]:
@@ -414,13 +418,12 @@ def create_signal_fields_from_kalman(
         tail_risk_left=tail_risk_left,
         tail_risk_right=tail_risk_right,
         volatility_state=volatility_state,
-        constraint_pressure=0.0,  # Not measured by Kalman
-        hedging_pressure=0.0,     # Not measured by Kalman
+        constraint_pressure=0.0,
+        hedging_pressure=0.0,
         model_name=model_name,
         raw_values={
             'mu_last': float(mu_last),
             'sigma_last': float(sigma_last),
-            'mu_zscore': float(mu_zscore),
             'snr': float(snr),
         }
     )
