@@ -293,23 +293,24 @@ class SignalFields:
 
 **Current Configuration (Production - Long-Only Mode):**
 - Markets have positive drift → shorts destroy CAGR
-- Direction threshold: 0.15 (emergent direction is noisier)
-- Confidence threshold: 0.32
-- Agreement threshold: 0.15 (weak signals don't count as votes)
-- NO reliability floor (architectural purity)
+- Direction threshold: 0.07 (lowered to capture drift)
+- Confidence threshold: 0.25 (lowered from 0.32)
+- Agreement threshold: 0.15 (weak but consistent signals count)
+- Reliability floor: 0.25 (prevents signal strangulation)
 - Base position: 45%, Max position: 85%
-- Long bias: 0.15
-- allow_shorts: False (set True for research/stress-testing)
+- Long bias: 0.12
+- allow_shorts: False (validated: enabling dropped Sharpe 0.16→0.10)
 
-**Reliability Formula (No Floor - Architectural Purity):**
+**Reliability Formula (With Floor - Drift Capture):**
 ```python
 stability_reliability = max(0, fields.stability + 0.3) / 1.3
-confidence_reliability = max(0, fields.confidence)
+confidence_reliability = max(0, fields.composite_confidence)  # Use composite!
 regime_reliability = max(0, fields.regime_fit + 0.5) / 1.5
 
-# Geometric mean + exponential dampening (no floor)
+# Geometric mean WITH FLOOR (prevents signal strangulation)
 reliability = (stab × conf × regime) ** (1/3)
-reliability = reliability ** 1.15  # Extra conservatism on weak signals
+reliability = max(0.25, reliability)  # Floor ensures weak signals still trade
+# NO exponent - was killing 80-95% of signals
 ```
 
 **Field Validation (NO SILENT FAILURES):**

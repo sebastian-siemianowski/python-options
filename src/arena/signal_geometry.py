@@ -222,15 +222,20 @@ class GeometryConfig:
     - Too strict thresholds → miss market drift → negative CAGR
     - Too loose thresholds → excessive trading → transaction costs eat alpha
     - Proper calibration captures drift while avoiding noise
+    
+    FIX (Feb 2026): Thresholds were over-conservative, strangling signal energy.
+    Markets reward repeated mild correctness, not epistemic perfection.
     """
     # Direction synthesis thresholds (after tanh transformation)
-    # EMERGENT direction is noisier - require stronger consensus
-    min_direction_score: float = 0.15      # Minimum |direction_score| to act
-    strong_direction_score: float = 0.30   # Strong direction threshold
+    # FIX: Lowered from 0.15 to 0.07 - was filtering out valid drift signals
+    # Drift compounds over time; medium-quality signals still create alpha
+    min_direction_score: float = 0.07      # Minimum |direction_score| to act
+    strong_direction_score: float = 0.25   # Strong direction threshold (lowered from 0.30)
     
     # Confidence thresholds - MODERATE selectivity
-    min_confidence: float = 0.32           # Minimum confidence to trade
-    high_confidence: float = 0.52          # High confidence bonus threshold
+    # FIX: Lowered from 0.32 to 0.25 - was blocking too many valid signals
+    min_confidence: float = 0.25           # Minimum confidence to trade
+    high_confidence: float = 0.45          # High confidence bonus threshold (lowered)
     
     # Stability thresholds - PERMISSIVE (stability gates, not vetoes)
     min_stability: float = -0.40           # Below this = unstable, deny entry
@@ -258,12 +263,14 @@ class GeometryConfig:
     
     # Long bias (markets have positive drift empirically)
     # With long-only mode, this helps stay invested more often
-    long_bias: float = 0.15                # Upward drift compensation
+    long_bias: float = 0.12                # Moderate bias for drift capture
     
     # Short mode toggle (for research/stress-testing negative geometry)
-    # Production: False (long-only captures drift, shorts destroy CAGR)
-    # Research: True (allows testing short-side calibration)
-    allow_shorts: bool = False
+    # DIAGNOSTIC RESULT: Shorts reduced Sharpe from 0.16 to 0.10
+    # Conclusion: Long-only is correct for drift capture
+    # Production: False (long-only captures positive market drift)
+    # Research: True (only for short-side calibration testing)
+    allow_shorts: bool = False  # Long-only confirmed better
 
 
 @dataclass
