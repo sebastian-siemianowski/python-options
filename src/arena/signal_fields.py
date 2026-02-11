@@ -236,16 +236,32 @@ class SignalFields:
     @property
     def composite_confidence(self) -> float:
         """
-        Weighted combination of confidence signals.
-        IMPROVED: Also consider regime fit.
+        MULTIPLICATIVE confidence authority.
+        
+        CRITICAL INSIGHT (Quant Audit):
+        Linear mixing allows one strong component to overpower a weak structural one.
+        e.g., High confidence + zero stability = medium authority (WRONG)
+        
+        Multiplicative authority ensures:
+        - Instability DOMINATES (near-zero stability → near-zero authority)
+        - All components must be positive for high authority
+        - This is proper risk-aware authority
+        
+        Formula: authority = confidence × stability × regime_fit (all normalized to [0,1])
         """
-        # High confidence when: accurate predictions, stable environment, good fit
-        regime_boost = max(0, self.regime_fit) * 0.2
-        return (
-            0.50 * self.confidence +
-            0.30 * max(0, self.stability) +
-            regime_boost
-        )
+        # Normalize each component to [0, 1] range
+        conf_norm = max(0, (self.confidence + 1) / 2)  # [-1,1] -> [0,1]
+        stab_norm = max(0, (self.stability + 1) / 2)   # [-1,1] -> [0,1]
+        regime_norm = max(0, (self.regime_fit + 1) / 2)  # [-1,1] -> [0,1]
+        
+        # Multiplicative authority - any weak component dominates
+        raw_authority = conf_norm * stab_norm * regime_norm
+        
+        # Apply cube root to make it less aggressive (geometric mean of 3 factors)
+        # This prevents near-zero values from completely zeroing out
+        authority = raw_authority ** (1/3)
+        
+        return float(authority)
     
     @property
     def composite_risk(self) -> float:

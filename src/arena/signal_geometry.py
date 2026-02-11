@@ -288,15 +288,21 @@ class GeometryDecision:
         Final position signal for the backtest engine.
         Only non-zero for ALLOW actions.
         
-        FORCE_DELEVERAGE returns 0 to flatten any existing position.
-        This is the explicit response to calibration bugs.
+        FORCE_DELEVERAGE, REQUIRE_EXIT, REDUCE_EXPOSURE all return 0.
+        This ensures high-risk regimes force position closure, not just scaling.
         """
-        if self.action == TradeAction.FORCE_DELEVERAGE:
-            # Calibration bug detected - flatten immediately
+        # Explicit deleverage actions - flatten position
+        if self.action in [TradeAction.FORCE_DELEVERAGE, 
+                           TradeAction.REQUIRE_EXIT,
+                           TradeAction.REDUCE_EXPOSURE]:
             return 0.0
+        
+        # Allow actions - return position
         if self.action in [TradeAction.ALLOW_LONG, TradeAction.ALLOW_SHORT, 
                            TradeAction.ALLOW_SCALING, TradeAction.HOLD]:
             return self.direction * self.position_size
+        
+        # DENY_ENTRY and others - no position
         return 0.0
 
 
