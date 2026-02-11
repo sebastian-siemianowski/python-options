@@ -338,24 +338,46 @@ def _simulate_signals(returns, model_name, params):
 
 
 def _compute_financial_diagnostics(returns, signals, initial_capital, tcost_bps, slip_bps, dates):
-    """Compute financial metrics (OBSERVATIONAL ONLY)."""
+    """
+    Compute financial metrics (OBSERVATIONAL ONLY).
+    
+    CRITICAL: Uses MULTIPLICATIVE compounding (correct for markets).
+    Markets are multiplicative processes: equity_t = equity_{t-1} × (1 + r_t)
+    NOT additive: equity_t ≠ equity_0 × (1 + Σr_i)
+    
+    Example showing the difference:
+        r₁ = +5%, r₂ = -5%
+        Multiplicative: 1.05 × 0.95 = 0.9975 → -0.25%
+        Additive: 1 + (0.05 - 0.05) = 1.0 → 0% (WRONG)
+    """
     positions = signals.copy()
     pos_changes = np.abs(np.diff(signals, prepend=0))
     costs = pos_changes * (tcost_bps + slip_bps) / 10000
     
+    # Strategy returns: position from t-1 applied to return at t, minus costs
     strategy_returns = np.zeros(len(returns))
     strategy_returns[1:] = positions[:-1] * returns[1:] - costs[1:]
     
-    cumulative = initial_capital * (1 + np.cumsum(strategy_returns))
+    # =========================================================================
+    # CRITICAL FIX: Use MULTIPLICATIVE compounding (cumprod), not additive (cumsum)
+    # =========================================================================
+    # WRONG: cumulative = initial_capital * (1 + np.cumsum(strategy_returns))
+    # CORRECT: equity evolves multiplicatively
+    equity_curve = initial_capital * np.cumprod(1 + strategy_returns)
     
-    # CAGR
+    # Final PnL from equity curve
+    final_equity = equity_curve[-1]
+    cumulative_pnl = final_equity - initial_capital
+    
+    # CAGR - now correctly computed from compounded equity
     n_years = len(returns) / 252
-    if n_years > 0 and cumulative[-1] > 0:
-        cagr = (cumulative[-1] / initial_capital) ** (1 / n_years) - 1
+    if n_years > 0 and final_equity > 0:
+        cagr = (final_equity / initial_capital) ** (1 / n_years) - 1
     else:
         cagr = 0.0
     
-    # Sharpe
+    # Sharpe - using log returns for better statistical properties with compounding
+    # But for consistency with standard practice, use arithmetic returns
     if np.std(strategy_returns) > 1e-8:
         sharpe = np.mean(strategy_returns) / np.std(strategy_returns) * np.sqrt(252)
     else:
@@ -368,10 +390,11 @@ def _compute_financial_diagnostics(returns, signals, initial_capital, tcost_bps,
     else:
         sortino = 0.0
     
-    # Drawdown - handle negative equity edge case
-    cumulative_for_dd = np.maximum(cumulative, 0.01)
-    peak = np.maximum.accumulate(cumulative_for_dd)
-    drawdown = np.clip((peak - cumulative_for_dd) / peak, 0, 1.0)
+    # Drawdown - computed from compounded equity curve
+    # No need for edge case handling - equity_curve is always positive from cumprod
+    peak = np.maximum.accumulate(equity_curve)
+    drawdown = (peak - equity_curve) / peak
+    drawdown = np.clip(drawdown, 0, 1.0)  # Safety clip
     max_dd = float(np.max(drawdown))
     
     # Drawdown duration
@@ -393,15 +416,17 @@ def _compute_financial_diagnostics(returns, signals, initial_capital, tcost_bps,
     else:
         profit_factor = np.inf if len(gains) > 0 else 0.0
     
-    # Hit rate
-    trades = strategy_returns[pos_changes > 0.01]
-    if len(trades) > 0:
-        hit_rate = np.sum(trades > 0) / len(trades)
+    # Hit rate - properly aligned with position changes
+    # Trade occurs when position changes significantly
+    trade_mask = pos_changes > 0.01
+    trade_returns = strategy_returns[trade_mask]
+    if len(trade_returns) > 0:
+        hit_rate = np.sum(trade_returns > 0) / len(trade_returns)
     else:
         hit_rate = 0.0
     
     return FinancialDiagnostics(
-        cumulative_pnl=cumulative[-1] - initial_capital,
+        cumulative_pnl=cumulative_pnl,
         cagr=cagr,
         sharpe_ratio=sharpe,
         sortino_ratio=sortino,
@@ -409,8 +434,8 @@ def _compute_financial_diagnostics(returns, signals, initial_capital, tcost_bps,
         max_drawdown_duration_days=max_dd_duration,
         profit_factor=profit_factor,
         hit_rate=hit_rate,
-        total_trades=int(np.sum(pos_changes > 0.01)),
-    ), cumulative
+        total_trades=int(np.sum(trade_mask)),
+    ), equity_curve
 
 
 def _compute_behavioral_diagnostics(returns, signals, equity_curve, config):
