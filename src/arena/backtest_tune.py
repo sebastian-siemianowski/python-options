@@ -30,6 +30,8 @@ Date: February 2026
 import json
 import os
 import sys
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -506,6 +508,70 @@ def list_tuned_models(config: BacktestConfig) -> List[str]:
 
 
 # =============================================================================
+# MULTIPROCESSING HELPERS
+# =============================================================================
+
+def _serialize_datasets(data_bundle) -> Dict[str, Any]:
+    """Serialize datasets for multiprocessing transfer."""
+    serialized = {}
+    for ticker, dataset in data_bundle.datasets.items():
+        df_reset = dataset.df.reset_index()
+        df_reset['Date'] = df_reset['Date'].astype(str)
+        serialized[ticker] = {
+            'df': df_reset.to_dict('list'),
+            'sector': dataset.sector.value if dataset.sector else None,
+            'market_cap': dataset.market_cap.value if dataset.market_cap else None,
+            'date_range': dataset.date_range,
+            'n_observations': dataset.n_observations,
+            'downloaded_at': dataset.downloaded_at,
+        }
+    return serialized
+
+
+def _tune_model_worker(args: Tuple[str, Dict[str, Any]]) -> Tuple[str, Optional[Dict], Optional[str]]:
+    """Worker function for parallel model tuning. Runs in separate PROCESS."""
+    import traceback
+    model_name, datasets_data = args
+    try:
+        datasets = {}
+        for ticker, data in datasets_data.items():
+            df = pd.DataFrame(data['df'])
+            df['Date'] = pd.to_datetime(df['Date'])
+            df.set_index('Date', inplace=True)
+            dataset = BacktestDataset(
+                ticker=ticker,
+                sector=Sector(data['sector']) if data['sector'] else Sector.TECHNOLOGY,
+                market_cap=MarketCap(data['market_cap']) if data['market_cap'] else MarketCap.LARGE_CAP,
+                df=df,
+                n_observations=data['n_observations'],
+                date_range=(data['date_range'][0], data['date_range'][1]),
+                downloaded_at=data['downloaded_at'],
+            )
+            datasets[ticker] = dataset
+        
+        model_params = ModelTunedParams(
+            model_name=model_name,
+            tuned_at=datetime.now().isoformat(),
+        )
+        for ticker, dataset in datasets.items():
+            params = tune_params_for_ticker(model_name, dataset)
+            model_params.params[ticker] = params
+        
+        all_vol_scaling = [p.vol_scaling for p in model_params.params.values()]
+        all_slippage = [p.slippage_estimate_bps for p in model_params.params.values()]
+        model_params.aggregate_stats = {
+            "mean_vol_scaling": float(np.mean(all_vol_scaling)),
+            "std_vol_scaling": float(np.std(all_vol_scaling)),
+            "mean_slippage_bps": float(np.mean(all_slippage)),
+            "max_slippage_bps": float(np.max(all_slippage)),
+            "n_tickers": len(model_params.params),
+        }
+        return (model_name, model_params.to_dict(), None)
+    except Exception as e:
+        return (model_name, None, f"{str(e)}\n{traceback.format_exc()}")
+
+
+# =============================================================================
 # MAIN TUNING PIPELINE
 # =============================================================================
 
@@ -583,45 +649,93 @@ def tune_backtest_params(
             _display_tuning_summary(console, results)
         return results
     
-    # Sequential tuning
-    if console:
-        console.print(f"\n  [cyan]Tuning {len(models_to_tune)} models across {data_bundle.n_tickers} tickers...[/cyan]")
+    # Serialize datasets ONCE for all workers
+    serialized_data = _serialize_datasets(data_bundle)
+    work_items = [(model_name, serialized_data) for model_name in models_to_tune]
     
-    for i, model_name in enumerate(models_to_tune, 1):
+    if parallel and len(models_to_tune) > 1:
+        # =====================================================================
+        # PARALLEL TUNING with ProcessPoolExecutor (multiprocessing)
+        # =====================================================================
         if console:
-            console.print(f"  [cyan]• [{i}/{len(models_to_tune)}] Tuning {model_name}...[/cyan]")
+            console.print(f"\n  [cyan]Starting PARALLEL tuning with {n_workers} processes...[/cyan]")
         
-        model_params = ModelTunedParams(
-            model_name=model_name,
-            tuned_at=datetime.now().isoformat(),
-        )
+        completed = 0
+        errors = []
         
-        # Tune for each ticker
-        for ticker, dataset in data_bundle.datasets.items():
-            params = tune_params_for_ticker(model_name, dataset)
-            model_params.params[ticker] = params
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_tune_model_worker, item): item[0] for item in work_items}
+            
+            for future in as_completed(futures):
+                model_name = futures[future]
+                completed += 1
+                
+                try:
+                    result_name, result_dict, error = future.result()
+                    
+                    if error:
+                        errors.append((result_name, error))
+                        if console:
+                            console.print(f"  [red]✗ {result_name}: {error.split(chr(10))[0]}[/red]")
+                    else:
+                        model_params = ModelTunedParams.from_dict(result_dict)
+                        save_tuned_params(model_params, config)
+                        results[result_name] = model_params
+                        
+                        if console:
+                            stats = model_params.aggregate_stats
+                            console.print(
+                                f"  [green]✓[/green] {result_name} "
+                                f"[dim]({completed}/{len(models_to_tune)}) "
+                                f"vol_scale={stats.get('mean_vol_scaling', 0):.2f}[/dim]"
+                            )
+                except Exception as e:
+                    errors.append((model_name, str(e)))
+                    if console:
+                        console.print(f"  [red]✗ {model_name}: {e}[/red]")
         
-        # Compute aggregate statistics
-        all_vol_scaling = [p.vol_scaling for p in model_params.params.values()]
-        all_slippage = [p.slippage_estimate_bps for p in model_params.params.values()]
-        
-        model_params.aggregate_stats = {
-            "mean_vol_scaling": float(np.mean(all_vol_scaling)),
-            "std_vol_scaling": float(np.std(all_vol_scaling)),
-            "mean_slippage_bps": float(np.mean(all_slippage)),
-            "max_slippage_bps": float(np.max(all_slippage)),
-            "n_tickers": len(model_params.params),
-        }
-        
-        # Save
-        save_tuned_params(model_params, config)
-        results[model_name] = model_params
-        
+        if errors and console:
+            console.print(f"\n  [yellow]⚠ {len(errors)} models failed to tune[/yellow]")
+    
+    else:
+        # =====================================================================
+        # SEQUENTIAL TUNING (single model or parallel disabled)
+        # =====================================================================
         if console:
-            console.print(
-                f"    └─ Tuned {len(model_params.params)} tickers, "
-                f"mean vol_scale={model_params.aggregate_stats['mean_vol_scaling']:.2f}"
+            console.print(f"\n  [cyan]Tuning {len(models_to_tune)} models sequentially...[/cyan]")
+        
+        for i, model_name in enumerate(models_to_tune, 1):
+            if console:
+                console.print(f"  [cyan]• [{i}/{len(models_to_tune)}] Tuning {model_name}...[/cyan]")
+            
+            model_params = ModelTunedParams(
+                model_name=model_name,
+                tuned_at=datetime.now().isoformat(),
             )
+            
+            for ticker, dataset in data_bundle.datasets.items():
+                params = tune_params_for_ticker(model_name, dataset)
+                model_params.params[ticker] = params
+            
+            all_vol_scaling = [p.vol_scaling for p in model_params.params.values()]
+            all_slippage = [p.slippage_estimate_bps for p in model_params.params.values()]
+            
+            model_params.aggregate_stats = {
+                "mean_vol_scaling": float(np.mean(all_vol_scaling)),
+                "std_vol_scaling": float(np.std(all_vol_scaling)),
+                "mean_slippage_bps": float(np.mean(all_slippage)),
+                "max_slippage_bps": float(np.max(all_slippage)),
+                "n_tickers": len(model_params.params),
+            }
+            
+            save_tuned_params(model_params, config)
+            results[model_name] = model_params
+            
+            if console:
+                console.print(
+                    f"    └─ Tuned {len(model_params.params)} tickers, "
+                    f"mean vol_scale={model_params.aggregate_stats['mean_vol_scaling']:.2f}"
+                )
     
     # Summary
     if console:
