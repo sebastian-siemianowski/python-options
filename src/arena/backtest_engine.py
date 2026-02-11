@@ -4,6 +4,8 @@ NON-OPTIMIZATION CONSTITUTION: Financial metrics are OBSERVATIONAL ONLY.
 Author: Chinese Staff Professor - Elite Quant Systems, Date: February 2026
 """
 import json
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -697,8 +699,185 @@ def run_structural_backtest(model_name, data_bundle=None, config=None):
     )
 
 
-def run_backtest_arena(model_names=None, config=None):
-    """Run backtest arena for multiple models."""
+# =============================================================================
+# PARALLEL BACKTEST SUPPORT
+# =============================================================================
+
+def _serialize_data_bundle(data_bundle) -> Dict[str, Any]:
+    """Serialize data bundle for multiprocessing transfer."""
+    serialized = {}
+    for ticker, dataset in data_bundle.datasets.items():
+        df_reset = dataset.df.reset_index()
+        df_reset['Date'] = df_reset['Date'].astype(str)
+        serialized[ticker] = {
+            'df': df_reset.to_dict('list'),
+            'sector': dataset.sector.value if dataset.sector else None,
+            'market_cap': dataset.market_cap.value if dataset.market_cap else None,
+            'date_range': dataset.date_range,
+            'n_observations': dataset.n_observations,
+            'downloaded_at': dataset.downloaded_at,
+        }
+    return serialized
+
+
+def _deserialize_data_bundle(serialized: Dict[str, Any]):
+    """Deserialize data bundle in worker process."""
+    datasets = {}
+    for ticker, data in serialized.items():
+        df = pd.DataFrame(data['df'])
+        # Keep Date as column (not index) - BacktestDataset.dates expects df["Date"]
+        df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+        dataset = BacktestDataset(
+            ticker=ticker,
+            sector=Sector(data['sector']) if data['sector'] else Sector.TECHNOLOGY,
+            market_cap=MarketCap(data['market_cap']) if data['market_cap'] else MarketCap.LARGE_CAP,
+            df=df,
+            n_observations=data['n_observations'],
+            date_range=(data['date_range'][0], data['date_range'][1]),
+            downloaded_at=data['downloaded_at'],
+        )
+        datasets[ticker] = dataset
+    
+    # Create a minimal bundle-like object
+    class MinimalBundle:
+        pass
+    bundle = MinimalBundle()
+    bundle.datasets = datasets
+    return bundle
+
+
+def _backtest_model_worker(args: Tuple[str, Dict[str, Any], Dict[str, Any]]) -> Tuple[str, Optional[Dict], Optional[str]]:
+    """
+    Worker function for parallel model backtesting.
+    Runs in separate PROCESS (not thread).
+    
+    Args:
+        args: (model_name, serialized_data_bundle, config_dict)
+    
+    Returns:
+        (model_name, result_dict or None, error_message or None)
+    """
+    import traceback
+    import sys
+    import os
+    
+    model_name, serialized_bundle, config_dict = args
+    
+    try:
+        # Ensure imports work in worker process
+        src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        
+        # Import everything fresh in worker
+        from arena.backtest_config import BacktestConfig, DEFAULT_BACKTEST_CONFIG, Sector, MarketCap
+        from arena.backtest_data import BacktestDataset
+        import pandas as pd
+        import numpy as np
+        
+        # Deserialize data bundle
+        # IMPORTANT: Keep Date as a COLUMN (not index) - BacktestDataset.dates property expects df["Date"]
+        datasets = {}
+        for ticker, data in serialized_bundle.items():
+            df = pd.DataFrame(data['df'])
+            # Date stays as column, just convert to proper type
+            df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+            dataset = BacktestDataset(
+                ticker=ticker,
+                sector=Sector(data['sector']) if data['sector'] else Sector.TECHNOLOGY,
+                market_cap=MarketCap(data['market_cap']) if data['market_cap'] else MarketCap.LARGE_CAP,
+                df=df,
+                n_observations=data['n_observations'],
+                date_range=(data['date_range'][0], data['date_range'][1]),
+                downloaded_at=data['downloaded_at'],
+            )
+            datasets[ticker] = dataset
+        
+        # Create minimal bundle
+        class MinimalBundle:
+            pass
+        data_bundle = MinimalBundle()
+        data_bundle.datasets = datasets
+        
+        # Reconstruct config
+        config = BacktestConfig(**config_dict) if config_dict else DEFAULT_BACKTEST_CONFIG
+        
+        # Clear model cache in worker (fresh start)
+        global _MODEL_CACHE
+        _MODEL_CACHE = {}
+        
+        # Run the backtest
+        result = run_structural_backtest(model_name, data_bundle, config)
+        
+        # Serialize result for transfer back
+        result_dict = {
+            'model_name': result.model_name,
+            'decision': result.decision.value,
+            'decision_rationale': result.decision_rationale,
+            'warnings': result.warnings,
+            'timestamp': result.timestamp,
+            'aggregate_financial': result.aggregate_financial.to_dict(),
+            'aggregate_behavioral': result.aggregate_behavioral.to_dict(),
+            'cross_asset': result.cross_asset.to_dict(),
+            'ticker_results': {
+                ticker: {
+                    'ticker': tr.ticker,
+                    'model_name': tr.model_name,
+                    'sector': tr.sector,
+                    'market_cap': tr.market_cap,
+                    'financial': tr.financial.to_dict(),
+                    'behavioral': tr.behavioral.to_dict(),
+                    'warnings': tr.warnings,
+                }
+                for ticker, tr in result.ticker_results.items()
+            }
+        }
+        return (model_name, result_dict, None)
+        
+    except Exception as e:
+        return (model_name, None, f"{str(e)}\n{traceback.format_exc()}")
+
+
+def _reconstruct_result(result_dict: Dict) -> 'ModelBacktestResult':
+    """Reconstruct ModelBacktestResult from serialized dict."""
+    ticker_results = {}
+    for ticker, tr_dict in result_dict['ticker_results'].items():
+        ticker_results[ticker] = TickerBacktestResult(
+            ticker=tr_dict['ticker'],
+            model_name=tr_dict['model_name'],
+            sector=tr_dict['sector'],
+            market_cap=tr_dict['market_cap'],
+            financial=FinancialDiagnostics(**tr_dict['financial']),
+            behavioral=BehavioralDiagnostics(**tr_dict['behavioral']),
+            warnings=tr_dict['warnings'],
+        )
+    
+    return ModelBacktestResult(
+        model_name=result_dict['model_name'],
+        ticker_results=ticker_results,
+        cross_asset=CrossAssetDiagnostics(**result_dict['cross_asset']),
+        aggregate_financial=FinancialDiagnostics(**result_dict['aggregate_financial']),
+        aggregate_behavioral=BehavioralDiagnostics(**result_dict['aggregate_behavioral']),
+        decision=DecisionOutcome(result_dict['decision']),
+        decision_rationale=result_dict['decision_rationale'],
+        warnings=result_dict['warnings'],
+        timestamp=result_dict['timestamp'],
+    )
+
+
+def run_backtest_arena(model_names=None, config=None, n_workers=None, parallel=True):
+    """
+    Run backtest arena for multiple models.
+    
+    Uses MULTIPROCESSING (not threading) for parallel execution.
+    Each model runs in its own process for true parallelism.
+    
+    Args:
+        model_names: List of model names to backtest (None = all tuned models)
+        config: BacktestConfig instance
+        n_workers: Number of parallel workers (None = cpu_count - 1)
+        parallel: If False, run sequentially (useful for debugging)
+    """
     config = config or DEFAULT_BACKTEST_CONFIG
     
     if model_names is None:
@@ -714,6 +893,10 @@ def run_backtest_arena(model_names=None, config=None):
     console = Console() if RICH_AVAILABLE else None
     results = {}
     
+    # Determine worker count
+    if n_workers is None:
+        n_workers = max(1, mp.cpu_count() - 1)
+    
     # Clean header
     if console:
         console.print()
@@ -724,16 +907,24 @@ def run_backtest_arena(model_names=None, config=None):
         console.print()
         console.print(f"  [dim]Models[/dim]  [white]{len(model_names)}[/white]")
         console.print(f"  [dim]Tickers[/dim] [white]{data_bundle.n_tickers}[/white]")
+        if parallel and len(model_names) > 1:
+            console.print(f"  [dim]Workers[/dim] [white]{n_workers}[/white] [dim](parallel)[/dim]")
         console.print()
         console.print("[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]")
     
-    for model_name in model_names:
-        try:
-            result = run_structural_backtest(model_name, data_bundle, config)
-            results[model_name] = result
-        except Exception as e:
-            if console:
-                console.print(f"\n  [red]✗ {model_name}: {e}[/red]")
+    # Run backtests
+    if parallel and len(model_names) > 1:
+        # PARALLEL: Use multiprocessing
+        results = _run_parallel_backtest(model_names, data_bundle, config, n_workers, console)
+    else:
+        # SEQUENTIAL: Standard loop
+        for model_name in model_names:
+            try:
+                result = run_structural_backtest(model_name, data_bundle, config)
+                results[model_name] = result
+            except Exception as e:
+                if console:
+                    console.print(f"\n  [red]✗ {model_name}: {e}[/red]")
     
     # Save results
     _save_backtest_results(results, config)
@@ -745,6 +936,78 @@ def run_backtest_arena(model_names=None, config=None):
         
         # Final summary
         _display_final_summary(console, results)
+    
+    return results
+
+
+def _run_parallel_backtest(model_names, data_bundle, config, n_workers, console):
+    """Run backtests in parallel using ProcessPoolExecutor."""
+    results = {}
+    
+    # Serialize data bundle once (shared across all workers)
+    serialized_bundle = _serialize_data_bundle(data_bundle)
+    config_dict = asdict(config) if config else None
+    
+    # Prepare work items
+    work_items = [
+        (model_name, serialized_bundle, config_dict)
+        for model_name in model_names
+    ]
+    
+    completed = 0
+    total = len(model_names)
+    errors = []
+    
+    if console:
+        console.print(f"\n  [dim]Running {total} backtests with {n_workers} workers...[/dim]")
+    
+    # Use ProcessPoolExecutor for true parallelism
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        # Submit all jobs
+        future_to_model = {
+            executor.submit(_backtest_model_worker, item): item[0]
+            for item in work_items
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_model):
+            model_name = future_to_model[future]
+            completed += 1
+            
+            try:
+                name, result_dict, error = future.result()
+                
+                if error:
+                    errors.append((name, error))
+                    if console:
+                        console.print(f"  [red]✗[/red] {name} ({completed}/{total}) [red]FAILED[/red]")
+                elif result_dict is None:
+                    errors.append((name, "Worker returned None result"))
+                    if console:
+                        console.print(f"  [red]✗[/red] {name} ({completed}/{total}) [red]NULL RESULT[/red]")
+                else:
+                    # Reconstruct result object
+                    results[name] = _reconstruct_result(result_dict)
+                    decision = results[name].decision.value
+                    color = "green" if decision == "APPROVED" else "yellow" if decision in ["RESTRICTED", "QUARANTINED"] else "red"
+                    if console:
+                        console.print(f"  [green]✓[/green] {name} ({completed}/{total}) [{color}]{decision}[/{color}]")
+                        
+            except Exception as e:
+                import traceback
+                errors.append((model_name, f"{str(e)}\n{traceback.format_exc()}"))
+                if console:
+                    console.print(f"  [red]✗[/red] {model_name} ({completed}/{total}) [red]ERROR: {e}[/red]")
+    
+    # Report errors at end
+    if errors and console:
+        console.print(f"\n  [red]⚠ {len(errors)} model(s) failed[/red]")
+        # Show first few errors for debugging
+        for name, err in errors[:3]:
+            err_lines = err.split('\n')[:5]  # First 5 lines
+            console.print(f"\n  [dim]{name}:[/dim]")
+            for line in err_lines:
+                console.print(f"    [red]{line}[/red]")
     
     return results
 

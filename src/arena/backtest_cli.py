@@ -128,6 +128,10 @@ def cmd_run(args):
     
     config = BacktestConfig()
     
+    # Parallel processing options
+    parallel = not getattr(args, 'no_parallel', False)
+    n_workers = getattr(args, 'workers', None)
+    
     # Determine models to backtest
     if args.models:
         model_names = [m.strip() for m in args.models.split(",")]
@@ -142,6 +146,8 @@ def cmd_run(args):
         results = run_backtest_arena(
             model_names=model_names,
             config=config,
+            parallel=parallel,
+            n_workers=n_workers,
         )
         
     except ValueError as e:
@@ -369,6 +375,8 @@ NON-OPTIMIZATION CONSTITUTION:
     # Run command
     run_parser = subparsers.add_parser("run", help="Run structural backtest")
     run_parser.add_argument("--models", type=str, help="Models to backtest (comma-separated)")
+    run_parser.add_argument("--workers", type=int, help="Number of parallel workers (default: CPU count - 1)")
+    run_parser.add_argument("--no-parallel", action="store_true", help="Disable parallel processing")
     
     # Results command
     results_parser = subparsers.add_parser("results", help="Show latest results")
