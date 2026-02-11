@@ -102,12 +102,18 @@ def cmd_tune(args):
         print("Error: No backtest data found. Run 'make arena-backtest-data' first.")
         return
     
+    # Determine parallelization
+    parallel = not getattr(args, 'no_parallel', False)
+    n_workers = getattr(args, 'workers', None)
+    
     # Tune
     results = tune_backtest_params(
         model_names=model_names,
         data_bundle=data_bundle,
         config=config,
         force=args.force,
+        parallel=parallel,
+        n_workers=n_workers,
     )
     
     print()
@@ -357,6 +363,8 @@ NON-OPTIMIZATION CONSTITUTION:
     tune_parser = subparsers.add_parser("tune", help="Tune backtest parameters")
     tune_parser.add_argument("--models", type=str, help="Models to tune (comma-separated)")
     tune_parser.add_argument("--force", action="store_true", help="Force re-tuning")
+    tune_parser.add_argument("--workers", type=int, help="Number of parallel workers (default: CPU count - 1)")
+    tune_parser.add_argument("--no-parallel", action="store_true", help="Disable parallel processing")
     
     # Run command
     run_parser = subparsers.add_parser("run", help="Run structural backtest")

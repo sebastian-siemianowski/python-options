@@ -143,7 +143,9 @@ SHELL := /bin/bash
 # │  ⚖️  STRUCTURAL BACKTEST ARENA — Behavioral Validation Layer                 │
 # ├──────────────────────────────────────────────────────────────────────────────┤
 # │  make arena-backtest-data     Download 50-ticker multi-sector universe       │
-# │  make arena-backtest-tune     Tune parameters (fairness, not optimization)   │
+# │  make arena-backtest-tune     Tune parameters (MULTIPROCESSING, fast)        │
+# │  make arena-backtest-tune ARGS="--workers 8"     Use 8 parallel workers      │
+# │  make arena-backtest-tune ARGS="--no-parallel"   Sequential mode             │
 # │  make arena-backtest          Run behavioral backtests + safety rules        │
 # │  make arena-backtest-results  Show latest backtest results                   │
 # │                                                                              │

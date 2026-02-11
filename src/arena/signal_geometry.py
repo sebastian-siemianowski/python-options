@@ -379,10 +379,10 @@ def _synthesize_direction(fields: SignalFields, long_bias: float = 0.0) -> float
     # STEP 3: Agreement bonus - boost when sources agree
     # ==========================================================================
     # Count how many sources agree on direction
-    # IMPORTANT: Only count votes if magnitude > 0.15 (not noise)
-    # Threshold 0.05 was too permissive - amplified weak signals
+    # IMPORTANT: Only count votes if magnitude > 0.20 (not noise)
+    # Lower thresholds amplify micro-noise and low-conviction drift
     sources = [fields.direction, fields.asymmetry, fields.belief_momentum]
-    agreement_threshold = 0.15  # Only meaningful signals count as votes
+    agreement_threshold = 0.20  # Only meaningful signals count as votes
     signs = [1 if s > agreement_threshold else (-1 if s < -agreement_threshold else 0) for s in sources]
     
     positive_votes = sum(1 for s in signs if s > 0)

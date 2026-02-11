@@ -514,11 +514,15 @@ def tune_backtest_params(
     data_bundle: Optional[BacktestDataBundle] = None,
     config: Optional[BacktestConfig] = None,
     force: bool = False,
+    n_workers: Optional[int] = None,
+    parallel: bool = True,
 ) -> Dict[str, ModelTunedParams]:
     """
     Tune backtest parameters for all models across all tickers.
     
     This is the entry point for `make arena-backtest-tune`.
+    
+    USES MULTIPROCESSING for parallel tuning across models.
     
     CONSTITUTIONAL REMINDER:
         This tuning is for BEHAVIORAL FAIRNESS, not PERFORMANCE OPTIMIZATION.
@@ -529,6 +533,8 @@ def tune_backtest_params(
         data_bundle: Pre-loaded data bundle (optional)
         config: Backtest configuration
         force: Force re-tuning even if cached
+        n_workers: Number of parallel workers (default: CPU count - 1)
+        parallel: Use multiprocessing (default: True)
         
     Returns:
         Dict mapping model_name to ModelTunedParams
@@ -545,26 +551,45 @@ def tune_backtest_params(
     console = Console() if RICH_AVAILABLE else None
     results: Dict[str, ModelTunedParams] = {}
     
-    if console:
-        console.print(Panel.fit(
-            "[bold cyan]Backtest Parameter Tuning[/bold cyan]\n"
-            f"Models: {len(model_names)} | Tickers: {data_bundle.n_tickers}\n"
-            "[dim]Tuning for BEHAVIORAL FAIRNESS, not performance[/dim]",
-            border_style="cyan"
-        ))
+    # Determine number of workers
+    if n_workers is None:
+        n_workers = max(1, mp.cpu_count() - 1)
     
+    # Separate cached vs to-tune models
+    models_to_tune = []
     for model_name in model_names:
-        # Check cache
         if not force:
             cached = load_tuned_params(model_name, config)
             if cached is not None:
                 results[model_name] = cached
-                if console:
-                    console.print(f"  [dim]• {model_name}: loaded from cache[/dim]")
                 continue
+        models_to_tune.append(model_name)
+    
+    if console:
+        console.print(Panel.fit(
+            "[bold cyan]Backtest Parameter Tuning[/bold cyan]\n"
+            f"Models: {len(model_names)} | To tune: {len(models_to_tune)} | Cached: {len(results)}\n"
+            f"Tickers: {data_bundle.n_tickers} | Workers: {n_workers if parallel else 1}\n"
+            "[dim]Tuning for BEHAVIORAL FAIRNESS, not performance[/dim]",
+            border_style="cyan"
+        ))
         
+        if results:
+            console.print(f"  [dim]Loaded {len(results)} models from cache[/dim]")
+    
+    if not models_to_tune:
         if console:
-            console.print(f"  [cyan]• Tuning {model_name}...[/cyan]")
+            console.print("  [green]All models already tuned![/green]")
+            _display_tuning_summary(console, results)
+        return results
+    
+    # Sequential tuning
+    if console:
+        console.print(f"\n  [cyan]Tuning {len(models_to_tune)} models across {data_bundle.n_tickers} tickers...[/cyan]")
+    
+    for i, model_name in enumerate(models_to_tune, 1):
+        if console:
+            console.print(f"  [cyan]• [{i}/{len(models_to_tune)}] Tuning {model_name}...[/cyan]")
         
         model_params = ModelTunedParams(
             model_name=model_name,
