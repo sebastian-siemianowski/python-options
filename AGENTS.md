@@ -299,6 +299,24 @@ class SignalFields:
 - Base position: 45%, Max position: 85%
 - Long bias: 0.15
 
+**Field Validation (NO SILENT FAILURES):**
+The system explicitly validates all SignalFields before processing:
+- Detects: NaN, None, Inf, extreme values
+- CRITICAL failures → FORCE_DELEVERAGE (flatten position)
+- WARNING failures → DENY_ENTRY (prevent new trades)
+- All failures are logged via `get_validation_failures()`
+
+```python
+# Check for calibration bugs after backtest
+from arena.signal_geometry import get_validation_failures, clear_validation_failures
+failures = get_validation_failures()
+if failures:
+    print(f"CALIBRATION BUGS DETECTED: {len(failures)}")
+    for model, severity, reasons in failures[:5]:
+        print(f"  {model} [{severity}]: {reasons[0]}")
+clear_validation_failures()  # Reset for next run
+```
+
 ## Code Conventions
 
 ### Import Structure

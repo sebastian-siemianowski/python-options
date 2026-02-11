@@ -19,6 +19,11 @@ CRITICAL ARCHITECTURAL PRINCIPLES (Professor Wang, Professor Chen, Professor Liu
    - No stability → no trade, regardless of direction signal
    - Stability acts as a circuit breaker
 
+4. EXPLICIT FAILURE HANDLING (NO SILENT FAILURES)
+   - Invalid fields (NaN, None, extreme) are EXPLICITLY detected
+   - Calibration bugs are logged, not hidden
+   - Force deleverage on invalid data
+
 FORMULA:
     direction_score = asymmetry × max(0, belief_momentum) × max(0, stability)
     polarity = sign(tanh(direction_score))
@@ -31,9 +36,11 @@ Date: February 2026
 ===============================================================================
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import List, Tuple, Optional
 import numpy as np
+import warnings
 
 from .signal_fields import SignalFields
 
@@ -46,6 +53,159 @@ class TradeAction(Enum):
     REQUIRE_EXIT = auto()
     REDUCE_EXPOSURE = auto()
     HOLD = auto()
+    FORCE_DELEVERAGE = auto()  # NEW: Explicit action for invalid fields
+
+
+# =============================================================================
+# FIELD VALIDATION — Explicit Detection of Calibration Bugs
+# =============================================================================
+
+@dataclass
+class FieldValidationResult:
+    """Result of field validation check."""
+    is_valid: bool
+    invalid_fields: List[str] = field(default_factory=list)
+    reasons: List[str] = field(default_factory=list)
+    severity: str = "OK"  # OK, WARNING, CRITICAL
+
+
+def _validate_fields(fields: SignalFields) -> FieldValidationResult:
+    """
+    EXPLICIT validation of SignalFields.
+    
+    Detects:
+    - NaN values
+    - None values  
+    - Extreme values (outside expected bounds)
+    - Infinite values
+    
+    This prevents SILENT failures that hide calibration bugs.
+    
+    Returns:
+        FieldValidationResult with details of any issues
+    """
+    invalid_fields = []
+    reasons = []
+    
+    # Define expected bounds for each field
+    field_bounds = {
+        'direction': (-1.0, 1.0),
+        'asymmetry': (-1.0, 1.0),
+        'belief_momentum': (-1.0, 1.0),
+        'confidence': (-1.0, 1.0),
+        'stability': (-1.0, 1.0),
+        'regime_fit': (-1.0, 1.0),
+        'transition_pressure': (-1.0, 1.0),
+        'tail_risk_left': (0.0, 1.0),
+        'tail_risk_right': (0.0, 1.0),
+        'volatility_state': (-1.0, 1.0),
+        'constraint_pressure': (-1.0, 1.0),
+        'hedging_pressure': (-1.0, 1.0),
+    }
+    
+    for field_name, (min_val, max_val) in field_bounds.items():
+        value = getattr(fields, field_name, None)
+        
+        # Check for None
+        if value is None:
+            invalid_fields.append(field_name)
+            reasons.append(f"{field_name}=None (missing)")
+            continue
+        
+        # Check for NaN
+        if np.isnan(value):
+            invalid_fields.append(field_name)
+            reasons.append(f"{field_name}=NaN (calibration failure)")
+            continue
+        
+        # Check for infinity
+        if np.isinf(value):
+            invalid_fields.append(field_name)
+            reasons.append(f"{field_name}=Inf (overflow)")
+            continue
+        
+        # Check for extreme values (3x outside expected bounds = CRITICAL)
+        extreme_min = min_val - 2 * abs(min_val) if min_val != 0 else -3.0
+        extreme_max = max_val + 2 * abs(max_val) if max_val != 0 else 3.0
+        
+        if value < extreme_min or value > extreme_max:
+            invalid_fields.append(field_name)
+            reasons.append(f"{field_name}={value:.4f} (extreme: expected [{min_val}, {max_val}])")
+            continue
+    
+    # Also check composite properties
+    try:
+        composite_dir = fields.composite_direction
+        if np.isnan(composite_dir) or np.isinf(composite_dir):
+            invalid_fields.append('composite_direction')
+            reasons.append(f"composite_direction={composite_dir} (derived NaN/Inf)")
+    except Exception as e:
+        invalid_fields.append('composite_direction')
+        reasons.append(f"composite_direction computation failed: {e}")
+    
+    try:
+        composite_conf = fields.composite_confidence
+        if np.isnan(composite_conf) or np.isinf(composite_conf):
+            invalid_fields.append('composite_confidence')
+            reasons.append(f"composite_confidence={composite_conf} (derived NaN/Inf)")
+    except Exception as e:
+        invalid_fields.append('composite_confidence')
+        reasons.append(f"composite_confidence computation failed: {e}")
+    
+    try:
+        composite_risk = fields.composite_risk
+        if np.isnan(composite_risk) or np.isinf(composite_risk):
+            invalid_fields.append('composite_risk')
+            reasons.append(f"composite_risk={composite_risk} (derived NaN/Inf)")
+    except Exception as e:
+        invalid_fields.append('composite_risk')
+        reasons.append(f"composite_risk computation failed: {e}")
+    
+    # Determine severity
+    if not invalid_fields:
+        severity = "OK"
+    elif any('NaN' in r or 'Inf' in r or 'None' in r for r in reasons):
+        severity = "CRITICAL"  # Calibration bug
+    else:
+        severity = "WARNING"  # Extreme but recoverable
+    
+    return FieldValidationResult(
+        is_valid=len(invalid_fields) == 0,
+        invalid_fields=invalid_fields,
+        reasons=reasons,
+        severity=severity
+    )
+
+
+# Track validation failures for diagnostics
+_VALIDATION_FAILURE_LOG: List[Tuple[str, str, List[str]]] = []
+_MAX_LOG_ENTRIES = 1000
+
+
+def _log_validation_failure(model_name: str, severity: str, reasons: List[str]):
+    """Log validation failure for later analysis."""
+    global _VALIDATION_FAILURE_LOG
+    
+    if len(_VALIDATION_FAILURE_LOG) < _MAX_LOG_ENTRIES:
+        _VALIDATION_FAILURE_LOG.append((model_name, severity, reasons))
+    
+    # Also emit warning for visibility
+    if severity == "CRITICAL":
+        warnings.warn(
+            f"CALIBRATION BUG DETECTED in {model_name}: {'; '.join(reasons[:3])}",
+            RuntimeWarning
+        )
+
+
+def get_validation_failures() -> List[Tuple[str, str, List[str]]]:
+    """Get logged validation failures for diagnostics."""
+    return _VALIDATION_FAILURE_LOG.copy()
+
+
+def clear_validation_failures():
+    """Clear validation failure log."""
+    global _VALIDATION_FAILURE_LOG
+    _VALIDATION_FAILURE_LOG = []
 
 
 @dataclass
@@ -122,7 +282,13 @@ class GeometryDecision:
         """
         Final position signal for the backtest engine.
         Only non-zero for ALLOW actions.
+        
+        FORCE_DELEVERAGE returns 0 to flatten any existing position.
+        This is the explicit response to calibration bugs.
         """
+        if self.action == TradeAction.FORCE_DELEVERAGE:
+            # Calibration bug detected - flatten immediately
+            return 0.0
         if self.action in [TradeAction.ALLOW_LONG, TradeAction.ALLOW_SHORT, 
                            TradeAction.ALLOW_SCALING, TradeAction.HOLD]:
             return self.direction * self.position_size
@@ -300,6 +466,34 @@ class SignalGeometryEngine:
         cfg = self.config
         
         # =====================================================================
+        # PHASE 0: FIELD VALIDATION (Detect Calibration Bugs)
+        # =====================================================================
+        # CRITICAL: Never silently fail on invalid fields
+        # Invalid data = calibration bug = MUST be visible
+        validation = _validate_fields(fields)
+        
+        if not validation.is_valid:
+            # Log the failure for diagnostics
+            _log_validation_failure(
+                fields.model_name or "unknown",
+                validation.severity,
+                validation.reasons
+            )
+            
+            # FORCE DELEVERAGE on critical failures (NaN, None, Inf)
+            if validation.severity == "CRITICAL":
+                return GeometryDecision(
+                    action=TradeAction.FORCE_DELEVERAGE,
+                    rationale=f"CALIBRATION BUG: {'; '.join(validation.reasons[:3])}"
+                )
+            
+            # WARNING level: still deny entry but don't force exit
+            return GeometryDecision(
+                action=TradeAction.DENY_ENTRY,
+                rationale=f"Invalid fields: {'; '.join(validation.reasons[:3])}"
+            )
+        
+        # =====================================================================
         # PHASE 1: STABILITY GATE (Circuit Breaker)
         # =====================================================================
         if fields.stability < cfg.min_stability:
@@ -419,4 +613,12 @@ class SignalGeometryEngine:
         )
 
 
-__all__ = ["TradeAction", "GeometryConfig", "GeometryDecision", "SignalGeometryEngine"]
+__all__ = [
+    "TradeAction", 
+    "GeometryConfig", 
+    "GeometryDecision", 
+    "SignalGeometryEngine",
+    "FieldValidationResult",
+    "get_validation_failures",
+    "clear_validation_failures",
+]
