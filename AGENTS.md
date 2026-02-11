@@ -244,9 +244,37 @@ Models are NOT traders. They are **distributional geometry estimators**.
 The Signal Geometry layer properly interprets epistemic fields.
 
 **Key Principles (Professor Wang, Chen, Liu):**
-1. **Direction is SYNTHESIZED, not read**: `direction_score = f(asymmetry, momentum, stability)`
-2. **Size comes from CONFIDENCE, not direction**: Capital authority ≠ Polarity authority
-3. **Stability gates everything**: Unstable environments → no trade
+1. **Direction is EMERGENT, not read**: No single field dominates. Direction emerges from weighted consensus of multiple sources.
+2. **Size comes from CONFIDENCE ONLY**: Strict orthogonality - direction magnitude NEVER affects size.
+3. **Stability gates everything**: Unstable environments → no trade.
+4. **Fallback NEVER bypasses geometry**: Even error fallback goes through SignalFields → Geometry flow.
+
+**Direction Synthesis Formula**:
+```python
+# Multiple sources vote on direction (no single source dominates)
+price_momentum_vote = fields.direction * 0.35
+asymmetry_vote = fields.asymmetry * 0.25  
+belief_vote = fields.belief_momentum * 0.25
+hedging_vote = fields.hedging_pressure * 0.15
+
+raw_consensus = sum(votes)
+reliability = geometric_mean(stability, confidence, regime_fit)
+agreement_mult = 1.3 if sources_agree else 0.7 if sources_conflict else 1.0
+
+direction_score = tanh(raw_consensus × reliability × agreement_mult + long_bias)
+```
+
+**Size Authority Formula** (STRICT ORTHOGONALITY):
+```python
+# Size comes ONLY from confidence × regime_fit
+# Direction provides POLARITY (sign)
+# Confidence provides CAPITAL AUTHORITY (size)
+# These are ORTHOGONAL
+
+size_authority = sqrt(confidence_factor × regime_factor) × stability_mult
+position_size = base_size × (1 + size_authority × 0.8) × risk_dampening
+# NO direction_strength_factor - strict orthogonality
+```
 
 **SignalFields Contract** (`signal_fields.py`):
 ```python
@@ -260,24 +288,16 @@ class SignalFields:
     regime_fit: float     # How well data fits model assumptions
     tail_risk_left: float # Left tail (downside) risk
     tail_risk_right: float # Right tail (upside) potential
-```
-
-**GeometryDecision Output** (`signal_geometry.py`):
-```python
-@dataclass
-class GeometryDecision:
-    action: TradeAction   # ALLOW_LONG, ALLOW_SHORT, DENY_ENTRY, HOLD, etc.
-    direction: int        # +1 or -1
-    position_size: float  # From confidence × regime_fit, NOT direction
-    direction_score: float # Synthesized direction strength
-    size_authority: float # Capital authority from confidence
+    hedging_pressure: float # Implied hedging pressure
 ```
 
 **Current Configuration (Long-Only Mode):**
 - Markets have positive drift → shorts destroy CAGR
-- Trend strength filter requires 2+ confirming factors
-- Direction threshold: 0.10, Confidence threshold: 0.30
-- Base position: 50%, Max position: 100%
+- Direction threshold: 0.15 (emergent direction is noisier)
+- Confidence threshold: 0.32
+- Reliability floor: 0.25 (allows signal through)
+- Base position: 45%, Max position: 85%
+- Long bias: 0.15
 
 ## Code Conventions
 

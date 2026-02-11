@@ -64,12 +64,13 @@ class GeometryConfig:
     - Proper calibration captures drift while avoiding noise
     """
     # Direction synthesis thresholds (after tanh transformation)
-    min_direction_score: float = 0.10      # Minimum |direction_score| to act
-    strong_direction_score: float = 0.25   # Strong direction threshold
+    # EMERGENT direction is noisier - require stronger consensus
+    min_direction_score: float = 0.15      # Minimum |direction_score| to act
+    strong_direction_score: float = 0.30   # Strong direction threshold
     
     # Confidence thresholds - MODERATE selectivity
-    min_confidence: float = 0.30           # Minimum confidence to trade
-    high_confidence: float = 0.50          # High confidence bonus threshold
+    min_confidence: float = 0.32           # Minimum confidence to trade
+    high_confidence: float = 0.52          # High confidence bonus threshold
     
     # Stability thresholds - PERMISSIVE (stability gates, not vetoes)
     min_stability: float = -0.40           # Below this = unstable, deny entry
@@ -85,14 +86,15 @@ class GeometryConfig:
     
     # Position sizing (SIZE AUTHORITY)
     # Size = base × confidence_factor × regime_factor
-    base_position_size: float = 0.50       # Base allocation - INCREASED
-    max_position_size: float = 1.00        # Maximum allocation - full position
-    min_position_size: float = 0.20        # Minimum to bother trading
+    # With emergent direction, be slightly more conservative
+    base_position_size: float = 0.45       # Base allocation
+    max_position_size: float = 0.85        # Maximum allocation
+    min_position_size: float = 0.15        # Minimum to bother trading
     
     # Confidence → Size multiplier (KEY INSTITUTIONAL PARAMETER)
-    confidence_size_multiplier: float = 2.0  # max(0, conf) × this - INCREASED
-    regime_size_multiplier: float = 1.2      # max(0, regime_fit) × this - INCREASED
-    stability_size_bonus: float = 0.30       # Bonus for high stability
+    confidence_size_multiplier: float = 1.8  # max(0, conf) × this
+    regime_size_multiplier: float = 1.0      # max(0, regime_fit) × this
+    stability_size_bonus: float = 0.25       # Bonus for high stability
     
     # Long bias (markets have positive drift empirically)
     # With long-only mode, this helps stay invested more often
@@ -129,90 +131,98 @@ class GeometryDecision:
 
 def _synthesize_direction(fields: SignalFields, long_bias: float = 0.0) -> float:
     """
-    CORE FORMULA: Synthesize direction from epistemic fields.
+    CORE FORMULA: Direction EMERGES from epistemic geometry.
     
-    INSTITUTIONAL INSIGHT (Professor Wang):
-    The direction field contains price momentum validated by Kalman accuracy.
-    This should be PRIMARY for CAGR capture.
+    CRITICAL INSIGHT (Professor Wang):
+    Direction is NOT read from any single field.
+    Direction EMERGES from the geometric product of multiple epistemic signals.
     
-    TREND STRENGTH FILTER (Professor Chen):
-    Only trade when multiple confirming factors agree.
-    Single-factor signals are noise.
+    PHILOSOPHY:
+    - fields.direction = price momentum (one input among many)
+    - fields.asymmetry = distributional skew (another input)
+    - fields.belief_momentum = model belief change (another input)
+    
+    TRUE SYNTHESIS:
+    Each field contributes a "vote" weighted by reliability.
+    Direction emerges from the consensus, not any single source.
     
     FORMULA:
-        base_direction = direction × (1 + alignment_bonus)
-        trend_strength = confirmation_count / total_factors
-        final_direction = base_direction × trend_strength_multiplier
+        weighted_sum = w1*direction + w2*asymmetry + w3*belief_momentum
+        reliability = f(stability, confidence, regime_fit)
+        direction_score = weighted_sum × reliability
+    
+    This ensures NO SINGLE FIELD dominates.
     
     Returns: direction_score in approximately [-1, +1] after tanh
     """
     # ==========================================================================
-    # PRIMARY: Direction from price momentum (validated by Kalman)
+    # STEP 1: Collect directional "votes" from multiple sources
     # ==========================================================================
-    base_direction = fields.direction  # Already in [-1, +1], captures price trend
+    # Each source contributes independently - no single source dominates
+    
+    # Source 1: Price momentum (from Kalman) - weight 0.35
+    price_momentum_vote = fields.direction * 0.35
+    
+    # Source 2: Distribution asymmetry (skewness) - weight 0.25
+    asymmetry_vote = fields.asymmetry * 0.25
+    
+    # Source 3: Belief momentum (rate of belief change) - weight 0.25
+    belief_vote = fields.belief_momentum * 0.25
+    
+    # Source 4: Hedging pressure (if available) - weight 0.15
+    hedging_vote = fields.hedging_pressure * 0.15
+    
+    # Raw directional consensus
+    raw_consensus = price_momentum_vote + asymmetry_vote + belief_vote + hedging_vote
     
     # ==========================================================================
-    # TREND STRENGTH FILTER: Count confirming factors
+    # STEP 2: Compute RELIABILITY multiplier
     # ==========================================================================
-    confirmation_count = 0
-    total_factors = 4
+    # Reliability gates the signal - low reliability = dampen direction
     
-    # Factor 1: Belief momentum alignment
-    if fields.belief_momentum * base_direction > 0.05:
-        confirmation_count += 1
+    # Stability contribution: stable = trust the consensus
+    stability_reliability = max(0, fields.stability + 0.3) / 1.3  # Normalize to [0, 1]
     
-    # Factor 2: Positive stability
-    if fields.stability > 0:
-        confirmation_count += 1
+    # Confidence contribution: confident = trust the consensus
+    confidence_reliability = max(0, fields.confidence) 
     
-    # Factor 3: Good regime fit
-    if fields.regime_fit > -0.2:
-        confirmation_count += 1
+    # Regime fit contribution: good fit = trust the consensus
+    regime_reliability = max(0, fields.regime_fit + 0.5) / 1.5  # Normalize to [0, 1]
     
-    # Factor 4: Confidence above threshold
-    if fields.confidence > 0.3:
-        confirmation_count += 1
+    # Combined reliability (geometric mean for conservatism)
+    reliability = (stability_reliability * confidence_reliability * regime_reliability) ** (1/3)
+    reliability = max(0.25, reliability)  # Floor at 0.25 to allow some signal through
     
-    # Trend strength multiplier: require at least 2 confirmations
-    if confirmation_count < 2:
-        trend_strength_mult = 0.3  # Heavily dampen weak signals
-    elif confirmation_count == 2:
-        trend_strength_mult = 0.7
-    elif confirmation_count == 3:
-        trend_strength_mult = 1.0
+    # ==========================================================================
+    # STEP 3: Agreement bonus - boost when sources agree
+    # ==========================================================================
+    # Count how many sources agree on direction
+    sources = [fields.direction, fields.asymmetry, fields.belief_momentum]
+    signs = [1 if s > 0.05 else (-1 if s < -0.05 else 0) for s in sources]
+    
+    positive_votes = sum(1 for s in signs if s > 0)
+    negative_votes = sum(1 for s in signs if s < 0)
+    
+    # Agreement multiplier: all agree = 1.3x, mixed = 0.7x
+    if positive_votes >= 2 and negative_votes == 0:
+        agreement_mult = 1.3
+    elif negative_votes >= 2 and positive_votes == 0:
+        agreement_mult = 1.3
+    elif positive_votes > 0 and negative_votes > 0:
+        agreement_mult = 0.7  # Conflicting signals = dampen
     else:
-        trend_strength_mult = 1.2  # Boost strong signals
+        agreement_mult = 1.0
     
     # ==========================================================================
-    # ALIGNMENT BONUS: Do other factors agree?
+    # STEP 4: Compute final direction score
     # ==========================================================================
-    alignment_bonus = 0.0
+    raw_direction = raw_consensus * reliability * agreement_mult
     
-    # Belief momentum alignment
-    if fields.belief_momentum * base_direction > 0:
-        alignment_bonus += 0.15 * abs(fields.belief_momentum)
-    else:
-        alignment_bonus -= 0.1 * abs(fields.belief_momentum)
+    # Add long bias (market drift compensation)
+    raw_direction += long_bias
     
-    # Asymmetry alignment
-    if fields.asymmetry * base_direction > 0:
-        alignment_bonus += 0.10 * abs(fields.asymmetry)
-    
-    # Stability bonus
-    if fields.stability > 0:
-        alignment_bonus += 0.08 * fields.stability
-    
-    # ==========================================================================
-    # COMPUTE FINAL DIRECTION SCORE
-    # ==========================================================================
-    direction_multiplier = (1.0 + alignment_bonus) * trend_strength_mult
-    raw_score = base_direction * direction_multiplier
-    
-    # Add long bias
-    raw_score += long_bias
-    
-    # Compress via tanh
-    direction_score = float(np.tanh(raw_score * 1.5))
+    # Compress to [-1, +1] via tanh
+    direction_score = float(np.tanh(raw_direction * 2.0))
     
     return direction_score
 
@@ -350,23 +360,24 @@ class SignalGeometryEngine:
             )
         
         # =====================================================================
-        # PHASE 6: SIZE AUTHORITY (THE KEY CHANGE)
+        # PHASE 6: SIZE AUTHORITY (STRICT ORTHOGONALITY)
         # =====================================================================
-        # Size comes from CONFIDENCE × REGIME_FIT, NOT direction magnitude
+        # Size comes ONLY from CONFIDENCE × REGIME_FIT
+        # Direction provides POLARITY (sign)
+        # Confidence provides CAPITAL AUTHORITY (size)
+        # These are ORTHOGONAL - direction magnitude NEVER affects size
         size_authority = _compute_size_authority(fields, cfg)
         
         # Compute position size: base × (1 + bounded_authority)
-        # This ensures size is in [base, base * 2] range at most
         position_size = cfg.base_position_size * (1 + size_authority * 0.8)
         
-        # Additional risk-based dampening
+        # Risk-based dampening (this is about RISK, not direction)
         if risk > 0.3:
             risk_dampening = 1 - (risk - 0.3) * 0.8
             position_size *= max(0.3, risk_dampening)
         
-        # Direction strength influence (weak signals = smaller size)
-        direction_strength_factor = min(1.0, abs(direction_score) / 0.3)
-        position_size *= (0.6 + 0.4 * direction_strength_factor)
+        # NO direction_strength_factor - STRICT ORTHOGONALITY
+        # Direction = sign only, Size = confidence only
         
         # Clamp to bounds
         position_size = float(np.clip(

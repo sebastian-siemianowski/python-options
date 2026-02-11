@@ -252,27 +252,52 @@ def _simulate_signals(returns, model_name, params):
             return np.clip(signals, -1, 1)
             
         except Exception as e:
-            print(f"Warning: Model {model_name} signal failed: {e}, falling back")
+            print(f"Warning: Model {model_name} signal failed: {e}, using geometry-aware fallback")
             import traceback
             traceback.print_exc()
     
-    # Fallback: Simple momentum signal
-    model_seed = hash(model_name) % 1000
-    np.random.seed(model_seed)
-    noise_factor = 1.0 + 0.1 * (np.random.random() - 0.5)
+    # =========================================================================
+    # FALLBACK: Geometry-aware simple momentum (NEVER bypass geometry)
+    # =========================================================================
+    # Even fallback MUST go through SignalFields → Geometry
+    # This preserves architectural integrity
+    from .signal_fields import SignalFields
+    from .signal_geometry import SignalGeometryEngine
     
-    lookback = 20 + (hash(model_name) % 10)
+    engine = SignalGeometryEngine()
     signals = np.zeros(n)
+    lookback = 20
     
     for i in range(lookback, n):
-        momentum = np.mean(returns[i-lookback:i]) * lookback
-        signals[i] = np.tanh(momentum * params.signal_normalization * noise_factor)
-        signals[i] *= params.vol_scaling
-    
-    # Apply crisis dampening
-    rolling_vol = pd.Series(returns).rolling(10).std().fillna(0).values
-    high_vol_mask = rolling_vol > np.percentile(rolling_vol, 90)
-    signals[high_vol_mask] *= params.crisis_dampening
+        # Compute simple momentum-based fields
+        recent_returns = returns[i-lookback:i]
+        return_mean = np.mean(recent_returns)
+        return_std = np.std(recent_returns) + 1e-10
+        
+        # Create minimal SignalFields from momentum
+        direction = float(np.tanh(return_mean / return_std * np.sqrt(lookback)))
+        
+        # Compute simple stability from return consistency
+        signs = np.sign(recent_returns)
+        consistency = np.mean(signs == np.sign(return_mean))
+        stability = float(consistency * 2 - 1)  # Map [0.5, 1] to [0, 1]
+        
+        # Simple confidence from momentum strength
+        confidence = float(min(1.0, abs(return_mean) / (return_std * 2)))
+        
+        fields = SignalFields(
+            direction=direction,
+            asymmetry=0.0,  # No asymmetry info in fallback
+            belief_momentum=direction * 0.5,  # Proxy
+            confidence=confidence,
+            stability=stability,
+            regime_fit=0.0,  # Unknown
+            model_name=f"{model_name}_fallback"
+        )
+        
+        # ALWAYS go through geometry - NEVER bypass
+        decision = engine.evaluate(fields)
+        signals[i] = decision.position_signal
     
     return np.clip(signals, -1, 1)
 
