@@ -900,13 +900,13 @@ def compute_and_render_unified_risk(
         )
         currency_table.add_column("Pair", justify="left", width=10)
         currency_table.add_column("Rate", justify="right", width=10)
-        currency_table.add_column("1D", justify="right", width=8)
-        currency_table.add_column("5D", justify="right", width=8)
-        currency_table.add_column("21D", justify="right", width=8)
-        currency_table.add_column("Momentum", justify="left", width=12)
-        currency_table.add_column("Risk", justify="right", width=6)
+        currency_table.add_column("1D", justify="right", width=7)
+        currency_table.add_column("5D", justify="right", width=7)
+        currency_table.add_column("21D", justify="right", width=7)
+        currency_table.add_column("Mom", justify="left", width=10)
+        currency_table.add_column("Risk", justify="right", width=5)
         
-        # Sort currencies by risk score (highest first)
+        # Sort ALL currencies by risk score (highest first)
         sorted_currencies = sorted(
             available_currencies,
             key=lambda c: c.risk_score,
@@ -941,9 +941,12 @@ def compute_and_render_unified_risk(
                 risk_style = "green"
             
             # Format rate based on pair convention
+            is_inverse = getattr(currency, 'is_inverse', False)
             if "BTC" in currency.name or "ETH" in currency.name:
-                # Crypto - show as currency with comma separator
                 rate_str = f"${currency.rate:,.0f}"
+            elif is_inverse:
+                # JPY base pairs have small rates (e.g., 0.006405)
+                rate_str = f"{currency.rate:.6f}"
             elif "JPY" in currency.name:
                 rate_str = f"{currency.rate:.2f}"
             else:
