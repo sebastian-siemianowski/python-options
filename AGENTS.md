@@ -228,10 +228,56 @@ Covers all major sectors and market caps:
 | File | Purpose |
 |------|---------|
 | `backtest_config.py` | Universe definition, thresholds, constitution |
-| `backtest_data.py` | Data pipeline for 50-ticker universe |
+| `backtest_data.py` | Data pipeline for 64-ticker universe |
 | `backtest_tune.py` | Parameter tuning for fairness (not optimization) |
-| `backtest_engine.py` | Backtest execution and decision logic |
+| `backtest_engine.py` | Backtest execution with SignalFields → Geometry flow |
 | `backtest_cli.py` | Command-line interface |
+| `signal_fields.py` | Epistemic fields contract (direction, confidence, stability, etc.) |
+| `signal_geometry.py` | Converts SignalFields to trading actions with proper sizing |
+| `backtest_models/` | Models for backtest arena (copy from safe_storage) |
+
+### Signal Geometry System (Critical Architecture)
+
+**Location**: `src/arena/signal_fields.py`, `src/arena/signal_geometry.py`
+
+Models are NOT traders. They are **distributional geometry estimators**.
+The Signal Geometry layer properly interprets epistemic fields.
+
+**Key Principles (Professor Wang, Chen, Liu):**
+1. **Direction is SYNTHESIZED, not read**: `direction_score = f(asymmetry, momentum, stability)`
+2. **Size comes from CONFIDENCE, not direction**: Capital authority ≠ Polarity authority
+3. **Stability gates everything**: Unstable environments → no trade
+
+**SignalFields Contract** (`signal_fields.py`):
+```python
+@dataclass
+class SignalFields:
+    direction: float      # Price momentum validated by Kalman (-1 to +1)
+    asymmetry: float      # Distribution skewness
+    belief_momentum: float # Rate of belief change
+    confidence: float     # Model's certainty (0 to +1)
+    stability: float      # Regime stability (-1 to +1)
+    regime_fit: float     # How well data fits model assumptions
+    tail_risk_left: float # Left tail (downside) risk
+    tail_risk_right: float # Right tail (upside) potential
+```
+
+**GeometryDecision Output** (`signal_geometry.py`):
+```python
+@dataclass
+class GeometryDecision:
+    action: TradeAction   # ALLOW_LONG, ALLOW_SHORT, DENY_ENTRY, HOLD, etc.
+    direction: int        # +1 or -1
+    position_size: float  # From confidence × regime_fit, NOT direction
+    direction_score: float # Synthesized direction strength
+    size_authority: float # Capital authority from confidence
+```
+
+**Current Configuration (Long-Only Mode):**
+- Markets have positive drift → shorts destroy CAGR
+- Trend strength filter requires 2+ confirming factors
+- Direction threshold: 0.10, Confidence threshold: 0.30
+- Base position: 50%, Max position: 100%
 
 ## Code Conventions
 

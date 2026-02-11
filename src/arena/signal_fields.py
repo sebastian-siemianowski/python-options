@@ -327,18 +327,54 @@ def create_signal_fields_from_kalman(
     sigma_mean = np.mean(sigma_hist) + 1e-10
     
     # =========================================================================
-    # DIRECTION: Based on MU MOMENTUM (change in mu), NOT mu level!
+    # KALMAN INNOVATION FILTER (Professor Wang's Solution)
     # =========================================================================
-    # Analysis showed: Following mu momentum has Sharpe 1.293 vs 0.294 for level
-    if n >= 5:
-        # Compute mu change (momentum)
+    # Innovation = actual return - predicted return
+    # Small innovations = model is predicting well = trust the direction
+    # Large innovations = model is surprised = don't trade
+    if n >= 10:
+        # Compute recent innovations (prediction errors)
+        innovations = returns[-10:] - mu[-11:-1]
+        innovation_std = np.std(innovations) + 1e-10
+        current_innovation = returns[-1] - mu[-2] if n >= 2 else 0
+        
+        # Innovation quality: low normalized innovation = high quality
+        innovation_zscore = abs(current_innovation) / innovation_std
+        innovation_quality = float(np.exp(-innovation_zscore))  # 1.0 = perfect, 0.37 = 1 std
+    else:
+        innovation_quality = 0.5
+    
+    # =========================================================================
+    # DIRECTION: Trend-Following with Kalman Validation
+    # =========================================================================
+    # KEY INSIGHT: When Kalman is accurate (high innovation quality),
+    # follow the ACTUAL price trend, not mu momentum
+    if n >= 20:
+        # Compute recent returns trend (price momentum)
+        recent_returns = returns[-20:]
+        return_mean = np.mean(recent_returns)
+        return_std = np.std(recent_returns) + 1e-10
+        
+        # Direction from returns trend
+        returns_zscore = return_mean / return_std * np.sqrt(20)  # Annualized
+        raw_direction = float(np.tanh(returns_zscore * 1.0))
+        
+        # MOMENTUM PERSISTENCE: Check if trend is consistent
+        if n >= 5:
+            recent_5d = np.mean(returns[-5:])
+            recent_10d = np.mean(returns[-10:]) if n >= 10 else recent_5d
+            trend_aligned = np.sign(recent_5d) == np.sign(recent_10d) == np.sign(return_mean)
+            persistence_boost = 1.2 if trend_aligned else 0.8
+        else:
+            persistence_boost = 1.0
+        
+        # Apply innovation quality (only follow trend when model validates)
+        direction = float(np.clip(raw_direction * innovation_quality * persistence_boost, -1, 1))
+    elif n >= 5:
+        # Fallback to mu momentum for short history
         mu_change = mu[-1] - mu[-2]
-        
-        # Normalize by recent mu change volatility
-        mu_changes = np.diff(mu[-20:]) if n >= 20 else np.diff(mu[-5:])
+        mu_changes = np.diff(mu[-5:])
         mu_change_std = np.std(mu_changes) + 1e-10
-        
-        # Direction = normalized mu change
         direction = float(np.tanh(mu_change / mu_change_std * 1.5))
     else:
         direction = 0.0
@@ -364,16 +400,19 @@ def create_signal_fields_from_kalman(
         belief_momentum = 0.0
     
     # =========================================================================
-    # CONFIDENCE: Based on consistency of mu momentum direction
+    # CONFIDENCE: Innovation Quality + Momentum Consistency
     # =========================================================================
     if n >= 10:
         mu_changes = np.diff(mu[-10:])
-        # Confidence = how consistently mu is moving in same direction
+        # Consistency = how often mu moves in same direction
         same_sign = np.sum(np.sign(mu_changes) == np.sign(mu_changes[-1]))
         consistency = same_sign / len(mu_changes)
-        confidence = float(consistency)
+        
+        # Combine consistency with innovation quality
+        confidence = float(0.5 * consistency + 0.5 * innovation_quality)
     else:
         confidence = 0.5
+    
     # =========================================================================
     # STABILITY: Consistency of sigma (low CV = stable)
     # =========================================================================
