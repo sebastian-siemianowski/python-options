@@ -148,7 +148,26 @@ def _load_model_class(model_name: str):
             else:
                 return None
         
-        # Find the model class (look for class ending with Model or KalmanModel)
+        # Convert snake_case filename to expected CamelCaseModel class name
+        # e.g., "wasserstein_persistence" -> "WassersteinPersistenceModel"
+        expected_class_name = ''.join(word.capitalize() for word in model_name.split('_')) + 'Model'
+        
+        # Also try with "Kalman" suffix for backward compatibility
+        expected_kalman_name = ''.join(word.capitalize() for word in model_name.split('_')) + 'KalmanModel'
+        
+        # First, try exact match with expected class name
+        if hasattr(module, expected_class_name):
+            cls = getattr(module, expected_class_name)
+            if isinstance(cls, type):
+                return cls
+        
+        # Try Kalman variant
+        if hasattr(module, expected_kalman_name):
+            cls = getattr(module, expected_kalman_name)
+            if isinstance(cls, type):
+                return cls
+        
+        # Fallback: Find first class ending with Model (for legacy files)
         for attr_name in dir(module):
             if attr_name.endswith("Model") or attr_name.endswith("KalmanModel"):
                 cls = getattr(module, attr_name)
