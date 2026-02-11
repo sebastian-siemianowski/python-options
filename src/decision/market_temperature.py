@@ -963,412 +963,276 @@ def _fetch_stock_sample_data(
     return result
 
 
-# =============================================================================
-# UNIVERSE METRICS COMPUTATION
-# =============================================================================
-
 def _compute_universe_metrics(
     name: str,
     weight: float,
     prices: pd.Series,
-    ticker_count: int = 1
+    ticker_count: int
 ) -> UniverseMetrics:
-    """Compute all metrics for a universe segment."""
-    metrics = UniverseMetrics(
-        name=name,
-        weight=weight,
-        ticker_count=ticker_count,
-    )
+    """Compute metrics for a single universe segment."""
+    if prices is None or len(prices) < 30:
+        return UniverseMetrics(name=name, weight=weight, data_available=False, ticker_count=0)
     
-    if prices is None or len(prices) < 20:
-        return metrics
-    
-    metrics.data_available = True
-    metrics.current_level = float(prices.iloc[-1])
-    
-    # Returns
-    returns = _compute_returns(prices)
-    metrics.return_1d = returns["1d"]
-    metrics.return_5d = returns["5d"]
-    metrics.return_21d = returns["21d"]
-    metrics.return_63d = returns["63d"]
-    
-    # Volatility
     try:
-        ret_series = prices.pct_change().dropna()
-        metrics.volatility_20d = float(ret_series.iloc[-20:].std() * np.sqrt(252))
+        current_level = float(prices.iloc[-1])
+        returns = _compute_returns(prices)
+        
+        vol_20d = float(prices.pct_change().dropna().iloc[-20:].std() * np.sqrt(252)) if len(prices) >= 20 else 0.0
+        vol_pct = _compute_volatility_percentile(prices)
+        vol_ratio, vol_inverted = _compute_vol_term_structure(prices)
+        
+        momentum = _compute_momentum_signal(returns['5d'], returns['21d'])
+        
+        vol_zscore = _compute_robust_zscore(prices.pct_change().rolling(20).std() * np.sqrt(252))
+        
+        stress = 0.0
+        stress += min(max(vol_zscore, 0), 2.0) * 0.4
+        stress += min(vol_pct, 1.0) * 0.3
+        if vol_inverted:
+            stress += 0.5
+        if returns['21d'] < -0.10:
+            stress += 0.3
+        stress = min(stress, 2.0)
+        
+        return UniverseMetrics(
+            name=name, weight=weight, current_level=current_level,
+            return_1d=returns['1d'], return_5d=returns['5d'],
+            return_21d=returns['21d'], return_63d=returns['63d'],
+            volatility_20d=vol_20d, volatility_percentile=vol_pct,
+            vol_term_structure_ratio=vol_ratio, vol_inverted=vol_inverted,
+            stress_level=stress, stress_contribution=stress * weight,
+            momentum_signal=momentum, data_available=True, ticker_count=ticker_count,
+        )
     except Exception:
-        pass
-    
-    metrics.volatility_percentile = _compute_volatility_percentile(prices)
-    
-    # Vol term structure
-    ratio, inverted = _compute_vol_term_structure(prices)
-    metrics.vol_term_structure_ratio = ratio
-    metrics.vol_inverted = inverted
-    
-    # Momentum signal
-    metrics.momentum_signal = _compute_momentum_signal(metrics.return_5d, metrics.return_21d)
-    
-    # Compute stress level
-    # Stress increases with: high volatility, negative momentum, vol inversion
-    vol_stress = max(0, (metrics.volatility_percentile - 0.5) * 2)  # 0 to 1
-    momentum_stress = max(0, -metrics.return_21d * 5)  # Negative returns = stress
-    inversion_stress = 0.5 if inverted else 0.0
-    
-    metrics.stress_level = min(2.0, vol_stress + momentum_stress + inversion_stress)
-    metrics.stress_contribution = metrics.stress_level * weight
-    
-    return metrics
+        return UniverseMetrics(name=name, weight=weight, data_available=False, ticker_count=0)
 
 
-def _compute_breadth_from_sample(
-    stock_data: Dict[str, pd.Series]
-) -> MarketBreadthMetrics:
+def _compute_breadth_from_sample(stock_data: Dict[str, pd.Series]) -> MarketBreadthMetrics:
     """Compute market breadth from a sample of stocks."""
-    breadth = MarketBreadthMetrics()
+    if not stock_data or len(stock_data) < 10:
+        return MarketBreadthMetrics()
     
-    if not stock_data:
-        return breadth
-    
-    above_50ma = 0
-    above_200ma = 0
-    advancing = 0
-    declining = 0
-    new_highs = 0
-    new_lows = 0
-    total = 0
-    
-    for ticker, prices in stock_data.items():
-        try:
+    try:
+        above_50ma = above_200ma = advances = declines = total = 0
+        
+        for ticker, prices in stock_data.items():
             if prices is None or len(prices) < 200:
                 continue
-            
             total += 1
             current = float(prices.iloc[-1])
-            
-            # 50-day MA
             ma_50 = float(prices.iloc[-50:].mean())
-            if current > ma_50:
-                above_50ma += 1
-            
-            # 200-day MA
             ma_200 = float(prices.iloc[-200:].mean())
-            if current > ma_200:
-                above_200ma += 1
+            prev = float(prices.iloc[-2]) if len(prices) >= 2 else current
             
-            # 1-day change
-            prev = float(prices.iloc[-2])
-            if current > prev:
-                advancing += 1
-            else:
-                declining += 1
-            
-            # 52-week highs/lows
-            high_252 = float(prices.iloc[-252:].max())
-            low_252 = float(prices.iloc[-252:].min())
-            
-            if current >= high_252 * 0.98:  # Within 2% of high
-                new_highs += 1
-            if current <= low_252 * 1.02:  # Within 2% of low
-                new_lows += 1
-                
-        except Exception:
-            pass
-    
-    if total > 0:
-        breadth.pct_above_50ma = above_50ma / total
-        breadth.pct_above_200ma = above_200ma / total
-        breadth.advance_decline_ratio = advancing / max(1, declining)
-        breadth.new_highs = new_highs
-        breadth.new_lows = new_lows
+            if current > ma_50: above_50ma += 1
+            if current > ma_200: above_200ma += 1
+            if current > prev: advances += 1
+            else: declines += 1
         
-        # Breadth thrust detection
-        if breadth.pct_above_50ma > 0.90:
-            breadth.breadth_thrust = True
+        if total == 0:
+            return MarketBreadthMetrics()
         
-        # Warning detection
-        if breadth.pct_above_50ma < BREADTH_WARNING_THRESHOLD:
-            breadth.breadth_warning = True
+        pct_50 = above_50ma / total
+        pct_200 = above_200ma / total
+        ad_ratio = advances / max(declines, 1)
+        warning = pct_50 < BREADTH_WARNING_THRESHOLD
+        thrust = pct_50 > 0.90 or pct_50 < 0.10
         
-        # Interpretation
-        if breadth.pct_above_50ma >= 0.70:
-            breadth.interpretation = "Strong - Broad participation"
-        elif breadth.pct_above_50ma >= 0.50:
-            breadth.interpretation = "Healthy - Normal breadth"
-        elif breadth.pct_above_50ma >= BREADTH_WARNING_THRESHOLD:
-            breadth.interpretation = "Narrowing - Watch for divergence"
-        elif breadth.pct_above_50ma >= BREADTH_DANGER_THRESHOLD:
-            breadth.interpretation = "⚠️ Weak - Distribution phase"
+        if pct_50 < BREADTH_DANGER_THRESHOLD:
+            interp = "Danger - Extreme weakness"
+        elif warning:
+            interp = "Warning - Narrowing breadth"
+        elif thrust and pct_50 > 0.90:
+            interp = "Thrust - Broad participation"
         else:
-            breadth.interpretation = "🚨 Critical - Capitulation risk"
-    
-    return breadth
+            interp = "Healthy - Normal breadth"
+        
+        return MarketBreadthMetrics(
+            pct_above_50ma=pct_50, pct_above_200ma=pct_200,
+            advance_decline_ratio=ad_ratio, breadth_thrust=thrust,
+            breadth_warning=warning, interpretation=interp,
+        )
+    except Exception:
+        return MarketBreadthMetrics()
 
 
-def _compute_correlation_stress(
-    stock_data: Dict[str, pd.Series],
-    lookback: int = CORRELATION_LOOKBACK
-) -> CorrelationStress:
+def _compute_correlation_stress(stock_data: Dict[str, pd.Series]) -> CorrelationStress:
     """Compute cross-asset correlation stress."""
-    stress = CorrelationStress()
-    
-    if len(stock_data) < 5:
-        return stress
+    if not stock_data or len(stock_data) < 5:
+        return CorrelationStress()
     
     try:
-        # Build returns DataFrame
-        returns_dict = {}
-        for ticker, prices in stock_data.items():
-            if prices is not None and len(prices) >= lookback:
-                ret = prices.pct_change().dropna().iloc[-lookback:]
-                if len(ret) >= lookback // 2:
-                    returns_dict[ticker] = ret
+        if USE_COPULA_CORRELATION and COPULA_CORRELATION_AVAILABLE:
+            copula_result = compute_copula_correlation_stress(stock_data)
+            return CorrelationStress(
+                avg_correlation=copula_result.avg_correlation,
+                max_correlation=copula_result.max_correlation,
+                correlation_percentile=copula_result.correlation_percentile,
+                systemic_risk_elevated=copula_result.systemic_risk_elevated,
+                interpretation=copula_result.interpretation,
+            )
         
-        if len(returns_dict) < 5:
-            return stress
+        returns_df = pd.DataFrame({t: p.pct_change() for t, p in stock_data.items()}).dropna()
+        if returns_df.empty or len(returns_df) < CORRELATION_LOOKBACK:
+            return CorrelationStress()
         
-        returns_df = pd.DataFrame(returns_dict)
+        recent = returns_df.iloc[-CORRELATION_LOOKBACK:]
+        corr_matrix = recent.corr()
+        mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
+        correlations = corr_matrix.values[mask]
+        correlations = correlations[~np.isnan(correlations)]
         
-        # Compute correlation matrix
-        corr_matrix = returns_df.corr()
+        if len(correlations) == 0:
+            return CorrelationStress()
         
-        # Get upper triangle (excluding diagonal)
-        mask = np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
-        upper_corrs = corr_matrix.where(mask).stack()
+        avg_corr = float(np.mean(correlations))
+        max_corr = float(np.max(correlations))
+        systemic = avg_corr > CORRELATION_STRESS_THRESHOLD
         
-        if len(upper_corrs) > 0:
-            stress.avg_correlation = float(upper_corrs.mean())
-            stress.max_correlation = float(upper_corrs.max())
-            
-            # Compute historical percentile (simplified - compare to threshold)
-            stress.correlation_percentile = min(1.0, stress.avg_correlation / 0.80)
-            
-            stress.systemic_risk_elevated = stress.avg_correlation > CORRELATION_STRESS_THRESHOLD
-            
-            if stress.avg_correlation >= 0.80:
-                stress.interpretation = "🚨 Extreme - Systemic risk"
-            elif stress.avg_correlation >= 0.65:
-                stress.interpretation = "⚠️ High - Correlations rising"
-            elif stress.avg_correlation >= 0.50:
-                stress.interpretation = "Moderate - Normal correlation"
-            else:
-                stress.interpretation = "Low - Healthy dispersion"
-                
+        if systemic:
+            interp = "High - Systemic risk elevated"
+        elif avg_corr > 0.60:
+            interp = "Elevated - Rising correlations"
+        else:
+            interp = "Low - Healthy dispersion"
+        
+        return CorrelationStress(
+            avg_correlation=avg_corr, max_correlation=max_corr,
+            correlation_percentile=0.5, systemic_risk_elevated=systemic,
+            interpretation=interp,
+        )
     except Exception:
-        pass
-    
-    return stress
+        return CorrelationStress()
 
 
 def _compute_crash_risk(
     universes: Dict[str, UniverseMetrics],
     breadth: MarketBreadthMetrics,
     correlation: CorrelationStress,
-    temperature: float,
+    temperature: float
 ) -> Tuple[float, str, int, List[str]]:
-    """Compute crash risk probability and level."""
+    """Compute crash risk probability."""
+    risk = 0.0
+    vol_inversions = []
     
-    # Count vol inversions
-    inverted_universes = [
-        name for name, u in universes.items()
-        if u.vol_inverted
-    ]
-    vol_inversion_count = len(inverted_universes)
+    for name, univ in universes.items():
+        if univ.vol_inverted:
+            vol_inversions.append(name)
+            risk += 0.15
     
-    # Base risk from vol inversions
-    base_risk_by_count = {0: 0.02, 1: 0.08, 2: 0.18, 3: 0.30, 4: 0.45}
-    base_risk = base_risk_by_count.get(vol_inversion_count, 0.45)
-    
-    # Breadth modifier
     if breadth.pct_above_50ma < BREADTH_DANGER_THRESHOLD:
-        breadth_multiplier = 1.5
+        risk += 0.20
     elif breadth.pct_above_50ma < BREADTH_WARNING_THRESHOLD:
-        breadth_multiplier = 1.25
-    else:
-        breadth_multiplier = 1.0
+        risk += 0.10
     
-    # Correlation modifier
     if correlation.systemic_risk_elevated:
-        corr_multiplier = 1.4
-    elif correlation.avg_correlation > 0.60:
-        corr_multiplier = 1.2
-    else:
-        corr_multiplier = 1.0
+        risk += 0.15
     
-    # Temperature modifier
-    if temperature > 1.5:
-        temp_multiplier = 1.5
-    elif temperature > 1.0:
-        temp_multiplier = 1.25
-    else:
-        temp_multiplier = 1.0
+    risk += temperature * 0.10
+    risk = min(risk, 1.0)
     
-    crash_risk_pct = min(0.75, base_risk * breadth_multiplier * corr_multiplier * temp_multiplier)
+    if risk > 0.50: level = "Extreme"
+    elif risk > 0.30: level = "High"
+    elif risk > 0.15: level = "Elevated"
+    else: level = "Low"
     
-    # Determine level
-    if crash_risk_pct >= 0.40:
-        level = "Extreme"
-    elif crash_risk_pct >= 0.25:
-        level = "High"
-    elif crash_risk_pct >= 0.15:
-        level = "Elevated"
-    elif crash_risk_pct >= 0.08:
-        level = "Moderate"
-    else:
-        level = "Low"
-    
-    return crash_risk_pct, level, vol_inversion_count, inverted_universes
+    return risk, level, len(vol_inversions), vol_inversions if vol_inversions else None
 
 
 def _determine_exit_signal(
     temperature: float,
     crash_risk_pct: float,
     breadth: MarketBreadthMetrics,
-    correlation: CorrelationStress,
+    correlation: CorrelationStress
 ) -> Tuple[bool, Optional[str]]:
-    """Determine if an exit signal should be issued."""
-    reasons = []
-    
-    if temperature >= 1.5:
-        reasons.append(f"Temperature extreme ({temperature:.2f})")
-    
-    if crash_risk_pct >= 0.35:
-        reasons.append(f"Crash risk high ({crash_risk_pct:.0%})")
-    
-    if breadth.pct_above_50ma < BREADTH_DANGER_THRESHOLD:
-        reasons.append(f"Breadth critical ({breadth.pct_above_50ma:.0%} above 50MA)")
-    
-    if correlation.systemic_risk_elevated:
-        reasons.append(f"Systemic risk ({correlation.avg_correlation:.0%} avg corr)")
-    
-    if len(reasons) >= 2:
-        return True, "; ".join(reasons)
-    
+    """Determine if exit signal should be triggered."""
+    if temperature >= 1.8:
+        return True, "Temperature extreme (>1.8)"
+    if crash_risk_pct >= 0.60:
+        return True, f"Crash risk critical ({crash_risk_pct:.0%})"
+    if breadth.pct_above_50ma < 0.15:
+        return True, f"Breadth collapse ({breadth.pct_above_50ma:.0%} above 50MA)"
     return False, None
 
 
 def _compute_overall_momentum(universes: Dict[str, UniverseMetrics]) -> str:
-    """Compute aggregate momentum signal."""
-    total_weight = sum(u.weight for u in universes.values() if u.data_available)
+    """Compute overall market momentum from universe segments."""
+    if not universes:
+        return "→ Neutral"
+    
+    weighted_momentum = total_weight = 0.0
+    for univ in universes.values():
+        if univ.data_available:
+            weighted_momentum += univ.return_21d * univ.weight
+            total_weight += univ.weight
+    
     if total_weight == 0:
         return "→ Neutral"
     
-    weighted_return = sum(
-        u.return_21d * u.weight
-        for u in universes.values()
-        if u.data_available
-    ) / total_weight
-    
-    return _compute_momentum_signal(weighted_return, weighted_return)
+    avg_momentum = weighted_momentum / total_weight
+    return _compute_momentum_signal(avg_momentum, avg_momentum)
 
 
 def _compute_sector_rotation(etf_data: Dict[str, pd.Series]) -> str:
-    """Compute growth vs value rotation signal."""
+    """Compute sector rotation signal from Growth vs Value performance."""
     if 'IWF' not in etf_data or 'IWD' not in etf_data:
-        return "Unknown"
+        return "Normal"
     
     try:
-        growth_returns = _compute_returns(etf_data['IWF'])
-        value_returns = _compute_returns(etf_data['IWD'])
+        growth_ret = _compute_returns(etf_data['IWF'])['21d']
+        value_ret = _compute_returns(etf_data['IWD'])['21d']
+        spread = growth_ret - value_ret
         
-        spread_21d = growth_returns['21d'] - value_returns['21d']
-        
-        if spread_21d > 0.05:
-            return "Growth Leading"
-        elif spread_21d < -0.05:
-            return "Value Leading"
-        else:
-            return "Balanced"
+        if spread > 0.05: return "Growth Leading"
+        elif spread < -0.05: return "Value Leading"
+        else: return "Normal"
     except Exception:
-        return "Unknown"
+        return "Normal"
 
 
 def _compute_sector_metrics(etf_data: Dict[str, pd.Series]) -> Dict[str, SectorMetrics]:
-    """
-    Compute metrics for each S&P 500 sector using SPDR Select Sector ETFs.
-    
-    Returns dict mapping sector name to SectorMetrics.
-    """
+    """Compute metrics for each sector ETF."""
     sectors = {}
     
-    for ticker, sector_name in SECTOR_ETFS.items():
+    for ticker, name in SECTOR_ETFS.items():
         if ticker not in etf_data:
-            # Create placeholder with no data
-            sectors[sector_name] = SectorMetrics(
-                name=sector_name,
-                ticker=ticker,
-                data_available=False,
-            )
+            sectors[name] = SectorMetrics(name=name, ticker=ticker, data_available=False)
             continue
         
         prices = etf_data[ticker]
         if prices is None or len(prices) < 30:
-            sectors[sector_name] = SectorMetrics(
-                name=sector_name,
-                ticker=ticker,
-                data_available=False,
-            )
+            sectors[name] = SectorMetrics(name=name, ticker=ticker, data_available=False)
             continue
         
         try:
-            # Compute returns
             returns = _compute_returns(prices)
-            ret_1d = returns.get('1d', 0.0)
-            ret_5d = returns.get('5d', 0.0)
-            ret_21d = returns.get('21d', 0.0)
-            
-            # Compute volatility
             daily_returns = prices.pct_change().dropna()
-            if len(daily_returns) >= 20:
-                vol_20d = float(daily_returns.iloc[-20:].std() * np.sqrt(252))
-            else:
-                vol_20d = 0.0
+            vol_20d = float(daily_returns.iloc[-20:].std() * np.sqrt(252)) if len(daily_returns) >= 20 else 0.0
+            vol_pct = _compute_volatility_percentile(prices)
+            momentum = _compute_momentum_signal(returns.get('5d', 0), returns.get('21d', 0))
             
-            # Volatility percentile
-            vol_pctl = _compute_volatility_percentile(prices)
+            vol_pts = min(vol_pct, 1.0) * 50
+            move_pts = min(abs(returns.get('5d', 0)) / 0.05, 1.0) * 50
+            risk_score = int(min(100, vol_pts + move_pts))
             
-            # Momentum signal
-            momentum = _compute_momentum_signal(ret_5d, ret_21d)
-            
-            # Risk score (0-100)
-            # Based on: vol_percentile (0-40), drawdown (0-40), vol level (0-20)
-            vol_pts = vol_pctl * 40
-            drawdown_pts = min(max(0, -ret_5d) / 0.10, 1.0) * 40
-            vol_level_pts = min(vol_20d / 0.50, 1.0) * 20
-            risk_score = int(min(100, vol_pts + drawdown_pts + vol_level_pts))
-            
-            sectors[sector_name] = SectorMetrics(
-                name=sector_name,
-                ticker=ticker,
-                return_1d=ret_1d,
-                return_5d=ret_5d,
-                return_21d=ret_21d,
-                volatility_20d=vol_20d,
-                volatility_percentile=vol_pctl,
-                momentum_signal=momentum,
-                risk_score=risk_score,
-                data_available=True,
+            sectors[name] = SectorMetrics(
+                name=name, ticker=ticker,
+                return_1d=returns.get('1d', 0), return_5d=returns.get('5d', 0),
+                return_21d=returns.get('21d', 0), volatility_20d=vol_20d,
+                volatility_percentile=vol_pct, momentum_signal=momentum,
+                risk_score=risk_score, data_available=True,
             )
         except Exception:
-            sectors[sector_name] = SectorMetrics(
-                name=sector_name,
-                ticker=ticker,
-                data_available=False,
-            )
+            sectors[name] = SectorMetrics(name=name, ticker=ticker, data_available=False)
     
     return sectors
 
 
-def _fetch_currency_data(
-    start_date: str,
-    end_date: Optional[str] = None
-) -> Dict[str, pd.Series]:
-    """Fetch currency pair data for FX market assessment (thread-safe)."""
+def _fetch_currency_data(start_date: str, end_date: Optional[str] = None) -> Dict[str, pd.Series]:
+    """Fetch currency pair data."""
     cache_key = f"currency_{start_date}_{end_date}"
     now = datetime.now()
     
-    # Thread-safe cache check
     with _cache_lock:
         if cache_key in _market_data_cache:
             cached_time, cached_data = _market_data_cache[cache_key]
@@ -1385,12 +1249,10 @@ def _fetch_currency_data(
     start = start_dt.strftime("%Y-%m-%d")
     
     result = {}
-    
     for ticker in CURRENCY_PAIRS.keys():
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                # Use Ticker object to avoid global state issues
                 ticker_obj = yf.Ticker(ticker)
                 df = ticker_obj.history(start=start, end=end, auto_adjust=True)
             
@@ -1401,19 +1263,217 @@ def _fetch_currency_data(
         except Exception:
             pass
     
-    # Thread-safe cache update
     with _cache_lock:
         _market_data_cache[cache_key] = (now, result)
     return result
 
 
+def _prophet_forecast(prices: pd.Series, horizons: list) -> list:
+    """Use Facebook Prophet for time series forecasting with trend + seasonality."""
+    try:
+        from prophet import Prophet
+        import logging
+        logging.getLogger('prophet').setLevel(logging.WARNING)
+        logging.getLogger('cmdstanpy').setLevel(logging.WARNING)
+        
+        # Prepare data for Prophet (requires 'ds' and 'y' columns)
+        df = pd.DataFrame({
+            'ds': prices.index,
+            'y': prices.values
+        })
+        df['ds'] = pd.to_datetime(df['ds'])
+        
+        # Configure Prophet
+        model = Prophet(
+            daily_seasonality=False,
+            weekly_seasonality=True,
+            yearly_seasonality=True,
+            changepoint_prior_scale=0.05,
+            seasonality_mode='multiplicative',
+        )
+        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(df)
+        
+        max_horizon = max(horizons)
+        future = model.make_future_dataframe(periods=max_horizon)
+        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            forecast = model.predict(future)
+        
+        current_price = float(prices.iloc[-1])
+        current_idx = len(prices) - 1
+        
+        forecasts = []
+        for h in horizons:
+            future_idx = current_idx + h
+            if future_idx < len(forecast):
+                future_price = float(forecast.iloc[future_idx]['yhat'])
+                pct_change = ((future_price / current_price) - 1) * 100
+                forecasts.append(pct_change)
+            else:
+                forecasts.append(0.0)
+        
+        return forecasts
+        
+    except Exception:
+        return [0.0] * len(horizons)
+
+
+def _lstm_forecast(prices: pd.Series, horizons: list) -> list:
+    """Use PyTorch LSTM for pattern-based forecasting."""
+    try:
+        import torch
+        import torch.nn as nn
+        
+        returns = prices.pct_change().dropna().values
+        if len(returns) < 100:
+            return [0.0] * len(horizons)
+        
+        mean_ret = np.mean(returns)
+        std_ret = np.std(returns)
+        if std_ret < 1e-8:
+            return [0.0] * len(horizons)
+        normalized = (returns - mean_ret) / std_ret
+        
+        seq_length = 20
+        X, y = [], []
+        for i in range(len(normalized) - seq_length):
+            X.append(normalized[i:i+seq_length])
+            y.append(normalized[i+seq_length])
+        
+        X = np.array(X)
+        y = np.array(y)
+        
+        if len(X) < 50:
+            return [0.0] * len(horizons)
+        
+        X_tensor = torch.FloatTensor(X).unsqueeze(-1)
+        y_tensor = torch.FloatTensor(y).unsqueeze(-1)
+        
+        class SimpleLSTM(nn.Module):
+            def __init__(self, input_size=1, hidden_size=32, num_layers=1):
+                super().__init__()
+                self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+                self.fc = nn.Linear(hidden_size, 1)
+            
+            def forward(self, x):
+                lstm_out, _ = self.lstm(x)
+                return self.fc(lstm_out[:, -1, :])
+        
+        model = SimpleLSTM()
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+        
+        model.train()
+        for epoch in range(50):
+            optimizer.zero_grad()
+            outputs = model(X_tensor)
+            loss = criterion(outputs, y_tensor)
+            loss.backward()
+            optimizer.step()
+        
+        model.eval()
+        forecasts = []
+        current_seq = normalized[-seq_length:].copy()
+        
+        cumulative_return = 0.0
+        for h in range(1, max(horizons) + 1):
+            with torch.no_grad():
+                seq_tensor = torch.FloatTensor(current_seq).unsqueeze(0).unsqueeze(-1)
+                pred = model(seq_tensor).item()
+            
+            pred_return = pred * std_ret + mean_ret
+            cumulative_return += pred_return
+            
+            if h in horizons:
+                forecasts.append(cumulative_return * 100)
+            
+            current_seq = np.roll(current_seq, -1)
+            current_seq[-1] = pred
+        
+        return forecasts
+        
+    except Exception:
+        return [0.0] * len(horizons)
+
+
+def _classical_forecast(prices: pd.Series, log_returns: pd.Series, horizons: list) -> list:
+    """Classical mean reversion + momentum forecast."""
+    try:
+        daily_drift = float(log_returns.mean())
+        current_price = float(prices.iloc[-1])
+        ma_200 = float(prices.iloc[-200:].mean()) if len(prices) >= 200 else float(prices.mean())
+        deviation_from_ma = (current_price - ma_200) / ma_200
+        mean_reversion_lambda = 0.01
+        momentum_5d = float(log_returns.iloc[-5:].mean()) if len(log_returns) >= 5 else 0.0
+        momentum_decay = 0.93
+        
+        forecasts = []
+        for horizon in horizons:
+            drift_contrib = daily_drift * horizon
+            mr_contrib = -deviation_from_ma * (1 - np.exp(-mean_reversion_lambda * horizon))
+            mom_weight = (1 - momentum_decay ** horizon) / (1 - momentum_decay)
+            momentum_contrib = momentum_5d * mom_weight * 0.3
+            total_log_return = drift_contrib + mr_contrib * 0.3 + momentum_contrib
+            pct_return = float((np.exp(total_log_return) - 1) * 100)
+            forecasts.append(pct_return)
+        
+        return forecasts
+    except Exception:
+        return [0.0] * len(horizons)
+
+
+def _compute_forecast_confidence(
+    prophet_fc: list, lstm_fc: list, classical_fc: list,
+    vol_20d: float, data_len: int
+) -> str:
+    """Compute confidence based on model agreement and data quality."""
+    try:
+        agreement_scores = []
+        for i in range(min(len(prophet_fc), len(lstm_fc), len(classical_fc))):
+            signs = [
+                np.sign(prophet_fc[i]) if prophet_fc[i] != 0 else 0,
+                np.sign(lstm_fc[i]) if lstm_fc[i] != 0 else 0,
+                np.sign(classical_fc[i]) if classical_fc[i] != 0 else 0,
+            ]
+            # Count agreement (all same sign = 1.0, 2/3 same = 0.67, all different = 0)
+            if signs[0] == signs[1] == signs[2] and signs[0] != 0:
+                agreement_scores.append(1.0)
+            elif signs[0] == signs[1] or signs[1] == signs[2] or signs[0] == signs[2]:
+                agreement_scores.append(0.67)
+            else:
+                agreement_scores.append(0.0)
+        
+        agreement = np.mean(agreement_scores) if agreement_scores else 0.0
+        
+        # Volatility penalty
+        vol_score = 1 - min(vol_20d / 0.20, 1.0)
+        
+        # Data quality
+        data_score = min(data_len / 500, 1.0)
+        
+        # Combined confidence
+        confidence_score = agreement * 0.4 + vol_score * 0.3 + data_score * 0.3
+        
+        if confidence_score > 0.7:
+            return "High"
+        elif confidence_score > 0.4:
+            return "Medium"
+        else:
+            return "Low"
+    except Exception:
+        return "Low"
+
+
 def _compute_currency_forecasts(prices: pd.Series, vol_20d: float) -> Tuple[float, float, float, float, float, float, str]:
     """
-    Compute scientifically sound currency forecasts using:
-    1. Historical drift (annualized mean return)
-    2. Mean reversion (deviation from long-term average)
-    3. Momentum persistence (recent trend continuation)
-    4. Volatility scaling (wider confidence bands in high vol)
+    Compute currency forecasts using ensemble of:
+    1. Prophet (Facebook's time series - trend + seasonality)
+    2. PyTorch LSTM (neural network for pattern recognition)
+    3. Classical mean reversion + momentum (fallback)
     
     Returns: (1d, 7d, 30d, 90d, 180d, 365d forecasts, confidence level)
     """
@@ -1421,75 +1481,43 @@ def _compute_currency_forecasts(prices: pd.Series, vol_20d: float) -> Tuple[floa
         if prices is None or len(prices) < 100:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
-        # Daily log returns
         log_returns = np.log(prices / prices.shift(1)).dropna()
         if len(log_returns) < 60:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
-        # Component 1: Historical drift (annualized)
-        daily_drift = float(log_returns.mean())
+        horizons = [1, 7, 30, 90, 180, 365]
         
-        # Component 2: Mean reversion to 200-day average
-        current_price = float(prices.iloc[-1])
-        ma_200 = float(prices.iloc[-200:].mean()) if len(prices) >= 200 else float(prices.mean())
-        deviation_from_ma = (current_price - ma_200) / ma_200
+        # === Ensemble: Prophet + LSTM + Classical ===
+        prophet_forecasts = _prophet_forecast(prices, horizons)
+        lstm_forecasts = _lstm_forecast(prices, horizons)
+        classical_forecasts = _classical_forecast(prices, log_returns, horizons)
         
-        # Mean reversion speed (half-life ~60 days for FX)
-        mean_reversion_lambda = 0.01  # Daily mean reversion rate
-        
-        # Component 3: Momentum (recent trend)
-        momentum_5d = float(log_returns.iloc[-5:].mean()) if len(log_returns) >= 5 else 0.0
-        momentum_20d = float(log_returns.iloc[-20:].mean()) if len(log_returns) >= 20 else 0.0
-        
-        # Momentum decays over time (half-life ~10 days)
-        momentum_decay = 0.93  # Per-day decay
-        
-        # Volatility for confidence assessment
+        final_forecasts = []
         daily_vol = float(log_returns.std())
         
-        forecasts = []
-        for horizon in [1, 7, 30, 90, 180, 365]:
-            # Drift contribution (scales with time)
-            drift_contrib = daily_drift * horizon
+        for i, horizon in enumerate(horizons):
+            # Weight by horizon: LSTM for short, Prophet for long
+            if horizon <= 7:
+                weights = [0.2, 0.5, 0.3]  # prophet, lstm, classical
+            elif horizon <= 30:
+                weights = [0.4, 0.3, 0.3]
+            else:
+                weights = [0.5, 0.2, 0.3]
             
-            # Mean reversion contribution (exponential decay to mean)
-            mr_contrib = -deviation_from_ma * (1 - np.exp(-mean_reversion_lambda * horizon))
+            prophet_fc = prophet_forecasts[i] if prophet_forecasts else 0.0
+            lstm_fc = lstm_forecasts[i] if lstm_forecasts else 0.0
+            classical_fc = classical_forecasts[i] if classical_forecasts else 0.0
             
-            # Momentum contribution (decays exponentially)
-            mom_weight = (1 - momentum_decay ** horizon) / (1 - momentum_decay)
-            momentum_contrib = momentum_5d * mom_weight * 0.3
-            
-            # Total forecast (in log returns, convert to %)
-            total_log_return = drift_contrib + mr_contrib * 0.3 + momentum_contrib
-            pct_return = float((np.exp(total_log_return) - 1) * 100)
-            
-            # Clip to reasonable bounds based on horizon
-            max_move = daily_vol * np.sqrt(horizon) * 3 * 100  # 3 sigma
-            pct_return = np.clip(pct_return, -max_move, max_move)
-            
-            forecasts.append(pct_return)
+            ensemble_fc = weights[0] * prophet_fc + weights[1] * lstm_fc + weights[2] * classical_fc
+            max_move = daily_vol * np.sqrt(horizon) * 3 * 100
+            ensemble_fc = np.clip(ensemble_fc, -max_move, max_move)
+            final_forecasts.append(float(ensemble_fc))
         
-        # Confidence based on:
-        # - Model fit (R² of momentum)
-        # - Volatility (lower vol = higher confidence)
-        # - Data availability
-        vol_score = 1 - min(vol_20d / 0.20, 1.0)  # Lower vol = higher score
-        data_score = min(len(prices) / 500, 1.0)   # More data = higher score
+        confidence = _compute_forecast_confidence(
+            prophet_forecasts, lstm_forecasts, classical_forecasts, vol_20d, len(prices)
+        )
         
-        # Momentum consistency (same direction over multiple timeframes)
-        mom_consistent = np.sign(momentum_5d) == np.sign(momentum_20d)
-        consistency_score = 0.7 if mom_consistent else 0.3
-        
-        confidence_score = (vol_score * 0.4 + data_score * 0.3 + consistency_score * 0.3)
-        
-        if confidence_score > 0.6:
-            confidence = "High"
-        elif confidence_score > 0.4:
-            confidence = "Medium"
-        else:
-            confidence = "Low"
-        
-        return tuple(forecasts) + (confidence,)
+        return tuple(final_forecasts) + (confidence,)
         
     except Exception:
         return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"

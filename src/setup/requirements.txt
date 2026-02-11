@@ -8,3 +8,5 @@ rich
 lxml
 hmmlearn
 numba
+torch
+prophet

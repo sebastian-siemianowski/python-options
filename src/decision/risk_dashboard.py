@@ -964,6 +964,85 @@ def compute_and_render_unified_risk(
         
         console.print(currency_table)
         console.print()
+        
+        # === JPY FORECAST TABLE (Yen Strength View with Forecasts) ===
+        jpy_base_pairs = [c for c in available_currencies if getattr(c, 'is_inverse', False)]
+        
+        if jpy_base_pairs:
+            console.print("  [dim]JPY Forecasts (Yen Strength View)[/dim]")
+            console.print()
+            
+            jpy_table = Table(
+                show_header=True,
+                header_style="bold white",
+                border_style="dim",
+                box=box.SIMPLE,
+                padding=(0, 1),
+            )
+            jpy_table.add_column("Pair", justify="left", width=9)
+            jpy_table.add_column("Rate", justify="right", width=10)
+            jpy_table.add_column("1D", justify="right", width=6)
+            jpy_table.add_column("7D", justify="right", width=6)
+            jpy_table.add_column("30D", justify="right", width=6)
+            jpy_table.add_column("3M", justify="right", width=6)
+            jpy_table.add_column("6M", justify="right", width=6)
+            jpy_table.add_column("12M", justify="right", width=6)
+            jpy_table.add_column("Conf", justify="left", width=6)
+            
+            # Sort by absolute forecast magnitude (most movement expected first)
+            sorted_jpy = sorted(
+                jpy_base_pairs,
+                key=lambda c: abs(getattr(c, 'forecast_30d', 0)),
+                reverse=True
+            )
+            
+            for currency in sorted_jpy:
+                # Rate formatting for JPY base pairs (small numbers)
+                rate_str = f"{currency.rate:.6f}"
+                
+                # Forecast styling
+                def forecast_style(fc):
+                    if fc > 1.0:
+                        return "bold bright_green"
+                    elif fc > 0:
+                        return "bright_green"
+                    elif fc < -1.0:
+                        return "bold indian_red1"
+                    elif fc < 0:
+                        return "indian_red1"
+                    return "dim"
+                
+                fc_1d = getattr(currency, 'forecast_1d', 0)
+                fc_7d = getattr(currency, 'forecast_7d', 0)
+                fc_30d = getattr(currency, 'forecast_30d', 0)
+                fc_90d = getattr(currency, 'forecast_90d', 0)
+                fc_180d = getattr(currency, 'forecast_180d', 0)
+                fc_365d = getattr(currency, 'forecast_365d', 0)
+                fc_conf = getattr(currency, 'forecast_confidence', 'Low')
+                
+                # Confidence styling
+                if fc_conf == "High":
+                    conf_style = "bold bright_green"
+                elif fc_conf == "Medium":
+                    conf_style = "yellow"
+                else:
+                    conf_style = "dim"
+                
+                jpy_table.add_row(
+                    currency.name,
+                    rate_str,
+                    Text(f"{fc_1d:+.1f}%", style=forecast_style(fc_1d)),
+                    Text(f"{fc_7d:+.1f}%", style=forecast_style(fc_7d)),
+                    Text(f"{fc_30d:+.1f}%", style=forecast_style(fc_30d)),
+                    Text(f"{fc_90d:+.1f}%", style=forecast_style(fc_90d)),
+                    Text(f"{fc_180d:+.1f}%", style=forecast_style(fc_180d)),
+                    Text(f"{fc_365d:+.1f}%", style=forecast_style(fc_365d)),
+                    Text(fc_conf, style=conf_style),
+                )
+            
+            console.print(jpy_table)
+            console.print("  [dim italic]Forecasts: Prophet + LSTM + Classical ensemble. Positive = JPY strengthening.[/dim italic]")
+            console.print()
     
     # Market Breadth
     console.print("  [dim]Market Breadth[/dim]")
