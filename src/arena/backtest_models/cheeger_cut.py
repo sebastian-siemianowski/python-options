@@ -522,9 +522,9 @@ class FiedlerVectorModel:
         self.max_time_ms = 10000
         self._defl_memory = 1.0
         self._hyv_memory = 0.0
-        self._fiedler_imbalance = 0.0
+        self._cached_fiedler_imbalance = 0.0
 
-    def _fiedler_imbalance(self, returns, t):
+    def _compute_fiedler_imbalance(self, returns, t):
         if t < self.FIEDLER_WINDOW:
             return 0.0
         seg = returns[t - self.FIEDLER_WINDOW:t]
@@ -572,7 +572,7 @@ class FiedlerVectorModel:
             ema_vol = 0.07 * rv + 0.93 * ema_vol
 
             if t % 15 == 0 and t >= self.FIEDLER_WINDOW:
-                cached_imbalance = self._fiedler_imbalance(ret, t)
+                cached_imbalance = self._compute_fiedler_imbalance(ret, t)
             phi_eff = self._phi_effective(phi, cached_imbalance)
 
             hc = self._hyv_correction(running_hyv, hyv_count)

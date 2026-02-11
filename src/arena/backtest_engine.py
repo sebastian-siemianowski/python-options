@@ -204,10 +204,14 @@ def _simulate_signals(returns, model_name, params):
     Generate trading signals using SignalFields → SignalGeometry flow.
     
     ARCHITECTURE:
-        1. Model.filter() → mu, sigma (Kalman state estimates)
+        1. Model.filter() or Model._filter() → mu, sigma (Kalman state estimates)
         2. create_signal_fields_from_kalman() → SignalFields (accuracy-based)
         3. SignalGeometryEngine.evaluate() → GeometryDecision (action + sizing)
         4. decision.position_signal → actual position
+    
+    Supports two model APIs:
+        - Kalman-style: model.filter(returns, vol, q, c, phi, ...)
+        - Experimental: model._filter(returns, vol, params_dict) 
     """
     n = len(returns)
     
@@ -218,7 +222,11 @@ def _simulate_signals(returns, model_name, params):
     model_params = getattr(params, 'model_params', {}) or {}
     has_fitted_params = model_params.get('q') is not None
     
-    if model is not None and hasattr(model, 'filter') and has_fitted_params:
+    # Determine which filter API the model supports
+    has_filter = model is not None and hasattr(model, 'filter')
+    has_internal_filter = model is not None and hasattr(model, '_filter')
+    
+    if (has_filter or has_internal_filter) and has_fitted_params:
         try:
             # Import signal modules
             from .signal_fields import SignalFields, create_signal_fields_from_kalman
@@ -235,12 +243,20 @@ def _simulate_signals(returns, model_name, params):
             complex_weight = model_params.get('complex_weight', 1.0)
             
             # Run the model filter with fitted parameters
-            if hasattr(model, 'n_levels'):
-                # DTCWT model
-                mu, sigma, _ = model.filter(returns, vol, q, c, phi, complex_weight)
+            if has_filter:
+                # Kalman-style API: model.filter(returns, vol, q, c, phi, ...)
+                if hasattr(model, 'n_levels'):
+                    # DTCWT model with complex_weight
+                    mu, sigma, _ = model.filter(returns, vol, q, c, phi, complex_weight)
+                else:
+                    # Standard Kalman model
+                    mu, sigma, _ = model.filter(returns, vol, q, c, phi)
             else:
-                # Standard Kalman model
-                mu, sigma, _ = model.filter(returns, vol, q, c, phi)
+                # Experimental API: model._filter(returns, vol, params_dict)
+                filter_params = {'q': q, 'c': c, 'phi': phi, 'cw': complex_weight}
+                result = model._filter(returns, vol, filter_params)
+                # _filter returns (mu, sigma, ll, pit)
+                mu, sigma = result[0], result[1]
             
             # =========================================================
             # SignalFields → SignalGeometry flow
