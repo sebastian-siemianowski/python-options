@@ -291,13 +291,26 @@ class SignalFields:
     hedging_pressure: float # Implied hedging pressure
 ```
 
-**Current Configuration (Long-Only Mode):**
+**Current Configuration (Production - Long-Only Mode):**
 - Markets have positive drift → shorts destroy CAGR
 - Direction threshold: 0.15 (emergent direction is noisier)
 - Confidence threshold: 0.32
-- Reliability floor: 0.25 (allows signal through)
+- Agreement threshold: 0.15 (weak signals don't count as votes)
+- NO reliability floor (architectural purity)
 - Base position: 45%, Max position: 85%
 - Long bias: 0.15
+- allow_shorts: False (set True for research/stress-testing)
+
+**Reliability Formula (No Floor - Architectural Purity):**
+```python
+stability_reliability = max(0, fields.stability + 0.3) / 1.3
+confidence_reliability = max(0, fields.confidence)
+regime_reliability = max(0, fields.regime_fit + 0.5) / 1.5
+
+# Geometric mean + exponential dampening (no floor)
+reliability = (stab × conf × regime) ** (1/3)
+reliability = reliability ** 1.15  # Extra conservatism on weak signals
+```
 
 **Field Validation (NO SILENT FAILURES):**
 The system explicitly validates all SignalFields before processing:

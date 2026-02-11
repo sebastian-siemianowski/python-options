@@ -259,6 +259,11 @@ class GeometryConfig:
     # Long bias (markets have positive drift empirically)
     # With long-only mode, this helps stay invested more often
     long_bias: float = 0.15                # Upward drift compensation
+    
+    # Short mode toggle (for research/stress-testing negative geometry)
+    # Production: False (long-only captures drift, shorts destroy CAGR)
+    # Research: True (allows testing short-side calibration)
+    allow_shorts: bool = False
 
 
 @dataclass
@@ -356,15 +361,23 @@ def _synthesize_direction(fields: SignalFields, long_bias: float = 0.0) -> float
     regime_reliability = max(0, fields.regime_fit + 0.5) / 1.5  # Normalize to [0, 1]
     
     # Combined reliability (geometric mean for conservatism)
+    # NO FLOOR - low reliability MUST genuinely dampen direction
+    # This is architectural purity: unreliable = no signal
     reliability = (stability_reliability * confidence_reliability * regime_reliability) ** (1/3)
-    reliability = max(0.25, reliability)  # Floor at 0.25 to allow some signal through
+    
+    # Apply slight exponential dampening for extra conservatism on weak reliability
+    # reliability^1.2 makes low values even lower, high values slightly lower
+    reliability = reliability ** 1.15
     
     # ==========================================================================
     # STEP 3: Agreement bonus - boost when sources agree
     # ==========================================================================
     # Count how many sources agree on direction
+    # IMPORTANT: Only count votes if magnitude > 0.15 (not noise)
+    # Threshold 0.05 was too permissive - amplified weak signals
     sources = [fields.direction, fields.asymmetry, fields.belief_momentum]
-    signs = [1 if s > 0.05 else (-1 if s < -0.05 else 0) for s in sources]
+    agreement_threshold = 0.15  # Only meaningful signals count as votes
+    signs = [1 if s > agreement_threshold else (-1 if s < -agreement_threshold else 0) for s in sources]
     
     positive_votes = sum(1 for s in signs if s > 0)
     negative_votes = sum(1 for s in signs if s < 0)
@@ -586,9 +599,10 @@ class SignalGeometryEngine:
         # Determine polarity from synthesized direction
         direction = 1 if direction_score > 0 else -1
         
-        # LONG-ONLY MODE: Markets have positive drift, shorts destroy CAGR
-        # Only allow LONG positions, HOLD on negative direction
-        if direction < 0:
+        # SHORT MODE GATE (Configurable for research vs production)
+        # Production (allow_shorts=False): Long-only, shorts destroy CAGR
+        # Research (allow_shorts=True): Test short-side geometry calibration
+        if direction < 0 and not cfg.allow_shorts:
             return GeometryDecision(
                 action=TradeAction.HOLD,
                 direction_score=direction_score,
@@ -596,11 +610,13 @@ class SignalGeometryEngine:
                 rationale=f"Long-only mode: direction={direction_score:.2f} < 0"
             )
         
-        # Determine action type for LONG positions only
+        # Determine action type
         if abs(direction_score) > cfg.strong_direction_score and confidence > cfg.high_confidence:
             action = TradeAction.ALLOW_SCALING
-        else:
+        elif direction > 0:
             action = TradeAction.ALLOW_LONG
+        else:
+            action = TradeAction.ALLOW_SHORT  # Only reached if allow_shorts=True
         
         return GeometryDecision(
             action=action,
