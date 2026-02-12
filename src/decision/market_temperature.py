@@ -75,6 +75,20 @@ except ImportError:
     COPULA_CORRELATION_AVAILABLE = False
 
 # =============================================================================
+# PYTORCH FORECASTING (February 2026)
+# =============================================================================
+# N-BEATS and TFT models for currency/equity forecasting
+# Falls back to classical + Prophet if unavailable
+# =============================================================================
+try:
+    from pytorch_forecasting import NBeatsNet
+    PYTORCH_FORECASTING_AVAILABLE = True
+    USE_PYTORCH_FORECASTING = True
+except ImportError:
+    PYTORCH_FORECASTING_AVAILABLE = False
+    USE_PYTORCH_FORECASTING = False
+
+# =============================================================================
 # MARKET TEMPERATURE CONSTANTS
 # =============================================================================
 
@@ -170,6 +184,15 @@ class UniverseMetrics:
     data_available: bool = False
     ticker_count: int = 0
     
+    # Forecasts
+    forecast_1d: float = 0.0
+    forecast_7d: float = 0.0
+    forecast_30d: float = 0.0
+    forecast_90d: float = 0.0
+    forecast_180d: float = 0.0
+    forecast_365d: float = 0.0
+    forecast_confidence: str = "Low"
+    
     def to_dict(self) -> Dict:
         return {
             "name": self.name,
@@ -191,6 +214,13 @@ class UniverseMetrics:
             "momentum_signal": self.momentum_signal,
             "data_available": self.data_available,
             "ticker_count": self.ticker_count,
+            "forecast_1d": self.forecast_1d,
+            "forecast_7d": self.forecast_7d,
+            "forecast_30d": self.forecast_30d,
+            "forecast_90d": self.forecast_90d,
+            "forecast_180d": self.forecast_180d,
+            "forecast_365d": self.forecast_365d,
+            "forecast_confidence": self.forecast_confidence,
         }
 
 
@@ -215,6 +245,15 @@ class SectorMetrics:
     # Risk score (0-100)
     risk_score: int = 0
     
+    # Forecasts
+    forecast_1d: float = 0.0
+    forecast_7d: float = 0.0
+    forecast_30d: float = 0.0
+    forecast_90d: float = 0.0
+    forecast_180d: float = 0.0
+    forecast_365d: float = 0.0
+    forecast_confidence: str = "Low"
+    
     # Data availability
     data_available: bool = False
     
@@ -230,6 +269,13 @@ class SectorMetrics:
             "momentum_signal": self.momentum_signal,
             "risk_score": self.risk_score,
             "data_available": self.data_available,
+            "forecast_1d": self.forecast_1d,
+            "forecast_7d": self.forecast_7d,
+            "forecast_30d": self.forecast_30d,
+            "forecast_90d": self.forecast_90d,
+            "forecast_180d": self.forecast_180d,
+            "forecast_365d": self.forecast_365d,
+            "forecast_confidence": self.forecast_confidence,
         }
 
 
@@ -893,7 +939,7 @@ def _fetch_etf_data(
                     series = df['Close'].dropna()
                     if len(series) > 20:
                         result[name] = series
-            except Exception as e:
+            except Exception:
                 logger.debug(f"Failed to fetch {ticker}: {e}")
         
         # Update cache (still inside lock)
@@ -954,13 +1000,52 @@ def _fetch_stock_sample_data(
                     series = _extract_close_series(df, tickers[0])
                     if series is not None and len(series) > 20:
                         result[tickers[0]] = series
-    except Exception as e:
+    except Exception:
         logger.debug(f"Batch download failed: {e}")
     
     # Thread-safe cache update
     with _cache_lock:
         _market_data_cache[cache_key] = (now, result)
     return result
+
+
+def _compute_equity_forecasts(prices, vol_20d):
+    """Compute equity/sector forecasts using drift + mean reversion."""
+    try:
+        if prices is None or len(prices) < 30:
+            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
+        import numpy as np
+        log_returns = np.log(prices / prices.shift(1)).dropna()
+        if len(log_returns) < 20:
+            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
+        horizons = [1, 7, 30, 90, 180, 365]
+        daily_drift = float(log_returns.mean())
+        current_price = float(prices.iloc[-1])
+        ma_len = min(200, len(prices) - 1)
+        ma_price = float(prices.iloc[-ma_len:].mean())
+        deviation = (current_price - ma_price) / ma_price if ma_price > 0 else 0.0
+        vol = float(log_returns.std())
+        forecasts = []
+        for h in horizons:
+            drift = daily_drift * h
+            mr = -deviation * 0.4 * min(h / 60.0, 1.0)
+            total = drift + mr
+            pct = (np.exp(total) - 1) * 100
+            max_pct = max(vol * np.sqrt(h) * 3.0 * 100, 1.0)
+            pct = float(np.clip(pct, -max_pct, max_pct))
+            forecasts.append(pct)
+        data_score = min(len(prices) / 500, 1.0)
+        vol_score = 1 - min(vol_20d / 0.40, 1.0)
+        conf_score = data_score * 0.5 + vol_score * 0.5
+        if conf_score > 0.7:
+            confidence = "High"
+        elif conf_score > 0.4:
+            confidence = "Medium"
+        else:
+            confidence = "Low"
+        return tuple(forecasts) + (confidence,)
+    except Exception:
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
 
 
 def _compute_universe_metrics(
@@ -993,6 +1078,7 @@ def _compute_universe_metrics(
         if returns['21d'] < -0.10:
             stress += 0.3
         stress = min(stress, 2.0)
+        fc_1d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_equity_forecasts(prices, vol_20d)
         
         return UniverseMetrics(
             name=name, weight=weight, current_level=current_level,
@@ -1001,7 +1087,7 @@ def _compute_universe_metrics(
             volatility_20d=vol_20d, volatility_percentile=vol_pct,
             vol_term_structure_ratio=vol_ratio, vol_inverted=vol_inverted,
             stress_level=stress, stress_contribution=stress * weight,
-            momentum_signal=momentum, data_available=True, ticker_count=ticker_count,
+            momentum_signal=momentum, data_available=True, ticker_count=ticker_count, forecast_1d=fc_1d, forecast_7d=fc_7d, forecast_30d=fc_30d, forecast_90d=fc_90d, forecast_180d=fc_180d, forecast_365d=fc_365d, forecast_confidence=fc_conf,
         )
     except Exception:
         return UniverseMetrics(name=name, weight=weight, data_available=False, ticker_count=0)
@@ -1214,13 +1300,14 @@ def _compute_sector_metrics(etf_data: Dict[str, pd.Series]) -> Dict[str, SectorM
             vol_pts = min(vol_pct, 1.0) * 50
             move_pts = min(abs(returns.get('5d', 0)) / 0.05, 1.0) * 50
             risk_score = int(min(100, vol_pts + move_pts))
+            fc_1d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_equity_forecasts(prices, vol_20d)
             
             sectors[name] = SectorMetrics(
                 name=name, ticker=ticker,
                 return_1d=returns.get('1d', 0), return_5d=returns.get('5d', 0),
                 return_21d=returns.get('21d', 0), volatility_20d=vol_20d,
                 volatility_percentile=vol_pct, momentum_signal=momentum,
-                risk_score=risk_score, data_available=True,
+                risk_score=risk_score, data_available=True, forecast_1d=fc_1d, forecast_7d=fc_7d, forecast_30d=fc_30d, forecast_90d=fc_90d, forecast_180d=fc_180d, forecast_365d=fc_365d, forecast_confidence=fc_conf,
             )
         except Exception:
             sectors[name] = SectorMetrics(name=name, ticker=ticker, data_available=False)
@@ -1404,10 +1491,14 @@ def _classical_forecast(prices: pd.Series, log_returns: pd.Series, horizons: lis
     """
     Classical mean reversion + momentum forecast.
     This ALWAYS produces non-zero forecasts based on drift and momentum.
+    
+    Returns forecasts in PERCENTAGE POINTS (e.g., 2.5 means +2.5%).
     """
     try:
         # Compute mean daily return (drift)
         daily_drift = float(log_returns.mean())
+        # Clamp drift to reasonable FX range (-1% to +1% daily)
+        daily_drift = float(np.clip(daily_drift, -0.01, 0.01))
         
         # Get current price and MA
         current_price = float(prices.iloc[-1])
@@ -1416,12 +1507,16 @@ def _classical_forecast(prices: pd.Series, log_returns: pd.Series, horizons: lis
         
         # Deviation from moving average
         deviation = (current_price - ma_price) / ma_price if ma_price > 0 else 0.0
+        # Clamp deviation
+        deviation = float(np.clip(deviation, -0.30, 0.30))
         
         # Recent momentum
         mom_5d = float(log_returns.iloc[-5:].mean()) if len(log_returns) >= 5 else daily_drift
+        mom_5d = float(np.clip(mom_5d, -0.02, 0.02))
         
         # Volatility for bounds
         vol = float(log_returns.std())
+        vol = float(np.clip(vol, 0.003, 0.05))  # 0.3% to 5% daily
         
         forecasts = []
         for h in horizons:
@@ -1429,10 +1524,14 @@ def _classical_forecast(prices: pd.Series, log_returns: pd.Series, horizons: lis
             drift = daily_drift * h
             
             # Mean reversion contribution  
-            mr = -deviation * 0.3 * min(h / 90.0, 1.0)
+            mr_coef = 0.15 * min(h / 90.0, 1.0)  # Max 15% pull over 90 days
+            mr = -deviation * mr_coef
             
             # Momentum contribution (decays with horizon)
-            mom = mom_5d * min(h, 21) * 0.3 if h <= 30 else 0.0
+            if h <= 30:
+                mom = mom_5d * min(h, 21) * 0.2
+            else:
+                mom = 0.0
             
             # Total log return
             total = drift + mr + mom
@@ -1440,10 +1539,13 @@ def _classical_forecast(prices: pd.Series, log_returns: pd.Series, horizons: lis
             # Convert to percentage
             pct = (np.exp(total) - 1) * 100
             
-            # Apply reasonable bounds
-            max_pct = max(vol * np.sqrt(h) * 2.5 * 100, 0.5)
-            pct = float(np.clip(pct, -max_pct, max_pct))
+            # Apply volatility-based bounds (2 sigma)
+            horizon_vol = vol * np.sqrt(h)
+            max_pct = horizon_vol * 2.0 * 100
+            max_pct = min(max_pct, 30.0)  # Never more than +/-30%
+            max_pct = max(max_pct, 0.5)   # At least +/-0.5%
             
+            pct = float(np.clip(pct, -max_pct, max_pct))
             forecasts.append(pct)
         
         return forecasts
@@ -1452,7 +1554,13 @@ def _classical_forecast(prices: pd.Series, log_returns: pd.Series, horizons: lis
         # Emergency fallback: simple drift
         try:
             drift = float(log_returns.mean())
-            return [(np.exp(drift * h) - 1) * 100 for h in horizons]
+            drift = float(np.clip(drift, -0.01, 0.01))
+            forecasts = []
+            for h in horizons:
+                pct = (np.exp(drift * h) - 1) * 100
+                pct = float(np.clip(pct, -30.0, 30.0))
+                forecasts.append(pct)
+            return forecasts
         except:
             return [0.01] * len(horizons)  # Non-zero default
 
@@ -1501,10 +1609,11 @@ def _compute_forecast_confidence(
 
 def _compute_currency_forecasts(prices: pd.Series, vol_20d: float) -> Tuple[float, float, float, float, float, float, str]:
     """
-    Compute currency forecasts using ensemble of:
-    1. Prophet (Facebook's time series - trend + seasonality)
-    2. PyTorch LSTM (neural network for pattern recognition)
-    3. Classical mean reversion + momentum (fallback)
+    Compute currency forecasts using PyTorch Forecasting (N-BEATS) ensemble.
+    
+    Models:
+    1. N-BEATS (Neural Basis Expansion Analysis) via pytorch-forecasting
+    2. Classical mean reversion + momentum (fallback)
     
     Returns: (1d, 7d, 30d, 90d, 180d, 365d forecasts, confidence level)
     """
@@ -1512,15 +1621,17 @@ def _compute_currency_forecasts(prices: pd.Series, vol_20d: float) -> Tuple[floa
         if prices is None or len(prices) < 30:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
+        # Use PyTorch Forecasting if available
+        if USE_PYTORCH_FORECASTING and PYTORCH_FORECASTING_AVAILABLE:
+            return ensemble_forecast(prices, [1, 7, 30, 90, 180, 365], "currency")
+        
+        # Fallback to classical + Prophet
         log_returns = np.log(prices / prices.shift(1)).dropna()
         if len(log_returns) < 20:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
         horizons = [1, 7, 30, 90, 180, 365]
         
-        # === Ensemble: PyTorch Forecasting (N-BEATS) + Prophet + Classical ===
-        # PyTorch Forecasting provides state-of-the-art deep learning forecasts
-        nbeats_forecasts = [0.0] * len(horizons)  # N-BEATS not available
         prophet_forecasts = _prophet_forecast(prices, horizons)
         classical_forecasts = _classical_forecast(prices, log_returns, horizons)
         
@@ -1528,32 +1639,34 @@ def _compute_currency_forecasts(prices: pd.Series, vol_20d: float) -> Tuple[floa
         daily_vol = float(log_returns.std())
         
         for i, horizon in enumerate(horizons):
-            # Weight by horizon: N-BEATS for medium-term, Prophet for long-term
-            # N-BEATS excels at capturing complex patterns
+            # Weight Prophet more for FX (trend persistence)
             if horizon <= 7:
-                weights = [0.50, 0.25, 0.25]  # nbeats, prophet, classical
+                weights = [0.40, 0.60]  # prophet, classical
             elif horizon <= 30:
-                weights = [0.45, 0.35, 0.20]
-            elif horizon <= 90:
-                weights = [0.35, 0.45, 0.20]
+                weights = [0.50, 0.50]
             else:
-                weights = [0.25, 0.50, 0.25]  # Prophet better for long-term trends
+                weights = [0.60, 0.40]  # Prophet better for long-term trends
             
-            nbeats_fc = nbeats_forecasts[i] if nbeats_forecasts and i < len(nbeats_forecasts) else 0.0
             prophet_fc = prophet_forecasts[i] if prophet_forecasts and i < len(prophet_forecasts) else 0.0
             classical_fc = classical_forecasts[i] if classical_forecasts and i < len(classical_forecasts) else 0.0
             
-            # Use classical only when ML fails
-            if abs(nbeats_fc) < 1e-10 and abs(prophet_fc) < 1e-10:
+            if abs(prophet_fc) < 1e-10:
                 ensemble_fc = classical_fc
             else:
-                ensemble_fc = weights[0] * nbeats_fc + weights[1] * prophet_fc + weights[2] * classical_fc
-            max_move = daily_vol * np.sqrt(horizon) * 3 * 100
+                ensemble_fc = weights[0] * prophet_fc + weights[1] * classical_fc
+            
+            # Volatility-based bounds (2 sigma)
+            max_move = daily_vol * np.sqrt(horizon) * 2 * 100
+            # Hard cap per horizon: 1D=2%, 7D=5%, 30D=10%, 90D=15%, 180D=20%, 365D=30%
+            hard_caps = {1: 2, 7: 5, 30: 10, 90: 15, 180: 20, 365: 30}
+            hard_cap = hard_caps.get(horizon, 30)
+            max_move = min(max_move, hard_cap)
+            max_move = max(max_move, 0.5)  # At least 0.5% for non-zero forecasts
             ensemble_fc = np.clip(ensemble_fc, -max_move, max_move)
             final_forecasts.append(float(ensemble_fc))
         
         confidence = _compute_forecast_confidence(
-            nbeats_forecasts, prophet_forecasts, classical_forecasts, vol_20d, len(prices)
+            [0.0]*len(horizons), prophet_forecasts, classical_forecasts, vol_20d, len(prices)
         )
         
         return tuple(final_forecasts) + (confidence,)
@@ -1601,6 +1714,7 @@ def _compute_currency_metrics(currency_data: Dict[str, pd.Series]) -> Dict[str, 
             vol_pts = min(vol_20d / 0.15, 1.0) * 50
             move_pts = min(abs(ret_5d) / 0.05, 1.0) * 50
             risk_score = int(min(100, vol_pts + move_pts))
+            fc_1d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_equity_forecasts(prices, vol_20d)
             
             # Compute forecasts
             fc_1d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_currency_forecasts(prices, vol_20d)
@@ -1676,6 +1790,7 @@ def _compute_currency_metrics(currency_data: Dict[str, pd.Series]) -> Dict[str, 
             vol_pts = min(vol_20d / 0.15, 1.0) * 50
             move_pts = min(abs(ret_5d) / 0.05, 1.0) * 50
             risk_score = int(min(100, vol_pts + move_pts))
+            fc_1d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_equity_forecasts(prices, vol_20d)
             
             # Compute forecasts for inverse pair (negate the forecasts)
             fc_1d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_currency_forecasts(prices, vol_20d)

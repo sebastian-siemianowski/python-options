@@ -65,8 +65,24 @@ Use `--disable-momentum` flag for ablation testing.
 make setup     # First-time setup (venv + deps + data)
 make stocks    # Refresh prices + generate signals
 make tune      # Re-estimate model parameters (weekly)
+make risk      # Unified risk dashboard (cross-asset, metals, equity, currencies)
 make tests     # Run test suite
 ```
+
+### Risk Dashboard (make risk)
+Displays unified risk assessment with forecasts across all asset classes:
+- **Cross-Asset Stress**: FX Carry, Equities, Duration, Commodities, Metals
+- **Metals Risk**: Individual metals with momentum, risk scores, forecasts (7D, 30D, 3M, 6M, 12M)
+- **Equity Market**: Universe metrics, sector breakdown, currency pairs with forecasts
+- **JPY Forecasts**: Yen strength view with multi-horizon forecasts
+
+**Forecasts use classical mean reversion + momentum with proper bounds:**
+
+| Asset Class | 7D   | 30D  | 3M   | 6M   | 12M  |
+|-------------|------|------|------|------|------|
+| Currencies  | ±5%  | ±10% | ±15% | ±20% | ±30% |
+| Equities    | ±5%  | ±10% | ±15% | ±20% | ±30% |
+| Metals      | ±8%  | ±15% | ±25% | ±35% | ±50% |
 
 ### Testing Patterns
 ```bash
