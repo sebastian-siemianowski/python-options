@@ -630,31 +630,55 @@ def _compute_volatility_percentile(
         return 0.5
 
 
-def _compute_metal_forecasts(prices: pd.Series, vol_20d: float) -> tuple:
-    """Compute metal price forecasts using drift + mean reversion model."""
+def _compute_metal_forecasts(prices: pd.Series, vol_20d: float, metal_name: str = "metal") -> tuple:
+    """
+    Compute metal price forecasts using PyTorch Forecasting ensemble.
+    
+    Uses N-BEATS + Classical drift/momentum ensemble for robust forecasting.
+    
+    Returns: (fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, confidence)
+    """
     try:
         if prices is None or len(prices) < 30:
-            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
+            return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
+        # Try PyTorch Forecasting ensemble first
+        try:
+            from decision.pytorch_forecasting_utils import ensemble_forecast, PYTORCH_FORECASTING_AVAILABLE
+            
+            if PYTORCH_FORECASTING_AVAILABLE and len(prices) >= 100:
+                fc_1d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, confidence = ensemble_forecast(
+                    prices, 
+                    horizons=[1, 7, 30, 90, 180, 365], 
+                    name=metal_name
+                )
+                # Return only 7d onwards
+                return fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, confidence
+        except ImportError:
+            pass
+        
+        # Fallback: classical method
         log_returns = np.log(prices / prices.shift(1)).dropna()
         if len(log_returns) < 20:
-            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
+            return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
-        horizons = [1, 7, 30, 90, 180, 365]
+        horizons = [7, 30, 90, 180, 365]
         daily_drift = float(log_returns.mean())
         current_price = float(prices.iloc[-1])
         ma_len = min(200, len(prices) - 1)
         ma_price = float(prices.iloc[-ma_len:].mean())
         deviation = (current_price - ma_price) / ma_price if ma_price > 0 else 0.0
+        mom_5d = float(log_returns.iloc[-5:].mean()) if len(log_returns) >= 5 else daily_drift
         vol = float(log_returns.std())
         
         forecasts = []
         for h in horizons:
             drift = daily_drift * h
-            mr = -deviation * 0.3 * min(h / 90.0, 1.0)
-            total = drift + mr
+            mr = -deviation * 0.25 * min(h / 90.0, 1.0)
+            mom = mom_5d * min(h, 15) * 0.2 if h <= 30 else 0.0
+            total = drift + mr + mom
             pct = (np.exp(total) - 1) * 100
-            max_pct = max(vol * np.sqrt(h) * 2.5 * 100, 0.5)
+            max_pct = max(vol * np.sqrt(h) * 2.5 * 100, 1.0)
             pct = float(np.clip(pct, -max_pct, max_pct))
             forecasts.append(pct)
         
@@ -665,7 +689,7 @@ def _compute_metal_forecasts(prices: pd.Series, vol_20d: float) -> tuple:
         
         return tuple(forecasts) + (confidence,)
     except Exception:
-        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
+        return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
 
 
 def _extract_close_series(df, ticker: str) -> Optional[pd.Series]:
@@ -1481,103 +1505,8 @@ def _compute_momentum_signal(ret_1d: float, ret_5d: float, ret_21d: float) -> st
         return "→ Flat"
 
 
-def _compute_metal_forecasts(
-    prices: pd.Series, 
-    vol_20d: float
-) -> Tuple[float, float, float, float, float, str]:
-    """
-    Compute metal price forecasts using classical mean reversion + momentum.
-    
-    Metals are typically mean-reverting with momentum persistence.
-    Uses drift + mean reversion + momentum with proper bounds per horizon.
-    
-    Returns: (7d, 30d, 90d, 180d, 365d forecasts, confidence level)
-    
-    Bounds per horizon (metals are more volatile than FX):
-        7D: ±8%, 30D: ±15%, 90D: ±25%, 180D: ±35%, 365D: ±50%
-    """
-    try:
-        if prices is None or len(prices) < 30:
-            return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
-        
-        log_returns = np.log(prices / prices.shift(1)).dropna()
-        if len(log_returns) < 20:
-            return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
-        
-        # Compute mean daily return (drift) - metals have lower drift than equities
-        daily_drift = float(log_returns.mean())
-        daily_drift = float(np.clip(daily_drift, -0.005, 0.005))  # ±0.5% daily max
-        
-        # Get current price and MA
-        current_price = float(prices.iloc[-1])
-        ma_len = min(200, len(prices) - 1)
-        ma_price = float(prices.iloc[-ma_len:].mean())
-        
-        # Deviation from moving average (mean reversion signal)
-        deviation = (current_price - ma_price) / ma_price if ma_price > 0 else 0.0
-        deviation = float(np.clip(deviation, -0.40, 0.40))  # Cap at 40%
-        
-        # Recent momentum (5-day)
-        mom_5d = float(log_returns.iloc[-5:].mean()) if len(log_returns) >= 5 else daily_drift
-        mom_5d = float(np.clip(mom_5d, -0.03, 0.03))  # ±3% daily momentum cap
-        
-        # Volatility for bounds
-        vol = float(log_returns.std())
-        vol = float(np.clip(vol, 0.005, 0.08))  # 0.5% to 8% daily for metals
-        
-        horizons = [7, 30, 90, 180, 365]
-        # Hard caps per horizon for metals (more volatile than FX)
-        hard_caps = {7: 8, 30: 15, 90: 25, 180: 35, 365: 50}
-        
-        forecasts = []
-        for h in horizons:
-            # Drift contribution (trend persistence)
-            drift = daily_drift * h
-            
-            # Mean reversion contribution (stronger for metals)
-            mr_coef = 0.20 * min(h / 60.0, 1.0)  # Max 20% pull over 60 days
-            mr = -deviation * mr_coef
-            
-            # Momentum contribution (decays with horizon)
-            if h <= 30:
-                mom = mom_5d * min(h, 15) * 0.3
-            elif h <= 90:
-                mom = mom_5d * 15 * 0.15
-            else:
-                mom = 0.0
-            
-            # Total log return
-            total = drift + mr + mom
-            
-            # Convert to percentage
-            pct = (np.exp(total) - 1) * 100
-            
-            # Apply volatility-based bounds (2 sigma)
-            horizon_vol = vol * np.sqrt(h)
-            max_pct = horizon_vol * 2.0 * 100
-            hard_cap = hard_caps.get(h, 50)
-            max_pct = min(max_pct, hard_cap)
-            max_pct = max(max_pct, 1.0)  # At least ±1%
-            
-            pct = float(np.clip(pct, -max_pct, max_pct))
-            forecasts.append(pct)
-        
-        # Compute confidence based on data quality and volatility
-        data_score = min(len(prices) / 500, 1.0)
-        vol_score = 1 - min(vol_20d / 1.0, 1.0)  # Metals can be very volatile
-        confidence_score = data_score * 0.5 + vol_score * 0.5
-        
-        if confidence_score > 0.7:
-            confidence = "High"
-        elif confidence_score > 0.4:
-            confidence = "Medium"
-        else:
-            confidence = "Low"
-        
-        return forecasts[0], forecasts[1], forecasts[2], forecasts[3], forecasts[4], confidence
-        
-    except Exception:
-        return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
+# Note: _compute_metal_forecasts is defined earlier in this file (around line 633)
+# with PyTorch Forecasting support. Do not add a duplicate definition here.
 
 
 def compute_individual_metal_stress(
@@ -1629,7 +1558,7 @@ def compute_individual_metal_stress(
             stress = vol_pct * 2.0
             
             # Compute forecasts (7d, 30d, 90d, 180d, 365d)
-            fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_metal_forecasts(prices, vol_20d)
+            fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_metal_forecasts(prices, vol_20d, name.title())
             
             metals[name.lower()] = MetalStressCategory(
                 name=name.title(),

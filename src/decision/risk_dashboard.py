@@ -788,6 +788,7 @@ def compute_and_render_unified_risk(
     univ_table.add_column("Vol", justify="right", width=6)
     univ_table.add_column("Risk", justify="right", width=4)
     univ_table.add_column("F:1D", justify="right", width=6)
+    univ_table.add_column("F:3D", justify="right", width=6)
     univ_table.add_column("F:7D", justify="right", width=6)
     univ_table.add_column("F:30D", justify="right", width=6)
     univ_table.add_column("F:3M", justify="right", width=6)
@@ -839,6 +840,7 @@ def compute_and_render_unified_risk(
         else:
             univ_risk_style = "green"
         fc_1d = getattr(univ, 'forecast_1d', 0.0)
+        fc_3d = getattr(univ, 'forecast_3d', 0.0)
         fc_7d = getattr(univ, 'forecast_7d', 0.0)
         fc_30d = getattr(univ, 'forecast_30d', 0.0)
         fc_90d = getattr(univ, 'forecast_90d', 0.0)
@@ -855,6 +857,7 @@ def compute_and_render_unified_risk(
             Text(f"{univ.volatility_20d:.0%}", style=vol_style),
             Text(f"{univ_crash_risk}", style=univ_risk_style),
             Text(f"{fc_1d:+.1f}%", style=forecast_style(fc_1d)),
+            Text(f"{fc_3d:+.1f}%", style=forecast_style(fc_3d)),
             Text(f"{fc_7d:+.1f}%", style=forecast_style(fc_7d)),
             Text(f"{fc_30d:+.1f}%", style=forecast_style(fc_30d)),
             Text(f"{fc_90d:+.1f}%", style=forecast_style(fc_90d)),
@@ -890,6 +893,8 @@ def compute_and_render_unified_risk(
         sector_table.add_column("Vol", justify="right", width=5)
         sector_table.add_column("Mom", justify="left", width=9)
         sector_table.add_column("Risk", justify="right", width=4)
+        sector_table.add_column("F:1D", justify="right", width=6)
+        sector_table.add_column("F:3D", justify="right", width=6)
         sector_table.add_column("F:7D", justify="right", width=6)
         sector_table.add_column("F:30D", justify="right", width=6)
         sector_table.add_column("F:3M", justify="right", width=6)
@@ -937,6 +942,8 @@ def compute_and_render_unified_risk(
                 risk_style = "green"
             
             # Forecast styling
+            fc_1d = getattr(sector, 'forecast_1d', 0.0)
+            fc_3d = getattr(sector, 'forecast_3d', 0.0)
             fc_7d = getattr(sector, 'forecast_7d', 0.0)
             fc_30d = getattr(sector, 'forecast_30d', 0.0)
             fc_90d = getattr(sector, 'forecast_90d', 0.0)
@@ -944,6 +951,8 @@ def compute_and_render_unified_risk(
             fc_365d = getattr(sector, 'forecast_365d', 0.0)
             fc_conf = getattr(sector, 'forecast_confidence', 'Low')
             
+            fc_1d_style = "bright_green" if fc_1d >= 0 else "indian_red1"
+            fc_3d_style = "bright_green" if fc_3d >= 0 else "indian_red1"
             fc_7d_style = "bright_green" if fc_7d >= 0 else "indian_red1"
             fc_30d_style = "bright_green" if fc_30d >= 0 else "indian_red1"
             fc_90d_style = "bright_green" if fc_90d >= 0 else "indian_red1"
@@ -959,6 +968,8 @@ def compute_and_render_unified_risk(
                 Text(f"{sector.volatility_20d:.0%}", style=vol_style),
                 Text(momentum, style=mom_style),
                 Text(f"{risk_score}", style=risk_style),
+                Text(f"{fc_1d:+.1f}%", style=fc_1d_style),
+                Text(f"{fc_3d:+.1f}%", style=fc_3d_style),
                 Text(f"{fc_7d:+.1f}%", style=fc_7d_style),
                 Text(f"{fc_30d:+.1f}%", style=fc_30d_style),
                 Text(f"{fc_90d:+.1f}%", style=fc_90d_style),
