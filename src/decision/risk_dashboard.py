@@ -906,11 +906,10 @@ def compute_and_render_unified_risk(
         currency_table.add_column("Mom", justify="left", width=10)
         currency_table.add_column("Risk", justify="right", width=5)
         
-        # Sort ALL currencies by risk score (highest first)
+        # Sort ALL currencies alphabetically by pair name
         sorted_currencies = sorted(
             available_currencies,
-            key=lambda c: c.risk_score,
-            reverse=True
+            key=lambda c: c.name
         )
         
         for currency in sorted_currencies:
@@ -989,11 +988,10 @@ def compute_and_render_unified_risk(
             jpy_table.add_column("12M", justify="right", width=6)
             jpy_table.add_column("Conf", justify="left", width=6)
             
-            # Sort by absolute forecast magnitude (most movement expected first)
+            # Sort alphabetically by pair name
             sorted_jpy = sorted(
                 jpy_base_pairs,
-                key=lambda c: abs(getattr(c, 'forecast_30d', 0)),
-                reverse=True
+                key=lambda c: c.name
             )
             
             for currency in sorted_jpy:
@@ -1031,17 +1029,17 @@ def compute_and_render_unified_risk(
                 jpy_table.add_row(
                     currency.name,
                     rate_str,
-                    Text(f"{fc_1d:+.1f}%", style=forecast_style(fc_1d)),
-                    Text(f"{fc_7d:+.1f}%", style=forecast_style(fc_7d)),
-                    Text(f"{fc_30d:+.1f}%", style=forecast_style(fc_30d)),
-                    Text(f"{fc_90d:+.1f}%", style=forecast_style(fc_90d)),
-                    Text(f"{fc_180d:+.1f}%", style=forecast_style(fc_180d)),
-                    Text(f"{fc_365d:+.1f}%", style=forecast_style(fc_365d)),
+                    Text(f"{fc_1d:+.2f}%", style=forecast_style(fc_1d)),
+                    Text(f"{fc_7d:+.2f}%", style=forecast_style(fc_7d)),
+                    Text(f"{fc_30d:+.2f}%", style=forecast_style(fc_30d)),
+                    Text(f"{fc_90d:+.2f}%", style=forecast_style(fc_90d)),
+                    Text(f"{fc_180d:+.2f}%", style=forecast_style(fc_180d)),
+                    Text(f"{fc_365d:+.2f}%", style=forecast_style(fc_365d)),
                     Text(fc_conf, style=conf_style),
                 )
             
             console.print(jpy_table)
-            console.print("  [dim italic]Forecasts: Prophet + LSTM + Classical ensemble. Positive = JPY strengthening.[/dim italic]")
+            console.print("  [dim italic]Forecasts: Classical + Prophet ensemble (when available). Positive = JPY strengthening.[/dim italic]")
             console.print()
     
     # Market Breadth
