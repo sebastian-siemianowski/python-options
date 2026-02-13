@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -29,6 +29,10 @@ SHELL := /bin/bash
 # │  make fx-plnjpy          Generate PLN/JPY FX signals                         │
 # │  make report             Render from cached results (no network)             │
 # │  make top20              Quick smoke test: first 20 assets only              │
+# │  make options-tune       Tune volatility models for high conviction options  │
+# │  make chain              Generate options signals using tuned parameters     │
+# │  make chain-force        Force re-tune all volatility models                 │
+# │  make chain-dry          Preview options pipeline (no processing)            │
 # └──────────────────────────────────────────────────────────────────────────────┘
 #
 # ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -112,6 +116,49 @@ SHELL := /bin/bash
 # │  🧪 TESTING                                                                  │
 # ├──────────────────────────────────────────────────────────────────────────────┤
 # │  make tests              Run all tests in src/tests/                         │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  🏟️  ARENA — Experimental Model Competition                                  │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make arena              Full competition: data + tune + results             │
+# │  make arena-data         Download benchmark data (12 symbols)                │
+# │  make arena-tune         Run model competition (standard + experimental)     │
+# │  make arena-results      Show latest competition results                     │
+# │                                                                              │
+# │  Benchmark Universe:                                                         │
+# │    Small Cap: UPST, AFRM, IONQ                                              │
+# │    Mid Cap:   CRWD, DKNG, SNAP                                              │
+# │    Large Cap: AAPL, NVDA, TSLA                                              │
+# │    Index:     SPY, QQQ, IWM                                                 │
+# │                                                                              │
+# │  Experimental models compete against standard momentum models:               │
+# │    - momentum_gaussian, momentum_phi_gaussian                                │
+# │    - momentum_phi_student_t_nu_{4,6,8,12,20}                                │
+# │                                                                              │
+# │  Models must beat standard by >5% to qualify for promotion.                  │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  ⚖️  STRUCTURAL BACKTEST ARENA — Behavioral Validation Layer                 │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make arena-backtest-data     Download 50-ticker multi-sector universe       │
+# │  make arena-backtest-tune     Tune parameters (MULTIPROCESSING, fast)        │
+# │  make arena-backtest-tune ARGS="--workers 8"     Use 8 parallel workers      │
+# │  make arena-backtest-tune ARGS="--no-parallel"   Sequential mode             │
+# │  make arena-backtest          Run behavioral backtests + safety rules        │
+# │  make arena-backtest-results  Show latest backtest results                   │
+# │                                                                              │
+# │  NON-OPTIMIZATION CONSTITUTION:                                              │
+# │    - Financial metrics are OBSERVATIONAL ONLY                                │
+# │    - Decisions based on BEHAVIORAL SAFETY, not raw performance               │
+# │    - One-way flow: Tuning → Backtest → Integration Trial                     │
+# │                                                                              │
+# │  Decision Outcomes: APPROVED | RESTRICTED | QUARANTINED | REJECTED           │
+# │                                                                              │
+# │  Universe Coverage (50 tickers):                                             │
+# │    Technology, Finance, Defence, Healthcare, Industrials,                    │
+# │    Energy, Materials, Consumer, Communication                                │
 # └──────────────────────────────────────────────────────────────────────────────┘
 
 # Ensure virtual environment exists before running commands
@@ -351,6 +398,39 @@ stocks: .venv/.deps_installed
 	@.venv/bin/python src/data_ops/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
 	@$(MAKE) fx-plnjpy
 
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  🔗 OPTIONS CHAIN ANALYSIS (Hierarchical Bayesian Framework)                 │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make options-tune       Tune volatility models for high conviction options  │
+# │  make options-tune-force Force re-tune all volatility models                 │
+# │  make chain              Generate options signals using tuned parameters     │
+# │  make chain-force        Force re-tune + generate signals                    │
+# │  make chain-dry          Preview options pipeline (no processing)            │
+# └──────────────────────────────────────────────────────────────────────────────┘
+
+# Options volatility tuning - reads from src/data/high_conviction/
+# Tunes constant_vol, mean_reverting_vol, regime_vol, regime_skew_vol, variance_swap_anchor
+# Saves results to src/data/option_tune/
+options-tune: .venv/.deps_installed
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -m src.decision.option_tune $(ARGS)
+
+options-tune-force: .venv/.deps_installed
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -m src.decision.option_tune --force $(ARGS)
+
+options-tune-dry: .venv/.deps_installed
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -m src.decision.option_tune --dry-run $(ARGS)
+
+# Options signal pipeline - reads from src/data/high_conviction/
+# Uses tuned volatility models from src/data/option_tune/
+chain: .venv/.deps_installed
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -m src.decision.option_signal $(ARGS)
+
+chain-force: .venv/.deps_installed
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -m src.decision.option_signal --force $(ARGS)
+
+chain-dry: .venv/.deps_installed
+	@PYTHONPATH=$(CURDIR) .venv/bin/python -m src.decision.option_signal --dry-run $(ARGS)
+
 # Render from cached results only (no network/compute)
 report: .venv/.deps_installed
 	@.venv/bin/python src/decision/signals.py --from-cache --cache-json src/data/currencies/fx_plnjpy.json
@@ -435,6 +515,121 @@ clean-cache: .venv/.deps_installed
 
 colors: .venv/.deps_installed
 	@.venv/bin/python src/show_colors.py
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARENA — Experimental Model Competition (February 2026)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Isolated sandbox for testing experimental models against production baselines.
+# Experimental models must beat standard momentum models by >5% to graduate.
+#
+# Benchmark Universe (12 symbols):
+#   Small Cap: UPST, AFRM, IONQ
+#   Mid Cap:   CRWD, DKNG, SNAP
+#   Large Cap: AAPL, NVDA, TSLA
+#   Index:     SPY, QQQ, IWM
+#
+# Standard Models (baselines):
+#   - kalman_gaussian_momentum, kalman_phi_gaussian_momentum
+#   - phi_student_t_nu_{4,6,8,12,20}_momentum
+#
+# Experimental Models (in src/arena/arena_models.py):
+#   - momentum_student_t_v2 (adaptive tail coupling)
+#   - momentum_student_t_regime_coupled (regime-aware ν)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Full arena workflow: run competition + show results (use arena-data to refresh data)
+arena: .venv/.deps_installed
+	@echo ""
+	@$(MAKE) arena-tune
+	@$(MAKE) arena-results
+
+# Download benchmark data for arena (3 small cap, 3 mid cap, 3 large cap, 3 index)
+# Run this explicitly when you need fresh data: make arena-data
+arena-data: .venv/.deps_installed
+	@echo "Downloading arena benchmark data..."
+	@mkdir -p src/arena/data
+	@.venv/bin/python src/arena/arena_cli.py data $(ARGS)
+
+# Run arena model competition (standard + experimental models)
+arena-tune: .venv/.deps_installed
+	@mkdir -p src/arena/data/results
+	@mkdir -p src/arena/disabled
+	@.venv/bin/python src/arena/arena_cli.py tune $(ARGS)
+
+# Show latest arena competition results
+arena-results: .venv/.deps_installed
+	@.venv/bin/python src/arena/arena_cli.py results
+
+# Show models in safe storage (archived competition winners)
+arena-safe-storage: .venv/.deps_installed
+	@.venv/bin/python src/arena/show_safe_storage.py
+
+# Run arena tests on all safe_storage models and update results
+arena-safe: .venv/.deps_installed
+	@echo ""
+	@echo "Running Safe Storage Arena..."
+	@mkdir -p src/arena/safe_storage/data
+	@.venv/bin/python src/arena/safe_storage/run_safe_arena.py $(ARGS)
+
+# Show disabled experimental models
+arena-disabled: .venv/.deps_installed
+	@.venv/bin/python src/arena/arena_cli.py disabled
+
+# Re-enable a disabled model (usage: make arena-enable MODEL=model_name)
+arena-enable: .venv/.deps_installed
+	@if [ -z "$(MODEL)" ]; then \
+		echo "Usage: make arena-enable MODEL=model_name"; \
+		echo "Available disabled models:"; \
+		.venv/bin/python src/arena/arena_cli.py disabled; \
+	else \
+		.venv/bin/python src/arena/arena_cli.py disabled --enable $(MODEL); \
+	fi
+
+# Re-enable all disabled models
+arena-enable-all: .venv/.deps_installed
+	@.venv/bin/python src/arena/arena_cli.py disabled --clear
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STRUCTURAL BACKTEST ARENA — Behavioral Validation Layer
+# ═══════════════════════════════════════════════════════════════════════════════
+# A "court of law" for models — behavioral validation with full diagnostics.
+# Financial metrics are OBSERVATIONAL ONLY — never used for optimization.
+#
+# NON-OPTIMIZATION CONSTITUTION:
+#   1. Separation of Powers: Backtest tuning isolated from production tuning
+#   2. One-Way Flow: Tuning → Backtest → Integration Trial (no reverse)
+#   3. Behavior Over Performance: Diagnostics inform safety, not returns
+#   4. Representativeness: 50 tickers across sectors/caps/regimes
+#
+# Decision Outcomes: APPROVED | RESTRICTED | QUARANTINED | REJECTED
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Download backtest data for the 50-ticker canonical universe
+arena-backtest-data: .venv/.deps_installed
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════════════════"
+	@echo "  STRUCTURAL BACKTEST DATA PIPELINE"
+	@echo "════════════════════════════════════════════════════════════════════════════"
+	@mkdir -p src/arena/data/backtest_data
+	@.venv/bin/python src/arena/backtest_cli.py data $(ARGS)
+
+# Tune backtest-specific parameters (for FAIRNESS, not optimization)
+arena-backtest-tune: .venv/.deps_installed
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════════════════"
+	@echo "  BACKTEST PARAMETER TUNING (for fairness, not optimization)"
+	@echo "════════════════════════════════════════════════════════════════════════════"
+	@mkdir -p src/arena/backtest_tuned_params
+	@.venv/bin/python src/arena/backtest_cli.py tune $(ARGS)
+
+# Execute structural backtests and apply behavioral safety rules
+arena-backtest: .venv/.deps_installed
+	@mkdir -p src/arena/data/backtest_results
+	@.venv/bin/python src/arena/backtest_cli.py run $(ARGS)
+
+# Show latest structural backtest results
+arena-backtest-results: .venv/.deps_installed
+	@.venv/bin/python src/arena/backtest_cli.py results
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UNIFIED RISK DASHBOARD

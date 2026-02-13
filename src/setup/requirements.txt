@@ -8,3 +8,7 @@ rich
 lxml
 hmmlearn
 numba
+torch
+prophet
+pytorch-lightning
+pytorch-forecasting

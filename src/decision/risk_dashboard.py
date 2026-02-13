@@ -361,7 +361,7 @@ def compute_and_render_unified_risk(
     
     title_content = Text()
     title_content.append("\n", style="")
-    title_content.append("U N I F I E D   R I S K   D A S H B O A R D", style="bold bright_white")
+    title_content.append("U N I F I E D   R I S K   D A S H B O A R D", style="bold bright-white")
     title_content.append("\n", style="")
     title_content.append("Cross-Asset • Metals • Equity Market", style="dim")
     title_content.append("\n", style="")
@@ -634,14 +634,20 @@ def compute_and_render_unified_risk(
         box=box.SIMPLE,
         padding=(0, 1),
     )
-    metals_table.add_column("Metal", justify="left", width=10)
-    metals_table.add_column("Price", justify="right", width=10)
-    metals_table.add_column("1D", justify="right", width=8)
-    metals_table.add_column("5D", justify="right", width=8)
-    metals_table.add_column("21D", justify="right", width=8)
-    metals_table.add_column("Vol", justify="right", width=6)
-    metals_table.add_column("Momentum", justify="left", width=12)
-    metals_table.add_column("Risk", justify="right", width=6)
+    metals_table.add_column("Metal", justify="left", width=9)
+    metals_table.add_column("Price", justify="right", width=9)
+    metals_table.add_column("1D", justify="right", width=6)
+    metals_table.add_column("5D", justify="right", width=6)
+    metals_table.add_column("21D", justify="right", width=6)
+    metals_table.add_column("Vol", justify="right", width=5)
+    metals_table.add_column("Mom", justify="left", width=9)
+    metals_table.add_column("Risk", justify="right", width=4)
+    metals_table.add_column("F:7D", justify="right", width=6)
+    metals_table.add_column("F:30D", justify="right", width=6)
+    metals_table.add_column("F:3M", justify="right", width=6)
+    metals_table.add_column("F:6M", justify="right", width=6)
+    metals_table.add_column("F:12M", justify="right", width=6)
+    metals_table.add_column("Conf", justify="left", width=6)
     
     for name, metal in metals_result.metals.items():
         if not metal.data_available:
@@ -676,7 +682,6 @@ def compute_and_render_unified_risk(
         vol = metal.volatility
         ret_5d = metal.return_5d
         
-        # Components: stress (0-40), volatility (0-30), drawdown (0-30)
         stress_pts = (stress / 2.0) * 40
         vol_pts = min(vol / 1.5, 1.0) * 30
         drawdown_pts = min(max(0, -ret_5d) / 0.30, 1.0) * 30
@@ -691,6 +696,21 @@ def compute_and_render_unified_risk(
         else:
             metal_risk_style = "green"
         
+        # Forecast styling
+        fc_7d = getattr(metal, 'forecast_7d', 0.0)
+        fc_30d = getattr(metal, 'forecast_30d', 0.0)
+        fc_90d = getattr(metal, 'forecast_90d', 0.0)
+        fc_180d = getattr(metal, 'forecast_180d', 0.0)
+        fc_365d = getattr(metal, 'forecast_365d', 0.0)
+        fc_conf = getattr(metal, 'forecast_confidence', 'Low')
+        
+        fc_7d_style = "bright_green" if fc_7d >= 0 else "indian_red1"
+        fc_30d_style = "bright_green" if fc_30d >= 0 else "indian_red1"
+        fc_90d_style = "bright_green" if fc_90d >= 0 else "indian_red1"
+        fc_180d_style = "bright_green" if fc_180d >= 0 else "indian_red1"
+        fc_365d_style = "bright_green" if fc_365d >= 0 else "indian_red1"
+        conf_style = "green" if fc_conf == "High" else ("yellow" if fc_conf == "Medium" else "dim")
+        
         metals_table.add_row(
             metal.name,
             price_str,
@@ -700,6 +720,12 @@ def compute_and_render_unified_risk(
             f"{metal.volatility:.0%}",
             Text(momentum, style=mom_style),
             Text(f"{metal_crash_risk}", style=metal_risk_style),
+            Text(f"{fc_7d:+.1f}%", style=fc_7d_style),
+            Text(f"{fc_30d:+.1f}%", style=fc_30d_style),
+            Text(f"{fc_90d:+.1f}%", style=fc_90d_style),
+            Text(f"{fc_180d:+.1f}%", style=fc_180d_style),
+            Text(f"{fc_365d:+.1f}%", style=fc_365d_style),
+            Text(fc_conf, style=conf_style),
         )
     
     console.print(metals_table)
@@ -728,6 +754,20 @@ def compute_and_render_unified_risk(
     # ═══════════════════════════════════════════════════════════════════════════
     
     console.print(Rule(" Equity Market ", style="bright_cyan"))
+
+    # Helper for forecast styling
+    def forecast_style(val: float) -> str:
+        if val > 2.0:
+            return "bold bright_green"
+        elif val > 0.5:
+            return "bright_green"
+        elif val < -2.0:
+            return "bold indian_red1"
+        elif val < -0.5:
+            return "indian_red1"
+        else:
+            return "dim"
+
     console.print()
     
     # Universe metrics table
@@ -746,8 +786,15 @@ def compute_and_render_unified_risk(
     univ_table.add_column("5D", justify="right", width=8)
     univ_table.add_column("21D", justify="right", width=8)
     univ_table.add_column("Vol", justify="right", width=6)
-    univ_table.add_column("Momentum", justify="left", width=12)
-    univ_table.add_column("Risk", justify="right", width=6)
+    univ_table.add_column("Risk", justify="right", width=4)
+    univ_table.add_column("F:1D", justify="right", width=6)
+    univ_table.add_column("F:3D", justify="right", width=6)
+    univ_table.add_column("F:7D", justify="right", width=6)
+    univ_table.add_column("F:30D", justify="right", width=6)
+    univ_table.add_column("F:3M", justify="right", width=6)
+    univ_table.add_column("F:6M", justify="right", width=6)
+    univ_table.add_column("F:12M", justify="right", width=6)
+    univ_table.add_column("Conf", justify="left", width=6)
     
     for name, univ in market_result.universes.items():
         if not univ.data_available:
@@ -792,6 +839,15 @@ def compute_and_render_unified_risk(
             univ_risk_style = "yellow"
         else:
             univ_risk_style = "green"
+        fc_1d = getattr(univ, 'forecast_1d', 0.0)
+        fc_3d = getattr(univ, 'forecast_3d', 0.0)
+        fc_7d = getattr(univ, 'forecast_7d', 0.0)
+        fc_30d = getattr(univ, 'forecast_30d', 0.0)
+        fc_90d = getattr(univ, 'forecast_90d', 0.0)
+        fc_180d = getattr(univ, 'forecast_180d', 0.0)
+        fc_365d = getattr(univ, 'forecast_365d', 0.0)
+        fc_conf = getattr(univ, 'forecast_confidence', 'Low')
+        fc_conf_style = "bold bright_green" if fc_conf == "High" else ("yellow" if fc_conf == "Medium" else "dim")
         
         univ_table.add_row(
             univ.name,
@@ -799,8 +855,15 @@ def compute_and_render_unified_risk(
             Text(f"{univ.return_5d:+.1%}", style=ret_5d_style),
             Text(f"{univ.return_21d:+.1%}", style=ret_21d_style),
             Text(f"{univ.volatility_20d:.0%}", style=vol_style),
-            Text(momentum, style=mom_style),
             Text(f"{univ_crash_risk}", style=univ_risk_style),
+            Text(f"{fc_1d:+.1f}%", style=forecast_style(fc_1d)),
+            Text(f"{fc_3d:+.1f}%", style=forecast_style(fc_3d)),
+            Text(f"{fc_7d:+.1f}%", style=forecast_style(fc_7d)),
+            Text(f"{fc_30d:+.1f}%", style=forecast_style(fc_30d)),
+            Text(f"{fc_90d:+.1f}%", style=forecast_style(fc_90d)),
+            Text(f"{fc_180d:+.1f}%", style=forecast_style(fc_180d)),
+            Text(f"{fc_365d:+.1f}%", style=forecast_style(fc_365d)),
+            Text(fc_conf, style=fc_conf_style),
         )
     
     console.print(univ_table)
@@ -823,13 +886,21 @@ def compute_and_render_unified_risk(
             box=box.SIMPLE,
             padding=(0, 1),
         )
-        sector_table.add_column("Sector", justify="left", width=14)
-        sector_table.add_column("1D", justify="right", width=8)
-        sector_table.add_column("5D", justify="right", width=8)
-        sector_table.add_column("21D", justify="right", width=8)
-        sector_table.add_column("Vol", justify="right", width=6)
-        sector_table.add_column("Momentum", justify="left", width=12)
-        sector_table.add_column("Risk", justify="right", width=6)
+        sector_table.add_column("Sector", justify="left", width=12)
+        sector_table.add_column("1D", justify="right", width=6)
+        sector_table.add_column("5D", justify="right", width=6)
+        sector_table.add_column("21D", justify="right", width=6)
+        sector_table.add_column("Vol", justify="right", width=5)
+        sector_table.add_column("Mom", justify="left", width=9)
+        sector_table.add_column("Risk", justify="right", width=4)
+        sector_table.add_column("F:1D", justify="right", width=6)
+        sector_table.add_column("F:3D", justify="right", width=6)
+        sector_table.add_column("F:7D", justify="right", width=6)
+        sector_table.add_column("F:30D", justify="right", width=6)
+        sector_table.add_column("F:3M", justify="right", width=6)
+        sector_table.add_column("F:6M", justify="right", width=6)
+        sector_table.add_column("F:12M", justify="right", width=6)
+        sector_table.add_column("Conf", justify="left", width=6)
         
         # Sort sectors by risk score (highest first)
         sorted_sectors = sorted(
@@ -870,6 +941,25 @@ def compute_and_render_unified_risk(
             else:
                 risk_style = "green"
             
+            # Forecast styling
+            fc_1d = getattr(sector, 'forecast_1d', 0.0)
+            fc_3d = getattr(sector, 'forecast_3d', 0.0)
+            fc_7d = getattr(sector, 'forecast_7d', 0.0)
+            fc_30d = getattr(sector, 'forecast_30d', 0.0)
+            fc_90d = getattr(sector, 'forecast_90d', 0.0)
+            fc_180d = getattr(sector, 'forecast_180d', 0.0)
+            fc_365d = getattr(sector, 'forecast_365d', 0.0)
+            fc_conf = getattr(sector, 'forecast_confidence', 'Low')
+            
+            fc_1d_style = "bright_green" if fc_1d >= 0 else "indian_red1"
+            fc_3d_style = "bright_green" if fc_3d >= 0 else "indian_red1"
+            fc_7d_style = "bright_green" if fc_7d >= 0 else "indian_red1"
+            fc_30d_style = "bright_green" if fc_30d >= 0 else "indian_red1"
+            fc_90d_style = "bright_green" if fc_90d >= 0 else "indian_red1"
+            fc_180d_style = "bright_green" if fc_180d >= 0 else "indian_red1"
+            fc_365d_style = "bright_green" if fc_365d >= 0 else "indian_red1"
+            conf_style = "green" if fc_conf == "High" else ("yellow" if fc_conf == "Medium" else "dim")
+            
             sector_table.add_row(
                 sector.name,
                 Text(f"{sector.return_1d:+.1%}", style=ret_1d_style),
@@ -878,6 +968,14 @@ def compute_and_render_unified_risk(
                 Text(f"{sector.volatility_20d:.0%}", style=vol_style),
                 Text(momentum, style=mom_style),
                 Text(f"{risk_score}", style=risk_style),
+                Text(f"{fc_1d:+.1f}%", style=fc_1d_style),
+                Text(f"{fc_3d:+.1f}%", style=fc_3d_style),
+                Text(f"{fc_7d:+.1f}%", style=fc_7d_style),
+                Text(f"{fc_30d:+.1f}%", style=fc_30d_style),
+                Text(f"{fc_90d:+.1f}%", style=fc_90d_style),
+                Text(f"{fc_180d:+.1f}%", style=fc_180d_style),
+                Text(f"{fc_365d:+.1f}%", style=fc_365d_style),
+                Text(fc_conf, style=conf_style),
             )
         
         console.print(sector_table)
@@ -898,37 +996,31 @@ def compute_and_render_unified_risk(
             box=box.SIMPLE,
             padding=(0, 1),
         )
-        currency_table.add_column("Pair", justify="left", width=10)
-        currency_table.add_column("Rate", justify="right", width=10)
-        currency_table.add_column("1D", justify="right", width=8)
-        currency_table.add_column("5D", justify="right", width=8)
-        currency_table.add_column("21D", justify="right", width=8)
-        currency_table.add_column("Momentum", justify="left", width=12)
-        currency_table.add_column("Risk", justify="right", width=6)
+        currency_table.add_column("Pair", justify="left", width=9)
+        currency_table.add_column("Rate", justify="right", width=9)
+        currency_table.add_column("1D", justify="right", width=6)
+        currency_table.add_column("5D", justify="right", width=6)
+        currency_table.add_column("21D", justify="right", width=6)
+        currency_table.add_column("Risk", justify="right", width=4)
+        currency_table.add_column("F:1D", justify="right", width=6)
+        currency_table.add_column("F:3D", justify="right", width=6)
+        currency_table.add_column("F:7D", justify="right", width=6)
+        currency_table.add_column("F:30D", justify="right", width=6)
+        currency_table.add_column("F:3M", justify="right", width=6)
+        currency_table.add_column("F:6M", justify="right", width=6)
+        currency_table.add_column("F:12M", justify="right", width=6)
+        currency_table.add_column("Conf", justify="left", width=6)
         
-        # Sort currencies by risk score (highest first)
+        # Sort ALL currencies alphabetically by pair name
         sorted_currencies = sorted(
             available_currencies,
-            key=lambda c: c.risk_score,
-            reverse=True
+            key=lambda c: c.name
         )
         
         for currency in sorted_currencies:
             ret_1d_style = "bright_green" if currency.return_1d >= 0 else "indian_red1"
             ret_5d_style = "bright_green" if currency.return_5d >= 0 else "indian_red1"
             ret_21d_style = "bright_green" if currency.return_21d >= 0 else "indian_red1"
-            
-            momentum = currency.momentum_signal
-            if "Strong" in momentum and "↑" in momentum:
-                mom_style = "bold bright_green"
-            elif "Rising" in momentum or "↗" in momentum:
-                mom_style = "bright_green"
-            elif "Weak" in momentum or "↓" in momentum:
-                mom_style = "bold indian_red1"
-            elif "Falling" in momentum or "↘" in momentum:
-                mom_style = "indian_red1"
-            else:
-                mom_style = "dim"
             
             risk_score = currency.risk_score
             if risk_score >= 70:
@@ -940,10 +1032,27 @@ def compute_and_render_unified_risk(
             else:
                 risk_style = "green"
             
+            # Forecast styling
+            fc_7d = getattr(currency, 'forecast_7d', 0.0)
+            fc_30d = getattr(currency, 'forecast_30d', 0.0)
+            fc_90d = getattr(currency, 'forecast_90d', 0.0)
+            fc_180d = getattr(currency, 'forecast_180d', 0.0)
+            fc_365d = getattr(currency, 'forecast_365d', 0.0)
+            fc_conf = getattr(currency, 'forecast_confidence', 'Low')
+            
+            fc_7d_style = "bright_green" if fc_7d >= 0 else "indian_red1"
+            fc_30d_style = "bright_green" if fc_30d >= 0 else "indian_red1"
+            fc_90d_style = "bright_green" if fc_90d >= 0 else "indian_red1"
+            fc_180d_style = "bright_green" if fc_180d >= 0 else "indian_red1"
+            fc_365d_style = "bright_green" if fc_365d >= 0 else "indian_red1"
+            conf_style = "green" if fc_conf == "High" else ("yellow" if fc_conf == "Medium" else "dim")
+            
             # Format rate based on pair convention
+            is_inverse = getattr(currency, 'is_inverse', False)
             if "BTC" in currency.name or "ETH" in currency.name:
-                # Crypto - show as currency with comma separator
                 rate_str = f"${currency.rate:,.0f}"
+            elif is_inverse:
+                rate_str = f"{currency.rate:.6f}"
             elif "JPY" in currency.name:
                 rate_str = f"{currency.rate:.2f}"
             else:
@@ -955,12 +1064,97 @@ def compute_and_render_unified_risk(
                 Text(f"{currency.return_1d:+.1%}", style=ret_1d_style),
                 Text(f"{currency.return_5d:+.1%}", style=ret_5d_style),
                 Text(f"{currency.return_21d:+.1%}", style=ret_21d_style),
-                Text(momentum, style=mom_style),
                 Text(f"{risk_score}", style=risk_style),
+                Text(f"{fc_1d:+.1f}%", style=fc_1d_style),
+                Text(f"{fc_3d:+.1f}%", style=fc_3d_style),
+                Text(f"{fc_7d:+.1f}%", style=fc_7d_style),
+                Text(f"{fc_30d:+.1f}%", style=fc_30d_style),
+                Text(f"{fc_90d:+.1f}%", style=fc_90d_style),
+                Text(f"{fc_180d:+.1f}%", style=fc_180d_style),
+                Text(f"{fc_365d:+.1f}%", style=fc_365d_style),
+                Text(fc_conf, style=conf_style),
             )
         
         console.print(currency_table)
         console.print()
+        
+        # === JPY FORECAST TABLE (Yen Strength View with Forecasts) ===
+        jpy_base_pairs = [c for c in available_currencies if getattr(c, 'is_inverse', False)]
+        
+        if jpy_base_pairs:
+            console.print("  [dim]JPY Forecasts (Yen Strength View)[/dim]")
+            console.print()
+            
+            jpy_table = Table(
+                show_header=True,
+                header_style="bold white",
+                border_style="dim",
+                box=box.SIMPLE,
+                padding=(0, 1),
+            )
+            jpy_table.add_column("Pair", justify="left", width=9)
+            jpy_table.add_column("Rate", justify="right", width=10)
+            jpy_table.add_column("1D", justify="right", width=6)
+            jpy_table.add_column("7D", justify="right", width=6)
+            jpy_table.add_column("30D", justify="right", width=6)
+            jpy_table.add_column("3M", justify="right", width=6)
+            jpy_table.add_column("6M", justify="right", width=6)
+            jpy_table.add_column("12M", justify="right", width=6)
+            jpy_table.add_column("Conf", justify="left", width=6)
+            
+            # Sort alphabetically by pair name
+            sorted_jpy = sorted(
+                jpy_base_pairs,
+                key=lambda c: c.name
+            )
+            
+            for currency in sorted_jpy:
+                # Rate formatting for JPY base pairs (small numbers)
+                rate_str = f"{currency.rate:.6f}"
+                
+                # Forecast styling
+                def forecast_style(fc):
+                    if fc > 1.0:
+                        return "bold bright_green"
+                    elif fc > 0:
+                        return "bright_green"
+                    elif fc < -1.0:
+                        return "bold indian_red1"
+                    elif fc < 0:
+                        return "indian_red1"
+                    return "dim"
+                
+                fc_1d = getattr(currency, 'forecast_1d', 0)
+                fc_7d = getattr(currency, 'forecast_7d', 0)
+                fc_30d = getattr(currency, 'forecast_30d', 0)
+                fc_90d = getattr(currency, 'forecast_90d', 0)
+                fc_180d = getattr(currency, 'forecast_180d', 0)
+                fc_365d = getattr(currency, 'forecast_365d', 0)
+                fc_conf = getattr(currency, 'forecast_confidence', 'Low')
+                
+                # Confidence styling
+                if fc_conf == "High":
+                    conf_style = "bold bright_green"
+                elif fc_conf == "Medium":
+                    conf_style = "yellow"
+                else:
+                    conf_style = "dim"
+                
+                jpy_table.add_row(
+                    currency.name,
+                    rate_str,
+                    Text(f"{fc_1d:+.2f}%", style=forecast_style(fc_1d)),
+                    Text(f"{fc_7d:+.2f}%", style=forecast_style(fc_7d)),
+                    Text(f"{fc_30d:+.2f}%", style=forecast_style(fc_30d)),
+                    Text(f"{fc_90d:+.2f}%", style=forecast_style(fc_90d)),
+                    Text(f"{fc_180d:+.2f}%", style=forecast_style(fc_180d)),
+                    Text(f"{fc_365d:+.2f}%", style=forecast_style(fc_365d)),
+                    Text(fc_conf, style=conf_style),
+                )
+            
+            console.print(jpy_table)
+            console.print("  [dim italic]Forecasts: Classical + Prophet ensemble (when available). Positive = JPY strengthening.[/dim italic]")
+            console.print()
     
     # Market Breadth
     console.print("  [dim]Market Breadth[/dim]")

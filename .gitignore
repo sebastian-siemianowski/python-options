@@ -51,6 +51,13 @@ src/data/options/stock_prices/
 src/data/plots/
 src/data/russell/
 
+# High conviction signals (regenerated each run, keep README and .gitkeep)
+src/data/high_conviction/buy/*.json
+src/data/high_conviction/sell/*.json
+!src/data/high_conviction/README.md
+!src/data/high_conviction/buy/.gitkeep
+!src/data/high_conviction/sell/.gitkeep
+
 # Kalman tuning cache - per-asset files (git-friendly, commit individual files as needed)
 # Legacy single-file cache (deprecated, use per-asset)
 src/data/kalman_q_cache.json
@@ -99,3 +106,12 @@ htmlcov/
 /src/data/tune2/
 /src/data/tune-old/
 /src/data/online_update/
+/src/data/option_tune/
+/src/data/options_signals/
+/src/data/old_options/
+/src/data/options_data/
+# Arena data files (results and downloaded data, not code)
+/src/data/arena/
+/src/arena/data/
+/src/arena/disabled/
+/src/arena/backtest_tuned_params/

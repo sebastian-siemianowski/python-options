@@ -192,6 +192,13 @@ class MetalStressCategory:
     return_1d: float = 0.0    # 1-day return
     return_21d: float = 0.0   # 21-day (1-month) return
     momentum_signal: str = "" # "↑ Strong", "↗ Rising", "→ Flat", "↘ Falling", "↓ Weak"
+    # Forecast fields (added Feb 2026)
+    forecast_7d: float = 0.0
+    forecast_30d: float = 0.0
+    forecast_90d: float = 0.0
+    forecast_180d: float = 0.0
+    forecast_365d: float = 0.0
+    forecast_confidence: str = "Low"
     
     def to_dict(self) -> Dict:
         return {
@@ -204,6 +211,12 @@ class MetalStressCategory:
             "stress_level": float(self.stress_level),
             "momentum_signal": self.momentum_signal,
             "data_available": self.data_available,
+            "forecast_7d": float(self.forecast_7d),
+            "forecast_30d": float(self.forecast_30d),
+            "forecast_90d": float(self.forecast_90d),
+            "forecast_180d": float(self.forecast_180d),
+            "forecast_365d": float(self.forecast_365d),
+            "forecast_confidence": self.forecast_confidence,
         }
 
 
@@ -615,6 +628,68 @@ def _compute_volatility_percentile(
         return float(percentile)
     except Exception:
         return 0.5
+
+
+def _compute_metal_forecasts(prices: pd.Series, vol_20d: float, metal_name: str = "metal") -> tuple:
+    """
+    Compute metal price forecasts using PyTorch Forecasting ensemble.
+    
+    Uses N-BEATS + Classical drift/momentum ensemble for robust forecasting.
+    
+    Returns: (fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, confidence)
+    """
+    try:
+        if prices is None or len(prices) < 30:
+            return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
+        
+        # Try PyTorch Forecasting ensemble first
+        try:
+            from decision.pytorch_forecasting_utils import ensemble_forecast, PYTORCH_FORECASTING_AVAILABLE
+            
+            if PYTORCH_FORECASTING_AVAILABLE and len(prices) >= 100:
+                fc_1d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, confidence = ensemble_forecast(
+                    prices, 
+                    horizons=[1, 7, 30, 90, 180, 365], 
+                    name=metal_name
+                )
+                # Return only 7d onwards
+                return fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, confidence
+        except ImportError:
+            pass
+        
+        # Fallback: classical method
+        log_returns = np.log(prices / prices.shift(1)).dropna()
+        if len(log_returns) < 20:
+            return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
+        
+        horizons = [7, 30, 90, 180, 365]
+        daily_drift = float(log_returns.mean())
+        current_price = float(prices.iloc[-1])
+        ma_len = min(200, len(prices) - 1)
+        ma_price = float(prices.iloc[-ma_len:].mean())
+        deviation = (current_price - ma_price) / ma_price if ma_price > 0 else 0.0
+        mom_5d = float(log_returns.iloc[-5:].mean()) if len(log_returns) >= 5 else daily_drift
+        vol = float(log_returns.std())
+        
+        forecasts = []
+        for h in horizons:
+            drift = daily_drift * h
+            mr = -deviation * 0.25 * min(h / 90.0, 1.0)
+            mom = mom_5d * min(h, 15) * 0.2 if h <= 30 else 0.0
+            total = drift + mr + mom
+            pct = (np.exp(total) - 1) * 100
+            max_pct = max(vol * np.sqrt(h) * 2.5 * 100, 1.0)
+            pct = float(np.clip(pct, -max_pct, max_pct))
+            forecasts.append(pct)
+        
+        data_score = min(len(prices) / 500, 1.0)
+        vol_score = 1 - min(vol_20d / 0.60, 1.0)
+        conf_score = data_score * 0.5 + vol_score * 0.5
+        confidence = "High" if conf_score > 0.7 else ("Medium" if conf_score > 0.4 else "Low")
+        
+        return tuple(forecasts) + (confidence,)
+    except Exception:
+        return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
 
 
 def _extract_close_series(df, ticker: str) -> Optional[pd.Series]:
@@ -1430,10 +1505,14 @@ def _compute_momentum_signal(ret_1d: float, ret_5d: float, ret_21d: float) -> st
         return "→ Flat"
 
 
+# Note: _compute_metal_forecasts is defined earlier in this file (around line 633)
+# with PyTorch Forecasting support. Do not add a duplicate definition here.
+
+
 def compute_individual_metal_stress(
     metals_data: Dict[str, pd.Series]
 ) -> Dict[str, MetalStressCategory]:
-    """Compute stress metrics for each individual metal including momentum."""
+    """Compute stress metrics for each individual metal including momentum and forecasts."""
     metals = {}
     
     for name in ['GOLD', 'SILVER', 'COPPER', 'PLATINUM', 'PALLADIUM']:
@@ -1478,6 +1557,9 @@ def compute_individual_metal_stress(
             vol_pct = _compute_volatility_percentile(prices)
             stress = vol_pct * 2.0
             
+            # Compute forecasts (7d, 30d, 90d, 180d, 365d)
+            fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_metal_forecasts(prices, vol_20d, name.title())
+            
             metals[name.lower()] = MetalStressCategory(
                 name=name.title(),
                 price=current_price,
@@ -1488,6 +1570,12 @@ def compute_individual_metal_stress(
                 stress_level=min(stress, 2.0),
                 momentum_signal=momentum_signal,
                 data_available=True,
+                forecast_7d=fc_7d,
+                forecast_30d=fc_30d,
+                forecast_90d=fc_90d,
+                forecast_180d=fc_180d,
+                forecast_365d=fc_365d,
+                forecast_confidence=fc_conf,
             )
         except Exception:
             metals[name.lower()] = MetalStressCategory(
@@ -1936,6 +2024,23 @@ def compute_anticipatory_metals_risk_temperature(
         action_text = "Reduce metals exposure significantly"
     else:  # Extreme
         action_text = "Defensive positioning - minimize metals exposure"
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # SAFETY CHECK: Override regime if temperature contradicts regime state
+    # This prevents displaying "Calm" or "Normal" when temperature indicates stress
+    # ═══════════════════════════════════════════════════════════════════════════════
+    if temperature >= 1.5 and new_regime not in ("Extreme",):
+        new_regime = "Extreme"
+        status = "Extreme"
+        action_text = "Defensive positioning - minimize metals exposure"
+    elif temperature >= 1.2 and new_regime not in ("Stressed", "Extreme"):
+        new_regime = "Stressed"
+        status = "Stressed"
+        action_text = "Reduce metals exposure significantly"
+    elif temperature >= 0.7 and new_regime not in ("Elevated", "Stressed", "Extreme"):
+        new_regime = "Elevated"
+        status = "Elevated"
+        action_text = "Monitor metals positions closely"
     
     # Find primary contributing indicator
     max_contributor = max(all_indicators, key=lambda x: x.contribution)

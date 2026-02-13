@@ -1,0 +1,1168 @@
+"""
+BACKTEST ENGINE - Structural Backtest Execution
+NON-OPTIMIZATION CONSTITUTION: Financial metrics are OBSERVATIONAL ONLY.
+Author: Chinese Staff Professor - Elite Quant Systems, Date: February 2026
+"""
+import json
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple
+import numpy as np
+import pandas as pd
+
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich import box
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
+from .backtest_config import BacktestConfig, DEFAULT_BACKTEST_CONFIG, DecisionOutcome, BACKTEST_UNIVERSE, Sector, MarketCap
+from .backtest_data import BacktestDataBundle, BacktestDataset, load_backtest_data
+from .backtest_tune import BacktestParams, ModelTunedParams, load_tuned_params, list_tuned_models
+
+
+@dataclass
+class FinancialDiagnostics:
+    cumulative_pnl: float = 0.0
+    cagr: float = 0.0
+    sharpe_ratio: float = 0.0
+    sortino_ratio: float = 0.0
+    max_drawdown: float = 0.0
+    max_drawdown_duration_days: int = 0
+    profit_factor: float = 0.0
+    hit_rate: float = 0.0
+    total_trades: int = 0
+    
+    def to_dict(self):
+        return asdict(self)
+
+
+@dataclass
+class BehavioralDiagnostics:
+    equity_curve_convexity: float = 0.0
+    tail_loss_clustering: int = 0
+    return_volatility: float = 0.0
+    turnover_mean: float = 0.0
+    turnover_std: float = 0.0
+    exposure_concentration: float = 0.0
+    leverage_sensitivity: float = 0.0
+    regime_stability: float = 0.0
+    
+    def to_dict(self):
+        return asdict(self)
+
+
+@dataclass
+class CrossAssetDiagnostics:
+    performance_dispersion: float = 0.0
+    drawdown_correlation: float = 0.0
+    sector_fragility: Dict[str, float] = field(default_factory=dict)
+    crisis_amplification: float = 0.0
+    
+    def to_dict(self):
+        return {
+            "performance_dispersion": self.performance_dispersion,
+            "drawdown_correlation": self.drawdown_correlation,
+            "sector_fragility": self.sector_fragility,
+            "crisis_amplification": self.crisis_amplification,
+        }
+
+
+@dataclass
+class TickerBacktestResult:
+    ticker: str
+    model_name: str
+    sector: str
+    market_cap: str
+    financial: FinancialDiagnostics
+    behavioral: BehavioralDiagnostics
+    warnings: List[str] = field(default_factory=list)
+    
+    def to_dict(self):
+        return {
+            "ticker": self.ticker,
+            "model_name": self.model_name,
+            "sector": self.sector,
+            "market_cap": self.market_cap,
+            "financial": self.financial.to_dict(),
+            "behavioral": self.behavioral.to_dict(),
+            "warnings": self.warnings,
+        }
+
+
+@dataclass
+class ModelBacktestResult:
+    model_name: str
+    ticker_results: Dict[str, TickerBacktestResult]
+    cross_asset: CrossAssetDiagnostics
+    aggregate_financial: FinancialDiagnostics
+    aggregate_behavioral: BehavioralDiagnostics
+    decision: DecisionOutcome
+    decision_rationale: List[str]
+    warnings: List[str]
+    timestamp: str
+    
+    def to_dict(self):
+        return {
+            "model_name": self.model_name,
+            "ticker_results": {t: r.to_dict() for t, r in self.ticker_results.items()},
+            "cross_asset": self.cross_asset.to_dict(),
+            "aggregate_financial": self.aggregate_financial.to_dict(),
+            "aggregate_behavioral": self.aggregate_behavioral.to_dict(),
+            "decision": self.decision.value,
+            "decision_rationale": self.decision_rationale,
+            "warnings": self.warnings,
+            "timestamp": self.timestamp,
+        }
+
+
+def _load_model_class(model_name: str):
+    """
+    Load model class from backtest_models directory.
+    
+    Returns the model class or None if not found.
+    """
+    import importlib.util
+    import sys
+    
+    models_dir = Path(__file__).parent / "backtest_models"
+    model_file = models_dir / f"{model_name}.py"
+    
+    if not model_file.exists():
+        return None
+    
+    try:
+        module_name = f"arena.backtest_models.{model_name}"
+        if module_name in sys.modules:
+            module = sys.modules[module_name]
+        else:
+            spec = importlib.util.spec_from_file_location(module_name, model_file)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+            else:
+                return None
+        
+        # Convert snake_case filename to expected CamelCaseModel class name
+        # e.g., "wasserstein_persistence" -> "WassersteinPersistenceModel"
+        expected_class_name = ''.join(word.capitalize() for word in model_name.split('_')) + 'Model'
+        
+        # Also try with "Kalman" suffix for backward compatibility
+        expected_kalman_name = ''.join(word.capitalize() for word in model_name.split('_')) + 'KalmanModel'
+        
+        # First, try exact match with expected class name
+        if hasattr(module, expected_class_name):
+            cls = getattr(module, expected_class_name)
+            if isinstance(cls, type):
+                return cls
+        
+        # Try Kalman variant
+        if hasattr(module, expected_kalman_name):
+            cls = getattr(module, expected_kalman_name)
+            if isinstance(cls, type):
+                return cls
+        
+        # Fallback: Find first class ending with Model (for legacy files)
+        for attr_name in dir(module):
+            if attr_name.endswith("Model") or attr_name.endswith("KalmanModel"):
+                cls = getattr(module, attr_name)
+                if isinstance(cls, type):
+                    return cls
+        
+        return None
+    except Exception as e:
+        print(f"Warning: Could not load model {model_name}: {e}")
+        return None
+
+
+# Cache for loaded models to avoid re-loading
+_MODEL_CACHE: Dict[str, Any] = {}
+
+
+def _get_model_instance(model_name: str):
+    """Get or create a model instance."""
+    if model_name not in _MODEL_CACHE:
+        model_class = _load_model_class(model_name)
+        if model_class:
+            try:
+                _MODEL_CACHE[model_name] = model_class()
+            except Exception as e:
+                print(f"Warning: Could not instantiate model {model_name}: {e}")
+                _MODEL_CACHE[model_name] = None
+        else:
+            _MODEL_CACHE[model_name] = None
+    return _MODEL_CACHE[model_name]
+
+
+def _simulate_signals(returns, model_name, params):
+    """
+    Generate trading signals using SignalFields → SignalGeometry flow.
+    
+    ARCHITECTURE:
+        1. Model.filter() or Model._filter() → mu, sigma (Kalman state estimates)
+        2. create_signal_fields_from_kalman() → SignalFields (accuracy-based)
+        3. SignalGeometryEngine.evaluate() → GeometryDecision (action + sizing)
+        4. decision.position_signal → actual position
+    
+    Supports two model APIs:
+        - Kalman-style: model.filter(returns, vol, q, c, phi, ...)
+        - Experimental: model._filter(returns, vol, params_dict) 
+    """
+    n = len(returns)
+    
+    # Try to load and use the actual model
+    model = _get_model_instance(model_name)
+    
+    # Check if we have pre-fitted model parameters from tuning
+    model_params = getattr(params, 'model_params', {}) or {}
+    has_fitted_params = model_params.get('q') is not None
+    
+    # Determine which filter API the model supports
+    has_filter = model is not None and hasattr(model, 'filter')
+    has_internal_filter = model is not None and hasattr(model, '_filter')
+    
+    if (has_filter or has_internal_filter) and has_fitted_params:
+        try:
+            # Import signal modules
+            from .signal_fields import SignalFields, create_signal_fields_from_kalman
+            from .signal_geometry import SignalGeometryEngine, GeometryConfig
+            
+            # Compute volatility estimate for the model
+            vol = pd.Series(returns).rolling(20).std().fillna(0.01).values
+            vol = np.maximum(vol, 0.001)
+            
+            # USE PRE-FITTED model parameters from tuning stage
+            q = model_params.get('q', 1e-6)
+            c = model_params.get('c', 1.0)
+            phi = model_params.get('phi', 0.0)
+            complex_weight = model_params.get('complex_weight', 1.0)
+            
+            # Run the model filter with fitted parameters
+            if has_filter:
+                # Kalman-style API: model.filter(returns, vol, q, c, phi, ...)
+                if hasattr(model, 'n_levels'):
+                    # DTCWT model with complex_weight
+                    mu, sigma, _ = model.filter(returns, vol, q, c, phi, complex_weight)
+                else:
+                    # Standard Kalman model
+                    mu, sigma, _ = model.filter(returns, vol, q, c, phi)
+            else:
+                # Experimental API: model._filter(returns, vol, params_dict)
+                filter_params = {'q': q, 'c': c, 'phi': phi, 'cw': complex_weight}
+                result = model._filter(returns, vol, filter_params)
+                # _filter returns (mu, sigma, ll, pit)
+                mu, sigma = result[0], result[1]
+            
+            # =========================================================
+            # SignalFields → SignalGeometry flow
+            # =========================================================
+            
+            # Create geometry engine
+            engine = SignalGeometryEngine()
+            
+            signals = np.zeros(n)
+            for i in range(30, n):
+                # Get lookback window
+                start_idx = max(0, i - 100)
+                
+                # STEP 1: Create signal fields
+                fields = create_signal_fields_from_kalman(
+                    mu=mu[start_idx:i+1],
+                    sigma=sigma[start_idx:i+1],
+                    returns=returns[start_idx:i+1],
+                    model_name=model_name
+                )
+                
+                # STEP 2: Geometry evaluates fields
+                decision = engine.evaluate(fields)
+                
+                # STEP 3: Extract position signal
+                signals[i] = decision.position_signal
+            
+            return np.clip(signals, -1, 1)
+            
+        except Exception as e:
+            print(f"Warning: Model {model_name} signal failed: {e}, using geometry-aware fallback")
+            import traceback
+            traceback.print_exc()
+    
+    # =========================================================================
+    # FALLBACK: Geometry-aware simple momentum (NEVER bypass geometry)
+    # =========================================================================
+    # Even fallback MUST go through SignalFields → Geometry
+    # This preserves architectural integrity
+    from .signal_fields import SignalFields
+    from .signal_geometry import SignalGeometryEngine
+    
+    engine = SignalGeometryEngine()
+    signals = np.zeros(n)
+    lookback = 20
+    
+    for i in range(lookback, n):
+        # Compute simple momentum-based fields
+        recent_returns = returns[i-lookback:i]
+        return_mean = np.mean(recent_returns)
+        return_std = np.std(recent_returns) + 1e-10
+        
+        # Create minimal SignalFields from momentum
+        direction = float(np.tanh(return_mean / return_std * np.sqrt(lookback)))
+        
+        # Compute simple stability from return consistency
+        signs = np.sign(recent_returns)
+        consistency = np.mean(signs == np.sign(return_mean))
+        stability = float(consistency * 2 - 1)  # Map [0.5, 1] to [0, 1]
+        
+        # Simple confidence from momentum strength
+        confidence = float(min(1.0, abs(return_mean) / (return_std * 2)))
+        
+        fields = SignalFields(
+            direction=direction,
+            asymmetry=0.0,  # No asymmetry info in fallback
+            belief_momentum=direction * 0.5,  # Proxy
+            confidence=confidence,
+            stability=stability,
+            regime_fit=0.0,  # Unknown
+            model_name=f"{model_name}_fallback"
+        )
+        
+        # ALWAYS go through geometry - NEVER bypass
+        decision = engine.evaluate(fields)
+        signals[i] = decision.position_signal
+    
+    return np.clip(signals, -1, 1)
+
+
+def _compute_financial_diagnostics(returns, signals, initial_capital, tcost_bps, slip_bps, dates):
+    """
+    Compute financial metrics (OBSERVATIONAL ONLY).
+    
+    CRITICAL: Uses MULTIPLICATIVE compounding (correct for markets).
+    Markets are multiplicative processes: equity_t = equity_{t-1} × (1 + r_t)
+    NOT additive: equity_t ≠ equity_0 × (1 + Σr_i)
+    
+    Example showing the difference:
+        r₁ = +5%, r₂ = -5%
+        Multiplicative: 1.05 × 0.95 = 0.9975 → -0.25%
+        Additive: 1 + (0.05 - 0.05) = 1.0 → 0% (WRONG)
+    """
+    positions = signals.copy()
+    pos_changes = np.abs(np.diff(signals, prepend=0))
+    costs = pos_changes * (tcost_bps + slip_bps) / 10000
+    
+    # Strategy returns: position from t-1 applied to return at t, minus costs
+    strategy_returns = np.zeros(len(returns))
+    strategy_returns[1:] = positions[:-1] * returns[1:] - costs[1:]
+    
+    # =========================================================================
+    # CRITICAL FIX: Use MULTIPLICATIVE compounding (cumprod), not additive (cumsum)
+    # =========================================================================
+    # WRONG: cumulative = initial_capital * (1 + np.cumsum(strategy_returns))
+    # CORRECT: equity evolves multiplicatively
+    equity_curve = initial_capital * np.cumprod(1 + strategy_returns)
+    
+    # Final PnL from equity curve
+    final_equity = equity_curve[-1]
+    cumulative_pnl = final_equity - initial_capital
+    
+    # CAGR - now correctly computed from compounded equity
+    n_years = len(returns) / 252
+    if n_years > 0 and final_equity > 0:
+        cagr = (final_equity / initial_capital) ** (1 / n_years) - 1
+    else:
+        cagr = 0.0
+    
+    # Sharpe - using log returns for better statistical properties with compounding
+    # But for consistency with standard practice, use arithmetic returns
+    if np.std(strategy_returns) > 1e-8:
+        sharpe = np.mean(strategy_returns) / np.std(strategy_returns) * np.sqrt(252)
+    else:
+        sharpe = 0.0
+    
+    # Sortino
+    downside = strategy_returns[strategy_returns < 0]
+    if len(downside) > 0 and np.std(downside) > 1e-8:
+        sortino = np.mean(strategy_returns) / np.std(downside) * np.sqrt(252)
+    else:
+        sortino = 0.0
+    
+    # Drawdown - computed from compounded equity curve
+    # No need for edge case handling - equity_curve is always positive from cumprod
+    peak = np.maximum.accumulate(equity_curve)
+    drawdown = (peak - equity_curve) / peak
+    drawdown = np.clip(drawdown, 0, 1.0)  # Safety clip
+    max_dd = float(np.max(drawdown))
+    
+    # Drawdown duration
+    in_drawdown = drawdown > 0.01
+    dd_duration = 0
+    max_dd_duration = 0
+    for i in range(len(in_drawdown)):
+        if in_drawdown[i]:
+            dd_duration += 1
+            max_dd_duration = max(max_dd_duration, dd_duration)
+        else:
+            dd_duration = 0
+    
+    # Profit factor
+    gains = strategy_returns[strategy_returns > 0]
+    losses = strategy_returns[strategy_returns < 0]
+    if len(losses) > 0 and np.sum(np.abs(losses)) > 1e-8:
+        profit_factor = np.sum(gains) / np.sum(np.abs(losses))
+    else:
+        profit_factor = np.inf if len(gains) > 0 else 0.0
+    
+    # Hit rate - properly aligned with position changes
+    # Trade occurs when position changes significantly
+    trade_mask = pos_changes > 0.01
+    trade_returns = strategy_returns[trade_mask]
+    if len(trade_returns) > 0:
+        hit_rate = np.sum(trade_returns > 0) / len(trade_returns)
+    else:
+        hit_rate = 0.0
+    
+    return FinancialDiagnostics(
+        cumulative_pnl=cumulative_pnl,
+        cagr=cagr,
+        sharpe_ratio=sharpe,
+        sortino_ratio=sortino,
+        max_drawdown=max_dd,
+        max_drawdown_duration_days=max_dd_duration,
+        profit_factor=profit_factor,
+        hit_rate=hit_rate,
+        total_trades=int(np.sum(trade_mask)),
+    ), equity_curve
+
+
+def _compute_behavioral_diagnostics(returns, signals, equity_curve, config):
+    """Compute behavioral diagnostics (PRIMARY for decisions)."""
+    warnings = []
+    n = len(returns)
+    
+    # Equity curve convexity
+    try:
+        if len(equity_curve) > 20:
+            convexity = np.polyfit(np.arange(len(equity_curve)), equity_curve, 2)[0] * 1e6
+        else:
+            convexity = 0.0
+    except:
+        convexity = 0.0
+    
+    # Tail loss clustering
+    tail_threshold = np.percentile(returns, 2)
+    cluster_count = 0
+    consecutive = 0
+    for i in range(len(returns)):
+        if returns[i] < tail_threshold:
+            consecutive += 1
+            if consecutive >= 3:
+                cluster_count += 1
+        else:
+            consecutive = 0
+    
+    if cluster_count >= config.tail_cluster_warning:
+        warnings.append(f"Tail loss clustering: {cluster_count}")
+    
+    # Return volatility
+    strategy_returns = signals[:-1] * returns[1:]
+    ret_vol = np.std(strategy_returns) * np.sqrt(252)
+    
+    # Turnover
+    turnover = np.abs(np.diff(signals))
+    
+    # Leverage sensitivity
+    base_sharpe = np.mean(strategy_returns) / (np.std(strategy_returns) + 1e-8)
+    leveraged_sharpe = np.mean(2 * strategy_returns) / (np.std(2 * strategy_returns) + 1e-8)
+    leverage_sensitivity = abs(leveraged_sharpe - base_sharpe) / (abs(base_sharpe) + 1e-8)
+    
+    if leverage_sensitivity > 0.5:
+        warnings.append(f"High leverage sensitivity: {leverage_sensitivity:.2f}")
+    
+    # Regime stability
+    mid = n // 2
+    first_half = strategy_returns[:mid]
+    second_half = strategy_returns[mid:]
+    first_sharpe = np.mean(first_half) / (np.std(first_half) + 1e-8)
+    second_sharpe = np.mean(second_half) / (np.std(second_half) + 1e-8)
+    regime_stability = 1.0 - abs(first_sharpe - second_sharpe) / (abs(first_sharpe) + abs(second_sharpe) + 1e-8)
+    
+    if regime_stability < 0.5:
+        warnings.append(f"Low regime stability: {regime_stability:.2f}")
+    
+    return BehavioralDiagnostics(
+        equity_curve_convexity=convexity,
+        tail_loss_clustering=cluster_count,
+        return_volatility=ret_vol,
+        turnover_mean=np.mean(turnover),
+        turnover_std=np.std(turnover),
+        exposure_concentration=np.max(np.abs(signals)),
+        leverage_sensitivity=leverage_sensitivity,
+        regime_stability=regime_stability,
+    ), warnings
+
+
+def backtest_ticker(model_name, dataset, params, config):
+    """Backtest a single ticker."""
+    returns = dataset.returns
+    dates = dataset.dates
+    
+    signals = _simulate_signals(returns, model_name, params)
+    
+    financial, equity = _compute_financial_diagnostics(
+        returns, signals, config.initial_capital,
+        config.transaction_cost_bps, params.slippage_estimate_bps, dates
+    )
+    
+    behavioral, warnings = _compute_behavioral_diagnostics(
+        returns, signals, equity, config
+    )
+    
+    # Add financial warnings
+    if financial.max_drawdown > config.max_drawdown_warning:
+        warnings.append(f"High DD: {financial.max_drawdown*100:.1f}%")
+    if financial.max_drawdown_duration_days > config.max_drawdown_duration_days:
+        warnings.append(f"Long DD: {financial.max_drawdown_duration_days}d")
+    
+    info = BACKTEST_UNIVERSE.get(dataset.ticker, {})
+    
+    return TickerBacktestResult(
+        ticker=dataset.ticker,
+        model_name=model_name,
+        sector=info.get("sector", Sector.TECHNOLOGY).value,
+        market_cap=info.get("cap", MarketCap.LARGE_CAP).value,
+        financial=financial,
+        behavioral=behavioral,
+        warnings=warnings,
+    )
+
+
+def make_decision(ticker_results, config):
+    """Make behavioral safety decision."""
+    rationale = []
+    
+    # Aggregate metrics
+    dds = [r.financial.max_drawdown for r in ticker_results.values()]
+    sharpes = [r.financial.sharpe_ratio for r in ticker_results.values()]
+    reg_stabs = [r.behavioral.regime_stability for r in ticker_results.values()]
+    lev_sens = [r.behavioral.leverage_sensitivity for r in ticker_results.values()]
+    
+    max_dd = max(dds)
+    mean_sharpe = np.mean(sharpes)
+    mean_regime_stability = np.mean(reg_stabs)
+    max_leverage_sensitivity = max(lev_sens)
+    
+    # REJECTED conditions
+    if max_dd > config.max_drawdown_for_approval:
+        rationale.append(f"REJECTED: Max DD {max_dd*100:.1f}%")
+        return DecisionOutcome.REJECTED, rationale
+    
+    if mean_sharpe < config.min_sharpe_for_approval:
+        rationale.append(f"REJECTED: Sharpe {mean_sharpe:.2f}")
+        return DecisionOutcome.REJECTED, rationale
+    
+    # QUARANTINED conditions
+    if mean_regime_stability < 0.4:
+        rationale.append(f"QUARANTINED: Regime stability {mean_regime_stability:.2f}")
+        return DecisionOutcome.QUARANTINED, rationale
+    
+    if max_leverage_sensitivity > 1.0:
+        rationale.append(f"QUARANTINED: Leverage sensitivity {max_leverage_sensitivity:.2f}")
+        return DecisionOutcome.QUARANTINED, rationale
+    
+    # RESTRICTED conditions
+    warning_count = sum(len(r.warnings) for r in ticker_results.values())
+    if warning_count > len(ticker_results) * 2:
+        rationale.append(f"RESTRICTED: {warning_count} warnings")
+        return DecisionOutcome.RESTRICTED, rationale
+    
+    if max_dd > config.max_drawdown_warning:
+        rationale.append(f"RESTRICTED: DD {max_dd*100:.1f}%")
+        return DecisionOutcome.RESTRICTED, rationale
+    
+    # APPROVED
+    rationale.append("APPROVED: Passed all behavioral safety gates")
+    return DecisionOutcome.APPROVED, rationale
+
+
+def _compute_cross_asset_diagnostics(ticker_results):
+    """Compute cross-asset diagnostics."""
+    sharpes = [r.financial.sharpe_ratio for r in ticker_results.values()]
+    dds = [r.financial.max_drawdown for r in ticker_results.values()]
+    
+    # Drawdown correlation
+    dd_correlation = 0.0
+    if len(dds) > 2:
+        try:
+            dd_correlation = np.corrcoef(dds[:-1], dds[1:])[0, 1]
+            if np.isnan(dd_correlation):
+                dd_correlation = 0.0
+        except:
+            pass
+    
+    # Sector fragility
+    sector_fragility = {}
+    sectors = set(r.sector for r in ticker_results.values())
+    for sector in sectors:
+        sector_results = [r for r in ticker_results.values() if r.sector == sector]
+        if sector_results:
+            sector_fragility[sector] = float(np.std([r.financial.sharpe_ratio for r in sector_results]))
+    
+    return CrossAssetDiagnostics(
+        performance_dispersion=np.std(sharpes),
+        drawdown_correlation=dd_correlation,
+        sector_fragility=sector_fragility,
+        crisis_amplification=1.0,
+    )
+
+
+def _aggregate_diagnostics(ticker_results):
+    """Aggregate diagnostics across tickers."""
+    if not ticker_results:
+        return FinancialDiagnostics(), BehavioralDiagnostics()
+    
+    results = list(ticker_results.values())
+    n_tickers = len(results)
+    
+    # Filter out infinite profit factors
+    pf_values = [r.financial.profit_factor for r in results if r.financial.profit_factor < np.inf]
+    
+    financial = FinancialDiagnostics(
+        # Average PnL per ticker (more meaningful than sum)
+        cumulative_pnl=np.mean([r.financial.cumulative_pnl for r in results]),
+        cagr=np.mean([r.financial.cagr for r in results]),
+        sharpe_ratio=np.mean([r.financial.sharpe_ratio for r in results]),
+        sortino_ratio=np.mean([r.financial.sortino_ratio for r in results]),
+        max_drawdown=max(r.financial.max_drawdown for r in results),
+        max_drawdown_duration_days=max(r.financial.max_drawdown_duration_days for r in results),
+        profit_factor=np.mean(pf_values) if pf_values else 0.0,
+        hit_rate=np.mean([r.financial.hit_rate for r in results]),
+        total_trades=sum(r.financial.total_trades for r in results),
+    )
+    
+    behavioral = BehavioralDiagnostics(
+        equity_curve_convexity=np.mean([r.behavioral.equity_curve_convexity for r in results]),
+        tail_loss_clustering=sum(r.behavioral.tail_loss_clustering for r in results),
+        return_volatility=np.mean([r.behavioral.return_volatility for r in results]),
+        turnover_mean=np.mean([r.behavioral.turnover_mean for r in results]),
+        turnover_std=np.mean([r.behavioral.turnover_std for r in results]),
+        exposure_concentration=max(r.behavioral.exposure_concentration for r in results),
+        leverage_sensitivity=max(r.behavioral.leverage_sensitivity for r in results),
+        regime_stability=np.mean([r.behavioral.regime_stability for r in results]),
+    )
+    
+    return financial, behavioral
+
+
+def run_structural_backtest(model_name, data_bundle=None, config=None):
+    """Run structural backtest for a single model."""
+    config = config or DEFAULT_BACKTEST_CONFIG
+    
+    if data_bundle is None:
+        data_bundle = load_backtest_data(config)
+    
+    model_params = load_tuned_params(model_name, config)
+    if model_params is None:
+        raise ValueError(f"No tuned params for {model_name}")
+    
+    ticker_results = {}
+    all_warnings = []
+    
+    for ticker, dataset in data_bundle.datasets.items():
+        params = model_params.get_params(ticker)
+        if params is None:
+            continue
+        
+        result = backtest_ticker(model_name, dataset, params, config)
+        ticker_results[ticker] = result
+        all_warnings.extend(result.warnings)
+    
+    cross_asset = _compute_cross_asset_diagnostics(ticker_results)
+    aggregate_financial, aggregate_behavioral = _aggregate_diagnostics(ticker_results)
+    decision, rationale = make_decision(ticker_results, config)
+    
+    return ModelBacktestResult(
+        model_name=model_name,
+        ticker_results=ticker_results,
+        cross_asset=cross_asset,
+        aggregate_financial=aggregate_financial,
+        aggregate_behavioral=aggregate_behavioral,
+        decision=decision,
+        decision_rationale=rationale,
+        warnings=all_warnings,
+        timestamp=datetime.now().isoformat(),
+    )
+
+
+# =============================================================================
+# PARALLEL BACKTEST SUPPORT
+# =============================================================================
+
+def _serialize_data_bundle(data_bundle) -> Dict[str, Any]:
+    """Serialize data bundle for multiprocessing transfer."""
+    serialized = {}
+    for ticker, dataset in data_bundle.datasets.items():
+        df_reset = dataset.df.reset_index()
+        df_reset['Date'] = df_reset['Date'].astype(str)
+        serialized[ticker] = {
+            'df': df_reset.to_dict('list'),
+            'sector': dataset.sector.value if dataset.sector else None,
+            'market_cap': dataset.market_cap.value if dataset.market_cap else None,
+            'date_range': dataset.date_range,
+            'n_observations': dataset.n_observations,
+            'downloaded_at': dataset.downloaded_at,
+        }
+    return serialized
+
+
+def _deserialize_data_bundle(serialized: Dict[str, Any]):
+    """Deserialize data bundle in worker process."""
+    datasets = {}
+    for ticker, data in serialized.items():
+        df = pd.DataFrame(data['df'])
+        # Keep Date as column (not index) - BacktestDataset.dates expects df["Date"]
+        df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+        dataset = BacktestDataset(
+            ticker=ticker,
+            sector=Sector(data['sector']) if data['sector'] else Sector.TECHNOLOGY,
+            market_cap=MarketCap(data['market_cap']) if data['market_cap'] else MarketCap.LARGE_CAP,
+            df=df,
+            n_observations=data['n_observations'],
+            date_range=(data['date_range'][0], data['date_range'][1]),
+            downloaded_at=data['downloaded_at'],
+        )
+        datasets[ticker] = dataset
+    
+    # Create a minimal bundle-like object
+    class MinimalBundle:
+        pass
+    bundle = MinimalBundle()
+    bundle.datasets = datasets
+    return bundle
+
+
+def _backtest_model_worker(args: Tuple[str, Dict[str, Any], Dict[str, Any]]) -> Tuple[str, Optional[Dict], Optional[str]]:
+    """
+    Worker function for parallel model backtesting.
+    Runs in separate PROCESS (not thread).
+    
+    Args:
+        args: (model_name, serialized_data_bundle, config_dict)
+    
+    Returns:
+        (model_name, result_dict or None, error_message or None)
+    """
+    import traceback
+    import sys
+    import os
+    
+    model_name, serialized_bundle, config_dict = args
+    
+    try:
+        # Ensure imports work in worker process
+        src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        
+        # Import everything fresh in worker
+        from arena.backtest_config import BacktestConfig, DEFAULT_BACKTEST_CONFIG, Sector, MarketCap
+        from arena.backtest_data import BacktestDataset
+        import pandas as pd
+        import numpy as np
+        
+        # Deserialize data bundle
+        # IMPORTANT: Keep Date as a COLUMN (not index) - BacktestDataset.dates property expects df["Date"]
+        datasets = {}
+        for ticker, data in serialized_bundle.items():
+            df = pd.DataFrame(data['df'])
+            # Date stays as column, just convert to proper type
+            df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+            dataset = BacktestDataset(
+                ticker=ticker,
+                sector=Sector(data['sector']) if data['sector'] else Sector.TECHNOLOGY,
+                market_cap=MarketCap(data['market_cap']) if data['market_cap'] else MarketCap.LARGE_CAP,
+                df=df,
+                n_observations=data['n_observations'],
+                date_range=(data['date_range'][0], data['date_range'][1]),
+                downloaded_at=data['downloaded_at'],
+            )
+            datasets[ticker] = dataset
+        
+        # Create minimal bundle
+        class MinimalBundle:
+            pass
+        data_bundle = MinimalBundle()
+        data_bundle.datasets = datasets
+        
+        # Reconstruct config
+        config = BacktestConfig(**config_dict) if config_dict else DEFAULT_BACKTEST_CONFIG
+        
+        # Clear model cache in worker (fresh start)
+        global _MODEL_CACHE
+        _MODEL_CACHE = {}
+        
+        # Run the backtest
+        result = run_structural_backtest(model_name, data_bundle, config)
+        
+        # Serialize result for transfer back
+        result_dict = {
+            'model_name': result.model_name,
+            'decision': result.decision.value,
+            'decision_rationale': result.decision_rationale,
+            'warnings': result.warnings,
+            'timestamp': result.timestamp,
+            'aggregate_financial': result.aggregate_financial.to_dict(),
+            'aggregate_behavioral': result.aggregate_behavioral.to_dict(),
+            'cross_asset': result.cross_asset.to_dict(),
+            'ticker_results': {
+                ticker: {
+                    'ticker': tr.ticker,
+                    'model_name': tr.model_name,
+                    'sector': tr.sector,
+                    'market_cap': tr.market_cap,
+                    'financial': tr.financial.to_dict(),
+                    'behavioral': tr.behavioral.to_dict(),
+                    'warnings': tr.warnings,
+                }
+                for ticker, tr in result.ticker_results.items()
+            }
+        }
+        return (model_name, result_dict, None)
+        
+    except Exception as e:
+        return (model_name, None, f"{str(e)}\n{traceback.format_exc()}")
+
+
+def _reconstruct_result(result_dict: Dict) -> 'ModelBacktestResult':
+    """Reconstruct ModelBacktestResult from serialized dict."""
+    ticker_results = {}
+    for ticker, tr_dict in result_dict['ticker_results'].items():
+        ticker_results[ticker] = TickerBacktestResult(
+            ticker=tr_dict['ticker'],
+            model_name=tr_dict['model_name'],
+            sector=tr_dict['sector'],
+            market_cap=tr_dict['market_cap'],
+            financial=FinancialDiagnostics(**tr_dict['financial']),
+            behavioral=BehavioralDiagnostics(**tr_dict['behavioral']),
+            warnings=tr_dict['warnings'],
+        )
+    
+    return ModelBacktestResult(
+        model_name=result_dict['model_name'],
+        ticker_results=ticker_results,
+        cross_asset=CrossAssetDiagnostics(**result_dict['cross_asset']),
+        aggregate_financial=FinancialDiagnostics(**result_dict['aggregate_financial']),
+        aggregate_behavioral=BehavioralDiagnostics(**result_dict['aggregate_behavioral']),
+        decision=DecisionOutcome(result_dict['decision']),
+        decision_rationale=result_dict['decision_rationale'],
+        warnings=result_dict['warnings'],
+        timestamp=result_dict['timestamp'],
+    )
+
+
+def run_backtest_arena(model_names=None, config=None, n_workers=None, parallel=True):
+    """
+    Run backtest arena for multiple models.
+    
+    Uses MULTIPROCESSING (not threading) for parallel execution.
+    Each model runs in its own process for true parallelism.
+    
+    Args:
+        model_names: List of model names to backtest (None = all tuned models)
+        config: BacktestConfig instance
+        n_workers: Number of parallel workers (None = cpu_count - 1)
+        parallel: If False, run sequentially (useful for debugging)
+    """
+    config = config or DEFAULT_BACKTEST_CONFIG
+    
+    if model_names is None:
+        model_names = list_tuned_models(config)
+    
+    if not model_names:
+        raise ValueError("No models to backtest")
+    
+    data_bundle = load_backtest_data(config)
+    if not data_bundle.datasets:
+        raise ValueError("No backtest data")
+    
+    console = Console() if RICH_AVAILABLE else None
+    results = {}
+    
+    # Determine worker count
+    if n_workers is None:
+        n_workers = max(1, mp.cpu_count() - 1)
+    
+    # Clean header
+    if console:
+        console.print()
+        console.print("[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]")
+        console.print()
+        console.print("  [bold white]STRUCTURAL BACKTEST ARENA[/bold white]")
+        console.print("  [dim]Behavioral validation · Court of Law[/dim]")
+        console.print()
+        console.print(f"  [dim]Models[/dim]  [white]{len(model_names)}[/white]")
+        console.print(f"  [dim]Tickers[/dim] [white]{data_bundle.n_tickers}[/white]")
+        if parallel and len(model_names) > 1:
+            console.print(f"  [dim]Workers[/dim] [white]{n_workers}[/white] [dim](parallel)[/dim]")
+        console.print()
+        console.print("[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]")
+    
+    # Run backtests
+    if parallel and len(model_names) > 1:
+        # PARALLEL: Use multiprocessing
+        results = _run_parallel_backtest(model_names, data_bundle, config, n_workers, console)
+    else:
+        # SEQUENTIAL: Standard loop
+        for model_name in model_names:
+            try:
+                result = run_structural_backtest(model_name, data_bundle, config)
+                results[model_name] = result
+            except Exception as e:
+                if console:
+                    console.print(f"\n  [red]✗ {model_name}: {e}[/red]")
+    
+    # Save results
+    _save_backtest_results(results, config)
+    
+    # Display results for each model
+    if console and results:
+        for name, result in results.items():
+            _display_model_results(console, name, result)
+        
+        # Final summary
+        _display_final_summary(console, results)
+    
+    return results
+
+
+def _run_parallel_backtest(model_names, data_bundle, config, n_workers, console):
+    """Run backtests in parallel using ProcessPoolExecutor."""
+    results = {}
+    
+    # Serialize data bundle once (shared across all workers)
+    serialized_bundle = _serialize_data_bundle(data_bundle)
+    config_dict = asdict(config) if config else None
+    
+    # Prepare work items
+    work_items = [
+        (model_name, serialized_bundle, config_dict)
+        for model_name in model_names
+    ]
+    
+    completed = 0
+    total = len(model_names)
+    errors = []
+    
+    if console:
+        console.print(f"\n  [dim]Running {total} backtests with {n_workers} workers...[/dim]")
+    
+    # Use ProcessPoolExecutor for true parallelism
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        # Submit all jobs
+        future_to_model = {
+            executor.submit(_backtest_model_worker, item): item[0]
+            for item in work_items
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_model):
+            model_name = future_to_model[future]
+            completed += 1
+            
+            try:
+                name, result_dict, error = future.result()
+                
+                if error:
+                    errors.append((name, error))
+                    if console:
+                        console.print(f"  [red]✗[/red] {name} ({completed}/{total}) [red]FAILED[/red]")
+                elif result_dict is None:
+                    errors.append((name, "Worker returned None result"))
+                    if console:
+                        console.print(f"  [red]✗[/red] {name} ({completed}/{total}) [red]NULL RESULT[/red]")
+                else:
+                    # Reconstruct result object
+                    results[name] = _reconstruct_result(result_dict)
+                    decision = results[name].decision.value
+                    color = "green" if decision == "APPROVED" else "yellow" if decision in ["RESTRICTED", "QUARANTINED"] else "red"
+                    if console:
+                        console.print(f"  [green]✓[/green] {name} ({completed}/{total}) [{color}]{decision}[/{color}]")
+                        
+            except Exception as e:
+                import traceback
+                errors.append((model_name, f"{str(e)}\n{traceback.format_exc()}"))
+                if console:
+                    console.print(f"  [red]✗[/red] {model_name} ({completed}/{total}) [red]ERROR: {e}[/red]")
+    
+    # Report errors at end
+    if errors and console:
+        console.print(f"\n  [red]⚠ {len(errors)} model(s) failed[/red]")
+        # Show first few errors for debugging
+        for name, err in errors[:3]:
+            err_lines = err.split('\n')[:5]  # First 5 lines
+            console.print(f"\n  [dim]{name}:[/dim]")
+            for line in err_lines:
+                console.print(f"    [red]{line}[/red]")
+    
+    return results
+
+
+def _display_model_results(console, name: str, result):
+    """Display results for a single model with Apple-like clean UX."""
+    
+    # Decision colors and icons
+    decision_styles = {
+        "APPROVED": ("green", "✓"),
+        "RESTRICTED": ("yellow", "◐"),
+        "QUARANTINED": ("orange3", "◑"),
+        "REJECTED": ("red", "✗"),
+    }
+    color, icon = decision_styles.get(result.decision.value, ("white", "?"))
+    
+    fin = result.aggregate_financial
+    beh = result.aggregate_behavioral
+    cross = result.cross_asset
+    
+    console.print()
+    console.print(f"  [bold white]{name}[/bold white]")
+    console.print(f"  [{color}]{icon} {result.decision.value}[/{color}]  [dim]{result.decision_rationale[0] if result.decision_rationale else ''}[/dim]")
+    console.print()
+    
+    # Financial metrics - properly aligned two column layout
+    console.print("  [bold dim]FINANCIAL[/bold dim]")
+    console.print()
+    
+    # Format values with color
+    pnl_color = "green" if fin.cumulative_pnl >= 0 else "red"
+    cagr_color = "green" if fin.cagr >= 0 else "red"
+    sharpe_color = "green" if fin.sharpe_ratio >= 0 else "red"
+    
+    # Column 1: 18 chars label, 14 chars value | Column 2: 14 chars label, 10 chars value
+    console.print(f"  [dim]PnL[/dim]              [{pnl_color}]${fin.cumulative_pnl:>11,.0f}[/{pnl_color}]    [dim]CAGR[/dim]           [{cagr_color}]{fin.cagr*100:>8.1f}%[/{cagr_color}]")
+    console.print(f"  [dim]Sharpe[/dim]           [{sharpe_color}]{fin.sharpe_ratio:>12.2f}[/{sharpe_color}]    [dim]Sortino[/dim]        [{sharpe_color}]{fin.sortino_ratio:>8.2f}[/{sharpe_color}]")
+    console.print(f"  [dim]Max Drawdown[/dim]     [red]{fin.max_drawdown*100:>11.1f}%[/red]    [dim]DD Duration[/dim]    {fin.max_drawdown_duration_days:>7}d")
+    console.print(f"  [dim]Profit Factor[/dim]    {fin.profit_factor:>12.2f}    [dim]Hit Rate[/dim]       {fin.hit_rate*100:>7.1f}%")
+    console.print(f"  [dim]Total Trades[/dim]     {fin.total_trades:>12,}")
+    console.print()
+    
+    # Behavioral metrics
+    console.print("  [bold dim]BEHAVIORAL[/bold dim]")
+    console.print()
+    
+    stability_color = "green" if beh.regime_stability >= 0.5 else "yellow" if beh.regime_stability >= 0.3 else "red"
+    
+    console.print(f"  [dim]Regime Stability[/dim] [{stability_color}]{beh.regime_stability:>12.2f}[/{stability_color}]    [dim]Volatility[/dim]     {beh.return_volatility*100:>7.1f}%")
+    console.print(f"  [dim]Turnover[/dim]         {beh.turnover_mean:>12.2f}    [dim]Tail Clusters[/dim]  {beh.tail_loss_clustering:>8}")
+    console.print(f"  [dim]Concentration[/dim]    {beh.exposure_concentration:>12.2f}    [dim]Leverage Sens[/dim]  {beh.leverage_sensitivity:>8.2f}")
+    console.print()
+    
+    # Cross-Asset metrics  
+    console.print("  [bold dim]CROSS-ASSET[/bold dim]")
+    console.print()
+    console.print(f"  [dim]Dispersion[/dim]       {cross.performance_dispersion:>12.2f}    [dim]DD Correlation[/dim] {cross.drawdown_correlation:>8.2f}")
+    console.print(f"  [dim]Crisis Amp[/dim]       {cross.crisis_amplification:>12.2f}")
+    console.print()
+    
+    # Sector fragility - compact format
+    if cross.sector_fragility:
+        console.print("  [bold dim]SECTOR RISK[/bold dim]")
+        console.print()
+        
+        # Group sectors by risk level
+        high_risk = [(s, f) for s, f in cross.sector_fragility.items() if f > 0.7]
+        moderate = [(s, f) for s, f in cross.sector_fragility.items() if 0.4 < f <= 0.7]
+        low_risk = [(s, f) for s, f in cross.sector_fragility.items() if f <= 0.4]
+        
+        if high_risk:
+            sectors = ", ".join([s for s, _ in sorted(high_risk, key=lambda x: -x[1])])
+            console.print(f"  [red]● High[/red]       {sectors}")
+        if moderate:
+            sectors = ", ".join([s for s, _ in sorted(moderate, key=lambda x: -x[1])])
+            console.print(f"  [yellow]● Moderate[/yellow]   {sectors}")
+        if low_risk:
+            sectors = ", ".join([s for s, _ in sorted(low_risk, key=lambda x: -x[1])[:5]])
+            if len(low_risk) > 5:
+                sectors += f" [dim]+{len(low_risk)-5} more[/dim]"
+            console.print(f"  [green]● Low[/green]       {sectors}")
+        console.print()
+    
+    # Warnings - compact
+    if result.warnings:
+        n_warnings = len(result.warnings)
+        console.print(f"  [dim]⚠ {n_warnings} warning{'s' if n_warnings > 1 else ''}[/dim]")
+        console.print()
+    
+    console.print("[dim]────────────────────────────────────────────────────────────────────────────────[/dim]")
+
+
+def _display_final_summary(console, results):
+    """Display final summary with Apple-like clean aesthetic."""
+    
+    approved = sum(1 for r in results.values() if r.decision == DecisionOutcome.APPROVED)
+    restricted = sum(1 for r in results.values() if r.decision == DecisionOutcome.RESTRICTED)
+    quarantined = sum(1 for r in results.values() if r.decision == DecisionOutcome.QUARANTINED)
+    rejected = sum(1 for r in results.values() if r.decision == DecisionOutcome.REJECTED)
+    total = len(results)
+    
+    console.print()
+    console.print("  [bold white]SUMMARY[/bold white]")
+    console.print()
+    
+    # Summary bar
+    if approved > 0:
+        console.print(f"  [green]✓ Approved[/green]     {approved}")
+    if restricted > 0:
+        console.print(f"  [yellow]◐ Restricted[/yellow]   {restricted}")
+    if quarantined > 0:
+        console.print(f"  [orange3]◑ Quarantined[/orange3]  {quarantined}")
+    if rejected > 0:
+        console.print(f"  [red]✗ Rejected[/red]     {rejected}")
+    
+    console.print()
+    console.print(f"  [dim]Total: {total} model{'s' if total > 1 else ''}[/dim]")
+    console.print()
+    console.print("[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]")
+    console.print()
+
+
+def _save_backtest_results(results, config):
+    """Save backtest results to JSON."""
+    results_dir = Path(config.results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = results_dir / f"backtest_result_{timestamp}.json"
+    
+    output = {
+        "timestamp": datetime.now().isoformat(),
+        "models": {name: result.to_dict() for name, result in results.items()},
+        "summary": {
+            "total_models": len(results),
+            "approved": sum(1 for r in results.values() if r.decision == DecisionOutcome.APPROVED),
+            "restricted": sum(1 for r in results.values() if r.decision == DecisionOutcome.RESTRICTED),
+            "quarantined": sum(1 for r in results.values() if r.decision == DecisionOutcome.QUARANTINED),
+            "rejected": sum(1 for r in results.values() if r.decision == DecisionOutcome.REJECTED),
+        },
+    }
+    
+    with open(filepath, "w") as f:
+        json.dump(output, f, indent=2)
+    
+    return str(filepath)
+
+
+__all__ = [
+    "FinancialDiagnostics",
+    "BehavioralDiagnostics",
+    "CrossAssetDiagnostics",
+    "TickerBacktestResult",
+    "ModelBacktestResult",
+    "backtest_ticker",
+    "run_structural_backtest",
+    "run_backtest_arena",
+]

@@ -2,4 +2,5 @@
 # Do not rewrite explicit `if/else` blocks into ternary expressions.
 # Preserve existing `else` blocks exactly as authored.
 # No stylistic rewrites of conditionals without explicit user request.
-# Prioritise creating test files as opposed to writing complex multiline code in the termi
+# Prioritise creating test files as opposed to writing complex multiline code in the terminal
+# Avoid using cmdand heredoc in the terminal

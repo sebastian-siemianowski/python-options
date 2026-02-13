@@ -398,6 +398,15 @@ from decision.signals_ux import (
     SIMPLIFIED_COLUMN_DESCRIPTIONS,
 )
 
+# Import high conviction signal storage with options data
+# February 2026: Saves strong buy/sell signals to src/data/high_conviction/
+try:
+    from decision.high_conviction_storage import save_high_conviction_signals
+    HIGH_CONVICTION_STORAGE_AVAILABLE = True
+except ImportError:
+    HIGH_CONVICTION_STORAGE_AVAILABLE = False
+    save_high_conviction_signals = None
+
 # Import render_risk_temperature_summary from risk_temperature module
 # (Temperature modules own their own rendering - no duplication in signals_ux)
 from decision.risk_temperature import render_risk_temperature_summary
@@ -2205,6 +2214,33 @@ def _estimate_regime_drift_priors(ret: pd.Series, vol: pd.Series) -> Optional[Di
         return None
 
 
+def _safe_get_nested(d: any, keys: list, default: any = None) -> any:
+    """
+    Safely get a nested value from a dict, returning default if any key is missing
+    or if any intermediate value is not a dict.
+    
+    Args:
+        d: The dict (or None) to get from
+        keys: List of keys to traverse
+        default: Default value if path doesn't exist
+        
+    Returns:
+        The value at the path, or default if not found
+    """
+    if d is None or not isinstance(d, dict):
+        return default
+    
+    current = d
+    for key in keys:
+        if not isinstance(current, dict):
+            return default
+        current = current.get(key)
+        if current is None:
+            return default
+    
+    return current
+
+
 # =============================================================================
 # PER-ASSET CACHE INTEGRATION
 # =============================================================================
@@ -2504,13 +2540,13 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
 
         # Elite Tuning diagnostics (v2.0 - February 2026)
         # Stability-aware model selection with fragility penalties
-        'elite_tuning_enabled': raw_data.get('meta', {}).get('elite_tuning_enabled', False),
-        'elite_tuning_preset': raw_data.get('meta', {}).get('elite_tuning_preset'),
-        'elite_diagnostics': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}) if best_params else {},
-        'elite_fragility_index': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}).get('fragility_index') if best_params else None,
-        'elite_is_ridge': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}).get('is_ridge_optimum', False) if best_params else False,
-        'elite_basin_score': (best_params.get('diagnostics') or {}).get('elite_diagnostics', {}).get('basin_score') if best_params else None,
-        'elite_fragility_penalty': best_params.get('elite_fragility_penalty', 0.0) if best_params else 0.0,
+        'elite_tuning_enabled': (raw_data.get('meta') or {}).get('elite_tuning_enabled', False),
+        'elite_tuning_preset': (raw_data.get('meta') or {}).get('elite_tuning_preset'),
+        'elite_diagnostics': _safe_get_nested(best_params, ['diagnostics', 'elite_diagnostics'], {}),
+        'elite_fragility_index': _safe_get_nested(best_params, ['diagnostics', 'elite_diagnostics', 'fragility_index'], None),
+        'elite_is_ridge': _safe_get_nested(best_params, ['diagnostics', 'elite_diagnostics', 'is_ridge_optimum'], False),
+        'elite_basin_score': _safe_get_nested(best_params, ['diagnostics', 'elite_diagnostics', 'basin_score'], None),
+        'elite_fragility_penalty': (best_params.get('elite_fragility_penalty') if best_params and isinstance(best_params, dict) else None) or 0.0,
 
         # Metadata
         'source': 'tuned_cache_bma',
@@ -7729,6 +7765,24 @@ def main() -> None:
             # Add high-conviction signals summary for short-term trading
             render_strong_signals_summary(summary_rows_cached, horizons=[1, 3, 7])
             
+            # Save high conviction signals to src/data/high_conviction/ with options data
+            if HIGH_CONVICTION_STORAGE_AVAILABLE:
+                try:
+                    result = save_high_conviction_signals(
+                        summary_rows_cached, 
+                        horizons=[1, 3, 7],
+                        fetch_options=True,
+                        fetch_prices=True,
+                    )
+                    if result.get("buy", 0) > 0 or result.get("sell", 0) > 0:
+                        Console().print(
+                            f"\n[dim]💾 Saved {result['buy']} buy + {result['sell']} sell signals "
+                            f"to src/data/high_conviction/[/dim]"
+                        )
+                except Exception as hc_e:
+                    if os.getenv("DEBUG"):
+                        Console().print(f"[dim]High conviction storage error: {hc_e}[/dim]")
+            
             # Show unified risk dashboard (replaces fragmented risk temperature display)
             if UNIFIED_RISK_DASHBOARD_AVAILABLE:
                 try:
@@ -8480,6 +8534,24 @@ def main() -> None:
         render_sector_summary_tables(summary_rows, horizons)
         # Add high-conviction signals summary for short-term trading
         render_strong_signals_summary(summary_rows, horizons=[1, 3, 7])
+        
+        # Save high conviction signals to src/data/high_conviction/ with options data
+        if HIGH_CONVICTION_STORAGE_AVAILABLE:
+            try:
+                result = save_high_conviction_signals(
+                    summary_rows, 
+                    horizons=[1, 3, 7],
+                    fetch_options=True,
+                    fetch_prices=True,
+                )
+                if result.get("buy", 0) > 0 or result.get("sell", 0) > 0:
+                    Console().print(
+                        f"\n[dim]💾 Saved {result['buy']} buy + {result['sell']} sell signals "
+                        f"to src/data/high_conviction/[/dim]"
+                    )
+            except Exception as hc_e:
+                if os.getenv("DEBUG"):
+                    Console().print(f"[dim]High conviction storage error: {hc_e}[/dim]")
         
         # Show unified risk dashboard (replaces fragmented risk temperature display)
         # February 2026: Full risk dashboard matching `make risk` output
