@@ -3887,6 +3887,7 @@ def _invert_ohlc_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> pd.DataFrame:
     """Robust Yahoo fetch with multiple strategies.
     Returns a DataFrame with OHLC columns (if available).
+    - Resolves symbol MAPPING first (e.g., QQQO → QQQ, XAGUSD → SI=F)
     - Checks if cached data is up-to-date; if not, fetches incremental updates
     - Tries yf.download first
     - Falls back to Ticker.history
@@ -3894,37 +3895,67 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     - Falls back to period='max' pulls to dodge timezone/metadata issues
     Normalizes DatetimeIndex to tz-naive for stability.
     
-    Handles inverse currency pairs (e.g., JPYUSD=X) by fetching the direct pair
-    (USDJPY=X) and inverting all OHLC prices.
+    Handles:
+    1. Symbol MAPPING (e.g., QQQO → QQQ, XAGUSD → SI=F, TRET → VNQ)
+    2. Inverse currency pairs (e.g., JPYUSD=X → invert USDJPY=X)
     """
-    import time
-    
-    # Check if this is an inverse currency pair
+    # ==========================================================================
+    # STEP 1: Resolve symbol using MAPPING (YieldMax, structured products, etc.)
+    # ==========================================================================
     symbol_upper = symbol.strip().upper()
+    
+    # Get mapped candidates from MAPPING (e.g., QQQO → ["QQQ"], XAGUSD → ["SI=F", "SLV"])
+    mapped_candidates = MAPPING.get(symbol_upper, [])
+    
+    # If we have mapped candidates, try each one
+    if mapped_candidates:
+        for candidate in mapped_candidates:
+            result = _download_prices_core(candidate, start, end)
+            if result is not None and not result.empty:
+                return result
+        # If all mapped candidates fail, fall through to try original symbol
+    
+    # ==========================================================================
+    # STEP 2: Check for inverse currency pairs
+    # ==========================================================================
     is_inverse_pair = symbol_upper in INVERSE_CURRENCY_PAIRS
     actual_symbol = INVERSE_CURRENCY_PAIRS.get(symbol_upper, symbol) if is_inverse_pair else symbol
+    
+    # Fetch using core download logic
+    result = _download_prices_core(actual_symbol, start, end)
+    
+    # Invert if this was an inverse currency pair
+    if result is not None and not result.empty and is_inverse_pair:
+        return _invert_ohlc_dataframe(result)
+    
+    return result if result is not None else pd.DataFrame()
+
+
+def _download_prices_core(symbol: str, start: Optional[str], end: Optional[str]) -> pd.DataFrame:
+    """Core download logic for a single symbol (no MAPPING resolution).
+    
+    This is the internal implementation called by _download_prices after
+    MAPPING and inverse pair resolution.
+    """
+    import time
     
     # Cap end date to today - never attempt to fetch future data
     end = _cap_date_to_today(end)
     
-    # Use actual symbol for cache lookup
-    cached = _get_cached_prices(actual_symbol, start, end)
+    # Use symbol for cache lookup
+    cached = _get_cached_prices(symbol, start, end)
     if cached is not None and not cached.empty:
-        if is_inverse_pair:
-            return _invert_ohlc_dataframe(cached)
         return cached
     
     # Load disk cache first - needed for both offline mode and incremental fetching
-    disk_df = _load_disk_prices(actual_symbol)
+    disk_df = _load_disk_prices(symbol)
     
     # =========================================================================
     # OFFLINE MODE: Use cached data only, skip all Yahoo Finance API calls
     # =========================================================================
     if OFFLINE_MODE:
         if disk_df is not None and not disk_df.empty:
-            _PX_CACHE[_px_cache_key(actual_symbol, start, end)] = disk_df
-            if is_inverse_pair:
-                return _invert_ohlc_dataframe(disk_df)
+            _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
             return disk_df
         # No cached data available in offline mode
         return pd.DataFrame()
@@ -3948,9 +3979,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         last_dt = pd.to_datetime(disk_df.index.max()).date()
         # If disk cache already covers up to target end, use it
         if last_dt >= target_end:
-            _PX_CACHE[_px_cache_key(actual_symbol, start, end)] = disk_df
-            if is_inverse_pair:
-                return _invert_ohlc_dataframe(disk_df)
+            _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
             return disk_df
         # Otherwise, fetch incrementally from day after last cached date
         fetch_start = (last_dt + timedelta(days=1)).isoformat()
@@ -3974,75 +4003,69 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
                 break
         return None
 
-    # Helper to finalize and return data (handles inversion for inverse pairs)
-    def _finalize_and_return(df: pd.DataFrame) -> pd.DataFrame:
-        if is_inverse_pair:
-            return _invert_ohlc_dataframe(df)
-        return df
-
     # Try standard download
     df = _try_fetch_with_retry(
-        lambda: _normalize(yf.download(actual_symbol, start=fetch_start, end=end, auto_adjust=True, progress=False, threads=False, timeout=YFINANCE_TIMEOUT))
+        lambda: _normalize(yf.download(symbol, start=fetch_start, end=end, auto_adjust=True, progress=False, threads=False, timeout=YFINANCE_TIMEOUT))
     )
     if df is not None and not df.empty:
         if disk_df is not None and not disk_df.empty:
-            df = _merge_and_store(actual_symbol, pd.concat([disk_df, df]))
+            df = _merge_and_store(symbol, pd.concat([disk_df, df]))
         else:
-            _store_disk_prices(actual_symbol, df)
-        _store_cached_prices(actual_symbol, start, end, df)
-        return _finalize_and_return(df)
+            _store_disk_prices(symbol, df)
+        _store_cached_prices(symbol, start, end, df)
+        return df
 
     # Try Ticker.history
     df = _try_fetch_with_retry(
-        lambda: _normalize(yf.Ticker(actual_symbol).history(start=fetch_start, end=end, auto_adjust=True, timeout=YFINANCE_TIMEOUT))
+        lambda: _normalize(yf.Ticker(symbol).history(start=fetch_start, end=end, auto_adjust=True, timeout=YFINANCE_TIMEOUT))
     )
     if df is not None and not df.empty:
         if disk_df is not None and not disk_df.empty:
-            df = _merge_and_store(actual_symbol, pd.concat([disk_df, df]))
+            df = _merge_and_store(symbol, pd.concat([disk_df, df]))
         else:
-            _store_disk_prices(actual_symbol, df)
-        _store_cached_prices(actual_symbol, start, end, df)
-        return _finalize_and_return(df)
+            _store_disk_prices(symbol, df)
+        _store_cached_prices(symbol, start, end, df)
+        return df
 
     # Try without auto_adjust
     df = _try_fetch_with_retry(
-        lambda: _normalize(yf.download(actual_symbol, start=fetch_start, end=end, auto_adjust=False, progress=False, threads=False, timeout=YFINANCE_TIMEOUT))
+        lambda: _normalize(yf.download(symbol, start=fetch_start, end=end, auto_adjust=False, progress=False, threads=False, timeout=YFINANCE_TIMEOUT))
     )
     if df is not None and not df.empty:
         if disk_df is not None and not disk_df.empty:
-            df = _merge_and_store(actual_symbol, pd.concat([disk_df, df]))
+            df = _merge_and_store(symbol, pd.concat([disk_df, df]))
         else:
-            _store_disk_prices(actual_symbol, df)
-        _store_cached_prices(actual_symbol, start, end, df)
-        return _finalize_and_return(df)
+            _store_disk_prices(symbol, df)
+        _store_cached_prices(symbol, start, end, df)
+        return df
 
     # Period max fallback to dodge tz/metadata issues for dash/dot tickers
     df = _try_fetch_with_retry(
-        lambda: _normalize(yf.Ticker(actual_symbol).history(period="max", auto_adjust=True, timeout=YFINANCE_TIMEOUT)),
+        lambda: _normalize(yf.Ticker(symbol).history(period="max", auto_adjust=True, timeout=YFINANCE_TIMEOUT)),
         max_retries=3,
         delay=1.0
     )
     if df is not None and not df.empty:
         if disk_df is not None and not disk_df.empty:
-            df = _merge_and_store(actual_symbol, pd.concat([disk_df, df]))
+            df = _merge_and_store(symbol, pd.concat([disk_df, df]))
         else:
-            _store_disk_prices(actual_symbol, df)
-        _store_cached_prices(actual_symbol, start, end, df)
-        return _finalize_and_return(df)
+            _store_disk_prices(symbol, df)
+        _store_cached_prices(symbol, start, end, df)
+        return df
 
     # Final fallback with yf.download period=max
     df = _try_fetch_with_retry(
-        lambda: _normalize(yf.download(actual_symbol, period="max", auto_adjust=True, progress=False, threads=False, timeout=YFINANCE_TIMEOUT)),
+        lambda: _normalize(yf.download(symbol, period="max", auto_adjust=True, progress=False, threads=False, timeout=YFINANCE_TIMEOUT)),
         max_retries=2,
         delay=1.0
     )
     if df is not None and not df.empty:
         if disk_df is not None and not disk_df.empty:
-            df = _merge_and_store(actual_symbol, pd.concat([disk_df, df]))
+            df = _merge_and_store(symbol, pd.concat([disk_df, df]))
         else:
-            _store_disk_prices(actual_symbol, df)
-        _store_cached_prices(actual_symbol, start, end, df)
-        return _finalize_and_return(df)
+            _store_disk_prices(symbol, df)
+        _store_cached_prices(symbol, start, end, df)
+        return df
 
     # =========================================================================
     # GRACEFUL FALLBACK: Return cached disk data when Yahoo Finance unavailable
@@ -4052,9 +4075,7 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
     # continue operating when network is unavailable or symbols are delisted.
     # =========================================================================
     if disk_df is not None and not disk_df.empty:
-        _PX_CACHE[_px_cache_key(actual_symbol, start, end)] = disk_df
-        if is_inverse_pair:
-            return _invert_ohlc_dataframe(disk_df)
+        _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
         return disk_df
 
     return pd.DataFrame()
