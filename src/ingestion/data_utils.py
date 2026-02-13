@@ -1728,9 +1728,63 @@ def get_company_name(symbol: str) -> Optional[str]:
 # This centralized constant is used by signals.py and tuning/tune.py
 # Individual scripts can override via command-line arguments
 DEFAULT_ASSET_UNIVERSE = [
-    # FX pairs
-    "PLNJPY=X",
+    # -------------------------
+    # FX Pairs - Major
+    # -------------------------
+    "EURUSD=X",   # Euro / US Dollar
+    "GBPUSD=X",   # British Pound / US Dollar
+    "USDJPY=X",   # US Dollar / Japanese Yen
+    "USDCHF=X",   # US Dollar / Swiss Franc
+    "AUDUSD=X",   # Australian Dollar / US Dollar
+    "USDCAD=X",   # US Dollar / Canadian Dollar
+    "NZDUSD=X",   # New Zealand Dollar / US Dollar
+    
+    # -------------------------
+    # FX Pairs - JPY Cross Rates
+    # -------------------------
+    "EURJPY=X",   # Euro / Japanese Yen
+    "GBPJPY=X",   # British Pound / Japanese Yen
+    "AUDJPY=X",   # Australian Dollar / Japanese Yen
+    "NZDJPY=X",   # New Zealand Dollar / Japanese Yen
+    "CADJPY=X",   # Canadian Dollar / Japanese Yen
+    "CHFJPY=X",   # Swiss Franc / Japanese Yen
+    "SGDJPY=X",   # Singapore Dollar / Japanese Yen
+    "HKDJPY=X",   # Hong Kong Dollar / Japanese Yen
+    "ZARJPY=X",   # South African Rand / Japanese Yen
+    "MXNJPY=X",   # Mexican Peso / Japanese Yen
+    "TRYJPY=X",   # Turkish Lira / Japanese Yen
+    "SEKJPY=X",   # Swedish Krona / Japanese Yen
+    "NOKJPY=X",   # Norwegian Krone / Japanese Yen
+    "DKKJPY=X",   # Danish Krone / Japanese Yen
+    "CNYJPY=X",   # Chinese Yuan / Japanese Yen
+    "PLNJPY=X",   # Polish Zloty / Japanese Yen
+    
+    # -------------------------
+    # FX Pairs - JPY as Base Currency
+    # -------------------------
+    # Note: These may not be directly available on Yahoo Finance.
+    # If not, the system computes them as inverses of XXXJPY pairs.
+    "JPYUSD=X",   # Japanese Yen / US Dollar
+    "JPYEUR=X",   # Japanese Yen / Euro
+    "JPYGBP=X",   # Japanese Yen / British Pound
+    "JPYAUD=X",   # Japanese Yen / Australian Dollar
+    "JPYNZD=X",   # Japanese Yen / New Zealand Dollar
+    "JPYCAD=X",   # Japanese Yen / Canadian Dollar
+    "JPYCHF=X",   # Japanese Yen / Swiss Franc
+    "JPYSGD=X",   # Japanese Yen / Singapore Dollar
+    "JPYHKD=X",   # Japanese Yen / Hong Kong Dollar
+    "JPYZAR=X",   # Japanese Yen / South African Rand
+    "JPYMXN=X",   # Japanese Yen / Mexican Peso
+    "JPYTRY=X",   # Japanese Yen / Turkish Lira
+    "JPYSEK=X",   # Japanese Yen / Swedish Krona
+    "JPYNOK=X",   # Japanese Yen / Norwegian Krone
+    "JPYDKK=X",   # Japanese Yen / Danish Krone
+    "JPYCNY=X",   # Japanese Yen / Chinese Yuan
+    "JPYPLN=X",   # Japanese Yen / Polish Zloty
+    
+    # -------------------------
     # Commodities
+    # -------------------------
     "GC=F",  # Gold futures
     "SI=F",  # Silver futures
     # Cryptocurrency

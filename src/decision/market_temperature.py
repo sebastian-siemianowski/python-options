@@ -1066,6 +1066,7 @@ JPY_BASE_PAIRS = {
     "NOKJPY=X": "JPY/NOK",
     "DKKJPY=X": "JPY/DKK",
     "CNYJPY=X": "JPY/CNY",
+    "PLNJPY=X": "JPY/PLN",
 }
 
 

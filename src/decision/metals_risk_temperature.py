@@ -2025,6 +2025,23 @@ def compute_anticipatory_metals_risk_temperature(
     else:  # Extreme
         action_text = "Defensive positioning - minimize metals exposure"
     
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # SAFETY CHECK: Override regime if temperature contradicts regime state
+    # This prevents displaying "Calm" or "Normal" when temperature indicates stress
+    # ═══════════════════════════════════════════════════════════════════════════════
+    if temperature >= 1.5 and new_regime not in ("Extreme",):
+        new_regime = "Extreme"
+        status = "Extreme"
+        action_text = "Defensive positioning - minimize metals exposure"
+    elif temperature >= 1.2 and new_regime not in ("Stressed", "Extreme"):
+        new_regime = "Stressed"
+        status = "Stressed"
+        action_text = "Reduce metals exposure significantly"
+    elif temperature >= 0.7 and new_regime not in ("Elevated", "Stressed", "Extreme"):
+        new_regime = "Elevated"
+        status = "Elevated"
+        action_text = "Monitor metals positions closely"
+    
     # Find primary contributing indicator
     max_contributor = max(all_indicators, key=lambda x: x.contribution)
     
