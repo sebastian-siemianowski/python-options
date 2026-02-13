@@ -58,6 +58,33 @@ Enabled by default since Feb 2026 (94.9% selection rate). Models compete via BMA
 
 Use `--disable-momentum` flag for ablation testing.
 
+### Garman-Klass Realized Volatility (Feb 2026)
+**Location**: `src/calibration/realized_volatility.py`
+
+Default volatility estimator upgraded from EWMA to Garman-Klass (GK):
+- **7.4x more efficient** than close-to-close EWMA
+- Uses OHLC (Open/High/Low/Close) data for range-based estimation
+- No additional parameters - pure efficiency improvement
+
+**Mathematical Foundation:**
+```
+σ²_GK = 0.5*(log(H/L))² - (2*log(2)-1)*(log(C/O))²
+```
+
+**Estimator Priority:**
+1. Garman-Klass (if OHLC available)
+2. GARCH(1,1) via MLE
+3. EWMA blend (fallback)
+
+**Impact on Calibration:**
+- Improves PIT histogram uniformity
+- Reduces variance estimation noise by 7.4x
+- Better c parameter estimation (observation variance scaling)
+
+**Display in Augmentation:**
+- `VOL:GK` - Garman-Klass active (using OHLC)
+- `VOL:EWMA` - Fallback to close-to-close
+
 ## Developer Workflow
 
 ### Daily Commands

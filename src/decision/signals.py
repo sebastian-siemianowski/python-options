@@ -3647,6 +3647,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         gmm_data = global_data.get('gmm', {})
         nig_data = global_data.get('nig', {})
         skew_t_data = global_data.get('phi_skew_t', {})
+        vol_estimator = global_data.get('volatility_estimator', 'EWMA')
 
         aug_table = Table(
             show_header=False,
@@ -3657,6 +3658,25 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         )
         aug_table.add_column("Layer", style="white", width=26)
         aug_table.add_column("Status", width=44)
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # VOLATILITY ESTIMATOR: Garman-Klass vs EWMA (February 2026)
+        # ═══════════════════════════════════════════════════════════════════════════
+        if vol_estimator and vol_estimator.upper() == "GK":
+            aug_table.add_row(
+                "[green]Realized Vol[/green]",
+                f"[green]Garman-Klass[/green]  (7.4x efficient vs EWMA)"
+            )
+        elif vol_estimator and "gk" in vol_estimator.lower():
+            aug_table.add_row(
+                "[green]Realized Vol[/green]",
+                f"[green]{vol_estimator}[/green]  (OHLC range-based)"
+            )
+        else:
+            aug_table.add_row(
+                "[dim]Realized Vol[/dim]",
+                f"[dim]{vol_estimator or 'EWMA'}[/dim]  (close-to-close)"
+            )
 
         # Helper to describe skewness direction
         def skew_direction(val):
@@ -7500,8 +7520,16 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         if not canon:
             canon = asset.strip().upper()
 
-        # Compute features and signals
-        feats = compute_features(px, asset_symbol=asset)
+        # Fetch OHLC data for Garman-Klass volatility (7.4x more efficient)
+        ohlc_df = None
+        if GK_VOLATILITY_AVAILABLE:
+            try:
+                ohlc_df = _download_prices(asset, args.start, args.end)
+            except Exception:
+                ohlc_df = None  # Fall back to GARCH/EWMA
+
+        # Compute features and signals with OHLC for GK volatility
+        feats = compute_features(px, asset_symbol=asset, ohlc_df=ohlc_df)
         last_close = _to_float(px.iloc[-1])
 
         # Load tuned params with BMA structure for model averaging

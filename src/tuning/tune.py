@@ -1294,9 +1294,12 @@ def tune_asset_q(
         Dictionary with tuned parameters and diagnostics, or None if failed
     """
     try:
-        # Fetch price data
+        # Fetch price data (need OHLC for Garman-Klass volatility)
+        df = None
         try:
             px, title = fetch_px(asset, start_date, end_date)
+            # fetch_px returns only close prices, try to get full OHLC
+            df = _download_prices(asset, start_date, end_date)
         except Exception:
             df = _download_prices(asset, start_date, end_date)
             if df is None or df.empty:
@@ -1308,12 +1311,35 @@ def tune_asset_q(
             _log(f"     ⚠️  Insufficient data for {asset}")
             return None
         
-        # Compute returns and volatility
+        # Compute returns
         log_ret = np.log(px / px.shift(1)).dropna()
         returns = log_ret.values
         
-        vol_ewma = log_ret.ewm(span=21, adjust=False).std()
-        vol = vol_ewma.values
+        # Compute volatility using Garman-Klass (7.4x more efficient than EWMA)
+        vol_estimator_used = "EWMA"
+        if GK_VOLATILITY_AVAILABLE and df is not None and not df.empty:
+            try:
+                # Check for OHLC columns
+                cols = {c.lower(): c for c in df.columns}
+                if all(c in cols for c in ['open', 'high', 'low', 'close']):
+                    open_ = df[cols['open']].values
+                    high = df[cols['high']].values
+                    low = df[cols['low']].values
+                    close = df[cols['close']].values
+                    
+                    vol, vol_estimator_used = compute_hybrid_volatility(
+                        open_=open_, high=high, low=low, close=close,
+                        span=21, annualize=False
+                    )
+                else:
+                    # Fallback to EWMA if OHLC not available
+                    vol = log_ret.ewm(span=21, adjust=False).std().values
+            except Exception as e:
+                # Fallback to EWMA on any error
+                vol = log_ret.ewm(span=21, adjust=False).std().values
+        else:
+            # Use EWMA if GK not available
+            vol = log_ret.ewm(span=21, adjust=False).std().values
         
         # Remove NaN/Inf
         valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
@@ -3590,9 +3616,12 @@ def tune_asset_with_bma(
         reset_cache_stats()
     
     try:
-        # Fetch price data
+        # Fetch price data (need OHLC for Garman-Klass volatility)
+        df = None
         try:
             px, title = fetch_px(asset, start_date, end_date)
+            # fetch_px returns only close prices, try to get full OHLC
+            df = _download_prices(asset, start_date, end_date)
         except Exception:
             df = _download_prices(asset, start_date, end_date)
             if df is None or df.empty:
@@ -3640,12 +3669,35 @@ def tune_asset_with_bma(
                 "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
 
-        # Compute returns and volatility
+        # Compute returns
         log_ret = np.log(px / px.shift(1)).dropna()
         returns = log_ret.values
 
-        vol_ewma = log_ret.ewm(span=21, adjust=False).std()
-        vol = vol_ewma.values
+        # Compute volatility using Garman-Klass (7.4x more efficient than EWMA)
+        vol_estimator_used = "EWMA"
+        if GK_VOLATILITY_AVAILABLE and df is not None and not df.empty:
+            try:
+                # Check for OHLC columns
+                cols = {c.lower(): c for c in df.columns}
+                if all(c in cols for c in ['open', 'high', 'low', 'close']):
+                    open_ = df[cols['open']].values
+                    high = df[cols['high']].values
+                    low = df[cols['low']].values
+                    close = df[cols['close']].values
+                    
+                    vol, vol_estimator_used = compute_hybrid_volatility(
+                        open_=open_, high=high, low=low, close=close,
+                        span=21, annualize=False
+                    )
+                else:
+                    # Fallback to EWMA if OHLC not available
+                    vol = log_ret.ewm(span=21, adjust=False).std().values
+            except Exception as e:
+                # Fallback to EWMA on any error
+                vol = log_ret.ewm(span=21, adjust=False).std().values
+        else:
+            # Use EWMA if GK not available
+            vol = log_ret.ewm(span=21, adjust=False).std().values
 
         # Remove NaN/Inf
         valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
@@ -3755,6 +3807,8 @@ def tune_asset_with_bma(
                 # Add BMA global model posterior
                 "model_posterior": bma_result.get("global", {}).get("model_posterior", {}),
                 "models": bma_result.get("global", {}).get("models", {}),
+                # Volatility estimator used (February 2026)
+                "volatility_estimator": vol_estimator_used,
             },
             "regime": regime_results,  # Now contains model_posterior and models per regime
             "use_regime_tuning": True,
