@@ -68,6 +68,36 @@ All models compete via BIC weights. If extra parameters don't improve fit,
 model weight collapses naturally toward simpler alternatives.
 
 -------------------------------------------------------------------------------
+VOLATILITY ESTIMATION — GARMAN-KLASS REALIZED VOLATILITY (February 2026)
+-------------------------------------------------------------------------------
+
+The observation variance in the Kalman filter is scaled by volatility σ_t:
+
+    r_t = μ_t + √(c·σ_t²)·ε_t
+
+VOLATILITY ESTIMATION PRIORITY (compute_features):
+    1. Garman-Klass (GK) — 7.4x more efficient than close-to-close EWMA
+       Requires OHLC data passed via ohlc_df parameter
+    2. GARCH(1,1) via MLE — captures volatility clustering
+    3. EWMA blend — robust baseline fallback
+
+GARMAN-KLASS FORMULA (uses OHLC data):
+    σ²_GK = 0.5*(log(H/L))² - (2*log(2)-1)*(log(C/O))²
+
+The efficiency gain (7.4x) means:
+    - Same precision as EWMA with ~7x fewer observations
+    - Or: same observations → ~7x more precise variance estimate
+
+IMPACT ON SIGNAL QUALITY:
+    - Better σ_t estimate → more accurate drift/vol ratio
+    - Improves regime classification accuracy
+    - Reduces noise in Expected Utility calculations
+
+The volatility estimator used is displayed in Augmentation Layers:
+    - "Realized Vol: Garman-Klass (7.4x efficient vs EWMA)"
+    - "Realized Vol: EWMA (close-to-close)"
+
+-------------------------------------------------------------------------------
 REGIME ASSIGNMENT — DETERMINISTIC, CONSISTENT WITH TUNE
 -------------------------------------------------------------------------------
 
@@ -473,6 +503,24 @@ enable_cache_only_mode()
 # Suppress noisy yfinance download warnings (e.g., "1 Failed download: ...")
 logging.getLogger("yfinance").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+# =============================================================================
+# GARMAN-KLASS REALIZED VOLATILITY (February 2026)
+# =============================================================================
+# Range-based volatility estimator using OHLC data.
+# 7.4x more efficient than close-to-close EWMA.
+# Improves PIT calibration without adding parameters.
+# =============================================================================
+try:
+    from calibration.realized_volatility import (
+        compute_gk_volatility,
+        compute_hybrid_volatility,
+        compute_volatility_from_df,
+        VolatilityEstimator,
+    )
+    GK_VOLATILITY_AVAILABLE = True
+except ImportError:
+    GK_VOLATILITY_AVAILABLE = False
 
 
 class StudentTDriftModel:
@@ -2943,16 +2991,26 @@ def _kalman_filter_drift(
     }
 
 
-def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[str, pd.Series]:
+def compute_features(
+    px: pd.Series, 
+    asset_symbol: Optional[str] = None,
+    ohlc_df: Optional[pd.DataFrame] = None,
+) -> Dict[str, pd.Series]:
     """
     Compute features from price series for signal generation.
 
     Args:
-        px: Price series
+        px: Price series (Close prices)
         asset_symbol: Asset symbol (e.g., "PLNJPY=X") for loading tuned Kalman parameters
+        ohlc_df: Optional DataFrame with OHLC columns for Garman-Klass volatility
 
     Returns:
         Dictionary of computed features
+        
+    VOLATILITY ESTIMATION PRIORITY (February 2026):
+        1. Garman-Klass (if OHLC available) - 7.4x more efficient than close-to-close
+        2. GARCH(1,1) via MLE - captures volatility clustering
+        3. EWMA blend (fallback) - robust baseline
     """
     # Protect log conversion from garbage ticks and non-positive prices
     px = _ensure_float_series(px)
@@ -2971,17 +3029,49 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     vol_fast = ret.ewm(span=21, adjust=False).std()
     vol_slow = ret.ewm(span=126, adjust=False).std()
 
-    # Prefer GARCH(1,1) volatility via MLE; fallback to EWMA blend on failure
-    try:
-        vol_garch, garch_params = _garch11_mle(ret)
-        # Align to ret index and name "vol" for downstream compatibility
-        vol = vol_garch.reindex(ret.index).rename("vol")
-        vol_source = "garch11"
-    except Exception:
-        # Blend vol: fast reacts, slow stabilizes
-        vol = (0.6 * vol_fast + 0.4 * vol_slow).rename("vol")
-        garch_params = {}
-        vol_source = "ewma_fallback"
+    # =========================================================================
+    # VOLATILITY ESTIMATION - Priority: GK > GARCH > EWMA
+    # =========================================================================
+    vol_source = "ewma_fallback"
+    garch_params = {}
+    
+    # Priority 1: Garman-Klass if OHLC data available (7.4x more efficient)
+    if GK_VOLATILITY_AVAILABLE and ohlc_df is not None and not ohlc_df.empty:
+        try:
+            cols = {c.lower(): c for c in ohlc_df.columns}
+            if all(c in cols for c in ['open', 'high', 'low', 'close']):
+                open_ = ohlc_df[cols['open']].values
+                high = ohlc_df[cols['high']].values
+                low = ohlc_df[cols['low']].values
+                close = ohlc_df[cols['close']].values
+                
+                vol_gk, vol_estimator = compute_hybrid_volatility(
+                    open_=open_, high=high, low=low, close=close,
+                    span=21, annualize=False
+                )
+                
+                # Convert to Series with proper index
+                vol_gk_series = pd.Series(vol_gk, index=ohlc_df.index)
+                # Align to ret index
+                vol = vol_gk_series.reindex(ret.index).rename("vol")
+                vol_source = f"gk_{vol_estimator.lower()}"
+        except Exception:
+            # Fall through to GARCH/EWMA
+            pass
+    
+    # Priority 2: GARCH(1,1) if GK not available/failed
+    if vol_source == "ewma_fallback":
+        try:
+            vol_garch, garch_params = _garch11_mle(ret)
+            # Align to ret index and name "vol" for downstream compatibility
+            vol = vol_garch.reindex(ret.index).rename("vol")
+            vol_source = "garch11"
+        except Exception:
+            # Priority 3: EWMA blend (fallback)
+            vol = (0.6 * vol_fast + 0.4 * vol_slow).rename("vol")
+            garch_params = {}
+            vol_source = "ewma_fallback"
+            
     # Robust global volatility floor to avoid feedback loops when vol collapses recently:
     # - Use a lagged expanding 10th percentile over the entire history (no look-ahead)
     # - Add a relative floor vs long-run median and a small absolute epsilon

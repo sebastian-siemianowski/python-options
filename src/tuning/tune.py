@@ -84,6 +84,33 @@ For EACH regime r:
     6. Applies hierarchical shrinkage toward global (optional)
 
 -------------------------------------------------------------------------------
+VOLATILITY ESTIMATION — GARMAN-KLASS REALIZED VOLATILITY (February 2026)
+
+The observation variance in the Kalman filter is scaled by volatility σ_t:
+
+    r_t = μ_t + √(c·σ_t²)·ε_t
+
+VOLATILITY ESTIMATION PRIORITY:
+    1. Garman-Klass (GK) — 7.4x more efficient than close-to-close EWMA
+    2. GARCH(1,1) via MLE — captures volatility clustering
+    3. EWMA blend — robust baseline fallback
+
+GARMAN-KLASS FORMULA (uses OHLC data):
+    σ²_GK = 0.5*(log(H/L))² - (2*log(2)-1)*(log(C/O))²
+
+The efficiency gain (7.4x) means:
+    - Same precision as EWMA with ~7x fewer observations
+    - Or: same observations → ~7x more precise variance estimate
+
+IMPACT ON CALIBRATION:
+    - Better σ_t estimate → less noise absorbed by c parameter
+    - Improves PIT calibration without adding parameters
+    - Reduces variance estimation error in all downstream models
+
+The volatility estimator used is stored in tuning results:
+    "volatility_estimator": "GK" | "EWMA" | "garch11"
+
+-------------------------------------------------------------------------------
 φ SHRINKAGE PRIOR (AR(1) COEFFICIENT REGULARIZATION)
 
 Models with autoregressive drift (Phi-Gaussian, Phi-Student-t) include an
@@ -286,6 +313,24 @@ try:
     ADAPTIVE_NU_AVAILABLE = True
 except ImportError:
     ADAPTIVE_NU_AVAILABLE = False
+
+# =============================================================================
+# GARMAN-KLASS REALIZED VOLATILITY (February 2026)
+# =============================================================================
+# Range-based volatility estimator using OHLC data.
+# 7.4x more efficient than close-to-close EWMA.
+# Improves PIT calibration without adding parameters.
+# =============================================================================
+try:
+    from calibration.realized_volatility import (
+        compute_gk_volatility,
+        compute_hybrid_volatility,
+        compute_volatility_from_df,
+        VolatilityEstimator,
+    )
+    GK_VOLATILITY_AVAILABLE = True
+except ImportError:
+    GK_VOLATILITY_AVAILABLE = False
 
 # Import Generalized Hyperbolic (GH) distribution for calibration improvement
 # GH is a fallback model when Student-t fails - captures skewness that t cannot
