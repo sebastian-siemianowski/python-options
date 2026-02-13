@@ -1002,6 +1002,8 @@ def compute_and_render_unified_risk(
         currency_table.add_column("5D", justify="right", width=6)
         currency_table.add_column("21D", justify="right", width=6)
         currency_table.add_column("Risk", justify="right", width=4)
+        currency_table.add_column("F:1D", justify="right", width=6)
+        currency_table.add_column("F:3D", justify="right", width=6)
         currency_table.add_column("F:7D", justify="right", width=6)
         currency_table.add_column("F:30D", justify="right", width=6)
         currency_table.add_column("F:3M", justify="right", width=6)
@@ -1063,6 +1065,8 @@ def compute_and_render_unified_risk(
                 Text(f"{currency.return_5d:+.1%}", style=ret_5d_style),
                 Text(f"{currency.return_21d:+.1%}", style=ret_21d_style),
                 Text(f"{risk_score}", style=risk_style),
+                Text(f"{fc_1d:+.1f}%", style=fc_1d_style),
+                Text(f"{fc_3d:+.1f}%", style=fc_3d_style),
                 Text(f"{fc_7d:+.1f}%", style=fc_7d_style),
                 Text(f"{fc_30d:+.1f}%", style=fc_30d_style),
                 Text(f"{fc_90d:+.1f}%", style=fc_90d_style),

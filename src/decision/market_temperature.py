@@ -434,7 +434,8 @@ class UniverseMetrics:
             "momentum_signal": self.momentum_signal,
             "data_available": self.data_available,
             "ticker_count": self.ticker_count,
-            "forecast_1d": self.forecast_1d,
+                        "forecast_1d": self.forecast_1d,
+            "forecast_3d": self.forecast_3d,
             "forecast_3d": self.forecast_3d,
             "forecast_7d": self.forecast_7d,
             "forecast_30d": self.forecast_30d,
@@ -491,7 +492,8 @@ class SectorMetrics:
             "momentum_signal": self.momentum_signal,
             "risk_score": self.risk_score,
             "data_available": self.data_available,
-            "forecast_1d": self.forecast_1d,
+                        "forecast_1d": self.forecast_1d,
+            "forecast_3d": self.forecast_3d,
             "forecast_3d": self.forecast_3d,
             "forecast_7d": self.forecast_7d,
             "forecast_30d": self.forecast_30d,
@@ -517,6 +519,7 @@ class CurrencyMetrics:
     data_available: bool = False
     # Forecasts (scientifically computed using drift + mean reversion + volatility)
     forecast_1d: float = 0.0      # 1 day forecast (% change)
+    forecast_3d: float = 0.0      # 3 day forecast
     forecast_7d: float = 0.0      # 7 day forecast
     forecast_30d: float = 0.0     # 30 day (1 month) forecast
     forecast_90d: float = 0.0     # 90 day (3 month) forecast
@@ -537,7 +540,8 @@ class CurrencyMetrics:
             "momentum_signal": self.momentum_signal,
             "risk_score": self.risk_score,
             "data_available": self.data_available,
-            "forecast_1d": self.forecast_1d,
+                        "forecast_1d": self.forecast_1d,
+            "forecast_3d": self.forecast_3d,
             "forecast_7d": self.forecast_7d,
             "forecast_30d": self.forecast_30d,
             "forecast_90d": self.forecast_90d,
@@ -1890,10 +1894,9 @@ def _compute_currency_metrics(currency_data: Dict[str, pd.Series]) -> Dict[str, 
             vol_pts = min(vol_20d / 0.15, 1.0) * 50
             move_pts = min(abs(ret_5d) / 0.05, 1.0) * 50
             risk_score = int(min(100, vol_pts + move_pts))
-            fc_1d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_equity_forecasts(prices, vol_20d)
             
             # Compute forecasts
-            fc_1d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_currency_forecasts(prices, vol_20d)
+            fc_1d, fc_3d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_currency_forecasts(prices, vol_20d)
             
             currencies[pair_name] = CurrencyMetrics(
                 name=pair_name,
@@ -1907,6 +1910,7 @@ def _compute_currency_metrics(currency_data: Dict[str, pd.Series]) -> Dict[str, 
                 risk_score=risk_score,
                 data_available=True,
                 forecast_1d=fc_1d,
+                forecast_3d=fc_3d,
                 forecast_7d=fc_7d,
                 forecast_30d=fc_30d,
                 forecast_90d=fc_90d,
@@ -1966,7 +1970,6 @@ def _compute_currency_metrics(currency_data: Dict[str, pd.Series]) -> Dict[str, 
             vol_pts = min(vol_20d / 0.15, 1.0) * 50
             move_pts = min(abs(ret_5d) / 0.05, 1.0) * 50
             risk_score = int(min(100, vol_pts + move_pts))
-            fc_1d, fc_3d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_equity_forecasts(prices, vol_20d)
             
             # Compute forecasts for inverse pair (negate the forecasts)
             fc_1d, fc_3d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, fc_conf = _compute_currency_forecasts(prices, vol_20d)
