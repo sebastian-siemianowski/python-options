@@ -1538,10 +1538,12 @@ def tune_asset_q(
                 # Check for OHLC columns
                 cols = {c.lower(): c for c in df.columns}
                 if all(c in cols for c in ['open', 'high', 'low', 'close']):
-                    open_ = df[cols['open']].values
-                    high = df[cols['high']].values
-                    low = df[cols['low']].values
-                    close = df[cols['close']].values
+                    # Align OHLC data with returns (drop first row to match log returns)
+                    df_aligned = df.iloc[1:].copy()
+                    open_ = df_aligned[cols['open']].values
+                    high = df_aligned[cols['high']].values
+                    low = df_aligned[cols['low']].values
+                    close = df_aligned[cols['close']].values
                     
                     vol, vol_estimator_used = compute_hybrid_volatility(
                         open_=open_, high=high, low=low, close=close,
@@ -1556,6 +1558,11 @@ def tune_asset_q(
         else:
             # Use EWMA if GK not available
             vol = log_ret.ewm(span=21, adjust=False).std().values
+        
+        # Ensure returns and vol have same length
+        min_len = min(len(returns), len(vol))
+        returns = returns[:min_len]
+        vol = vol[:min_len]
         
         # Remove NaN/Inf
         valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
@@ -4075,10 +4082,12 @@ def tune_asset_with_bma(
                 # Check for OHLC columns
                 cols = {c.lower(): c for c in df.columns}
                 if all(c in cols for c in ['open', 'high', 'low', 'close']):
-                    open_ = df[cols['open']].values
-                    high = df[cols['high']].values
-                    low = df[cols['low']].values
-                    close = df[cols['close']].values
+                    # Align OHLC data with returns (drop first row to match log returns)
+                    df_aligned = df.iloc[1:].copy()
+                    open_ = df_aligned[cols['open']].values
+                    high = df_aligned[cols['high']].values
+                    low = df_aligned[cols['low']].values
+                    close = df_aligned[cols['close']].values
                     
                     vol, vol_estimator_used = compute_hybrid_volatility(
                         open_=open_, high=high, low=low, close=close,
@@ -4093,6 +4102,11 @@ def tune_asset_with_bma(
         else:
             # Use EWMA if GK not available
             vol = log_ret.ewm(span=21, adjust=False).std().values
+
+        # Ensure returns and vol have same length
+        min_len = min(len(returns), len(vol))
+        returns = returns[:min_len]
+        vol = vol[:min_len]
 
         # Remove NaN/Inf
         valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
@@ -4276,6 +4290,9 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float,
     """
     asset, start_date, end_date, prior_log_q_mean, prior_lambda, lambda_regime, previous_posteriors = args_tuple
     
+    # Track failure reasons for better error reporting
+    failure_reasons = []
+    
     try:
         result = tune_asset_with_bma(
             asset=asset,
@@ -4289,6 +4306,8 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float,
         
         if result:
             return (asset, result, None, None)
+        
+        failure_reasons.append("tune_asset_with_bma returned None (likely insufficient data or data fetch error)")
 
         # Fallback to standard tuning when regime tuning fails (insufficient data for regime estimation)
         _log(f"  ↩️  {asset}: Falling back to standard model tuning...")
@@ -4307,7 +4326,29 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float,
             fallback_result['regime_fallback_reason'] = 'tune_asset_with_bma_returned_none'
             return (asset, fallback_result, None, None)
         else:
-            return (asset, None, "both regime and standard tuning failed", None)
+            failure_reasons.append("tune_asset_q also returned None")
+            
+            # Try to get more info about why data fetch might have failed
+            try:
+                df = _download_prices(asset, start_date, end_date)
+                if df is None:
+                    failure_reasons.append(f"_download_prices returned None for {asset}")
+                elif df.empty:
+                    failure_reasons.append(f"_download_prices returned empty DataFrame for {asset}")
+                else:
+                    n_rows = len(df)
+                    failure_reasons.append(f"Data was fetched ({n_rows} rows) but processing failed")
+                    # Check for NaN/Inf issues
+                    if 'Close' in df.columns:
+                        close = df['Close']
+                        n_valid = close.notna().sum()
+                        n_inf = np.isinf(close.replace([np.inf, -np.inf], np.nan).dropna()).sum() if n_valid > 0 else 0
+                        failure_reasons.append(f"Close prices: {n_valid} valid, {n_rows - n_valid} NaN, {n_inf} Inf")
+            except Exception as data_check_err:
+                failure_reasons.append(f"Data check error: {data_check_err}")
+            
+            detailed_error = " | ".join(failure_reasons)
+            return (asset, None, detailed_error, None)
 
     except Exception as e:
         import traceback
