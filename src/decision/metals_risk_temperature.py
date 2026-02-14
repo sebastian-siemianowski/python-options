@@ -632,10 +632,9 @@ def _compute_volatility_percentile(
 
 def _compute_metal_forecasts(prices: pd.Series, vol_20d: float, metal_name: str = "metal") -> tuple:
     """
-    Compute metal price forecasts using TFT + Classical ensemble.
+    Compute metal price forecasts using elite multi-model ensemble.
     
-    Uses TFT (Temporal Fusion Transformer) + Classical drift/momentum ensemble.
-    TFT provides attention-based pattern recognition for improved accuracy.
+    Uses Kalman, GARCH, OU, Momentum and Classical drift ensemble.
     
     IMPORTANT: Uses get_forecast_by_horizon() for safe horizon extraction.
     ensemble_forecast now always uses STANDARD_HORIZONS internally.
@@ -646,7 +645,7 @@ def _compute_metal_forecasts(prices: pd.Series, vol_20d: float, metal_name: str 
         if prices is None or len(prices) < 30:
             return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
-        # Try TFT-enhanced ensemble forecast first
+        # Use ensemble forecast
         try:
             from decision.market_temperature import (
                 ensemble_forecast, 

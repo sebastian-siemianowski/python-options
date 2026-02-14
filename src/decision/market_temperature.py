@@ -77,7 +77,7 @@ except ImportError:
 # =============================================================================
 # PYTORCH FORECASTING (February 2026)
 # =============================================================================
-# N-BEATS and TFT models for currency/equity forecasting
+# N-BEATS models for currency/equity forecasting
 # Falls back to classical + Prophet if unavailable
 # =============================================================================
 try:
@@ -89,42 +89,23 @@ except ImportError:
     USE_PYTORCH_FORECASTING = False
 
 # =============================================================================
-# TEMPORAL FUSION TRANSFORMER (TFT) INTEGRATION (February 2026)
-# =============================================================================
-# TFT provides attention-based multi-horizon forecasting with:
-# - Variable selection networks for automatic feature importance
-# - Interpretable attention over historical patterns
-# - Multi-quantile output for proper uncertainty quantification
-# Reference: Lim et al. (2021) "Temporal Fusion Transformers"
-# =============================================================================
-try:
-    from decision.tft_forecaster import (
-        tft_forecast,
-        is_tft_available,
-        TFT_AVAILABLE,
-    )
-    USE_TFT = TFT_AVAILABLE
-except ImportError:
-    USE_TFT = False
-    TFT_AVAILABLE = False
-    
-    def tft_forecast(prices, horizons, asset_type, asset_name):
-        """Stub when TFT not available."""
-        n = len(horizons) if horizons else 7
-        return [0.0] * n, [(0.0, 0.0)] * n, "Low"
-    
-    def is_tft_available():
-        return False
-
-
-# =============================================================================
-# STANDARD FORECAST HORIZONS (Canonical Definition — February 2026)
 # =============================================================================
 # All forecast functions MUST use these horizons to prevent index misalignment.
 # Callers should use get_forecast_by_horizon() instead of positional indices.
 # =============================================================================
 STANDARD_HORIZONS = [1, 3, 7, 30, 90, 180, 365]
 HORIZON_INDEX = {h: i for i, h in enumerate(STANDARD_HORIZONS)}
+
+# Crypto tickers for special handling (high volatility, different dynamics)
+CRYPTO_TICKERS = {"BTC-USD", "ETH-USD", "BTC/USD", "ETH/USD", "BTCUSD", "ETHUSD"}
+
+
+def _is_crypto_asset(asset_name: str) -> bool:
+    """Check if asset is a cryptocurrency based on name/ticker."""
+    if not asset_name:
+        return False
+    name_upper = asset_name.upper().replace("=", "").replace(" ", "")
+    return any(crypto in name_upper for crypto in ["BTC", "ETH", "BITCOIN", "ETHEREUM"])
 
 
 def get_forecast_by_horizon(result: tuple, horizon: int) -> float:
@@ -155,91 +136,282 @@ def get_forecast_confidence(result: tuple) -> str:
 # ELITE FORECASTING ENGINE (Professor-Grade Multi-Model Ensemble)
 # =============================================================================
 # Architecture: Multi-model Bayesian ensemble with regime-aware weighting
-# Models: Kalman Filter, GARCH(1,1), Ornstein-Uhlenbeck, TFT, Momentum
+# Models: Kalman Filter, GARCH(1,1), Ornstein-Uhlenbeck, Momentum, Classical
 # Horizon-adaptive: Different model weights per forecast horizon
-# TFT Integration: Attention-based forecasts weighted into ensemble
+# Horizon-adaptive weighting for optimal blending
 # =============================================================================
 
-def _kalman_forecast(returns: np.ndarray, horizons: list) -> list:
-    """Kalman Filter forecast with adaptive state estimation."""
+def _kalman_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equity") -> list:
+    """
+    Kalman Filter forecast with adaptive state estimation.
+    
+    Estimates latent drift state using multi-scale exponential smoothing,
+    then projects forward with proper persistence modeling.
+    
+    Key insight: Daily drift of 0.0005 (0.05%) compounds to ~13% annually.
+    Short-term forecasts should reflect recent momentum strength.
+    """
     try:
         if len(returns) < 20:
             return [0.0] * len(horizons)
-        alpha = 0.94
-        drift_state = returns[0]
-        for r in returns[1:]:
-            drift_state = alpha * drift_state + (1 - alpha) * r
+        
+        # Multi-scale drift estimation (EWMA with different spans)
+        ema_5 = returns[-5:].mean() if len(returns) >= 5 else returns.mean()
+        ema_20 = returns[-20:].mean() if len(returns) >= 20 else returns.mean()
+        ema_60 = returns[-60:].mean() if len(returns) >= 60 else returns.mean()
+        
+        # Recent volatility for signal-to-noise
+        vol_20 = np.std(returns[-20:])
+        vol_60 = np.std(returns[-60:]) if len(returns) >= 60 else vol_20
+        
+        # Signal strength: how significant is the recent drift?
+        signal_strength = abs(ema_5) / (vol_20 + 1e-8)
+        signal_strength = np.clip(signal_strength, 0, 3)  # Cap at 3 sigma
+        
         forecasts = []
         for h in horizons:
-            decay = np.exp(-h / 180.0)
-            fc = drift_state * h * decay
-            pct = (np.exp(fc) - 1) * 100
+            # Short-term: recent momentum dominates
+            # Long-term: drift reverts toward long-run mean
+            if h <= 3:
+                drift = ema_5 * 0.70 + ema_20 * 0.30
+                persistence = 0.95  # High persistence for very short term
+            elif h <= 7:
+                drift = ema_5 * 0.50 + ema_20 * 0.40 + ema_60 * 0.10
+                persistence = 0.85
+            elif h <= 30:
+                drift = ema_5 * 0.25 + ema_20 * 0.50 + ema_60 * 0.25
+                persistence = 0.70
+            elif h <= 90:
+                drift = ema_5 * 0.10 + ema_20 * 0.35 + ema_60 * 0.55
+                persistence = 0.50
+            else:
+                drift = ema_20 * 0.20 + ema_60 * 0.80
+                persistence = 0.30
+            
+            # Currency mean-reverts faster
+            if asset_type == "currency":
+                persistence *= 0.75
+            elif asset_type == "crypto":
+                persistence = min(persistence * 1.2, 0.95)  # Crypto trends persist
+            
+            # Project forward: drift * h * persistence
+            # Signal strength amplifies when drift is statistically significant
+            amplification = 1.0 + 0.3 * signal_strength
+            fc_log = drift * h * persistence * amplification
+            
+            # Convert to percentage
+            pct = fc_log * 100
+            
             forecasts.append(float(pct))
         return forecasts
     except Exception:
         return [0.0] * len(horizons)
 
 
-def _garch_forecast(returns: np.ndarray, horizons: list) -> list:
-    """GARCH(1,1) volatility-adjusted forecast."""
+def _garch_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equity") -> list:
+    """
+    GARCH(1,1) volatility-adjusted forecast.
+    
+    Estimates time-varying volatility and adjusts drift forecast based on
+    current volatility regime relative to long-term average.
+    """
     try:
         if len(returns) < 30:
             return [0.0] * len(horizons)
-        omega, alpha, beta = 0.00001, 0.10, 0.85
+        
+        # GARCH(1,1) parameters
+        omega = 0.00001
+        alpha_g = 0.08
+        beta_g = 0.88
+        
+        # Estimate conditional variance
         var_t = np.var(returns)
-        for r in returns[-20:]:
-            var_t = omega + alpha * r**2 + beta * var_t
-        drift = np.mean(returns[-10:])
-        vol_mult = 1.0 / (1.0 + np.sqrt(var_t) * 10)
+        for r in returns[-min(60, len(returns)):]:
+            var_t = omega + alpha_g * r**2 + beta_g * var_t
+        
+        # Long-run variance
+        denom = 1 - alpha_g - beta_g
+        long_var = omega / denom if denom > 0.01 else np.var(returns)
+        
+        # Volatility ratio (current vs long-run)
+        vol_ratio = np.sqrt(var_t) / np.sqrt(long_var) if long_var > 1e-10 else 1.0
+        vol_ratio = np.clip(vol_ratio, 0.3, 3.0)
+        
+        # Multi-scale drift estimates
+        drift_5d = np.mean(returns[-5:])
+        drift_20d = np.mean(returns[-20:])
+        drift_60d = np.mean(returns[-min(60, len(returns)):])
+        
         forecasts = []
         for h in horizons:
-            fc = drift * h * vol_mult * np.exp(-h / 365.0)
-            pct = (np.exp(fc) - 1) * 100
+            # Horizon-weighted drift
+            if h <= 7:
+                drift = drift_5d * 0.6 + drift_20d * 0.4
+            elif h <= 30:
+                drift = drift_5d * 0.25 + drift_20d * 0.50 + drift_60d * 0.25
+            else:
+                drift = drift_5d * 0.10 + drift_20d * 0.30 + drift_60d * 0.60
+            
+            # Volatility adjustment: high vol reduces confidence, not magnitude
+            vol_adj = 1.0 / np.sqrt(vol_ratio) if vol_ratio > 1.0 else 1.0
+            vol_adj = np.clip(vol_adj, 0.5, 1.5)
+            
+            # Decay based on asset type
+            if asset_type == "currency":
+                decay = np.exp(-h / 60.0)
+            else:
+                decay = np.exp(-h / 180.0)
+            
+            # Project forward
+            fc = drift * h * vol_adj * decay
+            pct = fc * 100
+            
             forecasts.append(float(pct))
         return forecasts
     except Exception:
         return [0.0] * len(horizons)
 
 
-def _ou_forecast(prices: pd.Series, horizons: list) -> list:
-    """Ornstein-Uhlenbeck mean reversion forecast."""
+def _ou_forecast(prices: pd.Series, horizons: list, asset_type: str = "equity") -> list:
+    """
+    Ornstein-Uhlenbeck mean reversion forecast.
+    
+    Models price as mean-reverting to moving average equilibrium.
+    Currencies exhibit stronger mean reversion than equities.
+    """
     try:
         if len(prices) < 60:
             return [0.0] * len(horizons)
+        
         current = float(prices.iloc[-1])
+        
+        # Multiple mean reversion targets
+        ma_50 = float(prices.iloc[-min(50, len(prices)):].mean())
+        ma_100 = float(prices.iloc[-min(100, len(prices)):].mean())
         ma_200 = float(prices.iloc[-min(200, len(prices)):].mean())
-        deviation = (current - ma_200) / ma_200 if ma_200 > 0 else 0.0
-        theta = 0.015
+        
+        # Deviations from each MA
+        dev_50 = (current - ma_50) / ma_50 if ma_50 > 0 else 0.0
+        dev_100 = (current - ma_100) / ma_100 if ma_100 > 0 else 0.0
+        dev_200 = (current - ma_200) / ma_200 if ma_200 > 0 else 0.0
+        
+        # Estimate mean reversion speed from autocorrelation
+        log_ret = np.log(prices / prices.shift(1)).dropna().values
+        if len(log_ret) >= 20:
+            try:
+                autocorr = np.corrcoef(log_ret[:-1], log_ret[1:])[0, 1]
+                if np.isnan(autocorr):
+                    autocorr = 0.0
+            except:
+                autocorr = 0.0
+            autocorr = np.clip(autocorr, -0.5, 0.5)
+            theta = 0.025 * (1 - autocorr)
+        else:
+            theta = 0.025
+        
+        # Currency-specific: faster mean reversion
+        if asset_type == "currency":
+            theta *= 1.8
+        
         forecasts = []
         for h in horizons:
-            expected_dev = deviation * np.exp(-theta * h)
-            fc_pct = (expected_dev - deviation) * 100
-            forecasts.append(float(-fc_pct))
+            # Horizon-dependent MA weighting
+            if h <= 7:
+                target_dev = dev_50 * 0.7 + dev_100 * 0.3
+            elif h <= 30:
+                target_dev = dev_50 * 0.3 + dev_100 * 0.4 + dev_200 * 0.3
+            elif h <= 90:
+                target_dev = dev_50 * 0.1 + dev_100 * 0.4 + dev_200 * 0.5
+            else:
+                target_dev = dev_100 * 0.2 + dev_200 * 0.8
+            
+            # OU: expected deviation shrinks exponentially toward zero
+            expected_dev = target_dev * np.exp(-theta * h)
+            
+            # Forecast = price change from current deviation to expected
+            # If above MA (positive dev), expect negative return
+            fc_pct = -(target_dev - expected_dev) * 100
+            
+            forecasts.append(float(fc_pct))
         return forecasts
     except Exception:
         return [0.0] * len(horizons)
 
 
-def _momentum_forecast(returns: np.ndarray, horizons: list) -> list:
-    """Multi-timeframe momentum forecast."""
+def _momentum_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equity") -> list:
+    """
+    Multi-timeframe momentum forecast.
+    
+    Combines short, medium, and long-term momentum with horizon-adaptive weighting.
+    Momentum persistence varies by asset type and current trend strength.
+    
+    Key insight: Strong recent momentum (high cumulative return / vol) persists.
+    """
     try:
-        if len(returns) < 60:
+        n_ret = len(returns)
+        if n_ret < 20:
             return [0.0] * len(horizons)
-        mom_5d = np.sum(returns[-5:])
-        mom_20d = np.sum(returns[-20:])
-        mom_60d = np.sum(returns[-60:])
+        
+        # Cumulative returns over different windows
+        ret_5d = np.sum(returns[-5:]) if n_ret >= 5 else np.sum(returns)
+        ret_20d = np.sum(returns[-20:]) if n_ret >= 20 else np.sum(returns)
+        ret_60d = np.sum(returns[-60:]) if n_ret >= 60 else np.sum(returns) * (60 / n_ret)
+        
+        # Daily drift equivalents
+        drift_5d = ret_5d / 5
+        drift_20d = ret_20d / 20
+        drift_60d = ret_60d / 60
+        
+        # Volatility for Sharpe-style signal strength
+        vol_20d = np.std(returns[-20:]) * np.sqrt(252)
+        
+        # Momentum strength: how strong is the trend relative to noise?
+        # High Sharpe = strong signal = more persistence
+        daily_vol = np.std(returns[-20:])
+        sharpe_20d = (drift_20d * 252) / (vol_20d + 0.01)
+        sharpe_20d = np.clip(sharpe_20d, -3, 3)
+        
+        # Persistence factor based on trend strength
+        trend_strength = min(abs(sharpe_20d) / 1.5, 1.0)  # 0 to 1
+        
         forecasts = []
         for h in horizons:
-            if h <= 7:
-                weights = [0.6, 0.3, 0.1]
+            # Horizon-dependent drift weighting
+            if h <= 3:
+                drift = drift_5d * 0.70 + drift_20d * 0.30
+                base_persistence = 0.90
+            elif h <= 7:
+                drift = drift_5d * 0.50 + drift_20d * 0.40 + drift_60d * 0.10
+                base_persistence = 0.80
             elif h <= 30:
-                weights = [0.3, 0.5, 0.2]
+                drift = drift_5d * 0.25 + drift_20d * 0.50 + drift_60d * 0.25
+                base_persistence = 0.65
+            elif h <= 90:
+                drift = drift_5d * 0.10 + drift_20d * 0.40 + drift_60d * 0.50
+                base_persistence = 0.45
             else:
-                weights = [0.1, 0.3, 0.6]
-            combined_mom = weights[0] * mom_5d + weights[1] * mom_20d / 4 + weights[2] * mom_60d / 12
-            decay = np.exp(-h / 90.0)
-            fc = combined_mom * decay * min(h, 30) / 30.0
+                drift = drift_5d * 0.05 + drift_20d * 0.25 + drift_60d * 0.70
+                base_persistence = 0.30
+            
+            # Asset-specific persistence adjustment
+            if asset_type == "currency":
+                persistence = base_persistence * 0.70  # FX momentum fades faster
+            elif asset_type == "crypto":
+                persistence = min(base_persistence * 1.30, 0.95)  # Crypto trends persist
+            else:
+                persistence = base_persistence
+            
+            # Boost persistence for strong trends
+            persistence = persistence + (1 - persistence) * trend_strength * 0.3
+            
+            # Project forward
+            fc = drift * h * persistence
             pct = fc * 100
+            
+            # Volatility-scaled sanity bound (3 sigma)
+            vol_bound = daily_vol * np.sqrt(h) * 3.0 * 100
+            pct = np.clip(pct, -vol_bound, vol_bound)
+            
             forecasts.append(float(pct))
         return forecasts
     except Exception:
@@ -270,16 +442,18 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
     """
     Elite multi-model ensemble forecast with regime-aware weighting.
     
-    Models (6 total):
+    Models (5 total):
     1. Kalman Filter - drift state estimation
     2. GARCH(1,1) - volatility-adjusted forecasts
     3. Ornstein-Uhlenbeck - mean reversion
     4. Momentum - multi-timeframe trend following
     5. Classical - baseline drift extrapolation
-    6. TFT - Temporal Fusion Transformer (attention-based)
     
     IMPORTANT: Always uses STANDARD_HORIZONS [1, 3, 7, 30, 90, 180, 365] internally.
     The horizons parameter is ignored for consistency.
+    
+    Asset types: "equity", "currency", "metal", "crypto"
+    Crypto detection: BTC, ETH are auto-detected from asset_name.
     
     Returns: (fc_1d, fc_3d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, confidence)
     """
@@ -290,87 +464,81 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         if prices is None or len(prices) < 60:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
+        # Auto-detect crypto assets
+        if _is_crypto_asset(asset_name):
+            asset_type = "crypto"
+        
         log_returns = np.log(prices / prices.shift(1)).dropna().values
         if len(log_returns) < 30:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
-        # Classical models
-        kalman_fc = _kalman_forecast(log_returns, horizons)
-        garch_fc = _garch_forecast(log_returns, horizons)
-        ou_fc = _ou_forecast(prices, horizons)
-        mom_fc = _momentum_forecast(log_returns, horizons)
+        # Get individual model forecasts
+        kalman_fc = _kalman_forecast(log_returns, horizons, asset_type)
+        garch_fc = _garch_forecast(log_returns, horizons, asset_type)
+        ou_fc = _ou_forecast(prices, horizons, asset_type)
+        mom_fc = _momentum_forecast(log_returns, horizons, asset_type)
         
-        daily_drift = np.mean(log_returns[-60:])
-        daily_drift = np.clip(daily_drift, -0.01, 0.01)
+        # Classical drift forecast
+        drift_5d = np.mean(log_returns[-5:])
+        drift_20d = np.mean(log_returns[-20:])
+        drift_60d = np.mean(log_returns[-60:]) if len(log_returns) >= 60 else drift_20d
+        
         classical_fc = []
         for h in horizons:
-            fc = daily_drift * h
-            pct = (np.exp(fc) - 1) * 100
-            classical_fc.append(float(pct))
-        
-        # TFT forecasts (attention-based deep learning)
-        tft_fc = [0.0] * len(horizons)
-        tft_confidence = "Low"
-        use_tft = USE_TFT and len(prices) >= 100
-        
-        if use_tft:
-            try:
-                tft_point, tft_intervals, tft_confidence = tft_forecast(
-                    prices, horizons, asset_type, asset_name
-                )
-                tft_fc = tft_point
-            except Exception:
-                tft_fc = [0.0] * len(horizons)
-                use_tft = False
+            # Weight recent momentum more for short horizons
+            if h <= 7:
+                drift = drift_5d * 0.60 + drift_20d * 0.40
+            elif h <= 30:
+                drift = drift_5d * 0.30 + drift_20d * 0.45 + drift_60d * 0.25
+            else:
+                drift = drift_5d * 0.15 + drift_20d * 0.35 + drift_60d * 0.50
+            
+            # Simple projection with mild persistence decay
+            persistence = max(0.4, 1 - h / 500)
+            fc = drift * h * persistence * 100
+            classical_fc.append(float(fc))
         
         regime = _regime_detect(log_returns)
         
-        # Base weights: [Kalman, GARCH, OU, Momentum, Classical, TFT]
-        # TFT gets higher weight when data quality is good
-        tft_base_weight = 0.20 if use_tft else 0.0
-        scale = 1.0 - tft_base_weight  # Scale other weights
-        
-        if regime == 'trending':
-            # TFT excels at capturing trends via attention
-            base_weights = [0.20*scale, 0.08*scale, 0.08*scale, 0.35*scale, 0.12*scale, tft_base_weight + 0.05]
+        # Base weights: [Kalman, GARCH, OU, Momentum, Classical]
+        if asset_type == "crypto":
+            # Crypto: momentum dominates, OU is weak
+            if regime == 'trending':
+                base_weights = [0.20, 0.10, 0.05, 0.50, 0.15]
+            else:
+                base_weights = [0.20, 0.15, 0.10, 0.40, 0.15]
+        elif regime == 'trending':
+            base_weights = [0.30, 0.10, 0.10, 0.35, 0.15]
         elif regime == 'mean_reverting':
-            # OU model dominates, TFT helps identify reversal patterns
-            base_weights = [0.12*scale, 0.12*scale, 0.35*scale, 0.08*scale, 0.15*scale, tft_base_weight]
+            base_weights = [0.15, 0.15, 0.40, 0.10, 0.20]
         elif regime == 'volatile':
-            # GARCH dominates, TFT conservative in volatile regimes
-            base_weights = [0.15*scale, 0.30*scale, 0.20*scale, 0.08*scale, 0.12*scale, tft_base_weight - 0.05]
+            base_weights = [0.20, 0.35, 0.20, 0.10, 0.15]
         else:  # calm
-            # Balanced ensemble, TFT contributes normally
-            base_weights = [0.20*scale, 0.15*scale, 0.15*scale, 0.12*scale, 0.18*scale, tft_base_weight]
-        
-        # Ensure non-negative weights
-        base_weights = [max(0, w) for w in base_weights]
+            base_weights = [0.25, 0.20, 0.20, 0.15, 0.20]
         
         final_forecasts = []
         for i, h in enumerate(horizons):
-            # Horizon-specific adjustments
-            # TFT is better for medium-term (7-90 days)
+            # Horizon-specific weight adjustments
             if h <= 3:
-                # Short-term: momentum dominates, TFT less useful
-                adj = [0.0, 0.0, -0.05, 0.10, 0.0, -0.05]
+                # Very short-term: momentum and Kalman dominate
+                adj = [0.05, 0.0, -0.08, 0.10, -0.07]
             elif h <= 7:
-                adj = [0.0, 0.0, -0.05, 0.05, -0.02, 0.02]
+                adj = [0.02, 0.0, -0.05, 0.06, -0.03]
             elif h <= 30:
-                # Medium-term: TFT shines with pattern recognition
-                adj = [0.02, 0.0, 0.0, -0.02, -0.03, 0.05]
+                adj = [0.0, 0.0, 0.02, 0.0, -0.02]
             elif h <= 90:
-                # Medium-long: TFT + OU for mean reversion signals
-                adj = [-0.02, 0.0, 0.08, -0.05, -0.02, 0.03]
+                # Medium-term: balance, OU gains
+                adj = [-0.02, 0.0, 0.08, -0.04, -0.02]
             else:
-                # Long-term: OU mean reversion + TFT attention
-                adj = [0.05, -0.03, 0.10, -0.10, -0.02, 0.02]
+                # Long-term: OU and GARCH gain, momentum fades
+                if asset_type == "crypto":
+                    adj = [0.0, 0.05, 0.05, -0.05, -0.05]
+                else:
+                    adj = [0.0, 0.0, 0.12, -0.10, -0.02]
             
-            weights = [max(0, base_weights[j] + adj[j]) for j in range(6)]
+            weights = [max(0.02, base_weights[j] + adj[j]) for j in range(5)]
             total_w = sum(weights)
-            if total_w > 0:
-                weights = [w / total_w for w in weights]
-            else:
-                weights = [1/6] * 6
+            weights = [w / total_w for w in weights]
             
             forecasts_at_h = [
                 kalman_fc[i] if i < len(kalman_fc) else 0.0,
@@ -378,7 +546,6 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
                 ou_fc[i] if i < len(ou_fc) else 0.0,
                 mom_fc[i] if i < len(mom_fc) else 0.0,
                 classical_fc[i] if i < len(classical_fc) else 0.0,
-                tft_fc[i] if i < len(tft_fc) else 0.0,
             ]
             
             ensemble = sum(w * f for w, f in zip(weights, forecasts_at_h))
@@ -386,41 +553,50 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         
         vol = float(np.std(log_returns) * np.sqrt(252))
         
-        if asset_type == "currency":
-            hard_caps = {1: 1.5, 3: 2.5, 7: 4, 30: 8, 90: 12, 180: 18, 365: 25}
+        # Asset-specific hard caps (realistic bounds)
+        if asset_type == "crypto":
+            hard_caps = {1: 10, 3: 18, 7: 30, 30: 60, 90: 85, 180: 120, 365: 180}
+        elif asset_type == "currency":
+            hard_caps = {1: 2.0, 3: 3.5, 7: 5.5, 30: 10, 90: 15, 180: 22, 365: 30}
         elif asset_type == "metal":
-            hard_caps = {1: 3, 3: 5, 7: 8, 30: 15, 90: 25, 180: 35, 365: 50}
+            hard_caps = {1: 4, 3: 7, 7: 10, 30: 18, 90: 28, 180: 40, 365: 55}
         else:
-            hard_caps = {1: 2, 3: 4, 7: 6, 30: 12, 90: 18, 180: 25, 365: 35}
+            hard_caps = {1: 3, 3: 5, 7: 8, 30: 14, 90: 22, 180: 32, 365: 45}
         
         bounded_forecasts = []
         for i, h in enumerate(horizons):
             fc = final_forecasts[i]
-            vol_bound = vol * np.sqrt(h / 252) * 3 * 100
-            hard_cap = hard_caps.get(h, 30)
-            max_fc = min(vol_bound, hard_cap)
-            max_fc = max(max_fc, 0.5)
+            hard_cap = hard_caps.get(h, 35)
+            # Use the larger of vol-based or hard cap for crypto
+            vol_bound = vol * np.sqrt(h / 252) * 2.5 * 100
+            if asset_type == "crypto":
+                max_fc = max(vol_bound, hard_cap)
+            else:
+                max_fc = max(min(vol_bound, hard_cap), 0.5)
+            
             fc = float(np.clip(fc, -max_fc, max_fc))
             bounded_forecasts.append(fc)
         
-        # Confidence score: boost if TFT agrees with classical models
-        data_score = min(len(prices) / 500, 1.0)
-        vol_score = 1 - min(vol / 0.50, 1.0)
-        regime_score = 0.8 if regime in ['calm', 'trending'] else 0.5
+        # Confidence score
+        data_score = min(len(prices) / 400, 1.0)
+        if asset_type == "crypto":
+            vol_score = 1 - min(vol / 1.50, 1.0)
+        else:
+            vol_score = 1 - min(vol / 0.50, 1.0)
         
-        # TFT agreement bonus
-        tft_bonus = 0.0
-        if use_tft and tft_confidence in ["High", "Medium"]:
-            # Check if TFT agrees with ensemble direction
-            avg_classical = np.mean([kalman_fc[0] if kalman_fc else 0, 
-                                      mom_fc[0] if mom_fc else 0])
-            if len(tft_fc) > 0 and tft_fc[0] != 0:
-                if np.sign(tft_fc[0]) == np.sign(avg_classical):
-                    tft_bonus = 0.1  # Agreement boosts confidence
+        # Regime-based confidence
+        if regime == 'calm':
+            regime_score = 0.85
+        elif regime == 'trending':
+            regime_score = 0.75
+        elif regime == 'mean_reverting':
+            regime_score = 0.65
+        else:  # volatile
+            regime_score = 0.45
         
-        conf_score = data_score * 0.25 + vol_score * 0.35 + regime_score * 0.25 + tft_bonus + 0.15
+        conf_score = data_score * 0.30 + vol_score * 0.30 + regime_score * 0.40
         
-        if conf_score > 0.7:
+        if conf_score > 0.65:
             confidence = "High"
         elif conf_score > 0.45:
             confidence = "Medium"
@@ -1893,8 +2069,7 @@ def _classical_forecast(prices: pd.Series, log_returns: pd.Series, horizons: lis
             
             # Apply volatility-based bounds (2 sigma)
             horizon_vol = vol * np.sqrt(h)
-            max_pct = horizon_vol * 2.0 * 100
-            max_pct = min(max_pct, 30.0)  # Never more than +/-30%
+            max_pct = min(horizon_vol * 2.0 * 100, 30.0)  # Never more than +/-30%
             max_pct = max(max_pct, 0.5)   # At least +/-0.5%
             
             pct = float(np.clip(pct, -max_pct, max_pct))

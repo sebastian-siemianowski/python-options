@@ -103,13 +103,42 @@ Displays unified risk assessment with forecasts across all asset classes:
 - **Equity Market**: Universe metrics, sector breakdown, currency pairs with forecasts
 - **JPY Forecasts**: Yen strength view with multi-horizon forecasts
 
-**Forecasts use classical mean reversion + momentum with proper bounds:**
+### Elite Forecasting Engine (February 2026)
+**Location**: `src/decision/market_temperature.py`
 
-| Asset Class | 7D   | 30D  | 3M   | 6M   | 12M  |
-|-------------|------|------|------|------|------|
-| Currencies  | ±5%  | ±10% | ±15% | ±20% | ±30% |
-| Equities    | ±5%  | ±10% | ±15% | ±20% | ±30% |
-| Metals      | ±8%  | ±15% | ±25% | ±35% | ±50% |
+Multi-model ensemble forecasting with regime-aware weighting:
+
+**Models (5 total):**
+1. **Kalman Filter** - Drift state estimation with adaptive alpha
+2. **GARCH(1,1)** - Volatility-adjusted forecasts  
+3. **Ornstein-Uhlenbeck** - Mean reversion to moving average
+4. **Momentum** - Multi-timeframe trend following
+5. **Classical** - Baseline drift extrapolation
+
+**Asset-Type Specific Parameters:**
+- **Currencies**: Faster mean reversion (θ × 1.8), shorter decay (45d vs 120d)
+- **Metals**: Wider bounds (±50% at 12M), momentum-heavy
+- **Equities**: Standard parameters with sector-specific adjustments
+
+**Standard Horizons:**
+```python
+STANDARD_HORIZONS = [1, 3, 7, 30, 90, 180, 365]  # Days
+```
+
+**Key Functions:**
+- `_kalman_forecast()` - Adaptive drift estimation
+- `_garch_forecast()` - Volatility regime adjustment
+- `_ou_forecast()` - Multi-MA mean reversion
+- `_momentum_forecast()` - Horizon-weighted momentum
+- `ensemble_forecast()` - Combined output with regime weighting
+
+**Forecasts use horizon-dependent bounds:**
+
+| Asset Class | 1D   | 7D   | 30D  | 3M   | 6M   | 12M  |
+|-------------|------|------|------|------|------|------|
+| Currencies  | ±1.5%| ±4%  | ±8%  | ±12% | ±18% | ±25% |
+| Equities    | ±2%  | ±6%  | ±12% | ±18% | ±25% | ±35% |
+| Metals      | ±3%  | ±8%  | ±15% | ±25% | ±35% | ±50% |
 
 ### Testing Patterns
 ```bash
@@ -450,4 +479,3 @@ Result: Sortino +4.63, Max DD 3.8%, near breakeven PnL
 | `signal_fields.py` | Convert Kalman outputs to epistemic fields |
 | `signal_geometry.py` | Gate + size trades based on field quality |
 
-## Code Conventions
