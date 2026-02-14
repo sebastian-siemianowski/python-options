@@ -632,9 +632,13 @@ def _compute_volatility_percentile(
 
 def _compute_metal_forecasts(prices: pd.Series, vol_20d: float, metal_name: str = "metal") -> tuple:
     """
-    Compute metal price forecasts using PyTorch Forecasting ensemble.
+    Compute metal price forecasts using TFT + Classical ensemble.
     
-    Uses N-BEATS + Classical drift/momentum ensemble for robust forecasting.
+    Uses TFT (Temporal Fusion Transformer) + Classical drift/momentum ensemble.
+    TFT provides attention-based pattern recognition for improved accuracy.
+    
+    IMPORTANT: Uses get_forecast_by_horizon() for safe horizon extraction.
+    ensemble_forecast now always uses STANDARD_HORIZONS internally.
     
     Returns: (fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, confidence)
     """
@@ -642,22 +646,33 @@ def _compute_metal_forecasts(prices: pd.Series, vol_20d: float, metal_name: str 
         if prices is None or len(prices) < 30:
             return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
-        # Try PyTorch Forecasting ensemble first
+        # Try TFT-enhanced ensemble forecast first
         try:
-            from decision.pytorch_forecasting_utils import ensemble_forecast, PYTORCH_FORECASTING_AVAILABLE
+            from decision.market_temperature import (
+                ensemble_forecast, 
+                get_forecast_by_horizon,
+                get_forecast_confidence
+            )
             
-            if PYTORCH_FORECASTING_AVAILABLE and len(prices) >= 100:
-                fc_1d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, confidence = ensemble_forecast(
+            if len(prices) >= 60:
+                # ensemble_forecast now ALWAYS uses STANDARD_HORIZONS [1,3,7,30,90,180,365]
+                result = ensemble_forecast(
                     prices, 
-                    horizons=[1, 7, 30, 90, 180, 365], 
-                    name=metal_name
+                    asset_type="metal",
+                    asset_name=metal_name
                 )
-                # Return only 7d onwards
+                # Use safe horizon extraction — never use positional indices
+                fc_7d = get_forecast_by_horizon(result, 7)
+                fc_30d = get_forecast_by_horizon(result, 30)
+                fc_90d = get_forecast_by_horizon(result, 90)
+                fc_180d = get_forecast_by_horizon(result, 180)
+                fc_365d = get_forecast_by_horizon(result, 365)
+                confidence = get_forecast_confidence(result)
                 return fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, confidence
         except ImportError:
             pass
         
-        # Fallback: classical method
+        # Fallback: classical method with improved scaling
         log_returns = np.log(prices / prices.shift(1)).dropna()
         if len(log_returns) < 20:
             return 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
@@ -669,23 +684,36 @@ def _compute_metal_forecasts(prices: pd.Series, vol_20d: float, metal_name: str 
         ma_price = float(prices.iloc[-ma_len:].mean())
         deviation = (current_price - ma_price) / ma_price if ma_price > 0 else 0.0
         mom_5d = float(log_returns.iloc[-5:].mean()) if len(log_returns) >= 5 else daily_drift
+        mom_20d = float(log_returns.iloc[-20:].mean()) if len(log_returns) >= 20 else daily_drift
         vol = float(log_returns.std())
         
         forecasts = []
         for h in horizons:
-            drift = daily_drift * h
-            mr = -deviation * 0.25 * min(h / 90.0, 1.0)
-            mom = mom_5d * min(h, 15) * 0.2 if h <= 30 else 0.0
+            # Drift with slower decay for commodities
+            drift = daily_drift * h * np.exp(-h / 400.0)
+            
+            # Mean reversion — stronger for longer horizons (commodities mean-revert)
+            mr = -deviation * 0.35 * min(h / 60.0, 1.0)
+            
+            # Momentum — multi-scale with decay
+            if h <= 30:
+                mom = (mom_5d * 0.6 + mom_20d * 0.4) * min(h, 20) * 0.25
+            else:
+                mom = mom_20d * 0.12 * np.exp(-h / 100.0) * 10
+            
             total = drift + mr + mom
             pct = (np.exp(total) - 1) * 100
-            max_pct = max(vol * np.sqrt(h) * 2.5 * 100, 1.0)
+            
+            # Metal-specific bounds (commodities are volatile)
+            max_pct = max(vol * np.sqrt(h) * 3.0 * 100, 2.0)
+            max_pct = min(max_pct, {7: 15, 30: 25, 90: 40, 180: 55, 365: 75}.get(h, 50))
             pct = float(np.clip(pct, -max_pct, max_pct))
             forecasts.append(pct)
         
         data_score = min(len(prices) / 500, 1.0)
         vol_score = 1 - min(vol_20d / 0.60, 1.0)
         conf_score = data_score * 0.5 + vol_score * 0.5
-        confidence = "High" if conf_score > 0.7 else ("Medium" if conf_score > 0.4 else "Low")
+        confidence = "High" if conf_score > 0.65 else ("Medium" if conf_score > 0.35 else "Low")
         
         return tuple(forecasts) + (confidence,)
     except Exception:

@@ -88,13 +88,76 @@ except ImportError:
     PYTORCH_FORECASTING_AVAILABLE = False
     USE_PYTORCH_FORECASTING = False
 
+# =============================================================================
+# TEMPORAL FUSION TRANSFORMER (TFT) INTEGRATION (February 2026)
+# =============================================================================
+# TFT provides attention-based multi-horizon forecasting with:
+# - Variable selection networks for automatic feature importance
+# - Interpretable attention over historical patterns
+# - Multi-quantile output for proper uncertainty quantification
+# Reference: Lim et al. (2021) "Temporal Fusion Transformers"
+# =============================================================================
+try:
+    from decision.tft_forecaster import (
+        tft_forecast,
+        is_tft_available,
+        TFT_AVAILABLE,
+    )
+    USE_TFT = TFT_AVAILABLE
+except ImportError:
+    USE_TFT = False
+    TFT_AVAILABLE = False
+    
+    def tft_forecast(prices, horizons, asset_type, asset_name):
+        """Stub when TFT not available."""
+        n = len(horizons) if horizons else 7
+        return [0.0] * n, [(0.0, 0.0)] * n, "Low"
+    
+    def is_tft_available():
+        return False
+
+
+# =============================================================================
+# STANDARD FORECAST HORIZONS (Canonical Definition — February 2026)
+# =============================================================================
+# All forecast functions MUST use these horizons to prevent index misalignment.
+# Callers should use get_forecast_by_horizon() instead of positional indices.
+# =============================================================================
+STANDARD_HORIZONS = [1, 3, 7, 30, 90, 180, 365]
+HORIZON_INDEX = {h: i for i, h in enumerate(STANDARD_HORIZONS)}
+
+
+def get_forecast_by_horizon(result: tuple, horizon: int) -> float:
+    """
+    Get forecast value for a specific horizon from ensemble_forecast result.
+    
+    Args:
+        result: Tuple from ensemble_forecast (7 floats + confidence string)
+        horizon: One of STANDARD_HORIZONS [1, 3, 7, 30, 90, 180, 365]
+        
+    Returns:
+        Forecast percentage for that horizon, or 0.0 if not found
+    """
+    idx = HORIZON_INDEX.get(horizon)
+    if idx is not None and idx < len(result) - 1:
+        return float(result[idx])
+    return 0.0
+
+
+def get_forecast_confidence(result: tuple) -> str:
+    """Get confidence string from ensemble_forecast result."""
+    if result and len(result) > 0:
+        return str(result[-1]) if isinstance(result[-1], str) else "Low"
+    return "Low"
+
 
 # =============================================================================
 # ELITE FORECASTING ENGINE (Professor-Grade Multi-Model Ensemble)
 # =============================================================================
 # Architecture: Multi-model Bayesian ensemble with regime-aware weighting
-# Models: Kalman Filter, GARCH(1,1), Ornstein-Uhlenbeck, LSTM, Momentum
+# Models: Kalman Filter, GARCH(1,1), Ornstein-Uhlenbeck, TFT, Momentum
 # Horizon-adaptive: Different model weights per forecast horizon
+# TFT Integration: Attention-based forecasts weighted into ensemble
 # =============================================================================
 
 def _kalman_forecast(returns: np.ndarray, horizons: list) -> list:
@@ -203,13 +266,27 @@ def _regime_detect(returns: np.ndarray) -> str:
         return 'calm'
 
 
-def ensemble_forecast(prices: pd.Series, horizons: list, asset_type: str = "equity") -> tuple:
+def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str = "equity", asset_name: str = "unknown") -> tuple:
     """
     Elite multi-model ensemble forecast with regime-aware weighting.
+    
+    Models (6 total):
+    1. Kalman Filter - drift state estimation
+    2. GARCH(1,1) - volatility-adjusted forecasts
+    3. Ornstein-Uhlenbeck - mean reversion
+    4. Momentum - multi-timeframe trend following
+    5. Classical - baseline drift extrapolation
+    6. TFT - Temporal Fusion Transformer (attention-based)
+    
+    IMPORTANT: Always uses STANDARD_HORIZONS [1, 3, 7, 30, 90, 180, 365] internally.
+    The horizons parameter is ignored for consistency.
     
     Returns: (fc_1d, fc_3d, fc_7d, fc_30d, fc_90d, fc_180d, fc_365d, confidence)
     """
     try:
+        # ALWAYS use standard horizons regardless of what's passed
+        horizons = STANDARD_HORIZONS
+        
         if prices is None or len(prices) < 60:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
@@ -217,6 +294,7 @@ def ensemble_forecast(prices: pd.Series, horizons: list, asset_type: str = "equi
         if len(log_returns) < 30:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
+        # Classical models
         kalman_fc = _kalman_forecast(log_returns, horizons)
         garch_fc = _garch_forecast(log_returns, horizons)
         ou_fc = _ou_forecast(prices, horizons)
@@ -230,31 +308,69 @@ def ensemble_forecast(prices: pd.Series, horizons: list, asset_type: str = "equi
             pct = (np.exp(fc) - 1) * 100
             classical_fc.append(float(pct))
         
+        # TFT forecasts (attention-based deep learning)
+        tft_fc = [0.0] * len(horizons)
+        tft_confidence = "Low"
+        use_tft = USE_TFT and len(prices) >= 100
+        
+        if use_tft:
+            try:
+                tft_point, tft_intervals, tft_confidence = tft_forecast(
+                    prices, horizons, asset_type, asset_name
+                )
+                tft_fc = tft_point
+            except Exception:
+                tft_fc = [0.0] * len(horizons)
+                use_tft = False
+        
         regime = _regime_detect(log_returns)
         
+        # Base weights: [Kalman, GARCH, OU, Momentum, Classical, TFT]
+        # TFT gets higher weight when data quality is good
+        tft_base_weight = 0.20 if use_tft else 0.0
+        scale = 1.0 - tft_base_weight  # Scale other weights
+        
         if regime == 'trending':
-            base_weights = [0.25, 0.10, 0.10, 0.40, 0.15]
+            # TFT excels at capturing trends via attention
+            base_weights = [0.20*scale, 0.08*scale, 0.08*scale, 0.35*scale, 0.12*scale, tft_base_weight + 0.05]
         elif regime == 'mean_reverting':
-            base_weights = [0.15, 0.15, 0.40, 0.10, 0.20]
+            # OU model dominates, TFT helps identify reversal patterns
+            base_weights = [0.12*scale, 0.12*scale, 0.35*scale, 0.08*scale, 0.15*scale, tft_base_weight]
         elif regime == 'volatile':
-            base_weights = [0.20, 0.30, 0.25, 0.10, 0.15]
-        else:
-            base_weights = [0.25, 0.20, 0.20, 0.15, 0.20]
+            # GARCH dominates, TFT conservative in volatile regimes
+            base_weights = [0.15*scale, 0.30*scale, 0.20*scale, 0.08*scale, 0.12*scale, tft_base_weight - 0.05]
+        else:  # calm
+            # Balanced ensemble, TFT contributes normally
+            base_weights = [0.20*scale, 0.15*scale, 0.15*scale, 0.12*scale, 0.18*scale, tft_base_weight]
+        
+        # Ensure non-negative weights
+        base_weights = [max(0, w) for w in base_weights]
         
         final_forecasts = []
         for i, h in enumerate(horizons):
-            if h <= 7:
-                adj = [0.0, 0.0, -0.10, 0.15, -0.05]
+            # Horizon-specific adjustments
+            # TFT is better for medium-term (7-90 days)
+            if h <= 3:
+                # Short-term: momentum dominates, TFT less useful
+                adj = [0.0, 0.0, -0.05, 0.10, 0.0, -0.05]
+            elif h <= 7:
+                adj = [0.0, 0.0, -0.05, 0.05, -0.02, 0.02]
             elif h <= 30:
-                adj = [0.05, 0.0, 0.0, 0.0, -0.05]
+                # Medium-term: TFT shines with pattern recognition
+                adj = [0.02, 0.0, 0.0, -0.02, -0.03, 0.05]
             elif h <= 90:
-                adj = [-0.05, 0.0, 0.15, -0.10, 0.0]
+                # Medium-long: TFT + OU for mean reversion signals
+                adj = [-0.02, 0.0, 0.08, -0.05, -0.02, 0.03]
             else:
-                adj = [0.10, -0.05, 0.15, -0.15, -0.05]
+                # Long-term: OU mean reversion + TFT attention
+                adj = [0.05, -0.03, 0.10, -0.10, -0.02, 0.02]
             
-            weights = [max(0, base_weights[j] + adj[j]) for j in range(5)]
+            weights = [max(0, base_weights[j] + adj[j]) for j in range(6)]
             total_w = sum(weights)
-            weights = [w / total_w for w in weights]
+            if total_w > 0:
+                weights = [w / total_w for w in weights]
+            else:
+                weights = [1/6] * 6
             
             forecasts_at_h = [
                 kalman_fc[i] if i < len(kalman_fc) else 0.0,
@@ -262,6 +378,7 @@ def ensemble_forecast(prices: pd.Series, horizons: list, asset_type: str = "equi
                 ou_fc[i] if i < len(ou_fc) else 0.0,
                 mom_fc[i] if i < len(mom_fc) else 0.0,
                 classical_fc[i] if i < len(classical_fc) else 0.0,
+                tft_fc[i] if i < len(tft_fc) else 0.0,
             ]
             
             ensemble = sum(w * f for w, f in zip(weights, forecasts_at_h))
@@ -286,10 +403,22 @@ def ensemble_forecast(prices: pd.Series, horizons: list, asset_type: str = "equi
             fc = float(np.clip(fc, -max_fc, max_fc))
             bounded_forecasts.append(fc)
         
+        # Confidence score: boost if TFT agrees with classical models
         data_score = min(len(prices) / 500, 1.0)
         vol_score = 1 - min(vol / 0.50, 1.0)
         regime_score = 0.8 if regime in ['calm', 'trending'] else 0.5
-        conf_score = data_score * 0.3 + vol_score * 0.4 + regime_score * 0.3
+        
+        # TFT agreement bonus
+        tft_bonus = 0.0
+        if use_tft and tft_confidence in ["High", "Medium"]:
+            # Check if TFT agrees with ensemble direction
+            avg_classical = np.mean([kalman_fc[0] if kalman_fc else 0, 
+                                      mom_fc[0] if mom_fc else 0])
+            if len(tft_fc) > 0 and tft_fc[0] != 0:
+                if np.sign(tft_fc[0]) == np.sign(avg_classical):
+                    tft_bonus = 0.1  # Agreement boosts confidence
+        
+        conf_score = data_score * 0.25 + vol_score * 0.35 + regime_score * 0.25 + tft_bonus + 0.15
         
         if conf_score > 0.7:
             confidence = "High"
@@ -1847,9 +1976,29 @@ def _compute_currency_forecasts(prices: pd.Series, vol_20d: float) -> Tuple[floa
         if prices is None or len(prices) < 30:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
-        # Use elite ensemble forecast
-        horizons = [1, 3, 7, 30, 90, 180, 365]
-        result = ensemble_forecast(prices, horizons, "currency")
+        # Ensure we have enough data for ensemble_forecast (requires 60+ points)
+        if len(prices) < 60:
+            # Use simple momentum-based forecast for limited data
+            log_returns = np.log(prices / prices.shift(1)).dropna()
+            if len(log_returns) < 5:
+                return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
+            
+            daily_drift = float(log_returns.mean())
+            vol = float(log_returns.std())
+            
+            forecasts = []
+            for h in STANDARD_HORIZONS:
+                fc = daily_drift * h * np.exp(-h / 180.0)
+                pct = (np.exp(fc) - 1) * 100
+                # Clamp to reasonable bounds for currencies
+                max_pct = min(vol * np.sqrt(h) * 3 * 100, {1: 3, 3: 5, 7: 7, 30: 12, 90: 18, 180: 25, 365: 35}.get(h, 20))
+                pct = float(np.clip(pct, -max_pct, max_pct))
+                forecasts.append(pct)
+            
+            return tuple(forecasts) + ("Low",)
+        
+        # Use elite ensemble forecast (horizons ignored, uses STANDARD_HORIZONS)
+        result = ensemble_forecast(prices, asset_type="currency")
         return result
         
     except Exception:
