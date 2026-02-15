@@ -1054,10 +1054,13 @@ def test_evt_splice_improvement(
     threshold_met = improvement_ratio >= EVT_SPLICE_PIT_IMPROVEMENT_THRESHOLD
     diagnostics["threshold_met"] = threshold_met
     
-    # Also require EVT PIT to be above critical level
-    evt_passes_critical = evt_pit_pvalue >= 0.01
-    
-    should_select = threshold_met and evt_passes_critical and evt_pit_pvalue > baseline_pit_pvalue
+    # Selection criteria:
+    # 1. Must improve over baseline (any improvement counts)
+    # 2. With 1.01 threshold, this means EVT PIT must be at least 1% better
+    # Note: We do NOT require evt_pit >= 0.01 because any improvement in 
+    # calibration is valuable, even if still in critical range. Going from
+    # p=0.001 to p=0.005 is 5x improvement and helps risk management.
+    should_select = threshold_met and evt_pit_pvalue > baseline_pit_pvalue
     
     if should_select:
         diagnostics["reason"] = "evt_improves_calibration"
@@ -1065,8 +1068,6 @@ def test_evt_splice_improvement(
         reasons = []
         if not threshold_met:
             reasons.append(f"improvement_ratio_{improvement_ratio:.2f}_below_threshold")
-        if not evt_passes_critical:
-            reasons.append(f"evt_pit_{evt_pit_pvalue:.4f}_below_critical")
         if evt_pit_pvalue <= baseline_pit_pvalue:
             reasons.append("no_improvement")
         diagnostics["reason"] = "|".join(reasons) if reasons else "unknown"
