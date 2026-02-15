@@ -3358,8 +3358,11 @@ def fit_all_models_for_regime(
                     
                     # Apply momentum augmentation to drift estimate
                     # (momentum adjusts the drift, VoV adjusts observation noise)
-                    momentum_signal = momentum_wrapper.compute_momentum_signal(returns)
-                    mu_vov_mom = mu_vov + momentum_signal * momentum_wrapper.config.signal_weight
+                    momentum_signal = momentum_wrapper._momentum_signal
+                    if momentum_signal is not None:
+                        mu_vov_mom = mu_vov + momentum_signal * momentum_wrapper.config.adjustment_scale
+                    else:
+                        mu_vov_mom = mu_vov
                     
                     # Compute PIT calibration with VoV-adjusted variance
                     ks_vov, pit_p_vov = PhiStudentTDriftModel.pit_ks_vov(
@@ -3446,9 +3449,12 @@ def fit_all_models_for_regime(
                         returns, vol, q_2p, c_2p, phi_2p, nu_left, nu_right
                     )
                     
-                    # Apply momentum augmentation
-                    momentum_signal = momentum_wrapper.compute_momentum_signal(returns)
-                    mu_2p_mom = mu_2p + momentum_signal * momentum_wrapper.config.signal_weight
+                    # Apply momentum augmentation (use precomputed momentum signal)
+                    momentum_signal = momentum_wrapper._momentum_signal
+                    if momentum_signal is not None:
+                        mu_2p_mom = mu_2p + momentum_signal * momentum_wrapper.config.adjustment_scale
+                    else:
+                        mu_2p_mom = mu_2p
                     
                     # Compute PIT calibration with two-piece CDF
                     ks_2p, pit_p_2p = PhiStudentTDriftModel.pit_ks_two_piece(
@@ -3538,9 +3544,12 @@ def fit_all_models_for_regime(
                         nu_calm, nu_stress, MIXTURE_WEIGHT_DEFAULT
                     )
                     
-                    # Apply momentum augmentation
-                    momentum_signal = momentum_wrapper.compute_momentum_signal(returns)
-                    mu_mix_mom = mu_mix + momentum_signal * momentum_wrapper.config.signal_weight
+                    # Apply momentum augmentation (use precomputed momentum signal)
+                    momentum_signal = momentum_wrapper._momentum_signal
+                    if momentum_signal is not None:
+                        mu_mix_mom = mu_mix + momentum_signal * momentum_wrapper.config.adjustment_scale
+                    else:
+                        mu_mix_mom = mu_mix
                     
                     # Compute PIT calibration (use average ν approximation)
                     nu_eff = (nu_calm + nu_stress) / 2

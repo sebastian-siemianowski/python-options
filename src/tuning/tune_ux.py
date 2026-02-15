@@ -2298,7 +2298,21 @@ Examples:
                             else:
                                 model_str = "Skew-t"
                         elif model_type.startswith('phi_student_t_nu_') and nu_val is not None:
-                            model_str = "Student-t"
+                            # Check for Enhanced Student-t variants
+                            gamma_vov = global_result.get('gamma_vov')
+                            nu_left = global_result.get('nu_left')
+                            nu_right = global_result.get('nu_right')
+                            nu_calm = global_result.get('nu_calm')
+                            nu_stress = global_result.get('nu_stress')
+                            
+                            if gamma_vov is not None and gamma_vov > 0:
+                                model_str = "Student-t+VoV"
+                            elif nu_left is not None and nu_right is not None:
+                                model_str = "Student-t+2P"
+                            elif nu_calm is not None and nu_stress is not None:
+                                model_str = "Student-t+Mix"
+                            else:
+                                model_str = "Student-t"
                         elif phi_val is not None:
                             model_str = "φ-Gaussian"
                         else:
@@ -2782,6 +2796,10 @@ Examples:
         momentum_phi_gaussian_count=momentum_phi_gaussian_count,
         momentum_phi_student_t_count=momentum_phi_student_t_count,
         momentum_total_count=momentum_count,
+        # Enhanced Student-t counts (February 2026)
+        vov_enhanced_count=vov_enhanced_count,
+        two_piece_count=two_piece_count,
+        mixture_t_count=mixture_t_count,
         console=console,
     )
 

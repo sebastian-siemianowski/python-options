@@ -537,6 +537,22 @@ class StudentTDriftModel:
 
 
 # =============================================================================
+# ENHANCED STUDENT-T MODELS (February 2026)
+# =============================================================================
+# Import PhiStudentTDriftModel for Vol-of-Vol, Two-Piece, and Mixture variants.
+# These provide improved PIT/Hyvärinen calibration through:
+#   1. Vol-of-Vol: R_t = c × σ² × (1 + γ × |Δlog(σ)|)
+#   2. Two-Piece: νL ≠ νR for asymmetric crash/recovery tails
+#   3. Mixture: w·t(νcalm) + (1-w)·t(νstress) with dynamic weights
+# =============================================================================
+try:
+    from models.phi_student_t import PhiStudentTDriftModel
+    ENHANCED_STUDENT_T_AVAILABLE = True
+except ImportError:
+    ENHANCED_STUDENT_T_AVAILABLE = False
+
+
+# =============================================================================
 # EVT (EXTREME VALUE THEORY) FOR POSITION SIZING
 # =============================================================================
 # Import POT/GPD tail modeling for EVT-corrected expected loss estimation.
@@ -2615,6 +2631,24 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         'calibration_warning': global_data.get('calibration_warning', False),
         'nu_refinement': global_data.get('nu_refinement', {}),
 
+        # =====================================================================
+        # ENHANCED STUDENT-T MODEL PARAMETERS (February 2026)
+        # =====================================================================
+        # Vol-of-Vol enhancement
+        'vov_enhanced': best_params.get('vov_enhanced', False) if isinstance(best_params, dict) else False,
+        'gamma_vov': best_params.get('gamma_vov') if isinstance(best_params, dict) else None,
+        
+        # Two-Piece asymmetric tails
+        'two_piece': best_params.get('two_piece', False) if isinstance(best_params, dict) else False,
+        'nu_left': best_params.get('nu_left') if isinstance(best_params, dict) else None,
+        'nu_right': best_params.get('nu_right') if isinstance(best_params, dict) else None,
+        
+        # Two-Component Mixture
+        'mixture_model': best_params.get('mixture_model', False) if isinstance(best_params, dict) else False,
+        'nu_calm': best_params.get('nu_calm') if isinstance(best_params, dict) else None,
+        'nu_stress': best_params.get('nu_stress') if isinstance(best_params, dict) else None,
+        'w_base': best_params.get('w_base') if isinstance(best_params, dict) else None,
+
         # K=2 mixture (DEPRECATED - kept for backward compatibility)
         'mixture_attempted': global_data.get('mixture_attempted', False),
         'mixture_selected': global_data.get('mixture_selected', False),
@@ -3020,12 +3054,80 @@ def _kalman_filter_drift(
                 gas_q_augmented = False
                 gas_q_result = None
 
+    # =========================================================================
+    # ENHANCED STUDENT-T MODELS (February 2026)
+    # =========================================================================
+    # Check for enhanced Student-t variants:
+    #   - Vol-of-Vol (VoV): gamma_vov in tuned params
+    #   - Two-Piece: nu_left and nu_right in tuned params
+    #   - Mixture: nu_calm and nu_stress in tuned params
+    # These use specialized filter implementations from PhiStudentTDriftModel.
+    # =========================================================================
+    enhanced_result = None
+    enhanced_model_type = None
+    
+    if ENHANCED_STUDENT_T_AVAILABLE and tuned_params is not None and gas_q_result is None:
+        # Check for Vol-of-Vol enhancement
+        if tuned_params.get('vov_enhanced') and tuned_params.get('gamma_vov') is not None:
+            try:
+                gamma_vov = float(tuned_params.get('gamma_vov'))
+                nu_vov = float(tuned_params.get('nu', 8))  # Default ν if not specified
+                mu_vov, P_vov, ll_vov = PhiStudentTDriftModel.filter_phi_vov(
+                    y, sigma, q_scalar, obs_scale, phi_used, nu_vov, gamma_vov
+                )
+                mu_filtered = mu_vov
+                P_filtered = P_vov
+                log_likelihood = ll_vov
+                enhanced_result = True
+                enhanced_model_type = 'vov'
+            except Exception as vov_e:
+                if os.getenv("DEBUG"):
+                    print(f"VoV filter failed, using standard: {vov_e}")
+                enhanced_result = None
+        
+        # Check for Two-Piece asymmetric tails
+        elif tuned_params.get('two_piece') and tuned_params.get('nu_left') is not None:
+            try:
+                nu_left = float(tuned_params.get('nu_left'))
+                nu_right = float(tuned_params.get('nu_right'))
+                mu_2p, P_2p, ll_2p = PhiStudentTDriftModel.filter_phi_two_piece(
+                    y, sigma, q_scalar, obs_scale, phi_used, nu_left, nu_right
+                )
+                mu_filtered = mu_2p
+                P_filtered = P_2p
+                log_likelihood = ll_2p
+                enhanced_result = True
+                enhanced_model_type = 'two_piece'
+            except Exception as tp_e:
+                if os.getenv("DEBUG"):
+                    print(f"Two-Piece filter failed, using standard: {tp_e}")
+                enhanced_result = None
+        
+        # Check for Two-Component Mixture
+        elif tuned_params.get('mixture_model') and tuned_params.get('nu_calm') is not None:
+            try:
+                nu_calm = float(tuned_params.get('nu_calm'))
+                nu_stress = float(tuned_params.get('nu_stress'))
+                w_base = float(tuned_params.get('w_base', 0.5))
+                mu_mix, P_mix, ll_mix = PhiStudentTDriftModel.filter_phi_mixture(
+                    y, sigma, q_scalar, obs_scale, phi_used, nu_calm, nu_stress, w_base
+                )
+                mu_filtered = mu_mix
+                P_filtered = P_mix
+                log_likelihood = ll_mix
+                enhanced_result = True
+                enhanced_model_type = 'mixture'
+            except Exception as mix_e:
+                if os.getenv("DEBUG"):
+                    print(f"Mixture filter failed, using standard: {mix_e}")
+                enhanced_result = None
+
     mu_t = 0.0
     P_t = 1.0
     log_likelihood_init = 0.0 if gas_q_result is None else log_likelihood
 
-    # Only run static filter if GAS-Q was not used
-    if gas_q_result is None:
+    # Only run static filter if neither GAS-Q nor enhanced models were used
+    if gas_q_result is None and enhanced_result is None:
         log_likelihood = log_likelihood_init
         for t in range(T):
             mu_pred = phi_used * mu_t
@@ -3105,6 +3207,16 @@ def _kalman_filter_drift(
         "gas_q_augmented": gas_q_augmented,
         "gas_q_result": gas_q_result,
         "q_t_series": pd.Series(q_t_series, index=idx, name="q_t") if q_t_series is not None else None,
+        # =========================================================================
+        # ENHANCED STUDENT-T MODEL DIAGNOSTICS (February 2026)
+        # =========================================================================
+        # When enhanced models are used, this tracks which variant was applied:
+        #   - 'vov': Vol-of-Vol adjustment to observation noise
+        #   - 'two_piece': Asymmetric tails (νL ≠ νR)
+        #   - 'mixture': Two-component mixture (νcalm + νstress)
+        # =========================================================================
+        "enhanced_student_t_active": enhanced_result is not None,
+        "enhanced_student_t_type": enhanced_model_type,
     }
 
 
