@@ -2082,6 +2082,11 @@ Examples:
     momentum_phi_gaussian_count = 0  # φ-Gaussian with momentum
     momentum_phi_student_t_count = 0  # φ-Student-t with momentum
     
+    # Enhanced Student-t counters (February 2026)
+    vov_enhanced_count = 0  # Vol-of-Vol enhanced
+    two_piece_count = 0  # Two-Piece asymmetric tails
+    mixture_t_count = 0  # Two-Component mixture
+    
     # Calibrated Trust Authority statistics
     recalibration_applied_count = 0
     calibrated_trust_count = 0
