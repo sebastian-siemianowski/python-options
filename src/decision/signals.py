@@ -8166,8 +8166,14 @@ def render_regime_model_summary(regime_model_tracker: Dict[str, Dict[str, int]],
         return
     
     # Define regime display order and labels
-    regime_order = ['LOW_VOL_TREND', 'HIGH_VOL_TREND', 'LOW_VOL_RANGE', 'HIGH_VOL_RANGE', 'CRISIS_JUMP']
+    # HMM regime names: calm, trending, crisis (sorted by volatility)
+    regime_order = ['calm', 'trending', 'crisis', 'LOW_VOL_TREND', 'HIGH_VOL_TREND', 'LOW_VOL_RANGE', 'HIGH_VOL_RANGE', 'CRISIS_JUMP']
     regime_labels = {
+        # HMM regime names (primary)
+        'calm': 'Calm',
+        'trending': 'Trending',
+        'crisis': 'Crisis',
+        # Legacy regime names (for backwards compatibility)
         'LOW_VOL_TREND': 'Low-Vol Trend',
         'HIGH_VOL_TREND': 'High-Vol Trend',
         'LOW_VOL_RANGE': 'Low-Vol Range',
@@ -9030,32 +9036,32 @@ def main() -> None:
                 if not model_name:
                     model_name = "gaussian"
             
-            # Get regime from feats (not diagnostics which may be empty)
+            # Get regime from feats - prioritize HMM result which is the most reliable
             regime_name = "Unknown"
             if feats:
-                # Try kalman_metadata for regime info
-                kalman_meta = feats.get("kalman_metadata", {})
-                if isinstance(kalman_meta, dict):
-                    regime_info = kalman_meta.get("kalman_regime_info", {})
-                    if isinstance(regime_info, dict):
-                        regime_name = regime_info.get("regime_name", "")
-                        if not regime_name:
-                            regime_idx = regime_info.get("regime_index")
-                            regime_map = {0: "LOW_VOL_TREND", 1: "HIGH_VOL_TREND", 2: "LOW_VOL_RANGE", 3: "HIGH_VOL_RANGE", 4: "CRISIS_JUMP"}
-                            regime_name = regime_map.get(regime_idx, "")
+                # PRIMARY: Try HMM result for regime (most reliable - uses 3-state Gaussian HMM)
+                hmm_result = feats.get("hmm_result")
+                if isinstance(hmm_result, dict) and hmm_result:
+                    regime_name = hmm_result.get("current_regime", "")
                 
-                # Try feats directly
-                if not regime_name:
+                # FALLBACK: Try kalman_metadata for regime info
+                if not regime_name or regime_name == "Unknown":
+                    kalman_meta = feats.get("kalman_metadata", {})
+                    if isinstance(kalman_meta, dict):
+                        regime_info = kalman_meta.get("kalman_regime_info", {})
+                        if isinstance(regime_info, dict) and regime_info:
+                            regime_name = regime_info.get("regime_name", "")
+                            if not regime_name:
+                                regime_idx = regime_info.get("regime_index")
+                                regime_map = {0: "LOW_VOL_TREND", 1: "HIGH_VOL_TREND", 2: "LOW_VOL_RANGE", 3: "HIGH_VOL_RANGE", 4: "CRISIS_JUMP"}
+                                regime_name = regime_map.get(regime_idx, "")
+                
+                # FALLBACK: Try regime_params directly
+                if not regime_name or regime_name == "Unknown":
                     regime_info = feats.get("regime_params", {})
                     if isinstance(regime_info, dict) and regime_info:
                         # Get first regime key as current
                         regime_name = next(iter(regime_info.keys()), "Unknown")
-                
-                # Try HMM result for regime
-                if not regime_name or regime_name == "Unknown":
-                    hmm_result = feats.get("hmm_result", {})
-                    if isinstance(hmm_result, dict):
-                        regime_name = hmm_result.get("current_regime", "Unknown")
                 
                 # Default if still empty
                 if not regime_name:
