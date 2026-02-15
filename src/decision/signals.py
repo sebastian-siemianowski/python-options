@@ -3278,7 +3278,7 @@ def compute_features(
         # Includes: Base models, Momentum variants, Student-t ν grid, and adaptive refinements
         model_info = {
             # ═══════════════════════════════════════════════════════════════════
-            # BASE GAUSSIAN MODELS
+            # BASE GAUSSIAN MODELS (disabled in BMA, kept for compatibility)
             # ═══════════════════════════════════════════════════════════════════
             'kalman_gaussian': {'short': 'Gaussian', 'desc': 'Random walk drift', 'family': 'gaussian'},
             'kalman_phi_gaussian': {'short': 'φ-Gaussian', 'desc': 'AR(1) mean-reverting drift', 'family': 'gaussian'},

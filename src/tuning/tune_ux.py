@@ -1013,7 +1013,7 @@ def render_tuning_summary(
         if "+Mom" in m and ("Student" in m or "t(" in m or "phi_student" in m.lower()):
             return "φ-Student-t+Mom"
         # φ-Gaussian+Mom (momentum phi-gaussian)
-        if "φ-Gaussian+Mom" in m or "phi_gaussian" in m.lower() and "_momentum" in m.lower():
+        if "φ-Gaussian+Mom" in m or "kalman_phi_gaussian_momentum" in m.lower():
             return "φ-Gaussian+Mom"
         # Gaussian+Mom (momentum gaussian, no phi)
         if "Gaussian+Mom" in m or ("kalman_gaussian_momentum" in m.lower() and "phi" not in m.lower()):

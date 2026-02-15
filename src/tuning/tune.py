@@ -29,22 +29,20 @@ WHAT THIS FILE DOES
 For EACH regime r:
 
     1. Fits ALL candidate model classes m independently:
-       - kalman_gaussian:       q, c           (2 params) [DISABLED - use momentum version]
-       - kalman_phi_gaussian:   q, c, φ        (3 params) [DISABLED - use momentum version]
-       - kalman_gaussian_momentum:     q, c           (2 params) [ENABLED]
-       - kalman_phi_gaussian_momentum: q, c, φ        (3 params) [ENABLED]
+       - kalman_gaussian_momentum:          q, c           (2 params) [ENABLED - momentum Gaussian]
+       - kalman_phi_gaussian_momentum:      q, c, φ        (3 params) [ENABLED - momentum φ-Gaussian]
        - phi_student_t_nu_4:    q, c, φ        (3 params, ν=4 FIXED)
        - phi_student_t_nu_6:    q, c, φ        (3 params, ν=6 FIXED)
        - phi_student_t_nu_8:    q, c, φ        (3 params, ν=8 FIXED)
        - phi_student_t_nu_12:   q, c, φ        (3 params, ν=12 FIXED)
        - phi_student_t_nu_20:   q, c, φ        (3 params, ν=20 FIXED)
-       - phi_student_t_nu_{ν}_momentum: q, c, φ (3 params, ν FIXED) [ENABLED]
+       - phi_student_t_nu_{ν}_momentum: q, c, φ     (3 params, ν FIXED) [ENABLED]
        - phi_skew_t_nu_{ν}_gamma_{γ}: q, c, φ  (3 params, ν and γ FIXED)
        - phi_nig_alpha_{α}_beta_{β}: q, c, φ   (3 params, α and β FIXED)
+       - phi_fisher_rao_w{W}_d{D}_momentum: q, c, φ (5 params) [ENABLED - Fisher-Rao geometry]
 
-    NOTE: Pure Gaussian and φ-Gaussian are DISABLED by default (February 2026).
-    Empirical evidence shows momentum-augmented models dominate (94.9% selection rate).
-    Set DISABLE_PURE_GAUSSIAN_MODELS = False to re-enable them.
+    NOTE: Pure Gaussian and φ-Gaussian are NOT exposed in BMA (February 2026).
+    Only momentum-augmented versions (kalman_gaussian_momentum, kalman_phi_gaussian_momentum) participate.
 
     NOTE: Student-t, Skew-t, and NIG use DISCRETE grids (not continuous optimization).
     Each parameter combination is treated as a separate sub-model in BMA.
@@ -344,7 +342,6 @@ MOMENTUM_AUGMENTATION_ENABLED = True
 #   - Gaussian+Mom and φ-Gaussian+Mom are ENABLED
 #   - All Student-t variants remain enabled
 # =============================================================================
-DISABLE_PURE_GAUSSIAN_MODELS = True
 
 # Import Adaptive ν Refinement for calibration improvement
 try:
@@ -2513,136 +2510,7 @@ def fit_all_models_for_regime(
     models = {}
     
     # =========================================================================
-    # Model 0: Kalman Gaussian (q, c)
-    # =========================================================================
-    # NOTE: Pure Gaussian is disabled by default (February 2026).
-    # Empirical evidence shows Gaussian+Mom dominates with 40.9% selection rate
-    # vs pure Gaussian at 0.7%. We still fit it to provide parameters for
-    # momentum-augmented version, but mark it as disabled in BMA.
-    # =========================================================================
-    try:
-        q_gauss, c_gauss, ll_cv_gauss, diag_gauss = GaussianDriftModel.optimize_params(
-            returns, vol,
-            prior_log_q_mean=prior_log_q_mean,
-            prior_lambda=prior_lambda
-        )
-        
-        # Run full filter
-        mu_gauss, P_gauss, ll_full_gauss = GaussianDriftModel.filter(returns, vol, q_gauss, c_gauss)
-        
-        # Compute PIT calibration
-        ks_gauss, pit_p_gauss = GaussianDriftModel.pit_ks(returns, mu_gauss, vol, P_gauss, c_gauss)
-        
-        # Compute information criteria
-        n_params_gauss = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN]
-        aic_gauss = compute_aic(ll_full_gauss, n_params_gauss)
-        bic_gauss = compute_bic(ll_full_gauss, n_params_gauss, n_obs)
-        mean_ll_gauss = ll_full_gauss / max(n_obs, 1)
-        
-        # Compute Hyvärinen score for robust model selection
-        # Forecast std = sqrt(c * vol^2 + P) includes both observation and state uncertainty
-        forecast_std_gauss = np.sqrt(c_gauss * (vol ** 2) + P_gauss)
-        hyvarinen_gauss = compute_hyvarinen_score_gaussian(returns, mu_gauss, forecast_std_gauss)
-        
-        # Mark as disabled in BMA if DISABLE_PURE_GAUSSIAN_MODELS is True
-        # Parameters are still stored for momentum-augmented version
-        is_disabled = DISABLE_PURE_GAUSSIAN_MODELS
-        
-        models["kalman_gaussian"] = {
-            "q": float(q_gauss),
-            "c": float(c_gauss),
-            "phi": None,
-            "nu": None,
-            "log_likelihood": float(ll_full_gauss),
-            "mean_log_likelihood": float(mean_ll_gauss),
-            "cv_penalized_ll": float(ll_cv_gauss),
-            "bic": float('inf') if is_disabled else float(bic_gauss),  # Effectively remove from BMA
-            "bic_original": float(bic_gauss),  # Store original for diagnostics
-            "aic": float(aic_gauss),
-            "hyvarinen_score": float(hyvarinen_gauss),
-            "n_params": int(n_params_gauss),
-            "ks_statistic": float(ks_gauss),
-            "pit_ks_pvalue": float(pit_p_gauss),
-            "fit_success": True,
-            "disabled_in_bma": is_disabled,  # Flag for UX display
-            "diagnostics": diag_gauss,
-        }
-    except Exception as e:
-        models["kalman_gaussian"] = {
-            "fit_success": False,
-            "error": str(e),
-            "bic": float('inf'),
-            "aic": float('inf'),
-            "hyvarinen_score": float('-inf'),
-            "disabled_in_bma": DISABLE_PURE_GAUSSIAN_MODELS,
-        }
-    
-    # =========================================================================
-    # Model 1: Phi-Gaussian (q, c, phi)
-    # =========================================================================
-    # NOTE: Pure φ-Gaussian is disabled by default (February 2026).
-    # Empirical evidence shows φ-Gaussian+Mom dominates with 15.2% selection rate
-    # vs pure φ-Gaussian at 0.0%. We still fit it to provide parameters for
-    # momentum-augmented version, but mark it as disabled in BMA.
-    # =========================================================================
-    try:
-        q_phi, c_phi, phi_opt, ll_cv_phi, diag_phi = PhiGaussianDriftModel.optimize_params(
-            returns, vol,
-            prior_log_q_mean=prior_log_q_mean,
-            prior_lambda=prior_lambda
-        )
-        
-        # Run full filter
-        mu_phi, P_phi, ll_full_phi = GaussianDriftModel.filter_phi(returns, vol, q_phi, c_phi, phi_opt)
-        
-        # Compute PIT calibration
-        ks_phi, pit_p_phi = GaussianDriftModel.pit_ks(returns, mu_phi, vol, P_phi, c_phi)
-        
-        # Compute information criteria
-        n_params_phi = MODEL_CLASS_N_PARAMS[ModelClass.PHI_GAUSSIAN]
-        aic_phi = compute_aic(ll_full_phi, n_params_phi)
-        bic_phi = compute_bic(ll_full_phi, n_params_phi, n_obs)
-        mean_ll_phi = ll_full_phi / max(n_obs, 1)
-        
-        # Compute Hyvärinen score for robust model selection
-        forecast_std_phi = np.sqrt(c_phi * (vol ** 2) + P_phi)
-        hyvarinen_phi = compute_hyvarinen_score_gaussian(returns, mu_phi, forecast_std_phi)
-        
-        # Mark as disabled in BMA if DISABLE_PURE_GAUSSIAN_MODELS is True
-        # Parameters are still stored for momentum-augmented version
-        is_disabled = DISABLE_PURE_GAUSSIAN_MODELS
-        
-        models["kalman_phi_gaussian"] = {
-            "q": float(q_phi),
-            "c": float(c_phi),
-            "phi": float(phi_opt),
-            "nu": None,
-            "log_likelihood": float(ll_full_phi),
-            "mean_log_likelihood": float(mean_ll_phi),
-            "cv_penalized_ll": float(ll_cv_phi),
-            "bic": float('inf') if is_disabled else float(bic_phi),  # Effectively remove from BMA
-            "bic_original": float(bic_phi),  # Store original for diagnostics
-            "aic": float(aic_phi),
-            "hyvarinen_score": float(hyvarinen_phi),
-            "n_params": int(n_params_phi),
-            "ks_statistic": float(ks_phi),
-            "pit_ks_pvalue": float(pit_p_phi),
-            "fit_success": True,
-            "disabled_in_bma": is_disabled,  # Flag for UX display
-            "diagnostics": diag_phi,
-        }
-    except Exception as e:
-        models["kalman_phi_gaussian"] = {
-            "fit_success": False,
-            "error": str(e),
-            "bic": float('inf'),
-            "aic": float('inf'),
-            "hyvarinen_score": float('-inf'),
-            "disabled_in_bma": DISABLE_PURE_GAUSSIAN_MODELS,
-        }
-    
-    # =========================================================================
-    # Model 2: Phi-Student-t with DISCRETE ν GRID
+    # Model 1: Phi-Student-t with DISCRETE ν GRID
     # =========================================================================
     # Instead of continuous ν optimization, we fit separate sub-models for
     # each ν in STUDENT_T_NU_GRID. Each sub-model participates independently
@@ -2951,128 +2819,135 @@ def fit_all_models_for_regime(
         momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
         momentum_wrapper.precompute_momentum(returns)
         
-        # Momentum-augmented Gaussian
-        base_name = "kalman_gaussian"
-        mom_name = get_momentum_augmented_model_name(base_name)
+        # =====================================================================
+        # Momentum-augmented Gaussian (inline parameter fitting)
+        # =====================================================================
+        # Fit Gaussian parameters directly, then apply momentum augmentation.
+        # This is the ONLY Gaussian model in BMA - no pure Gaussian variant.
+        # =====================================================================
+        mom_name = "kalman_gaussian_momentum"  
         
-        if base_name in models and models[base_name].get("fit_success", False):
-            try:
-                base_model = models[base_name]
-                q_mom = base_model["q"]
-                c_mom = base_model["c"]
-                
-                # Run filter with momentum augmentation
-                mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
-                    returns, vol, q_mom, c_mom, phi=1.0, base_model='gaussian'
-                )
-                
-                # Compute PIT calibration
-                ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_mom)
-                
-                # Compute information criteria with prior penalty
-                n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN]
-                aic_mom = compute_aic(ll_mom, n_params_mom)
-                bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
-                bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
-                mean_ll_mom = ll_mom / max(n_obs, 1)
-                
-                # Compute Hyvärinen score
-                forecast_std_mom = np.sqrt(c_mom * (vol ** 2) + P_mom)
-                hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
-                
-                models[mom_name] = {
-                    "q": float(q_mom),
-                    "c": float(c_mom),
-                    "phi": None,
-                    "nu": None,
-                    "log_likelihood": float(ll_mom),
-                    "mean_log_likelihood": float(mean_ll_mom),
-                    "cv_penalized_ll": float(ll_mom),
-                    "bic": float(bic_mom),
-                    "bic_raw": float(bic_raw_mom),
-                    "aic": float(aic_mom),
-                    "hyvarinen_score": float(hyvarinen_mom),
-                    "n_params": int(n_params_mom),
-                    "ks_statistic": float(ks_mom),
-                    "pit_ks_pvalue": float(pit_p_mom),
-                    "fit_success": True,
-                    "momentum_augmented": True,
-                    "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
-                    "base_model": base_name,
-                    "diagnostics": momentum_wrapper.get_diagnostics(),
-                }
-            except Exception as e:
-                models[mom_name] = {
-                    "fit_success": False,
-                    "error": str(e),
-                    "bic": float('inf'),
-                    "aic": float('inf'),
-                    "hyvarinen_score": float('-inf'),
-                    "momentum_augmented": True,
-                    "base_model": base_name,
-                }
+        try:
+            # Fit Gaussian parameters (q, c)
+            q_gauss, c_gauss, ll_cv_gauss, diag_gauss = GaussianDriftModel.optimize_params(
+                returns, vol,
+                prior_log_q_mean=prior_log_q_mean,
+                prior_lambda=prior_lambda
+            )
+            
+            # Run filter with momentum augmentation
+            mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
+                returns, vol, q_gauss, c_gauss, phi=1.0, base_model='gaussian'
+            )
+            
+            # Compute PIT calibration
+            ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_gauss)
+            
+            # Compute information criteria with prior penalty
+            n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN]
+            aic_mom = compute_aic(ll_mom, n_params_mom)
+            bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
+            bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
+            mean_ll_mom = ll_mom / max(n_obs, 1)
+            
+            # Compute Hyvärinen score
+            forecast_std_mom = np.sqrt(c_gauss * (vol ** 2) + P_mom)
+            hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
+            
+            models[mom_name] = {
+                "q": float(q_gauss),
+                "c": float(c_gauss),
+                "phi": None,
+                "nu": None,
+                "log_likelihood": float(ll_mom),
+                "mean_log_likelihood": float(mean_ll_mom),
+                "cv_penalized_ll": float(ll_mom),
+                "bic": float(bic_mom),
+                "bic_raw": float(bic_raw_mom),
+                "aic": float(aic_mom),
+                "hyvarinen_score": float(hyvarinen_mom),
+                "n_params": int(n_params_mom),
+                "ks_statistic": float(ks_mom),
+                "pit_ks_pvalue": float(pit_p_mom),
+                "fit_success": True,
+                "momentum_augmented": True,
+                "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                "diagnostics": {**diag_gauss, **momentum_wrapper.get_diagnostics()},
+            }
+        except Exception as e:
+            models[mom_name] = {
+                "fit_success": False,
+                "error": str(e),
+                "bic": float('inf'),
+                "aic": float('inf'),
+                "hyvarinen_score": float('-inf'),
+                "momentum_augmented": True,
+            }
         
-        # Momentum-augmented Phi-Gaussian
-        base_name = "kalman_phi_gaussian"
-        mom_name = get_momentum_augmented_model_name(base_name)
+        # =====================================================================
+        # Momentum-augmented Phi-Gaussian (inline parameter fitting)
+        # =====================================================================
+        # Fit φ-Gaussian parameters directly, then apply momentum augmentation.
+        # This is the ONLY φ-Gaussian model in BMA - no pure variant.
+        # =====================================================================
+        mom_name = "kalman_phi_gaussian_momentum"  
         
-        if base_name in models and models[base_name].get("fit_success", False):
-            try:
-                base_model = models[base_name]
-                q_mom = base_model["q"]
-                c_mom = base_model["c"]
-                phi_mom = base_model["phi"]
-                
-                # Run filter with momentum augmentation
-                mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
-                    returns, vol, q_mom, c_mom, phi=phi_mom, base_model='phi_gaussian'
-                )
-                
-                # Compute PIT calibration
-                ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_mom)
-                
-                # Compute information criteria with prior penalty
-                n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.PHI_GAUSSIAN]
-                aic_mom = compute_aic(ll_mom, n_params_mom)
-                bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
-                bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
-                mean_ll_mom = ll_mom / max(n_obs, 1)
-                
-                # Compute Hyvärinen score
-                forecast_std_mom = np.sqrt(c_mom * (vol ** 2) + P_mom)
-                hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
-                
-                models[mom_name] = {
-                    "q": float(q_mom),
-                    "c": float(c_mom),
-                    "phi": float(phi_mom),
-                    "nu": None,
-                    "log_likelihood": float(ll_mom),
-                    "mean_log_likelihood": float(mean_ll_mom),
-                    "cv_penalized_ll": float(ll_mom),
-                    "bic": float(bic_mom),
-                    "bic_raw": float(bic_raw_mom),
-                    "aic": float(aic_mom),
-                    "hyvarinen_score": float(hyvarinen_mom),
-                    "n_params": int(n_params_mom),
-                    "ks_statistic": float(ks_mom),
-                    "pit_ks_pvalue": float(pit_p_mom),
-                    "fit_success": True,
-                    "momentum_augmented": True,
-                    "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
-                    "base_model": base_name,
-                    "diagnostics": momentum_wrapper.get_diagnostics(),
-                }
-            except Exception as e:
-                models[mom_name] = {
-                    "fit_success": False,
-                    "error": str(e),
-                    "bic": float('inf'),
-                    "aic": float('inf'),
-                    "hyvarinen_score": float('-inf'),
-                    "momentum_augmented": True,
-                    "base_model": base_name,
-                }
+        try:
+            # Fit Phi-Gaussian parameters (q, c, phi)
+            q_phi, c_phi, phi_opt, ll_cv_phi, diag_phi = PhiGaussianDriftModel.optimize_params(
+                returns, vol,
+                prior_log_q_mean=prior_log_q_mean,
+                prior_lambda=prior_lambda
+            )
+            
+            # Run filter with momentum augmentation
+            mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
+                returns, vol, q_phi, c_phi, phi=phi_opt, base_model='phi_gaussian'
+            )
+            
+            # Compute PIT calibration
+            ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_phi)
+            
+            # Compute information criteria with prior penalty
+            n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.PHI_GAUSSIAN]
+            aic_mom = compute_aic(ll_mom, n_params_mom)
+            bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
+            bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
+            mean_ll_mom = ll_mom / max(n_obs, 1)
+            
+            # Compute Hyvärinen score
+            forecast_std_mom = np.sqrt(c_phi * (vol ** 2) + P_mom)
+            hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
+            
+            models[mom_name] = {
+                "q": float(q_phi),
+                "c": float(c_phi),
+                "phi": float(phi_opt),
+                "nu": None,
+                "log_likelihood": float(ll_mom),
+                "mean_log_likelihood": float(mean_ll_mom),
+                "cv_penalized_ll": float(ll_mom),
+                "bic": float(bic_mom),
+                "bic_raw": float(bic_raw_mom),
+                "aic": float(aic_mom),
+                "hyvarinen_score": float(hyvarinen_mom),
+                "n_params": int(n_params_mom),
+                "ks_statistic": float(ks_mom),
+                "pit_ks_pvalue": float(pit_p_mom),
+                "fit_success": True,
+                "momentum_augmented": True,
+                "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                "diagnostics": {**diag_phi, **momentum_wrapper.get_diagnostics()},
+            }
+        except Exception as e:
+            models[mom_name] = {
+                "fit_success": False,
+                "error": str(e),
+                "bic": float('inf'),
+                "aic": float('inf'),
+                "hyvarinen_score": float('-inf'),
+                "momentum_augmented": True,
+            }
         
         # Momentum-augmented Student-t (for each nu in grid)
         for nu_fixed in STUDENT_T_NU_GRID:
@@ -3165,7 +3040,7 @@ def fit_all_models_for_regime(
         )
         
         # GAS-Q augmented Gaussian+Momentum (stack on top of momentum)
-        base_name = "gaussian+mom"
+        base_name = "kalman_gaussian_momentum"
         gas_q_name = get_gas_q_model_name(base_name)
         
         if base_name in models and models[base_name].get("fit_success", False):
@@ -3244,7 +3119,7 @@ def fit_all_models_for_regime(
         
         # GAS-Q augmented Student-t+Momentum (for each nu)
         for nu_fixed in STUDENT_T_NU_GRID:
-            base_name = f"phi_student_t_nu_{nu_fixed}+mom"
+            base_name = f"phi_student_t_nu_{nu_fixed}_momentum"
             gas_q_name = get_gas_q_model_name(base_name)
             
             if base_name in models and models[base_name].get("fit_success", False):
