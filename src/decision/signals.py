@@ -9042,7 +9042,14 @@ def main() -> None:
                 # PRIMARY: Try HMM result for regime (most reliable - uses 3-state Gaussian HMM)
                 hmm_result = feats.get("hmm_result")
                 if isinstance(hmm_result, dict) and hmm_result:
-                    regime_name = hmm_result.get("current_regime", "")
+                    # fit_hmm_regimes returns regime_series (pd.Series of regime labels)
+                    # Get current regime from the last value in the series
+                    regime_series = hmm_result.get("regime_series")
+                    if regime_series is not None and hasattr(regime_series, 'iloc') and len(regime_series) > 0:
+                        regime_name = str(regime_series.iloc[-1])
+                    else:
+                        # Fallback: check if there's a current_regime key (older format)
+                        regime_name = hmm_result.get("current_regime", "")
                 
                 # FALLBACK: Try kalman_metadata for regime info
                 if not regime_name or regime_name == "Unknown":
@@ -9063,7 +9070,25 @@ def main() -> None:
                         # Get first regime key as current
                         regime_name = next(iter(regime_info.keys()), "Unknown")
                 
-                # Default if still empty
+                # FALLBACK: Volatility-based regime classification (for assets without HMM)
+                # This handles new/short-history assets where HMM returns None
+                if not regime_name or regime_name == "Unknown":
+                    vol_series = feats.get("vol") if feats else None
+                    if vol_series is not None and hasattr(vol_series, 'iloc') and len(vol_series) > 0:
+                        try:
+                            current_vol = float(vol_series.iloc[-1])
+                            # Annualized volatility thresholds (approximate)
+                            # calm: < 15%, trending: 15-30%, crisis: > 30%
+                            if current_vol < 0.15:
+                                regime_name = "calm"
+                            elif current_vol < 0.30:
+                                regime_name = "trending"
+                            else:
+                                regime_name = "crisis"
+                        except (ValueError, TypeError):
+                            pass
+                
+                # Final default if still empty
                 if not regime_name:
                     regime_name = "Unknown"
             
