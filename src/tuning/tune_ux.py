@@ -552,8 +552,8 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
             display_name = level_name
             if level_name == 'φ-Student-t (ν-refined)':
                 display_name = 'φ-Student-t (adaptive ν)'
-            elif level_name == 'φ-Student-t+Mom (ν-refined)':
-                display_name = 'φ-Student-t+Mom (adaptive ν)'
+            elif level_name == 'φ-Student-t+Momentum (ν-refined)':
+                display_name = 'φ-Student-t+Momentum (adaptive ν)'
             
             if is_disabled:
                 row.append(f"{display_name:<28}", style="dim")
@@ -575,7 +575,7 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
                     row.append(rate_str, style="dim italic")
                 elif count > 0:
                     # Add appropriate annotation based on model type
-                    if 'Momentum' in level_name or '+Mom' in level_name:
+                    if 'Momentum' in level_name:
                         row.append("  ↑ momentum augmented", style="dim italic")
                     elif 'Student-t' in level_name and 'base' not in level_name.lower():
                         row.append("  ↑ heavier tails", style="dim italic")

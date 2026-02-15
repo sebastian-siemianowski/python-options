@@ -2556,6 +2556,10 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
     
     # Track if momentum model was selected
     is_momentum_model = _is_momentum_augmented(best_model)
+    
+    # Also store the full model name (includes _momentum suffix) for tracking/display
+    # This differs from noise_model which is normalized to base type
+    full_model_name = best_model
 
     # Validate required params
     if q_val is None or not np.isfinite(q_val) or q_val <= 0:
@@ -3398,8 +3402,8 @@ def compute_features(
             # ═══════════════════════════════════════════════════════════════════
             # MOMENTUM-AUGMENTED GAUSSIAN MODELS
             # ═══════════════════════════════════════════════════════════════════
-            'kalman_gaussian_momentum': {'short': 'Gaussian+Mom', 'desc': 'Random walk with momentum', 'family': 'momentum'},
-            'kalman_phi_gaussian_momentum': {'short': 'φ-Gaussian+Mom', 'desc': 'AR(1) with momentum', 'family': 'momentum'},
+            'kalman_gaussian_momentum': {'short': 'Gaussian+Momentum', 'desc': 'Random walk with momentum', 'family': 'momentum'},
+            'kalman_phi_gaussian_momentum': {'short': 'φ-Gaussian+Momentum', 'desc': 'AR(1) with momentum', 'family': 'momentum'},
             
             # ═══════════════════════════════════════════════════════════════════
             # STUDENT-T MODELS (Discrete ν grid: 4, 6, 8, 12, 20)
@@ -3413,11 +3417,11 @@ def compute_features(
             # ═══════════════════════════════════════════════════════════════════
             # MOMENTUM-AUGMENTED STUDENT-T MODELS
             # ═══════════════════════════════════════════════════════════════════
-            'phi_student_t_nu_4_momentum': {'short': 'φ-T(ν=4)+Mom', 'desc': 'Very heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_6_momentum': {'short': 'φ-T(ν=6)+Mom', 'desc': 'Heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_8_momentum': {'short': 'φ-T(ν=8)+Mom', 'desc': 'Moderate-heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_12_momentum': {'short': 'φ-T(ν=12)+Mom', 'desc': 'Moderate tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_20_momentum': {'short': 'φ-T(ν=20)+Mom', 'desc': 'Light tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_4_momentum': {'short': 'φ-T(ν=4)+Momentum', 'desc': 'Very heavy tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_6_momentum': {'short': 'φ-T(ν=6)+Momentum', 'desc': 'Heavy tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_8_momentum': {'short': 'φ-T(ν=8)+Momentum', 'desc': 'Moderate-heavy tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_12_momentum': {'short': 'φ-T(ν=12)+Momentum', 'desc': 'Moderate tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_20_momentum': {'short': 'φ-T(ν=20)+Momentum', 'desc': 'Light tails with momentum', 'family': 'momentum'},
             
             # ═══════════════════════════════════════════════════════════════════
             # ADAPTIVE ν REFINEMENT CANDIDATES (intermediate values)
@@ -3456,11 +3460,32 @@ def compute_features(
             base_name = model_name.replace('_momentum', '')
             
             # Handle enhanced Student-t variants (February 2026)
-            # Vol-of-Vol enhanced: phi_student_t_nu_{nu}_vov_{gamma}_momentum
+            # Vol-of-Vol enhanced: phi_student_t_nu_{nu}_vov_g{gamma}_momentum
             if 'vov' in base_name.lower() and 'student_t' in base_name.lower():
-                short = 'φ-T(VoV)'
+                # Try to extract gamma value from name (e.g., phi_student_t_nu_6_vov_g0.5_momentum)
+                gamma_str = ""
+                nu_str = ""
+                import re
+                # Extract gamma: look for g followed by number
+                gamma_match = re.search(r'_g(\d+\.?\d*)', base_name)
+                if gamma_match:
+                    gamma_str = gamma_match.group(1)
+                # Extract nu
+                nu_match = re.search(r'nu_(\d+)', base_name)
+                if nu_match:
+                    nu_str = nu_match.group(1)
+                
+                if gamma_str and nu_str:
+                    short = f'φ-T(ν={nu_str},γ={gamma_str})'
+                elif gamma_str:
+                    short = f'φ-T(VoV,γ={gamma_str})'
+                elif nu_str:
+                    short = f'φ-T(ν={nu_str},VoV)'
+                else:
+                    short = 'φ-T(VoV)'
+                
                 if is_momentum:
-                    short += '+Mom'
+                    short += '+Momentum'
                 family = 'enhanced'
                 desc = 'Vol-of-Vol enhanced Student-t'
                 if is_momentum:
@@ -3469,9 +3494,16 @@ def compute_features(
             
             # Two-Piece asymmetric: phi_student_t_nuL{L}_nuR{R}_momentum
             if 'nul' in base_name.lower() and 'nur' in base_name.lower():
-                short = 'φ-T(2P)'
+                # Extract nu_left and nu_right
+                import re
+                nul_match = re.search(r'nul(\d+)', base_name.lower())
+                nur_match = re.search(r'nur(\d+)', base_name.lower())
+                if nul_match and nur_match:
+                    short = f'φ-T(νL={nul_match.group(1)},νR={nur_match.group(1)})'
+                else:
+                    short = 'φ-T(2P)'
                 if is_momentum:
-                    short += '+Mom'
+                    short += '+Momentum'
                 family = 'enhanced'
                 desc = 'Two-Piece asymmetric Student-t'
                 if is_momentum:
@@ -3480,9 +3512,15 @@ def compute_features(
             
             # Two-Component mixture: phi_student_t_mix_{calm}_{stress}_momentum
             if 'mix' in base_name.lower() and 'student_t' in base_name.lower():
-                short = 'φ-T(Mix)'
+                # Extract calm and stress nu values
+                import re
+                mix_match = re.search(r'mix_(\d+)_(\d+)', base_name)
+                if mix_match:
+                    short = f'φ-T(Mix:{mix_match.group(1)}/{mix_match.group(2)})'
+                else:
+                    short = 'φ-T(Mix)'
                 if is_momentum:
-                    short += '+Mom'
+                    short += '+Momentum'
                 family = 'enhanced'
                 desc = 'Two-Component mixture Student-t'
                 if is_momentum:
@@ -3495,7 +3533,7 @@ def compute_features(
                     nu_val = int(base_name.split('_')[-1])
                     short = f'φ-T(ν={nu_val})'
                     if is_momentum:
-                        short += '+Mom'
+                        short += '+Momentum'
                     family = 'momentum' if is_momentum else 'student_t'
                     desc = f'Student-t with ν={nu_val}'
                     if is_momentum:
@@ -3507,7 +3545,7 @@ def compute_features(
             # Handle other Gaussian variants with momentum
             if is_momentum:
                 if 'phi_gaussian' in base_name or 'kalman_phi_gaussian' in base_name:
-                    return {'short': 'φ-Gaussian+Mom', 'desc': 'AR(1) drift with momentum', 'family': 'momentum'}
+                    return {'short': 'φ-Gaussian+Momentum', 'desc': 'AR(1) drift with momentum', 'family': 'momentum'}
                 elif 'gaussian' in base_name or 'kalman_gaussian' in base_name:
                     return {'short': 'Gaussian+Mom', 'desc': 'Random walk with momentum', 'family': 'momentum'}
             
@@ -3683,22 +3721,25 @@ def compute_features(
         console.print(comp_header)
         console.print()
 
-        # Only show models with weight > 0.001% to reduce clutter
-        visible_models = [m for m in all_models if model_posterior.get(m, 0) >= 0.0001]
+        # Only show models with weight > 1% to reduce clutter (show significant models only)
+        visible_models = [m for m in all_models if model_posterior.get(m, 0) >= 0.01]
         
         # Organize models by family for cleaner display
-        model_families = {'momentum': [], 'gaussian': [], 'student_t': [], 'other': []}
+        model_families = {'momentum': [], 'gaussian': [], 'student_t': [], 'enhanced': [], 'other': []}
         for model_name in visible_models:
             info = get_model_info(model_name)
             family = info.get('family', 'other')
+            # Handle unknown families by putting them in 'other'
+            if family not in model_families:
+                family = 'other'
             model_families[family].append(model_name)
         
         # Sort within each family by weight descending
         for family in model_families:
             model_families[family].sort(key=lambda m: model_posterior.get(m, 0), reverse=True)
         
-        # Display order: momentum first (most relevant), then gaussian, then student_t
-        display_order = ['momentum', 'gaussian', 'student_t', 'other']
+        # Display order: momentum first (most relevant), then enhanced, gaussian, student_t
+        display_order = ['momentum', 'enhanced', 'gaussian', 'student_t', 'other']
         
         for family in display_order:
             family_models = model_families[family]
@@ -3710,6 +3751,7 @@ def compute_features(
             if total_families > 1 and len(family_models) > 0:
                 family_names = {
                     'momentum': 'Momentum-Augmented',
+                    'enhanced': 'Enhanced Student-t',
                     'gaussian': 'Gaussian',
                     'student_t': 'Student-t',
                     'other': 'Other'
@@ -8075,6 +8117,121 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
     return successes, failures
 
 
+def render_regime_model_summary(regime_model_tracker: Dict[str, Dict[str, int]], console: Console = None) -> None:
+    """
+    Render a summary table showing model usage per regime.
+    
+    This helps identify which models are selected in each market regime,
+    useful for understanding model behavior and identifying unused models.
+    
+    Args:
+        regime_model_tracker: Dict[regime_name, Dict[model_short_name, count]]
+        console: Rich Console for output
+    """
+    if console is None:
+        console = Console(force_terminal=True, width=140)
+    
+    if not regime_model_tracker:
+        return
+    
+    from rich.table import Table
+    from rich.text import Text
+    from rich.rule import Rule
+    
+    # Count total assets per regime
+    regime_totals = {}
+    for regime, models in regime_model_tracker.items():
+        regime_totals[regime] = sum(models.values())
+    
+    total_assets = sum(regime_totals.values())
+    if total_assets == 0:
+        return
+    
+    # Collect all unique models across regimes
+    all_models = set()
+    for models in regime_model_tracker.values():
+        all_models.update(models.keys())
+    
+    # Sort models by total usage (most used first)
+    model_usage = {}
+    for model in all_models:
+        model_usage[model] = sum(regime_model_tracker.get(r, {}).get(model, 0) for r in regime_model_tracker)
+    sorted_models = sorted(all_models, key=lambda m: model_usage[m], reverse=True)
+    
+    # Only show models with at least 1% usage overall
+    min_usage = max(1, int(total_assets * 0.01))
+    visible_models = [m for m in sorted_models if model_usage[m] >= min_usage]
+    
+    if not visible_models:
+        return
+    
+    # Define regime display order and labels
+    regime_order = ['LOW_VOL_TREND', 'HIGH_VOL_TREND', 'LOW_VOL_RANGE', 'HIGH_VOL_RANGE', 'CRISIS_JUMP']
+    regime_labels = {
+        'LOW_VOL_TREND': 'Low-Vol Trend',
+        'HIGH_VOL_TREND': 'High-Vol Trend',
+        'LOW_VOL_RANGE': 'Low-Vol Range',
+        'HIGH_VOL_RANGE': 'High-Vol Range',
+        'CRISIS_JUMP': 'Crisis/Jump',
+        'Unknown': 'Unknown',
+    }
+    
+    # Build the table
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    header = Text()
+    header.append("▸ ", style="bright_cyan")
+    header.append("MODEL SELECTION BY REGIME", style="bold white")
+    console.print(header)
+    console.print()
+    
+    table = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
+    table.add_column("Model", style="white", justify="left")
+    table.add_column("Total", style="bold white", justify="right")
+    
+    # Add regime columns
+    active_regimes = [r for r in regime_order if r in regime_model_tracker]
+    # Add any regimes not in the predefined order
+    for r in regime_model_tracker:
+        if r not in active_regimes:
+            active_regimes.append(r)
+    
+    for regime in active_regimes:
+        label = regime_labels.get(regime, regime)
+        table.add_column(label, justify="right")
+    
+    # Add rows for each model
+    for model in visible_models:
+        total = model_usage[model]
+        total_pct = (total / total_assets * 100) if total_assets > 0 else 0
+        
+        row = [model, f"{total} ({total_pct:.0f}%)"]
+        
+        for regime in active_regimes:
+            count = regime_model_tracker.get(regime, {}).get(model, 0)
+            regime_total = regime_totals.get(regime, 1)
+            pct = (count / regime_total * 100) if regime_total > 0 else 0
+            if count > 0:
+                row.append(f"{count} ({pct:.0f}%)")
+            else:
+                row.append("[dim]—[/dim]")
+        
+        table.add_row(*row)
+    
+    # Add totals row
+    total_row = ["[bold]Total Assets[/bold]", f"[bold]{total_assets}[/bold]"]
+    for regime in active_regimes:
+        count = regime_totals.get(regime, 0)
+        pct = (count / total_assets * 100) if total_assets > 0 else 0
+        total_row.append(f"[bold]{count}[/bold] ({pct:.0f}%)")
+    table.add_row(*total_row)
+    
+    console.print(table)
+    console.print()
+
+
 def main() -> None:
     args = parse_args()
     horizons = sorted({int(x.strip()) for x in args.horizons.split(",") if x.strip()})
@@ -8249,6 +8406,7 @@ def main() -> None:
     csv_rows_simple = []  # for CSV simple export
     csv_rows_detailed = []  # for CSV detailed export
     summary_rows = []  # for summary table across assets
+    regime_model_tracker = {}  # Dict[regime_name, Dict[model_short_name, count]] for end-of-run summary
 
     # =========================================================================
     # RETRYING PARALLEL PROCESSING: Compute features/signals with bounded retries
@@ -8845,6 +9003,132 @@ def main() -> None:
             "momentum_score": momentum_score,
         })
 
+        # Track regime and model for end-of-run summary
+        try:
+            import re
+            
+            # Get model name from feats - multiple sources
+            model_name = "Unknown"
+            if feats:
+                # Try kalman_metadata first
+                kalman_meta = feats.get("kalman_metadata", {})
+                if isinstance(kalman_meta, dict):
+                    # best_model has the full name including _momentum suffix
+                    model_name = kalman_meta.get("best_model", "")
+                    if not model_name:
+                        model_name = kalman_meta.get("kalman_noise_model", "")
+                    if not model_name:
+                        model_name = kalman_meta.get("model_selected", "")
+                
+                # Try direct feats keys if not found
+                if not model_name or model_name == "Unknown":
+                    model_name = feats.get("best_model", "")
+                if not model_name or model_name == "Unknown":
+                    model_name = feats.get("kalman_noise_model", "")
+                
+                # Default to gaussian if still empty
+                if not model_name:
+                    model_name = "gaussian"
+            
+            # Get regime from feats (not diagnostics which may be empty)
+            regime_name = "Unknown"
+            if feats:
+                # Try kalman_metadata for regime info
+                kalman_meta = feats.get("kalman_metadata", {})
+                if isinstance(kalman_meta, dict):
+                    regime_info = kalman_meta.get("kalman_regime_info", {})
+                    if isinstance(regime_info, dict):
+                        regime_name = regime_info.get("regime_name", "")
+                        if not regime_name:
+                            regime_idx = regime_info.get("regime_index")
+                            regime_map = {0: "LOW_VOL_TREND", 1: "HIGH_VOL_TREND", 2: "LOW_VOL_RANGE", 3: "HIGH_VOL_RANGE", 4: "CRISIS_JUMP"}
+                            regime_name = regime_map.get(regime_idx, "")
+                
+                # Try feats directly
+                if not regime_name:
+                    regime_info = feats.get("regime_params", {})
+                    if isinstance(regime_info, dict) and regime_info:
+                        # Get first regime key as current
+                        regime_name = next(iter(regime_info.keys()), "Unknown")
+                
+                # Try HMM result for regime
+                if not regime_name or regime_name == "Unknown":
+                    hmm_result = feats.get("hmm_result", {})
+                    if isinstance(hmm_result, dict):
+                        regime_name = hmm_result.get("current_regime", "Unknown")
+                
+                # Default if still empty
+                if not regime_name:
+                    regime_name = "Unknown"
+            
+            # Convert model name to short display name
+            model_short = model_name
+            is_momentum = '_momentum' in model_name
+            base_name = model_name.replace('_momentum', '')
+            
+            # Use the same model info lookup as the Model Weights display
+            model_info_lookup = {
+                'kalman_gaussian': 'Gaussian',
+                'kalman_phi_gaussian': 'φ-Gaussian',
+                'kalman_gaussian_momentum': 'Gaussian+Momentum',
+                'kalman_phi_gaussian_momentum': 'φ-Gaussian+Momentum',
+                'gaussian': 'Gaussian',
+            }
+            if model_name in model_info_lookup:
+                model_short = model_info_lookup[model_name]
+            # Handle VoV models with gamma extraction
+            elif 'vov' in base_name.lower() and 'student_t' in base_name.lower():
+                gamma_match = re.search(r'_g(\d+\.?\d*)', base_name)
+                nu_match = re.search(r'nu_(\d+)', base_name)
+                if gamma_match and nu_match:
+                    model_short = f'φ-T(ν={nu_match.group(1)},γ={gamma_match.group(1)})'
+                elif gamma_match:
+                    model_short = f'φ-T(VoV,γ={gamma_match.group(1)})'
+                elif nu_match:
+                    model_short = f'φ-T(ν={nu_match.group(1)},VoV)'
+                else:
+                    model_short = 'φ-T(VoV)'
+                if is_momentum:
+                    model_short += '+Momentum'
+            # Handle Two-Piece models
+            elif 'nul' in base_name.lower() and 'nur' in base_name.lower():
+                nul_match = re.search(r'nul(\d+)', base_name.lower())
+                nur_match = re.search(r'nur(\d+)', base_name.lower())
+                if nul_match and nur_match:
+                    model_short = f'φ-T(νL={nul_match.group(1)},νR={nur_match.group(1)})'
+                else:
+                    model_short = 'φ-T(2P)'
+                if is_momentum:
+                    model_short += '+Momentum'
+            # Handle Mixture models
+            elif 'mix' in base_name.lower() and 'student_t' in base_name.lower():
+                mix_match = re.search(r'mix_(\d+)_(\d+)', base_name)
+                if mix_match:
+                    model_short = f'φ-T(Mix:{mix_match.group(1)}/{mix_match.group(2)})'
+                else:
+                    model_short = 'φ-T(Mix)'
+                if is_momentum:
+                    model_short += '+Momentum'
+            elif 'phi_student_t_nu_' in model_name:
+                # Extract nu value
+                nu_match = re.search(r'nu_(\d+)', model_name)
+                if nu_match:
+                    nu_val = nu_match.group(1)
+                    model_short = f'φ-T(ν={nu_val})'
+                    if is_momentum:
+                        model_short += '+Momentum'
+            elif is_momentum:
+                model_short = base_name.replace('_', '-') + '+Momentum'
+            
+            # Update tracker
+            if regime_name not in regime_model_tracker:
+                regime_model_tracker[regime_name] = {}
+            if model_short not in regime_model_tracker[regime_name]:
+                regime_model_tracker[regime_name][model_short] = 0
+            regime_model_tracker[regime_name][model_short] += 1
+        except Exception:
+            pass  # Silent fail for tracking
+
         # Prepare JSON block
         block = {
             "symbol": asset,
@@ -8981,6 +9265,14 @@ def main() -> None:
                     Console().print(f"[dim]Risk temperature display skipped: {rt_e}[/dim]")
     except Exception as e:
         Console().print(f"[yellow]Warning:[/yellow] Could not print summary tables: {e}")
+
+    # Render regime-model summary table (shows which models were selected per regime)
+    try:
+        if regime_model_tracker:
+            render_regime_model_summary(regime_model_tracker, Console(force_terminal=True, width=140))
+    except Exception as rms_e:
+        if os.getenv("DEBUG"):
+            Console().print(f"[dim]Regime-model summary error: {rms_e}[/dim]")
 
     # Build structured failure log for exports
     failure_log = [
