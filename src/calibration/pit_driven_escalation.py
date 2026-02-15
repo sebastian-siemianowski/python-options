@@ -794,7 +794,7 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             'K=2 Scale Mixture': mixture_count,
             'Generalized Hyperbolic': gh_count,
             'Time-Varying Vol Multiplier': tvvm_count,
-            'EVT Tail Splice': 0,
+            'EVT Tail Splice': evt_successes,
         },
         'model_counts': {
             'gaussian': gaussian_base_count,

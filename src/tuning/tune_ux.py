@@ -360,13 +360,15 @@ def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: 
     chips3.append("   ○ ", style="bright_green")
     chips3.append("AIGF-NF", style="bright_green")
     console.print(Align.center(chips3))
-    # Momentum augmentation status
+    # Momentum and Fisher-Rao augmentation status
     chips4 = Text()
     if momentum_enabled:
         chips4.append("○ ", style="bright_yellow")
         chips4.append("Momentum", style="bright_yellow")
         chips4.append(" ", style="dim")
         chips4.append("(BMA augmentation)", style="dim")
+        chips4.append("   ○ ", style="bright_cyan")
+        chips4.append("Fisher-Rao", style="bright_cyan")
     else:
         chips4.append("○ ", style="dim")
         chips4.append("Momentum", style="dim")

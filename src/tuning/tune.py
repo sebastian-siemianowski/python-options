@@ -906,12 +906,20 @@ try:
         EVT_THRESHOLD_PERCENTILE_DEFAULT,
         EVT_MIN_EXCEEDANCES,
         check_student_t_consistency,
+        # EVT Tail Splice for PIT Calibration (February 2026)
+        compute_evt_spliced_pit,
+        test_evt_splice_improvement,
+        EVT_SPLICE_ENABLED,
+        EVT_SPLICE_PIT_IMPROVEMENT_THRESHOLD,
     )
     EVT_AVAILABLE = True
+    EVT_SPLICE_AVAILABLE = True
 except ImportError:
     EVT_AVAILABLE = False
+    EVT_SPLICE_AVAILABLE = False
     EVT_THRESHOLD_PERCENTILE_DEFAULT = 0.90
     EVT_MIN_EXCEEDANCES = 30
+    EVT_SPLICE_ENABLED = False
 
 # Note: Tuning presentation functions (create_tuning_console, render_tuning_header, etc.)
 # are now defined in tune_ux.py to avoid circular imports. tune.py is the core tuning
@@ -1870,6 +1878,95 @@ def tune_asset_q(
                     _log(f"     ⚠️ ν-refinement error: {nu_err}")
                     nu_refinement_result = {"error": str(nu_err)}
         
+        # =====================================================================
+        # PIT-DRIVEN ESCALATION: EVT TAIL SPLICE (L3)
+        # =====================================================================
+        # EVT Tail Splice replaces the tail portion of the CDF with GPD.
+        # This is triggered when:
+        #   1. PIT calibration still fails after ν-refinement
+        #   2. EVT has been fitted successfully
+        #   3. EVT splice improves PIT p-value by >= 50%
+        #
+        # The spliced distribution provides theoretically justified tail
+        # extrapolation via the Pickands–Balkema–de Haan theorem.
+        # =====================================================================
+        evt_splice_result = None
+        evt_splice_attempted = False
+        evt_splice_selected = False
+        
+        if EVT_SPLICE_AVAILABLE and EVT_SPLICE_ENABLED and evt_result is not None:
+            # Check if PIT still fails after previous escalations
+            current_pit = best_params.get("pit_ks_pvalue", 1.0)
+            pit_still_fails = current_pit < 0.05
+            
+            if pit_still_fails:
+                evt_splice_attempted = True
+                try:
+                    # Reconstruct GPDFitResult from stored dict
+                    gpd_result_obj = GPDFitResult.from_dict(evt_result)
+                    
+                    # Get filter outputs for PIT computation
+                    # We need to run filter with best params
+                    q_best = best_params.get("q", 1e-6)
+                    c_best = best_params.get("c", 1.0)
+                    phi_best = best_params.get("phi", 0.0)
+                    nu_best = best_params.get("nu")
+                    
+                    # Run filter
+                    if phi_best is not None:
+                        from models import PhiStudentTDriftModel, PhiGaussianDriftModel
+                        if nu_best is not None:
+                            mu_filt, P_filt, _ = PhiStudentTDriftModel.filter_phi(
+                                returns, vol, q_best, c_best, phi_best, nu_best
+                            )
+                        else:
+                            mu_filt, P_filt, _ = PhiGaussianDriftModel.filter_phi(
+                                returns, vol, q_best, c_best, phi_best
+                            )
+                    else:
+                        from models import GaussianDriftModel
+                        mu_filt, P_filt, _ = GaussianDriftModel.filter(
+                            returns, vol, q_best, c_best
+                        )
+                    
+                    # Test if EVT splice improves PIT
+                    should_select, evt_pit_pvalue, improvement_ratio, evt_diag = test_evt_splice_improvement(
+                        returns=returns,
+                        mu_filtered=mu_filt,
+                        vol=vol,
+                        P_filtered=P_filt,
+                        c=c_best,
+                        nu=nu_best,
+                        gpd_result=gpd_result_obj,
+                        baseline_pit_pvalue=current_pit,
+                    )
+                    
+                    evt_splice_result = {
+                        "attempted": True,
+                        "should_select": should_select,
+                        "baseline_pit_pvalue": current_pit,
+                        "evt_pit_pvalue": evt_pit_pvalue,
+                        "improvement_ratio": improvement_ratio,
+                        "diagnostics": evt_diag,
+                    }
+                    
+                    if should_select:
+                        evt_splice_selected = True
+                        # Update best params to flag EVT splice
+                        best_params = best_params.copy()
+                        best_params["evt_splice_selected"] = True
+                        best_params["evt_splice_pit_pvalue"] = evt_pit_pvalue
+                        best_params["pit_ks_pvalue"] = evt_pit_pvalue  # Update PIT
+                        _log(f"     ✓ EVT Splice L3: PIT {current_pit:.4f}→{evt_pit_pvalue:.4f} ({improvement_ratio:.1f}x improvement)")
+                    else:
+                        reason = evt_diag.get("reason", "unknown")
+                        _log(f"     ⚠️ EVT Splice L3: Not selected ({reason})")
+                        
+                except Exception as evt_err:
+                    _log(f"     ⚠️ EVT Splice error: {evt_err}")
+                    evt_splice_result = {"attempted": True, "error": str(evt_err)}
+
+        
         # Build result structure - BMA-compatible format
         # signals.py expects: {"global": {...}, "has_bma": True}
         global_data = {
@@ -1908,6 +2005,10 @@ def tune_asset_q(
             "evt": evt_result,
             "evt_diagnostics": evt_diagnostics,
             "evt_student_t_consistency": evt_consistency,
+            # EVT Tail Splice for PIT calibration (L3 escalation)
+            "evt_splice": evt_splice_result,
+            "evt_splice_attempted": evt_splice_attempted,
+            "evt_splice_selected": evt_splice_selected,
             # Contaminated Student-t Mixture for regime-dependent tails
             "contaminated_student_t": cst_result,
             "contaminated_student_t_diagnostics": cst_diagnostics,
