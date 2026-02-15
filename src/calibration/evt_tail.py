@@ -814,14 +814,20 @@ def check_student_t_consistency(
 
 
 # =============================================================================
-# EVT TAIL SPLICE — Spliced Distribution for PIT Calibration (February 2026)
+# EVT TAIL SPLICE — Spliced Distribution for Tail Risk (February 2026)
 # =============================================================================
 # The EVT Tail Splice combines:
 #   - Core: Student-t or Gaussian CDF for |x| < threshold
 #   - Tails: GPD CDF for |x| > threshold
 #
-# This provides theoretically justified tail extrapolation while preserving
-# the empirically-fitted core distribution.
+# IMPORTANT: EVT splice is primarily for TAIL RISK computation (VaR, CTE),
+# not for overall PIT calibration. The KS test in PIT is dominated by core
+# behavior where most data lives. EVT improves 1%, 0.1% quantile estimation
+# but rarely improves overall PIT p-value.
+#
+# The selection criteria (improvement_ratio >= 1.01) is intentionally lenient
+# because any improvement in tail modeling is valuable for risk management,
+# even if PIT p-value remains low.
 #
 # MATHEMATICAL FORMULATION:
 #   For standardized residual z = (r - μ) / √(c·σ² + P):
@@ -829,14 +835,14 @@ def check_student_t_consistency(
 #   F_splice(z) = 
 #       F_core(z)                           if |z| < u (below threshold)
 #       1 - (1-p_u) * (1 - G_GPD(z-u))      if z > u (upper tail)
-#       p_l + (1-p_l) * G_GPD(-z-u)         if z < -u (lower tail)
+#       p_l * (1 - G_GPD(-z-u))             if z < -u (lower tail)
 #   
 #   where p_u = F_core(u), p_l = F_core(-u), G_GPD = GPD CDF
 #
 # INTEGRATION:
-#   - tune.py fits GPD to tail exceedances
-#   - If EVT improves PIT p-value, model is flagged with evt_splice_selected=True
-#   - signals.py uses compute_evt_spliced_pit() for predictive inference
+#   - tune.py fits GPD to tail exceedances and stores in cache
+#   - signals.py uses GPD parameters for CTE computation regardless of splice selection
+#   - If EVT improves PIT, model is flagged with evt_splice_selected=True
 # =============================================================================
 
 # Feature toggle for EVT tail splice
@@ -943,6 +949,11 @@ def compute_evt_spliced_pit(
     """
     Compute PIT values using EVT-spliced distribution.
     
+    CRITICAL FIX (Feb 2026): We fit GPD directly on standardized residual 
+    exceedances rather than trying to scale the pre-fitted GPD parameters.
+    This ensures the GPD tail model is properly matched to the standardized
+    residual scale that PIT computation uses.
+    
     Args:
         returns: Observed returns
         mu_filtered: Kalman-filtered mean predictions
@@ -950,7 +961,7 @@ def compute_evt_spliced_pit(
         P_filtered: Kalman filter variance
         c: Observation noise scaling
         nu: Student-t degrees of freedom (None for Gaussian)
-        gpd_result: Fitted GPD result from fit_gpd_pot()
+        gpd_result: Pre-fitted GPD result (used for xi hint, but sigma is refit)
         threshold_percentile: Percentile for tail threshold
         
     Returns:
@@ -969,17 +980,64 @@ def compute_evt_spliced_pit(
     z = (returns - mu_filtered) / total_std
     
     # Determine threshold in standardized units
-    # Use the percentile that corresponds to GPD threshold
     abs_z = np.abs(z)
     threshold_z = np.percentile(abs_z, threshold_percentile * 100)
     threshold_z = max(threshold_z, 1.5)  # Minimum threshold of 1.5σ
     
-    # Convert GPD sigma to standardized units
-    # GPD was fit to raw exceedances, need to scale
-    sigma_z = gpd_result.sigma / np.mean(total_std) if np.mean(total_std) > 0 else gpd_result.sigma
+    # FIT GPD DIRECTLY ON STANDARDIZED RESIDUAL EXCEEDANCES
+    # This is the correct approach - fit GPD in the same scale as PIT computation
+    upper_exceedances = z[z > threshold_z] - threshold_z
+    lower_exceedances = -z[z < -threshold_z] - threshold_z
     
-    # Compute spliced PIT values
-    pit_values = compute_evt_spliced_cdf(z, nu, gpd_result.xi, sigma_z, threshold_z)
+    # Pool both tails for symmetric GPD (more data, better fit)
+    all_exceedances = np.concatenate([upper_exceedances, lower_exceedances])
+    
+    if len(all_exceedances) < 10:
+        # Insufficient exceedances - fall back to pre-fitted parameters with scaling
+        sigma_z = gpd_result.sigma / np.mean(total_std) if np.mean(total_std) > 0 else gpd_result.sigma
+        xi_z = gpd_result.xi
+    else:
+        # Fit GPD on standardized exceedances using MLE
+        try:
+            # Use xi from pre-fitted as initial guess for stability
+            xi_init = gpd_result.xi
+            sigma_init = np.mean(all_exceedances)
+            
+            # MLE for GPD: maximize sum of log-densities
+            def neg_log_likelihood(params):
+                xi, sigma = params
+                if sigma <= 0:
+                    return np.inf
+                if xi == 0:
+                    # Exponential case
+                    return n * np.log(sigma) + np.sum(all_exceedances) / sigma
+                else:
+                    # General GPD case
+                    term = 1 + xi * all_exceedances / sigma
+                    if np.any(term <= 0):
+                        return np.inf
+                    return len(all_exceedances) * np.log(sigma) + (1 + 1/xi) * np.sum(np.log(term))
+            
+            result = minimize(
+                neg_log_likelihood,
+                x0=[xi_init, sigma_init],
+                bounds=[(EVT_XI_MIN, EVT_XI_MAX), (1e-6, 10.0)],
+                method='L-BFGS-B'
+            )
+            
+            if result.success:
+                xi_z, sigma_z = result.x
+            else:
+                # Fallback to moment estimator
+                xi_z = gpd_result.xi
+                sigma_z = np.mean(all_exceedances) * (1 - xi_z) if xi_z < 1 else np.mean(all_exceedances)
+        except Exception:
+            # Fallback
+            xi_z = gpd_result.xi
+            sigma_z = np.mean(all_exceedances)
+    
+    # Compute spliced PIT values with correctly-scaled GPD
+    pit_values = compute_evt_spliced_cdf(z, nu, xi_z, sigma_z, threshold_z)
     
     # KS test against uniform
     ks_stat, ks_pval = stats.kstest(pit_values, 'uniform')

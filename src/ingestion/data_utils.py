@@ -2550,6 +2550,7 @@ MAPPING = {
     "DFNG": ["ITA"],
     "GFA": ["ANGL"],
     "TRET": ["VNQ"],
+    "AAPI": ["AAPL"],  # iShares Apple Options ETF → AAPL proxy
 
     # Share class and punctuation variants (explicit mappings)
     "BRK.B": ["BRK-B"],
@@ -3979,6 +3980,13 @@ def _download_prices_core(symbol: str, start: Optional[str], end: Optional[str])
         last_dt = pd.to_datetime(disk_df.index.max()).date()
         # If disk cache already covers up to target end, use it
         if last_dt >= target_end:
+            _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
+            return disk_df
+        # If disk cache is reasonably recent (within 3 calendar days),
+        # use it without attempting incremental fetch to avoid noisy error messages
+        # for tickers that may have data gaps or be temporarily unavailable
+        days_stale = (target_end - last_dt).days
+        if days_stale <= 3:
             _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
             return disk_df
         # Otherwise, fetch incrementally from day after last cached date
