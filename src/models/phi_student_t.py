@@ -26,7 +26,8 @@ The model includes an explicit Gaussian shrinkage prior on φ:
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from scipy.optimize import minimize
@@ -72,6 +73,32 @@ PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 
 # Discrete ν grid for Student-t models
 STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
+
+
+# =============================================================================
+# ENHANCED STUDENT-T CONFIGURATION (February 2026)
+# =============================================================================
+# Three enhancements to improve Hyvarinen/PIT calibration:
+#   1. Vol-of-Vol (VoV): R_t = c × σ² × (1 + γ × |Δlog(σ)|)
+#   2. Two-Piece: Different νL (crash) vs νR (recovery) tails
+#   3. Two-Component Mixture: Blend νcalm and νstress with dynamic weights
+# =============================================================================
+
+# Vol-of-Vol (VoV) Enhancement
+GAMMA_VOV_GRID = [0.3, 0.5, 0.7]
+VOV_BMA_PENALTY = 1.0
+
+# Two-Piece Student-t Enhancement
+NU_LEFT_GRID = [3, 4, 5]
+NU_RIGHT_GRID = [8, 12, 20]
+TWO_PIECE_BMA_PENALTY = 3.0
+
+# Two-Component Mixture Student-t Enhancement
+NU_CALM_GRID = [12, 20]
+NU_STRESS_GRID = [4, 6]
+MIXTURE_WEIGHT_DEFAULT = 0.8
+MIXTURE_WEIGHT_K = 2.0  # Sigmoid sensitivity to vol_relative
+MIXTURE_BMA_PENALTY = 4.0
 
 
 # =============================================================================
@@ -312,6 +339,94 @@ class PhiStudentTDriftModel:
         log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
         log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
         return float(log_norm + log_kernel)
+
+    @staticmethod
+    def logpdf_two_piece(x: float, nu_left: float, nu_right: float, mu: float, scale: float) -> float:
+        """
+        Log-density of Two-Piece Student-t with different ν for left/right tails.
+        
+        Two-Piece Student-t (Fernández & Steel inspired):
+            p(x) ∝ t(x; νL) if x < μ
+            p(x) ∝ t(x; νR) if x ≥ μ
+        
+        This allows crash tails (νL small) to be heavier than recovery tails (νR larger).
+        
+        Args:
+            x: Observation value
+            nu_left: Degrees of freedom for x < μ (crash tail)
+            nu_right: Degrees of freedom for x ≥ μ (recovery tail)
+            mu: Location parameter
+            scale: Scale parameter
+            
+        Returns:
+            Log-density value
+        """
+        if scale <= 0 or nu_left <= 0 or nu_right <= 0:
+            return -1e12
+        
+        z = (x - mu) / scale
+        
+        # Choose ν based on sign of innovation
+        if z < 0:
+            nu = nu_left
+        else:
+            nu = nu_right
+        
+        # Standard Student-t log-density with chosen ν
+        log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
+        log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
+        
+        # Normalization correction for two-piece (approximate - assumes similar scales)
+        # True normalization: 2 / (1/σL + 1/σR) but for same scale, just log(2) - log(2) = 0
+        return float(log_norm + log_kernel)
+
+    @staticmethod
+    def logpdf_mixture(x: float, nu_calm: float, nu_stress: float, w_calm: float, mu: float, scale: float) -> float:
+        """
+        Log-density of Two-Component Student-t mixture.
+        
+        Mixture model:
+            p(x) = w_calm × t(x; νcalm) + (1 - w_calm) × t(x; νstress)
+        
+        This captures two curvature regimes in the central body:
+            - Calm regime: lighter tails (νcalm > νstress)
+            - Stress regime: heavier tails (νstress < νcalm)
+        
+        Args:
+            x: Observation value
+            nu_calm: Degrees of freedom for calm component (lighter tails)
+            nu_stress: Degrees of freedom for stress component (heavier tails)
+            w_calm: Weight on calm component ∈ [0, 1]
+            mu: Location parameter
+            scale: Scale parameter
+            
+        Returns:
+            Log-density value
+        """
+        if scale <= 0 or nu_calm <= 0 or nu_stress <= 0:
+            return -1e12
+        
+        w_calm = float(np.clip(w_calm, 0.001, 0.999))
+        z = (x - mu) / scale
+        
+        # Compute both component log-densities
+        def _t_logpdf(nu):
+            log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
+            log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
+            return log_norm + log_kernel
+        
+        ll_calm = _t_logpdf(nu_calm)
+        ll_stress = _t_logpdf(nu_stress)
+        
+        # Log-sum-exp for numerical stability
+        # log(w1*exp(ll1) + w2*exp(ll2)) = ll_max + log(w1*exp(ll1-ll_max) + w2*exp(ll2-ll_max))
+        ll_max = max(ll_calm, ll_stress)
+        log_mix = ll_max + np.log(
+            w_calm * np.exp(ll_calm - ll_max) + 
+            (1 - w_calm) * np.exp(ll_stress - ll_max)
+        )
+        
+        return float(log_mix) if np.isfinite(log_mix) else -1e12
 
     @classmethod
     def filter(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
@@ -578,6 +693,474 @@ class PhiStudentTDriftModel:
         if len(pit_values) < 2:
             return 1.0, 0.0
             
+        ks_result = kstest(pit_values, 'uniform')
+        return float(ks_result.statistic), float(ks_result.pvalue)
+
+    # =========================================================================
+    # ENHANCED FILTER METHODS (February 2026)
+    # =========================================================================
+    
+    @classmethod
+    def filter_phi_vov(
+        cls, 
+        returns: np.ndarray, 
+        vol: np.ndarray, 
+        q: float, 
+        c: float, 
+        phi: float, 
+        nu: float,
+        gamma_vov: float = 0.0
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        φ-Student-t filter with Volatility-of-Volatility observation noise correction.
+        
+        Standard model: R_t = c × σ_t²
+        VoV model:      R_t = c × σ_t² × (1 + γ × |Δlog(σ_t)|)
+        
+        When volatility changes rapidly, the EWMA vol lags true vol, so we need
+        a larger multiplier. When γ=0, this reduces to standard filter_phi.
+        
+        Args:
+            returns: Return series
+            vol: EWMA volatility series
+            q: Process noise variance
+            c: Base observation noise scale
+            phi: AR(1) persistence
+            nu: Degrees of freedom
+            gamma_vov: Vol-of-vol sensitivity (0 = disabled)
+            
+        Returns:
+            (mu_filtered, P_filtered, log_likelihood)
+        """
+        n = len(returns)
+        
+        # Convert to contiguous arrays
+        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        
+        # Extract scalar values
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+        nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
+        gamma = float(gamma_vov) if np.ndim(gamma_vov) == 0 else float(gamma_vov.item())
+        
+        # Pre-compute vol changes: |Δlog(σ_t)|
+        log_vol = np.log(np.maximum(vol, 1e-10))
+        vol_changes = np.zeros(n)
+        vol_changes[1:] = np.abs(np.diff(log_vol))
+        
+        # Pre-compute VoV-adjusted c multipliers: 1 + γ × |Δlog(σ)|
+        vov_mult = 1.0 + gamma * vol_changes
+        
+        # Pre-compute constants
+        phi_sq = phi_val * phi_val
+        nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
+        log_norm_const = gammaln((nu_val + 1.0) / 2.0) - gammaln(nu_val / 2.0) - 0.5 * np.log(nu_val * np.pi)
+        neg_exp = -((nu_val + 1.0) / 2.0)
+        inv_nu = 1.0 / nu_val
+        
+        # Pre-compute base R values (will be scaled by vov_mult)
+        R_base = c_val * (vol * vol)
+        
+        # Allocate output arrays
+        mu_filtered = np.empty(n, dtype=np.float64)
+        P_filtered = np.empty(n, dtype=np.float64)
+        
+        # State initialization
+        mu = 0.0
+        P = 1e-4
+        log_likelihood = 0.0
+        
+        # Main filter loop with VoV correction
+        for t in range(n):
+            # Prediction step
+            mu_pred = phi_val * mu
+            P_pred = phi_sq * P + q_val
+            
+            # VoV-adjusted observation variance
+            R = R_base[t] * vov_mult[t]
+            
+            # Observation update
+            S = P_pred + R
+            if S <= 1e-12:
+                S = 1e-12
+            
+            innovation = returns[t] - mu_pred
+            K = nu_adjust * P_pred / S
+            
+            # State update
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
+            
+            # Store filtered values
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+            
+            # Inlined log-pdf calculation
+            forecast_scale = np.sqrt(S)
+            if forecast_scale > 1e-12:
+                z = innovation / forecast_scale
+                ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
+                if np.isfinite(ll_t):
+                    log_likelihood += ll_t
+        
+        return mu_filtered, P_filtered, float(log_likelihood)
+
+    @classmethod
+    def filter_phi_two_piece(
+        cls, 
+        returns: np.ndarray, 
+        vol: np.ndarray, 
+        q: float, 
+        c: float, 
+        phi: float, 
+        nu_left: float,
+        nu_right: float
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        φ-Student-t filter with Two-Piece asymmetric tail behavior.
+        
+        Uses different degrees of freedom for negative vs positive innovations:
+            - νL (nu_left): For negative returns (crash tail) - typically smaller = heavier
+            - νR (nu_right): For positive returns (recovery tail) - typically larger = lighter
+        
+        This captures the empirical asymmetry where crashes are more extreme than rallies.
+        
+        Args:
+            returns: Return series
+            vol: EWMA volatility series
+            q: Process noise variance
+            c: Observation noise scale
+            phi: AR(1) persistence
+            nu_left: Degrees of freedom for negative innovations (crash)
+            nu_right: Degrees of freedom for positive innovations (recovery)
+            
+        Returns:
+            (mu_filtered, P_filtered, log_likelihood)
+        """
+        n = len(returns)
+        
+        # Convert to contiguous arrays
+        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        
+        # Extract scalar values
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+        nu_L = cls._clip_nu(nu_left, cls.nu_min_default, cls.nu_max_default)
+        nu_R = cls._clip_nu(nu_right, cls.nu_min_default, cls.nu_max_default)
+        
+        # Pre-compute constants
+        phi_sq = phi_val * phi_val
+        
+        # Pre-compute log-pdf constants for both ν values
+        log_norm_L = gammaln((nu_L + 1.0) / 2.0) - gammaln(nu_L / 2.0) - 0.5 * np.log(nu_L * np.pi)
+        neg_exp_L = -((nu_L + 1.0) / 2.0)
+        inv_nu_L = 1.0 / nu_L
+        nu_adjust_L = min(nu_L / (nu_L + 3.0), 1.0)
+        
+        log_norm_R = gammaln((nu_R + 1.0) / 2.0) - gammaln(nu_R / 2.0) - 0.5 * np.log(nu_R * np.pi)
+        neg_exp_R = -((nu_R + 1.0) / 2.0)
+        inv_nu_R = 1.0 / nu_R
+        nu_adjust_R = min(nu_R / (nu_R + 3.0), 1.0)
+        
+        # Pre-compute R values
+        R = c_val * (vol * vol)
+        
+        # Allocate output arrays
+        mu_filtered = np.empty(n, dtype=np.float64)
+        P_filtered = np.empty(n, dtype=np.float64)
+        
+        # State initialization
+        mu = 0.0
+        P = 1e-4
+        log_likelihood = 0.0
+        
+        # Main filter loop with two-piece likelihood
+        for t in range(n):
+            # Prediction step
+            mu_pred = phi_val * mu
+            P_pred = phi_sq * P + q_val
+            
+            # Observation update
+            S = P_pred + R[t]
+            if S <= 1e-12:
+                S = 1e-12
+            
+            innovation = returns[t] - mu_pred
+            
+            # Choose ν based on innovation sign
+            if innovation < 0:
+                # Crash tail (left)
+                nu_adjust = nu_adjust_L
+                log_norm = log_norm_L
+                neg_exp = neg_exp_L
+                inv_nu = inv_nu_L
+            else:
+                # Recovery tail (right)
+                nu_adjust = nu_adjust_R
+                log_norm = log_norm_R
+                neg_exp = neg_exp_R
+                inv_nu = inv_nu_R
+            
+            K = nu_adjust * P_pred / S
+            
+            # State update
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
+            
+            # Store filtered values
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+            
+            # Inlined log-pdf calculation with chosen ν
+            forecast_scale = np.sqrt(S)
+            if forecast_scale > 1e-12:
+                z = innovation / forecast_scale
+                ll_t = log_norm - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
+                if np.isfinite(ll_t):
+                    log_likelihood += ll_t
+        
+        return mu_filtered, P_filtered, float(log_likelihood)
+
+    @classmethod
+    def filter_phi_mixture(
+        cls, 
+        returns: np.ndarray, 
+        vol: np.ndarray, 
+        q: float, 
+        c: float, 
+        phi: float, 
+        nu_calm: float,
+        nu_stress: float,
+        w_base: float = 0.5
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        φ-Student-t filter with Two-Component mixture body.
+        
+        Mixture model with dynamic weights:
+            p(r_t) = w_t × t(νcalm) + (1 - w_t) × t(νstress)
+        
+        Weight dynamics (higher vol → more stress weight):
+            w_t = sigmoid(w_base - k × vol_relative_t)
+        
+        where vol_relative = σ_t / median(σ), k = 2.0
+        
+        This captures two curvature regimes:
+            - Calm: lighter tails (νcalm > νstress)
+            - Stress: heavier tails (νstress < νcalm)
+        
+        Args:
+            returns: Return series
+            vol: EWMA volatility series
+            q: Process noise variance
+            c: Observation noise scale
+            phi: AR(1) persistence
+            nu_calm: Degrees of freedom for calm regime (lighter)
+            nu_stress: Degrees of freedom for stress regime (heavier)
+            w_base: Base weight parameter (default 0.5)
+            
+        Returns:
+            (mu_filtered, P_filtered, log_likelihood)
+        """
+        n = len(returns)
+        
+        # Convert to contiguous arrays
+        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        
+        # Extract scalar values
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+        nu_C = cls._clip_nu(nu_calm, cls.nu_min_default, cls.nu_max_default)
+        nu_S = cls._clip_nu(nu_stress, cls.nu_min_default, cls.nu_max_default)
+        w_b = float(w_base) if np.ndim(w_base) == 0 else float(w_base.item())
+        
+        # Pre-compute constants
+        phi_sq = phi_val * phi_val
+        k = MIXTURE_WEIGHT_K  # Sensitivity to vol_relative
+        
+        # Pre-compute vol_relative and dynamic weights
+        vol_median = np.median(vol)
+        if vol_median < 1e-10:
+            vol_median = 1e-10
+        vol_relative = vol / vol_median
+        
+        # w_t = sigmoid(w_base - k * vol_relative)
+        # Higher vol → lower w_calm → more stress weight
+        exponent = np.clip(-(w_b - k * vol_relative), -50, 50)
+        w_calm = 1.0 / (1.0 + np.exp(exponent))
+        
+        # Pre-compute log-pdf constants for both ν values
+        log_norm_C = gammaln((nu_C + 1.0) / 2.0) - gammaln(nu_C / 2.0) - 0.5 * np.log(nu_C * np.pi)
+        neg_exp_C = -((nu_C + 1.0) / 2.0)
+        inv_nu_C = 1.0 / nu_C
+        
+        log_norm_S = gammaln((nu_S + 1.0) / 2.0) - gammaln(nu_S / 2.0) - 0.5 * np.log(nu_S * np.pi)
+        neg_exp_S = -((nu_S + 1.0) / 2.0)
+        inv_nu_S = 1.0 / nu_S
+        
+        # Use average ν for Kalman gain (weighted by w_calm)
+        # This is an approximation; exact would require mixture state estimation
+        nu_avg = w_b * nu_C + (1 - w_b) * nu_S  # Use base weight for stability
+        nu_adjust = min(nu_avg / (nu_avg + 3.0), 1.0)
+        
+        # Pre-compute R values
+        R = c_val * (vol * vol)
+        
+        # Allocate output arrays
+        mu_filtered = np.empty(n, dtype=np.float64)
+        P_filtered = np.empty(n, dtype=np.float64)
+        
+        # State initialization
+        mu = 0.0
+        P = 1e-4
+        log_likelihood = 0.0
+        
+        # Main filter loop with mixture likelihood
+        for t in range(n):
+            # Prediction step
+            mu_pred = phi_val * mu
+            P_pred = phi_sq * P + q_val
+            
+            # Observation update
+            S = P_pred + R[t]
+            if S <= 1e-12:
+                S = 1e-12
+            
+            innovation = returns[t] - mu_pred
+            K = nu_adjust * P_pred / S
+            
+            # State update
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
+            
+            # Store filtered values
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+            
+            # Mixture log-pdf calculation
+            forecast_scale = np.sqrt(S)
+            if forecast_scale > 1e-12:
+                z = innovation / forecast_scale
+                
+                # Calm component log-pdf
+                ll_C = log_norm_C - np.log(forecast_scale) + neg_exp_C * np.log(1.0 + z * z * inv_nu_C)
+                
+                # Stress component log-pdf
+                ll_S = log_norm_S - np.log(forecast_scale) + neg_exp_S * np.log(1.0 + z * z * inv_nu_S)
+                
+                # Mixture log-pdf via log-sum-exp
+                w_t = w_calm[t]
+                ll_max = max(ll_C, ll_S)
+                ll_mix = ll_max + np.log(
+                    w_t * np.exp(ll_C - ll_max) + 
+                    (1.0 - w_t) * np.exp(ll_S - ll_max)
+                )
+                
+                if np.isfinite(ll_mix):
+                    log_likelihood += ll_mix
+        
+        return mu_filtered, P_filtered, float(log_likelihood)
+
+    @staticmethod
+    def pit_ks_two_piece(
+        returns: np.ndarray, 
+        mu_filtered: np.ndarray, 
+        vol: np.ndarray, 
+        P_filtered: np.ndarray, 
+        c: float, 
+        nu_left: float,
+        nu_right: float
+    ) -> Tuple[float, float]:
+        """PIT/KS calibration test for Two-Piece Student-t model."""
+        returns_flat = np.asarray(returns).flatten()
+        mu_flat = np.asarray(mu_filtered).flatten()
+        vol_flat = np.asarray(vol).flatten()
+        P_flat = np.asarray(P_filtered).flatten()
+        
+        forecast_var = c * (vol_flat ** 2) + P_flat
+        forecast_scale = np.sqrt(np.maximum(forecast_var, 1e-20))
+        forecast_scale = np.where(forecast_scale < 1e-10, 1e-10, forecast_scale)
+        
+        standardized = (returns_flat - mu_flat) / forecast_scale
+        
+        valid_mask = np.isfinite(standardized)
+        if not np.any(valid_mask):
+            return 1.0, 0.0
+        
+        standardized_clean = standardized[valid_mask]
+        
+        # Two-piece CDF: use νL for z<0, νR for z>=0
+        pit_values = np.empty(len(standardized_clean))
+        nu_L_safe = max(nu_left, 2.01)
+        nu_R_safe = max(nu_right, 2.01)
+        
+        neg_mask = standardized_clean < 0
+        pos_mask = ~neg_mask
+        
+        # For z < 0: CDF with νL, scaled to [0, 0.5]
+        if np.any(neg_mask):
+            pit_values[neg_mask] = 0.5 * student_t.cdf(standardized_clean[neg_mask], df=nu_L_safe) / student_t.cdf(0, df=nu_L_safe)
+        
+        # For z >= 0: CDF with νR, mapped to [0.5, 1]
+        if np.any(pos_mask):
+            pit_values[pos_mask] = 0.5 + 0.5 * (student_t.cdf(standardized_clean[pos_mask], df=nu_R_safe) - 0.5) / 0.5
+        
+        if len(pit_values) < 2:
+            return 1.0, 0.0
+        
+        ks_result = kstest(pit_values, 'uniform')
+        return float(ks_result.statistic), float(ks_result.pvalue)
+
+    @staticmethod
+    def pit_ks_vov(
+        returns: np.ndarray, 
+        mu_filtered: np.ndarray, 
+        vol: np.ndarray, 
+        P_filtered: np.ndarray, 
+        c: float, 
+        nu: float,
+        gamma_vov: float
+    ) -> Tuple[float, float]:
+        """PIT/KS calibration test for Vol-of-Vol corrected model."""
+        returns_flat = np.asarray(returns).flatten()
+        mu_flat = np.asarray(mu_filtered).flatten()
+        vol_flat = np.asarray(vol).flatten()
+        P_flat = np.asarray(P_filtered).flatten()
+        
+        # Compute VoV-adjusted forecast variance
+        log_vol = np.log(np.maximum(vol_flat, 1e-10))
+        vol_changes = np.zeros(len(vol_flat))
+        vol_changes[1:] = np.abs(np.diff(log_vol))
+        vov_mult = 1.0 + gamma_vov * vol_changes
+        
+        forecast_var = c * (vol_flat ** 2) * vov_mult + P_flat
+        forecast_scale = np.sqrt(np.maximum(forecast_var, 1e-20))
+        forecast_scale = np.where(forecast_scale < 1e-10, 1e-10, forecast_scale)
+        
+        standardized = (returns_flat - mu_flat) / forecast_scale
+        
+        valid_mask = np.isfinite(standardized)
+        if not np.any(valid_mask):
+            return 1.0, 0.0
+        
+        standardized_clean = standardized[valid_mask]
+        nu_safe = max(nu, 2.01)
+        pit_values = student_t.cdf(standardized_clean, df=nu_safe)
+        
+        if len(pit_values) < 2:
+            return 1.0, 0.0
+        
         ks_result = kstest(pit_values, 'uniform')
         return float(ks_result.statistic), float(ks_result.pvalue)
 

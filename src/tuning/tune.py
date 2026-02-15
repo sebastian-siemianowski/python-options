@@ -3299,6 +3299,309 @@ def fit_all_models_for_regime(
                         "nu": float(nu_fixed),
                     }
     
+    # =========================================================================
+    # ENHANCED STUDENT-T MODELS (February 2026)
+    # =========================================================================
+    # Three enhancements to improve Hyvarinen/PIT calibration:
+    #   1. Vol-of-Vol (VoV): R_t = c × σ² × (1 + γ × |Δlog(σ)|)
+    #   2. Two-Piece: Different νL (crash) vs νR (recovery) tails
+    #   3. Two-Component Mixture: Blend νcalm and νstress with dynamic weights
+    #
+    # These compete in BMA with appropriate penalties for extra parameters.
+    # Only momentum variants are fitted (as per existing architecture).
+    # =========================================================================
+    
+    if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
+        # Import enhanced Student-t grids
+        from models import (
+            NU_LEFT_GRID, NU_RIGHT_GRID, TWO_PIECE_BMA_PENALTY,
+            GAMMA_VOV_GRID, VOV_BMA_PENALTY,
+            NU_CALM_GRID, NU_STRESS_GRID, MIXTURE_BMA_PENALTY,
+        )
+        
+        # Reuse momentum wrapper from above
+        if 'momentum_wrapper' not in dir():
+            momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
+            momentum_wrapper.precompute_momentum(returns)
+        
+        # =====================================================================
+        # Vol-of-Vol Enhanced Student-t + Momentum
+        # =====================================================================
+        # For each (nu, gamma_vov) combination, fit enhanced model.
+        # γ=0 is equivalent to base model, so skip γ=0 to avoid duplication.
+        # =====================================================================
+        for nu_fixed in STUDENT_T_NU_GRID:
+            base_name = f"phi_student_t_nu_{nu_fixed}"
+            
+            if base_name not in models or not models[base_name].get("fit_success", False):
+                continue
+                
+            base_model = models[base_name]
+            q_base = base_model["q"]
+            c_base = base_model["c"]
+            phi_base = base_model["phi"]
+            
+            for gamma_vov in GAMMA_VOV_GRID:
+                # Skip γ=0 (already covered by base momentum model)
+                if gamma_vov == 0.0:
+                    continue
+                
+                # Format gamma for model name (remove decimal point)
+                gamma_str = f"{gamma_vov:.1f}".replace(".", "")
+                vov_name = f"phi_student_t_nu_{nu_fixed}_vov_{gamma_str}_momentum"
+                
+                try:
+                    # Run VoV-enhanced filter
+                    mu_vov, P_vov, ll_vov = PhiStudentTDriftModel.filter_phi_vov(
+                        returns, vol, q_base, c_base, phi_base, nu_fixed, gamma_vov
+                    )
+                    
+                    # Apply momentum augmentation to drift estimate
+                    # (momentum adjusts the drift, VoV adjusts observation noise)
+                    momentum_signal = momentum_wrapper.compute_momentum_signal(returns)
+                    mu_vov_mom = mu_vov + momentum_signal * momentum_wrapper.config.signal_weight
+                    
+                    # Compute PIT calibration with VoV-adjusted variance
+                    ks_vov, pit_p_vov = PhiStudentTDriftModel.pit_ks_vov(
+                        returns, mu_vov, vol, P_vov, c_base, nu_fixed, gamma_vov
+                    )
+                    
+                    # Compute information criteria with VoV + momentum penalties
+                    n_params_vov = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 1  # +1 for γ
+                    aic_vov = compute_aic(ll_vov, n_params_vov)
+                    bic_raw_vov = compute_bic(ll_vov, n_params_vov, n_obs)
+                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + VOV_BMA_PENALTY
+                    bic_vov = compute_momentum_model_bic_adjustment(bic_raw_vov, combined_penalty)
+                    mean_ll_vov = ll_vov / max(n_obs, 1)
+                    
+                    # Compute Hyvärinen score
+                    forecast_scale_vov = np.sqrt(c_base * (vol ** 2) + P_vov)
+                    hyvarinen_vov = compute_hyvarinen_score_student_t(
+                        returns, mu_vov, forecast_scale_vov, nu_fixed
+                    )
+                    
+                    models[vov_name] = {
+                        "q": float(q_base),
+                        "c": float(c_base),
+                        "phi": float(phi_base),
+                        "nu": float(nu_fixed),
+                        "gamma_vov": float(gamma_vov),
+                        "log_likelihood": float(ll_vov),
+                        "mean_log_likelihood": float(mean_ll_vov),
+                        "cv_penalized_ll": float(ll_vov),
+                        "bic": float(bic_vov),
+                        "bic_raw": float(bic_raw_vov),
+                        "aic": float(aic_vov),
+                        "hyvarinen_score": float(hyvarinen_vov),
+                        "n_params": int(n_params_vov),
+                        "ks_statistic": float(ks_vov),
+                        "pit_ks_pvalue": float(pit_p_vov),
+                        "fit_success": True,
+                        "vov_enhanced": True,
+                        "momentum_augmented": True,
+                        "vov_penalty": VOV_BMA_PENALTY,
+                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                        "base_model": base_name,
+                        "nu_fixed": True,
+                        "model_type": "phi_student_t_vov",
+                    }
+                except Exception as e:
+                    models[vov_name] = {
+                        "fit_success": False,
+                        "error": str(e),
+                        "bic": float('inf'),
+                        "aic": float('inf'),
+                        "hyvarinen_score": float('-inf'),
+                        "vov_enhanced": True,
+                        "momentum_augmented": True,
+                        "nu": float(nu_fixed),
+                        "gamma_vov": float(gamma_vov),
+                    }
+        
+        # =====================================================================
+        # Two-Piece Student-t + Momentum
+        # =====================================================================
+        # Different ν for left (crash) vs right (recovery) tails.
+        # Captures empirical asymmetry: crashes are more extreme than rallies.
+        # =====================================================================
+        for nu_left in NU_LEFT_GRID:
+            for nu_right in NU_RIGHT_GRID:
+                # Use closest standard ν as base for parameters
+                base_nu = min(STUDENT_T_NU_GRID, key=lambda x: abs(x - (nu_left + nu_right) / 2))
+                base_name = f"phi_student_t_nu_{base_nu}"
+                
+                if base_name not in models or not models[base_name].get("fit_success", False):
+                    continue
+                
+                base_model = models[base_name]
+                q_2p = base_model["q"]
+                c_2p = base_model["c"]
+                phi_2p = base_model["phi"]
+                
+                two_piece_name = f"phi_student_t_nuL{nu_left}_nuR{nu_right}_momentum"
+                
+                try:
+                    # Run Two-Piece filter
+                    mu_2p, P_2p, ll_2p = PhiStudentTDriftModel.filter_phi_two_piece(
+                        returns, vol, q_2p, c_2p, phi_2p, nu_left, nu_right
+                    )
+                    
+                    # Apply momentum augmentation
+                    momentum_signal = momentum_wrapper.compute_momentum_signal(returns)
+                    mu_2p_mom = mu_2p + momentum_signal * momentum_wrapper.config.signal_weight
+                    
+                    # Compute PIT calibration with two-piece CDF
+                    ks_2p, pit_p_2p = PhiStudentTDriftModel.pit_ks_two_piece(
+                        returns, mu_2p, vol, P_2p, c_2p, nu_left, nu_right
+                    )
+                    
+                    # Compute information criteria with Two-Piece + momentum penalties
+                    # +2 params: nu_left, nu_right instead of single nu
+                    n_params_2p = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 1
+                    aic_2p = compute_aic(ll_2p, n_params_2p)
+                    bic_raw_2p = compute_bic(ll_2p, n_params_2p, n_obs)
+                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + TWO_PIECE_BMA_PENALTY
+                    bic_2p = compute_momentum_model_bic_adjustment(bic_raw_2p, combined_penalty)
+                    mean_ll_2p = ll_2p / max(n_obs, 1)
+                    
+                    # Compute Hyvärinen score (use average ν as approximation)
+                    nu_avg = (nu_left + nu_right) / 2
+                    forecast_scale_2p = np.sqrt(c_2p * (vol ** 2) + P_2p)
+                    hyvarinen_2p = compute_hyvarinen_score_student_t(
+                        returns, mu_2p, forecast_scale_2p, nu_avg
+                    )
+                    
+                    models[two_piece_name] = {
+                        "q": float(q_2p),
+                        "c": float(c_2p),
+                        "phi": float(phi_2p),
+                        "nu": None,  # No single ν
+                        "nu_left": float(nu_left),
+                        "nu_right": float(nu_right),
+                        "log_likelihood": float(ll_2p),
+                        "mean_log_likelihood": float(mean_ll_2p),
+                        "cv_penalized_ll": float(ll_2p),
+                        "bic": float(bic_2p),
+                        "bic_raw": float(bic_raw_2p),
+                        "aic": float(aic_2p),
+                        "hyvarinen_score": float(hyvarinen_2p),
+                        "n_params": int(n_params_2p),
+                        "ks_statistic": float(ks_2p),
+                        "pit_ks_pvalue": float(pit_p_2p),
+                        "fit_success": True,
+                        "two_piece": True,
+                        "momentum_augmented": True,
+                        "two_piece_penalty": TWO_PIECE_BMA_PENALTY,
+                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                        "base_model": base_name,
+                        "model_type": "phi_student_t_two_piece",
+                    }
+                except Exception as e:
+                    models[two_piece_name] = {
+                        "fit_success": False,
+                        "error": str(e),
+                        "bic": float('inf'),
+                        "aic": float('inf'),
+                        "hyvarinen_score": float('-inf'),
+                        "two_piece": True,
+                        "momentum_augmented": True,
+                        "nu_left": float(nu_left),
+                        "nu_right": float(nu_right),
+                    }
+        
+        # =====================================================================
+        # Two-Component Mixture Student-t + Momentum
+        # =====================================================================
+        # Blend νcalm and νstress with dynamic vol-based weights.
+        # Captures two curvature regimes in the central body.
+        # =====================================================================
+        for nu_calm in NU_CALM_GRID:
+            for nu_stress in NU_STRESS_GRID:
+                # Use calm ν as base for parameters
+                base_name = f"phi_student_t_nu_{nu_calm}"
+                
+                if base_name not in models or not models[base_name].get("fit_success", False):
+                    continue
+                
+                base_model = models[base_name]
+                q_mix = base_model["q"]
+                c_mix = base_model["c"]
+                phi_mix = base_model["phi"]
+                
+                mixture_name = f"phi_student_t_mix_{nu_calm}_{nu_stress}_momentum"
+                
+                try:
+                    # Run Mixture filter with default w_base
+                    from models import MIXTURE_WEIGHT_DEFAULT
+                    mu_mix, P_mix, ll_mix = PhiStudentTDriftModel.filter_phi_mixture(
+                        returns, vol, q_mix, c_mix, phi_mix, 
+                        nu_calm, nu_stress, MIXTURE_WEIGHT_DEFAULT
+                    )
+                    
+                    # Apply momentum augmentation
+                    momentum_signal = momentum_wrapper.compute_momentum_signal(returns)
+                    mu_mix_mom = mu_mix + momentum_signal * momentum_wrapper.config.signal_weight
+                    
+                    # Compute PIT calibration (use average ν approximation)
+                    nu_eff = (nu_calm + nu_stress) / 2
+                    ks_mix, pit_p_mix = PhiStudentTDriftModel.pit_ks(
+                        returns, mu_mix, vol, P_mix, c_mix, nu_eff
+                    )
+                    
+                    # Compute information criteria with Mixture + momentum penalties
+                    # +3 params: nu_calm, nu_stress, w_base instead of single nu
+                    n_params_mix = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 2
+                    aic_mix = compute_aic(ll_mix, n_params_mix)
+                    bic_raw_mix = compute_bic(ll_mix, n_params_mix, n_obs)
+                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + MIXTURE_BMA_PENALTY
+                    bic_mix = compute_momentum_model_bic_adjustment(bic_raw_mix, combined_penalty)
+                    mean_ll_mix = ll_mix / max(n_obs, 1)
+                    
+                    # Compute Hyvärinen score (use effective ν)
+                    forecast_scale_mix = np.sqrt(c_mix * (vol ** 2) + P_mix)
+                    hyvarinen_mix = compute_hyvarinen_score_student_t(
+                        returns, mu_mix, forecast_scale_mix, nu_eff
+                    )
+                    
+                    models[mixture_name] = {
+                        "q": float(q_mix),
+                        "c": float(c_mix),
+                        "phi": float(phi_mix),
+                        "nu": None,  # No single ν
+                        "nu_calm": float(nu_calm),
+                        "nu_stress": float(nu_stress),
+                        "w_base": MIXTURE_WEIGHT_DEFAULT,
+                        "log_likelihood": float(ll_mix),
+                        "mean_log_likelihood": float(mean_ll_mix),
+                        "cv_penalized_ll": float(ll_mix),
+                        "bic": float(bic_mix),
+                        "bic_raw": float(bic_raw_mix),
+                        "aic": float(aic_mix),
+                        "hyvarinen_score": float(hyvarinen_mix),
+                        "n_params": int(n_params_mix),
+                        "ks_statistic": float(ks_mix),
+                        "pit_ks_pvalue": float(pit_p_mix),
+                        "fit_success": True,
+                        "mixture_model": True,
+                        "momentum_augmented": True,
+                        "mixture_penalty": MIXTURE_BMA_PENALTY,
+                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                        "base_model": base_name,
+                        "model_type": "phi_student_t_mixture",
+                    }
+                except Exception as e:
+                    models[mixture_name] = {
+                        "fit_success": False,
+                        "error": str(e),
+                        "bic": float('inf'),
+                        "aic": float('inf'),
+                        "hyvarinen_score": float('-inf'),
+                        "mixture_model": True,
+                        "momentum_augmented": True,
+                        "nu_calm": float(nu_calm),
+                        "nu_stress": float(nu_stress),
+                    }
+    
     return models
 
 

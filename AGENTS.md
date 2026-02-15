@@ -58,6 +58,37 @@ Enabled by default since Feb 2026 (94.9% selection rate). Models compete via BMA
 
 Use `--disable-momentum` flag for ablation testing.
 
+### Enhanced Student-t Models (February 2026)
+**Location**: `src/models/phi_student_t.py`
+
+Three enhancements to improve Hyvarinen/PIT calibration:
+
+**1. Vol-of-Vol (VoV) Enhancement**
+```
+R_t = c × σ_t² × (1 + γ × |Δlog(σ_t)|)
+```
+When volatility changes rapidly, EWMA vol lags true vol, requiring larger observation noise.
+- Grid: `GAMMA_VOV_GRID = [0.3, 0.5, 0.7]`
+- BIC Penalty: `VOV_BMA_PENALTY = 1.0` (1 extra parameter)
+
+**2. Two-Piece Student-t (Asymmetric Tails)**
+Different νL (crash) vs νR (recovery) tails:
+- νL small → heavier crash tails
+- νR larger → lighter recovery tails
+- Grid: `NU_LEFT_GRID = [3, 4, 5]`, `NU_RIGHT_GRID = [8, 12, 20]`
+- BIC Penalty: `TWO_PIECE_BMA_PENALTY = 3.0` (2 extra params)
+
+**3. Two-Component Mixture**
+Blend νcalm and νstress with dynamic weights:
+```
+p(r_t) = w_t × t(νcalm) + (1 - w_t) × t(νstress)
+```
+- Grid: `NU_CALM_GRID = [12, 20]`, `NU_STRESS_GRID = [4, 6]`
+- Weight dynamics: `w_t = sigmoid(w_base - k × vol_relative)`
+- BIC Penalty: `MIXTURE_BMA_PENALTY = 4.0` (3 extra params)
+
+All enhancements compete via BMA against standard models.
+
 ### Garman-Klass Realized Volatility (Feb 2026)
 **Location**: `src/calibration/realized_volatility.py`
 

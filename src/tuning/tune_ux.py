@@ -639,6 +639,10 @@ def render_tuning_summary(
     momentum_phi_gaussian_count: int = 0,  # φ-Gaussian with momentum
     momentum_phi_student_t_count: int = 0,  # φ-Student-t with momentum
     momentum_total_count: int = 0,
+    # Enhanced Student-t counts (February 2026)
+    vov_enhanced_count: int = 0,  # Vol-of-Vol enhanced
+    two_piece_count: int = 0,  # Two-Piece asymmetric tails
+    mixture_t_count: int = 0,  # Two-Component mixture
     # Legacy parameter for backward compatibility
     momentum_student_t_count: int = 0,
     console: Console = None
@@ -809,6 +813,68 @@ def render_tuning_summary(
             mom_total_pct = momentum_total_count / total_models * 100 if total_models > 0 else 0
             mom_total_row.append(f" ({mom_total_pct:.1f}%)", style="dim")
             console.print(mom_total_row)
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # ENHANCED STUDENT-T MODELS (Vol-of-Vol, Two-Piece, Mixture)
+        # ═══════════════════════════════════════════════════════════════════
+        enhanced_total = vov_enhanced_count + two_piece_count + mixture_t_count
+        if enhanced_total > 0:
+            console.print()
+            enhanced_section = Text()
+            enhanced_section.append("    ▸ Enhanced Student-t", style="bold dim")
+            console.print(enhanced_section)
+            console.print()
+            
+            # Vol-of-Vol enhanced
+            vov_pct = vov_enhanced_count / total_models * 100 if total_models > 0 else 0
+            vov_filled = int(vov_pct / 100 * bar_width)
+            vov_style = "bright_magenta" if vov_enhanced_count > 0 else "dim"
+            vov_row = Text()
+            vov_row.append("      ◎ ", style=vov_style)
+            vov_row.append(f"{'Vol-of-Vol+Mom':<22} ", style=vov_style)
+            vov_row.append("█" * vov_filled, style=vov_style)
+            vov_row.append("░" * (bar_width - vov_filled), style="dim")
+            vov_row.append(f"  {vov_enhanced_count:>4}", style="bold white" if vov_enhanced_count > 0 else "dim")
+            vov_row.append(f"  ({vov_pct:>4.1f}%)", style="dim")
+            console.print(vov_row)
+            
+            # Two-Piece asymmetric
+            tp_pct = two_piece_count / total_models * 100 if total_models > 0 else 0
+            tp_filled = int(tp_pct / 100 * bar_width)
+            tp_style = "yellow" if two_piece_count > 0 else "dim"
+            tp_row = Text()
+            tp_row.append("      ◐ ", style=tp_style)
+            tp_row.append(f"{'Two-Piece-t+Mom':<22} ", style=tp_style)
+            tp_row.append("█" * tp_filled, style=tp_style)
+            tp_row.append("░" * (bar_width - tp_filled), style="dim")
+            tp_row.append(f"  {two_piece_count:>4}", style="bold white" if two_piece_count > 0 else "dim")
+            tp_row.append(f"  ({tp_pct:>4.1f}%)", style="dim")
+            console.print(tp_row)
+            
+            # Two-Component mixture
+            mix_pct = mixture_t_count / total_models * 100 if total_models > 0 else 0
+            mix_filled = int(mix_pct / 100 * bar_width)
+            mix_style = "bright_green" if mixture_t_count > 0 else "dim"
+            mix_row = Text()
+            mix_row.append("      ◉ ", style=mix_style)
+            mix_row.append(f"{'Mixture-t+Mom':<22} ", style=mix_style)
+            mix_row.append("█" * mix_filled, style=mix_style)
+            mix_row.append("░" * (bar_width - mix_filled), style="dim")
+            mix_row.append(f"  {mixture_t_count:>4}", style="bold white" if mixture_t_count > 0 else "dim")
+            mix_row.append(f"  ({mix_pct:>4.1f}%)", style="dim")
+            console.print(mix_row)
+            
+            # Enhanced summary
+            console.print()
+            enh_sum_row = Text()
+            enh_sum_row.append("      ─────────────────────────────────────────────────────────", style="dim")
+            console.print(enh_sum_row)
+            enh_total_row = Text()
+            enh_total_row.append("      Total Enhanced: ", style="dim")
+            enh_total_row.append(f"{enhanced_total}", style="bold bright_cyan")
+            enh_total_pct = enhanced_total / total_models * 100 if total_models > 0 else 0
+            enh_total_row.append(f" ({enh_total_pct:.1f}%)", style="dim")
+            console.print(enh_total_row)
         
         # ═══════════════════════════════════════════════════════════════════
         # OTHER VARIANTS (φ-Skew-t, φ-NIG) - only show if any exist

@@ -3317,6 +3317,16 @@ def compute_features(
             'phi_student_t_nu_14': {'short': 'φ-T(ν=14)', 'desc': 'Light tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_16': {'short': 'φ-T(ν=16)', 'desc': 'Light tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_25': {'short': 'φ-T(ν=25)', 'desc': 'Near-Gaussian (refined)', 'family': 'student_t'},
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # ENHANCED STUDENT-T MODELS (February 2026)
+            # ═══════════════════════════════════════════════════════════════════
+            # Vol-of-Vol enhanced (dynamic observation noise)
+            'phi_student_t_vov': {'short': 'φ-T(VoV)', 'desc': 'Vol-of-Vol enhanced', 'family': 'enhanced'},
+            # Two-Piece asymmetric (different νL vs νR)
+            'phi_student_t_two_piece': {'short': 'φ-T(2P)', 'desc': 'Two-Piece asymmetric tails', 'family': 'enhanced'},
+            # Two-Component mixture (calm/stress body)
+            'phi_student_t_mixture': {'short': 'φ-T(Mix)', 'desc': 'Two-Component mixture', 'family': 'enhanced'},
         }
 
         # Dynamic fallback: generate model info for any model name
@@ -3332,6 +3342,40 @@ def compute_features(
             # Check for momentum suffix
             is_momentum = '_momentum' in model_name
             base_name = model_name.replace('_momentum', '')
+            
+            # Handle enhanced Student-t variants (February 2026)
+            # Vol-of-Vol enhanced: phi_student_t_nu_{nu}_vov_{gamma}_momentum
+            if 'vov' in base_name.lower() and 'student_t' in base_name.lower():
+                short = 'φ-T(VoV)'
+                if is_momentum:
+                    short += '+Mom'
+                family = 'enhanced'
+                desc = 'Vol-of-Vol enhanced Student-t'
+                if is_momentum:
+                    desc += ' with momentum'
+                return {'short': short, 'desc': desc, 'family': family}
+            
+            # Two-Piece asymmetric: phi_student_t_nuL{L}_nuR{R}_momentum
+            if 'nul' in base_name.lower() and 'nur' in base_name.lower():
+                short = 'φ-T(2P)'
+                if is_momentum:
+                    short += '+Mom'
+                family = 'enhanced'
+                desc = 'Two-Piece asymmetric Student-t'
+                if is_momentum:
+                    desc += ' with momentum'
+                return {'short': short, 'desc': desc, 'family': family}
+            
+            # Two-Component mixture: phi_student_t_mix_{calm}_{stress}_momentum
+            if 'mix' in base_name.lower() and 'student_t' in base_name.lower():
+                short = 'φ-T(Mix)'
+                if is_momentum:
+                    short += '+Mom'
+                family = 'enhanced'
+                desc = 'Two-Component mixture Student-t'
+                if is_momentum:
+                    desc += ' with momentum'
+                return {'short': short, 'desc': desc, 'family': family}
             
             # Handle phi_student_t_nu_* with any ν value
             if base_name.startswith('phi_student_t_nu_'):
