@@ -68,6 +68,36 @@ All models compete via BIC weights. If extra parameters don't improve fit,
 model weight collapses naturally toward simpler alternatives.
 
 -------------------------------------------------------------------------------
+VOLATILITY ESTIMATION — GARMAN-KLASS REALIZED VOLATILITY (February 2026)
+-------------------------------------------------------------------------------
+
+The observation variance in the Kalman filter is scaled by volatility σ_t:
+
+    r_t = μ_t + √(c·σ_t²)·ε_t
+
+VOLATILITY ESTIMATION PRIORITY (compute_features):
+    1. Garman-Klass (GK) — 7.4x more efficient than close-to-close EWMA
+       Requires OHLC data passed via ohlc_df parameter
+    2. GARCH(1,1) via MLE — captures volatility clustering
+    3. EWMA blend — robust baseline fallback
+
+GARMAN-KLASS FORMULA (uses OHLC data):
+    σ²_GK = 0.5*(log(H/L))² - (2*log(2)-1)*(log(C/O))²
+
+The efficiency gain (7.4x) means:
+    - Same precision as EWMA with ~7x fewer observations
+    - Or: same observations → ~7x more precise variance estimate
+
+IMPACT ON SIGNAL QUALITY:
+    - Better σ_t estimate → more accurate drift/vol ratio
+    - Improves regime classification accuracy
+    - Reduces noise in Expected Utility calculations
+
+The volatility estimator used is displayed in Augmentation Layers:
+    - "Realized Vol: Garman-Klass (7.4x efficient vs EWMA)"
+    - "Realized Vol: EWMA (close-to-close)"
+
+-------------------------------------------------------------------------------
 REGIME ASSIGNMENT — DETERMINISTIC, CONSISTENT WITH TUNE
 -------------------------------------------------------------------------------
 
@@ -474,6 +504,24 @@ enable_cache_only_mode()
 logging.getLogger("yfinance").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
+# =============================================================================
+# GARMAN-KLASS REALIZED VOLATILITY (February 2026)
+# =============================================================================
+# Range-based volatility estimator using OHLC data.
+# 7.4x more efficient than close-to-close EWMA.
+# Improves PIT calibration without adding parameters.
+# =============================================================================
+try:
+    from calibration.realized_volatility import (
+        compute_gk_volatility,
+        compute_hybrid_volatility,
+        compute_volatility_from_df,
+        VolatilityEstimator,
+    )
+    GK_VOLATILITY_AVAILABLE = True
+except ImportError:
+    GK_VOLATILITY_AVAILABLE = False
+
 
 class StudentTDriftModel:
     """Minimal Student-t helper used for Kalman log-likelihood and mapping."""
@@ -486,6 +534,22 @@ class StudentTDriftModel:
         log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
         log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
         return float(log_norm + log_kernel)
+
+
+# =============================================================================
+# ENHANCED STUDENT-T MODELS (February 2026)
+# =============================================================================
+# Import PhiStudentTDriftModel for Vol-of-Vol, Two-Piece, and Mixture variants.
+# These provide improved PIT/Hyvärinen calibration through:
+#   1. Vol-of-Vol: R_t = c × σ² × (1 + γ × |Δlog(σ)|)
+#   2. Two-Piece: νL ≠ νR for asymmetric crash/recovery tails
+#   3. Mixture: w·t(νcalm) + (1-w)·t(νstress) with dynamic weights
+# =============================================================================
+try:
+    from models.phi_student_t import PhiStudentTDriftModel
+    ENHANCED_STUDENT_T_AVAILABLE = True
+except ImportError:
+    ENHANCED_STUDENT_T_AVAILABLE = False
 
 
 # =============================================================================
@@ -755,6 +819,49 @@ except ImportError:
         return None
     def clear_updater_cache(*args, **kwargs):
         pass
+
+# =============================================================================
+# GAS-Q SCORE-DRIVEN PARAMETER DYNAMICS (February 2026)
+# =============================================================================
+# Implements Creal, Koopman & Lucas (2013) GAS dynamics for process noise q.
+# q_t = omega + alpha * s_{t-1} + beta * q_{t-1}
+# where s_t is the score (derivative of log-likelihood with respect to q).
+#
+# When gas_q_augmented=True in tuned params, the Kalman filter uses:
+#   - Dynamic q_t that adapts to recent forecast errors
+#   - Larger q during uncertainty spikes, smaller q during stable periods
+#
+# Expected Impact:
+#   - 15-20% improvement in adaptive forecasting during regime transitions
+#   - Better PIT calibration in volatile periods
+# =============================================================================
+try:
+    from models.gas_q import (
+        GASQConfig,
+        GASQResult,
+        DEFAULT_GAS_Q_CONFIG,
+        gas_q_filter_gaussian,
+        gas_q_filter_student_t,
+        is_gas_q_enabled,
+    )
+    GAS_Q_AVAILABLE = True
+except ImportError:
+    GAS_Q_AVAILABLE = False
+    # Stub definitions when GAS-Q module is unavailable
+    class GASQConfig:
+        def __init__(self, omega=1e-6, alpha=0.1, beta=0.5):
+            self.omega = omega
+            self.alpha = alpha
+            self.beta = beta
+    class GASQResult:
+        pass
+    DEFAULT_GAS_Q_CONFIG = None
+    def gas_q_filter_gaussian(*args, **kwargs):
+        return None
+    def gas_q_filter_student_t(*args, **kwargs):
+        return None
+    def is_gas_q_enabled(*args, **kwargs):
+        return False
 
 # =============================================================================
 # UNIFIED RISK CONTEXT (February 2026)
@@ -2449,6 +2556,10 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
     
     # Track if momentum model was selected
     is_momentum_model = _is_momentum_augmented(best_model)
+    
+    # Also store the full model name (includes _momentum suffix) for tracking/display
+    # This differs from noise_model which is normalized to base type
+    full_model_name = best_model
 
     # Validate required params
     if q_val is None or not np.isfinite(q_val) or q_val <= 0:
@@ -2523,6 +2634,24 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         # Calibration status and escalation tracking
         'calibration_warning': global_data.get('calibration_warning', False),
         'nu_refinement': global_data.get('nu_refinement', {}),
+
+        # =====================================================================
+        # ENHANCED STUDENT-T MODEL PARAMETERS (February 2026)
+        # =====================================================================
+        # Vol-of-Vol enhancement
+        'vov_enhanced': best_params.get('vov_enhanced', False) if isinstance(best_params, dict) else False,
+        'gamma_vov': best_params.get('gamma_vov') if isinstance(best_params, dict) else None,
+        
+        # Two-Piece asymmetric tails
+        'two_piece': best_params.get('two_piece', False) if isinstance(best_params, dict) else False,
+        'nu_left': best_params.get('nu_left') if isinstance(best_params, dict) else None,
+        'nu_right': best_params.get('nu_right') if isinstance(best_params, dict) else None,
+        
+        # Two-Component Mixture
+        'mixture_model': best_params.get('mixture_model', False) if isinstance(best_params, dict) else False,
+        'nu_calm': best_params.get('nu_calm') if isinstance(best_params, dict) else None,
+        'nu_stress': best_params.get('nu_stress') if isinstance(best_params, dict) else None,
+        'w_base': best_params.get('w_base') if isinstance(best_params, dict) else None,
 
         # K=2 mixture (DEPRECATED - kept for backward compatibility)
         'mixture_attempted': global_data.get('mixture_attempted', False),
@@ -2868,46 +2997,178 @@ def _kalman_filter_drift(
     innovations = np.zeros(T, dtype=float)
     innovation_vars = np.zeros(T, dtype=float)
 
+    # =========================================================================
+    # GAS-Q SCORE-DRIVEN PARAMETER DYNAMICS (February 2026)
+    # =========================================================================
+    # Check if GAS-Q augmentation is enabled in tuned params.
+    # When gas_q_augmented=True, q evolves dynamically via score-driven updates.
+    # =========================================================================
+    gas_q_augmented = False
+    gas_q_result = None
+    q_t_series = None
+    
+    if GAS_Q_AVAILABLE and tuned_params is not None:
+        gas_q_augmented = tuned_params.get('gas_q_augmented', False)
+        gas_q_params = tuned_params.get('gas_q_params', {})
+        
+        if gas_q_augmented and gas_q_params:
+            try:
+                # Build GAS-Q config from tuned params
+                gas_config = GASQConfig(
+                    omega=gas_q_params.get('omega', q_scalar * 0.1),
+                    alpha=gas_q_params.get('alpha', 0.1),
+                    beta=gas_q_params.get('beta', 0.5),
+                )
+                
+                # Run GAS-Q filter to get dynamic q_t series
+                if is_student_t and nu_used is not None:
+                    gas_q_result = gas_q_filter_student_t(
+                        y=y,
+                        sigma=sigma,
+                        phi=phi_used,
+                        c=obs_scale,
+                        nu=nu_used,
+                        gas_config=gas_config,
+                        q_init=q_scalar,
+                    )
+                else:
+                    gas_q_result = gas_q_filter_gaussian(
+                        y=y,
+                        sigma=sigma,
+                        phi=phi_used,
+                        c=obs_scale,
+                        gas_config=gas_config,
+                        q_init=q_scalar,
+                    )
+                
+                if gas_q_result is not None and hasattr(gas_q_result, 'q_t'):
+                    q_t_series = gas_q_result.q_t
+                    # Use pre-computed filter results from GAS-Q
+                    mu_filtered = gas_q_result.mu_filtered
+                    P_filtered = gas_q_result.P_filtered
+                    K_gain = gas_q_result.K_gain if hasattr(gas_q_result, 'K_gain') else np.zeros(T)
+                    innovations = gas_q_result.innovations if hasattr(gas_q_result, 'innovations') else np.zeros(T)
+                    innovation_vars = gas_q_result.innovation_vars if hasattr(gas_q_result, 'innovation_vars') else np.zeros(T)
+                    log_likelihood = gas_q_result.log_likelihood if hasattr(gas_q_result, 'log_likelihood') else 0.0
+                    
+            except Exception as gas_e:
+                # Graceful fallback to static q if GAS-Q fails
+                if os.getenv("DEBUG"):
+                    print(f"GAS-Q filter failed, using static q: {gas_e}")
+                gas_q_augmented = False
+                gas_q_result = None
+
+    # =========================================================================
+    # ENHANCED STUDENT-T MODELS (February 2026)
+    # =========================================================================
+    # Check for enhanced Student-t variants:
+    #   - Vol-of-Vol (VoV): gamma_vov in tuned params
+    #   - Two-Piece: nu_left and nu_right in tuned params
+    #   - Mixture: nu_calm and nu_stress in tuned params
+    # These use specialized filter implementations from PhiStudentTDriftModel.
+    # =========================================================================
+    enhanced_result = None
+    enhanced_model_type = None
+    
+    if ENHANCED_STUDENT_T_AVAILABLE and tuned_params is not None and gas_q_result is None:
+        # Check for Vol-of-Vol enhancement
+        if tuned_params.get('vov_enhanced') and tuned_params.get('gamma_vov') is not None:
+            try:
+                gamma_vov = float(tuned_params.get('gamma_vov'))
+                nu_vov = float(tuned_params.get('nu', 8))  # Default ν if not specified
+                mu_vov, P_vov, ll_vov = PhiStudentTDriftModel.filter_phi_vov(
+                    y, sigma, q_scalar, obs_scale, phi_used, nu_vov, gamma_vov
+                )
+                mu_filtered = mu_vov
+                P_filtered = P_vov
+                log_likelihood = ll_vov
+                enhanced_result = True
+                enhanced_model_type = 'vov'
+            except Exception as vov_e:
+                if os.getenv("DEBUG"):
+                    print(f"VoV filter failed, using standard: {vov_e}")
+                enhanced_result = None
+        
+        # Check for Two-Piece asymmetric tails
+        elif tuned_params.get('two_piece') and tuned_params.get('nu_left') is not None:
+            try:
+                nu_left = float(tuned_params.get('nu_left'))
+                nu_right = float(tuned_params.get('nu_right'))
+                mu_2p, P_2p, ll_2p = PhiStudentTDriftModel.filter_phi_two_piece(
+                    y, sigma, q_scalar, obs_scale, phi_used, nu_left, nu_right
+                )
+                mu_filtered = mu_2p
+                P_filtered = P_2p
+                log_likelihood = ll_2p
+                enhanced_result = True
+                enhanced_model_type = 'two_piece'
+            except Exception as tp_e:
+                if os.getenv("DEBUG"):
+                    print(f"Two-Piece filter failed, using standard: {tp_e}")
+                enhanced_result = None
+        
+        # Check for Two-Component Mixture
+        elif tuned_params.get('mixture_model') and tuned_params.get('nu_calm') is not None:
+            try:
+                nu_calm = float(tuned_params.get('nu_calm'))
+                nu_stress = float(tuned_params.get('nu_stress'))
+                w_base = float(tuned_params.get('w_base', 0.5))
+                mu_mix, P_mix, ll_mix = PhiStudentTDriftModel.filter_phi_mixture(
+                    y, sigma, q_scalar, obs_scale, phi_used, nu_calm, nu_stress, w_base
+                )
+                mu_filtered = mu_mix
+                P_filtered = P_mix
+                log_likelihood = ll_mix
+                enhanced_result = True
+                enhanced_model_type = 'mixture'
+            except Exception as mix_e:
+                if os.getenv("DEBUG"):
+                    print(f"Mixture filter failed, using standard: {mix_e}")
+                enhanced_result = None
+
     mu_t = 0.0
     P_t = 1.0
-    log_likelihood = 0.0
+    log_likelihood_init = 0.0 if gas_q_result is None else log_likelihood
 
-    for t in range(T):
-        mu_pred = phi_used * mu_t
-        P_pred = (phi_used ** 2) * P_t + q_scalar
-        R_t = float(max(obs_scale * (sigma[t] ** 2), 1e-12))
-        innov = y[t] - mu_pred
-        S_t = float(max(P_pred + R_t, 1e-12))
+    # Only run static filter if neither GAS-Q nor enhanced models were used
+    if gas_q_result is None and enhanced_result is None:
+        log_likelihood = log_likelihood_init
+        for t in range(T):
+            mu_pred = phi_used * mu_t
+            P_pred = (phi_used ** 2) * P_t + q_scalar
+            R_t = float(max(obs_scale * (sigma[t] ** 2), 1e-12))
+            innov = y[t] - mu_pred
+            S_t = float(max(P_pred + R_t, 1e-12))
 
-        if is_student_t:
-            nu_adj = min(nu_used / (nu_used + 3.0), 1.0)
-            K_t = nu_adj * P_pred / S_t
-        else:
-            K_t = P_pred / S_t
+            if is_student_t:
+                nu_adj = min(nu_used / (nu_used + 3.0), 1.0)
+                K_t = nu_adj * P_pred / S_t
+            else:
+                K_t = P_pred / S_t
 
-        mu_t = mu_pred + K_t * innov
-        P_t = float(max((1.0 - K_t) * P_pred, 1e-12))
+            mu_t = mu_pred + K_t * innov
+            P_t = float(max((1.0 - K_t) * P_pred, 1e-12))
 
-        mu_filtered[t] = mu_t
-        P_filtered[t] = P_t
-        K_gain[t] = K_t
-        innovations[t] = innov
-        innovation_vars[t] = S_t
+            mu_filtered[t] = mu_t
+            P_filtered[t] = P_t
+            K_gain[t] = K_t
+            innovations[t] = innov
+            innovation_vars[t] = S_t
 
-        if is_student_t:
-            try:
-                ll_t = StudentTDriftModel.logpdf(innov, nu_used, 0.0, math.sqrt(S_t))
-                if np.isfinite(ll_t):
-                    log_likelihood += ll_t
-            except Exception:
-                pass
-        else:
-            try:
-                ll_t = -0.5 * (np.log(2.0 * np.pi * S_t) + (innov ** 2) / S_t)
-                if np.isfinite(ll_t):
-                    log_likelihood += ll_t
-            except Exception:
-                pass
+            if is_student_t:
+                try:
+                    ll_t = StudentTDriftModel.logpdf(innov, nu_used, 0.0, math.sqrt(S_t))
+                    if np.isfinite(ll_t):
+                        log_likelihood += ll_t
+                except Exception:
+                    pass
+            else:
+                try:
+                    ll_t = -0.5 * (np.log(2.0 * np.pi * S_t) + (innov ** 2) / S_t)
+                    if np.isfinite(ll_t):
+                        log_likelihood += ll_t
+                except Exception:
+                    pass
 
     kalman_gain_mean = float(np.mean(K_gain))
     kalman_gain_recent = float(K_gain[-1]) if len(K_gain) > 0 else float('nan')
@@ -2940,19 +3201,49 @@ def _kalman_filter_drift(
         "online_update_active": online_active,
         "online_update_result": online_update_result,
         "online_params": online_params if online_active else None,
+        # =========================================================================
+        # GAS-Q SCORE-DRIVEN PARAMETER DYNAMICS DIAGNOSTICS (February 2026)
+        # =========================================================================
+        # When gas_q_augmented=True, process noise q evolves dynamically via
+        # score-driven updates: q_t = omega + alpha * s_{t-1} + beta * q_{t-1}
+        # This allows adaptive filtering during volatility regime changes.
+        # =========================================================================
+        "gas_q_augmented": gas_q_augmented,
+        "gas_q_result": gas_q_result,
+        "q_t_series": pd.Series(q_t_series, index=idx, name="q_t") if q_t_series is not None else None,
+        # =========================================================================
+        # ENHANCED STUDENT-T MODEL DIAGNOSTICS (February 2026)
+        # =========================================================================
+        # When enhanced models are used, this tracks which variant was applied:
+        #   - 'vov': Vol-of-Vol adjustment to observation noise
+        #   - 'two_piece': Asymmetric tails (νL ≠ νR)
+        #   - 'mixture': Two-component mixture (νcalm + νstress)
+        # =========================================================================
+        "enhanced_student_t_active": enhanced_result is not None,
+        "enhanced_student_t_type": enhanced_model_type,
     }
 
 
-def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[str, pd.Series]:
+def compute_features(
+    px: pd.Series, 
+    asset_symbol: Optional[str] = None,
+    ohlc_df: Optional[pd.DataFrame] = None,
+) -> Dict[str, pd.Series]:
     """
     Compute features from price series for signal generation.
 
     Args:
-        px: Price series
+        px: Price series (Close prices)
         asset_symbol: Asset symbol (e.g., "PLNJPY=X") for loading tuned Kalman parameters
+        ohlc_df: Optional DataFrame with OHLC columns for Garman-Klass volatility
 
     Returns:
         Dictionary of computed features
+        
+    VOLATILITY ESTIMATION PRIORITY (February 2026):
+        1. Garman-Klass (if OHLC available) - 7.4x more efficient than close-to-close
+        2. GARCH(1,1) via MLE - captures volatility clustering
+        3. EWMA blend (fallback) - robust baseline
     """
     # Protect log conversion from garbage ticks and non-positive prices
     px = _ensure_float_series(px)
@@ -2971,17 +3262,49 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
     vol_fast = ret.ewm(span=21, adjust=False).std()
     vol_slow = ret.ewm(span=126, adjust=False).std()
 
-    # Prefer GARCH(1,1) volatility via MLE; fallback to EWMA blend on failure
-    try:
-        vol_garch, garch_params = _garch11_mle(ret)
-        # Align to ret index and name "vol" for downstream compatibility
-        vol = vol_garch.reindex(ret.index).rename("vol")
-        vol_source = "garch11"
-    except Exception:
-        # Blend vol: fast reacts, slow stabilizes
-        vol = (0.6 * vol_fast + 0.4 * vol_slow).rename("vol")
-        garch_params = {}
-        vol_source = "ewma_fallback"
+    # =========================================================================
+    # VOLATILITY ESTIMATION - Priority: GK > GARCH > EWMA
+    # =========================================================================
+    vol_source = "ewma_fallback"
+    garch_params = {}
+    
+    # Priority 1: Garman-Klass if OHLC data available (7.4x more efficient)
+    if GK_VOLATILITY_AVAILABLE and ohlc_df is not None and not ohlc_df.empty:
+        try:
+            cols = {c.lower(): c for c in ohlc_df.columns}
+            if all(c in cols for c in ['open', 'high', 'low', 'close']):
+                open_ = ohlc_df[cols['open']].values
+                high = ohlc_df[cols['high']].values
+                low = ohlc_df[cols['low']].values
+                close = ohlc_df[cols['close']].values
+                
+                vol_gk, vol_estimator = compute_hybrid_volatility(
+                    open_=open_, high=high, low=low, close=close,
+                    span=21, annualize=False
+                )
+                
+                # Convert to Series with proper index
+                vol_gk_series = pd.Series(vol_gk, index=ohlc_df.index)
+                # Align to ret index
+                vol = vol_gk_series.reindex(ret.index).rename("vol")
+                vol_source = f"gk_{vol_estimator.lower()}"
+        except Exception:
+            # Fall through to GARCH/EWMA
+            pass
+    
+    # Priority 2: GARCH(1,1) if GK not available/failed
+    if vol_source == "ewma_fallback":
+        try:
+            vol_garch, garch_params = _garch11_mle(ret)
+            # Align to ret index and name "vol" for downstream compatibility
+            vol = vol_garch.reindex(ret.index).rename("vol")
+            vol_source = "garch11"
+        except Exception:
+            # Priority 3: EWMA blend (fallback)
+            vol = (0.6 * vol_fast + 0.4 * vol_slow).rename("vol")
+            garch_params = {}
+            vol_source = "ewma_fallback"
+            
     # Robust global volatility floor to avoid feedback loops when vol collapses recently:
     # - Use a lagged expanding 10th percentile over the entire history (no look-ahead)
     # - Add a relative floor vs long-run median and a small absolute epsilon
@@ -3071,7 +3394,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         # Includes: Base models, Momentum variants, Student-t ν grid, and adaptive refinements
         model_info = {
             # ═══════════════════════════════════════════════════════════════════
-            # BASE GAUSSIAN MODELS
+            # BASE GAUSSIAN MODELS (disabled in BMA, kept for compatibility)
             # ═══════════════════════════════════════════════════════════════════
             'kalman_gaussian': {'short': 'Gaussian', 'desc': 'Random walk drift', 'family': 'gaussian'},
             'kalman_phi_gaussian': {'short': 'φ-Gaussian', 'desc': 'AR(1) mean-reverting drift', 'family': 'gaussian'},
@@ -3079,8 +3402,8 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             # ═══════════════════════════════════════════════════════════════════
             # MOMENTUM-AUGMENTED GAUSSIAN MODELS
             # ═══════════════════════════════════════════════════════════════════
-            'kalman_gaussian_momentum': {'short': 'Gaussian+Mom', 'desc': 'Random walk with momentum', 'family': 'momentum'},
-            'kalman_phi_gaussian_momentum': {'short': 'φ-Gaussian+Mom', 'desc': 'AR(1) with momentum', 'family': 'momentum'},
+            'kalman_gaussian_momentum': {'short': 'Gaussian+Momentum', 'desc': 'Random walk with momentum', 'family': 'momentum'},
+            'kalman_phi_gaussian_momentum': {'short': 'φ-Gaussian+Momentum', 'desc': 'AR(1) with momentum', 'family': 'momentum'},
             
             # ═══════════════════════════════════════════════════════════════════
             # STUDENT-T MODELS (Discrete ν grid: 4, 6, 8, 12, 20)
@@ -3094,11 +3417,11 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             # ═══════════════════════════════════════════════════════════════════
             # MOMENTUM-AUGMENTED STUDENT-T MODELS
             # ═══════════════════════════════════════════════════════════════════
-            'phi_student_t_nu_4_momentum': {'short': 'φ-T(ν=4)+Mom', 'desc': 'Very heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_6_momentum': {'short': 'φ-T(ν=6)+Mom', 'desc': 'Heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_8_momentum': {'short': 'φ-T(ν=8)+Mom', 'desc': 'Moderate-heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_12_momentum': {'short': 'φ-T(ν=12)+Mom', 'desc': 'Moderate tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_20_momentum': {'short': 'φ-T(ν=20)+Mom', 'desc': 'Light tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_4_momentum': {'short': 'φ-T(ν=4)+Momentum', 'desc': 'Very heavy tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_6_momentum': {'short': 'φ-T(ν=6)+Momentum', 'desc': 'Heavy tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_8_momentum': {'short': 'φ-T(ν=8)+Momentum', 'desc': 'Moderate-heavy tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_12_momentum': {'short': 'φ-T(ν=12)+Momentum', 'desc': 'Moderate tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_20_momentum': {'short': 'φ-T(ν=20)+Momentum', 'desc': 'Light tails with momentum', 'family': 'momentum'},
             
             # ═══════════════════════════════════════════════════════════════════
             # ADAPTIVE ν REFINEMENT CANDIDATES (intermediate values)
@@ -3110,6 +3433,16 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             'phi_student_t_nu_14': {'short': 'φ-T(ν=14)', 'desc': 'Light tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_16': {'short': 'φ-T(ν=16)', 'desc': 'Light tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_25': {'short': 'φ-T(ν=25)', 'desc': 'Near-Gaussian (refined)', 'family': 'student_t'},
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # ENHANCED STUDENT-T MODELS (February 2026)
+            # ═══════════════════════════════════════════════════════════════════
+            # Vol-of-Vol enhanced (dynamic observation noise)
+            'phi_student_t_vov': {'short': 'φ-T(VoV)', 'desc': 'Vol-of-Vol enhanced', 'family': 'enhanced'},
+            # Two-Piece asymmetric (different νL vs νR)
+            'phi_student_t_two_piece': {'short': 'φ-T(2P)', 'desc': 'Two-Piece asymmetric tails', 'family': 'enhanced'},
+            # Two-Component mixture (calm/stress body)
+            'phi_student_t_mixture': {'short': 'φ-T(Mix)', 'desc': 'Two-Component mixture', 'family': 'enhanced'},
         }
 
         # Dynamic fallback: generate model info for any model name
@@ -3126,13 +3459,81 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             is_momentum = '_momentum' in model_name
             base_name = model_name.replace('_momentum', '')
             
+            # Handle enhanced Student-t variants (February 2026)
+            # Vol-of-Vol enhanced: phi_student_t_nu_{nu}_vov_g{gamma}_momentum
+            if 'vov' in base_name.lower() and 'student_t' in base_name.lower():
+                # Try to extract gamma value from name (e.g., phi_student_t_nu_6_vov_g0.5_momentum)
+                gamma_str = ""
+                nu_str = ""
+                import re
+                # Extract gamma: look for g followed by number
+                gamma_match = re.search(r'_g(\d+\.?\d*)', base_name)
+                if gamma_match:
+                    gamma_str = gamma_match.group(1)
+                # Extract nu
+                nu_match = re.search(r'nu_(\d+)', base_name)
+                if nu_match:
+                    nu_str = nu_match.group(1)
+                
+                if gamma_str and nu_str:
+                    short = f'φ-T(ν={nu_str},γ={gamma_str})'
+                elif gamma_str:
+                    short = f'φ-T(VoV,γ={gamma_str})'
+                elif nu_str:
+                    short = f'φ-T(ν={nu_str},VoV)'
+                else:
+                    short = 'φ-T(VoV)'
+                
+                if is_momentum:
+                    short += '+Momentum'
+                family = 'enhanced'
+                desc = 'Vol-of-Vol enhanced Student-t'
+                if is_momentum:
+                    desc += ' with momentum'
+                return {'short': short, 'desc': desc, 'family': family}
+            
+            # Two-Piece asymmetric: phi_student_t_nuL{L}_nuR{R}_momentum
+            if 'nul' in base_name.lower() and 'nur' in base_name.lower():
+                # Extract nu_left and nu_right
+                import re
+                nul_match = re.search(r'nul(\d+)', base_name.lower())
+                nur_match = re.search(r'nur(\d+)', base_name.lower())
+                if nul_match and nur_match:
+                    short = f'φ-T(νL={nul_match.group(1)},νR={nur_match.group(1)})'
+                else:
+                    short = 'φ-T(2P)'
+                if is_momentum:
+                    short += '+Momentum'
+                family = 'enhanced'
+                desc = 'Two-Piece asymmetric Student-t'
+                if is_momentum:
+                    desc += ' with momentum'
+                return {'short': short, 'desc': desc, 'family': family}
+            
+            # Two-Component mixture: phi_student_t_mix_{calm}_{stress}_momentum
+            if 'mix' in base_name.lower() and 'student_t' in base_name.lower():
+                # Extract calm and stress nu values
+                import re
+                mix_match = re.search(r'mix_(\d+)_(\d+)', base_name)
+                if mix_match:
+                    short = f'φ-T(Mix:{mix_match.group(1)}/{mix_match.group(2)})'
+                else:
+                    short = 'φ-T(Mix)'
+                if is_momentum:
+                    short += '+Momentum'
+                family = 'enhanced'
+                desc = 'Two-Component mixture Student-t'
+                if is_momentum:
+                    desc += ' with momentum'
+                return {'short': short, 'desc': desc, 'family': family}
+            
             # Handle phi_student_t_nu_* with any ν value
             if base_name.startswith('phi_student_t_nu_'):
                 try:
                     nu_val = int(base_name.split('_')[-1])
                     short = f'φ-T(ν={nu_val})'
                     if is_momentum:
-                        short += '+Mom'
+                        short += '+Momentum'
                     family = 'momentum' if is_momentum else 'student_t'
                     desc = f'Student-t with ν={nu_val}'
                     if is_momentum:
@@ -3144,7 +3545,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             # Handle other Gaussian variants with momentum
             if is_momentum:
                 if 'phi_gaussian' in base_name or 'kalman_phi_gaussian' in base_name:
-                    return {'short': 'φ-Gaussian+Mom', 'desc': 'AR(1) drift with momentum', 'family': 'momentum'}
+                    return {'short': 'φ-Gaussian+Momentum', 'desc': 'AR(1) drift with momentum', 'family': 'momentum'}
                 elif 'gaussian' in base_name or 'kalman_gaussian' in base_name:
                     return {'short': 'Gaussian+Mom', 'desc': 'Random walk with momentum', 'family': 'momentum'}
             
@@ -3320,22 +3721,25 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         console.print(comp_header)
         console.print()
 
-        # Only show models with weight > 0.001% to reduce clutter
-        visible_models = [m for m in all_models if model_posterior.get(m, 0) >= 0.0001]
+        # Only show models with weight > 1% to reduce clutter (show significant models only)
+        visible_models = [m for m in all_models if model_posterior.get(m, 0) >= 0.01]
         
         # Organize models by family for cleaner display
-        model_families = {'momentum': [], 'gaussian': [], 'student_t': [], 'other': []}
+        model_families = {'momentum': [], 'gaussian': [], 'student_t': [], 'enhanced': [], 'other': []}
         for model_name in visible_models:
             info = get_model_info(model_name)
             family = info.get('family', 'other')
+            # Handle unknown families by putting them in 'other'
+            if family not in model_families:
+                family = 'other'
             model_families[family].append(model_name)
         
         # Sort within each family by weight descending
         for family in model_families:
             model_families[family].sort(key=lambda m: model_posterior.get(m, 0), reverse=True)
         
-        # Display order: momentum first (most relevant), then gaussian, then student_t
-        display_order = ['momentum', 'gaussian', 'student_t', 'other']
+        # Display order: momentum first (most relevant), then enhanced, gaussian, student_t
+        display_order = ['momentum', 'enhanced', 'gaussian', 'student_t', 'other']
         
         for family in display_order:
             family_models = model_families[family]
@@ -3347,6 +3751,7 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
             if total_families > 1 and len(family_models) > 0:
                 family_names = {
                     'momentum': 'Momentum-Augmented',
+                    'enhanced': 'Enhanced Student-t',
                     'gaussian': 'Gaussian',
                     'student_t': 'Student-t',
                     'other': 'Other'
@@ -3525,13 +3930,14 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         console.print(Padding(params_table, (0, 0, 0, 4)))
 
         # ─────────────────────────────────────────────────────────────────────────────
-        # CALIBRATION & TRUST - Clean, Apple-quality
+        # MODEL QUALITY - Combined calibration status and augmentation layers
+        # Clean, compact Apple-quality design
         # ─────────────────────────────────────────────────────────────────────────────
         console.print()
 
-        calibration_header = Text()
-        calibration_header.append("    Calibration", style="bold white")
-        console.print(calibration_header)
+        quality_header = Text()
+        quality_header.append("    Model Quality", style="bold white")
+        console.print(quality_header)
         console.print()
 
         # Get calibration data from tuned params
@@ -3547,234 +3953,206 @@ def compute_features(px: pd.Series, asset_symbol: Optional[str] = None) -> Dict[
         gh_selected = tuned_params.get('gh_selected', False)
         gh_model = tuned_params.get('gh_model', {})
 
-        # Trust decomposition table - clean, no borders
-        trust_table = Table(
-            show_header=False,
-            border_style="dim",
-            box=box.SIMPLE,
-            padding=(0, 2),
-            expand=False,
-        )
-        trust_table.add_column("Label", style="dim", width=26)
-        trust_table.add_column("Value", width=36)
-
-        # Calibration status
-        if calibration_warning:
-            cal_status = "[bold yellow]Warning[/bold yellow]"
-        else:
-            cal_status = "[bold green]Passed[/bold green]"
-        trust_table.add_row("PIT Calibration", cal_status)
-
-        # PIT p-values
-        if pit_ks_pvalue is not None:
-            pit_color = "red" if pit_ks_pvalue < 0.01 else "yellow" if pit_ks_pvalue < 0.05 else "green"
-            pit_str = f"[{pit_color}]{pit_ks_pvalue:.4f}[/{pit_color}]"
-            trust_table.add_row("  Raw PIT p-value", pit_str)
-
-        if pit_ks_pvalue_calibrated is not None:
-            pit_cal_color = "red" if pit_ks_pvalue_calibrated < 0.01 else "yellow" if pit_ks_pvalue_calibrated < 0.05 else "green"
-            pit_cal_str = f"[{pit_cal_color}]{pit_ks_pvalue_calibrated:.4f}[/{pit_cal_color}]"
-            trust_table.add_row("  Calibrated PIT p-value", pit_cal_str)
-
-        # Isotonic recalibration
-        if recalibration_applied:
-            trust_table.add_row("  Isotonic Recalibration", "[green]Applied[/green]")
-        else:
-            trust_table.add_row("  Isotonic Recalibration", "[dim]Not applied[/dim]")
-
-        # ν refinement
-        if nu_refinement:
-            nu_attempted = nu_refinement.get('refinement_attempted', False)
-            nu_improved = nu_refinement.get('improvement_achieved', False)
-            nu_original = nu_refinement.get('nu_original')
-            nu_final = nu_refinement.get('nu_final')
-
-            if nu_attempted:
-                if nu_improved and nu_original != nu_final:
-                    trust_table.add_row("  ν Refinement", f"[green]Improved ν={nu_original}→{nu_final}[/green]")
-                else:
-                    trust_table.add_row("  ν Refinement", f"[dim]Attempted, no improvement[/dim]")
-            else:
-                trust_table.add_row("  ν Refinement", "[dim]Not needed[/dim]")
-
-        # GH model
-        if gh_selected and gh_model:
-            gh_params = gh_model.get('parameters', {})
-            gh_skew = gh_params.get('beta', 0)
-            skew_dir = "right" if gh_skew > 0.1 else "left" if gh_skew < -0.1 else "symmetric"
-            trust_table.add_row("  GH Skew Model", f"[cyan]Selected ({skew_dir})[/cyan]")
-
-        # Trust decomposition (main feature)
-        if effective_trust is not None and calibration_trust is not None:
-            trust_table.add_row("", "")  # Spacer
-            trust_table.add_row("[bold]Trust Authority[/bold]", "")
-
-            # Calibration trust
-            cal_trust_color = "green" if calibration_trust > 0.8 else "yellow" if calibration_trust > 0.5 else "red"
-            trust_table.add_row("  Calibration Trust", f"[{cal_trust_color}]{calibration_trust:.1%}[/{cal_trust_color}]")
-
-            # Regime penalty
-            if regime_penalty is not None:
-                penalty_color = "dim" if regime_penalty < 0.1 else "yellow" if regime_penalty < 0.2 else "red"
-                regime_context = calibrated_trust_data.get('regime_context', 'normal')
-                trust_table.add_row("  Regime Penalty", f"[{penalty_color}]-{regime_penalty:.1%} ({regime_context})[/{penalty_color}]")
-
-            # Effective trust (final)
-            eff_trust_color = "green" if effective_trust > 0.7 else "yellow" if effective_trust > 0.4 else "red"
-            trust_table.add_row("  [bold]Effective Trust[/bold]", f"[bold {eff_trust_color}]{effective_trust:.1%}[/bold {eff_trust_color}]")
-
-            # Tail bias
-            tail_bias = calibrated_trust_data.get('tail_bias')
-            if tail_bias is not None:
-                bias_dir = "right" if tail_bias > 0.02 else "left" if tail_bias < -0.02 else "centered"
-                trust_table.add_row("  Tail Bias", f"[dim]{tail_bias:+.3f} ({bias_dir})[/dim]")
-
-        console.print(Padding(trust_table, (0, 0, 0, 4)))
-
-        # ─────────────────────────────────────────────────────────────────────────────
-        # AUGMENTATION LAYERS - Clean Apple-quality design without icons
-        # ─────────────────────────────────────────────────────────────────────────────
-        console.print()
-
-        aug_header = Text()
-        aug_header.append("    Augmentation Layers", style="bold white")
-        console.print(aug_header)
-        console.print()
-
-        # Extract augmentation layer data from global_data
+        # Extract augmentation layer data
         hansen_data = global_data.get('hansen_skew_t', {})
         cst_data = global_data.get('contaminated_student_t', {})
         gmm_data = global_data.get('gmm', {})
         nig_data = global_data.get('nig', {})
         skew_t_data = global_data.get('phi_skew_t', {})
+        vol_estimator = global_data.get('volatility_estimator', 'EWMA')
 
-        aug_table = Table(
+        # Build compact quality table
+        quality_table = Table(
             show_header=False,
             border_style="dim",
             box=box.SIMPLE,
             padding=(0, 2),
             expand=False,
         )
-        aug_table.add_column("Layer", style="white", width=26)
-        aug_table.add_column("Status", width=44)
-
-        # Helper to describe skewness direction
-        def skew_direction(val):
-            if val is None:
-                return "n/a"
-            if val < -0.05:
-                return "left (crash risk)"
-            elif val > 0.05:
-                return "right (upside)"
-            return "symmetric"
+        quality_table.add_column("Label", style="dim", width=24)
+        quality_table.add_column("Value", width=56)
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # HANSEN SKEW-T: Asymmetric heavy tails via λ parameter
+        # PIT CALIBRATION - Model fit quality check
+        # Tests if predictions match actual market behavior (higher p = better fit)
+        # ═══════════════════════════════════════════════════════════════════════════
+        pit_status_parts = []
+        pit_explanation = ""
+        
+        if pit_ks_pvalue is not None:
+            pit_color = "red" if pit_ks_pvalue < 0.01 else "yellow" if pit_ks_pvalue < 0.05 else "green"
+            pit_status_parts.append(f"[{pit_color}]p={pit_ks_pvalue:.4f}[/{pit_color}]")
+            
+            # User-friendly explanation
+            if pit_ks_pvalue >= 0.05:
+                pit_explanation = "✓ Good fit"
+            elif pit_ks_pvalue >= 0.01:
+                pit_explanation = "⚠ Marginal fit"
+            else:
+                pit_explanation = "✗ Poor fit"
+        
+        # ν refinement (tail thickness adjusted)
+        if nu_refinement:
+            nu_improved = nu_refinement.get('improvement_achieved', False)
+            nu_original = nu_refinement.get('nu_original')
+            nu_final = nu_refinement.get('nu_final')
+            if nu_improved and nu_original != nu_final:
+                pit_status_parts.append(f"[green]ν {nu_original}→{nu_final}[/green]")
+        
+        # Recalibration applied
+        if recalibration_applied:
+            pit_status_parts.append("[green]recalibrated[/green]")
+        
+        if pit_status_parts:
+            if calibration_warning:
+                cal_label = "[yellow]PIT Calibration[/yellow]"
+            else:
+                cal_label = "[green]PIT Calibration[/green]"
+            status_str = "  ".join(pit_status_parts)
+            if pit_explanation:
+                status_str += f"  [dim]{pit_explanation}[/dim]"
+            quality_table.add_row(cal_label, status_str)
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # TRUST AUTHORITY - Overall confidence in model predictions
+        # Higher = more reliable signals, lower = treat with caution
+        # ═══════════════════════════════════════════════════════════════════════════
+        if effective_trust is not None:
+            eff_trust_color = "green" if effective_trust > 0.7 else "yellow" if effective_trust > 0.4 else "red"
+            trust_desc = "High confidence" if effective_trust > 0.7 else "Moderate" if effective_trust > 0.4 else "Low confidence"
+            
+            trust_str = f"[bold {eff_trust_color}]{effective_trust:.0%}[/bold {eff_trust_color}]  [dim]{trust_desc}[/dim]"
+            
+            # Add regime penalty context if significant
+            if regime_penalty is not None and regime_penalty >= 0.05:
+                regime_context = calibrated_trust_data.get('regime_context', 'stressed')
+                trust_str += f"  [dim](-{regime_penalty:.0%} {regime_context} market)[/dim]"
+            
+            quality_table.add_row("[bold]Trust[/bold]", trust_str)
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # VOLATILITY ESTIMATOR - Method used to estimate price volatility
+        # ═══════════════════════════════════════════════════════════════════════════
+        if vol_estimator and vol_estimator.upper() == "GK":
+            quality_table.add_row(
+                "[green]Volatility[/green]",
+                "[green]Garman-Klass[/green]  [dim]Uses OHLC data, 7.4× more accurate[/dim]"
+            )
+        elif vol_estimator and "gk" in vol_estimator.lower():
+            quality_table.add_row("[green]Volatility[/green]", f"[green]{vol_estimator}[/green]  [dim]OHLC range-based[/dim]")
+        else:
+            quality_table.add_row("[dim]Volatility[/dim]", f"[dim]{vol_estimator or 'EWMA'}  Close-to-close estimate[/dim]")
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # HANSEN SKEW-T - Captures asymmetric crash/rally behavior
+        # λ < 0 = left-skewed (crash prone), λ > 0 = right-skewed (rally prone)
         # ═══════════════════════════════════════════════════════════════════════════
         hansen_lambda = hansen_data.get('lambda') if hansen_data else None
         hansen_nu = hansen_data.get('nu') if hansen_data else None
         hansen_enabled = hansen_lambda is not None and abs(hansen_lambda) > 0.01
-
+        
         if hansen_enabled:
-            skew_dir = skew_direction(hansen_lambda)
-            aug_table.add_row(
-                "[cyan]Hansen Skew-T[/cyan]",
-                f"[green]Active[/green]  λ={hansen_lambda:+.2f} ({skew_dir})"
-            )
+            # Direction indicator and explanation
+            if hansen_lambda < -0.05:
+                skew_symbol = "←"
+                skew_desc = "crash prone"
+            elif hansen_lambda > 0.05:
+                skew_symbol = "→"
+                skew_desc = "rally prone"
+            else:
+                skew_symbol = "○"
+                skew_desc = "balanced"
+            
+            hansen_str = f"[green]λ={hansen_lambda:+.2f}[/green] {skew_symbol}  [dim]{skew_desc}[/dim]"
             if hansen_nu:
-                aug_table.add_row("  Tail weight (ν)", f"[dim]{hansen_nu:.0f}[/dim]")
+                tail_desc = "extreme tails" if hansen_nu <= 4 else "heavy tails" if hansen_nu <= 8 else "moderate tails"
+                hansen_str += f"  [dim]ν={hansen_nu:.0f} ({tail_desc})[/dim]"
+            quality_table.add_row("[cyan]Hansen Skew-T[/cyan]", hansen_str)
         else:
-            aug_table.add_row(
-                "[dim]Hansen Skew-T[/dim]",
-                "[dim]Not fitted[/dim]"
-            )
+            quality_table.add_row("[dim]Hansen Skew-T[/dim]", "[dim]Not fitted  (Asymmetric tail model)[/dim]")
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # CONTAMINATED STUDENT-T: Regime-dependent tail heaviness
+        # CONTAMINATED STUDENT-T - Regime-switching model for crisis detection
+        # Models market as mixture of "normal" and "crisis" states
+        # ε = probability of being in crisis mode
         # ═══════════════════════════════════════════════════════════════════════════
         cst_nu_normal = cst_data.get('nu_normal') if cst_data else None
         cst_nu_crisis = cst_data.get('nu_crisis') if cst_data else None
         cst_epsilon = cst_data.get('epsilon') if cst_data else None
         cst_enabled = cst_nu_normal is not None and cst_epsilon is not None and cst_epsilon > 0.001
-
+        
         if cst_enabled:
-            aug_table.add_row(
-                "[magenta]Contaminated-T[/magenta]",
-                f"[green]Active[/green]  ε={cst_epsilon:.0%} crisis probability"
-            )
-            aug_table.add_row("  Normal regime (ν)", f"[dim]{cst_nu_normal:.0f} (lighter tails)[/dim]")
-            aug_table.add_row("  Crisis regime (ν)", f"[dim]{cst_nu_crisis:.0f} (heavier tails)[/dim]")
+            # Explain crisis probability
+            if cst_epsilon >= 0.25:
+                crisis_desc = "high stress"
+            elif cst_epsilon >= 0.15:
+                crisis_desc = "elevated"
+            else:
+                crisis_desc = "normal"
+            
+            cst_str = f"[green]ε={cst_epsilon:.0%}[/green] {crisis_desc}  [dim]ν: {cst_nu_normal:.0f}→{cst_nu_crisis:.0f} in crisis[/dim]"
+            quality_table.add_row("[magenta]Contaminated-T[/magenta]", cst_str)
         else:
-            aug_table.add_row(
-                "[dim]Contaminated-T[/dim]",
-                "[dim]Not fitted[/dim]"
-            )
+            quality_table.add_row("[dim]Contaminated-T[/dim]", "[dim]Not fitted  (Crisis regime model)[/dim]")
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # GMM: 2-component Gaussian mixture (bimodal dynamics)
+        # GMM MIXTURE - Detects bimodal return distributions (momentum vs reversal)
         # ═══════════════════════════════════════════════════════════════════════════
         gmm_weights = gmm_data.get('weights') if gmm_data else None
         gmm_means = gmm_data.get('means') if gmm_data else None
         gmm_enabled = gmm_weights is not None and len(gmm_weights) >= 2
-
+        
         if gmm_enabled:
-            aug_table.add_row(
-                "[yellow]GMM Mixture[/yellow]",
-                f"[green]Active[/green]  K=2 components"
-            )
-            for i, (w, m) in enumerate(zip(gmm_weights[:2], gmm_means[:2] if gmm_means else [0, 0])):
-                component_label = "Momentum" if m > 0 else "Reversal"
-                aug_table.add_row(f"  Component {i+1}", f"[dim]w={w:.1%}, μ={m:.4f} ({component_label})[/dim]")
+            w1, w2 = gmm_weights[0], gmm_weights[1]
+            m1, m2 = gmm_means[0] if gmm_means else 0, gmm_means[1] if gmm_means and len(gmm_means) > 1 else 0
+            # Determine dominant regime
+            if abs(m1 - m2) > 0.001:
+                dominant = "momentum" if max(m1, m2) > 0 else "reversal"
+                gmm_str = f"[green]K=2[/green]  [dim]{w1:.0%}/{w2:.0%} split, {dominant} dominant[/dim]"
+            else:
+                gmm_str = f"[green]K=2[/green]  [dim]{w1:.0%}/{w2:.0%} split[/dim]"
+            quality_table.add_row("[yellow]GMM Mixture[/yellow]", gmm_str)
         else:
-            aug_table.add_row(
-                "[dim]GMM Mixture[/dim]",
-                "[dim]Not fitted[/dim]"
-            )
+            quality_table.add_row("[dim]GMM Mixture[/dim]", "[dim]Not fitted  (Bimodal regime model)[/dim]")
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # NIG: Normal-Inverse Gaussian (semi-heavy tails, Lévy compatible)
+        # NIG DISTRIBUTION - Normal-Inverse Gaussian for semi-heavy tails
         # ═══════════════════════════════════════════════════════════════════════════
         nig_alpha = nig_data.get('alpha') if nig_data else None
         nig_beta = nig_data.get('beta') if nig_data else None
         nig_enabled = nig_alpha is not None and nig_beta is not None
-
+        
         if nig_enabled:
-            asym_dir = skew_direction(nig_beta)
-            aug_table.add_row(
-                "[blue]NIG Distribution[/blue]",
-                f"[green]Active[/green]  α={nig_alpha:.2f}, β={nig_beta:+.2f}"
-            )
-            aug_table.add_row("  Asymmetry", f"[dim]{asym_dir}[/dim]")
+            asym = "left skew" if nig_beta < -0.05 else "right skew" if nig_beta > 0.05 else "symmetric"
+            nig_str = f"[green]α={nig_alpha:.2f} β={nig_beta:+.2f}[/green]  [dim]{asym}[/dim]"
+            quality_table.add_row("[blue]NIG Distribution[/blue]", nig_str)
         else:
-            aug_table.add_row(
-                "[dim]NIG Distribution[/dim]",
-                "[dim]Not fitted[/dim]"
-            )
+            quality_table.add_row("[dim]NIG Distribution[/dim]", "[dim]Not fitted  (Semi-heavy tail model)[/dim]")
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # PHI-SKEW-T: Fernández-Steel skew-t (γ parameter)
+        # SKEW-T (Fernández-Steel) - Another asymmetric distribution model
+        # γ < 1 = left-skewed, γ > 1 = right-skewed
         # ═══════════════════════════════════════════════════════════════════════════
         skew_t_gamma = skew_t_data.get('gamma') if skew_t_data else None
         skew_t_nu = skew_t_data.get('nu') if skew_t_data else None
         skew_t_enabled = skew_t_gamma is not None
-
+        
         if skew_t_enabled:
-            # γ < 1 = left-skewed, γ > 1 = right-skewed
-            gamma_dir = "left (crash risk)" if skew_t_gamma < 0.95 else "right (upside)" if skew_t_gamma > 1.05 else "symmetric"
-            aug_table.add_row(
-                "[purple]Skew-T (F-S)[/purple]",
-                f"[green]Active[/green]  γ={skew_t_gamma:.2f} ({gamma_dir})"
-            )
+            if skew_t_gamma < 0.95:
+                gamma_desc = "crash risk higher"
+            elif skew_t_gamma > 1.05:
+                gamma_desc = "rally potential"
+            else:
+                gamma_desc = "balanced"
+            
+            skew_str = f"[green]γ={skew_t_gamma:.2f}[/green]  [dim]{gamma_desc}[/dim]"
             if skew_t_nu:
-                aug_table.add_row("  Tail weight (ν)", f"[dim]{skew_t_nu:.0f}[/dim]")
+                skew_str += f"  [dim]ν={skew_t_nu:.0f}[/dim]"
+            quality_table.add_row("[purple]Skew-T (F-S)[/purple]", skew_str)
         else:
-            aug_table.add_row(
-                "[dim]Skew-T (F-S)[/dim]",
-                "[dim]Not fitted[/dim]"
-            )
+            quality_table.add_row("[dim]Skew-T (F-S)[/dim]", "[dim]Not fitted[/dim]")
 
-        console.print(Padding(trust_table, (0, 0, 0, 4)))
-        console.print(Padding(aug_table, (0, 0, 0, 4)))
+        console.print(Padding(quality_table, (0, 0, 0, 4)))
 
         console.print()
         console.print(Rule(style="dim", characters="─"))
@@ -7500,8 +7878,16 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         if not canon:
             canon = asset.strip().upper()
 
-        # Compute features and signals
-        feats = compute_features(px, asset_symbol=asset)
+        # Fetch OHLC data for Garman-Klass volatility (7.4x more efficient)
+        ohlc_df = None
+        if GK_VOLATILITY_AVAILABLE:
+            try:
+                ohlc_df = _download_prices(asset, args.start, args.end)
+            except Exception:
+                ohlc_df = None  # Fall back to GARCH/EWMA
+
+        # Compute features and signals with OHLC for GK volatility
+        feats = compute_features(px, asset_symbol=asset, ohlc_df=ohlc_df)
         last_close = _to_float(px.iloc[-1])
 
         # Load tuned params with BMA structure for model averaging
@@ -7684,6 +8070,127 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
     return successes, failures
 
 
+def render_regime_model_summary(regime_model_tracker: Dict[str, Dict[str, int]], console: Console = None) -> None:
+    """
+    Render a summary table showing model usage per regime.
+    
+    This helps identify which models are selected in each market regime,
+    useful for understanding model behavior and identifying unused models.
+    
+    Args:
+        regime_model_tracker: Dict[regime_name, Dict[model_short_name, count]]
+        console: Rich Console for output
+    """
+    if console is None:
+        console = Console(force_terminal=True, width=140)
+    
+    if not regime_model_tracker:
+        return
+    
+    from rich.table import Table
+    from rich.text import Text
+    from rich.rule import Rule
+    
+    # Count total assets per regime
+    regime_totals = {}
+    for regime, models in regime_model_tracker.items():
+        regime_totals[regime] = sum(models.values())
+    
+    total_assets = sum(regime_totals.values())
+    if total_assets == 0:
+        return
+    
+    # Collect all unique models across regimes
+    all_models = set()
+    for models in regime_model_tracker.values():
+        all_models.update(models.keys())
+    
+    # Sort models by total usage (most used first)
+    model_usage = {}
+    for model in all_models:
+        model_usage[model] = sum(regime_model_tracker.get(r, {}).get(model, 0) for r in regime_model_tracker)
+    sorted_models = sorted(all_models, key=lambda m: model_usage[m], reverse=True)
+    
+    # Only show models with at least 1% usage overall
+    min_usage = max(1, int(total_assets * 0.01))
+    visible_models = [m for m in sorted_models if model_usage[m] >= min_usage]
+    
+    if not visible_models:
+        return
+    
+    # Define regime display order and labels
+    # HMM regime names: calm, trending, crisis (sorted by volatility)
+    regime_order = ['calm', 'trending', 'crisis', 'LOW_VOL_TREND', 'HIGH_VOL_TREND', 'LOW_VOL_RANGE', 'HIGH_VOL_RANGE', 'CRISIS_JUMP']
+    regime_labels = {
+        # HMM regime names (primary)
+        'calm': 'Calm',
+        'trending': 'Trending',
+        'crisis': 'Crisis',
+        # Legacy regime names (for backwards compatibility)
+        'LOW_VOL_TREND': 'Low-Vol Trend',
+        'HIGH_VOL_TREND': 'High-Vol Trend',
+        'LOW_VOL_RANGE': 'Low-Vol Range',
+        'HIGH_VOL_RANGE': 'High-Vol Range',
+        'CRISIS_JUMP': 'Crisis/Jump',
+        'Unknown': 'Unknown',
+    }
+    
+    # Build the table
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    header = Text()
+    header.append("▸ ", style="bright_cyan")
+    header.append("MODEL SELECTION BY REGIME", style="bold white")
+    console.print(header)
+    console.print()
+    
+    table = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
+    table.add_column("Model", style="white", justify="left")
+    table.add_column("Total", style="bold white", justify="right")
+    
+    # Add regime columns
+    active_regimes = [r for r in regime_order if r in regime_model_tracker]
+    # Add any regimes not in the predefined order
+    for r in regime_model_tracker:
+        if r not in active_regimes:
+            active_regimes.append(r)
+    
+    for regime in active_regimes:
+        label = regime_labels.get(regime, regime)
+        table.add_column(label, justify="right")
+    
+    # Add rows for each model
+    for model in visible_models:
+        total = model_usage[model]
+        total_pct = (total / total_assets * 100) if total_assets > 0 else 0
+        
+        row = [model, f"{total} ({total_pct:.0f}%)"]
+        
+        for regime in active_regimes:
+            count = regime_model_tracker.get(regime, {}).get(model, 0)
+            regime_total = regime_totals.get(regime, 1)
+            pct = (count / regime_total * 100) if regime_total > 0 else 0
+            if count > 0:
+                row.append(f"{count} ({pct:.0f}%)")
+            else:
+                row.append("[dim]—[/dim]")
+        
+        table.add_row(*row)
+    
+    # Add totals row
+    total_row = ["[bold]Total Assets[/bold]", f"[bold]{total_assets}[/bold]"]
+    for regime in active_regimes:
+        count = regime_totals.get(regime, 0)
+        pct = (count / total_assets * 100) if total_assets > 0 else 0
+        total_row.append(f"[bold]{count}[/bold] ({pct:.0f}%)")
+    table.add_row(*total_row)
+    
+    console.print(table)
+    console.print()
+
+
 def main() -> None:
     args = parse_args()
     horizons = sorted({int(x.strip()) for x in args.horizons.split(",") if x.strip()})
@@ -7858,6 +8365,7 @@ def main() -> None:
     csv_rows_simple = []  # for CSV simple export
     csv_rows_detailed = []  # for CSV detailed export
     summary_rows = []  # for summary table across assets
+    regime_model_tracker = {}  # Dict[regime_name, Dict[model_short_name, count]] for end-of-run summary
 
     # =========================================================================
     # RETRYING PARALLEL PROCESSING: Compute features/signals with bounded retries
@@ -8454,6 +8962,157 @@ def main() -> None:
             "momentum_score": momentum_score,
         })
 
+        # Track regime and model for end-of-run summary
+        try:
+            import re
+            
+            # Get model name from feats - multiple sources
+            model_name = "Unknown"
+            if feats:
+                # Try kalman_metadata first
+                kalman_meta = feats.get("kalman_metadata", {})
+                if isinstance(kalman_meta, dict):
+                    # best_model has the full name including _momentum suffix
+                    model_name = kalman_meta.get("best_model", "")
+                    if not model_name:
+                        model_name = kalman_meta.get("kalman_noise_model", "")
+                    if not model_name:
+                        model_name = kalman_meta.get("model_selected", "")
+                
+                # Try direct feats keys if not found
+                if not model_name or model_name == "Unknown":
+                    model_name = feats.get("best_model", "")
+                if not model_name or model_name == "Unknown":
+                    model_name = feats.get("kalman_noise_model", "")
+                
+                # Default to gaussian if still empty
+                if not model_name:
+                    model_name = "gaussian"
+            
+            # Get regime from feats - prioritize HMM result which is the most reliable
+            regime_name = "Unknown"
+            if feats:
+                # PRIMARY: Try HMM result for regime (most reliable - uses 3-state Gaussian HMM)
+                hmm_result = feats.get("hmm_result")
+                if isinstance(hmm_result, dict) and hmm_result:
+                    # fit_hmm_regimes returns regime_series (pd.Series of regime labels)
+                    # Get current regime from the last value in the series
+                    regime_series = hmm_result.get("regime_series")
+                    if regime_series is not None and hasattr(regime_series, 'iloc') and len(regime_series) > 0:
+                        regime_name = str(regime_series.iloc[-1])
+                    else:
+                        # Fallback: check if there's a current_regime key (older format)
+                        regime_name = hmm_result.get("current_regime", "")
+                
+                # FALLBACK: Try kalman_metadata for regime info
+                if not regime_name or regime_name == "Unknown":
+                    kalman_meta = feats.get("kalman_metadata", {})
+                    if isinstance(kalman_meta, dict):
+                        regime_info = kalman_meta.get("kalman_regime_info", {})
+                        if isinstance(regime_info, dict) and regime_info:
+                            regime_name = regime_info.get("regime_name", "")
+                            if not regime_name:
+                                regime_idx = regime_info.get("regime_index")
+                                regime_map = {0: "LOW_VOL_TREND", 1: "HIGH_VOL_TREND", 2: "LOW_VOL_RANGE", 3: "HIGH_VOL_RANGE", 4: "CRISIS_JUMP"}
+                                regime_name = regime_map.get(regime_idx, "")
+                
+                # FALLBACK: Try regime_params directly
+                if not regime_name or regime_name == "Unknown":
+                    regime_info = feats.get("regime_params", {})
+                    if isinstance(regime_info, dict) and regime_info:
+                        # Get first regime key as current
+                        regime_name = next(iter(regime_info.keys()), "Unknown")
+                
+                # FALLBACK: Volatility-based regime classification (for assets without HMM)
+                # This handles new/short-history assets where HMM returns None
+                if not regime_name or regime_name == "Unknown":
+                    vol_series = feats.get("vol") if feats else None
+                    if vol_series is not None and hasattr(vol_series, 'iloc') and len(vol_series) > 0:
+                        try:
+                            current_vol = float(vol_series.iloc[-1])
+                            # Annualized volatility thresholds (approximate)
+                            # calm: < 15%, trending: 15-30%, crisis: > 30%
+                            if current_vol < 0.15:
+                                regime_name = "calm"
+                            elif current_vol < 0.30:
+                                regime_name = "trending"
+                            else:
+                                regime_name = "crisis"
+                        except (ValueError, TypeError):
+                            pass
+                
+                # Final default if still empty
+                if not regime_name:
+                    regime_name = "Unknown"
+            
+            # Convert model name to short display name
+            model_short = model_name
+            is_momentum = '_momentum' in model_name
+            base_name = model_name.replace('_momentum', '')
+            
+            # Use the same model info lookup as the Model Weights display
+            model_info_lookup = {
+                'kalman_gaussian': 'Gaussian',
+                'kalman_phi_gaussian': 'φ-Gaussian',
+                'kalman_gaussian_momentum': 'Gaussian+Momentum',
+                'kalman_phi_gaussian_momentum': 'φ-Gaussian+Momentum',
+                'gaussian': 'Gaussian',
+            }
+            if model_name in model_info_lookup:
+                model_short = model_info_lookup[model_name]
+            # Handle VoV models with gamma extraction
+            elif 'vov' in base_name.lower() and 'student_t' in base_name.lower():
+                gamma_match = re.search(r'_g(\d+\.?\d*)', base_name)
+                nu_match = re.search(r'nu_(\d+)', base_name)
+                if gamma_match and nu_match:
+                    model_short = f'φ-T(ν={nu_match.group(1)},γ={gamma_match.group(1)})'
+                elif gamma_match:
+                    model_short = f'φ-T(VoV,γ={gamma_match.group(1)})'
+                elif nu_match:
+                    model_short = f'φ-T(ν={nu_match.group(1)},VoV)'
+                else:
+                    model_short = 'φ-T(VoV)'
+                if is_momentum:
+                    model_short += '+Momentum'
+            # Handle Two-Piece models
+            elif 'nul' in base_name.lower() and 'nur' in base_name.lower():
+                nul_match = re.search(r'nul(\d+)', base_name.lower())
+                nur_match = re.search(r'nur(\d+)', base_name.lower())
+                if nul_match and nur_match:
+                    model_short = f'φ-T(νL={nul_match.group(1)},νR={nur_match.group(1)})'
+                else:
+                    model_short = 'φ-T(2P)'
+                if is_momentum:
+                    model_short += '+Momentum'
+            # Handle Mixture models
+            elif 'mix' in base_name.lower() and 'student_t' in base_name.lower():
+                mix_match = re.search(r'mix_(\d+)_(\d+)', base_name)
+                if mix_match:
+                    model_short = f'φ-T(Mix:{mix_match.group(1)}/{mix_match.group(2)})'
+                else:
+                    model_short = 'φ-T(Mix)'
+                if is_momentum:
+                    model_short += '+Momentum'
+            elif 'phi_student_t_nu_' in model_name:
+                # Extract nu value
+                nu_match = re.search(r'nu_(\d+)', model_name)
+                if nu_match:
+                    nu_val = nu_match.group(1)
+                    model_short = f'φ-T(ν={nu_val})'
+                    if is_momentum:
+                        model_short += '+Momentum'
+            elif is_momentum:
+                model_short = base_name.replace('_', '-') + '+Momentum'
+            
+            # Update tracker
+            if regime_name not in regime_model_tracker:
+                regime_model_tracker[regime_name] = {}
+            if model_short not in regime_model_tracker[regime_name]:
+                regime_model_tracker[regime_name][model_short] = 0
+            regime_model_tracker[regime_name][model_short] += 1
+        except Exception:
+            pass  # Silent fail for tracking
+
         # Prepare JSON block
         block = {
             "symbol": asset,
@@ -8590,6 +9249,14 @@ def main() -> None:
                     Console().print(f"[dim]Risk temperature display skipped: {rt_e}[/dim]")
     except Exception as e:
         Console().print(f"[yellow]Warning:[/yellow] Could not print summary tables: {e}")
+
+    # Render regime-model summary table (shows which models were selected per regime)
+    try:
+        if regime_model_tracker:
+            render_regime_model_summary(regime_model_tracker, Console(force_terminal=True, width=140))
+    except Exception as rms_e:
+        if os.getenv("DEBUG"):
+            Console().print(f"[dim]Regime-model summary error: {rms_e}[/dim]")
 
     # Build structured failure log for exports
     failure_log = [

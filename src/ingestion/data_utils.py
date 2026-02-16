@@ -2550,6 +2550,7 @@ MAPPING = {
     "DFNG": ["ITA"],
     "GFA": ["ANGL"],
     "TRET": ["VNQ"],
+    "AAPI": ["AAPL"],  # iShares Apple Options ETF → AAPL proxy
 
     # Share class and punctuation variants (explicit mappings)
     "BRK.B": ["BRK-B"],
@@ -3835,21 +3836,114 @@ def _get_cached_prices(symbol: str, start: Optional[str], end: Optional[str]) ->
     return disk
 
 
+def _invert_ohlc_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Invert OHLC prices for inverse currency pairs.
+    
+    For an inverse pair like JPYUSD (= 1/USDJPY):
+    - Inverted Open = 1 / Open
+    - Inverted High = 1 / Low  (High becomes Low when inverted)
+    - Inverted Low = 1 / High  (Low becomes High when inverted)
+    - Inverted Close = 1 / Close
+    - Volume remains unchanged
+    
+    Args:
+        df: DataFrame with OHLC columns
+        
+    Returns:
+        DataFrame with inverted OHLC prices
+    """
+    if df is None or df.empty:
+        return df
+    
+    result = df.copy()
+    
+    # Find OHLC columns (case-insensitive)
+    cols = {c.lower(): c for c in df.columns}
+    
+    # Invert prices - note High and Low swap
+    if 'open' in cols:
+        result[cols['open']] = 1.0 / df[cols['open']]
+    if 'close' in cols:
+        result[cols['close']] = 1.0 / df[cols['close']]
+    if 'adj close' in cols:
+        result[cols['adj close']] = 1.0 / df[cols['adj close']]
+    
+    # High and Low swap when inverting
+    if 'high' in cols and 'low' in cols:
+        old_high = df[cols['high']].copy()
+        old_low = df[cols['low']].copy()
+        result[cols['high']] = 1.0 / old_low  # New high is 1/old_low
+        result[cols['low']] = 1.0 / old_high  # New low is 1/old_high
+    elif 'high' in cols:
+        result[cols['high']] = 1.0 / df[cols['high']]
+    elif 'low' in cols:
+        result[cols['low']] = 1.0 / df[cols['low']]
+    
+    # Volume stays the same
+    
+    return result
+
+
 def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> pd.DataFrame:
     """Robust Yahoo fetch with multiple strategies.
     Returns a DataFrame with OHLC columns (if available).
+    - Resolves symbol MAPPING first (e.g., QQQO → QQQ, XAGUSD → SI=F)
     - Checks if cached data is up-to-date; if not, fetches incremental updates
     - Tries yf.download first
     - Falls back to Ticker.history
     - Tries again without auto_adjust
     - Falls back to period='max' pulls to dodge timezone/metadata issues
     Normalizes DatetimeIndex to tz-naive for stability.
+    
+    Handles:
+    1. Symbol MAPPING (e.g., QQQO → QQQ, XAGUSD → SI=F, TRET → VNQ)
+    2. Inverse currency pairs (e.g., JPYUSD=X → invert USDJPY=X)
+    """
+    # ==========================================================================
+    # STEP 1: Resolve symbol using MAPPING (YieldMax, structured products, etc.)
+    # ==========================================================================
+    symbol_upper = symbol.strip().upper()
+    
+    # Get mapped candidates from MAPPING (e.g., QQQO → ["QQQ"], XAGUSD → ["SI=F", "SLV"])
+    mapped_candidates = MAPPING.get(symbol_upper, [])
+    
+    # If we have mapped candidates, try each one
+    if mapped_candidates:
+        for candidate in mapped_candidates:
+            result = _download_prices_core(candidate, start, end)
+            if result is not None and not result.empty:
+                return result
+        # If all mapped candidates fail, fall through to try original symbol
+    
+    # ==========================================================================
+    # STEP 2: Check for inverse currency pairs
+    # ==========================================================================
+    is_inverse_pair = symbol_upper in INVERSE_CURRENCY_PAIRS
+    actual_symbol = INVERSE_CURRENCY_PAIRS.get(symbol_upper, symbol) if is_inverse_pair else symbol
+    
+    # Fetch using core download logic
+    result = _download_prices_core(actual_symbol, start, end)
+    
+    # Invert if this was an inverse currency pair
+    if result is not None and not result.empty and is_inverse_pair:
+        return _invert_ohlc_dataframe(result)
+    
+    return result if result is not None else pd.DataFrame()
+
+
+def _download_prices_core(symbol: str, start: Optional[str], end: Optional[str]) -> pd.DataFrame:
+    """Core download logic for a single symbol (no MAPPING resolution).
+    
+    This is the internal implementation called by _download_prices after
+    MAPPING and inverse pair resolution.
     """
     import time
     
     # Cap end date to today - never attempt to fetch future data
     end = _cap_date_to_today(end)
     
+    # Use symbol for cache lookup
     cached = _get_cached_prices(symbol, start, end)
     if cached is not None and not cached.empty:
         return cached
@@ -3886,6 +3980,13 @@ def _download_prices(symbol: str, start: Optional[str], end: Optional[str]) -> p
         last_dt = pd.to_datetime(disk_df.index.max()).date()
         # If disk cache already covers up to target end, use it
         if last_dt >= target_end:
+            _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
+            return disk_df
+        # If disk cache is reasonably recent (within 3 calendar days),
+        # use it without attempting incremental fetch to avoid noisy error messages
+        # for tickers that may have data gaps or be temporarily unavailable
+        days_stale = (target_end - last_dt).days
+        if days_stale <= 3:
             _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
             return disk_df
         # Otherwise, fetch incrementally from day after last cached date
@@ -4448,10 +4549,60 @@ def _fetch_with_fallback(symbols: List[str], start: Optional[str], end: Optional
     raise RuntimeError(f"No data for symbols: {symbols}")
 
 
+# =============================================================================
+# INVERSE CURRENCY PAIR MAPPING
+# =============================================================================
+# Maps inverse JPY pairs (JPY as base) to their direct counterparts (JPY as quote)
+# which are available on Yahoo Finance. The prices will be inverted automatically.
+# =============================================================================
+INVERSE_CURRENCY_PAIRS = {
+    "JPYUSD=X": "USDJPY=X",
+    "JPYEUR=X": "EURJPY=X",
+    "JPYGBP=X": "GBPJPY=X",
+    "JPYAUD=X": "AUDJPY=X",
+    "JPYNZD=X": "NZDJPY=X",
+    "JPYCAD=X": "CADJPY=X",
+    "JPYCHF=X": "CHFJPY=X",
+    "JPYSGD=X": "SGDJPY=X",
+    "JPYHKD=X": "HKDJPY=X",
+    "JPYZAR=X": "ZARJPY=X",
+    "JPYMXN=X": "MXNJPY=X",
+    "JPYTRY=X": "TRYJPY=X",
+    "JPYSEK=X": "SEKJPY=X",
+    "JPYNOK=X": "NOKJPY=X",
+    "JPYDKK=X": "DKKJPY=X",
+    "JPYCNY=X": "CNYJPY=X",
+    "JPYPLN=X": "PLNJPY=X",
+}
+
+
 def fetch_px(pair: str, start: Optional[str], end: Optional[str]) -> Tuple[pd.Series, str]:
     """Fetch price series with mapping/dot-dash fallbacks.
     Returns (series, display_name).
+    
+    Handles inverse currency pairs (e.g., JPYUSD=X) by fetching the direct pair
+    (USDJPY=X) and inverting the prices.
     """
+    pair_upper = pair.strip().upper()
+    
+    # Check if this is an inverse currency pair that needs special handling
+    if pair_upper in INVERSE_CURRENCY_PAIRS:
+        direct_pair = INVERSE_CURRENCY_PAIRS[pair_upper]
+        try:
+            px = _fetch_px_symbol(direct_pair, start, end)
+            px = pd.to_numeric(px, errors="coerce").dropna()
+            if px.empty:
+                raise RuntimeError(f"No numeric data for {direct_pair}")
+            # Invert the prices: JPY/USD = 1 / (USD/JPY)
+            px_inverted = 1.0 / px
+            px_inverted.name = "px"
+            # Display name shows the inverse pair
+            title = _resolve_display_name(pair_upper)
+            return px_inverted, title
+        except Exception as e:
+            # Fall through to try the original pair directly
+            pass
+    
     candidates = _resolve_symbol_candidates(pair)
     last_err: Optional[Exception] = None
     for sym in candidates:

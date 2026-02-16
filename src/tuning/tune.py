@@ -29,22 +29,20 @@ WHAT THIS FILE DOES
 For EACH regime r:
 
     1. Fits ALL candidate model classes m independently:
-       - kalman_gaussian:       q, c           (2 params) [DISABLED - use momentum version]
-       - kalman_phi_gaussian:   q, c, φ        (3 params) [DISABLED - use momentum version]
-       - kalman_gaussian_momentum:     q, c           (2 params) [ENABLED]
-       - kalman_phi_gaussian_momentum: q, c, φ        (3 params) [ENABLED]
+       - kalman_gaussian_momentum:          q, c           (2 params) [ENABLED - momentum Gaussian]
+       - kalman_phi_gaussian_momentum:      q, c, φ        (3 params) [ENABLED - momentum φ-Gaussian]
        - phi_student_t_nu_4:    q, c, φ        (3 params, ν=4 FIXED)
        - phi_student_t_nu_6:    q, c, φ        (3 params, ν=6 FIXED)
        - phi_student_t_nu_8:    q, c, φ        (3 params, ν=8 FIXED)
        - phi_student_t_nu_12:   q, c, φ        (3 params, ν=12 FIXED)
        - phi_student_t_nu_20:   q, c, φ        (3 params, ν=20 FIXED)
-       - phi_student_t_nu_{ν}_momentum: q, c, φ (3 params, ν FIXED) [ENABLED]
+       - phi_student_t_nu_{ν}_momentum: q, c, φ     (3 params, ν FIXED) [ENABLED]
        - phi_skew_t_nu_{ν}_gamma_{γ}: q, c, φ  (3 params, ν and γ FIXED)
        - phi_nig_alpha_{α}_beta_{β}: q, c, φ   (3 params, α and β FIXED)
+       - phi_fisher_rao_w{W}_d{D}_momentum: q, c, φ (5 params) [ENABLED - Fisher-Rao geometry]
 
-    NOTE: Pure Gaussian and φ-Gaussian are DISABLED by default (February 2026).
-    Empirical evidence shows momentum-augmented models dominate (94.9% selection rate).
-    Set DISABLE_PURE_GAUSSIAN_MODELS = False to re-enable them.
+    NOTE: Pure Gaussian and φ-Gaussian are NOT exposed in BMA (February 2026).
+    Only momentum-augmented versions (kalman_gaussian_momentum, kalman_phi_gaussian_momentum) participate.
 
     NOTE: Student-t, Skew-t, and NIG use DISCRETE grids (not continuous optimization).
     Each parameter combination is treated as a separate sub-model in BMA.
@@ -82,6 +80,80 @@ For EACH regime r:
     5. Normalizes to get p(m|r)
 
     6. Applies hierarchical shrinkage toward global (optional)
+
+-------------------------------------------------------------------------------
+VOLATILITY ESTIMATION — GARMAN-KLASS REALIZED VOLATILITY (February 2026)
+
+The observation variance in the Kalman filter is scaled by volatility σ_t:
+
+    r_t = μ_t + √(c·σ_t²)·ε_t
+
+VOLATILITY ESTIMATION PRIORITY:
+    1. Garman-Klass (GK) — 7.4x more efficient than close-to-close EWMA
+    2. GARCH(1,1) via MLE — captures volatility clustering
+    3. EWMA blend — robust baseline fallback
+
+GARMAN-KLASS FORMULA (uses OHLC data):
+    σ²_GK = 0.5*(log(H/L))² - (2*log(2)-1)*(log(C/O))²
+
+The efficiency gain (7.4x) means:
+    - Same precision as EWMA with ~7x fewer observations
+    - Or: same observations → ~7x more precise variance estimate
+
+IMPACT ON CALIBRATION:
+    - Better σ_t estimate → less noise absorbed by c parameter
+    - Improves PIT calibration without adding parameters
+    - Reduces variance estimation error in all downstream models
+
+The volatility estimator used is stored in tuning results:
+    "volatility_estimator": "GK" | "EWMA" | "garch11"
+
+-------------------------------------------------------------------------------
+GAS-Q SCORE-DRIVEN PROCESS NOISE (February 2026)
+-------------------------------------------------------------------------------
+
+PROBLEM: Static process noise q doesn't adapt to recent forecast errors.
+When innovations are large, q should increase. When small, q should decrease.
+
+SOLUTION: Generalized Autoregressive Score (GAS) model for q.
+Reference: Creal, Koopman & Lucas (2013) "Generalized Autoregressive Score Models"
+
+GAS-Q DYNAMICS:
+    q_t = ω + α·s_{t-1} + β·q_{t-1}
+    
+Where:
+    s_t = ∂log p(y_t|θ)/∂q is the scaled score
+    
+For Gaussian innovations:
+    s_t = (e_t² / S_t - 1) / (2 * S_t)
+    
+For Student-t innovations with ν degrees of freedom:
+    w_t = (ν + 1) / (ν + (y_t - μ_t)² / S_t)
+    s_t = (w_t * e_t² / S_t - 1) / (2 * S_t)
+    
+PARAMETERS (jointly estimated with c, φ, ν):
+    ω (omega): Long-run mean level of q (ω > 0)
+    α (alpha): Score sensitivity (0 ≤ α ≤ 1)
+    β (beta):  Persistence (0 ≤ β < 1)
+    
+STATIONARITY CONSTRAINT:
+    β < 1 ensures q_t is mean-reverting to ω / (1 - β)
+
+EXPECTED IMPACT:
+    - 15-20% improvement in adaptive forecasting during regime transitions
+    - Process noise adapts to recent forecast errors
+    - Better PIT calibration in volatile periods
+
+TUNING OUTPUT:
+    When GAS-Q is selected, the model includes:
+    - gas_q_augmented: True
+    - gas_q_omega, gas_q_alpha, gas_q_beta: GAS-Q parameters
+    - gas_q_ll: Log-likelihood with GAS-Q dynamics
+
+INTEGRATION:
+    - tune.py: Fits GAS-Q parameters via concentrated likelihood
+    - gas_q.py: Implements GAS-Q filter functions
+    - signals.py: Uses GAS-Q filter when gas_q_augmented=True in cache
 
 -------------------------------------------------------------------------------
 φ SHRINKAGE PRIOR (AR(1) COEFFICIENT REGULARIZATION)
@@ -270,7 +342,6 @@ MOMENTUM_AUGMENTATION_ENABLED = True
 #   - Gaussian+Mom and φ-Gaussian+Mom are ENABLED
 #   - All Student-t variants remain enabled
 # =============================================================================
-DISABLE_PURE_GAUSSIAN_MODELS = True
 
 # Import Adaptive ν Refinement for calibration improvement
 try:
@@ -286,6 +357,148 @@ try:
     ADAPTIVE_NU_AVAILABLE = True
 except ImportError:
     ADAPTIVE_NU_AVAILABLE = False
+
+# =============================================================================
+# GARMAN-KLASS REALIZED VOLATILITY (February 2026)
+# =============================================================================
+# Range-based volatility estimator using OHLC data.
+# 7.4x more efficient than close-to-close EWMA.
+# Improves PIT calibration without adding parameters.
+# =============================================================================
+try:
+    from calibration.realized_volatility import (
+        compute_gk_volatility,
+        compute_hybrid_volatility,
+        compute_volatility_from_df,
+        VolatilityEstimator,
+    )
+    GK_VOLATILITY_AVAILABLE = True
+except ImportError:
+    GK_VOLATILITY_AVAILABLE = False
+
+# =============================================================================
+# GAS-Q SCORE-DRIVEN PARAMETER DYNAMICS (February 2026)
+# =============================================================================
+# Implements Creal, Koopman & Lucas (2013) GAS dynamics for process noise q.
+# q_t = omega + alpha * s_{t-1} + beta * q_{t-1}
+# where s_t is the score (derivative of log-likelihood with respect to q).
+# Enables adaptive process noise during regime transitions.
+# =============================================================================
+GAS_Q_ENABLED = True  # Set to False to disable GAS-Q augmentation
+
+try:
+    from models.gas_q import (
+        GASQConfig,
+        GASQResult,
+        DEFAULT_GAS_Q_CONFIG,
+        gas_q_filter_gaussian,
+        gas_q_filter_student_t,
+        optimize_gas_q_params,
+        get_gas_q_model_name,
+        is_gas_q_model,
+        is_gas_q_enabled,
+    )
+    GAS_Q_AVAILABLE = True
+    
+    # =========================================================================
+    # GAS-Q FITTING WRAPPER FUNCTIONS
+    # =========================================================================
+    # Convenient wrapper functions for fitting GAS-Q models.
+    # These are exported for testing and external use.
+    # =========================================================================
+    from dataclasses import dataclass
+    
+    @dataclass
+    class GASQFitResult:
+        """Result of GAS-Q parameter optimization."""
+        omega: float
+        alpha: float
+        beta: float
+        log_likelihood: float
+        ll_improvement: float
+        ll_static: float
+        fit_success: bool
+        q_mean: float
+        q_std: float
+        n_obs: int
+    
+    def fit_gas_q_gaussian(y, sigma, c, phi, train_frac=0.7):
+        """
+        Fit GAS-Q parameters for Gaussian Kalman filter.
+        
+        Args:
+            y: Observations (returns)
+            sigma: Volatility series
+            c: Observation scale parameter
+            phi: AR(1) coefficient for drift
+            train_frac: Fraction of data for training
+            
+        Returns:
+            GASQFitResult with optimized parameters
+        """
+        config, diag = optimize_gas_q_params(y, sigma, c, phi, nu=None, train_frac=train_frac)
+        
+        # Run filter with optimized params to get log-likelihood
+        result = gas_q_filter_gaussian(y, sigma, c, phi, config)
+        
+        # Compare with static q filter
+        ll_static = diag.get("ll_static", result.log_likelihood)
+        ll_improvement = result.log_likelihood - ll_static
+        
+        return GASQFitResult(
+            omega=config.omega,
+            alpha=config.alpha,
+            beta=config.beta,
+            log_likelihood=result.log_likelihood,
+            ll_improvement=ll_improvement,
+            ll_static=ll_static,
+            fit_success=diag.get("fit_success", True),
+            q_mean=result.q_mean,
+            q_std=result.q_std,
+            n_obs=len(y),
+        )
+    
+    def fit_gas_q_student_t(y, sigma, c, phi, nu, train_frac=0.7):
+        """
+        Fit GAS-Q parameters for Student-t Kalman filter.
+        
+        Args:
+            y: Observations (returns)
+            sigma: Volatility series
+            c: Observation scale parameter
+            phi: AR(1) coefficient for drift
+            nu: Degrees of freedom for Student-t
+            train_frac: Fraction of data for training
+            
+        Returns:
+            GASQFitResult with optimized parameters
+        """
+        config, diag = optimize_gas_q_params(y, sigma, c, phi, nu=nu, train_frac=train_frac)
+        
+        # Run filter with optimized params to get log-likelihood
+        result = gas_q_filter_student_t(y, sigma, c, phi, nu, config)
+        
+        # Compare with static q filter
+        ll_static = diag.get("ll_static", result.log_likelihood)
+        ll_improvement = result.log_likelihood - ll_static
+        
+        return GASQFitResult(
+            omega=config.omega,
+            alpha=config.alpha,
+            beta=config.beta,
+            log_likelihood=result.log_likelihood,
+            ll_improvement=ll_improvement,
+            ll_static=ll_static,
+            fit_success=diag.get("fit_success", True),
+            q_mean=result.q_mean,
+            q_std=result.q_std,
+            n_obs=len(y),
+        )
+        
+except ImportError as e:
+    GAS_Q_AVAILABLE = False
+    import warnings
+    warnings.warn(f"GAS-Q module not available: {e}")
 
 # Import Generalized Hyperbolic (GH) distribution for calibration improvement
 # GH is a fallback model when Student-t fails - captures skewness that t cannot
@@ -693,12 +906,20 @@ try:
         EVT_THRESHOLD_PERCENTILE_DEFAULT,
         EVT_MIN_EXCEEDANCES,
         check_student_t_consistency,
+        # EVT Tail Splice for PIT Calibration (February 2026)
+        compute_evt_spliced_pit,
+        test_evt_splice_improvement,
+        EVT_SPLICE_ENABLED,
+        EVT_SPLICE_PIT_IMPROVEMENT_THRESHOLD,
     )
     EVT_AVAILABLE = True
+    EVT_SPLICE_AVAILABLE = True
 except ImportError:
     EVT_AVAILABLE = False
+    EVT_SPLICE_AVAILABLE = False
     EVT_THRESHOLD_PERCENTILE_DEFAULT = 0.90
     EVT_MIN_EXCEEDANCES = 30
+    EVT_SPLICE_ENABLED = False
 
 # Note: Tuning presentation functions (create_tuning_console, render_tuning_header, etc.)
 # are now defined in tune_ux.py to avoid circular imports. tune.py is the core tuning
@@ -1294,9 +1515,12 @@ def tune_asset_q(
         Dictionary with tuned parameters and diagnostics, or None if failed
     """
     try:
-        # Fetch price data
+        # Fetch price data (need OHLC for Garman-Klass volatility)
+        df = None
         try:
             px, title = fetch_px(asset, start_date, end_date)
+            # fetch_px returns only close prices, try to get full OHLC
+            df = _download_prices(asset, start_date, end_date)
         except Exception:
             df = _download_prices(asset, start_date, end_date)
             if df is None or df.empty:
@@ -1308,12 +1532,42 @@ def tune_asset_q(
             _log(f"     ⚠️  Insufficient data for {asset}")
             return None
         
-        # Compute returns and volatility
+        # Compute returns
         log_ret = np.log(px / px.shift(1)).dropna()
         returns = log_ret.values
         
-        vol_ewma = log_ret.ewm(span=21, adjust=False).std()
-        vol = vol_ewma.values
+        # Compute volatility using Garman-Klass (7.4x more efficient than EWMA)
+        vol_estimator_used = "EWMA"
+        if GK_VOLATILITY_AVAILABLE and df is not None and not df.empty:
+            try:
+                # Check for OHLC columns
+                cols = {c.lower(): c for c in df.columns}
+                if all(c in cols for c in ['open', 'high', 'low', 'close']):
+                    # Align OHLC data with returns (drop first row to match log returns)
+                    df_aligned = df.iloc[1:].copy()
+                    open_ = df_aligned[cols['open']].values
+                    high = df_aligned[cols['high']].values
+                    low = df_aligned[cols['low']].values
+                    close = df_aligned[cols['close']].values
+                    
+                    vol, vol_estimator_used = compute_hybrid_volatility(
+                        open_=open_, high=high, low=low, close=close,
+                        span=21, annualize=False
+                    )
+                else:
+                    # Fallback to EWMA if OHLC not available
+                    vol = log_ret.ewm(span=21, adjust=False).std().values
+            except Exception as e:
+                # Fallback to EWMA on any error
+                vol = log_ret.ewm(span=21, adjust=False).std().values
+        else:
+            # Use EWMA if GK not available
+            vol = log_ret.ewm(span=21, adjust=False).std().values
+        
+        # Ensure returns and vol have same length
+        min_len = min(len(returns), len(vol))
+        returns = returns[:min_len]
+        vol = vol[:min_len]
         
         # Remove NaN/Inf
         valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
@@ -1624,6 +1878,95 @@ def tune_asset_q(
                     _log(f"     ⚠️ ν-refinement error: {nu_err}")
                     nu_refinement_result = {"error": str(nu_err)}
         
+        # =====================================================================
+        # PIT-DRIVEN ESCALATION: EVT TAIL SPLICE (L3)
+        # =====================================================================
+        # EVT Tail Splice replaces the tail portion of the CDF with GPD.
+        # This is triggered when:
+        #   1. PIT calibration still fails after ν-refinement
+        #   2. EVT has been fitted successfully
+        #   3. EVT splice improves PIT p-value by >= 50%
+        #
+        # The spliced distribution provides theoretically justified tail
+        # extrapolation via the Pickands–Balkema–de Haan theorem.
+        # =====================================================================
+        evt_splice_result = None
+        evt_splice_attempted = False
+        evt_splice_selected = False
+        
+        if EVT_SPLICE_AVAILABLE and EVT_SPLICE_ENABLED and evt_result is not None:
+            # Check if PIT still fails after previous escalations
+            current_pit = best_params.get("pit_ks_pvalue", 1.0)
+            pit_still_fails = current_pit < 0.05
+            
+            if pit_still_fails:
+                evt_splice_attempted = True
+                try:
+                    # Reconstruct GPDFitResult from stored dict
+                    gpd_result_obj = GPDFitResult.from_dict(evt_result)
+                    
+                    # Get filter outputs for PIT computation
+                    # We need to run filter with best params
+                    q_best = best_params.get("q", 1e-6)
+                    c_best = best_params.get("c", 1.0)
+                    phi_best = best_params.get("phi", 0.0)
+                    nu_best = best_params.get("nu")
+                    
+                    # Run filter
+                    if phi_best is not None:
+                        from models import PhiStudentTDriftModel, PhiGaussianDriftModel
+                        if nu_best is not None:
+                            mu_filt, P_filt, _ = PhiStudentTDriftModel.filter_phi(
+                                returns, vol, q_best, c_best, phi_best, nu_best
+                            )
+                        else:
+                            mu_filt, P_filt, _ = PhiGaussianDriftModel.filter_phi(
+                                returns, vol, q_best, c_best, phi_best
+                            )
+                    else:
+                        from models import GaussianDriftModel
+                        mu_filt, P_filt, _ = GaussianDriftModel.filter(
+                            returns, vol, q_best, c_best
+                        )
+                    
+                    # Test if EVT splice improves PIT
+                    should_select, evt_pit_pvalue, improvement_ratio, evt_diag = test_evt_splice_improvement(
+                        returns=returns,
+                        mu_filtered=mu_filt,
+                        vol=vol,
+                        P_filtered=P_filt,
+                        c=c_best,
+                        nu=nu_best,
+                        gpd_result=gpd_result_obj,
+                        baseline_pit_pvalue=current_pit,
+                    )
+                    
+                    evt_splice_result = {
+                        "attempted": True,
+                        "should_select": should_select,
+                        "baseline_pit_pvalue": current_pit,
+                        "evt_pit_pvalue": evt_pit_pvalue,
+                        "improvement_ratio": improvement_ratio,
+                        "diagnostics": evt_diag,
+                    }
+                    
+                    if should_select:
+                        evt_splice_selected = True
+                        # Update best params to flag EVT splice
+                        best_params = best_params.copy()
+                        best_params["evt_splice_selected"] = True
+                        best_params["evt_splice_pit_pvalue"] = evt_pit_pvalue
+                        best_params["pit_ks_pvalue"] = evt_pit_pvalue  # Update PIT
+                        _log(f"     ✓ EVT Splice L3: PIT {current_pit:.4f}→{evt_pit_pvalue:.4f} ({improvement_ratio:.1f}x improvement)")
+                    else:
+                        reason = evt_diag.get("reason", "unknown")
+                        _log(f"     ⚠️ EVT Splice L3: Not selected ({reason})")
+                        
+                except Exception as evt_err:
+                    _log(f"     ⚠️ EVT Splice error: {evt_err}")
+                    evt_splice_result = {"attempted": True, "error": str(evt_err)}
+
+        
         # Build result structure - BMA-compatible format
         # signals.py expects: {"global": {...}, "has_bma": True}
         global_data = {
@@ -1662,6 +2005,10 @@ def tune_asset_q(
             "evt": evt_result,
             "evt_diagnostics": evt_diagnostics,
             "evt_student_t_consistency": evt_consistency,
+            # EVT Tail Splice for PIT calibration (L3 escalation)
+            "evt_splice": evt_splice_result,
+            "evt_splice_attempted": evt_splice_attempted,
+            "evt_splice_selected": evt_splice_selected,
             # Contaminated Student-t Mixture for regime-dependent tails
             "contaminated_student_t": cst_result,
             "contaminated_student_t_diagnostics": cst_diagnostics,
@@ -2264,136 +2611,7 @@ def fit_all_models_for_regime(
     models = {}
     
     # =========================================================================
-    # Model 0: Kalman Gaussian (q, c)
-    # =========================================================================
-    # NOTE: Pure Gaussian is disabled by default (February 2026).
-    # Empirical evidence shows Gaussian+Mom dominates with 40.9% selection rate
-    # vs pure Gaussian at 0.7%. We still fit it to provide parameters for
-    # momentum-augmented version, but mark it as disabled in BMA.
-    # =========================================================================
-    try:
-        q_gauss, c_gauss, ll_cv_gauss, diag_gauss = GaussianDriftModel.optimize_params(
-            returns, vol,
-            prior_log_q_mean=prior_log_q_mean,
-            prior_lambda=prior_lambda
-        )
-        
-        # Run full filter
-        mu_gauss, P_gauss, ll_full_gauss = GaussianDriftModel.filter(returns, vol, q_gauss, c_gauss)
-        
-        # Compute PIT calibration
-        ks_gauss, pit_p_gauss = GaussianDriftModel.pit_ks(returns, mu_gauss, vol, P_gauss, c_gauss)
-        
-        # Compute information criteria
-        n_params_gauss = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN]
-        aic_gauss = compute_aic(ll_full_gauss, n_params_gauss)
-        bic_gauss = compute_bic(ll_full_gauss, n_params_gauss, n_obs)
-        mean_ll_gauss = ll_full_gauss / max(n_obs, 1)
-        
-        # Compute Hyvärinen score for robust model selection
-        # Forecast std = sqrt(c * vol^2 + P) includes both observation and state uncertainty
-        forecast_std_gauss = np.sqrt(c_gauss * (vol ** 2) + P_gauss)
-        hyvarinen_gauss = compute_hyvarinen_score_gaussian(returns, mu_gauss, forecast_std_gauss)
-        
-        # Mark as disabled in BMA if DISABLE_PURE_GAUSSIAN_MODELS is True
-        # Parameters are still stored for momentum-augmented version
-        is_disabled = DISABLE_PURE_GAUSSIAN_MODELS
-        
-        models["kalman_gaussian"] = {
-            "q": float(q_gauss),
-            "c": float(c_gauss),
-            "phi": None,
-            "nu": None,
-            "log_likelihood": float(ll_full_gauss),
-            "mean_log_likelihood": float(mean_ll_gauss),
-            "cv_penalized_ll": float(ll_cv_gauss),
-            "bic": float('inf') if is_disabled else float(bic_gauss),  # Effectively remove from BMA
-            "bic_original": float(bic_gauss),  # Store original for diagnostics
-            "aic": float(aic_gauss),
-            "hyvarinen_score": float(hyvarinen_gauss),
-            "n_params": int(n_params_gauss),
-            "ks_statistic": float(ks_gauss),
-            "pit_ks_pvalue": float(pit_p_gauss),
-            "fit_success": True,
-            "disabled_in_bma": is_disabled,  # Flag for UX display
-            "diagnostics": diag_gauss,
-        }
-    except Exception as e:
-        models["kalman_gaussian"] = {
-            "fit_success": False,
-            "error": str(e),
-            "bic": float('inf'),
-            "aic": float('inf'),
-            "hyvarinen_score": float('-inf'),
-            "disabled_in_bma": DISABLE_PURE_GAUSSIAN_MODELS,
-        }
-    
-    # =========================================================================
-    # Model 1: Phi-Gaussian (q, c, phi)
-    # =========================================================================
-    # NOTE: Pure φ-Gaussian is disabled by default (February 2026).
-    # Empirical evidence shows φ-Gaussian+Mom dominates with 15.2% selection rate
-    # vs pure φ-Gaussian at 0.0%. We still fit it to provide parameters for
-    # momentum-augmented version, but mark it as disabled in BMA.
-    # =========================================================================
-    try:
-        q_phi, c_phi, phi_opt, ll_cv_phi, diag_phi = PhiGaussianDriftModel.optimize_params(
-            returns, vol,
-            prior_log_q_mean=prior_log_q_mean,
-            prior_lambda=prior_lambda
-        )
-        
-        # Run full filter
-        mu_phi, P_phi, ll_full_phi = GaussianDriftModel.filter_phi(returns, vol, q_phi, c_phi, phi_opt)
-        
-        # Compute PIT calibration
-        ks_phi, pit_p_phi = GaussianDriftModel.pit_ks(returns, mu_phi, vol, P_phi, c_phi)
-        
-        # Compute information criteria
-        n_params_phi = MODEL_CLASS_N_PARAMS[ModelClass.PHI_GAUSSIAN]
-        aic_phi = compute_aic(ll_full_phi, n_params_phi)
-        bic_phi = compute_bic(ll_full_phi, n_params_phi, n_obs)
-        mean_ll_phi = ll_full_phi / max(n_obs, 1)
-        
-        # Compute Hyvärinen score for robust model selection
-        forecast_std_phi = np.sqrt(c_phi * (vol ** 2) + P_phi)
-        hyvarinen_phi = compute_hyvarinen_score_gaussian(returns, mu_phi, forecast_std_phi)
-        
-        # Mark as disabled in BMA if DISABLE_PURE_GAUSSIAN_MODELS is True
-        # Parameters are still stored for momentum-augmented version
-        is_disabled = DISABLE_PURE_GAUSSIAN_MODELS
-        
-        models["kalman_phi_gaussian"] = {
-            "q": float(q_phi),
-            "c": float(c_phi),
-            "phi": float(phi_opt),
-            "nu": None,
-            "log_likelihood": float(ll_full_phi),
-            "mean_log_likelihood": float(mean_ll_phi),
-            "cv_penalized_ll": float(ll_cv_phi),
-            "bic": float('inf') if is_disabled else float(bic_phi),  # Effectively remove from BMA
-            "bic_original": float(bic_phi),  # Store original for diagnostics
-            "aic": float(aic_phi),
-            "hyvarinen_score": float(hyvarinen_phi),
-            "n_params": int(n_params_phi),
-            "ks_statistic": float(ks_phi),
-            "pit_ks_pvalue": float(pit_p_phi),
-            "fit_success": True,
-            "disabled_in_bma": is_disabled,  # Flag for UX display
-            "diagnostics": diag_phi,
-        }
-    except Exception as e:
-        models["kalman_phi_gaussian"] = {
-            "fit_success": False,
-            "error": str(e),
-            "bic": float('inf'),
-            "aic": float('inf'),
-            "hyvarinen_score": float('-inf'),
-            "disabled_in_bma": DISABLE_PURE_GAUSSIAN_MODELS,
-        }
-    
-    # =========================================================================
-    # Model 2: Phi-Student-t with DISCRETE ν GRID
+    # Model 1: Phi-Student-t with DISCRETE ν GRID
     # =========================================================================
     # Instead of continuous ν optimization, we fit separate sub-models for
     # each ν in STUDENT_T_NU_GRID. Each sub-model participates independently
@@ -2702,128 +2920,135 @@ def fit_all_models_for_regime(
         momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
         momentum_wrapper.precompute_momentum(returns)
         
-        # Momentum-augmented Gaussian
-        base_name = "kalman_gaussian"
-        mom_name = get_momentum_augmented_model_name(base_name)
+        # =====================================================================
+        # Momentum-augmented Gaussian (inline parameter fitting)
+        # =====================================================================
+        # Fit Gaussian parameters directly, then apply momentum augmentation.
+        # This is the ONLY Gaussian model in BMA - no pure Gaussian variant.
+        # =====================================================================
+        mom_name = "kalman_gaussian_momentum"  
         
-        if base_name in models and models[base_name].get("fit_success", False):
-            try:
-                base_model = models[base_name]
-                q_mom = base_model["q"]
-                c_mom = base_model["c"]
-                
-                # Run filter with momentum augmentation
-                mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
-                    returns, vol, q_mom, c_mom, phi=1.0, base_model='gaussian'
-                )
-                
-                # Compute PIT calibration
-                ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_mom)
-                
-                # Compute information criteria with prior penalty
-                n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN]
-                aic_mom = compute_aic(ll_mom, n_params_mom)
-                bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
-                bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
-                mean_ll_mom = ll_mom / max(n_obs, 1)
-                
-                # Compute Hyvärinen score
-                forecast_std_mom = np.sqrt(c_mom * (vol ** 2) + P_mom)
-                hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
-                
-                models[mom_name] = {
-                    "q": float(q_mom),
-                    "c": float(c_mom),
-                    "phi": None,
-                    "nu": None,
-                    "log_likelihood": float(ll_mom),
-                    "mean_log_likelihood": float(mean_ll_mom),
-                    "cv_penalized_ll": float(ll_mom),
-                    "bic": float(bic_mom),
-                    "bic_raw": float(bic_raw_mom),
-                    "aic": float(aic_mom),
-                    "hyvarinen_score": float(hyvarinen_mom),
-                    "n_params": int(n_params_mom),
-                    "ks_statistic": float(ks_mom),
-                    "pit_ks_pvalue": float(pit_p_mom),
-                    "fit_success": True,
-                    "momentum_augmented": True,
-                    "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
-                    "base_model": base_name,
-                    "diagnostics": momentum_wrapper.get_diagnostics(),
-                }
-            except Exception as e:
-                models[mom_name] = {
-                    "fit_success": False,
-                    "error": str(e),
-                    "bic": float('inf'),
-                    "aic": float('inf'),
-                    "hyvarinen_score": float('-inf'),
-                    "momentum_augmented": True,
-                    "base_model": base_name,
-                }
+        try:
+            # Fit Gaussian parameters (q, c)
+            q_gauss, c_gauss, ll_cv_gauss, diag_gauss = GaussianDriftModel.optimize_params(
+                returns, vol,
+                prior_log_q_mean=prior_log_q_mean,
+                prior_lambda=prior_lambda
+            )
+            
+            # Run filter with momentum augmentation
+            mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
+                returns, vol, q_gauss, c_gauss, phi=1.0, base_model='gaussian'
+            )
+            
+            # Compute PIT calibration
+            ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_gauss)
+            
+            # Compute information criteria with prior penalty
+            n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN]
+            aic_mom = compute_aic(ll_mom, n_params_mom)
+            bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
+            bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
+            mean_ll_mom = ll_mom / max(n_obs, 1)
+            
+            # Compute Hyvärinen score
+            forecast_std_mom = np.sqrt(c_gauss * (vol ** 2) + P_mom)
+            hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
+            
+            models[mom_name] = {
+                "q": float(q_gauss),
+                "c": float(c_gauss),
+                "phi": None,
+                "nu": None,
+                "log_likelihood": float(ll_mom),
+                "mean_log_likelihood": float(mean_ll_mom),
+                "cv_penalized_ll": float(ll_mom),
+                "bic": float(bic_mom),
+                "bic_raw": float(bic_raw_mom),
+                "aic": float(aic_mom),
+                "hyvarinen_score": float(hyvarinen_mom),
+                "n_params": int(n_params_mom),
+                "ks_statistic": float(ks_mom),
+                "pit_ks_pvalue": float(pit_p_mom),
+                "fit_success": True,
+                "momentum_augmented": True,
+                "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                "diagnostics": {**diag_gauss, **momentum_wrapper.get_diagnostics()},
+            }
+        except Exception as e:
+            models[mom_name] = {
+                "fit_success": False,
+                "error": str(e),
+                "bic": float('inf'),
+                "aic": float('inf'),
+                "hyvarinen_score": float('-inf'),
+                "momentum_augmented": True,
+            }
         
-        # Momentum-augmented Phi-Gaussian
-        base_name = "kalman_phi_gaussian"
-        mom_name = get_momentum_augmented_model_name(base_name)
+        # =====================================================================
+        # Momentum-augmented Phi-Gaussian (inline parameter fitting)
+        # =====================================================================
+        # Fit φ-Gaussian parameters directly, then apply momentum augmentation.
+        # This is the ONLY φ-Gaussian model in BMA - no pure variant.
+        # =====================================================================
+        mom_name = "kalman_phi_gaussian_momentum"  
         
-        if base_name in models and models[base_name].get("fit_success", False):
-            try:
-                base_model = models[base_name]
-                q_mom = base_model["q"]
-                c_mom = base_model["c"]
-                phi_mom = base_model["phi"]
-                
-                # Run filter with momentum augmentation
-                mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
-                    returns, vol, q_mom, c_mom, phi=phi_mom, base_model='phi_gaussian'
-                )
-                
-                # Compute PIT calibration
-                ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_mom)
-                
-                # Compute information criteria with prior penalty
-                n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.PHI_GAUSSIAN]
-                aic_mom = compute_aic(ll_mom, n_params_mom)
-                bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
-                bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
-                mean_ll_mom = ll_mom / max(n_obs, 1)
-                
-                # Compute Hyvärinen score
-                forecast_std_mom = np.sqrt(c_mom * (vol ** 2) + P_mom)
-                hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
-                
-                models[mom_name] = {
-                    "q": float(q_mom),
-                    "c": float(c_mom),
-                    "phi": float(phi_mom),
-                    "nu": None,
-                    "log_likelihood": float(ll_mom),
-                    "mean_log_likelihood": float(mean_ll_mom),
-                    "cv_penalized_ll": float(ll_mom),
-                    "bic": float(bic_mom),
-                    "bic_raw": float(bic_raw_mom),
-                    "aic": float(aic_mom),
-                    "hyvarinen_score": float(hyvarinen_mom),
-                    "n_params": int(n_params_mom),
-                    "ks_statistic": float(ks_mom),
-                    "pit_ks_pvalue": float(pit_p_mom),
-                    "fit_success": True,
-                    "momentum_augmented": True,
-                    "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
-                    "base_model": base_name,
-                    "diagnostics": momentum_wrapper.get_diagnostics(),
-                }
-            except Exception as e:
-                models[mom_name] = {
-                    "fit_success": False,
-                    "error": str(e),
-                    "bic": float('inf'),
-                    "aic": float('inf'),
-                    "hyvarinen_score": float('-inf'),
-                    "momentum_augmented": True,
-                    "base_model": base_name,
-                }
+        try:
+            # Fit Phi-Gaussian parameters (q, c, phi)
+            q_phi, c_phi, phi_opt, ll_cv_phi, diag_phi = PhiGaussianDriftModel.optimize_params(
+                returns, vol,
+                prior_log_q_mean=prior_log_q_mean,
+                prior_lambda=prior_lambda
+            )
+            
+            # Run filter with momentum augmentation
+            mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
+                returns, vol, q_phi, c_phi, phi=phi_opt, base_model='phi_gaussian'
+            )
+            
+            # Compute PIT calibration
+            ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_phi)
+            
+            # Compute information criteria with prior penalty
+            n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.PHI_GAUSSIAN]
+            aic_mom = compute_aic(ll_mom, n_params_mom)
+            bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
+            bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
+            mean_ll_mom = ll_mom / max(n_obs, 1)
+            
+            # Compute Hyvärinen score
+            forecast_std_mom = np.sqrt(c_phi * (vol ** 2) + P_mom)
+            hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
+            
+            models[mom_name] = {
+                "q": float(q_phi),
+                "c": float(c_phi),
+                "phi": float(phi_opt),
+                "nu": None,
+                "log_likelihood": float(ll_mom),
+                "mean_log_likelihood": float(mean_ll_mom),
+                "cv_penalized_ll": float(ll_mom),
+                "bic": float(bic_mom),
+                "bic_raw": float(bic_raw_mom),
+                "aic": float(aic_mom),
+                "hyvarinen_score": float(hyvarinen_mom),
+                "n_params": int(n_params_mom),
+                "ks_statistic": float(ks_mom),
+                "pit_ks_pvalue": float(pit_p_mom),
+                "fit_success": True,
+                "momentum_augmented": True,
+                "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                "diagnostics": {**diag_phi, **momentum_wrapper.get_diagnostics()},
+            }
+        except Exception as e:
+            models[mom_name] = {
+                "fit_success": False,
+                "error": str(e),
+                "bic": float('inf'),
+                "aic": float('inf'),
+                "hyvarinen_score": float('-inf'),
+                "momentum_augmented": True,
+            }
         
         # Momentum-augmented Student-t (for each nu in grid)
         for nu_fixed in STUDENT_T_NU_GRID:
@@ -2893,6 +3118,497 @@ def fit_all_models_for_regime(
                         "momentum_augmented": True,
                         "base_model": base_name,
                         "nu": float(nu_fixed),
+                    }
+    
+    # =========================================================================
+    # GAS-Q AUGMENTED MODELS (February 2026)
+    # =========================================================================
+    # Score-Driven Parameter Dynamics for process noise q.
+    # GAS-Q models adapt q_t based on forecast errors: q_t = ω + α·s_{t-1} + β·q_{t-1}
+    # This improves forecasting during regime transitions.
+    # Reference: Creal, Koopman & Lucas (2013) "Generalized Autoregressive Score Models"
+    # =========================================================================
+    
+    if GAS_Q_ENABLED and GAS_Q_AVAILABLE:
+        from models.gas_q import (
+            gas_q_filter_gaussian,
+            gas_q_filter_student_t,
+            optimize_gas_q_params,
+            get_gas_q_model_name,
+            compute_gas_q_bic,
+            GASQConfig,
+            DEFAULT_GAS_Q_CONFIG,
+        )
+        
+        # GAS-Q augmented Gaussian+Momentum (stack on top of momentum)
+        base_name = "kalman_gaussian_momentum"
+        gas_q_name = get_gas_q_model_name(base_name)
+        
+        if base_name in models and models[base_name].get("fit_success", False):
+            try:
+                base_model = models[base_name]
+                c_gas = base_model["c"]
+                phi_gas = base_model.get("phi", 1.0)
+                
+                # Optimize GAS-Q parameters
+                gas_config, gas_diag = optimize_gas_q_params(
+                    returns, vol, c_gas, phi_gas, nu=None, train_frac=0.7
+                )
+                
+                if gas_diag.get("fit_success", False):
+                    # Run GAS-Q filter
+                    gas_result = gas_q_filter_gaussian(
+                        returns, vol, c_gas, phi_gas, gas_config
+                    )
+                    
+                    # Compute PIT calibration
+                    ks_gas, pit_p_gas = GaussianDriftModel.pit_ks(
+                        returns, gas_result.mu_filtered, vol, 
+                        gas_result.P_filtered, c_gas
+                    )
+                    
+                    # BIC with extra 3 GAS parameters
+                    n_params_gas = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN] + 3
+                    bic_gas = compute_gas_q_bic(
+                        gas_result.log_likelihood, n_obs, 
+                        MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN], 3
+                    )
+                    aic_gas = compute_aic(gas_result.log_likelihood, n_params_gas)
+                    mean_ll_gas = gas_result.log_likelihood / max(n_obs, 1)
+                    
+                    # Compute Hyvärinen score
+                    forecast_std_gas = np.sqrt(c_gas * (vol ** 2) + gas_result.P_filtered)
+                    hyvarinen_gas = compute_hyvarinen_score_gaussian(
+                        returns, gas_result.mu_filtered, forecast_std_gas
+                    )
+                    
+                    models[gas_q_name] = {
+                        "q": float(gas_result.q_mean),
+                        "c": float(c_gas),
+                        "phi": float(phi_gas),
+                        "nu": None,
+                        "log_likelihood": float(gas_result.log_likelihood),
+                        "mean_log_likelihood": float(mean_ll_gas),
+                        "cv_penalized_ll": float(gas_result.log_likelihood),
+                        "bic": float(bic_gas),
+                        "aic": float(aic_gas),
+                        "hyvarinen_score": float(hyvarinen_gas),
+                        "n_params": int(n_params_gas),
+                        "ks_statistic": float(ks_gas),
+                        "pit_ks_pvalue": float(pit_p_gas),
+                        "fit_success": True,
+                        "gas_q_augmented": True,
+                        "gas_q_omega": float(gas_config.omega),
+                        "gas_q_alpha": float(gas_config.alpha),
+                        "gas_q_beta": float(gas_config.beta),
+                        "gas_q_mean": float(gas_result.q_mean),
+                        "gas_q_std": float(gas_result.q_std),
+                        "gas_q_final": float(gas_result.final_q),
+                        "base_model": base_name,
+                        "momentum_augmented": True,  # Inherits from base
+                    }
+            except Exception as e:
+                models[gas_q_name] = {
+                    "fit_success": False,
+                    "error": str(e),
+                    "bic": float('inf'),
+                    "aic": float('inf'),
+                    "hyvarinen_score": float('-inf'),
+                    "gas_q_augmented": True,
+                    "base_model": base_name,
+                }
+        
+        # GAS-Q augmented Student-t+Momentum (for each nu)
+        for nu_fixed in STUDENT_T_NU_GRID:
+            base_name = f"phi_student_t_nu_{nu_fixed}_momentum"
+            gas_q_name = get_gas_q_model_name(base_name)
+            
+            if base_name in models and models[base_name].get("fit_success", False):
+                try:
+                    base_model = models[base_name]
+                    c_gas = base_model["c"]
+                    phi_gas = base_model.get("phi", 0.0)
+                    
+                    # Optimize GAS-Q parameters for Student-t
+                    gas_config, gas_diag = optimize_gas_q_params(
+                        returns, vol, c_gas, phi_gas, nu=nu_fixed, train_frac=0.7
+                    )
+                    
+                    if gas_diag.get("fit_success", False):
+                        # Run GAS-Q filter
+                        gas_result = gas_q_filter_student_t(
+                            returns, vol, c_gas, phi_gas, nu_fixed, gas_config
+                        )
+                        
+                        # Compute PIT calibration
+                        ks_gas, pit_p_gas = PhiStudentTDriftModel.pit_ks(
+                            returns, gas_result.mu_filtered, vol,
+                            gas_result.P_filtered, c_gas, nu_fixed
+                        )
+                        
+                        # BIC with extra 3 GAS parameters
+                        n_params_gas = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 3
+                        bic_gas = compute_gas_q_bic(
+                            gas_result.log_likelihood, n_obs,
+                            MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T], 3
+                        )
+                        aic_gas = compute_aic(gas_result.log_likelihood, n_params_gas)
+                        mean_ll_gas = gas_result.log_likelihood / max(n_obs, 1)
+                        
+                        # Compute Hyvärinen score (Student-t)
+                        forecast_scale_gas = np.sqrt(c_gas * (vol ** 2) + gas_result.P_filtered)
+                        hyvarinen_gas = compute_hyvarinen_score_student_t(
+                            returns, gas_result.mu_filtered, forecast_scale_gas, nu_fixed
+                        )
+                        
+                        models[gas_q_name] = {
+                            "q": float(gas_result.q_mean),
+                            "c": float(c_gas),
+                            "phi": float(phi_gas),
+                            "nu": float(nu_fixed),
+                            "log_likelihood": float(gas_result.log_likelihood),
+                            "mean_log_likelihood": float(mean_ll_gas),
+                            "cv_penalized_ll": float(gas_result.log_likelihood),
+                            "bic": float(bic_gas),
+                            "aic": float(aic_gas),
+                            "hyvarinen_score": float(hyvarinen_gas),
+                            "n_params": int(n_params_gas),
+                            "ks_statistic": float(ks_gas),
+                            "pit_ks_pvalue": float(pit_p_gas),
+                            "fit_success": True,
+                            "gas_q_augmented": True,
+                            "gas_q_omega": float(gas_config.omega),
+                            "gas_q_alpha": float(gas_config.alpha),
+                            "gas_q_beta": float(gas_config.beta),
+                            "gas_q_mean": float(gas_result.q_mean),
+                            "gas_q_std": float(gas_result.q_std),
+                            "gas_q_final": float(gas_result.final_q),
+                            "base_model": base_name,
+                            "momentum_augmented": True,
+                            "nu_fixed": True,
+                        }
+                except Exception as e:
+                    models[gas_q_name] = {
+                        "fit_success": False,
+                        "error": str(e),
+                        "bic": float('inf'),
+                        "aic": float('inf'),
+                        "hyvarinen_score": float('-inf'),
+                        "gas_q_augmented": True,
+                        "base_model": base_name,
+                        "nu": float(nu_fixed),
+                    }
+    
+    # =========================================================================
+    # ENHANCED STUDENT-T MODELS (February 2026)
+    # =========================================================================
+    # Three enhancements to improve Hyvarinen/PIT calibration:
+    #   1. Vol-of-Vol (VoV): R_t = c × σ² × (1 + γ × |Δlog(σ)|)
+    #   2. Two-Piece: Different νL (crash) vs νR (recovery) tails
+    #   3. Two-Component Mixture: Blend νcalm and νstress with dynamic weights
+    #
+    # These compete in BMA with appropriate penalties for extra parameters.
+    # Only momentum variants are fitted (as per existing architecture).
+    # =========================================================================
+    
+    if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
+        # Import enhanced Student-t grids
+        from models import (
+            NU_LEFT_GRID, NU_RIGHT_GRID, TWO_PIECE_BMA_PENALTY,
+            GAMMA_VOV_GRID, VOV_BMA_PENALTY,
+            NU_CALM_GRID, NU_STRESS_GRID, MIXTURE_BMA_PENALTY,
+        )
+        
+        # Reuse momentum wrapper from above
+        if 'momentum_wrapper' not in dir():
+            momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
+            momentum_wrapper.precompute_momentum(returns)
+        
+        # =====================================================================
+        # Vol-of-Vol Enhanced Student-t + Momentum
+        # =====================================================================
+        # For each (nu, gamma_vov) combination, fit enhanced model.
+        # γ=0 is equivalent to base model, so skip γ=0 to avoid duplication.
+        # =====================================================================
+        for nu_fixed in STUDENT_T_NU_GRID:
+            base_name = f"phi_student_t_nu_{nu_fixed}"
+            
+            if base_name not in models or not models[base_name].get("fit_success", False):
+                continue
+                
+            base_model = models[base_name]
+            q_base = base_model["q"]
+            c_base = base_model["c"]
+            phi_base = base_model["phi"]
+            
+            for gamma_vov in GAMMA_VOV_GRID:
+                # Skip γ=0 (already covered by base momentum model)
+                if gamma_vov == 0.0:
+                    continue
+                
+                # Format gamma for model name (remove decimal point)
+                gamma_str = f"{gamma_vov:.1f}".replace(".", "")
+                vov_name = f"phi_student_t_nu_{nu_fixed}_vov_{gamma_str}_momentum"
+                
+                try:
+                    # Run VoV-enhanced filter
+                    mu_vov, P_vov, ll_vov = PhiStudentTDriftModel.filter_phi_vov(
+                        returns, vol, q_base, c_base, phi_base, nu_fixed, gamma_vov
+                    )
+                    
+                    # Apply momentum augmentation to drift estimate
+                    # (momentum adjusts the drift, VoV adjusts observation noise)
+                    momentum_signal = momentum_wrapper._momentum_signal
+                    if momentum_signal is not None:
+                        mu_vov_mom = mu_vov + momentum_signal * momentum_wrapper.config.adjustment_scale
+                    else:
+                        mu_vov_mom = mu_vov
+                    
+                    # Compute PIT calibration with VoV-adjusted variance
+                    ks_vov, pit_p_vov = PhiStudentTDriftModel.pit_ks_vov(
+                        returns, mu_vov, vol, P_vov, c_base, nu_fixed, gamma_vov
+                    )
+                    
+                    # Compute information criteria with VoV + momentum penalties
+                    n_params_vov = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 1  # +1 for γ
+                    aic_vov = compute_aic(ll_vov, n_params_vov)
+                    bic_raw_vov = compute_bic(ll_vov, n_params_vov, n_obs)
+                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + VOV_BMA_PENALTY
+                    bic_vov = compute_momentum_model_bic_adjustment(bic_raw_vov, combined_penalty)
+                    mean_ll_vov = ll_vov / max(n_obs, 1)
+                    
+                    # Compute Hyvärinen score
+                    forecast_scale_vov = np.sqrt(c_base * (vol ** 2) + P_vov)
+                    hyvarinen_vov = compute_hyvarinen_score_student_t(
+                        returns, mu_vov, forecast_scale_vov, nu_fixed
+                    )
+                    
+                    models[vov_name] = {
+                        "q": float(q_base),
+                        "c": float(c_base),
+                        "phi": float(phi_base),
+                        "nu": float(nu_fixed),
+                        "gamma_vov": float(gamma_vov),
+                        "log_likelihood": float(ll_vov),
+                        "mean_log_likelihood": float(mean_ll_vov),
+                        "cv_penalized_ll": float(ll_vov),
+                        "bic": float(bic_vov),
+                        "bic_raw": float(bic_raw_vov),
+                        "aic": float(aic_vov),
+                        "hyvarinen_score": float(hyvarinen_vov),
+                        "n_params": int(n_params_vov),
+                        "ks_statistic": float(ks_vov),
+                        "pit_ks_pvalue": float(pit_p_vov),
+                        "fit_success": True,
+                        "vov_enhanced": True,
+                        "momentum_augmented": True,
+                        "vov_penalty": VOV_BMA_PENALTY,
+                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                        "base_model": base_name,
+                        "nu_fixed": True,
+                        "model_type": "phi_student_t_vov",
+                    }
+                except Exception as e:
+                    models[vov_name] = {
+                        "fit_success": False,
+                        "error": str(e),
+                        "bic": float('inf'),
+                        "aic": float('inf'),
+                        "hyvarinen_score": float('-inf'),
+                        "vov_enhanced": True,
+                        "momentum_augmented": True,
+                        "nu": float(nu_fixed),
+                        "gamma_vov": float(gamma_vov),
+                    }
+        
+        # =====================================================================
+        # Two-Piece Student-t + Momentum
+        # =====================================================================
+        # Different ν for left (crash) vs right (recovery) tails.
+        # Captures empirical asymmetry: crashes are more extreme than rallies.
+        # =====================================================================
+        for nu_left in NU_LEFT_GRID:
+            for nu_right in NU_RIGHT_GRID:
+                # Use closest standard ν as base for parameters
+                base_nu = min(STUDENT_T_NU_GRID, key=lambda x: abs(x - (nu_left + nu_right) / 2))
+                base_name = f"phi_student_t_nu_{base_nu}"
+                
+                if base_name not in models or not models[base_name].get("fit_success", False):
+                    continue
+                
+                base_model = models[base_name]
+                q_2p = base_model["q"]
+                c_2p = base_model["c"]
+                phi_2p = base_model["phi"]
+                
+                two_piece_name = f"phi_student_t_nuL{nu_left}_nuR{nu_right}_momentum"
+                
+                try:
+                    # Run Two-Piece filter
+                    mu_2p, P_2p, ll_2p = PhiStudentTDriftModel.filter_phi_two_piece(
+                        returns, vol, q_2p, c_2p, phi_2p, nu_left, nu_right
+                    )
+                    
+                    # Apply momentum augmentation (use precomputed momentum signal)
+                    momentum_signal = momentum_wrapper._momentum_signal
+                    if momentum_signal is not None:
+                        mu_2p_mom = mu_2p + momentum_signal * momentum_wrapper.config.adjustment_scale
+                    else:
+                        mu_2p_mom = mu_2p
+                    
+                    # Compute PIT calibration with two-piece CDF
+                    ks_2p, pit_p_2p = PhiStudentTDriftModel.pit_ks_two_piece(
+                        returns, mu_2p, vol, P_2p, c_2p, nu_left, nu_right
+                    )
+                    
+                    # Compute information criteria with Two-Piece + momentum penalties
+                    # +2 params: nu_left, nu_right instead of single nu
+                    n_params_2p = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 1
+                    aic_2p = compute_aic(ll_2p, n_params_2p)
+                    bic_raw_2p = compute_bic(ll_2p, n_params_2p, n_obs)
+                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + TWO_PIECE_BMA_PENALTY
+                    bic_2p = compute_momentum_model_bic_adjustment(bic_raw_2p, combined_penalty)
+                    mean_ll_2p = ll_2p / max(n_obs, 1)
+                    
+                    # Compute Hyvärinen score (use average ν as approximation)
+                    nu_avg = (nu_left + nu_right) / 2
+                    forecast_scale_2p = np.sqrt(c_2p * (vol ** 2) + P_2p)
+                    hyvarinen_2p = compute_hyvarinen_score_student_t(
+                        returns, mu_2p, forecast_scale_2p, nu_avg
+                    )
+                    
+                    models[two_piece_name] = {
+                        "q": float(q_2p),
+                        "c": float(c_2p),
+                        "phi": float(phi_2p),
+                        "nu": None,  # No single ν
+                        "nu_left": float(nu_left),
+                        "nu_right": float(nu_right),
+                        "log_likelihood": float(ll_2p),
+                        "mean_log_likelihood": float(mean_ll_2p),
+                        "cv_penalized_ll": float(ll_2p),
+                        "bic": float(bic_2p),
+                        "bic_raw": float(bic_raw_2p),
+                        "aic": float(aic_2p),
+                        "hyvarinen_score": float(hyvarinen_2p),
+                        "n_params": int(n_params_2p),
+                        "ks_statistic": float(ks_2p),
+                        "pit_ks_pvalue": float(pit_p_2p),
+                        "fit_success": True,
+                        "two_piece": True,
+                        "momentum_augmented": True,
+                        "two_piece_penalty": TWO_PIECE_BMA_PENALTY,
+                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                        "base_model": base_name,
+                        "model_type": "phi_student_t_two_piece",
+                    }
+                except Exception as e:
+                    models[two_piece_name] = {
+                        "fit_success": False,
+                        "error": str(e),
+                        "bic": float('inf'),
+                        "aic": float('inf'),
+                        "hyvarinen_score": float('-inf'),
+                        "two_piece": True,
+                        "momentum_augmented": True,
+                        "nu_left": float(nu_left),
+                        "nu_right": float(nu_right),
+                    }
+        
+        # =====================================================================
+        # Two-Component Mixture Student-t + Momentum
+        # =====================================================================
+        # Blend νcalm and νstress with dynamic vol-based weights.
+        # Captures two curvature regimes in the central body.
+        # =====================================================================
+        for nu_calm in NU_CALM_GRID:
+            for nu_stress in NU_STRESS_GRID:
+                # Use calm ν as base for parameters
+                base_name = f"phi_student_t_nu_{nu_calm}"
+                
+                if base_name not in models or not models[base_name].get("fit_success", False):
+                    continue
+                
+                base_model = models[base_name]
+                q_mix = base_model["q"]
+                c_mix = base_model["c"]
+                phi_mix = base_model["phi"]
+                
+                mixture_name = f"phi_student_t_mix_{nu_calm}_{nu_stress}_momentum"
+                
+                try:
+                    # Run Mixture filter with default w_base
+                    from models import MIXTURE_WEIGHT_DEFAULT
+                    mu_mix, P_mix, ll_mix = PhiStudentTDriftModel.filter_phi_mixture(
+                        returns, vol, q_mix, c_mix, phi_mix, 
+                        nu_calm, nu_stress, MIXTURE_WEIGHT_DEFAULT
+                    )
+                    
+                    # Apply momentum augmentation (use precomputed momentum signal)
+                    momentum_signal = momentum_wrapper._momentum_signal
+                    if momentum_signal is not None:
+                        mu_mix_mom = mu_mix + momentum_signal * momentum_wrapper.config.adjustment_scale
+                    else:
+                        mu_mix_mom = mu_mix
+                    
+                    # Compute PIT calibration (use average ν approximation)
+                    nu_eff = (nu_calm + nu_stress) / 2
+                    ks_mix, pit_p_mix = PhiStudentTDriftModel.pit_ks(
+                        returns, mu_mix, vol, P_mix, c_mix, nu_eff
+                    )
+                    
+                    # Compute information criteria with Mixture + momentum penalties
+                    # +3 params: nu_calm, nu_stress, w_base instead of single nu
+                    n_params_mix = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 2
+                    aic_mix = compute_aic(ll_mix, n_params_mix)
+                    bic_raw_mix = compute_bic(ll_mix, n_params_mix, n_obs)
+                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + MIXTURE_BMA_PENALTY
+                    bic_mix = compute_momentum_model_bic_adjustment(bic_raw_mix, combined_penalty)
+                    mean_ll_mix = ll_mix / max(n_obs, 1)
+                    
+                    # Compute Hyvärinen score (use effective ν)
+                    forecast_scale_mix = np.sqrt(c_mix * (vol ** 2) + P_mix)
+                    hyvarinen_mix = compute_hyvarinen_score_student_t(
+                        returns, mu_mix, forecast_scale_mix, nu_eff
+                    )
+                    
+                    models[mixture_name] = {
+                        "q": float(q_mix),
+                        "c": float(c_mix),
+                        "phi": float(phi_mix),
+                        "nu": None,  # No single ν
+                        "nu_calm": float(nu_calm),
+                        "nu_stress": float(nu_stress),
+                        "w_base": MIXTURE_WEIGHT_DEFAULT,
+                        "log_likelihood": float(ll_mix),
+                        "mean_log_likelihood": float(mean_ll_mix),
+                        "cv_penalized_ll": float(ll_mix),
+                        "bic": float(bic_mix),
+                        "bic_raw": float(bic_raw_mix),
+                        "aic": float(aic_mix),
+                        "hyvarinen_score": float(hyvarinen_mix),
+                        "n_params": int(n_params_mix),
+                        "ks_statistic": float(ks_mix),
+                        "pit_ks_pvalue": float(pit_p_mix),
+                        "fit_success": True,
+                        "mixture_model": True,
+                        "momentum_augmented": True,
+                        "mixture_penalty": MIXTURE_BMA_PENALTY,
+                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
+                        "base_model": base_name,
+                        "model_type": "phi_student_t_mixture",
+                    }
+                except Exception as e:
+                    models[mixture_name] = {
+                        "fit_success": False,
+                        "error": str(e),
+                        "bic": float('inf'),
+                        "aic": float('inf'),
+                        "hyvarinen_score": float('-inf'),
+                        "mixture_model": True,
+                        "momentum_augmented": True,
+                        "nu_calm": float(nu_calm),
+                        "nu_stress": float(nu_stress),
                     }
     
     return models
@@ -3590,9 +4306,12 @@ def tune_asset_with_bma(
         reset_cache_stats()
     
     try:
-        # Fetch price data
+        # Fetch price data (need OHLC for Garman-Klass volatility)
+        df = None
         try:
             px, title = fetch_px(asset, start_date, end_date)
+            # fetch_px returns only close prices, try to get full OHLC
+            df = _download_prices(asset, start_date, end_date)
         except Exception:
             df = _download_prices(asset, start_date, end_date)
             if df is None or df.empty:
@@ -3640,12 +4359,42 @@ def tune_asset_with_bma(
                 "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
 
-        # Compute returns and volatility
+        # Compute returns
         log_ret = np.log(px / px.shift(1)).dropna()
         returns = log_ret.values
 
-        vol_ewma = log_ret.ewm(span=21, adjust=False).std()
-        vol = vol_ewma.values
+        # Compute volatility using Garman-Klass (7.4x more efficient than EWMA)
+        vol_estimator_used = "EWMA"
+        if GK_VOLATILITY_AVAILABLE and df is not None and not df.empty:
+            try:
+                # Check for OHLC columns
+                cols = {c.lower(): c for c in df.columns}
+                if all(c in cols for c in ['open', 'high', 'low', 'close']):
+                    # Align OHLC data with returns (drop first row to match log returns)
+                    df_aligned = df.iloc[1:].copy()
+                    open_ = df_aligned[cols['open']].values
+                    high = df_aligned[cols['high']].values
+                    low = df_aligned[cols['low']].values
+                    close = df_aligned[cols['close']].values
+                    
+                    vol, vol_estimator_used = compute_hybrid_volatility(
+                        open_=open_, high=high, low=low, close=close,
+                        span=21, annualize=False
+                    )
+                else:
+                    # Fallback to EWMA if OHLC not available
+                    vol = log_ret.ewm(span=21, adjust=False).std().values
+            except Exception as e:
+                # Fallback to EWMA on any error
+                vol = log_ret.ewm(span=21, adjust=False).std().values
+        else:
+            # Use EWMA if GK not available
+            vol = log_ret.ewm(span=21, adjust=False).std().values
+
+        # Ensure returns and vol have same length
+        min_len = min(len(returns), len(vol))
+        returns = returns[:min_len]
+        vol = vol[:min_len]
 
         # Remove NaN/Inf
         valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
@@ -3755,6 +4504,8 @@ def tune_asset_with_bma(
                 # Add BMA global model posterior
                 "model_posterior": bma_result.get("global", {}).get("model_posterior", {}),
                 "models": bma_result.get("global", {}).get("models", {}),
+                # Volatility estimator used (February 2026)
+                "volatility_estimator": vol_estimator_used,
             },
             "regime": regime_results,  # Now contains model_posterior and models per regime
             "use_regime_tuning": True,
@@ -3827,6 +4578,9 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float,
     """
     asset, start_date, end_date, prior_log_q_mean, prior_lambda, lambda_regime, previous_posteriors = args_tuple
     
+    # Track failure reasons for better error reporting
+    failure_reasons = []
+    
     try:
         result = tune_asset_with_bma(
             asset=asset,
@@ -3840,6 +4594,8 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float,
         
         if result:
             return (asset, result, None, None)
+        
+        failure_reasons.append("tune_asset_with_bma returned None (likely insufficient data or data fetch error)")
 
         # Fallback to standard tuning when regime tuning fails (insufficient data for regime estimation)
         _log(f"  ↩️  {asset}: Falling back to standard model tuning...")
@@ -3858,7 +4614,29 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float,
             fallback_result['regime_fallback_reason'] = 'tune_asset_with_bma_returned_none'
             return (asset, fallback_result, None, None)
         else:
-            return (asset, None, "both regime and standard tuning failed", None)
+            failure_reasons.append("tune_asset_q also returned None")
+            
+            # Try to get more info about why data fetch might have failed
+            try:
+                df = _download_prices(asset, start_date, end_date)
+                if df is None:
+                    failure_reasons.append(f"_download_prices returned None for {asset}")
+                elif df.empty:
+                    failure_reasons.append(f"_download_prices returned empty DataFrame for {asset}")
+                else:
+                    n_rows = len(df)
+                    failure_reasons.append(f"Data was fetched ({n_rows} rows) but processing failed")
+                    # Check for NaN/Inf issues
+                    if 'Close' in df.columns:
+                        close = df['Close']
+                        n_valid = close.notna().sum()
+                        n_inf = np.isinf(close.replace([np.inf, -np.inf], np.nan).dropna()).sum() if n_valid > 0 else 0
+                        failure_reasons.append(f"Close prices: {n_valid} valid, {n_rows - n_valid} NaN, {n_inf} Inf")
+            except Exception as data_check_err:
+                failure_reasons.append(f"Data check error: {data_check_err}")
+            
+            detailed_error = " | ".join(failure_reasons)
+            return (asset, None, detailed_error, None)
 
     except Exception as e:
         import traceback

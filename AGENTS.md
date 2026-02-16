@@ -58,6 +58,64 @@ Enabled by default since Feb 2026 (94.9% selection rate). Models compete via BMA
 
 Use `--disable-momentum` flag for ablation testing.
 
+### Enhanced Student-t Models (February 2026)
+**Location**: `src/models/phi_student_t.py`
+
+Three enhancements to improve Hyvarinen/PIT calibration:
+
+**1. Vol-of-Vol (VoV) Enhancement**
+```
+R_t = c × σ_t² × (1 + γ × |Δlog(σ_t)|)
+```
+When volatility changes rapidly, EWMA vol lags true vol, requiring larger observation noise.
+- Grid: `GAMMA_VOV_GRID = [0.3, 0.5, 0.7]`
+- BIC Penalty: `VOV_BMA_PENALTY = 1.0` (1 extra parameter)
+
+**2. Two-Piece Student-t (Asymmetric Tails)**
+Different νL (crash) vs νR (recovery) tails:
+- νL small → heavier crash tails
+- νR larger → lighter recovery tails
+- Grid: `NU_LEFT_GRID = [3, 4, 5]`, `NU_RIGHT_GRID = [8, 12, 20]`
+- BIC Penalty: `TWO_PIECE_BMA_PENALTY = 3.0` (2 extra params)
+
+**3. Two-Component Mixture**
+Blend νcalm and νstress with dynamic weights:
+```
+p(r_t) = w_t × t(νcalm) + (1 - w_t) × t(νstress)
+```
+- Grid: `NU_CALM_GRID = [12, 20]`, `NU_STRESS_GRID = [4, 6]`
+- Weight dynamics: `w_t = sigmoid(w_base - k × vol_relative)`
+- BIC Penalty: `MIXTURE_BMA_PENALTY = 4.0` (3 extra params)
+
+All enhancements compete via BMA against standard models.
+
+### Garman-Klass Realized Volatility (Feb 2026)
+**Location**: `src/calibration/realized_volatility.py`
+
+Default volatility estimator upgraded from EWMA to Garman-Klass (GK):
+- **7.4x more efficient** than close-to-close EWMA
+- Uses OHLC (Open/High/Low/Close) data for range-based estimation
+- No additional parameters - pure efficiency improvement
+
+**Mathematical Foundation:**
+```
+σ²_GK = 0.5*(log(H/L))² - (2*log(2)-1)*(log(C/O))²
+```
+
+**Estimator Priority:**
+1. Garman-Klass (if OHLC available)
+2. GARCH(1,1) via MLE
+3. EWMA blend (fallback)
+
+**Impact on Calibration:**
+- Improves PIT histogram uniformity
+- Reduces variance estimation noise by 7.4x
+- Better c parameter estimation (observation variance scaling)
+
+**Display in Augmentation:**
+- `VOL:GK` - Garman-Klass active (using OHLC)
+- `VOL:EWMA` - Fallback to close-to-close
+
 ## Developer Workflow
 
 ### Daily Commands
@@ -76,13 +134,42 @@ Displays unified risk assessment with forecasts across all asset classes:
 - **Equity Market**: Universe metrics, sector breakdown, currency pairs with forecasts
 - **JPY Forecasts**: Yen strength view with multi-horizon forecasts
 
-**Forecasts use classical mean reversion + momentum with proper bounds:**
+### Elite Forecasting Engine (February 2026)
+**Location**: `src/decision/market_temperature.py`
 
-| Asset Class | 7D   | 30D  | 3M   | 6M   | 12M  |
-|-------------|------|------|------|------|------|
-| Currencies  | ±5%  | ±10% | ±15% | ±20% | ±30% |
-| Equities    | ±5%  | ±10% | ±15% | ±20% | ±30% |
-| Metals      | ±8%  | ±15% | ±25% | ±35% | ±50% |
+Multi-model ensemble forecasting with regime-aware weighting:
+
+**Models (5 total):**
+1. **Kalman Filter** - Drift state estimation with adaptive alpha
+2. **GARCH(1,1)** - Volatility-adjusted forecasts  
+3. **Ornstein-Uhlenbeck** - Mean reversion to moving average
+4. **Momentum** - Multi-timeframe trend following
+5. **Classical** - Baseline drift extrapolation
+
+**Asset-Type Specific Parameters:**
+- **Currencies**: Faster mean reversion (θ × 1.8), shorter decay (45d vs 120d)
+- **Metals**: Wider bounds (±50% at 12M), momentum-heavy
+- **Equities**: Standard parameters with sector-specific adjustments
+
+**Standard Horizons:**
+```python
+STANDARD_HORIZONS = [1, 3, 7, 30, 90, 180, 365]  # Days
+```
+
+**Key Functions:**
+- `_kalman_forecast()` - Adaptive drift estimation
+- `_garch_forecast()` - Volatility regime adjustment
+- `_ou_forecast()` - Multi-MA mean reversion
+- `_momentum_forecast()` - Horizon-weighted momentum
+- `ensemble_forecast()` - Combined output with regime weighting
+
+**Forecasts use horizon-dependent bounds:**
+
+| Asset Class | 1D   | 7D   | 30D  | 3M   | 6M   | 12M  |
+|-------------|------|------|------|------|------|------|
+| Currencies  | ±1.5%| ±4%  | ±8%  | ±12% | ±18% | ±25% |
+| Equities    | ±2%  | ±6%  | ±12% | ±18% | ±25% | ±35% |
+| Metals      | ±3%  | ±8%  | ±15% | ±25% | ±35% | ±50% |
 
 ### Testing Patterns
 ```bash
@@ -423,4 +510,3 @@ Result: Sortino +4.63, Max DD 3.8%, near breakeven PnL
 | `signal_fields.py` | Convert Kalman outputs to epistemic fields |
 | `signal_geometry.py` | Gate + size trades based on field quality |
 
-## Code Conventions

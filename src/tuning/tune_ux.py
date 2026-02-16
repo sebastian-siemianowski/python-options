@@ -360,13 +360,15 @@ def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: 
     chips3.append("   ○ ", style="bright_green")
     chips3.append("AIGF-NF", style="bright_green")
     console.print(Align.center(chips3))
-    # Momentum augmentation status
+    # Momentum and Fisher-Rao augmentation status
     chips4 = Text()
     if momentum_enabled:
         chips4.append("○ ", style="bright_yellow")
         chips4.append("Momentum", style="bright_yellow")
         chips4.append(" ", style="dim")
         chips4.append("(BMA augmentation)", style="dim")
+        chips4.append("   ○ ", style="bright_cyan")
+        chips4.append("Fisher-Rao", style="bright_cyan")
     else:
         chips4.append("○ ", style="dim")
         chips4.append("Momentum", style="dim")
@@ -550,8 +552,8 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
             display_name = level_name
             if level_name == 'φ-Student-t (ν-refined)':
                 display_name = 'φ-Student-t (adaptive ν)'
-            elif level_name == 'φ-Student-t+Mom (ν-refined)':
-                display_name = 'φ-Student-t+Mom (adaptive ν)'
+            elif level_name == 'φ-Student-t+Momentum (ν-refined)':
+                display_name = 'φ-Student-t+Momentum (adaptive ν)'
             
             if is_disabled:
                 row.append(f"{display_name:<28}", style="dim")
@@ -573,7 +575,7 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
                     row.append(rate_str, style="dim italic")
                 elif count > 0:
                     # Add appropriate annotation based on model type
-                    if 'Momentum' in level_name or '+Mom' in level_name:
+                    if 'Momentum' in level_name:
                         row.append("  ↑ momentum augmented", style="dim italic")
                     elif 'Student-t' in level_name and 'base' not in level_name.lower():
                         row.append("  ↑ heavier tails", style="dim italic")
@@ -637,6 +639,10 @@ def render_tuning_summary(
     momentum_phi_gaussian_count: int = 0,  # φ-Gaussian with momentum
     momentum_phi_student_t_count: int = 0,  # φ-Student-t with momentum
     momentum_total_count: int = 0,
+    # Enhanced Student-t counts (February 2026)
+    vov_enhanced_count: int = 0,  # Vol-of-Vol enhanced
+    two_piece_count: int = 0,  # Two-Piece asymmetric tails
+    mixture_t_count: int = 0,  # Two-Component mixture
     # Legacy parameter for backward compatibility
     momentum_student_t_count: int = 0,
     console: Console = None
@@ -807,6 +813,68 @@ def render_tuning_summary(
             mom_total_pct = momentum_total_count / total_models * 100 if total_models > 0 else 0
             mom_total_row.append(f" ({mom_total_pct:.1f}%)", style="dim")
             console.print(mom_total_row)
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # ENHANCED STUDENT-T MODELS (Vol-of-Vol, Two-Piece, Mixture)
+        # ═══════════════════════════════════════════════════════════════════
+        enhanced_total = vov_enhanced_count + two_piece_count + mixture_t_count
+        if enhanced_total > 0:
+            console.print()
+            enhanced_section = Text()
+            enhanced_section.append("    ▸ Enhanced Student-t", style="bold dim")
+            console.print(enhanced_section)
+            console.print()
+            
+            # Vol-of-Vol enhanced
+            vov_pct = vov_enhanced_count / total_models * 100 if total_models > 0 else 0
+            vov_filled = int(vov_pct / 100 * bar_width)
+            vov_style = "bright_magenta" if vov_enhanced_count > 0 else "dim"
+            vov_row = Text()
+            vov_row.append("      ◎ ", style=vov_style)
+            vov_row.append(f"{'Vol-of-Vol+Mom':<22} ", style=vov_style)
+            vov_row.append("█" * vov_filled, style=vov_style)
+            vov_row.append("░" * (bar_width - vov_filled), style="dim")
+            vov_row.append(f"  {vov_enhanced_count:>4}", style="bold white" if vov_enhanced_count > 0 else "dim")
+            vov_row.append(f"  ({vov_pct:>4.1f}%)", style="dim")
+            console.print(vov_row)
+            
+            # Two-Piece asymmetric
+            tp_pct = two_piece_count / total_models * 100 if total_models > 0 else 0
+            tp_filled = int(tp_pct / 100 * bar_width)
+            tp_style = "yellow" if two_piece_count > 0 else "dim"
+            tp_row = Text()
+            tp_row.append("      ◐ ", style=tp_style)
+            tp_row.append(f"{'Two-Piece-t+Mom':<22} ", style=tp_style)
+            tp_row.append("█" * tp_filled, style=tp_style)
+            tp_row.append("░" * (bar_width - tp_filled), style="dim")
+            tp_row.append(f"  {two_piece_count:>4}", style="bold white" if two_piece_count > 0 else "dim")
+            tp_row.append(f"  ({tp_pct:>4.1f}%)", style="dim")
+            console.print(tp_row)
+            
+            # Two-Component mixture
+            mix_pct = mixture_t_count / total_models * 100 if total_models > 0 else 0
+            mix_filled = int(mix_pct / 100 * bar_width)
+            mix_style = "bright_green" if mixture_t_count > 0 else "dim"
+            mix_row = Text()
+            mix_row.append("      ◉ ", style=mix_style)
+            mix_row.append(f"{'Mixture-t+Mom':<22} ", style=mix_style)
+            mix_row.append("█" * mix_filled, style=mix_style)
+            mix_row.append("░" * (bar_width - mix_filled), style="dim")
+            mix_row.append(f"  {mixture_t_count:>4}", style="bold white" if mixture_t_count > 0 else "dim")
+            mix_row.append(f"  ({mix_pct:>4.1f}%)", style="dim")
+            console.print(mix_row)
+            
+            # Enhanced summary
+            console.print()
+            enh_sum_row = Text()
+            enh_sum_row.append("      ─────────────────────────────────────────────────────────", style="dim")
+            console.print(enh_sum_row)
+            enh_total_row = Text()
+            enh_total_row.append("      Total Enhanced: ", style="dim")
+            enh_total_row.append(f"{enhanced_total}", style="bold bright_cyan")
+            enh_total_pct = enhanced_total / total_models * 100 if total_models > 0 else 0
+            enh_total_row.append(f" ({enh_total_pct:.1f}%)", style="dim")
+            console.print(enh_total_row)
         
         # ═══════════════════════════════════════════════════════════════════
         # OTHER VARIANTS (φ-Skew-t, φ-NIG) - only show if any exist
@@ -1013,7 +1081,7 @@ def render_tuning_summary(
         if "+Mom" in m and ("Student" in m or "t(" in m or "phi_student" in m.lower()):
             return "φ-Student-t+Mom"
         # φ-Gaussian+Mom (momentum phi-gaussian)
-        if "φ-Gaussian+Mom" in m or "phi_gaussian" in m.lower() and "_momentum" in m.lower():
+        if "φ-Gaussian+Mom" in m or "kalman_phi_gaussian_momentum" in m.lower():
             return "φ-Gaussian+Mom"
         # Gaussian+Mom (momentum gaussian, no phi)
         if "Gaussian+Mom" in m or ("kalman_gaussian_momentum" in m.lower() and "phi" not in m.lower()):
@@ -2014,6 +2082,11 @@ Examples:
     momentum_phi_gaussian_count = 0  # φ-Gaussian with momentum
     momentum_phi_student_t_count = 0  # φ-Student-t with momentum
     
+    # Enhanced Student-t counters (February 2026)
+    vov_enhanced_count = 0  # Vol-of-Vol enhanced
+    two_piece_count = 0  # Two-Piece asymmetric tails
+    mixture_t_count = 0  # Two-Component mixture
+    
     # Calibrated Trust Authority statistics
     recalibration_applied_count = 0
     calibrated_trust_count = 0
@@ -2230,7 +2303,21 @@ Examples:
                             else:
                                 model_str = "Skew-t"
                         elif model_type.startswith('phi_student_t_nu_') and nu_val is not None:
-                            model_str = "Student-t"
+                            # Check for Enhanced Student-t variants
+                            gamma_vov = global_result.get('gamma_vov')
+                            nu_left = global_result.get('nu_left')
+                            nu_right = global_result.get('nu_right')
+                            nu_calm = global_result.get('nu_calm')
+                            nu_stress = global_result.get('nu_stress')
+                            
+                            if gamma_vov is not None and gamma_vov > 0:
+                                model_str = "Student-t+VoV"
+                            elif nu_left is not None and nu_right is not None:
+                                model_str = "Student-t+2P"
+                            elif nu_calm is not None and nu_stress is not None:
+                                model_str = "Student-t+Mix"
+                            else:
+                                model_str = "Student-t"
                         elif phi_val is not None:
                             model_str = "φ-Gaussian"
                         else:
@@ -2714,6 +2801,10 @@ Examples:
         momentum_phi_gaussian_count=momentum_phi_gaussian_count,
         momentum_phi_student_t_count=momentum_phi_student_t_count,
         momentum_total_count=momentum_count,
+        # Enhanced Student-t counts (February 2026)
+        vov_enhanced_count=vov_enhanced_count,
+        two_piece_count=two_piece_count,
+        mixture_t_count=mixture_t_count,
         console=console,
     )
 

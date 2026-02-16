@@ -163,6 +163,17 @@ from models.phi_student_t import (
     PHI_SHRINKAGE_GLOBAL_DEFAULT,
     PHI_SHRINKAGE_LAMBDA_DEFAULT,
     STUDENT_T_NU_GRID,
+    # Enhanced Student-t constants (February 2026)
+    NU_LEFT_GRID,
+    NU_RIGHT_GRID,
+    TWO_PIECE_BMA_PENALTY,
+    GAMMA_VOV_GRID,
+    VOV_BMA_PENALTY,
+    NU_CALM_GRID,
+    NU_STRESS_GRID,
+    MIXTURE_BMA_PENALTY,
+    MIXTURE_WEIGHT_K,
+    MIXTURE_WEIGHT_DEFAULT,
 )
 
 __all__ = [
@@ -178,6 +189,17 @@ __all__ = [
     'PHI_SHRINKAGE_GLOBAL_DEFAULT',
     'PHI_SHRINKAGE_LAMBDA_DEFAULT',
     'STUDENT_T_NU_GRID',
+    # Enhanced Student-t constants
+    'NU_LEFT_GRID',
+    'NU_RIGHT_GRID',
+    'TWO_PIECE_BMA_PENALTY',
+    'GAMMA_VOV_GRID',
+    'VOV_BMA_PENALTY',
+    'NU_CALM_GRID',
+    'NU_STRESS_GRID',
+    'MIXTURE_BMA_PENALTY',
+    'MIXTURE_WEIGHT_K',
+    'MIXTURE_WEIGHT_DEFAULT',
     # Constants (from phi_skew_t)
     'SKEW_T_NU_GRID',
     'SKEW_T_GAMMA_GRID',
