@@ -3930,13 +3930,14 @@ def compute_features(
         console.print(Padding(params_table, (0, 0, 0, 4)))
 
         # ─────────────────────────────────────────────────────────────────────────────
-        # CALIBRATION & TRUST - Clean, Apple-quality
+        # MODEL QUALITY - Combined calibration status and augmentation layers
+        # Clean, compact Apple-quality design
         # ─────────────────────────────────────────────────────────────────────────────
         console.print()
 
-        calibration_header = Text()
-        calibration_header.append("    Calibration", style="bold white")
-        console.print(calibration_header)
+        quality_header = Text()
+        quality_header.append("    Model Quality", style="bold white")
+        console.print(quality_header)
         console.print()
 
         # Get calibration data from tuned params
@@ -3952,101 +3953,7 @@ def compute_features(
         gh_selected = tuned_params.get('gh_selected', False)
         gh_model = tuned_params.get('gh_model', {})
 
-        # Trust decomposition table - clean, no borders
-        trust_table = Table(
-            show_header=False,
-            border_style="dim",
-            box=box.SIMPLE,
-            padding=(0, 2),
-            expand=False,
-        )
-        trust_table.add_column("Label", style="dim", width=26)
-        trust_table.add_column("Value", width=36)
-
-        # Calibration status
-        if calibration_warning:
-            cal_status = "[bold yellow]Warning[/bold yellow]"
-        else:
-            cal_status = "[bold green]Passed[/bold green]"
-        trust_table.add_row("PIT Calibration", cal_status)
-
-        # PIT p-values
-        if pit_ks_pvalue is not None:
-            pit_color = "red" if pit_ks_pvalue < 0.01 else "yellow" if pit_ks_pvalue < 0.05 else "green"
-            pit_str = f"[{pit_color}]{pit_ks_pvalue:.4f}[/{pit_color}]"
-            trust_table.add_row("  Raw PIT p-value", pit_str)
-
-        if pit_ks_pvalue_calibrated is not None:
-            pit_cal_color = "red" if pit_ks_pvalue_calibrated < 0.01 else "yellow" if pit_ks_pvalue_calibrated < 0.05 else "green"
-            pit_cal_str = f"[{pit_cal_color}]{pit_ks_pvalue_calibrated:.4f}[/{pit_cal_color}]"
-            trust_table.add_row("  Calibrated PIT p-value", pit_cal_str)
-
-        # Isotonic recalibration
-        if recalibration_applied:
-            trust_table.add_row("  Isotonic Recalibration", "[green]Applied[/green]")
-        else:
-            trust_table.add_row("  Isotonic Recalibration", "[dim]Not applied[/dim]")
-
-        # ν refinement
-        if nu_refinement:
-            nu_attempted = nu_refinement.get('refinement_attempted', False)
-            nu_improved = nu_refinement.get('improvement_achieved', False)
-            nu_original = nu_refinement.get('nu_original')
-            nu_final = nu_refinement.get('nu_final')
-
-            if nu_attempted:
-                if nu_improved and nu_original != nu_final:
-                    trust_table.add_row("  ν Refinement", f"[green]Improved ν={nu_original}→{nu_final}[/green]")
-                else:
-                    trust_table.add_row("  ν Refinement", f"[dim]Attempted, no improvement[/dim]")
-            else:
-                trust_table.add_row("  ν Refinement", "[dim]Not needed[/dim]")
-
-        # GH model
-        if gh_selected and gh_model:
-            gh_params = gh_model.get('parameters', {})
-            gh_skew = gh_params.get('beta', 0)
-            skew_dir = "right" if gh_skew > 0.1 else "left" if gh_skew < -0.1 else "symmetric"
-            trust_table.add_row("  GH Skew Model", f"[cyan]Selected ({skew_dir})[/cyan]")
-
-        # Trust decomposition (main feature)
-        if effective_trust is not None and calibration_trust is not None:
-            trust_table.add_row("", "")  # Spacer
-            trust_table.add_row("[bold]Trust Authority[/bold]", "")
-
-            # Calibration trust
-            cal_trust_color = "green" if calibration_trust > 0.8 else "yellow" if calibration_trust > 0.5 else "red"
-            trust_table.add_row("  Calibration Trust", f"[{cal_trust_color}]{calibration_trust:.1%}[/{cal_trust_color}]")
-
-            # Regime penalty
-            if regime_penalty is not None:
-                penalty_color = "dim" if regime_penalty < 0.1 else "yellow" if regime_penalty < 0.2 else "red"
-                regime_context = calibrated_trust_data.get('regime_context', 'normal')
-                trust_table.add_row("  Regime Penalty", f"[{penalty_color}]-{regime_penalty:.1%} ({regime_context})[/{penalty_color}]")
-
-            # Effective trust (final)
-            eff_trust_color = "green" if effective_trust > 0.7 else "yellow" if effective_trust > 0.4 else "red"
-            trust_table.add_row("  [bold]Effective Trust[/bold]", f"[bold {eff_trust_color}]{effective_trust:.1%}[/bold {eff_trust_color}]")
-
-            # Tail bias
-            tail_bias = calibrated_trust_data.get('tail_bias')
-            if tail_bias is not None:
-                bias_dir = "right" if tail_bias > 0.02 else "left" if tail_bias < -0.02 else "centered"
-                trust_table.add_row("  Tail Bias", f"[dim]{tail_bias:+.3f} ({bias_dir})[/dim]")
-
-        console.print(Padding(trust_table, (0, 0, 0, 4)))
-
-        # ─────────────────────────────────────────────────────────────────────────────
-        # AUGMENTATION LAYERS - Clean Apple-quality design without icons
-        # ─────────────────────────────────────────────────────────────────────────────
-        console.print()
-
-        aug_header = Text()
-        aug_header.append("    Augmentation Layers", style="bold white")
-        console.print(aug_header)
-        console.print()
-
-        # Extract augmentation layer data from global_data
+        # Extract augmentation layer data
         hansen_data = global_data.get('hansen_skew_t', {})
         cst_data = global_data.get('contaminated_student_t', {})
         gmm_data = global_data.get('gmm', {})
@@ -4054,152 +3961,198 @@ def compute_features(
         skew_t_data = global_data.get('phi_skew_t', {})
         vol_estimator = global_data.get('volatility_estimator', 'EWMA')
 
-        aug_table = Table(
+        # Build compact quality table
+        quality_table = Table(
             show_header=False,
             border_style="dim",
             box=box.SIMPLE,
             padding=(0, 2),
             expand=False,
         )
-        aug_table.add_column("Layer", style="white", width=26)
-        aug_table.add_column("Status", width=44)
+        quality_table.add_column("Label", style="dim", width=24)
+        quality_table.add_column("Value", width=56)
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # VOLATILITY ESTIMATOR: Garman-Klass vs EWMA (February 2026)
+        # PIT CALIBRATION - Model fit quality check
+        # Tests if predictions match actual market behavior (higher p = better fit)
+        # ═══════════════════════════════════════════════════════════════════════════
+        pit_status_parts = []
+        pit_explanation = ""
+        
+        if pit_ks_pvalue is not None:
+            pit_color = "red" if pit_ks_pvalue < 0.01 else "yellow" if pit_ks_pvalue < 0.05 else "green"
+            pit_status_parts.append(f"[{pit_color}]p={pit_ks_pvalue:.4f}[/{pit_color}]")
+            
+            # User-friendly explanation
+            if pit_ks_pvalue >= 0.05:
+                pit_explanation = "✓ Good fit"
+            elif pit_ks_pvalue >= 0.01:
+                pit_explanation = "⚠ Marginal fit"
+            else:
+                pit_explanation = "✗ Poor fit"
+        
+        # ν refinement (tail thickness adjusted)
+        if nu_refinement:
+            nu_improved = nu_refinement.get('improvement_achieved', False)
+            nu_original = nu_refinement.get('nu_original')
+            nu_final = nu_refinement.get('nu_final')
+            if nu_improved and nu_original != nu_final:
+                pit_status_parts.append(f"[green]ν {nu_original}→{nu_final}[/green]")
+        
+        # Recalibration applied
+        if recalibration_applied:
+            pit_status_parts.append("[green]recalibrated[/green]")
+        
+        if pit_status_parts:
+            if calibration_warning:
+                cal_label = "[yellow]PIT Calibration[/yellow]"
+            else:
+                cal_label = "[green]PIT Calibration[/green]"
+            status_str = "  ".join(pit_status_parts)
+            if pit_explanation:
+                status_str += f"  [dim]{pit_explanation}[/dim]"
+            quality_table.add_row(cal_label, status_str)
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # TRUST AUTHORITY - Overall confidence in model predictions
+        # Higher = more reliable signals, lower = treat with caution
+        # ═══════════════════════════════════════════════════════════════════════════
+        if effective_trust is not None:
+            eff_trust_color = "green" if effective_trust > 0.7 else "yellow" if effective_trust > 0.4 else "red"
+            trust_desc = "High confidence" if effective_trust > 0.7 else "Moderate" if effective_trust > 0.4 else "Low confidence"
+            
+            trust_str = f"[bold {eff_trust_color}]{effective_trust:.0%}[/bold {eff_trust_color}]  [dim]{trust_desc}[/dim]"
+            
+            # Add regime penalty context if significant
+            if regime_penalty is not None and regime_penalty >= 0.05:
+                regime_context = calibrated_trust_data.get('regime_context', 'stressed')
+                trust_str += f"  [dim](-{regime_penalty:.0%} {regime_context} market)[/dim]"
+            
+            quality_table.add_row("[bold]Trust[/bold]", trust_str)
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # VOLATILITY ESTIMATOR - Method used to estimate price volatility
         # ═══════════════════════════════════════════════════════════════════════════
         if vol_estimator and vol_estimator.upper() == "GK":
-            aug_table.add_row(
-                "[green]Realized Vol[/green]",
-                f"[green]Garman-Klass[/green]  (7.4x efficient vs EWMA)"
+            quality_table.add_row(
+                "[green]Volatility[/green]",
+                "[green]Garman-Klass[/green]  [dim]Uses OHLC data, 7.4× more accurate[/dim]"
             )
         elif vol_estimator and "gk" in vol_estimator.lower():
-            aug_table.add_row(
-                "[green]Realized Vol[/green]",
-                f"[green]{vol_estimator}[/green]  (OHLC range-based)"
-            )
+            quality_table.add_row("[green]Volatility[/green]", f"[green]{vol_estimator}[/green]  [dim]OHLC range-based[/dim]")
         else:
-            aug_table.add_row(
-                "[dim]Realized Vol[/dim]",
-                f"[dim]{vol_estimator or 'EWMA'}[/dim]  (close-to-close)"
-            )
-
-        # Helper to describe skewness direction
-        def skew_direction(val):
-            if val is None:
-                return "n/a"
-            if val < -0.05:
-                return "left (crash risk)"
-            elif val > 0.05:
-                return "right (upside)"
-            return "symmetric"
+            quality_table.add_row("[dim]Volatility[/dim]", f"[dim]{vol_estimator or 'EWMA'}  Close-to-close estimate[/dim]")
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # HANSEN SKEW-T: Asymmetric heavy tails via λ parameter
+        # HANSEN SKEW-T - Captures asymmetric crash/rally behavior
+        # λ < 0 = left-skewed (crash prone), λ > 0 = right-skewed (rally prone)
         # ═══════════════════════════════════════════════════════════════════════════
         hansen_lambda = hansen_data.get('lambda') if hansen_data else None
         hansen_nu = hansen_data.get('nu') if hansen_data else None
         hansen_enabled = hansen_lambda is not None and abs(hansen_lambda) > 0.01
-
+        
         if hansen_enabled:
-            skew_dir = skew_direction(hansen_lambda)
-            aug_table.add_row(
-                "[cyan]Hansen Skew-T[/cyan]",
-                f"[green]Active[/green]  λ={hansen_lambda:+.2f} ({skew_dir})"
-            )
+            # Direction indicator and explanation
+            if hansen_lambda < -0.05:
+                skew_symbol = "←"
+                skew_desc = "crash prone"
+            elif hansen_lambda > 0.05:
+                skew_symbol = "→"
+                skew_desc = "rally prone"
+            else:
+                skew_symbol = "○"
+                skew_desc = "balanced"
+            
+            hansen_str = f"[green]λ={hansen_lambda:+.2f}[/green] {skew_symbol}  [dim]{skew_desc}[/dim]"
             if hansen_nu:
-                aug_table.add_row("  Tail weight (ν)", f"[dim]{hansen_nu:.0f}[/dim]")
+                tail_desc = "extreme tails" if hansen_nu <= 4 else "heavy tails" if hansen_nu <= 8 else "moderate tails"
+                hansen_str += f"  [dim]ν={hansen_nu:.0f} ({tail_desc})[/dim]"
+            quality_table.add_row("[cyan]Hansen Skew-T[/cyan]", hansen_str)
         else:
-            aug_table.add_row(
-                "[dim]Hansen Skew-T[/dim]",
-                "[dim]Not fitted[/dim]"
-            )
+            quality_table.add_row("[dim]Hansen Skew-T[/dim]", "[dim]Not fitted  (Asymmetric tail model)[/dim]")
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # CONTAMINATED STUDENT-T: Regime-dependent tail heaviness
+        # CONTAMINATED STUDENT-T - Regime-switching model for crisis detection
+        # Models market as mixture of "normal" and "crisis" states
+        # ε = probability of being in crisis mode
         # ═══════════════════════════════════════════════════════════════════════════
         cst_nu_normal = cst_data.get('nu_normal') if cst_data else None
         cst_nu_crisis = cst_data.get('nu_crisis') if cst_data else None
         cst_epsilon = cst_data.get('epsilon') if cst_data else None
         cst_enabled = cst_nu_normal is not None and cst_epsilon is not None and cst_epsilon > 0.001
-
+        
         if cst_enabled:
-            aug_table.add_row(
-                "[magenta]Contaminated-T[/magenta]",
-                f"[green]Active[/green]  ε={cst_epsilon:.0%} crisis probability"
-            )
-            aug_table.add_row("  Normal regime (ν)", f"[dim]{cst_nu_normal:.0f} (lighter tails)[/dim]")
-            aug_table.add_row("  Crisis regime (ν)", f"[dim]{cst_nu_crisis:.0f} (heavier tails)[/dim]")
+            # Explain crisis probability
+            if cst_epsilon >= 0.25:
+                crisis_desc = "high stress"
+            elif cst_epsilon >= 0.15:
+                crisis_desc = "elevated"
+            else:
+                crisis_desc = "normal"
+            
+            cst_str = f"[green]ε={cst_epsilon:.0%}[/green] {crisis_desc}  [dim]ν: {cst_nu_normal:.0f}→{cst_nu_crisis:.0f} in crisis[/dim]"
+            quality_table.add_row("[magenta]Contaminated-T[/magenta]", cst_str)
         else:
-            aug_table.add_row(
-                "[dim]Contaminated-T[/dim]",
-                "[dim]Not fitted[/dim]"
-            )
+            quality_table.add_row("[dim]Contaminated-T[/dim]", "[dim]Not fitted  (Crisis regime model)[/dim]")
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # GMM: 2-component Gaussian mixture (bimodal dynamics)
+        # GMM MIXTURE - Detects bimodal return distributions (momentum vs reversal)
         # ═══════════════════════════════════════════════════════════════════════════
         gmm_weights = gmm_data.get('weights') if gmm_data else None
         gmm_means = gmm_data.get('means') if gmm_data else None
         gmm_enabled = gmm_weights is not None and len(gmm_weights) >= 2
-
+        
         if gmm_enabled:
-            aug_table.add_row(
-                "[yellow]GMM Mixture[/yellow]",
-                f"[green]Active[/green]  K=2 components"
-            )
-            for i, (w, m) in enumerate(zip(gmm_weights[:2], gmm_means[:2] if gmm_means else [0, 0])):
-                component_label = "Momentum" if m > 0 else "Reversal"
-                aug_table.add_row(f"  Component {i+1}", f"[dim]w={w:.1%}, μ={m:.4f} ({component_label})[/dim]")
+            w1, w2 = gmm_weights[0], gmm_weights[1]
+            m1, m2 = gmm_means[0] if gmm_means else 0, gmm_means[1] if gmm_means and len(gmm_means) > 1 else 0
+            # Determine dominant regime
+            if abs(m1 - m2) > 0.001:
+                dominant = "momentum" if max(m1, m2) > 0 else "reversal"
+                gmm_str = f"[green]K=2[/green]  [dim]{w1:.0%}/{w2:.0%} split, {dominant} dominant[/dim]"
+            else:
+                gmm_str = f"[green]K=2[/green]  [dim]{w1:.0%}/{w2:.0%} split[/dim]"
+            quality_table.add_row("[yellow]GMM Mixture[/yellow]", gmm_str)
         else:
-            aug_table.add_row(
-                "[dim]GMM Mixture[/dim]",
-                "[dim]Not fitted[/dim]"
-            )
+            quality_table.add_row("[dim]GMM Mixture[/dim]", "[dim]Not fitted  (Bimodal regime model)[/dim]")
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # NIG: Normal-Inverse Gaussian (semi-heavy tails, Lévy compatible)
+        # NIG DISTRIBUTION - Normal-Inverse Gaussian for semi-heavy tails
         # ═══════════════════════════════════════════════════════════════════════════
         nig_alpha = nig_data.get('alpha') if nig_data else None
         nig_beta = nig_data.get('beta') if nig_data else None
         nig_enabled = nig_alpha is not None and nig_beta is not None
-
+        
         if nig_enabled:
-            asym_dir = skew_direction(nig_beta)
-            aug_table.add_row(
-                "[blue]NIG Distribution[/blue]",
-                f"[green]Active[/green]  α={nig_alpha:.2f}, β={nig_beta:+.2f}"
-            )
-            aug_table.add_row("  Asymmetry", f"[dim]{asym_dir}[/dim]")
+            asym = "left skew" if nig_beta < -0.05 else "right skew" if nig_beta > 0.05 else "symmetric"
+            nig_str = f"[green]α={nig_alpha:.2f} β={nig_beta:+.2f}[/green]  [dim]{asym}[/dim]"
+            quality_table.add_row("[blue]NIG Distribution[/blue]", nig_str)
         else:
-            aug_table.add_row(
-                "[dim]NIG Distribution[/dim]",
-                "[dim]Not fitted[/dim]"
-            )
+            quality_table.add_row("[dim]NIG Distribution[/dim]", "[dim]Not fitted  (Semi-heavy tail model)[/dim]")
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # PHI-SKEW-T: Fernández-Steel skew-t (γ parameter)
+        # SKEW-T (Fernández-Steel) - Another asymmetric distribution model
+        # γ < 1 = left-skewed, γ > 1 = right-skewed
         # ═══════════════════════════════════════════════════════════════════════════
         skew_t_gamma = skew_t_data.get('gamma') if skew_t_data else None
         skew_t_nu = skew_t_data.get('nu') if skew_t_data else None
         skew_t_enabled = skew_t_gamma is not None
-
+        
         if skew_t_enabled:
-            # γ < 1 = left-skewed, γ > 1 = right-skewed
-            gamma_dir = "left (crash risk)" if skew_t_gamma < 0.95 else "right (upside)" if skew_t_gamma > 1.05 else "symmetric"
-            aug_table.add_row(
-                "[purple]Skew-T (F-S)[/purple]",
-                f"[green]Active[/green]  γ={skew_t_gamma:.2f} ({gamma_dir})"
-            )
+            if skew_t_gamma < 0.95:
+                gamma_desc = "crash risk higher"
+            elif skew_t_gamma > 1.05:
+                gamma_desc = "rally potential"
+            else:
+                gamma_desc = "balanced"
+            
+            skew_str = f"[green]γ={skew_t_gamma:.2f}[/green]  [dim]{gamma_desc}[/dim]"
             if skew_t_nu:
-                aug_table.add_row("  Tail weight (ν)", f"[dim]{skew_t_nu:.0f}[/dim]")
+                skew_str += f"  [dim]ν={skew_t_nu:.0f}[/dim]"
+            quality_table.add_row("[purple]Skew-T (F-S)[/purple]", skew_str)
         else:
-            aug_table.add_row(
-                "[dim]Skew-T (F-S)[/dim]",
-                "[dim]Not fitted[/dim]"
-            )
+            quality_table.add_row("[dim]Skew-T (F-S)[/dim]", "[dim]Not fitted[/dim]")
 
-        console.print(Padding(trust_table, (0, 0, 0, 4)))
-        console.print(Padding(aug_table, (0, 0, 0, 4)))
+        console.print(Padding(quality_table, (0, 0, 0, 4)))
 
         console.print()
         console.print(Rule(style="dim", characters="─"))
