@@ -939,6 +939,31 @@ def render_augmentation_layers_summary(
         else:
             layers.append("[yellow]CST[/yellow]")
     
+    # Volatility Estimator (February 2026 - Garman-Klass support)
+    if vol_estimator:
+        if vol_estimator == "GK" or vol_estimator == "HAR-GK":
+            # Garman-Klass or HAR-GK: 7.4x more efficient
+            efficiency = "7.4x"
+            layers.append(f"[bright_green]Vol:{vol_estimator}[/bright_green]")
+        elif vol_estimator == "HAR":
+            layers.append(f"[green]Vol:HAR[/green]")
+        else:
+            layers.append(f"[dim]Vol:{vol_estimator}[/dim]")
+    
+    # Enhanced Mixture Weight Dynamics (February 2026)
+    if mixture_enhanced:
+        layers.append("[magenta]MixEnhanced[/magenta]")
+    
+    # VIX-based ν adjustment (February 2026)
+    vix_nu_applied = getattr(signal, 'vix_nu_adjustment_applied', False)
+    if vix_nu_applied:
+        nu_orig = getattr(signal, 'nu_original', None)
+        nu_adj = getattr(signal, 'nu_adjusted', None)
+        if nu_orig is not None and nu_adj is not None:
+            layers.append(f"[red]VIX:ν{nu_orig:.0f}→{nu_adj:.0f}[/red]")
+        else:
+            layers.append("[red]VIX:ν↓[/red]")
+    
     if layers:
         # Print with markup enabled - use console.print directly with markup=True
         aug_line = "  [dim]Augmentation[/dim]  " + "  ".join(layers)

@@ -100,6 +100,22 @@ MIXTURE_WEIGHT_DEFAULT = 0.8
 MIXTURE_WEIGHT_K = 2.0  # Sigmoid sensitivity to vol_relative
 MIXTURE_BMA_PENALTY = 4.0
 
+# =============================================================================
+# ENHANCED MIXTURE WEIGHT DYNAMICS (February 2026 - Expert Panel)
+# =============================================================================
+# Upgraded from reactive (vol-only) to multi-factor conditioning:
+#   w_t = sigmoid(a × z_t + b × Δσ_t + c × M_t)
+# Where:
+#   z_t = standardized residuals (shock detection)
+#   Δσ_t = vol acceleration (regime change detection)  
+#   M_t = momentum (trend structure)
+# =============================================================================
+
+# Default mixture weight sensitivity parameters
+MIXTURE_WEIGHT_A_SHOCK = 1.0       # Sensitivity to standardized residuals
+MIXTURE_WEIGHT_B_VOL_ACCEL = 0.5   # Sensitivity to vol acceleration
+MIXTURE_WEIGHT_C_MOMENTUM = 0.3    # Sensitivity to momentum
+
 
 # =============================================================================
 # ELITE TUNING CONFIGURATION (v2.0 - February 2026)
@@ -1069,8 +1085,197 @@ class PhiStudentTDriftModel:
                 
                 if np.isfinite(ll_mix):
                     log_likelihood += ll_mix
-        
+
         return mu_filtered, P_filtered, float(log_likelihood)
+
+    @classmethod
+    def filter_phi_mixture_enhanced(
+        cls, 
+        returns: np.ndarray, 
+        vol: np.ndarray, 
+        q: float, 
+        c: float, 
+        phi: float, 
+        nu_calm: float,
+        nu_stress: float,
+        w_base: float = 0.5,
+        a_shock: float = MIXTURE_WEIGHT_A_SHOCK,
+        b_vol_accel: float = MIXTURE_WEIGHT_B_VOL_ACCEL,
+        c_momentum: float = MIXTURE_WEIGHT_C_MOMENTUM,
+        momentum_window: int = 21
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        φ-Student-t filter with ENHANCED multi-factor mixture weight dynamics.
+        
+        Expert Panel Enhancement (February 2026):
+        Instead of reactive (vol-only) weighting, uses multi-factor conditioning:
+        
+            w_t = sigmoid(a × z_t + b × Δσ_t + c × M_t)
+        
+        Where:
+            z_t = standardized residual (shock detection)
+            Δσ_t = vol acceleration (regime change detection)
+            M_t = normalized momentum (trend structure)
+        
+        This makes the mixture respond to:
+            - Shocks (extreme residuals)
+            - Volatility expansion/contraction
+            - Trend structure
+        
+        Args:
+            returns: Return series
+            vol: EWMA/GK volatility series
+            q: Process noise variance
+            c: Observation noise scale
+            phi: AR(1) persistence
+            nu_calm: Degrees of freedom for calm regime
+            nu_stress: Degrees of freedom for stress regime
+            w_base: Base weight parameter (sigmoid intercept)
+            a_shock: Sensitivity to standardized residuals
+            b_vol_accel: Sensitivity to vol acceleration
+            c_momentum: Sensitivity to momentum
+            momentum_window: Window for momentum calculation
+            
+        Returns:
+            (mu_filtered, P_filtered, log_likelihood)
+        """
+        n = len(returns)
+        
+        # Convert to contiguous arrays
+        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        
+        # Extract scalar values
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+        nu_C = cls._clip_nu(nu_calm, cls.nu_min_default, cls.nu_max_default)
+        nu_S = cls._clip_nu(nu_stress, cls.nu_min_default, cls.nu_max_default)
+        w_b = float(w_base) if np.ndim(w_base) == 0 else float(w_base.item())
+        
+        # Pre-compute constants
+        phi_sq = phi_val * phi_val
+        
+        # =====================================================================
+        # MULTI-FACTOR WEIGHT COMPONENTS
+        # =====================================================================
+        
+        # 1. Vol acceleration: Δlog(σ_t) normalized
+        log_vol = np.log(np.maximum(vol, 1e-10))
+        vol_accel = np.zeros(n)
+        vol_accel[1:] = np.diff(log_vol)
+        # Normalize by rolling std
+        vol_accel_std = np.std(vol_accel[vol_accel != 0]) if np.any(vol_accel != 0) else 1.0
+        vol_accel_z = vol_accel / max(vol_accel_std, 1e-6)
+        
+        # 2. Momentum: Rolling mean return normalized
+        momentum = np.zeros(n)
+        ret_std = np.std(returns) if np.std(returns) > 0 else 1.0
+        for t in range(momentum_window, n):
+            momentum[t] = np.mean(returns[t-momentum_window:t]) / ret_std
+        # Fill early values
+        for t in range(1, min(momentum_window, n)):
+            momentum[t] = np.mean(returns[:t]) / ret_std
+        
+        # 3. Standardized residuals (computed during filtering, initialized to 0)
+        # Will be updated in the loop based on previous residual
+        z_prev = 0.0
+        
+        # Pre-compute log-pdf constants for both ν values
+        log_norm_C = gammaln((nu_C + 1.0) / 2.0) - gammaln(nu_C / 2.0) - 0.5 * np.log(nu_C * np.pi)
+        neg_exp_C = -((nu_C + 1.0) / 2.0)
+        inv_nu_C = 1.0 / nu_C
+        
+        log_norm_S = gammaln((nu_S + 1.0) / 2.0) - gammaln(nu_S / 2.0) - 0.5 * np.log(nu_S * np.pi)
+        neg_exp_S = -((nu_S + 1.0) / 2.0)
+        inv_nu_S = 1.0 / nu_S
+        
+        # Use average ν for Kalman gain
+        nu_avg = w_b * nu_C + (1 - w_b) * nu_S
+        nu_adjust = min(nu_avg / (nu_avg + 3.0), 1.0)
+        
+        # Pre-compute R values
+        R = c_val * (vol * vol)
+        
+        # Allocate output arrays
+        mu_filtered = np.empty(n, dtype=np.float64)
+        P_filtered = np.empty(n, dtype=np.float64)
+        
+        # State initialization
+        mu = 0.0
+        P = 1e-4
+        log_likelihood = 0.0
+        
+        # Main filter loop with enhanced mixture likelihood
+        for t in range(n):
+            # Prediction step
+            mu_pred = phi_val * mu
+            P_pred = phi_sq * P + q_val
+            
+            # Observation update
+            S = P_pred + R[t]
+            if S <= 1e-12:
+                S = 1e-12
+            
+            innovation = returns[t] - mu_pred
+            forecast_scale = np.sqrt(S)
+            
+            # Current standardized residual
+            z_t = innovation / forecast_scale if forecast_scale > 1e-12 else 0.0
+            
+            # =====================================================================
+            # ENHANCED MIXTURE WEIGHT CALCULATION
+            # w_t = sigmoid(a × z_prev + b × Δσ_t + c × M_t - w_base)
+            # Higher values → more CALM weight (lower stress)
+            # Shocks (high |z|), vol expansion, negative momentum → stress
+            # =====================================================================
+            composite_signal = (
+                -a_shock * abs(z_prev) +          # Shocks reduce calm weight
+                -b_vol_accel * vol_accel_z[t] +   # Vol expansion reduces calm weight
+                c_momentum * momentum[t] +         # Positive momentum increases calm
+                w_b                                # Base intercept
+            )
+            # Sigmoid transformation
+            exponent = np.clip(-composite_signal, -50, 50)
+            w_calm_t = 1.0 / (1.0 + np.exp(exponent))
+            
+            # Update z_prev for next iteration
+            z_prev = z_t
+            
+            K = nu_adjust * P_pred / S
+            
+            # State update
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
+            
+            # Store filtered values
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+            
+            # Mixture log-pdf calculation
+            if forecast_scale > 1e-12:
+                z = z_t
+                
+                # Calm component log-pdf
+                ll_C = log_norm_C - np.log(forecast_scale) + neg_exp_C * np.log(1.0 + z * z * inv_nu_C)
+                
+                # Stress component log-pdf
+                ll_S = log_norm_S - np.log(forecast_scale) + neg_exp_S * np.log(1.0 + z * z * inv_nu_S)
+                
+                # Mixture log-pdf via log-sum-exp
+                ll_max = max(ll_C, ll_S)
+                ll_mix = ll_max + np.log(
+                    w_calm_t * np.exp(ll_C - ll_max) + 
+                    (1.0 - w_calm_t) * np.exp(ll_S - ll_max)
+                )
+                
+                if np.isfinite(ll_mix):
+                    log_likelihood += ll_mix
+
+        return mu_filtered, P_filtered, float(log_likelihood)
+
 
     @staticmethod
     def pit_ks_two_piece(
@@ -1118,7 +1323,7 @@ class PhiStudentTDriftModel:
         
         if len(pit_values) < 2:
             return 1.0, 0.0
-        
+            
         ks_result = kstest(pit_values, 'uniform')
         return float(ks_result.statistic), float(ks_result.pvalue)
 

@@ -643,6 +643,10 @@ def render_tuning_summary(
     vov_enhanced_count: int = 0,  # Vol-of-Vol enhanced
     two_piece_count: int = 0,  # Two-Piece asymmetric tails
     mixture_t_count: int = 0,  # Two-Component mixture
+    # Volatility estimator counts (February 2026)
+    gk_vol_count: int = 0,  # Garman-Klass volatility
+    har_vol_count: int = 0,  # HAR volatility
+    ewma_vol_count: int = 0,  # EWMA volatility (fallback)
     # Legacy parameter for backward compatibility
     momentum_student_t_count: int = 0,
     console: Console = None
@@ -2087,6 +2091,11 @@ Examples:
     two_piece_count = 0  # Two-Piece asymmetric tails
     mixture_t_count = 0  # Two-Component mixture
     
+    # Volatility estimator counters (February 2026)
+    gk_vol_count = 0  # Garman-Klass volatility
+    har_vol_count = 0  # HAR (Corsi) volatility
+    ewma_vol_count = 0  # EWMA volatility (fallback)
+    
     # Calibrated Trust Authority statistics
     recalibration_applied_count = 0
     calibrated_trust_count = 0
@@ -2376,6 +2385,15 @@ Examples:
                             cst_epsilon = cst_data.get('epsilon', 0.05)
                             model_str += f"+CST{int(cst_epsilon*100)}%"
                             contaminated_t_count += 1
+                        
+                        # Count volatility estimator (February 2026)
+                        vol_estimator = global_result.get('volatility_estimator', 'EWMA')
+                        if vol_estimator == 'GK' or vol_estimator == 'Garman-Klass':
+                            gk_vol_count += 1
+                        elif vol_estimator == 'HAR' or vol_estimator == 'HAR-GK':
+                            har_vol_count += 1
+                        else:
+                            ewma_vol_count += 1
                         
                         import math
                         details = f"{model_str}|q={q_val:.2e}|c={c_val:.3f}"
@@ -2805,6 +2823,10 @@ Examples:
         vov_enhanced_count=vov_enhanced_count,
         two_piece_count=two_piece_count,
         mixture_t_count=mixture_t_count,
+        # Volatility estimator counts (February 2026)
+        gk_vol_count=gk_vol_count,
+        har_vol_count=har_vol_count,
+        ewma_vol_count=ewma_vol_count,
         console=console,
     )
 

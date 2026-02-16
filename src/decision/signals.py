@@ -515,12 +515,18 @@ try:
     from calibration.realized_volatility import (
         compute_gk_volatility,
         compute_hybrid_volatility,
+        compute_hybrid_volatility_har,
         compute_volatility_from_df,
         VolatilityEstimator,
+        HAR_WEIGHT_DAILY,
+        HAR_WEIGHT_WEEKLY,
+        HAR_WEIGHT_MONTHLY,
     )
     GK_VOLATILITY_AVAILABLE = True
+    HAR_VOLATILITY_AVAILABLE = True
 except ImportError:
     GK_VOLATILITY_AVAILABLE = False
+    HAR_VOLATILITY_AVAILABLE = False
 
 
 class StudentTDriftModel:
@@ -700,6 +706,28 @@ except ImportError:
         # Fallback to symmetric Student-t
         samples = rng.standard_t(df=nu, size=size)
         return loc + scale * samples
+
+
+# =============================================================================
+# ENHANCED MIXTURE WEIGHT DYNAMICS (February 2026 - Expert Panel)
+# =============================================================================
+# Multi-factor weight conditioning for mixture Student-t models.
+# w_t = sigmoid(a × z_t + b × Δσ_t + c × M_t)
+# =============================================================================
+ENHANCED_MIXTURE_ENABLED = True  # Set to False to use standard vol-only mixture
+
+try:
+    from models import (
+        MIXTURE_WEIGHT_A_SHOCK,
+        MIXTURE_WEIGHT_B_VOL_ACCEL,
+        MIXTURE_WEIGHT_C_MOMENTUM,
+    )
+    ENHANCED_MIXTURE_AVAILABLE = True
+except ImportError:
+    ENHANCED_MIXTURE_AVAILABLE = False
+    MIXTURE_WEIGHT_A_SHOCK = 1.0
+    MIXTURE_WEIGHT_B_VOL_ACCEL = 0.5
+    MIXTURE_WEIGHT_C_MOMENTUM = 0.3
 
 
 # =============================================================================
@@ -1672,6 +1700,14 @@ class Signal:
     pit_violation_severity: float = 0.0     # V ∈ [0, 1], 0 = no violation
     pit_penalty_effective: float = 1.0      # P ∈ (0, 1], 1 = no penalty
     pit_selected_model: Optional[str] = None  # Model that triggered the EXIT check
+    # Volatility Estimator (February 2026):
+    volatility_estimator: Optional[str] = None  # "GK", "HAR-GK", "EWMA", etc.
+    # Enhanced Mixture (February 2026):
+    mixture_enhanced: bool = False          # True if enhanced multi-factor mixture weights used
+    # VIX-based ν adjustment (February 2026):
+    vix_nu_adjustment_applied: bool = False  # True if VIX-based ν adjustment was applied
+    nu_original: Optional[float] = None      # Original ν before VIX adjustment
+    nu_adjusted: Optional[float] = None      # ν after VIX adjustment
 
 
 
@@ -2979,6 +3015,29 @@ def _kalman_filter_drift(
             nu_used = (tuned_params or {}).get('nu')
     else:
         nu_used = None
+    
+    # =========================================================================
+    # MARKET CONDITIONING: VIX-Based ν Adjustment (February 2026)
+    # =========================================================================
+    # When market is stressed (high VIX), reduce ν to increase tail heaviness.
+    # This makes the model more conservative during volatile periods.
+    # ν_adjusted = max(ν_min, ν_base - κ × VIX_normalized)
+    # =========================================================================
+    vix_nu_adjustment_applied = False
+    nu_original = nu_used
+    
+    if is_student_t and nu_used is not None:
+        vix_adjustment_enabled = (tuned_params or {}).get('vix_nu_adjustment_enabled', False)
+        if vix_adjustment_enabled:
+            try:
+                from calibration.market_conditioning import compute_vix_nu_adjustment
+                vix_result = compute_vix_nu_adjustment(nu_base=float(nu_used))
+                if vix_result.adjustment_applied:
+                    nu_used = vix_result.nu_adjusted
+                    vix_nu_adjustment_applied = True
+            except Exception as vix_err:
+                # Silently fallback to original nu on any error
+                pass
 
     if q_used is None or not np.isfinite(q_used) or q_used <= 0:
         return {}
@@ -3113,9 +3172,18 @@ def _kalman_filter_drift(
                 nu_calm = float(tuned_params.get('nu_calm'))
                 nu_stress = float(tuned_params.get('nu_stress'))
                 w_base = float(tuned_params.get('w_base', 0.5))
-                mu_mix, P_mix, ll_mix = PhiStudentTDriftModel.filter_phi_mixture(
-                    y, sigma, q_scalar, obs_scale, phi_used, nu_calm, nu_stress, w_base
-                )
+                # Use enhanced mixture if enabled (multi-factor weight dynamics)
+                if ENHANCED_MIXTURE_ENABLED and ENHANCED_MIXTURE_AVAILABLE:
+                    mu_mix, P_mix, ll_mix = PhiStudentTDriftModel.filter_phi_mixture_enhanced(
+                        y, sigma, q_scalar, obs_scale, phi_used, nu_calm, nu_stress, w_base,
+                        a_shock=MIXTURE_WEIGHT_A_SHOCK,
+                        b_vol_accel=MIXTURE_WEIGHT_B_VOL_ACCEL,
+                        c_momentum=MIXTURE_WEIGHT_C_MOMENTUM,
+                    )
+                else:
+                    mu_mix, P_mix, ll_mix = PhiStudentTDriftModel.filter_phi_mixture(
+                        y, sigma, q_scalar, obs_scale, phi_used, nu_calm, nu_stress, w_base
+                    )
                 mu_filtered = mu_mix
                 P_filtered = P_mix
                 log_likelihood = ll_mix
@@ -3221,6 +3289,15 @@ def _kalman_filter_drift(
         # =========================================================================
         "enhanced_student_t_active": enhanced_result is not None,
         "enhanced_student_t_type": enhanced_model_type,
+        # =========================================================================
+        # VIX-BASED ν ADJUSTMENT DIAGNOSTICS (February 2026)
+        # =========================================================================
+        # When market is stressed (high VIX), ν is reduced to increase tail heaviness.
+        # ν_adjusted = max(ν_min, ν_base - κ × VIX_normalized)
+        # =========================================================================
+        "vix_nu_adjustment_applied": vix_nu_adjustment_applied,
+        "nu_original": float(nu_original) if nu_original is not None else None,
+        "nu_adjusted": float(nu_used) if nu_used is not None else None,
     }
 
 
@@ -3268,7 +3345,7 @@ def compute_features(
     vol_source = "ewma_fallback"
     garch_params = {}
     
-    # Priority 1: Garman-Klass if OHLC data available (7.4x more efficient)
+    # Priority 1: Garman-Klass/HAR if OHLC data available (7.4x more efficient)
     if GK_VOLATILITY_AVAILABLE and ohlc_df is not None and not ohlc_df.empty:
         try:
             cols = {c.lower(): c for c in ohlc_df.columns}
@@ -3278,10 +3355,17 @@ def compute_features(
                 low = ohlc_df[cols['low']].values
                 close = ohlc_df[cols['close']].values
                 
-                vol_gk, vol_estimator = compute_hybrid_volatility(
-                    open_=open_, high=high, low=low, close=close,
-                    span=21, annualize=False
-                )
+                # Use HAR volatility if available (multi-horizon memory for crash detection)
+                if HAR_VOLATILITY_AVAILABLE:
+                    vol_gk, vol_estimator = compute_hybrid_volatility_har(
+                        open_=open_, high=high, low=low, close=close,
+                        span=21, annualize=False, use_har=True
+                    )
+                else:
+                    vol_gk, vol_estimator = compute_hybrid_volatility(
+                        open_=open_, high=high, low=low, close=close,
+                        span=21, annualize=False
+                    )
                 
                 # Convert to Series with proper index
                 vol_gk_series = pd.Series(vol_gk, index=ohlc_df.index)
@@ -4230,6 +4314,10 @@ def compute_features(
                 "elite_is_ridge": tuned_params.get("elite_is_ridge", False) if tuned_params else False,
                 "elite_basin_score": tuned_params.get("elite_basin_score") if tuned_params else None,
                 "elite_fragility_penalty": tuned_params.get("elite_fragility_penalty", 0.0) if tuned_params else 0.0,
+                # VIX-based ν adjustment diagnostics (February 2026)
+                "vix_nu_adjustment_applied": kf_result.get("vix_nu_adjustment_applied", False),
+                "nu_original": kf_result.get("nu_original"),
+                "nu_adjusted": kf_result.get("nu_adjusted"),
             }
         else:
             # Fallback: use EWMA blend if Kalman fails
@@ -7815,6 +7903,14 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             pit_violation_severity=float(pit_violation_severity),
             pit_penalty_effective=float(pit_penalty_effective),
             pit_selected_model=pit_selected_model,
+            # Volatility Estimator (February 2026):
+            volatility_estimator=tuned_params.get('volatility_estimator') if tuned_params else None,
+            # Enhanced Mixture (February 2026):
+            mixture_enhanced=bool(ENHANCED_MIXTURE_ENABLED and ENHANCED_MIXTURE_AVAILABLE),
+            # VIX-based ν adjustment (February 2026):
+            vix_nu_adjustment_applied=bool(kalman_metadata.get('vix_nu_adjustment_applied', False)),
+            nu_original=float(kalman_metadata.get('nu_original')) if kalman_metadata.get('nu_original') is not None else None,
+            nu_adjusted=float(kalman_metadata.get('nu_adjusted')) if kalman_metadata.get('nu_adjusted') is not None else None,
         ))
 
     return sigs, thresholds

@@ -369,12 +369,51 @@ try:
     from calibration.realized_volatility import (
         compute_gk_volatility,
         compute_hybrid_volatility,
+        compute_hybrid_volatility_har,
         compute_volatility_from_df,
         VolatilityEstimator,
+        # HAR configuration constants (February 2026)
+        HAR_WEIGHT_DAILY,
+        HAR_WEIGHT_WEEKLY,
+        HAR_WEIGHT_MONTHLY,
     )
     GK_VOLATILITY_AVAILABLE = True
+    HAR_VOLATILITY_AVAILABLE = True
 except ImportError:
     GK_VOLATILITY_AVAILABLE = False
+    HAR_VOLATILITY_AVAILABLE = False
+
+# =============================================================================
+# MARKET CONDITIONING LAYER (February 2026)
+# =============================================================================
+# Cross-sectional and VIX-based model enhancement for systemic risk awareness.
+# σ²_composite = σ²_asset + (coupling × β²) × σ²_market
+# ν_t = max(ν_min, ν_base - κ × VIX_normalized)
+# =============================================================================
+MARKET_CONDITIONING_ENABLED = True  # Set to False to disable
+
+try:
+    from calibration.market_conditioning import (
+        compute_composite_volatility,
+        compute_vix_nu_adjustment,
+        condition_model_on_market,
+        MarketConditioningResult,
+        VIXConditioningResult,
+        VIX_KAPPA_DEFAULT,
+        MARKET_VOL_COUPLING_DEFAULT,
+    )
+    MARKET_CONDITIONING_AVAILABLE = True
+except ImportError:
+    MARKET_CONDITIONING_AVAILABLE = False
+
+# =============================================================================
+# ENHANCED MIXTURE WEIGHT DYNAMICS (February 2026 - Expert Panel)
+# =============================================================================
+# Upgraded from reactive (vol-only) to multi-factor conditioning:
+#   w_t = sigmoid(a × z_t + b × Δσ_t + c × M_t)
+# Where: z_t = shock, Δσ_t = vol acceleration, M_t = momentum
+# =============================================================================
+ENHANCED_MIXTURE_ENABLED = True  # Set to False to use standard vol-only mixture
 
 # =============================================================================
 # GAS-Q SCORE-DRIVEN PARAMETER DYNAMICS (February 2026)
@@ -855,6 +894,10 @@ from models import (
     PhiGaussianDriftModel,
     PhiStudentTDriftModel,
     PhiNIGDriftModel,
+    # Enhanced Mixture Weight Dynamics (February 2026)
+    MIXTURE_WEIGHT_A_SHOCK,
+    MIXTURE_WEIGHT_B_VOL_ACCEL,
+    MIXTURE_WEIGHT_C_MOMENTUM,
     # AIGF-NF (Adaptive Implicit Generative Filter - Normalizing Flow)
     AIGFNFModel,
     AIGFNFConfig,
@@ -1536,7 +1579,7 @@ def tune_asset_q(
         log_ret = np.log(px / px.shift(1)).dropna()
         returns = log_ret.values
         
-        # Compute volatility using Garman-Klass (7.4x more efficient than EWMA)
+        # Compute volatility using Garman-Klass or HAR (7.4x more efficient than EWMA)
         vol_estimator_used = "EWMA"
         if GK_VOLATILITY_AVAILABLE and df is not None and not df.empty:
             try:
@@ -1550,10 +1593,17 @@ def tune_asset_q(
                     low = df_aligned[cols['low']].values
                     close = df_aligned[cols['close']].values
                     
-                    vol, vol_estimator_used = compute_hybrid_volatility(
-                        open_=open_, high=high, low=low, close=close,
-                        span=21, annualize=False
-                    )
+                    # Use HAR volatility if available (multi-horizon memory for crash detection)
+                    if HAR_VOLATILITY_AVAILABLE:
+                        vol, vol_estimator_used = compute_hybrid_volatility_har(
+                            open_=open_, high=high, low=low, close=close,
+                            span=21, annualize=False, use_har=True
+                        )
+                    else:
+                        vol, vol_estimator_used = compute_hybrid_volatility(
+                            open_=open_, high=high, low=low, close=close,
+                            span=21, annualize=False
+                        )
                 else:
                     # Fallback to EWMA if OHLC not available
                     vol = log_ret.ewm(span=21, adjust=False).std().values
@@ -1985,6 +2035,8 @@ def tune_asset_q(
             "pit_ks_pvalue": float(best_params.get("pit_ks_pvalue", 0.0)),
             "calibration_warning": best_params.get("pit_ks_pvalue", 1.0) < 0.05,
             "n_obs": n_obs,
+            # Volatility estimator used (February 2026 - Garman-Klass support)
+            "volatility_estimator": vol_estimator_used,
             "model_weights": model_weights,
             "model_posterior": model_weights,  # BMA expects model_posterior
             "models": models,  # Full model details for BMA
@@ -2017,6 +2069,10 @@ def tune_asset_q(
             "nu_refinement": nu_refinement_result,
             "nu_refinement_attempted": nu_refinement_attempted,
             "nu_refinement_improved": nu_refinement_improved,
+            # Market conditioning flags (February 2026)
+            # These tell signals.py to apply VIX-based ν adjustment at inference time
+            "market_conditioning_enabled": MARKET_CONDITIONING_ENABLED and MARKET_CONDITIONING_AVAILABLE,
+            "vix_nu_adjustment_enabled": MARKET_CONDITIONING_ENABLED and MARKET_CONDITIONING_AVAILABLE and best_params.get("nu") is not None,
         }
         
         result = {
@@ -3537,12 +3593,23 @@ def fit_all_models_for_regime(
                 mixture_name = f"phi_student_t_mix_{nu_calm}_{nu_stress}_momentum"
                 
                 try:
-                    # Run Mixture filter with default w_base
+                    # Run Mixture filter (enhanced or standard based on config)
                     from models import MIXTURE_WEIGHT_DEFAULT
-                    mu_mix, P_mix, ll_mix = PhiStudentTDriftModel.filter_phi_mixture(
-                        returns, vol, q_mix, c_mix, phi_mix, 
-                        nu_calm, nu_stress, MIXTURE_WEIGHT_DEFAULT
-                    )
+                    if ENHANCED_MIXTURE_ENABLED:
+                        # Enhanced: multi-factor weight dynamics (shock + vol accel + momentum)
+                        mu_mix, P_mix, ll_mix = PhiStudentTDriftModel.filter_phi_mixture_enhanced(
+                            returns, vol, q_mix, c_mix, phi_mix, 
+                            nu_calm, nu_stress, MIXTURE_WEIGHT_DEFAULT,
+                            a_shock=MIXTURE_WEIGHT_A_SHOCK,
+                            b_vol_accel=MIXTURE_WEIGHT_B_VOL_ACCEL,
+                            c_momentum=MIXTURE_WEIGHT_C_MOMENTUM,
+                        )
+                    else:
+                        # Standard: vol-only weight dynamics
+                        mu_mix, P_mix, ll_mix = PhiStudentTDriftModel.filter_phi_mixture(
+                            returns, vol, q_mix, c_mix, phi_mix, 
+                            nu_calm, nu_stress, MIXTURE_WEIGHT_DEFAULT
+                        )
                     
                     # Apply momentum augmentation (use precomputed momentum signal)
                     momentum_signal = momentum_wrapper._momentum_signal
@@ -4363,7 +4430,7 @@ def tune_asset_with_bma(
         log_ret = np.log(px / px.shift(1)).dropna()
         returns = log_ret.values
 
-        # Compute volatility using Garman-Klass (7.4x more efficient than EWMA)
+        # Compute volatility using Garman-Klass or HAR (7.4x more efficient than EWMA)
         vol_estimator_used = "EWMA"
         if GK_VOLATILITY_AVAILABLE and df is not None and not df.empty:
             try:
@@ -4377,10 +4444,17 @@ def tune_asset_with_bma(
                     low = df_aligned[cols['low']].values
                     close = df_aligned[cols['close']].values
                     
-                    vol, vol_estimator_used = compute_hybrid_volatility(
-                        open_=open_, high=high, low=low, close=close,
-                        span=21, annualize=False
-                    )
+                    # Use HAR volatility if available (multi-horizon memory for crash detection)
+                    if HAR_VOLATILITY_AVAILABLE:
+                        vol, vol_estimator_used = compute_hybrid_volatility_har(
+                            open_=open_, high=high, low=low, close=close,
+                            span=21, annualize=False, use_har=True
+                        )
+                    else:
+                        vol, vol_estimator_used = compute_hybrid_volatility(
+                            open_=open_, high=high, low=low, close=close,
+                            span=21, annualize=False
+                        )
                 else:
                     # Fallback to EWMA if OHLC not available
                     vol = log_ret.ewm(span=21, adjust=False).std().values
@@ -4506,6 +4580,9 @@ def tune_asset_with_bma(
                 "models": bma_result.get("global", {}).get("models", {}),
                 # Volatility estimator used (February 2026)
                 "volatility_estimator": vol_estimator_used,
+                # Market conditioning flags (February 2026)
+                "market_conditioning_enabled": MARKET_CONDITIONING_ENABLED and MARKET_CONDITIONING_AVAILABLE,
+                "vix_nu_adjustment_enabled": MARKET_CONDITIONING_ENABLED and MARKET_CONDITIONING_AVAILABLE and global_data.get("nu") is not None,
             },
             "regime": regime_results,  # Now contains model_posterior and models per regime
             "use_regime_tuning": True,

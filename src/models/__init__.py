@@ -174,6 +174,10 @@ from models.phi_student_t import (
     MIXTURE_BMA_PENALTY,
     MIXTURE_WEIGHT_K,
     MIXTURE_WEIGHT_DEFAULT,
+    # Enhanced Mixture Weight Dynamics (February 2026 - Expert Panel)
+    MIXTURE_WEIGHT_A_SHOCK,
+    MIXTURE_WEIGHT_B_VOL_ACCEL,
+    MIXTURE_WEIGHT_C_MOMENTUM,
 )
 
 __all__ = [
@@ -200,6 +204,10 @@ __all__ = [
     'MIXTURE_BMA_PENALTY',
     'MIXTURE_WEIGHT_K',
     'MIXTURE_WEIGHT_DEFAULT',
+    # Enhanced Mixture Weight Dynamics (February 2026)
+    'MIXTURE_WEIGHT_A_SHOCK',
+    'MIXTURE_WEIGHT_B_VOL_ACCEL',
+    'MIXTURE_WEIGHT_C_MOMENTUM',
     # Constants (from phi_skew_t)
     'SKEW_T_NU_GRID',
     'SKEW_T_GAMMA_GRID',
