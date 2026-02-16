@@ -82,23 +82,27 @@ STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
 #   1. Vol-of-Vol (VoV): R_t = c × σ² × (1 + γ × |Δlog(σ)|)
 #   2. Two-Piece: Different νL (crash) vs νR (recovery) tails
 #   3. Two-Component Mixture: Blend νcalm and νstress with dynamic weights
+#
+# NOTE: No BMA penalties - all models compete fairly on equal footing.
+# Standard Student-t has no penalty, so enhanced variants should not either.
+# Model complexity is already penalized by BIC's parameter count.
 # =============================================================================
 
 # Vol-of-Vol (VoV) Enhancement
 GAMMA_VOV_GRID = [0.3, 0.5, 0.7]
-VOV_BMA_PENALTY = 1.0
+VOV_BMA_PENALTY = 0.0  # REMOVED: Equal competition with base Student-t
 
 # Two-Piece Student-t Enhancement
 NU_LEFT_GRID = [3, 4, 5]
 NU_RIGHT_GRID = [8, 12, 20]
-TWO_PIECE_BMA_PENALTY = 3.0
+TWO_PIECE_BMA_PENALTY = 0.0  # REMOVED: Equal competition with base Student-t
 
 # Two-Component Mixture Student-t Enhancement
 NU_CALM_GRID = [12, 20]
 NU_STRESS_GRID = [4, 6]
 MIXTURE_WEIGHT_DEFAULT = 0.8
 MIXTURE_WEIGHT_K = 2.0  # Sigmoid sensitivity to vol_relative
-MIXTURE_BMA_PENALTY = 4.0
+MIXTURE_BMA_PENALTY = 0.0  # REMOVED: Equal competition with base Student-t
 
 # =============================================================================
 # ENHANCED MIXTURE WEIGHT DYNAMICS (February 2026 - Expert Panel)

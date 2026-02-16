@@ -2833,6 +2833,12 @@ def fit_all_models_for_regime(
                         returns, mu_nig, forecast_scale_nig
                     )
                     
+                    # Compute CRPS for regime-aware model selection (February 2026)
+                    # Use Gaussian approximation for NIG (consistent with Hyvärinen approach)
+                    crps_nig = compute_crps_gaussian_inline(
+                        returns, mu_nig, forecast_scale_nig
+                    )
+                    
                     models[model_name] = {
                         "q": float(q_nig),
                         "c": float(c_nig),
@@ -2847,6 +2853,7 @@ def fit_all_models_for_regime(
                         "bic": float(bic_nig),
                         "aic": float(aic_nig),
                         "hyvarinen_score": float(hyvarinen_nig),
+                        "crps": float(crps_nig),  # CRPS for regime-aware selection
                         "n_params": int(n_params_nig),
                         "ks_statistic": float(ks_nig),
                         "pit_ks_pvalue": float(pit_p_nig),
@@ -2862,6 +2869,7 @@ def fit_all_models_for_regime(
                         "bic": float('inf'),
                         "aic": float('inf'),
                         "hyvarinen_score": float('-inf'),
+                        "crps": float('inf'),  # CRPS for failed models
                         "nig_alpha": float(alpha_fixed),
                         "nig_beta": float(beta_fixed),
                         "nig_delta": float(delta_baseline),
@@ -2924,6 +2932,10 @@ def fit_all_models_for_regime(
             mu_aigf = aigf_result.get('predictive_mean', 0.0) * np.ones(n_obs)
             hyvarinen_aigf = compute_hyvarinen_score_gaussian(returns, mu_aigf, forecast_std_aigf)
             
+            # Compute CRPS for regime-aware model selection (February 2026)
+            # Use Gaussian approximation for AIGF-NF (consistent with Hyvärinen approach)
+            crps_aigf = compute_crps_gaussian_inline(returns, mu_aigf, forecast_std_aigf)
+            
             # PIT calibration (computed during filtering)
             # Use simple empirical PIT for now
             samples_for_pit = aigf_model.sample_predictive(n_samples=min(n_obs * 10, 10000))
@@ -2945,6 +2957,7 @@ def fit_all_models_for_regime(
                 "bic": float(bic_aigf),
                 "aic": float(aic_aigf),
                 "hyvarinen_score": float(hyvarinen_aigf),
+                "crps": float(crps_aigf),  # CRPS for regime-aware selection
                 "n_params": int(n_params_aigf),
                 "ks_statistic": float(ks_aigf),
                 "pit_ks_pvalue": float(pit_p_aigf),
@@ -2968,6 +2981,7 @@ def fit_all_models_for_regime(
                 "bic": float('inf'),
                 "aic": float('inf'),
                 "hyvarinen_score": float('-inf'),
+                "crps": float('inf'),  # CRPS for failed models
                 "model_type": "aigf_nf",
             }
     
@@ -3276,6 +3290,11 @@ def fit_all_models_for_regime(
                         returns, gas_result.mu_filtered, forecast_std_gas
                     )
                     
+                    # Compute CRPS for regime-aware model selection (February 2026)
+                    crps_gas = compute_crps_gaussian_inline(
+                        returns, gas_result.mu_filtered, forecast_std_gas
+                    )
+                    
                     models[gas_q_name] = {
                         "q": float(gas_result.q_mean),
                         "c": float(c_gas),
@@ -3287,6 +3306,7 @@ def fit_all_models_for_regime(
                         "bic": float(bic_gas),
                         "aic": float(aic_gas),
                         "hyvarinen_score": float(hyvarinen_gas),
+                        "crps": float(crps_gas),  # CRPS for regime-aware selection
                         "n_params": int(n_params_gas),
                         "ks_statistic": float(ks_gas),
                         "pit_ks_pvalue": float(pit_p_gas),
@@ -3308,6 +3328,7 @@ def fit_all_models_for_regime(
                     "bic": float('inf'),
                     "aic": float('inf'),
                     "hyvarinen_score": float('-inf'),
+                    "crps": float('inf'),  # CRPS for failed models
                     "gas_q_augmented": True,
                     "base_model": base_name,
                 }
@@ -3355,6 +3376,11 @@ def fit_all_models_for_regime(
                             returns, gas_result.mu_filtered, forecast_scale_gas, nu_fixed
                         )
                         
+                        # Compute CRPS for regime-aware model selection (February 2026)
+                        crps_gas = compute_crps_student_t_inline(
+                            returns, gas_result.mu_filtered, forecast_scale_gas, nu_fixed
+                        )
+                        
                         models[gas_q_name] = {
                             "q": float(gas_result.q_mean),
                             "c": float(c_gas),
@@ -3366,6 +3392,7 @@ def fit_all_models_for_regime(
                             "bic": float(bic_gas),
                             "aic": float(aic_gas),
                             "hyvarinen_score": float(hyvarinen_gas),
+                            "crps": float(crps_gas),  # CRPS for regime-aware selection
                             "n_params": int(n_params_gas),
                             "ks_statistic": float(ks_gas),
                             "pit_ks_pvalue": float(pit_p_gas),
@@ -3388,6 +3415,7 @@ def fit_all_models_for_regime(
                         "bic": float('inf'),
                         "aic": float('inf'),
                         "hyvarinen_score": float('-inf'),
+                        "crps": float('inf'),  # CRPS for failed models
                         "gas_q_augmented": True,
                         "base_model": base_name,
                         "nu": float(nu_fixed),
@@ -3477,6 +3505,11 @@ def fit_all_models_for_regime(
                         returns, mu_vov, forecast_scale_vov, nu_fixed
                     )
                     
+                    # Compute CRPS for regime-aware model selection (February 2026)
+                    crps_vov = compute_crps_student_t_inline(
+                        returns, mu_vov, forecast_scale_vov, nu_fixed
+                    )
+                    
                     models[vov_name] = {
                         "q": float(q_base),
                         "c": float(c_base),
@@ -3490,6 +3523,7 @@ def fit_all_models_for_regime(
                         "bic_raw": float(bic_raw_vov),
                         "aic": float(aic_vov),
                         "hyvarinen_score": float(hyvarinen_vov),
+                        "crps": float(crps_vov),  # CRPS for regime-aware selection
                         "n_params": int(n_params_vov),
                         "ks_statistic": float(ks_vov),
                         "pit_ks_pvalue": float(pit_p_vov),
@@ -3509,6 +3543,7 @@ def fit_all_models_for_regime(
                         "bic": float('inf'),
                         "aic": float('inf'),
                         "hyvarinen_score": float('-inf'),
+                        "crps": float('inf'),  # CRPS for failed models
                         "vov_enhanced": True,
                         "momentum_augmented": True,
                         "nu": float(nu_fixed),
@@ -3571,6 +3606,11 @@ def fit_all_models_for_regime(
                         returns, mu_2p, forecast_scale_2p, nu_avg
                     )
                     
+                    # Compute CRPS for regime-aware model selection (February 2026)
+                    crps_2p = compute_crps_student_t_inline(
+                        returns, mu_2p, forecast_scale_2p, nu_avg
+                    )
+                    
                     models[two_piece_name] = {
                         "q": float(q_2p),
                         "c": float(c_2p),
@@ -3585,6 +3625,7 @@ def fit_all_models_for_regime(
                         "bic_raw": float(bic_raw_2p),
                         "aic": float(aic_2p),
                         "hyvarinen_score": float(hyvarinen_2p),
+                        "crps": float(crps_2p),  # CRPS for regime-aware selection
                         "n_params": int(n_params_2p),
                         "ks_statistic": float(ks_2p),
                         "pit_ks_pvalue": float(pit_p_2p),
@@ -3603,6 +3644,7 @@ def fit_all_models_for_regime(
                         "bic": float('inf'),
                         "aic": float('inf'),
                         "hyvarinen_score": float('-inf'),
+                        "crps": float('inf'),  # CRPS for failed models
                         "two_piece": True,
                         "momentum_augmented": True,
                         "nu_left": float(nu_left),
@@ -3677,6 +3719,11 @@ def fit_all_models_for_regime(
                         returns, mu_mix, forecast_scale_mix, nu_eff
                     )
                     
+                    # Compute CRPS for regime-aware model selection (February 2026)
+                    crps_mix = compute_crps_student_t_inline(
+                        returns, mu_mix, forecast_scale_mix, nu_eff
+                    )
+                    
                     models[mixture_name] = {
                         "q": float(q_mix),
                         "c": float(c_mix),
@@ -3692,6 +3739,7 @@ def fit_all_models_for_regime(
                         "bic_raw": float(bic_raw_mix),
                         "aic": float(aic_mix),
                         "hyvarinen_score": float(hyvarinen_mix),
+                        "crps": float(crps_mix),  # CRPS for regime-aware selection
                         "n_params": int(n_params_mix),
                         "ks_statistic": float(ks_mix),
                         "pit_ks_pvalue": float(pit_p_mix),
@@ -3710,6 +3758,7 @@ def fit_all_models_for_regime(
                         "bic": float('inf'),
                         "aic": float('inf'),
                         "hyvarinen_score": float('-inf'),
+                        "crps": float('inf'),  # CRPS for failed models
                         "mixture_model": True,
                         "momentum_augmented": True,
                         "nu_calm": float(nu_calm),
