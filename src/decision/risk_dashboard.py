@@ -137,11 +137,26 @@ def _render_metals_guidance(console: Console, metals_result) -> None:
     temp = metals_result.temperature
     crash_risk = getattr(metals_result, 'crash_risk_pct', 0.0)
     vol_inversions = getattr(metals_result, 'vol_inversion_count', 0)
+    regime_state = getattr(metals_result, 'regime_state', 'Normal')
     
     console.print()
     console.print("  [dim]📊 Guidance:[/dim]")
     
     warnings_issued = False
+    
+    # Regime-specific guidance (based on actual regime_state)
+    if regime_state == "Extreme":
+        console.print(f"     [bold red]→ EXTREME REGIME: Exit discretionary metals positions. Systematic only.[/bold red]")
+        console.print(f"       [dim]Temperature={temp:.2f}. All signals point to defensive positioning.[/dim]")
+        warnings_issued = True
+    elif regime_state == "Stressed":
+        console.print(f"     [yellow]→ STRESSED REGIME: Reduce metals position sizes by 50%.[/yellow]")
+        console.print(f"       [dim]Temperature={temp:.2f}. Flight to quality active - favor gold over silver.[/dim]")
+        warnings_issued = True
+    elif regime_state == "Elevated":
+        console.print(f"     [yellow]→ ELEVATED REGIME: Monitor metals positions closely.[/yellow]")
+        console.print(f"       [dim]Temperature={temp:.2f}. Tighten stops, avoid new speculative positions.[/dim]")
+        warnings_issued = True
     
     if vol_inversions >= 2:
         console.print("     [bold red]→ VOLATILITY INVERSION detected in multiple metals.[/bold red]")
@@ -166,12 +181,7 @@ def _render_metals_guidance(console: Console, metals_result) -> None:
             console.print(f"     [yellow]→ {name} {direction} {ret_5d:+.1%} in 5 days. Unusual move - investigate catalyst.[/yellow]")
             warnings_issued = True
     
-    if temp >= 1.5:
-        console.print("     [bold red]→ EXTREME REGIME: Exit discretionary metals positions. Systematic only.[/bold red]")
-        warnings_issued = True
-    elif temp >= 1.0:
-        console.print("     [yellow]→ Stressed regime: Reduce metals position sizes by 50%.[/yellow]")
-        warnings_issued = True
+    # Regime-specific guidance is now at the top based on regime_state
     
     if not warnings_issued:
         console.print("     [bright_green]→ Metals regime normal. Standard position sizing permitted.[/bright_green]")
