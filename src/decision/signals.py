@@ -529,6 +529,26 @@ except ImportError:
     HAR_VOLATILITY_AVAILABLE = False
 
 
+# =============================================================================
+# CRPS COMPUTATION FOR MODEL SELECTION (February 2026)
+# =============================================================================
+# CRPS is a strictly proper scoring rule for calibration + sharpness.
+# Used for regime-aware model selection in conjunction with BIC and Hyvärinen.
+# =============================================================================
+try:
+    from tuning.diagnostics import (
+        compute_crps_gaussian_inline,
+        compute_crps_student_t_inline,
+        compute_regime_aware_model_weights,
+        REGIME_SCORING_WEIGHTS,
+        CRPS_SCORING_ENABLED,
+    )
+    CRPS_AVAILABLE = True
+except ImportError:
+    CRPS_AVAILABLE = False
+    CRPS_SCORING_ENABLED = False
+
+
 class StudentTDriftModel:
     """Minimal Student-t helper used for Kalman log-likelihood and mapping."""
 
@@ -1708,6 +1728,10 @@ class Signal:
     vix_nu_adjustment_applied: bool = False  # True if VIX-based ν adjustment was applied
     nu_original: Optional[float] = None      # Original ν before VIX adjustment
     nu_adjusted: Optional[float] = None      # ν after VIX adjustment
+    # CRPS-based model selection (February 2026):
+    crps_score: Optional[float] = None       # Model's CRPS score (lower is better)
+    scoring_weights: Optional[Dict[str, float]] = None  # Regime-aware weights used {bic, hyvarinen, crps}
+    scoring_method: Optional[str] = None     # "regime_aware_bic_hyv_crps" or "bic_only"
 
 
 
@@ -7911,6 +7935,10 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             vix_nu_adjustment_applied=bool(kalman_metadata.get('vix_nu_adjustment_applied', False)),
             nu_original=float(kalman_metadata.get('nu_original')) if kalman_metadata.get('nu_original') is not None else None,
             nu_adjusted=float(kalman_metadata.get('nu_adjusted')) if kalman_metadata.get('nu_adjusted') is not None else None,
+            # CRPS-based model selection (February 2026):
+            crps_score=float(tuned_params.get('crps')) if tuned_params and tuned_params.get('crps') is not None else None,
+            scoring_weights=tuned_params.get('scoring_weights_used') if tuned_params else None,
+            scoring_method=tuned_params.get('scoring_method') if tuned_params else None,
         ))
 
     return sigs, thresholds

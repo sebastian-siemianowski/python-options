@@ -964,6 +964,12 @@ def render_augmentation_layers_summary(
         else:
             layers.append("[red]VIX:ν↓[/red]")
     
+    # CRPS-based model selection (February 2026)
+    crps_score = getattr(signal, 'crps_score', None)
+    scoring_method = getattr(signal, 'scoring_method', None)
+    if crps_score is not None and scoring_method == 'regime_aware_bic_hyv_crps':
+        layers.append(f"[cyan]CRPS={crps_score:.4f}[/cyan]")
+    
     if layers:
         # Print with markup enabled - use console.print directly with markup=True
         aug_line = "  [dim]Augmentation[/dim]  " + "  ".join(layers)

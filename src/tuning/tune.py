@@ -821,6 +821,13 @@ from tuning.diagnostics import (
     compute_regime_diagnostics,
     DEFAULT_ENTROPY_LAMBDA,
     DEFAULT_MIN_WEIGHT_FRACTION,
+    # CRPS computation (February 2026)
+    compute_crps_gaussian_inline,
+    compute_crps_student_t_inline,
+    compute_crps_model_weights,
+    compute_regime_aware_model_weights,
+    REGIME_SCORING_WEIGHTS,
+    CRPS_SCORING_ENABLED,
 )
 
 from tuning.reporting import render_calibration_issues_table
@@ -1637,9 +1644,19 @@ def tune_asset_q(
             prior_lambda=prior_lambda,
         )
         
-        # Compute model weights using BIC
+        # Compute model weights using regime-aware BIC + Hyvärinen + CRPS (February 2026)
         bic_values = {m: models[m].get("bic", float('inf')) for m in models}
-        model_weights = compute_bic_model_weights(bic_values)
+        hyvarinen_values = {m: models[m].get("hyvarinen_score", float('-inf')) for m in models}
+        crps_values = {m: models[m].get("crps", float('inf')) for m in models if models[m].get("crps") is not None}
+        
+        # Use regime-aware weights if CRPS available, else fallback to BIC-only
+        if crps_values and CRPS_SCORING_ENABLED:
+            model_weights, weight_meta = compute_regime_aware_model_weights(
+                bic_values, hyvarinen_values, crps_values, regime=None
+            )
+        else:
+            model_weights = compute_bic_model_weights(bic_values)
+            weight_meta = {"scoring_method": "bic_only"}
         
         # Find best model by BIC
         best_model = min(bic_values.items(), key=lambda x: x[1])[0]
@@ -2711,6 +2728,11 @@ def fit_all_models_for_regime(
                 returns, mu_st, forecast_scale_st, nu_fixed
             )
             
+            # Compute CRPS for regime-aware model selection (February 2026)
+            crps_st = compute_crps_student_t_inline(
+                returns, mu_st, forecast_scale_st, nu_fixed
+            )
+            
             models[model_name] = {
                 "q": float(q_st),
                 "c": float(c_st),
@@ -2722,6 +2744,7 @@ def fit_all_models_for_regime(
                 "bic": float(bic_st),
                 "aic": float(aic_st),
                 "hyvarinen_score": float(hyvarinen_st),
+                "crps": float(crps_st),  # CRPS for regime-aware selection
                 "n_params": int(n_params_st),
                 "ks_statistic": float(ks_st),
                 "pit_ks_pvalue": float(pit_p_st),
@@ -2736,6 +2759,7 @@ def fit_all_models_for_regime(
                 "bic": float('inf'),
                 "aic": float('inf'),
                 "hyvarinen_score": float('-inf'),
+                "crps": float('inf'),  # CRPS for failed models
                 "nu": float(nu_fixed),
                 "nu_fixed": True,
             }
@@ -3011,6 +3035,9 @@ def fit_all_models_for_regime(
             forecast_std_mom = np.sqrt(c_gauss * (vol ** 2) + P_mom)
             hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
             
+            # Compute CRPS for regime-aware model selection (February 2026)
+            crps_mom = compute_crps_gaussian_inline(returns, mu_mom, forecast_std_mom)
+            
             models[mom_name] = {
                 "q": float(q_gauss),
                 "c": float(c_gauss),
@@ -3023,6 +3050,7 @@ def fit_all_models_for_regime(
                 "bic_raw": float(bic_raw_mom),
                 "aic": float(aic_mom),
                 "hyvarinen_score": float(hyvarinen_mom),
+                "crps": float(crps_mom),  # CRPS for regime-aware selection
                 "n_params": int(n_params_mom),
                 "ks_statistic": float(ks_mom),
                 "pit_ks_pvalue": float(pit_p_mom),
@@ -3038,6 +3066,7 @@ def fit_all_models_for_regime(
                 "bic": float('inf'),
                 "aic": float('inf'),
                 "hyvarinen_score": float('-inf'),
+                "crps": float('inf'),  # CRPS for failed models
                 "momentum_augmented": True,
             }
         
@@ -3076,6 +3105,9 @@ def fit_all_models_for_regime(
             forecast_std_mom = np.sqrt(c_phi * (vol ** 2) + P_mom)
             hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
             
+            # Compute CRPS for regime-aware model selection (February 2026)
+            crps_mom = compute_crps_gaussian_inline(returns, mu_mom, forecast_std_mom)
+            
             models[mom_name] = {
                 "q": float(q_phi),
                 "c": float(c_phi),
@@ -3088,6 +3120,7 @@ def fit_all_models_for_regime(
                 "bic_raw": float(bic_raw_mom),
                 "aic": float(aic_mom),
                 "hyvarinen_score": float(hyvarinen_mom),
+                "crps": float(crps_mom),  # CRPS for regime-aware selection
                 "n_params": int(n_params_mom),
                 "ks_statistic": float(ks_mom),
                 "pit_ks_pvalue": float(pit_p_mom),
@@ -3103,6 +3136,7 @@ def fit_all_models_for_regime(
                 "bic": float('inf'),
                 "aic": float('inf'),
                 "hyvarinen_score": float('-inf'),
+                "crps": float('inf'),  # CRPS for failed models
                 "momentum_augmented": True,
             }
         
@@ -3142,6 +3176,11 @@ def fit_all_models_for_regime(
                         returns, mu_mom, forecast_scale_mom, nu_fixed
                     )
                     
+                    # Compute CRPS for regime-aware model selection (February 2026)
+                    crps_mom = compute_crps_student_t_inline(
+                        returns, mu_mom, forecast_scale_mom, nu_fixed
+                    )
+                    
                     models[mom_name] = {
                         "q": float(q_mom),
                         "c": float(c_mom),
@@ -3154,6 +3193,7 @@ def fit_all_models_for_regime(
                         "bic_raw": float(bic_raw_mom),
                         "aic": float(aic_mom),
                         "hyvarinen_score": float(hyvarinen_mom),
+                        "crps": float(crps_mom),  # CRPS for regime-aware selection
                         "n_params": int(n_params_mom),
                         "ks_statistic": float(ks_mom),
                         "pit_ks_pvalue": float(pit_p_mom),
@@ -3171,6 +3211,7 @@ def fit_all_models_for_regime(
                         "bic": float('inf'),
                         "aic": float('inf'),
                         "hyvarinen_score": float('-inf'),
+                        "crps": float('inf'),  # CRPS for failed models
                         "momentum_augmented": True,
                         "base_model": base_name,
                         "nu": float(nu_fixed),
@@ -3854,32 +3895,33 @@ def fit_regime_model_posterior(
         )
         
         # =====================================================================
-        # Step 2: Extract BIC and Hyvärinen scores
+        # Step 2: Extract BIC, Hyvärinen, and CRPS scores
         # =====================================================================
         bic_values = {m: models[m].get("bic", float('inf')) for m in models}
         hyvarinen_scores = {m: models[m].get("hyvarinen_score", float('-inf')) for m in models}
+        crps_values = {m: models[m].get("crps", float('inf')) for m in models if models[m].get("crps") is not None}
         
         # Print model fits
         for m, info in models.items():
             if info.get("fit_success", False):
                 bic_val = info.get("bic", float('nan'))
                 hyv_val = info.get("hyvarinen_score", float('nan'))
+                crps_val = info.get("crps", float('nan'))
                 mean_ll = info.get("mean_log_likelihood", float('nan'))
-                _log(f"     {m}: BIC={bic_val:.1f}, H={hyv_val:.4f}, mean_LL={mean_ll:.4f}")
+                _log(f"     {m}: BIC={bic_val:.1f}, H={hyv_val:.4f}, CRPS={crps_val:.4f}, mean_LL={mean_ll:.4f}")
             else:
                 _log(f"     {m}: FAILED - {info.get('error', 'unknown')}")
         
         # =====================================================================
-        # Step 3: Compute raw weights using specified method
+        # Step 3: Compute raw weights using regime-aware method (February 2026)
         # =====================================================================
-        # Model selection methods:
-        #   'bic'       - Traditional BIC-based weights (consistent but not robust)
-        #   'hyvarinen' - Hyvärinen score weights (robust under misspecification)
-        #   'combined'  - Entropy-regularized weights from BIC and Hyvärinen
+        # Model selection now includes CRPS with regime-specific weights:
+        #   - Crisis: CRPS 55%, BIC 20%, Hyvärinen 25% (calibration critical)
+        #   - Trending: balanced 35%/35%/30%
+        #   - Ranging: BIC 45%, Hyvärinen 25%, CRPS 30% (simpler models)
+        #   - Low Vol: Hyvärinen 40%, BIC 30%, CRPS 30% (robustness)
         #
         # HARD GATE: Disable Hyvärinen for small-sample regimes
-        # Small-n Student-t fits can produce illusory smoothness → artificially 
-        # good Hyvärinen scores. This is epistemically incorrect.
         # =====================================================================
         hyvarinen_disabled = n_samples < MIN_HYVARINEN_SAMPLES
         effective_method = model_selection_method
@@ -3895,8 +3937,16 @@ def fit_regime_model_posterior(
         elif effective_method == 'hyvarinen':
             raw_weights = compute_hyvarinen_model_weights(hyvarinen_scores)
             _log(f"     → Using Hyvärinen-only model selection (robust)")
+        elif crps_values and CRPS_SCORING_ENABLED:
+            # NEW: Regime-aware combined method with CRPS
+            raw_weights, weight_metadata = compute_regime_aware_model_weights(
+                bic_values, hyvarinen_scores, crps_values, 
+                regime=regime, lambda_entropy=DEFAULT_ENTROPY_LAMBDA
+            )
+            w_used = weight_metadata.get('weights_used', {})
+            _log(f"     → Using regime-aware BIC+Hyvärinen+CRPS selection (regime={regime}, bic={w_used.get('bic', 0):.2f}, hyv={w_used.get('hyvarinen', 0):.2f}, crps={w_used.get('crps', 0):.2f})")
         else:
-            # Default: combined method with entropy regularization
+            # Fallback: combined method without CRPS
             raw_weights, weight_metadata = compute_combined_model_weights(
                 bic_values, hyvarinen_scores, bic_weight=bic_weight,
                 lambda_entropy=DEFAULT_ENTROPY_LAMBDA
@@ -3908,10 +3958,14 @@ def fit_regime_model_posterior(
             w = raw_weights.get(m, 1e-10)
             if weight_metadata is not None:
                 # Use standardized combined score (lower = better)
-                models[m]['combined_score'] = float(weight_metadata['combined_scores_standardized'].get(m, 0.0))
+                # Handle None values from metadata (non-finite scores stored as None)
+                combined_score_val = weight_metadata.get('combined_scores_standardized', {}).get(m)
+                models[m]['combined_score'] = float(combined_score_val) if combined_score_val is not None else 0.0
                 models[m]['model_weight_entropy'] = float(w)
-                models[m]['standardized_bic'] = float(weight_metadata['bic_standardized'].get(m, 0.0)) if weight_metadata['bic_standardized'].get(m) is not None else None
-                models[m]['standardized_hyvarinen'] = float(weight_metadata['hyvarinen_standardized'].get(m, 0.0)) if weight_metadata['hyvarinen_standardized'].get(m) is not None else None
+                bic_std_val = weight_metadata.get('bic_standardized', {}).get(m)
+                models[m]['standardized_bic'] = float(bic_std_val) if bic_std_val is not None else None
+                hyv_std_val = weight_metadata.get('hyvarinen_standardized', {}).get(m)
+                models[m]['standardized_hyvarinen'] = float(hyv_std_val) if hyv_std_val is not None else None
                 models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
             else:
                 # Legacy: log of weight
@@ -4182,10 +4236,13 @@ def tune_regime_model_averaging(
     for m in global_models:
         w = global_raw_weights.get(m, 1e-10)
         if fallback_weight_metadata is not None:
-            global_models[m]['combined_score'] = float(fallback_weight_metadata['combined_scores_standardized'].get(m, 0.0))
+            combined_score_val = fallback_weight_metadata.get('combined_scores_standardized', {}).get(m)
+            global_models[m]['combined_score'] = float(combined_score_val) if combined_score_val is not None else 0.0
             global_models[m]['model_weight_entropy'] = float(w)
-            global_models[m]['standardized_bic'] = float(fallback_weight_metadata['bic_standardized'].get(m, 0.0)) if fallback_weight_metadata['bic_standardized'].get(m) is not None else None
-            global_models[m]['standardized_hyvarinen'] = float(fallback_weight_metadata['hyvarinen_standardized'].get(m, 0.0)) if fallback_weight_metadata['hyvarinen_standardized'].get(m) is not None else None
+            bic_std_val = fallback_weight_metadata.get('bic_standardized', {}).get(m)
+            global_models[m]['standardized_bic'] = float(bic_std_val) if bic_std_val is not None else None
+            hyv_std_val = fallback_weight_metadata.get('hyvarinen_standardized', {}).get(m)
+            global_models[m]['standardized_hyvarinen'] = float(hyv_std_val) if hyv_std_val is not None else None
             global_models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
         else:
             global_models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')

@@ -647,6 +647,9 @@ def render_tuning_summary(
     gk_vol_count: int = 0,  # Garman-Klass volatility
     har_vol_count: int = 0,  # HAR volatility
     ewma_vol_count: int = 0,  # EWMA volatility (fallback)
+    # CRPS model selection (February 2026)
+    crps_computed_count: int = 0,  # Models with CRPS computed
+    crps_regime_aware_count: int = 0,  # Assets using regime-aware CRPS weights
     # Legacy parameter for backward compatibility
     momentum_student_t_count: int = 0,
     console: Console = None
@@ -2096,6 +2099,10 @@ Examples:
     har_vol_count = 0  # HAR (Corsi) volatility
     ewma_vol_count = 0  # EWMA volatility (fallback)
     
+    # CRPS model selection counters (February 2026)
+    crps_computed_count = 0  # Models with CRPS computed
+    crps_regime_aware_count = 0  # Assets using regime-aware CRPS weights
+    
     # Calibrated Trust Authority statistics
     recalibration_applied_count = 0
     calibrated_trust_count = 0
@@ -2827,6 +2834,9 @@ Examples:
         gk_vol_count=gk_vol_count,
         har_vol_count=har_vol_count,
         ewma_vol_count=ewma_vol_count,
+        # CRPS model selection (February 2026)
+        crps_computed_count=crps_computed_count,
+        crps_regime_aware_count=crps_regime_aware_count,
         console=console,
     )
 
