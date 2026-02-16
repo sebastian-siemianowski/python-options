@@ -889,8 +889,10 @@ def render_augmentation_layers_summary(
     hansen_active = getattr(signal, 'hansen_enabled', False)
     evt_active = getattr(signal, 'evt_enabled', False)
     cst_active = getattr(signal, 'cst_enabled', False)
+    vol_estimator = getattr(signal, 'volatility_estimator', None)
+    mixture_enhanced = getattr(signal, 'mixture_enhanced', False)
     
-    if not (hansen_active or evt_active or cst_active):
+    if not (hansen_active or evt_active or cst_active or vol_estimator or mixture_enhanced):
         return  # No augmentation layers to display
     
     from rich.text import Text

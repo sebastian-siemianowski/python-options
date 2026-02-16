@@ -1203,8 +1203,8 @@ def get_gh_config() -> Optional['GHModelConfig']:
 # =============================================================================
 # TVVM addresses the volatility-of-volatility effect by making c time-varying.
 #
-# Standard model: r_t = μ_t + √(c·σ_t²)·ε_t  (static c)
-# TVVM model:     r_t = μ_t + √(c_t·σ_t²)·ε_t  (dynamic c_t)
+# Standard model: r_t = μ_t + √(c·σ_t²)  (static c)
+# TVVM model:     r_t = μ_t + √(c_t·σ_t²)  (dynamic c_t)
 #
 # where: c_t = c_base * (1 + γ * |Δσ_t/σ_t|)
 #
@@ -1600,37 +1600,34 @@ def tune_asset_q(
                     low = df_aligned[cols['low']].values
                     close = df_aligned[cols['close']].values
                     
-                    # Use HAR volatility if available (multi-horizon memory for crash detection)
-                    if HAR_VOLATILITY_AVAILABLE:
-                        vol, vol_estimator_used = compute_hybrid_volatility_har(
-                            open_=open_, high=high, low=low, close=close,
-                            span=21, annualize=False, use_har=True
-                        )
-                    else:
-                        vol, vol_estimator_used = compute_hybrid_volatility(
-                            open_=open_, high=high, low=low, close=close,
-                            span=21, annualize=False
-                        )
+                    # ENFORCE HAR-GK ONLY (February 2026)
+                    # HAR-GK provides multi-horizon memory for crash detection
+                    # Combined with Garman-Klass (7.4x more efficient than EWMA)
+                    vol, vol_estimator_used = compute_hybrid_volatility_har(
+                        open_=open_, high=high, low=low, close=close,
+                        span=21, annualize=False, use_har=True
+                    )
                 else:
-                    # Fallback to EWMA if OHLC not available
-                    vol = log_ret.ewm(span=21, adjust=False).std().values
+                    # OHLC not available - raise error as HAR-GK is required
+                    raise ValueError(f"OHLC data required for HAR-GK volatility estimation for {asset}")
             except Exception as e:
-                # Fallback to EWMA on any error
-                vol = log_ret.ewm(span=21, adjust=False).std().values
+                # Log error but don't silently fall back to inferior estimator
+                _log(f"     ⚠️ HAR-GK volatility estimation failed: {e}")
+                raise ValueError(f"HAR-GK volatility estimation required but failed for {asset}: {e}")
         else:
-            # Use EWMA if GK not available
-            vol = log_ret.ewm(span=21, adjust=False).std().values
+            # GK/HAR module not available - this should not happen in production
+            raise ImportError("HAR-GK volatility module required but not available")
         
         # Ensure returns and vol have same length
         min_len = min(len(returns), len(vol))
         returns = returns[:min_len]
         vol = vol[:min_len]
-        
+
         # Remove NaN/Inf
         valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
         returns = returns[valid_mask]
         vol = vol[valid_mask]
-        
+
         if len(returns) < 20:
             _log(f"     ⚠️  Insufficient valid data for {asset}")
             return None
@@ -2094,7 +2091,7 @@ def tune_asset_q(
         
         result = {
             "asset": asset,
-            "has_bma": True,  # CRITICAL: signals.py checks this flag
+            "has_bma": True,  # CRITICAL: signals.py checks this flag to accept the cache
             "global": global_data,  # BMA-compatible structure
             "regime": None,  # No regime data for basic tuning
             "use_regime_tuning": False,
@@ -2660,7 +2657,7 @@ def fit_all_models_for_regime(
     
     DISCRETE ν GRID FOR STUDENT-T:
     We fit separate Student-t sub-models for each ν in STUDENT_T_NU_GRID.
-    Each participates independently in BMA, eliminating ν-σ identifiability issues.
+    Each sub-model participates independently in BMA, eliminating ν-σ identifiability issues.
     
     Args:
         returns: Regime-specific returns
@@ -2975,7 +2972,7 @@ def fit_all_models_for_regime(
             }
     
     # =========================================================================
-    # Model 5: MOMENTUM-AUGMENTED MODELS (February 2026)
+    # MOMENTUM-AUGMENTED MODELS (February 2026)
     # =========================================================================
     # Momentum-augmented variants of base models compete as conditional
     # hypotheses in BMA. Momentum enters model selection, not filter equations.
@@ -3180,7 +3177,7 @@ def fit_all_models_for_regime(
                     crps_mom = compute_crps_student_t_inline(
                         returns, mu_mom, forecast_scale_mom, nu_fixed
                     )
-                    
+
                     models[mom_name] = {
                         "q": float(q_mom),
                         "c": float(c_mom),
@@ -3718,7 +3715,7 @@ def fit_all_models_for_regime(
                         "nu_calm": float(nu_calm),
                         "nu_stress": float(nu_stress),
                     }
-    
+
     return models
 
 
@@ -3803,8 +3800,8 @@ def fit_regime_model_posterior(
                     }
                 },
                 "regime_meta": {
-                    "temporal_alpha": alpha,
-                    "n_samples": n,
+                    "temporal_alpha": α,
+                    "n_samples": N,
                     "regime_name": str,
                     "fallback": bool,
                     "borrowed_from_global": bool,
@@ -4501,27 +4498,24 @@ def tune_asset_with_bma(
                     low = df_aligned[cols['low']].values
                     close = df_aligned[cols['close']].values
                     
-                    # Use HAR volatility if available (multi-horizon memory for crash detection)
-                    if HAR_VOLATILITY_AVAILABLE:
-                        vol, vol_estimator_used = compute_hybrid_volatility_har(
-                            open_=open_, high=high, low=low, close=close,
-                            span=21, annualize=False, use_har=True
-                        )
-                    else:
-                        vol, vol_estimator_used = compute_hybrid_volatility(
-                            open_=open_, high=high, low=low, close=close,
-                            span=21, annualize=False
-                        )
+                    # ENFORCE HAR-GK ONLY (February 2026)
+                    # HAR-GK provides multi-horizon memory for crash detection
+                    # Combined with Garman-Klass (7.4x more efficient than EWMA)
+                    vol, vol_estimator_used = compute_hybrid_volatility_har(
+                        open_=open_, high=high, low=low, close=close,
+                        span=21, annualize=False, use_har=True
+                    )
                 else:
-                    # Fallback to EWMA if OHLC not available
-                    vol = log_ret.ewm(span=21, adjust=False).std().values
+                    # OHLC not available - raise error as HAR-GK is required
+                    raise ValueError(f"OHLC data required for HAR-GK volatility estimation for {asset}")
             except Exception as e:
-                # Fallback to EWMA on any error
-                vol = log_ret.ewm(span=21, adjust=False).std().values
+                # Log error but don't silently fall back to inferior estimator
+                _log(f"     ⚠️ HAR-GK volatility estimation failed: {e}")
+                raise ValueError(f"HAR-GK volatility estimation required but failed for {asset}: {e}")
         else:
-            # Use EWMA if GK not available
-            vol = log_ret.ewm(span=21, adjust=False).std().values
-
+            # GK/HAR module not available - this should not happen in production
+            raise ImportError("HAR-GK volatility module required but not available")
+        
         # Ensure returns and vol have same length
         min_len = min(len(returns), len(vol))
         returns = returns[:min_len]
@@ -5084,6 +5078,7 @@ Examples:
         if 'hierarchical_tuning' in data:
             if data['hierarchical_tuning'].get('collapse_warning', False):
                 collapse_warnings += 1
+
     print(f"  Regime-specific fits:")
     for r in range(5):
         shrunk_str = f" ({regime_shrunk_counts[r]} shrunk)" if regime_shrunk_counts[r] > 0 else ""

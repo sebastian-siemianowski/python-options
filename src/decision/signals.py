@@ -3364,12 +3364,15 @@ def compute_features(
     vol_slow = ret.ewm(span=126, adjust=False).std()
 
     # =========================================================================
-    # VOLATILITY ESTIMATION - Priority: GK > GARCH > EWMA
+    # VOLATILITY ESTIMATION - ENFORCE HAR-GK ONLY (February 2026)
+    # =========================================================================
+    # HAR-GK provides multi-horizon memory for crash detection
+    # Combined with Garman-Klass (7.4x more efficient than EWMA)
     # =========================================================================
     vol_source = "ewma_fallback"
     garch_params = {}
     
-    # Priority 1: Garman-Klass/HAR if OHLC data available (7.4x more efficient)
+    # ENFORCE HAR-GK ONLY - require OHLC data
     if GK_VOLATILITY_AVAILABLE and ohlc_df is not None and not ohlc_df.empty:
         try:
             cols = {c.lower(): c for c in ohlc_df.columns}
@@ -3379,39 +3382,26 @@ def compute_features(
                 low = ohlc_df[cols['low']].values
                 close = ohlc_df[cols['close']].values
                 
-                # Use HAR volatility if available (multi-horizon memory for crash detection)
-                if HAR_VOLATILITY_AVAILABLE:
-                    vol_gk, vol_estimator = compute_hybrid_volatility_har(
-                        open_=open_, high=high, low=low, close=close,
-                        span=21, annualize=False, use_har=True
-                    )
-                else:
-                    vol_gk, vol_estimator = compute_hybrid_volatility(
-                        open_=open_, high=high, low=low, close=close,
-                        span=21, annualize=False
-                    )
+                # ENFORCE HAR-GK ONLY (February 2026)
+                vol_gk, vol_estimator = compute_hybrid_volatility_har(
+                    open_=open_, high=high, low=low, close=close,
+                    span=21, annualize=False, use_har=True
+                )
                 
                 # Convert to Series with proper index
                 vol_gk_series = pd.Series(vol_gk, index=ohlc_df.index)
                 # Align to ret index
                 vol = vol_gk_series.reindex(ret.index).rename("vol")
                 vol_source = f"gk_{vol_estimator.lower()}"
-        except Exception:
-            # Fall through to GARCH/EWMA
-            pass
-    
-    # Priority 2: GARCH(1,1) if GK not available/failed
-    if vol_source == "ewma_fallback":
-        try:
-            vol_garch, garch_params = _garch11_mle(ret)
-            # Align to ret index and name "vol" for downstream compatibility
-            vol = vol_garch.reindex(ret.index).rename("vol")
-            vol_source = "garch11"
-        except Exception:
-            # Priority 3: EWMA blend (fallback)
-            vol = (0.6 * vol_fast + 0.4 * vol_slow).rename("vol")
-            garch_params = {}
-            vol_source = "ewma_fallback"
+            else:
+                # OHLC not available - raise error as HAR-GK is required
+                raise ValueError(f"OHLC data required for HAR-GK volatility estimation")
+        except Exception as e:
+            # Log error but don't silently fall back to inferior estimator
+            raise ValueError(f"HAR-GK volatility estimation required but failed: {e}")
+    else:
+        # GK/HAR module not available - this should not happen in production
+        raise ImportError("HAR-GK volatility module required but not available")
             
     # Robust global volatility floor to avoid feedback loops when vol collapses recently:
     # - Use a lagged expanding 10th percentile over the entire history (no look-ahead)
