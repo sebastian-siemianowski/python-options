@@ -171,6 +171,21 @@ from models.phi_student_t import (
     optimize_params_ms_q,
 )
 
+# Import Numba-accelerated filter wrappers (February 2026 Performance)
+try:
+    from models.numba_wrappers import (
+        run_ms_q_student_t_filter,
+        run_student_t_filter_with_lfo_cv,
+        run_student_t_filter_with_lfo_cv_batch,
+        run_gaussian_filter_with_lfo_cv,
+    )
+except ImportError:
+    # Stubs when Numba not available
+    run_ms_q_student_t_filter = None
+    run_student_t_filter_with_lfo_cv = None
+    run_student_t_filter_with_lfo_cv_batch = None
+    run_gaussian_filter_with_lfo_cv = None
+
 __all__ = [
     # Models
     'GaussianDriftModel',
@@ -280,4 +295,9 @@ __all__ = [
     'CST_EPSILON_MAX',
     'CST_EPSILON_DEFAULT',
     'CST_MIN_OBS',
+    # Numba-accelerated filter wrappers (February 2026 Performance)
+    'run_ms_q_student_t_filter',
+    'run_student_t_filter_with_lfo_cv',
+    'run_student_t_filter_with_lfo_cv_batch',
+    'run_gaussian_filter_with_lfo_cv',
 ]

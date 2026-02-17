@@ -55,12 +55,21 @@ try:
         is_numba_available,
         run_phi_student_t_filter,
         run_phi_student_t_filter_batch,
+        # MS-q and fused LFO-CV wrappers (February 2026)
+        run_ms_q_student_t_filter,
+        run_student_t_filter_with_lfo_cv,
+        run_student_t_filter_with_lfo_cv_batch,
     )
     _USE_NUMBA = is_numba_available()
+    _MS_Q_NUMBA_AVAILABLE = _USE_NUMBA
 except ImportError:
     _USE_NUMBA = False
+    _MS_Q_NUMBA_AVAILABLE = False
     run_phi_student_t_filter = None
     run_phi_student_t_filter_batch = None
+    run_ms_q_student_t_filter = None
+    run_student_t_filter_with_lfo_cv = None
+    run_student_t_filter_with_lfo_cv_batch = None
 
 
 # =============================================================================
