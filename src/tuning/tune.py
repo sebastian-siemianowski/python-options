@@ -1575,17 +1575,20 @@ def tune_asset_q(
     """
     try:
         # Fetch price data (need OHLC for Garman-Klass volatility)
-        df = None
-        try:
-            px, title = fetch_px(asset, start_date, end_date)
-            # fetch_px returns only close prices, try to get full OHLC
-            df = _download_prices(asset, start_date, end_date)
-        except Exception:
-            df = _download_prices(asset, start_date, end_date)
-            if df is None or df.empty:
-                _log(f"     ⚠️  No price data for {asset}")
-                return None
-            px = df['Close']
+        # Use _download_prices ONCE to get OHLC data - extract Close from it
+        # This avoids duplicate downloads (February 2026 optimization)
+        df = _download_prices(asset, start_date, end_date)
+        if df is None or df.empty:
+            _log(f"     ⚠️  No price data for {asset}")
+            return None
+        
+        # Extract Close prices from OHLC DataFrame
+        cols = {c.lower(): c for c in df.columns}
+        if 'close' in cols:
+            px = df[cols['close']]
+        else:
+            _log(f"     ⚠️  No Close column for {asset}")
+            return None
         
         if px is None or len(px) < 20:
             _log(f"     ⚠️  Insufficient data for {asset}")
@@ -4665,17 +4668,20 @@ def tune_asset_with_bma(
     
     try:
         # Fetch price data (need OHLC for Garman-Klass volatility)
-        df = None
-        try:
-            px, title = fetch_px(asset, start_date, end_date)
-            # fetch_px returns only close prices, try to get full OHLC
-            df = _download_prices(asset, start_date, end_date)
-        except Exception:
-            df = _download_prices(asset, start_date, end_date)
-            if df is None or df.empty:
-                _log(f"     ⚠️  No price data for {asset}")
-                return None
-            px = df['Close']
+        # Use _download_prices ONCE to get OHLC data - extract Close from it
+        # This avoids duplicate downloads (February 2026 optimization)
+        df = _download_prices(asset, start_date, end_date)
+        if df is None or df.empty:
+            _log(f"     ⚠️  No price data for {asset}")
+            return None
+        
+        # Extract Close prices from OHLC DataFrame
+        cols = {c.lower(): c for c in df.columns}
+        if 'close' in cols:
+            px = df[cols['close']]
+        else:
+            _log(f"     ⚠️  No Close column for {asset}")
+            return None
         
         n_points = len(px) if px is not None else 0
         

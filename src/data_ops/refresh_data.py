@@ -341,7 +341,21 @@ def bulk_download_n_times(
                 pass
     
     # Run num_passes bulk-only passes (no individual fallback)
+    # FIX: Track symbols that still need to be fetched across passes
+    remaining_symbols = all_symbols.copy()
+    
     for pass_num in range(1, num_passes + 1):
+        # If no remaining symbols, we're done early
+        if not remaining_symbols:
+            if not quiet:
+                console.print()
+                done_msg = Text()
+                done_msg.append("    ")
+                done_msg.append("✓ ", style="bold green")
+                done_msg.append("All symbols downloaded!", style="green")
+                console.print(done_msg)
+            break
+        
         is_final_pass = (pass_num == num_passes)
         tracker.start_pass(pass_num)
         
@@ -352,6 +366,7 @@ def bulk_download_n_times(
             pass_header.append("    ")
             pass_header.append(f"Pass {pass_num}", style="bold cyan")
             pass_header.append(f"/{num_passes}", style="dim")
+            pass_header.append(f"  ({len(remaining_symbols)} symbols)", style="dim")
             if is_final_pass:
                 pass_header.append("  +fallback", style="yellow")
             console.print(pass_header)
@@ -360,7 +375,8 @@ def bulk_download_n_times(
         # INNER RETRY LOOP: Keep retrying pending symbols until all are done
         # or we've exhausted retries within this pass (max 3 inner retries)
         # =====================================================================
-        symbols_to_try = all_symbols.copy()
+        # FIX: Use remaining_symbols from previous pass, not all_symbols
+        symbols_to_try = remaining_symbols.copy()
         max_inner_retries = 3
         inner_retry = 0
         
@@ -472,6 +488,9 @@ def bulk_download_n_times(
         successful = len(all_symbols) - len(failed_symbols)
         last_failed_count = len(failed_symbols)
         last_failed_symbols = failed_symbols
+        
+        # FIX: Update remaining_symbols for the next pass
+        remaining_symbols = failed_symbols
         
         tracker.end_pass(successful, last_failed_count)
         

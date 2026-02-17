@@ -3982,11 +3982,12 @@ def _download_prices_core(symbol: str, start: Optional[str], end: Optional[str])
         if last_dt >= target_end:
             _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
             return disk_df
-        # If disk cache is reasonably recent (within 3 calendar days),
+        # If disk cache is reasonably recent (within 5 calendar days),
         # use it without attempting incremental fetch to avoid noisy error messages
         # for tickers that may have data gaps or be temporarily unavailable
+        # (5 days handles long weekends like Presidents' Day, MLK Day, etc.)
         days_stale = (target_end - last_dt).days
-        if days_stale <= 3:
+        if days_stale <= 5:
             _PX_CACHE[_px_cache_key(symbol, start, end)] = disk_df
             return disk_df
         # Otherwise, fetch incrementally from day after last cached date
