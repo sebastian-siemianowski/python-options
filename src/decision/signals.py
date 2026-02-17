@@ -611,26 +611,6 @@ except ImportError:
     EVT_MIN_EXCEEDANCES = 30
     EVT_FALLBACK_MULTIPLIER = 1.5
 
-# =============================================================================
-# AIGF-NF (Adaptive Implicit Generative Filter - Normalizing Flow)
-# =============================================================================
-# AIGF-NF is an advanced generative model for return distribution modeling.
-# =============================================================================
-try:
-    from models import (
-        AIGFNFModel,
-        AIGFNFConfig,
-        DEFAULT_AIGF_NF_CONFIG,
-        is_aigf_nf_model,
-    )
-    AIGF_NF_AVAILABLE = True
-except ImportError:
-    AIGF_NF_AVAILABLE = False
-    
-    def is_aigf_nf_model(name: str) -> bool:
-        """Fallback stub - always returns False when module unavailable."""
-        return False
-
 
 # =============================================================================
 # CONTAMINATED STUDENT-T DISTRIBUTION
@@ -6136,70 +6116,6 @@ def bayesian_model_average_mc(
 
         # Number of samples: proportional to weight but with minimum guarantee
         n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_paths))
-
-        # ====================================================================
-        # AIGF-NF SPECIAL HANDLING
-        # ====================================================================
-        # AIGF-NF uses its own normalizing flow-based sampling.
-        # It does NOT use the standard run_regime_specific_mc() path.
-        # Instead, we reconstruct the model from cached state and sample.
-        #
-        # ARCHITECTURE:
-        # - Flow parameters θ are frozen (trained offline)
-        # - Latent state z_t evolves online
-        # - Sampling is via flow forward pass: x = f_θ(ε; z), ε ~ N(0,I)
-        # ====================================================================
-        if is_aigf_nf_model(model_name) and AIGF_NF_AVAILABLE:
-            try:
-                # Reconstruct AIGF-NF model from cached parameters
-                latent_z = model_params.get('latent_z', [0.0] * 8)
-                latent_dim = model_params.get('latent_dim', 8)
-                config_dict = model_params.get('config', {})
-                
-                # Create config (use default if not available)
-                if config_dict:
-                    config = AIGFNFConfig.from_dict(config_dict)
-                else:
-                    config = DEFAULT_AIGF_NF_CONFIG
-                
-                # Create model with cached state
-                aigf_model = AIGFNFModel(config=config, rng=rng)
-                
-                # Restore latent state from cache
-                if latent_z and len(latent_z) == aigf_model.state.z.shape[0]:
-                    aigf_model.state.z = np.array(latent_z)
-                
-                # Sample from the flow
-                model_samples = aigf_model.sample_predictive(n_samples=n_model_samples)
-                
-                # Scale samples to horizon H (flow samples are single-step)
-                # For multi-step forecast, we accumulate drift like other models
-                if H > 1:
-                    # Simple random walk scaling for horizon
-                    model_samples = model_samples * np.sqrt(H)
-                
-                all_samples.append(model_samples)
-                model_details[model_name] = {
-                    "weight": float(model_weight),
-                    "n_samples": len(model_samples),
-                    "model_type": "aigf_nf",
-                    "latent_dim": latent_dim,
-                    "predictive_mean": model_params.get('predictive_mean'),
-                    "predictive_std": model_params.get('predictive_std'),
-                    "tail_heaviness": model_params.get('tail_heaviness'),
-                    "novelty_score": model_params.get('novelty_score'),
-                    "flow_artifact_id": model_params.get('flow_artifact_id'),
-                }
-                continue  # Skip standard MC sampling
-                
-            except Exception as e:
-                # If AIGF-NF sampling fails, log and skip this model
-                import warnings
-                warnings.warn(
-                    f"AIGF-NF sampling failed: {e}. Skipping model in BMA.",
-                    RuntimeWarning
-                )
-                continue
 
         # Generate samples from p(x | r_t, m, θ_m)
         # AUGMENTATION LAYERS ARE PASSED TO MC SAMPLING:

@@ -137,25 +137,6 @@ from models.contaminated_student_t import (
     CST_MIN_OBS,
 )
 
-# Import AIGF-NF (Adaptive Implicit Generative Filter - Normalizing Flow)
-# AIGF-NF is a bounded, non-parametric belief model per spec v1.0.
-# It competes in BMA via log-likelihood.
-from models.aigf_nf import (
-    AIGFNFConfig,
-    DEFAULT_AIGF_NF_CONFIG,
-    FlowArtifact,
-    LatentState,
-    InterpretabilityProxies,
-    StabilityDiagnostics,
-    AIGFNFCalibrationResult,
-    AIGFNFPredictiveResult,
-    AIGFNFModel,
-    AIGF_NF_MODEL_NAME,
-    get_aigf_nf_model_name,
-    is_aigf_nf_model,
-    create_aigf_nf_model,
-    fit_aigf_nf,
-)
 
 # Re-export constants from phi_student_t (the canonical source for Student-t config)
 from models.phi_student_t import (
@@ -279,19 +260,4 @@ __all__ = [
     'CST_EPSILON_MAX',
     'CST_EPSILON_DEFAULT',
     'CST_MIN_OBS',
-    # AIGF-NF (Adaptive Implicit Generative Filter - Normalizing Flow)
-    'AIGFNFConfig',
-    'DEFAULT_AIGF_NF_CONFIG',
-    'FlowArtifact',
-    'LatentState',
-    'InterpretabilityProxies',
-    'StabilityDiagnostics',
-    'AIGFNFCalibrationResult',
-    'AIGFNFPredictiveResult',
-    'AIGFNFModel',
-    'AIGF_NF_MODEL_NAME',
-    'get_aigf_nf_model_name',
-    'is_aigf_nf_model',
-    'create_aigf_nf_model',
-    'fit_aigf_nf',
 ]

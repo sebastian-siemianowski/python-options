@@ -691,22 +691,6 @@ def extract_model_params_for_sampling(
         result["evt_sigma"] = fitted_params.get("evt_sigma", fitted_params.get("sigma", spec.default_params.get("evt_sigma")))
         result["evt_threshold"] = fitted_params.get("evt_threshold", fitted_params.get("threshold", spec.default_params.get("evt_threshold")))
     
-    elif spec.family == ModelFamily.AIGF_NF:
-        # AIGF-NF specific parameters
-        result["latent_z"] = fitted_params.get("latent_z", [0.0] * 8)
-        result["latent_dim"] = fitted_params.get("latent_dim", 8)
-        result["ewma_lambda"] = fitted_params.get("ewma_lambda", spec.default_params.get("ewma_lambda", 0.95))
-        result["clip_threshold"] = fitted_params.get("clip_threshold", spec.default_params.get("clip_threshold", 5.0))
-        result["step_size_alpha"] = fitted_params.get("step_size_alpha", spec.default_params.get("step_size_alpha", 0.01))
-        result["trust_radius"] = fitted_params.get("trust_radius", spec.default_params.get("trust_radius", 3.0))
-        result["predictive_mean"] = fitted_params.get("predictive_mean", 0.0)
-        result["predictive_std"] = fitted_params.get("predictive_std", 0.01)
-        result["tail_heaviness"] = fitted_params.get("tail_heaviness", 1.0)
-        result["novelty_score"] = fitted_params.get("novelty_score", 0.0)
-        # Flow artifact info for auditing
-        result["flow_artifact_id"] = fitted_params.get("flow_artifact_id", "default_init")
-        result["flow_version"] = fitted_params.get("flow_version", "0.0.1")
-    
     return result
 
 
@@ -721,7 +705,7 @@ def get_base_models_for_tuning() -> List[str]:
     This is what tune.py should iterate over.
     Augmentation layers are applied separately after base model selection.
     """
-    # Order: Gaussian → Student-t (by ν) → AIGF-NF → others
+    # Order: Gaussian → Student-t (by ν)
     models = []
     
     # Gaussian family first
@@ -731,9 +715,6 @@ def get_base_models_for_tuning() -> List[str]:
     # Student-t family (original grid)
     for nu in STUDENT_T_NU_GRID:
         models.append(make_student_t_name(nu))
-    
-    # AIGF-NF (Normalizing Flow based model)
-    models.append(make_aigf_nf_name())
     
     return models
 

@@ -358,7 +358,6 @@ def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: 
     chips3.append("   ○ ", style="bright_red")
     chips3.append("RiskTemp", style="bright_red")
     chips3.append("   ○ ", style="bright_green")
-    chips3.append("AIGF-NF", style="bright_green")
     console.print(Align.center(chips3))
     # Momentum and Fisher-Rao augmentation status
     chips4 = Text()
