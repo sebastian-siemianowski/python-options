@@ -3867,43 +3867,36 @@ def fit_regime_model_posterior(
         # =====================================================================
         # Step 3: Compute raw weights using regime-aware method (February 2026)
         # =====================================================================
-        # Model selection now includes CRPS with regime-specific weights:
-        #   - Crisis: CRPS 55%, BIC 20%, Hyvärinen 25% (calibration critical)
-        #   - Trending: balanced 35%/35%/30%
-        #   - Ranging: BIC 45%, Hyvärinen 25%, CRPS 30% (simpler models)
-        #   - Low Vol: Hyvärinen 40%, BIC 30%, CRPS 30% (robustness)
+        # Model selection uses BIC + Hyvärinen + CRPS with regime-specific weights:
+        #   - Unknown: (0.30, 0.30, 0.40) — balanced with CRPS tilt
+        #   - Crisis: (0.25, 0.20, 0.55) — CRPS critical for tail risk
+        #   - Trending: (0.30, 0.25, 0.45) — forecast quality > curvature
+        #   - Ranging: (0.45, 0.30, 0.25) — simpler models preferred
+        #   - Low Vol: (0.30, 0.40, 0.30) — robustness to misspecification
         #
-        # HARD GATE: Disable Hyvärinen for small-sample regimes
+        # SMALL SAMPLE HANDLING: When Hyvärinen is disabled, use BIC+CRPS only
         # =====================================================================
         hyvarinen_disabled = n_samples < MIN_HYVARINEN_SAMPLES
-        effective_method = model_selection_method
         weight_metadata = None
         
-        if hyvarinen_disabled and model_selection_method in ('hyvarinen', 'combined'):
-            effective_method = 'bic'
-            _log(f"     ⚠️  Hyvärinen disabled for regime {regime} (n={n_samples} < {MIN_HYVARINEN_SAMPLES}) → using BIC-only")
-        
-        if effective_method == 'bic':
-            raw_weights = compute_bic_model_weights(bic_values)
-            _log(f"     → Using BIC-only model selection")
-        elif effective_method == 'hyvarinen':
-            raw_weights = compute_hyvarinen_model_weights(hyvarinen_scores)
-            _log(f"     → Using Hyvärinen-only model selection (robust)")
-        elif crps_values and CRPS_SCORING_ENABLED:
-            # NEW: Regime-aware combined method with CRPS
+        if hyvarinen_disabled:
+            # Small samples: use BIC + CRPS only (Hyvärinen unreliable)
+            raw_weights, weight_metadata = compute_regime_aware_model_weights(
+                bic_values, hyvarinen_scores, crps_values,
+                regime=regime, 
+                bic_weight=0.50, hyvarinen_weight=0.0, crps_weight=0.50,
+                lambda_entropy=DEFAULT_ENTROPY_LAMBDA
+            )
+            w_used = weight_metadata.get('weights_used', {})
+            _log(f"     ⚠️  Hyvärinen disabled (n={n_samples} < {MIN_HYVARINEN_SAMPLES}) → BIC+CRPS only (bic={w_used.get('bic', 0):.2f}, crps={w_used.get('crps', 0):.2f})")
+        else:
+            # Full regime-aware method: BIC + Hyvärinen + CRPS
             raw_weights, weight_metadata = compute_regime_aware_model_weights(
                 bic_values, hyvarinen_scores, crps_values, 
                 regime=regime, lambda_entropy=DEFAULT_ENTROPY_LAMBDA
             )
             w_used = weight_metadata.get('weights_used', {})
             _log(f"     → Using regime-aware BIC+Hyvärinen+CRPS selection (regime={regime}, bic={w_used.get('bic', 0):.2f}, hyv={w_used.get('hyvarinen', 0):.2f}, crps={w_used.get('crps', 0):.2f})")
-        else:
-            # Fallback: combined method without CRPS
-            raw_weights, weight_metadata = compute_combined_model_weights(
-                bic_values, hyvarinen_scores, bic_weight=bic_weight,
-                lambda_entropy=DEFAULT_ENTROPY_LAMBDA
-            )
-            _log(f"     → Using entropy-regularized BIC+Hyvärinen selection (α={bic_weight:.2f}, λ={DEFAULT_ENTROPY_LAMBDA:.3f})")
         
         # Store combined_score and entropy-regularized weights in each model
         for m in models:
@@ -4085,10 +4078,10 @@ def fit_regime_model_posterior(
                 "hyvarinen_max": float(max(finite_hyvs)) if finite_hyvs else None,
                 "combined_score_min": float(min(finite_combined)) if finite_combined else None,
                 "best_model_by_combined": best_model_by_combined,
-                "model_selection_method": model_selection_method,
-                "effective_selection_method": effective_method,
+                "model_selection_method": "regime_aware_crps",
+                "effective_selection_method": "bic_crps_only" if hyvarinen_disabled else "bic_hyv_crps",
                 "hyvarinen_disabled": hyvarinen_disabled,
-                "bic_weight": bic_weight if model_selection_method == 'combined' else None,
+                "crps_enabled": True,
                 "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
                 "smoothing_applied": prev_posterior is not None and temporal_alpha > 0,
                 # PIT Penalty metadata (February 2026)
