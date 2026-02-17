@@ -904,6 +904,116 @@ class PhiStudentTDriftModel:
         return mu_filtered, P_filtered, float(log_likelihood)
     
     @classmethod
+    def filter_phi_augmented(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        nu: float,
+        exogenous_input: np.ndarray = None,
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        Kalman filter with exogenous input in state equation.
+        
+        STATE-EQUATION INTEGRATION (Elite Upgrade - February 2026):
+            μ_t = φ × μ_{t-1} + u_t + w_t
+            r_t = μ_t + ε_t,  ε_t ~ t(ν)
+        
+        Preserves probabilistic coherence — likelihood computed correctly.
+        
+        EXPERT VALIDATED:
+        - mu_pred includes u_t (coherent likelihood)
+        - scale_t uses variance parameterization (consistent with rest of codebase)
+        - gammaln imported at module level (Expert #2)
+        
+        Args:
+            returns: Array of returns
+            vol: Array of volatility estimates
+            q: Process noise variance
+            c: Observation noise scale
+            phi: AR(1) persistence
+            nu: Degrees of freedom
+            exogenous_input: Array of u_t values (α×MOM - β×MR)
+            
+        Returns:
+            Tuple of (mu_filtered, P_filtered, log_likelihood)
+        """
+        n = len(returns)
+        
+        # Convert to contiguous float64 arrays
+        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        
+        # Extract scalar values
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+        nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
+        
+        # Pre-compute constants
+        phi_sq = phi_val * phi_val
+        nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
+        
+        # Pre-compute log-pdf constants (gammaln imported at module level - Expert #2)
+        log_norm_const = gammaln((nu_val + 1.0) / 2.0) - gammaln(nu_val / 2.0) - 0.5 * np.log(nu_val * np.pi)
+        neg_exp = -((nu_val + 1.0) / 2.0)
+        inv_nu = 1.0 / nu_val
+        
+        # Pre-compute R values
+        R = c_val * (vol * vol)
+        
+        # Allocate output arrays
+        mu_filtered = np.empty(n, dtype=np.float64)
+        P_filtered = np.empty(n, dtype=np.float64)
+        
+        # State initialization
+        mu = 0.0
+        P = 1e-4
+        log_likelihood = 0.0
+        
+        # Main filter loop with exogenous input
+        for t in range(n):
+            # Exogenous input (KEY: injected into state equation)
+            u_t = exogenous_input[t] if exogenous_input is not None and t < len(exogenous_input) else 0.0
+            
+            # Prediction step INCLUDES exogenous input (Expert #1: coherent)
+            mu_pred = phi_val * mu + u_t
+            P_pred = phi_sq * P + q_val
+            
+            # Observation update
+            S = P_pred + R[t]
+            if S <= 1e-12:
+                S = 1e-12
+            
+            innovation = returns[t] - mu_pred
+            K = nu_adjust * P_pred / S
+            
+            # State update with robust Student-t weighting
+            z_sq = (innovation ** 2) / S
+            w_t = (nu_val + 1.0) / (nu_val + z_sq)
+            
+            mu = mu_pred + K * w_t * innovation
+            P = (1.0 - w_t * K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
+            
+            # Store filtered values
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+            
+            # Log-likelihood (coherent with u_t - Expert #1)
+            forecast_scale = np.sqrt(S)
+            if forecast_scale > 1e-12:
+                z = innovation / forecast_scale
+                ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
+                if np.isfinite(ll_t):
+                    log_likelihood += ll_t
+        
+        return mu_filtered, P_filtered, float(log_likelihood)
+    
+    @classmethod
     def _filter_phi_python(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
         """Pure Python implementation of φ-Student-t filter (for fallback and testing)."""
         # Delegate to optimized version

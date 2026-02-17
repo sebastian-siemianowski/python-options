@@ -221,6 +221,47 @@ Higher VIX → lower ν → heavier tails.
 - VIX leading indicator for tail events
 - Improves cross-asset calibration (CRPS/CSS scores)
 
+### State-Equation Mean Reversion Integration (February 2026)
+**Location**: `src/models/momentum_augmented.py`
+
+Elite upgrade that integrates OU mean reversion directly into the Kalman state equation:
+
+**State-Equation Integration (Probabilistically Coherent):**
+```
+μ_t = φ × μ_{t-1} + u_t + w_t
+where u_t = α_t × MOM_t - β_t × MR_t  (exogenous input)
+```
+
+**Key Functions:**
+- `estimate_local_level_equilibrium()` - State-space equilibrium (not MA)
+- `estimate_kappa_bayesian()` - OU κ with delta-method variance
+- `compute_mr_signal()` - Mean reversion signal in returns units
+- `apply_phi_shrinkage_for_mr()` - φ shrinkage for identifiability
+- `filter_phi_augmented()` - Augmented filters in gaussian.py/phi_student_t.py
+
+**Expert Panel Validated Design:**
+1. **Expert #1**: State-equation injection preserves likelihood coherence
+2. **Expert #2**: gammaln imported at module level (critical bug fix)
+3. **Expert #3**: φ shrinkage toward 1.0 prevents φ/κ collinearity
+4. **Expert #4**: Delta-method κ variance with explicit prior_var
+5. **Expert #5**: CRPS feedback DISABLED by default (leakage risk)
+6. **Expert #8**: Dynamic max_u = k × √q (vol-consistent capping)
+
+**Configuration (MomentumConfig):**
+```python
+enable_mean_reversion: bool = True
+mr_equilibrium_method: str = "state_space"
+mr_kappa_prior: float = 0.05  # ~14 day half-life
+mr_kappa_max: float = 0.10  # Tightened for identifiability
+mr_phi_shrinkage_strength: float = 0.3  # 30% shrinkage toward 1.0
+max_u_scale_by_q: bool = True  # Dynamic cap scaling
+```
+
+**Impact:**
+- Probabilistically coherent likelihood (no post-filter hacks)
+- Better PIT calibration during range regimes
+- Improved out-of-sample robustness
+
 ## Developer Workflow
 
 ### Daily Commands

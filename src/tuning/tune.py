@@ -1643,11 +1643,25 @@ def tune_asset_q(
         
         n_obs = len(returns)
         
+        # Extract prices array for MR integration (February 2026)
+        # Align prices with returns (skip first element since returns = diff(log(px)))
+        prices_array = None
+        if px is not None:
+            px_values = px.values if hasattr(px, 'values') else np.array(px)
+            # Skip first price to align with returns, then apply same valid_mask
+            if len(px_values) > 1:
+                prices_aligned = px_values[1:][:min_len]
+                if len(prices_aligned) == len(valid_mask):
+                    prices_array = prices_aligned[valid_mask]
+                elif len(prices_aligned) >= len(returns):
+                    prices_array = prices_aligned[:len(returns)]
+        
         # Fit all model classes globally
         models = fit_all_models_for_regime(
             returns, vol,
             prior_log_q_mean=prior_log_q_mean,
             prior_lambda=prior_lambda,
+            prices=prices_array,  # MR integration (February 2026)
         )
         
         # Compute model weights using regime-aware BIC + Hyvärinen + CRPS (February 2026)
@@ -2675,6 +2689,8 @@ def fit_all_models_for_regime(
     vol: np.ndarray,
     prior_log_q_mean: float = -6.0,
     prior_lambda: float = 1.0,
+    prices: np.ndarray = None,  # Added for MR integration (February 2026)
+    regime_labels: np.ndarray = None,  # Added for regime-adaptive blending
 ) -> Dict[str, Dict]:
     """
     Fit ALL candidate model classes for a single regime's data.
@@ -2694,6 +2710,8 @@ def fit_all_models_for_regime(
         vol: Regime-specific volatility
         prior_log_q_mean: Prior mean for log10(q)
         prior_lambda: Regularization strength
+        prices: Price array for MR equilibrium estimation (optional)
+        regime_labels: Regime labels for adaptive blending (optional)
 
     Returns:
         Dictionary with fitted models:
@@ -2986,9 +3004,27 @@ def fit_all_models_for_regime(
     # =========================================================================
     
     if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
-        # Create momentum wrapper
+        # Create momentum wrapper with MR integration (February 2026)
         momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
-        momentum_wrapper.precompute_momentum(returns)
+        
+        # Use precompute_signals for state-equation MR integration
+        # Falls back to momentum-only if prices not available
+        if prices is not None:
+            # Get process noise q from base Gaussian model for dynamic max_u scaling
+            q_for_scaling = 1e-6  # Default
+            if 'kalman_gaussian' in models and models['kalman_gaussian'].get('q'):
+                q_for_scaling = models['kalman_gaussian']['q']
+            
+            momentum_wrapper.precompute_signals(
+                returns=returns,
+                prices=prices,
+                vol=vol,
+                regime_labels=regime_labels,
+                q=q_for_scaling,
+            )
+        else:
+            # Legacy path: momentum-only (no MR)
+            momentum_wrapper.precompute_momentum(returns)
         
         # =====================================================================
         # Momentum-augmented Gaussian (inline parameter fitting)
@@ -3524,7 +3560,15 @@ def fit_all_models_for_regime(
         # Reuse momentum wrapper from above
         if 'momentum_wrapper' not in dir():
             momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
-            momentum_wrapper.precompute_momentum(returns)
+            # Use precompute_signals for MR integration if prices available
+            if prices is not None:
+                q_for_scaling = models.get('kalman_gaussian', {}).get('q', 1e-6)
+                momentum_wrapper.precompute_signals(
+                    returns=returns, prices=prices, vol=vol,
+                    regime_labels=regime_labels, q=q_for_scaling,
+                )
+            else:
+                momentum_wrapper.precompute_momentum(returns)
         
         # =====================================================================
         # Vol-of-Vol Enhanced Student-t + Momentum
@@ -3861,6 +3905,7 @@ def fit_regime_model_posterior(
     global_posterior: Optional[Dict[str, float]] = None,
     model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
     bic_weight: float = DEFAULT_BIC_WEIGHT,
+    prices: np.ndarray = None,  # Added for MR integration (February 2026)
 ) -> Dict[int, Dict]:
     """
     Compute regime-conditional Bayesian model averaging with temporal smoothing.
@@ -4011,6 +4056,10 @@ def fit_regime_model_posterior(
         ret_regime = returns[mask]
         vol_regime = vol[mask]
         
+        # Extract regime-specific prices for MR integration (February 2026)
+        prices_regime = prices[mask] if prices is not None else None
+        regime_labels_regime = regime_labels[mask] if regime_labels is not None else None
+        
         # =====================================================================
         # Step 1: Fit ALL models for this regime
         # =====================================================================
@@ -4018,6 +4067,8 @@ def fit_regime_model_posterior(
             ret_regime, vol_regime,
             prior_log_q_mean=prior_log_q_mean,
             prior_lambda=prior_lambda,
+            prices=prices_regime,  # MR integration (February 2026)
+            regime_labels=regime_labels_regime,
         )
         
         # =====================================================================
@@ -4321,6 +4372,7 @@ def tune_regime_model_averaging(
     lambda_regime: float = 0.05,
     model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
     bic_weight: float = DEFAULT_BIC_WEIGHT,
+    prices: np.ndarray = None,  # Added for MR integration (February 2026)
 ) -> Dict:
     """
     Full regime-conditional Bayesian model averaging pipeline.
@@ -4382,6 +4434,8 @@ def tune_regime_model_averaging(
         returns, vol,
         prior_log_q_mean=prior_log_q_mean,
         prior_lambda=prior_lambda,
+        prices=prices,  # MR integration (February 2026)
+        regime_labels=regime_labels,
     )
     
     # Compute global model posterior using specified method
@@ -4445,6 +4499,7 @@ def tune_regime_model_averaging(
         global_posterior=global_posterior,
         model_selection_method=model_selection_method,
         bic_weight=bic_weight,
+        prices=prices,  # MR integration (February 2026)
     )
     
     # =========================================================================
@@ -4774,6 +4829,19 @@ def tune_asset_with_bma(
         _log(f"     🔄 Bayesian Model Averaging (λ_regime={lambda_regime})...")
         if previous_posteriors is not None:
             _log(f"        ↪ Using previous posteriors for temporal smoothing (α={DEFAULT_TEMPORAL_ALPHA})")
+        
+        # Extract prices array for MR integration (February 2026)
+        prices_array = None
+        if px is not None:
+            px_values = px.values if hasattr(px, 'values') else np.array(px)
+            # Skip first price to align with returns, then apply same valid_mask
+            if len(px_values) > 1:
+                prices_aligned = px_values[1:][:min_len]
+                if len(prices_aligned) == len(valid_mask):
+                    prices_array = prices_aligned[valid_mask]
+                elif len(prices_aligned) >= len(returns):
+                    prices_array = prices_aligned[:len(returns)]
+        
         bma_result = tune_regime_model_averaging(
             returns=returns,
             vol=vol,
@@ -4784,6 +4852,7 @@ def tune_asset_with_bma(
             temporal_alpha=DEFAULT_TEMPORAL_ALPHA,
             previous_posteriors=previous_posteriors,  # Use provided previous posteriors
             lambda_regime=lambda_regime,
+            prices=prices_array,  # MR integration (February 2026)
         )
 
         # Collect diagnostics summary
