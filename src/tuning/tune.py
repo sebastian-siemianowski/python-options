@@ -1646,7 +1646,28 @@ def tune_asset_q(
             )
         else:
             model_weights = compute_bic_model_weights(bic_values)
-            weight_meta = {"scoring_method": "bic_only"}
+            weight_meta = {"scoring_method": "bic_only", "crps_enabled": False}
+        
+        # Store standardized scores and weights in each model
+        for m in models:
+            w = model_weights.get(m, 1e-10)
+            models[m]['model_weight_entropy'] = float(w)
+            if weight_meta:
+                combined_score_val = weight_meta.get('combined_scores_standardized', {}).get(m)
+                models[m]['combined_score'] = float(combined_score_val) if combined_score_val is not None else 0.0
+                bic_std_val = weight_meta.get('bic_standardized', {}).get(m)
+                models[m]['standardized_bic'] = float(bic_std_val) if bic_std_val is not None else None
+                hyv_std_val = weight_meta.get('hyvarinen_standardized', {}).get(m)
+                models[m]['standardized_hyvarinen'] = float(hyv_std_val) if hyv_std_val is not None else None
+                crps_std_val = weight_meta.get('crps_standardized', {}).get(m)
+                models[m]['standardized_crps'] = float(crps_std_val) if crps_std_val is not None else None
+                scoring_weights = weight_meta.get('weights_used', {})
+                models[m]['scoring_weights'] = {
+                    'bic': float(scoring_weights.get('bic', 0.0)),
+                    'hyvarinen': float(scoring_weights.get('hyvarinen', 0.0)),
+                    'crps': float(scoring_weights.get('crps', 0.0)),
+                }
+                models[m]['crps_scoring_enabled'] = weight_meta.get('crps_enabled', False)
         
         # Find best model by BIC
         best_model = min(bic_values.items(), key=lambda x: x[1])[0]
@@ -3897,6 +3918,17 @@ def fit_regime_model_posterior(
                 models[m]['standardized_bic'] = float(bic_std_val) if bic_std_val is not None else None
                 hyv_std_val = weight_metadata.get('hyvarinen_standardized', {}).get(m)
                 models[m]['standardized_hyvarinen'] = float(hyv_std_val) if hyv_std_val is not None else None
+                # CRPS standardized (February 2026 - regime-aware scoring)
+                crps_std_val = weight_metadata.get('crps_standardized', {}).get(m)
+                models[m]['standardized_crps'] = float(crps_std_val) if crps_std_val is not None else None
+                # Store scoring weights used for this model
+                scoring_weights = weight_metadata.get('weights_used', {})
+                models[m]['scoring_weights'] = {
+                    'bic': float(scoring_weights.get('bic', 0.0)),
+                    'hyvarinen': float(scoring_weights.get('hyvarinen', 0.0)),
+                    'crps': float(scoring_weights.get('crps', 0.0)),
+                }
+                models[m]['crps_scoring_enabled'] = weight_metadata.get('crps_enabled', False)
                 models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
             else:
                 # Legacy: log of weight
@@ -4174,6 +4206,17 @@ def tune_regime_model_averaging(
             global_models[m]['standardized_bic'] = float(bic_std_val) if bic_std_val is not None else None
             hyv_std_val = fallback_weight_metadata.get('hyvarinen_standardized', {}).get(m)
             global_models[m]['standardized_hyvarinen'] = float(hyv_std_val) if hyv_std_val is not None else None
+            # CRPS standardized (February 2026 - regime-aware scoring)
+            crps_std_val = fallback_weight_metadata.get('crps_standardized', {}).get(m)
+            global_models[m]['standardized_crps'] = float(crps_std_val) if crps_std_val is not None else None
+            # Store scoring weights used
+            scoring_weights = fallback_weight_metadata.get('weights_used', {})
+            global_models[m]['scoring_weights'] = {
+                'bic': float(scoring_weights.get('bic', 0.0)),
+                'hyvarinen': float(scoring_weights.get('hyvarinen', 0.0)),
+                'crps': float(scoring_weights.get('crps', 0.0)),
+            }
+            global_models[m]['crps_scoring_enabled'] = fallback_weight_metadata.get('crps_enabled', False)
             global_models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
         else:
             global_models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')

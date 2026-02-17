@@ -456,10 +456,14 @@ def compute_combined_model_weights(
     metadata = {
         "bic_standardized": {k: float(v) if np.isfinite(v) else None for k, v in bic_standardized.items()},
         "hyvarinen_standardized": {k: float(v) if np.isfinite(v) else None for k, v in hyv_standardized.items()},
+        "crps_standardized": {},  # Empty - CRPS not used in this method
         "combined_scores_standardized": {k: float(v) if np.isfinite(v) else None for k, v in combined_scores.items()},
+        "weights_used": {"bic": float(bic_weight), "hyvarinen": float(1.0 - bic_weight), "crps": 0.0},
         "bic_weight": bic_weight,
         "lambda_entropy": lambda_entropy,
         "entropy_regularized": True,
+        "crps_enabled": False,
+        "scoring_method": "bic_hyv_only",
     }
     
     return weights, metadata

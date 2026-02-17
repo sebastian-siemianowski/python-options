@@ -71,7 +71,6 @@ class ModelFamily(Enum):
     GMM = "gmm"
     EVT_GPD = "evt_gpd"
     CONTAMINATED_T = "contaminated_t"
-    AIGF_NF = "aigf_nf"  # Adaptive Implicit Generative Filter (Normalizing Flow)
 
 
 class SupportType(Enum):
@@ -215,16 +214,8 @@ def make_gmm_name(n_components: int = 2) -> str:
     return f"gmm_k{n_components}"
 
 
-def make_aigf_nf_name() -> str:
-    """Generate canonical name for AIGF-NF (Adaptive Implicit Generative Filter)."""
-    return "aigf_nf"
 
 
-def is_aigf_nf_model(name: str) -> bool:
-    """Check if a model name corresponds to AIGF-NF."""
-    if not name:
-        return False
-    return name.lower() == "aigf_nf"
 
 
 def make_evt_gpd_name(xi: float, sigma: float) -> str:
@@ -480,31 +471,6 @@ def build_model_registry() -> Dict[str, ModelSpec]:
     )
     
     # =========================================================================
-    # AIGF-NF FAMILY — Adaptive Implicit Generative Filter (Normalizing Flow)
-    # =========================================================================
-    # AIGF-NF is a bounded, non-parametric belief model per spec v1.0.
-    # It competes in BMA via log-likelihood.
-    # Flow parameters θ are frozen; only latent z_t evolves online.
-    registry[make_aigf_nf_name()] = ModelSpec(
-        name=make_aigf_nf_name(),
-        family=ModelFamily.AIGF_NF,
-        support=SupportType.FULL,
-        n_params=10,  # latent_dim (8) + EWMA state (2)
-        param_names=(
-            "latent_z", "latent_dim", "ewma_lambda", "clip_threshold",
-            "step_size_alpha", "trust_radius", "predictive_mean", "predictive_std",
-            "tail_heaviness", "novelty_score"
-        ),
-        default_params={
-            "latent_dim": 8,
-            "ewma_lambda": 0.95,
-            "clip_threshold": 5.0,
-            "step_size_alpha": 0.01,
-            "trust_radius": 3.0,
-        },
-        description="AIGF-NF: Bounded non-parametric belief model via normalizing flow",
-        is_augmentation=False,
-    )
     
     return registry
 
@@ -610,8 +576,6 @@ def get_sampler_for_model(spec: ModelSpec) -> str:
             return "hansen_skew_t_mc"
         elif spec.family == ModelFamily.NIG:
             return "nig_mc"
-        elif spec.family == ModelFamily.AIGF_NF:
-            return "aigf_nf_mc"  # AIGF-NF has its own sampling via flow
         else:
             return "gaussian_mc"  # fallback
     
