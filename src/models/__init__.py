@@ -137,25 +137,6 @@ from models.contaminated_student_t import (
     CST_MIN_OBS,
 )
 
-# Import AIGF-NF (Adaptive Implicit Generative Filter - Normalizing Flow)
-# AIGF-NF is a bounded, non-parametric belief model per spec v1.0.
-# It competes in BMA via log-likelihood.
-from models.aigf_nf import (
-    AIGFNFConfig,
-    DEFAULT_AIGF_NF_CONFIG,
-    FlowArtifact,
-    LatentState,
-    InterpretabilityProxies,
-    StabilityDiagnostics,
-    AIGFNFCalibrationResult,
-    AIGFNFPredictiveResult,
-    AIGFNFModel,
-    AIGF_NF_MODEL_NAME,
-    get_aigf_nf_model_name,
-    is_aigf_nf_model,
-    create_aigf_nf_model,
-    fit_aigf_nf,
-)
 
 # Re-export constants from phi_student_t (the canonical source for Student-t config)
 from models.phi_student_t import (
@@ -174,6 +155,10 @@ from models.phi_student_t import (
     MIXTURE_BMA_PENALTY,
     MIXTURE_WEIGHT_K,
     MIXTURE_WEIGHT_DEFAULT,
+    # Enhanced Mixture Weight Dynamics (February 2026 - Expert Panel)
+    MIXTURE_WEIGHT_A_SHOCK,
+    MIXTURE_WEIGHT_B_VOL_ACCEL,
+    MIXTURE_WEIGHT_C_MOMENTUM,
 )
 
 __all__ = [
@@ -200,6 +185,10 @@ __all__ = [
     'MIXTURE_BMA_PENALTY',
     'MIXTURE_WEIGHT_K',
     'MIXTURE_WEIGHT_DEFAULT',
+    # Enhanced Mixture Weight Dynamics (February 2026)
+    'MIXTURE_WEIGHT_A_SHOCK',
+    'MIXTURE_WEIGHT_B_VOL_ACCEL',
+    'MIXTURE_WEIGHT_C_MOMENTUM',
     # Constants (from phi_skew_t)
     'SKEW_T_NU_GRID',
     'SKEW_T_GAMMA_GRID',
@@ -271,19 +260,4 @@ __all__ = [
     'CST_EPSILON_MAX',
     'CST_EPSILON_DEFAULT',
     'CST_MIN_OBS',
-    # AIGF-NF (Adaptive Implicit Generative Filter - Normalizing Flow)
-    'AIGFNFConfig',
-    'DEFAULT_AIGF_NF_CONFIG',
-    'FlowArtifact',
-    'LatentState',
-    'InterpretabilityProxies',
-    'StabilityDiagnostics',
-    'AIGFNFCalibrationResult',
-    'AIGFNFPredictiveResult',
-    'AIGFNFModel',
-    'AIGF_NF_MODEL_NAME',
-    'get_aigf_nf_model_name',
-    'is_aigf_nf_model',
-    'create_aigf_nf_model',
-    'fit_aigf_nf',
 ]

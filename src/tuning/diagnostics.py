@@ -19,6 +19,8 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
+from scipy.special import gammaln
+from scipy.stats import norm, t as student_t_dist
 
 
 # =============================================================================
@@ -454,10 +456,14 @@ def compute_combined_model_weights(
     metadata = {
         "bic_standardized": {k: float(v) if np.isfinite(v) else None for k, v in bic_standardized.items()},
         "hyvarinen_standardized": {k: float(v) if np.isfinite(v) else None for k, v in hyv_standardized.items()},
+        "crps_standardized": {},  # Empty - CRPS not used in this method
         "combined_scores_standardized": {k: float(v) if np.isfinite(v) else None for k, v in combined_scores.items()},
+        "weights_used": {"bic": float(bic_weight), "hyvarinen": float(1.0 - bic_weight), "crps": 0.0},
         "bic_weight": bic_weight,
         "lambda_entropy": lambda_entropy,
         "entropy_regularized": True,
+        "crps_enabled": False,
+        "scoring_method": "bic_hyv_only",
     }
     
     return weights, metadata
@@ -565,3 +571,247 @@ def compute_regime_diagnostics(
             log_fn("     ⚠️  Collapse warning: All regime parameters too close to global")
     
     return diagnostics
+
+
+# =============================================================================
+# CRPS COMPUTATION FOR MODEL SELECTION (February 2026)
+# =============================================================================
+# Continuous Ranked Probability Score (CRPS) is a strictly proper scoring rule
+# that measures both calibration and sharpness of probabilistic forecasts.
+#
+# CRPS(F, y) = ∫ (F(x) - 1{x ≥ y})² dx
+#
+# Lower CRPS is better. Closed-form expressions exist for Gaussian/Student-t.
+#
+# Reference: Gneiting & Raftery (2007), Gneiting et al. (2005)
+# =============================================================================
+
+
+def compute_crps_gaussian_inline(
+    observations: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+) -> float:
+    """
+    Compute CRPS for Gaussian predictive distributions.
+    
+    Closed-form formula (Gneiting & Raftery 2007):
+        CRPS(N(μ,σ²), y) = σ * [z*(2Φ(z)-1) + 2φ(z) - 1/√π]
+        
+    where z = (y - μ) / σ, Φ is standard normal CDF, φ is PDF.
+    
+    Args:
+        observations: Actual observed values
+        mu: Predicted means
+        sigma: Predicted standard deviations
+        
+    Returns:
+        Mean CRPS (lower is better)
+    """
+    observations = np.asarray(observations).flatten()
+    mu = np.asarray(mu).flatten()
+    sigma = np.asarray(sigma).flatten()
+    
+    # Ensure positive sigma and matching lengths
+    sigma = np.maximum(sigma, 1e-10)
+    n = min(len(observations), len(mu), len(sigma))
+    
+    if n == 0:
+        return float('inf')
+    
+    observations = observations[:n]
+    mu = mu[:n]
+    sigma = sigma[:n]
+    
+    # Standardized residual
+    z = (observations - mu) / sigma
+    
+    # Standard normal PDF and CDF
+    phi_z = norm.pdf(z)
+    Phi_z = norm.cdf(z)
+    
+    # CRPS for each observation (closed-form for Gaussian)
+    crps_individual = sigma * (z * (2 * Phi_z - 1) + 2 * phi_z - 1.0 / np.sqrt(np.pi))
+    
+    # Filter non-finite values
+    valid = np.isfinite(crps_individual)
+    if not np.any(valid):
+        return float('inf')
+    
+    return float(np.mean(crps_individual[valid]))
+
+
+def compute_crps_student_t_inline(
+    observations: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    nu: float,
+) -> float:
+    """
+    Compute CRPS for Student-t predictive distributions.
+    
+    Uses the closed-form expression from Gneiting & Raftery (2007).
+    
+    Args:
+        observations: Actual observed values
+        mu: Predicted means
+        sigma: Predicted scale parameters
+        nu: Degrees of freedom (must be > 1 for finite CRPS)
+        
+    Returns:
+        Mean CRPS (lower is better)
+    """
+    observations = np.asarray(observations).flatten()
+    mu = np.asarray(mu).flatten()
+    sigma = np.asarray(sigma).flatten()
+    
+    # Ensure positive sigma and valid nu
+    sigma = np.maximum(sigma, 1e-10)
+    nu = max(float(nu), 1.01)
+    
+    n = min(len(observations), len(mu), len(sigma))
+    if n == 0:
+        return float('inf')
+    
+    observations = observations[:n]
+    mu = mu[:n]
+    sigma = sigma[:n]
+    
+    # Standardized residual
+    z = (observations - mu) / sigma
+    
+    # Student-t PDF and CDF
+    t_dist = student_t_dist(df=nu)
+    pdf_z = t_dist.pdf(z)
+    cdf_z = t_dist.cdf(z)
+    
+    # Closed-form CRPS for Student-t (Gneiting & Raftery 2007)
+    if nu > 1:
+        log_B_half_nu_minus_half = gammaln(0.5) + gammaln(nu - 0.5) - gammaln(nu)
+        log_B_half_nu_half = gammaln(0.5) + gammaln(nu / 2) - gammaln((nu + 1) / 2)
+        B_ratio = np.exp(log_B_half_nu_minus_half - 2 * log_B_half_nu_half)
+        
+        term1 = z * (2 * cdf_z - 1)
+        term2 = 2 * pdf_z * (nu + z**2) / (nu - 1)
+        term3 = 2 * np.sqrt(nu) * B_ratio / (nu - 1)
+        
+        crps_individual = sigma * (term1 + term2 - term3)
+    else:
+        # Fallback to Gaussian approximation
+        phi_z = norm.pdf(z)
+        Phi_z = norm.cdf(z)
+        crps_individual = sigma * (z * (2 * Phi_z - 1) + 2 * phi_z - 1.0 / np.sqrt(np.pi))
+    
+    valid = np.isfinite(crps_individual)
+    if not np.any(valid):
+        return float('inf')
+    
+    return float(np.mean(crps_individual[valid]))
+
+
+def compute_crps_model_weights(
+    crps_values: Dict[str, float],
+    epsilon: float = 1e-10
+) -> Dict[str, float]:
+    """
+    Convert CRPS values to model weights (lower CRPS = higher weight).
+    """
+    finite_crps = [c for c in crps_values.values() if np.isfinite(c) and c > 0]
+    if not finite_crps:
+        n_models = len(crps_values)
+        return {m: 1.0 / max(n_models, 1) for m in crps_values}
+    
+    crps_median = np.median(finite_crps)
+    if crps_median < 1e-10:
+        crps_median = 1.0
+    
+    weights = {}
+    for model_name, crps in crps_values.items():
+        if np.isfinite(crps) and crps > 0:
+            w = np.exp(-crps / crps_median)
+            weights[model_name] = max(w, epsilon)
+        else:
+            weights[model_name] = epsilon
+    
+    return weights
+
+
+# =============================================================================
+# REGIME-AWARE COMBINED MODEL WEIGHTS (BIC + Hyvärinen + CRPS)
+# =============================================================================
+
+# Regime-specific weight configurations: (bic_weight, hyvarinen_weight, crps_weight)
+REGIME_SCORING_WEIGHTS = {
+    0: (0.30, 0.30, 0.40),  # Unknown: balanced with structural geometry checks
+    1: (0.25, 0.20, 0.55),  # Crisis: CRPS critical, but maintain stability pressure
+    2: (0.30, 0.25, 0.45),  # Trending: forecast quality > curvature purity
+    3: (0.45, 0.30, 0.25),  # Ranging: BIC heavy, less CRPS (noise-dominated)
+    4: (0.30, 0.40, 0.30),  # Low Vol: curvature misspecification visible, Hyv high
+}
+
+DEFAULT_BIC_WEIGHT_COMBINED = 0.35
+DEFAULT_HYVARINEN_WEIGHT_COMBINED = 0.30
+DEFAULT_CRPS_WEIGHT_COMBINED = 0.35
+CRPS_SCORING_ENABLED = True
+
+
+def compute_regime_aware_model_weights(
+    bic_values: Dict[str, float],
+    hyvarinen_scores: Dict[str, float],
+    crps_values: Optional[Dict[str, float]] = None,
+    regime: Optional[int] = None,
+    bic_weight: Optional[float] = None,
+    hyvarinen_weight: Optional[float] = None,
+    crps_weight: Optional[float] = None,
+    lambda_entropy: float = DEFAULT_ENTROPY_LAMBDA,
+    epsilon: float = 1e-10,
+) -> Tuple[Dict[str, float], Dict[str, Any]]:
+    """
+    Compute regime-aware model weights using BIC + Hyvärinen + CRPS.
+    """
+    has_crps = crps_values is not None and len(crps_values) > 0 and CRPS_SCORING_ENABLED
+    
+    # Determine weights
+    if bic_weight is not None and hyvarinen_weight is not None:
+        w_bic, w_hyv = bic_weight, hyvarinen_weight
+        w_crps = crps_weight if crps_weight is not None else 0.0
+    elif regime is not None and regime in REGIME_SCORING_WEIGHTS and has_crps:
+        w_bic, w_hyv, w_crps = REGIME_SCORING_WEIGHTS[regime]
+    elif has_crps:
+        w_bic, w_hyv, w_crps = DEFAULT_BIC_WEIGHT_COMBINED, DEFAULT_HYVARINEN_WEIGHT_COMBINED, DEFAULT_CRPS_WEIGHT_COMBINED
+    else:
+        w_bic, w_hyv, w_crps = 0.5, 0.5, 0.0
+    
+    # Normalize
+    w_total = w_bic + w_hyv + w_crps
+    if w_total > 0:
+        w_bic, w_hyv, w_crps = w_bic / w_total, w_hyv / w_total, w_crps / w_total
+    
+    # Standardize
+    bic_std = robust_standardize_scores(bic_values)
+    hyv_std = robust_standardize_scores(hyvarinen_scores)
+    crps_std = robust_standardize_scores(crps_values) if has_crps else {}
+    
+    # Combine: BIC/CRPS lower=better (+), Hyv higher=better (-)
+    combined_scores = {}
+    for model_name in bic_values.keys():
+        b = bic_std.get(model_name, 0.0)
+        h = hyv_std.get(model_name, 0.0)
+        c = crps_std.get(model_name, 0.0) if has_crps else 0.0
+        combined_scores[model_name] = w_bic * b - w_hyv * h + w_crps * c
+    
+    weights = entropy_regularized_weights(combined_scores, lambda_entropy=lambda_entropy, eps=epsilon)
+    
+    metadata = {
+        "bic_standardized": {k: float(v) if np.isfinite(v) else None for k, v in bic_std.items()},
+        "hyvarinen_standardized": {k: float(v) if np.isfinite(v) else None for k, v in hyv_std.items()},
+        "crps_standardized": {k: float(v) if np.isfinite(v) else None for k, v in crps_std.items()} if has_crps else {},
+        "combined_scores_standardized": {k: float(v) if np.isfinite(v) else None for k, v in combined_scores.items()},
+        "weights_used": {"bic": float(w_bic), "hyvarinen": float(w_hyv), "crps": float(w_crps)},
+        "regime": regime,
+        "lambda_entropy": lambda_entropy,
+        "crps_enabled": has_crps,
+        "scoring_method": "regime_aware_bic_hyv_crps" if has_crps else "bic_hyv_only",
+    }
+    
+    return weights, metadata

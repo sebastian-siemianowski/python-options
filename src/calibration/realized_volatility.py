@@ -562,6 +562,201 @@ def compute_hybrid_volatility(
 
 
 # =============================================================================
+# HAR (HETEROGENEOUS AUTOREGRESSIVE) VOLATILITY - February 2026
+# =============================================================================
+# Multi-horizon memory for improved crash detection (Corsi 2009)
+# σ²_t = w₁·RV_daily + w₂·RV_weekly + w₃·RV_monthly
+# Reduces lag during crash onset compared to single-horizon EWMA
+# =============================================================================
+
+# Default HAR weights from Corsi (2009) empirical findings
+HAR_WEIGHT_DAILY = 0.5
+HAR_WEIGHT_WEEKLY = 0.3
+HAR_WEIGHT_MONTHLY = 0.2
+
+# HAR horizons (trading days)
+HAR_HORIZON_DAILY = 1
+HAR_HORIZON_WEEKLY = 5
+HAR_HORIZON_MONTHLY = 22
+
+
+def compute_har_volatility(
+    returns: Optional[np.ndarray] = None,
+    open_: Optional[np.ndarray] = None,
+    high: Optional[np.ndarray] = None,
+    low: Optional[np.ndarray] = None,
+    close: Optional[np.ndarray] = None,
+    w_daily: float = HAR_WEIGHT_DAILY,
+    w_weekly: float = HAR_WEIGHT_WEEKLY,
+    w_monthly: float = HAR_WEIGHT_MONTHLY,
+    use_gk: bool = True,
+    annualize: bool = False,
+) -> Tuple[np.ndarray, Dict]:
+    """
+    Compute HAR (Heterogeneous Autoregressive) volatility with multi-horizon memory.
+    
+    HAR captures the "rough" nature of volatility by combining:
+    - Daily RV: Captures immediate shocks
+    - Weekly RV: Medium-term persistence
+    - Monthly RV: Long-term baseline
+    
+    This reduces lag during crash onset compared to single-horizon EWMA.
+    
+    Formula:
+        σ²_t = w_daily × RV_daily(t) + w_weekly × RV_weekly(t) + w_monthly × RV_monthly(t)
+    
+    Where:
+        RV_daily = squared return (or GK variance)
+        RV_weekly = 5-day rolling mean of daily RV
+        RV_monthly = 22-day rolling mean of daily RV
+    
+    Args:
+        returns: Log returns (used if OHLC not provided)
+        open_, high, low, close: OHLC data for Garman-Klass base
+        w_daily: Weight for daily component (default 0.5)
+        w_weekly: Weight for weekly component (default 0.3)
+        w_monthly: Weight for monthly component (default 0.2)
+        use_gk: Use Garman-Klass for daily RV if OHLC available
+        annualize: Whether to annualize output
+        
+    Returns:
+        Tuple of (volatility array, diagnostics dict)
+        
+    References:
+        Corsi, F. (2009). "A Simple Approximate Long-Memory Model of Realized Volatility"
+        Journal of Financial Econometrics, 7(2), 174-196.
+    """
+    # Normalize weights
+    w_sum = w_daily + w_weekly + w_monthly
+    w_d = w_daily / w_sum
+    w_w = w_weekly / w_sum
+    w_m = w_monthly / w_sum
+    
+    # Compute daily realized variance
+    has_ohlc = all(x is not None for x in [open_, high, low, close])
+    
+    if use_gk and has_ohlc:
+        # Garman-Klass daily variance (7.4x efficient)
+        rv_daily = _garman_klass_variance(open_, high, low, close)
+        estimator_used = "GK"
+    elif returns is not None:
+        # Squared returns
+        rv_daily = returns ** 2
+        estimator_used = "SqRet"
+    elif close is not None:
+        # Compute returns from close
+        log_ret = np.log(close[1:] / close[:-1])
+        rv_daily = np.concatenate([[np.nan], log_ret ** 2])
+        estimator_used = "SqRet"
+    else:
+        raise ValueError("Either returns or close prices must be provided")
+    
+    n = len(rv_daily)
+    
+    # Compute multi-horizon RV components
+    rv_daily_clean = np.where(np.isfinite(rv_daily), rv_daily, 0.0)
+    
+    # Weekly RV: 5-day rolling mean
+    rv_weekly = np.full(n, np.nan)
+    for t in range(HAR_HORIZON_WEEKLY, n):
+        rv_weekly[t] = np.mean(rv_daily_clean[t-HAR_HORIZON_WEEKLY+1:t+1])
+    # Fill early values with expanding mean
+    for t in range(1, HAR_HORIZON_WEEKLY):
+        rv_weekly[t] = np.mean(rv_daily_clean[1:t+1])
+    
+    # Monthly RV: 22-day rolling mean
+    rv_monthly = np.full(n, np.nan)
+    for t in range(HAR_HORIZON_MONTHLY, n):
+        rv_monthly[t] = np.mean(rv_daily_clean[t-HAR_HORIZON_MONTHLY+1:t+1])
+    # Fill early values with expanding mean
+    for t in range(1, HAR_HORIZON_MONTHLY):
+        rv_monthly[t] = np.mean(rv_daily_clean[1:t+1])
+    
+    # HAR composite variance
+    har_variance = (
+        w_d * rv_daily_clean + 
+        w_w * np.nan_to_num(rv_weekly, nan=rv_daily_clean) + 
+        w_m * np.nan_to_num(rv_monthly, nan=rv_daily_clean)
+    )
+    
+    # Floor to prevent zero variance
+    har_variance = np.maximum(har_variance, MIN_VARIANCE)
+    
+    # Convert to volatility
+    har_vol = np.sqrt(har_variance)
+    
+    if annualize:
+        har_vol = har_vol * np.sqrt(ANNUALIZATION_FACTOR)
+    
+    diagnostics = {
+        "estimator": f"HAR-{estimator_used}",
+        "weights": {"daily": w_d, "weekly": w_w, "monthly": w_m},
+        "rv_daily_mean": float(np.nanmean(rv_daily)),
+        "rv_weekly_mean": float(np.nanmean(rv_weekly)),
+        "rv_monthly_mean": float(np.nanmean(rv_monthly)),
+        "har_vol_mean": float(np.nanmean(har_vol)),
+    }
+    
+    return har_vol, diagnostics
+
+
+def compute_hybrid_volatility_har(
+    open_: Optional[np.ndarray],
+    high: Optional[np.ndarray],
+    low: Optional[np.ndarray],
+    close: np.ndarray,
+    use_har: bool = True,
+    har_weights: Optional[Tuple[float, float, float]] = None,
+    span: int = DEFAULT_VOL_SPAN,
+    annualize: bool = False,
+) -> Tuple[np.ndarray, str]:
+    """
+    Compute volatility using HAR (multi-horizon) or standard GK.
+    
+    This is an enhanced version of compute_hybrid_volatility that supports
+    HAR multi-horizon memory for improved crash detection.
+    
+    Args:
+        open_, high, low, close: OHLC data
+        use_har: If True, use HAR multi-horizon; if False, use standard GK/EWMA
+        har_weights: Optional (w_daily, w_weekly, w_monthly) tuple
+        span: EWMA span for non-HAR fallback
+        annualize: Whether to annualize
+        
+    Returns:
+        Tuple of (volatility array, estimator name used)
+    """
+    has_ohlc = all(x is not None and len(x) == len(close) 
+                   for x in [open_, high, low])
+    
+    if use_har:
+        if har_weights is not None:
+            w_d, w_w, w_m = har_weights
+        else:
+            w_d, w_w, w_m = HAR_WEIGHT_DAILY, HAR_WEIGHT_WEEKLY, HAR_WEIGHT_MONTHLY
+        
+        try:
+            vol, diag = compute_har_volatility(
+                open_=open_ if has_ohlc else None,
+                high=high if has_ohlc else None,
+                low=low if has_ohlc else None,
+                close=close,
+                w_daily=w_d,
+                w_weekly=w_w,
+                w_monthly=w_m,
+                use_gk=has_ohlc,
+                annualize=annualize,
+            )
+            return vol, diag.get("estimator", "HAR")
+        except Exception:
+            # Fall through to standard hybrid
+            pass
+    
+    # Standard hybrid (GK/Parkinson/EWMA)
+    return compute_hybrid_volatility(open_, high, low, close, span, annualize)
+
+
+# =============================================================================
 # DIAGNOSTICS
 # =============================================================================
 

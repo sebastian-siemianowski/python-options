@@ -89,32 +89,86 @@ p(r_t) = w_t × t(νcalm) + (1 - w_t) × t(νstress)
 
 All enhancements compete via BMA against standard models.
 
-### Garman-Klass Realized Volatility (Feb 2026)
+### Enhanced Mixture Weight Dynamics (February 2026)
+**Location**: `src/models/phi_student_t.py`
+
+Upgraded from reactive (vol-only) to multi-factor conditioning:
+
+**Old (Reactive):**
+```
+w_t = sigmoid(k × vol_relative)
+```
+
+**New (Multi-Factor):**
+```
+w_t = sigmoid(a × z_t + b × Δσ_t + c × M_t)
+```
+
+Where:
+- `z_t` = standardized residual (shock detection)
+- `Δσ_t` = vol acceleration (regime change detection)
+- `M_t` = momentum (trend structure)
+
+**Parameters:**
+- `MIXTURE_WEIGHT_A_SHOCK = 1.0` - Sensitivity to shocks
+- `MIXTURE_WEIGHT_B_VOL_ACCEL = 0.5` - Sensitivity to vol acceleration
+- `MIXTURE_WEIGHT_C_MOMENTUM = 0.3` - Sensitivity to momentum
+
+This makes the mixture respond to shocks, volatility expansion, and trend structure - how elite systems behave.
+
+### HAR (Heterogeneous Autoregressive) Volatility (February 2026)
 **Location**: `src/calibration/realized_volatility.py`
 
-Default volatility estimator upgraded from EWMA to Garman-Klass (GK):
-- **7.4x more efficient** than close-to-close EWMA
-- Uses OHLC (Open/High/Low/Close) data for range-based estimation
-- No additional parameters - pure efficiency improvement
+Multi-horizon memory for improved crash detection (Corsi 2009):
 
-**Mathematical Foundation:**
 ```
-σ²_GK = 0.5*(log(H/L))² - (2*log(2)-1)*(log(C/O))²
+σ²_t = w₁·RV_daily + w₂·RV_weekly + w₃·RV_monthly
 ```
 
-**Estimator Priority:**
-1. Garman-Klass (if OHLC available)
-2. GARCH(1,1) via MLE
-3. EWMA blend (fallback)
+**Horizons:**
+- Daily: 1 day
+- Weekly: 5-day rolling mean
+- Monthly: 22-day rolling mean
 
-**Impact on Calibration:**
-- Improves PIT histogram uniformity
-- Reduces variance estimation noise by 7.4x
-- Better c parameter estimation (observation variance scaling)
+**Default Weights (Corsi 2009):**
+- `HAR_WEIGHT_DAILY = 0.5`
+- `HAR_WEIGHT_WEEKLY = 0.3`
+- `HAR_WEIGHT_MONTHLY = 0.2`
 
-**Display in Augmentation:**
-- `VOL:GK` - Garman-Klass active (using OHLC)
-- `VOL:EWMA` - Fallback to close-to-close
+**Benefits:**
+- Captures "rough" nature of volatility
+- Reduces lag during crash onset
+- Improves tail detection timing
+
+### Market Conditioning Layer (February 2026)
+**Location**: `src/calibration/market_conditioning.py`
+
+Cross-sectional and VIX-based model enhancement:
+
+**1. Composite Volatility (Beta Coupling):**
+```
+σ²_composite = σ²_asset + (coupling × β²) × σ²_market
+```
+
+High-beta assets get more market volatility contribution.
+
+**2. VIX-Conditional Tail Thickness:**
+```
+ν_t = max(ν_min, ν_base - κ × VIX_normalized)
+```
+
+Higher VIX → lower ν → heavier tails.
+
+**Parameters:**
+- `MARKET_VOL_COUPLING_DEFAULT = 0.3` - Market vol contribution
+- `VIX_KAPPA_DEFAULT = 0.15` - VIX sensitivity for ν adjustment
+- `VIX_MEDIAN_DEFAULT = 18.0` - Historical VIX median
+- `NU_MIN_FLOOR = 3.0` - Minimum ν even in extreme stress
+
+**Benefits:**
+- Assets don't live in isolation - captures systemic risk
+- VIX leading indicator for tail events
+- Improves cross-asset calibration (CRPS/CSS scores)
 
 ## Developer Workflow
 
@@ -509,4 +563,3 @@ Result: Sortino +4.63, Max DD 3.8%, near breakeven PnL
 |------|---------|
 | `signal_fields.py` | Convert Kalman outputs to epistemic fields |
 | `signal_geometry.py` | Gate + size trades based on field quality |
-
