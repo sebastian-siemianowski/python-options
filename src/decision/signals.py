@@ -542,11 +542,18 @@ try:
         compute_regime_aware_model_weights,
         REGIME_SCORING_WEIGHTS,
         CRPS_SCORING_ENABLED,
+        # LFO-CV for out-of-sample model selection (February 2026)
+        compute_lfo_cv_score_gaussian,
+        compute_lfo_cv_score_student_t,
+        LFO_CV_ENABLED,
     )
     CRPS_AVAILABLE = True
+    LFO_CV_AVAILABLE = True
 except ImportError:
     CRPS_AVAILABLE = False
     CRPS_SCORING_ENABLED = False
+    LFO_CV_AVAILABLE = False
+    LFO_CV_ENABLED = False
 
 
 class StudentTDriftModel:
@@ -728,6 +735,32 @@ except ImportError:
     MIXTURE_WEIGHT_A_SHOCK = 1.0
     MIXTURE_WEIGHT_B_VOL_ACCEL = 0.5
     MIXTURE_WEIGHT_C_MOMENTUM = 0.3
+
+
+# =============================================================================
+# MARKOV-SWITCHING PROCESS NOISE (MS-q) — February 2026
+# =============================================================================
+# Proactive regime-switching q based on volatility structure.
+# Unlike GAS-Q (reactive), MS-q shifts BEFORE errors materialize.
+# =============================================================================
+MS_Q_ENABLED = True  # Set to False to disable MS-q in signal generation
+
+try:
+    from models import (
+        MS_Q_CALM_DEFAULT,
+        MS_Q_STRESS_DEFAULT,
+        MS_Q_SENSITIVITY,
+        MS_Q_THRESHOLD,
+        filter_phi_ms_q,
+    )
+    MS_Q_AVAILABLE = True
+except ImportError:
+    MS_Q_AVAILABLE = False
+    MS_Q_CALM_DEFAULT = 1e-6
+    MS_Q_STRESS_DEFAULT = 1e-4
+    MS_Q_SENSITIVITY = 2.0
+    MS_Q_THRESHOLD = 1.3
+    filter_phi_ms_q = None
 
 
 # =============================================================================
@@ -3128,10 +3161,12 @@ def _kalman_filter_drift(
     #   - Vol-of-Vol (VoV): gamma_vov in tuned params
     #   - Two-Piece: nu_left and nu_right in tuned params
     #   - Mixture: nu_calm and nu_stress in tuned params
+    #   - MS-q: Markov-Switching process noise (q_calm, q_stress)
     # These use specialized filter implementations from PhiStudentTDriftModel.
     # =========================================================================
     enhanced_result = None
     enhanced_model_type = None
+    ms_q_diagnostics = None
     
     if ENHANCED_STUDENT_T_AVAILABLE and tuned_params is not None and gas_q_result is None:
         # Check for Vol-of-Vol enhancement
@@ -3196,6 +3231,39 @@ def _kalman_filter_drift(
             except Exception as mix_e:
                 if os.getenv("DEBUG"):
                     print(f"Mixture filter failed, using standard: {mix_e}")
+                enhanced_result = None
+        
+        # Check for Markov-Switching Process Noise (MS-q) — February 2026
+        elif tuned_params.get('ms_q_augmented') and MS_Q_AVAILABLE and MS_Q_ENABLED:
+            try:
+                q_calm = float(tuned_params.get('q_calm', MS_Q_CALM_DEFAULT))
+                q_stress = float(tuned_params.get('q_stress', MS_Q_STRESS_DEFAULT))
+                nu_ms = float(tuned_params.get('nu', 8))
+                
+                # Use MS-q filter with proactive regime-switching q
+                mu_ms, P_ms, ll_ms, q_t, p_stress = filter_phi_ms_q(
+                    y, sigma, obs_scale, phi_used, nu_ms,
+                    q_calm=q_calm, q_stress=q_stress,
+                    sensitivity=MS_Q_SENSITIVITY,
+                    threshold=MS_Q_THRESHOLD,
+                )
+                mu_filtered = mu_ms
+                P_filtered = P_ms
+                log_likelihood = ll_ms
+                enhanced_result = True
+                enhanced_model_type = 'ms_q'
+                # Store MS-q diagnostics for downstream use
+                ms_q_diagnostics = {
+                    'q_t_mean': float(np.mean(q_t)),
+                    'q_t_std': float(np.std(q_t)),
+                    'p_stress_mean': float(np.mean(p_stress)),
+                    'p_stress_max': float(np.max(p_stress)),
+                    'q_calm': q_calm,
+                    'q_stress': q_stress,
+                }
+            except Exception as ms_q_e:
+                if os.getenv("DEBUG"):
+                    print(f"MS-q filter failed, using standard: {ms_q_e}")
                 enhanced_result = None
 
     mu_t = 0.0
@@ -3290,9 +3358,11 @@ def _kalman_filter_drift(
         #   - 'vov': Vol-of-Vol adjustment to observation noise
         #   - 'two_piece': Asymmetric tails (νL ≠ νR)
         #   - 'mixture': Two-component mixture (νcalm + νstress)
+        #   - 'ms_q': Markov-Switching process noise
         # =========================================================================
         "enhanced_student_t_active": enhanced_result is not None,
         "enhanced_student_t_type": enhanced_model_type,
+        "ms_q_diagnostics": ms_q_diagnostics,
         # =========================================================================
         # VIX-BASED ν ADJUSTMENT DIAGNOSTICS (February 2026)
         # =========================================================================

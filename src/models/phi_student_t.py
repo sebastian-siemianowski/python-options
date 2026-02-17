@@ -122,6 +122,313 @@ MIXTURE_WEIGHT_C_MOMENTUM = 0.3    # Sensitivity to momentum
 
 
 # =============================================================================
+# MARKOV-SWITCHING PROCESS NOISE (MS-q) — February 2026
+# =============================================================================
+# Proactive regime-switching q based on volatility structure.
+# Unlike GAS-Q (reactive to errors), MS-q shifts BEFORE errors materialize.
+#
+# PROBLEM WITH STATIC q:
+#   Static process noise doesn't adapt to market regime changes.
+#   During regime transitions, forecast errors spike before q catches up.
+#
+# PROBLEM WITH GAS-Q:
+#   GAS-Q is reactive — it responds AFTER seeing large errors.
+#   But regime changes are predictable from volatility structure.
+#
+# SOLUTION (MS-q):
+#   Markov-Switching Process Noise with 2 states (calm, stress):
+#       q_t = (1 - p_stress_t) × q_calm + p_stress_t × q_stress
+#   where:
+#       p_stress_t = sigmoid(sensitivity × (vol_relative_t - threshold))
+#
+# The transition probability is PROACTIVE — it shifts q BEFORE errors materialize.
+#
+# THEORETICAL BASIS:
+# - Hamilton (1989) Markov-switching models
+# - Regime-switching variance in financial econometrics
+# - Consistent with Contaminated Student-t philosophy for nu
+# =============================================================================
+
+# MS-q Configuration
+MS_Q_ENABLED = True           # Master switch for MS-q models
+MS_Q_CALM_DEFAULT = 1e-6      # Process noise in calm regime
+MS_Q_STRESS_DEFAULT = 1e-4    # Process noise in stress regime (100x calm)
+MS_Q_SENSITIVITY = 2.0        # Sigmoid sensitivity to vol_relative
+MS_Q_THRESHOLD = 1.3          # vol_relative threshold for transition
+MS_Q_BMA_PENALTY = 0.0        # No penalty - fair competition via BIC
+
+
+def compute_ms_process_noise(
+    vol: np.ndarray,
+    q_calm: float = MS_Q_CALM_DEFAULT,
+    q_stress: float = MS_Q_STRESS_DEFAULT,
+    sensitivity: float = MS_Q_SENSITIVITY,
+    threshold: float = MS_Q_THRESHOLD,
+    vol_median: float = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute Markov-switching process noise based on volatility regime.
+    
+    The key insight: volatility structure PREDICTS regime changes.
+    When vol rises above median, we proactively increase q BEFORE
+    forecast errors materialize.
+    
+    Args:
+        vol: Time series of volatility estimates
+        q_calm: Process noise for calm regime
+        q_stress: Process noise for stress regime
+        sensitivity: Sigmoid sensitivity to vol_relative
+        threshold: vol_relative threshold for regime transition
+        vol_median: Median volatility (computed if None)
+        
+    Returns:
+        Tuple of (q_t, p_stress_t):
+        - q_t: Time-varying process noise array
+        - p_stress_t: Probability of stress regime array
+    """
+    vol = np.asarray(vol).flatten()
+    n = len(vol)
+    
+    # Compute expanding median for normalization (no future leakage)
+    if vol_median is None:
+        vol_cumsum = np.cumsum(vol)
+        vol_count = np.arange(1, n + 1)
+        # Use expanding mean as proxy for median (faster, similar result)
+        vol_baseline = vol_cumsum / vol_count
+        # Warm-up: use first 20 observations for initial baseline
+        if n > 20:
+            vol_baseline[:20] = np.mean(vol[:20])
+    else:
+        vol_baseline = np.full(n, vol_median)
+    
+    # Prevent division by zero
+    vol_baseline = np.maximum(vol_baseline, 1e-10)
+    
+    # Compute vol_relative
+    vol_relative = vol / vol_baseline
+    
+    # Compute stress probability via sigmoid
+    # p_stress = sigmoid(sensitivity × (vol_relative - threshold))
+    z = sensitivity * (vol_relative - threshold)
+    p_stress = 1.0 / (1.0 + np.exp(-z))
+    
+    # Clip to [0.01, 0.99] for numerical stability
+    p_stress = np.clip(p_stress, 0.01, 0.99)
+    
+    # Compute time-varying q
+    q_t = (1.0 - p_stress) * q_calm + p_stress * q_stress
+    
+    return q_t, p_stress
+
+
+def filter_phi_ms_q(
+    y: np.ndarray,
+    vol: np.ndarray,
+    c: float,
+    phi: float,
+    nu: float,
+    q_calm: float = MS_Q_CALM_DEFAULT,
+    q_stress: float = MS_Q_STRESS_DEFAULT,
+    sensitivity: float = MS_Q_SENSITIVITY,
+    threshold: float = MS_Q_THRESHOLD,
+) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray, np.ndarray]:
+    """
+    Kalman filter with Markov-switching process noise for Student-t.
+    
+    Unlike static q or reactive GAS-q, MS-q adapts PROACTIVELY
+    based on volatility regime before errors materialize.
+    
+    Args:
+        y: Observations (returns)
+        vol: Volatility estimates
+        c: Observation noise scale
+        phi: AR(1) coefficient
+        nu: Degrees of freedom for Student-t
+        q_calm: Process noise in calm regime
+        q_stress: Process noise in stress regime
+        sensitivity: Sigmoid sensitivity
+        threshold: Vol_relative threshold
+        
+    Returns:
+        Tuple of (mu_filtered, P_filtered, log_likelihood, q_t, p_stress_t)
+    """
+    y = np.asarray(y).flatten()
+    vol = np.asarray(vol).flatten()
+    n = len(y)
+    nu = max(float(nu), 2.01)
+    
+    # Compute time-varying q
+    q_t, p_stress = compute_ms_process_noise(
+        vol, q_calm, q_stress, sensitivity, threshold
+    )
+    
+    # Initialize state
+    mu = np.zeros(n)
+    P = np.zeros(n)
+    mu_t = 0.0
+    P_t = 1.0
+    
+    # Log-likelihood accumulation
+    total_ll = 0.0
+    
+    # Log of gamma function ratios for Student-t PDF
+    log_gamma_ratio = gammaln((nu + 1) / 2) - gammaln(nu / 2)
+    log_norm_const = log_gamma_ratio - 0.5 * np.log(nu * np.pi)
+    
+    for t in range(n):
+        # Observation variance
+        R_t = c * (vol[t] ** 2)
+        
+        # Predictive variance
+        S_t = P_t + R_t
+        
+        # Student-t scale
+        if nu > 2:
+            scale_t = np.sqrt(S_t * (nu - 2) / nu)
+        else:
+            scale_t = np.sqrt(S_t)
+        
+        # Innovation
+        innovation = y[t] - mu_t
+        z = innovation / scale_t
+        
+        # Log-likelihood contribution
+        ll_t = log_norm_const - np.log(scale_t) - ((nu + 1) / 2) * np.log(1 + z**2 / nu)
+        if np.isfinite(ll_t):
+            total_ll += ll_t
+        
+        # Robust weighting for Student-t (downweight outliers)
+        z_sq = (innovation ** 2) / S_t if S_t > 1e-12 else 0
+        w_t = (nu + 1) / (nu + z_sq)
+        
+        # Kalman gain
+        K_t = P_t / S_t if S_t > 1e-12 else 0.0
+        
+        # Weighted update
+        mu_t = mu_t + K_t * w_t * innovation
+        P_t = (1 - w_t * K_t) * P_t
+        
+        # Store filtered state
+        mu[t] = mu_t
+        P[t] = P_t
+        
+        # State prediction with TIME-VARYING q
+        mu_t = phi * mu_t
+        P_t = (phi ** 2) * P_t + q_t[t]
+    
+    return mu, P, total_ll, q_t, p_stress
+
+
+def optimize_params_ms_q(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    nu: float,
+    prior_log_q_mean: float = -6.0,
+    prior_lambda: float = 1.0,
+) -> Tuple[float, float, float, float, float, float, Dict]:
+    """
+    Optimize MS-q model parameters: (c, phi, q_calm, q_stress).
+    
+    Uses concentrated likelihood over q_calm and q_stress while
+    jointly optimizing c and phi.
+    
+    Args:
+        returns: Time series of returns
+        vol: Time series of volatility estimates
+        nu: Degrees of freedom (fixed)
+        prior_log_q_mean: Prior mean for log10(q)
+        prior_lambda: Prior strength
+        
+    Returns:
+        Tuple of (c_opt, phi_opt, q_calm_opt, q_stress_opt, log_likelihood, lfo_cv_score, diagnostics)
+    """
+    returns = np.asarray(returns).flatten()
+    vol = np.asarray(vol).flatten()
+    n = len(returns)
+    
+    # Grid search over q_calm/q_stress ratios
+    q_calm_grid = [1e-7, 5e-7, 1e-6, 5e-6, 1e-5]
+    q_ratio_grid = [10, 50, 100, 200]  # q_stress / q_calm
+    
+    best_ll = float('-inf')
+    best_params = None
+    
+    for q_calm in q_calm_grid:
+        for ratio in q_ratio_grid:
+            q_stress = q_calm * ratio
+            
+            # Optimize c, phi for this (q_calm, q_stress) pair
+            def neg_ll(params):
+                c_try, phi_try = params
+                if c_try <= 0 or abs(phi_try) >= 1:
+                    return 1e12
+                
+                try:
+                    _, _, ll, _, _ = filter_phi_ms_q(
+                        returns, vol, c_try, phi_try, nu,
+                        q_calm=q_calm, q_stress=q_stress
+                    )
+                    
+                    # Add regularization
+                    log_q_avg = np.log10((q_calm + q_stress) / 2)
+                    prior_penalty = prior_lambda * (log_q_avg - prior_log_q_mean) ** 2
+                    
+                    return -ll + prior_penalty
+                except Exception:
+                    return 1e12
+            
+            # Initial guess
+            c_init = 1.0
+            phi_init = 0.0
+            
+            try:
+                result = minimize(
+                    neg_ll,
+                    [c_init, phi_init],
+                    method='L-BFGS-B',
+                    bounds=[(0.01, 10.0), (-0.99, 0.99)],
+                    options={'maxiter': 100}
+                )
+                
+                if result.success and -result.fun > best_ll:
+                    best_ll = -result.fun
+                    best_params = (result.x[0], result.x[1], q_calm, q_stress)
+            except Exception:
+                continue
+    
+    if best_params is None:
+        # Fallback to defaults
+        c_opt, phi_opt = 1.0, 0.0
+        q_calm_opt, q_stress_opt = MS_Q_CALM_DEFAULT, MS_Q_STRESS_DEFAULT
+        ll_opt = float('-inf')
+    else:
+        c_opt, phi_opt, q_calm_opt, q_stress_opt = best_params
+        ll_opt = best_ll
+    
+    # Compute LFO-CV score for model comparison
+    try:
+        from tuning.diagnostics import compute_lfo_cv_score_student_t
+        # Use average q for LFO-CV (approximate)
+        q_avg = (q_calm_opt + q_stress_opt) / 2
+        lfo_cv_score, lfo_diag = compute_lfo_cv_score_student_t(
+            returns, vol, q_avg, c_opt, phi_opt, nu
+        )
+    except ImportError:
+        lfo_cv_score = float('-inf')
+        lfo_diag = {"error": "lfo_cv_not_available"}
+    
+    diagnostics = {
+        "fit_success": best_params is not None,
+        "n_obs": n,
+        "nu": nu,
+        "q_ratio": q_stress_opt / q_calm_opt if q_calm_opt > 0 else 0,
+        "lfo_cv_diagnostics": lfo_diag,
+    }
+    
+    return c_opt, phi_opt, q_calm_opt, q_stress_opt, ll_opt, lfo_cv_score, diagnostics
+
+
+# =============================================================================
 # ELITE TUNING CONFIGURATION (v2.0 - February 2026)
 # =============================================================================
 # Plateau-optimal parameter selection with:

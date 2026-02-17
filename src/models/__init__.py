@@ -159,6 +159,16 @@ from models.phi_student_t import (
     MIXTURE_WEIGHT_A_SHOCK,
     MIXTURE_WEIGHT_B_VOL_ACCEL,
     MIXTURE_WEIGHT_C_MOMENTUM,
+    # Markov-Switching Process Noise (MS-q) — February 2026
+    MS_Q_ENABLED,
+    MS_Q_CALM_DEFAULT,
+    MS_Q_STRESS_DEFAULT,
+    MS_Q_SENSITIVITY,
+    MS_Q_THRESHOLD,
+    MS_Q_BMA_PENALTY,
+    compute_ms_process_noise,
+    filter_phi_ms_q,
+    optimize_params_ms_q,
 )
 
 __all__ = [
@@ -189,6 +199,16 @@ __all__ = [
     'MIXTURE_WEIGHT_A_SHOCK',
     'MIXTURE_WEIGHT_B_VOL_ACCEL',
     'MIXTURE_WEIGHT_C_MOMENTUM',
+    # Markov-Switching Process Noise (MS-q) — February 2026
+    'MS_Q_ENABLED',
+    'MS_Q_CALM_DEFAULT',
+    'MS_Q_STRESS_DEFAULT',
+    'MS_Q_SENSITIVITY',
+    'MS_Q_THRESHOLD',
+    'MS_Q_BMA_PENALTY',
+    'compute_ms_process_noise',
+    'filter_phi_ms_q',
+    'optimize_params_ms_q',
     # Constants (from phi_skew_t)
     'SKEW_T_NU_GRID',
     'SKEW_T_GAMMA_GRID',
