@@ -313,6 +313,17 @@ class PhiGaussianDriftModel:
         ret_mean = float(np.mean(returns_robust))
         vol_mean = float(np.mean(vol))
         vol_std = float(np.std(vol))
+        
+        # ================================================================
+        # ELITE FIX 2: Scale-aware q_min
+        # ================================================================
+        # Prevent deterministic state collapse by setting q_min relative
+        # to observation variance. This ensures state evolution maintains
+        # meaningful uncertainty.
+        # ================================================================
+        vol_var_median = float(np.median(vol ** 2))
+        q_min_scaled = max(1e-10, 0.001 * vol_var_median)
+        q_min = max(q_min, q_min_scaled, 1e-8)  # Hard floor at 1e-8
 
         if vol_mean > 0:
             vol_cv = vol_std / vol_mean
@@ -443,8 +454,21 @@ class PhiGaussianDriftModel:
                 phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
                 tau=phi_tau
             )
+            
+            # ================================================================
+            # ELITE FIX 3: Strong φ-q regularization for deterministic collapse
+            # ================================================================
+            # When |φ| > 0.95: state becomes near-deterministic
+            # When log_q < -7: no state uncertainty propagation
+            # Both together cause overconfident forecasts → PIT failure
+            #
+            # Use STRONG penalty (500x) because φ→1 collapse is severe
+            # ================================================================
+            phi_near_one_penalty = max(0.0, abs(phi_clip) - 0.95) ** 2
+            q_very_small_penalty = max(0.0, -7.0 - log_q) ** 2
+            state_regularization = -500.0 * (phi_near_one_penalty + q_very_small_penalty)
 
-            penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty
+            penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty + state_regularization
             return -penalized_ll if np.isfinite(penalized_ll) else 1e12
 
         log_q_min = np.log10(q_min)

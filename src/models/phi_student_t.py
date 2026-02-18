@@ -35,7 +35,8 @@ from __future__ import annotations
 
 import math
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 from scipy.optimize import minimize
@@ -173,6 +174,262 @@ MS_Q_STRESS_DEFAULT = 1e-4    # Process noise in stress regime (100x calm)
 MS_Q_SENSITIVITY = 2.0        # Sigmoid sensitivity to vol_relative
 MS_Q_THRESHOLD = 1.3          # vol_relative threshold for transition
 MS_Q_BMA_PENALTY = 0.0        # No penalty - fair competition via BIC
+
+
+# =============================================================================
+# UNIFIED STUDENT-T CONFIGURATION (February 2026 - Elite Architecture)
+# =============================================================================
+# Consolidates 48+ model variants into single adaptive architecture:
+#   - Smooth asymmetric ν (replaces Two-Piece)
+#   - Probabilistic MS-q (replaces threshold-based)
+#   - VoV with redundancy damping
+#   - Momentum integration
+#   - State collapse regularization
+# =============================================================================
+
+@dataclass
+class UnifiedStudentTConfig:
+    """
+    Configuration for Unified Elite Student-T Model.
+    
+    Combines ALL enhancements into single coherent architecture:
+      1. Smooth Asymmetric ν: tanh-modulated tail heaviness
+      2. Probabilistic MS-q: sigmoid regime switching
+      3. Adaptive VoV: with redundancy damping
+      4. Momentum: exogenous drift input
+      5. State regularization: prevents φ→1/q→0 collapse
+    """
+    
+    # Core parameters
+    q: float = 1e-6
+    c: float = 1.0
+    phi: float = 0.0
+    nu_base: float = 8.0
+    
+    # Smooth asymmetric ν: ν_eff = ν_base × (1 + α × tanh(k × z))
+    # α < 0: heavier left tail (crashes), α > 0: heavier right tail
+    alpha_asym: float = 0.0      # [-0.3, 0.3], asymmetry magnitude
+    k_asym: float = 1.0          # [0.5, 2.0], transition sharpness
+    
+    # Probabilistic MS-q: p_stress = sigmoid(sensitivity × vol_zscore)
+    q_calm: float = None         # Defaults to q if None
+    q_stress_ratio: float = 10.0 # q_stress = q_calm × ratio
+    ms_sensitivity: float = 2.0  # [1.0, 3.0], regime sensitivity
+    
+    # VoV with MS-q redundancy damping
+    gamma_vov: float = 0.3       # [0, 1.0], VoV sensitivity
+    vov_damping: float = 0.3     # [0, 0.5], reduce VoV when MS-q active
+    vov_window: int = 20         # Rolling window for VoV
+    
+    # Momentum/exogenous input
+    exogenous_input: np.ndarray = field(default=None, repr=False)
+    
+    # Data-driven bounds (auto-computed)
+    c_min: float = 0.01
+    c_max: float = 10.0
+    q_min: float = 1e-8
+    
+    def __post_init__(self):
+        """Validate and set defaults."""
+        if self.q_calm is None:
+            self.q_calm = self.q
+        # Clip parameters to valid ranges
+        self.alpha_asym = float(np.clip(self.alpha_asym, -0.3, 0.3))
+        self.k_asym = float(np.clip(self.k_asym, 0.5, 2.0))
+        self.ms_sensitivity = float(np.clip(self.ms_sensitivity, 1.0, 3.0))
+        self.gamma_vov = float(np.clip(self.gamma_vov, 0.0, 1.0))
+        self.vov_damping = float(np.clip(self.vov_damping, 0.0, 0.5))
+    
+    @property
+    def q_stress(self) -> float:
+        """Compute stress regime process noise."""
+        return self.q_calm * self.q_stress_ratio
+    
+    @classmethod
+    def auto_configure(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        nu_base: float = 8.0,
+    ) -> 'UnifiedStudentTConfig':
+        """
+        Auto-configure from data characteristics.
+        
+        Uses robust statistics (MAD) for c bounds and
+        data-driven initialization for asymmetry and VoV.
+        """
+        returns = np.asarray(returns).flatten()
+        vol = np.asarray(vol).flatten()
+        
+        # Filter valid data
+        valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+        returns_clean = returns[valid_mask]
+        vol_clean = vol[valid_mask]
+        
+        if len(returns_clean) < 30:
+            # Not enough data, use defaults
+            return cls(nu_base=nu_base)
+        
+        # Data-driven c bounds using robust MAD scale
+        returns_mad = float(np.median(np.abs(returns_clean - np.median(returns_clean))))
+        vol_median = float(np.median(vol_clean))
+        
+        if vol_median > 1e-10 and returns_mad > 0:
+            # c_target such that c × vol² ≈ returns_variance
+            returns_scale = returns_mad / 0.6745  # MAD to σ conversion
+            c_target = (returns_scale / vol_median) ** 2
+            c_target = float(np.clip(c_target, 0.01, 50.0))
+            c_min = max(0.1 * c_target, 0.001)
+            c_max = min(10.0 * c_target, 100.0)
+        else:
+            c_target = 1.0
+            c_min = 0.01
+            c_max = 10.0
+        
+        # VoV from realized vol-of-vol
+        log_vol = np.log(np.maximum(vol_clean, 1e-10))
+        if len(log_vol) > 1:
+            vol_cv = float(np.std(np.diff(log_vol)))
+            gamma_vov = 0.3 * float(np.clip(vol_cv / 0.02, 0, 1)) if vol_cv > 0.01 else 0.0
+        else:
+            gamma_vov = 0.0
+        
+        # Asymmetry from skewness (α = -0.1 × skewness)
+        if len(returns_clean) > 30:
+            ret_std = float(np.std(returns_clean))
+            if ret_std > 1e-10:
+                ret_centered = returns_clean - np.mean(returns_clean)
+                skewness = float(np.mean((ret_centered / ret_std) ** 3))
+                alpha_asym = -0.1 * float(np.clip(skewness, -3, 3))
+            else:
+                alpha_asym = 0.0
+        else:
+            alpha_asym = 0.0
+        
+        # MS-q: enable stronger switching if vol is volatile
+        if len(log_vol) > 1:
+            vol_cv = float(np.std(np.diff(log_vol)))
+            q_stress_ratio = 10.0 if vol_cv > 0.02 else 5.0
+        else:
+            q_stress_ratio = 5.0
+        
+        # Scale-aware q_min
+        q_min = max(1e-8, 0.001 * vol_median ** 2)
+        
+        return cls(
+            nu_base=nu_base,
+            c=c_target,
+            c_min=c_min,
+            c_max=c_max,
+            q_min=q_min,
+            gamma_vov=gamma_vov,
+            alpha_asym=alpha_asym,
+            q_stress_ratio=q_stress_ratio,
+        )
+    
+    @classmethod
+    def from_legacy(
+        cls,
+        q: float,
+        c: float,
+        phi: float,
+        nu: float,
+        **kwargs,
+    ) -> 'UnifiedStudentTConfig':
+        """Convert legacy tuned params to unified config with conservative defaults."""
+        return cls(
+            q=q,
+            c=c,
+            phi=phi,
+            nu_base=nu,
+            alpha_asym=0.0,      # Conservative: no asymmetry
+            gamma_vov=0.3,       # Moderate VoV
+            ms_sensitivity=2.0,  # Default sensitivity
+            q_stress_ratio=10.0, # Standard stress ratio
+            **kwargs,
+        )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            'q': self.q,
+            'c': self.c,
+            'phi': self.phi,
+            'nu_base': self.nu_base,
+            'alpha_asym': self.alpha_asym,
+            'k_asym': self.k_asym,
+            'q_calm': self.q_calm,
+            'q_stress_ratio': self.q_stress_ratio,
+            'ms_sensitivity': self.ms_sensitivity,
+            'gamma_vov': self.gamma_vov,
+            'vov_damping': self.vov_damping,
+            'c_min': self.c_min,
+            'c_max': self.c_max,
+            'q_min': self.q_min,
+        }
+
+
+def compute_ms_process_noise_smooth(
+    vol: np.ndarray,
+    q_calm: float,
+    q_stress: float,
+    sensitivity: float = 2.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute smooth probabilistic MS process noise.
+    
+    Uses expanding-window z-score (no lookahead) with sigmoid transition.
+    Sensitivity bounded to [1.0, 3.0] to prevent quasi-step behavior.
+    
+    This replaces the threshold-based MS-q with a fully smooth,
+    differentiable regime switching mechanism.
+    
+    Args:
+        vol: Time series of volatility estimates
+        q_calm: Process noise for calm regime
+        q_stress: Process noise for stress regime
+        sensitivity: Sigmoid sensitivity (bounded to [1.0, 3.0])
+        
+    Returns:
+        Tuple of (q_t, p_stress):
+        - q_t: Time-varying process noise array
+        - p_stress: Probability of stress regime array
+    """
+    vol = np.asarray(vol).flatten()
+    n = len(vol)
+    
+    # Bound sensitivity to prevent quasi-step behavior
+    sensitivity = float(np.clip(sensitivity, 1.0, 3.0))
+    
+    # Expanding-window statistics (no lookahead)
+    vol_cumsum = np.cumsum(vol)
+    vol_sq_cumsum = np.cumsum(vol ** 2)
+    counts = np.arange(1, n + 1, dtype=np.float64)
+    
+    vol_mean = vol_cumsum / counts
+    vol_var = vol_sq_cumsum / counts - vol_mean ** 2
+    vol_var = np.maximum(vol_var, 1e-12)  # Prevent negative variance
+    vol_std = np.sqrt(vol_var)
+    
+    # Warm-up: use first 20 obs for initial estimates
+    warmup = min(20, n)
+    if n > warmup:
+        init_mean = np.mean(vol[:warmup])
+        init_std = max(np.std(vol[:warmup]), 1e-6)
+        vol_mean[:warmup] = init_mean
+        vol_std[:warmup] = init_std
+    
+    # Z-score
+    vol_zscore = (vol - vol_mean) / np.maximum(vol_std, 1e-6)
+    
+    # Smooth sigmoid transition
+    p_stress = 1.0 / (1.0 + np.exp(-sensitivity * vol_zscore))
+    p_stress = np.clip(p_stress, 0.01, 0.99)
+    
+    # Time-varying q
+    q_t = (1.0 - p_stress) * q_calm + p_stress * q_stress
+    
+    return q_t, p_stress
 
 
 def compute_ms_process_noise(
@@ -710,6 +967,58 @@ class PhiStudentTDriftModel:
         else:
             scale = np.sqrt(variance_safe)
         return np.where(scale < 1e-10, 1e-10, scale)
+
+    @staticmethod
+    def compute_effective_nu(
+        nu_base: float,
+        innovation: float,
+        scale: float,
+        alpha: float,
+        k: float = 1.0,
+        nu_min: float = 2.1,
+        nu_max: float = 50.0,
+    ) -> float:
+        """
+        Compute smooth asymmetric effective ν using tanh modulation.
+        
+        Formula:
+            ν_eff = ν_base × (1 + α × tanh(k × z))
+            
+        where z = innovation / scale is the standardized residual.
+        
+        Properties:
+            - Differentiable everywhere (smooth, no discontinuities)
+            - Bounded: ν_eff ∈ [ν_base×0.7, ν_base×1.3] for |α|≤0.3
+            - α < 0: heavier left tail (crashes get lower ν)
+            - α > 0: heavier right tail (recoveries get lower ν)
+            - CRITICAL: Always returns ν_eff > 2.1 to ensure variance defined
+        
+        This replaces the hard Two-Piece switch with smooth, differentiable
+        asymmetry that doesn't create optimizer instability.
+        
+        Args:
+            nu_base: Base degrees of freedom
+            innovation: y_t - μ_pred (residual)
+            scale: Predictive standard deviation sqrt(S)
+            alpha: Asymmetry parameter in [-0.3, 0.3]
+            k: Transition sharpness in [0.5, 2.0]
+            nu_min: Minimum ν (must be > 2 for finite variance)
+            nu_max: Maximum ν
+            
+        Returns:
+            Effective degrees of freedom ν_eff
+        """
+        # Standardized residual
+        scale_safe = max(abs(scale), 1e-10)
+        z = innovation / scale_safe
+        
+        # Smooth asymmetric modulation via tanh
+        # tanh is bounded in [-1, 1] and smooth everywhere
+        modulation = 1.0 + alpha * np.tanh(k * z)
+        nu_raw = nu_base * modulation
+        
+        # CRITICAL: Ensure ν > 2 (finite variance requirement)
+        return float(np.clip(nu_raw, nu_min, nu_max))
 
     @staticmethod
     def logpdf(x: float, nu: float, mu: float, scale: float) -> float:
@@ -2302,8 +2611,18 @@ class PhiStudentTDriftModel:
                 tau=phi_tau
             )
             log_prior_nu = -0.05 * prior_scale * (log_nu - np.log10(6.0)) ** 2
+            
+            # ================================================================
+            # ELITE FIX 3: Smooth quadratic φ-q regularization
+            # ================================================================
+            # Prevents deterministic state evolution collapse (φ→1 AND q→0)
+            # Strong penalty (500×) because this is the ROOT CAUSE of PIT failures
+            # ================================================================
+            phi_near_one_penalty = max(0.0, abs(phi_clip) - 0.95) ** 2
+            q_very_small_penalty = max(0.0, -7.0 - log_q) ** 2
+            state_regularization = -500.0 * (phi_near_one_penalty + q_very_small_penalty)
 
-            penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + log_prior_nu + calibration_penalty
+            penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + log_prior_nu + calibration_penalty + state_regularization
             return -penalized_ll if np.isfinite(penalized_ll) else 1e12
 
         log_q_min = np.log10(q_min)
@@ -2389,37 +2708,71 @@ class PhiStudentTDriftModel:
         asset_symbol: str = None,
         vol_median: float = None,
         returns_std: float = None,
+        returns_mad: float = None,
     ) -> Tuple[float, float]:
         """
-        Return (c_min, c_max) bounds adaptive to asset class.
+        Return (c_min, c_max) bounds adaptive to asset class and data scale.
         
-        FIX #4: FX pairs have ~10x smaller returns than equities.
-        Fixed c_min=0.3 forces FX to use wrong observation scale,
+        ELITE FIX (February 2026): Data-driven c bounds using robust MAD scale.
+        
+        The key insight: c should be such that R = c × vol² ≈ observed return variance.
+        When c is constrained to wrong bounds, the model can't fit properly,
         causing systematic PIT miscalibration.
         
-        Asset class detection:
-        - FX: symbol contains '=X' or 'JPY' or 'USD' etc.
-        - Crypto: symbol is BTC-USD, ETH-USD, etc.
-        - Indices: symbol starts with '^'
-        - Equities: default
-        
-        Alternatively uses vol_median/returns_std to detect scale.
+        Primary method: Data-driven from returns/vol ratio using robust MAD scale.
+        Fallback: Asset class detection by symbol.
         
         Args:
             asset_symbol: Ticker symbol for asset class detection
             vol_median: Median volatility for scale-based detection
-            returns_std: Standard deviation of returns for scale-based detection
+            returns_std: Standard deviation of returns
+            returns_mad: Median Absolute Deviation of returns (robust scale)
             
         Returns:
             Tuple of (c_min, c_max) bounds
         """
-        # Detection by symbol
+        # =================================================================
+        # PRIMARY: Data-driven c bounds from returns/vol ratio
+        # =================================================================
+        # c_target = (returns_scale / vol_median)² such that R ≈ Var(returns)
+        # Use MAD for robustness (MAD ≈ 0.6745 × σ for Gaussian)
+        
+        if vol_median is not None and vol_median > 1e-10:
+            # Prefer robust MAD scale, fallback to std
+            if returns_mad is not None and returns_mad > 0:
+                # Convert MAD to σ-equivalent: σ ≈ MAD / 0.6745
+                returns_scale = returns_mad / 0.6745
+            elif returns_std is not None and returns_std > 0:
+                returns_scale = returns_std
+            else:
+                returns_scale = None
+            
+            if returns_scale is not None:
+                # Target c such that c × vol² ≈ returns_variance
+                c_target = (returns_scale / vol_median) ** 2
+                
+                # Cap c_target to prevent explosion in micro-vol regimes
+                c_target = min(c_target, 50.0)
+                
+                # Wide bounds around target (0.1× to 10×)
+                c_min = max(0.1 * c_target, 0.001)
+                c_max = min(10.0 * c_target, 20.0)
+                
+                # Ensure reasonable spread
+                if c_max < 2 * c_min:
+                    c_max = 2 * c_min
+                
+                return (c_min, c_max)
+        
+        # =================================================================
+        # FALLBACK: Asset class detection by symbol
+        # =================================================================
         if asset_symbol:
             symbol_upper = asset_symbol.upper()
             
             # FX pairs: much smaller returns, need smaller c
             if '=X' in symbol_upper:
-                return (0.005, 0.5)  # FX: allow much smaller c
+                return (0.005, 0.5)
             
             # JPY crosses (USDJPY, EURJPY, etc.)
             if symbol_upper.endswith('JPY') or symbol_upper.startswith('JPY'):
@@ -2427,33 +2780,29 @@ class PhiStudentTDriftModel:
             
             # Other FX-like patterns
             if any(ccy in symbol_upper for ccy in ['USD', 'EUR', 'GBP', 'CHF', 'AUD', 'NZD', 'CAD']):
-                # Check if it's a currency pair (6-7 chars) vs equity
                 if len(symbol_upper) <= 8 and not symbol_upper.startswith('^'):
-                    # Likely FX pair
                     if 'USD' in symbol_upper and len(symbol_upper) == 6:
                         return (0.005, 0.5)
             
             # Crypto: very high volatility, need larger c
             if symbol_upper in ['BTC-USD', 'ETH-USD', 'BTC', 'ETH']:
-                return (0.5, 10.0)  # Crypto: allow larger c
+                return (0.5, 10.0)
             if 'BITCOIN' in symbol_upper or 'CRYPTO' in symbol_upper:
                 return (0.5, 10.0)
             
             # Indices: typically smooth
             if symbol_upper.startswith('^'):
-                return (0.1, 2.0)
+                return (0.1, 3.0)
         
-        # Detection by scale (fallback when no symbol or not matched)
+        # Detection by scale (fallback)
         if returns_std is not None and returns_std < 0.005:
-            # Very small returns (likely FX)
             return (0.005, 0.5)
         
         if vol_median is not None and vol_median < 0.01:
-            # Very low volatility (likely FX)
             return (0.005, 0.5)
         
         # Default: equities
-        return (0.3, 3.0)
+        return (0.2, 5.0)
 
     @staticmethod
     def optimize_params_fixed_nu(
@@ -2461,7 +2810,7 @@ class PhiStudentTDriftModel:
         vol: np.ndarray,
         nu: float,
         train_frac: float = 0.7,
-        q_min: float = 1e-10,
+        q_min: float = None,  # ELITE FIX: Now auto-computed if None
         q_max: float = 1e-1,
         c_min: float = None,  # FIX #4: Now auto-detected if None
         c_max: float = None,  # FIX #4: Now auto-detected if None
@@ -2484,6 +2833,10 @@ class PhiStudentTDriftModel:
         - Asset symbol (FX, crypto, indices, equities)
         - Returns scale (std of returns)
         - Volatility scale (median of vol)
+        
+        ELITE FIX (February 2026): Scale-aware q_min.
+        If q_min is None, it is auto-computed based on observation variance
+        to prevent deterministic state collapse (φ→1, q→0).
         """
         n = len(returns)
         ret_p005 = np.percentile(returns, 0.5)
@@ -2497,13 +2850,28 @@ class PhiStudentTDriftModel:
         ret_mean = float(np.mean(returns_robust))
         rv_ratio = abs(ret_mean) / ret_std if ret_std > 0 else 0.0
         
-        # FIX #4: Auto-detect c bounds based on asset class
+        # Compute robust MAD scale for c bounds
+        ret_mad = float(np.median(np.abs(returns_robust - np.median(returns_robust))))
+        vol_median = float(np.median(vol))
+        vol_var_median = vol_median ** 2
+        
+        # ================================================================
+        # ELITE FIX 2: Scale-aware q_min to prevent deterministic state collapse
+        # ================================================================
+        # q_min should be ~0.1% of observation noise scale
+        # This prevents φ→1, q→10^-12 collapse that causes overconfident forecasts
+        if q_min is None:
+            q_min = max(1e-10, 0.001 * vol_var_median)
+            # Hard floor at 1e-8 to prevent deterministic state
+            q_min = max(q_min, 1e-8)
+        
+        # FIX #4: Auto-detect c bounds based on asset class (now with MAD)
         if c_min is None or c_max is None:
-            vol_median = float(np.median(vol))
             c_min_auto, c_max_auto = PhiStudentTDriftModel.get_c_bounds_for_asset(
                 asset_symbol=asset_symbol,
                 vol_median=vol_median,
                 returns_std=ret_std,
+                returns_mad=ret_mad,  # ELITE FIX: Pass MAD for robust scale
             )
             c_min = c_min if c_min is not None else c_min_auto
             c_max = c_max if c_max is not None else c_max_auto
@@ -2624,8 +2992,22 @@ class PhiStudentTDriftModel:
                 phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
                 tau=phi_tau
             )
+            
+            # ================================================================
+            # ELITE FIX 3: Smooth quadratic φ-q regularization
+            # ================================================================
+            # Prevents deterministic state evolution collapse (φ→1 AND q→0)
+            # When |φ| > 0.95 AND log₁₀(q) < -7, state becomes deterministic
+            # → Predictive variance collapses → Overconfident forecasts → PIT failure
+            #
+            # Uses smooth quadratic penalties (not multiplicative) for optimizer stability
+            # Strong penalty (500×) because this is the ROOT CAUSE of PIT failures
+            # ================================================================
+            phi_near_one_penalty = max(0.0, abs(phi_clip) - 0.95) ** 2
+            q_very_small_penalty = max(0.0, -7.0 - log_q) ** 2
+            state_regularization = -500.0 * (phi_near_one_penalty + q_very_small_penalty)
 
-            penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty
+            penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty + state_regularization
             return -penalized_ll if np.isfinite(penalized_ll) else 1e12
 
         log_q_min = np.log10(q_min)

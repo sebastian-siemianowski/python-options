@@ -29,7 +29,8 @@ LEGACY_CACHE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "da
 # Version history:
 #   2.0 - Per-asset cache format
 #   2.1 - PIT scale fix: variance-to-scale conversion (February 2026)
-CURRENT_CACHE_VERSION = "2.1"
+#   2.2 - PIT collapse prevention: φ-q regularization + scale-aware q_min (February 2026)
+CURRENT_CACHE_VERSION = "2.2"
 
 
 class NumpyEncoder(json.JSONEncoder):
