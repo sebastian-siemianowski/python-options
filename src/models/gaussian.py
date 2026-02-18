@@ -155,6 +155,103 @@ class GaussianDriftModel:
         return mu_filtered, P_filtered, float(log_likelihood)
 
     @staticmethod
+    def filter_phi_with_predictive(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+        """
+        ELITE FIX: φ-Gaussian filter returning PREDICTIVE values for proper PIT.
+        
+        Same as filter_phi but also returns:
+            mu_pred[t] = φ × μ_{t-1}     (BEFORE seeing y_t)
+            S_pred[t] = P_pred + R_t      (BEFORE seeing y_t)
+        
+        For proper PIT computation.
+        """
+        n = len(returns)
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+
+        mu = 0.0
+        P = 1e-4
+        mu_filtered = np.zeros(n)
+        P_filtered = np.zeros(n)
+        mu_pred_arr = np.zeros(n)  # PREDICTIVE mean
+        S_pred_arr = np.zeros(n)   # PREDICTIVE variance
+        log_likelihood = 0.0
+
+        for t in range(n):
+            # Prediction step (BEFORE seeing y_t)
+            mu_pred = phi_val * mu
+            P_pred = (phi_val ** 2) * P + q_val
+
+            vol_t = vol[t]
+            vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
+            R = c_val * (vol_scalar ** 2)
+
+            S = P_pred + R
+            if S <= 1e-12:
+                S = 1e-12
+            
+            # Store PREDICTIVE values
+            mu_pred_arr[t] = mu_pred
+            S_pred_arr[t] = S
+
+            ret_t = returns[t]
+            r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
+            innovation = r_val - mu_pred
+
+            # Update step (AFTER seeing y_t)
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            P = float(max(P, 1e-12))
+
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+
+            log_likelihood += -0.5 * (np.log(2 * np.pi * S) + (innovation ** 2) / S)
+
+        return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
+
+    @staticmethod
+    def pit_ks_predictive(
+        returns: np.ndarray,
+        mu_pred: np.ndarray,
+        S_pred: np.ndarray,
+    ) -> Tuple[float, float]:
+        """
+        ELITE FIX: Proper PIT/KS using PREDICTIVE distribution for Gaussian.
+        
+        For Gaussian, scale = sqrt(S_pred) (no adjustment needed).
+        """
+        returns_flat = np.asarray(returns).flatten()
+        mu_pred_flat = np.asarray(mu_pred).flatten()
+        S_pred_flat = np.asarray(S_pred).flatten()
+        
+        forecast_std = np.sqrt(np.maximum(S_pred_flat, 1e-20))
+        forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
+        
+        standardized = (returns_flat - mu_pred_flat) / forecast_std
+        
+        valid_mask = np.isfinite(standardized)
+        if not np.any(valid_mask):
+            return 1.0, 0.0
+        
+        standardized_clean = standardized[valid_mask]
+        pit_values = norm.cdf(standardized_clean)
+        
+        if len(pit_values) < 2:
+            return 1.0, 0.0
+        
+        ks_result = kstest(pit_values, 'uniform')
+        return float(ks_result.statistic), float(ks_result.pvalue)
+
+    @staticmethod
     def filter_augmented(
         returns: np.ndarray,
         vol: np.ndarray,

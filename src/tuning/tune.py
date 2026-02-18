@@ -1665,6 +1665,7 @@ def tune_asset_q(
             prior_log_q_mean=prior_log_q_mean,
             prior_lambda=prior_lambda,
             prices=prices_array,  # MR integration (February 2026)
+            asset=asset,  # FIX #4: Asset-class adaptive c bounds
         )
         
         # Compute model weights using regime-aware BIC + Hyvärinen + CRPS (February 2026)
@@ -2399,6 +2400,128 @@ def compute_pit_ks_pvalue_student_t(returns: np.ndarray, mu_filtered: np.ndarray
     return PhiStudentTDriftModel.pit_ks(returns, mu_filtered, vol, P_filtered, c, nu)
 
 
+def compute_predictive_pit_student_t(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+) -> Tuple[float, float, np.ndarray, np.ndarray]:
+    """
+    ELITE FIX: Compute proper PIT using PREDICTIVE distribution.
+    
+    This function runs the filter to get predictive values (before seeing y_t)
+    and computes PIT correctly. The key insight: PIT transforms y_t through
+    the CDF of its PRIOR predictive distribution, not the posterior.
+    
+    Args:
+        returns: Return observations
+        vol: Volatility estimates
+        q: Process noise variance
+        c: Observation noise scale
+        phi: AR(1) persistence
+        nu: Degrees of freedom
+        
+    Returns:
+        Tuple of (KS statistic, KS p-value, mu_pred, S_pred)
+    """
+    # Run filter with predictive output
+    mu_filt, P_filt, mu_pred, S_pred, ll = PhiStudentTDriftModel.filter_phi_with_predictive(
+        returns, vol, q, c, phi, nu
+    )
+    
+    # Compute PIT using predictive distribution
+    ks_stat, pit_p = PhiStudentTDriftModel.pit_ks_predictive(
+        returns, mu_pred, S_pred, nu
+    )
+    
+    return ks_stat, pit_p, mu_pred, S_pred
+
+
+def compute_predictive_scores_student_t(
+    returns: np.ndarray,
+    mu_pred: np.ndarray,
+    S_pred: np.ndarray,
+    nu: float,
+) -> Tuple[float, float]:
+    """
+    ELITE FIX: Compute Hyvärinen and CRPS using PREDICTIVE distribution.
+    
+    Uses predictive mean and variance (before seeing y_t) for proper
+    out-of-sample scoring.
+    
+    Args:
+        returns: Return observations
+        mu_pred: Predictive means from filter_phi_with_predictive
+        S_pred: Predictive variances from filter_phi_with_predictive
+        nu: Degrees of freedom
+        
+    Returns:
+        Tuple of (Hyvärinen score, CRPS)
+    """
+    # Compute Student-t scale from predictive variance
+    if nu > 2:
+        forecast_scale = np.sqrt(S_pred * (nu - 2) / nu)
+    else:
+        forecast_scale = np.sqrt(S_pred)
+    
+    # Compute scores using predictive values
+    hyvarinen = compute_hyvarinen_score_student_t(returns, mu_pred, forecast_scale, nu)
+    crps = compute_crps_student_t_inline(returns, mu_pred, forecast_scale, nu)
+    
+    return hyvarinen, crps
+
+
+def compute_predictive_pit_gaussian(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float = 1.0,
+) -> Tuple[float, float, np.ndarray, np.ndarray]:
+    """
+    ELITE FIX: Compute proper PIT using PREDICTIVE distribution for Gaussian.
+    
+    Args:
+        returns: Return observations
+        vol: Volatility estimates
+        q: Process noise variance
+        c: Observation noise scale
+        phi: AR(1) persistence (default 1.0 for random walk)
+        
+    Returns:
+        Tuple of (KS statistic, KS p-value, mu_pred, S_pred)
+    """
+    # Run filter with predictive output
+    mu_filt, P_filt, mu_pred, S_pred, ll = GaussianDriftModel.filter_phi_with_predictive(
+        returns, vol, q, c, phi
+    )
+    
+    # Compute PIT using predictive distribution
+    ks_stat, pit_p = GaussianDriftModel.pit_ks_predictive(
+        returns, mu_pred, S_pred
+    )
+    
+    return ks_stat, pit_p, mu_pred, S_pred
+
+
+def compute_predictive_scores_gaussian(
+    returns: np.ndarray,
+    mu_pred: np.ndarray,
+    S_pred: np.ndarray,
+) -> Tuple[float, float]:
+    """
+    ELITE FIX: Compute Hyvärinen and CRPS using PREDICTIVE distribution for Gaussian.
+    """
+    forecast_std = np.sqrt(S_pred)
+    
+    hyvarinen = compute_hyvarinen_score_gaussian(returns, mu_pred, forecast_std)
+    crps = compute_crps_gaussian_inline(returns, mu_pred, forecast_std)
+    
+    return hyvarinen, crps
+
+
 def optimize_q_c_phi_mle(
     returns: np.ndarray,
     vol: np.ndarray,
@@ -2694,6 +2817,7 @@ def fit_all_models_for_regime(
     prior_lambda: float = 1.0,
     prices: np.ndarray = None,  # Added for MR integration (February 2026)
     regime_labels: np.ndarray = None,  # Added for regime-adaptive blending
+    asset: str = None,  # FIX #4: Asset symbol for c-bounds detection
 ) -> Dict[str, Dict]:
     """
     Fit ALL candidate model classes for a single regime's data.
@@ -2715,6 +2839,7 @@ def fit_all_models_for_regime(
         prior_lambda: Regularization strength
         prices: Price array for MR equilibrium estimation (optional)
         regime_labels: Regime labels for adaptive blending (optional)
+        asset: Asset symbol for c-bounds detection (FIX #4, optional)
 
     Returns:
         Dictionary with fitted models:
@@ -2805,21 +2930,28 @@ def fit_all_models_for_regime(
         
         try:
             # Optimize q, c, phi with FIXED nu
+            # FIX #4: Pass asset symbol for adaptive c bounds
             q_st, c_st, phi_st, ll_cv_st, diag_st = PhiStudentTDriftModel.optimize_params_fixed_nu(
                 returns, vol,
                 nu=nu_fixed,
                 prior_log_q_mean=prior_log_q_mean,
-                prior_lambda=prior_lambda
+                prior_lambda=prior_lambda,
+                asset_symbol=asset,  # FIX #4: Asset-class adaptive c bounds
             )
             
-            # Run full filter with fixed nu
-            mu_st, P_st, ll_full_st = PhiStudentTDriftModel.filter_phi(
+            # ELITE FIX: Run filter with predictive output for proper PIT
+            # The key insight: PIT requires PRIOR PREDICTIVE values (before y_t),
+            # not posterior values (after update). Using posterior values causes
+            # systematic miscalibration (residuals appear too concentrated).
+            mu_st, P_st, mu_pred_st, S_pred_st, ll_full_st = PhiStudentTDriftModel.filter_phi_with_predictive(
                 returns, vol, q_st, c_st, phi_st, nu_fixed
             )
             
-            # Compute PIT calibration
-            ks_st, pit_p_st = PhiStudentTDriftModel.pit_ks(
-                returns, mu_st, vol, P_st, c_st, nu_fixed
+            # ELITE FIX: Compute PIT calibration using PREDICTIVE distribution
+            # This is the mathematically correct formulation:
+            # z_t = (y_t - mu_pred_t) / scale_t, PIT_t = F_ν(z_t)
+            ks_st, pit_p_st = PhiStudentTDriftModel.pit_ks_predictive(
+                returns, mu_pred_st, S_pred_st, nu_fixed
             )
             
             # Compute information criteria
@@ -2828,14 +2960,21 @@ def fit_all_models_for_regime(
             mean_ll_st = ll_full_st / max(n_obs, 1)
             
             # Compute Hyvärinen score for robust model selection (Student-t)
-            forecast_scale_st = np.sqrt(c_st * (vol ** 2) + P_st)
+            # FIX #1: Use correct Student-t scale parameterization
+            # For Student-t, Var = scale² × ν/(ν-2), so scale = sqrt(Var × (ν-2)/ν)
+            # ELITE FIX: Use predictive variance S_pred for consistency
+            if nu_fixed > 2:
+                forecast_scale_st = np.sqrt(S_pred_st * (nu_fixed - 2) / nu_fixed)
+            else:
+                forecast_scale_st = np.sqrt(S_pred_st)
             hyvarinen_st = compute_hyvarinen_score_student_t(
-                returns, mu_st, forecast_scale_st, nu_fixed
+                returns, mu_pred_st, forecast_scale_st, nu_fixed
             )
             
             # Compute CRPS for regime-aware model selection (February 2026)
+            # ELITE FIX: Use predictive mean for proper out-of-sample scoring
             crps_st = compute_crps_student_t_inline(
-                returns, mu_st, forecast_scale_st, nu_fixed
+                returns, mu_pred_st, forecast_scale_st, nu_fixed
             )
             
             models[model_name] = {
@@ -3187,9 +3326,10 @@ def fit_all_models_for_regime(
                         base_model='phi_student_t'
                     )
                     
-                    # Compute PIT calibration
-                    ks_mom, pit_p_mom = PhiStudentTDriftModel.pit_ks(
-                        returns, mu_mom, vol, P_mom, c_mom, nu_fixed
+                    # ELITE FIX: Compute PIT using PREDICTIVE distribution
+                    # Run the base filter to get predictive values for proper PIT
+                    ks_mom, pit_p_mom, mu_pred_mom, S_pred_mom = compute_predictive_pit_student_t(
+                        returns, vol, q_mom, c_mom, phi_mom, nu_fixed
                     )
                     
                     # Compute information criteria with prior penalty
@@ -3199,15 +3339,9 @@ def fit_all_models_for_regime(
                     bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
                     mean_ll_mom = ll_mom / max(n_obs, 1)
                     
-                    # Compute Hyvärinen score (Student-t)
-                    forecast_scale_mom = np.sqrt(c_mom * (vol ** 2) + P_mom)
-                    hyvarinen_mom = compute_hyvarinen_score_student_t(
-                        returns, mu_mom, forecast_scale_mom, nu_fixed
-                    )
-                    
-                    # Compute CRPS for regime-aware model selection (February 2026)
-                    crps_mom = compute_crps_student_t_inline(
-                        returns, mu_mom, forecast_scale_mom, nu_fixed
+                    # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
+                    hyvarinen_mom, crps_mom = compute_predictive_scores_student_t(
+                        returns, mu_pred_mom, S_pred_mom, nu_fixed
                     )
 
                     models[mom_name] = {
@@ -3373,10 +3507,10 @@ def fit_all_models_for_regime(
                             returns, vol, c_gas, phi_gas, nu_fixed, gas_config
                         )
                         
-                        # Compute PIT calibration
-                        ks_gas, pit_p_gas = PhiStudentTDriftModel.pit_ks(
-                            returns, gas_result.mu_filtered, vol,
-                            gas_result.P_filtered, c_gas, nu_fixed
+                        # ELITE FIX: Compute PIT using PREDICTIVE distribution
+                        # GAS-Q uses time-varying q, but PIT still needs predictive values
+                        ks_gas, pit_p_gas, mu_pred_gas, S_pred_gas = compute_predictive_pit_student_t(
+                            returns, vol, float(gas_result.q_mean), c_gas, phi_gas, nu_fixed
                         )
                         
                         # BIC with extra 3 GAS parameters
@@ -3388,15 +3522,9 @@ def fit_all_models_for_regime(
                         aic_gas = compute_aic(gas_result.log_likelihood, n_params_gas)
                         mean_ll_gas = gas_result.log_likelihood / max(n_obs, 1)
                         
-                        # Compute Hyvärinen score (Student-t)
-                        forecast_scale_gas = np.sqrt(c_gas * (vol ** 2) + gas_result.P_filtered)
-                        hyvarinen_gas = compute_hyvarinen_score_student_t(
-                            returns, gas_result.mu_filtered, forecast_scale_gas, nu_fixed
-                        )
-                        
-                        # Compute CRPS for regime-aware model selection (February 2026)
-                        crps_gas = compute_crps_student_t_inline(
-                            returns, gas_result.mu_filtered, forecast_scale_gas, nu_fixed
+                        # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
+                        hyvarinen_gas, crps_gas = compute_predictive_scores_student_t(
+                            returns, mu_pred_gas, S_pred_gas, nu_fixed
                         )
                         
                         models[gas_q_name] = {
@@ -3476,9 +3604,12 @@ def fit_all_models_for_regime(
                             q_calm=q_calm, q_stress=q_stress
                         )
                         
-                        # Compute PIT calibration
-                        ks_ms, pit_p_ms = PhiStudentTDriftModel.pit_ks(
-                            returns, mu_ms, vol, P_ms, c_ms, nu_fixed
+                        # ELITE FIX: Compute PIT using PREDICTIVE distribution
+                        # MS-q uses time-varying q, but PIT still needs predictive values
+                        # Use average q for predictive computation
+                        q_mean_ms = float(np.mean(q_t))
+                        ks_ms, pit_p_ms, mu_pred_ms, S_pred_ms = compute_predictive_pit_student_t(
+                            returns, vol, q_mean_ms, c_ms, phi_ms, nu_fixed
                         )
                         
                         # Compute information criteria
@@ -3488,15 +3619,9 @@ def fit_all_models_for_regime(
                         bic_ms = compute_bic(ll_full, n_params_ms_q, n_obs)
                         mean_ll_ms = ll_full / max(n_obs, 1)
                         
-                        # Compute Hyvarinen score
-                        forecast_scale_ms = np.sqrt(c_ms * (vol ** 2) + P_ms)
-                        hyvarinen_ms = compute_hyvarinen_score_student_t(
-                            returns, mu_ms, forecast_scale_ms, nu_fixed
-                        )
-                        
-                        # Compute CRPS
-                        crps_ms = compute_crps_student_t_inline(
-                            returns, mu_ms, forecast_scale_ms, nu_fixed
+                        # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
+                        hyvarinen_ms, crps_ms = compute_predictive_scores_student_t(
+                            returns, mu_pred_ms, S_pred_ms, nu_fixed
                         )
                         
                         models[ms_q_name] = {
@@ -3613,9 +3738,9 @@ def fit_all_models_for_regime(
                     else:
                         mu_vov_mom = mu_vov
                     
-                    # Compute PIT calibration with VoV-adjusted variance
-                    ks_vov, pit_p_vov = PhiStudentTDriftModel.pit_ks_vov(
-                        returns, mu_vov, vol, P_vov, c_base, nu_fixed, gamma_vov
+                    # ELITE FIX: Compute PIT using PREDICTIVE distribution
+                    ks_vov, pit_p_vov, mu_pred_vov, S_pred_vov = compute_predictive_pit_student_t(
+                        returns, vol, q_base, c_base, phi_base, nu_fixed
                     )
                     
                     # Compute information criteria with VoV + momentum penalties
@@ -3626,15 +3751,9 @@ def fit_all_models_for_regime(
                     bic_vov = compute_momentum_model_bic_adjustment(bic_raw_vov, combined_penalty)
                     mean_ll_vov = ll_vov / max(n_obs, 1)
                     
-                    # Compute Hyvärinen score
-                    forecast_scale_vov = np.sqrt(c_base * (vol ** 2) + P_vov)
-                    hyvarinen_vov = compute_hyvarinen_score_student_t(
-                        returns, mu_vov, forecast_scale_vov, nu_fixed
-                    )
-                    
-                    # Compute CRPS for regime-aware model selection (February 2026)
-                    crps_vov = compute_crps_student_t_inline(
-                        returns, mu_vov, forecast_scale_vov, nu_fixed
+                    # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
+                    hyvarinen_vov, crps_vov = compute_predictive_scores_student_t(
+                        returns, mu_pred_vov, S_pred_vov, nu_fixed
                     )
                     
                     models[vov_name] = {
@@ -3712,9 +3831,11 @@ def fit_all_models_for_regime(
                     else:
                         mu_2p_mom = mu_2p
                     
-                    # Compute PIT calibration with two-piece CDF
-                    ks_2p, pit_p_2p = PhiStudentTDriftModel.pit_ks_two_piece(
-                        returns, mu_2p, vol, P_2p, c_2p, nu_left, nu_right
+                    # ELITE FIX: Compute PIT using PREDICTIVE distribution
+                    # Use average ν for predictive computation
+                    nu_avg = (nu_left + nu_right) / 2
+                    ks_2p, pit_p_2p, mu_pred_2p, S_pred_2p = compute_predictive_pit_student_t(
+                        returns, vol, q_2p, c_2p, phi_2p, nu_avg
                     )
                     
                     # Compute information criteria with Two-Piece + momentum penalties
@@ -3726,16 +3847,9 @@ def fit_all_models_for_regime(
                     bic_2p = compute_momentum_model_bic_adjustment(bic_raw_2p, combined_penalty)
                     mean_ll_2p = ll_2p / max(n_obs, 1)
                     
-                    # Compute Hyvärinen score (use average ν as approximation)
-                    nu_avg = (nu_left + nu_right) / 2
-                    forecast_scale_2p = np.sqrt(c_2p * (vol ** 2) + P_2p)
-                    hyvarinen_2p = compute_hyvarinen_score_student_t(
-                        returns, mu_2p, forecast_scale_2p, nu_avg
-                    )
-                    
-                    # Compute CRPS for regime-aware model selection (February 2026)
-                    crps_2p = compute_crps_student_t_inline(
-                        returns, mu_2p, forecast_scale_2p, nu_avg
+                    # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
+                    hyvarinen_2p, crps_2p = compute_predictive_scores_student_t(
+                        returns, mu_pred_2p, S_pred_2p, nu_avg
                     )
                     
                     models[two_piece_name] = {
@@ -3825,10 +3939,11 @@ def fit_all_models_for_regime(
                     else:
                         mu_mix_mom = mu_mix
                     
-                    # Compute PIT calibration (use average ν approximation)
+                    # ELITE FIX: Compute PIT using PREDICTIVE distribution
+                    # Use effective ν (average) for predictive computation
                     nu_eff = (nu_calm + nu_stress) / 2
-                    ks_mix, pit_p_mix = PhiStudentTDriftModel.pit_ks(
-                        returns, mu_mix, vol, P_mix, c_mix, nu_eff
+                    ks_mix, pit_p_mix, mu_pred_mix, S_pred_mix = compute_predictive_pit_student_t(
+                        returns, vol, q_mix, c_mix, phi_mix, nu_eff
                     )
                     
                     # Compute information criteria with Mixture + momentum penalties
@@ -3840,15 +3955,9 @@ def fit_all_models_for_regime(
                     bic_mix = compute_momentum_model_bic_adjustment(bic_raw_mix, combined_penalty)
                     mean_ll_mix = ll_mix / max(n_obs, 1)
                     
-                    # Compute Hyvärinen score (use effective ν)
-                    forecast_scale_mix = np.sqrt(c_mix * (vol ** 2) + P_mix)
-                    hyvarinen_mix = compute_hyvarinen_score_student_t(
-                        returns, mu_mix, forecast_scale_mix, nu_eff
-                    )
-                    
-                    # Compute CRPS for regime-aware model selection (February 2026)
-                    crps_mix = compute_crps_student_t_inline(
-                        returns, mu_mix, forecast_scale_mix, nu_eff
+                    # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
+                    hyvarinen_mix, crps_mix = compute_predictive_scores_student_t(
+                        returns, mu_pred_mix, S_pred_mix, nu_eff
                     )
                     
                     models[mixture_name] = {
@@ -3909,6 +4018,7 @@ def fit_regime_model_posterior(
     model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
     bic_weight: float = DEFAULT_BIC_WEIGHT,
     prices: np.ndarray = None,  # Added for MR integration (February 2026)
+    asset: str = None,  # FIX #4: Asset symbol for c-bounds detection
 ) -> Dict[int, Dict]:
     """
     Compute regime-conditional Bayesian model averaging with temporal smoothing.
@@ -4072,6 +4182,7 @@ def fit_regime_model_posterior(
             prior_lambda=prior_lambda,
             prices=prices_regime,  # MR integration (February 2026)
             regime_labels=regime_labels_regime,
+            asset=asset,  # FIX #4: Asset-class adaptive c bounds
         )
         
         # =====================================================================
@@ -4376,6 +4487,7 @@ def tune_regime_model_averaging(
     model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
     bic_weight: float = DEFAULT_BIC_WEIGHT,
     prices: np.ndarray = None,  # Added for MR integration (February 2026)
+    asset: str = None,  # FIX #4: Asset symbol for c-bounds detection
 ) -> Dict:
     """
     Full regime-conditional Bayesian model averaging pipeline.
@@ -4439,6 +4551,7 @@ def tune_regime_model_averaging(
         prior_lambda=prior_lambda,
         prices=prices,  # MR integration (February 2026)
         regime_labels=regime_labels,
+        asset=asset,  # FIX #4: Asset-class adaptive c bounds
     )
     
     # Compute global model posterior using specified method
@@ -4503,6 +4616,7 @@ def tune_regime_model_averaging(
         model_selection_method=model_selection_method,
         bic_weight=bic_weight,
         prices=prices,  # MR integration (February 2026)
+        asset=asset,  # FIX #4: Asset-class adaptive c bounds
     )
     
     # =========================================================================
@@ -4859,6 +4973,7 @@ def tune_asset_with_bma(
             previous_posteriors=previous_posteriors,  # Use provided previous posteriors
             lambda_regime=lambda_regime,
             prices=prices_array,  # MR integration (February 2026)
+            asset=asset,  # FIX #4: Asset-class adaptive c bounds
         )
 
         # Collect diagnostics summary

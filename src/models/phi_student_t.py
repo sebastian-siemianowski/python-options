@@ -1020,6 +1020,201 @@ class PhiStudentTDriftModel:
         return cls._filter_phi_python_optimized(returns, vol, q, c, phi, nu)
 
     @classmethod
+    def filter_phi_with_predictive(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        nu: float,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+        """
+        ELITE FIX: φ-Student-t filter returning PREDICTIVE values for proper PIT.
+        
+        CRITICAL BUG IN EXISTING pit_ks:
+        The existing code computes PIT using POSTERIOR values (mu_filtered, P_filtered),
+        but PIT requires PRIOR PREDICTIVE values (mu_pred, S_pred = P_pred + R).
+        
+        Using posterior values makes residuals look artificially concentrated because
+        the posterior has already "seen" the observation y_t.
+        
+        This method returns both filtered AND predictive values:
+            mu_pred[t] = φ × μ_{t-1}     (BEFORE seeing y_t)
+            S_pred[t] = P_pred + R_t      (BEFORE seeing y_t)
+        
+        For proper PIT:
+            z_t = (y_t - mu_pred[t]) / scale_pred[t]
+            PIT_t = F_ν(z_t)
+        
+        Where scale_pred = sqrt(S_pred × (ν-2)/ν) for Student-t.
+        
+        Args:
+            returns: Return observations
+            vol: Volatility estimates
+            q: Process noise variance
+            c: Observation noise scale  
+            phi: AR(1) persistence
+            nu: Degrees of freedom
+            
+        Returns:
+            Tuple of:
+            - mu_filtered: Posterior mean (after update)
+            - P_filtered: Posterior variance (after update)
+            - mu_pred: Prior predictive mean (BEFORE seeing y_t)
+            - S_pred: Prior predictive variance (BEFORE seeing y_t) = P_pred + R
+            - log_likelihood: Total log-likelihood
+        """
+        n = len(returns)
+        
+        # Convert to contiguous float64 arrays
+        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        
+        # Extract scalar values
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+        nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
+        
+        # Pre-compute constants
+        phi_sq = phi_val * phi_val
+        nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
+        
+        # Pre-compute log-pdf constants
+        log_norm_const = gammaln((nu_val + 1.0) / 2.0) - gammaln(nu_val / 2.0) - 0.5 * np.log(nu_val * np.pi)
+        neg_exp = -((nu_val + 1.0) / 2.0)
+        inv_nu = 1.0 / nu_val
+        
+        # Pre-compute R values
+        R = c_val * (vol * vol)
+        
+        # Allocate output arrays
+        mu_filtered = np.empty(n, dtype=np.float64)
+        P_filtered = np.empty(n, dtype=np.float64)
+        mu_pred_arr = np.empty(n, dtype=np.float64)  # PREDICTIVE mean
+        S_pred_arr = np.empty(n, dtype=np.float64)   # PREDICTIVE variance
+        
+        # State initialization
+        mu = 0.0
+        P = 1e-4
+        log_likelihood = 0.0
+        
+        # Main filter loop
+        for t in range(n):
+            # =========================================================
+            # PREDICTION STEP (BEFORE seeing y_t)
+            # =========================================================
+            mu_pred = phi_val * mu
+            P_pred = phi_sq * P + q_val
+            
+            # Predictive variance = state uncertainty + observation noise
+            S = P_pred + R[t]
+            if S <= 1e-12:
+                S = 1e-12
+            
+            # STORE PREDICTIVE VALUES (critical for proper PIT!)
+            mu_pred_arr[t] = mu_pred
+            S_pred_arr[t] = S
+            
+            # =========================================================
+            # UPDATE STEP (AFTER seeing y_t)
+            # =========================================================
+            innovation = returns[t] - mu_pred
+            K = nu_adjust * P_pred / S
+            
+            # State update
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
+            
+            # Store filtered (posterior) values
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+            
+            # Log-likelihood contribution
+            forecast_scale = np.sqrt(S)
+            if forecast_scale > 1e-12:
+                z = innovation / forecast_scale
+                ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
+                if np.isfinite(ll_t):
+                    log_likelihood += ll_t
+        
+        return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
+
+    @staticmethod
+    def pit_ks_predictive(
+        returns: np.ndarray,
+        mu_pred: np.ndarray,
+        S_pred: np.ndarray,
+        nu: float,
+    ) -> Tuple[float, float]:
+        """
+        ELITE FIX: Proper PIT/KS using PREDICTIVE distribution.
+        
+        This is the correct PIT calculation:
+            z_t = (y_t - μ_pred_t) / scale_t
+            PIT_t = F_ν(z_t)
+        
+        Where:
+            μ_pred_t = φ × μ_{t-1}  (predictive mean BEFORE y_t)
+            S_pred_t = P_pred + R_t  (predictive variance BEFORE y_t)
+            scale_t = sqrt(S_pred × (ν-2)/ν)  (Student-t scale parameter)
+        
+        The key insight: PIT transforms y_t through the CDF of its PRIOR
+        predictive distribution (before y_t is observed). Using posterior
+        values (after the update) is mathematically incorrect and causes
+        the systematic miscalibration seen in the diagnostics.
+        
+        Args:
+            returns: Observed returns
+            mu_pred: Predictive means (from filter_phi_with_predictive)
+            S_pred: Predictive variances (from filter_phi_with_predictive)
+            nu: Degrees of freedom
+            
+        Returns:
+            Tuple of (KS statistic, KS p-value)
+        """
+        returns_flat = np.asarray(returns).flatten()
+        mu_pred_flat = np.asarray(mu_pred).flatten()
+        S_pred_flat = np.asarray(S_pred).flatten()
+        
+        # Ensure nu is valid
+        nu_safe = max(nu, 2.01)
+        
+        # Compute Student-t scale from predictive variance
+        # For Student-t: Var = scale² × ν/(ν-2)
+        # So: scale = sqrt(Var × (ν-2)/ν)
+        if nu_safe > 2:
+            scale_factor = (nu_safe - 2) / nu_safe
+        else:
+            scale_factor = 1.0
+        
+        forecast_scale = np.sqrt(np.maximum(S_pred_flat * scale_factor, 1e-20))
+        forecast_scale = np.where(forecast_scale < 1e-10, 1e-10, forecast_scale)
+        
+        # Standardize using predictive mean and scale
+        standardized = (returns_flat - mu_pred_flat) / forecast_scale
+        
+        # Handle NaN/Inf
+        valid_mask = np.isfinite(standardized)
+        if not np.any(valid_mask):
+            return 1.0, 0.0
+        
+        standardized_clean = standardized[valid_mask]
+        
+        # Compute PIT values
+        pit_values = student_t.cdf(standardized_clean, df=nu_safe)
+        
+        if len(pit_values) < 2:
+            return 1.0, 0.0
+        
+        # KS test against uniform
+        ks_result = kstest(pit_values, 'uniform')
+        return float(ks_result.statistic), float(ks_result.pvalue)
+
+    @classmethod
     def _filter_phi_with_trajectory(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
         """
         Pure Python φ-Student-t filter with per-timestep likelihood trajectory.
@@ -1112,15 +1307,30 @@ class PhiStudentTDriftModel:
         
         Uses the Student-t distribution CDF for the PIT transformation, which is
         more appropriate for heavy-tailed return distributions.
+        
+        FIX #3: Correct scale parameterization for Student-t CDF.
+        scipy.stats.t.cdf expects standardized = (y - μ) / scale
+        where Var = scale² × ν/(ν-2), so scale = sqrt(Var × (ν-2)/ν)
         """
         returns_flat = np.asarray(returns).flatten()
         mu_flat = np.asarray(mu_filtered).flatten()
         vol_flat = np.asarray(vol).flatten()
         P_flat = np.asarray(P_filtered).flatten()
 
-        # Compute forecast scale with numerical floor
+        # Ensure nu is valid for Student-t (must be > 2 for finite variance)
+        nu_safe = max(nu, 2.01)
+        
+        # FIX #3: Compute correct Student-t scale (not variance!)
+        # For Student-t, Var = scale² × ν/(ν-2)
+        # So scale = sqrt(Var × (ν-2)/ν)
         forecast_var = c * (vol_flat ** 2) + P_flat
-        forecast_scale = np.sqrt(np.maximum(forecast_var, 1e-20))
+        
+        if nu_safe > 2:
+            # Correct scale: sqrt(variance × (ν-2)/ν)
+            forecast_scale = np.sqrt(np.maximum(forecast_var * (nu_safe - 2) / nu_safe, 1e-20))
+        else:
+            forecast_scale = np.sqrt(np.maximum(forecast_var, 1e-20))
+        
         forecast_scale = np.where(forecast_scale < 1e-10, 1e-10, forecast_scale)
         
         standardized = (returns_flat - mu_flat) / forecast_scale
@@ -1132,8 +1342,6 @@ class PhiStudentTDriftModel:
         
         standardized_clean = standardized[valid_mask]
         
-        # Ensure nu is valid for Student-t (must be > 0)
-        nu_safe = max(nu, 2.01)
         pit_values = student_t.cdf(standardized_clean, df=nu_safe)
         
         if len(pit_values) < 2:
@@ -2085,6 +2293,77 @@ class PhiStudentTDriftModel:
         return q_opt, c_opt, phi_opt, nu_opt, ll_opt, diagnostics
 
     @staticmethod
+    def get_c_bounds_for_asset(
+        asset_symbol: str = None,
+        vol_median: float = None,
+        returns_std: float = None,
+    ) -> Tuple[float, float]:
+        """
+        Return (c_min, c_max) bounds adaptive to asset class.
+        
+        FIX #4: FX pairs have ~10x smaller returns than equities.
+        Fixed c_min=0.3 forces FX to use wrong observation scale,
+        causing systematic PIT miscalibration.
+        
+        Asset class detection:
+        - FX: symbol contains '=X' or 'JPY' or 'USD' etc.
+        - Crypto: symbol is BTC-USD, ETH-USD, etc.
+        - Indices: symbol starts with '^'
+        - Equities: default
+        
+        Alternatively uses vol_median/returns_std to detect scale.
+        
+        Args:
+            asset_symbol: Ticker symbol for asset class detection
+            vol_median: Median volatility for scale-based detection
+            returns_std: Standard deviation of returns for scale-based detection
+            
+        Returns:
+            Tuple of (c_min, c_max) bounds
+        """
+        # Detection by symbol
+        if asset_symbol:
+            symbol_upper = asset_symbol.upper()
+            
+            # FX pairs: much smaller returns, need smaller c
+            if '=X' in symbol_upper:
+                return (0.005, 0.5)  # FX: allow much smaller c
+            
+            # JPY crosses (USDJPY, EURJPY, etc.)
+            if symbol_upper.endswith('JPY') or symbol_upper.startswith('JPY'):
+                return (0.005, 0.5)
+            
+            # Other FX-like patterns
+            if any(ccy in symbol_upper for ccy in ['USD', 'EUR', 'GBP', 'CHF', 'AUD', 'NZD', 'CAD']):
+                # Check if it's a currency pair (6-7 chars) vs equity
+                if len(symbol_upper) <= 8 and not symbol_upper.startswith('^'):
+                    # Likely FX pair
+                    if 'USD' in symbol_upper and len(symbol_upper) == 6:
+                        return (0.005, 0.5)
+            
+            # Crypto: very high volatility, need larger c
+            if symbol_upper in ['BTC-USD', 'ETH-USD', 'BTC', 'ETH']:
+                return (0.5, 10.0)  # Crypto: allow larger c
+            if 'BITCOIN' in symbol_upper or 'CRYPTO' in symbol_upper:
+                return (0.5, 10.0)
+            
+            # Indices: typically smooth
+            if symbol_upper.startswith('^'):
+                return (0.1, 2.0)
+        
+        # Detection by scale (fallback when no symbol or not matched)
+        if returns_std is not None and returns_std < 0.005:
+            # Very small returns (likely FX)
+            return (0.005, 0.5)
+        
+        if vol_median is not None and vol_median < 0.01:
+            # Very low volatility (likely FX)
+            return (0.005, 0.5)
+        
+        # Default: equities
+        return (0.3, 3.0)
+
+    @staticmethod
     def optimize_params_fixed_nu(
         returns: np.ndarray,
         vol: np.ndarray,
@@ -2092,12 +2371,13 @@ class PhiStudentTDriftModel:
         train_frac: float = 0.7,
         q_min: float = 1e-10,
         q_max: float = 1e-1,
-        c_min: float = 0.3,
-        c_max: float = 3.0,
+        c_min: float = None,  # FIX #4: Now auto-detected if None
+        c_max: float = None,  # FIX #4: Now auto-detected if None
         phi_min: float = -0.999,
         phi_max: float = 0.999,
         prior_log_q_mean: float = -6.0,
-        prior_lambda: float = 1.0
+        prior_lambda: float = 1.0,
+        asset_symbol: str = None,  # FIX #4: Asset symbol for c-bounds detection
     ) -> Tuple[float, float, float, float, Dict]:
         """
         Optimize (q, c, φ) for the φ-Student-t drift model with FIXED ν.
@@ -2106,6 +2386,12 @@ class PhiStudentTDriftModel:
         - ν is held fixed (passed as argument, not optimized)
         - Only q, c, φ are optimized via CV MLE
         - Each ν value becomes a separate sub-model in BMA
+        
+        FIX #4 (February 2026): Asset-class adaptive c bounds.
+        If c_min/c_max are None, they are auto-detected based on:
+        - Asset symbol (FX, crypto, indices, equities)
+        - Returns scale (std of returns)
+        - Volatility scale (median of vol)
         """
         n = len(returns)
         ret_p005 = np.percentile(returns, 0.5)
@@ -2118,6 +2404,17 @@ class PhiStudentTDriftModel:
         ret_std = float(np.std(returns_robust))
         ret_mean = float(np.mean(returns_robust))
         rv_ratio = abs(ret_mean) / ret_std if ret_std > 0 else 0.0
+        
+        # FIX #4: Auto-detect c bounds based on asset class
+        if c_min is None or c_max is None:
+            vol_median = float(np.median(vol))
+            c_min_auto, c_max_auto = PhiStudentTDriftModel.get_c_bounds_for_asset(
+                asset_symbol=asset_symbol,
+                vol_median=vol_median,
+                returns_std=ret_std,
+            )
+            c_min = c_min if c_min is not None else c_min_auto
+            c_max = c_max if c_max is not None else c_max_auto
 
         if vol_cv > 0.5 or rv_ratio > 0.15:
             adaptive_prior_mean = prior_log_q_mean + 0.5

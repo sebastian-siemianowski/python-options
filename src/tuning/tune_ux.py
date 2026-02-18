@@ -1261,16 +1261,14 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
     table.add_column("ν", justify="right", width=5)
     table.add_column("φ", justify="right", width=7)
     table.add_column("BIC", justify="right", width=9)
+    table.add_column("Hyv", justify="right", width=8)
+    table.add_column("CRPS", justify="right", width=8)
     table.add_column("PIT p", justify="right", width=8)
-    table.add_column("Status", justify="center", width=8)
+    table.add_column("St", justify="center", width=4)
     
     last_group = None
-    row_count = 0
-    max_rows = 50  # Limit display for readability
     
     for asset, raw_data in sorted_assets:
-        if row_count >= max_rows:
-            break
             
         # Handle regime-conditional structure
         if 'global' in raw_data:
@@ -1283,7 +1281,7 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
         # Add group separator
         if model != last_group:
             if last_group is not None:
-                table.add_row("", "", "", "", "", "", "", "", "", style="dim")
+                table.add_row("", "", "", "", "", "", "", "", "", "", "", style="dim")
             last_group = model
         
         q_val = data.get('q', float('nan'))
@@ -1293,6 +1291,26 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
         bic_val = data.get('bic', float('nan'))
         pit_p = data.get('pit_ks_pvalue', float('nan'))
         
+        # Get Hyvarinen and CRPS from the best model in the models dict
+        hyv_val = float('nan')
+        crps_val = float('nan')
+        models_dict = data.get('models', {})
+        best_model_name = data.get('best_model_by_bic', data.get('noise_model', ''))
+        if best_model_name and best_model_name in models_dict:
+            best_model = models_dict[best_model_name]
+            hyv_val = best_model.get('hyvarinen_score', float('nan'))
+            crps_val = best_model.get('crps', float('nan'))
+            if not np.isfinite(pit_p):
+                pit_p = best_model.get('pit_ks_pvalue', float('nan'))
+        elif models_dict:
+            for m_name, m_data in models_dict.items():
+                if m_data.get('fit_success', False):
+                    hyv_val = m_data.get('hyvarinen_score', float('nan'))
+                    crps_val = m_data.get('crps', float('nan'))
+                    if not np.isfinite(pit_p):
+                        pit_p = m_data.get('pit_ks_pvalue', float('nan'))
+                    break
+        
         log10_q = np.log10(q_val) if q_val > 0 else float('nan')
         
         # Format values
@@ -1301,6 +1319,18 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
         nu_str = f"{nu_val:.1f}" if nu_val is not None else "-"
         phi_str = f"{phi_val:+.3f}" if phi_val is not None else "-"
         bic_str = f"{bic_val:.1f}" if np.isfinite(bic_val) else "-"
+        
+        # Hyvärinen score (higher is better, typically negative)
+        if np.isfinite(hyv_val):
+            hyv_str = f"{hyv_val:.1f}"
+        else:
+            hyv_str = "-"
+        
+        # CRPS (lower is better)
+        if np.isfinite(crps_val):
+            crps_str = f"{crps_val:.4f}"
+        else:
+            crps_str = "-"
         
         # PIT p-value with color coding
         if np.isfinite(pit_p):
@@ -1334,16 +1364,13 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
             nu_str,
             phi_str,
             bic_str,
+            hyv_str,
+            crps_str,
             pit_str,
             status,
         )
-        row_count += 1
     
     console.print(table)
-    
-    if len(cache) > max_rows:
-        console.print(f"\n    [dim]... and {len(cache) - max_rows} more assets (showing top {max_rows} by model group)[/dim]")
-    
     console.print()
     
     # Legend
@@ -1353,13 +1380,17 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
     legend.append("log₁₀(q)", style="dim")
     legend.append("=process noise  ", style="dim")
     legend.append("c", style="dim")
-    legend.append("=observation scale  ", style="dim")
+    legend.append("=obs scale  ", style="dim")
     legend.append("ν", style="dim")
     legend.append("=Student-t df  ", style="dim")
     legend.append("φ", style="dim")
-    legend.append("=AR(1) persistence  ", style="dim")
+    legend.append("=AR(1)  ", style="dim")
+    legend.append("Hyv", style="dim")
+    legend.append("=Hyvärinen  ", style="dim")
+    legend.append("CRPS", style="dim")
+    legend.append("=calibration  ", style="dim")
     legend.append("PIT p", style="dim")
-    legend.append("=calibration p-value", style="dim")
+    legend.append("=p-value", style="dim")
     console.print(legend)
     console.print()
 
@@ -2687,7 +2718,7 @@ Examples:
             if is_momentum:
                 momentum_phi_student_t_count += 1
                 momentum_count += 1
-        elif noise_model in ('phi_gaussian', 'kalman_phi_gaussian', 'kalman_phi_gaussian_momentum'):
+        elif noise_model == 'phi_gaussian' or 'phi' in noise_model.lower():
             phi_gaussian_count += 1
             gaussian_count += 1
             if is_momentum:
