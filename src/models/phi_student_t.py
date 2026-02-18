@@ -6,11 +6,19 @@ PHI-STUDENT-T DRIFT MODEL — Kalman Filter with AR(1) Drift and Student-t Noise
 Implements a state-space model with AR(1) drift and heavy-tailed observation noise:
 
     State equation:    μ_t = φ·μ_{t-1} + w_t,  w_t ~ N(0, q)
-    Observation:       r_t = μ_t + ε_t,         ε_t ~ Student-t(ν, 0, √(c)·σ_t)
+    Observation:       r_t = μ_t + ε_t,         ε_t ~ Student-t(ν, 0, scale_t)
+    
+    Where:
+        - Observation variance: Var(ε_t) = c·σ_t²
+        - Student-t scale: scale_t = sqrt(c·σ_t² × (ν-2)/ν) for ν > 2
+        
+    CRITICAL: The c parameter scales the observation VARIANCE, not the scale.
+    For Student-t with ν degrees of freedom: Var = scale² × ν/(ν-2).
+    So scale = sqrt(Var × (ν-2)/ν) = sqrt(c·σ_t² × (ν-2)/ν).
 
 Parameters:
     q:   Process noise variance (drift evolution uncertainty)
-    c:   Observation noise scale (multiplier on EWMA variance)
+    c:   Observation noise variance multiplier (scales EWMA variance σ_t²)
     φ:   AR(1) persistence coefficient (φ=1 is random walk, φ=0 is mean reversion)
     ν:   Degrees of freedom (controls tail heaviness; ν→∞ approaches Gaussian)
 
@@ -307,7 +315,8 @@ def filter_phi_ms_q(
             total_ll += ll_t
         
         # Robust weighting for Student-t (downweight outliers)
-        z_sq = (innovation ** 2) / S_t if S_t > 1e-12 else 0
+        # FIX: Use z² = innovation² / scale_t² (consistent with log-likelihood)
+        z_sq = z ** 2  # z = innovation / scale_t already computed above
         w_t = (nu + 1) / (nu + z_sq)
         
         # Kalman gain
@@ -663,6 +672,46 @@ class PhiStudentTDriftModel:
         return float(np.clip(float(nu), nu_min, nu_max))
 
     @staticmethod
+    def _variance_to_scale(variance: float, nu: float) -> float:
+        """
+        Convert predictive variance to Student-t scale parameter.
+        
+        For Student-t with ν degrees of freedom:
+            Var(X) = scale² × ν/(ν-2)  when ν > 2
+            
+        So:
+            scale = sqrt(Var × (ν-2)/ν)
+            
+        This is critical for correct PIT calibration. Using sqrt(Var) directly
+        inflates the scale by sqrt(ν/(ν-2)), causing standardized residuals
+        to be too small and PIT values to concentrate around 0.5.
+        
+        Args:
+            variance: Predictive variance (P_pred + R)
+            nu: Degrees of freedom
+            
+        Returns:
+            Student-t scale parameter
+        """
+        if variance <= 1e-20:
+            return 1e-10
+        if nu > 2:
+            return np.sqrt(variance * (nu - 2) / nu)
+        else:
+            # For ν ≤ 2, variance is infinite; use variance as proxy for scale²
+            return np.sqrt(variance)
+
+    @staticmethod
+    def _variance_to_scale_vec(variance: np.ndarray, nu: float) -> np.ndarray:
+        """Vectorized version of _variance_to_scale for array inputs."""
+        variance_safe = np.maximum(variance, 1e-20)
+        if nu > 2:
+            scale = np.sqrt(variance_safe * (nu - 2) / nu)
+        else:
+            scale = np.sqrt(variance_safe)
+        return np.where(scale < 1e-10, 1e-10, scale)
+
+    @staticmethod
     def logpdf(x: float, nu: float, mu: float, scale: float) -> float:
         """
         Log-density of scaled Student-t with location ``mu`` and scale ``scale``.
@@ -894,7 +943,11 @@ class PhiStudentTDriftModel:
             P_filtered[t] = P
             
             # Inlined log-pdf calculation (avoids function call + gammaln per step)
-            forecast_scale = np.sqrt(S)
+            # FIX: Convert variance S to Student-t scale: scale = sqrt(S × (ν-2)/ν)
+            if nu_val > 2:
+                forecast_scale = np.sqrt(S * (nu_val - 2) / nu_val)
+            else:
+                forecast_scale = np.sqrt(S)
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
                 ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
@@ -1004,7 +1057,11 @@ class PhiStudentTDriftModel:
             P_filtered[t] = P
             
             # Log-likelihood (coherent with u_t - Expert #1)
-            forecast_scale = np.sqrt(S)
+            # FIX: Convert variance S to Student-t scale
+            if nu_val > 2:
+                forecast_scale = np.sqrt(S * (nu_val - 2) / nu_val)
+            else:
+                forecast_scale = np.sqrt(S)
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
                 ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
@@ -1134,7 +1191,11 @@ class PhiStudentTDriftModel:
             P_filtered[t] = P
             
             # Log-likelihood contribution
-            forecast_scale = np.sqrt(S)
+            # FIX: Convert variance S to Student-t scale
+            if nu_val > 2:
+                forecast_scale = np.sqrt(S * (nu_val - 2) / nu_val)
+            else:
+                forecast_scale = np.sqrt(S)
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
                 ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
@@ -1261,7 +1322,11 @@ class PhiStudentTDriftModel:
             mu_filtered[t] = mu
             P_filtered[t] = P
 
-            forecast_scale = np.sqrt(S)
+            # FIX: Convert variance S to Student-t scale
+            if nu_val > 2:
+                forecast_scale = np.sqrt(S * (nu_val - 2) / nu_val)
+            else:
+                forecast_scale = np.sqrt(S)
             ll_t = 0.0
             if forecast_scale > 1e-12:
                 ll_t = cls.logpdf(r_val, nu_val, mu_pred, forecast_scale)
@@ -1454,7 +1519,11 @@ class PhiStudentTDriftModel:
             P_filtered[t] = P
             
             # Inlined log-pdf calculation
-            forecast_scale = np.sqrt(S)
+            # FIX: Convert variance S to Student-t scale
+            if nu_val > 2:
+                forecast_scale = np.sqrt(S * (nu_val - 2) / nu_val)
+            else:
+                forecast_scale = np.sqrt(S)
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
                 ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
@@ -1574,7 +1643,13 @@ class PhiStudentTDriftModel:
             P_filtered[t] = P
             
             # Inlined log-pdf calculation with chosen ν
-            forecast_scale = np.sqrt(S)
+            # FIX: Convert variance S to Student-t scale using chosen inv_nu
+            # inv_nu = 1/nu, so (nu-2)/nu = 1 - 2*inv_nu
+            scale_factor = 1.0 - 2.0 * inv_nu
+            if scale_factor > 0:
+                forecast_scale = np.sqrt(S * scale_factor)
+            else:
+                forecast_scale = np.sqrt(S)
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
                 ll_t = log_norm - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
@@ -1703,15 +1778,23 @@ class PhiStudentTDriftModel:
             P_filtered[t] = P
             
             # Mixture log-pdf calculation
-            forecast_scale = np.sqrt(S)
-            if forecast_scale > 1e-12:
-                z = innovation / forecast_scale
+            # FIX: Each mixture component needs its own scale conversion
+            # For component with ν_C: scale_C = sqrt(S × (ν_C-2)/ν_C)
+            # For component with ν_S: scale_S = sqrt(S × (ν_S-2)/ν_S)
+            scale_factor_C = max(1.0 - 2.0 * inv_nu_C, 0.01)  # (ν_C-2)/ν_C
+            scale_factor_S = max(1.0 - 2.0 * inv_nu_S, 0.01)  # (ν_S-2)/ν_S
+            forecast_scale_C = np.sqrt(S * scale_factor_C)
+            forecast_scale_S = np.sqrt(S * scale_factor_S)
+            
+            if forecast_scale_C > 1e-12 and forecast_scale_S > 1e-12:
+                z_C = innovation / forecast_scale_C
+                z_S = innovation / forecast_scale_S
                 
-                # Calm component log-pdf
-                ll_C = log_norm_C - np.log(forecast_scale) + neg_exp_C * np.log(1.0 + z * z * inv_nu_C)
+                # Calm component log-pdf with its own scale
+                ll_C = log_norm_C - np.log(forecast_scale_C) + neg_exp_C * np.log(1.0 + z_C * z_C * inv_nu_C)
                 
-                # Stress component log-pdf
-                ll_S = log_norm_S - np.log(forecast_scale) + neg_exp_S * np.log(1.0 + z * z * inv_nu_S)
+                # Stress component log-pdf with its own scale
+                ll_S = log_norm_S - np.log(forecast_scale_S) + neg_exp_S * np.log(1.0 + z_S * z_S * inv_nu_S)
                 
                 # Mixture log-pdf via log-sum-exp
                 w_t = w_calm[t]
@@ -1856,10 +1939,18 @@ class PhiStudentTDriftModel:
                 S = 1e-12
             
             innovation = returns[t] - mu_pred
-            forecast_scale = np.sqrt(S)
             
-            # Current standardized residual
-            z_t = innovation / forecast_scale if forecast_scale > 1e-12 else 0.0
+            # FIX: Convert variance to Student-t scale for each component
+            scale_factor_C = max(1.0 - 2.0 * inv_nu_C, 0.01)  # (ν_C-2)/ν_C
+            scale_factor_S = max(1.0 - 2.0 * inv_nu_S, 0.01)  # (ν_S-2)/ν_S
+            forecast_scale_C = np.sqrt(S * scale_factor_C)
+            forecast_scale_S = np.sqrt(S * scale_factor_S)
+            # For z_t used in mixture weight, use average scale factor
+            avg_scale_factor = (scale_factor_C + scale_factor_S) / 2
+            forecast_scale_avg = np.sqrt(S * avg_scale_factor)
+            
+            # Current standardized residual (for mixture weight calculation)
+            z_t = innovation / forecast_scale_avg if forecast_scale_avg > 1e-12 else 0.0
             
             # =====================================================================
             # ENHANCED MIXTURE WEIGHT CALCULATION
@@ -1892,15 +1983,16 @@ class PhiStudentTDriftModel:
             mu_filtered[t] = mu
             P_filtered[t] = P
             
-            # Mixture log-pdf calculation
-            if forecast_scale > 1e-12:
-                z = z_t
+            # Mixture log-pdf calculation with component-specific scales
+            if forecast_scale_C > 1e-12 and forecast_scale_S > 1e-12:
+                z_C = innovation / forecast_scale_C
+                z_S = innovation / forecast_scale_S
                 
-                # Calm component log-pdf
-                ll_C = log_norm_C - np.log(forecast_scale) + neg_exp_C * np.log(1.0 + z * z * inv_nu_C)
+                # Calm component log-pdf with its own scale
+                ll_C = log_norm_C - np.log(forecast_scale_C) + neg_exp_C * np.log(1.0 + z_C * z_C * inv_nu_C)
                 
-                # Stress component log-pdf
-                ll_S = log_norm_S - np.log(forecast_scale) + neg_exp_S * np.log(1.0 + z * z * inv_nu_S)
+                # Stress component log-pdf with its own scale
+                ll_S = log_norm_S - np.log(forecast_scale_S) + neg_exp_S * np.log(1.0 + z_S * z_S * inv_nu_S)
                 
                 # Mixture log-pdf via log-sum-exp
                 ll_max = max(ll_C, ll_S)
@@ -2478,11 +2570,16 @@ class PhiStudentTDriftModel:
                         forecast_var = P_pred + R
 
                         if forecast_var > 1e-12:
-                            forecast_std = np.sqrt(forecast_var)
-                            ll_contrib = PhiStudentTDriftModel.logpdf(ret_t, nu_fixed, mu_pred, forecast_std)
+                            # FIX: Convert variance to Student-t scale
+                            # For Student-t: Var = scale² × ν/(ν-2), so scale = sqrt(Var × (ν-2)/ν)
+                            if nu_fixed > 2:
+                                forecast_scale = np.sqrt(forecast_var * (nu_fixed - 2) / nu_fixed)
+                            else:
+                                forecast_scale = np.sqrt(forecast_var)
+                            ll_contrib = PhiStudentTDriftModel.logpdf(ret_t, nu_fixed, mu_pred, forecast_scale)
                             ll_fold += ll_contrib
                             if len(all_standardized) < 1000:
-                                all_standardized.append(float(innovation / forecast_std))
+                                all_standardized.append(float(innovation / forecast_scale))
 
                         nu_adjust = min(nu_fixed / (nu_fixed + 3.0), 1.0)
                         K = nu_adjust * P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0

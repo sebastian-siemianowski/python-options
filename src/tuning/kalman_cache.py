@@ -25,6 +25,12 @@ TUNE_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"
 # Legacy single-file cache path (for backward compatibility)
 LEGACY_CACHE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "kalman_q_cache.json")
 
+# Current cache version - bump this when changing parameter semantics
+# Version history:
+#   2.0 - Per-asset cache format
+#   2.1 - PIT scale fix: variance-to-scale conversion (February 2026)
+CURRENT_CACHE_VERSION = "2.1"
+
 
 class NumpyEncoder(json.JSONEncoder):
     """Custom JSON encoder that handles numpy types."""
@@ -117,12 +123,19 @@ def load_tuned_params(symbol: str) -> Optional[Dict[str, Any]]:
     if os.path.exists(cache_path):
         try:
             with open(cache_path, "r") as f:
-                return json.load(f)
+                cached = json.load(f)
+            # Version validation: invalidate stale caches
+            cached_version = cached.get("cache_version", "1.0")
+            if cached_version != CURRENT_CACHE_VERSION:
+                # Cache is outdated, needs re-tuning
+                return None
+            return cached
         except (json.JSONDecodeError, IOError) as e:
             print(f"Warning: Failed to load cache for {symbol}: {e}")
             pass
     
     # Fallback: legacy single-file cache (for migration period)
+    # Note: Legacy caches are always treated as stale (version mismatch)
     if os.path.exists(LEGACY_CACHE_PATH):
         try:
             with open(LEGACY_CACHE_PATH, "r") as f:
@@ -165,7 +178,7 @@ def save_tuned_params(symbol: str, params: Dict[str, Any]) -> str:
     params_with_meta = {
         "symbol": symbol,
         "normalized_symbol": _normalize_symbol(symbol),
-        "cache_version": "2.0",  # Per-asset cache format
+        "cache_version": CURRENT_CACHE_VERSION,
         "saved_at": datetime.now().isoformat(),
         **params
     }

@@ -727,7 +727,11 @@ def student_t_filter_with_lfo_cv_kernel(
         S = P_pred + R
         
         if S > _MIN_VARIANCE:
-            scale = np.sqrt(S)
+            # FIX: Student-t scale = sqrt(S × (ν-2)/ν)
+            if nu > 2.0:
+                scale = np.sqrt(S * (nu - 2.0) / nu)
+            else:
+                scale = np.sqrt(S)
             z = innovation / scale
             z_sq = z * z
             

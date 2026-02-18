@@ -40,6 +40,128 @@ DEFAULT_MIN_WEIGHT_FRACTION = 0.01
 
 
 # =============================================================================
+# SAMPLE-SIZE-AWARE PIT CALIBRATION (Elite Fix - February 2026)
+# =============================================================================
+# With large samples (n>5000), even tiny miscalibration (2-3%) gives KS p=0.
+# These functions provide more informative calibration metrics.
+# =============================================================================
+
+def compute_pit_calibration_metrics(
+    pit_values: np.ndarray,
+) -> Dict[str, float]:
+    """
+    Compute comprehensive PIT calibration metrics that scale better with sample size.
+    
+    The KS test becomes overly sensitive with large samples. This function provides
+    additional metrics that better quantify the practical significance of miscalibration.
+    
+    Returns:
+        Dict with:
+        - ks_statistic: Standard KS statistic
+        - ks_pvalue: Standard KS p-value  
+        - max_deviation: Maximum deviation from uniform quantiles
+        - mean_deviation: Mean absolute deviation from uniform quantiles
+        - practical_calibration: Boolean for practical adequacy (MAD < 0.05)
+        - calibration_score: Score from 0-1 (1 = perfect calibration)
+    """
+    from scipy.stats import kstest
+    
+    pit_clean = np.asarray(pit_values).flatten()
+    pit_clean = pit_clean[np.isfinite(pit_clean)]
+    n = len(pit_clean)
+    
+    if n < 2:
+        return {
+            "ks_statistic": 1.0,
+            "ks_pvalue": 0.0,
+            "max_deviation": 1.0,
+            "mean_deviation": 1.0,
+            "practical_calibration": False,
+            "calibration_score": 0.0,
+        }
+    
+    # Standard KS test
+    ks_result = kstest(pit_clean, 'uniform')
+    ks_stat = float(ks_result.statistic)
+    ks_p = float(ks_result.pvalue)
+    
+    # Empirical CDF comparison to uniform
+    pit_sorted = np.sort(pit_clean)
+    uniform_quantiles = np.linspace(0, 1, n)
+    
+    # Deviations from perfect uniform
+    deviations = np.abs(pit_sorted - uniform_quantiles)
+    max_deviation = float(np.max(deviations))
+    mean_deviation = float(np.mean(deviations))
+    
+    # Practical calibration check: MAD < 5% is acceptable
+    practical_calibration = mean_deviation < 0.05
+    
+    # Calibration score: exponential decay from 1.0
+    # Score = exp(-10 * mean_deviation), so MAD=0 => 1.0, MAD=0.1 => 0.37
+    calibration_score = float(np.exp(-10.0 * mean_deviation))
+    
+    return {
+        "ks_statistic": ks_stat,
+        "ks_pvalue": ks_p,
+        "max_deviation": max_deviation,
+        "mean_deviation": mean_deviation,
+        "practical_calibration": practical_calibration,
+        "calibration_score": calibration_score,
+    }
+
+
+def sample_size_adjusted_pit_threshold(n_samples: int) -> float:
+    """
+    Get an adjusted PIT p-value threshold that accounts for sample size.
+    
+    With small samples, use standard α=0.05.
+    With large samples, use a more lenient threshold since even
+    tiny miscalibration will cause rejection.
+    
+    Formula: α_adjusted = 0.05 * (1 + 0.5*log10(n/1000)) for n > 1000
+    
+    Args:
+        n_samples: Number of PIT values
+        
+    Returns:
+        Adjusted significance threshold
+    """
+    if n_samples <= 1000:
+        return 0.05
+    
+    # Log-adjusted threshold
+    # At n=1000: α=0.05
+    # At n=5000: α≈0.07
+    # At n=10000: α≈0.08
+    log_adjustment = 1.0 + 0.5 * np.log10(n_samples / 1000.0)
+    return min(0.05 * log_adjustment, 0.15)  # Cap at 0.15
+
+
+def is_pit_calibrated(
+    pit_pvalue: float,
+    n_samples: int,
+    strict: bool = False
+) -> bool:
+    """
+    Check if PIT calibration passes using sample-size-adjusted threshold.
+    
+    Args:
+        pit_pvalue: KS test p-value
+        n_samples: Number of observations
+        strict: If True, use standard 0.05; if False, use adjusted threshold
+        
+    Returns:
+        True if calibration is acceptable
+    """
+    if strict:
+        return pit_pvalue >= 0.05
+    
+    threshold = sample_size_adjusted_pit_threshold(n_samples)
+    return pit_pvalue >= threshold
+
+
+# =============================================================================
 # HYVÄRINEN SCORE COMPUTATION
 # =============================================================================
 # The Hyvärinen score is a proper scoring rule that only requires the score
@@ -56,7 +178,7 @@ def compute_hyvarinen_score_gaussian(
     returns: np.ndarray,
     mu: np.ndarray,
     sigma: np.ndarray,
-    min_sigma: float = 1e-8
+    min_sigma: float = 1e-4  # Increased from 1e-8 to prevent explosion for FX pairs
 ) -> float:
     """
     Compute Hyvärinen score for Gaussian predictive density.
@@ -115,7 +237,7 @@ def compute_hyvarinen_score_student_t(
     mu: np.ndarray,
     sigma: np.ndarray,
     nu: float,
-    min_sigma: float = 1e-8,
+    min_sigma: float = 1e-4,  # Increased from 1e-8 to prevent explosion for FX pairs
     min_nu: float = 2.1
 ) -> float:
     """

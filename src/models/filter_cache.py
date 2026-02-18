@@ -988,7 +988,11 @@ def _run_momentum_phi_student_t_with_trajectory(
         r_t = float(returns[t])
         innovation = r_t - mu_pred
         S = P_pred + R
-        forecast_scale = np.sqrt(S) if S > 1e-12 else 1e-6
+        # FIX: Convert variance S to Student-t scale: scale = sqrt(S × (ν-2)/ν)
+        if nu_val > 2 and S > 1e-12:
+            forecast_scale = np.sqrt(S * (nu_val - 2) / nu_val)
+        else:
+            forecast_scale = np.sqrt(S) if S > 1e-12 else 1e-6
         
         if S > 1e-12:
             K = nu_adjust * P_pred / S

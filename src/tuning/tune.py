@@ -836,6 +836,13 @@ from tuning.diagnostics import (
     LFO_CV_MIN_TRAIN_FRAC,
 )
 
+# PIT calibration metrics (Elite Fix - February 2026)
+from tuning.pit_calibration import (
+    compute_pit_calibration_metrics,
+    sample_size_adjusted_pit_threshold,
+    is_pit_calibrated,
+)
+
 from tuning.reporting import render_calibration_issues_table
 
 # =============================================================================
@@ -2522,6 +2529,95 @@ def compute_predictive_scores_gaussian(
     return hyvarinen, crps
 
 
+def reconstruct_predictive_from_filtered_gaussian(
+    returns: np.ndarray,
+    mu_filtered: np.ndarray,
+    P_filtered: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    ELITE FIX: Reconstruct predictive values from filtered values.
+    
+    For momentum-augmented models that only return filtered values,
+    this function reconstructs the predictive values needed for proper PIT.
+    
+    The key insight:
+        mu_pred[t] = phi * mu_filtered[t-1]  (before seeing y_t)
+        P_pred[t] = phi^2 * P_filtered[t-1] + q  (before seeing y_t)
+        S_pred[t] = P_pred[t] + c * vol[t]^2  (total predictive variance)
+    
+    Args:
+        returns: Return observations (for length)
+        mu_filtered: Filtered (posterior) mean estimates
+        P_filtered: Filtered (posterior) variance estimates
+        vol: Volatility estimates
+        q: Process noise variance
+        c: Observation noise scale
+        phi: AR(1) persistence
+        
+    Returns:
+        Tuple of (mu_pred, S_pred) predictive arrays
+    """
+    n = len(returns)
+    mu_pred = np.zeros(n)
+    S_pred = np.zeros(n)
+    
+    # Initial values (t=0)
+    mu_pred[0] = 0.0  # Prior mean
+    P_pred_0 = 1e-4 + q  # Prior variance + process noise
+    S_pred[0] = P_pred_0 + c * (vol[0] ** 2)
+    
+    # Reconstruct for t >= 1
+    for t in range(1, n):
+        # Predictive mean: φ × μ_{t-1|t-1}
+        mu_pred[t] = phi * mu_filtered[t - 1]
+        
+        # Predictive state variance: φ² × P_{t-1|t-1} + q
+        P_pred_t = (phi ** 2) * P_filtered[t - 1] + q
+        
+        # Total predictive variance: P_pred + observation noise
+        S_pred[t] = P_pred_t + c * (vol[t] ** 2)
+    
+    return mu_pred, S_pred
+
+
+def compute_pit_from_filtered_gaussian(
+    returns: np.ndarray,
+    mu_filtered: np.ndarray,
+    P_filtered: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float = 1.0,
+) -> Tuple[float, float]:
+    """
+    ELITE FIX: Compute proper PIT from filtered values for Gaussian.
+    
+    Reconstructs predictive values and computes PIT correctly.
+    Use this for momentum-augmented models that only return filtered values.
+    
+    Args:
+        returns: Return observations
+        mu_filtered: Filtered (posterior) mean estimates
+        P_filtered: Filtered (posterior) variance estimates
+        vol: Volatility estimates
+        q: Process noise variance
+        c: Observation noise scale
+        phi: AR(1) persistence
+        
+    Returns:
+        Tuple of (KS statistic, KS p-value)
+    """
+    mu_pred, S_pred = reconstruct_predictive_from_filtered_gaussian(
+        returns, mu_filtered, P_filtered, vol, q, c, phi
+    )
+    
+    return GaussianDriftModel.pit_ks_predictive(returns, mu_pred, S_pred)
+
+
 def optimize_q_c_phi_mle(
     returns: np.ndarray,
     vol: np.ndarray,
@@ -3190,7 +3286,9 @@ def fit_all_models_for_regime(
             )
             
             # Compute PIT calibration
-            ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_gauss)
+            ks_mom, pit_p_mom = compute_pit_from_filtered_gaussian(
+                returns, mu_mom, P_mom, vol, q_gauss, c_gauss, phi=1.0
+            )
             
             # Compute information criteria with prior penalty
             n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN]
@@ -3259,8 +3357,10 @@ def fit_all_models_for_regime(
                 returns, vol, q_phi, c_phi, phi=phi_opt, base_model='phi_gaussian'
             )
             
-            # Compute PIT calibration
-            ks_mom, pit_p_mom = GaussianDriftModel.pit_ks(returns, mu_mom, vol, P_mom, c_phi)
+            # Compute PIT calibration using reconstructed predictive values
+            ks_mom, pit_p_mom = compute_pit_from_filtered_gaussian(
+                returns, mu_mom, P_mom, vol, q_phi, c_phi, phi=phi_opt
+            )
             
             # Compute information criteria with prior penalty
             n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.PHI_GAUSSIAN]
@@ -3421,10 +3521,11 @@ def fit_all_models_for_regime(
                         returns, vol, c_gas, phi_gas, gas_config
                     )
                     
-                    # Compute PIT calibration
-                    ks_gas, pit_p_gas = GaussianDriftModel.pit_ks(
-                        returns, gas_result.mu_filtered, vol, 
-                        gas_result.P_filtered, c_gas
+                    # Compute PIT calibration using reconstructed predictive values
+                    # Note: GAS-Q has time-varying q, use mean q for reconstruction
+                    ks_gas, pit_p_gas = compute_pit_from_filtered_gaussian(
+                        returns, gas_result.mu_filtered, gas_result.P_filtered, 
+                        vol, gas_result.q_mean, c_gas, phi=phi_gas
                     )
                     
                     # BIC with extra 3 GAS parameters
