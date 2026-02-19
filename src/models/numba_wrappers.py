@@ -40,6 +40,7 @@ try:
         student_t_filter_with_lfo_cv_kernel,
         gaussian_filter_with_lfo_cv_kernel,
         ms_q_student_t_filter_kernel,
+        unified_phi_student_t_filter_kernel,
     )
     _NUMBA_AVAILABLE = True
 except ImportError:
@@ -567,3 +568,113 @@ def run_student_t_filter_with_lfo_cv_batch(
         results[nu] = (mu, P, ll, lfo)
     
     return results
+
+
+# =============================================================================
+# UNIFIED φ-STUDENT-T WRAPPER (VoV + MS-q + Smooth Asymmetric ν + Momentum)
+# =============================================================================
+
+def run_unified_phi_student_t_filter(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    c: float,
+    phi: float,
+    nu_base: float,
+    # MS-q arrays (precomputed)
+    q_t: np.ndarray,
+    p_stress: np.ndarray,
+    # VoV arrays (precomputed)
+    vov_rolling: np.ndarray,
+    gamma_vov: float,
+    vov_damping: float,
+    # Asymmetry parameters
+    alpha_asym: float,
+    k_asym: float,
+    # Momentum
+    momentum: np.ndarray,
+    P0: float = 1e-4,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    Run Numba-accelerated unified φ-Student-t filter.
+    
+    This is the wrapper for the elite unified model combining:
+      1. Smooth Asymmetric ν (Lanczos gammaln for dynamic ν)
+      2. Probabilistic MS-q regime switching
+      3. VoV scaling with redundancy damping
+      4. Momentum drift input
+      5. Robust Student-t weighting
+    
+    All time-varying arrays must be precomputed before calling:
+      - q_t: from compute_ms_process_noise_smooth()
+      - p_stress: from compute_ms_process_noise_smooth()
+      - vov_rolling: rolling std of log(vol)
+      - momentum: exogenous signal or zeros
+    
+    Parameters
+    ----------
+    returns : np.ndarray
+        Log returns
+    vol : np.ndarray
+        EWMA volatility
+    c : float
+        Observation noise scale
+    phi : float
+        AR(1) persistence
+    nu_base : float
+        Base degrees of freedom
+    q_t : np.ndarray
+        Time-varying process noise
+    p_stress : np.ndarray
+        Stress probability per timestep
+    vov_rolling : np.ndarray
+        Rolling vol-of-vol
+    gamma_vov : float
+        VoV sensitivity
+    vov_damping : float
+        Redundancy damping factor
+    alpha_asym : float
+        Asymmetry parameter (negative = heavier left tail)
+    k_asym : float
+        Asymmetry transition sharpness
+    momentum : np.ndarray
+        Momentum signal per timestep
+    P0 : float
+        Initial state covariance
+        
+    Returns
+    -------
+    mu_filtered : np.ndarray
+        Posterior state mean
+    P_filtered : np.ndarray
+        Posterior state variance
+    mu_pred : np.ndarray
+        Prior predictive mean (for PIT)
+    S_pred : np.ndarray
+        Prior predictive variance (for PIT)
+    log_likelihood : float
+        Total log-likelihood
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available for unified filter")
+    
+    # Prepare all arrays as contiguous float64
+    returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+    vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+    q_t = np.ascontiguousarray(q_t.flatten(), dtype=np.float64)
+    p_stress = np.ascontiguousarray(p_stress.flatten(), dtype=np.float64)
+    vov_rolling = np.ascontiguousarray(vov_rolling.flatten(), dtype=np.float64)
+    momentum = np.ascontiguousarray(momentum.flatten(), dtype=np.float64)
+    
+    return unified_phi_student_t_filter_kernel(
+        returns, vol,
+        float(c), float(phi), float(nu_base),
+        q_t, p_stress,
+        vov_rolling, float(gamma_vov), float(vov_damping),
+        float(alpha_asym), float(k_asym),
+        momentum, float(P0)
+    )
+
+
+def is_unified_filter_available() -> bool:
+    """Check if Numba unified filter kernel is available."""
+    return _NUMBA_AVAILABLE
