@@ -2267,7 +2267,8 @@ def load_cache(cache_json: str) -> Dict[str, Dict]:
             return cache
     
     # Fallback to legacy single-file cache
-    if os.path.exists(cache_json):
+    # Note: cache_json might be a directory path (from retune), so check isfile()
+    if cache_json and os.path.isfile(cache_json):
         try:
             with open(cache_json, 'r') as f:
                 return json.load(f)
