@@ -3209,6 +3209,7 @@ def fit_all_models_for_regime(
                 "alpha_asym": float(config.alpha_asym),
                 "ms_sensitivity": float(config.ms_sensitivity),
                 "q_stress_ratio": float(config.q_stress_ratio),
+                "variance_inflation": float(getattr(config, 'variance_inflation', 1.0)),  # ELITE FIX
                 # Scores
                 "log_likelihood": float(ll_u),
                 "mean_log_likelihood": float(mean_ll_u),

@@ -1433,6 +1433,7 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
             phi_str,
             alpha_str,
             gamma_str,
+            beta_str,  # ELITE FIX: variance_inflation
             bic_str,
             hyv_str,
             crps_str,
@@ -1459,6 +1460,8 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
     legend.append("=asym  ", style="dim")
     legend.append("γ", style="dim")
     legend.append("=VoV  ", style="dim")
+    legend.append("β", style="dim")
+    legend.append("=var_infl  ", style="dim")
     legend.append("Hyv", style="dim")
     legend.append("=Hyvärinen  ", style="dim")
     legend.append("CRPS", style="dim")
