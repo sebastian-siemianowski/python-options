@@ -2556,10 +2556,11 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
 
     # Helper to check if model is Student-t (phi_student_t_nu_* naming)
     # Also handles momentum-augmented variants (phi_student_t_nu_*_momentum)
+    # Also handles unified variants (phi_student_t_unified_nu_*)
     def _is_student_t(model_name: str) -> bool:
         # Strip momentum suffix if present
         base_name = model_name[:-9] if model_name.endswith('_momentum') else model_name
-        return base_name.startswith('phi_student_t_nu_')
+        return base_name.startswith('phi_student_t_nu_') or base_name.startswith('phi_student_t_unified_nu_')
     
     # Helper to check if model is momentum-augmented
     def _is_momentum_augmented(model_name: str) -> bool:
@@ -3158,6 +3159,7 @@ def _kalman_filter_drift(
     # ENHANCED STUDENT-T MODELS (February 2026)
     # =========================================================================
     # Check for enhanced Student-t variants:
+    #   - Unified: phi_student_t_unified_nu_* (combines all enhancements)
     #   - Vol-of-Vol (VoV): gamma_vov in tuned params
     #   - Two-Piece: nu_left and nu_right in tuned params
     #   - Mixture: nu_calm and nu_stress in tuned params
@@ -3167,6 +3169,41 @@ def _kalman_filter_drift(
     enhanced_result = None
     enhanced_model_type = None
     ms_q_diagnostics = None
+    
+    # Check for Unified Student-T model (February 2026 - Elite Architecture)
+    if tuned_params is not None and tuned_params.get('unified_model') and gas_q_result is None:
+        try:
+            from models.phi_student_t import UnifiedStudentTConfig
+            
+            # Build unified config from tuned params
+            unified_config = UnifiedStudentTConfig(
+                q=float(tuned_params.get('q', 1e-6)),
+                c=float(tuned_params.get('c', 1.0)),
+                phi=float(tuned_params.get('phi', 0.0)),
+                nu_base=float(tuned_params.get('nu', 8)),
+                alpha_asym=float(tuned_params.get('alpha_asym', 0.0)),
+                gamma_vov=float(tuned_params.get('gamma_vov', 0.3)),
+                ms_sensitivity=float(tuned_params.get('ms_sensitivity', 2.0)),
+                q_stress_ratio=float(tuned_params.get('q_stress_ratio', 10.0)),
+            )
+            
+            # Run unified filter
+            mu_u, P_u, mu_pred_u, S_pred_u, ll_u = PhiStudentTDriftModel.filter_phi_unified(
+                y, sigma, unified_config
+            )
+            mu_filtered = mu_u
+            P_filtered = P_u
+            log_likelihood = ll_u
+            enhanced_result = True
+            enhanced_model_type = 'unified'
+            
+            if os.getenv("DEBUG"):
+                print(f"Using unified Student-T filter: ν={unified_config.nu_base}, "
+                      f"α={unified_config.alpha_asym:.3f}, γ_vov={unified_config.gamma_vov:.2f}")
+        except Exception as unified_e:
+            if os.getenv("DEBUG"):
+                print(f"Unified filter failed, falling back: {unified_e}")
+            enhanced_result = None
     
     if ENHANCED_STUDENT_T_AVAILABLE and tuned_params is not None and gas_q_result is None:
         # Check for Vol-of-Vol enhancement

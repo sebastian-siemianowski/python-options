@@ -416,6 +416,20 @@ except ImportError:
 ENHANCED_MIXTURE_ENABLED = True  # Set to False to use standard vol-only mixture
 
 # =============================================================================
+# UNIFIED STUDENT-T ARCHITECTURE (February 2026 - Elite Consolidation)
+# =============================================================================
+# When UNIFIED_STUDENT_T_ONLY is True:
+#   - Only phi_student_t_nu_8 (base reference) and phi_student_t_unified_nu_{4,8,20} are fitted
+#   - Disables: VoV grid, Two-Piece grid, Mixture grid, MS-q, GAS-Q Student-T
+#   - Reduces model explosion from 48+ variants to 4 canonical models
+#   - All enhancements (VoV, asymmetry, MS-q) are incorporated INTO unified models
+#
+# This is the production configuration after architectural consolidation.
+# Set to False to restore legacy model grid for comparison testing.
+# =============================================================================
+UNIFIED_STUDENT_T_ONLY = True  # Set to False to enable legacy 48+ model variants
+
+# =============================================================================
 # GAS-Q SCORE-DRIVEN PARAMETER DYNAMICS (February 2026)
 # =============================================================================
 # Implements Creal, Koopman & Lucas (2013) GAS dynamics for process noise q.
@@ -928,6 +942,9 @@ from models import (
     compute_ms_process_noise,
     filter_phi_ms_q,
     optimize_params_ms_q,
+    # Unified Student-T Architecture (February 2026)
+    UnifiedStudentTConfig,
+    compute_ms_process_noise_smooth,
 )
 
 # =============================================================================
@@ -2096,6 +2113,16 @@ def tune_asset_q(
             "nu": best_params.get("nu"),
             "noise_model": best_model,
             "best_model_by_bic": best_model,
+            # Unified Student-t specific parameters (February 2026 - Elite Architecture)
+            "unified_model": best_params.get("unified_model", False),
+            "alpha_asym": best_params.get("alpha_asym"),
+            "gamma_vov": best_params.get("gamma_vov"),
+            "ms_sensitivity": best_params.get("ms_sensitivity"),
+            "q_stress_ratio": best_params.get("q_stress_ratio"),
+            "vov_damping": best_params.get("vov_damping"),
+            "degraded": best_params.get("degraded", False),
+            "hessian_cond": best_params.get("hessian_cond"),
+            "pit_calibration_grade": best_params.get("pit_calibration_grade"),
             "bic": float(best_params.get("bic", float('inf'))),
             "aic": float(best_params.get("aic", float('inf'))),
             "log_likelihood": float(best_params.get("log_likelihood", float('-inf'))),
@@ -3105,6 +3132,110 @@ def fit_all_models_for_regime(
             }
     
     # =========================================================================
+    # Model 2: UNIFIED Phi-Student-t (February 2026 - Elite Architecture)
+    # =========================================================================
+    # Consolidates 48+ model variants into 3 adaptive unified models.
+    # Each unified model combines: VoV, Smooth Asymmetric ν, Probabilistic MS-q
+    #
+    # This replaces separate VoV/Two-Piece/Mixture/MS-q loops with a single
+    # coherent architecture that auto-adapts to asset characteristics.
+    #
+    # Model naming: "phi_student_t_unified_nu_{nu}"
+    # =========================================================================
+    
+    # Unified models use 3 ν values from grid
+    UNIFIED_NU_GRID = [4, 8, 20]
+    n_params_unified = 7  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν
+    
+    for nu_fixed in UNIFIED_NU_GRID:
+        unified_name = f"phi_student_t_unified_nu_{nu_fixed}"
+        
+        try:
+            # Staged optimization for unified model
+            config, diagnostics = PhiStudentTDriftModel.optimize_params_unified(
+                returns, vol, 
+                nu_base=float(nu_fixed),
+                train_frac=0.7, 
+                asset_symbol=asset
+            )
+
+            if not diagnostics.get("success", False):
+                raise ValueError(f"Unified optimization failed: {diagnostics.get('error', 'Unknown')}")
+
+            # Run unified filter to get predictive values
+            mu_u, P_u, mu_pred_u, S_pred_u, ll_u = PhiStudentTDriftModel.filter_phi_unified(
+                returns, vol, config
+            )
+
+            # PIT calibration using predictive distribution
+            ks_u, pit_p_u, pit_metrics = PhiStudentTDriftModel.pit_ks_unified(
+                returns, mu_pred_u, S_pred_u, config
+            )
+
+            # Information criteria
+            aic_u = compute_aic(ll_u, n_params_unified)
+            bic_u = compute_bic(ll_u, n_params_unified, n_obs)
+            mean_ll_u = ll_u / max(n_obs, 1)
+
+            # Hyvärinen and CRPS scores using predictive values
+            # Use base nu for scoring (asymmetry is internal adjustment)
+            if nu_fixed > 2:
+                forecast_scale_u = np.sqrt(S_pred_u * (nu_fixed - 2) / nu_fixed)
+            else:
+                forecast_scale_u = np.sqrt(S_pred_u)
+
+            hyvarinen_u = compute_hyvarinen_score_student_t(
+                returns, mu_pred_u, forecast_scale_u, nu_fixed
+            )
+            crps_u = compute_crps_student_t_inline(
+                returns, mu_pred_u, forecast_scale_u, nu_fixed
+            )
+
+            models[unified_name] = {
+                "q": float(config.q),
+                "c": float(config.c),
+                "phi": float(config.phi),
+                "nu": float(nu_fixed),
+                # Unified-specific parameters
+                "gamma_vov": float(config.gamma_vov),
+                "alpha_asym": float(config.alpha_asym),
+                "ms_sensitivity": float(config.ms_sensitivity),
+                "q_stress_ratio": float(config.q_stress_ratio),
+                # Scores
+                "log_likelihood": float(ll_u),
+                "mean_log_likelihood": float(mean_ll_u),
+                "bic": float(bic_u),
+                "aic": float(aic_u),
+                "hyvarinen_score": float(hyvarinen_u),
+                "crps": float(crps_u),
+                "ks_statistic": float(ks_u),
+                "pit_ks_pvalue": float(pit_p_u),
+                "pit_calibration_grade": pit_metrics.get("calibration_grade", "F"),
+                "histogram_mad": pit_metrics.get("histogram_mad", 1.0),
+                # Metadata
+                "fit_success": True,
+                "unified_model": True,
+                "degraded": diagnostics.get("degraded", False),
+                "hessian_cond": diagnostics.get("hessian_cond", float('inf')),
+                "n_params": int(n_params_unified),
+                "nu_fixed": True,
+                "model_type": "phi_student_t_unified",
+            }
+
+        except Exception as e:
+            models[unified_name] = {
+                "fit_success": False,
+                "error": str(e),
+                "bic": float('inf'),
+                "aic": float('inf'),
+                "hyvarinen_score": float('-inf'),
+                "crps": float('inf'),
+                "nu": float(nu_fixed),
+                "unified_model": True,
+                "nu_fixed": True,
+            }
+
+    # =========================================================================
     # Model 3: Phi-NIG with DISCRETE α and β GRID (Normal-Inverse Gaussian)
     # =========================================================================
     # NIG (Normal-Inverse Gaussian) distribution captures both:
@@ -3587,86 +3718,88 @@ def fit_all_models_for_regime(
                 }
         
         # GAS-Q augmented Student-t+Momentum (for each nu)
-        for nu_fixed in STUDENT_T_NU_GRID:
-            base_name = f"phi_student_t_nu_{nu_fixed}_momentum"
-            gas_q_name = get_gas_q_model_name(base_name)
-            
-            if base_name in models and models[base_name].get("fit_success", False):
-                try:
-                    base_model = models[base_name]
-                    c_gas = base_model["c"]
-                    phi_gas = base_model.get("phi", 0.0)
-                    
-                    # Optimize GAS-Q parameters for Student-t
-                    gas_config, gas_diag = optimize_gas_q_params(
-                        returns, vol, c_gas, phi_gas, nu=nu_fixed, train_frac=0.7
-                    )
-                    
-                    if gas_diag.get("fit_success", False):
-                        # Run GAS-Q filter
-                        gas_result = gas_q_filter_student_t(
-                            returns, vol, c_gas, phi_gas, nu_fixed, gas_config
+        # DISABLED when UNIFIED_STUDENT_T_ONLY=True - unified models include adaptive q
+        if not UNIFIED_STUDENT_T_ONLY:
+            for nu_fixed in STUDENT_T_NU_GRID:
+                base_name = f"phi_student_t_nu_{nu_fixed}_momentum"
+                gas_q_name = get_gas_q_model_name(base_name)
+                
+                if base_name in models and models[base_name].get("fit_success", False):
+                    try:
+                        base_model = models[base_name]
+                        c_gas = base_model["c"]
+                        phi_gas = base_model.get("phi", 0.0)
+                        
+                        # Optimize GAS-Q parameters for Student-t
+                        gas_config, gas_diag = optimize_gas_q_params(
+                            returns, vol, c_gas, phi_gas, nu=nu_fixed, train_frac=0.7
                         )
                         
-                        # ELITE FIX: Compute PIT using PREDICTIVE distribution
-                        # GAS-Q uses time-varying q, but PIT still needs predictive values
-                        ks_gas, pit_p_gas, mu_pred_gas, S_pred_gas = compute_predictive_pit_student_t(
-                            returns, vol, float(gas_result.q_mean), c_gas, phi_gas, nu_fixed
-                        )
-                        
-                        # BIC with extra 3 GAS parameters
-                        n_params_gas = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 3
-                        bic_gas = compute_gas_q_bic(
-                            gas_result.log_likelihood, n_obs,
-                            MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T], 3
-                        )
-                        aic_gas = compute_aic(gas_result.log_likelihood, n_params_gas)
-                        mean_ll_gas = gas_result.log_likelihood / max(n_obs, 1)
-                        
-                        # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
-                        hyvarinen_gas, crps_gas = compute_predictive_scores_student_t(
-                            returns, mu_pred_gas, S_pred_gas, nu_fixed
-                        )
-                        
+                        if gas_diag.get("fit_success", False):
+                            # Run GAS-Q filter
+                            gas_result = gas_q_filter_student_t(
+                                returns, vol, c_gas, phi_gas, nu_fixed, gas_config
+                            )
+                            
+                            # ELITE FIX: Compute PIT using PREDICTIVE distribution
+                            # GAS-Q uses time-varying q, but PIT still needs predictive values
+                            ks_gas, pit_p_gas, mu_pred_gas, S_pred_gas = compute_predictive_pit_student_t(
+                                returns, vol, float(gas_result.q_mean), c_gas, phi_gas, nu_fixed
+                            )
+                            
+                            # BIC with extra 3 GAS parameters
+                            n_params_gas = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 3
+                            bic_gas = compute_gas_q_bic(
+                                gas_result.log_likelihood, n_obs,
+                                MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T], 3
+                            )
+                            aic_gas = compute_aic(gas_result.log_likelihood, n_params_gas)
+                            mean_ll_gas = gas_result.log_likelihood / max(n_obs, 1)
+                            
+                            # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
+                            hyvarinen_gas, crps_gas = compute_predictive_scores_student_t(
+                                returns, mu_pred_gas, S_pred_gas, nu_fixed
+                            )
+                            
+                            models[gas_q_name] = {
+                                "q": float(gas_result.q_mean),
+                                "c": float(c_gas),
+                                "phi": float(phi_gas),
+                                "nu": float(nu_fixed),
+                                "log_likelihood": float(gas_result.log_likelihood),
+                                "mean_log_likelihood": float(mean_ll_gas),
+                                "cv_penalized_ll": float(gas_result.log_likelihood),
+                                "bic": float(bic_gas),
+                                "aic": float(aic_gas),
+                                "hyvarinen_score": float(hyvarinen_gas),
+                                "crps": float(crps_gas),  # CRPS for regime-aware selection
+                                "n_params": int(n_params_gas),
+                                "ks_statistic": float(ks_gas),
+                                "pit_ks_pvalue": float(pit_p_gas),
+                                "fit_success": True,
+                                "gas_q_augmented": True,
+                                "gas_q_omega": float(gas_config.omega),
+                                "gas_q_alpha": float(gas_config.alpha),
+                                "gas_q_beta": float(gas_config.beta),
+                                "gas_q_mean": float(gas_result.q_mean),
+                                "gas_q_std": float(gas_result.q_std),
+                                "gas_q_final": float(gas_result.final_q),
+                                "base_model": base_name,
+                                "momentum_augmented": True,
+                                "nu_fixed": True,
+                            }
+                    except Exception as e:
                         models[gas_q_name] = {
-                            "q": float(gas_result.q_mean),
-                            "c": float(c_gas),
-                            "phi": float(phi_gas),
-                            "nu": float(nu_fixed),
-                            "log_likelihood": float(gas_result.log_likelihood),
-                            "mean_log_likelihood": float(mean_ll_gas),
-                            "cv_penalized_ll": float(gas_result.log_likelihood),
-                            "bic": float(bic_gas),
-                            "aic": float(aic_gas),
-                            "hyvarinen_score": float(hyvarinen_gas),
-                            "crps": float(crps_gas),  # CRPS for regime-aware selection
-                            "n_params": int(n_params_gas),
-                            "ks_statistic": float(ks_gas),
-                            "pit_ks_pvalue": float(pit_p_gas),
-                            "fit_success": True,
+                            "fit_success": False,
+                            "error": str(e),
+                            "bic": float('inf'),
+                            "aic": float('inf'),
+                            "hyvarinen_score": float('-inf'),
+                            "crps": float('inf'),  # CRPS for failed models
                             "gas_q_augmented": True,
-                            "gas_q_omega": float(gas_config.omega),
-                            "gas_q_alpha": float(gas_config.alpha),
-                            "gas_q_beta": float(gas_config.beta),
-                            "gas_q_mean": float(gas_result.q_mean),
-                            "gas_q_std": float(gas_result.q_std),
-                            "gas_q_final": float(gas_result.final_q),
                             "base_model": base_name,
-                            "momentum_augmented": True,
-                            "nu_fixed": True,
+                            "nu": float(nu_fixed),
                         }
-                except Exception as e:
-                    models[gas_q_name] = {
-                        "fit_success": False,
-                        "error": str(e),
-                        "bic": float('inf'),
-                        "aic": float('inf'),
-                        "hyvarinen_score": float('-inf'),
-                        "crps": float('inf'),  # CRPS for failed models
-                        "gas_q_augmented": True,
-                        "base_model": base_name,
-                        "nu": float(nu_fixed),
-                    }
     
     # =========================================================================
     # MARKOV-SWITCHING PROCESS NOISE (MS-q) — February 2026
@@ -3683,7 +3816,8 @@ def fit_all_models_for_regime(
     # - Proactive vs reactive adaptation
     # =========================================================================
     
-    if MS_Q_ENABLED and MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
+    # DISABLED when UNIFIED_STUDENT_T_ONLY=True - unified models include probabilistic MS-q
+    if MS_Q_ENABLED and MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE and not UNIFIED_STUDENT_T_ONLY:
         
         for nu_fixed in STUDENT_T_NU_GRID:
             base_name = f"phi_student_t_nu_{nu_fixed}_momentum"
@@ -3776,9 +3910,12 @@ def fit_all_models_for_regime(
     #
     # These compete in BMA with appropriate penalties for extra parameters.
     # Only momentum variants are fitted (as per existing architecture).
+    #
+    # DISABLED when UNIFIED_STUDENT_T_ONLY=True - unified models incorporate
+    # VoV, smooth asymmetric ν, and probabilistic MS-q into single architecture.
     # =========================================================================
     
-    if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
+    if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE and not UNIFIED_STUDENT_T_ONLY:
         # Import enhanced Student-t grids
         from models import (
             NU_LEFT_GRID, NU_RIGHT_GRID, TWO_PIECE_BMA_PENALTY,

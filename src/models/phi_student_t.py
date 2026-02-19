@@ -2315,6 +2315,529 @@ class PhiStudentTDriftModel:
 
         return mu_filtered, P_filtered, float(log_likelihood)
 
+    # =========================================================================
+    # UNIFIED STUDENT-T FILTER (February 2026 - Elite Architecture)
+    # =========================================================================
+    # Consolidates 48+ model variants into single adaptive architecture.
+    # Combines: VoV, Smooth Asymmetric ν, Probabilistic MS-q, Momentum
+    # =========================================================================
+    
+    @classmethod
+    def filter_phi_unified(
+        cls, 
+        returns: np.ndarray, 
+        vol: np.ndarray, 
+        config: 'UnifiedStudentTConfig',
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+        """
+        UNIFIED Elite φ-Student-t filter combining ALL enhancements.
+        
+        This is the canonical production filter that merges:
+          1. Smooth Asymmetric ν: tanh-modulated tail heaviness (differentiable)
+          2. Probabilistic MS-q: sigmoid regime switching (no hard thresholds)
+          3. Adaptive VoV: with MS-q redundancy damping
+          4. Momentum: exogenous drift input
+          5. Robust Student-t weighting: outlier downweighting
+        
+        All enhancements operate smoothly and are fully differentiable,
+        enabling stable optimization without gradient discontinuities.
+        
+        Args:
+            returns: Return series
+            vol: EWMA/GK volatility series
+            config: UnifiedStudentTConfig instance with all parameters
+            
+        Returns:
+            Tuple of (mu_filtered, P_filtered, mu_pred, S_pred, log_likelihood):
+            - mu_filtered: Posterior state mean
+            - P_filtered: Posterior state variance
+            - mu_pred: Prior predictive mean (for PIT)
+            - S_pred: Prior predictive variance (for PIT)
+            - log_likelihood: Total log-likelihood
+        """
+        n = len(returns)
+        
+        # Convert to contiguous arrays
+        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        
+        # Extract config values with safety
+        q_base = float(config.q)
+        c_val = float(config.c)
+        phi_val = float(np.clip(config.phi, -0.999, 0.999))
+        nu_base = float(config.nu_base)
+        alpha = float(config.alpha_asym)
+        k_asym = float(config.k_asym)
+        gamma_vov = float(config.gamma_vov)
+        damping = float(config.vov_damping)
+        vov_window = int(config.vov_window)
+        
+        # MS-q setup
+        q_calm = float(config.q_calm) if config.q_calm is not None else q_base
+        q_stress = q_calm * float(config.q_stress_ratio)
+        ms_enabled = abs(q_stress - q_calm) > 1e-12
+        
+        # Compute MS-q time series using smooth probabilistic function
+        if ms_enabled:
+            q_t, p_stress = compute_ms_process_noise_smooth(
+                vol, q_calm, q_stress, config.ms_sensitivity
+            )
+        else:
+            q_t = np.full(n, q_base)
+            p_stress = np.zeros(n)
+        
+        # Compute VoV rolling (20-day window default)
+        log_vol = np.log(np.maximum(vol, 1e-10))
+        vov_rolling = np.zeros(n)
+        for t in range(vov_window, n):
+            vov_rolling[t] = np.std(log_vol[t-vov_window:t])
+        if n > vov_window:
+            vov_rolling[:vov_window] = vov_rolling[vov_window]
+        
+        # Pre-compute constants
+        phi_sq = phi_val * phi_val
+        
+        # Pre-compute base R
+        R_base = c_val * (vol ** 2)
+        
+        # Allocate output arrays
+        mu_filtered = np.empty(n, dtype=np.float64)
+        P_filtered = np.empty(n, dtype=np.float64)
+        mu_pred_arr = np.empty(n, dtype=np.float64)
+        S_pred_arr = np.empty(n, dtype=np.float64)
+        
+        # State initialization
+        mu = 0.0
+        P = 1e-4
+        log_likelihood = 0.0
+        
+        # Main filter loop with ALL enhancements
+        for t in range(n):
+            # === PREDICTION STEP ===
+            # Momentum: inject exogenous input if provided
+            u_t = 0.0
+            if config.exogenous_input is not None and t < len(config.exogenous_input):
+                u_t = float(config.exogenous_input[t])
+            
+            # MS-q: time-varying process noise
+            q_t_val = q_t[t]
+            
+            # State prediction with momentum
+            mu_pred = phi_val * mu + u_t
+            P_pred = phi_sq * P + q_t_val
+            
+            # VoV with redundancy damping (reduce VoV when MS-q active)
+            vov_effective = gamma_vov * (1.0 - damping * p_stress[t])
+            R = R_base[t] * (1.0 + vov_effective * vov_rolling[t])
+            
+            # Predictive variance
+            S = P_pred + R
+            if S <= 1e-12:
+                S = 1e-12
+            
+            # Store predictive values (for proper PIT computation)
+            mu_pred_arr[t] = mu_pred
+            S_pred_arr[t] = S
+            
+            # Innovation
+            innovation = returns[t] - mu_pred
+            
+            # === UPDATE STEP ===
+            # Smooth asymmetric ν (replaces hard Two-Piece switch)
+            scale = np.sqrt(S)
+            nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
+            
+            # ν-adjusted Kalman gain
+            nu_adjust = min(nu_eff / (nu_eff + 3.0), 1.0)
+            K = nu_adjust * P_pred / S
+            
+            # Robust Student-t weighting (downweight outliers)
+            z_sq = (innovation ** 2) / S
+            w_t = (nu_eff + 1.0) / (nu_eff + z_sq)
+            
+            # State update with robust weighting
+            mu = mu_pred + K * w_t * innovation
+            P = (1.0 - w_t * K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
+            
+            # Store filtered values
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+            
+            # === LOG-LIKELIHOOD ===
+            # Convert variance S to Student-t scale (CRITICAL for correct PIT)
+            scale_factor = max((nu_eff - 2.0) / nu_eff, 0.01)
+            forecast_scale = np.sqrt(S * scale_factor)
+            
+            if forecast_scale > 1e-12:
+                z = innovation / forecast_scale
+                inv_nu = 1.0 / nu_eff
+                log_norm = (gammaln((nu_eff + 1.0) / 2.0) - gammaln(nu_eff / 2.0) 
+                           - 0.5 * np.log(nu_eff * np.pi))
+                neg_exp = -((nu_eff + 1.0) / 2.0)
+                
+                ll_t = log_norm - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
+                if np.isfinite(ll_t):
+                    log_likelihood += ll_t
+        
+        return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
+
+    @classmethod
+    def optimize_params_unified(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        nu_base: float = 8.0,
+        train_frac: float = 0.7,
+        asset_symbol: str = None,
+    ) -> Tuple['UnifiedStudentTConfig', Dict]:
+        """
+        Staged optimization for unified model.
+        
+        Optimization is performed in stages to avoid feature interaction instability:
+          Stage 1: Base parameters (q, c, φ) with state regularization
+          Stage 2: VoV gamma (freeze base)
+          Stage 3: MS-q sensitivity (freeze base + VoV)
+          Stage 4: Asymmetry alpha (freeze all, fine-tune)
+        
+        Includes:
+          - Data-driven bounds (MAD-based c, scale-aware q_min)
+          - State regularization (prevents φ→1/q→0 collapse)
+          - Parameter regularization (prevents overfitting)
+          - Hessian condition check with graceful degradation
+        
+        Args:
+            returns: Return series
+            vol: EWMA/GK volatility series
+            nu_base: Base degrees of freedom (from discrete grid)
+            train_frac: Fraction for train/test split
+            asset_symbol: Asset symbol for logging
+            
+        Returns:
+            Tuple of (UnifiedStudentTConfig, diagnostics_dict)
+        """
+        returns = np.asarray(returns).flatten()
+        vol = np.asarray(vol).flatten()
+        
+        # Auto-configure initial bounds from data
+        config = UnifiedStudentTConfig.auto_configure(returns, vol, nu_base)
+        
+        n = len(returns)
+        n_train = int(n * train_frac)
+        returns_train = returns[:n_train]
+        vol_train = vol[:n_train]
+        
+        # =====================================================================
+        # STAGE 1: Base parameters (q, c, φ) with state regularization
+        # =====================================================================
+        def neg_ll_base(params):
+            log_q, c, phi = params
+            q = 10 ** log_q
+            
+            # Create config with base params only (disable enhancements)
+            cfg = UnifiedStudentTConfig(
+                q=q, c=c, phi=phi, nu_base=nu_base,
+                alpha_asym=0.0,      # No asymmetry
+                gamma_vov=0.0,       # No VoV
+                q_stress_ratio=1.0,  # No MS-q
+            )
+            
+            try:
+                _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+            except Exception:
+                return 1e10
+            
+            if not np.isfinite(ll):
+                return 1e10
+            
+            # State regularization: smooth quadratic penalty for collapse
+            phi_pen = max(0.0, abs(phi) - 0.95)
+            q_pen = max(0.0, -7.0 - log_q)
+            state_reg = 50.0 * (phi_pen ** 2 + q_pen ** 2)
+            
+            # Extra penalty for joint collapse (φ→1 AND q→0)
+            if phi_pen > 0 and q_pen > 0:
+                state_reg += 30.0 * phi_pen * q_pen
+            
+            return -ll / n_train + state_reg
+        
+        # Initial guess
+        log_q_init = np.log10(max(config.q_min * 10, 1e-7))
+        c_init = (config.c_min + config.c_max) / 2
+        x0_base = [log_q_init, c_init, 0.0]
+        
+        bounds_base = [
+            (np.log10(config.q_min), -2),   # log₁₀(q)
+            (config.c_min, config.c_max),    # c
+            (-0.99, 0.99),                   # φ
+        ]
+        
+        try:
+            result_base = minimize(
+                neg_ll_base, x0_base, bounds=bounds_base, 
+                method='L-BFGS-B', options={'maxiter': 200}
+            )
+            stage1_success = result_base.success
+        except Exception as e:
+            stage1_success = False
+            result_base = None
+        
+        if not stage1_success:
+            # Graceful degradation: return auto-configured defaults
+            return config, {
+                "stage": 0, 
+                "success": False, 
+                "error": "Stage 1 optimization failed",
+                "degraded": True,
+            }
+        
+        log_q_opt, c_opt, phi_opt = result_base.x
+        q_opt = 10 ** log_q_opt
+        
+        # =====================================================================
+        # STAGE 2: VoV gamma (freeze base parameters)
+        # =====================================================================
+        def neg_ll_vov(gamma_arr):
+            gamma = gamma_arr[0]
+            cfg = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
+                alpha_asym=0.0,
+                gamma_vov=gamma,
+                q_stress_ratio=1.0,
+            )
+            try:
+                _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+            except Exception:
+                return 1e10
+            
+            if not np.isfinite(ll):
+                return 1e10
+            
+            # Regularization: keep gamma near prior (0.3)
+            reg = 10.0 * (gamma - 0.3) ** 2
+            return -ll / n_train + reg
+        
+        try:
+            result_vov = minimize(
+                neg_ll_vov, [config.gamma_vov], 
+                bounds=[(0.0, 1.0)], method='L-BFGS-B'
+            )
+            gamma_opt = result_vov.x[0] if result_vov.success else config.gamma_vov
+        except Exception:
+            gamma_opt = config.gamma_vov
+        
+        # =====================================================================
+        # STAGE 3: MS-q sensitivity (freeze base + VoV)
+        # =====================================================================
+        def neg_ll_msq(sens_arr):
+            sens = sens_arr[0]
+            cfg = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
+                alpha_asym=0.0,
+                gamma_vov=gamma_opt,
+                ms_sensitivity=sens,
+                q_stress_ratio=10.0,
+            )
+            try:
+                _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+            except Exception:
+                return 1e10
+            
+            if not np.isfinite(ll):
+                return 1e10
+            
+            # Regularization: keep sensitivity near 2.0
+            reg = 10.0 * (sens - 2.0) ** 2
+            return -ll / n_train + reg
+        
+        try:
+            result_msq = minimize(
+                neg_ll_msq, [2.0], 
+                bounds=[(1.0, 3.0)], method='L-BFGS-B'
+            )
+            sens_opt = result_msq.x[0] if result_msq.success else 2.0
+        except Exception:
+            sens_opt = 2.0
+        
+        # =====================================================================
+        # STAGE 4: Asymmetry alpha (freeze all, fine-tune)
+        # =====================================================================
+        def neg_ll_asym(alpha_arr):
+            alpha = alpha_arr[0]
+            cfg = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
+                alpha_asym=alpha,
+                gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt,
+                q_stress_ratio=10.0,
+            )
+            try:
+                _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+            except Exception:
+                return 1e10
+            
+            if not np.isfinite(ll):
+                return 1e10
+            
+            # Regularization: keep alpha small (penalize strong asymmetry)
+            reg = 10.0 * alpha ** 2
+            return -ll / n_train + reg
+        
+        try:
+            result_asym = minimize(
+                neg_ll_asym, [config.alpha_asym], 
+                bounds=[(-0.3, 0.3)], method='L-BFGS-B'
+            )
+            alpha_opt = result_asym.x[0] if result_asym.success else config.alpha_asym
+        except Exception:
+            alpha_opt = config.alpha_asym
+        
+        # =====================================================================
+        # HESSIAN CONDITION CHECK (graceful degradation)
+        # =====================================================================
+        try:
+            if hasattr(result_base, 'hess_inv'):
+                hess_inv = result_base.hess_inv
+                if hasattr(hess_inv, 'todense'):
+                    hess_inv = hess_inv.todense()
+                cond_num = float(np.linalg.cond(hess_inv))
+            else:
+                cond_num = 1.0
+        except Exception:
+            cond_num = 1e10
+        
+        degraded = False
+        if cond_num > 1e6:
+            # Graceful degradation: disable advanced features
+            gamma_opt = 0.0
+            sens_opt = 2.0
+            alpha_opt = 0.0
+            degraded = True
+        
+        # =====================================================================
+        # BUILD FINAL CONFIG
+        # =====================================================================
+        final_config = UnifiedStudentTConfig(
+            q=q_opt,
+            c=c_opt,
+            phi=phi_opt,
+            nu_base=nu_base,
+            alpha_asym=alpha_opt,
+            gamma_vov=gamma_opt,
+            ms_sensitivity=sens_opt,
+            q_stress_ratio=10.0,
+            vov_damping=0.3,
+            q_min=config.q_min,
+            c_min=config.c_min,
+            c_max=config.c_max,
+        )
+        
+        diagnostics = {
+            "stage": 4,
+            "success": True,
+            "degraded": degraded,
+            "hessian_cond": cond_num,
+            "q": float(q_opt),
+            "c": float(c_opt),
+            "phi": float(phi_opt),
+            "log10_q": float(log_q_opt),
+            "gamma_vov": float(gamma_opt),
+            "ms_sensitivity": float(sens_opt),
+            "alpha_asym": float(alpha_opt),
+            "c_bounds": (float(config.c_min), float(config.c_max)),
+            "q_min": float(config.q_min),
+        }
+        
+        return final_config, diagnostics
+
+    @classmethod
+    def pit_ks_unified(
+        cls,
+        returns: np.ndarray,
+        mu_pred: np.ndarray,
+        S_pred: np.ndarray,
+        config: 'UnifiedStudentTConfig',
+    ) -> Tuple[float, float, Dict]:
+        """
+        PIT/KS calibration for unified model using PREDICTIVE distribution.
+        
+        Uses predictive values (mu_pred, S_pred) rather than posterior,
+        which is the correct approach for proper PIT calibration.
+        
+        Args:
+            returns: Return series
+            mu_pred: Predictive means from filter
+            S_pred: Predictive variances from filter
+            config: UnifiedStudentTConfig instance
+            
+        Returns:
+            Tuple of (ks_statistic, ks_pvalue, metrics_dict)
+        """
+        returns = np.asarray(returns).flatten()
+        mu_pred = np.asarray(mu_pred).flatten()
+        S_pred = np.asarray(S_pred).flatten()
+        
+        n = len(returns)
+        pit_values = np.empty(n)
+        
+        nu_base = config.nu_base
+        alpha = config.alpha_asym
+        k_asym = config.k_asym
+        
+        for t in range(n):
+            innovation = returns[t] - mu_pred[t]
+            scale = np.sqrt(max(S_pred[t], 1e-12))
+            
+            # Effective ν (smooth asymmetric)
+            nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
+            
+            # Student-t scale (variance to scale conversion)
+            if nu_eff > 2:
+                t_scale = np.sqrt(S_pred[t] * (nu_eff - 2) / nu_eff)
+            else:
+                t_scale = scale
+            
+            t_scale = max(t_scale, 1e-10)
+            
+            # PIT value via Student-t CDF
+            pit_values[t] = student_t.cdf(innovation, df=nu_eff, loc=0, scale=t_scale)
+        
+        # Clean and compute KS
+        valid = np.isfinite(pit_values)
+        pit_clean = np.clip(pit_values[valid], 0, 1)
+        
+        if len(pit_clean) < 20:
+            return 1.0, 0.0, {"n_samples": len(pit_clean), "calibrated": False}
+        
+        ks_result = kstest(pit_clean, 'uniform')
+        
+        # Histogram MAD for practical calibration grading
+        hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
+        hist_freq = hist / len(pit_clean)
+        hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
+        
+        # Calibration grade (A/B/C/F)
+        if hist_mad < 0.02:
+            grade = "A"
+        elif hist_mad < 0.05:
+            grade = "B"
+        elif hist_mad < 0.10:
+            grade = "C"
+        else:
+            grade = "F"
+        
+        metrics = {
+            "n_samples": len(pit_clean),
+            "ks_statistic": float(ks_result.statistic),
+            "ks_pvalue": float(ks_result.pvalue),
+            "histogram_mad": hist_mad,
+            "calibration_grade": grade,
+            "calibrated": hist_mad < 0.05,
+        }
+        
+        return float(ks_result.statistic), float(ks_result.pvalue), metrics
+
 
     @staticmethod
     def pit_ks_two_piece(
