@@ -6,6 +6,14 @@
 # 3. For multiline code: CREATE A FILE first, then run the file
 # 4. For shell scripts: Write to a .sh file, then execute it
 
+Shell Rules (MANDATORY):
+
+- NEVER use heredoc (<<EOF, <<'EOF', etc.)
+- NEVER generate interactive shell commands
+- NEVER use cat > file or tee with heredoc
+- ALWAYS output raw file contents only
+- If file creation is needed, output the file content only, no shell wrapping
+
 ## Project Overview
 
 A **quantitative signal engine** using Bayesian Model Averaging (BMA) with Kalman filtering. Generates trading signals for 100+ assets with calibrated uncertainty estimates.
