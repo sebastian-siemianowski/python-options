@@ -475,16 +475,18 @@ def compute_optimal_variance_inflation(
     mu_pred: np.ndarray,
     S_pred: np.ndarray,
     nu: float,
-    beta_min: float = 0.5,
+    beta_min: float = 0.1,
     beta_max: float = 5.0,
 ) -> float:
     """
-    ELITE CALIBRATION FIX (February 2026): Find optimal variance inflation β.
+    ELITE CALIBRATION FIX (February 2026): Find optimal variance scaling β.
     
     The core mathematical insight:
     PIT miscalibration occurs when predictive variance S_t is systematically
-    wrong. When q → 1e-7 (hitting floor), S_t becomes too narrow, causing
-    U-shaped PIT histogram (overconfidence).
+    wrong relative to actual return variability.
+    
+    When S_pred > actual_variance: PIT is concentrated around 0.5 → need β < 1
+    When S_pred < actual_variance: PIT has heavy tails (U-shape) → need β > 1
     
     This function finds β such that:
         S_calibrated = β × S_pred
@@ -539,22 +541,40 @@ def compute_optimal_variance_inflation(
         
         return mad
     
-    # Optimize β using bounded scalar optimization
+    # =========================================================================
+    # ELITE FIX: Grid search + local refinement to find global minimum
+    # The MAD objective may have multiple local minima due to discrete binning.
+    # A coarse grid search finds the basin, then Brent refines it.
+    # =========================================================================
+    
+    # Step 1: Coarse grid search to find best basin
+    grid_betas = np.linspace(beta_min, beta_max, 20)  # 20 points
+    grid_mads = [pit_histogram_mad(b) for b in grid_betas]
+    best_idx = int(np.argmin(grid_mads))
+    best_grid_beta = grid_betas[best_idx]
+    best_grid_mad = grid_mads[best_idx]
+    
+    # Step 2: Local refinement around best grid point
+    # Search in [best - step, best + step]
+    step = (beta_max - beta_min) / 20
+    local_min = max(beta_min, best_grid_beta - step)
+    local_max = min(beta_max, best_grid_beta + step)
+    
     try:
         result = minimize_scalar(
             pit_histogram_mad,
-            bounds=(beta_min, beta_max),
+            bounds=(local_min, local_max),
             method='bounded',
-            options={'xatol': 0.01}
+            options={'xatol': 0.001}  # Tighter tolerance for local search
         )
         
-        if result.success:
+        if result.success and result.fun < best_grid_mad:
             return float(result.x)
     except Exception:
         pass
     
-    # Fallback: no inflation
-    return 1.0
+    # Fallback to grid search result
+    return float(best_grid_beta)
 
 
 def compute_ms_process_noise(
@@ -1537,7 +1557,7 @@ class PhiStudentTDriftModel:
         For proper PIT:
             z_t = (y_t - mu_pred[t]) / scale_pred[t]
             PIT_t = F_ν(z_t)
-        
+
         Where scale_pred = sqrt(S_pred × (ν-2)/ν) for Student-t.
         
         Args:
@@ -1583,33 +1603,59 @@ class PhiStudentTDriftModel:
         # Allocate output arrays
         mu_filtered = np.empty(n, dtype=np.float64)
         P_filtered = np.empty(n, dtype=np.float64)
+        mu_pred_arr = np.empty(n, dtype=np.float64)
+        S_pred_arr = np.empty(n, dtype=np.float64)
         
         # State initialization
         mu = 0.0
         P = 1e-4
         log_likelihood = 0.0
         
-        # Main filter loop with exogenous input
+        # Main filter loop
         for t in range(n):
-            # Exogenous input (KEY: injected into state equation)
-            u_t = exogenous_input[t] if exogenous_input is not None and t < len(exogenous_input) else 0.0
+            # === PREDICTION ===
+            # Momentum input
+            u_t = 0.0
+            if config.exogenous_input is not None and t < len(config.exogenous_input):
+                u_t = float(config.exogenous_input[t])
             
-            # Prediction step INCLUDES exogenous input (Expert #1: coherent)
+            # MS-q: time-varying process noise
+            q_t_val = q_t[t]
+            
+            # State prediction
             mu_pred = phi_val * mu + u_t
-            P_pred = phi_sq * P + q_val
+            P_pred = phi_sq * P + q_t_val
             
-            # Observation update
-            S = P_pred + R[t]
+            # VoV with redundancy damping
+            vov_effective = gamma_vov * (1.0 - damping * p_stress[t])
+            R = R_base[t] * (1.0 + vov_effective * vov_rolling[t])
+            
+            # Predictive variance
+            S = P_pred + R
             if S <= 1e-12:
                 S = 1e-12
             
+            # Store predictive values (CRITICAL for proper PIT)
+            mu_pred_arr[t] = mu_pred
+            S_pred_arr[t] = S
+            
+            # Innovation
             innovation = returns[t] - mu_pred
+            
+            # === UPDATE ===
+            # Smooth asymmetric ν
+            scale = np.sqrt(S)
+            nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
+            
+            # ν-adjusted Kalman gain
+            nu_adjust = min(nu_eff / (nu_eff + 3.0), 1.0)
             K = nu_adjust * P_pred / S
             
-            # State update with robust Student-t weighting
+            # Robust Student-t weighting (downweight outliers)
             z_sq = (innovation ** 2) / S
-            w_t = (nu_val + 1.0) / (nu_val + z_sq)
+            w_t = (nu_eff + 1.0) / (nu_eff + z_sq)
             
+            # State update with robust weighting
             mu = mu_pred + K * w_t * innovation
             P = (1.0 - w_t * K) * P_pred
             if P < 1e-12:
@@ -1619,369 +1665,328 @@ class PhiStudentTDriftModel:
             mu_filtered[t] = mu
             P_filtered[t] = P
             
-            # Log-likelihood (coherent with u_t - Expert #1)
-            # FIX: Convert variance S to Student-t scale
-            if nu_val > 2:
-                forecast_scale = np.sqrt(S * (nu_val - 2) / nu_val)
+            # === LOG-LIKELIHOOD ===
+            # Convert variance to Student-t scale using effective ν
+            if nu_eff > 2:
+                scale_factor = (nu_eff - 2) / nu_eff
             else:
-                forecast_scale = np.sqrt(S)
+                scale_factor = 0.5  # Fallback for ν ≤ 2
+            forecast_scale = np.sqrt(S * scale_factor)
+            
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
-                ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
+                # Recompute log-norm for effective ν
+                log_norm_eff = gammaln((nu_eff + 1.0) / 2.0) - gammaln(nu_eff / 2.0) - 0.5 * np.log(nu_eff * np.pi)
+                neg_exp_eff = -((nu_eff + 1.0) / 2.0)
+                inv_nu_eff = 1.0 / nu_eff
+                
+                ll_t = log_norm_eff - np.log(forecast_scale) + neg_exp_eff * np.log(1.0 + z * z * inv_nu_eff)
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
         
-        return mu_filtered, P_filtered, float(log_likelihood)
-    
+        return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
+
     @classmethod
-    def filter_phi_batch(
+    def optimize_params_unified(
         cls,
         returns: np.ndarray,
         vol: np.ndarray,
-        q: float,
-        c: float,
-        phi: float,
-        nu_grid: List[float] = None
-    ) -> Dict[float, Tuple[np.ndarray, np.ndarray, float]]:
-        """
-        Run φ-Student-t filter for multiple ν values (discrete grid BMA).
-        
-        Significantly faster than calling filter_phi() in a loop because:
-        - Arrays are prepared once
-        - Gamma values are precomputed efficiently per ν
-        
-        Parameters
-        ----------
-        nu_grid : List[float], optional
-            List of ν values to evaluate. Default: [4, 6, 8, 12, 20]
-        
-        Returns
-        -------
-        results : Dict[float, Tuple[np.ndarray, np.ndarray, float]]
-            Dict mapping ν -> (mu_filtered, P_filtered, log_likelihood)
-        """
-        if nu_grid is None:
-            nu_grid = STUDENT_T_NU_GRID
-        
-        # Try Numba batch version
-        if _USE_NUMBA:
-            try:
-                return run_phi_student_t_filter_batch(returns, vol, q, c, phi, nu_grid)
-            except Exception:
-                pass  # Fall through to Python implementation
-        
-        # Python fallback
-        results = {}
-        for nu in nu_grid:
-            results[nu] = cls._filter_phi_python(returns, vol, q, c, phi, nu)
-        return results
-
-    @staticmethod
-    def optimize_params(
-        returns: np.ndarray,
-        vol: np.ndarray,
+        nu_base: float = 8.0,
         train_frac: float = 0.7,
-        q_min: float = 1e-10,
-        q_max: float = 1e-1,
-        c_min: float = 0.3,
-        c_max: float = 3.0,
-        phi_min: float = -0.999,
-        phi_max: float = 0.999,
-        nu_min: float = 2.1,
-        nu_max: float = 30.0,
-        prior_log_q_mean: float = -6.0,
-        prior_lambda: float = 1.0
-    ) -> Tuple[float, float, float, float, float, Dict]:
-        """Jointly optimize (q, c, φ, ν) for the φ-Student-t drift model via CV MLE."""
+        asset_symbol: str = None,
+    ) -> Tuple['UnifiedStudentTConfig', Dict]:
+        """
+        Staged optimization for unified model.
+        
+        Optimization is performed in stages to avoid feature interaction instability:
+          Stage 1: Base parameters (q, c, φ) with state regularization
+          Stage 2: VoV gamma (freeze base)
+          Stage 3: MS-q sensitivity (freeze base + VoV)
+          Stage 4: Asymmetry alpha (freeze all, fine-tune)
+        
+        Includes:
+          - Data-driven bounds (MAD-based c, scale-aware q_min)
+          - State regularization (prevents φ→1/q→0 collapse)
+          - Parameter regularization (prevents overfitting)
+          - Hessian condition check with graceful degradation
+        
+        Args:
+            returns: Return series
+            vol: EWMA/GK volatility series
+            nu_base: Base degrees of freedom (from discrete grid)
+            train_frac: Fraction for train/test split
+            asset_symbol: Asset symbol for logging
+            
+        Returns:
+            Tuple of (UnifiedStudentTConfig, diagnostics_dict)
+        """
+        returns = np.asarray(returns).flatten()
+        vol = np.asarray(vol).flatten()
+        
+        # Auto-configure initial bounds from data
+        config = UnifiedStudentTConfig.auto_configure(returns, vol, nu_base)
+        
         n = len(returns)
-        ret_p005 = np.percentile(returns, 0.5)
-        ret_p995 = np.percentile(returns, 99.5)
-        returns_robust = np.clip(returns, ret_p005, ret_p995)
-
-        vol_mean = float(np.mean(vol))
-        vol_std = float(np.std(vol))
-        vol_cv = vol_std / vol_mean if vol_mean > 0 else 0.0
-        ret_std = float(np.std(returns_robust))
-        ret_mean = float(np.mean(returns_robust))
-        rv_ratio = abs(ret_mean) / ret_std if ret_std > 0 else 0.0
-
-        if vol_cv > 0.5 or rv_ratio > 0.15:
-            adaptive_prior_mean = prior_log_q_mean + 0.5
-            adaptive_lambda = prior_lambda * 0.5
-        elif vol_cv < 0.2 and rv_ratio < 0.05:
-            adaptive_prior_mean = prior_log_q_mean - 0.3
-            adaptive_lambda = prior_lambda * 1.5
-        else:
-            adaptive_prior_mean = prior_log_q_mean
-            adaptive_lambda = prior_lambda
-
-        min_train = min(max(60, int(n * 0.4)), max(n - 5, 1))
-        test_window = min(max(20, int(n * 0.1)), max(n - min_train, 5))
-        fold_splits = []
-        train_end = min_train
-        while train_end + test_window <= n:
-            test_end = min(train_end + test_window, n)
-            if test_end - train_end >= 20:
-                fold_splits.append((0, train_end, train_end, test_end))
-            train_end += test_window
-        if not fold_splits:
-            split_idx = int(n * train_frac)
-            fold_splits = [(0, split_idx, split_idx, n)]
-
-        def neg_pen_ll(params: np.ndarray) -> float:
-            log_q, log_c, phi, log_nu = params
+        n_train = int(n * train_frac)
+        returns_train = returns[:n_train]
+        vol_train = vol[:n_train]
+        
+        # =====================================================================
+        # STAGE 1: Base parameters (q, c, φ) with state regularization
+        # =====================================================================
+        def neg_ll_base(params):
+            log_q, c, phi = params
             q = 10 ** log_q
-            c = 10 ** log_c
-            phi_clip = float(np.clip(phi, phi_min, phi_max))
-            nu = 10 ** log_nu
-            if q <= 0 or c <= 0 or not np.isfinite(q) or not np.isfinite(c) or nu < nu_min or nu > nu_max:
-                return 1e12
-            total_ll_oos = 0.0
-            total_obs = 0
-            all_standardized = []
-            for tr_start, tr_end, te_start, te_end in fold_splits:
-                try:
-                    ret_train = returns_robust[tr_start:tr_end]
-                    vol_train = vol[tr_start:tr_end]
-                    if len(ret_train) < 3:
-                        continue
-                    mu_filt_train, P_filt_train, _ = PhiStudentTDriftModel.filter_phi(
-                        ret_train, vol_train, q, c, phi_clip, nu
-                    )
-                    mu_pred = float(mu_filt_train[-1])
-                    P_pred = float(P_filt_train[-1])
-                    ll_fold = 0.0
-                    for t in range(te_start, te_end):
-                        mu_pred = phi_clip * mu_pred
-                        P_pred = (phi_clip ** 2) * P_pred + q
-                        ret_t = float(returns_robust[t]) if np.ndim(returns_robust[t]) == 0 else float(returns_robust[t].item())
-                        vol_t = float(vol[t]) if np.ndim(vol[t]) == 0 else float(vol[t].item())
-                        R = c * (vol_t ** 2)
-                        innovation = ret_t - mu_pred
-                        forecast_var = P_pred + R
-
-                        if forecast_var > 1e-12:
-                            # FIX: Convert variance to Student-t scale
-                            # For Student-t: Var = scale² × ν/(ν-2), so scale = sqrt(Var × (ν-2)/ν)
-                            if nu > 2:
-                                forecast_scale = np.sqrt(forecast_var * (nu - 2) / nu)
-                            else:
-                                forecast_scale = np.sqrt(forecast_var)
-                            ll_contrib = PhiStudentTDriftModel.logpdf(ret_t, nu, mu_pred, forecast_scale)
-                            ll_fold += ll_contrib
-                            if len(all_standardized) < 1000:
-                                all_standardized.append(float(innovation / forecast_scale))
-
-                        nu_adjust = min(nu / (nu + 3.0), 1.0)
-                        K = nu_adjust * P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
-                        mu_pred = mu_pred + K * innovation
-                        P_pred = (1.0 - K) * P_pred
-
-                    total_ll_oos += ll_fold
-                    total_obs += (te_end - te_start)
-
-                except Exception:
-                    continue
             
-            if total_obs == 0:
-                return 1e12
-            
-            avg_ll = total_ll_oos / max(total_obs, 1)
-            calibration_penalty = 0.0
-            if len(all_standardized) >= 30:
-                try:
-                    pit_values = student_t.cdf(all_standardized, df=nu)
-                    ks_result = kstest(pit_values, 'uniform')
-                    ks_stat = float(ks_result.statistic)
-                    if ks_stat > 0.05:
-                        calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
-                        if ks_stat > 0.10:
-                            calibration_penalty -= 100.0 * (ks_stat - 0.10)
-                        if ks_stat > 0.15:
-                            calibration_penalty -= 200.0 * (ks_stat - 0.15)
-                except Exception:
-                    pass
-            
-            prior_scale = 1.0 / max(total_obs, 100)
-            log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
-            log_c_target = np.log10(0.9)
-            log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
-            
-            # Explicit φ shrinkage prior
-            phi_lambda_effective = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale
-            phi_tau = _lambda_to_tau(phi_lambda_effective)
-            log_prior_phi = _phi_shrinkage_log_prior(
-                phi_r=phi_clip,
-                phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
-                tau=phi_tau
+            # Create config with base params only (disable enhancements)
+            cfg = UnifiedStudentTConfig(
+                q=q, c=c, phi=phi, nu_base=nu_base,
+                alpha_asym=0.0,      # No asymmetry
+                gamma_vov=0.0,       # No VoV
+                q_stress_ratio=1.0,  # No MS-q
             )
-            log_prior_nu = -0.05 * prior_scale * (log_nu - np.log10(6.0)) ** 2
             
-            # ================================================================
-            # ELITE FIX 3: Smooth quadratic φ-q regularization
-            # ================================================================
-            # Prevents deterministic state evolution collapse (φ→1 AND q→0)
-            # When |φ| > 0.95 AND log₁₀(q) < -7, state becomes deterministic
-            # → Predictive variance collapses → Overconfident forecasts → PIT failure
-            #
-            # Uses smooth quadratic penalties (not multiplicative) for optimizer stability
-            # Strong penalty (500×) because this is the ROOT CAUSE of PIT failures
-            # ================================================================
-            phi_near_one_penalty = max(0.0, abs(phi_clip) - 0.95) ** 2
-            q_very_small_penalty = max(0.0, -7.0 - log_q) ** 2
-            state_regularization = -500.0 * (phi_near_one_penalty + q_very_small_penalty)
-
-            penalized_ll = avg_ll + log_prior_q + log_prior_c + log_prior_phi + log_prior_nu + calibration_penalty + state_regularization
-            return -penalized_ll if np.isfinite(penalized_ll) else 1e12
-
-        log_q_min = np.log10(q_min)
-        log_q_max = np.log10(q_max)
-        log_c_min = np.log10(c_min)
-        log_c_max = np.log10(c_max)
-
-        # Optimized grid search with parallel evaluation (February 2026)
-        # Use coarser grid (3x2x3 = 18) with parallel execution
-        lq_grid = np.linspace(log_q_min, log_q_max, 3)
-        lc_grid = np.linspace(log_c_min, log_c_max, 2)
-        lp_grid = np.array([phi_min, 0.0, phi_max * 0.5])
+            try:
+                _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+            except Exception:
+                return 1e10
+            
+            if not np.isfinite(ll):
+                return 1e10
+            
+            # State regularization: smooth quadratic penalty for collapse
+            phi_pen = max(0.0, abs(phi) - 0.95)
+            q_pen = max(0.0, -7.0 - log_q)
+            state_reg = 50.0 * (phi_pen ** 2 + q_pen ** 2)
+            
+            # Extra penalty for joint collapse (φ→1 AND q→0)
+            if phi_pen > 0 and q_pen > 0:
+                state_reg += 30.0 * phi_pen * q_pen
+            
+            return -ll / n_train + state_reg
         
-        # Generate all grid points
-        grid_points = [(lq, lc, lp) 
-                       for lq in lq_grid 
-                       for lc in lc_grid 
-                       for lp in lp_grid]
+        # Initial guess
+        log_q_init = np.log10(max(config.q_min * 10, 1e-7))
+        c_init = (config.c_min + config.c_max) / 2
+        x0_base = [log_q_init, c_init, 0.0]
         
-        def _eval_point(point):
-            lq, lc, lp = point
-            val = neg_pen_ll(np.array([lq, lc, lp]))
-            return val, point
-        
-        grid_best = (adaptive_prior_mean, np.log10(0.9), 0.0)
-        best_neg = float('inf')
-        
-        # Use 4 threads for parallel evaluation
-        try:
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                results = list(executor.map(_eval_point, grid_points))
-            for val, point in results:
-                if val < best_neg:
-                    best_neg = val
-                    grid_best = point
-        except Exception:
-            # Fallback to sequential if parallel fails
-            for point in grid_points:
-                val = neg_pen_ll(np.array(point))
-                if val < best_neg:
-                    best_neg = val
-                    grid_best = point
-        
-        bounds = [(log_q_min, log_q_max), (log_c_min, log_c_max), (phi_min, phi_max)]
-        start_points = [
-            np.array(grid_best),
-            np.array([adaptive_prior_mean, np.log10(0.9), 0.0])
+        bounds_base = [
+            (np.log10(config.q_min), -2),   # log₁₀(q)
+            (config.c_min, config.c_max),    # c
+            (-0.99, 0.99),                   # φ
         ]
-        best_res = None
-        best_fun = float('inf')
-        for x0 in start_points:
-            try:
-                res = minimize(
-                    neg_pen_ll, x0=x0, method='L-BFGS-B',
-                    bounds=bounds, options={'maxiter': 120, 'ftol': 1e-6}
-                )
-                if res.fun < best_fun:
-                    best_fun = res.fun
-                    best_res = res
-            except Exception:
-                continue
-
-        if best_res is not None and best_res.success:
-            lq_opt, lc_opt, phi_opt = best_res.x
-            q_opt = 10 ** lq_opt
-            c_opt = 10 ** lc_opt
-            phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
-            ll_opt = -best_res.fun
-        else:
-            lq_opt, lc_opt, phi_opt = grid_best
-            q_opt = 10 ** lq_opt
-            c_opt = 10 ** lc_opt
-            phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
-            ll_opt = -best_neg
-
-        # =====================================================================
-        # ELITE TUNING: Curvature and Fragility Analysis (February 2026)
-        # =====================================================================
-        elite_diagnostics = {}
-        if ELITE_TUNING_ENABLED:
-            optimal_params = np.array([lq_opt, lc_opt, phi_opt])
-            param_ranges = np.array([log_q_max - log_q_min, log_c_max - log_c_min, phi_max - phi_min])
-            
-            # Compute curvature penalty (prefer flat regions)
-            try:
-                curvature_penalty, condition_number, curv_diag = _compute_curvature_penalty(
-                    neg_pen_ll, optimal_params, bounds, HESSIAN_EPSILON, MAX_CONDITION_NUMBER
-                )
-                elite_diagnostics['curvature'] = curv_diag
-                elite_diagnostics['condition_number'] = float(condition_number)
-            except Exception:
-                curvature_penalty = 0.0
-                condition_number = 1.0
-                elite_diagnostics['curvature'] = {'error': 'computation_failed'}
-            
-            # Compute coherence (fold-to-fold stability)
-            # Note: Would need fold_optimal_params from per-fold optimization
-            # For now, we provide placeholder indicating single-optimum result
-            elite_diagnostics['coherence'] = {
-                'coherence_penalty': 0.0,
-                'n_folds_with_separate_optima': 0,
-                'note': 'coherence computed at tune.py level with per-fold optima'
-            }
-            
-            # Compute fragility index
-            try:
-                fragility_index, frag_components = _compute_fragility_index(
-                    condition_number, np.array([]), 0.0
-                )
-                elite_diagnostics['fragility_index'] = float(fragility_index)
-                elite_diagnostics['fragility_components'] = frag_components
-                elite_diagnostics['fragility_warning'] = fragility_index > 0.5
-            except Exception:
-                elite_diagnostics['fragility_index'] = 0.5
-                elite_diagnostics['fragility_warning'] = False
         
-        n_obs_approx = len(returns)
-        prior_scale_diag = 1.0 / max(n_obs_approx, 100)
-        phi_lambda_eff_diag = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale_diag
-        phi_tau_diag = _lambda_to_tau(phi_lambda_eff_diag)
-        phi_prior_diag = _compute_phi_prior_diagnostics(
-            phi_r=phi_opt,
-            phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
-            tau=phi_tau_diag,
-            log_likelihood=ll_opt
+        try:
+            result_base = minimize(
+                neg_ll_base, x0_base, bounds=bounds_base, 
+                method='L-BFGS-B', options={'maxiter': 200}
+            )
+            stage1_success = result_base.success
+        except Exception as e:
+            stage1_success = False
+            result_base = None
+        
+        if not stage1_success:
+            # Graceful degradation: return auto-configured defaults
+            return config, {
+                "stage": 0, 
+                "success": False, 
+                "error": "Stage 1 optimization failed",
+                "degraded": True,
+            }
+        
+        log_q_opt, c_opt, phi_opt = result_base.x
+        q_opt = 10 ** log_q_opt
+        
+        # =====================================================================
+        # STAGE 2: VoV gamma (freeze base parameters)
+        # =====================================================================
+        def neg_ll_vov(gamma_arr):
+            gamma = gamma_arr[0]
+            cfg = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
+                alpha_asym=0.0,
+                gamma_vov=gamma,
+                q_stress_ratio=1.0,
+            )
+            try:
+                _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+            except Exception:
+                return 1e10
+            
+            if not np.isfinite(ll):
+                return 1e10
+            
+            # Regularization: keep gamma near prior (0.3)
+            reg = 10.0 * (gamma - 0.3) ** 2
+            return -ll / n_train + reg
+        
+        try:
+            result_vov = minimize(
+                neg_ll_vov, [config.gamma_vov], 
+                bounds=[(0.0, 1.0)], method='L-BFGS-B'
+            )
+            gamma_opt = result_vov.x[0] if result_vov.success else config.gamma_vov
+        except Exception:
+            gamma_opt = config.gamma_vov
+        
+        # =====================================================================
+        # STAGE 3: MS-q sensitivity (freeze base + VoV)
+        # =====================================================================
+        def neg_ll_msq(sens_arr):
+            sens = sens_arr[0]
+            cfg = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
+                alpha_asym=0.0,
+                gamma_vov=gamma_opt,
+                ms_sensitivity=sens,
+                q_stress_ratio=10.0,
+            )
+            try:
+                _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+            except Exception:
+                return 1e10
+            
+            if not np.isfinite(ll):
+                return 1e10
+            
+            # Regularization: keep sensitivity near 2.0
+            reg = 10.0 * (sens - 2.0) ** 2
+            return -ll / n_train + reg
+        
+        try:
+            result_msq = minimize(
+                neg_ll_msq, [2.0], 
+                bounds=[(1.0, 3.0)], method='L-BFGS-B'
+            )
+            sens_opt = result_msq.x[0] if result_msq.success else 2.0
+        except Exception:
+            sens_opt = 2.0
+        
+        # =====================================================================
+        # STAGE 4: Asymmetry alpha (freeze all, fine-tune)
+        # =====================================================================
+        def neg_ll_asym(alpha_arr):
+            alpha = alpha_arr[0]
+            cfg = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
+                alpha_asym=alpha,
+                gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt,
+                q_stress_ratio=10.0,
+            )
+            try:
+                _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+            except Exception:
+                return 1e10
+            
+            if not np.isfinite(ll):
+                return 1e10
+            
+            # Regularization: keep alpha small (penalize strong asymmetry)
+            reg = 10.0 * alpha ** 2
+            return -ll / n_train + reg
+        
+        try:
+            result_asym = minimize(
+                neg_ll_asym, [config.alpha_asym], 
+                bounds=[(-0.3, 0.3)], method='L-BFGS-B'
+            )
+            alpha_opt = result_asym.x[0] if result_asym.success else config.alpha_asym
+        except Exception:
+            alpha_opt = config.alpha_asym
+        
+        # =====================================================================
+        # HESSIAN CONDITION CHECK (graceful degradation)
+        # =====================================================================
+        try:
+            if hasattr(result_base, 'hess_inv'):
+                hess_inv = result_base.hess_inv
+                if hasattr(hess_inv, 'todense'):
+                    hess_inv = hess_inv.todense()
+                cond_num = float(np.linalg.cond(hess_inv))
+            else:
+                cond_num = 1.0
+        except Exception:
+            cond_num = 1e10
+        
+        degraded = False
+        if cond_num > 1e6:
+            # Graceful degradation: disable advanced features
+            gamma_opt = 0.0
+            sens_opt = 2.0
+            alpha_opt = 0.0
+            degraded = True
+        elif cond_num < 1e-6:
+            # Warning: very flat region, optimization may be unstable
+            pass
+        
+        # =====================================================================
+        # STAGE 5: ELITE VARIANCE INFLATION CALIBRATION (February 2026)
+        # =====================================================================
+        # Run filter to get predictive values, then optimize β for PIT uniformity
+        temp_config = UnifiedStudentTConfig(
+            q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
+            alpha_asym=alpha_opt, gamma_vov=gamma_opt,
+            ms_sensitivity=sens_opt, q_stress_ratio=10.0,
+            vov_damping=0.3, variance_inflation=1.0,
         )
-
+        
+        try:
+            _, _, mu_pred_full, S_pred_full, _ = cls.filter_phi_unified(
+                returns, vol, temp_config
+            )
+            
+            # Compute optimal variance inflation on full dataset
+            beta_opt = compute_optimal_variance_inflation(
+                returns, mu_pred_full, S_pred_full, nu_base
+            )
+            
+            # Clamp to reasonable range [0.1, 5.0]
+            # Note: β < 1 is common when model overestimates variance (S_pred > returns_var)
+            beta_opt = float(np.clip(beta_opt, 0.1, 5.0))
+        except Exception:
+            beta_opt = 1.0  # Fallback: no inflation
+        
+        # =====================================================================
+        # BUILD FINAL CONFIG
+        # =====================================================================
+        final_config = UnifiedStudentTConfig(
+            q=q_opt,
+            c=c_opt,
+            phi=phi_opt,
+            nu_base=nu_base,
+            alpha_asym=alpha_opt,
+            gamma_vov=gamma_opt,
+            ms_sensitivity=sens_opt,
+            q_stress_ratio=10.0,
+            vov_damping=0.3,
+            variance_inflation=beta_opt,  # ELITE FIX: calibrated variance inflation
+            q_min=config.q_min,
+            c_min=config.c_min,
+            c_max=config.c_max,
+        )
+        
         diagnostics = {
-            'nu_fixed': float(nu_fixed),
-            'grid_best_q': float(10 ** grid_best[0]),
-            'grid_best_c': float(10 ** grid_best[1]),
-            'grid_best_phi': float(grid_best[2]),
-            'refined_best_q': float(q_opt),
-            'refined_best_c': float(c_opt),
-            'refined_best_phi': float(phi_opt),
-            'prior_applied': adaptive_lambda > 0,
-            'prior_log_q_mean': float(adaptive_prior_mean),
-            'prior_lambda': float(adaptive_lambda),
-            'vol_cv': float(vol_cv),
-            'rv_ratio': float(rv_ratio),
-            'n_folds': int(len(fold_splits)),
-            'optimization_successful': best_res is not None and (best_res.success if best_res else False),
-            'elite_tuning_enabled': ELITE_TUNING_ENABLED,
-            'elite_diagnostics': elite_diagnostics if ELITE_TUNING_ENABLED else None,
-            **phi_prior_diag,
+            "stage": 5,  # Now 5 stages with variance inflation
+            "success": True,
+            "degraded": degraded,
+            "hessian_cond": cond_num,
+            "q": float(q_opt),
+            "c": float(c_opt),
+            "phi": float(phi_opt),
+            "log10_q": float(log_q_opt),  # FIX: was adaptive_prior_mean
+            "gamma_vov": float(gamma_opt),
+            "ms_sensitivity": float(sens_opt),
+            "alpha_asym": float(alpha_opt),
+            "variance_inflation": float(beta_opt),  # ELITE FIX
+            "c_bounds": (float(config.c_min), float(config.c_max)),
+            "q_min": float(config.q_min),
         }
+        
+        return final_config, diagnostics
 
-        return q_opt, c_opt, phi_opt, ll_opt, diagnostics
-
-    @staticmethod
+    @classmethod
     def pit_ks_unified(
         cls,
         returns: np.ndarray,
@@ -1994,6 +1999,9 @@ class PhiStudentTDriftModel:
         
         Uses predictive values (mu_pred, S_pred) rather than posterior,
         which is the correct approach for proper PIT calibration.
+        
+        ELITE FIX (February 2026): Applies variance_inflation β to S_pred
+        to calibrate predictive variance for uniform PIT distribution.
         
         Args:
             returns: Return series
@@ -2015,16 +2023,26 @@ class PhiStudentTDriftModel:
         alpha = config.alpha_asym
         k_asym = config.k_asym
         
+        # ELITE FIX (February 2026): Apply variance_inflation to S_pred
+        # The variance_inflation β calibrates predictive variance to achieve uniform PIT
+        # β < 1: Model overestimates variance → reduce S_pred
+        # β > 1: Model underestimates variance → increase S_pred
+        variance_inflation = getattr(config, 'variance_inflation', 1.0)
+        
         for t in range(n):
             innovation = returns[t] - mu_pred[t]
-            scale = np.sqrt(max(S_pred[t], 1e-12))
+            
+            # CRITICAL: Apply variance inflation to predictive variance
+            S_calibrated = S_pred[t] * variance_inflation
+            
+            scale = np.sqrt(max(S_calibrated, 1e-12))
             
             # Effective ν (smooth asymmetric)
             nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
             
             # Student-t scale (variance to scale conversion)
             if nu_eff > 2:
-                t_scale = np.sqrt(S_pred[t] * (nu_eff - 2) / nu_eff)
+                t_scale = np.sqrt(S_calibrated * (nu_eff - 2) / nu_eff)
             else:
                 t_scale = scale
             
@@ -2421,11 +2439,9 @@ class PhiStudentTDriftModel:
             # Inlined log-pdf calculation with chosen ν
             # FIX: Convert variance S to Student-t scale using chosen inv_nu
             # inv_nu = 1/nu, so (nu-2)/nu = 1 - 2*inv_nu
-            scale_factor = 1.0 - 2.0 * inv_nu
-            if scale_factor > 0:
-                forecast_scale = np.sqrt(S * scale_factor)
-            else:
-                forecast_scale = np.sqrt(S)
+            scale_factor = max(1.0 - 2.0 * inv_nu, 0.01)  # (ν-2)/ν
+            forecast_scale = np.sqrt(S * scale_factor)
+            
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
                 ll_t = log_norm - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
@@ -3188,8 +3204,9 @@ class PhiStudentTDriftModel:
                 returns, mu_pred_full, S_pred_full, nu_base
             )
             
-            # Clamp to reasonable range
-            beta_opt = float(np.clip(beta_opt, 0.5, 3.0))
+            # Clamp to reasonable range [0.1, 5.0]
+            # Note: β < 1 is common when model overestimates variance (S_pred > returns_var)
+            beta_opt = float(np.clip(beta_opt, 0.1, 5.0))
         except Exception:
             beta_opt = 1.0  # Fallback: no inflation
         
@@ -3220,7 +3237,7 @@ class PhiStudentTDriftModel:
             "q": float(q_opt),
             "c": float(c_opt),
             "phi": float(phi_opt),
-            "log10_q": float(adaptive_prior_mean),
+            "log10_q": float(log_q_opt),  # FIX: was adaptive_prior_mean
             "gamma_vov": float(gamma_opt),
             "ms_sensitivity": float(sens_opt),
             "alpha_asym": float(alpha_opt),
@@ -3231,7 +3248,7 @@ class PhiStudentTDriftModel:
         
         return final_config, diagnostics
 
-    @staticmethod
+    @classmethod
     def pit_ks_unified(
         cls,
         returns: np.ndarray,
@@ -3244,6 +3261,9 @@ class PhiStudentTDriftModel:
         
         Uses predictive values (mu_pred, S_pred) rather than posterior,
         which is the correct approach for proper PIT calibration.
+        
+        ELITE FIX (February 2026): Applies variance_inflation β to S_pred
+        to calibrate predictive variance for uniform PIT distribution.
         
         Args:
             returns: Return series
@@ -3265,16 +3285,26 @@ class PhiStudentTDriftModel:
         alpha = config.alpha_asym
         k_asym = config.k_asym
         
+        # ELITE FIX (February 2026): Apply variance_inflation to S_pred
+        # The variance_inflation β calibrates predictive variance to achieve uniform PIT
+        # β < 1: Model overestimates variance → reduce S_pred
+        # β > 1: Model underestimates variance → increase S_pred
+        variance_inflation = getattr(config, 'variance_inflation', 1.0)
+        
         for t in range(n):
             innovation = returns[t] - mu_pred[t]
-            scale = np.sqrt(max(S_pred[t], 1e-12))
+            
+            # CRITICAL: Apply variance inflation to predictive variance
+            S_calibrated = S_pred[t] * variance_inflation
+            
+            scale = np.sqrt(max(S_calibrated, 1e-12))
             
             # Effective ν (smooth asymmetric)
             nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
             
             # Student-t scale (variance to scale conversion)
             if nu_eff > 2:
-                t_scale = np.sqrt(S_pred[t] * (nu_eff - 2) / nu_eff)
+                t_scale = np.sqrt(S_calibrated * (nu_eff - 2) / nu_eff)
             else:
                 t_scale = scale
             
@@ -3317,4 +3347,3 @@ class PhiStudentTDriftModel:
         }
         
         return float(ks_result.statistic), float(ks_result.pvalue), metrics
-
