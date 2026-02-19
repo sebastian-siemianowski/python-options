@@ -49,7 +49,9 @@ class PITTestResult:
     phi: float
     nu: float
     variance_inflation: float
-    fit_success: bool
+    gamma_vov: float = 0.0
+    alpha_asym: float = 0.0
+    fit_success: bool = False
     error: Optional[str] = None
     
     @property
@@ -111,7 +113,8 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
                 symbol=symbol, pit_pvalue=0.0, ks_statistic=1.0,
                 histogram_mad=1.0, calibration_grade='F',
                 log10_q=float('nan'), c=float('nan'), phi=float('nan'),
-                nu=nu_base, variance_inflation=1.0, fit_success=False,
+                nu=nu_base, variance_inflation=1.0, gamma_vov=0.0, alpha_asym=0.0,
+                fit_success=False,
                 error=diagnostics.get('error', 'Optimization failed')
             )
         mu_filt, P_filt, mu_pred, S_pred, ll = PhiStudentTDriftModel.filter_phi_unified(
@@ -131,6 +134,8 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
             phi=float(config.phi),
             nu=float(config.nu_base),
             variance_inflation=float(getattr(config, 'variance_inflation', 1.0)),
+            gamma_vov=float(getattr(config, 'gamma_vov', 0.0)),
+            alpha_asym=float(getattr(config, 'alpha_asym', 0.0)),
             fit_success=True,
         )
     except Exception as e:
@@ -138,7 +143,8 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
             symbol=symbol, pit_pvalue=0.0, ks_statistic=1.0,
             histogram_mad=1.0, calibration_grade='F',
             log10_q=float('nan'), c=float('nan'), phi=float('nan'),
-            nu=nu_base, variance_inflation=1.0, fit_success=False,
+            nu=nu_base, variance_inflation=1.0, gamma_vov=0.0, alpha_asym=0.0,
+            fit_success=False,
             error=str(e)
         )
 
@@ -148,7 +154,8 @@ def print_test_result(result):
     mad_status = 'X' if result.mad_failed else 'OK'
     if result.fit_success:
         print(f'  {result.symbol:12s}  log10(q)={result.log10_q:+.2f}  c={result.c:.3f}  '
-              f'phi={result.phi:+.2f}  beta={result.variance_inflation:.2f}  |  '
+              f'phi={result.phi:+.2f}  beta={result.variance_inflation:.2f}  '
+              f'γ={result.gamma_vov:.2f}  α={result.alpha_asym:+.3f}  |  '
               f'PIT_p={result.pit_pvalue:.4f} {status}  MAD={result.histogram_mad:.4f} {mad_status}  '
               f'Grade={result.calibration_grade}')
     else:

@@ -299,10 +299,13 @@ class UnifiedStudentTConfig:
             c_max = 10.0
         
         # VoV from realized vol-of-vol
+        # FIX (Feb 2026): More sensitive formula for gamma variation across assets
         log_vol = np.log(np.maximum(vol_clean, 1e-10))
         if len(log_vol) > 1:
             vol_cv = float(np.std(np.diff(log_vol)))
-            gamma_vov = 0.3 * float(np.clip(vol_cv / 0.02, 0, 1)) if vol_cv > 0.01 else 0.0
+            # Linear scaling: vol_cv typical range [0.01, 0.05] -> gamma [0.15, 0.75]
+            # Formula: gamma = 15 * vol_cv, clipped to [0.0, 1.0]
+            gamma_vov = float(np.clip(15.0 * vol_cv, 0.0, 1.0)) if vol_cv > 0.005 else 0.0
         else:
             gamma_vov = 0.0
         
@@ -3079,8 +3082,8 @@ class PhiStudentTDriftModel:
             if not np.isfinite(ll):
                 return 1e10
             
-            # Regularization: keep gamma near prior (0.3)
-            reg = 10.0 * (gamma - 0.3) ** 2
+            # FIX: Reduced reg
+            reg = 1.0 * (gamma - config.gamma_vov) ** 2
             return -ll / n_train + reg
         
         try:
