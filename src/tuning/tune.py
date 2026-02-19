@@ -1692,19 +1692,20 @@ def tune_asset_q(
             asset=asset,  # FIX #4: Asset-class adaptive c bounds
         )
         
-        # Compute model weights using regime-aware BIC + Hyvärinen + CRPS (February 2026)
+        # Compute model weights using regime-aware BIC + Hyvärinen + CRPS + PIT (February 2026)
         bic_values = {m: models[m].get("bic", float('inf')) for m in models}
         hyvarinen_values = {m: models[m].get("hyvarinen_score", float('-inf')) for m in models}
         crps_values = {m: models[m].get("crps", float('inf')) for m in models if models[m].get("crps") is not None}
+        pit_pvalues = {m: models[m].get("pit_ks_pvalue") for m in models if models[m].get("pit_ks_pvalue") is not None}
         
-        # Use regime-aware weights if CRPS available, else fallback to BIC-only
+        # Use regime-aware weights with PIT penalty (February 2026 - Elite Architecture)
         if crps_values and CRPS_SCORING_ENABLED:
             model_weights, weight_meta = compute_regime_aware_model_weights(
-                bic_values, hyvarinen_values, crps_values, regime=None
+                bic_values, hyvarinen_values, crps_values, pit_pvalues=pit_pvalues, regime=None
             )
         else:
             model_weights = compute_bic_model_weights(bic_values)
-            weight_meta = {"scoring_method": "bic_only", "crps_enabled": False}
+            weight_meta = {"scoring_method": "bic_only", "crps_enabled": False, "pit_enabled": False}
         
         # Store standardized scores and weights in each model
         for m in models:
@@ -1727,8 +1728,14 @@ def tune_asset_q(
                 }
                 models[m]['crps_scoring_enabled'] = weight_meta.get('crps_enabled', False)
         
-        # Find best model by BIC
-        best_model = min(bic_values.items(), key=lambda x: x[1])[0]
+        # Find best model by COMBINED SCORE (BIC + Hyvärinen + CRPS)
+        # Combined score formula: w_bic * BIC_std - w_hyv * Hyv_std + w_crps * CRPS_std
+        # Lower combined score = better model (February 2026 - Elite Architecture Fix)
+        combined_scores = weight_meta.get('combined_scores_standardized', {})
+        best_model = min(
+            ((m, s) for m, s in combined_scores.items() if s is not None and np.isfinite(s)),
+            key=lambda x: x[1]
+        )[0]
         best_params = models[best_model]
         
         # =====================================================================
@@ -2112,7 +2119,7 @@ def tune_asset_q(
             "phi": best_params.get("phi"),
             "nu": best_params.get("nu"),
             "noise_model": best_model,
-            "best_model_by_bic": best_model,
+            "best_model": best_model,  # Selected by combined BIC+Hyv+CRPS score
             # Unified Student-t specific parameters (February 2026 - Elite Architecture)
             "unified_model": best_params.get("unified_model", False),
             "alpha_asym": best_params.get("alpha_asym"),
@@ -4424,11 +4431,13 @@ def fit_regime_model_posterior(
         )
         
         # =====================================================================
-        # Step 2: Extract BIC, Hyvärinen, CRPS, and compute LFO-CV scores
+        # Step 2: Extract BIC, Hyvärinen, CRPS, PIT and compute LFO-CV scores
         # =====================================================================
         bic_values = {m: models[m].get("bic", float('inf')) for m in models}
         hyvarinen_scores = {m: models[m].get("hyvarinen_score", float('-inf')) for m in models}
         crps_values = {m: models[m].get("crps", float('inf')) for m in models if models[m].get("crps") is not None}
+        # February 2026 - Elite PIT calibration: extract PIT p-values for regime-aware scoring
+        pit_pvalues = {m: models[m].get("pit_ks_pvalue") for m in models if models[m].get("pit_ks_pvalue") is not None}
         
         # LFO-CV scores for proper out-of-sample model selection (February 2026)
         lfo_cv_scores = {}
@@ -4495,23 +4504,29 @@ def fit_regime_model_posterior(
         weight_metadata = None
         
         if hyvarinen_disabled:
-            # Small samples: use BIC + CRPS only (Hyvärinen unreliable)
+            # Small samples: use BIC + CRPS + PIT only (Hyvärinen unreliable)
             raw_weights, weight_metadata = compute_regime_aware_model_weights(
                 bic_values, hyvarinen_scores, crps_values,
+                pit_pvalues=pit_pvalues,  # February 2026 - Elite PIT calibration
                 regime=regime, 
                 bic_weight=0.50, hyvarinen_weight=0.0, crps_weight=0.50,
                 lambda_entropy=DEFAULT_ENTROPY_LAMBDA
             )
             w_used = weight_metadata.get('weights_used', {})
-            _log(f"     ⚠️  Hyvärinen disabled (n={n_samples} < {MIN_HYVARINEN_SAMPLES}) → BIC+CRPS only (bic={w_used.get('bic', 0):.2f}, crps={w_used.get('crps', 0):.2f})")
+            pit_penalty_active = any(v > 0 for v in weight_metadata.get('pit_penalty_applied', {}).values())
+            pit_indicator = " +PIT_penalty" if pit_penalty_active else ""
+            _log(f"     ⚠️  Hyvärinen disabled (n={n_samples} < {MIN_HYVARINEN_SAMPLES}) → BIC+CRPS (bic={w_used.get('bic', 0):.2f}, crps={w_used.get('crps', 0):.2f}){pit_indicator}")
         else:
-            # Full regime-aware method: BIC + Hyvärinen + CRPS
+            # Full regime-aware method: BIC + Hyvärinen + CRPS + PIT
             raw_weights, weight_metadata = compute_regime_aware_model_weights(
-                bic_values, hyvarinen_scores, crps_values, 
+                bic_values, hyvarinen_scores, crps_values,
+                pit_pvalues=pit_pvalues,  # February 2026 - Elite PIT calibration
                 regime=regime, lambda_entropy=DEFAULT_ENTROPY_LAMBDA
             )
             w_used = weight_metadata.get('weights_used', {})
-            _log(f"     → Using regime-aware BIC+Hyvärinen+CRPS selection (regime={regime}, bic={w_used.get('bic', 0):.2f}, hyv={w_used.get('hyvarinen', 0):.2f}, crps={w_used.get('crps', 0):.2f})")
+            pit_penalty_active = any(v > 0 for v in weight_metadata.get('pit_penalty_applied', {}).values())
+            pit_indicator = " +PIT_penalty" if pit_penalty_active else ""
+            _log(f"     → Using regime-aware BIC+Hyvärinen+CRPS selection (regime={regime}, bic={w_used.get('bic', 0):.2f}, hyv={w_used.get('hyvarinen', 0):.2f}, crps={w_used.get('crps', 0):.2f}){pit_indicator}")
         
         # Store combined_score and entropy-regularized weights in each model
         for m in models:
@@ -5599,7 +5614,7 @@ Examples:
                             model_comparisons[asset_name] = {
                                 'model_comparison': global_result['model_comparison'],
                                 'selected_model': global_result.get('noise_model', 'unknown'),
-                                'best_model_by_bic': global_result.get('best_model_by_bic', 'unknown'),
+                                'best_model': global_result.get('best_model', global_result.get('best_model_by_bic', 'unknown')),
                                 'q': global_result.get('q'),
                                 'c': global_result.get('c'),
                                 'phi': global_result.get('phi'),
@@ -5764,7 +5779,7 @@ Examples:
             bic_val = data.get('bic', float('nan'))
             pit_p = data.get('pit_ks_pvalue', float('nan'))
             model = _model_label(raw_data)
-            best_model = data.get('best_model_by_bic', 'kalman_drift')
+            best_model = data.get('best_model', data.get('best_model_by_bic', 'kalman_drift'))
 
             log10_q = np.log10(q_val) if q_val > 0 else float('nan')
 
@@ -5844,7 +5859,7 @@ Examples:
             mc = model_comparisons[asset_name]
             model_comp = mc.get('model_comparison', {})
             selected = mc.get('selected_model', 'unknown')
-            best_bic = mc.get('best_model_by_bic', 'unknown')
+            best_bic = mc.get('best_model', mc.get('best_model_by_bic', 'unknown'))
             model_sel_method = mc.get('model_selection_method', 'combined')
             
             print(f"\n  {asset_name} (selection: {model_sel_method}):")

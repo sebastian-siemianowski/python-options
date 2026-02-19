@@ -2365,7 +2365,7 @@ Examples:
                             model_comparisons[asset_name] = {
                                 'model_comparison': global_result['model_comparison'],
                                 'selected_model': global_result.get('noise_model', 'unknown'),
-                                'best_model_by_bic': global_result.get('best_model_by_bic', 'unknown'),
+                                'best_model': global_result.get('best_model', global_result.get('best_model_by_bic', 'unknown')),
                                 'q': global_result.get('q'),
                                 'c': global_result.get('c'),
                                 'phi': global_result.get('phi'),

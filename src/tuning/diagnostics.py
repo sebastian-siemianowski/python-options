@@ -1137,6 +1137,7 @@ def compute_crps_model_weights(
 # =============================================================================
 
 # Regime-specific weight configurations: (bic_weight, hyvarinen_weight, crps_weight)
+# PIT is NOT a weight - it's a conditional penalty applied only when p < 0.01
 REGIME_SCORING_WEIGHTS = {
     0: (0.30, 0.30, 0.40),  # Unknown: balanced with structural geometry checks
     1: (0.25, 0.20, 0.55),  # Crisis: CRPS critical, but maintain stability pressure
@@ -1144,6 +1145,11 @@ REGIME_SCORING_WEIGHTS = {
     3: (0.45, 0.30, 0.25),  # Ranging: BIC heavy, less CRPS (noise-dominated)
     4: (0.30, 0.40, 0.30),  # Low Vol: curvature misspecification visible, Hyv high
 }
+
+# PIT Catastrophic Penalty (February 2026 - Elite Architecture)
+# Only applied when PIT p-value < 0.01 (catastrophic miscalibration)
+PIT_CATASTROPHIC_THRESHOLD = 0.01
+PIT_CATASTROPHIC_PENALTY = 0.5  # Additive penalty to combined score
 
 DEFAULT_BIC_WEIGHT_COMBINED = 0.35
 DEFAULT_HYVARINEN_WEIGHT_COMBINED = 0.30
@@ -1155,6 +1161,7 @@ def compute_regime_aware_model_weights(
     bic_values: Dict[str, float],
     hyvarinen_scores: Dict[str, float],
     crps_values: Optional[Dict[str, float]] = None,
+    pit_pvalues: Optional[Dict[str, float]] = None,
     regime: Optional[int] = None,
     bic_weight: Optional[float] = None,
     hyvarinen_weight: Optional[float] = None,
@@ -1164,37 +1171,62 @@ def compute_regime_aware_model_weights(
 ) -> Tuple[Dict[str, float], Dict[str, Any]]:
     """
     Compute regime-aware model weights using BIC + Hyvärinen + CRPS.
+    
+    February 2026 Elite Architecture:
+    - FinalScore = w1 * BIC_norm - w2 * Hyv_norm + w3 * CRPS_norm
+    - If PIT_p < 0.01: FinalScore += penalty
+    
+    PIT is NOT a weighted component - it's a conditional penalty for catastrophic miscalibration.
     """
     has_crps = crps_values is not None and len(crps_values) > 0 and CRPS_SCORING_ENABLED
+    has_pit = pit_pvalues is not None and len(pit_pvalues) > 0
     
-    # Determine weights
+    # Determine weights (BIC, Hyv, CRPS only - NO PIT weight)
     if bic_weight is not None and hyvarinen_weight is not None:
         w_bic, w_hyv = bic_weight, hyvarinen_weight
         w_crps = crps_weight if crps_weight is not None else 0.0
-    elif regime is not None and regime in REGIME_SCORING_WEIGHTS and has_crps:
+    elif regime is not None and regime in REGIME_SCORING_WEIGHTS:
         w_bic, w_hyv, w_crps = REGIME_SCORING_WEIGHTS[regime]
+        if not has_crps:
+            w_crps = 0.0
     elif has_crps:
         w_bic, w_hyv, w_crps = DEFAULT_BIC_WEIGHT_COMBINED, DEFAULT_HYVARINEN_WEIGHT_COMBINED, DEFAULT_CRPS_WEIGHT_COMBINED
     else:
         w_bic, w_hyv, w_crps = 0.5, 0.5, 0.0
     
-    # Normalize
+    # Normalize weights (BIC + Hyv + CRPS only)
     w_total = w_bic + w_hyv + w_crps
     if w_total > 0:
         w_bic, w_hyv, w_crps = w_bic / w_total, w_hyv / w_total, w_crps / w_total
     
-    # Standardize
+    # Standardize scores
     bic_std = robust_standardize_scores(bic_values)
     hyv_std = robust_standardize_scores(hyvarinen_scores)
     crps_std = robust_standardize_scores(crps_values) if has_crps else {}
     
     # Combine: BIC/CRPS lower=better (+), Hyv higher=better (-)
+    # Then apply conditional PIT penalty
     combined_scores = {}
+    pit_penalties_applied = {}
+    
     for model_name in bic_values.keys():
         b = bic_std.get(model_name, 0.0)
         h = hyv_std.get(model_name, 0.0)
         c = crps_std.get(model_name, 0.0) if has_crps else 0.0
-        combined_scores[model_name] = w_bic * b - w_hyv * h + w_crps * c
+        
+        # Base score from proper scoring rules
+        score = w_bic * b - w_hyv * h + w_crps * c
+        
+        # Conditional PIT penalty: ONLY if p < 0.01
+        pit_penalty = 0.0
+        if has_pit and model_name in pit_pvalues:
+            pit_p = pit_pvalues[model_name]
+            if pit_p is not None and np.isfinite(pit_p) and pit_p < PIT_CATASTROPHIC_THRESHOLD:
+                pit_penalty = PIT_CATASTROPHIC_PENALTY
+                score += pit_penalty
+        
+        combined_scores[model_name] = score
+        pit_penalties_applied[model_name] = pit_penalty
     
     weights = entropy_regularized_weights(combined_scores, lambda_entropy=lambda_entropy, eps=epsilon)
     
@@ -1202,12 +1234,16 @@ def compute_regime_aware_model_weights(
         "bic_standardized": {k: float(v) if np.isfinite(v) else None for k, v in bic_std.items()},
         "hyvarinen_standardized": {k: float(v) if np.isfinite(v) else None for k, v in hyv_std.items()},
         "crps_standardized": {k: float(v) if np.isfinite(v) else None for k, v in crps_std.items()} if has_crps else {},
+        "pit_penalty_applied": {k: float(v) for k, v in pit_penalties_applied.items()} if has_pit else {},
         "combined_scores_standardized": {k: float(v) if np.isfinite(v) else None for k, v in combined_scores.items()},
         "weights_used": {"bic": float(w_bic), "hyvarinen": float(w_hyv), "crps": float(w_crps)},
+        "pit_threshold": PIT_CATASTROPHIC_THRESHOLD,
+        "pit_penalty_value": PIT_CATASTROPHIC_PENALTY,
         "regime": regime,
         "lambda_entropy": lambda_entropy,
         "crps_enabled": has_crps,
-        "scoring_method": "regime_aware_bic_hyv_crps" if has_crps else "bic_hyv_only",
+        "pit_enabled": has_pit,
+        "scoring_method": "regime_aware_bic_hyv_crps" + ("_pit_gated" if has_pit else ""),
     }
     
     return weights, metadata

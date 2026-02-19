@@ -1,82 +1,105 @@
-#!/usr/bin/env python3
-"""Test script for PIT penalty module."""
+"""Test PIT conditional penalty implementation."""
 import sys
 sys.path.insert(0, 'src')
 
-from calibration.pit_penalty import (
-    compute_pit_violation_severity,
-    compute_pit_penalty,
-    compute_model_pit_penalty,
-    apply_pit_penalties_to_weights,
-    PIT_EXIT_THRESHOLD,
-    PIT_CRITICAL_THRESHOLDS,
+import numpy as np
+from tuning.diagnostics import (
+    compute_regime_aware_model_weights, 
+    PIT_CATASTROPHIC_THRESHOLD, 
+    PIT_CATASTROPHIC_PENALTY,
+    REGIME_SCORING_WEIGHTS
 )
 
-print("=" * 60)
-print("PIT PENALTY MODULE TEST")
-print("=" * 60)
+# Test data
+bic_values = {
+    "model_A": -1000.0,  # Best BIC
+    "model_B": -950.0,   # Moderate
+    "model_C": -800.0,   # Worst
+}
 
-# Test 1: No violation (p > threshold)
-v = compute_pit_violation_severity(0.5, 0.01)
-print(f'\nTest 1 - No violation: V = {v} (expected 0.0)')
-assert v == 0.0, "Test 1 failed"
+hyvarinen_scores = {
+    "model_A": 500.0,   # Moderate Hyv
+    "model_B": 600.0,   # Best Hyv (higher = better)
+    "model_C": 400.0,   # Worst Hyv
+}
 
-# Test 2: Violation (p < threshold)
-v = compute_pit_violation_severity(0.001, 0.01)
-print(f'Test 2 - Violation: V = {v:.3f} (expected 0.9)')
-assert abs(v - 0.9) < 0.001, "Test 2 failed"
+crps_values = {
+    "model_A": 0.02,   # Best CRPS
+    "model_B": 0.03,   # Moderate
+    "model_C": 0.05,   # Worst
+}
 
-# Test 3: Penalty for violation
-p = compute_pit_penalty(0.9, 5.0)
-print(f'Test 3 - Penalty: P = {p:.4f} (expected ~0.011)')
-assert p < 0.02, "Test 3 failed"
+# Scenario 1: All models have good PIT (no penalty)
+pit_good = {
+    "model_A": 0.15,  # Good
+    "model_B": 0.08,  # Marginal but above threshold
+    "model_C": 0.25,  # Good
+}
 
-# Test 4: Full model penalty computation
-result = compute_model_pit_penalty(
-    model_name='phi_student_t_nu_8',
-    pit_pvalue=0.001,
-    regime=0,  # LOW_VOL_TREND
-    n_samples=100,
+weights1, meta1 = compute_regime_aware_model_weights(
+    bic_values, hyvarinen_scores, crps_values, pit_good, regime=0
 )
-print(f'\nTest 4 - Model penalty:')
-print(f'  is_violated: {result.is_violated}')
-print(f'  violation_severity: {result.violation_severity:.3f}')
-print(f'  effective_penalty: {result.effective_penalty:.4f}')
-print(f'  triggers_exit: {result.triggers_exit}')
-assert result.is_violated, "Test 4a failed"
-assert result.triggers_exit, "Test 4b failed - should trigger EXIT"
 
-# Test 5: No EXIT for mild violation
-result_mild = compute_model_pit_penalty(
-    model_name='phi_student_t_nu_8',
-    pit_pvalue=0.02,  # Above some thresholds
-    regime=4,  # CRISIS (threshold = 0.05)
-    n_samples=100,
+print("=== Scenario 1: All models have good PIT (p > 0.01) ===")
+print(f"REGIME_SCORING_WEIGHTS (regime=0): {REGIME_SCORING_WEIGHTS[0]}")
+print(f"Weights used: {meta1['weights_used']}")
+print(f"Model weights: {weights1}")
+print(f"PIT penalties applied: {meta1['pit_penalty_applied']}")
+assert all(p == 0.0 for p in meta1['pit_penalty_applied'].values()), "No penalty should be applied"
+print("✓ No penalty applied correctly\n")
+
+# Scenario 2: One model has catastrophic PIT
+pit_bad = {
+    "model_A": 0.001,  # CATASTROPHIC - below 0.01
+    "model_B": 0.08,   # Marginal but OK
+    "model_C": 0.25,   # Good
+}
+
+weights2, meta2 = compute_regime_aware_model_weights(
+    bic_values, hyvarinen_scores, crps_values, pit_bad, regime=0
 )
-print(f'\nTest 5 - Mild violation (crisis regime):')
-print(f'  is_violated: {result_mild.is_violated}')
-print(f'  effective_penalty: {result_mild.effective_penalty:.4f}')
-print(f'  triggers_exit: {result_mild.triggers_exit}')
-assert not result_mild.is_violated, "Test 5 failed - should not be violated in crisis"
 
-# Test 6: Apply penalties to weights
-print(f'\nTest 6 - Apply penalties to weights:')
-raw_weights = {'model_a': 0.4, 'model_b': 0.4, 'model_c': 0.2}
-pit_pvalues = {'model_a': 0.5, 'model_b': 0.001, 'model_c': 0.1}
-adjusted, report = apply_pit_penalties_to_weights(
-    raw_weights, pit_pvalues, regime=0, n_samples=100
+print("=== Scenario 2: model_A has catastrophic PIT (p=0.001 < 0.01) ===")
+print(f"Model weights: {weights2}")
+print(f"PIT penalties applied: {meta2['pit_penalty_applied']}")
+assert meta2['pit_penalty_applied']['model_A'] == PIT_CATASTROPHIC_PENALTY, "model_A should have penalty"
+assert meta2['pit_penalty_applied']['model_B'] == 0.0, "model_B should have no penalty"
+assert meta2['pit_penalty_applied']['model_C'] == 0.0, "model_C should have no penalty"
+print(f"✓ Only model_A penalized with {PIT_CATASTROPHIC_PENALTY}\n")
+
+# Verify model_A gets lower weight after penalty
+print(f"model_A weight with good PIT: {weights1['model_A']:.4f}")
+print(f"model_A weight with bad PIT:  {weights2['model_A']:.4f}")
+assert weights2['model_A'] < weights1['model_A'], "model_A should have lower weight after penalty"
+print("✓ model_A weight correctly reduced\n")
+
+# Scenario 3: Edge case - PIT exactly at threshold
+pit_edge = {
+    "model_A": 0.01,   # Exactly at threshold - NO penalty (< threshold, not <=)
+    "model_B": 0.009,  # Just below - PENALTY
+    "model_C": 0.011,  # Just above - NO penalty
+}
+
+weights3, meta3 = compute_regime_aware_model_weights(
+    bic_values, hyvarinen_scores, crps_values, pit_edge, regime=0
 )
-print(f'  Raw weights: {raw_weights}')
-print(f'  PIT p-values: {pit_pvalues}')
-print(f'  Adjusted weights: {dict((k, round(v, 3)) for k, v in adjusted.items())}')
-print(f'  Selection diverged: {report.selection_diverged}')
-print(f'  N violated: {report.n_violated}')
 
-# model_b should be heavily penalized
-assert adjusted['model_b'] < raw_weights['model_b'], "Test 6 failed - penalty not applied"
+print("=== Scenario 3: Edge cases at threshold (0.01) ===")
+print(f"PIT values: model_A=0.01, model_B=0.009, model_C=0.011")
+print(f"PIT penalties: {meta3['pit_penalty_applied']}")
+# model_A: 0.01 is NOT < 0.01, so no penalty
+# model_B: 0.009 < 0.01, so penalty
+# model_C: 0.011 is NOT < 0.01, so no penalty
+assert meta3['pit_penalty_applied']['model_A'] == 0.0, "0.01 should NOT get penalty (not strictly less than)"
+assert meta3['pit_penalty_applied']['model_B'] == PIT_CATASTROPHIC_PENALTY, "0.009 should get penalty"
+assert meta3['pit_penalty_applied']['model_C'] == 0.0, "0.011 should NOT get penalty"
+print("✓ Edge cases handled correctly\n")
 
-print("\n" + "=" * 60)
-print("ALL TESTS PASSED!")
-print("=" * 60)
-print(f"\nEXIT threshold: {PIT_EXIT_THRESHOLD}")
-print(f"Critical thresholds by regime: {dict(PIT_CRITICAL_THRESHOLDS)}")
+print("=" * 50)
+print("ALL TESTS PASSED ✓")
+print("=" * 50)
+print(f"\nSummary:")
+print(f"  PIT_CATASTROPHIC_THRESHOLD = {PIT_CATASTROPHIC_THRESHOLD}")
+print(f"  PIT_CATASTROPHIC_PENALTY = {PIT_CATASTROPHIC_PENALTY}")
+print(f"  REGIME_SCORING_WEIGHTS contains 3-tuples (BIC, Hyv, CRPS)")
+print(f"  PIT is NOT a weight - only a conditional penalty when p < {PIT_CATASTROPHIC_THRESHOLD}")
