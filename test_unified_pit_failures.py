@@ -51,6 +51,12 @@ class PITTestResult:
     variance_inflation: float
     gamma_vov: float = 0.0
     alpha_asym: float = 0.0
+    ms_sensitivity: float = 2.0
+    bic: float = float('nan')
+    hyvarinen: float = float('nan')
+    crps: float = float('nan')
+    log_likelihood: float = float('nan')
+    n_obs: int = 0
     fit_success: bool = False
     error: Optional[str] = None
     
@@ -105,6 +111,9 @@ def fetch_asset_data(symbol, start_date='2015-01-01'):
 def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
     try:
         from models.phi_student_t import PhiStudentTDriftModel
+        from tuning.diagnostics import compute_hyvarinen_score_student_t, compute_crps_student_t_inline
+        from calibration.model_selection import compute_bic
+        
         config, diagnostics = PhiStudentTDriftModel.optimize_params_unified(
             returns, vol, nu_base=nu_base, train_frac=0.7, asset_symbol=symbol
         )
@@ -114,6 +123,8 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
                 histogram_mad=1.0, calibration_grade='F',
                 log10_q=float('nan'), c=float('nan'), phi=float('nan'),
                 nu=nu_base, variance_inflation=1.0, gamma_vov=0.0, alpha_asym=0.0,
+                ms_sensitivity=2.0, bic=float('nan'), hyvarinen=float('nan'),
+                crps=float('nan'), log_likelihood=float('nan'), n_obs=len(returns),
                 fit_success=False,
                 error=diagnostics.get('error', 'Optimization failed')
             )
@@ -123,6 +134,33 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         ks_stat, pit_pvalue, pit_metrics = PhiStudentTDriftModel.pit_ks_unified(
             returns, mu_pred, S_pred, config
         )
+        
+        # Compute BIC: -2*LL + k*ln(n)
+        # Parameters: q, c, phi, alpha_asym, gamma_vov, ms_sensitivity = 6 core params
+        n_params = 6
+        n_obs = len(returns)
+        bic = compute_bic(ll, n_params, n_obs)
+        
+        # Compute Hyvarinen score for Student-t
+        # Need scale (sigma), not variance. Convert S_pred to scale.
+        nu = config.nu_base
+        if nu > 2:
+            sigma_pred = np.sqrt(S_pred * (nu - 2) / nu)
+        else:
+            sigma_pred = np.sqrt(S_pred)
+        sigma_pred = np.maximum(sigma_pred, 1e-10)
+        
+        try:
+            hyvarinen = compute_hyvarinen_score_student_t(returns, mu_pred, sigma_pred, nu)
+        except Exception:
+            hyvarinen = float('nan')
+        
+        # Compute CRPS for Student-t
+        try:
+            crps = compute_crps_student_t_inline(returns, mu_pred, sigma_pred, nu)
+        except Exception:
+            crps = float('nan')
+        
         return PITTestResult(
             symbol=symbol,
             pit_pvalue=float(pit_pvalue),
@@ -136,6 +174,12 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
             variance_inflation=float(getattr(config, 'variance_inflation', 1.0)),
             gamma_vov=float(getattr(config, 'gamma_vov', 0.0)),
             alpha_asym=float(getattr(config, 'alpha_asym', 0.0)),
+            ms_sensitivity=float(getattr(config, 'ms_sensitivity', 2.0)),
+            bic=float(bic),
+            hyvarinen=float(hyvarinen),
+            crps=float(crps),
+            log_likelihood=float(ll),
+            n_obs=n_obs,
             fit_success=True,
         )
     except Exception as e:
@@ -144,6 +188,8 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
             histogram_mad=1.0, calibration_grade='F',
             log10_q=float('nan'), c=float('nan'), phi=float('nan'),
             nu=nu_base, variance_inflation=1.0, gamma_vov=0.0, alpha_asym=0.0,
+            ms_sensitivity=2.0, bic=float('nan'), hyvarinen=float('nan'),
+            crps=float('nan'), log_likelihood=float('nan'), n_obs=0,
             fit_success=False,
             error=str(e)
         )
@@ -182,9 +228,13 @@ def print_test_result(result):
     status = 'X' if result.pit_failed else 'OK'
     mad_status = 'X' if result.mad_failed else 'OK'
     if result.fit_success:
-        print(f'  {result.symbol:12s}  log10(q)={result.log10_q:+.2f}  c={result.c:.3f}  '
-              f'phi={result.phi:+.2f}  beta={result.variance_inflation:.2f}  '
-              f'γ={result.gamma_vov:.2f}  α={result.alpha_asym:+.3f}  |  '
+        # Line 1: Core parameters
+        print(f'  {result.symbol:12s}  log₁₀(q)={result.log10_q:+.2f}  c={result.c:.3f}  '
+              f'ν={result.nu:.0f}  φ={result.phi:+.2f}  α={result.alpha_asym:+.3f}  '
+              f'γ={result.gamma_vov:.2f}')
+        # Line 2: Calibration metrics
+        print(f'               β={result.variance_inflation:.3f}  '
+              f'BIC={result.bic:+.1f}  Hyv={result.hyvarinen:+.4f}  CRPS={result.crps:.4f}  |  '
               f'PIT_p={result.pit_pvalue:.4f} {status}  MAD={result.histogram_mad:.4f} {mad_status}  '
               f'Grade={result.calibration_grade}')
     else:
@@ -335,7 +385,14 @@ def test_full_tuning_all_assets():
             'c': result.c if not np.isnan(result.c) else None,
             'phi': result.phi if not np.isnan(result.phi) else None,
             'nu': result.nu,
+            'alpha_asym': result.alpha_asym,
+            'gamma_vov': result.gamma_vov,
             'variance_inflation': result.variance_inflation,
+            'bic': result.bic if not np.isnan(result.bic) else None,
+            'hyvarinen': result.hyvarinen if not np.isnan(result.hyvarinen) else None,
+            'crps': result.crps if not np.isnan(result.crps) else None,
+            'log_likelihood': result.log_likelihood if not np.isnan(result.log_likelihood) else None,
+            'n_obs': result.n_obs,
             'fit_success': result.fit_success,
             'error': result.error,
             'pit_failed': result.pit_failed,
@@ -378,23 +435,30 @@ def test_full_tuning_all_assets():
     
     print(f'\nBaseline saved to: {RESULTS_FILE}')
     
-    # Print results table
-    print('\n' + '-' * 100)
-    print(f'{"Symbol":12s}  {"log10(q)":>9s}  {"c":>6s}  {"phi":>6s}  {"beta":>5s}  '
-          f'{"PIT_p":>8s}  {"MAD":>7s}  {"Grade":>5s}  {"Status":>6s}')
-    print('-' * 100)
+    # Print results table with ALL important stats
+    print('\n' + '-' * 140)
+    print(f'{"Symbol":10s} {"log₁₀(q)":>8s} {"c":>5s} {"ν":>3s} {"φ":>5s} {"α":>6s} {"γ":>4s} '
+          f'{"BIC":>9s} {"Hyv":>8s} {"CRPS":>7s} {"PIT_p":>7s} {"MAD":>6s} {"Grd":>3s} {"Status":>6s}')
+    print('-' * 140)
     
     for r in sorted(results, key=lambda x: x.get('pit_pvalue', 999) if x.get('fit_success') else 999):
         if r.get('fit_success'):
             q = r['log10_q'] if r['log10_q'] else float('nan')
             c = r['c'] if r['c'] else float('nan')
             phi = r['phi'] if r['phi'] else float('nan')
+            nu = r.get('nu', 8)
+            alpha = r.get('alpha_asym', 0.0)
+            gamma = r.get('gamma_vov', 0.0)
+            bic = r.get('bic') if r.get('bic') else float('nan')
+            hyv = r.get('hyvarinen') if r.get('hyvarinen') else float('nan')
+            crps = r.get('crps') if r.get('crps') else float('nan')
             st = 'FAIL' if r['pit_failed'] else 'PASS'
-            print(f'{r["symbol"]:12s}  {q:+9.2f}  {c:6.3f}  {phi:+6.2f}  {r["variance_inflation"]:5.2f}  '
-                  f'{r["pit_pvalue"]:8.4f}  {r["histogram_mad"]:7.4f}  {r["calibration_grade"]:>5s}  {st:>6s}')
+            print(f'{r["symbol"]:10s} {q:+8.2f} {c:5.3f} {nu:3.0f} {phi:+5.2f} {alpha:+6.3f} {gamma:4.2f} '
+                  f'{bic:+9.1f} {hyv:+8.4f} {crps:7.4f} {r["pit_pvalue"]:7.4f} {r["histogram_mad"]:6.4f} '
+                  f'{r["calibration_grade"]:>3s} {st:>6s}')
         else:
-            print(f'{r["symbol"]:12s}  {"---":>9s}  {"---":>6s}  {"---":>6s}  {"---":>5s}  '
-                  f'{"---":>8s}  {"---":>7s}  {"---":>5s}  {"ERROR":>6s}')
+            print(f'{r["symbol"]:10s} {"---":>8s} {"---":>5s} {"---":>3s} {"---":>5s} {"---":>6s} {"---":>4s} '
+                  f'{"---":>9s} {"---":>8s} {"---":>7s} {"---":>7s} {"---":>6s} {"---":>3s} {"ERROR":>6s}')
     
     return baseline
 
