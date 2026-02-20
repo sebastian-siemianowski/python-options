@@ -464,7 +464,7 @@ def print_result_row(result: GaussianPITResult):
           f"PIT_p={result.pit_pvalue:.4f} {pit_ok}  MAD={result.histogram_mad:.4f} {mad_ok}  Grd={result.calibration_grade}")
 
 
-def run_full_test(assets: List[str], include_pure_gaussian: bool = True, include_phi_gaussian: bool = True, include_momentum: bool = True):
+def run_full_test(assets: List[str], include_pure_gaussian: bool = False, include_phi_gaussian: bool = True, include_momentum: bool = True):
     """Run full PIT calibration test for Gaussian models."""
     
     print("=" * 80)
@@ -563,7 +563,7 @@ def main():
     parser = argparse.ArgumentParser(description='Gaussian PIT Calibration Test')
     parser.add_argument('--quick', action='store_true', help='Quick test with 5 assets')
     parser.add_argument('--full', action='store_true', help='Full test with 22 assets')
-    parser.add_argument('--no-gaussian', action='store_true', help='Skip pure Gaussian')
+    parser.add_argument('--gaussian', action='store_true', help='Include pure Gaussian (disabled by default)')
     parser.add_argument('--no-phi-gaussian', action='store_true', help='Skip φ-Gaussian')
     parser.add_argument('--no-momentum', action='store_true', help='Skip momentum models')
     args = parser.parse_args()
@@ -575,7 +575,7 @@ def main():
     
     run_full_test(
         assets, 
-        include_pure_gaussian=not args.no_gaussian,
+        include_pure_gaussian=args.gaussian if hasattr(args, 'gaussian') else False,
         include_phi_gaussian=not args.no_phi_gaussian,
         include_momentum=not args.no_momentum,
     )
