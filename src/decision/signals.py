@@ -3185,6 +3185,9 @@ def _kalman_filter_drift(
                 gamma_vov=float(tuned_params.get('gamma_vov', 0.3)),
                 ms_sensitivity=float(tuned_params.get('ms_sensitivity', 2.0)),
                 q_stress_ratio=float(tuned_params.get('q_stress_ratio', 10.0)),
+                # ELITE FIX (February 2026): Calibration parameters
+                variance_inflation=float(tuned_params.get('variance_inflation', 1.0)),
+                mu_drift=float(tuned_params.get('mu_drift', 0.0)),
             )
             
             # Run unified filter
