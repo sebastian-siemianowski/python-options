@@ -1692,6 +1692,7 @@ class PhiStudentTDriftModel:
         try:
             from .elite_pit_diagnostics import (
                 compute_elite_calibrated_pit,
+                compute_elite_calibrated_pit_v2,
                 compute_berkowitz_lr_test,
                 compute_pit_autocorrelation,
             )
@@ -1706,8 +1707,8 @@ class PhiStudentTDriftModel:
                     lam=0.0,
                     variance_inflation=variance_inflation,
                     mu_drift=mu_drift,
-                    use_gas_vol=True,
-                    use_isotonic=True,
+                    use_gas_vol=True,   # Harvey (2013) GAS
+                    use_isotonic=True,  # Optimal transport
                     train_frac=0.7,
                 )
                 pit_clean = pit_calibrated
