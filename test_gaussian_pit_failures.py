@@ -166,7 +166,7 @@ def run_phi_gaussian_pit(
     vol: np.ndarray,
     with_momentum: bool = False,
 ) -> GaussianPITResult:
-    """Run φ-Gaussian filter and compute PIT calibration."""
+    """Run φ-Gaussian filter and compute PIT calibration on OUT-OF-SAMPLE data only."""
     from models.phi_gaussian import PhiGaussianDriftModel
     
     model_type = 'phi_gaussian_momentum' if with_momentum else 'phi_gaussian'
@@ -194,54 +194,67 @@ def run_phi_gaussian_pit(
                 gamma=0.0,
                 log_likelihood=float('nan'),
                 bic=float('inf'),
-                hyvarinen=float(hyv),
-                crps=float(crps),
+                hyvarinen=0.0,
+                crps=0.0,
                 n_obs=n_obs,
                 fit_success=False,
                 error=diagnostics.get('error', 'Optimization failed')
             )
         
-        # Run filter - use momentum wrapper if requested
+        # =================================================================
+        # PROPER OUT-OF-SAMPLE EVALUATION (NO CHEATING)
+        # =================================================================
+        # - Variance inflation optimized on TRAINING data (70%)
+        # - PIT computed on TEST data ONLY (30%)
+        # - NO isotonic recalibration (would be fitting on test data)
+        # =================================================================
+        n_train = int(n_obs * 0.7)
+        returns_test = returns[n_train:]
+        vol_test = vol[n_train:]
+        n_test = len(returns_test)
+        
+        # Optimize variance inflation on TRAINING data only
+        variance_inflation = PhiGaussianDriftModel.optimize_variance_inflation(
+            returns, vol, q_opt, c_opt, phi_opt, train_frac=0.7
+        )
+        c_calibrated = c_opt * variance_inflation
+        
+        # Run filter on FULL data to propagate state to test boundary
         if with_momentum:
             from models.momentum_augmented import MomentumAugmentedDriftModel, MomentumConfig
             mom_config = MomentumConfig(enable=True, lookbacks=[5, 10, 20, 60])
             mom_model = MomentumAugmentedDriftModel(mom_config)
             mom_model.precompute_momentum(returns)
             mu_filt, P_filt, ll = mom_model.filter(
-                returns, vol, q_opt, c_opt, phi_opt, base_model='phi_gaussian'
+                returns, vol, q_opt, c_calibrated, phi_opt, base_model='phi_gaussian'
             )
         else:
             mu_filt, P_filt, ll = PhiGaussianDriftModel.filter(
-                returns, vol, q_opt, c_opt, phi_opt
+                returns, vol, q_opt, c_calibrated, phi_opt
             )
         
-        # Compute PIT values
-        pit_values = []
-        for t in range(len(returns)):
-            if t == 0:
-                mu_pred = 0.0
-                P_pred = 1e-4 + q_opt
-            else:
-                mu_pred = phi_opt * mu_filt[t-1]
-                P_pred = (phi_opt ** 2) * P_filt[t-1] + q_opt
-            
-            R = c_opt * (vol[t] ** 2)
-            S = P_pred + R
-            
-            innovation = returns[t] - mu_pred
-            z = innovation / np.sqrt(max(S, 1e-12))
-            
-            pit_t = norm.cdf(z)
-            pit_values.append(pit_t)
+        # Compute predictive values for PIT on TEST DATA ONLY (out-of-sample)
+        mu_pred_test = np.zeros(n_test)
+        S_pred_test = np.zeros(n_test)
+        for i, t in enumerate(range(n_train, n_obs)):
+            # Use state from previous time step (t-1)
+            mu_pred_test[i] = phi_opt * mu_filt[t-1]
+            P_pred_t = (phi_opt ** 2) * P_filt[t-1] + q_opt
+            R = c_calibrated * (vol[t] ** 2)
+            S_pred_test[i] = P_pred_t + R
         
+        # Compute PIT on OUT-OF-SAMPLE test data ONLY
+        # NO isotonic recalibration - that would be cheating (fitting on test data)
+        z_test = (returns_test - mu_pred_test) / np.sqrt(np.maximum(S_pred_test, 1e-12))
+        pit_values = norm.cdf(z_test)
         pit_values = np.clip(pit_values, 0.001, 0.999)
         
-        # KS test
+        # KS test on out-of-sample PIT
         ks_result = kstest(pit_values, 'uniform')
         ks_stat = float(ks_result.statistic)
         ks_pvalue = float(ks_result.pvalue)
         
-        # Histogram MAD
+        # Histogram MAD on test data
         hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
         hist_freq = hist / len(pit_values)
         hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
@@ -256,13 +269,13 @@ def run_phi_gaussian_pit(
         else:
             grade = "F"
         
-        # BIC: 3 parameters (q, c, phi)
+        # BIC on full data
         bic = compute_bic(ll, 3, n_obs)
         
-        # Compute CRPS and Hyvarinen scores
-        forecast_std = np.sqrt(c_opt) * vol
-        crps = compute_crps_gaussian(returns, mu_filt, forecast_std)
-        hyv = compute_hyvarinen_gaussian(returns, mu_filt, forecast_std)
+        # Compute CRPS and Hyvarinen on TEST data only
+        forecast_std = np.sqrt(S_pred_test)
+        crps = compute_crps_gaussian(returns_test, mu_pred_test, forecast_std)
+        hyv = compute_hyvarinen_gaussian(returns_test, mu_pred_test, forecast_std)
         
         return GaussianPITResult(
             symbol=symbol,
@@ -272,16 +285,16 @@ def run_phi_gaussian_pit(
             histogram_mad=hist_mad,
             calibration_grade=grade,
             log10_q=float(np.log10(q_opt)) if q_opt > 0 else float('-inf'),
-            c=float(c_opt),
+            c=float(c_calibrated),
             phi=float(phi_opt),
             nu=0.0,
             alpha=0.0,
-            gamma=0.0,
+            gamma=variance_inflation,  # Store variance inflation in gamma field
             log_likelihood=float(ll),
             bic=float(bic),
             hyvarinen=float(hyv),
             crps=float(crps),
-            n_obs=n_obs,
+            n_obs=n_test,  # Report test set size
             fit_success=True,
         )
     
@@ -296,13 +309,13 @@ def run_phi_gaussian_pit(
             log10_q=float('nan'),
             c=float('nan'),
             phi=float('nan'),
-                nu=0.0,
-                alpha=0.0,
-                gamma=0.0,
+            nu=0.0,
+            alpha=0.0,
+            gamma=0.0,
             log_likelihood=float('nan'),
             bic=float('inf'),
-                hyvarinen=float(hyv),
-                crps=float(crps),
+            hyvarinen=0.0,
+            crps=0.0,
             n_obs=n_obs,
             fit_success=False,
             error=str(e)
@@ -335,8 +348,8 @@ def run_gaussian_pit(symbol: str, returns: np.ndarray, vol: np.ndarray) -> Gauss
                 gamma=0.0,
                 log_likelihood=float('nan'),
                 bic=float('inf'),
-                hyvarinen=float(hyv),
-                crps=float(crps),
+                hyvarinen=0.0,
+                crps=0.0,
                 n_obs=n_obs,
                 fit_success=False,
                 error=diagnostics.get('error', 'Optimization failed')
@@ -431,8 +444,8 @@ def run_gaussian_pit(symbol: str, returns: np.ndarray, vol: np.ndarray) -> Gauss
             gamma=0.0,
             log_likelihood=float('nan'),
             bic=float('inf'),
-                hyvarinen=float(hyv),
-                crps=float(crps),
+            hyvarinen=0.0,
+            crps=0.0,
             n_obs=n_obs,
             fit_success=False,
             error=str(e)
