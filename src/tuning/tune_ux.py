@@ -1723,10 +1723,18 @@ def render_calibration_report(cache: Dict, failure_reasons: Dict[str, str], cons
                 severity = 'warning'
         
         if has_issue:
-            if 'student_t' in noise_model:
+            # Determine model display name
+            if 'unified' in noise_model.lower():
+                # Unified Student-t model
+                model_str = f"φ-T-Uni(ν={int(nu_val)})" if nu_val else "φ-T-Unified"
+            elif 'student_t' in noise_model:
                 model_str = f"φ-T(ν={int(nu_val)})" if nu_val else "Student-t"
+            elif 'gaussian' in noise_model and 'momentum' in noise_model.lower():
+                model_str = "φ-G+Mom"
             elif 'gaussian' in noise_model:
                 model_str = "Gaussian"
+            elif 'momentum' in noise_model.lower():
+                model_str = "φ-G+Mom"
             else:
                 model_str = noise_model[:12] if noise_model else '-'
             
