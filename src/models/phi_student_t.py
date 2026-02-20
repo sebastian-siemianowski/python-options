@@ -1553,7 +1553,7 @@ class PhiStudentTDriftModel:
         neg_exp = -((nu_val + 1.0) / 2.0)
         inv_nu = 1.0 / nu_val
         
-        # Pre-compute R values (vectorized)
+        # Pre-compute R values
         R = c_val * (vol * vol)
         
         # Allocate output arrays
@@ -1878,49 +1878,85 @@ class PhiStudentTDriftModel:
             pass
         
         # =====================================================================
-        # STAGE 5: ELITE VARIANCE & MEAN CALIBRATION (February 2026)
+        # STAGE 5: ELITE VARIANCE, MEAN & NU CALIBRATION (February 2026)
         # =====================================================================
         # Compute:
-        #   1. variance_inflation β: E[innovation²] / E[S_pred]
-        #   2. mu_drift: mean(innovation) - accounts for equity risk premium
-        # Both computed on TRAINING DATA ONLY to prevent information leakage
-        temp_config = UnifiedStudentTConfig(
-            q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
-            alpha_asym=alpha_opt, gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt, q_stress_ratio=10.0,
-            vov_damping=0.3, variance_inflation=1.0,
-        )
+        #   1. Optimal nu: Select nu from grid that maximizes KS p-value
+        #   2. variance_inflation β: E[innovation²] / E[S_pred]
+        #   3. mu_drift: mean(innovation) - accounts for equity risk premium
+        # All computed on TRAINING DATA ONLY to prevent information leakage
         
-        try:
-            # Use training data only to prevent information leakage
-            _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
-                returns_train, vol_train, temp_config
-            )
-            
-            # Compute innovations on training data
-            innovations_train = returns_train - mu_pred_train
-            
-            # ELITE FIX 1: Variance inflation
-            beta_opt = compute_optimal_variance_inflation(
-                returns_train, mu_pred_train, S_pred_train, nu_base
-            )
-            beta_opt = float(np.clip(beta_opt, 0.5, 2.0))
-            
-            # ELITE FIX 2: Mean drift correction
-            # Equities have positive risk premium that zero-mean Kalman doesn't capture
-            mu_drift_opt = float(np.mean(innovations_train))
-        except Exception:
-            beta_opt = 1.0
-            mu_drift_opt = 0.0
+        # Grid search for optimal nu
+        NU_GRID = [4, 6, 8, 10, 12]
+        best_nu = nu_base
+        best_ks_p = 0.0
+        best_beta = 1.0
+        best_mu_drift = 0.0
+        
+        for test_nu in NU_GRID:
+            try:
+                temp_config = UnifiedStudentTConfig(
+                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=float(test_nu),
+                    alpha_asym=alpha_opt, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, q_stress_ratio=10.0,
+                    vov_damping=0.3, variance_inflation=1.0,
+                )
+                
+                # Use training data only
+                _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
+                    returns_train, vol_train, temp_config
+                )
+                
+                # Compute innovations on training data
+                innovations_train = returns_train - mu_pred_train
+                
+                # Variance inflation for this nu
+                test_beta = compute_optimal_variance_inflation(
+                    returns_train, mu_pred_train, S_pred_train, float(test_nu)
+                )
+                test_beta = float(np.clip(test_beta, 0.5, 2.0))
+                
+                # Mean drift correction
+                test_mu_drift = float(np.mean(innovations_train))
+                
+                # Compute PIT with this (nu, beta, mu_drift)
+                from scipy.stats import t as student_t, kstest
+                pit_values = []
+                for t in range(len(returns_train)):
+                    inn = innovations_train[t] - test_mu_drift
+                    S_cal = S_pred_train[t] * test_beta
+                    if test_nu > 2:
+                        t_scale = np.sqrt(S_cal * (test_nu - 2) / test_nu)
+                    else:
+                        t_scale = np.sqrt(S_cal)
+                    t_scale = max(t_scale, 1e-10)
+                    pit_values.append(student_t.cdf(inn, df=test_nu, loc=0, scale=t_scale))
+                
+                _, ks_p = kstest(pit_values, 'uniform')
+                
+                if ks_p > best_ks_p:
+                    best_ks_p = ks_p
+                    best_nu = float(test_nu)
+                    best_beta = test_beta
+                    best_mu_drift = test_mu_drift
+                    
+            except Exception:
+                continue
+        
+        # Use best found values
+        nu_opt = best_nu
+        beta_opt = best_beta
+        mu_drift_opt = best_mu_drift
         
         # =====================================================================
         # BUILD FINAL CONFIG
         # =====================================================================
+        # ELITE FIX: Use optimal nu from Stage 5 grid search, not input nu_base
         final_config = UnifiedStudentTConfig(
             q=q_opt,
             c=c_opt,
             phi=phi_opt,
-            nu_base=nu_base,
+            nu_base=nu_opt,  # ELITE FIX: Use optimized nu from grid search
             alpha_asym=alpha_opt,
             gamma_vov=gamma_opt,
             ms_sensitivity=sens_opt,
@@ -2298,7 +2334,7 @@ class PhiStudentTDriftModel:
                 ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
-        
+
         return mu_filtered, P_filtered, float(log_likelihood)
 
     @classmethod
@@ -2451,7 +2487,7 @@ class PhiStudentTDriftModel:
         
         Where:
             z_t = standardized residuals (shock detection)
-            Δσ_t = vol acceleration (regime change detection)
+            Δσ_t = vol acceleration (regime change detection)  
             M_t = momentum (trend structure)
         
         This makes the mixture respond to:
@@ -3008,49 +3044,85 @@ class PhiStudentTDriftModel:
             pass
         
         # =====================================================================
-        # STAGE 5: ELITE VARIANCE & MEAN CALIBRATION (February 2026)
+        # STAGE 5: ELITE VARIANCE, MEAN & NU CALIBRATION (February 2026)
         # =====================================================================
         # Compute:
-        #   1. variance_inflation β: E[innovation²] / E[S_pred]
-        #   2. mu_drift: mean(innovation) - accounts for equity risk premium
-        # Both computed on TRAINING DATA ONLY to prevent information leakage
-        temp_config = UnifiedStudentTConfig(
-            q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
-            alpha_asym=alpha_opt, gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt, q_stress_ratio=10.0,
-            vov_damping=0.3, variance_inflation=1.0,
-        )
+        #   1. Optimal nu: Select nu from grid that maximizes KS p-value
+        #   2. variance_inflation β: E[innovation²] / E[S_pred]
+        #   3. mu_drift: mean(innovation) - accounts for equity risk premium
+        # All computed on TRAINING DATA ONLY to prevent information leakage
         
-        try:
-            # Use training data only to prevent information leakage
-            _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
-                returns_train, vol_train, temp_config
-            )
-            
-            # Compute innovations on training data
-            innovations_train = returns_train - mu_pred_train
-            
-            # ELITE FIX 1: Variance inflation
-            beta_opt = compute_optimal_variance_inflation(
-                returns_train, mu_pred_train, S_pred_train, nu_base
-            )
-            beta_opt = float(np.clip(beta_opt, 0.5, 2.0))
-            
-            # ELITE FIX 2: Mean drift correction
-            # Equities have positive risk premium that zero-mean Kalman doesn't capture
-            mu_drift_opt = float(np.mean(innovations_train))
-        except Exception:
-            beta_opt = 1.0
-            mu_drift_opt = 0.0
+        # Grid search for optimal nu
+        NU_GRID = [4, 6, 8, 10, 12]
+        best_nu = nu_base
+        best_ks_p = 0.0
+        best_beta = 1.0
+        best_mu_drift = 0.0
+        
+        for test_nu in NU_GRID:
+            try:
+                temp_config = UnifiedStudentTConfig(
+                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=float(test_nu),
+                    alpha_asym=alpha_opt, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, q_stress_ratio=10.0,
+                    vov_damping=0.3, variance_inflation=1.0,
+                )
+                
+                # Use training data only
+                _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
+                    returns_train, vol_train, temp_config
+                )
+                
+                # Compute innovations on training data
+                innovations_train = returns_train - mu_pred_train
+                
+                # Variance inflation for this nu
+                test_beta = compute_optimal_variance_inflation(
+                    returns_train, mu_pred_train, S_pred_train, float(test_nu)
+                )
+                test_beta = float(np.clip(test_beta, 0.5, 2.0))
+                
+                # Mean drift correction
+                test_mu_drift = float(np.mean(innovations_train))
+                
+                # Compute PIT with this (nu, beta, mu_drift)
+                from scipy.stats import t as student_t, kstest
+                pit_values = []
+                for t in range(len(returns_train)):
+                    inn = innovations_train[t] - test_mu_drift
+                    S_cal = S_pred_train[t] * test_beta
+                    if test_nu > 2:
+                        t_scale = np.sqrt(S_cal * (test_nu - 2) / test_nu)
+                    else:
+                        t_scale = np.sqrt(S_cal)
+                    t_scale = max(t_scale, 1e-10)
+                    pit_values.append(student_t.cdf(inn, df=test_nu, loc=0, scale=t_scale))
+                
+                _, ks_p = kstest(pit_values, 'uniform')
+                
+                if ks_p > best_ks_p:
+                    best_ks_p = ks_p
+                    best_nu = float(test_nu)
+                    best_beta = test_beta
+                    best_mu_drift = test_mu_drift
+                    
+            except Exception:
+                continue
+        
+        # Use best found values
+        nu_opt = best_nu
+        beta_opt = best_beta
+        mu_drift_opt = best_mu_drift
         
         # =====================================================================
         # BUILD FINAL CONFIG
         # =====================================================================
+        # ELITE FIX: Use optimal nu from Stage 5 grid search, not input nu_base
         final_config = UnifiedStudentTConfig(
             q=q_opt,
             c=c_opt,
             phi=phi_opt,
-            nu_base=nu_base,
+            nu_base=nu_opt,  # ELITE FIX: Use optimized nu from grid search
             alpha_asym=alpha_opt,
             gamma_vov=gamma_opt,
             ms_sensitivity=sens_opt,
@@ -3082,111 +3154,3 @@ class PhiStudentTDriftModel:
         }
         
         return final_config, diagnostics
-
-    @classmethod
-    def pit_ks_unified(
-        cls,
-        returns: np.ndarray,
-        mu_pred: np.ndarray,
-        S_pred: np.ndarray,
-        config: 'UnifiedStudentTConfig',
-    ) -> Tuple[float, float, Dict]:
-        """
-        PIT/KS calibration for unified model using PREDICTIVE distribution.
-        
-        Uses predictive values (mu_pred, S_pred) rather than posterior,
-        which is the correct approach for proper PIT calibration.
-        
-        ELITE FIX (February 2026): Applies variance_inflation β to S_pred
-        to calibrate predictive variance for uniform PIT distribution.
-        
-        Args:
-            returns: Return series
-            mu_pred: Predictive means from filter
-            S_pred: Predictive variances from filter
-            config: UnifiedStudentTConfig instance
-            
-        Returns:
-            Tuple of (ks_statistic, ks_pvalue, metrics_dict)
-        """
-        returns = np.asarray(returns).flatten()
-        mu_pred = np.asarray(mu_pred).flatten()
-        S_pred = np.asarray(S_pred).flatten()
-        
-        n = len(returns)
-        pit_values = np.empty(n)
-        
-        nu_base = config.nu_base
-        alpha = config.alpha_asym
-        k_asym = config.k_asym
-        
-        # ELITE FIX (February 2026): Apply variance_inflation to S_pred
-        # The variance_inflation β calibrates predictive variance to achieve uniform PIT
-        # β < 1: Model overestimates variance → reduce S_pred
-        # β > 1: Model underestimates variance → increase S_pred
-        variance_inflation = getattr(config, 'variance_inflation', 1.0)
-        mu_drift = getattr(config, 'mu_drift', 0.0)  # ELITE FIX: mean drift correction
-        
-        for t in range(n):
-            # ELITE FIX: Subtract mu_drift to center innovations at zero
-            # This accounts for equity risk premium that Kalman filter doesn't capture
-            innovation = returns[t] - mu_pred[t] - mu_drift
-            
-            # CRITICAL: Apply variance inflation to predictive variance
-            S_calibrated = S_pred[t] * variance_inflation
-            
-            # FIX: Use Student-t scale for proper standardization
-            if nu_base > 2:
-                t_scale_base = np.sqrt(max(S_calibrated, 1e-12) * (nu_base - 2) / nu_base)
-            else:
-                t_scale_base = np.sqrt(max(S_calibrated, 1e-12))
-            scale = t_scale_base
-            
-            # Effective ν (smooth asymmetric)
-            nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
-            
-            # Student-t scale (variance to scale conversion)
-            if nu_eff > 2:
-                t_scale = np.sqrt(S_calibrated * (nu_eff - 2) / nu_eff)
-            else:
-                t_scale = scale
-            
-            t_scale = max(t_scale, 1e-10)
-            
-            # PIT value via Student-t CDF
-            pit_values[t] = student_t.cdf(innovation, df=nu_eff, loc=0, scale=t_scale)
-        
-        # Clean and compute KS
-        valid = np.isfinite(pit_values)
-        pit_clean = np.clip(pit_values[valid], 0, 1)
-        
-        if len(pit_clean) < 20:
-            return 1.0, 0.0, {"n_samples": len(pit_clean), "calibrated": False}
-        
-        ks_result = kstest(pit_clean, 'uniform')
-        
-        # Histogram MAD for practical calibration grading
-        hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
-        hist_freq = hist / len(pit_clean)
-        hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
-        
-        # Calibration grade (A/B/C/F)
-        if hist_mad < 0.02:
-            grade = "A"
-        elif hist_mad < 0.05:
-            grade = "B"
-        elif hist_mad < 0.10:
-            grade = "C"
-        else:
-            grade = "F"
-        
-        metrics = {
-            "n_samples": len(pit_clean),
-            "ks_statistic": float(ks_result.statistic),
-            "ks_pvalue": float(ks_result.pvalue),
-            "histogram_mad": hist_mad,
-            "calibration_grade": grade,
-            "calibrated": hist_mad < 0.05,
-        }
-        
-        return float(ks_result.statistic), float(ks_result.pvalue), metrics

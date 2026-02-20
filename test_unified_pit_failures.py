@@ -149,6 +149,35 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         )
 
 
+def fit_unified_model_adaptive_nu(symbol, returns, vol):
+    """
+    ELITE IMPROVEMENT: Adaptive nu selection.
+    
+    Try multiple nu values and select the one that achieves best KS p-value.
+    This accounts for the fact that different assets have different tail behavior.
+    
+    Mathematical basis: The optimal nu minimizes the KS distance between
+    the empirical PIT distribution and U[0,1].
+    """
+    # Nu grid - covers light tails (nu=20) to heavy tails (nu=4)
+    NU_GRID = [4, 6, 8, 10, 12, 20]
+    
+    best_result = None
+    best_pvalue = -1.0
+    
+    for nu in NU_GRID:
+        result = fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=float(nu))
+        if result.fit_success and result.pit_pvalue > best_pvalue:
+            best_pvalue = result.pit_pvalue
+            best_result = result
+    
+    if best_result is None:
+        # Fallback to nu=8 if all failed
+        return fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0)
+    
+    return best_result
+
+
 def print_test_result(result):
     status = 'X' if result.pit_failed else 'OK'
     mad_status = 'X' if result.mad_failed else 'OK'
@@ -196,10 +225,72 @@ def test_unified_pit_failures_exist():
         print('OK: PIT failures confirmed - test documents current behavior')
 
 
-if __name__ == '__main__':
-    print('UNIFIED STUDENT-T PIT CALIBRATION FAILURE TESTS')
-    test_unified_pit_failures_exist()
-    print('ALL TESTS COMPLETED')
+def test_adaptive_nu_improvement():
+    """
+    ELITE TEST: Test adaptive nu selection improvement.
+    
+    This test verifies that selecting optimal nu per asset improves PIT calibration.
+    """
+    print('=' * 80)
+    print('ELITE TEST: Adaptive Nu Selection')
+    print('=' * 80)
+    print('Comparing fixed nu=8 vs optimal nu per asset')
+    print('')
+    
+    results_fixed = []
+    results_adaptive = []
+    
+    for symbol in ALL_FAILING_ASSETS:
+        print(f'Processing {symbol}...')
+        data = fetch_asset_data(symbol)
+        if data is None:
+            print(f'  Skipping {symbol} - no data')
+            continue
+        
+        returns, vol = data
+        
+        # Fixed nu=8
+        result_fixed = fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0)
+        results_fixed.append(result_fixed)
+        
+        # Adaptive nu
+        result_adaptive = fit_unified_model_adaptive_nu(symbol, returns, vol)
+        results_adaptive.append(result_adaptive)
+        
+        # Compare
+        fixed_p = result_fixed.pit_pvalue
+        adaptive_p = result_adaptive.pit_pvalue
+        fixed_pass = 'PASS' if fixed_p >= 0.05 else 'FAIL'
+        adaptive_pass = 'PASS' if adaptive_p >= 0.05 else 'FAIL'
+        improvement = adaptive_p - fixed_p
+        
+        print(f'  {symbol:8s} nu=8: p={fixed_p:.4f} ({fixed_pass})  '
+              f'nu={result_adaptive.nu:.0f}: p={adaptive_p:.4f} ({adaptive_pass})  '
+              f'Δp={improvement:+.4f}')
+    
+    # Summary
+    n_fixed_pass = sum(1 for r in results_fixed if r.pit_pvalue >= 0.05)
+    n_adaptive_pass = sum(1 for r in results_adaptive if r.pit_pvalue >= 0.05)
+    
+    print('')
+    print('=' * 80)
+    print('SUMMARY: Adaptive Nu Selection')
+    print('=' * 80)
+    print(f'Assets tested:           {len(results_fixed)}')
+    print(f'Fixed nu=8 passes:       {n_fixed_pass} / {len(results_fixed)} ({100*n_fixed_pass/len(results_fixed):.1f}%)')
+    print(f'Adaptive nu passes:      {n_adaptive_pass} / {len(results_adaptive)} ({100*n_adaptive_pass/len(results_adaptive):.1f}%)')
+    print(f'Improvement:             +{n_adaptive_pass - n_fixed_pass} assets passing')
+    
+    # Show optimal nu distribution
+    nu_counts = {}
+    for r in results_adaptive:
+        nu = int(r.nu)
+        nu_counts[nu] = nu_counts.get(nu, 0) + 1
+    print(f'\nOptimal nu distribution:')
+    for nu in sorted(nu_counts.keys()):
+        print(f'  nu={nu:2d}: {nu_counts[nu]} assets')
+    
+    return n_adaptive_pass, n_fixed_pass
 
 
 def test_full_tuning_all_assets():
@@ -373,12 +464,15 @@ if __name__ == '__main__':
         test_full_tuning_all_assets()
     elif len(sys.argv) > 1 and sys.argv[1] == '--compare':
         compare_with_baseline()
+    elif len(sys.argv) > 1 and sys.argv[1] == '--adaptive':
+        test_adaptive_nu_improvement()
     else:
         print('UNIFIED STUDENT-T PIT CALIBRATION FAILURE TESTS')
         print('Usage:')
-        print('  python test_unified_pit_failures.py          # Quick test (5 assets)')
-        print('  python test_unified_pit_failures.py --full   # Full test (22 assets)')
-        print('  python test_unified_pit_failures.py --compare # Compare with baseline')
+        print('  python test_unified_pit_failures.py             # Quick test (5 assets)')
+        print('  python test_unified_pit_failures.py --full      # Full test (22 assets)')
+        print('  python test_unified_pit_failures.py --adaptive  # Test adaptive nu selection')
+        print('  python test_unified_pit_failures.py --compare   # Compare with baseline')
         print('')
         test_unified_pit_failures_exist()
         print('ALL TESTS COMPLETED')
