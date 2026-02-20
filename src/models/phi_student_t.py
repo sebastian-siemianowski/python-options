@@ -233,6 +233,13 @@ class UnifiedStudentTConfig:
     # β > 1: model was under-estimating variance (common for q→0 collapse)
     variance_inflation: float = 1.0  # [0.5, 5.0], optimized for PIT uniformity
     
+    # ELITE CALIBRATION FIX (February 2026): Mean drift correction
+    # Equities have positive risk premium (~15-25% annualized) that the zero-mean
+    # Kalman filter doesn't capture. This causes systematic positive innovations
+    # and right-skewed PIT histogram.
+    # mu_drift = mean(returns - mu_pred) on training data
+    mu_drift: float = 0.0  # Mean bias correction for PIT
+    
     # Momentum/exogenous input
     exogenous_input: np.ndarray = field(default=None, repr=False)
     
@@ -482,102 +489,48 @@ def compute_optimal_variance_inflation(
     beta_max: float = 5.0,
 ) -> float:
     """
-    ELITE CALIBRATION FIX (February 2026): Find optimal variance scaling β.
+    ELITE CALIBRATION FIX (February 2026): Find optimal variance scaling beta.
     
-    The core mathematical insight:
-    PIT miscalibration occurs when predictive variance S_t is systematically
-    wrong relative to actual return variability.
+    FIX: Use ANALYTICAL SOLUTION based on variance ratio, not histogram MAD.
     
-    When S_pred > actual_variance: PIT is concentrated around 0.5 → need β < 1
-    When S_pred < actual_variance: PIT has heavy tails (U-shape) → need β > 1
+    The core insight: For calibrated PIT, we need:
+        Var(innovations) = mean(beta * S_pred)
     
-    This function finds β such that:
-        S_calibrated = β × S_pred
-    
-    yields uniform PIT distribution (minimizes histogram MAD from 0.1).
+    Therefore:
+        beta_optimal = Var(innovations) / mean(S_pred)
     
     Args:
         returns: Observed returns
         mu_pred: Predictive means from filter
         S_pred: Predictive variances from filter
         nu: Degrees of freedom for Student-t
-        beta_min: Minimum variance inflation (0.5 = halve variance)
-        beta_max: Maximum variance inflation (5.0 = 5× variance)
+        beta_min: Minimum variance inflation
+        beta_max: Maximum variance inflation
         
     Returns:
-        Optimal β that calibrates PIT to uniform
+        Optimal beta that calibrates variance
     """
-    from scipy.optimize import minimize_scalar
-    
     returns = np.asarray(returns).flatten()
     mu_pred = np.asarray(mu_pred).flatten()
     S_pred = np.asarray(S_pred).flatten()
     
-    def pit_histogram_mad(beta: float) -> float:
-        """Objective: MAD of PIT histogram from uniform."""
-        S_inflated = beta * S_pred
-        innovations = returns - mu_pred
-        
-        # Student-t scale conversion
-        if nu > 2:
-            scale_factor = (nu - 2) / nu
-        else:
-            scale_factor = 0.5
-        
-        scales = np.sqrt(np.maximum(S_inflated * scale_factor, 1e-12))
-        standardized = innovations / scales
-        
-        # Compute PIT values
-        pit_values = student_t.cdf(standardized, df=nu)
-        
-        # Filter valid values
-        valid = np.isfinite(pit_values)
-        pit_clean = np.clip(pit_values[valid], 0, 1)
-        
-        if len(pit_clean) < 20:
-            return 1.0  # Insufficient data
-        
-        # Compute histogram MAD from uniform
-        hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
-        hist_freq = hist / len(pit_clean)
-        mad = float(np.mean(np.abs(hist_freq - 0.1)))
-        
-        return mad
+    # Compute actual innovation variance
+    innovations = returns - mu_pred
+    actual_var = float(np.var(innovations))
     
-    # =========================================================================
-    # ELITE FIX: Grid search + local refinement to find global minimum
-    # The MAD objective may have multiple local minima due to discrete binning.
-    # A coarse grid search finds the basin, then Brent refines it.
-    # =========================================================================
+    # Mean predicted variance
+    mean_S = float(np.mean(S_pred))
     
-    # Step 1: Coarse grid search to find best basin
-    grid_betas = np.linspace(beta_min, beta_max, 20)  # 20 points
-    grid_mads = [pit_histogram_mad(b) for b in grid_betas]
-    best_idx = int(np.argmin(grid_mads))
-    best_grid_beta = grid_betas[best_idx]
-    best_grid_mad = grid_mads[best_idx]
+    # Analytical solution: beta = actual_var / mean_S
+    if mean_S > 1e-12:
+        beta_analytical = actual_var / mean_S
+    else:
+        beta_analytical = 1.0
     
-    # Step 2: Local refinement around best grid point
-    # Search in [best - step, best + step]
-    step = (beta_max - beta_min) / 20
-    local_min = max(beta_min, best_grid_beta - step)
-    local_max = min(beta_max, best_grid_beta + step)
+    # Clip to valid range
+    beta_opt = float(np.clip(beta_analytical, beta_min, beta_max))
     
-    try:
-        result = minimize_scalar(
-            pit_histogram_mad,
-            bounds=(local_min, local_max),
-            method='bounded',
-            options={'xatol': 0.001}  # Tighter tolerance for local search
-        )
-        
-        if result.success and result.fun < best_grid_mad:
-            return float(result.x)
-    except Exception:
-        pass
-    
-    # Fallback to grid search result
-    return float(best_grid_beta)
+    return beta_opt
 
 
 def compute_ms_process_noise(
@@ -1600,7 +1553,7 @@ class PhiStudentTDriftModel:
         neg_exp = -((nu_val + 1.0) / 2.0)
         inv_nu = 1.0 / nu_val
         
-        # Pre-compute R values
+        # Pre-compute R values (vectorized)
         R = c_val * (vol * vol)
         
         # Allocate output arrays
@@ -1820,8 +1773,8 @@ class PhiStudentTDriftModel:
             if not np.isfinite(ll):
                 return 1e10
             
-            # Regularization: keep gamma near prior (0.3)
-            reg = 10.0 * (gamma - 0.3) ** 2
+            # FIX: Reduced reg
+            reg = 1.0 * (gamma - config.gamma_vov) ** 2
             return -ll / n_train + reg
         
         try:
@@ -1886,8 +1839,8 @@ class PhiStudentTDriftModel:
             if not np.isfinite(ll):
                 return 1e10
             
-            # Regularization: keep alpha small (penalize strong asymmetry)
-            reg = 10.0 * alpha ** 2
+            # FIX: Reduced regularization centered on data-driven prior
+            reg = 1.0 * (alpha - config.alpha_asym) ** 2
             return -ll / n_train + reg
         
         try:
@@ -1925,9 +1878,12 @@ class PhiStudentTDriftModel:
             pass
         
         # =====================================================================
-        # STAGE 5: ELITE VARIANCE INFLATION CALIBRATION (February 2026)
+        # STAGE 5: ELITE VARIANCE & MEAN CALIBRATION (February 2026)
         # =====================================================================
-        # Run filter to get predictive values, then optimize β for PIT uniformity
+        # Compute:
+        #   1. variance_inflation β: E[innovation²] / E[S_pred]
+        #   2. mu_drift: mean(innovation) - accounts for equity risk premium
+        # Both computed on TRAINING DATA ONLY to prevent information leakage
         temp_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
             alpha_asym=alpha_opt, gamma_vov=gamma_opt,
@@ -1936,20 +1892,26 @@ class PhiStudentTDriftModel:
         )
         
         try:
-            _, _, mu_pred_full, S_pred_full, _ = cls.filter_phi_unified(
-                returns, vol, temp_config
+            # Use training data only to prevent information leakage
+            _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
+                returns_train, vol_train, temp_config
             )
             
-            # Compute optimal variance inflation on full dataset
+            # Compute innovations on training data
+            innovations_train = returns_train - mu_pred_train
+            
+            # ELITE FIX 1: Variance inflation
             beta_opt = compute_optimal_variance_inflation(
-                returns, mu_pred_full, S_pred_full, nu_base
+                returns_train, mu_pred_train, S_pred_train, nu_base
             )
+            beta_opt = float(np.clip(beta_opt, 0.5, 2.0))
             
-            # Clamp to reasonable range [0.1, 5.0]
-            # Note: β < 1 is common when model overestimates variance (S_pred > returns_var)
-            beta_opt = float(np.clip(beta_opt, 0.1, 5.0))
+            # ELITE FIX 2: Mean drift correction
+            # Equities have positive risk premium that zero-mean Kalman doesn't capture
+            mu_drift_opt = float(np.mean(innovations_train))
         except Exception:
-            beta_opt = 1.0  # Fallback: no inflation
+            beta_opt = 1.0
+            mu_drift_opt = 0.0
         
         # =====================================================================
         # BUILD FINAL CONFIG
@@ -1964,25 +1926,27 @@ class PhiStudentTDriftModel:
             ms_sensitivity=sens_opt,
             q_stress_ratio=10.0,
             vov_damping=0.3,
-            variance_inflation=beta_opt,  # ELITE FIX: calibrated variance inflation
+            variance_inflation=beta_opt,
+            mu_drift=mu_drift_opt,  # ELITE FIX: mean drift correction
             q_min=config.q_min,
             c_min=config.c_min,
             c_max=config.c_max,
         )
         
         diagnostics = {
-            "stage": 5,  # Now 5 stages with variance inflation
+            "stage": 5,
             "success": True,
             "degraded": degraded,
             "hessian_cond": cond_num,
             "q": float(q_opt),
             "c": float(c_opt),
             "phi": float(phi_opt),
-            "log10_q": float(log_q_opt),  # FIX: was adaptive_prior_mean
+            "log10_q": float(log_q_opt),
             "gamma_vov": float(gamma_opt),
             "ms_sensitivity": float(sens_opt),
             "alpha_asym": float(alpha_opt),
-            "variance_inflation": float(beta_opt),  # ELITE FIX
+            "variance_inflation": float(beta_opt),
+            "mu_drift": float(mu_drift_opt),  # ELITE FIX
             "c_bounds": (float(config.c_min), float(config.c_max)),
             "q_min": float(config.q_min),
         }
@@ -2031,14 +1995,22 @@ class PhiStudentTDriftModel:
         # β < 1: Model overestimates variance → reduce S_pred
         # β > 1: Model underestimates variance → increase S_pred
         variance_inflation = getattr(config, 'variance_inflation', 1.0)
+        mu_drift = getattr(config, 'mu_drift', 0.0)  # ELITE FIX: mean drift correction
         
         for t in range(n):
-            innovation = returns[t] - mu_pred[t]
+            # ELITE FIX: Subtract mu_drift to center innovations at zero
+            # This accounts for equity risk premium that Kalman filter doesn't capture
+            innovation = returns[t] - mu_pred[t] - mu_drift
             
             # CRITICAL: Apply variance inflation to predictive variance
             S_calibrated = S_pred[t] * variance_inflation
             
-            scale = np.sqrt(max(S_calibrated, 1e-12))
+            # FIX: Use Student-t scale for proper standardization
+            if nu_base > 2:
+                t_scale_base = np.sqrt(max(S_calibrated, 1e-12) * (nu_base - 2) / nu_base)
+            else:
+                t_scale_base = np.sqrt(max(S_calibrated, 1e-12))
+            scale = t_scale_base
             
             # Effective ν (smooth asymmetric)
             nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
@@ -2451,157 +2423,6 @@ class PhiStudentTDriftModel:
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
         
-        return mu_filtered, P_filtered, float(log_likelihood)
-
-    @classmethod
-    def filter_phi_mixture(
-        cls, 
-        returns: np.ndarray, 
-        vol: np.ndarray, 
-        q: float, 
-        c: float, 
-        phi: float, 
-        nu_calm: float,
-        nu_stress: float,
-        w_base: float = 0.5
-    ) -> Tuple[np.ndarray, np.ndarray, float]:
-        """
-        φ-Student-t filter with Two-Component mixture body.
-        
-        Mixture model with dynamic weights:
-            p(r_t) = w_t × t(νcalm) + (1 - w_t) × t(νstress)
-        
-        Weight dynamics (higher vol → more stress weight):
-            w_t = sigmoid(w_base - k × vol_relative_t)
-        
-        where vol_relative = σ_t / median(σ), k = 2.0
-        
-        This captures two curvature regimes:
-            - Calm: lighter tails (νcalm > νstress)
-            - Stress: heavier tails (νstress < νcalm)
-        
-        Args:
-            returns: Return series
-            vol: EWMA volatility series
-            q: Process noise variance
-            c: Observation noise scale
-            phi: AR(1) persistence
-            nu_calm: Degrees of freedom for calm regime (lighter)
-            nu_stress: Degrees of freedom for stress regime (heavier)
-            w_base: Base weight parameter (default 0.5)
-            
-        Returns:
-            (mu_filtered, P_filtered, log_likelihood)
-        """
-        n = len(returns)
-        
-        # Convert to contiguous arrays
-        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
-        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
-        
-        # Extract scalar values
-        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
-        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
-        phi_val = float(np.clip(phi, -0.999, 0.999))
-        nu_C = cls._clip_nu(nu_calm, cls.nu_min_default, cls.nu_max_default)
-        nu_S = cls._clip_nu(nu_stress, cls.nu_min_default, cls.nu_max_default)
-        w_b = float(w_base) if np.ndim(w_base) == 0 else float(w_base.item())
-        
-        # Pre-compute constants
-        phi_sq = phi_val * phi_val
-        k = MIXTURE_WEIGHT_K  # Sensitivity to vol_relative
-        
-        # Pre-compute vol_relative and dynamic weights
-        vol_median = np.median(vol)
-        if vol_median < 1e-10:
-            vol_median = 1e-10
-        vol_relative = vol / vol_median
-        
-        # w_t = sigmoid(w_base - k * vol_relative)
-        # Higher vol → lower w_calm → more stress weight
-        exponent = np.clip(-(w_b - k * vol_relative), -50, 50)
-        w_calm = 1.0 / (1.0 + np.exp(exponent))
-        
-        # Pre-compute log-pdf constants for both ν values
-        log_norm_C = gammaln((nu_C + 1.0) / 2.0) - gammaln(nu_C / 2.0) - 0.5 * np.log(nu_C * np.pi)
-        neg_exp_C = -((nu_C + 1.0) / 2.0)
-        inv_nu_C = 1.0 / nu_C
-        
-        log_norm_S = gammaln((nu_S + 1.0) / 2.0) - gammaln(nu_S / 2.0) - 0.5 * np.log(nu_S * np.pi)
-        neg_exp_S = -((nu_S + 1.0) / 2.0)
-        inv_nu_S = 1.0 / nu_S
-        
-        # Use average ν for Kalman gain (weighted by w_calm)
-        # This is an approximation; exact would require mixture state estimation
-        nu_avg = w_b * nu_C + (1 - w_b) * nu_S  # Use base weight for stability
-        nu_adjust = min(nu_avg / (nu_avg + 3.0), 1.0)
-        
-        # Pre-compute R values
-        R = c_val * (vol * vol)
-        
-        # Allocate output arrays
-        mu_filtered = np.empty(n, dtype=np.float64)
-        P_filtered = np.empty(n, dtype=np.float64)
-        
-        # State initialization
-        mu = 0.0
-        P = 1e-4
-        log_likelihood = 0.0
-        
-        # Main filter loop with mixture likelihood
-        for t in range(n):
-            # Prediction step
-            mu_pred = phi_val * mu
-            P_pred = phi_sq * P + q_val
-            
-            # Observation update
-            S = P_pred + R[t]
-            if S <= 1e-12:
-                S = 1e-12
-            
-            innovation = returns[t] - mu_pred
-            K = nu_adjust * P_pred / S
-            
-            # State update
-            mu = mu_pred + K * innovation
-            P = (1.0 - K) * P_pred
-            if P < 1e-12:
-                P = 1e-12
-            
-            # Store filtered values
-            mu_filtered[t] = mu
-            P_filtered[t] = P
-            
-            # Mixture log-pdf calculation
-            # FIX: Each mixture component needs its own scale conversion
-            # For component with ν_C: scale_C = sqrt(S × (ν_C-2)/ν_C)
-            # For component with ν_S: scale_S = sqrt(S × (ν_S-2)/ν_S)
-            scale_factor_C = max(1.0 - 2.0 * inv_nu_C, 0.01)  # (ν_C-2)/ν_C
-            scale_factor_S = max(1.0 - 2.0 * inv_nu_S, 0.01)  # (ν_S-2)/ν_S
-            forecast_scale_C = np.sqrt(S * scale_factor_C)
-            forecast_scale_S = np.sqrt(S * scale_factor_S)
-            
-            if forecast_scale_C > 1e-12 and forecast_scale_S > 1e-12:
-                z_C = innovation / forecast_scale_C
-                z_S = innovation / forecast_scale_S
-                
-                # Calm component log-pdf with its own scale
-                ll_C = log_norm_C - np.log(forecast_scale_C) + neg_exp_C * np.log(1.0 + z_C * z_C * inv_nu_C)
-                
-                # Stress component log-pdf with its own scale
-                ll_S = log_norm_S - np.log(forecast_scale_S) + neg_exp_S * np.log(1.0 + z_S * z_S * inv_nu_S)
-                
-                # Mixture log-pdf via log-sum-exp
-                w_t = w_calm[t]
-                ll_max = max(ll_C, ll_S)
-                ll_mix = ll_max + np.log(
-                    w_t * np.exp(ll_C - ll_max) + 
-                    (1.0 - w_t) * np.exp(ll_S - ll_max)
-                )
-                
-                if np.isfinite(ll_mix):
-                    log_likelihood += ll_mix
-
         return mu_filtered, P_filtered, float(log_likelihood)
 
     @classmethod
@@ -3148,8 +2969,8 @@ class PhiStudentTDriftModel:
             if not np.isfinite(ll):
                 return 1e10
             
-            # Regularization: keep alpha small (penalize strong asymmetry)
-            reg = 10.0 * alpha ** 2
+            # FIX: Reduced regularization centered on data-driven prior
+            reg = 1.0 * (alpha - config.alpha_asym) ** 2
             return -ll / n_train + reg
         
         try:
@@ -3187,9 +3008,12 @@ class PhiStudentTDriftModel:
             pass
         
         # =====================================================================
-        # STAGE 5: ELITE VARIANCE INFLATION CALIBRATION (February 2026)
+        # STAGE 5: ELITE VARIANCE & MEAN CALIBRATION (February 2026)
         # =====================================================================
-        # Run filter to get predictive values, then optimize β for PIT uniformity
+        # Compute:
+        #   1. variance_inflation β: E[innovation²] / E[S_pred]
+        #   2. mu_drift: mean(innovation) - accounts for equity risk premium
+        # Both computed on TRAINING DATA ONLY to prevent information leakage
         temp_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
             alpha_asym=alpha_opt, gamma_vov=gamma_opt,
@@ -3198,20 +3022,26 @@ class PhiStudentTDriftModel:
         )
         
         try:
-            _, _, mu_pred_full, S_pred_full, _ = cls.filter_phi_unified(
-                returns, vol, temp_config
+            # Use training data only to prevent information leakage
+            _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
+                returns_train, vol_train, temp_config
             )
             
-            # Compute optimal variance inflation on full dataset
+            # Compute innovations on training data
+            innovations_train = returns_train - mu_pred_train
+            
+            # ELITE FIX 1: Variance inflation
             beta_opt = compute_optimal_variance_inflation(
-                returns, mu_pred_full, S_pred_full, nu_base
+                returns_train, mu_pred_train, S_pred_train, nu_base
             )
+            beta_opt = float(np.clip(beta_opt, 0.5, 2.0))
             
-            # Clamp to reasonable range [0.1, 5.0]
-            # Note: β < 1 is common when model overestimates variance (S_pred > returns_var)
-            beta_opt = float(np.clip(beta_opt, 0.1, 5.0))
+            # ELITE FIX 2: Mean drift correction
+            # Equities have positive risk premium that zero-mean Kalman doesn't capture
+            mu_drift_opt = float(np.mean(innovations_train))
         except Exception:
-            beta_opt = 1.0  # Fallback: no inflation
+            beta_opt = 1.0
+            mu_drift_opt = 0.0
         
         # =====================================================================
         # BUILD FINAL CONFIG
@@ -3226,25 +3056,27 @@ class PhiStudentTDriftModel:
             ms_sensitivity=sens_opt,
             q_stress_ratio=10.0,
             vov_damping=0.3,
-            variance_inflation=beta_opt,  # ELITE FIX: calibrated variance inflation
+            variance_inflation=beta_opt,
+            mu_drift=mu_drift_opt,  # ELITE FIX: mean drift correction
             q_min=config.q_min,
             c_min=config.c_min,
             c_max=config.c_max,
         )
         
         diagnostics = {
-            "stage": 5,  # Now 5 stages with variance inflation
+            "stage": 5,
             "success": True,
             "degraded": degraded,
             "hessian_cond": cond_num,
             "q": float(q_opt),
             "c": float(c_opt),
             "phi": float(phi_opt),
-            "log10_q": float(log_q_opt),  # FIX: was adaptive_prior_mean
+            "log10_q": float(log_q_opt),
             "gamma_vov": float(gamma_opt),
             "ms_sensitivity": float(sens_opt),
             "alpha_asym": float(alpha_opt),
-            "variance_inflation": float(beta_opt),  # ELITE FIX
+            "variance_inflation": float(beta_opt),
+            "mu_drift": float(mu_drift_opt),  # ELITE FIX
             "c_bounds": (float(config.c_min), float(config.c_max)),
             "q_min": float(config.q_min),
         }
@@ -3293,14 +3125,22 @@ class PhiStudentTDriftModel:
         # β < 1: Model overestimates variance → reduce S_pred
         # β > 1: Model underestimates variance → increase S_pred
         variance_inflation = getattr(config, 'variance_inflation', 1.0)
+        mu_drift = getattr(config, 'mu_drift', 0.0)  # ELITE FIX: mean drift correction
         
         for t in range(n):
-            innovation = returns[t] - mu_pred[t]
+            # ELITE FIX: Subtract mu_drift to center innovations at zero
+            # This accounts for equity risk premium that Kalman filter doesn't capture
+            innovation = returns[t] - mu_pred[t] - mu_drift
             
             # CRITICAL: Apply variance inflation to predictive variance
             S_calibrated = S_pred[t] * variance_inflation
             
-            scale = np.sqrt(max(S_calibrated, 1e-12))
+            # FIX: Use Student-t scale for proper standardization
+            if nu_base > 2:
+                t_scale_base = np.sqrt(max(S_calibrated, 1e-12) * (nu_base - 2) / nu_base)
+            else:
+                t_scale_base = np.sqrt(max(S_calibrated, 1e-12))
+            scale = t_scale_base
             
             # Effective ν (smooth asymmetric)
             nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
