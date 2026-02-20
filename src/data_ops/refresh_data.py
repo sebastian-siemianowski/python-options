@@ -47,6 +47,7 @@ from ingestion.data_utils import (
     PRICE_CACHE_DIR_PATH,
     reset_symbol_tables,
     suppress_symbol_tables,
+    INVERSE_CURRENCY_PAIRS,
 )
 
 
@@ -344,6 +345,11 @@ def bulk_download_n_times(
     # FIX: Track symbols that still need to be fetched across passes
     remaining_symbols = all_symbols.copy()
     
+    # Set of symbols that require individual fallback (inverse currency pairs, etc.)
+    # These will always fail in bulk download so we skip to final pass if only these remain
+    fallback_only_symbols = set(INVERSE_CURRENCY_PAIRS.keys())
+    skip_message_printed = False  # Track if skip message was printed
+    
     for pass_num in range(1, num_passes + 1):
         # If no remaining symbols, we're done early
         if not remaining_symbols:
@@ -355,6 +361,24 @@ def bulk_download_n_times(
                 done_msg.append("All symbols downloaded!", style="green")
                 console.print(done_msg)
             break
+        
+        # =====================================================================
+        # FAST-FORWARD: If all remaining symbols are fallback-only, skip to final pass
+        # =====================================================================
+        remaining_set = set(s.upper() for s in remaining_symbols)
+        all_fallback_only = remaining_set.issubset(fallback_only_symbols)
+        
+        if all_fallback_only and pass_num < num_passes:
+            if not quiet and pass_num == 1:
+                # Only print skip message once (when detected at start)
+                skip_msg = Text()
+                skip_msg.append("    ")
+                skip_msg.append("⚡ ", style="bold yellow")
+                skip_msg.append(f"Skipping to final pass", style="yellow")
+                skip_msg.append(f" ({len(remaining_symbols)} fallback-only symbols)", style="dim")
+                console.print(skip_msg)
+            # Continue to next iteration until we reach the final pass
+            continue
         
         is_final_pass = (pass_num == num_passes)
         tracker.start_pass(pass_num)

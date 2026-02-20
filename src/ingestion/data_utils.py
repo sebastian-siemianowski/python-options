@@ -4574,6 +4574,8 @@ INVERSE_CURRENCY_PAIRS = {
     "JPYDKK=X": "DKKJPY=X",
     "JPYCNY=X": "CNYJPY=X",
     "JPYPLN=X": "PLNJPY=X",
+    "CADPLN=X": "PLNCAD=X",
+    "SEKPLN=X": "PLNSEK=X",
 }
 
 
