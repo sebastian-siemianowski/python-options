@@ -116,6 +116,7 @@ SHELL := /bin/bash
 # │  🧪 TESTING                                                                  │
 # ├──────────────────────────────────────────────────────────────────────────────┤
 # │  make tests              Run all tests in src/tests/                         │
+# │  make pit                Run PIT calibration test (22 assets, full tuning)   │
 # └──────────────────────────────────────────────────────────────────────────────┘
 #
 # ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -376,6 +377,11 @@ online-test: .venv/.deps_installed
 tests: .venv/.deps_installed
 	@echo "Running all tests..."
 	@.venv/bin/python -m unittest discover -s src/tests -p "test_*.py" -v
+
+# PIT calibration test for unified Student-t model
+pit: .venv/.deps_installed
+	@echo "🎯 Running PIT calibration test (full tuning for 22 assets)..."
+	@.venv/bin/python -B test_unified_pit_failures.py --full $(ARGS)
 
 # Manually (re)install requirements and refresh the dependency stamp
 doctor: .venv/bin/python
