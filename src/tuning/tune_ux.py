@@ -821,15 +821,30 @@ def render_tuning_summary(
             console.print(mom_total_row)
         
         # ═══════════════════════════════════════════════════════════════════
-        # ENHANCED STUDENT-T MODELS (Vol-of-Vol, Two-Piece, Mixture)
+        # ENHANCED STUDENT-T MODELS (Unified, Vol-of-Vol, Two-Piece, Mixture)
         # ═══════════════════════════════════════════════════════════════════
-        enhanced_total = vov_enhanced_count + two_piece_count + mixture_t_count
-        if enhanced_total > 0:
+        enhanced_total = unified_model_count + vov_enhanced_count + two_piece_count + mixture_t_count
+        if enhanced_total > 0 or unified_model_count > 0:
             console.print()
             enhanced_section = Text()
             enhanced_section.append("    ▸ Enhanced Student-t", style="bold dim")
             console.print(enhanced_section)
             console.print()
+            
+            # Unified Elite Student-t (February 2026 - Top priority)
+            uni_pct = unified_model_count / total_models * 100 if total_models > 0 else 0
+            uni_filled = int(uni_pct / 100 * bar_width)
+            uni_style = "bright_yellow" if unified_model_count > 0 else "dim"
+            uni_row = Text()
+            uni_row.append("      ★ ", style=uni_style)
+            uni_row.append(f"{'φ-t-Unified+Elite':<22} ", style=uni_style)
+            uni_row.append("█" * uni_filled, style=uni_style)
+            uni_row.append("░" * (bar_width - uni_filled), style="dim")
+            uni_row.append(f"  {unified_model_count:>4}", style="bold white" if unified_model_count > 0 else "dim")
+            uni_row.append(f"  ({uni_pct:>4.1f}%)", style="dim")
+            if unified_model_count > 0:
+                uni_row.append("  ↑ GAS+Isotonic calibrated", style="bright_cyan italic")
+            console.print(uni_row)
             
             # Vol-of-Vol enhanced
             vov_pct = vov_enhanced_count / total_models * 100 if total_models > 0 else 0
@@ -2955,6 +2970,7 @@ Examples:
         vov_enhanced_count=vov_enhanced_count,
         two_piece_count=two_piece_count,
         mixture_t_count=mixture_t_count,
+        unified_model_count=unified_model_count,
         # Volatility estimator counts (February 2026)
         gk_vol_count=gk_vol_count,
         har_vol_count=har_vol_count,
