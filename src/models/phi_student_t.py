@@ -1729,6 +1729,16 @@ class PhiStudentTDriftModel:
         hist_freq = hist / len(pit_clean)
         hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
         
+        # ELITE: Berkowitz LR test (institutional VaR standard)
+        try:
+            from .elite_pit_diagnostics import compute_berkowitz_lr_test, compute_pit_autocorrelation
+            berkowitz_lr, berkowitz_p, berk_diag = compute_berkowitz_lr_test(pit_clean)
+            pit_acf = compute_pit_autocorrelation(pit_clean)
+        except ImportError:
+            # Fallback: compute inline
+            berkowitz_lr, berkowitz_p = float('nan'), float('nan')
+            pit_acf = {}
+        
         # Calibration grade (A/B/C/F)
         if hist_mad < 0.02:
             grade = "A"
@@ -1746,6 +1756,12 @@ class PhiStudentTDriftModel:
             "histogram_mad": hist_mad,
             "calibration_grade": grade,
             "calibrated": hist_mad < 0.05,
+            # ELITE additions
+            "berkowitz_lr": float(berkowitz_lr) if np.isfinite(berkowitz_lr) else None,
+            "berkowitz_pvalue": float(berkowitz_p) if np.isfinite(berkowitz_p) else None,
+            "pit_autocorr_lag1": pit_acf.get('autocorrelations', {}).get('lag_1'),
+            "ljung_box_pvalue": pit_acf.get('ljung_box_pvalue'),
+            "has_dynamic_misspec": pit_acf.get('has_autocorrelation', False),
         }
         
         return float(ks_result.statistic), float(ks_result.pvalue), metrics

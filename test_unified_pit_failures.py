@@ -59,6 +59,12 @@ class PITTestResult:
     n_obs: int = 0
     fit_success: bool = False
     error: Optional[str] = None
+    # ELITE additions (February 2026)
+    berkowitz_pvalue: float = float('nan')
+    berkowitz_lr: float = float('nan')
+    pit_autocorr_lag1: float = float('nan')
+    ljung_box_pvalue: float = float('nan')
+    has_dynamic_misspec: bool = False
     
     @property
     def pit_failed(self) -> bool:
@@ -181,6 +187,12 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
             log_likelihood=float(ll),
             n_obs=n_obs,
             fit_success=True,
+            # ELITE additions
+            berkowitz_pvalue=float(pit_metrics.get('berkowitz_pvalue', float('nan'))) if pit_metrics.get('berkowitz_pvalue') is not None else float('nan'),
+            berkowitz_lr=float(pit_metrics.get('berkowitz_lr', float('nan'))) if pit_metrics.get('berkowitz_lr') is not None else float('nan'),
+            pit_autocorr_lag1=float(pit_metrics.get('pit_autocorr_lag1', float('nan'))) if pit_metrics.get('pit_autocorr_lag1') is not None else float('nan'),
+            ljung_box_pvalue=float(pit_metrics.get('ljung_box_pvalue', float('nan'))) if pit_metrics.get('ljung_box_pvalue') is not None else float('nan'),
+            has_dynamic_misspec=bool(pit_metrics.get('has_dynamic_misspec', False)),
         )
     except Exception as e:
         return PITTestResult(
@@ -227,15 +239,23 @@ def fit_unified_model_adaptive_nu(symbol, returns, vol):
 def print_test_result(result):
     status = 'X' if result.pit_failed else 'OK'
     mad_status = 'X' if result.mad_failed else 'OK'
+    # Berkowitz status: p > 0.05 means well-calibrated
+    berk_p = result.berkowitz_pvalue if np.isfinite(result.berkowitz_pvalue) else 0.0
+    berk_status = 'OK' if berk_p >= 0.05 else 'X'
     if result.fit_success:
         # Line 1: Core parameters
         print(f'  {result.symbol:12s}  log₁₀(q)={result.log10_q:+.2f}  c={result.c:.3f}  '
               f'ν={result.nu:.0f}  φ={result.phi:+.2f}  α={result.alpha_asym:+.3f}  '
               f'γ={result.gamma_vov:.2f}')
-        # Line 2: Calibration metrics
+        # Line 2: Calibration metrics (BIC, Hyvarinen, CRPS)
         print(f'               β={result.variance_inflation:.3f}  '
-              f'BIC={result.bic:+.1f}  Hyv={result.hyvarinen:+.4f}  CRPS={result.crps:.4f}  |  '
-              f'PIT_p={result.pit_pvalue:.4f} {status}  MAD={result.histogram_mad:.4f} {mad_status}  '
+              f'BIC={result.bic:+.1f}  Hyv={result.hyvarinen:+.4f}  CRPS={result.crps:.4f}')
+        # Line 3: PIT diagnostics (KS, Berkowitz, MAD)
+        acf1_str = f'{result.pit_autocorr_lag1:+.3f}' if np.isfinite(result.pit_autocorr_lag1) else 'N/A'
+        print(f'               PIT: KS_p={result.pit_pvalue:.4f} {status}  '
+              f'Berk_p={berk_p:.4f} {berk_status}  '
+              f'MAD={result.histogram_mad:.4f} {mad_status}  '
+              f'ACF₁={acf1_str}  '
               f'Grade={result.calibration_grade}')
     else:
         print(f'  {result.symbol:12s}  FIT FAILED: {result.error}')
