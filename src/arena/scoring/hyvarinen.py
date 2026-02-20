@@ -89,6 +89,10 @@ def compute_hyvarinen_score_student_t(
         
     where z = (y - μ) / σ
     
+    NUMERICAL STABILITY FIX (February 2026):
+        1. Clip z values to [-10, 10]
+        2. Clip results to [-10000, 10000]
+    
     Args:
         observations: Actual observed values (n,)
         mu: Predicted means (n,)
@@ -102,18 +106,19 @@ def compute_hyvarinen_score_student_t(
     mu = np.asarray(mu).flatten()
     sigma = np.asarray(sigma).flatten()
     
-    # Ensure positive sigma and valid nu
-    sigma = np.maximum(sigma, 1e-10)
+    # Ensure positive sigma with reasonable floor and valid nu
+    sigma = np.maximum(sigma, 1e-3)
     nu = max(nu, 2.01)
     
     sigma2 = sigma ** 2
     
-    # Standardized residual
+    # Standardized residual - CLIP to prevent explosion
     z = (observations - mu) / sigma
+    z = np.clip(z, -10.0, 10.0)
     z2 = z ** 2
     
     # Denominator: ν + z²
-    denom = nu + z2
+    denom = np.maximum(nu + z2, 1e-6)
     
     # First derivative: ∂log p/∂y
     d1 = -(nu + 1) * z / (sigma * denom)
@@ -124,7 +129,14 @@ def compute_hyvarinen_score_student_t(
     # Hyvärinen score: -2*d2 - d1²
     hyvarinen = -2 * d2 - d1**2
     
-    return float(np.mean(hyvarinen))
+    # Clip to reasonable range
+    hyvarinen = np.clip(hyvarinen, -1e4, 1e4)
+    
+    valid = np.isfinite(hyvarinen)
+    if not np.any(valid):
+        return 0.0
+    
+    return float(np.clip(np.mean(hyvarinen[valid]), -1e4, 1e4))
 
 
 def compute_hyvarinen_score_mixture(

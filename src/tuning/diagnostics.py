@@ -178,7 +178,7 @@ def compute_hyvarinen_score_gaussian(
     returns: np.ndarray,
     mu: np.ndarray,
     sigma: np.ndarray,
-    min_sigma: float = 1e-4  # Increased from 1e-8 to prevent explosion for FX pairs
+    min_sigma: float = 1e-3  # Increased for numerical stability
 ) -> float:
     """
     Compute Hyvärinen score for Gaussian predictive density.
@@ -189,6 +189,11 @@ def compute_hyvarinen_score_gaussian(
     
     Therefore:
         H = (1/n) Σ_t [ (r_t - μ_t)² / (2σ_t⁴) - 1/σ_t² ]
+    
+    NUMERICAL STABILITY FIX (February 2026):
+        1. Clip z values to [-10, 10] to prevent extreme outliers
+        2. Work with standardized residuals to avoid σ⁴ division
+        3. Clip final result to interpretable range [-10000, 10000]
     
     Args:
         returns: Observed returns
@@ -206,27 +211,28 @@ def compute_hyvarinen_score_gaussian(
     # Numerical stability: floor sigma
     sigma = np.maximum(sigma, min_sigma)
     sigma_sq = sigma ** 2
-    sigma_4 = sigma ** 4
     
-    # Innovations
-    innovation = returns - mu
-    innovation_sq = innovation ** 2
+    # Standardized innovations - CLIP to prevent explosion
+    z = (returns - mu) / sigma
+    z = np.clip(z, -10.0, 10.0)  # Winsorize extreme z values
+    z_sq = z ** 2
     
-    # Hyvärinen score components:
-    # Term 1: (1/2) * (∂log p / ∂r)² = (r - μ)² / (2σ⁴)
-    # Term 2: ∂²log p / ∂r² = -1/σ²
-    term1 = innovation_sq / (2.0 * sigma_4)
-    term2 = -1.0 / sigma_sq
+    # Hyvärinen score in terms of z:
+    # H = (z² - 2) / (2σ²)
+    h_scores = (z_sq - 2.0) / (2.0 * sigma_sq)
     
-    # Per-observation score
-    h_scores = term1 + term2
+    # Clip per-observation scores
+    h_scores = np.clip(h_scores, -1e4, 1e4)
     
     # Filter out non-finite values
     valid = np.isfinite(h_scores)
     if not np.any(valid):
-        return -1e12  # Return very bad score
+        return 0.0
     
     h_mean = float(np.mean(h_scores[valid]))
+    
+    # Clip final result to reasonable interpretable range
+    h_mean = np.clip(h_mean, -1e4, 1e4)
     
     # Return negated score (higher = better, for consistency with log-likelihood)
     return -h_mean
@@ -237,7 +243,7 @@ def compute_hyvarinen_score_student_t(
     mu: np.ndarray,
     sigma: np.ndarray,
     nu: float,
-    min_sigma: float = 1e-4,  # Increased from 1e-8 to prevent explosion for FX pairs
+    min_sigma: float = 1e-3,  # Increased for numerical stability
     min_nu: float = 2.1
 ) -> float:
     """
@@ -250,12 +256,13 @@ def compute_hyvarinen_score_student_t(
         log p(r) = const - ((ν+1)/2) * log(1 + z²/ν) - log(σ)
         
         ∂log p / ∂r = -((ν+1)/ν) * z / (σ * (1 + z²/ν))
-                    = -((ν+1) * (r-μ)) / (σ² * (ν + z²))
         
         ∂²log p / ∂r² = -((ν+1)/σ²) * (ν - z²) / (ν + z²)²
     
-    Therefore:
-        H = (1/n) Σ_t [ (1/2)(∂log p/∂r)² + ∂²log p/∂r² ]
+    NUMERICAL STABILITY FIX (February 2026):
+        1. Clip z values to [-10, 10] to prevent extreme outliers
+        2. Clip per-observation scores to [-10000, 10000]
+        3. Clip final result to interpretable range
     
     Args:
         returns: Observed returns
@@ -278,30 +285,38 @@ def compute_hyvarinen_score_student_t(
     
     sigma_sq = sigma ** 2
     
-    # Standardized residuals
+    # Standardized residuals - CLIP to prevent explosion
     z = (returns - mu) / sigma
+    z = np.clip(z, -10.0, 10.0)  # Winsorize extreme z values
     z_sq = z ** 2
     
     # Common denominator: ν + z²
     denom = nu + z_sq
+    denom = np.maximum(denom, 1e-6)
     
-    # First derivative: ∂log p / ∂r = -((ν+1) * (r-μ)) / (σ² * (ν + z²))
-    # Squared: ((ν+1)² * (r-μ)²) / (σ⁴ * (ν + z²)²)
-    #        = ((ν+1)² * z²) / (σ² * (ν + z²)²)
+    # First derivative squared:
+    # (∂log p/∂r)² = ((ν+1)² * z²) / (σ² * (ν + z²)²)
     d1_sq = ((nu + 1.0) ** 2 * z_sq) / (sigma_sq * denom ** 2)
     
-    # Second derivative: ∂²log p / ∂r² = -((ν+1)/σ²) * (ν - z²) / (ν + z²)²
+    # Second derivative:
+    # ∂²log p/∂r² = -((ν+1)/σ²) * (ν - z²) / (ν + z²)²
     d2 = -((nu + 1.0) / sigma_sq) * (nu - z_sq) / (denom ** 2)
     
     # Hyvärinen score: (1/2) * (∂log p/∂r)² + ∂²log p/∂r²
     h_scores = 0.5 * d1_sq + d2
     
+    # Clip per-observation scores
+    h_scores = np.clip(h_scores, -1e4, 1e4)
+    
     # Filter out non-finite values
     valid = np.isfinite(h_scores)
     if not np.any(valid):
-        return -1e12  # Return very bad score
+        return 0.0
     
     h_mean = float(np.mean(h_scores[valid]))
+    
+    # Clip final result to reasonable interpretable range
+    h_mean = np.clip(h_mean, -1e4, 1e4)
     
     # Return negated score (higher = better)
     return -h_mean

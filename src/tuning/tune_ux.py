@@ -642,6 +642,7 @@ def render_tuning_summary(
     vov_enhanced_count: int = 0,  # Vol-of-Vol enhanced
     two_piece_count: int = 0,  # Two-Piece asymmetric tails
     mixture_t_count: int = 0,  # Two-Component mixture
+    unified_model_count: int = 0,  # Unified Student-t model
     # Volatility estimator counts (February 2026)
     gk_vol_count: int = 0,  # Garman-Klass volatility
     har_vol_count: int = 0,  # HAR volatility
