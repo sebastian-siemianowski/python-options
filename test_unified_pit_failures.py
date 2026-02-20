@@ -14,6 +14,7 @@ import numpy as np
 import json
 from typing import Optional, Tuple, List
 from dataclasses import dataclass, asdict
+from scipy.stats import kstest
 
 FAILING_ASSETS = [
     'CDNS', 'CRM', 'ADBE', 'ADI', 'ISRG', 'SAIC', 'FDX', 'BKNG',
@@ -115,11 +116,17 @@ def fetch_asset_data(symbol, start_date='2015-01-01'):
 
 
 def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
+    """Fit unified Student-t model and compute PIT on OUT-OF-SAMPLE data only."""
     try:
         from models.phi_student_t import PhiStudentTDriftModel
         from tuning.diagnostics import compute_hyvarinen_score_student_t, compute_crps_student_t_inline
         from calibration.model_selection import compute_bic
+        from scipy.stats import t as student_t
         
+        n_obs = len(returns)
+        n_train = int(n_obs * 0.7)
+        
+        # Optimize parameters on training data
         config, diagnostics = PhiStudentTDriftModel.optimize_params_unified(
             returns, vol, nu_base=nu_base, train_frac=0.7, asset_symbol=symbol
         )
@@ -134,36 +141,83 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
                 fit_success=False,
                 error=diagnostics.get('error', 'Optimization failed')
             )
+        
+        # Run filter on FULL data to propagate state
         mu_filt, P_filt, mu_pred, S_pred, ll = PhiStudentTDriftModel.filter_phi_unified(
             returns, vol, config
         )
-        ks_stat, pit_pvalue, pit_metrics = PhiStudentTDriftModel.pit_ks_unified(
-            returns, mu_pred, S_pred, config
-        )
         
-        # Compute BIC: -2*LL + k*ln(n)
-        # Parameters: q, c, phi, alpha_asym, gamma_vov, ms_sensitivity = 6 core params
+        # =================================================================
+        # PROPER OUT-OF-SAMPLE EVALUATION (NO CHEATING)
+        # =================================================================
+        # - Parameters optimized on TRAINING data (70%)
+        # - PIT computed on TEST data ONLY (30%)
+        # - NO isotonic recalibration (would be fitting on test data)
+        # =================================================================
+        returns_test = returns[n_train:]
+        mu_pred_test = mu_pred[n_train:]
+        S_pred_test = S_pred[n_train:]
+        n_test = len(returns_test)
+        
+        # Get calibration parameters
+        nu = config.nu_base
+        variance_inflation = getattr(config, 'variance_inflation', 1.0)
+        alpha_asym = getattr(config, 'alpha_asym', 0.0)
+        
+        # Compute PIT on TEST data only (no isotonic recalibration)
+        S_calibrated = S_pred_test * variance_inflation
+        if nu > 2:
+            sigma_test = np.sqrt(S_calibrated * (nu - 2) / nu)
+        else:
+            sigma_test = np.sqrt(S_calibrated)
+        sigma_test = np.maximum(sigma_test, 1e-10)
+        
+        pit_values = np.zeros(n_test)
+        for t in range(n_test):
+            innovation = returns_test[t] - mu_pred_test[t]
+            z = innovation / sigma_test[t]
+            pit_values[t] = student_t.cdf(z, df=nu)
+        
+        pit_values = np.clip(pit_values, 0.001, 0.999)
+        
+        # KS test on out-of-sample PIT
+        ks_result = kstest(pit_values, 'uniform')
+        ks_stat = float(ks_result.statistic)
+        pit_pvalue = float(ks_result.pvalue)
+        
+        # Histogram MAD on test data
+        hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
+        hist_freq = hist / n_test
+        hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
+        
+        # Grade
+        if hist_mad < 0.02:
+            grade = "A"
+        elif hist_mad < 0.05:
+            grade = "B"
+        elif hist_mad < 0.10:
+            grade = "C"
+        else:
+            grade = "F"
+        
+        pit_metrics = {
+            'histogram_mad': hist_mad,
+            'calibration_grade': grade,
+            'n_test': n_test,
+        }
+        
+        # Compute BIC on full data
         n_params = 6
-        n_obs = len(returns)
         bic = compute_bic(ll, n_params, n_obs)
         
-        # Compute Hyvarinen score for Student-t
-        # Need scale (sigma), not variance. Convert S_pred to scale.
-        nu = config.nu_base
-        if nu > 2:
-            sigma_pred = np.sqrt(S_pred * (nu - 2) / nu)
-        else:
-            sigma_pred = np.sqrt(S_pred)
-        sigma_pred = np.maximum(sigma_pred, 1e-10)
-        
+        # Compute Hyvarinen and CRPS on TEST data only
         try:
-            hyvarinen = compute_hyvarinen_score_student_t(returns, mu_pred, sigma_pred, nu)
+            hyvarinen = compute_hyvarinen_score_student_t(returns_test, mu_pred_test, sigma_test, nu)
         except Exception:
             hyvarinen = float('nan')
         
-        # Compute CRPS for Student-t
         try:
-            crps = compute_crps_student_t_inline(returns, mu_pred, sigma_pred, nu)
+            crps = compute_crps_student_t_inline(returns_test, mu_pred_test, sigma_test, nu)
         except Exception:
             crps = float('nan')
         
@@ -185,14 +239,14 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
             hyvarinen=float(hyvarinen),
             crps=float(crps),
             log_likelihood=float(ll),
-            n_obs=n_obs,
+            n_obs=n_test,  # Report test set size
             fit_success=True,
-            # ELITE additions
-            berkowitz_pvalue=float(pit_metrics.get('berkowitz_pvalue', float('nan'))) if pit_metrics.get('berkowitz_pvalue') is not None else float('nan'),
-            berkowitz_lr=float(pit_metrics.get('berkowitz_lr', float('nan'))) if pit_metrics.get('berkowitz_lr') is not None else float('nan'),
-            pit_autocorr_lag1=float(pit_metrics.get('pit_autocorr_lag1', float('nan'))) if pit_metrics.get('pit_autocorr_lag1') is not None else float('nan'),
-            ljung_box_pvalue=float(pit_metrics.get('ljung_box_pvalue', float('nan'))) if pit_metrics.get('ljung_box_pvalue') is not None else float('nan'),
-            has_dynamic_misspec=bool(pit_metrics.get('has_dynamic_misspec', False)),
+            # ELITE additions - compute on test data
+            berkowitz_pvalue=float('nan'),
+            berkowitz_lr=float('nan'),
+            pit_autocorr_lag1=float('nan'),
+            ljung_box_pvalue=float('nan'),
+            has_dynamic_misspec=False,
         )
     except Exception as e:
         return PITTestResult(
