@@ -905,28 +905,35 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
     console.print(Rule(style="dim"))
     console.print()
     
+    # Table header
+    table_title = Text()
+    table_title.append("    📋  ", style="bold bright_cyan")
+    table_title.append("DETAILED RESULTS", style="bold bright_white")
+    table_title.append("  (sorted by PIT p-value)", style="dim")
+    console.print(table_title)
+    console.print()
+    
     table = Table(
         show_header=True,
-        header_style="bold white",
+        header_style="bold bright_white on grey23",
         border_style="dim",
         box=box.ROUNDED,
         padding=(0, 1),
-        row_styles=["", "on grey7"],
+        expand=False,
     )
     
-    table.add_column("Symbol", justify="left", width=10, no_wrap=True)
-    table.add_column("log₁₀(q)", justify="right", width=8)
+    table.add_column("Symbol", justify="left", style="bold", no_wrap=True)
+    table.add_column("PIT_p", justify="right", width=7)
+    table.add_column("MAD", justify="right", width=6)
+    table.add_column("Grd", justify="center", width=3)
+    table.add_column("log₁₀(q)", justify="right", width=7)
     table.add_column("c", justify="right", width=6)
     table.add_column("ν", justify="right", width=3)
     table.add_column("φ", justify="right", width=6)
     table.add_column("α", justify="right", width=7)
     table.add_column("γ", justify="right", width=5)
     table.add_column("BIC", justify="right", width=10)
-    table.add_column("Hyv", justify="right", width=12)
     table.add_column("CRPS", justify="right", width=7)
-    table.add_column("PIT_p", justify="right", width=7)
-    table.add_column("MAD", justify="right", width=6)
-    table.add_column("Grd", justify="center", width=3)
     table.add_column("Status", justify="center", width=6)
     
     # Sort by PIT p-value
@@ -941,15 +948,43 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
             alpha = r.get('alpha_asym', 0.0)
             gamma = r.get('gamma_vov', 0.0)
             bic = r.get('bic') if r.get('bic') else float('nan')
-            hyv = r.get('hyvarinen') if r.get('hyvarinen') else float('nan')
             crps = r.get('crps') if r.get('crps') else float('nan')
-            st = 'FAIL' if r['pit_failed'] else 'PASS'
-            print(f'{r["symbol"]:10s} {q:+8.2f} {c:5.3f} {nu:3.0f} {phi:+5.2f} {alpha:+6.3f} {gamma:4.2f} '
-                  f'{bic:+9.1f} {hyv:+8.4f} {crps:7.4f} {r["pit_pvalue"]:7.4f} {r["histogram_mad"]:6.4f} '
-                  f'{r["calibration_grade"]:>3s} {st:>6s}')
+            pit_p = r.get('pit_pvalue', 0)
+            mad = r.get('histogram_mad', 0)
+            grade = r.get('calibration_grade', '-')
+            is_fail = r.get('pit_failed', True)
+            
+            # Styling based on status
+            sym_style = "indian_red1" if is_fail else "bright_green"
+            pit_style = "bright_green" if pit_p >= 0.10 else "yellow" if pit_p >= 0.05 else "indian_red1"
+            mad_style = "bright_green" if mad < 0.03 else "yellow" if mad < 0.05 else "indian_red1"
+            grade_style = "bright_green" if grade == 'A' else "yellow" if grade in ['B', 'C'] else "indian_red1"
+            status_style = "indian_red1 bold" if is_fail else "bright_green bold"
+            status_text = "FAIL" if is_fail else "PASS"
+            
+            table.add_row(
+                f"[{sym_style}]{r['symbol']}[/{sym_style}]",
+                f"[{pit_style}]{pit_p:.4f}[/{pit_style}]",
+                f"[{mad_style}]{mad:.4f}[/{mad_style}]",
+                f"[{grade_style}]{grade}[/{grade_style}]",
+                f"{q:+.2f}" if np.isfinite(q) else "[dim]-[/dim]",
+                f"{c:.3f}" if np.isfinite(c) else "[dim]-[/dim]",
+                f"{nu:.0f}",
+                f"{phi:+.2f}" if np.isfinite(phi) else "[dim]-[/dim]",
+                f"{alpha:+.3f}",
+                f"{gamma:.2f}",
+                f"{bic:+.1f}" if np.isfinite(bic) else "[dim]-[/dim]",
+                f"{crps:.4f}" if np.isfinite(crps) else "[dim]-[/dim]",
+                f"[{status_style}]{status_text}[/{status_style}]",
+            )
         else:
-            print(f'{r["symbol"]:10s} {"---":>8s} {"---":>5s} {"---":>3s} {"---":>5s} {"---":>6s} {"---":>4s} '
-                  f'{"---":>9s} {"---":>8s} {"---":>7s} {"---":>7s} {"---":>6s} {"---":>3s} {"ERROR":>6s}')
+            table.add_row(
+                f"[indian_red1]{r['symbol']}[/indian_red1]",
+                "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
+                "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
+                "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
+                "[indian_red1 bold]ERROR[/indian_red1 bold]",
+            )
     
     console.print(table)
     console.print()
