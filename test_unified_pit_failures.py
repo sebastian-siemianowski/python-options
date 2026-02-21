@@ -16,6 +16,22 @@ from typing import Optional, Tuple, List
 from dataclasses import dataclass, asdict
 from scipy.stats import kstest
 
+# Rich imports for beautiful output
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich import box
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
+    from rich.rule import Rule
+    from rich.align import Align
+    RICH_AVAILABLE = True
+    console = Console(force_terminal=True, color_system="truecolor", width=140)
+except ImportError:
+    RICH_AVAILABLE = False
+    console = None
+
 FAILING_ASSETS = [
     # Original 22 assets
     'CDNS', 'CRM', 'ADBE', 'ADI', 'ISRG', 'SAIC', 'FDX', 'BKNG',
@@ -313,62 +329,231 @@ def fit_unified_model_adaptive_nu(symbol, returns, vol):
 
 
 def print_test_result(result):
+    """Print test result with Rich formatting - PIT-first layout."""
     status = 'X' if result.pit_failed else 'OK'
     mad_status = 'X' if result.mad_failed else 'OK'
     # Berkowitz status: p > 0.05 means well-calibrated
     berk_p = result.berkowitz_pvalue if np.isfinite(result.berkowitz_pvalue) else 0.0
     berk_status = 'OK' if berk_p >= 0.05 else 'X'
+    
+    if not RICH_AVAILABLE:
+        # Fallback to plain text - PIT first (most important)
+        if result.fit_success:
+            acf1_str = f'{result.pit_autocorr_lag1:+.3f}' if np.isfinite(result.pit_autocorr_lag1) else 'N/A'
+            print(f'  {result.symbol:10s}  PIT: p={result.pit_pvalue:.4f} {status}  │  '
+                  f'Berk={berk_p:.4f} {berk_status}  │  MAD={result.histogram_mad:.4f} {mad_status}  │  '
+                  f'Grade={result.calibration_grade}')
+            print(f'              log₁₀(q)={result.log10_q:+.2f}  c={result.c:.3f}  '
+                  f'ν={result.nu:.0f}  φ={result.phi:+.2f}  α={result.alpha_asym:+.3f}  γ={result.gamma_vov:.2f}')
+            print(f'              BIC={result.bic:+.1f}  Hyv={result.hyvarinen:+.4f}  '
+                  f'CRPS={result.crps:.4f}  β={result.variance_inflation:.3f}')
+        else:
+            print(f'  {result.symbol:10s}  FIT FAILED: {result.error}')
+        return
+    
     if result.fit_success:
-        # Line 1: Core parameters
-        print(f'  {result.symbol:12s}  log₁₀(q)={result.log10_q:+.2f}  c={result.c:.3f}  '
-              f'ν={result.nu:.0f}  φ={result.phi:+.2f}  α={result.alpha_asym:+.3f}  '
-              f'γ={result.gamma_vov:.2f}')
-        # Line 2: Calibration metrics (BIC, Hyvarinen, CRPS)
-        print(f'               β={result.variance_inflation:.3f}  '
-              f'BIC={result.bic:+.1f}  Hyv={result.hyvarinen:+.4f}  CRPS={result.crps:.4f}')
-        # Line 3: PIT diagnostics (KS, Berkowitz, MAD)
-        acf1_str = f'{result.pit_autocorr_lag1:+.3f}' if np.isfinite(result.pit_autocorr_lag1) else 'N/A'
-        print(f'               PIT: KS_p={result.pit_pvalue:.4f} {status}  '
-              f'Berk_p={berk_p:.4f} {berk_status}  '
-              f'MAD={result.histogram_mad:.4f} {mad_status}  '
-              f'ACF₁={acf1_str}  '
-              f'Grade={result.calibration_grade}')
+        # Symbol with status color
+        sym_color = "indian_red1" if result.pit_failed else "bright_green"
+        
+        # Line 1: PIT diagnostics (most important - first!)
+        line1 = Text()
+        line1.append(f"  {result.symbol:<10}", style=f"bold {sym_color}")
+        line1.append("  PIT: ", style="bold white")
+        
+        # KS p-value (main metric)
+        line1.append("p=", style="dim")
+        ks_color = "bright_green" if result.pit_pvalue >= 0.10 else "yellow" if result.pit_pvalue >= 0.05 else "indian_red1"
+        line1.append(f"{result.pit_pvalue:.4f}", style=f"bold {ks_color}")
+        line1.append(f" {status}", style=f"bold {'bright_green' if status == 'OK' else 'indian_red1'}")
+        
+        # Berkowitz
+        line1.append("  │  ", style="dim")
+        line1.append("Berk=", style="dim")
+        berk_color = "bright_green" if berk_p >= 0.10 else "yellow" if berk_p >= 0.05 else "indian_red1"
+        line1.append(f"{berk_p:.4f}", style=berk_color)
+        line1.append(f" {berk_status}", style="bright_green" if berk_status == 'OK' else "indian_red1")
+        
+        # MAD
+        line1.append("  │  ", style="dim")
+        line1.append("MAD=", style="dim")
+        mad_color = "bright_green" if result.histogram_mad < 0.03 else "yellow" if result.histogram_mad < 0.05 else "indian_red1"
+        line1.append(f"{result.histogram_mad:.4f}", style=mad_color)
+        line1.append(f" {mad_status}", style="bright_green" if mad_status == 'OK' else "indian_red1")
+        
+        # Grade
+        line1.append("  │  ", style="dim")
+        line1.append("Grade=", style="dim")
+        grade_color = "bright_green" if result.calibration_grade == 'A' else "yellow" if result.calibration_grade in ['B', 'C'] else "indian_red1"
+        line1.append(result.calibration_grade, style=f"bold {grade_color}")
+        
+        console.print(line1)
+        
+        # Line 2: Core model parameters (aligned)
+        line2 = Text()
+        line2.append("              ", style="")  # 14 spaces for alignment
+        line2.append("log₁₀(q)=", style="dim")
+        line2.append(f"{result.log10_q:+.2f}", style="cyan")
+        line2.append("  c=", style="dim")
+        line2.append(f"{result.c:.3f}", style="white")
+        line2.append("  ν=", style="dim")
+        line2.append(f"{result.nu:.0f}", style="bright_magenta")
+        line2.append("  φ=", style="dim")
+        line2.append(f"{result.phi:+.2f}", style="white")
+        line2.append("  α=", style="dim")
+        alpha_color = "yellow" if abs(result.alpha_asym) > 0.1 else "white"
+        line2.append(f"{result.alpha_asym:+.3f}", style=alpha_color)
+        line2.append("  γ=", style="dim")
+        line2.append(f"{result.gamma_vov:.2f}", style="white")
+        console.print(line2)
+        
+        # Line 3: Calibration metrics (aligned)
+        line3 = Text()
+        line3.append("              ", style="")  # 14 spaces for alignment
+        line3.append("BIC=", style="dim")
+        line3.append(f"{result.bic:+.1f}", style="cyan")
+        line3.append("  Hyv=", style="dim")
+        line3.append(f"{result.hyvarinen:+.4f}", style="white")
+        line3.append("  CRPS=", style="dim")
+        crps_color = "bright_green" if result.crps < 0.02 else "yellow" if result.crps < 0.05 else "indian_red1"
+        line3.append(f"{result.crps:.4f}", style=crps_color)
+        line3.append("  β=", style="dim")
+        line3.append(f"{result.variance_inflation:.3f}", style="white")
+        console.print(line3)
     else:
-        print(f'  {result.symbol:12s}  FIT FAILED: {result.error}')
+        line = Text()
+        line.append(f"  {result.symbol:<10}", style="bold indian_red1")
+        line.append("  FIT FAILED: ", style="indian_red1")
+        line.append(str(result.error), style="dim")
+        console.print(line)
 
 
 def test_unified_pit_failures_exist():
-    print('TEST: Verifying PIT calibration failures exist for unified Student-t model')
+    """Quick test to verify PIT calibration failures exist."""
+    if RICH_AVAILABLE:
+        console.print()
+        header = Text()
+        header.append("  🔬  ", style="bold bright_yellow")
+        header.append("QUICK PIT VERIFICATION TEST", style="bold bright_white")
+        console.print(header)
+        console.print("      [dim]Verifying PIT calibration failures exist for unified Student-t model[/dim]")
+        console.print()
+    else:
+        print('TEST: Verifying PIT calibration failures exist for unified Student-t model')
+    
     results = []
     n_pit_failures = 0
     n_mad_failures = 0
-    for symbol in QUICK_TEST_ASSETS:
-        print(f'Processing {symbol}...')
+    
+    for i, symbol in enumerate(QUICK_TEST_ASSETS):
+        if RICH_AVAILABLE:
+            # Add spacing between assets
+            if i > 0:
+                console.print()
+            
+            # Processing header
+            proc_text = Text()
+            proc_text.append(f"  [{i+1}/{len(QUICK_TEST_ASSETS)}] ", style="dim")
+            proc_text.append(symbol, style="bold bright_cyan")
+            console.print(proc_text)
+        else:
+            print(f'Processing {symbol}...')
+        
         data = fetch_asset_data(symbol)
         if data is None:
-            print(f'Warning: No data available for {symbol}, skipping')
+            if RICH_AVAILABLE:
+                console.print("        [yellow]⚠ No data available, skipping[/yellow]")
+            else:
+                print(f'Warning: No data available for {symbol}, skipping')
             continue
+        
         returns, vol = data
-        print(f'Data: {len(returns)} observations')
+        if RICH_AVAILABLE:
+            data_text = Text()
+            data_text.append("        ", style="")
+            data_text.append(f"{len(returns)}", style="bold white")
+            data_text.append(" observations", style="dim")
+            console.print(data_text)
+        else:
+            print(f'Data: {len(returns)} observations')
+        
         result = fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0)
         results.append(result)
         print_test_result(result)
+        
         if result.pit_failed:
             n_pit_failures += 1
         if result.mad_failed:
             n_mad_failures += 1
-    print('SUMMARY')
-    print(f'Assets tested:     {len(results)}')
-    print(f'PIT failures:      {n_pit_failures} / {len(results)} (p < 0.05)')
-    print(f'MAD failures:      {n_mad_failures} / {len(results)} (MAD > 0.05)')
-    if len(results) > 0:
-        pit_failure_rate = n_pit_failures / len(results)
-        print(f'PIT failure rate:  {pit_failure_rate:.1%}')
-        assert pit_failure_rate >= 0.5, (
-            f'Expected at least 50% PIT failure rate, got {pit_failure_rate:.1%}. '
-            f'Either the data changed or the calibration was improved.'
-        )
-        print('OK: PIT failures confirmed - test documents current behavior')
+    
+    # Summary
+    if RICH_AVAILABLE:
+        console.print()
+        console.print(Rule(style="dim"))
+        console.print()
+        
+        summary_header = Text()
+        summary_header.append("  📊  ", style="bold bright_cyan")
+        summary_header.append("QUICK TEST SUMMARY", style="bold bright_white")
+        console.print(summary_header)
+        console.print()
+        
+        # Metrics
+        pit_rate = n_pit_failures / len(results) * 100 if len(results) > 0 else 0
+        pit_color = "bright_green" if pit_rate < 30 else "yellow" if pit_rate < 60 else "indian_red1"
+        
+        m1 = Text()
+        m1.append("      Assets tested:     ", style="dim")
+        m1.append(f"{len(results)}", style="bold bright_white")
+        console.print(m1)
+        
+        m2 = Text()
+        m2.append("      PIT failures:      ", style="dim")
+        m2.append(f"{n_pit_failures}", style=f"bold {pit_color}")
+        m2.append(f" / {len(results)}", style="dim")
+        m2.append(" (p < 0.05)", style="dim")
+        console.print(m2)
+        
+        m3 = Text()
+        m3.append("      MAD failures:      ", style="dim")
+        mad_color = "bright_green" if n_mad_failures == 0 else "indian_red1"
+        m3.append(f"{n_mad_failures}", style=f"bold {mad_color}")
+        m3.append(f" / {len(results)}", style="dim")
+        m3.append(" (MAD > 0.05)", style="dim")
+        console.print(m3)
+        
+        m4 = Text()
+        m4.append("      PIT failure rate:  ", style="dim")
+        m4.append(f"{pit_rate:.1f}%", style=f"bold {pit_color}")
+        console.print(m4)
+        console.print()
+        
+        if len(results) > 0:
+            pit_failure_rate = n_pit_failures / len(results)
+            if pit_failure_rate >= 0.5:
+                ok_text = Text()
+                ok_text.append("      ✓ ", style="bold bright_green")
+                ok_text.append("PIT failures confirmed", style="bright_green")
+                ok_text.append(" — test documents current behavior", style="dim")
+                console.print(ok_text)
+            else:
+                warn_text = Text()
+                warn_text.append("      ⚠ ", style="bold yellow")
+                warn_text.append(f"Lower than expected failure rate ({pit_failure_rate:.1%})", style="yellow")
+                console.print(warn_text)
+        console.print()
+    else:
+        print('SUMMARY')
+        print(f'Assets tested:     {len(results)}')
+        print(f'PIT failures:      {n_pit_failures} / {len(results)} (p < 0.05)')
+        print(f'MAD failures:      {n_mad_failures} / {len(results)} (MAD > 0.05)')
+        if len(results) > 0:
+            pit_failure_rate = n_pit_failures / len(results)
+            print(f'PIT failure rate:  {pit_failure_rate:.1%}')
+            assert pit_failure_rate >= 0.5, (
+                f'Expected at least 50% PIT failure rate, got {pit_failure_rate:.1%}. '
+                f'Either the data changed or the calibration was improved.'
+            )
+            print('OK: PIT failures confirmed - test documents current behavior')
 
 
 def test_adaptive_nu_improvement():
@@ -445,67 +630,160 @@ def test_full_tuning_all_assets():
     
     This creates a baseline JSON file that can be compared after fixes.
     """
-    print('=' * 80)
-    print('FULL TUNING TEST: Running unified model on all failing assets')
-    print('=' * 80)
+    if RICH_AVAILABLE:
+        console.print()
+        console.print(Rule(style="bright_cyan"))
+        title = Text()
+        title.append("  ◆  ", style="bold bright_cyan")
+        title.append("UNIFIED STUDENT-T PIT CALIBRATION TEST", style="bold bright_white")
+        console.print(title)
+        console.print(Rule(style="bright_cyan"))
+        console.print()
+    else:
+        print('=' * 80)
+        print('FULL TUNING TEST: Running unified model on all failing assets')
+        print('=' * 80)
     
     results = []
     n_pit_failures = 0
     n_mad_failures = 0
     
-    for i, symbol in enumerate(ALL_FAILING_ASSETS):
-        print(f'\n[{i+1}/{len(ALL_FAILING_ASSETS)}] Processing {symbol}...')
-        
-        data = fetch_asset_data(symbol)
-        if data is None:
-            print(f'  WARNING: No data available for {symbol}, skipping')
-            results.append({
-                'symbol': symbol,
-                'fit_success': False,
-                'error': 'No data available'
-            })
-            continue
-        
-        returns, vol = data
-        print(f'  Data: {len(returns)} observations')
-        
-        result = fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0)
-        
-        result_dict = {
-            'symbol': result.symbol,
-            'pit_pvalue': result.pit_pvalue,
-            'ks_statistic': result.ks_statistic,
-            'histogram_mad': result.histogram_mad,
-            'calibration_grade': result.calibration_grade,
-            'log10_q': result.log10_q if not np.isnan(result.log10_q) else None,
-            'c': result.c if not np.isnan(result.c) else None,
-            'phi': result.phi if not np.isnan(result.phi) else None,
-            'nu': result.nu,
-            'alpha_asym': result.alpha_asym,
-            'gamma_vov': result.gamma_vov,
-            'variance_inflation': result.variance_inflation,
-            'bic': result.bic if not np.isnan(result.bic) else None,
-            'hyvarinen': result.hyvarinen if not np.isnan(result.hyvarinen) else None,
-            'crps': result.crps if not np.isnan(result.crps) else None,
-            'log_likelihood': result.log_likelihood if not np.isnan(result.log_likelihood) else None,
-            'n_obs': result.n_obs,
-            'fit_success': result.fit_success,
-            'error': result.error,
-            'pit_failed': result.pit_failed,
-            'mad_failed': result.mad_failed,
-        }
-        results.append(result_dict)
-        
-        print_test_result(result)
-        
-        if result.pit_failed:
-            n_pit_failures += 1
-        if result.mad_failed:
-            n_mad_failures += 1
+    # Use Rich progress if available
+    if RICH_AVAILABLE:
+        with Progress(
+            SpinnerColumn(spinner_name="dots", style="bright_yellow"),
+            TextColumn("[bold cyan]{task.description}[/bold cyan]"),
+            BarColumn(bar_width=30, complete_style="bright_green"),
+            MofNCompleteColumn(),
+            TextColumn("·"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=False,
+        ) as progress:
+            task = progress.add_task("Processing assets", total=len(ALL_FAILING_ASSETS))
+            
+            for i, symbol in enumerate(ALL_FAILING_ASSETS):
+                progress.update(task, description=f"[cyan]{symbol}[/cyan]")
+                
+                console.print()
+                idx_text = Text()
+                idx_text.append(f"[{i+1}/{len(ALL_FAILING_ASSETS)}] ", style="dim")
+                idx_text.append("Processing ", style="dim")
+                idx_text.append(symbol, style="bold bright_white")
+                idx_text.append("...", style="dim")
+                console.print(idx_text)
+                
+                data = fetch_asset_data(symbol)
+                if data is None:
+                    warn_text = Text()
+                    warn_text.append("  ⚠ ", style="yellow")
+                    warn_text.append("No data available, skipping", style="dim")
+                    console.print(warn_text)
+                    results.append({
+                        'symbol': symbol,
+                        'fit_success': False,
+                        'error': 'No data available'
+                    })
+                    progress.advance(task)
+                    continue
+                
+                returns, vol = data
+                data_text = Text()
+                data_text.append("  Data: ", style="dim")
+                data_text.append(f"{len(returns)}", style="bold white")
+                data_text.append(" observations", style="dim")
+                console.print(data_text)
+                
+                result = fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0)
+                
+                result_dict = {
+                    'symbol': result.symbol,
+                    'pit_pvalue': result.pit_pvalue,
+                    'ks_statistic': result.ks_statistic,
+                    'histogram_mad': result.histogram_mad,
+                    'calibration_grade': result.calibration_grade,
+                    'log10_q': result.log10_q if not np.isnan(result.log10_q) else None,
+                    'c': result.c if not np.isnan(result.c) else None,
+                    'phi': result.phi if not np.isnan(result.phi) else None,
+                    'nu': result.nu,
+                    'alpha_asym': result.alpha_asym,
+                    'gamma_vov': result.gamma_vov,
+                    'variance_inflation': result.variance_inflation,
+                    'bic': result.bic if not np.isnan(result.bic) else None,
+                    'hyvarinen': result.hyvarinen if not np.isnan(result.hyvarinen) else None,
+                    'crps': result.crps if not np.isnan(result.crps) else None,
+                    'log_likelihood': result.log_likelihood if not np.isnan(result.log_likelihood) else None,
+                    'n_obs': result.n_obs,
+                    'fit_success': result.fit_success,
+                    'error': result.error,
+                    'pit_failed': result.pit_failed,
+                    'mad_failed': result.mad_failed,
+                }
+                results.append(result_dict)
+                
+                print_test_result(result)
+                
+                if result.pit_failed:
+                    n_pit_failures += 1
+                if result.mad_failed:
+                    n_mad_failures += 1
+                
+                progress.advance(task)
+    else:
+        # Fallback to plain text
+        for i, symbol in enumerate(ALL_FAILING_ASSETS):
+            print(f'\n[{i+1}/{len(ALL_FAILING_ASSETS)}] Processing {symbol}...')
+            
+            data = fetch_asset_data(symbol)
+            if data is None:
+                print(f'  WARNING: No data available for {symbol}, skipping')
+                results.append({
+                    'symbol': symbol,
+                    'fit_success': False,
+                    'error': 'No data available'
+                })
+                continue
+            
+            returns, vol = data
+            print(f'  Data: {len(returns)} observations')
+            
+            result = fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0)
+            
+            result_dict = {
+                'symbol': result.symbol,
+                'pit_pvalue': result.pit_pvalue,
+                'ks_statistic': result.ks_statistic,
+                'histogram_mad': result.histogram_mad,
+                'calibration_grade': result.calibration_grade,
+                'log10_q': result.log10_q if not np.isnan(result.log10_q) else None,
+                'c': result.c if not np.isnan(result.c) else None,
+                'phi': result.phi if not np.isnan(result.phi) else None,
+                'nu': result.nu,
+                'alpha_asym': result.alpha_asym,
+                'gamma_vov': result.gamma_vov,
+                'variance_inflation': result.variance_inflation,
+                'bic': result.bic if not np.isnan(result.bic) else None,
+                'hyvarinen': result.hyvarinen if not np.isnan(result.hyvarinen) else None,
+                'crps': result.crps if not np.isnan(result.crps) else None,
+                'log_likelihood': result.log_likelihood if not np.isnan(result.log_likelihood) else None,
+                'n_obs': result.n_obs,
+                'fit_success': result.fit_success,
+                'error': result.error,
+                'pit_failed': result.pit_failed,
+                'mad_failed': result.mad_failed,
+            }
+            results.append(result_dict)
+            
+            print_test_result(result)
+            
+            if result.pit_failed:
+                n_pit_failures += 1
+            if result.mad_failed:
+                n_mad_failures += 1
     
     # Save results to JSON
     baseline = {
-        'test_date': '2026-02-19',
+        'test_date': '2026-02-21',
         'model': 'phi_student_t_unified_nu_8',
         'total_assets': len(ALL_FAILING_ASSETS),
         'assets_tested': len([r for r in results if r.get('fit_success', False)]),
@@ -517,27 +795,144 @@ def test_full_tuning_all_assets():
     with open(RESULTS_FILE, 'w') as f:
         json.dump(baseline, f, indent=2)
     
-    print('\n' + '=' * 80)
-    print('FULL TUNING SUMMARY')
-    print('=' * 80)
-    print(f'Total assets:      {len(ALL_FAILING_ASSETS)}')
-    print(f'Assets tested:     {baseline["assets_tested"]}')
-    print(f'PIT failures:      {n_pit_failures} / {baseline["assets_tested"]} (p < 0.05)')
-    print(f'MAD failures:      {n_mad_failures} / {baseline["assets_tested"]} (MAD > 0.05)')
+    # Print summary using Rich
+    if RICH_AVAILABLE:
+        render_pit_summary(baseline, results, n_pit_failures, n_mad_failures)
+    else:
+        print('\n' + '=' * 80)
+        print('FULL TUNING SUMMARY')
+        print('=' * 80)
+        print(f'Total assets:      {len(ALL_FAILING_ASSETS)}')
+        print(f'Assets tested:     {baseline["assets_tested"]}')
+        print(f'PIT failures:      {n_pit_failures} / {baseline["assets_tested"]} (p < 0.05)')
+        print(f'MAD failures:      {n_mad_failures} / {baseline["assets_tested"]} (MAD > 0.05)')
+        
+        if baseline['assets_tested'] > 0:
+            pit_failure_rate = n_pit_failures / baseline['assets_tested']
+            print(f'PIT failure rate:  {pit_failure_rate:.1%}')
+        
+        print(f'\nBaseline saved to: {RESULTS_FILE}')
+        
+        # Print results table
+        print('\n' + '-' * 140)
+        print(f'{"Symbol":10s} {"log₁₀(q)":>8s} {"c":>5s} {"ν":>3s} {"φ":>5s} {"α":>6s} {"γ":>4s} '
+              f'{"BIC":>9s} {"Hyv":>8s} {"CRPS":>7s} {"PIT_p":>7s} {"MAD":>6s} {"Grd":>3s} {"Status":>6s}')
+        print('-' * 140)
+        
+        for r in sorted(results, key=lambda x: x.get('pit_pvalue', 999) if x.get('fit_success') else 999):
+            if r.get('fit_success'):
+                q = r['log10_q'] if r['log10_q'] else float('nan')
+                c = r['c'] if r['c'] else float('nan')
+                phi = r['phi'] if r['phi'] else float('nan')
+                nu = r.get('nu', 8)
+                alpha = r.get('alpha_asym', 0.0)
+                gamma = r.get('gamma_vov', 0.0)
+                bic = r.get('bic') if r.get('bic') else float('nan')
+                hyv = r.get('hyvarinen') if r.get('hyvarinen') else float('nan')
+                crps = r.get('crps') if r.get('crps') else float('nan')
+                st = 'FAIL' if r['pit_failed'] else 'PASS'
+                print(f'{r["symbol"]:10s} {q:+8.2f} {c:5.3f} {nu:3.0f} {phi:+5.2f} {alpha:+6.3f} {gamma:4.2f} '
+                      f'{bic:+9.1f} {hyv:+8.4f} {crps:7.4f} {r["pit_pvalue"]:7.4f} {r["histogram_mad"]:6.4f} '
+                      f'{r["calibration_grade"]:>3s} {st:>6s}')
+            else:
+                print(f'{r["symbol"]:10s} {"---":>8s} {"---":>5s} {"---":>3s} {"---":>5s} {"---":>6s} {"---":>4s} '
+                      f'{"---":>9s} {"---":>8s} {"---":>7s} {"---":>7s} {"---":>6s} {"---":>3s} {"ERROR":>6s}')
     
-    if baseline['assets_tested'] > 0:
-        pit_failure_rate = n_pit_failures / baseline['assets_tested']
-        print(f'PIT failure rate:  {pit_failure_rate:.1%}')
+    return baseline
+
+
+def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
+    """Render beautiful PIT calibration summary using Rich."""
+    console.print()
+    console.print(Rule(style="bright_cyan"))
+    console.print()
     
-    print(f'\nBaseline saved to: {RESULTS_FILE}')
+    # Summary panel
+    summary_title = Text()
+    summary_title.append("  📊  ", style="bold bright_cyan")
+    summary_title.append("PIT CALIBRATION SUMMARY", style="bold bright_white")
+    console.print(summary_title)
+    console.print()
     
-    # Print results table with ALL important stats
-    print('\n' + '-' * 140)
-    print(f'{"Symbol":10s} {"log₁₀(q)":>8s} {"c":>5s} {"ν":>3s} {"φ":>5s} {"α":>6s} {"γ":>4s} '
-          f'{"BIC":>9s} {"Hyv":>8s} {"CRPS":>7s} {"PIT_p":>7s} {"MAD":>6s} {"Grd":>3s} {"Status":>6s}')
-    print('-' * 140)
+    # Key metrics
+    assets_tested = baseline['assets_tested']
+    total_assets = baseline['total_assets']
+    pit_rate = n_pit_failures / assets_tested * 100 if assets_tested > 0 else 0
+    mad_rate = n_mad_failures / assets_tested * 100 if assets_tested > 0 else 0
+    pass_rate = 100 - pit_rate
     
-    for r in sorted(results, key=lambda x: x.get('pit_pvalue', 999) if x.get('fit_success') else 999):
+    # Metric rows
+    metrics = Text()
+    metrics.append("    Total assets:      ", style="dim")
+    metrics.append(f"{total_assets}", style="bold bright_white")
+    console.print(metrics)
+    
+    metrics2 = Text()
+    metrics2.append("    Assets tested:     ", style="dim")
+    metrics2.append(f"{assets_tested}", style="bold bright_white")
+    console.print(metrics2)
+    
+    metrics3 = Text()
+    metrics3.append("    PIT failures:      ", style="dim")
+    pit_color = "bright_green" if pit_rate < 20 else "yellow" if pit_rate < 50 else "indian_red1"
+    metrics3.append(f"{n_pit_failures}", style=f"bold {pit_color}")
+    metrics3.append(f" / {assets_tested}", style="dim")
+    metrics3.append(f" (p < 0.05)", style="dim")
+    console.print(metrics3)
+    
+    metrics4 = Text()
+    metrics4.append("    MAD failures:      ", style="dim")
+    mad_color = "bright_green" if mad_rate < 10 else "yellow" if mad_rate < 20 else "indian_red1"
+    metrics4.append(f"{n_mad_failures}", style=f"bold {mad_color}")
+    metrics4.append(f" / {assets_tested}", style="dim")
+    metrics4.append(f" (MAD > 0.05)", style="dim")
+    console.print(metrics4)
+    
+    metrics5 = Text()
+    metrics5.append("    PIT failure rate:  ", style="dim")
+    metrics5.append(f"{pit_rate:.1f}%", style=f"bold {pit_color}")
+    console.print(metrics5)
+    console.print()
+    
+    # Baseline saved
+    saved = Text()
+    saved.append("    Baseline saved to: ", style="dim")
+    saved.append(RESULTS_FILE, style="bright_cyan")
+    console.print(saved)
+    console.print()
+    
+    # Results table
+    console.print(Rule(style="dim"))
+    console.print()
+    
+    table = Table(
+        show_header=True,
+        header_style="bold white",
+        border_style="dim",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        row_styles=["", "on grey7"],
+    )
+    
+    table.add_column("Symbol", justify="left", width=10, no_wrap=True)
+    table.add_column("log₁₀(q)", justify="right", width=8)
+    table.add_column("c", justify="right", width=6)
+    table.add_column("ν", justify="right", width=3)
+    table.add_column("φ", justify="right", width=6)
+    table.add_column("α", justify="right", width=7)
+    table.add_column("γ", justify="right", width=5)
+    table.add_column("BIC", justify="right", width=10)
+    table.add_column("Hyv", justify="right", width=12)
+    table.add_column("CRPS", justify="right", width=7)
+    table.add_column("PIT_p", justify="right", width=7)
+    table.add_column("MAD", justify="right", width=6)
+    table.add_column("Grd", justify="center", width=3)
+    table.add_column("Status", justify="center", width=6)
+    
+    # Sort by PIT p-value
+    sorted_results = sorted(results, key=lambda x: x.get('pit_pvalue', 999) if x.get('fit_success') else 999)
+    
+    for r in sorted_results:
         if r.get('fit_success'):
             q = r['log10_q'] if r['log10_q'] else float('nan')
             c = r['c'] if r['c'] else float('nan')
@@ -556,9 +951,9 @@ def test_full_tuning_all_assets():
             print(f'{r["symbol"]:10s} {"---":>8s} {"---":>5s} {"---":>3s} {"---":>5s} {"---":>6s} {"---":>4s} '
                   f'{"---":>9s} {"---":>8s} {"---":>7s} {"---":>7s} {"---":>6s} {"---":>3s} {"ERROR":>6s}')
     
-    return baseline
-
-
+    console.print(table)
+    console.print()
+        
 def compare_with_baseline():
     """Compare current results with saved baseline to verify improvements."""
     import os
@@ -627,12 +1022,31 @@ if __name__ == '__main__':
     elif len(sys.argv) > 1 and sys.argv[1] == '--adaptive':
         test_adaptive_nu_improvement()
     else:
-        print('UNIFIED STUDENT-T PIT CALIBRATION FAILURE TESTS')
-        print('Usage:')
-        print('  python test_unified_pit_failures.py             # Quick test (5 assets)')
-        print('  python test_unified_pit_failures.py --full      # Full test (22 assets)')
-        print('  python test_unified_pit_failures.py --adaptive  # Test adaptive nu selection')
-        print('  python test_unified_pit_failures.py --compare   # Compare with baseline')
-        print('')
+        if RICH_AVAILABLE:
+            console.print()
+            title = Text()
+            title.append("◆ ", style="bold bright_cyan")
+            title.append("UNIFIED STUDENT-T PIT CALIBRATION TESTS", style="bold bright_white")
+            console.print(title)
+            console.print()
+            
+            console.print("[dim]Usage:[/dim]")
+            console.print(f"  [cyan]python test_unified_pit_failures.py[/cyan]             [dim]# Quick test (5 assets)[/dim]")
+            console.print(f"  [cyan]python test_unified_pit_failures.py --full[/cyan]      [dim]# Full test ({len(ALL_FAILING_ASSETS)} assets)[/dim]")
+            console.print(f"  [cyan]python test_unified_pit_failures.py --adaptive[/cyan]  [dim]# Test adaptive nu selection[/dim]")
+            console.print(f"  [cyan]python test_unified_pit_failures.py --compare[/cyan]   [dim]# Compare with baseline[/dim]")
+            console.print()
+        else:
+            print('UNIFIED STUDENT-T PIT CALIBRATION FAILURE TESTS')
+            print('Usage:')
+            print('  python test_unified_pit_failures.py             # Quick test (5 assets)')
+            print(f'  python test_unified_pit_failures.py --full      # Full test ({len(ALL_FAILING_ASSETS)} assets)')
+            print('  python test_unified_pit_failures.py --adaptive  # Test adaptive nu selection')
+            print('  python test_unified_pit_failures.py --compare   # Compare with baseline')
+            print('')
         test_unified_pit_failures_exist()
-        print('ALL TESTS COMPLETED')
+        if RICH_AVAILABLE:
+            console.print()
+            console.print("[bold bright_green]✓ ALL TESTS COMPLETED[/bold bright_green]")
+        else:
+            print('ALL TESTS COMPLETED')
