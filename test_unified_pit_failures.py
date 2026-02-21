@@ -1075,7 +1075,11 @@ if __name__ == '__main__':
     import sys
     
     if len(sys.argv) > 1 and sys.argv[1] == '--full':
-        test_full_tuning_all_assets()
+        # Test failing assets only
+        test_full_tuning_all_assets(mode="failing")
+    elif len(sys.argv) > 1 and sys.argv[1] == '--all':
+        # Test ALL assets (failing + passing)
+        test_full_tuning_all_assets(mode="all")
     elif len(sys.argv) > 1 and sys.argv[1] == '--compare':
         compare_with_baseline()
     elif len(sys.argv) > 1 and sys.argv[1] == '--adaptive':
