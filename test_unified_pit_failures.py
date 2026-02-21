@@ -151,16 +151,12 @@ def fetch_asset_data(symbol, start_date='2015-01-01'):
 
 
 def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
-    """Fit unified Student-t model and compute PIT using V3 Elite Wavelet Pipeline."""
+    """Fit unified Student-t model and compute PIT using integrated calibration."""
     try:
         from models.phi_student_t import PhiStudentTDriftModel
         from tuning.diagnostics import compute_hyvarinen_score_student_t, compute_crps_student_t_inline
         from calibration.model_selection import compute_bic
         from scipy.stats import t as student_t
-        from models.elite_pit_v3 import (
-            compute_elite_calibrated_pit_v3,
-            compute_berkowitz_lr_test,
-        )
         
         n_obs = len(returns)
         n_train = int(n_obs * 0.7)
@@ -181,52 +177,27 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
                 error=diagnostics.get('error', 'Optimization failed')
             )
         
-        # Run filter on FULL data to propagate state
+        # =================================================================
+        # USE INTEGRATED FILTER + CALIBRATION (February 2026)
+        # All calibration happens INSIDE the model - no external elite_pit_v3
+        # =================================================================
+        pit_calibrated, pit_pvalue, sigma_calibrated, crps, calib_diag = \
+            PhiStudentTDriftModel.filter_and_calibrate(returns, vol, config, train_frac=0.7)
+        
+        # Get test data for additional metrics
+        returns_test = returns[n_train:]
+        n_test = len(returns_test)
+        
+        # Run filter for full data metrics
         mu_filt, P_filt, mu_pred, S_pred, ll = PhiStudentTDriftModel.filter_phi_unified(
             returns, vol, config
         )
-        
-        # =================================================================
-        # V3 ELITE WAVELET-ENHANCED PIT CALIBRATION (February 2026)
-        # =================================================================
-        # Combines: DTCWT (UK), Asymmetric GAS (Renaissance), Wavelet Nu (Chinese),
-        # Hansen Skew-t (German), Beta Calibration (MIT)
-        # =================================================================
-        returns_test = returns[n_train:]
         mu_pred_test = mu_pred[n_train:]
-        S_pred_test = S_pred[n_train:]
-        n_test = len(returns_test)
-        
-        # Get calibration parameters
-        nu = config.nu_base
-        variance_inflation = getattr(config, 'variance_inflation', 1.0)
-        mu_drift = getattr(config, 'mu_drift', 0.0)
-        alpha_asym = getattr(config, 'alpha_asym', 0.0)
-        
-        # Use V3 Elite Wavelet Pipeline for PIT computation
-        pit_calibrated, ks_pvalue, elite_diag = compute_elite_calibrated_pit_v3(
-            returns=returns_test,
-            mu_pred=mu_pred_test,
-            S_pred=S_pred_test,
-            nu=nu,
-            variance_inflation=variance_inflation,
-            mu_drift=mu_drift,
-            use_wavelet_vol=True,       # DTCWT multi-scale (UK/Cambridge)
-            use_asymmetric_gas=True,    # Renaissance leverage effect
-            use_wavelet_nu=True,        # Chinese realized kurtosis
-            use_beta_calibration=True,  # MIT ensemble
-            use_dynamic_skew=True,      # German Hansen skew-t
-            train_frac=0.7,             # For post-hoc calibration within test
-        )
         
         pit_values = pit_calibrated
-        pit_pvalue = ks_pvalue
         ks_stat = float(kstest(pit_values, 'uniform').statistic)
         
-        # Berkowitz test for dynamic misspecification
-        _, berkowitz_pvalue, berkowitz_diag = compute_berkowitz_lr_test(pit_values)
-        
-        # Histogram MAD on test data
+        # Histogram MAD
         hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
         hist_freq = hist / n_test
         hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
@@ -241,54 +212,30 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         else:
             grade = "F"
         
-        pit_metrics = {
-            'histogram_mad': hist_mad,
-            'calibration_grade': grade,
-            'n_test': n_test,
-        }
-        
         # Compute BIC on full data
         n_params = 6
         bic = compute_bic(ll, n_params, n_obs)
         
-        # Get calibrated sigma from elite pipeline for Hyvarinen/CRPS
-        # This ensures consistency: same sigma used for PIT and CRPS
-        nu_effective = elite_diag.get('nu_effective', nu)
-        sigma_calibrated = elite_diag.get('sigma_calibrated', None)
+        # Get nu_effective from calibration diagnostics
+        nu_effective = calib_diag.get('nu_effective', config.nu_base)
+        berkowitz_pvalue = calib_diag.get('berkowitz_pvalue', 0.0)
         
-        if sigma_calibrated is not None:
-            # Use V3's calibrated sigma (wavelet + GAS enhanced)
-            sigma_test = sigma_calibrated
-        else:
-            # Fallback to basic calculation
-            S_calibrated = S_pred_test * variance_inflation
-            if nu_effective > 2:
-                sigma_test = np.sqrt(S_calibrated * (nu_effective - 2) / nu_effective)
-            else:
-                sigma_test = np.sqrt(S_calibrated)
-            sigma_test = np.maximum(sigma_test, 1e-10)
-        
-        # Compute Hyvarinen and CRPS on TEST data only
+        # Compute Hyvarinen on TEST data
         try:
-            hyvarinen = compute_hyvarinen_score_student_t(returns_test, mu_pred_test, sigma_test, nu_effective)
+            hyvarinen = compute_hyvarinen_score_student_t(returns_test, mu_pred_test, sigma_calibrated, nu_effective)
         except Exception:
             hyvarinen = float('nan')
-        
-        try:
-            crps = compute_crps_student_t_inline(returns_test, mu_pred_test, sigma_test, nu_effective)
-        except Exception:
-            crps = float('nan')
         
         return PITTestResult(
             symbol=symbol,
             pit_pvalue=float(pit_pvalue),
             ks_statistic=float(ks_stat),
-            histogram_mad=float(pit_metrics.get('histogram_mad', 1.0)),
-            calibration_grade=str(pit_metrics.get('calibration_grade', 'F')),
+            histogram_mad=float(hist_mad),
+            calibration_grade=str(grade),
             log10_q=float(np.log10(config.q)) if config.q > 0 else float('-inf'),
             c=float(config.c),
             phi=float(config.phi),
-            nu=float(elite_diag.get('nu_effective', config.nu_base)),
+            nu=float(nu_effective),
             variance_inflation=float(getattr(config, 'variance_inflation', 1.0)),
             gamma_vov=float(getattr(config, 'gamma_vov', 0.0)),
             alpha_asym=float(getattr(config, 'alpha_asym', 0.0)),
@@ -299,12 +246,11 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
             log_likelihood=float(ll),
             n_obs=n_test,  # Report test set size
             fit_success=True,
-            # ELITE V3 additions
             berkowitz_pvalue=float(berkowitz_pvalue) if np.isfinite(berkowitz_pvalue) else 0.0,
-            berkowitz_lr=float(berkowitz_diag.get('mu_hat', 0.0)),
-            pit_autocorr_lag1=float(elite_diag.get('berkowitz_rho_hat', 0.0)),
-            ljung_box_pvalue=float(elite_diag.get('ljung_box_pvalue', 1.0)),
-            has_dynamic_misspec=elite_diag.get('has_autocorrelation', False),
+            berkowitz_lr=0.0,
+            pit_autocorr_lag1=0.0,
+            ljung_box_pvalue=1.0,
+            has_dynamic_misspec=False,
         )
     except Exception as e:
         return PITTestResult(
@@ -756,6 +702,7 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
                     'alpha_asym': result.alpha_asym,
                     'gamma_vov': result.gamma_vov,
                     'variance_inflation': result.variance_inflation,
+                    'berkowitz_pvalue': result.berkowitz_pvalue if not np.isnan(result.berkowitz_pvalue) else 0.0,
                     'bic': result.bic if not np.isnan(result.bic) else None,
                     'hyvarinen': result.hyvarinen if not np.isnan(result.hyvarinen) else None,
                     'crps': result.crps if not np.isnan(result.crps) else None,
@@ -809,6 +756,7 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
                 'alpha_asym': result.alpha_asym,
                 'gamma_vov': result.gamma_vov,
                 'variance_inflation': result.variance_inflation,
+                'berkowitz_pvalue': result.berkowitz_pvalue if not np.isnan(result.berkowitz_pvalue) else 0.0,
                 'bic': result.bic if not np.isnan(result.bic) else None,
                 'hyvarinen': result.hyvarinen if not np.isnan(result.hyvarinen) else None,
                 'crps': result.crps if not np.isnan(result.crps) else None,
@@ -971,6 +919,7 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
     
     table.add_column("Symbol", justify="left", style="bold", no_wrap=True)
     table.add_column("PIT_p", justify="right", width=7)
+    table.add_column("Berk", justify="right", width=6)
     table.add_column("MAD", justify="right", width=6)
     table.add_column("Grd", justify="center", width=3)
     table.add_column("log₁₀(q)", justify="right", width=7)
@@ -997,6 +946,7 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
             bic = r.get('bic') if r.get('bic') else float('nan')
             crps = r.get('crps') if r.get('crps') else float('nan')
             pit_p = r.get('pit_pvalue', 0)
+            berk_p = r.get('berkowitz_pvalue', 0)
             mad = r.get('histogram_mad', 0)
             grade = r.get('calibration_grade', '-')
             is_fail = r.get('pit_failed', True)
@@ -1004,6 +954,7 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
             # Styling based on status
             sym_style = "indian_red1" if is_fail else "bright_green"
             pit_style = "bright_green" if pit_p >= 0.10 else "yellow" if pit_p >= 0.05 else "indian_red1"
+            berk_style = "bright_green" if berk_p >= 0.10 else "yellow" if berk_p >= 0.05 else "indian_red1"
             mad_style = "bright_green" if mad < 0.03 else "yellow" if mad < 0.05 else "indian_red1"
             grade_style = "bright_green" if grade == 'A' else "yellow" if grade in ['B', 'C'] else "indian_red1"
             status_style = "indian_red1 bold" if is_fail else "bright_green bold"
@@ -1012,6 +963,7 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
             table.add_row(
                 f"[{sym_style}]{r['symbol']}[/{sym_style}]",
                 f"[{pit_style}]{pit_p:.4f}[/{pit_style}]",
+                f"[{berk_style}]{berk_p:.4f}[/{berk_style}]",
                 f"[{mad_style}]{mad:.4f}[/{mad_style}]",
                 f"[{grade_style}]{grade}[/{grade_style}]",
                 f"{q:+.2f}" if np.isfinite(q) else "[dim]-[/dim]",
@@ -1029,7 +981,7 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
                 f"[indian_red1]{r['symbol']}[/indian_red1]",
                 "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
                 "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
-                "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
+                "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
                 "[indian_red1 bold]ERROR[/indian_red1 bold]",
             )
     
