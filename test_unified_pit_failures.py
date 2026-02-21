@@ -32,42 +32,39 @@ except ImportError:
     RICH_AVAILABLE = False
     console = None
 
+# ============================================================================
+# ASSET LISTS - Updated February 21, 2026
+# ============================================================================
+
+# Assets that are currently FAILING PIT calibration (p < 0.05)
 FAILING_ASSETS = [
-    # Original 22 assets
-    'CDNS', 'CRM', 'ADBE', 'ADI', 'ISRG', 'SAIC', 'FDX', 'BKNG',
-    'LLY', 'AIG', 'DE', 'HII', 'HEI', 'MET', 'JCI', 'GOOGL',
-    'TMO', 'GOOG', 'UNH', 'USB', 'BAH', 'LDOS',
-    # Additional failing assets (February 2026)
-    'ABCL', 'ABTC', 'AFK', 'AIFF', 'AIRI', 'AMZE', 'ANNA', 'APLM',
-    'ARQQ', 'ATAI', 'AZBA', 'BCAL', 'BKSY', 'BNZI', 'BZAI', 'CNXT',
-    'COMM', 'CRML', 'DNN', 'DPRO', 'DURA', 'EH', 'ERMAY', 'ESLT',
-    'EVTL', 'FINMY', 'FLTR', 'FTAI', 'GC=F', 'GLIN', 'GLNCY', 'GORO',
-    'GRND', 'GSAT', 'HOVR', 'HYMC', 'ILKAF', 'INTC', 'KITT', 'LYSCF',
-    'MDALF', 'MOTG', 'MOTI', 'MSTR', 'NLR', 'NVO', 'OKLO', 'OPXS',
-    'PACB', 'PEW', 'PGY', 'PSIX', 'QBTS', 'QS', 'RCAT', 'RGTI',
-    'RIO', 'SATL', 'SI=F', 'SIF', 'SMCI', 'SNT', 'SPCE', 'TATT',
-    'USAS', 'VRT', 'VSAT', 'XAGUSD', 'XLRE',
+    # Critical failures (p < 0.001)
+    'FLTR', 'ILKAF', 'BZAI', 'ANNA', 'MDALF', 'BCAL', 'AIFF', 'FTAI',
+    'ABTC', 'GC=F', 'GLIN', 'ERMAY', 'BNZI', 'SPCE', 'GORO', 'EVTL',
+    'PACB', 'AMZE', 'RCAT', 'LDOS', 'FINMY', 'VRT', 'GOOG', 'MOTG',
+    'SI=F', 'XAGUSD', 'GOOGL', 'KITT', 'JCI', 'LLY', 'HII', 'MET',
+    'SAIC', 'BKSY', 'ESLT', 'AFK', 'MSTR', 'HEI', 'PEW', 'RGTI',
+    'AIG', 'TATT', 'SATL', 'SMCI', 'QBTS', 'NLR', 'SNT', 'VSAT',
+    'SIF', 'ARQQ', 'ISRG', 'AIRI', 'OKLO',
 ]
 
+# Assets that are currently PASSING PIT calibration (p >= 0.05)
+PASSING_ASSETS = [
+    # Marginal passes (0.05 <= p < 0.10)
+    'DURA', 'BAH', 'OPXS', 'FDX',
+    # Good passes (p >= 0.10)
+    'CRML', 'BKNG', 'GLNCY', 'QS', 'INTC', 'CNXT', 'PSIX', 'USB',
+    'MOTI', 'CRM', 'RIO', 'USAS', 'ADI', 'DPRO', 'HYMC', 'EH',
+    'XLRE', 'DE', 'DNN', 'APLM', 'TMO', 'ATAI', 'CDNS', 'PGY',
+    'ADBE', 'GRND', 'HOVR', 'UNH', 'AZBA', 'COMM', 'ABCL', 'LYSCF',
+    'GSAT', 'NVO',
+]
+
+# Quick test uses a mix of passing and failing
 QUICK_TEST_ASSETS = ['GOOGL', 'CDNS', 'CRM', 'ISRG', 'LLY']
 
-# All failing assets from make tune output
-ALL_FAILING_ASSETS = [
-    # Original 22 assets
-    'CDNS', 'CRM', 'ADBE', 'ADI', 'ISRG', 'SAIC', 'FDX', 'BKNG',
-    'LLY', 'AIG', 'DE', 'HII', 'HEI', 'MET', 'JCI', 'GOOGL',
-    'TMO', 'GOOG', 'UNH', 'USB', 'BAH', 'LDOS',
-    # Additional failing assets (February 2026)
-    'ABCL', 'ABTC', 'AFK', 'AIFF', 'AIRI', 'AMZE', 'ANNA', 'APLM',
-    'ARQQ', 'ATAI', 'AZBA', 'BCAL', 'BKSY', 'BNZI', 'BZAI', 'CNXT',
-    'COMM', 'CRML', 'DNN', 'DPRO', 'DURA', 'EH', 'ERMAY', 'ESLT',
-    'EVTL', 'FINMY', 'FLTR', 'FTAI', 'GC=F', 'GLIN', 'GLNCY', 'GORO',
-    'GRND', 'GSAT', 'HOVR', 'HYMC', 'ILKAF', 'INTC', 'KITT', 'LYSCF',
-    'MDALF', 'MOTG', 'MOTI', 'MSTR', 'NLR', 'NVO', 'OKLO', 'OPXS',
-    'PACB', 'PEW', 'PGY', 'PSIX', 'QBTS', 'QS', 'RCAT', 'RGTI',
-    'RIO', 'SATL', 'SI=F', 'SIF', 'SMCI', 'SNT', 'SPCE', 'TATT',
-    'USAS', 'VRT', 'VSAT', 'XAGUSD', 'XLRE',
-]
+# All assets for comprehensive testing
+ALL_ASSETS = FAILING_ASSETS + PASSING_ASSETS
 
 PIT_PVALUE_THRESHOLD = 0.05
 MAD_THRESHOLD = 0.05
@@ -571,7 +568,7 @@ def test_adaptive_nu_improvement():
     results_fixed = []
     results_adaptive = []
     
-    for symbol in ALL_FAILING_ASSETS:
+    for symbol in FAILING_ASSETS:
         print(f'Processing {symbol}...')
         data = fetch_asset_data(symbol)
         if data is None:
@@ -624,24 +621,51 @@ def test_adaptive_nu_improvement():
     return n_adaptive_pass, n_fixed_pass
 
 
-def test_full_tuning_all_assets():
+def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
     """
-    Run full tuning for ALL failing assets and save baseline results.
+    Run full tuning for assets and save baseline results.
+    
+    Args:
+        assets_to_test: List of assets to test. If None, uses mode to determine.
+        mode: "failing" (only failing), "all" (all assets), or "passing" (only passing)
     
     This creates a baseline JSON file that can be compared after fixes.
     """
+    # Determine which assets to test
+    if assets_to_test is None:
+        if mode == "all":
+            assets_to_test = ALL_ASSETS
+            test_name = "COMPREHENSIVE"
+            test_desc = "all assets (failing + passing)"
+        elif mode == "passing":
+            assets_to_test = PASSING_ASSETS
+            test_name = "PASSING VERIFICATION"
+            test_desc = "passing assets only"
+        else:  # default: failing
+            assets_to_test = FAILING_ASSETS
+            test_name = "FAILING"
+            test_desc = "currently failing assets"
+    else:
+        test_name = "CUSTOM"
+        test_desc = "custom asset list"
+    
     if RICH_AVAILABLE:
         console.print()
         console.print(Rule(style="bright_cyan"))
         title = Text()
         title.append("  ◆  ", style="bold bright_cyan")
-        title.append("UNIFIED STUDENT-T PIT CALIBRATION TEST", style="bold bright_white")
+        title.append(f"UNIFIED STUDENT-T PIT CALIBRATION TEST ({test_name})", style="bold bright_white")
         console.print(title)
+        desc = Text()
+        desc.append(f"      Testing {len(assets_to_test)} ", style="dim")
+        desc.append(test_desc, style="bright_white")
+        console.print(desc)
         console.print(Rule(style="bright_cyan"))
         console.print()
     else:
         print('=' * 80)
-        print('FULL TUNING TEST: Running unified model on all failing assets')
+        print(f'FULL TUNING TEST ({test_name}): {test_desc}')
+        print(f'Testing {len(assets_to_test)} assets')
         print('=' * 80)
     
     results = []
@@ -660,14 +684,14 @@ def test_full_tuning_all_assets():
             console=console,
             transient=False,
         ) as progress:
-            task = progress.add_task("Processing assets", total=len(ALL_FAILING_ASSETS))
+            task = progress.add_task("Processing assets", total=len(assets_to_test))
             
-            for i, symbol in enumerate(ALL_FAILING_ASSETS):
+            for i, symbol in enumerate(assets_to_test):
                 progress.update(task, description=f"[cyan]{symbol}[/cyan]")
                 
                 console.print()
                 idx_text = Text()
-                idx_text.append(f"[{i+1}/{len(ALL_FAILING_ASSETS)}] ", style="dim")
+                idx_text.append(f"[{i+1}/{len(assets_to_test)}] ", style="dim")
                 idx_text.append("Processing ", style="dim")
                 idx_text.append(symbol, style="bold bright_white")
                 idx_text.append("...", style="dim")
@@ -731,8 +755,8 @@ def test_full_tuning_all_assets():
                 progress.advance(task)
     else:
         # Fallback to plain text
-        for i, symbol in enumerate(ALL_FAILING_ASSETS):
-            print(f'\n[{i+1}/{len(ALL_FAILING_ASSETS)}] Processing {symbol}...')
+        for i, symbol in enumerate(FAILING_ASSETS):
+            print(f'\n[{i+1}/{len(FAILING_ASSETS)}] Processing {symbol}...')
             
             data = fetch_asset_data(symbol)
             if data is None:
@@ -785,7 +809,7 @@ def test_full_tuning_all_assets():
     baseline = {
         'test_date': '2026-02-21',
         'model': 'phi_student_t_unified_nu_8',
-        'total_assets': len(ALL_FAILING_ASSETS),
+        'total_assets': len(FAILING_ASSETS),
         'assets_tested': len([r for r in results if r.get('fit_success', False)]),
         'pit_failures': n_pit_failures,
         'mad_failures': n_mad_failures,
@@ -802,7 +826,7 @@ def test_full_tuning_all_assets():
         print('\n' + '=' * 80)
         print('FULL TUNING SUMMARY')
         print('=' * 80)
-        print(f'Total assets:      {len(ALL_FAILING_ASSETS)}')
+        print(f'Total assets:      {len(FAILING_ASSETS)}')
         print(f'Assets tested:     {baseline["assets_tested"]}')
         print(f'PIT failures:      {n_pit_failures} / {baseline["assets_tested"]} (p < 0.05)')
         print(f'MAD failures:      {n_mad_failures} / {baseline["assets_tested"]} (MAD > 0.05)')
@@ -1067,7 +1091,8 @@ if __name__ == '__main__':
             
             console.print("[dim]Usage:[/dim]")
             console.print(f"  [cyan]python test_unified_pit_failures.py[/cyan]             [dim]# Quick test (5 assets)[/dim]")
-            console.print(f"  [cyan]python test_unified_pit_failures.py --full[/cyan]      [dim]# Full test ({len(ALL_FAILING_ASSETS)} assets)[/dim]")
+            console.print(f"  [cyan]python test_unified_pit_failures.py --full[/cyan]      [dim]# Failing assets ({len(FAILING_ASSETS)} assets)[/dim]")
+            console.print(f"  [cyan]python test_unified_pit_failures.py --all[/cyan]       [dim]# All assets ({len(ALL_ASSETS)} assets)[/dim]")
             console.print(f"  [cyan]python test_unified_pit_failures.py --adaptive[/cyan]  [dim]# Test adaptive nu selection[/dim]")
             console.print(f"  [cyan]python test_unified_pit_failures.py --compare[/cyan]   [dim]# Compare with baseline[/dim]")
             console.print()
@@ -1075,8 +1100,9 @@ if __name__ == '__main__':
             print('UNIFIED STUDENT-T PIT CALIBRATION FAILURE TESTS')
             print('Usage:')
             print('  python test_unified_pit_failures.py             # Quick test (5 assets)')
-            print(f'  python test_unified_pit_failures.py --full      # Full test ({len(ALL_FAILING_ASSETS)} assets)')
+            print(f'  python test_unified_pit_failures.py --full      # Failing assets ({len(FAILING_ASSETS)} assets)')
             print('  python test_unified_pit_failures.py --adaptive  # Test adaptive nu selection')
+            print(f'  python test_unified_pit_failures.py --all       # All assets ({len(ALL_ASSETS)} assets)')
             print('  python test_unified_pit_failures.py --compare   # Compare with baseline')
             print('')
         test_unified_pit_failures_exist()
