@@ -17,18 +17,40 @@ from dataclasses import dataclass, asdict
 from scipy.stats import kstest
 
 FAILING_ASSETS = [
+    # Original 22 assets
     'CDNS', 'CRM', 'ADBE', 'ADI', 'ISRG', 'SAIC', 'FDX', 'BKNG',
     'LLY', 'AIG', 'DE', 'HII', 'HEI', 'MET', 'JCI', 'GOOGL',
     'TMO', 'GOOG', 'UNH', 'USB', 'BAH', 'LDOS',
+    # Additional failing assets (February 2026)
+    'ABCL', 'ABTC', 'AFK', 'AIFF', 'AIRI', 'AMZE', 'ANNA', 'APLM',
+    'ARQQ', 'ATAI', 'AZBA', 'BCAL', 'BKSY', 'BNZI', 'BZAI', 'CNXT',
+    'COMM', 'CRML', 'DNN', 'DPRO', 'DURA', 'EH', 'ERMAY', 'ESLT',
+    'EVTL', 'FINMY', 'FLTR', 'FTAI', 'GC=F', 'GLIN', 'GLNCY', 'GORO',
+    'GRND', 'GSAT', 'HOVR', 'HYMC', 'ILKAF', 'INTC', 'KITT', 'LYSCF',
+    'MDALF', 'MOTG', 'MOTI', 'MSTR', 'NLR', 'NVO', 'OKLO', 'OPXS',
+    'PACB', 'PEW', 'PGY', 'PSIX', 'QBTS', 'QS', 'RCAT', 'RGTI',
+    'RIO', 'SATL', 'SI=F', 'SIF', 'SMCI', 'SNT', 'SPCE', 'TATT',
+    'USAS', 'VRT', 'VSAT', 'XAGUSD', 'XLRE',
 ]
 
 QUICK_TEST_ASSETS = ['GOOGL', 'CDNS', 'CRM', 'ISRG', 'LLY']
 
 # All failing assets from make tune output
 ALL_FAILING_ASSETS = [
+    # Original 22 assets
     'CDNS', 'CRM', 'ADBE', 'ADI', 'ISRG', 'SAIC', 'FDX', 'BKNG',
     'LLY', 'AIG', 'DE', 'HII', 'HEI', 'MET', 'JCI', 'GOOGL',
     'TMO', 'GOOG', 'UNH', 'USB', 'BAH', 'LDOS',
+    # Additional failing assets (February 2026)
+    'ABCL', 'ABTC', 'AFK', 'AIFF', 'AIRI', 'AMZE', 'ANNA', 'APLM',
+    'ARQQ', 'ATAI', 'AZBA', 'BCAL', 'BKSY', 'BNZI', 'BZAI', 'CNXT',
+    'COMM', 'CRML', 'DNN', 'DPRO', 'DURA', 'EH', 'ERMAY', 'ESLT',
+    'EVTL', 'FINMY', 'FLTR', 'FTAI', 'GC=F', 'GLIN', 'GLNCY', 'GORO',
+    'GRND', 'GSAT', 'HOVR', 'HYMC', 'ILKAF', 'INTC', 'KITT', 'LYSCF',
+    'MDALF', 'MOTG', 'MOTI', 'MSTR', 'NLR', 'NVO', 'OKLO', 'OPXS',
+    'PACB', 'PEW', 'PGY', 'PSIX', 'QBTS', 'QS', 'RCAT', 'RGTI',
+    'RIO', 'SATL', 'SI=F', 'SIF', 'SMCI', 'SNT', 'SPCE', 'TATT',
+    'USAS', 'VRT', 'VSAT', 'XAGUSD', 'XLRE',
 ]
 
 PIT_PVALUE_THRESHOLD = 0.05

@@ -380,12 +380,14 @@ tests: .venv/.deps_installed
 
 # PIT calibration test for unified Student-t model
 pit: .venv/.deps_installed
-	@echo "🎯 Running PIT calibration test (full tuning for 22 assets)..."
+	@ASSET_COUNT=$$(grep -E "^\s*'[A-Z0-9=.-]+'" test_unified_pit_failures.py | head -100 | wc -l | tr -d ' '); \
+	echo "🎯 Running PIT calibration test (full tuning for $$ASSET_COUNT assets)..."
 	@.venv/bin/python -B test_unified_pit_failures.py --full $(ARGS)
 
 # PIT calibration test for Gaussian models (φ-Gaussian and pure Gaussian)
 pit-g: .venv/.deps_installed
-	@echo "🎯 Running Gaussian PIT calibration test (22 assets)..."
+	@ASSET_COUNT=$$(grep -E "^\s*'[A-Z0-9=.-]+'" test_gaussian_pit_failures.py | head -100 | wc -l | tr -d ' '); \
+	echo "🎯 Running Gaussian PIT calibration test ($$ASSET_COUNT assets)..."
 	@.venv/bin/python -B test_gaussian_pit_failures.py --full $(ARGS)
 
 # Manually (re)install requirements and refresh the dependency stamp
