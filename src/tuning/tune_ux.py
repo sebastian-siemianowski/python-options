@@ -2860,6 +2860,8 @@ Examples:
     momentum_count = 0
     momentum_gaussian_count = 0
     momentum_student_t_count = 0
+    # Reset unified model counter for full cache computation
+    unified_model_count = 0
     # Reset trust statistics for full cache computation
     recalibration_applied_count = 0
     calibrated_trust_count = 0
@@ -2873,9 +2875,15 @@ Examples:
         
         # Detect if this is a momentum model (noise_model ends with _momentum)
         is_momentum = '_momentum' in noise_model
+        # Detect if this is a unified model
+        is_unified = 'unified' in noise_model.lower()
         
         # Count by model type - handle momentum suffix properly
-        if noise_model.startswith('phi_nig_'):
+        if is_unified:
+            # Unified Student-t model - count it
+            unified_model_count += 1
+            student_t_count += 1
+        elif noise_model.startswith('phi_nig_'):
             phi_nig_count += 1
             student_t_count += 1
         elif noise_model.startswith('phi_skew_t_nu_'):
