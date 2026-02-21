@@ -251,14 +251,22 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         n_params = 6
         bic = compute_bic(ll, n_params, n_obs)
         
-        # Get sigma from elite pipeline for Hyvarinen/CRPS
+        # Get calibrated sigma from elite pipeline for Hyvarinen/CRPS
+        # This ensures consistency: same sigma used for PIT and CRPS
         nu_effective = elite_diag.get('nu_effective', nu)
-        S_calibrated = S_pred_test * variance_inflation
-        if nu_effective > 2:
-            sigma_test = np.sqrt(S_calibrated * (nu_effective - 2) / nu_effective)
+        sigma_calibrated = elite_diag.get('sigma_calibrated', None)
+        
+        if sigma_calibrated is not None:
+            # Use V3's calibrated sigma (wavelet + GAS enhanced)
+            sigma_test = sigma_calibrated
         else:
-            sigma_test = np.sqrt(S_calibrated)
-        sigma_test = np.maximum(sigma_test, 1e-10)
+            # Fallback to basic calculation
+            S_calibrated = S_pred_test * variance_inflation
+            if nu_effective > 2:
+                sigma_test = np.sqrt(S_calibrated * (nu_effective - 2) / nu_effective)
+            else:
+                sigma_test = np.sqrt(S_calibrated)
+            sigma_test = np.maximum(sigma_test, 1e-10)
         
         # Compute Hyvarinen and CRPS on TEST data only
         try:
