@@ -517,21 +517,43 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
         phi_gaussian_base_count = level_counts.get('φ-Gaussian', 0)
         phi_student_t_base_count = level_counts.get('φ-Student-t', 0)
         
+        # Get unified Student-t counts by ν (February 2026 - Elite Architecture)
+        unified_t_4 = level_counts.get('φ-t-Unified-4', 0)
+        unified_t_6 = level_counts.get('φ-t-Unified-6', 0)
+        unified_t_8 = level_counts.get('φ-t-Unified-8', 0)
+        unified_t_12 = level_counts.get('φ-t-Unified-12', 0)
+        unified_t_20 = level_counts.get('φ-t-Unified-20', 0)
+        total_unified = unified_t_4 + unified_t_6 + unified_t_8 + unified_t_12 + unified_t_20
+        
+        # Get regular Student-t counts by ν (non-unified)
+        student_t_4 = level_counts.get('φ-t(ν=4)', 0)
+        student_t_6 = level_counts.get('φ-t(ν=6)', 0)
+        student_t_8 = level_counts.get('φ-t(ν=8)', 0)
+        student_t_12 = level_counts.get('φ-t(ν=12)', 0)
+        student_t_20 = level_counts.get('φ-t(ν=20)', 0)
+        
         levels = [
             # Momentum models (primary - enabled)
-            ('Gaussian+Momentum', 'M0', 'bright_green', '○', False, gaussian_mom_count, 0, 0, 0, None),
-            ('φ-Gaussian+Momentum', 'M1', 'bright_cyan', '◇', False, phi_gaussian_mom_count, 0, 0, 0, None),
-            ('φ-Student-t+Momentum', 'M2', 'bright_magenta', '●', False, phi_student_t_mom_count, 0, 0, 0, None),
-            # Base Student-t (still enabled for non-momentum selection)
-            ('φ-Student-t', 'L1', 'magenta', '●', False, phi_student_t_base_count, 0, 0, 0, None),
-            ('φ-Student-t (ν-refined)', 'L2', 'bright_magenta', '◆', False, None, nu_attempts, nu_successes, nu_rate, 'improved'),
-            ('EVT Tail Splice', 'L3', 'bright_red', '▲', False, None, evt_attempts, evt_successes, evt_rate, 'heavy'),
-            ('Generalized Hyperbolic', 'L4', 'bright_cyan', '★', False, gh_successes, gh_attempts, gh_successes, gh_rate, 'improved'),
-            ('TVVM', 'L5', 'yellow', '⚡', False, tvvm_successes, tvvm_attempts, tvvm_successes, tvvm_rate, 'improved'),
+            ('Gaussian+Momentum       ', 'M0 ', 'bright_green', '○', False, gaussian_mom_count, 0, 0, 0, None),
+            ('φ-Gaussian+Momentum     ', 'M1 ', 'bright_cyan', '◇', False, phi_gaussian_mom_count, 0, 0, 0, None),
+            ('φ-Student-t+Momentum    ', 'M2 ', 'bright_magenta', '●', False, phi_student_t_mom_count, 0, 0, 0, None),
+            # Unified Student-t by ν (February 2026 - Elite Architecture)
+            ('φ-t-Unified(ν=4)        ', 'U4 ', 'bright_yellow', '★', False, unified_t_4, 0, 0, 0, None),
+            ('φ-t-Unified(ν=8)        ', 'U8 ', 'bright_yellow', '★', False, unified_t_8, 0, 0, 0, None),
+            ('φ-t-Unified(ν=20)       ', 'U20', 'bright_yellow', '★', False, unified_t_20, 0, 0, 0, None),
+            # Regular Student-t by ν (non-unified)
+            ('φ-t(ν=4)                ', 't4 ', 'magenta', '●', False, student_t_4, 0, 0, 0, None),
+            ('φ-t(ν=8)                ', 't8 ', 'magenta', '●', False, student_t_8, 0, 0, 0, None),
+            ('φ-t(ν=20)               ', 't20', 'magenta', '●', False, student_t_20, 0, 0, 0, None),
+            # Escalation models
+            ('φ-Student-t (adaptive ν)', 'L2 ', 'bright_magenta', '◆', False, None, nu_attempts, nu_successes, nu_rate, 'improved'),
+            ('EVT Tail Splice         ', 'L3 ', 'bright_red', '▲', False, None, evt_attempts, evt_successes, evt_rate, 'heavy'),
+            ('Generalized Hyperbolic  ', 'L4 ', 'bright_cyan', '★', False, gh_successes, gh_attempts, gh_successes, gh_rate, 'improved'),
+            ('TVVM                    ', 'L5 ', 'yellow', '⚡', False, tvvm_successes, tvvm_attempts, tvvm_successes, tvvm_rate, 'improved'),
             # Disabled models at the bottom
-            ('Gaussian', 'LD', 'dim', '○', True, gaussian_base_count, 0, 0, 0, None),
-            ('φ-Gaussian', 'LD', 'dim', '◇', True, phi_gaussian_base_count, 0, 0, 0, None),
-            ('K=2 Scale Mixture', 'LD', 'dim', '◈', True, None, mix_attempts, mix_successes, mix_rate, 'improved'),
+            ('Gaussian                ', 'LD ', 'dim', '○', True, gaussian_base_count, 0, 0, 0, None),
+            ('φ-Gaussian              ', 'LD ', 'dim', '◇', True, phi_gaussian_base_count, 0, 0, 0, None),
+            ('K=2 Scale Mixture       ', 'LD ', 'dim', '◈', True, None, mix_attempts, mix_successes, mix_rate, 'improved'),
         ]
         
         for level_name, level_code, color, symbol, is_disabled, count_override, attempts, successes, rate, rate_label in levels:
@@ -545,17 +567,13 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
             
             row = Text()
             row.append(f"      {symbol} ", style="dim" if is_disabled else color)
-            row.append(f"{level_code} ", style="dim")
+            row.append(f"{level_code}", style="dim")
             
-            # Display name - show "adaptive ν" instead of "ν-refined"
+            # Use level_name directly (names already padded to 24 chars)
             display_name = level_name
-            if level_name == 'φ-Student-t (ν-refined)':
-                display_name = 'φ-Student-t (adaptive ν)'
-            elif level_name == 'φ-Student-t+Momentum (ν-refined)':
-                display_name = 'φ-Student-t+Momentum (adaptive ν)'
             
             if is_disabled:
-                row.append(f"{display_name:<28}", style="dim")
+                row.append(f"{display_name}", style="dim")
                 row.append("░" * bar_width, style="dim")
                 row.append(f"  {count:>4}  ({pct:>5.1f}%)", style="dim")
                 # Add PIT attempt stats for disabled levels too
@@ -563,7 +581,7 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
                     row.append(f"  [{successes}/{attempts} {rate:.0f}%]", style="dim italic")
                 row.append("  [disabled]", style="dim italic")
             else:
-                row.append(f"{display_name:<28}", style=color if count > 0 else "dim")
+                row.append(f"{display_name}", style=color if count > 0 else "dim")
                 row.append("█" * filled, style=color)
                 row.append("░" * (bar_width - filled), style="dim")
                 row.append(f"  {count:>4}  ({pct:>5.1f}%)", style="white" if count > 0 else "dim")
@@ -591,6 +609,29 @@ def render_pdde_escalation_summary(escalation_summary: Dict[str, any], console: 
             mom_summary.append(f"{total_momentum}", style="bold bright_yellow")
             mom_summary.append(f" ({momentum_pct:.1f}% of assets)", style="dim")
             console.print(mom_summary)
+        
+        # Show unified Student-t model summary (February 2026)
+        if total_unified > 0:
+            unified_pct = total_unified / total * 100 if total > 0 else 0
+            unified_summary = Text()
+            unified_summary.append("    Unified Student-t: ", style="dim")
+            unified_summary.append(f"{total_unified}", style="bold bright_yellow")
+            unified_summary.append(f" ({unified_pct:.1f}% of assets)", style="dim")
+            # Show breakdown by ν if multiple variants used
+            unified_parts = []
+            if unified_t_4 > 0:
+                unified_parts.append(f"ν=4:{unified_t_4}")
+            if unified_t_6 > 0:
+                unified_parts.append(f"ν=6:{unified_t_6}")
+            if unified_t_8 > 0:
+                unified_parts.append(f"ν=8:{unified_t_8}")
+            if unified_t_12 > 0:
+                unified_parts.append(f"ν=12:{unified_t_12}")
+            if unified_t_20 > 0:
+                unified_parts.append(f"ν=20:{unified_t_20}")
+            if len(unified_parts) > 1:
+                unified_summary.append(f"  [{', '.join(unified_parts)}]", style="dim italic")
+            console.print(unified_summary)
         
         # Show how many assets needed heavier tails
         escalations = escalation_summary.get('escalations_triggered', 0)
@@ -1089,8 +1130,8 @@ def render_tuning_summary(
         # Momentum Student-t
         ("φ-Student-t+Mom", "t+M", "bright_magenta", 5),
         # Unified Student-t (February 2026 - Elite Architecture)
-        ("φ-t-Unified-4", "U4", "bright_yellow", 3),
-        ("φ-t-Unified-8", "U8", "bright_yellow", 3),
+        ("φ-t-Unified-4", "U4", "bright_yellow", 4),
+        ("φ-t-Unified-8", "U8", "bright_yellow", 4),
         ("φ-t-Unified-20", "U20", "bright_yellow", 4),
         # Augmentation layers
         ("Hansen-λ", "Hλ", "cyan", 5),
@@ -1161,9 +1202,9 @@ def render_tuning_summary(
         padding=(0, 1),
         row_styles=["", "on grey7"],
     )
-    table.add_column("Regime", width=12)
+    table.add_column("Regime", width=12, no_wrap=True)
     table.add_column("Fits", justify="right", width=5)
-    table.add_column("Distribution", width=18)
+    table.add_column("Distribution", width=20, no_wrap=True)
     
     # Track which columns we add for row building
     column_model_keys = []
@@ -1176,12 +1217,13 @@ def render_tuning_summary(
     for i, (name, short, color, icon) in enumerate(zip(regime_names, regime_short, regime_colors_list, regime_icons)):
         fit_count = regime_fit_counts.get(i, 0)
         
-        # Create visual bar
+        # Create visual bar (16 chars to fit in column width with Rich markup)
+        bar_width = 16
         if fit_count == 0:
-            bar = "[dim]" + "─" * 18 + "[/]"
+            bar = "[dim]" + "─" * bar_width + "[/]"
         else:
-            filled = int(fit_count / max_fits * 18) if max_fits > 0 else 0
-            bar = f"[{color}]{'━' * filled}[/{color}][dim]{'─' * (18 - filled)}[/]"
+            filled = int(fit_count / max_fits * bar_width) if max_fits > 0 else 0
+            bar = f"[{color}]{'━' * filled}[/{color}][dim]{'─' * (bar_width - filled)}[/]"
         
         # Build row
         row = [
@@ -2690,6 +2732,15 @@ Examples:
                 model_key = f"φ-Skew-t({skew_dir})"
             else:
                 model_key = "φ-Skew-t"
+        elif 'unified' in base_noise_model.lower() and nu_val is not None:
+            # Unified Student-t model (February 2026 - Elite Architecture)
+            nu_int = int(nu_val)
+            if nu_int == 4:
+                model_key = "φ-t-Unified-4"
+            elif nu_int == 20:
+                model_key = "φ-t-Unified-20"
+            else:
+                model_key = "φ-t-Unified-8"
         elif base_noise_model.startswith('phi_student_t_nu_') and nu_val is not None:
             model_key = f"φ-t(ν={int(nu_val)})"
         elif base_noise_model == 'kalman_phi_gaussian' or phi_val is not None:
