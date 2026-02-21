@@ -155,6 +155,207 @@ class GaussianDriftModel:
         return mu_filtered, P_filtered, float(log_likelihood)
 
     @staticmethod
+    def filter_phi_with_predictive(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+        """
+        ELITE FIX: φ-Gaussian filter returning PREDICTIVE values for proper PIT.
+        
+        Same as filter_phi but also returns:
+            mu_pred[t] = φ × μ_{t-1}     (BEFORE seeing y_t)
+            S_pred[t] = P_pred + R_t      (BEFORE seeing y_t)
+        
+        For proper PIT computation.
+        """
+        n = len(returns)
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+
+        mu = 0.0
+        P = 1e-4
+        mu_filtered = np.zeros(n)
+        P_filtered = np.zeros(n)
+        mu_pred_arr = np.zeros(n)  # PREDICTIVE mean
+        S_pred_arr = np.zeros(n)   # PREDICTIVE variance
+        log_likelihood = 0.0
+
+        for t in range(n):
+            # Prediction step (BEFORE seeing y_t)
+            mu_pred = phi_val * mu
+            P_pred = (phi_val ** 2) * P + q_val
+
+            vol_t = vol[t]
+            vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
+            R = c_val * (vol_scalar ** 2)
+
+            S = P_pred + R
+            if S <= 1e-12:
+                S = 1e-12
+            
+            # Store PREDICTIVE values
+            mu_pred_arr[t] = mu_pred
+            S_pred_arr[t] = S
+
+            ret_t = returns[t]
+            r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
+            innovation = r_val - mu_pred
+
+            # Update step (AFTER seeing y_t)
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            P = float(max(P, 1e-12))
+
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+
+            log_likelihood += -0.5 * (np.log(2 * np.pi * S) + (innovation ** 2) / S)
+
+        return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
+
+    @staticmethod
+    def pit_ks_predictive(
+        returns: np.ndarray,
+        mu_pred: np.ndarray,
+        S_pred: np.ndarray,
+    ) -> Tuple[float, float]:
+        """
+        ELITE FIX: Proper PIT/KS using PREDICTIVE distribution for Gaussian.
+        
+        For Gaussian, scale = sqrt(S_pred) (no adjustment needed).
+        """
+        returns_flat = np.asarray(returns).flatten()
+        mu_pred_flat = np.asarray(mu_pred).flatten()
+        S_pred_flat = np.asarray(S_pred).flatten()
+        
+        forecast_std = np.sqrt(np.maximum(S_pred_flat, 1e-20))
+        forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
+        
+        standardized = (returns_flat - mu_pred_flat) / forecast_std
+        
+        valid_mask = np.isfinite(standardized)
+        if not np.any(valid_mask):
+            return 1.0, 0.0
+        
+        standardized_clean = standardized[valid_mask]
+        pit_values = norm.cdf(standardized_clean)
+        
+        if len(pit_values) < 2:
+            return 1.0, 0.0
+        
+        ks_result = kstest(pit_values, 'uniform')
+        return float(ks_result.statistic), float(ks_result.pvalue)
+
+    @staticmethod
+    def filter_augmented(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        exogenous_input: np.ndarray = None,
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Gaussian filter with exogenous input (phi=1).
+        
+        STATE-EQUATION INTEGRATION (Elite Upgrade - February 2026):
+        Delegates to filter_phi_augmented with phi=1.0.
+        """
+        return GaussianDriftModel.filter_phi_augmented(
+            returns, vol, q, c, phi=1.0, exogenous_input=exogenous_input
+        )
+
+    @staticmethod
+    def filter_phi_augmented(
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float = 1.0,
+        exogenous_input: np.ndarray = None,
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        φ-Gaussian filter with exogenous input in state equation.
+        
+        STATE-EQUATION INTEGRATION (Elite Upgrade - February 2026):
+            μ_t = φ × μ_{t-1} + u_t + w_t
+            r_t = μ_t + ε_t,  ε_t ~ N(0, c×σ²)
+        
+        EXPERT VALIDATED: mu_pred includes u_t for coherent likelihood.
+        
+        Args:
+            returns: Array of returns
+            vol: Array of volatility estimates
+            q: Process noise variance
+            c: Observation noise scale
+            phi: AR(1) persistence
+            exogenous_input: Array of u_t values (α×MOM - β×MR)
+            
+        Returns:
+            Tuple of (mu_filtered, P_filtered, log_likelihood)
+        """
+        n = len(returns)
+        
+        # Convert to contiguous float64 arrays
+        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+        phi_sq = phi_val * phi_val
+        
+        # Pre-compute constants
+        log_2pi = np.log(2 * np.pi)
+        
+        # Pre-compute R array
+        R = c_val * (vol * vol)
+        
+        # Allocate output arrays
+        mu_filtered = np.empty(n, dtype=np.float64)
+        P_filtered = np.empty(n, dtype=np.float64)
+        
+        # State initialization
+        mu = 0.0
+        P = 1e-4
+        log_likelihood = 0.0
+        
+        # Main filter loop with exogenous input
+        for t in range(n):
+            # Exogenous input (KEY: injected into state equation)
+            u_t = exogenous_input[t] if exogenous_input is not None and t < len(exogenous_input) else 0.0
+            
+            # Prediction step INCLUDES exogenous input
+            mu_pred = phi_val * mu + u_t
+            P_pred = phi_sq * P + q_val
+            
+            # Observation update
+            S = P_pred + R[t]
+            if S <= 1e-12:
+                S = 1e-12
+            
+            innovation = returns[t] - mu_pred
+            K = P_pred / S
+            
+            # State update
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
+            
+            # Store filtered values
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+            
+            # Log-likelihood (coherent with u_t)
+            log_likelihood += -0.5 * (log_2pi + np.log(S) + (innovation * innovation) / S)
+        
+        return mu_filtered, P_filtered, float(log_likelihood)
+
+    @staticmethod
     def pit_ks(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float = 1.0) -> Tuple[float, float]:
         """PIT/KS for Gaussian forecasts including parameter uncertainty.
         

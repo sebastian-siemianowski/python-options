@@ -47,6 +47,7 @@ from ingestion.data_utils import (
     PRICE_CACHE_DIR_PATH,
     reset_symbol_tables,
     suppress_symbol_tables,
+    INVERSE_CURRENCY_PAIRS,
 )
 
 
@@ -341,7 +342,44 @@ def bulk_download_n_times(
                 pass
     
     # Run num_passes bulk-only passes (no individual fallback)
+    # FIX: Track symbols that still need to be fetched across passes
+    remaining_symbols = all_symbols.copy()
+    
+    # Set of symbols that require individual fallback (inverse currency pairs, etc.)
+    # These will always fail in bulk download so we skip to final pass if only these remain
+    fallback_only_symbols = set(INVERSE_CURRENCY_PAIRS.keys())
+    skip_message_printed = False  # Track if skip message was printed
+    
     for pass_num in range(1, num_passes + 1):
+        # If no remaining symbols, we're done early
+        if not remaining_symbols:
+            if not quiet:
+                console.print()
+                done_msg = Text()
+                done_msg.append("    ")
+                done_msg.append("✓ ", style="bold green")
+                done_msg.append("All symbols downloaded!", style="green")
+                console.print(done_msg)
+            break
+        
+        # =====================================================================
+        # FAST-FORWARD: If all remaining symbols are fallback-only, skip to final pass
+        # =====================================================================
+        remaining_set = set(s.upper() for s in remaining_symbols)
+        all_fallback_only = remaining_set.issubset(fallback_only_symbols)
+        
+        if all_fallback_only and pass_num < num_passes:
+            if not quiet and pass_num == 1:
+                # Only print skip message once (when detected at start)
+                skip_msg = Text()
+                skip_msg.append("    ")
+                skip_msg.append("⚡ ", style="bold yellow")
+                skip_msg.append(f"Skipping to final pass", style="yellow")
+                skip_msg.append(f" ({len(remaining_symbols)} fallback-only symbols)", style="dim")
+                console.print(skip_msg)
+            # Continue to next iteration until we reach the final pass
+            continue
+        
         is_final_pass = (pass_num == num_passes)
         tracker.start_pass(pass_num)
         
@@ -352,6 +390,7 @@ def bulk_download_n_times(
             pass_header.append("    ")
             pass_header.append(f"Pass {pass_num}", style="bold cyan")
             pass_header.append(f"/{num_passes}", style="dim")
+            pass_header.append(f"  ({len(remaining_symbols)} symbols)", style="dim")
             if is_final_pass:
                 pass_header.append("  +fallback", style="yellow")
             console.print(pass_header)
@@ -360,7 +399,8 @@ def bulk_download_n_times(
         # INNER RETRY LOOP: Keep retrying pending symbols until all are done
         # or we've exhausted retries within this pass (max 3 inner retries)
         # =====================================================================
-        symbols_to_try = all_symbols.copy()
+        # FIX: Use remaining_symbols from previous pass, not all_symbols
+        symbols_to_try = remaining_symbols.copy()
         max_inner_retries = 3
         inner_retry = 0
         
@@ -472,6 +512,9 @@ def bulk_download_n_times(
         successful = len(all_symbols) - len(failed_symbols)
         last_failed_count = len(failed_symbols)
         last_failed_symbols = failed_symbols
+        
+        # FIX: Update remaining_symbols for the next pass
+        remaining_symbols = failed_symbols
         
         tracker.end_pass(successful, last_failed_count)
         

@@ -159,7 +159,35 @@ from models.phi_student_t import (
     MIXTURE_WEIGHT_A_SHOCK,
     MIXTURE_WEIGHT_B_VOL_ACCEL,
     MIXTURE_WEIGHT_C_MOMENTUM,
+    # Markov-Switching Process Noise (MS-q) — February 2026
+    MS_Q_ENABLED,
+    MS_Q_CALM_DEFAULT,
+    MS_Q_STRESS_DEFAULT,
+    MS_Q_SENSITIVITY,
+    MS_Q_THRESHOLD,
+    MS_Q_BMA_PENALTY,
+    compute_ms_process_noise,
+    filter_phi_ms_q,
+    optimize_params_ms_q,
+    # Unified Student-T Architecture (February 2026)
+    UnifiedStudentTConfig,
+    compute_ms_process_noise_smooth,
 )
+
+# Import Numba-accelerated filter wrappers (February 2026 Performance)
+try:
+    from models.numba_wrappers import (
+        run_ms_q_student_t_filter,
+        run_student_t_filter_with_lfo_cv,
+        run_student_t_filter_with_lfo_cv_batch,
+        run_gaussian_filter_with_lfo_cv,
+    )
+except ImportError:
+    # Stubs when Numba not available
+    run_ms_q_student_t_filter = None
+    run_student_t_filter_with_lfo_cv = None
+    run_student_t_filter_with_lfo_cv_batch = None
+    run_gaussian_filter_with_lfo_cv = None
 
 __all__ = [
     # Models
@@ -189,6 +217,19 @@ __all__ = [
     'MIXTURE_WEIGHT_A_SHOCK',
     'MIXTURE_WEIGHT_B_VOL_ACCEL',
     'MIXTURE_WEIGHT_C_MOMENTUM',
+    # Markov-Switching Process Noise (MS-q) — February 2026
+    'MS_Q_ENABLED',
+    'MS_Q_CALM_DEFAULT',
+    'MS_Q_STRESS_DEFAULT',
+    'MS_Q_SENSITIVITY',
+    'MS_Q_THRESHOLD',
+    'MS_Q_BMA_PENALTY',
+    'compute_ms_process_noise',
+    'filter_phi_ms_q',
+    'optimize_params_ms_q',
+    # Unified Student-T Architecture (February 2026)
+    'UnifiedStudentTConfig',
+    'compute_ms_process_noise_smooth',
     # Constants (from phi_skew_t)
     'SKEW_T_NU_GRID',
     'SKEW_T_GAMMA_GRID',
@@ -260,4 +301,9 @@ __all__ = [
     'CST_EPSILON_MAX',
     'CST_EPSILON_DEFAULT',
     'CST_MIN_OBS',
+    # Numba-accelerated filter wrappers (February 2026 Performance)
+    'run_ms_q_student_t_filter',
+    'run_student_t_filter_with_lfo_cv',
+    'run_student_t_filter_with_lfo_cv_batch',
+    'run_gaussian_filter_with_lfo_cv',
 ]

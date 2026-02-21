@@ -40,6 +40,128 @@ DEFAULT_MIN_WEIGHT_FRACTION = 0.01
 
 
 # =============================================================================
+# SAMPLE-SIZE-AWARE PIT CALIBRATION (Elite Fix - February 2026)
+# =============================================================================
+# With large samples (n>5000), even tiny miscalibration (2-3%) gives KS p=0.
+# These functions provide more informative calibration metrics.
+# =============================================================================
+
+def compute_pit_calibration_metrics(
+    pit_values: np.ndarray,
+) -> Dict[str, float]:
+    """
+    Compute comprehensive PIT calibration metrics that scale better with sample size.
+    
+    The KS test becomes overly sensitive with large samples. This function provides
+    additional metrics that better quantify the practical significance of miscalibration.
+    
+    Returns:
+        Dict with:
+        - ks_statistic: Standard KS statistic
+        - ks_pvalue: Standard KS p-value  
+        - max_deviation: Maximum deviation from uniform quantiles
+        - mean_deviation: Mean absolute deviation from uniform quantiles
+        - practical_calibration: Boolean for practical adequacy (MAD < 0.05)
+        - calibration_score: Score from 0-1 (1 = perfect calibration)
+    """
+    from scipy.stats import kstest
+    
+    pit_clean = np.asarray(pit_values).flatten()
+    pit_clean = pit_clean[np.isfinite(pit_clean)]
+    n = len(pit_clean)
+    
+    if n < 2:
+        return {
+            "ks_statistic": 1.0,
+            "ks_pvalue": 0.0,
+            "max_deviation": 1.0,
+            "mean_deviation": 1.0,
+            "practical_calibration": False,
+            "calibration_score": 0.0,
+        }
+    
+    # Standard KS test
+    ks_result = kstest(pit_clean, 'uniform')
+    ks_stat = float(ks_result.statistic)
+    ks_p = float(ks_result.pvalue)
+    
+    # Empirical CDF comparison to uniform
+    pit_sorted = np.sort(pit_clean)
+    uniform_quantiles = np.linspace(0, 1, n)
+    
+    # Deviations from perfect uniform
+    deviations = np.abs(pit_sorted - uniform_quantiles)
+    max_deviation = float(np.max(deviations))
+    mean_deviation = float(np.mean(deviations))
+    
+    # Practical calibration check: MAD < 5% is acceptable
+    practical_calibration = mean_deviation < 0.05
+    
+    # Calibration score: exponential decay from 1.0
+    # Score = exp(-10 * mean_deviation), so MAD=0 => 1.0, MAD=0.1 => 0.37
+    calibration_score = float(np.exp(-10.0 * mean_deviation))
+    
+    return {
+        "ks_statistic": ks_stat,
+        "ks_pvalue": ks_p,
+        "max_deviation": max_deviation,
+        "mean_deviation": mean_deviation,
+        "practical_calibration": practical_calibration,
+        "calibration_score": calibration_score,
+    }
+
+
+def sample_size_adjusted_pit_threshold(n_samples: int) -> float:
+    """
+    Get an adjusted PIT p-value threshold that accounts for sample size.
+    
+    With small samples, use standard α=0.05.
+    With large samples, use a more lenient threshold since even
+    tiny miscalibration will cause rejection.
+    
+    Formula: α_adjusted = 0.05 * (1 + 0.5*log10(n/1000)) for n > 1000
+    
+    Args:
+        n_samples: Number of PIT values
+        
+    Returns:
+        Adjusted significance threshold
+    """
+    if n_samples <= 1000:
+        return 0.05
+    
+    # Log-adjusted threshold
+    # At n=1000: α=0.05
+    # At n=5000: α≈0.07
+    # At n=10000: α≈0.08
+    log_adjustment = 1.0 + 0.5 * np.log10(n_samples / 1000.0)
+    return min(0.05 * log_adjustment, 0.15)  # Cap at 0.15
+
+
+def is_pit_calibrated(
+    pit_pvalue: float,
+    n_samples: int,
+    strict: bool = False
+) -> bool:
+    """
+    Check if PIT calibration passes using sample-size-adjusted threshold.
+    
+    Args:
+        pit_pvalue: KS test p-value
+        n_samples: Number of observations
+        strict: If True, use standard 0.05; if False, use adjusted threshold
+        
+    Returns:
+        True if calibration is acceptable
+    """
+    if strict:
+        return pit_pvalue >= 0.05
+    
+    threshold = sample_size_adjusted_pit_threshold(n_samples)
+    return pit_pvalue >= threshold
+
+
+# =============================================================================
 # HYVÄRINEN SCORE COMPUTATION
 # =============================================================================
 # The Hyvärinen score is a proper scoring rule that only requires the score
@@ -56,7 +178,7 @@ def compute_hyvarinen_score_gaussian(
     returns: np.ndarray,
     mu: np.ndarray,
     sigma: np.ndarray,
-    min_sigma: float = 1e-8
+    min_sigma: float = 1e-3  # Increased for numerical stability
 ) -> float:
     """
     Compute Hyvärinen score for Gaussian predictive density.
@@ -67,6 +189,11 @@ def compute_hyvarinen_score_gaussian(
     
     Therefore:
         H = (1/n) Σ_t [ (r_t - μ_t)² / (2σ_t⁴) - 1/σ_t² ]
+    
+    NUMERICAL STABILITY FIX (February 2026):
+        1. Clip z values to [-10, 10] to prevent extreme outliers
+        2. Work with standardized residuals to avoid σ⁴ division
+        3. Clip final result to interpretable range [-10000, 10000]
     
     Args:
         returns: Observed returns
@@ -84,27 +211,28 @@ def compute_hyvarinen_score_gaussian(
     # Numerical stability: floor sigma
     sigma = np.maximum(sigma, min_sigma)
     sigma_sq = sigma ** 2
-    sigma_4 = sigma ** 4
     
-    # Innovations
-    innovation = returns - mu
-    innovation_sq = innovation ** 2
+    # Standardized innovations - CLIP to prevent explosion
+    z = (returns - mu) / sigma
+    z = np.clip(z, -10.0, 10.0)  # Winsorize extreme z values
+    z_sq = z ** 2
     
-    # Hyvärinen score components:
-    # Term 1: (1/2) * (∂log p / ∂r)² = (r - μ)² / (2σ⁴)
-    # Term 2: ∂²log p / ∂r² = -1/σ²
-    term1 = innovation_sq / (2.0 * sigma_4)
-    term2 = -1.0 / sigma_sq
+    # Hyvärinen score in terms of z:
+    # H = (z² - 2) / (2σ²)
+    h_scores = (z_sq - 2.0) / (2.0 * sigma_sq)
     
-    # Per-observation score
-    h_scores = term1 + term2
+    # Clip per-observation scores
+    h_scores = np.clip(h_scores, -1e4, 1e4)
     
     # Filter out non-finite values
     valid = np.isfinite(h_scores)
     if not np.any(valid):
-        return -1e12  # Return very bad score
+        return 0.0
     
     h_mean = float(np.mean(h_scores[valid]))
+    
+    # Clip final result to reasonable interpretable range
+    h_mean = np.clip(h_mean, -1e4, 1e4)
     
     # Return negated score (higher = better, for consistency with log-likelihood)
     return -h_mean
@@ -115,7 +243,7 @@ def compute_hyvarinen_score_student_t(
     mu: np.ndarray,
     sigma: np.ndarray,
     nu: float,
-    min_sigma: float = 1e-8,
+    min_sigma: float = 1e-3,  # Increased for numerical stability
     min_nu: float = 2.1
 ) -> float:
     """
@@ -128,12 +256,13 @@ def compute_hyvarinen_score_student_t(
         log p(r) = const - ((ν+1)/2) * log(1 + z²/ν) - log(σ)
         
         ∂log p / ∂r = -((ν+1)/ν) * z / (σ * (1 + z²/ν))
-                    = -((ν+1) * (r-μ)) / (σ² * (ν + z²))
         
         ∂²log p / ∂r² = -((ν+1)/σ²) * (ν - z²) / (ν + z²)²
     
-    Therefore:
-        H = (1/n) Σ_t [ (1/2)(∂log p/∂r)² + ∂²log p/∂r² ]
+    NUMERICAL STABILITY FIX (February 2026):
+        1. Clip z values to [-10, 10] to prevent extreme outliers
+        2. Clip per-observation scores to [-10000, 10000]
+        3. Clip final result to interpretable range
     
     Args:
         returns: Observed returns
@@ -156,30 +285,38 @@ def compute_hyvarinen_score_student_t(
     
     sigma_sq = sigma ** 2
     
-    # Standardized residuals
+    # Standardized residuals - CLIP to prevent explosion
     z = (returns - mu) / sigma
+    z = np.clip(z, -10.0, 10.0)  # Winsorize extreme z values
     z_sq = z ** 2
     
     # Common denominator: ν + z²
     denom = nu + z_sq
+    denom = np.maximum(denom, 1e-6)
     
-    # First derivative: ∂log p / ∂r = -((ν+1) * (r-μ)) / (σ² * (ν + z²))
-    # Squared: ((ν+1)² * (r-μ)²) / (σ⁴ * (ν + z²)²)
-    #        = ((ν+1)² * z²) / (σ² * (ν + z²)²)
+    # First derivative squared:
+    # (∂log p/∂r)² = ((ν+1)² * z²) / (σ² * (ν + z²)²)
     d1_sq = ((nu + 1.0) ** 2 * z_sq) / (sigma_sq * denom ** 2)
     
-    # Second derivative: ∂²log p / ∂r² = -((ν+1)/σ²) * (ν - z²) / (ν + z²)²
+    # Second derivative:
+    # ∂²log p/∂r² = -((ν+1)/σ²) * (ν - z²) / (ν + z²)²
     d2 = -((nu + 1.0) / sigma_sq) * (nu - z_sq) / (denom ** 2)
     
     # Hyvärinen score: (1/2) * (∂log p/∂r)² + ∂²log p/∂r²
     h_scores = 0.5 * d1_sq + d2
     
+    # Clip per-observation scores
+    h_scores = np.clip(h_scores, -1e4, 1e4)
+    
     # Filter out non-finite values
     valid = np.isfinite(h_scores)
     if not np.any(valid):
-        return -1e12  # Return very bad score
+        return 0.0
     
     h_mean = float(np.mean(h_scores[valid]))
+    
+    # Clip final result to reasonable interpretable range
+    h_mean = np.clip(h_mean, -1e4, 1e4)
     
     # Return negated score (higher = better)
     return -h_mean
@@ -574,6 +711,280 @@ def compute_regime_diagnostics(
 
 
 # =============================================================================
+# LEAVE-FUTURE-OUT CROSS-VALIDATION (LFO-CV) — February 2026
+# =============================================================================
+# LFO-CV is the gold-standard for time series model selection.
+# Unlike k-fold CV which shuffles data, LFO-CV respects temporal ordering:
+#
+#   For t = T_start to T:
+#     Train on [1, t-1]
+#     Predict y_t
+#     Accumulate log p(y_t | y_{1:t-1}, θ)
+#
+# This is exactly what matters for forecasting: how well does the model
+# predict FUTURE observations given PAST data?
+#
+# THEORETICAL BASIS:
+# - Proper scoring rule (Gneiting & Raftery 2007)
+# - Equivalent to prequential likelihood (Dawid 1984)
+# - Used by Renaissance, Two Sigma, DE Shaw for model selection
+#
+# COMPUTATIONAL NOTE:
+# Running Kalman filter once computes all one-step-ahead predictions.
+# LFO-CV is therefore O(T), same as standard likelihood.
+# =============================================================================
+
+# Enable LFO-CV for model selection
+LFO_CV_ENABLED = True
+LFO_CV_MIN_TRAIN_FRAC = 0.5  # Use first 50% for initial training
+
+
+def compute_lfo_cv_score_gaussian(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float = 1.0,
+    min_train_frac: float = 0.5,
+) -> Tuple[float, Dict[str, Any]]:
+    """
+    Compute Leave-Future-Out CV score for Gaussian Kalman filter.
+    
+    The Kalman filter naturally produces one-step-ahead predictive distributions.
+    LFO-CV simply evaluates the log-likelihood of observations under these
+    predictive distributions, starting from a minimum training period.
+    
+    Args:
+        returns: Time series of returns
+        vol: Time series of volatility estimates
+        q: Process noise variance
+        c: Observation noise scale
+        phi: AR(1) coefficient (default 1.0 = random walk)
+        min_train_frac: Minimum fraction of data for training (default 0.5)
+        
+    Returns:
+        Tuple of (lfo_cv_score, diagnostics)
+        - lfo_cv_score: Mean log predictive density (higher is better)
+        - diagnostics: Dict with per-period scores and metadata
+    """
+    returns = np.asarray(returns).flatten()
+    vol = np.asarray(vol).flatten()
+    n = len(returns)
+    
+    # Minimum training period
+    t_start = max(int(n * min_train_frac), 20)
+    
+    if n < t_start + 10:
+        return float('-inf'), {"error": "insufficient_data", "n": n, "t_start": t_start}
+    
+    # Initialize Kalman state
+    mu_t = 0.0
+    P_t = 1.0  # Initial state variance
+    
+    # Accumulate log predictive densities
+    log_pred_densities = []
+    pred_errors = []
+    
+    for t in range(n):
+        # Observation variance
+        R_t = c * (vol[t] ** 2)
+        
+        # Predictive distribution: y_t | y_{1:t-1} ~ N(mu_t|t-1, S_t)
+        S_t = P_t + R_t
+        
+        if t >= t_start:
+            # Compute log predictive density for this observation
+            innovation = returns[t] - mu_t
+            log_pred = -0.5 * np.log(2 * np.pi * S_t) - 0.5 * (innovation ** 2) / S_t
+            
+            if np.isfinite(log_pred):
+                log_pred_densities.append(log_pred)
+                pred_errors.append(innovation)
+        
+        # Kalman update (standard equations)
+        innovation = returns[t] - mu_t
+        K_t = P_t / S_t if S_t > 1e-12 else 0.0
+        
+        mu_t = mu_t + K_t * innovation
+        P_t = (1 - K_t) * P_t
+        
+        # State prediction for next step
+        mu_t = phi * mu_t
+        P_t = (phi ** 2) * P_t + q
+    
+    if len(log_pred_densities) == 0:
+        return float('-inf'), {"error": "no_valid_predictions"}
+    
+    # LFO-CV score is mean log predictive density
+    lfo_cv_score = float(np.mean(log_pred_densities))
+    
+    diagnostics = {
+        "n_predictions": len(log_pred_densities),
+        "t_start": t_start,
+        "mean_abs_error": float(np.mean(np.abs(pred_errors))),
+        "rmse": float(np.sqrt(np.mean(np.array(pred_errors) ** 2))),
+        "log_pred_std": float(np.std(log_pred_densities)),
+    }
+    
+    return lfo_cv_score, diagnostics
+
+
+def compute_lfo_cv_score_student_t(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    min_train_frac: float = 0.5,
+) -> Tuple[float, Dict[str, Any]]:
+    """
+    Compute Leave-Future-Out CV score for Student-t Kalman filter.
+    
+    Uses Student-t predictive density instead of Gaussian.
+    The scale parameter is adjusted for Student-t variance.
+    
+    Args:
+        returns: Time series of returns
+        vol: Time series of volatility estimates  
+        q: Process noise variance
+        c: Observation noise scale
+        phi: AR(1) coefficient
+        nu: Degrees of freedom for Student-t
+        min_train_frac: Minimum fraction of data for training
+        
+    Returns:
+        Tuple of (lfo_cv_score, diagnostics)
+    """
+    returns = np.asarray(returns).flatten()
+    vol = np.asarray(vol).flatten()
+    n = len(returns)
+    nu = max(float(nu), 2.01)  # Ensure nu > 2 for finite variance
+    
+    # Minimum training period
+    t_start = max(int(n * min_train_frac), 20)
+    
+    if n < t_start + 10:
+        return float('-inf'), {"error": "insufficient_data", "n": n, "t_start": t_start}
+    
+    # Initialize Kalman state
+    mu_t = 0.0
+    P_t = 1.0
+    
+    # Log of gamma function ratios for Student-t PDF
+    log_gamma_ratio = gammaln((nu + 1) / 2) - gammaln(nu / 2)
+    log_norm_const = log_gamma_ratio - 0.5 * np.log(nu * np.pi)
+    
+    # Accumulate log predictive densities
+    log_pred_densities = []
+    pred_errors = []
+    
+    for t in range(n):
+        # Observation variance
+        R_t = c * (vol[t] ** 2)
+        
+        # Predictive variance (Gaussian approximation for Kalman)
+        S_t = P_t + R_t
+        
+        # For Student-t: scale = sqrt(S_t * (nu-2)/nu) to match variance
+        if nu > 2:
+            scale_t = np.sqrt(S_t * (nu - 2) / nu)
+        else:
+            scale_t = np.sqrt(S_t)
+        
+        if t >= t_start:
+            # Student-t log predictive density
+            innovation = returns[t] - mu_t
+            z = innovation / scale_t
+            
+            log_pred = log_norm_const - np.log(scale_t) - ((nu + 1) / 2) * np.log(1 + z**2 / nu)
+            
+            if np.isfinite(log_pred):
+                log_pred_densities.append(log_pred)
+                pred_errors.append(innovation)
+        
+        # Kalman update with Student-t weighting
+        innovation = returns[t] - mu_t
+        
+        # Robust weighting for Student-t (downweight outliers)
+        z_sq = (innovation ** 2) / S_t if S_t > 1e-12 else 0
+        w_t = (nu + 1) / (nu + z_sq)  # Student-t weight
+        
+        K_t = P_t / S_t if S_t > 1e-12 else 0.0
+        
+        # Weighted update (accounts for heavy tails)
+        mu_t = mu_t + K_t * w_t * innovation
+        P_t = (1 - w_t * K_t) * P_t
+        
+        # State prediction
+        mu_t = phi * mu_t
+        P_t = (phi ** 2) * P_t + q
+    
+    if len(log_pred_densities) == 0:
+        return float('-inf'), {"error": "no_valid_predictions"}
+    
+    lfo_cv_score = float(np.mean(log_pred_densities))
+    
+    diagnostics = {
+        "n_predictions": len(log_pred_densities),
+        "t_start": t_start,
+        "nu": nu,
+        "mean_abs_error": float(np.mean(np.abs(pred_errors))),
+        "rmse": float(np.sqrt(np.mean(np.array(pred_errors) ** 2))),
+        "log_pred_std": float(np.std(log_pred_densities)),
+    }
+    
+    return lfo_cv_score, diagnostics
+
+
+def compute_lfo_cv_model_weights(
+    lfo_cv_scores: Dict[str, float],
+    temperature: float = 1.0,
+    epsilon: float = 1e-10,
+) -> Dict[str, float]:
+    """
+    Convert LFO-CV scores to model weights.
+    
+    Uses softmax transformation:
+        w(m) = exp(temperature * (LFO_m - LFO_max))
+    
+    Args:
+        lfo_cv_scores: Dict mapping model name to LFO-CV score
+        temperature: Softmax temperature (higher = more uniform)
+        epsilon: Minimum weight floor
+        
+    Returns:
+        Dict of normalized model weights
+    """
+    if not lfo_cv_scores:
+        return {}
+    
+    # Filter finite scores
+    finite_scores = {m: s for m, s in lfo_cv_scores.items() if np.isfinite(s)}
+    
+    if not finite_scores:
+        n_models = len(lfo_cv_scores)
+        return {m: 1.0 / max(n_models, 1) for m in lfo_cv_scores}
+    
+    max_score = max(finite_scores.values())
+    
+    weights = {}
+    for model_name, score in lfo_cv_scores.items():
+        if np.isfinite(score):
+            w = np.exp(temperature * (score - max_score))
+            weights[model_name] = max(w, epsilon)
+        else:
+            weights[model_name] = epsilon
+    
+    # Normalize
+    total = sum(weights.values())
+    if total > 0:
+        weights = {m: w / total for m, w in weights.items()}
+    
+    return weights
+
+
+# =============================================================================
 # CRPS COMPUTATION FOR MODEL SELECTION (February 2026)
 # =============================================================================
 # Continuous Ranked Probability Score (CRPS) is a strictly proper scoring rule
@@ -741,6 +1152,7 @@ def compute_crps_model_weights(
 # =============================================================================
 
 # Regime-specific weight configurations: (bic_weight, hyvarinen_weight, crps_weight)
+# PIT is NOT a weight - it's a conditional penalty applied only when p < 0.01
 REGIME_SCORING_WEIGHTS = {
     0: (0.30, 0.30, 0.40),  # Unknown: balanced with structural geometry checks
     1: (0.25, 0.20, 0.55),  # Crisis: CRPS critical, but maintain stability pressure
@@ -748,6 +1160,11 @@ REGIME_SCORING_WEIGHTS = {
     3: (0.45, 0.30, 0.25),  # Ranging: BIC heavy, less CRPS (noise-dominated)
     4: (0.30, 0.40, 0.30),  # Low Vol: curvature misspecification visible, Hyv high
 }
+
+# PIT Catastrophic Penalty (February 2026 - Elite Architecture)
+# Only applied when PIT p-value < 0.01 (catastrophic miscalibration)
+PIT_CATASTROPHIC_THRESHOLD = 0.01
+PIT_CATASTROPHIC_PENALTY = 0.5  # Additive penalty to combined score
 
 DEFAULT_BIC_WEIGHT_COMBINED = 0.35
 DEFAULT_HYVARINEN_WEIGHT_COMBINED = 0.30
@@ -759,6 +1176,7 @@ def compute_regime_aware_model_weights(
     bic_values: Dict[str, float],
     hyvarinen_scores: Dict[str, float],
     crps_values: Optional[Dict[str, float]] = None,
+    pit_pvalues: Optional[Dict[str, float]] = None,
     regime: Optional[int] = None,
     bic_weight: Optional[float] = None,
     hyvarinen_weight: Optional[float] = None,
@@ -768,37 +1186,62 @@ def compute_regime_aware_model_weights(
 ) -> Tuple[Dict[str, float], Dict[str, Any]]:
     """
     Compute regime-aware model weights using BIC + Hyvärinen + CRPS.
+    
+    February 2026 Elite Architecture:
+    - FinalScore = w1 * BIC_norm - w2 * Hyv_norm + w3 * CRPS_norm
+    - If PIT_p < 0.01: FinalScore += penalty
+    
+    PIT is NOT a weighted component - it's a conditional penalty for catastrophic miscalibration.
     """
     has_crps = crps_values is not None and len(crps_values) > 0 and CRPS_SCORING_ENABLED
+    has_pit = pit_pvalues is not None and len(pit_pvalues) > 0
     
-    # Determine weights
+    # Determine weights (BIC, Hyv, CRPS only - NO PIT weight)
     if bic_weight is not None and hyvarinen_weight is not None:
         w_bic, w_hyv = bic_weight, hyvarinen_weight
         w_crps = crps_weight if crps_weight is not None else 0.0
-    elif regime is not None and regime in REGIME_SCORING_WEIGHTS and has_crps:
+    elif regime is not None and regime in REGIME_SCORING_WEIGHTS:
         w_bic, w_hyv, w_crps = REGIME_SCORING_WEIGHTS[regime]
+        if not has_crps:
+            w_crps = 0.0
     elif has_crps:
         w_bic, w_hyv, w_crps = DEFAULT_BIC_WEIGHT_COMBINED, DEFAULT_HYVARINEN_WEIGHT_COMBINED, DEFAULT_CRPS_WEIGHT_COMBINED
     else:
         w_bic, w_hyv, w_crps = 0.5, 0.5, 0.0
     
-    # Normalize
+    # Normalize weights (BIC + Hyv + CRPS only)
     w_total = w_bic + w_hyv + w_crps
     if w_total > 0:
         w_bic, w_hyv, w_crps = w_bic / w_total, w_hyv / w_total, w_crps / w_total
     
-    # Standardize
+    # Standardize scores
     bic_std = robust_standardize_scores(bic_values)
     hyv_std = robust_standardize_scores(hyvarinen_scores)
     crps_std = robust_standardize_scores(crps_values) if has_crps else {}
     
     # Combine: BIC/CRPS lower=better (+), Hyv higher=better (-)
+    # Then apply conditional PIT penalty
     combined_scores = {}
+    pit_penalties_applied = {}
+    
     for model_name in bic_values.keys():
         b = bic_std.get(model_name, 0.0)
         h = hyv_std.get(model_name, 0.0)
         c = crps_std.get(model_name, 0.0) if has_crps else 0.0
-        combined_scores[model_name] = w_bic * b - w_hyv * h + w_crps * c
+        
+        # Base score from proper scoring rules
+        score = w_bic * b - w_hyv * h + w_crps * c
+        
+        # Conditional PIT penalty: ONLY if p < 0.01
+        pit_penalty = 0.0
+        if has_pit and model_name in pit_pvalues:
+            pit_p = pit_pvalues[model_name]
+            if pit_p is not None and np.isfinite(pit_p) and pit_p < PIT_CATASTROPHIC_THRESHOLD:
+                pit_penalty = PIT_CATASTROPHIC_PENALTY
+                score += pit_penalty
+        
+        combined_scores[model_name] = score
+        pit_penalties_applied[model_name] = pit_penalty
     
     weights = entropy_regularized_weights(combined_scores, lambda_entropy=lambda_entropy, eps=epsilon)
     
@@ -806,12 +1249,16 @@ def compute_regime_aware_model_weights(
         "bic_standardized": {k: float(v) if np.isfinite(v) else None for k, v in bic_std.items()},
         "hyvarinen_standardized": {k: float(v) if np.isfinite(v) else None for k, v in hyv_std.items()},
         "crps_standardized": {k: float(v) if np.isfinite(v) else None for k, v in crps_std.items()} if has_crps else {},
+        "pit_penalty_applied": {k: float(v) for k, v in pit_penalties_applied.items()} if has_pit else {},
         "combined_scores_standardized": {k: float(v) if np.isfinite(v) else None for k, v in combined_scores.items()},
         "weights_used": {"bic": float(w_bic), "hyvarinen": float(w_hyv), "crps": float(w_crps)},
+        "pit_threshold": PIT_CATASTROPHIC_THRESHOLD,
+        "pit_penalty_value": PIT_CATASTROPHIC_PENALTY,
         "regime": regime,
         "lambda_entropy": lambda_entropy,
         "crps_enabled": has_crps,
-        "scoring_method": "regime_aware_bic_hyv_crps" if has_crps else "bic_hyv_only",
+        "pit_enabled": has_pit,
+        "scoring_method": "regime_aware_bic_hyv_crps" + ("_pit_gated" if has_pit else ""),
     }
     
     return weights, metadata

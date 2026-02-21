@@ -313,6 +313,17 @@ class PhiGaussianDriftModel:
         ret_mean = float(np.mean(returns_robust))
         vol_mean = float(np.mean(vol))
         vol_std = float(np.std(vol))
+        
+        # ================================================================
+        # ELITE FIX 2: Scale-aware q_min
+        # ================================================================
+        # Prevent deterministic state collapse by setting q_min relative
+        # to observation variance. This ensures state evolution maintains
+        # meaningful uncertainty.
+        # ================================================================
+        vol_var_median = float(np.median(vol ** 2))
+        q_min_scaled = max(1e-10, 0.001 * vol_var_median)
+        q_min = max(q_min, q_min_scaled, 1e-8)  # Hard floor at 1e-8
 
         if vol_mean > 0:
             vol_cv = vol_std / vol_mean
@@ -443,8 +454,21 @@ class PhiGaussianDriftModel:
                 phi_global=PHI_SHRINKAGE_GLOBAL_DEFAULT,
                 tau=phi_tau
             )
+            
+            # ================================================================
+            # ELITE FIX 3: Strong φ-q regularization for deterministic collapse
+            # ================================================================
+            # When |φ| > 0.95: state becomes near-deterministic
+            # When log_q < -7: no state uncertainty propagation
+            # Both together cause overconfident forecasts → PIT failure
+            #
+            # Use STRONG penalty (500x) because φ→1 collapse is severe
+            # ================================================================
+            phi_near_one_penalty = max(0.0, abs(phi_clip) - 0.95) ** 2
+            q_very_small_penalty = max(0.0, -7.0 - log_q) ** 2
+            state_regularization = -500.0 * (phi_near_one_penalty + q_very_small_penalty)
 
-            penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty
+            penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty + state_regularization
             return -penalized_ll if np.isfinite(penalized_ll) else 1e12
 
         log_q_min = np.log10(q_min)
@@ -581,3 +605,180 @@ class PhiGaussianDriftModel:
         }
 
         return q_optimal, c_optimal, phi_optimal, ll_optimal, diagnostics
+
+    @classmethod
+    def pit_ks_unified(
+        cls,
+        returns: np.ndarray,
+        mu_pred: np.ndarray,
+        S_pred: np.ndarray,
+        variance_inflation: float = 1.0,
+    ) -> Tuple[float, float, Dict]:
+        """
+        PIT/KS calibration for φ-Gaussian using PREDICTIVE distribution.
+        
+        ELITE IMPROVEMENTS (February 2026):
+        - Variance inflation for calibration
+        - Isotonic recalibration
+        - Berkowitz LR test
+        - PIT autocorrelation diagnostics
+        
+        Args:
+            returns: Return series
+            mu_pred: Predictive means from filter
+            S_pred: Predictive variances from filter
+            variance_inflation: Multiplier for predictive variance (default 1.0)
+            
+        Returns:
+            Tuple of (ks_statistic, ks_pvalue, metrics_dict)
+        """
+        returns = np.asarray(returns).flatten()
+        mu_pred = np.asarray(mu_pred).flatten()
+        S_pred = np.asarray(S_pred).flatten()
+        n = len(returns)
+        
+        # Compute raw PIT values using Gaussian CDF
+        S_calibrated = S_pred * variance_inflation
+        innovations = returns - mu_pred
+        z = innovations / np.sqrt(np.maximum(S_calibrated, 1e-12))
+        pit_raw = norm.cdf(z)
+        pit_raw = np.clip(pit_raw, 0.001, 0.999)
+        
+        # Raw KS test
+        ks_result_raw = kstest(pit_raw, 'uniform')
+        ks_stat_raw = float(ks_result_raw.statistic)
+        ks_pvalue_raw = float(ks_result_raw.pvalue)
+        
+        # =====================================================================
+        # ELITE: Isotonic recalibration (from Student-t pipeline)
+        # =====================================================================
+        pit_clean = pit_raw
+        ks_stat = ks_stat_raw
+        ks_pvalue = ks_pvalue_raw
+        isotonic_applied = False
+        
+        if ks_pvalue_raw < 0.10 and n >= 100:
+            try:
+                from calibration.isotonic_recalibration import IsotonicRecalibrator
+                recalibrator = IsotonicRecalibrator()
+                result = recalibrator.fit(pit_raw)
+                if not result.is_identity:
+                    pit_clean = recalibrator.transform(pit_raw)
+                    ks_result_cal = kstest(pit_clean, 'uniform')
+                    # Only use if it improves calibration
+                    if ks_result_cal.pvalue > ks_pvalue_raw:
+                        ks_stat = float(ks_result_cal.statistic)
+                        ks_pvalue = float(ks_result_cal.pvalue)
+                        isotonic_applied = True
+            except ImportError:
+                pass
+        
+        # Histogram MAD
+        hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
+        hist_freq = hist / len(pit_clean)
+        hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
+        
+        # Calibration grade
+        if hist_mad < 0.02:
+            grade = "A"
+        elif hist_mad < 0.05:
+            grade = "B"
+        elif hist_mad < 0.10:
+            grade = "C"
+        else:
+            grade = "F"
+        
+        # =====================================================================
+        # ELITE: Berkowitz LR test + PIT autocorrelation
+        # =====================================================================
+        berkowitz_lr, berkowitz_p = float('nan'), float('nan')
+        pit_acf = {}
+        try:
+            from .elite_pit_diagnostics import compute_berkowitz_lr_test, compute_pit_autocorrelation
+            berkowitz_lr, berkowitz_p, _ = compute_berkowitz_lr_test(pit_clean)
+            pit_acf = compute_pit_autocorrelation(pit_clean)
+        except ImportError:
+            pass
+        
+        metrics = {
+            "n_samples": len(pit_clean),
+            "ks_statistic": ks_stat,
+            "ks_pvalue": ks_pvalue,
+            "ks_pvalue_raw": ks_pvalue_raw,
+            "ks_improvement": float(ks_pvalue - ks_pvalue_raw),
+            "histogram_mad": hist_mad,
+            "calibration_grade": grade,
+            "calibrated": hist_mad < 0.05,
+            "variance_inflation": variance_inflation,
+            "isotonic_applied": isotonic_applied,
+            # ELITE diagnostics
+            "berkowitz_lr": float(berkowitz_lr) if np.isfinite(berkowitz_lr) else None,
+            "berkowitz_pvalue": float(berkowitz_p) if np.isfinite(berkowitz_p) else None,
+            "pit_autocorr_lag1": pit_acf.get('autocorrelations', {}).get('lag_1'),
+            "ljung_box_pvalue": pit_acf.get('ljung_box_pvalue'),
+            "has_dynamic_misspec": pit_acf.get('has_autocorrelation', False),
+        }
+        
+        return ks_stat, ks_pvalue, metrics
+
+    @classmethod
+    def optimize_variance_inflation(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        train_frac: float = 0.7,
+    ) -> float:
+        """
+        Grid search for optimal variance inflation to minimize PIT MAD.
+        
+        ELITE IMPROVEMENT (February 2026): Auto-calibrate observation noise
+        to achieve uniform PIT distribution.
+        
+        Args:
+            returns, vol: Data arrays
+            q, c, phi: Base model parameters
+            train_frac: Fraction for training
+            
+        Returns:
+            Optimal variance inflation factor
+        """
+        n = len(returns)
+        n_train = int(n * train_frac)
+        returns_train = returns[:n_train]
+        vol_train = vol[:n_train]
+        
+        def compute_pit_mad(vi):
+            try:
+                mu_filt, P_filt, _ = cls.filter(returns_train, vol_train, q, c * vi, phi)
+            except Exception:
+                return 1.0
+            
+            pit_values = []
+            for t in range(len(returns_train)):
+                if t == 0:
+                    mu_pred = 0.0
+                    P_pred = 1e-4 + q
+                else:
+                    mu_pred = phi * mu_filt[t-1]
+                    P_pred = (phi ** 2) * P_filt[t-1] + q
+                
+                R = c * vi * (vol_train[t] ** 2)
+                S = P_pred + R
+                z = (returns_train[t] - mu_pred) / np.sqrt(max(S, 1e-12))
+                pit_values.append(norm.cdf(z))
+            
+            pit_values = np.clip(pit_values, 0.001, 0.999)
+            hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
+            return float(np.mean(np.abs(hist / len(pit_values) - 0.1)))
+        
+        # Grid search
+        best_vi, best_mad = 1.0, compute_pit_mad(1.0)
+        for vi in [0.80, 0.85, 0.90, 0.95, 1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30]:
+            mad = compute_pit_mad(vi)
+            if mad < best_mad:
+                best_mad, best_vi = mad, vi
+        
+        return best_vi

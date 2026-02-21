@@ -544,7 +544,11 @@ def get_pit_critical_stocks(
     """
     Identify stocks with critical PIT calibration issues.
     
-    A stock is PIT-critical if pit_ks_pvalue < threshold.
+    A stock is PIT-critical if pit_ks_pvalue < threshold for the SELECTED model.
+    
+    IMPORTANT (February 2026): This checks only the selected/best model's PIT,
+    not all models. The unified Student-t model may have good calibration even
+    if other models failed.
     
     Args:
         cache: The tuning cache dictionary
@@ -562,18 +566,22 @@ def get_pit_critical_stocks(
         else:
             global_data = data
         
-        # Check models within global
-        if 'models' in global_data:
-            for model_name, model_data in global_data['models'].items():
+        # First, check the top-level pit_ks_pvalue (this is for the SELECTED model)
+        pit_p = global_data.get('pit_ks_pvalue')
+        
+        # If no top-level pit_p, check model_comparison for selected model
+        if pit_p is None:
+            model_comparison = global_data.get('model_comparison', {})
+            selected_model = model_comparison.get('selected_model')
+            
+            if selected_model and 'models' in global_data:
+                model_data = global_data['models'].get(selected_model, {})
                 pit_p = model_data.get('pit_ks_pvalue')
-                if pit_p is not None and pit_p < threshold:
-                    critical_stocks.append(asset)
-                    break  # One critical model is enough
-        else:
-            # Direct pit_ks_pvalue at top level
-            pit_p = global_data.get('pit_ks_pvalue')
-            if pit_p is not None and pit_p < threshold:
-                critical_stocks.append(asset)
+        
+        
+        # Only mark as critical if we have a p-value AND it's below threshold
+        if pit_p is not None and pit_p < threshold:
+            critical_stocks.append(asset)
     
     return sorted(set(critical_stocks))
 
@@ -586,13 +594,17 @@ def is_pit_critical(
     """
     Check if a specific asset has critical PIT calibration issues.
     
+    IMPORTANT (February 2026): This checks only the SELECTED model's PIT p-value,
+    not all models. The model selection is done during tuning and the selected
+    model's pit_ks_pvalue is stored at the global/top level.
+    
     Args:
         asset: Asset symbol
         cache: The tuning cache dictionary
         threshold: PIT p-value threshold
         
     Returns:
-        True if the asset has pit_ks_pvalue < threshold
+        True if the asset has pit_ks_pvalue < threshold for selected model
     """
     if asset not in cache:
         return False
@@ -603,16 +615,27 @@ def is_pit_critical(
     else:
         global_data = data
     
-    # Check models
-    if 'models' in global_data:
-        for model_name, model_data in global_data['models'].items():
+    # The top-level pit_ks_pvalue is for the SELECTED model
+    pit_p = global_data.get('pit_ks_pvalue')
+    
+    # If no top-level pit_p, try to find it from the selected model
+    if pit_p is None:
+        model_comparison = global_data.get('model_comparison', {})
+        selected_model = model_comparison.get('selected_model')
+        
+        # Also check noise_model which stores the selected model name
+        if selected_model is None:
+            noise_model = global_data.get('noise_model', '')
+            if noise_model:
+                selected_model = noise_model
+        
+        if selected_model and 'models' in global_data:
+            model_data = global_data['models'].get(selected_model, {})
             pit_p = model_data.get('pit_ks_pvalue')
-            if pit_p is not None and pit_p < threshold:
-                return True
-    else:
-        pit_p = global_data.get('pit_ks_pvalue')
-        if pit_p is not None and pit_p < threshold:
-            return True
+    
+    # Only return True if we have a p-value AND it's below threshold
+    if pit_p is not None and pit_p < threshold:
+        return True
     
     return False
 

@@ -647,6 +647,20 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
     student_t_base_count = 0
     student_t_base_refined_count = 0
     
+    # Unified Student-t models (February 2026 - Elite Architecture)
+    unified_t_4_count = 0
+    unified_t_6_count = 0
+    unified_t_8_count = 0
+    unified_t_12_count = 0
+    unified_t_20_count = 0
+    
+    # Regular Student-t by ν (non-unified)
+    student_t_nu_4_count = 0
+    student_t_nu_6_count = 0
+    student_t_nu_8_count = 0
+    student_t_nu_12_count = 0
+    student_t_nu_20_count = 0
+    
     # Momentum models
     gaussian_momentum_count = 0
     phi_gaussian_momentum_count = 0
@@ -689,6 +703,7 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
         # Count model types (mutually exclusive)
         noise_model = str(global_data.get('noise_model', '')).lower()
         nu_ref = global_data.get('nu_refinement') or {}
+        nu_val = global_data.get('nu')
         is_momentum = (
             global_data.get('momentum_enabled', False) or 
             'momentum' in noise_model or 
@@ -697,6 +712,7 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
         )
         is_phi = 'phi' in noise_model or global_data.get('phi') is not None
         is_student_t = 'student_t' in noise_model or 'student-t' in noise_model
+        is_unified = 'unified' in noise_model
         is_nu_refined = nu_ref.get('improvement_achieved', False)
         
         # Categorize each asset into exactly one model category
@@ -706,17 +722,42 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             gh_count += 1
         elif global_data.get('mixture_selected'):
             mixture_count += 1
+        elif is_unified and is_student_t:
+            # Unified Student-t model - count by ν
+            nu_int = int(nu_val) if nu_val else 8
+            if nu_int == 4:
+                unified_t_4_count += 1
+            elif nu_int == 6:
+                unified_t_6_count += 1
+            elif nu_int == 12:
+                unified_t_12_count += 1
+            elif nu_int == 20:
+                unified_t_20_count += 1
+            else:
+                unified_t_8_count += 1  # Default to 8
         elif is_student_t:
+            # Regular (non-unified) Student-t
             if is_momentum:
                 if is_nu_refined:
                     student_t_momentum_refined_count += 1
                 else:
                     student_t_momentum_count += 1
             else:
+                # Count by ν for regular Student-t
+                nu_int = int(nu_val) if nu_val else 8
                 if is_nu_refined:
                     student_t_base_refined_count += 1
+                elif nu_int == 4:
+                    student_t_nu_4_count += 1
+                elif nu_int == 6:
+                    student_t_nu_6_count += 1
+                elif nu_int == 12:
+                    student_t_nu_12_count += 1
+                elif nu_int == 20:
+                    student_t_nu_20_count += 1
                 else:
-                    student_t_base_count += 1
+                    student_t_nu_8_count += 1
+                student_t_base_count += 1
         elif is_phi:
             # φ-Gaussian (with or without momentum)
             if is_momentum:
@@ -767,7 +808,9 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
     
     # Calculate totals
     total_momentum = gaussian_momentum_count + phi_gaussian_momentum_count + student_t_momentum_count + student_t_momentum_refined_count
-    total_student_t = student_t_base_count + student_t_base_refined_count + student_t_momentum_count + student_t_momentum_refined_count
+    total_unified = unified_t_4_count + unified_t_6_count + unified_t_8_count + unified_t_12_count + unified_t_20_count
+    total_student_t_regular = student_t_nu_4_count + student_t_nu_6_count + student_t_nu_8_count + student_t_nu_12_count + student_t_nu_20_count
+    total_student_t = total_unified + total_student_t_regular + student_t_base_refined_count + student_t_momentum_count + student_t_momentum_refined_count
     escalations = total_student_t + mixture_count + gh_count + tvvm_count
     total_nu_attempts = nu_refinement_attempts + nu_refinement_momentum_attempts
     total_nu_successes = nu_refinement_successes + nu_refinement_momentum_successes
@@ -782,11 +825,24 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             # Base models (non-momentum) - Gaussian/φ-Gaussian disabled
             'Gaussian': gaussian_base_count,
             'φ-Gaussian': phi_gaussian_base_count,
-            'φ-Student-t': student_t_base_count,
             # Momentum models (primary)
             'Gaussian+Momentum': gaussian_momentum_count,
             'φ-Gaussian+Momentum': phi_gaussian_momentum_count,
             'φ-Student-t+Momentum': student_t_momentum_count,
+            # Unified Student-t by ν (February 2026 - Elite Architecture)
+            'φ-t-Unified-4': unified_t_4_count,
+            'φ-t-Unified-6': unified_t_6_count,
+            'φ-t-Unified-8': unified_t_8_count,
+            'φ-t-Unified-12': unified_t_12_count,
+            'φ-t-Unified-20': unified_t_20_count,
+            # Regular Student-t by ν (non-unified)
+            'φ-t(ν=4)': student_t_nu_4_count,
+            'φ-t(ν=6)': student_t_nu_6_count,
+            'φ-t(ν=8)': student_t_nu_8_count,
+            'φ-t(ν=12)': student_t_nu_12_count,
+            'φ-t(ν=20)': student_t_nu_20_count,
+            # Legacy count for backward compatibility
+            'φ-Student-t': student_t_base_count,
             # Refined variants (separate tracking for momentum vs non-momentum)
             'φ-Student-t (ν-refined)': student_t_base_refined_count,
             'φ-Student-t+Momentum (ν-refined)': student_t_momentum_refined_count,
@@ -805,9 +861,22 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             'phi-t_momentum': student_t_momentum_count,
             'phi-t-refined': student_t_base_refined_count,
             'phi-t-refined_momentum': student_t_momentum_refined_count,
+            'unified-t-4': unified_t_4_count,
+            'unified-t-6': unified_t_6_count,
+            'unified-t-8': unified_t_8_count,
+            'unified-t-12': unified_t_12_count,
+            'unified-t-20': unified_t_20_count,
             'mixture': mixture_count,
             'gh': gh_count,
             'tvvm': tvvm_count,
+        },
+        'unified_counts': {
+            'total_unified': total_unified,
+            'unified_t_4': unified_t_4_count,
+            'unified_t_6': unified_t_6_count,
+            'unified_t_8': unified_t_8_count,
+            'unified_t_12': unified_t_12_count,
+            'unified_t_20': unified_t_20_count,
         },
         'momentum_counts': {
             'total_momentum': total_momentum,
