@@ -1683,7 +1683,9 @@ class PhiStudentTDriftModel:
         
         # =========================================================================
         # ELITE CALIBRATION PIPELINE (International Quant Literature - Feb 2026)
-        # Harvey (2013) GAS + Gneiting-Raftery (2007) + Isotonic Calibration
+        # =========================================================================
+        # V3 WAVELET-ENHANCED: Combines DTCWT (UK), Asymmetric GAS (Renaissance),
+        # Wavelet Nu (Chinese), Hansen Skew-t (German), Beta Calibration (MIT)
         # =========================================================================
         elite_enabled = True
         ks_raw_pvalue = None
@@ -1693,22 +1695,25 @@ class PhiStudentTDriftModel:
             from .elite_pit_diagnostics import (
                 compute_elite_calibrated_pit,
                 compute_elite_calibrated_pit_v2,
+                compute_elite_calibrated_pit_v3,
                 compute_berkowitz_lr_test,
                 compute_pit_autocorrelation,
             )
             
             if elite_enabled and n >= 100:
-                # Use elite calibration pipeline with GAS volatility + isotonic
-                pit_calibrated, ks_pvalue_calib, elite_diag = compute_elite_calibrated_pit(
+                # Use V3 elite wavelet-enhanced calibration pipeline
+                pit_calibrated, ks_pvalue_calib, elite_diag = compute_elite_calibrated_pit_v3(
                     returns=returns,
                     mu_pred=mu_pred,
                     S_pred=S_pred,
                     nu=nu_base,
-                    lam=0.0,
                     variance_inflation=variance_inflation,
                     mu_drift=mu_drift,
-                    use_gas_vol=True,   # Harvey (2013) GAS
-                    use_isotonic=True,  # Optimal transport
+                    use_wavelet_vol=True,       # DTCWT multi-scale (UK/Cambridge)
+                    use_asymmetric_gas=True,    # Renaissance leverage effect
+                    use_wavelet_nu=True,        # Chinese realized kurtosis
+                    use_beta_calibration=True,  # MIT ensemble
+                    use_dynamic_skew=True,      # German Hansen skew-t
                     train_frac=0.7,
                 )
                 pit_clean = pit_calibrated

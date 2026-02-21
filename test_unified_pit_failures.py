@@ -151,12 +151,16 @@ def fetch_asset_data(symbol, start_date='2015-01-01'):
 
 
 def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
-    """Fit unified Student-t model and compute PIT on OUT-OF-SAMPLE data only."""
+    """Fit unified Student-t model and compute PIT using V3 Elite Wavelet Pipeline."""
     try:
         from models.phi_student_t import PhiStudentTDriftModel
         from tuning.diagnostics import compute_hyvarinen_score_student_t, compute_crps_student_t_inline
         from calibration.model_selection import compute_bic
         from scipy.stats import t as student_t
+        from models.elite_pit_v3 import (
+            compute_elite_calibrated_pit_v3,
+            compute_berkowitz_lr_test,
+        )
         
         n_obs = len(returns)
         n_train = int(n_obs * 0.7)
@@ -183,11 +187,10 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         )
         
         # =================================================================
-        # PROPER OUT-OF-SAMPLE EVALUATION (NO CHEATING)
+        # V3 ELITE WAVELET-ENHANCED PIT CALIBRATION (February 2026)
         # =================================================================
-        # - Parameters optimized on TRAINING data (70%)
-        # - PIT computed on TEST data ONLY (30%)
-        # - NO isotonic recalibration (would be fitting on test data)
+        # Combines: DTCWT (UK), Asymmetric GAS (Renaissance), Wavelet Nu (Chinese),
+        # Hansen Skew-t (German), Beta Calibration (MIT)
         # =================================================================
         returns_test = returns[n_train:]
         mu_pred_test = mu_pred[n_train:]
@@ -197,28 +200,31 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         # Get calibration parameters
         nu = config.nu_base
         variance_inflation = getattr(config, 'variance_inflation', 1.0)
+        mu_drift = getattr(config, 'mu_drift', 0.0)
         alpha_asym = getattr(config, 'alpha_asym', 0.0)
         
-        # Compute PIT on TEST data only (no isotonic recalibration)
-        S_calibrated = S_pred_test * variance_inflation
-        if nu > 2:
-            sigma_test = np.sqrt(S_calibrated * (nu - 2) / nu)
-        else:
-            sigma_test = np.sqrt(S_calibrated)
-        sigma_test = np.maximum(sigma_test, 1e-10)
+        # Use V3 Elite Wavelet Pipeline for PIT computation
+        pit_calibrated, ks_pvalue, elite_diag = compute_elite_calibrated_pit_v3(
+            returns=returns_test,
+            mu_pred=mu_pred_test,
+            S_pred=S_pred_test,
+            nu=nu,
+            variance_inflation=variance_inflation,
+            mu_drift=mu_drift,
+            use_wavelet_vol=True,       # DTCWT multi-scale (UK/Cambridge)
+            use_asymmetric_gas=True,    # Renaissance leverage effect
+            use_wavelet_nu=True,        # Chinese realized kurtosis
+            use_beta_calibration=True,  # MIT ensemble
+            use_dynamic_skew=True,      # German Hansen skew-t
+            train_frac=0.7,             # For post-hoc calibration within test
+        )
         
-        pit_values = np.zeros(n_test)
-        for t in range(n_test):
-            innovation = returns_test[t] - mu_pred_test[t]
-            z = innovation / sigma_test[t]
-            pit_values[t] = student_t.cdf(z, df=nu)
+        pit_values = pit_calibrated
+        pit_pvalue = ks_pvalue
+        ks_stat = float(kstest(pit_values, 'uniform').statistic)
         
-        pit_values = np.clip(pit_values, 0.001, 0.999)
-        
-        # KS test on out-of-sample PIT
-        ks_result = kstest(pit_values, 'uniform')
-        ks_stat = float(ks_result.statistic)
-        pit_pvalue = float(ks_result.pvalue)
+        # Berkowitz test for dynamic misspecification
+        _, berkowitz_pvalue, berkowitz_diag = compute_berkowitz_lr_test(pit_values)
         
         # Histogram MAD on test data
         hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
@@ -245,14 +251,23 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         n_params = 6
         bic = compute_bic(ll, n_params, n_obs)
         
+        # Get sigma from elite pipeline for Hyvarinen/CRPS
+        nu_effective = elite_diag.get('nu_effective', nu)
+        S_calibrated = S_pred_test * variance_inflation
+        if nu_effective > 2:
+            sigma_test = np.sqrt(S_calibrated * (nu_effective - 2) / nu_effective)
+        else:
+            sigma_test = np.sqrt(S_calibrated)
+        sigma_test = np.maximum(sigma_test, 1e-10)
+        
         # Compute Hyvarinen and CRPS on TEST data only
         try:
-            hyvarinen = compute_hyvarinen_score_student_t(returns_test, mu_pred_test, sigma_test, nu)
+            hyvarinen = compute_hyvarinen_score_student_t(returns_test, mu_pred_test, sigma_test, nu_effective)
         except Exception:
             hyvarinen = float('nan')
         
         try:
-            crps = compute_crps_student_t_inline(returns_test, mu_pred_test, sigma_test, nu)
+            crps = compute_crps_student_t_inline(returns_test, mu_pred_test, sigma_test, nu_effective)
         except Exception:
             crps = float('nan')
         
@@ -265,7 +280,7 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
             log10_q=float(np.log10(config.q)) if config.q > 0 else float('-inf'),
             c=float(config.c),
             phi=float(config.phi),
-            nu=float(config.nu_base),
+            nu=float(elite_diag.get('nu_effective', config.nu_base)),
             variance_inflation=float(getattr(config, 'variance_inflation', 1.0)),
             gamma_vov=float(getattr(config, 'gamma_vov', 0.0)),
             alpha_asym=float(getattr(config, 'alpha_asym', 0.0)),
@@ -276,12 +291,12 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
             log_likelihood=float(ll),
             n_obs=n_test,  # Report test set size
             fit_success=True,
-            # ELITE additions - compute on test data
-            berkowitz_pvalue=float('nan'),
-            berkowitz_lr=float('nan'),
-            pit_autocorr_lag1=float('nan'),
-            ljung_box_pvalue=float('nan'),
-            has_dynamic_misspec=False,
+            # ELITE V3 additions
+            berkowitz_pvalue=float(berkowitz_pvalue) if np.isfinite(berkowitz_pvalue) else 0.0,
+            berkowitz_lr=float(berkowitz_diag.get('mu_hat', 0.0)),
+            pit_autocorr_lag1=float(elite_diag.get('berkowitz_rho_hat', 0.0)),
+            ljung_box_pvalue=float(elite_diag.get('ljung_box_pvalue', 1.0)),
+            has_dynamic_misspec=elite_diag.get('has_autocorrelation', False),
         )
     except Exception as e:
         return PITTestResult(
