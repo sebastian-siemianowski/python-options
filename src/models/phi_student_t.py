@@ -2034,7 +2034,7 @@ class PhiStudentTDriftModel:
             pit_clipped = np.clip(pit_calibrated, 0.0001, 0.9999)
             z_berk = norm.ppf(pit_clipped)
             z_berk = z_berk[np.isfinite(z_berk)]
-            n_z = len(z_berk)
+            n_z = len(z_berk);
             
             if n_z > 20:
                 # MLE estimates under H1 (unrestricted)
@@ -2077,78 +2077,8 @@ class PhiStudentTDriftModel:
         except Exception:
             berkowitz_pvalue = float('nan')
         
-        # =====================================================================
-        # STEP 9: CRPS-Optimal Scale Adjustment (Gneiting & Katzfuss 2014)
-        # =====================================================================
-        # CRPS is minimized when the predictive scale matches the true scale.
-        # We find the optimal scale multiplier on the first 50% of test data,
-        # then apply it to compute CRPS on the full test set.
-        # The scale optimization is legitimate since it's done on a subset.
-        # =====================================================================
-        crps_train_end = n_test // 2
-        if crps_train_end > 30:
-            # Joint grid search for optimal (scale, nu) on first half
-            scale_multipliers = np.array([0.6, 0.7, 0.8, 0.9, 0.95, 1.0, 1.05, 1.1, 1.2, 1.3, 1.5])
-            nu_candidates = np.array([max(3, nu_effective - 2), nu_effective, min(30, nu_effective + 2)])
-            best_crps = float('inf')
-            best_mult = 1.0
-            best_nu_crps = nu_effective
-            
-            z_train = (returns_test[:crps_train_end] - mu_pred_test[:crps_train_end])
-            sigma_train = sigma[:crps_train_end]
-            
-            for nu_try in nu_candidates:
-                for mult in scale_multipliers:
-                    sigma_scaled = sigma_train * mult
-                    z_scaled = z_train / sigma_scaled
-                    
-                    t_dist_temp = student_t(df=nu_try)
-                    pdf_temp = t_dist_temp.pdf(z_scaled)
-                    cdf_temp = t_dist_temp.cdf(z_scaled)
-                    
-                    if nu_try > 1:
-                        log_B1 = gammaln(0.5) + gammaln(nu_try - 0.5) - gammaln(nu_try)
-                        log_B2 = gammaln(0.5) + gammaln(nu_try / 2) - gammaln((nu_try + 1) / 2)
-                        B_r = np.exp(log_B1 - 2 * log_B2)
-                        
-                        t1 = z_scaled * (2 * cdf_temp - 1)
-                        t2 = 2 * pdf_temp * (nu_try + z_scaled**2) / (nu_try - 1)
-                        t3 = 2 * np.sqrt(nu_try) * B_r / (nu_try - 1)
-                        
-                        crps_vals = sigma_scaled * (t1 + t2 - t3)
-                        mean_crps = float(np.mean(crps_vals[np.isfinite(crps_vals)]))
-                        
-                        if mean_crps < best_crps:
-                            best_crps = mean_crps
-                            best_mult = mult
-                            best_nu_crps = nu_try
-            
-            # Apply optimal scale and nu to full test
-            sigma_crps = sigma * best_mult
-            nu_crps = best_nu_crps
-        else:
-            sigma_crps = sigma
-            nu_crps = nu_effective
-        
-        # CRPS computation on FULL test data using optimized parameters
-        z = (returns_test - mu_pred_test) / sigma_crps
-        t_dist = student_t(df=nu_crps)
-        pdf_z = t_dist.pdf(z)
-        cdf_z = t_dist.cdf(z)
-        
-        if nu_crps > 1:
-            log_B_half_nu_minus_half = gammaln(0.5) + gammaln(nu_crps - 0.5) - gammaln(nu_crps)
-            log_B_half_nu_half = gammaln(0.5) + gammaln(nu_crps / 2) - gammaln((nu_crps + 1) / 2)
-            B_ratio = np.exp(log_B_half_nu_minus_half - 2 * log_B_half_nu_half)
-            
-            term1 = z * (2 * cdf_z - 1)
-            term2 = 2 * pdf_z * (nu_crps + z**2) / (nu_crps - 1)
-            term3 = 2 * np.sqrt(nu_crps) * B_ratio / (nu_crps - 1)
-            
-            crps_individual = sigma_crps * (term1 + term2 - term3)
-            crps = float(np.mean(crps_individual[np.isfinite(crps_individual)]))
-        else:
-            crps = float('nan')
+        # CRPS is computed in optimize_params_unified, not here
+        crps = float('nan')
         
         diagnostics = {
             'pit_pvalue': pit_pvalue,

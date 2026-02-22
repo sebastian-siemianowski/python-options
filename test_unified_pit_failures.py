@@ -181,7 +181,7 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         # USE INTEGRATED FILTER + CALIBRATION (February 2026)
         # All calibration happens INSIDE the model - no external elite_pit_v3
         # =================================================================
-        pit_calibrated, pit_pvalue, sigma_calibrated, crps, calib_diag = \
+        pit_calibrated, pit_pvalue, sigma_calibrated, _, calib_diag = \
             PhiStudentTDriftModel.filter_and_calibrate(returns, vol, config, train_frac=0.7)
         
         # Get test data for additional metrics
@@ -193,6 +193,22 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
             returns, vol, config
         )
         mu_pred_test = mu_pred[n_train:]
+        S_pred_test = S_pred[n_train:]
+        
+        # =====================================================================
+        # CRPS: Compute from RAW model predictions (no cheating)
+        # =====================================================================
+        nu_crps = config.nu_base
+        if nu_crps > 2:
+            sigma_raw = np.sqrt(S_pred_test * (nu_crps - 2) / nu_crps)
+        else:
+            sigma_raw = np.sqrt(S_pred_test)
+        sigma_raw = np.maximum(sigma_raw, 1e-10)
+        
+        try:
+            crps = compute_crps_student_t_inline(returns_test, mu_pred_test, sigma_raw, nu_crps)
+        except Exception:
+            crps = float('nan')
         
         pit_values = pit_calibrated
         ks_stat = float(kstest(pit_values, 'uniform').statistic)
