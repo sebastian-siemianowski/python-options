@@ -248,6 +248,12 @@ class UnifiedStudentTConfig:
     garch_beta: float = 0.0       # GARCH coefficient (lagged variance)
     garch_unconditional_var: float = 1e-4  # For initialization
     
+    # Wavelet correction factor (February 2026 - DTCWT-inspired)
+    # Multi-scale variance correction estimated on training data
+    wavelet_correction: float = 1.0  # Multi-scale variance adjustment
+    wavelet_weights: np.ndarray = field(default=None, repr=False)  # Scale weights
+    phase_asymmetry: float = 1.0  # Leverage effect ratio (var_down / var_up)
+    
     # Momentum/exogenous input
     exogenous_input: np.ndarray = field(default=None, repr=False)
     
@@ -1731,6 +1737,8 @@ class PhiStudentTDriftModel:
         nu = config.nu_base
         variance_inflation = getattr(config, 'variance_inflation', 1.0)
         mu_drift = getattr(config, 'mu_drift', 0.0)
+        wavelet_correction = getattr(config, 'wavelet_correction', 1.0)
+        phase_asymmetry = getattr(config, 'phase_asymmetry', 1.0)
         
         # GARCH parameters (estimated on training data)
         garch_omega = getattr(config, 'garch_omega', 0.0)
@@ -1740,8 +1748,11 @@ class PhiStudentTDriftModel:
         use_garch = garch_alpha > 0 or garch_beta > 0
         
         # =====================================================================
-        # HONEST VARIANCE with GARCH dynamics (if configured)
+        # HONEST VARIANCE with GARCH + Wavelet Enhancement
         # =====================================================================
+        # Apply wavelet correction factor from training
+        S_pred_wavelet = S_pred_test * wavelet_correction
+        
         if use_garch:
             # Use GARCH variance dynamics (parameters from training)
             # The GARCH model is CAUSAL - h_t only depends on ε²_{t-1}
@@ -1755,32 +1766,41 @@ class PhiStudentTDriftModel:
                 h_garch[t] = garch_omega + garch_alpha * sq_innov[t-1] + garch_beta * h_garch[t-1]
                 h_garch[t] = max(h_garch[t], 1e-12)
             
-            # Apply variance inflation to both components
-            S_kalman_calibrated = S_pred_test * variance_inflation
+            # Apply variance inflation
+            S_kalman_calibrated = S_pred_wavelet * variance_inflation
             
-            # Adaptive blending: when filter variance is very different from GARCH,
-            # rely more on GARCH. Parameters estimated on training data.
-            kalman_mean = np.mean(S_kalman_calibrated)
-            garch_mean = np.mean(h_garch)
+            # DTCWT-inspired phase-aware and magnitude-aware blending
+            # Volatility phase: increasing (+1) or decreasing (-1)
+            log_vol_test = np.log(np.maximum(vol[n_train:], 1e-10))
+            d_log_vol = np.zeros(n_test)
+            d_log_vol[1:] = log_vol_test[1:] - log_vol_test[:-1]
+            vol_phase = np.sign(d_log_vol)
             
-            # Ratio computed from training data
-            if garch_mean > 1e-12 and kalman_mean > 1e-12:
-                ratio = kalman_mean / garch_mean
-                if ratio < 0.3 or ratio > 3.0:
-                    # Large mismatch - GARCH dominates
-                    garch_weight = 0.8
-                elif ratio < 0.5 or ratio > 2.0:
-                    # Moderate mismatch
-                    garch_weight = 0.6
+            # Volatility level: compare to historical median
+            vol_test = vol[n_train:]
+            vol_median = np.median(vol[:n_train])
+            vol_relative = vol_test / (vol_median + 1e-10)
+            
+            # When vol is increasing (stress), rely more on GARCH (reactive)
+            # When vol is decreasing (calm), rely more on Kalman (smooth)
+            # When vol is HIGH, rely more on GARCH (better at extremes)
+            S_calibrated = np.zeros(n_test)
+            for t in range(n_test):
+                # Phase-based weight
+                if vol_phase[t] > 0:
+                    gw = 0.65
                 else:
-                    # Good agreement
-                    garch_weight = 0.4
-            else:
-                garch_weight = 0.5
-            
-            S_calibrated = (1 - garch_weight) * S_kalman_calibrated + garch_weight * h_garch
+                    gw = 0.45
+                
+                # Magnitude-based adjustment: more GARCH in high vol
+                if vol_relative[t] > 1.5:
+                    gw = min(gw + 0.15, 0.85)
+                elif vol_relative[t] < 0.7:
+                    gw = max(gw - 0.10, 0.30)
+                
+                S_calibrated[t] = (1 - gw) * S_kalman_calibrated[t] + gw * h_garch[t]
         else:
-            S_calibrated = S_pred_test * variance_inflation
+            S_calibrated = S_pred_wavelet * variance_inflation
         
         # =====================================================================
         # HONEST SIGMA: Convert variance to Student-t scale
@@ -2114,6 +2134,114 @@ class PhiStudentTDriftModel:
             pass
         
         # =====================================================================
+        # STAGE 4.5: DTCWT-INSPIRED ADAPTIVE VARIANCE (February 2026 - Elite)
+        # =====================================================================
+        # Key insight from Dual-Tree Complex Wavelet Transform:
+        #   1. Multi-scale decomposition reveals structure at different timescales
+        #   2. Phase information captures directionality (trends vs mean-reversion)
+        #   3. Scale-dependent q adjustment: q_j = q × 2^j at scale j
+        #
+        # For honest calibration, we compute:
+        #   1. Volatility phase: sign(d_vol) captures vol direction
+        #   2. Volatility magnitude at multiple scales
+        #   3. Optimal scale mixture for variance prediction
+        #
+        # All parameters estimated on TRAINING data only.
+        # =====================================================================
+        def compute_dtcwt_features(returns, vol, n_scales=4):
+            """
+            Compute DTCWT-inspired features for variance prediction.
+            
+            Returns:
+                - phase: Volatility direction indicator
+                - scale_vars: Multi-scale variance estimates
+                - phase_weight: How much phase information helps
+            """
+            n = len(returns)
+            
+            # Phase: direction of volatility changes
+            log_vol = np.log(np.maximum(vol, 1e-10))
+            d_log_vol = np.diff(log_vol, prepend=log_vol[0])
+            phase = np.sign(d_log_vol)  # +1: vol increasing, -1: vol decreasing
+            
+            # Multi-scale variance using Haar-like decomposition
+            scale_vars = np.zeros((n_scales, n))
+            sq_ret = returns ** 2
+            
+            for j in range(n_scales):
+                window = 2 ** (j + 1)  # 2, 4, 8, 16
+                for t in range(n):
+                    start_idx = max(0, t - window + 1)
+                    scale_vars[j, t] = np.mean(sq_ret[start_idx:t+1])
+            
+            # Phase-weighted variance: higher vol in up-phase vs down-phase
+            phase_up = phase > 0
+            phase_down = phase < 0
+            
+            if np.sum(phase_up) > 10 and np.sum(phase_down) > 10:
+                var_up = np.mean(sq_ret[phase_up])
+                var_down = np.mean(sq_ret[phase_down])
+                phase_asymmetry = var_down / (var_up + 1e-12)  # Leverage effect ratio
+            else:
+                phase_asymmetry = 1.0
+            
+            return phase, scale_vars, phase_asymmetry
+        
+        # Compute DTCWT features on training data
+        temp_config = UnifiedStudentTConfig(
+            q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
+            alpha_asym=alpha_opt, gamma_vov=gamma_opt,
+            ms_sensitivity=sens_opt, q_stress_ratio=10.0,
+            vov_damping=0.3, variance_inflation=1.0,
+        )
+        
+        _, _, mu_pred_pre, S_pred_pre, _ = cls.filter_phi_unified(
+            returns_train, vol_train, temp_config
+        )
+        innovations_pre = returns_train - mu_pred_pre
+        
+        phase_train, scale_vars_train, phase_asymmetry = compute_dtcwt_features(
+            innovations_pre, vol_train, n_scales=4
+        )
+        
+        # Compute variance prediction error at each scale
+        actual_sq = innovations_pre ** 2
+        scale_errors = np.zeros(4)
+        for j in range(4):
+            scale_errors[j] = np.mean((scale_vars_train[j, :] - actual_sq) ** 2)
+        
+        # Optimal scale: lowest prediction error
+        best_scale = int(np.argmin(scale_errors))
+        
+        # Compute correction factor using best scale
+        best_scale_var = scale_vars_train[best_scale, :]
+        
+        S_pred_mean = np.mean(S_pred_pre)
+        best_scale_mean = np.mean(best_scale_var)
+        
+        if S_pred_mean > 1e-12 and best_scale_mean > 1e-12:
+            wavelet_correction = best_scale_mean / S_pred_mean
+        else:
+            wavelet_correction = 1.0
+        
+        # Phase asymmetry adjustment: if leverage effect is strong,
+        # increase variance estimate slightly
+        if phase_asymmetry > 1.5:
+            wavelet_correction *= 1.1
+        elif phase_asymmetry < 0.7:
+            wavelet_correction *= 0.9
+        
+        # Disable wavelet correction - it was making things worse
+        # Keep code for future experimentation but force correction to 1.0
+        wavelet_correction = 1.0
+        
+        # Store wavelet weights for diagnostics
+        wavelet_weights = np.zeros(4)
+        total_inv_error = np.sum(1.0 / (scale_errors + 1e-12))
+        for j in range(4):
+            wavelet_weights[j] = (1.0 / (scale_errors[j] + 1e-12)) / total_inv_error
+
+        # =====================================================================
         # STAGE 5: ROLLING CV CALIBRATION (February 2026 - Honest OOS)
         # =====================================================================
         # Key insight: Training-set calibration doesn't generalize.
@@ -2129,8 +2257,8 @@ class PhiStudentTDriftModel:
         # =====================================================================
         from scipy.stats import t as student_t, kstest
         
-        # Expanded nu grid with finer granularity
-        NU_GRID = [3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 25, 30]
+        # Nu grid: start at 5 (nu=3-4 leads to poor calibration)
+        NU_GRID = [5, 6, 7, 8, 10, 12, 15, 20]
         
         # Rolling CV: 5 folds
         n_folds = 5
@@ -2154,6 +2282,9 @@ class PhiStudentTDriftModel:
                 _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
                     returns_train, vol_train, temp_config
                 )
+                
+                # Note: wavelet_correction is disabled (set to 1.0)
+                # S_pred_train = S_pred_train * wavelet_correction
                 
                 # Compute innovations
                 innovations_train = returns_train - mu_pred_train
@@ -2257,34 +2388,10 @@ class PhiStudentTDriftModel:
         nu_opt = best_nu
         beta_opt = 0.7 * final_beta + 0.3 * best_global_beta
         mu_drift_opt = 0.7 * final_mu_drift + 0.3 * best_global_mu_drift
-        
-        # =====================================================================
-        # STAGE 5b: Calibration Adjustment Factor
-        # =====================================================================
-        # Compute an additional scaling factor based on how well the 
-        # calibration worked on the validation portion of training data.
-        # This helps compensate for systematic bias.
-        # =====================================================================
-        n_valid_train = int(n_train * 0.3)  # Last 30% of training
-        innov_valid_train = innovations_train[-n_valid_train:] - mu_drift_opt
-        S_valid_train = S_pred_train[-n_valid_train:]
-        
-        # Compute actual vs predicted variance ratio
-        actual_var_valid = float(np.var(innov_valid_train))
-        predicted_var_valid = float(np.mean(S_valid_train * beta_opt))
-        
-        if predicted_var_valid > 1e-12:
-            cal_adjustment = actual_var_valid / predicted_var_valid
-        else:
-            cal_adjustment = 1.0
-        
-        # Apply adjustment to beta (clip to prevent extreme values)
-        cal_adjustment = float(np.clip(cal_adjustment, 0.5, 2.0))
-        beta_opt = beta_opt * cal_adjustment
         beta_opt = float(np.clip(beta_opt, 0.2, 5.0))
         
         # =====================================================================
-        # STAGE 5b: GARCH Parameter Estimation on Training Data
+        # STAGE 5c: GARCH Parameter Estimation on Training Data
         # =====================================================================
         # Estimate GARCH(1,1) parameters on training innovations
         # These will be used in filter_and_calibrate WITHOUT look-ahead
@@ -2339,6 +2446,9 @@ class PhiStudentTDriftModel:
             garch_alpha=garch_alpha,
             garch_beta=garch_beta,
             garch_unconditional_var=unconditional_var,
+            wavelet_correction=wavelet_correction,  # DTCWT-inspired multi-scale
+            wavelet_weights=wavelet_weights,
+            phase_asymmetry=phase_asymmetry,  # Leverage effect from training
             q_min=config.q_min,
             c_min=config.c_min,
             c_max=config.c_max,
@@ -2360,6 +2470,7 @@ class PhiStudentTDriftModel:
             "mu_drift": float(mu_drift_opt),
             "garch_alpha": float(garch_alpha),
             "garch_beta": float(garch_beta),
+            "wavelet_correction": float(wavelet_correction),
             "c_bounds": (float(config.c_min), float(config.c_max)),
             "q_min": float(config.q_min),
         }
