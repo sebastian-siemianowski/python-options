@@ -1679,30 +1679,28 @@ class PhiStudentTDriftModel:
         train_frac: float = 0.7,
     ) -> Tuple[np.ndarray, float, np.ndarray, float, Dict]:
         """
-        ELITE INTEGRATED FILTER + CALIBRATION (February 2026).
+        HONEST PIT Computation (February 2026 - No Cheating).
         
-        Combines filtering AND calibration in a single method - no external
-        elite_pit_v3 needed. All calibration happens INSIDE the model.
+        PIT values are computed using ONLY parameters from training data:
+        - config.nu_base: optimized during training
+        - config.variance_inflation: optimized during training  
+        - config.mu_drift: computed during training
+        - S_pred: from Kalman filter (trained on training data)
         
-        Key innovations:
-          1. CRPS-optimized variance: scale-neutral wavelet enhancement
-          2. Proper Student-t parameterization with effective nu
-          3. Multi-method calibration ensemble (Beta + Isotonic + Platt)
-          4. Progressive refinement for stubborn cases
+        NO post-hoc adjustments using test data:
+        - No GARCH re-estimation on test data
+        - No nu re-estimation from test kurtosis
+        - No calibration ensemble (Beta/Isotonic/Platt)
+        - No rank smoothing
+        - No AR whitening
         
-        Args:
-            returns: Full return series
-            vol: Full volatility series  
-            config: UnifiedStudentTConfig
-            train_frac: Train/test split fraction
-            
         Returns:
             Tuple of:
-              - pit_calibrated: Calibrated PIT values (test set only)
+              - pit_values: Raw PIT values from model predictions
               - pit_pvalue: KS test p-value
-              - sigma_calibrated: Calibrated sigma for CRPS (test set only)
-              - crps: CRPS score on test set
-              - diagnostics: Dict with all calibration info
+              - sigma: Scale for CRPS computation
+              - crps: Set to nan (computed in test file)
+              - diagnostics: Dict with calibration info
         """
         from scipy.stats import kstest
         from scipy.special import gammaln
@@ -1712,7 +1710,7 @@ class PhiStudentTDriftModel:
         n = len(returns)
         n_train = int(n * train_frac)
         
-        # Run the unified filter
+        # Run the unified filter (trained on full data, but parameters from training)
         mu_filt, P_filt, mu_pred, S_pred, ll = cls.filter_phi_unified(returns, vol, config)
         
         # Extract test data
@@ -1721,327 +1719,62 @@ class PhiStudentTDriftModel:
         S_pred_test = S_pred[n_train:]
         n_test = len(returns_test)
         
-        # Get config params
+        # Get config params (ALL from training - no test data used)
         nu = config.nu_base
         variance_inflation = getattr(config, 'variance_inflation', 1.0)
         mu_drift = getattr(config, 'mu_drift', 0.0)
         
         # =====================================================================
-        # STEP 1: GARCH(1,1) variance dynamics (proper causal, no look-ahead)
+        # HONEST VARIANCE: Use model predictions with trained variance_inflation
         # =====================================================================
-        # The key insight: Berkowitz test fails because variance prediction
-        # doesn't capture volatility clustering. We need GARCH dynamics
-        # that update BEFORE seeing each return (proper predictive).
-        #
-        # h_t = ω + α × ε²_{t-1} + β × h_{t-1}  (predictive variance)
-        # ε_t = r_t - μ_pred_t
-        #
-        # This ensures PITs are computed using truly predictive variances.
-        # =====================================================================
-        innovations = returns_test - mu_pred_test
-        
-        # Estimate GARCH parameters from first 70% of test data
-        train_end = int(n_test * 0.7)
-        innov_train = innovations[:train_end]
-        
-        # Unconditional variance for initialization
-        unconditional_var = float(np.var(innov_train))
-        
-        # Simple GARCH(1,1) parameter estimation (Method of Moments)
-        sq_innov = innovations ** 2
-        if train_end > 50:
-            # Estimate α (ARCH effect) from autocorrelation of squared innovations
-            sq_centered = sq_innov[:train_end] - unconditional_var
-            if np.sum(sq_centered[:-1]**2) > 1e-12:
-                arch_effect = float(np.sum(sq_centered[1:] * sq_centered[:-1]) / np.sum(sq_centered[:-1]**2))
-                arch_effect = np.clip(arch_effect, 0.01, 0.3)  # Typical ARCH range
-            else:
-                arch_effect = 0.1
-            
-            # GARCH persistence: β ≈ 0.85 - 0.95 typically
-            garch_persist = 0.90
-            
-            # Ensure stationarity: α + β < 1
-            if arch_effect + garch_persist >= 0.99:
-                garch_persist = 0.98 - arch_effect
-            
-            omega = unconditional_var * (1 - arch_effect - garch_persist)
-        else:
-            arch_effect = 0.1
-            garch_persist = 0.85
-            omega = unconditional_var * 0.05
-        
-        # Compute GARCH variance series (predictive - uses only past info)
-        h_garch = np.zeros(n_test)
-        h_garch[0] = unconditional_var  # Initialize at unconditional
-        
-        for t in range(1, n_test):
-            h_garch[t] = omega + arch_effect * sq_innov[t-1] + garch_persist * h_garch[t-1]
-            h_garch[t] = max(h_garch[t], 1e-10)  # Floor for stability
-        
-        # Blend GARCH with model S_pred based on variance mismatch
-        predicted_var = float(np.mean(S_pred_test[:train_end]))
-        variance_ratio = unconditional_var / (predicted_var + 1e-12)
-        
-        if variance_ratio > 5.0:
-            # Severe mismatch - rely more on GARCH
-            S_corrected = 0.3 * S_pred_test + 0.7 * h_garch
-        elif variance_ratio > 2.0 or variance_ratio < 0.5:
-            # Moderate mismatch - blend equally
-            S_corrected = 0.5 * S_pred_test + 0.5 * h_garch
-        else:
-            # Good match - use model variance with GARCH correction
-            S_corrected = 0.7 * S_pred_test + 0.3 * h_garch
+        S_calibrated = S_pred_test * variance_inflation
         
         # =====================================================================
-        # STEP 2: Nu estimation from empirical kurtosis
+        # HONEST SIGMA: Convert variance to Student-t scale
         # =====================================================================
-        train_end = int(n_test * 0.7)
-        kurt = float(np.mean(innovations[:train_end]**4) / (np.var(innovations[:train_end])**2 + 1e-12))
-        excess = max(kurt - 3.0, 0.1)
-        nu_empirical = float(np.clip(4.0 + 6.0 / excess, 4.0, 15.0))
-        nu_effective = float(np.clip(0.5 * nu_empirical + 0.5 * nu, 4.0, 15.0))
-        
-        # =====================================================================
-        # STEP 3: Compute sigma (CRPS-aware, scale-neutral)
-        # =====================================================================
-        S_calibrated = S_corrected * variance_inflation
-        if nu_effective > 2:
-            sigma = np.sqrt(S_calibrated * (nu_effective - 2) / nu_effective)
+        if nu > 2:
+            sigma = np.sqrt(S_calibrated * (nu - 2) / nu)
         else:
             sigma = np.sqrt(S_calibrated)
         sigma = np.maximum(sigma, 1e-10)
         
         # =====================================================================
-        # STEP 4: Dynamic skewness estimation
+        # HONEST PIT: Compute from model predictions only
         # =====================================================================
-        lam = 0.0
-        if train_end >= 50:
-            try:
-                # Simple skewness from standardized residuals
-                z_train = (innovations[:train_end] - mu_drift) / sigma[:train_end]
-                skew_emp = float(np.mean(z_train**3))
-                lam = float(np.clip(skew_emp * 0.15, -0.4, 0.4))
-            except:
-                lam = 0.0
+        innovations = returns_test - mu_pred_test - mu_drift
+        z = innovations / sigma
         
-        # =====================================================================
-        # STEP 5: Raw PIT computation
-        # =====================================================================
-        pit_raw = np.zeros(n_test)
-        for t in range(n_test):
-            inn = innovations[t] - mu_drift
-            z = inn / sigma[t]
-            
-            if abs(lam) > 0.01:
-                # Skewed-t approximation using Fernandez-Steel
-                if z < 0:
-                    z_adj = z * (1 + lam)
-                else:
-                    z_adj = z * (1 - lam)
-                sf = np.sqrt((nu_effective - 2) / nu_effective) if nu_effective > 2 else 1.0
-                pit_raw[t] = student_t.cdf(z_adj / sf, df=nu_effective)
-            else:
-                sf = np.sqrt((nu_effective - 2) / nu_effective) if nu_effective > 2 else 1.0
-                pit_raw[t] = student_t.cdf(z / sf, df=nu_effective)
-        
-        pit_raw = np.clip(pit_raw, 0.001, 0.999)
-        
-        # =====================================================================
-        # STEP 6: Multi-method calibration ensemble
-        # =====================================================================
-        pit_train_end = int(n_test * 0.6)  # Leave room for test within test
-        pit_train = pit_raw[:pit_train_end]
-        
-        # Beta calibration
-        def beta_calibration(p_train, p_full):
-            from scipy.optimize import minimize_scalar
-            p_train = np.clip(p_train, 0.001, 0.999)
-            
-            def neg_ll(beta_param):
-                a, b = max(beta_param, 0.1), max(beta_param, 0.1)
-                try:
-                    from scipy.stats import beta as beta_dist
-                    ll = np.sum(beta_dist.logpdf(p_train, a, b))
-                    return -ll if np.isfinite(ll) else 1e10
-                except:
-                    return 1e10
-            
-            try:
-                result = minimize_scalar(neg_ll, bounds=(0.5, 2.0), method='bounded')
-                beta_opt = result.x if result.success else 1.0
-            except:
-                beta_opt = 1.0
-            
-            from scipy.stats import beta as beta_dist
-            return beta_dist.cdf(p_full, beta_opt, beta_opt)
-        
-        # Isotonic calibration
-        def isotonic_calibration(p_train, p_full):
-            from scipy.interpolate import interp1d
-            sorted_idx = np.argsort(p_train)
-            p_sorted = p_train[sorted_idx]
-            uniform_target = np.linspace(0.001, 0.999, len(p_train))
-            
-            # Isotonic regression (PAV algorithm)
-            y = uniform_target.copy()
-            n_iso = len(y)
-            for _ in range(n_iso):
-                changed = False
-                for i in range(n_iso - 1):
-                    if y[i] > y[i + 1]:
-                        y[i] = y[i + 1] = (y[i] + y[i + 1]) / 2
-                        changed = True
-                if not changed:
-                    break
-            
-            try:
-                f = interp1d(p_sorted, y, kind='linear', bounds_error=False, fill_value=(0.001, 0.999))
-                return np.clip(f(p_full), 0.001, 0.999)
-            except:
-                return p_full
-        
-        # Platt scaling
-        def platt_scaling(p_train, p_full):
-            p_train = np.clip(p_train, 0.001, 0.999)
-            logit_p = np.log(p_train / (1 - p_train))
-            uniform_target = np.linspace(0.001, 0.999, len(p_train))
-            logit_target = np.log(uniform_target / (1 - uniform_target))
-            
-            try:
-                X = np.column_stack([np.ones(len(p_train)), logit_p])
-                coeffs = np.linalg.lstsq(X, logit_target, rcond=None)[0]
-                a, b = coeffs[0], coeffs[1]
-            except:
-                a, b = 0.0, 1.0
-            
-            p_full = np.clip(p_full, 0.001, 0.999)
-            logit_full = np.log(p_full / (1 - p_full))
-            calibrated_logit = a + b * logit_full
-            return np.clip(1 / (1 + np.exp(-calibrated_logit)), 0.001, 0.999)
-        
-        # Apply all methods
-        pit_beta = beta_calibration(pit_train, pit_raw)
-        pit_isotonic = isotonic_calibration(pit_train, pit_raw)
-        pit_platt = platt_scaling(pit_train, pit_raw)
-        
-        # Quality-weighted ensemble
-        ks_beta = kstest(pit_beta, 'uniform').pvalue
-        ks_isotonic = kstest(pit_isotonic, 'uniform').pvalue
-        ks_platt = kstest(pit_platt, 'uniform').pvalue
-        ks_raw = kstest(pit_raw, 'uniform').pvalue
-        
-        methods = [
-            (pit_beta, ks_beta),
-            (pit_isotonic, ks_isotonic),
-            (pit_platt, ks_platt),
-            (pit_raw, ks_raw),
-        ]
-        methods.sort(key=lambda x: x[1], reverse=True)
-        
-        total_weight = sum(m[1] for m in methods[:3])
-        if total_weight > 0:
-            w1 = methods[0][1] / total_weight
-            w2 = methods[1][1] / total_weight
-            w3 = methods[2][1] / total_weight
-            pit_calibrated = np.clip(
-                w1 * methods[0][0] + w2 * methods[1][0] + w3 * methods[2][0],
-                0.001, 0.999
-            )
+        # Scale factor for Student-t
+        if nu > 2:
+            scale_factor = np.sqrt((nu - 2) / nu)
         else:
-            pit_calibrated = np.clip(0.5 * pit_beta + 0.5 * pit_isotonic, 0.001, 0.999)
+            scale_factor = 1.0
+        
+        # PIT values from Student-t CDF
+        pit_values = student_t.cdf(z / scale_factor, df=nu)
+        pit_values = np.clip(pit_values, 0.001, 0.999)
         
         # =====================================================================
-        # STEP 7: Progressive refinement for stubborn cases
+        # HONEST METRICS: No adjustments
         # =====================================================================
-        for _ in range(3):
-            ks_check = kstest(pit_calibrated, 'uniform')
-            if ks_check.pvalue >= 0.05:
-                break
-            
-            # Rank-based smoothing
-            pit_sorted_idx = np.argsort(pit_calibrated)
-            pit_refined = np.zeros(n_test)
-            pit_refined[pit_sorted_idx] = (np.arange(n_test) + 0.5) / n_test
-            
-            if ks_check.pvalue < 0.001:
-                blend = 0.4
-            elif ks_check.pvalue < 0.01:
-                blend = 0.3
-            else:
-                blend = 0.2
-            
-            pit_calibrated = np.clip(
-                (1 - blend) * pit_calibrated + blend * pit_refined,
-                0.001, 0.999
-            )
-        
-        # =====================================================================
-        # STEP 7.5: Autocorrelation correction for Berkowitz test
-        # =====================================================================
-        # The Berkowitz test checks if Φ⁻¹(PIT) ~ N(0,1) with no autocorrelation.
-        # Serial correlation in PITs is caused by:
-        #   1. Volatility clustering not fully captured
-        #   2. Regime persistence in returns
-        #   3. Model misspecification in variance dynamics
-        #
-        # Fix: Apply AR(1) whitening to the inverse-normal transformed PITs,
-        # then transform back to uniform via the CDF.
-        # This is the Rosenblatt transform correction (Diebold et al. 1998).
-        # =====================================================================
-        pit_clipped = np.clip(pit_calibrated, 0.0001, 0.9999)
-        z_pit = norm.ppf(pit_clipped)
-        
-        # Estimate AR(1) coefficient from z_pit
-        if len(z_pit) > 20:
-            z_mean = np.mean(z_pit)
-            z_centered = z_pit - z_mean
-            
-            # OLS estimate of rho: z_t = rho * z_{t-1} + e_t
-            numerator = np.sum(z_centered[1:] * z_centered[:-1])
-            denominator = np.sum(z_centered[:-1] ** 2) + 1e-12
-            rho_hat = float(np.clip(numerator / denominator, -0.95, 0.95))
-            
-            # Apply AR(1) whitening if significant autocorrelation
-            if abs(rho_hat) > 0.05:
-                # Whitened residuals: e_t = z_t - rho * z_{t-1}
-                z_whitened = np.zeros(len(z_pit))
-                z_whitened[0] = z_pit[0]  # First observation unchanged
-                z_whitened[1:] = z_pit[1:] - rho_hat * z_pit[:-1]
-                
-                # Standardize to N(0,1)
-                z_std = np.std(z_whitened)
-                if z_std > 0.1:
-                    z_whitened = (z_whitened - np.mean(z_whitened)) / z_std
-                
-                # Transform back to uniform via Φ(z)
-                pit_whitened = norm.cdf(z_whitened)
-                pit_calibrated = np.clip(pit_whitened, 0.001, 0.999)
-        
-        # =====================================================================
-        # STEP 8: Compute final metrics
-        # =====================================================================
-        ks_result = kstest(pit_calibrated, 'uniform')
+        ks_result = kstest(pit_values, 'uniform')
         pit_pvalue = float(ks_result.pvalue)
         
-        hist, _ = np.histogram(pit_calibrated, bins=10, range=(0, 1))
+        # Histogram MAD
+        hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
         mad = float(np.mean(np.abs(hist / n_test - 0.1)))
         
-        # Berkowitz test (LR test for N(0,1) of inverse-normal transformed PITs)
-        # Tests H0: μ=0, σ²=1, ρ=0 vs H1: unconstrained (μ, σ², ρ)
-        # Based on Berkowitz (2001) "Testing Density Forecasts, with Applications to Risk Management"
+        # Berkowitz test (honest - no whitening)
         try:
-            pit_clipped = np.clip(pit_calibrated, 0.0001, 0.9999)
+            pit_clipped = np.clip(pit_values, 0.0001, 0.9999)
             z_berk = norm.ppf(pit_clipped)
             z_berk = z_berk[np.isfinite(z_berk)]
-            n_z = len(z_berk);
+            n_z = len(z_berk)
             
             if n_z > 20:
-                # MLE estimates under H1 (unrestricted)
                 mu_hat = float(np.mean(z_berk))
-                var_hat = float(np.var(z_berk, ddof=0))  # MLE uses n, not n-1
+                var_hat = float(np.var(z_berk, ddof=0))
                 
-                # AR(1) coefficient estimate
                 z_centered = z_berk - mu_hat
                 if np.sum(z_centered[:-1]**2) > 1e-12:
                     rho_hat = float(np.sum(z_centered[1:] * z_centered[:-1]) / np.sum(z_centered[:-1]**2))
@@ -2049,27 +1782,19 @@ class PhiStudentTDriftModel:
                 else:
                     rho_hat = 0.0
                 
-                # Compute log-likelihood under H0: μ=0, σ²=1, ρ=0
                 ll_null = -0.5 * n_z * np.log(2 * np.pi) - 0.5 * np.sum(z_berk**2)
                 
-                # Compute log-likelihood under H1: unrestricted AR(1) with N(μ, σ²)
-                # For AR(1): z_t | z_{t-1} ~ N(μ + ρ(z_{t-1} - μ), σ²(1-ρ²))
                 sigma_sq_cond = var_hat * (1 - rho_hat**2) if abs(rho_hat) < 0.99 else var_hat * 0.01
                 sigma_sq_cond = max(sigma_sq_cond, 1e-6)
                 
-                # First observation: marginal N(μ, σ²)
                 ll_alt = -0.5 * np.log(2 * np.pi * var_hat) - 0.5 * (z_berk[0] - mu_hat)**2 / var_hat
-                
-                # Subsequent observations: conditional N(μ + ρ(z_{t-1} - μ), σ²(1-ρ²))
                 for t in range(1, n_z):
                     mu_cond = mu_hat + rho_hat * (z_berk[t-1] - mu_hat)
                     resid = z_berk[t] - mu_cond
                     ll_alt += -0.5 * np.log(2 * np.pi * sigma_sq_cond) - 0.5 * resid**2 / sigma_sq_cond
                 
-                # LR statistic: 2 * (ll_alt - ll_null) ~ χ²(3) under H0
                 lr_stat = 2 * (ll_alt - ll_null)
                 
-                # Chi-squared with 3 df (testing μ, σ², and ρ)
                 from scipy.stats import chi2
                 berkowitz_pvalue = float(1 - chi2.cdf(max(lr_stat, 0), df=3))
             else:
@@ -2077,23 +1802,28 @@ class PhiStudentTDriftModel:
         except Exception:
             berkowitz_pvalue = float('nan')
         
-        # CRPS is computed in optimize_params_unified, not here
+        # Variance ratio for diagnostics
+        actual_var = float(np.var(innovations))
+        predicted_var = float(np.mean(S_calibrated))
+        variance_ratio = actual_var / (predicted_var + 1e-12)
+        
+        # CRPS is computed in test file, not here
         crps = float('nan')
         
         diagnostics = {
             'pit_pvalue': pit_pvalue,
             'berkowitz_pvalue': berkowitz_pvalue,
             'mad': mad,
-            'nu_effective': nu_effective,
+            'nu_effective': nu,
             'variance_ratio': variance_ratio,
-            'skewness': lam,
+            'skewness': 0.0,
             'crps': crps,
             'log_likelihood': ll,
             'n_train': n_train,
             'n_test': n_test,
         }
         
-        return pit_calibrated, pit_pvalue, sigma, crps, diagnostics
+        return pit_values, pit_pvalue, sigma, crps, diagnostics
 
     @classmethod
     def optimize_params_unified(
