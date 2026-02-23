@@ -2009,39 +2009,90 @@ class PhiStudentTDriftModel:
                 # Blend rough vol into GARCH variance
                 h_garch = (1.0 - rough_weight) * h_garch + rough_weight * h_rough
             
-            # Apply variance inflation
-            S_kalman_calibrated = S_pred_wavelet * variance_inflation
-            
-            # DTCWT-inspired phase-aware and magnitude-aware blending
-            # Volatility phase: increasing (+1) or decreasing (-1)
+            # =================================================================
+            # PHASE-AWARE KALMAN/GARCH BLENDING (blend first, calibrate after)
+            # =================================================================
+            # Key architectural fix: blend Kalman and GARCH FIRST, then apply
+            # variance_inflation β to the BLENDED output. Previously β was only
+            # applied to Kalman, leaving GARCH uncalibrated.
+            # =================================================================
             log_vol_test = np.log(np.maximum(vol[n_train:], 1e-10))
             d_log_vol = np.zeros(n_test)
             d_log_vol[1:] = log_vol_test[1:] - log_vol_test[:-1]
             vol_phase = np.sign(d_log_vol)
             
-            # Volatility level: compare to historical median
             vol_test = vol[n_train:]
             vol_median = np.median(vol[:n_train])
             vol_relative = vol_test / (vol_median + 1e-10)
             
-            # When vol is increasing (stress), rely more on GARCH (reactive)
-            # When vol is decreasing (calm), rely more on Kalman (smooth)
-            # When vol is HIGH, rely more on GARCH (better at extremes)
-            S_calibrated = np.zeros(n_test)
+            S_blended = np.zeros(n_test)
             for t in range(n_test):
-                # Phase-based weight
                 if vol_phase[t] > 0:
                     gw = 0.65
                 else:
                     gw = 0.45
-                
-                # Magnitude-based adjustment: more GARCH in high vol
                 if vol_relative[t] > 1.5:
                     gw = min(gw + 0.15, 0.85)
                 elif vol_relative[t] < 0.7:
                     gw = max(gw - 0.10, 0.30)
-                
-                S_calibrated[t] = (1 - gw) * S_kalman_calibrated[t] + gw * h_garch[t]
+                S_blended[t] = (1 - gw) * S_pred_wavelet[t] + gw * h_garch[t]
+            
+            # =================================================================
+            # POST-GARCH β RECALIBRATION (on training data, no look-ahead)
+            # =================================================================
+            # The rolling CV (Stage 5) estimated β without GARCH blending.
+            # Recalibrate β to account for the GARCH-blended variance level.
+            # This ensures the TOTAL predictive variance matches actual
+            # innovation variance — the fundamental PIT calibration condition.
+            # =================================================================
+            innovations_train_recal = returns[:n_train] - mu_pred[:n_train] - mu_drift
+            sq_innov_train = innovations_train_recal ** 2
+            neg_ind_train = (innovations_train_recal < 0).astype(np.float64)
+            
+            # Run GARCH on training data (causal — no look-ahead)
+            h_garch_train = np.zeros(n_train)
+            h_garch_train[0] = garch_unconditional_var
+            for t in range(1, n_train):
+                h_garch_train[t] = (garch_omega
+                                    + garch_alpha * sq_innov_train[t-1]
+                                    + garch_leverage * sq_innov_train[t-1] * neg_ind_train[t-1]
+                                    + garch_beta * h_garch_train[t-1])
+                h_garch_train[t] = max(h_garch_train[t], 1e-12)
+            
+            # Blend on training data using same phase logic
+            S_pred_train_wavelet = S_pred[:n_train] * wavelet_correction
+            log_vol_train = np.log(np.maximum(vol[:n_train], 1e-10))
+            d_log_vol_train = np.zeros(n_train)
+            d_log_vol_train[1:] = log_vol_train[1:] - log_vol_train[:-1]
+            vol_phase_train = np.sign(d_log_vol_train)
+            vol_relative_train = vol[:n_train] / (vol_median + 1e-10)
+            
+            S_blended_train = np.zeros(n_train)
+            for t in range(n_train):
+                if vol_phase_train[t] > 0:
+                    gw_t = 0.65
+                else:
+                    gw_t = 0.45
+                if vol_relative_train[t] > 1.5:
+                    gw_t = min(gw_t + 0.15, 0.85)
+                elif vol_relative_train[t] < 0.7:
+                    gw_t = max(gw_t - 0.10, 0.30)
+                S_blended_train[t] = (1 - gw_t) * S_pred_train_wavelet[t] + gw_t * h_garch_train[t]
+            
+            # Recalibrate β: match training innovation variance to blended variance
+            actual_var_train = float(np.mean(innovations_train_recal ** 2))
+            predicted_var_train = float(np.mean(S_blended_train))
+            if predicted_var_train > 1e-12:
+                beta_recal = actual_var_train / predicted_var_train
+            else:
+                beta_recal = variance_inflation
+            beta_recal = float(np.clip(beta_recal, 0.2, 5.0))
+            
+            # Blend with original β for robustness
+            beta_final = 0.5 * beta_recal + 0.5 * variance_inflation
+            
+            # Apply recalibrated β to blended test variance
+            S_calibrated = S_blended * beta_final
         else:
             S_calibrated = S_pred_wavelet * variance_inflation
         
@@ -2057,17 +2108,24 @@ class PhiStudentTDriftModel:
         # =====================================================================
         # HONEST PIT: Compute from model predictions only
         # =====================================================================
+        # CRITICAL FIX (February 2026): The previous code divided z by
+        # scale_factor = sqrt((ν-2)/ν), but z was ALREADY standardized by
+        # sigma = sqrt(S*(ν-2)/ν). This DOUBLE-CORRECTED the variance:
+        #
+        #   z = inn / sqrt(S*(ν-2)/ν)        ← correct standardization
+        #   z / sqrt((ν-2)/ν)                ← WRONG: inflates z by sqrt(ν/(ν-2))
+        #
+        # For ν=5: z inflated by 29%, for ν=8: by 15%, for ν=20: by 5%.
+        # This caused systematic PIT failure, especially for low ν assets.
+        #
+        # The rolling CV (Stage 5) correctly uses: cdf(z, df=ν)
+        # This must match. The β was calibrated for the correct formula.
+        # =====================================================================
         innovations = returns_test - mu_pred_test - mu_drift
         z = innovations / sigma
         
-        # Scale factor for Student-t
-        if nu > 2:
-            scale_factor = np.sqrt((nu - 2) / nu)
-        else:
-            scale_factor = 1.0
-        
-        # PIT values from Student-t CDF
-        pit_values = student_t.cdf(z / scale_factor, df=nu)
+        # PIT values from Student-t CDF (z already standardized to unit t_ν)
+        pit_values = student_t.cdf(z, df=nu)
         pit_values = np.clip(pit_values, 0.001, 0.999)
         
         # =====================================================================
@@ -2769,8 +2827,18 @@ class PhiStudentTDriftModel:
             else:
                 garch_leverage = 0.0
             
-            # Typical GARCH(1,1) persistence: β ≈ 0.85-0.95
-            garch_beta = 0.90
+            # Typical GARCH(1,1) persistence: estimate from data
+            # For GARCH(1,1): autocorr(ε²) ≈ α + β (Bollerslev 1986)
+            # So β = autocorr(ε²) - α - γ_lev/2
+            sq_centered = sq_innov - unconditional_var
+            denom_sq = np.sum(sq_centered[:-1]**2)
+            if denom_sq > 1e-12:
+                autocorr_sq = float(np.sum(sq_centered[1:] * sq_centered[:-1]) / denom_sq)
+                total_persistence = float(np.clip(autocorr_sq, 0.6, 0.99))
+                garch_beta = total_persistence - garch_alpha - garch_leverage / 2.0
+                garch_beta = float(np.clip(garch_beta, 0.50, 0.95))
+            else:
+                garch_beta = 0.90
             
             # Ensure stationarity: α + γ/2 + β < 1
             # (GJR stationarity requires α + γ_lev/2 + β < 1 since E[I(ε<0)] ≈ 0.5)
