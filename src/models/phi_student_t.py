@@ -250,6 +250,46 @@ class UnifiedStudentTConfig:
     # =========================================================================
     risk_premium_sensitivity: float = 0.0  # λ₁ ∈ [-5, 10], 0.0 = disabled
     
+    # =========================================================================
+    # CONDITIONAL SKEW DYNAMICS (February 2026 - GAS Framework)
+    # =========================================================================
+    # Time-varying skewness via Generalized Autoregressive Score (GAS):
+    #   Creal, Koopman & Lucas (2013), Harvey (2013)
+    #
+    # The static asymmetry α_asym treats tail heaviness as constant.
+    # In reality, skewness shifts across regimes:
+    #   - Pre-crash: markets become negatively skewed (left tail fattens)
+    #   - Momentum: markets become positively skewed (right tail fattens)
+    #   - Recovery: skewness mean-reverts to baseline
+    #
+    # GAS update for the dynamic asymmetry parameter α_t:
+    #   α_{t+1} = (1 - ρ_λ) · α₀ + ρ_λ · α_t + κ_λ · s_t
+    #
+    # where:
+    #   α₀ = alpha_asym (static baseline from Stage 4 optimization)
+    #   ρ_λ = skew_persistence ∈ [0.90, 0.99] (how slowly skew reverts)
+    #   κ_λ = skew_score_sensitivity (how fast skew reacts to new data)
+    #   s_t = z_t · w_t (Student-t score = weighted standardized innovation)
+    #   z_t = innovation / scale
+    #   w_t = (ν+1) / (ν + z_t²)  (Student-t weight, already in filter)
+    #
+    # The score s_t is the optimal information-theoretic direction:
+    #   - Large negative z → s_t strongly negative → α_t decreases → heavier left tail
+    #   - Large positive z → s_t strongly positive → α_t increases → heavier right tail
+    #   - Small z → s_t ≈ 0 → α_t mean-reverts to α₀
+    #
+    # α_t is clipped to [-0.3, 0.3] for stability (same as static α bounds).
+    #
+    # κ_λ = 0.0: disabled (pure static α, backward compatible)
+    # κ_λ > 0: dynamic skew active
+    #
+    # Typical values: κ_λ ∈ [0.001, 0.05], ρ_λ ∈ [0.90, 0.99]
+    #
+    # Alpha impact: ⭐⭐⭐⭐ — tail asymmetry is a leading crisis signal.
+    # =========================================================================
+    skew_score_sensitivity: float = 0.0  # κ_λ ≥ 0, 0.0 = disabled
+    skew_persistence: float = 0.97       # ρ_λ ∈ [0.90, 0.99], skew mean-reversion speed
+    
     # ELITE CALIBRATION FIX (February 2026): Variance inflation
     # Multiplies S_pred by β to ensure predictive variance ≈ returns variance
     # β < 1: model was over-estimating variance (rare)
@@ -1708,6 +1748,12 @@ class PhiStudentTDriftModel:
         # Conditional Risk Premium: λ₁ (Merton ICAPM)
         risk_prem = float(getattr(config, 'risk_premium_sensitivity', 0.0))
         
+        # Conditional Skew Dynamics: GAS-driven α_t (Creal-Koopman-Lucas 2013)
+        skew_kappa = float(getattr(config, 'skew_score_sensitivity', 0.0))
+        skew_rho = float(getattr(config, 'skew_persistence', 0.97))
+        skew_enabled = skew_kappa > 1e-8
+        alpha_t = alpha  # Initialize dynamic α at static baseline α₀
+        
         log_norm_const = gammaln((nu_base + 1.0) / 2.0) - gammaln(nu_base / 2.0) - 0.5 * np.log(nu_base * np.pi)
         neg_exp = -((nu_base + 1.0) / 2.0)
         inv_nu = 1.0 / nu_base
@@ -1787,7 +1833,11 @@ class PhiStudentTDriftModel:
             innovation = returns[t] - mu_pred
             
             scale = np.sqrt(S)
-            nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
+            # ─────────────────────────────────────────────────────────────────
+            # CONDITIONAL SKEW DYNAMICS: use dynamic α_t instead of static α
+            # α_t evolves via GAS score, capturing regime-dependent asymmetry
+            # ─────────────────────────────────────────────────────────────────
+            nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha_t, k_asym)
             
             # -----------------------------------------------------------------
             # Kalman gain and state update use DIFFUSION-ONLY variance
@@ -1842,6 +1892,26 @@ class PhiStudentTDriftModel:
             
             mu_filtered[t] = mu
             P_filtered[t] = P
+            
+            # -----------------------------------------------------------------
+            # GAS SKEW UPDATE: α_{t+1} = (1-ρ)·α₀ + ρ·α_t + κ·s_t
+            # -----------------------------------------------------------------
+            # s_t = z_t · w_t  (Student-t score for skewness)
+            #   z_t = innovation / sqrt(S_diffusion)  (standardized residual)
+            #   w_t = (ν+1)/(ν + z²)  (Student-t tail weight, already computed)
+            #
+            # Properties of the score:
+            #   - s_t < 0 when z_t < 0 (negative shocks → left tail fattens)
+            #   - s_t > 0 when z_t > 0 (positive shocks → right tail fattens)
+            #   - |s_t| is bounded by w_t ∈ (0,1] × |z_t| (robust to outliers)
+            #   - For Student-t: w_t downweights extreme z, providing natural
+            #     robustness that Gaussian scores lack
+            # -----------------------------------------------------------------
+            if skew_enabled:
+                z_for_score = innovation / max(np.sqrt(S_diffusion), 1e-10)
+                score_t = z_for_score * w_t  # Student-t score
+                alpha_t = (1.0 - skew_rho) * alpha + skew_rho * alpha_t + skew_kappa * score_t
+                alpha_t = float(np.clip(alpha_t, -0.3, 0.3))  # Stability clip
             
             # -----------------------------------------------------------------
             # Log-likelihood: mixture of diffusion + jump components
@@ -2563,6 +2633,66 @@ class PhiStudentTDriftModel:
                 risk_premium_opt = 0.0
         except Exception:
             risk_premium_opt = 0.0
+        
+        # =====================================================================
+        # STAGE 4.2: CONDITIONAL SKEW DYNAMICS (GAS Framework)
+        # =====================================================================
+        # Optimize κ_λ (skew_score_sensitivity):
+        #   α_{t+1} = (1 - ρ_λ)·α₀ + ρ_λ·α_t + κ_λ·s_t
+        #
+        # where s_t = z_t·w_t is the Student-t score for skewness.
+        #
+        # κ_λ > 0: dynamic skew active (tail asymmetry adapts to regime)
+        # κ_λ = 0: pure static asymmetry (alpha_opt from Stage 4)
+        #
+        # The persistence ρ_λ is fixed at 0.97 (empirically robust for daily
+        # equities — corresponds to ~33 day half-life, matching typical
+        # crisis build-up timescale). Joint optimization of κ and ρ leads to
+        # identifiability issues; fixing ρ is standard GAS practice.
+        #
+        # Regularization: 5·κ² pulls toward 0 unless likelihood strongly
+        # favors dynamic skew. This prevents overfitting on short histories.
+        # =====================================================================
+        skew_persistence_fixed = 0.97  # Fixed persistence (robust daily default)
+        
+        def neg_ll_skew_dynamics(kappa_arr):
+            kappa_val = kappa_arr[0]
+            cfg = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
+                alpha_asym=alpha_opt,
+                gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt,
+                q_stress_ratio=10.0,
+                risk_premium_sensitivity=risk_premium_opt,
+                skew_score_sensitivity=kappa_val,
+                skew_persistence=skew_persistence_fixed,
+            )
+            try:
+                _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+            except Exception:
+                return 1e10
+            
+            if not np.isfinite(ll):
+                return 1e10
+            
+            # Regularization: mild L2 centered on 0
+            # 5·κ² ensures κ only activates when evidence is clear
+            reg = 5.0 * kappa_val ** 2
+            return -ll / n_train + reg
+        
+        try:
+            result_skew = minimize(
+                neg_ll_skew_dynamics, [0.0],
+                bounds=[(0.0, 0.10)], method='L-BFGS-B',
+                options={'maxiter': 100}
+            )
+            if result_skew.x is not None and np.isfinite(result_skew.x[0]):
+                skew_kappa_opt = float(result_skew.x[0])
+            else:
+                skew_kappa_opt = 0.0
+        except Exception:
+            skew_kappa_opt = 0.0
+        
         # =====================================================================
         try:
             if hasattr(result_base, 'hess_inv'):
@@ -2582,6 +2712,7 @@ class PhiStudentTDriftModel:
             sens_opt = 2.0
             alpha_opt = 0.0
             risk_premium_opt = 0.0
+            skew_kappa_opt = 0.0
             degraded = True
         elif cond_num < 1e-6:
             # Warning: very flat region, optimization may be unstable
@@ -2648,6 +2779,8 @@ class PhiStudentTDriftModel:
             ms_sensitivity=sens_opt, q_stress_ratio=10.0,
             vov_damping=0.3, variance_inflation=1.0,
             risk_premium_sensitivity=risk_premium_opt,
+            skew_score_sensitivity=skew_kappa_opt,
+            skew_persistence=skew_persistence_fixed,
         )
         
         _, _, mu_pred_pre, S_pred_pre, _ = cls.filter_phi_unified(
@@ -2732,6 +2865,8 @@ class PhiStudentTDriftModel:
                     ms_sensitivity=sens_opt, q_stress_ratio=10.0,
                     vov_damping=0.3, variance_inflation=1.0,
                     risk_premium_sensitivity=risk_premium_opt,
+                    skew_score_sensitivity=skew_kappa_opt,
+                    skew_persistence=skew_persistence_fixed,
                 )
                 
                 # Run filter on FULL training data
@@ -2823,6 +2958,8 @@ class PhiStudentTDriftModel:
             ms_sensitivity=sens_opt, q_stress_ratio=10.0,
             vov_damping=0.3, variance_inflation=1.0,
             risk_premium_sensitivity=risk_premium_opt,
+            skew_score_sensitivity=skew_kappa_opt,
+            skew_persistence=skew_persistence_fixed,
         )
         
         _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
@@ -3008,6 +3145,8 @@ class PhiStudentTDriftModel:
                                 vov_damping=0.3, variance_inflation=beta_opt,
                                 mu_drift=mu_drift_opt,
                                 risk_premium_sensitivity=risk_premium_opt,
+                                skew_score_sensitivity=skew_kappa_opt,
+                                skew_persistence=skew_persistence_fixed,
                                 jump_intensity=jump_intensity_est,
                                 jump_variance=jump_variance_est,
                                 jump_sensitivity=sens_val,
@@ -3045,6 +3184,8 @@ class PhiStudentTDriftModel:
                             vov_damping=0.3, variance_inflation=beta_opt,
                             mu_drift=mu_drift_opt,
                             risk_premium_sensitivity=risk_premium_opt,
+                            skew_score_sensitivity=skew_kappa_opt,
+                            skew_persistence=skew_persistence_fixed,
                         )
                         cfg_with_jump = UnifiedStudentTConfig(
                             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
@@ -3053,6 +3194,8 @@ class PhiStudentTDriftModel:
                             vov_damping=0.3, variance_inflation=beta_opt,
                             mu_drift=mu_drift_opt,
                             risk_premium_sensitivity=risk_premium_opt,
+                            skew_score_sensitivity=skew_kappa_opt,
+                            skew_persistence=skew_persistence_fixed,
                             jump_intensity=jump_intensity_est,
                             jump_variance=jump_variance_est,
                             jump_sensitivity=jump_sensitivity_est,
@@ -3181,6 +3324,8 @@ class PhiStudentTDriftModel:
             variance_inflation=beta_opt,
             mu_drift=mu_drift_opt,  # ELITE FIX: mean drift correction
             risk_premium_sensitivity=risk_premium_opt,  # ICAPM risk premium (February 2026)
+            skew_score_sensitivity=skew_kappa_opt,  # GAS dynamic skew (February 2026)
+            skew_persistence=skew_persistence_fixed,  # GAS skew persistence
             garch_omega=garch_omega,
             garch_alpha=garch_alpha,
             garch_beta=garch_beta,
@@ -3259,6 +3404,8 @@ class PhiStudentTDriftModel:
             "ms_sensitivity": float(sens_opt),
             "alpha_asym": float(alpha_opt),
             "risk_premium_sensitivity": float(risk_premium_opt),
+            "skew_score_sensitivity": float(skew_kappa_opt),
+            "skew_persistence": float(skew_persistence_fixed),
             "variance_inflation": float(beta_opt),
             "mu_drift": float(mu_drift_opt),
             "garch_alpha": float(garch_alpha),

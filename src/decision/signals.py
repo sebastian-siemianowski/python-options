@@ -3197,6 +3197,9 @@ def _kalman_filter_drift(
                 variance_inflation=float(tuned_params.get('variance_inflation', 1.0)),
                 mu_drift=float(tuned_params.get('mu_drift', 0.0)),
                 risk_premium_sensitivity=float(tuned_params.get('risk_premium_sensitivity', 0.0)),
+                # Conditional skew dynamics (February 2026 - GAS Framework)
+                skew_score_sensitivity=float(tuned_params.get('skew_score_sensitivity', 0.0)),
+                skew_persistence=float(tuned_params.get('skew_persistence', 0.97)),
                 # GARCH parameters (February 2026)
                 garch_omega=float(tuned_params.get('garch_omega', 0.0)),
                 garch_alpha=float(tuned_params.get('garch_alpha', 0.0)),
@@ -3235,6 +3238,7 @@ def _kalman_filter_drift(
                 gjr_active = unified_config.garch_leverage > 1e-6
                 rough_active = unified_config.rough_hurst > 0.01
                 rp_active = abs(getattr(unified_config, 'risk_premium_sensitivity', 0.0)) > 1e-4
+                skew_active = getattr(unified_config, 'skew_score_sensitivity', 0.0) > 1e-6
                 print(f"Using unified Student-T filter: ν={unified_config.nu_base}, "
                       f"α={unified_config.alpha_asym:.3f}, γ_vov={unified_config.gamma_vov:.2f}, "
                       f"β={unified_config.variance_inflation:.3f}, "
@@ -3242,6 +3246,7 @@ def _kalman_filter_drift(
                       f"GJR_γ={'%.3f' % unified_config.garch_leverage if gjr_active else 'OFF'}, "
                       f"H={'%.3f' % unified_config.rough_hurst if rough_active else 'OFF'}, "
                       f"λ₁={'%.3f' % unified_config.risk_premium_sensitivity if rp_active else 'OFF'}, "
+                      f"κ_skew={'%.4f' % unified_config.skew_score_sensitivity if skew_active else 'OFF'}, "
                       f"jump={'ON' if jump_active else 'OFF'}"
                       + (f" p₀={unified_config.jump_intensity:.3f} σ²_J={unified_config.jump_variance:.5f}" if jump_active else ""))
         except Exception as unified_e:
