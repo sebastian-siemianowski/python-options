@@ -204,6 +204,7 @@ class UnifiedStudentTConfig:
       3. Adaptive VoV: with redundancy damping
       4. Momentum: exogenous drift input
       5. State regularization: prevents φ→1/q→0 collapse
+      6. Merton Jump-Diffusion: separates discrete jumps from continuous diffusion
     """
     
     # Core parameters
@@ -254,6 +255,27 @@ class UnifiedStudentTConfig:
     wavelet_weights: np.ndarray = field(default=None, repr=False)  # Scale weights
     phase_asymmetry: float = 1.0  # Leverage effect ratio (var_down / var_up)
     
+    # =========================================================================
+    # MERTON JUMP-DIFFUSION LAYER (February 2026 - Elite Institutional)
+    # =========================================================================
+    # Separates discrete jump events from continuous diffusion:
+    #   r_t = μ_t + σ_t·ε_t + J_t
+    #   J_t ~ Bernoulli(p_t) · N(μ_J, σ²_J)
+    #   p_t = logistic(a₀ + b·vov_t)  where a₀ = logit(jump_intensity)
+    #
+    # Without jump separation, large shocks inflate diffusion variance,
+    # cause q to over-adapt, vov to overreact, and stress ratio to spike.
+    # This directly degrades PIT calibration (MAD, Berkowitz).
+    #
+    # With jump layer: diffusion stays clean, tails model correctly,
+    # crisis transitions are smoother, forecast consistency improves.
+    # =========================================================================
+    jump_intensity: float = 0.0     # Base jump probability p₀ ∈ [0, 0.15]
+                                     # 0.0 = disabled, 0.02 ≈ 5 jumps/year
+    jump_variance: float = 0.0      # σ²_J jump size variance, 0.0 = disabled
+    jump_sensitivity: float = 1.0   # b in p_t = logistic(a₀ + b·vov_t)
+    jump_mean: float = 0.0          # μ_J jump mean (allows asymmetric jumps)
+    
     # Momentum/exogenous input
     exogenous_input: np.ndarray = field(default=None, repr=False)
     
@@ -272,6 +294,11 @@ class UnifiedStudentTConfig:
         self.ms_sensitivity = float(np.clip(self.ms_sensitivity, 1.0, 3.0))
         self.gamma_vov = float(np.clip(self.gamma_vov, 0.0, 1.0))
         self.vov_damping = float(np.clip(self.vov_damping, 0.0, 0.5))
+        # Jump parameters
+        self.jump_intensity = float(np.clip(self.jump_intensity, 0.0, 0.15))
+        self.jump_variance = float(np.clip(self.jump_variance, 0.0, 0.1))
+        self.jump_sensitivity = float(np.clip(self.jump_sensitivity, 0.0, 5.0))
+        self.jump_mean = float(np.clip(self.jump_mean, -0.05, 0.05))
     
     @property
     def q_stress(self) -> float:
@@ -428,6 +455,11 @@ class UnifiedStudentTConfig:
             'c_min': self.c_min,
             'c_max': self.c_max,
             'q_min': self.q_min,
+            # Jump-diffusion parameters
+            'jump_intensity': self.jump_intensity,
+            'jump_variance': self.jump_variance,
+            'jump_sensitivity': self.jump_sensitivity,
+            'jump_mean': self.jump_mean,
         }
 
 
@@ -1619,6 +1651,24 @@ class PhiStudentTDriftModel:
         neg_exp = -((nu_base + 1.0) / 2.0)
         inv_nu = 1.0 / nu_base
         
+        # =====================================================================
+        # MERTON JUMP-DIFFUSION LAYER (February 2026 - Elite Institutional)
+        # =====================================================================
+        # Extract jump parameters; layer is fully disabled when jump_variance=0
+        jump_var = float(getattr(config, 'jump_variance', 0.0))
+        jump_intensity = float(getattr(config, 'jump_intensity', 0.0))
+        jump_sensitivity = float(getattr(config, 'jump_sensitivity', 1.0))
+        jump_mean = float(getattr(config, 'jump_mean', 0.0))
+        jump_enabled = jump_var > 1e-12 and jump_intensity > 1e-6
+        
+        # Pre-compute logit of base jump intensity for dynamic modulation
+        if jump_enabled:
+            # a₀ = logit(p₀) = log(p₀ / (1 - p₀))
+            p0_safe = float(np.clip(jump_intensity, 1e-4, 0.999))
+            logit_p0 = np.log(p0_safe / (1.0 - p0_safe))
+            # Pre-compute Gaussian normalization for jump component
+            log_gauss_norm = -0.5 * np.log(2.0 * np.pi)
+        
         mu_filtered = np.empty(n, dtype=np.float64)
         P_filtered = np.empty(n, dtype=np.float64)
         mu_pred_arr = np.empty(n, dtype=np.float64)
@@ -1640,23 +1690,79 @@ class PhiStudentTDriftModel:
             vov_effective = gamma_vov * (1.0 - damping * p_stress[t])
             R = R_base[t] * (1.0 + vov_effective * vov_rolling[t])
             
-            S = P_pred + R
-            if S <= 1e-12:
-                S = 1e-12
+            # S_diffusion: pure diffusion predictive variance
+            S_diffusion = P_pred + R
+            if S_diffusion <= 1e-12:
+                S_diffusion = 1e-12
+            
+            # -----------------------------------------------------------------
+            # Jump-augmented predictive variance
+            # S_total = (1 - p_t)·S_diffusion + p_t·(S_diffusion + σ²_J)
+            #         = S_diffusion + p_t·σ²_J
+            # This is the PREDICTIVE variance including jump risk
+            # -----------------------------------------------------------------
+            if jump_enabled:
+                # Dynamic jump probability: p_t = logistic(a₀ + b·vov_t)
+                p_t = 1.0 / (1.0 + np.exp(-(logit_p0 + jump_sensitivity * vov_rolling[t])))
+                p_t = float(np.clip(p_t, 1e-4, 0.5))  # Cap at 50% (beyond → nonsensical)
+                S = S_diffusion + p_t * jump_var
+            else:
+                p_t = 0.0
+                S = S_diffusion
             
             mu_pred_arr[t] = mu_pred
-            S_pred_arr[t] = S
+            S_pred_arr[t] = S  # Predictive variance INCLUDES jump risk
             
             innovation = returns[t] - mu_pred
             
             scale = np.sqrt(S)
             nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
             
+            # -----------------------------------------------------------------
+            # Kalman gain and state update use DIFFUSION-ONLY variance
+            # Key insight: the Kalman state tracks the continuous drift μ_t.
+            # Jumps are transient events that should NOT contaminate the state.
+            # -----------------------------------------------------------------
             nu_adjust = min(nu_eff / (nu_eff + 3.0), 1.0)
-            K = nu_adjust * P_pred / S
+            K = nu_adjust * P_pred / S_diffusion  # Use S_diffusion, NOT S
             
-            z_sq = (innovation ** 2) / S
-            w_t = (nu_eff + 1.0) / (nu_eff + z_sq)
+            z_sq_diffusion = (innovation ** 2) / S_diffusion
+            w_t = (nu_eff + 1.0) / (nu_eff + z_sq_diffusion)
+            
+            if jump_enabled:
+                # Posterior jump probability via Bayes' rule:
+                # p(jump|y) ∝ p_t · N(innovation; μ_J, S_diff + σ²_J)
+                # p(no_jump|y) ∝ (1-p_t) · t(innovation; ν, 0, S_diff)
+                S_jump_total = S_diffusion + jump_var
+                innov_centered = innovation - jump_mean
+                
+                # Log-likelihood under jump component (Gaussian)
+                ll_jump = log_gauss_norm - 0.5 * np.log(S_jump_total) - 0.5 * (innov_centered ** 2) / S_jump_total
+                
+                # Log-likelihood under diffusion component (Student-t)
+                if nu_eff > 2:
+                    sf = (nu_eff - 2.0) / nu_eff
+                else:
+                    sf = 0.5
+                fs_diff = np.sqrt(S_diffusion * sf)
+                if fs_diff > 1e-12:
+                    z_diff = innovation / fs_diff
+                    log_n_diff = gammaln((nu_eff + 1.0) / 2.0) - gammaln(nu_eff / 2.0) - 0.5 * np.log(nu_eff * np.pi)
+                    ll_diff = log_n_diff - np.log(fs_diff) + (-((nu_eff + 1.0) / 2.0)) * np.log(1.0 + z_diff * z_diff / nu_eff)
+                else:
+                    ll_diff = -1e10
+                
+                # Posterior jump probability via log-sum-exp
+                log_num = np.log(max(p_t, 1e-15)) + ll_jump
+                log_den_parts = [np.log(max(1.0 - p_t, 1e-15)) + ll_diff, log_num]
+                log_den_max = max(log_den_parts)
+                log_den = log_den_max + np.log(sum(np.exp(lp - log_den_max) for lp in log_den_parts))
+                p_jump_post = np.exp(log_num - log_den) if np.isfinite(log_den) else p_t
+                p_jump_post = float(np.clip(p_jump_post, 0.0, 1.0))
+                
+                # Reduce Kalman update weight for likely jumps
+                # This prevents jump shocks from contaminating the drift state
+                w_t *= (1.0 - 0.7 * p_jump_post)
             
             mu = mu_pred + K * w_t * innovation
             P = (1.0 - w_t * K) * P_pred
@@ -1666,11 +1772,15 @@ class PhiStudentTDriftModel:
             mu_filtered[t] = mu
             P_filtered[t] = P
             
+            # -----------------------------------------------------------------
+            # Log-likelihood: mixture of diffusion + jump components
+            # ll_t = log[(1-p_t)·t(innov; ν, S_diff) + p_t·N(innov; μ_J, S_diff+σ²_J)]
+            # -----------------------------------------------------------------
             if nu_eff > 2:
                 scale_factor = (nu_eff - 2) / nu_eff
             else:
                 scale_factor = 0.5
-            forecast_scale = np.sqrt(S * scale_factor)
+            forecast_scale = np.sqrt(S_diffusion * scale_factor)
             
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
@@ -1678,7 +1788,22 @@ class PhiStudentTDriftModel:
                 neg_exp_eff = -((nu_eff + 1.0) / 2.0)
                 inv_nu_eff = 1.0 / nu_eff
                 
-                ll_t = log_norm_eff - np.log(forecast_scale) + neg_exp_eff * np.log(1.0 + z * z * inv_nu_eff)
+                ll_diffusion = log_norm_eff - np.log(forecast_scale) + neg_exp_eff * np.log(1.0 + z * z * inv_nu_eff)
+                
+                if jump_enabled and p_t > 1e-6:
+                    # Mixture log-likelihood via log-sum-exp
+                    S_jt = S_diffusion + jump_var
+                    ic = innovation - jump_mean
+                    ll_jmp = log_gauss_norm - 0.5 * np.log(S_jt) - 0.5 * (ic ** 2) / S_jt
+                    
+                    ll_max = max(ll_diffusion, ll_jmp)
+                    ll_t = ll_max + np.log(
+                        (1.0 - p_t) * np.exp(ll_diffusion - ll_max)
+                        + p_t * np.exp(ll_jmp - ll_max)
+                    )
+                else:
+                    ll_t = ll_diffusion
+                
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
         
@@ -1842,7 +1967,7 @@ class PhiStudentTDriftModel:
             pit_clipped = np.clip(pit_values, 0.0001, 0.9999)
             z_berk = norm.ppf(pit_clipped)
             z_berk = z_berk[np.isfinite(z_berk)]
-            n_z = len(z_berk)
+            n_z = len(z_berk);
             
             if n_z > 20:
                 mu_hat = float(np.mean(z_berk))
@@ -2494,6 +2619,150 @@ class PhiStudentTDriftModel:
             garch_beta = 0.87
         
         # =====================================================================
+        # STAGE 5d: MERTON JUMP-DIFFUSION ESTIMATION (February 2026 - Elite)
+        # =====================================================================
+        # Separate discrete jump events from continuous diffusion.
+        # Without jump separation, large shocks inflate diffusion variance,
+        # cause q to over-adapt, vov to overreact → degrades PIT/Berkowitz.
+        #
+        # Estimation procedure (all on TRAINING data):
+        #   1. Detect jump candidates: |z_t| > 3σ (excess kurtosis threshold)
+        #   2. Estimate jump_intensity = count(|z|>threshold) / n_train
+        #   3. Estimate jump_variance = var(jumps) - var(diffusion)
+        #   4. Estimate jump_mean = mean(jumps) (allows asymmetric jumps)
+        #   5. Optimize jump_sensitivity via 1D L-BFGS-B on log-likelihood
+        # =====================================================================
+        jump_intensity_est = 0.0
+        jump_variance_est = 0.0
+        jump_sensitivity_est = 1.0
+        jump_mean_est = 0.0
+        
+        if n_train > 100:
+            try:
+                # Compute standardized innovations from diffusion-only filter
+                innovations_for_jump = returns_train - mu_pred_train - mu_drift_opt
+                innov_std = float(np.std(innovations_for_jump))
+                
+                if innov_std > 1e-10:
+                    z_innov = innovations_for_jump / innov_std
+                    
+                    # Detect jump candidates: |z| > 3 (≈0.27% under Gaussian)
+                    # Under Student-t with ν=6, this is ≈1.5% — more realistic
+                    jump_threshold = 3.0
+                    jump_mask = np.abs(z_innov) > jump_threshold
+                    n_jumps = int(np.sum(jump_mask))
+                    
+                    # Require at least 5 jumps to estimate meaningfully
+                    if n_jumps >= 5:
+                        # 1. Jump intensity: fraction of jump days
+                        jump_intensity_est = float(np.clip(n_jumps / n_train, 0.005, 0.15))
+                        
+                        # 2. Jump variance: excess variance from jump observations
+                        # σ²_J = Var(innov|jump) - Var(innov|no_jump)
+                        var_jump = float(np.var(innovations_for_jump[jump_mask]))
+                        var_diffusion = float(np.var(innovations_for_jump[~jump_mask]))
+                        jump_variance_est = float(np.clip(var_jump - var_diffusion, 1e-8, 0.1))
+                        
+                        # 3. Jump mean: allows asymmetric jumps (crashes vs rallies)
+                        jump_mean_est = float(np.clip(
+                            np.mean(innovations_for_jump[jump_mask]),
+                            -0.05, 0.05
+                        ))
+                        
+                        # 4. Optimize jump_sensitivity via 1D search
+                        # Maximize log-likelihood with jump-augmented filter
+                        log_vol_train = np.log(np.maximum(vol_train, 1e-10))
+                        vov_train_rolling = np.zeros(n_train)
+                        w = 20
+                        for tt in range(w, n_train):
+                            vov_train_rolling[tt] = np.std(log_vol_train[tt-w:tt])
+                        if n_train > w:
+                            vov_train_rolling[:w] = vov_train_rolling[w]
+                        
+                        def neg_ll_jump_sens(sens_arr):
+                            sens_val = sens_arr[0]
+                            cfg_j = UnifiedStudentTConfig(
+                                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                                alpha_asym=alpha_opt, gamma_vov=gamma_opt,
+                                ms_sensitivity=sens_opt, q_stress_ratio=10.0,
+                                vov_damping=0.3, variance_inflation=beta_opt,
+                                mu_drift=mu_drift_opt,
+                                jump_intensity=jump_intensity_est,
+                                jump_variance=jump_variance_est,
+                                jump_sensitivity=sens_val,
+                                jump_mean=jump_mean_est,
+                            )
+                            try:
+                                _, _, _, _, ll_j = cls.filter_phi_unified(
+                                    returns_train, vol_train, cfg_j
+                                )
+                            except Exception:
+                                return 1e10
+                            if not np.isfinite(ll_j):
+                                return 1e10
+                            # Mild regularization toward sensitivity=1.0
+                            reg_j = 0.5 * (sens_val - 1.0) ** 2
+                            return -ll_j / n_train + reg_j
+                        
+                        try:
+                            result_jump_sens = minimize(
+                                neg_ll_jump_sens, [1.0],
+                                bounds=[(0.0, 5.0)], method='L-BFGS-B',
+                                options={'maxiter': 50}
+                            )
+                            if result_jump_sens.x is not None and np.isfinite(result_jump_sens.x[0]):
+                                jump_sensitivity_est = float(result_jump_sens.x[0])
+                        except Exception:
+                            jump_sensitivity_est = 1.0
+                        
+                        # 5. Verify jump layer improves likelihood
+                        # Compare: filter with jumps vs. filter without jumps
+                        cfg_no_jump = UnifiedStudentTConfig(
+                            q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                            alpha_asym=alpha_opt, gamma_vov=gamma_opt,
+                            ms_sensitivity=sens_opt, q_stress_ratio=10.0,
+                            vov_damping=0.3, variance_inflation=beta_opt,
+                            mu_drift=mu_drift_opt,
+                        )
+                        cfg_with_jump = UnifiedStudentTConfig(
+                            q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                            alpha_asym=alpha_opt, gamma_vov=gamma_opt,
+                            ms_sensitivity=sens_opt, q_stress_ratio=10.0,
+                            vov_damping=0.3, variance_inflation=beta_opt,
+                            mu_drift=mu_drift_opt,
+                            jump_intensity=jump_intensity_est,
+                            jump_variance=jump_variance_est,
+                            jump_sensitivity=jump_sensitivity_est,
+                            jump_mean=jump_mean_est,
+                        )
+                        
+                        _, _, _, _, ll_no_jump = cls.filter_phi_unified(
+                            returns_train, vol_train, cfg_no_jump
+                        )
+                        _, _, _, _, ll_with_jump = cls.filter_phi_unified(
+                            returns_train, vol_train, cfg_with_jump
+                        )
+                        
+                        # BIC-style check: jump layer adds 4 params
+                        # Only enable if ΔLL > 2·ln(n) per extra param
+                        bic_penalty = 4 * np.log(n_train)
+                        ll_improvement = 2 * (ll_with_jump - ll_no_jump)
+                        
+                        if ll_improvement < bic_penalty:
+                            # Jump layer doesn't improve enough — disable
+                            jump_intensity_est = 0.0
+                            jump_variance_est = 0.0
+                            jump_sensitivity_est = 1.0
+                            jump_mean_est = 0.0
+                    
+            except Exception:
+                # Jump estimation failed gracefully — disable
+                jump_intensity_est = 0.0
+                jump_variance_est = 0.0
+                jump_sensitivity_est = 1.0
+                jump_mean_est = 0.0
+        
+        # =====================================================================
         # BUILD FINAL CONFIG
         # =====================================================================
         # ELITE FIX: Use optimal nu from Stage 5 grid search, not input nu_base
@@ -2516,6 +2785,11 @@ class PhiStudentTDriftModel:
             wavelet_correction=wavelet_correction,  # DTCWT-inspired multi-scale
             wavelet_weights=wavelet_weights,
             phase_asymmetry=phase_asymmetry,  # Leverage effect from training
+            # Merton jump-diffusion layer (February 2026)
+            jump_intensity=jump_intensity_est,
+            jump_variance=jump_variance_est,
+            jump_sensitivity=jump_sensitivity_est,
+            jump_mean=jump_mean_est,
             q_min=config.q_min,
             c_min=config.c_min,
             c_max=config.c_max,
@@ -2586,7 +2860,13 @@ class PhiStudentTDriftModel:
             "wavelet_correction": float(wavelet_correction),
             "c_bounds": (float(config.c_min), float(config.c_max)),
             "q_min": float(config.q_min),
-            # Calibration diagnostics (new)
+            # Merton jump-diffusion diagnostics (February 2026)
+            "jump_intensity": float(jump_intensity_est),
+            "jump_variance": float(jump_variance_est),
+            "jump_sensitivity": float(jump_sensitivity_est),
+            "jump_mean": float(jump_mean_est),
+            "jump_enabled": jump_intensity_est > 1e-6 and jump_variance_est > 1e-12,
+            # Calibration diagnostics
             "pit_rho1": float(pit_rho1),           # Should be near 0 for good Berk
             "pit_left_tail": float(pit_left_tail),  # Should be ~0.05
             "pit_right_tail": float(pit_right_tail),# Should be ~0.05

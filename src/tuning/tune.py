@@ -3153,7 +3153,7 @@ def fit_all_models_for_regime(
     
     # Unified models use 3 ν values from grid
     UNIFIED_NU_GRID = [4, 8, 20]
-    n_params_unified = 7  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν
+    n_params_unified = 11  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν, garch(2), jump(4-conditional)
     
     for nu_fixed in UNIFIED_NU_GRID:
         unified_name = f"phi_student_t_unified_nu_{nu_fixed}"
@@ -3180,9 +3180,11 @@ def fit_all_models_for_regime(
                 returns, mu_pred_u, S_pred_u, config
             )
 
-            # Information criteria
-            aic_u = compute_aic(ll_u, n_params_unified)
-            bic_u = compute_bic(ll_u, n_params_unified, n_obs)
+            # Information criteria — adjust param count if jump layer active
+            jump_active = getattr(config, 'jump_intensity', 0.0) > 1e-6 and getattr(config, 'jump_variance', 0.0) > 1e-12
+            effective_n_params = n_params_unified + (4 if jump_active else 0)
+            aic_u = compute_aic(ll_u, effective_n_params)
+            bic_u = compute_bic(ll_u, effective_n_params, n_obs)
             mean_ll_u = ll_u / max(n_obs, 1)
 
             # Hyvärinen and CRPS scores using predictive values
@@ -3200,6 +3202,7 @@ def fit_all_models_for_regime(
             )
 
             models[unified_name] = {
+                # Core parameters
                 "q": float(config.q),
                 "c": float(config.c),
                 "phi": float(config.phi),
@@ -3207,10 +3210,31 @@ def fit_all_models_for_regime(
                 # Unified-specific parameters
                 "gamma_vov": float(config.gamma_vov),
                 "alpha_asym": float(config.alpha_asym),
+                "k_asym": float(getattr(config, 'k_asym', 1.0)),
                 "ms_sensitivity": float(config.ms_sensitivity),
                 "q_stress_ratio": float(config.q_stress_ratio),
-                "variance_inflation": float(getattr(config, 'variance_inflation', 1.0)),  # ELITE FIX
-                "mu_drift": float(getattr(config, 'mu_drift', 0.0)),  # ELITE FIX
+                "vov_damping": float(getattr(config, 'vov_damping', 0.3)),
+                # Calibration parameters (February 2026)
+                "variance_inflation": float(getattr(config, 'variance_inflation', 1.0)),
+                "mu_drift": float(getattr(config, 'mu_drift', 0.0)),
+                # GARCH parameters (February 2026)
+                "garch_omega": float(getattr(config, 'garch_omega', 0.0)),
+                "garch_alpha": float(getattr(config, 'garch_alpha', 0.0)),
+                "garch_beta": float(getattr(config, 'garch_beta', 0.0)),
+                "garch_unconditional_var": float(getattr(config, 'garch_unconditional_var', 1e-4)),
+                # Wavelet/DTCWT parameters (February 2026)
+                "wavelet_correction": float(getattr(config, 'wavelet_correction', 1.0)),
+                "wavelet_weights": getattr(config, 'wavelet_weights', None).tolist() if getattr(config, 'wavelet_weights', None) is not None else None,
+                "phase_asymmetry": float(getattr(config, 'phase_asymmetry', 1.0)),
+                # Merton jump-diffusion parameters (February 2026)
+                "jump_intensity": float(getattr(config, 'jump_intensity', 0.0)),
+                "jump_variance": float(getattr(config, 'jump_variance', 0.0)),
+                "jump_sensitivity": float(getattr(config, 'jump_sensitivity', 1.0)),
+                "jump_mean": float(getattr(config, 'jump_mean', 0.0)),
+                # Data-driven bounds
+                "c_min": float(getattr(config, 'c_min', 0.01)),
+                "c_max": float(getattr(config, 'c_max', 10.0)),
+                "q_min": float(getattr(config, 'q_min', 1e-8)),
                 # Scores
                 "log_likelihood": float(ll_u),
                 "mean_log_likelihood": float(mean_ll_u),
@@ -3227,7 +3251,7 @@ def fit_all_models_for_regime(
                 "unified_model": True,
                 "degraded": diagnostics.get("degraded", False),
                 "hessian_cond": diagnostics.get("hessian_cond", float('inf')),
-                "n_params": int(n_params_unified),
+                "n_params": int(effective_n_params),
                 "nu_fixed": True,
                 "model_type": "phi_student_t_unified",
             }

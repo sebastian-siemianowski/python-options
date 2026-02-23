@@ -3174,20 +3174,46 @@ def _kalman_filter_drift(
     if tuned_params is not None and tuned_params.get('unified_model') and gas_q_result is None:
         try:
             from models.phi_student_t import UnifiedStudentTConfig
+            import numpy as _np_sig
             
-            # Build unified config from tuned params
+            # Build unified config from tuned params with ALL evolved parameters
+            # Includes: core, asymmetry, MS-q, VoV, calibration, GARCH,
+            #           wavelet/DTCWT, Merton jump-diffusion, and data-driven bounds
             unified_config = UnifiedStudentTConfig(
+                # Core parameters
                 q=float(tuned_params.get('q', 1e-6)),
                 c=float(tuned_params.get('c', 1.0)),
                 phi=float(tuned_params.get('phi', 0.0)),
                 nu_base=float(tuned_params.get('nu', 8)),
+                # Asymmetric tails
                 alpha_asym=float(tuned_params.get('alpha_asym', 0.0)),
+                k_asym=float(tuned_params.get('k_asym', 1.0)),
+                # Markov-switching process noise
                 gamma_vov=float(tuned_params.get('gamma_vov', 0.3)),
                 ms_sensitivity=float(tuned_params.get('ms_sensitivity', 2.0)),
                 q_stress_ratio=float(tuned_params.get('q_stress_ratio', 10.0)),
-                # ELITE FIX (February 2026): Calibration parameters
+                vov_damping=float(tuned_params.get('vov_damping', 0.3)),
+                # Calibration parameters (February 2026)
                 variance_inflation=float(tuned_params.get('variance_inflation', 1.0)),
                 mu_drift=float(tuned_params.get('mu_drift', 0.0)),
+                # GARCH parameters (February 2026)
+                garch_omega=float(tuned_params.get('garch_omega', 0.0)),
+                garch_alpha=float(tuned_params.get('garch_alpha', 0.0)),
+                garch_beta=float(tuned_params.get('garch_beta', 0.0)),
+                garch_unconditional_var=float(tuned_params.get('garch_unconditional_var', 1e-4)),
+                # Wavelet/DTCWT parameters (February 2026)
+                wavelet_correction=float(tuned_params.get('wavelet_correction', 1.0)),
+                wavelet_weights=_np_sig.array(tuned_params['wavelet_weights']) if tuned_params.get('wavelet_weights') is not None else None,
+                phase_asymmetry=float(tuned_params.get('phase_asymmetry', 1.0)),
+                # Merton jump-diffusion parameters (February 2026)
+                jump_intensity=float(tuned_params.get('jump_intensity', 0.0)),
+                jump_variance=float(tuned_params.get('jump_variance', 0.0)),
+                jump_sensitivity=float(tuned_params.get('jump_sensitivity', 1.0)),
+                jump_mean=float(tuned_params.get('jump_mean', 0.0)),
+                # Data-driven bounds
+                c_min=float(tuned_params.get('c_min', 0.01)),
+                c_max=float(tuned_params.get('c_max', 10.0)),
+                q_min=float(tuned_params.get('q_min', 1e-8)),
             )
             
             # Run unified filter
@@ -3201,8 +3227,13 @@ def _kalman_filter_drift(
             enhanced_model_type = 'unified'
             
             if os.getenv("DEBUG"):
+                jump_active = unified_config.jump_intensity > 1e-6 and unified_config.jump_variance > 1e-12
                 print(f"Using unified Student-T filter: ν={unified_config.nu_base}, "
-                      f"α={unified_config.alpha_asym:.3f}, γ_vov={unified_config.gamma_vov:.2f}")
+                      f"α={unified_config.alpha_asym:.3f}, γ_vov={unified_config.gamma_vov:.2f}, "
+                      f"β={unified_config.variance_inflation:.3f}, "
+                      f"garch=({unified_config.garch_alpha:.3f},{unified_config.garch_beta:.3f}), "
+                      f"jump={'ON' if jump_active else 'OFF'}"
+                      + (f" p₀={unified_config.jump_intensity:.3f} σ²_J={unified_config.jump_variance:.5f}" if jump_active else ""))
         except Exception as unified_e:
             if os.getenv("DEBUG"):
                 print(f"Unified filter failed, falling back: {unified_e}")
