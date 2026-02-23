@@ -2130,62 +2130,147 @@ class PhiStudentTDriftModel:
             vol_median = np.median(vol[:n_train])
             vol_relative = vol_test / (vol_median + 1e-10)
             
+            # =================================================================
+            # DATA-DRIVEN GARCH BLENDING WEIGHT (February 2026)
+            # =================================================================
+            # Previous approach: hardcoded gw=0.65/0.45 — calibrated for equities.
+            # Problem: commodities (gold, silver) have different vol dynamics:
+            #   - Different leverage effect (gold is safe-haven, NOT equity-like)
+            #   - Different autocorrelation structure
+            #   - Hardcoded equity weights miscalibrate PIT for metals
+            #
+            # New approach: estimate optimal base GARCH weight on TRAINING data.
+            # For each candidate weight, compute blended variance, estimate β,
+            # compute PIT KS p-value on training validation fold.
+            # Pick weight that gives best calibration.
+            #
+            # The phase adjustment (vol-up vs vol-down) is preserved but uses
+            # the data-driven base weight ± 0.10 instead of hardcoded values.
+            #
+            # All estimation on training data — no test data used.
+            # =================================================================
+            from scipy.stats import t as student_t_dist, kstest as ks_test
+            
+            # Run GARCH on training data for blending estimation
+            innovations_train_blend = returns[:n_train] - mu_pred[:n_train] - mu_drift
+            sq_innov_train_blend = innovations_train_blend ** 2
+            neg_ind_train_blend = (innovations_train_blend < 0).astype(np.float64)
+            
+            h_garch_train_est = np.zeros(n_train)
+            h_garch_train_est[0] = garch_unconditional_var
+            for t in range(1, n_train):
+                h_garch_train_est[t] = (garch_omega
+                                        + garch_alpha * sq_innov_train_blend[t-1]
+                                        + garch_leverage * sq_innov_train_blend[t-1] * neg_ind_train_blend[t-1]
+                                        + garch_beta * h_garch_train_est[t-1])
+                h_garch_train_est[t] = max(h_garch_train_est[t], 1e-12)
+            
+            S_pred_train_wav = S_pred[:n_train] * wavelet_correction
+            
+            # Compute phase on training data
+            log_vol_train_est = np.log(np.maximum(vol[:n_train], 1e-10))
+            d_log_vol_train_est = np.zeros(n_train)
+            d_log_vol_train_est[1:] = log_vol_train_est[1:] - log_vol_train_est[:-1]
+            vol_phase_train_est = np.sign(d_log_vol_train_est)
+            vol_relative_train_est = vol[:n_train] / (vol_median + 1e-10)
+            
+            # Validation split within training (latter 40% of training data)
+            n_train_est = int(n_train * 0.6)
+            n_val_est = n_train - n_train_est
+            
+            GW_CANDIDATES = [0.30, 0.40, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75]
+            best_gw_base = 0.55  # Default
+            best_gw_ks_p = -1.0
+            
+            for gw_cand in GW_CANDIDATES:
+                # Phase adjustment: ±0.10 from base
+                gw_up = min(gw_cand + 0.10, 0.90)
+                gw_down = max(gw_cand - 0.10, 0.15)
+                
+                # Blend on full training data with this candidate weight
+                S_blend_cand = np.zeros(n_train)
+                for t in range(n_train):
+                    if vol_phase_train_est[t] > 0:
+                        gw_t = gw_up
+                    else:
+                        gw_t = gw_down
+                    # Vol-relative adjustment
+                    if vol_relative_train_est[t] > 1.5:
+                        gw_t = min(gw_t + 0.10, 0.90)
+                    elif vol_relative_train_est[t] < 0.7:
+                        gw_t = max(gw_t - 0.10, 0.15)
+                    S_blend_cand[t] = (1 - gw_t) * S_pred_train_wav[t] + gw_t * h_garch_train_est[t]
+                
+                # Estimate β on estimation portion (first 60% of training)
+                est_innov = innovations_train_blend[:n_train_est]
+                est_var = float(np.mean(est_innov ** 2))
+                est_pred = float(np.mean(S_blend_cand[:n_train_est]))
+                if est_pred > 1e-12:
+                    beta_cand = est_var / est_pred
+                else:
+                    beta_cand = 1.0
+                beta_cand = float(np.clip(beta_cand, 0.2, 5.0))
+                
+                # Compute PIT on validation portion (latter 40% of training)
+                val_innov = innovations_train_blend[n_train_est:]
+                S_val = S_blend_cand[n_train_est:] * beta_cand
+                
+                if nu > 2:
+                    sigma_val = np.sqrt(S_val * (nu - 2) / nu)
+                else:
+                    sigma_val = np.sqrt(S_val)
+                sigma_val = np.maximum(sigma_val, 1e-10)
+                
+                z_val = val_innov / sigma_val
+                pit_val = student_t_dist.cdf(z_val, df=nu)
+                pit_val = np.clip(pit_val, 0.001, 0.999)
+                
+                try:
+                    _, ks_p_cand = ks_test(pit_val, 'uniform')
+                    if ks_p_cand > best_gw_ks_p:
+                        best_gw_ks_p = ks_p_cand
+                        best_gw_base = gw_cand
+                except Exception:
+                    pass
+            
+            # Apply data-driven blending weight to TEST data
+            gw_up_opt = min(best_gw_base + 0.10, 0.90)
+            gw_down_opt = max(best_gw_base - 0.10, 0.15)
+            
             S_blended = np.zeros(n_test)
             for t in range(n_test):
                 if vol_phase[t] > 0:
-                    gw = 0.65
+                    gw = gw_up_opt
                 else:
-                    gw = 0.45
+                    gw = gw_down_opt
                 if vol_relative[t] > 1.5:
-                    gw = min(gw + 0.15, 0.85)
+                    gw = min(gw + 0.10, 0.90)
                 elif vol_relative[t] < 0.7:
-                    gw = max(gw - 0.10, 0.30)
+                    gw = max(gw - 0.10, 0.15)
                 S_blended[t] = (1 - gw) * S_pred_wavelet[t] + gw * h_garch[t]
             
             # =================================================================
             # POST-GARCH β RECALIBRATION (on training data, no look-ahead)
             # =================================================================
-            # The rolling CV (Stage 5) estimated β without GARCH blending.
-            # Recalibrate β to account for the GARCH-blended variance level.
+            # Recalibrate β using the SAME data-driven blending weight.
             # This ensures the TOTAL predictive variance matches actual
             # innovation variance — the fundamental PIT calibration condition.
             # =================================================================
-            innovations_train_recal = returns[:n_train] - mu_pred[:n_train] - mu_drift
-            sq_innov_train = innovations_train_recal ** 2
-            neg_ind_train = (innovations_train_recal < 0).astype(np.float64)
-            
-            # Run GARCH on training data (causal — no look-ahead)
-            h_garch_train = np.zeros(n_train)
-            h_garch_train[0] = garch_unconditional_var
-            for t in range(1, n_train):
-                h_garch_train[t] = (garch_omega
-                                    + garch_alpha * sq_innov_train[t-1]
-                                    + garch_leverage * sq_innov_train[t-1] * neg_ind_train[t-1]
-                                    + garch_beta * h_garch_train[t-1])
-                h_garch_train[t] = max(h_garch_train[t], 1e-12)
-            
-            # Blend on training data using same phase logic
-            S_pred_train_wavelet = S_pred[:n_train] * wavelet_correction
-            log_vol_train = np.log(np.maximum(vol[:n_train], 1e-10))
-            d_log_vol_train = np.zeros(n_train)
-            d_log_vol_train[1:] = log_vol_train[1:] - log_vol_train[:-1]
-            vol_phase_train = np.sign(d_log_vol_train)
-            vol_relative_train = vol[:n_train] / (vol_median + 1e-10)
-            
+            # Reuse training GARCH and blending already computed during weight search
             S_blended_train = np.zeros(n_train)
             for t in range(n_train):
-                if vol_phase_train[t] > 0:
-                    gw_t = 0.65
+                if vol_phase_train_est[t] > 0:
+                    gw_t = gw_up_opt
                 else:
-                    gw_t = 0.45
-                if vol_relative_train[t] > 1.5:
-                    gw_t = min(gw_t + 0.15, 0.85)
-                elif vol_relative_train[t] < 0.7:
-                    gw_t = max(gw_t - 0.10, 0.30)
-                S_blended_train[t] = (1 - gw_t) * S_pred_train_wavelet[t] + gw_t * h_garch_train[t]
+                    gw_t = gw_down_opt
+                if vol_relative_train_est[t] > 1.5:
+                    gw_t = min(gw_t + 0.10, 0.90)
+                elif vol_relative_train_est[t] < 0.7:
+                    gw_t = max(gw_t - 0.10, 0.15)
+                S_blended_train[t] = (1 - gw_t) * S_pred_train_wav[t] + gw_t * h_garch_train_est[t]
             
             # Recalibrate β: match training innovation variance to blended variance
-            actual_var_train = float(np.mean(innovations_train_recal ** 2))
+            actual_var_train = float(np.mean(innovations_train_blend ** 2))
             predicted_var_train = float(np.mean(S_blended_train))
             if predicted_var_train > 1e-12:
                 beta_recal = actual_var_train / predicted_var_train
@@ -2193,12 +2278,133 @@ class PhiStudentTDriftModel:
                 beta_recal = variance_inflation
             beta_recal = float(np.clip(beta_recal, 0.2, 5.0))
             
-            # Blend with original β for robustness (recal is more correct,
-            # but blending protects against non-stationarity between train/test)
-            beta_final = 0.8 * beta_recal + 0.2 * variance_inflation
+            # Blend with original β for robustness
+            # With data-driven weights, β_recal is more reliable → give it 90% weight
+            beta_final = 0.9 * beta_recal + 0.1 * variance_inflation
             
             # Apply recalibrated β to blended test variance
             S_calibrated = S_blended * beta_final
+            
+            # =================================================================
+            # POST-GARCH ν REFINEMENT (February 2026 - Data-Driven)
+            # =================================================================
+            # Stage 5 selected ν using RAW Kalman S_pred. With GARCH-blended
+            # variance, a nearby ν may calibrate better. We search ±2 steps
+            # from the Stage 5 ν to avoid overfitting to extreme values.
+            #
+            # Uses 3-fold rolling CV on training data for robustness.
+            # Only updates if materially better (≥1.5x KS p-value improvement).
+            # =================================================================
+            NU_FULL = [5, 6, 7, 8, 10, 12, 15, 20]
+            try:
+                nu_idx = NU_FULL.index(int(nu))
+            except ValueError:
+                nu_idx = -1
+            
+            if nu_idx >= 0:
+                # Search ±2 positions in the grid (at most)
+                lo = max(0, nu_idx - 2)
+                hi = min(len(NU_FULL) - 1, nu_idx + 2)
+                NU_REFINE_GRID = NU_FULL[lo:hi+1]
+            else:
+                NU_REFINE_GRID = [int(nu)]
+            
+            # 3-fold rolling CV on training data
+            refine_fold_size = n_train // 3
+            
+            if len(NU_REFINE_GRID) > 1 and refine_fold_size > 30:
+                best_nu_ref = int(nu)
+                best_ks_ref = -1.0
+                
+                for nu_cand in NU_REFINE_GRID:
+                    fold_ks_vals = []
+                    for fold_i in range(1, 3):
+                        val_start = fold_i * refine_fold_size
+                        val_end = min((fold_i + 1) * refine_fold_size, n_train)
+                        if val_end <= val_start:
+                            continue
+                        
+                        # Estimate β on estimation portion (before this fold)
+                        est_innov = innovations_train_blend[:val_start]
+                        S_est = S_blended_train[:val_start] * beta_final
+                        if nu_cand > 2:
+                            sigma_est = np.sqrt(S_est * (nu_cand - 2) / nu_cand)
+                        else:
+                            sigma_est = np.sqrt(S_est)
+                        sigma_est = np.maximum(sigma_est, 1e-10)
+                        
+                        actual_sq = est_innov ** 2
+                        expected_sq = sigma_est ** 2
+                        beta_fold = float(np.mean(actual_sq)) / (float(np.mean(expected_sq)) + 1e-12)
+                        beta_fold = float(np.clip(beta_fold, 0.2, 5.0))
+                        
+                        # Validate on this fold
+                        val_innov_ref = innovations_train_blend[val_start:val_end]
+                        S_val_ref = S_blended_train[val_start:val_end] * beta_fold
+                        
+                        if nu_cand > 2:
+                            sigma_ref = np.sqrt(S_val_ref * (nu_cand - 2) / nu_cand)
+                        else:
+                            sigma_ref = np.sqrt(S_val_ref)
+                        sigma_ref = np.maximum(sigma_ref, 1e-10)
+                        
+                        z_ref = val_innov_ref / sigma_ref
+                        pit_ref = student_t_dist.cdf(z_ref, df=nu_cand)
+                        pit_ref = np.clip(pit_ref, 0.001, 0.999)
+                        
+                        try:
+                            _, ks_p_ref = ks_test(pit_ref, 'uniform')
+                            fold_ks_vals.append(ks_p_ref)
+                        except Exception:
+                            pass
+                    
+                    if fold_ks_vals:
+                        avg_ks = float(np.mean(fold_ks_vals))
+                        if avg_ks > best_ks_ref:
+                            best_ks_ref = avg_ks
+                            best_nu_ref = nu_cand
+                
+                # Only update if materially better (≥1.5x avg KS improvement)
+                if best_nu_ref != int(nu):
+                    # Compute avg KS for original ν using same folds
+                    orig_fold_ks = []
+                    for fold_i in range(1, 3):
+                        val_start = fold_i * refine_fold_size
+                        val_end = min((fold_i + 1) * refine_fold_size, n_train)
+                        if val_end <= val_start:
+                            continue
+                        val_innov_ref = innovations_train_blend[val_start:val_end]
+                        S_val_ref = S_blended_train[val_start:val_end] * beta_final
+                        if nu > 2:
+                            sigma_orig = np.sqrt(S_val_ref * (nu - 2) / nu)
+                        else:
+                            sigma_orig = np.sqrt(S_val_ref)
+                        sigma_orig = np.maximum(sigma_orig, 1e-10)
+                        z_orig = val_innov_ref / sigma_orig
+                        pit_orig = student_t_dist.cdf(z_orig, df=nu)
+                        pit_orig = np.clip(pit_orig, 0.001, 0.999)
+                        try:
+                            _, ks_p_o = ks_test(pit_orig, 'uniform')
+                            orig_fold_ks.append(ks_p_o)
+                        except Exception:
+                            pass
+                    
+                    orig_avg = float(np.mean(orig_fold_ks)) if orig_fold_ks else 0.0
+                    
+                    if best_ks_ref > orig_avg * 1.5:
+                        nu = float(best_nu_ref)
+                        # Re-estimate β for new ν
+                        if nu > 2:
+                            sigma_train_new = np.sqrt(S_blended_train * (nu - 2) / nu)
+                        else:
+                            sigma_train_new = np.sqrt(S_blended_train)
+                        sigma_train_new = np.maximum(sigma_train_new, 1e-10)
+                        actual_sq_train = innovations_train_blend ** 2
+                        expected_sq_train = sigma_train_new ** 2
+                        ratio = float(np.mean(actual_sq_train)) / (float(np.mean(expected_sq_train)) + 1e-12)
+                        beta_final = float(np.clip(ratio, 0.2, 5.0))
+                        S_calibrated = S_blended * beta_final
+            
         else:
             S_calibrated = S_pred_wavelet * variance_inflation
         
@@ -2845,7 +3051,7 @@ class PhiStudentTDriftModel:
         # =====================================================================
         from scipy.stats import t as student_t, kstest
         
-        # Nu grid: start at 5 (nu=3-4 leads to poor calibration)
+        # Nu grid: from 5 to 20 (stable range for daily returns)
         NU_GRID = [5, 6, 7, 8, 10, 12, 15, 20]
         
         # Rolling CV: 5 folds
