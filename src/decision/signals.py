@@ -3202,6 +3202,8 @@ def _kalman_filter_drift(
                 garch_beta=float(tuned_params.get('garch_beta', 0.0)),
                 garch_leverage=float(tuned_params.get('garch_leverage', 0.0)),
                 garch_unconditional_var=float(tuned_params.get('garch_unconditional_var', 1e-4)),
+                # Rough volatility memory (February 2026 - Gatheral-Jaisson-Rosenbaum)
+                rough_hurst=float(tuned_params.get('rough_hurst', 0.0)),
                 # Wavelet/DTCWT parameters (February 2026)
                 wavelet_correction=float(tuned_params.get('wavelet_correction', 1.0)),
                 wavelet_weights=_np_sig.array(tuned_params['wavelet_weights']) if tuned_params.get('wavelet_weights') is not None else None,
@@ -3230,11 +3232,13 @@ def _kalman_filter_drift(
             if os.getenv("DEBUG"):
                 jump_active = unified_config.jump_intensity > 1e-6 and unified_config.jump_variance > 1e-12
                 gjr_active = unified_config.garch_leverage > 1e-6
+                rough_active = unified_config.rough_hurst > 0.01
                 print(f"Using unified Student-T filter: ν={unified_config.nu_base}, "
                       f"α={unified_config.alpha_asym:.3f}, γ_vov={unified_config.gamma_vov:.2f}, "
                       f"β={unified_config.variance_inflation:.3f}, "
                       f"garch=({unified_config.garch_alpha:.3f},{unified_config.garch_beta:.3f}), "
                       f"GJR_γ={'%.3f' % unified_config.garch_leverage if gjr_active else 'OFF'}, "
+                      f"H={'%.3f' % unified_config.rough_hurst if rough_active else 'OFF'}, "
                       f"jump={'ON' if jump_active else 'OFF'}"
                       + (f" p₀={unified_config.jump_intensity:.3f} σ²_J={unified_config.jump_variance:.5f}" if jump_active else ""))
         except Exception as unified_e:

@@ -3153,7 +3153,7 @@ def fit_all_models_for_regime(
     
     # Unified models use 3 ν values from grid
     UNIFIED_NU_GRID = [4, 8, 20]
-    n_params_unified = 11  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν, garch(2), jump(4-conditional)
+    n_params_unified = 11  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν, garch(3), rough_hurst, jump(4-cond)
     
     for nu_fixed in UNIFIED_NU_GRID:
         unified_name = f"phi_student_t_unified_nu_{nu_fixed}"
@@ -3180,9 +3180,10 @@ def fit_all_models_for_regime(
                 returns, mu_pred_u, S_pred_u, config
             )
 
-            # Information criteria — adjust param count if jump layer active
+            # Information criteria — adjust param count if jump/rough layers active
             jump_active = getattr(config, 'jump_intensity', 0.0) > 1e-6 and getattr(config, 'jump_variance', 0.0) > 1e-12
-            effective_n_params = n_params_unified + (4 if jump_active else 0)
+            rough_active = getattr(config, 'rough_hurst', 0.0) > 0.01
+            effective_n_params = n_params_unified + (4 if jump_active else 0) + (1 if rough_active else 0)
             aic_u = compute_aic(ll_u, effective_n_params)
             bic_u = compute_bic(ll_u, effective_n_params, n_obs)
             mean_ll_u = ll_u / max(n_obs, 1)
@@ -3223,6 +3224,8 @@ def fit_all_models_for_regime(
                 "garch_beta": float(getattr(config, 'garch_beta', 0.0)),
                 "garch_leverage": float(getattr(config, 'garch_leverage', 0.0)),
                 "garch_unconditional_var": float(getattr(config, 'garch_unconditional_var', 1e-4)),
+                # Rough volatility memory (February 2026 - Gatheral-Jaisson-Rosenbaum)
+                "rough_hurst": float(getattr(config, 'rough_hurst', 0.0)),
                 # Wavelet/DTCWT parameters (February 2026)
                 "wavelet_correction": float(getattr(config, 'wavelet_correction', 1.0)),
                 "wavelet_weights": getattr(config, 'wavelet_weights', None).tolist() if getattr(config, 'wavelet_weights', None) is not None else None,

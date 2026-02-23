@@ -254,6 +254,27 @@ class UnifiedStudentTConfig:
     garch_leverage: float = 0.0   # GJR leverage coefficient γ_lev ≥ 0
     garch_unconditional_var: float = 1e-4  # For initialization
     
+    # =========================================================================
+    # ROUGH VOLATILITY MEMORY (February 2026 - Gatheral-Jaisson-Rosenbaum)
+    # =========================================================================
+    # Real market volatility has long-memory (rough) behavior:
+    #   σ²_t ~ (1-L)^d · ε²_t    where d = H - 0.5
+    #
+    # Standard GARCH decays exponentially: w_k = β^k
+    # Rough vol decays as power law:       w_k ~ k^(H-3/2) / Γ(H-1/2)
+    #
+    # For H < 0.5 (rough regime, empirically H ≈ 0.1 for equities):
+    #   - Slower post-crisis variance decay (power law vs exponential)
+    #   - More realistic volatility clustering
+    #   - Better medium-horizon forecasting
+    #   - Less artificial need for extreme γ persistence
+    #
+    # H = 0.0 → disabled (pure GJR-GARCH)
+    # H ∈ (0, 0.5) → rough vol active, blended with GJR-GARCH
+    # H = 0.5 → Brownian (equivalent to GARCH memory)
+    # =========================================================================
+    rough_hurst: float = 0.0  # Hurst exponent H ∈ [0, 0.5], 0.0 = disabled
+    
     # Wavelet correction factor (February 2026 - DTCWT-inspired)
     # Multi-scale variance correction estimated on training data
     wavelet_correction: float = 1.0  # Multi-scale variance adjustment
@@ -304,6 +325,8 @@ class UnifiedStudentTConfig:
         self.jump_variance = float(np.clip(self.jump_variance, 0.0, 0.1))
         self.jump_sensitivity = float(np.clip(self.jump_sensitivity, 0.0, 5.0))
         self.jump_mean = float(np.clip(self.jump_mean, -0.05, 0.05))
+        # Rough volatility
+        self.rough_hurst = float(np.clip(self.rough_hurst, 0.0, 0.5))
     
     @property
     def q_stress(self) -> float:
@@ -466,6 +489,8 @@ class UnifiedStudentTConfig:
             'garch_beta': self.garch_beta,
             'garch_leverage': self.garch_leverage,
             'garch_unconditional_var': self.garch_unconditional_var,
+            # Rough volatility memory (Gatheral-Jaisson-Rosenbaum 2018)
+            'rough_hurst': self.rough_hurst,
             # Jump-diffusion parameters
             'jump_intensity': self.jump_intensity,
             'jump_variance': self.jump_variance,
@@ -1882,6 +1907,7 @@ class PhiStudentTDriftModel:
         garch_beta = getattr(config, 'garch_beta', 0.0)
         garch_leverage = getattr(config, 'garch_leverage', 0.0)
         garch_unconditional_var = getattr(config, 'garch_unconditional_var', 1e-4)
+        rough_hurst = getattr(config, 'rough_hurst', 0.0)
         use_garch = garch_alpha > 0 or garch_beta > 0
         
         # =====================================================================
@@ -1917,6 +1943,71 @@ class PhiStudentTDriftModel:
                               + garch_leverage * sq_innov[t-1] * neg_indicator[t-1]
                               + garch_beta * h_garch[t-1])
                 h_garch[t] = max(h_garch[t], 1e-12)
+            
+            # =================================================================
+            # ROUGH VOLATILITY MEMORY (Gatheral-Jaisson-Rosenbaum 2018)
+            # =================================================================
+            # Fractional differencing operator (1-L)^d applied to ε²_t
+            # d = H - 0.5, H = Hurst exponent < 0.5 for rough regime
+            #
+            # Standard GARCH: exponential memory decay  w_k = β^k
+            # Rough vol:      power-law memory decay    w_k ~ k^(d-1)
+            #
+            # This gives:
+            #   - Slower post-crisis variance decay
+            #   - More realistic volatility clustering
+            #   - Better medium-horizon forecasting
+            #
+            # The fractional kernel weights are:
+            #   w_0 = 1
+            #   w_k = w_{k-1} · (k - 1 - d) / k   for k ≥ 1
+            #
+            # These are the coefficients of the binomial series (1-L)^d.
+            # For d < 0 (rough, H < 0.5): weights are positive and decay
+            # slowly as k^(d-1), giving long memory.
+            # =================================================================
+            use_rough = rough_hurst > 0.01 and rough_hurst < 0.5
+            
+            if use_rough:
+                d_frac = rough_hurst - 0.5  # d ∈ (-0.5, 0) for rough regime
+                
+                # Truncated kernel length: balance accuracy vs performance
+                # Empirically, 50 lags captures >95% of the kernel mass
+                max_lag = min(50, n_test - 1)
+                
+                # Precompute fractional differencing weights
+                # w_0 = 1, w_k = w_{k-1} × (k-1-d)/k
+                frac_weights = np.zeros(max_lag + 1)
+                frac_weights[0] = 1.0
+                for k in range(1, max_lag + 1):
+                    frac_weights[k] = frac_weights[k-1] * (k - 1 - d_frac) / k
+                
+                # Normalize to sum to 1 (proper probability kernel)
+                frac_weights = np.abs(frac_weights)
+                weight_sum = np.sum(frac_weights)
+                if weight_sum > 1e-10:
+                    frac_weights /= weight_sum
+                
+                # Compute rough variance: weighted sum of past ε²
+                h_rough = np.zeros(n_test)
+                h_rough[0] = garch_unconditional_var
+                
+                for t in range(1, n_test):
+                    # Apply fractional kernel to past squared innovations
+                    lookback = min(t, max_lag)
+                    weighted_var = 0.0
+                    for lag in range(lookback):
+                        weighted_var += frac_weights[lag] * sq_innov[t - 1 - lag]
+                    h_rough[t] = max(weighted_var, 1e-12)
+                
+                # Blend: adaptive weight based on H
+                # H close to 0 → strong rough component (slow decay)
+                # H close to 0.5 → weak rough (nearly GARCH-equivalent)
+                rough_weight = 0.3 * (1.0 - 2.0 * rough_hurst)  # ∈ [0, 0.3]
+                rough_weight = max(rough_weight, 0.0)
+                
+                # Blend rough vol into GARCH variance
+                h_garch = (1.0 - rough_weight) * h_garch + rough_weight * h_rough
             
             # Apply variance inflation
             S_kalman_calibrated = S_pred_wavelet * variance_inflation
@@ -2842,6 +2933,85 @@ class PhiStudentTDriftModel:
                 jump_mean_est = 0.0
         
         # =====================================================================
+        # STAGE 5e: ROUGH VOLATILITY HURST ESTIMATION (February 2026)
+        # =====================================================================
+        # Estimate Hurst exponent H of volatility using the variogram method
+        # on log absolute innovations (Gatheral-Jaisson-Rosenbaum 2018).
+        #
+        # The variogram at lag τ is:
+        #   m(τ) = E[|log|ε_{t+τ}| - log|ε_t||²]
+        #
+        # For fractional Brownian motion with Hurst H:
+        #   m(τ) ~ C · τ^{2H}
+        #
+        # So: log m(τ) = log(C) + 2H · log(τ)
+        # → OLS regression of log m(τ) on log(τ) gives slope = 2H
+        #
+        # Empirical finding: equity vol H ≈ 0.05-0.15 (rough)
+        # H < 0.5 → rough (long-memory, slow power-law decay)
+        # H = 0.5 → Brownian (GARCH-equivalent, exponential decay)
+        #
+        # All estimation on TRAINING data — no look-ahead.
+        # =====================================================================
+        rough_hurst_est = 0.0  # Default: disabled
+        
+        if n_train > 200:
+            try:
+                # Use innovations from training (already computed)
+                innov_for_hurst = returns_train - mu_pred_train - mu_drift_opt
+                
+                # Log absolute innovations (proxy for log-volatility)
+                abs_innov = np.abs(innov_for_hurst)
+                abs_innov = np.maximum(abs_innov, 1e-12)  # Avoid log(0)
+                log_abs = np.log(abs_innov)
+                
+                # Compute variogram at multiple lags
+                max_tau = min(30, n_train // 10)
+                lags = np.arange(1, max_tau + 1)
+                variogram = np.zeros(max_tau)
+                
+                for i, tau in enumerate(lags):
+                    diffs = log_abs[tau:] - log_abs[:-tau]
+                    variogram[i] = np.mean(diffs ** 2)
+                
+                # Filter valid entries (variogram > 0)
+                valid = variogram > 1e-12
+                if np.sum(valid) >= 5:
+                    log_tau = np.log(lags[valid])
+                    log_var = np.log(variogram[valid])
+                    
+                    # OLS regression: log m(τ) = a + 2H · log(τ)
+                    # Use only short lags (τ ≤ 15) for rough vol estimation
+                    # Long lags are contaminated by regime changes
+                    short_mask = lags[valid] <= 15
+                    if np.sum(short_mask) >= 3:
+                        log_tau_s = log_tau[short_mask]
+                        log_var_s = log_var[short_mask]
+                        
+                        # OLS: slope = cov(x,y) / var(x)
+                        n_pts = len(log_tau_s)
+                        mean_x = np.mean(log_tau_s)
+                        mean_y = np.mean(log_var_s)
+                        cov_xy = np.sum((log_tau_s - mean_x) * (log_var_s - mean_y))
+                        var_x = np.sum((log_tau_s - mean_x) ** 2)
+                        
+                        if var_x > 1e-12:
+                            slope = cov_xy / var_x
+                            # slope = 2H, so H = slope/2
+                            H_est = slope / 2.0
+                            
+                            # Only accept rough regime: H ∈ [0.01, 0.45]
+                            # H ≥ 0.45 is near-Brownian → no benefit over GARCH
+                            # H < 0.01 is pathological
+                            if 0.01 <= H_est <= 0.45:
+                                rough_hurst_est = float(H_est)
+                            else:
+                                rough_hurst_est = 0.0
+                        
+            except Exception:
+                rough_hurst_est = 0.0
+        
+        # =====================================================================
         # BUILD FINAL CONFIG
         # =====================================================================
         # ELITE FIX: Use optimal nu from Stage 5 grid search, not input nu_base
@@ -2862,6 +3032,7 @@ class PhiStudentTDriftModel:
             garch_beta=garch_beta,
             garch_leverage=garch_leverage,
             garch_unconditional_var=unconditional_var,
+            rough_hurst=rough_hurst_est,  # Rough vol memory (February 2026)
             wavelet_correction=wavelet_correction,  # DTCWT-inspired multi-scale
             wavelet_weights=wavelet_weights,
             phase_asymmetry=phase_asymmetry,  # Leverage effect from training
@@ -2938,6 +3109,7 @@ class PhiStudentTDriftModel:
             "garch_alpha": float(garch_alpha),
             "garch_beta": float(garch_beta),
             "garch_leverage": float(garch_leverage),
+            "rough_hurst": float(rough_hurst_est),
             "wavelet_correction": float(wavelet_correction),
             "c_bounds": (float(config.c_min), float(config.c_max)),
             "q_min": float(config.q_min),
