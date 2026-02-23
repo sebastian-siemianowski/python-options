@@ -2088,8 +2088,9 @@ class PhiStudentTDriftModel:
                 beta_recal = variance_inflation
             beta_recal = float(np.clip(beta_recal, 0.2, 5.0))
             
-            # Blend with original β for robustness
-            beta_final = 0.5 * beta_recal + 0.5 * variance_inflation
+            # Blend with original β for robustness (recal is more correct,
+            # but blending protects against non-stationarity between train/test)
+            beta_final = 0.8 * beta_recal + 0.2 * variance_inflation
             
             # Apply recalibrated β to blended test variance
             S_calibrated = S_blended * beta_final
@@ -2827,18 +2828,11 @@ class PhiStudentTDriftModel:
             else:
                 garch_leverage = 0.0
             
-            # Typical GARCH(1,1) persistence: estimate from data
-            # For GARCH(1,1): autocorr(ε²) ≈ α + β (Bollerslev 1986)
-            # So β = autocorr(ε²) - α - γ_lev/2
-            sq_centered = sq_innov - unconditional_var
-            denom_sq = np.sum(sq_centered[:-1]**2)
-            if denom_sq > 1e-12:
-                autocorr_sq = float(np.sum(sq_centered[1:] * sq_centered[:-1]) / denom_sq)
-                total_persistence = float(np.clip(autocorr_sq, 0.6, 0.99))
-                garch_beta = total_persistence - garch_alpha - garch_leverage / 2.0
-                garch_beta = float(np.clip(garch_beta, 0.50, 0.95))
-            else:
-                garch_beta = 0.90
+            # GARCH β: target total persistence ≈ 0.97 for daily equities
+            # (Bollerslev 1986, Engle-Patton 2001: empirical α+γ/2+β ≈ 0.95-0.99)
+            # β = target - α - γ/2, adapted to each asset through α and γ
+            garch_beta = 0.97 - garch_alpha - garch_leverage / 2.0
+            garch_beta = float(np.clip(garch_beta, 0.70, 0.95))
             
             # Ensure stationarity: α + γ/2 + β < 1
             # (GJR stationarity requires α + γ_lev/2 + β < 1 since E[I(ε<0)] ≈ 0.5)
