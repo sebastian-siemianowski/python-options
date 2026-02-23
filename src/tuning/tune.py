@@ -3221,6 +3221,7 @@ def fit_all_models_for_regime(
                 "garch_omega": float(getattr(config, 'garch_omega', 0.0)),
                 "garch_alpha": float(getattr(config, 'garch_alpha', 0.0)),
                 "garch_beta": float(getattr(config, 'garch_beta', 0.0)),
+                "garch_leverage": float(getattr(config, 'garch_leverage', 0.0)),
                 "garch_unconditional_var": float(getattr(config, 'garch_unconditional_var', 1e-4)),
                 # Wavelet/DTCWT parameters (February 2026)
                 "wavelet_correction": float(getattr(config, 'wavelet_correction', 1.0)),

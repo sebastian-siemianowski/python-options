@@ -241,12 +241,17 @@ class UnifiedStudentTConfig:
     # mu_drift = mean(returns - mu_pred) on training data
     mu_drift: float = 0.0  # Mean bias correction for PIT
     
-    # GARCH parameters for honest variance dynamics (February 2026)
+    # GJR-GARCH parameters for honest variance dynamics (February 2026)
     # Estimated on TRAINING data, applied to TEST data without look-ahead
-    # h_t = omega + alpha × ε²_{t-1} + beta × h_{t-1}
+    # h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε_{t-1}<0) + β·h_{t-1}
+    # The leverage term γ_lev captures the asymmetric variance reaction:
+    #   negative returns → variance increase of (α + γ_lev)·ε²
+    #   positive returns → variance increase of α·ε²
+    # This is the GJR-GARCH(1,1) of Glosten-Jagannathan-Runkle (1993).
     garch_omega: float = 0.0      # Unconditional variance weight
     garch_alpha: float = 0.0      # ARCH coefficient (squared innovation)
     garch_beta: float = 0.0       # GARCH coefficient (lagged variance)
+    garch_leverage: float = 0.0   # GJR leverage coefficient γ_lev ≥ 0
     garch_unconditional_var: float = 1e-4  # For initialization
     
     # Wavelet correction factor (February 2026 - DTCWT-inspired)
@@ -455,6 +460,12 @@ class UnifiedStudentTConfig:
             'c_min': self.c_min,
             'c_max': self.c_max,
             'q_min': self.q_min,
+            # GJR-GARCH parameters
+            'garch_omega': self.garch_omega,
+            'garch_alpha': self.garch_alpha,
+            'garch_beta': self.garch_beta,
+            'garch_leverage': self.garch_leverage,
+            'garch_unconditional_var': self.garch_unconditional_var,
             # Jump-diffusion parameters
             'jump_intensity': self.jump_intensity,
             'jump_variance': self.jump_variance,
@@ -1865,30 +1876,46 @@ class PhiStudentTDriftModel:
         wavelet_correction = getattr(config, 'wavelet_correction', 1.0)
         phase_asymmetry = getattr(config, 'phase_asymmetry', 1.0)
         
-        # GARCH parameters (estimated on training data)
+        # GJR-GARCH parameters (estimated on training data)
         garch_omega = getattr(config, 'garch_omega', 0.0)
         garch_alpha = getattr(config, 'garch_alpha', 0.0)
         garch_beta = getattr(config, 'garch_beta', 0.0)
+        garch_leverage = getattr(config, 'garch_leverage', 0.0)
         garch_unconditional_var = getattr(config, 'garch_unconditional_var', 1e-4)
         use_garch = garch_alpha > 0 or garch_beta > 0
         
         # =====================================================================
-        # HONEST VARIANCE with GARCH + Wavelet Enhancement
+        # HONEST VARIANCE with GJR-GARCH + Wavelet Enhancement
+        # =====================================================================
+        # GJR-GARCH(1,1) — Glosten-Jagannathan-Runkle (1993):
+        #   h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε_{t-1}<0) + β·h_{t-1}
+        #
+        # The leverage term γ_lev captures variance asymmetry:
+        #   negative ε → variance increases by (α + γ_lev)·ε²
+        #   positive ε → variance increases by α·ε² only
+        #
+        # This is statistically well-documented across decades of equity data.
+        # Without it, crisis variance response lags and left-tail CRPS suffers.
         # =====================================================================
         # Apply wavelet correction factor from training
         S_pred_wavelet = S_pred_test * wavelet_correction
         
         if use_garch:
-            # Use GARCH variance dynamics (parameters from training)
+            # Use GJR-GARCH variance dynamics (parameters from training)
             # The GARCH model is CAUSAL - h_t only depends on ε²_{t-1}
             innovations = returns_test - mu_pred_test - mu_drift
             sq_innov = innovations ** 2
+            neg_indicator = (innovations < 0).astype(np.float64)  # I(ε_{t-1} < 0)
             
             h_garch = np.zeros(n_test)
             h_garch[0] = garch_unconditional_var
             
             for t in range(1, n_test):
-                h_garch[t] = garch_omega + garch_alpha * sq_innov[t-1] + garch_beta * h_garch[t-1]
+                # GJR-GARCH(1,1): h_t = ω + α·ε²_{t-1} + γ·ε²_{t-1}·I(ε_{t-1}<0) + β·h_{t-1}
+                h_garch[t] = (garch_omega
+                              + garch_alpha * sq_innov[t-1]
+                              + garch_leverage * sq_innov[t-1] * neg_indicator[t-1]
+                              + garch_beta * h_garch[t-1])
                 h_garch[t] = max(h_garch[t], 1e-12)
             
             # Apply variance inflation
@@ -2583,17 +2610,29 @@ class PhiStudentTDriftModel:
         beta_opt = float(np.clip(beta_opt, 0.2, 5.0))
         
         # =====================================================================
-        # STAGE 5c: GARCH Parameter Estimation on Training Data
+        # STAGE 5c: GJR-GARCH Parameter Estimation on Training Data
         # =====================================================================
-        # Estimate GARCH(1,1) parameters on training innovations
-        # These will be used in filter_and_calibrate WITHOUT look-ahead
+        # Estimate GJR-GARCH(1,1) parameters on training innovations.
+        # GJR-GARCH — Glosten, Jagannathan, Runkle (1993):
+        #   h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε_{t-1}<0) + β·h_{t-1}
+        #
+        # The leverage term γ_lev captures asymmetric variance reaction:
+        #   - Negative returns → variance increases by (α + γ_lev)·ε²
+        #   - Positive returns → variance increases by α·ε² only
+        #
+        # This is statistically well-documented across decades of equity data.
+        # Without it, crisis variance response lags and left-tail CRPS suffers.
+        #
+        # These will be used in filter_and_calibrate WITHOUT look-ahead.
         # =====================================================================
         innovations_train = returns_train - mu_pred_train - mu_drift_opt
         sq_innov = innovations_train ** 2
         
         unconditional_var = float(np.var(innovations_train))
         
-        # Estimate GARCH parameters using Quasi-MLE (Method of Moments)
+        # Estimate GJR-GARCH parameters using Quasi-MLE (Method of Moments)
+        garch_leverage = 0.0  # Default: no leverage (symmetric GARCH)
+        
         if n_train > 100:
             # Estimate α (ARCH effect) from autocorrelation of squared innovations
             sq_centered = sq_innov - unconditional_var
@@ -2604,19 +2643,59 @@ class PhiStudentTDriftModel:
             else:
                 garch_alpha = 0.08
             
+            # -----------------------------------------------------------------
+            # GJR Leverage Estimation (Engle-Ng sign bias approach)
+            # -----------------------------------------------------------------
+            # Regress ε²_t on ε²_{t-1}·I(ε_{t-1}<0) to extract asymmetric
+            # variance response. This is the sign-bias test statistic converted
+            # to the GJR γ coefficient.
+            #
+            # Intuition: If negative innovations at t-1 cause EXTRA variance at t
+            # beyond what the symmetric α·ε²_{t-1} captures, then γ_lev > 0.
+            # -----------------------------------------------------------------
+            neg_indicator = (innovations_train[:-1] < 0).astype(np.float64)
+            
+            # ε²_{t} | ε_{t-1} < 0  vs  ε²_{t} | ε_{t-1} ≥ 0
+            n_neg = max(int(np.sum(neg_indicator)), 1)
+            n_pos = max(int(np.sum(1.0 - neg_indicator)), 1)
+            mean_sq_after_neg = float(np.sum(sq_innov[1:] * neg_indicator) / n_neg)
+            mean_sq_after_pos = float(np.sum(sq_innov[1:] * (1.0 - neg_indicator)) / n_pos)
+            
+            # Leverage ratio: how much more variance after negative vs positive
+            if mean_sq_after_pos > 1e-12:
+                leverage_ratio = mean_sq_after_neg / mean_sq_after_pos
+            else:
+                leverage_ratio = 1.0
+            
+            # Convert ratio to GJR γ coefficient
+            # If leverage_ratio > 1, negative shocks cause more variance
+            # γ_lev ≈ α × (leverage_ratio - 1), but capped for stability
+            if leverage_ratio > 1.0:
+                garch_leverage = float(np.clip(
+                    garch_alpha * (leverage_ratio - 1.0),
+                    0.0, 0.20  # Cap at 0.20 for stationarity
+                ))
+            else:
+                garch_leverage = 0.0
+            
             # Typical GARCH(1,1) persistence: β ≈ 0.85-0.95
             garch_beta = 0.90
             
-            # Ensure stationarity: α + β < 1
-            if garch_alpha + garch_beta >= 0.99:
-                garch_beta = 0.98 - garch_alpha
+            # Ensure stationarity: α + γ/2 + β < 1
+            # (GJR stationarity requires α + γ_lev/2 + β < 1 since E[I(ε<0)] ≈ 0.5)
+            total_persistence = garch_alpha + garch_leverage / 2.0 + garch_beta
+            if total_persistence >= 0.99:
+                # Scale down β to maintain stationarity
+                garch_beta = 0.98 - garch_alpha - garch_leverage / 2.0
+                garch_beta = max(garch_beta, 0.5)  # Don't let β go too low
             
-            garch_omega = unconditional_var * (1 - garch_alpha - garch_beta)
+            garch_omega = unconditional_var * (1 - garch_alpha - garch_leverage / 2.0 - garch_beta)
             garch_omega = max(garch_omega, 1e-10)
         else:
             garch_omega = unconditional_var * 0.05
             garch_alpha = 0.08
             garch_beta = 0.87
+            garch_leverage = 0.0
         
         # =====================================================================
         # STAGE 5d: MERTON JUMP-DIFFUSION ESTIMATION (February 2026 - Elite)
@@ -2781,6 +2860,7 @@ class PhiStudentTDriftModel:
             garch_omega=garch_omega,
             garch_alpha=garch_alpha,
             garch_beta=garch_beta,
+            garch_leverage=garch_leverage,
             garch_unconditional_var=unconditional_var,
             wavelet_correction=wavelet_correction,  # DTCWT-inspired multi-scale
             wavelet_weights=wavelet_weights,
@@ -2857,6 +2937,7 @@ class PhiStudentTDriftModel:
             "mu_drift": float(mu_drift_opt),
             "garch_alpha": float(garch_alpha),
             "garch_beta": float(garch_beta),
+            "garch_leverage": float(garch_leverage),
             "wavelet_correction": float(wavelet_correction),
             "c_bounds": (float(config.c_min), float(config.c_max)),
             "q_min": float(config.q_min),
