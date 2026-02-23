@@ -228,6 +228,28 @@ class UnifiedStudentTConfig:
     vov_damping: float = 0.3     # [0, 0.5], reduce VoV when MS-q active
     vov_window: int = 20         # Rolling window for VoV
     
+    # =========================================================================
+    # CONDITIONAL RISK PREMIUM STATE (February 2026 - Merton ICAPM)
+    # =========================================================================
+    # Equity returns are conditionally heteroskedastic AND risk-premium driven:
+    #   E[r_t | F_{t-1}] = φ·μ_{t-1} + λ₁·σ²_t
+    #
+    # The risk premium λ₁ captures the intertemporal relation between expected
+    # return and conditional variance (Merton 1973, French-Schwert-Stambaugh 1987).
+    # Without this, the model treats variance purely as noise rather than
+    # information — missing the fundamental risk-return tradeoff.
+    #
+    # λ₁ > 0: higher variance → higher expected return (risk compensation)
+    # λ₁ < 0: higher variance → lower expected return (leverage/fear effect)
+    # λ₁ = 0: disabled (pure AR(1) state, default for backward compatibility)
+    #
+    # Empirically: λ₁ ∈ [-2, 5] for daily equities (small magnitude)
+    # Typical: λ₁ ≈ 0.5-2.0 for broad equities, can be negative for high-vol
+    #
+    # Alpha impact: ⭐⭐⭐⭐ — subtle but powerful for medium-horizon alpha.
+    # =========================================================================
+    risk_premium_sensitivity: float = 0.0  # λ₁ ∈ [-5, 10], 0.0 = disabled
+    
     # ELITE CALIBRATION FIX (February 2026): Variance inflation
     # Multiplies S_pred by β to ensure predictive variance ≈ returns variance
     # β < 1: model was over-estimating variance (rare)
@@ -1683,6 +1705,9 @@ class PhiStudentTDriftModel:
         phi_sq = phi_val * phi_val
         R_base = c_val * (vol ** 2)
         
+        # Conditional Risk Premium: λ₁ (Merton ICAPM)
+        risk_prem = float(getattr(config, 'risk_premium_sensitivity', 0.0))
+        
         log_norm_const = gammaln((nu_base + 1.0) / 2.0) - gammaln(nu_base / 2.0) - 0.5 * np.log(nu_base * np.pi)
         neg_exp = -((nu_base + 1.0) / 2.0)
         inv_nu = 1.0 / nu_base
@@ -1720,7 +1745,17 @@ class PhiStudentTDriftModel:
                 u_t = float(config.exogenous_input[t])
             
             q_t_val = q_t[t]
-            mu_pred = phi_val * mu + u_t
+            # ─────────────────────────────────────────────────────────────────
+            # CONDITIONAL RISK PREMIUM STATE TRANSITION (Merton ICAPM)
+            # ─────────────────────────────────────────────────────────────────
+            # μ_pred = φ·μ_{t-1} + u_t + λ₁·R_t
+            #
+            # R_t = c·σ²_vol is the observation variance — a CAUSAL proxy for
+            # conditional variance (vol[t] uses data strictly before t).
+            # λ₁ captures the risk-return tradeoff: investors demand higher
+            # expected return for bearing higher conditional variance.
+            # ─────────────────────────────────────────────────────────────────
+            mu_pred = phi_val * mu + u_t + risk_prem * R_base[t]
             P_pred = phi_sq * P + q_t_val
             
             vov_effective = gamma_vov * (1.0 - damping * p_stress[t])
@@ -2478,7 +2513,56 @@ class PhiStudentTDriftModel:
             alpha_opt = config.alpha_asym
         
         # =====================================================================
-        # HESSIAN CONDITION CHECK (graceful degradation)
+        # STAGE 4.1: CONDITIONAL RISK PREMIUM (Merton ICAPM)
+        # =====================================================================
+        # Optimize λ₁: E[r_t | F_{t-1}] = φ·μ_{t-1} + λ₁·σ²_t
+        #
+        # The risk premium captures the intertemporal relation between
+        # expected return and conditional variance.
+        #
+        # λ₁ > 0: higher variance → higher expected return (risk compensation)
+        # λ₁ < 0: higher variance → lower expected return (leverage/fear)
+        # λ₁ = 0: pure AR(1) state (no variance feedback to mean)
+        #
+        # This is optimized AFTER base params, VoV, MS-q, and asymmetry
+        # because it interacts with the variance structure but is a
+        # refinement on the mean dynamics.
+        # =====================================================================
+        def neg_ll_risk_premium(rp_arr):
+            rp = rp_arr[0]
+            cfg = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
+                alpha_asym=alpha_opt,
+                gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt,
+                q_stress_ratio=10.0,
+                risk_premium_sensitivity=rp,
+            )
+            try:
+                _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+            except Exception:
+                return 1e10
+            
+            if not np.isfinite(ll):
+                return 1e10
+            
+            # Mild regularization toward 0 — let data decide
+            # L2 penalty: 0.5·(λ₁)² keeps it small unless evidence is strong
+            reg = 0.5 * rp ** 2
+            return -ll / n_train + reg
+        
+        try:
+            result_rp = minimize(
+                neg_ll_risk_premium, [0.0],
+                bounds=[(-5.0, 10.0)], method='L-BFGS-B',
+                options={'maxiter': 100}
+            )
+            if result_rp.x is not None and np.isfinite(result_rp.x[0]):
+                risk_premium_opt = float(result_rp.x[0])
+            else:
+                risk_premium_opt = 0.0
+        except Exception:
+            risk_premium_opt = 0.0
         # =====================================================================
         try:
             if hasattr(result_base, 'hess_inv'):
@@ -2497,6 +2581,7 @@ class PhiStudentTDriftModel:
             gamma_opt = 0.0
             sens_opt = 2.0
             alpha_opt = 0.0
+            risk_premium_opt = 0.0
             degraded = True
         elif cond_num < 1e-6:
             # Warning: very flat region, optimization may be unstable
@@ -2562,6 +2647,7 @@ class PhiStudentTDriftModel:
             alpha_asym=alpha_opt, gamma_vov=gamma_opt,
             ms_sensitivity=sens_opt, q_stress_ratio=10.0,
             vov_damping=0.3, variance_inflation=1.0,
+            risk_premium_sensitivity=risk_premium_opt,
         )
         
         _, _, mu_pred_pre, S_pred_pre, _ = cls.filter_phi_unified(
@@ -2645,6 +2731,7 @@ class PhiStudentTDriftModel:
                     alpha_asym=alpha_opt, gamma_vov=gamma_opt,
                     ms_sensitivity=sens_opt, q_stress_ratio=10.0,
                     vov_damping=0.3, variance_inflation=1.0,
+                    risk_premium_sensitivity=risk_premium_opt,
                 )
                 
                 # Run filter on FULL training data
@@ -2735,6 +2822,7 @@ class PhiStudentTDriftModel:
             alpha_asym=alpha_opt, gamma_vov=gamma_opt,
             ms_sensitivity=sens_opt, q_stress_ratio=10.0,
             vov_damping=0.3, variance_inflation=1.0,
+            risk_premium_sensitivity=risk_premium_opt,
         )
         
         _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
@@ -2919,6 +3007,7 @@ class PhiStudentTDriftModel:
                                 ms_sensitivity=sens_opt, q_stress_ratio=10.0,
                                 vov_damping=0.3, variance_inflation=beta_opt,
                                 mu_drift=mu_drift_opt,
+                                risk_premium_sensitivity=risk_premium_opt,
                                 jump_intensity=jump_intensity_est,
                                 jump_variance=jump_variance_est,
                                 jump_sensitivity=sens_val,
@@ -2955,6 +3044,7 @@ class PhiStudentTDriftModel:
                             ms_sensitivity=sens_opt, q_stress_ratio=10.0,
                             vov_damping=0.3, variance_inflation=beta_opt,
                             mu_drift=mu_drift_opt,
+                            risk_premium_sensitivity=risk_premium_opt,
                         )
                         cfg_with_jump = UnifiedStudentTConfig(
                             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
@@ -2962,6 +3052,7 @@ class PhiStudentTDriftModel:
                             ms_sensitivity=sens_opt, q_stress_ratio=10.0,
                             vov_damping=0.3, variance_inflation=beta_opt,
                             mu_drift=mu_drift_opt,
+                            risk_premium_sensitivity=risk_premium_opt,
                             jump_intensity=jump_intensity_est,
                             jump_variance=jump_variance_est,
                             jump_sensitivity=jump_sensitivity_est,
@@ -3089,6 +3180,7 @@ class PhiStudentTDriftModel:
             vov_damping=0.3,
             variance_inflation=beta_opt,
             mu_drift=mu_drift_opt,  # ELITE FIX: mean drift correction
+            risk_premium_sensitivity=risk_premium_opt,  # ICAPM risk premium (February 2026)
             garch_omega=garch_omega,
             garch_alpha=garch_alpha,
             garch_beta=garch_beta,
@@ -3166,6 +3258,7 @@ class PhiStudentTDriftModel:
             "gamma_vov": float(gamma_opt),
             "ms_sensitivity": float(sens_opt),
             "alpha_asym": float(alpha_opt),
+            "risk_premium_sensitivity": float(risk_premium_opt),
             "variance_inflation": float(beta_opt),
             "mu_drift": float(mu_drift_opt),
             "garch_alpha": float(garch_alpha),

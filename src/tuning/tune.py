@@ -3153,7 +3153,7 @@ def fit_all_models_for_regime(
     
     # Unified models use 3 ν values from grid
     UNIFIED_NU_GRID = [4, 8, 20]
-    n_params_unified = 11  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν, garch(3), rough_hurst, jump(4-cond)
+    n_params_unified = 12  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν, garch(3), rough_hurst, risk_premium, jump(4-cond)
     
     for nu_fixed in UNIFIED_NU_GRID:
         unified_name = f"phi_student_t_unified_nu_{nu_fixed}"
@@ -3218,6 +3218,7 @@ def fit_all_models_for_regime(
                 # Calibration parameters (February 2026)
                 "variance_inflation": float(getattr(config, 'variance_inflation', 1.0)),
                 "mu_drift": float(getattr(config, 'mu_drift', 0.0)),
+                "risk_premium_sensitivity": float(getattr(config, 'risk_premium_sensitivity', 0.0)),
                 # GARCH parameters (February 2026)
                 "garch_omega": float(getattr(config, 'garch_omega', 0.0)),
                 "garch_alpha": float(getattr(config, 'garch_alpha', 0.0)),
