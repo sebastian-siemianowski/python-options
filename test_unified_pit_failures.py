@@ -9,7 +9,8 @@ import multiprocessing
 warnings.filterwarnings('ignore')
 sys.path.insert(0, 'src')
 
-print('Loading test module...')
+if __name__ == '__main__' or multiprocessing.current_process().name == 'MainProcess':
+    pass  # silent load
 
 import numpy as np
 import json
@@ -25,6 +26,7 @@ try:
     from rich.text import Text
     from rich import box
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
+    from rich.live import Live
     from rich.rule import Rule
     from rich.align import Align
     RICH_AVAILABLE = True
@@ -717,38 +719,86 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
     n_mad_failures = 0
     
     # =========================================================================
-    # MULTIPROCESSING: Use all CPUs for parallel asset processing
+    # MULTIPROCESSING with Rich live progress
     # =========================================================================
+    import time as _time
     n_workers = min(os.cpu_count() or 1, len(assets_to_test))
-    use_parallel = n_workers > 1 and len(assets_to_test) > 1 and "--serial" not in sys.argv
+    use_parallel = n_workers > 1 and len(assets_to_test) > 1
+    t0 = _time.time()
 
-    if use_parallel:
-        print(f"\n⚡ Multiprocessing: {n_workers} workers ({os.cpu_count()} CPUs)\n")
+    if use_parallel and RICH_AVAILABLE:
+        info = Text()
+        info.append("    \u26a1 ", style="bold bright_yellow")
+        info.append(f"{n_workers}", style="bold bright_white")
+        info.append(" workers ", style="dim")
+        info.append(f"({os.cpu_count()} CPUs) ", style="dim")
+        info.append(f"\u2502 {len(assets_to_test)} assets", style="bright_cyan")
+        console.print(info)
+        console.print()
 
         with multiprocessing.Pool(processes=n_workers, initializer=_init_worker) as pool:
+            with Progress(
+                SpinnerColumn(spinner_name="dots", style="bright_yellow"),
+                TextColumn("[bold cyan]{task.description}[/bold cyan]"),
+                BarColumn(bar_width=40, complete_style="bright_green", finished_style="bold bright_green"),
+                MofNCompleteColumn(),
+                TextColumn("\u00b7"),
+                TimeElapsedColumn(),
+                console=console,
+                transient=False,
+            ) as progress:
+                task = progress.add_task("Calibrating", total=len(assets_to_test))
+
+                for rd in pool.imap_unordered(_process_asset_worker, assets_to_test):
+                    results.append(rd)
+                    sym = rd.get("symbol", "?")
+                    if rd.get("fit_success", False):
+                        pit_p = rd.get("pit_pvalue", 0)
+                        pf = rd.get("pit_failed", True)
+                        if pf: n_pit_failures += 1
+                        if rd.get("mad_failed", False): n_mad_failures += 1
+                        mark = "\u2717" if pf else "\u2713"
+                        mc = "indian_red1" if pf else "bright_green"
+                        desc = f"[{mc}]{mark} {sym}[/{mc}] [dim]p={pit_p:.4f}[/dim]"
+                        progress.update(task, description=desc)
+                    else:
+                        progress.update(task, description=f"[indian_red1]\u26a0 {sym}[/indian_red1]")
+                    progress.advance(task)
+
+        elapsed = _time.time() - t0
+        done_text = Text()
+        done_text.append("    \u2713 ", style="bold bright_green")
+        done_text.append(f"Completed {len(results)} assets in ", style="dim")
+        done_text.append(f"{elapsed:.1f}s", style="bold bright_white")
+        done_text.append(f" ({elapsed/len(results):.1f}s/asset)", style="dim")
+        console.print(done_text)
+
+    elif use_parallel:
+        print(f"\n\u26a1 Multiprocessing: {n_workers} workers ({os.cpu_count()} CPUs)\n")
+        with multiprocessing.Pool(processes=n_workers, initializer=_init_worker) as pool:
             completed = 0
-            for result_dict in pool.imap_unordered(_process_asset_worker, assets_to_test):
+            for rd in pool.imap_unordered(_process_asset_worker, assets_to_test):
                 completed += 1
-                results.append(result_dict)
-                sym = result_dict.get("symbol", "?")
-                if result_dict.get("fit_success", False):
-                    pit_p = result_dict.get("pit_pvalue", 0)
-                    if result_dict.get("pit_failed", True): n_pit_failures += 1
-                    if result_dict.get("mad_failed", False): n_mad_failures += 1
+                results.append(rd)
+                sym = rd.get("symbol", "?")
+                if rd.get("fit_success", False):
+                    pit_p = rd.get("pit_pvalue", 0)
+                    if rd.get("pit_failed", True): n_pit_failures += 1
+                    if rd.get("mad_failed", False): n_mad_failures += 1
                     print(f"  [{completed}/{len(assets_to_test)}] {sym}: PIT p={pit_p:.4f}")
                 else:
-                    err = result_dict.get("error", "?")
+                    err = rd.get("error", "?")
                     print(f"  [{completed}/{len(assets_to_test)}] {sym}: FAILED - {err}")
 
     else:
-        # Sequential fallback (1 asset or --serial flag)
+        # Sequential fallback
         for i, symbol in enumerate(assets_to_test):
-            result_dict = _process_asset_worker(symbol)
-            results.append(result_dict)
-            if result_dict.get("fit_success", False):
-                if result_dict.get("pit_failed", True): n_pit_failures += 1
-                if result_dict.get("mad_failed", False): n_mad_failures += 1
-                pit_p = result_dict.get('pit_pvalue', 0)
+            rd = _process_asset_worker(symbol)
+            results.append(rd)
+            if rd.get("fit_success", False):
+                if rd.get("pit_failed", True): n_pit_failures += 1
+                if rd.get("mad_failed", False): n_mad_failures += 1
+                pit_p = rd.get("pit_pvalue", 0)
                 print(f"  [{i+1}/{len(assets_to_test)}] {symbol}: PIT p={pit_p:.4f}")
             else:
                 print(f"  [{i+1}/{len(assets_to_test)}] {symbol}: FAILED")
@@ -915,25 +965,48 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
     sorted_results = sorted(results, key=lambda x: x.get('pit_pvalue', 999) if x.get('fit_success') else 999)
     
     for r in sorted_results:
-        if r.get('fit_success'):
-            q = r['log10_q'] if r['log10_q'] else float('nan')
-            c = r['c'] if r['c'] else float('nan')
-            phi = r['phi'] if r['phi'] else float('nan')
-            nu = r.get('nu', 8)
-            alpha = r.get('alpha_asym', 0.0)
-            gamma = r.get('gamma_vov', 0.0)
-            bic = r.get('bic') if r.get('bic') else float('nan')
-            hyv = r.get('hyvarinen') if r.get('hyvarinen') else float('nan')
-            crps = r.get('crps') if r.get('crps') else float('nan')
-            pit_st = 'FAIL' if r['pit_failed'] else 'PASS'
-            crps_st = 'PASS' if (np.isfinite(crps) and crps < 0.012) else ('WARN' if (np.isfinite(crps) and crps < 0.02) else 'FAIL')
-            print(f'{r["symbol"]:10s} {q:+8.2f} {c:5.3f} {nu:3.0f} {phi:+5.2f} {alpha:+6.3f} {gamma:4.2f} '
-                  f'{bic:+9.1f} {hyv:+8.4f} {crps:7.4f} {r["pit_pvalue"]:7.4f} {r["histogram_mad"]:6.4f} '
-                  f'{r["calibration_grade"]:>3s} {pit_st:>10s} {crps_st:>11s}')
+        if r.get("fit_success"):
+            sym = r["symbol"]
+            q = r.get("log10_q") or 0
+            c_v = r.get("c") or 0
+            phi = r.get("phi") or 0
+            nu = r.get("nu", 8)
+            alpha = r.get("alpha_asym", 0.0)
+            gamma = r.get("gamma_vov", 0.0)
+            berk = r.get("berkowitz_pvalue", 0.0)
+            bic = r.get("bic") or 0
+            crps = r.get("crps") or 0
+            pit_st = "FAIL" if r.get("pit_failed") else "PASS"
+            crps_ok = np.isfinite(crps) and crps < 0.012
+            crps_warn = np.isfinite(crps) and 0.012 <= crps < 0.02
+            crps_st = "PASS" if crps_ok else ("WARN" if crps_warn else "FAIL")
+            pc = "bright_green" if r["pit_pvalue"] >= 0.10 else "yellow" if r["pit_pvalue"] >= 0.05 else "indian_red1"
+            bc = "bright_green" if berk >= 0.10 else "yellow" if berk >= 0.05 else "indian_red1"
+            mc = "bright_green" if r["histogram_mad"] < 0.02 else "yellow" if r["histogram_mad"] < 0.05 else "indian_red1"
+            gc = "bright_green" if r["calibration_grade"] == "A" else "yellow" if r["calibration_grade"] in ["B","C"] else "indian_red1"
+            psc = "bright_green" if pit_st == "PASS" else "indian_red1"
+            csc = "bright_green" if crps_st == "PASS" else "yellow" if crps_st == "WARN" else "indian_red1"
+            table.add_row(
+                f'[bold]{sym}[/bold]',
+                f'[{pc}]{r["pit_pvalue"]:.4f}[/{pc}]',
+                f'[{bc}]{berk:.4f}[/{bc}]',
+                f'[{mc}]{r["histogram_mad"]:.4f}[/{mc}]',
+                f'[{gc}]{r["calibration_grade"]}[/{gc}]',
+                f'{q:+.2f}',
+                f'{c_v:.3f}',
+                f'{nu:.0f}',
+                f'{phi:+.2f}',
+                f'{alpha:+.3f}',
+                f'{gamma:.2f}',
+                f'{bic:+.1f}',
+                f'{crps:.4f}',
+                f'[bold {psc}]{pit_st}[/bold {psc}]',
+                f'[bold {csc}]{crps_st}[/bold {csc}]',
+            )
         else:
-            print(f'{r["symbol"]:10s} {"---":>8s} {"---":>5s} {"---":>3s} {"---":>5s} {"---":>6s} {"---":>4s} '
-                  f'{"---":>9s} {"---":>8s} {"---":>7s} {"---":>7s} {"---":>6s} {"---":>3s} {"ERROR":>10s} {"---":>11s}')
-    
+            sym = r.get("symbol", "?")
+            table.add_row(sym, "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "[indian_red1]ERROR[/]", "---")
+
     console.print(table)
     console.print()
         
