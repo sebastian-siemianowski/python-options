@@ -3193,16 +3193,20 @@ def fit_all_models_for_regime(
 
             # Hyvärinen and CRPS scores using predictive values
             # Use base nu for scoring (asymmetry is internal adjustment)
+            # CRPS uses mu_pred directly — filter_phi_unified already
+            # incorporates mu_drift into its output predictions.
             if nu_fixed > 2:
                 forecast_scale_u = np.sqrt(S_pred_u * (nu_fixed - 2) / nu_fixed)
             else:
                 forecast_scale_u = np.sqrt(S_pred_u)
 
+            mu_effective_u = mu_pred_u  # Already includes mu_drift
+
             hyvarinen_u = compute_hyvarinen_score_student_t(
-                returns, mu_pred_u, forecast_scale_u, nu_fixed
+                returns, mu_effective_u, forecast_scale_u, nu_fixed
             )
             crps_u = compute_crps_student_t_inline(
-                returns, mu_pred_u, forecast_scale_u, nu_fixed
+                returns, mu_effective_u, forecast_scale_u, nu_fixed
             )
 
             models[unified_name] = {
