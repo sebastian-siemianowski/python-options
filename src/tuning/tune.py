@@ -3216,6 +3216,7 @@ def fit_all_models_for_regime(
                 "alpha_asym": float(config.alpha_asym),
                 "k_asym": float(getattr(config, 'k_asym', 1.0)),
                 "ms_sensitivity": float(config.ms_sensitivity),
+                "ms_ewm_lambda": float(getattr(config, 'ms_ewm_lambda', 0.0)),
                 "q_stress_ratio": float(config.q_stress_ratio),
                 "vov_damping": float(getattr(config, 'vov_damping', 0.3)),
                 # Calibration parameters (February 2026)

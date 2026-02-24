@@ -3191,6 +3191,7 @@ def _kalman_filter_drift(
                 # Markov-switching process noise
                 gamma_vov=float(tuned_params.get('gamma_vov', 0.3)),
                 ms_sensitivity=float(tuned_params.get('ms_sensitivity', 2.0)),
+                ms_ewm_lambda=float(tuned_params.get('ms_ewm_lambda', 0.0)),
                 q_stress_ratio=float(tuned_params.get('q_stress_ratio', 10.0)),
                 vov_damping=float(tuned_params.get('vov_damping', 0.3)),
                 # Calibration parameters (February 2026)

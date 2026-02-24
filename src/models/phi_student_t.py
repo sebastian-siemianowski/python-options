@@ -265,6 +265,7 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'ms_sensitivity_init': 2.5,         # Higher initial MS-q sensitivity
         'ms_sensitivity_reg_center': 2.5,   # Regularize toward 2.5, not 2.0
         'ms_sensitivity_reg_weight': 5.0,   # Weaker reg (was 10.0)
+        'ms_ewm_lambda': 0.97,             # EWM z-score (~33-day half-life)
         'vov_damping': 0.05,                # Near-zero: let VoV + MS-q coexist
         'risk_premium_reg_penalty': 0.1,    # Weaker pull toward 0 (was 0.5)
         'risk_premium_init': 0.5,           # Start from positive risk premium
@@ -286,6 +287,7 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'ms_sensitivity_init': 2.8,         # Even higher — explosive regimes
         'ms_sensitivity_reg_center': 2.8,   # Regularize toward 2.8
         'ms_sensitivity_reg_weight': 3.0,   # Very weak reg
+        'ms_ewm_lambda': 0.94,             # Faster EWM (~16-day half-life)
         'vov_damping': 0.03,                # Minimal: silver IS VoV-dominated
         'risk_premium_reg_penalty': 0.05,   # Very weak — silver is variance-conditioned
         'risk_premium_init': 0.8,           # Stronger risk premium prior
@@ -303,6 +305,7 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'ms_sensitivity_init': 2.3,
         'ms_sensitivity_reg_center': 2.3,
         'ms_sensitivity_reg_weight': 7.0,
+        'ms_ewm_lambda': 0.96,             # Moderate EWM (~25-day half-life)
         'vov_damping': 0.10,
         'risk_premium_reg_penalty': 0.2,
         'risk_premium_init': 0.3,
@@ -354,7 +357,11 @@ class UnifiedStudentTConfig:
     # Probabilistic MS-q: p_stress = sigmoid(sensitivity × vol_zscore)
     q_calm: float = None         # Defaults to q if None
     q_stress_ratio: float = 10.0 # q_stress = q_calm × ratio
-    ms_sensitivity: float = 2.0  # [1.0, 3.0], regime sensitivity
+    ms_sensitivity: float = 2.0  # [1.0, 5.0], regime sensitivity
+    ms_ewm_lambda: float = 0.0   # EWM decay for MS-q z-score baseline.
+                                  # 0.0 = expanding window (backward-compatible).
+                                  # 0.94-0.99 = EWM with corresponding half-life.
+                                  # Gold: 0.97 (~33-day). Silver: 0.94 (~16-day).
     
     # VoV with MS-q redundancy damping
     gamma_vov: float = 0.3       # [0, 1.0], VoV sensitivity
@@ -512,7 +519,7 @@ class UnifiedStudentTConfig:
         # Clip parameters to valid ranges
         self.alpha_asym = float(np.clip(self.alpha_asym, -0.3, 0.3))
         self.k_asym = float(np.clip(self.k_asym, 0.5, 2.0))
-        self.ms_sensitivity = float(np.clip(self.ms_sensitivity, 1.0, 3.0))
+        self.ms_sensitivity = float(np.clip(self.ms_sensitivity, 1.0, 5.0))
         self.gamma_vov = float(np.clip(self.gamma_vov, 0.0, 1.0))
         self.vov_damping = float(np.clip(self.vov_damping, 0.0, 0.5))
         # Jump parameters
@@ -673,6 +680,7 @@ class UnifiedStudentTConfig:
             'q_calm': self.q_calm,
             'q_stress_ratio': self.q_stress_ratio,
             'ms_sensitivity': self.ms_sensitivity,
+            'ms_ewm_lambda': self.ms_ewm_lambda,
             'gamma_vov': self.gamma_vov,
             'vov_damping': self.vov_damping,
             'c_min': self.c_min,
@@ -699,21 +707,29 @@ def compute_ms_process_noise_smooth(
     q_calm: float,
     q_stress: float,
     sensitivity: float = 2.0,
+    ewm_lambda: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute smooth probabilistic MS process noise.
     
-    Uses expanding-window z-score (no lookahead) with sigmoid transition.
-    Sensitivity bounded to [1.0, 3.0] to prevent quasi-step behavior.
+    Two modes of operation:
+      1. ewm_lambda = 0.0: Expanding-window z-score (original, backward-compatible)
+      2. ewm_lambda > 0.0: Exponentially-weighted moving statistics (EWM)
     
-    This replaces the threshold-based MS-q with a fully smooth,
-    differentiable regime switching mechanism.
+    EWM mode (February 2026 - Elite Metals Fix):
+      The expanding window divides by counts that grow to N.
+      After 2600+ observations the z-score baseline is anchored to distant
+      history. Gold vol permanently shifted post-2020 — the expanding
+      window does not adapt. EWM with lambda=0.97 has ~33-day half-life,
+      making regime detection 10-50x faster for long series.
     
     Args:
         vol: Time series of volatility estimates
         q_calm: Process noise for calm regime
         q_stress: Process noise for stress regime
-        sensitivity: Sigmoid sensitivity (bounded to [1.0, 3.0])
+        sensitivity: Sigmoid sensitivity (bounded to [1.0, 5.0])
+        ewm_lambda: EWM decay factor. 0.0 = expanding window (default).
+                     0.94-0.99 = EWM with corresponding half-life.
         
     Returns:
         Tuple of (q_t, p_stress):
@@ -723,29 +739,52 @@ def compute_ms_process_noise_smooth(
     vol = np.asarray(vol).flatten()
     n = len(vol)
     
-    # Bound sensitivity to prevent quasi-step behavior
-    sensitivity = float(np.clip(sensitivity, 1.0, 3.0))
+    # Bound sensitivity — widened to [1.0, 5.0] for metals (Feb 2026)
+    sensitivity = float(np.clip(sensitivity, 1.0, 5.0))
     
-    # Expanding-window statistics (no lookahead)
-    vol_cumsum = np.cumsum(vol)
-    vol_sq_cumsum = np.cumsum(vol ** 2)
-    counts = np.arange(1, n + 1, dtype=np.float64)
-    
-    vol_mean = vol_cumsum / counts
-    vol_var = vol_sq_cumsum / counts - vol_mean ** 2
-    vol_var = np.maximum(vol_var, 1e-12)  # Prevent negative variance
-    vol_std = np.sqrt(vol_var)
-    
-    # Warm-up: use first 20 obs for initial estimates
-    warmup = min(20, n)
-    if n > warmup:
-        init_mean = np.mean(vol[:warmup])
-        init_std = max(np.std(vol[:warmup]), 1e-6)
-        vol_mean[:warmup] = init_mean
-        vol_std[:warmup] = init_std
-    
-    # Z-score
-    vol_zscore = (vol - vol_mean) / np.maximum(vol_std, 1e-6)
+    if ewm_lambda > 0.01:
+        # ─────────────────────────────────────────────────────────────
+        # EWM MODE: Exponentially-weighted moving statistics
+        # ─────────────────────────────────────────────────────────────
+        lam = float(np.clip(ewm_lambda, 0.5, 0.999))
+        
+        warmup = min(20, n)
+        ewm_mean = float(np.mean(vol[:warmup])) if warmup > 0 else float(vol[0])
+        ewm_var = float(np.var(vol[:warmup])) if warmup > 1 else 1e-6
+        ewm_var = max(ewm_var, 1e-12)
+        
+        vol_zscore = np.zeros(n)
+        for t in range(n):
+            ewm_std = np.sqrt(ewm_var)
+            ewm_std = max(ewm_std, 1e-6)
+            vol_zscore[t] = (vol[t] - ewm_mean) / ewm_std
+            
+            # Update AFTER computing z-score (no look-ahead)
+            ewm_mean = lam * ewm_mean + (1.0 - lam) * vol[t]
+            diff = vol[t] - ewm_mean
+            ewm_var = lam * ewm_var + (1.0 - lam) * (diff * diff)
+            ewm_var = max(ewm_var, 1e-12)
+    else:
+        # ─────────────────────────────────────────────────────────────
+        # EXPANDING-WINDOW MODE: Original behavior (backward-compatible)
+        # ─────────────────────────────────────────────────────────────
+        vol_cumsum = np.cumsum(vol)
+        vol_sq_cumsum = np.cumsum(vol ** 2)
+        counts = np.arange(1, n + 1, dtype=np.float64)
+        
+        vol_mean = vol_cumsum / counts
+        vol_var = vol_sq_cumsum / counts - vol_mean ** 2
+        vol_var = np.maximum(vol_var, 1e-12)
+        vol_std = np.sqrt(vol_var)
+        
+        warmup = min(20, n)
+        if n > warmup:
+            init_mean = np.mean(vol[:warmup])
+            init_std = max(np.std(vol[:warmup]), 1e-6)
+            vol_mean[:warmup] = init_mean
+            vol_std[:warmup] = init_std
+        
+        vol_zscore = (vol - vol_mean) / np.maximum(vol_std, 1e-6)
     
     # Smooth sigmoid transition
     p_stress = 1.0 / (1.0 + np.exp(-sensitivity * vol_zscore))
@@ -1861,7 +1900,8 @@ class PhiStudentTDriftModel:
         
         if ms_enabled:
             q_t, p_stress = compute_ms_process_noise_smooth(
-                vol, q_calm, q_stress, config.ms_sensitivity
+                vol, q_calm, q_stress, config.ms_sensitivity,
+                getattr(config, 'ms_ewm_lambda', 0.0)
             )
         else:
             q_t = np.full(n, q_base)
@@ -2711,6 +2751,7 @@ class PhiStudentTDriftModel:
         _prof_k_asym = profile.get('k_asym', 1.0)
         _prof_alpha_asym_init = profile.get('alpha_asym_init', config.alpha_asym)
         _prof_q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        _prof_ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
         
         # =====================================================================
         # CALIBRATION-AWARE OBJECTIVE HELPER FUNCTIONS
@@ -2889,6 +2930,7 @@ class PhiStudentTDriftModel:
                 alpha_asym=0.0,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens,
+                ms_ewm_lambda=_prof_ms_ewm_lambda,
                 q_stress_ratio=_prof_q_stress_ratio,
             )
             try:
@@ -2906,7 +2948,7 @@ class PhiStudentTDriftModel:
         try:
             result_msq = minimize(
                 neg_ll_msq, [_prof_ms_sens_init], 
-                bounds=[(1.0, 3.0)], method='L-BFGS-B'
+                bounds=[(1.0, 5.0)], method='L-BFGS-B'
             )
             sens_opt = result_msq.x[0] if result_msq.success else _prof_ms_sens_init
         except Exception:
@@ -2924,6 +2966,7 @@ class PhiStudentTDriftModel:
                 k_asym=_prof_k_asym,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens_opt,
+                ms_ewm_lambda=_prof_ms_ewm_lambda,
                 q_stress_ratio=_prof_q_stress_ratio,
             )
             try:
@@ -2971,6 +3014,7 @@ class PhiStudentTDriftModel:
                 k_asym=_prof_k_asym,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens_opt,
+                ms_ewm_lambda=_prof_ms_ewm_lambda,
                 q_stress_ratio=_prof_q_stress_ratio,
                 risk_premium_sensitivity=rp,
             )
@@ -3029,6 +3073,7 @@ class PhiStudentTDriftModel:
                 k_asym=_prof_k_asym,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens_opt,
+                ms_ewm_lambda=_prof_ms_ewm_lambda,
                 q_stress_ratio=_prof_q_stress_ratio,
                 risk_premium_sensitivity=risk_premium_opt,
                 skew_score_sensitivity=kappa_val,
@@ -3143,7 +3188,7 @@ class PhiStudentTDriftModel:
         temp_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
             alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+            ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
             vov_damping=_prof_vov_damping, variance_inflation=1.0,
             risk_premium_sensitivity=risk_premium_opt,
             skew_score_sensitivity=skew_kappa_opt,
@@ -3229,7 +3274,7 @@ class PhiStudentTDriftModel:
                 temp_config = UnifiedStudentTConfig(
                     q=q_opt, c=c_opt, phi=phi_opt, nu_base=float(test_nu),
                     alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
-                    ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+                    ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
                     vov_damping=_prof_vov_damping, variance_inflation=1.0,
                     risk_premium_sensitivity=risk_premium_opt,
                     skew_score_sensitivity=skew_kappa_opt,
@@ -3301,7 +3346,20 @@ class PhiStudentTDriftModel:
                     if len(pit_values) > 10:
                         pit_values = np.clip(pit_values, 0.001, 0.999)
                         _, ks_p = kstest(pit_values, 'uniform')
-                        fold_ks_pvalues.append(ks_p)
+                        
+                        # PIT autocorrelation penalty (Feb 2026 — Berkowitz fix)
+                        # High PIT autocorrelation → Berkowitz test failure.
+                        # Penalize ν values that produce serially correlated PITs.
+                        pit_arr = np.array(pit_values)
+                        pit_c = pit_arr - np.mean(pit_arr)
+                        pit_denom = np.sum(pit_c ** 2)
+                        if pit_denom > 1e-12 and len(pit_c) > 2:
+                            pit_rho = float(np.sum(pit_c[1:] * pit_c[:-1]) / pit_denom)
+                        else:
+                            pit_rho = 0.0
+                        # Adjusted score: ks_p × (1 - |ρ₁|)
+                        ks_p_adj = ks_p * (1.0 - min(abs(pit_rho), 0.99))
+                        fold_ks_pvalues.append(ks_p_adj)
                 
                 # Average KS p-value across folds
                 if len(fold_ks_pvalues) > 0:
@@ -3322,7 +3380,7 @@ class PhiStudentTDriftModel:
         temp_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt, nu_base=best_nu,
             alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+            ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
             vov_damping=_prof_vov_damping, variance_inflation=1.0,
             risk_premium_sensitivity=risk_premium_opt,
             skew_score_sensitivity=skew_kappa_opt,
@@ -3510,7 +3568,7 @@ class PhiStudentTDriftModel:
                                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
                                 alpha_asym=alpha_opt, k_asym=_prof_k_asym,
                                 gamma_vov=gamma_opt,
-                                ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+                                ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
                                 vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
                                 mu_drift=mu_drift_opt,
                                 risk_premium_sensitivity=risk_premium_opt,
@@ -3550,7 +3608,7 @@ class PhiStudentTDriftModel:
                             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
                             alpha_asym=alpha_opt, k_asym=_prof_k_asym,
                             gamma_vov=gamma_opt,
-                            ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+                            ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
                             vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
                             mu_drift=mu_drift_opt,
                             risk_premium_sensitivity=risk_premium_opt,
@@ -3561,7 +3619,7 @@ class PhiStudentTDriftModel:
                             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
                             alpha_asym=alpha_opt, k_asym=_prof_k_asym,
                             gamma_vov=gamma_opt,
-                            ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+                            ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
                             vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
                             mu_drift=mu_drift_opt,
                             risk_premium_sensitivity=risk_premium_opt,
@@ -3691,6 +3749,7 @@ class PhiStudentTDriftModel:
             k_asym=_prof_k_asym,  # Profile-adaptive asymmetric ν transition sharpness
             gamma_vov=gamma_opt,
             ms_sensitivity=sens_opt,
+            ms_ewm_lambda=_prof_ms_ewm_lambda,  # EWM z-score for metals (Feb 2026)
             q_stress_ratio=_prof_q_stress_ratio,  # Profile-adaptive stress ratio
             vov_damping=_prof_vov_damping,  # Profile-adaptive VoV damping
             variance_inflation=beta_opt,
@@ -3804,6 +3863,7 @@ class PhiStudentTDriftModel:
             "profile_vov_damping": _prof_vov_damping,
             "profile_k_asym": _prof_k_asym,
             "profile_q_stress_ratio": _prof_q_stress_ratio,
+            "profile_ms_ewm_lambda": _prof_ms_ewm_lambda,
         }
         
         return final_config, diagnostics
