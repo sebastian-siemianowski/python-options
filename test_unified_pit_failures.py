@@ -1065,7 +1065,10 @@ def compare_with_baseline():
 if __name__ == '__main__':
     import sys
     
-    if len(sys.argv) > 1 and sys.argv[1] == '--full':
+    if len(sys.argv) > 1 and sys.argv[1] == '--metals':
+        # Test metals only (GC=F, SI=F, XAGUSD)
+        test_full_tuning_all_assets(assets_to_test=['GC=F', 'SI=F', 'XAGUSD'])
+    elif len(sys.argv) > 1 and sys.argv[1] == '--full':
         # Test failing assets only
         test_full_tuning_all_assets(mode="failing")
     elif len(sys.argv) > 1 and sys.argv[1] == '--all':

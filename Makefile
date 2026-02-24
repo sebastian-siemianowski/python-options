@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-full pit-g
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -382,6 +382,11 @@ tests: .venv/.deps_installed
 pit: .venv/.deps_installed
 	@echo "🎯 Running PIT calibration test (failing assets only)..."
 	@.venv/bin/python -B test_unified_pit_failures.py --full $(ARGS)
+
+# PIT calibration test - metals only (GC=F, SI=F, XAGUSD)
+pit-metals: .venv/.deps_installed
+	@echo "🥇 Running PIT calibration test (metals: GC=F, SI=F, XAGUSD)..."
+	@.venv/bin/python -B test_unified_pit_failures.py --metals $(ARGS)
 
 # PIT calibration test - comprehensive (all assets: failing + passing)
 pit-full: .venv/.deps_installed
