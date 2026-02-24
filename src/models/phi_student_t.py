@@ -2359,17 +2359,24 @@ class PhiStudentTDriftModel:
             
             def _berkowitz_penalized_ks(pit_arr):
                 """
-                Joint KS + Berkowitz score for calibration selection.
+                Full Berkowitz-aware composite score for calibration selection.
                 
-                Pure KS p-value ignores serial dependence in PITs.
-                For metals (gold, silver), regime transitions create PIT
-                autocorrelation that KS cannot detect but Berkowitz does.
+                Targets ALL three Berkowitz test components on probit-transformed
+                PITs z = Φ⁻¹(PIT):
+                  1. Mean: μ̂ ≈ 0       (location calibration)
+                  2. Variance: σ̂² ≈ 1  (scale calibration)
+                  3. AR(1): ρ̂ ≈ 0     (serial independence)
                 
-                Score = ks_p × (1 - |ρ₁|)²
+                Score = KS_p × exp(-5μ̂²) × exp(-3(σ̂²-1)²) × exp(-10ρ̂²)
                 
-                The squaring makes the penalty convex — mild autocorrelation
-                (|ρ₁| < 0.1) is barely penalized, but moderate autocorrelation
-                (|ρ₁| > 0.2) is heavily penalized.
+                Each exponential penalty ∈ (0, 1]:
+                  - Perfect calibration → penalty = 1.0 (no reduction)
+                  - Mild deviation → gentle reduction
+                  - Large deviation → near-zero (strongly penalized)
+                
+                The exponential form is smooth, differentiable, and
+                multiplicatively decomposes the score across components.
+                This directly targets what Berkowitz tests for.
                 
                 Returns (score, ks_p, rho1) for diagnostics.
                 """
@@ -2378,19 +2385,36 @@ class PhiStudentTDriftModel:
                 except Exception:
                     return 0.0, 0.0, 0.0
                 
-                # PIT lag-1 autocorrelation
-                if len(pit_arr) > 10:
-                    pit_c = pit_arr - np.mean(pit_arr)
-                    denom = np.sum(pit_c ** 2)
-                    if denom > 1e-12:
-                        rho1 = float(np.sum(pit_c[1:] * pit_c[:-1]) / denom)
-                    else:
-                        rho1 = 0.0
+                if len(pit_arr) < 20:
+                    return float(ks_p), float(ks_p), 0.0
+                
+                # Probit transform for Berkowitz component analysis
+                pit_clp = np.clip(pit_arr, 0.001, 0.999)
+                z_probit = norm_dist.ppf(pit_clp)
+                z_probit = z_probit[np.isfinite(z_probit)]
+                
+                if len(z_probit) < 20:
+                    return float(ks_p), float(ks_p), 0.0
+                
+                # Component 1: Probit mean ≈ 0 (location calibration)
+                mu_hat = float(np.mean(z_probit))
+                mu_penalty = float(np.exp(-5.0 * mu_hat ** 2))
+                
+                # Component 2: Probit variance ≈ 1 (scale calibration)
+                var_hat = float(np.var(z_probit, ddof=0))
+                var_penalty = float(np.exp(-3.0 * (var_hat - 1.0) ** 2))
+                
+                # Component 3: AR(1) autocorrelation ≈ 0 (independence)
+                z_c = z_probit - mu_hat
+                denom = np.sum(z_c ** 2)
+                if denom > 1e-12:
+                    rho1 = float(np.sum(z_c[1:] * z_c[:-1]) / denom)
                 else:
                     rho1 = 0.0
+                rho_penalty = float(np.exp(-10.0 * rho1 ** 2))
                 
-                penalty = (1.0 - min(abs(rho1), 0.99)) ** 2
-                return float(ks_p * penalty), float(ks_p), float(rho1)
+                score = float(ks_p * mu_penalty * var_penalty * rho_penalty)
+                return score, float(ks_p), float(rho1)
             
             # Run GARCH on training data for blending estimation
             innovations_train_blend = returns[:n_train] - mu_pred[:n_train] - mu_drift
@@ -2835,6 +2859,72 @@ class PhiStudentTDriftModel:
             # Flat blending with CV-selected gw (consistent with training CV)
             _S_bt_final = (1 - _best_gw_adap) * S_pred_train_wav + _best_gw_adap * h_garch_train_est
             
+            # =============================================================
+            # PROBIT-VARIANCE β CORRECTION (Berkowitz σ² targeting)
+            # =============================================================
+            # Run the selected adaptive EWM on training data to compute
+            # probit(PIT) variance. If σ²_probit > 1, the model scale is
+            # too narrow → multiply β by σ²_probit to widen the predictive
+            # distribution. This directly targets the Berkowitz σ² component
+            # (which dominates the test for metals).
+            #
+            # All computation on training data — no test look-ahead.
+            # The correction is bounded to [0.8, 1.3] for stability.
+            # =============================================================
+            _ewm_mu_cal = float(np.mean(innovations_train_blend))
+            _ewm_num_cal = float(np.mean(innovations_train_blend ** 2))
+            _ewm_den_cal = float(np.mean(_S_bt_final))
+            
+            # Use latter 40% of training as validation for probit variance
+            _cal_start = int(n_train * 0.6)
+            _n_cal = n_train - _cal_start
+            
+            # Warm up EWM through first 60%
+            for _t_cal in range(_cal_start):
+                _ewm_mu_cal = _best_lam_mu * _ewm_mu_cal + (1 - _best_lam_mu) * innovations_train_blend[_t_cal]
+                _ewm_num_cal = _best_lam_beta * _ewm_num_cal + (1 - _best_lam_beta) * (innovations_train_blend[_t_cal] ** 2)
+                _ewm_den_cal = _best_lam_beta * _ewm_den_cal + (1 - _best_lam_beta) * _S_bt_final[_t_cal]
+            
+            # Compute training PITs on validation portion
+            _pit_train_cal = np.zeros(_n_cal)
+            _ewm_mu_cv = _ewm_mu_cal
+            _ewm_num_cv = _ewm_num_cal
+            _ewm_den_cv = _ewm_den_cal
+            
+            for _t_cv in range(_n_cal):
+                _idx_cv = _cal_start + _t_cv
+                _beta_cv = _ewm_num_cv / (_ewm_den_cv + 1e-12)
+                _beta_cv = float(np.clip(_beta_cv, 0.2, 5.0))
+                
+                _inn_cv = innovations_train_blend[_idx_cv] - _ewm_mu_cv
+                _S_cv = _S_bt_final[_idx_cv] * _beta_cv
+                if nu > 2:
+                    _sig_cv = np.sqrt(_S_cv * (nu - 2) / nu)
+                else:
+                    _sig_cv = np.sqrt(_S_cv)
+                _sig_cv = max(_sig_cv, 1e-10)
+                _z_cv = _inn_cv / _sig_cv
+                _pit_train_cal[_t_cv] = student_t_dist.cdf(_z_cv, df=nu)
+                
+                _ewm_mu_cv = _best_lam_mu * _ewm_mu_cv + (1 - _best_lam_mu) * innovations_train_blend[_idx_cv]
+                _ewm_num_cv = _best_lam_beta * _ewm_num_cv + (1 - _best_lam_beta) * (innovations_train_blend[_idx_cv] ** 2)
+                _ewm_den_cv = _best_lam_beta * _ewm_den_cv + (1 - _best_lam_beta) * _S_bt_final[_idx_cv]
+            
+            _pit_train_cal = np.clip(_pit_train_cal, 0.001, 0.999)
+            
+            # Compute probit variance on training PITs
+            _z_probit_cal = norm_dist.ppf(_pit_train_cal)
+            _z_probit_cal = _z_probit_cal[np.isfinite(_z_probit_cal)]
+            
+            if len(_z_probit_cal) > 30:
+                _probit_var = float(np.var(_z_probit_cal, ddof=0))
+                # If σ² > 1: scale too narrow → inflate β
+                # If σ² < 1: scale too wide → shrink β
+                # Bounded to [0.8, 1.3] for stability
+                _beta_scale_corr = float(np.clip(_probit_var, 0.8, 1.3))
+            else:
+                _beta_scale_corr = 1.0
+            
             # Initialize EWM from training mean (no warmup — matches the
             # estimation-portion initialization used in the CV)
             _ewm_mu_final = float(np.mean(innovations_train_blend))
@@ -2855,9 +2945,9 @@ class PhiStudentTDriftModel:
             _ewm_den_t = _ewm_den_final
             
             for _t_p in range(n_test):
-                # Current adaptive β
+                # Current adaptive β with probit-variance correction
                 _beta_p = _ewm_num_t / (_ewm_den_t + 1e-12)
-                _beta_p = float(np.clip(_beta_p, 0.2, 5.0))
+                _beta_p = float(np.clip(_beta_p * _beta_scale_corr, 0.2, 5.0))
                 
                 # Use the CV-selected gw blended variance
                 _S_cal_p = _S_blended_test[_t_p] * _beta_p
