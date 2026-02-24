@@ -726,82 +726,130 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
     use_parallel = n_workers > 1 and len(assets_to_test) > 1
     t0 = _time.time()
 
+    def _print_detail(rd, idx, total, con):
+        sym = rd.get('symbol', '?')
+        n_obs = rd.get('n_obs', 0)
+        if not rd.get('fit_success', False):
+            e = Text()
+            e.append(f'  [{idx}/{total}] ', style='dim')
+            e.append(sym, style='bold indian_red1')
+            err = rd.get('error', '?')
+            e.append(f'  FAILED: {err}', style='dim')
+            con.print(e)
+            return
+        pit_p = rd.get('pit_pvalue', 0)
+        berk = rd.get('berkowitz_pvalue', 0.0)
+        mad = rd.get('histogram_mad', 0)
+        grade = rd.get('calibration_grade', '?')
+        pf = rd.get('pit_failed', True)
+        mf = rd.get('mad_failed', False)
+        status = 'X' if pf else 'OK'
+        mad_st = 'X' if mf else 'OK'
+        berk_st = 'OK' if berk >= 0.05 else 'X'
+        sc = 'indian_red1' if pf else 'bright_green'
+        bc = 'bright_green' if berk >= 0.05 else 'indian_red1'
+        mc = 'bright_green' if not mf else 'indian_red1'
+        q = rd.get('log10_q') or 0
+        cv = rd.get('c') or 0
+        phi = rd.get('phi') or 0
+        nu = rd.get('nu', 8)
+        alpha = rd.get('alpha_asym', 0.0)
+        gamma = rd.get('gamma_vov', 0.0)
+        bic = rd.get('bic') or 0
+        hyv = rd.get('hyvarinen') or 0
+        crps = rd.get('crps') or 0
+        vi = rd.get('variance_inflation', 0)
+        # Line 1: header
+        h = Text()
+        h.append(f'  [{idx}/{total}] ', style='dim')
+        h.append('Processing ', style='dim')
+        h.append(f'{sym}', style='bold bright_white')
+        h.append('...', style='dim')
+        con.print(h)
+        # Data line
+        d = Text()
+        d.append(f'  Data: {n_obs} observations', style='dim')
+        con.print(d)
+        # Line 2: PIT | Berk | MAD | Grade
+        r2 = Text()
+        r2.append(f'  {sym:12s}', style='bold')
+        r2.append('PIT: ', style='dim')
+        r2.append(f'p={pit_p:.4f} ', style=sc)
+        r2.append(status, style=f'bold {sc}')
+        r2.append('  │  ', style='dim')
+        r2.append(f'Berk={berk:.4f} ', style=bc)
+        r2.append(berk_st, style=f'bold {bc}')
+        r2.append('  │  ', style='dim')
+        r2.append(f'MAD={mad:.4f} ', style=mc)
+        r2.append(mad_st, style=f'bold {mc}')
+        r2.append('  │  ', style='dim')
+        r2.append(f'Grade={grade}', style='bright_white')
+        con.print(r2)
+        # Line 3: parameters
+        r3 = Text()
+        r3.append('              ', style='dim')
+        r3.append(f'log₁₀(q)={q:+.2f}  c={cv:.3f}  ν={nu:.0f}  φ={phi:+.2f}  α={alpha:+.3f}  γ={gamma:.2f}', style='dim')
+        con.print(r3)
+        # Line 4: scores
+        r4 = Text()
+        r4.append('              ', style='dim')
+        r4.append(f'BIC={bic:+.1f}  Hyv={hyv:+.4f}  CRPS={crps:.4f}  β={vi:.3f}', style='dim')
+        con.print(r4)
+
     if use_parallel and RICH_AVAILABLE:
         info = Text()
-        info.append("    \u26a1 ", style="bold bright_yellow")
-        info.append(f"{n_workers}", style="bold bright_white")
-        info.append(" workers ", style="dim")
-        info.append(f"({os.cpu_count()} CPUs) ", style="dim")
-        info.append(f"\u2502 {len(assets_to_test)} assets", style="bright_cyan")
+        info.append('    ⚡ ', style='bold bright_yellow')
+        info.append(f'{n_workers}', style='bold bright_white')
+        info.append(' workers ', style='dim')
+        info.append(f'({os.cpu_count()} CPUs) ', style='dim')
+        info.append(f'│ {len(assets_to_test)} assets', style='bright_cyan')
         console.print(info)
         console.print()
-
-        with multiprocessing.Pool(processes=n_workers, initializer=_init_worker) as pool:
-            with Progress(
-                SpinnerColumn(spinner_name="dots", style="bright_yellow"),
-                TextColumn("[bold cyan]{task.description}[/bold cyan]"),
-                BarColumn(bar_width=40, complete_style="bright_green", finished_style="bold bright_green"),
-                MofNCompleteColumn(),
-                TextColumn("\u00b7"),
-                TimeElapsedColumn(),
-                console=console,
-                transient=False,
-            ) as progress:
-                task = progress.add_task("Calibrating", total=len(assets_to_test))
-
-                for rd in pool.imap_unordered(_process_asset_worker, assets_to_test):
-                    results.append(rd)
-                    sym = rd.get("symbol", "?")
-                    if rd.get("fit_success", False):
-                        pit_p = rd.get("pit_pvalue", 0)
-                        pf = rd.get("pit_failed", True)
-                        if pf: n_pit_failures += 1
-                        if rd.get("mad_failed", False): n_mad_failures += 1
-                        mark = "\u2717" if pf else "\u2713"
-                        mc = "indian_red1" if pf else "bright_green"
-                        desc = f"[{mc}]{mark} {sym}[/{mc}] [dim]p={pit_p:.4f}[/dim]"
-                        progress.update(task, description=desc)
-                    else:
-                        progress.update(task, description=f"[indian_red1]\u26a0 {sym}[/indian_red1]")
-                    progress.advance(task)
-
-        elapsed = _time.time() - t0
-        done_text = Text()
-        done_text.append("    \u2713 ", style="bold bright_green")
-        done_text.append(f"Completed {len(results)} assets in ", style="dim")
-        done_text.append(f"{elapsed:.1f}s", style="bold bright_white")
-        done_text.append(f" ({elapsed/len(results):.1f}s/asset)", style="dim")
-        console.print(done_text)
-
-    elif use_parallel:
-        print(f"\n\u26a1 Multiprocessing: {n_workers} workers ({os.cpu_count()} CPUs)\n")
         with multiprocessing.Pool(processes=n_workers, initializer=_init_worker) as pool:
             completed = 0
             for rd in pool.imap_unordered(_process_asset_worker, assets_to_test):
                 completed += 1
                 results.append(rd)
-                sym = rd.get("symbol", "?")
-                if rd.get("fit_success", False):
-                    pit_p = rd.get("pit_pvalue", 0)
-                    if rd.get("pit_failed", True): n_pit_failures += 1
-                    if rd.get("mad_failed", False): n_mad_failures += 1
-                    print(f"  [{completed}/{len(assets_to_test)}] {sym}: PIT p={pit_p:.4f}")
-                else:
-                    err = rd.get("error", "?")
-                    print(f"  [{completed}/{len(assets_to_test)}] {sym}: FAILED - {err}")
+                sym = rd.get('symbol', '?')
+                if rd.get('fit_success', False):
+                    if rd.get('pit_failed', True): n_pit_failures += 1
+                    if rd.get('mad_failed', False): n_mad_failures += 1
+                _print_detail(rd, completed, len(assets_to_test), console)
+        elapsed = _time.time() - t0
+        done = Text()
+        done.append('    ✓ ', style='bold bright_green')
+        done.append(f'Completed {len(results)} assets in ', style='dim')
+        done.append(f'{elapsed:.1f}s', style='bold bright_white')
+        done.append(f' ({elapsed/len(results):.1f}s/asset)', style='dim')
+        console.print(done)
 
+    elif use_parallel:
+        print(f'⚡ MP: {n_workers} workers ({os.cpu_count()} CPUs)')
+        with multiprocessing.Pool(n_workers, _init_worker) as pool:
+            done = 0
+            for rd in pool.imap_unordered(_process_asset_worker, assets_to_test):
+                done += 1
+                results.append(rd)
+                sym = rd.get('symbol', '?')
+                if rd.get('fit_success', False):
+                    p = rd.get('pit_pvalue', 0)
+                    if rd.get('pit_failed', True): n_pit_failures += 1
+                    if rd.get('mad_failed', False): n_mad_failures += 1
+                    print(f'  [{done}/{len(assets_to_test)}] {sym}: p={p:.4f}')
+                else:
+                    print(f'  [{done}/{len(assets_to_test)}] {sym}: FAILED')
     else:
-        # Sequential fallback
         for i, symbol in enumerate(assets_to_test):
             rd = _process_asset_worker(symbol)
             results.append(rd)
-            if rd.get("fit_success", False):
-                if rd.get("pit_failed", True): n_pit_failures += 1
-                if rd.get("mad_failed", False): n_mad_failures += 1
-                pit_p = rd.get("pit_pvalue", 0)
-                print(f"  [{i+1}/{len(assets_to_test)}] {symbol}: PIT p={pit_p:.4f}")
+            if rd.get('fit_success', False):
+                if rd.get('pit_failed', True): n_pit_failures += 1
+                if rd.get('mad_failed', False): n_mad_failures += 1
+            if RICH_AVAILABLE:
+                _print_detail(rd, i+1, len(assets_to_test), console)
             else:
-                print(f"  [{i+1}/{len(assets_to_test)}] {symbol}: FAILED")
+                p = rd.get('pit_pvalue', 0)
+                print(f'  [{i+1}/{len(assets_to_test)}] {symbol}: p={p:.4f}')
 
     # Save results to JSON
     baseline = {
