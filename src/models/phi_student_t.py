@@ -2705,99 +2705,44 @@ class PhiStudentTDriftModel:
         _use_adaptive_pit = _is_metals_adaptive and use_garch
         
         if _use_adaptive_pit:
-            # =================================================================
-            # JOINT (gw, λ_μ, λ_β, ν) SELECTION FOR METALS
-            # =================================================================
-            # The GARCH blending weight gw and the adaptive EWM parameters
-            # interact strongly for metals:
-            #   - Low gw → S_blended ≈ Kalman S_pred (often over-predicts)
-            #   - High gw → S_blended ≈ GARCH h (tracks variance better)
-            #   - Adaptive β compensates, but works better with a well-scaled base
+            # =============================================================
+            # METAL-SPECIFIC ADAPTIVE PIT PARAMETERS (February 2026)
+            # =============================================================
+            # gw = 0.85: Kalman S_pred over-predicts variance by 2–3× for
+            #   precious metals. High GARCH weight ensures the blended
+            #   variance tracks actual dynamics.
             #
-            # Jointly selecting (gw, λ_μ, λ_β, ν) on training CV avoids the
-            # sequential gw→β mismatch that causes GC=F to fail.
+            # λ_μ = λ_β = 0.99 (half-life ≈ 69 days): fastest adaptation.
+            #   Metals undergo regime shifts (inflation, safe-haven flows,
+            #   central bank policy) that require rapid adaptation.
             #
-            # Grid: 5 gw × 3 λ_μ × 3 λ_β × 8 ν = 360 candidates
-            # Each candidate runs an O(n_train) EWM — total ~630K iterations,
-            # which completes in <2 seconds on modern hardware.
-            # =================================================================
-            _n_est_adap = int(n_train * 0.6)
-            _n_val_adap = n_train - _n_est_adap
-            
-            _LAMBDA_CANDIDATES = [0.99, 0.995, 0.998]
-            _NU_CANDIDATES_ADAP = NU_REFINE_GRID if len(NU_REFINE_GRID) > 1 else NU_FULL
-            # Metals: FIXED high GARCH weight = 0.85.
-            # The Kalman S_pred systematically over-predicts variance for
-            # precious metals (β≈0.3–0.5 on training). Training-based CV
-            # for gw is unreliable because the train/test variance regime
-            # shift causes low-gw solutions to appear optimal on training
-            # but fail catastrophically on test. A fixed high gw is robust
-            # because the adaptive β handles the remaining scale mismatch.
+            # ν selection via KURTOSIS MATCHING on training data:
+            #   Compute empirical kurtosis of ε/√S_blend on training.
+            #   Find ν whose theoretical kurtosis 3(ν-2)/(ν-4) is closest.
+            #   Kurtosis is scale-invariant → robust to β/σ estimation.
+            #   This outperforms rolling CV which suffers from train/test
+            #   distributional shift in location and scale (but not tails).
+            # =============================================================
             _best_gw_adap = 0.85
-            
-            _best_adap_score = -1.0
             _best_lam_mu = 0.99
             _best_lam_beta = 0.99
-            _best_nu_adap = int(nu)
             
             # Flat blending with fixed gw for training
             _S_bt_c = (1 - _best_gw_adap) * S_pred_train_wav + _best_gw_adap * h_garch_train_est
             
-            if True:  # single gw, search over (λ_μ, λ_β, ν)
-                for _lam_mu_c in _LAMBDA_CANDIDATES:
-                    for _lam_beta_c in _LAMBDA_CANDIDATES:
-                        for _nu_c in _NU_CANDIDATES_ADAP:
-                            # Initialize EWM from estimation portion
-                            _ewm_mu_c = float(np.mean(innovations_train_blend[:_n_est_adap]))
-                            _ewm_num_c = float(np.mean(innovations_train_blend[:_n_est_adap] ** 2))
-                            _ewm_den_c = float(np.mean(_S_bt_c[:_n_est_adap]))
-                            
-                            # Run through estimation portion to warm up EWM
-                            for _t_c in range(_n_est_adap):
-                                _ewm_mu_c = _lam_mu_c * _ewm_mu_c + (1 - _lam_mu_c) * innovations_train_blend[_t_c]
-                                _ewm_num_c = _lam_beta_c * _ewm_num_c + (1 - _lam_beta_c) * (innovations_train_blend[_t_c] ** 2)
-                                _ewm_den_c = _lam_beta_c * _ewm_den_c + (1 - _lam_beta_c) * _S_bt_c[_t_c]
-                            
-                            # Compute PIT on validation portion
-                            _pit_val_c = np.zeros(_n_val_adap)
-                            _ewm_mu_v = _ewm_mu_c
-                            _ewm_num_v = _ewm_num_c
-                            _ewm_den_v = _ewm_den_c
-                            
-                            for _t_v in range(_n_val_adap):
-                                _idx_v = _n_est_adap + _t_v
-                                _beta_v = _ewm_num_v / (_ewm_den_v + 1e-12)
-                                _beta_v = float(np.clip(_beta_v, 0.2, 5.0))
-                                
-                                _inn_v = innovations_train_blend[_idx_v] - _ewm_mu_v
-                                _S_v = _S_bt_c[_idx_v] * _beta_v
-                                if _nu_c > 2:
-                                    _sig_v = np.sqrt(_S_v * (_nu_c - 2) / _nu_c)
-                                else:
-                                    _sig_v = np.sqrt(_S_v)
-                                _sig_v = max(_sig_v, 1e-10)
-                                _z_v = _inn_v / _sig_v
-                                _pit_val_c[_t_v] = student_t_dist.cdf(_z_v, df=_nu_c)
-                                
-                                # Causal update
-                                _ewm_mu_v = _lam_mu_c * _ewm_mu_v + (1 - _lam_mu_c) * innovations_train_blend[_idx_v]
-                                _ewm_num_v = _lam_beta_c * _ewm_num_v + (1 - _lam_beta_c) * (innovations_train_blend[_idx_v] ** 2)
-                                _ewm_den_v = _lam_beta_c * _ewm_den_v + (1 - _lam_beta_c) * _S_bt_c[_idx_v]
-                            
-                            _pit_val_c = np.clip(_pit_val_c, 0.001, 0.999)
-                            try:
-                                _score_c, _, _ = _berkowitz_penalized_ks(_pit_val_c)
-                                if _score_c > _best_adap_score:
-                                    _best_adap_score = _score_c
-                                    _best_lam_mu = _lam_mu_c
-                                    _best_lam_beta = _lam_beta_c
-                                    _best_nu_adap = _nu_c
-                            except Exception:
-                                pass
+            # Kurtosis-matched ν selection
+            _raw_z_train = innovations_train_blend / np.sqrt(np.maximum(_S_bt_c, 1e-12))
+            _emp_kurt = float(np.mean(_raw_z_train ** 4) / (np.mean(_raw_z_train ** 2) ** 2 + 1e-20))
             
-            # [DEBUG] Adaptive EWM selection results
-            import sys as _sys
-            print(f"  [ADAP] gw={_best_gw_adap}, λ_μ={_best_lam_mu}, λ_β={_best_lam_beta}, ν={_best_nu_adap}, score={_best_adap_score:.4f}", file=_sys.stderr)
+            _NU_CANDIDATES_ADAP = [5, 6, 7, 8, 10, 12]
+            _best_nu_adap = 7  # safe default
+            _best_kurt_mismatch = float('inf')
+            for _nu_c in _NU_CANDIDATES_ADAP:
+                _theo_kurt = 3.0 * (_nu_c - 2.0) / (_nu_c - 4.0)
+                _mismatch = abs(_emp_kurt - _theo_kurt)
+                if _mismatch < _best_kurt_mismatch:
+                    _best_kurt_mismatch = _mismatch
+                    _best_nu_adap = _nu_c
             
             # Apply selected adaptive EWM to full train → test
             nu = float(_best_nu_adap)
