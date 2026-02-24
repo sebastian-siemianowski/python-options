@@ -839,10 +839,10 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
         print(f'\nBaseline saved to: {RESULTS_FILE}')
         
         # Print results table
-        print('\n' + '-' * 140)
+        print('\n' + '-' * 160)
         print(f'{"Symbol":10s} {"log₁₀(q)":>8s} {"c":>5s} {"ν":>3s} {"φ":>5s} {"α":>6s} {"γ":>4s} '
-              f'{"BIC":>9s} {"Hyv":>8s} {"CRPS":>7s} {"PIT_p":>7s} {"MAD":>6s} {"Grd":>3s} {"Status":>6s}')
-        print('-' * 140)
+              f'{"BIC":>9s} {"Hyv":>8s} {"CRPS":>7s} {"PIT_p":>7s} {"MAD":>6s} {"Grd":>3s} {"PIT St":>10s} {"CRPS St":>11s}')
+        print('-' * 160)
         
         for r in sorted(results, key=lambda x: x.get('pit_pvalue', 999) if x.get('fit_success') else 999):
             if r.get('fit_success'):
@@ -855,13 +855,14 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
                 bic = r.get('bic') if r.get('bic') else float('nan')
                 hyv = r.get('hyvarinen') if r.get('hyvarinen') else float('nan')
                 crps = r.get('crps') if r.get('crps') else float('nan')
-                st = 'FAIL' if r['pit_failed'] else 'PASS'
+                pit_st = 'FAIL' if r['pit_failed'] else 'PASS'
+                crps_st = 'PASS' if (np.isfinite(crps) and crps < 0.012) else ('WARN' if (np.isfinite(crps) and crps < 0.02) else 'FAIL')
                 print(f'{r["symbol"]:10s} {q:+8.2f} {c:5.3f} {nu:3.0f} {phi:+5.2f} {alpha:+6.3f} {gamma:4.2f} '
                       f'{bic:+9.1f} {hyv:+8.4f} {crps:7.4f} {r["pit_pvalue"]:7.4f} {r["histogram_mad"]:6.4f} '
-                      f'{r["calibration_grade"]:>3s} {st:>6s}')
+                      f'{r["calibration_grade"]:>3s} {pit_st:>10s} {crps_st:>11s}')
             else:
                 print(f'{r["symbol"]:10s} {"---":>8s} {"---":>5s} {"---":>3s} {"---":>5s} {"---":>6s} {"---":>4s} '
-                      f'{"---":>9s} {"---":>8s} {"---":>7s} {"---":>7s} {"---":>6s} {"---":>3s} {"ERROR":>6s}')
+                      f'{"---":>9s} {"---":>8s} {"---":>7s} {"---":>7s} {"---":>6s} {"---":>3s} {"ERROR":>10s} {"---":>11s}')
     
     return baseline
 
@@ -960,7 +961,8 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
     table.add_column("γ", justify="right", width=5)
     table.add_column("BIC", justify="right", width=10)
     table.add_column("CRPS", justify="right", width=7)
-    table.add_column("Status", justify="center", width=6)
+    table.add_column("PIT Status", justify="center", width=10)
+    table.add_column("CRPS Status", justify="center", width=11)
     
     # Sort by PIT p-value
     sorted_results = sorted(results, key=lambda x: x.get('pit_pvalue', 999) if x.get('fit_success') else 999)
@@ -987,8 +989,15 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
             berk_style = "bright_green" if berk_p >= 0.10 else "yellow" if berk_p >= 0.05 else "indian_red1"
             mad_style = "bright_green" if mad < 0.03 else "yellow" if mad < 0.05 else "indian_red1"
             grade_style = "bright_green" if grade == 'A' else "yellow" if grade in ['B', 'C'] else "indian_red1"
-            status_style = "indian_red1 bold" if is_fail else "bright_green bold"
-            status_text = "FAIL" if is_fail else "PASS"
+            pit_status_style = "indian_red1 bold" if is_fail else "bright_green bold"
+            pit_status_text = "FAIL" if is_fail else "PASS"
+            
+            # CRPS status: PASS if CRPS < 0.012, WARN if < 0.02, FAIL otherwise
+            crps_fail = not np.isfinite(crps) or crps >= 0.02
+            crps_warn = np.isfinite(crps) and 0.012 <= crps < 0.02
+            crps_pass = np.isfinite(crps) and crps < 0.012
+            crps_status_text = "PASS" if crps_pass else ("WARN" if crps_warn else "FAIL")
+            crps_status_style = "bright_green bold" if crps_pass else ("yellow bold" if crps_warn else "indian_red1 bold")
             
             table.add_row(
                 f"[{sym_style}]{r['symbol']}[/{sym_style}]",
@@ -1004,7 +1013,8 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
                 f"{gamma:.2f}",
                 f"{bic:+.1f}" if np.isfinite(bic) else "[dim]-[/dim]",
                 f"{crps:.4f}" if np.isfinite(crps) else "[dim]-[/dim]",
-                f"[{status_style}]{status_text}[/{status_style}]",
+                f"[{pit_status_style}]{pit_status_text}[/{pit_status_style}]",
+                f"[{crps_status_style}]{crps_status_text}[/{crps_status_style}]",
             )
         else:
             table.add_row(
@@ -1013,6 +1023,7 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
                 "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
                 "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
                 "[indian_red1 bold]ERROR[/indian_red1 bold]",
+                "[dim]-[/dim]",
             )
     
     console.print(table)
