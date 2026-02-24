@@ -2801,36 +2801,40 @@ class PhiStudentTDriftModel:
             _emp_kurt = float(np.mean(_raw_z_train ** 4) / (np.mean(_raw_z_train ** 2) ** 2 + 1e-20))
             
             # Asset-class adaptive ν grid:
-            # Metals: [5..12] — heavier tails from macro jumps
-            # High-vol equities: [3..10] — very heavy tails, lower ν gives
-            #   smaller σ_scale = σ_std × √((ν-2)/ν), directly reducing CRPS
-            # Regular equities: [5..20] — wider range for diverse tail behavior
+            # Metals: [5..12] with kurtosis pre-filtering (top 3)
+            # All equities: [3..20] with kurtosis pre-filtering (top 7)
+            #   Pre-filtering acts as regularizer — full search overfits
+            #   on CV folds. But top-7 of 10 is permissive enough to
+            #   include the optimal ν for most assets.
             if _is_metals_adaptive:
                 _NU_ALL = [5, 6, 7, 8, 10, 12]
-            elif _is_high_vol:
-                _NU_ALL = [3, 4, 5, 6, 7, 8, 10]
             else:
-                _NU_ALL = [5, 6, 7, 8, 10, 12, 15, 20]
-            # Rank by kurtosis mismatch, pick top candidates
-            # Metals: top 3 (narrow grid, heavy tails expected)
-            # Equities: top 5 (wide diversity in tail behavior)
+                _NU_ALL = [3, 4, 5, 6, 7, 8, 10, 12, 15, 20]
+            # Rank by kurtosis mismatch
             _kurt_ranked = []
             for _nu_c in _NU_ALL:
                 if _nu_c > 4:
                     _theo_kurt = 3.0 * (_nu_c - 2.0) / (_nu_c - 4.0)
                     _mismatch = abs(_emp_kurt - _theo_kurt)
-                elif _nu_c > 2:
-                    # For ν ∈ (2,4]: theoretical kurtosis is infinite.
-                    # Use a heuristic: if empirical kurtosis > 6, these ν
-                    # values are reasonable. Assign mismatch proportional to
-                    # how far the empirical kurtosis is from "very heavy tailed".
-                    _mismatch = max(0.0, 9.0 - _emp_kurt)  # Prefer when kurt > 9
+                elif _nu_c == 4:
+                    _mismatch = max(0.0, 6.0 - _emp_kurt) * 0.5
+                elif _nu_c == 3:
+                    _mismatch = max(0.0, 8.0 - _emp_kurt) * 0.4
                 else:
                     _mismatch = float('inf')
                 _kurt_ranked.append((_mismatch, _nu_c))
             _kurt_ranked.sort()
-            _n_nu_cands = 3 if _is_metals_adaptive else (5 if _is_high_vol else 6)
-            _NU_CANDIDATES_ADAP = [_nu for _, _nu in _kurt_ranked[:_n_nu_cands]]
+            if _is_metals_adaptive:
+                _NU_CANDIDATES_ADAP = [_nu for _, _nu in _kurt_ranked[:3]]
+            else:
+                # Equities: use ALL ν values — no kurtosis pre-filtering.
+                # Pre-filtering excluded the optimal ν for CNXT (ν=5 ranked
+                # 10/10 by kurtosis at reference gw=0.5, but scores 0.85 on
+                # training at the CV-selected gw=0.9). The CV scoring with
+                # its multi-objective criterion (Berkowitz × MAD × Sharpness)
+                # is the proper regularizer — kurtosis matching at a fixed
+                # reference gw is unreliable when optimal gw varies widely.
+                _NU_CANDIDATES_ADAP = [_nu for _, _nu in _kurt_ranked]
             
             # Step 2: Walk-forward CV grid search
             # Asset-class adaptive grids:
@@ -2839,20 +2843,37 @@ class PhiStudentTDriftModel:
             # Regular equities: wider gw range, wider λ
             
             if _is_metals_adaptive:
-                _GW_GRID = [0.70, 0.75, 0.80, 0.85, 0.90]
+                _GW_GRID = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.0]
                 _LAM_GRID = [0.98, 0.985, 0.99, 0.995]
             elif _is_high_vol:
                 # High-vol equities: faster decay, GARCH-heavy
                 # λ = 0.96 → ~25-day half-life, tracks vol swings
-                # Higher gw → GARCH dominates (better for crisis adaptation)
-                _GW_GRID = [0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.95]
+                # gw=1.0 = pure GARCH (no Kalman S_pred at all)
+                _GW_GRID = [0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.95, 1.0]
                 _LAM_GRID = [0.96, 0.965, 0.97, 0.975, 0.98, 0.985]
             else:
-                _GW_GRID = [0.0, 0.15, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
-                _LAM_GRID = [0.975, 0.98, 0.983, 0.985, 0.988, 0.99, 0.995]
-            # Walk-forward CV: 3 folds for equities (more data → better
-            # generalization), 2 folds for metals (preserve existing behavior)
-            _n_cv_folds = 2 if _is_metals_adaptive else 3
+                # Regular equities: wide gw range (0→pure GARCH)
+                # gw=1.0 essential for extreme-c assets (ERMAY c=10.2,
+                # CNXT c=10.0) where any Kalman contribution is toxic.
+                _GW_GRID = [0.0, 0.15, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.0]
+                # For short data: add faster λ (0.95-0.97) for quicker
+                # EWM convergence within limited warmup periods
+                if n_train < 350:
+                    _LAM_GRID = [0.95, 0.96, 0.97, 0.975, 0.98, 0.985, 0.99]
+                else:
+                    _LAM_GRID = [0.975, 0.98, 0.983, 0.985, 0.988, 0.99, 0.995]
+            # Walk-forward CV: adaptive fold count based on data length.
+            # Each fold needs ≥80 observations for reliable KS test and
+            # histogram MAD computation. Very short data (n_train<200)
+            # gets 1 fold; short data gets 2; regular data gets 3.
+            if _is_metals_adaptive:
+                _n_cv_folds = 2
+            elif n_train < 200:
+                _n_cv_folds = 1  # Very short: single train/val split
+            elif n_train < 400:
+                _n_cv_folds = 2  # Short data: larger folds for reliability
+            else:
+                _n_cv_folds = 3
             _n_cv_portions = _n_cv_folds + 1
             _fold_size = n_train // _n_cv_portions
             
@@ -2936,7 +2957,7 @@ class PhiStudentTDriftModel:
                                 # The ratio innov_std/mean_sigma measures how
                                 # well σ tracks actual scale. If σ > innov_std,
                                 # ratio < 1 → penalty (over-dispersed).
-                                # Exponent 1.5 and wide clip [0.55, 1.45] give
+                                # Exponent 1.5 and clip [0.55, 1.45] give
                                 # meaningful discrimination between candidates.
                                 _innov_std_est = float(np.std(innovations_train_blend[:_est_end]))
                                 if _innov_std_est > 1e-10 and _mean_sig_fold > 1e-10:
@@ -2966,15 +2987,19 @@ class PhiStudentTDriftModel:
             #
             # Grid: 5 gw × 5 λ × 1 ν = 25 candidates × n_folds,
             # completes in < 50 ms.
+            #
+            # Skip for short data (n_train < 300): fold sizes too small
+            # for reliable fine-grained scoring — refinement adds noise.
             # =============================================================
+            _skip_refinement = n_train < 300
             _gw_fine_lo = max(_best_gw_adap - 0.06, 0.0)
-            _gw_fine_hi = min(_best_gw_adap + 0.06, 0.95)
+            _gw_fine_hi = min(_best_gw_adap + 0.06, 1.0)
             _lam_fine_lo = max(_best_lam_mu - 0.003, 0.970)
             _lam_fine_hi = min(_best_lam_mu + 0.003, 0.998)
             _GW_FINE = np.arange(_gw_fine_lo, _gw_fine_hi + 0.01, 0.03)
             _LAM_FINE = np.arange(_lam_fine_lo, _lam_fine_hi + 0.0005, 0.001)
             
-            for _gw_f in _GW_FINE:
+            for _gw_f in (_GW_FINE if not _skip_refinement else []):
                 _gw_f = float(_gw_f)
                 if abs(_gw_f - _best_gw_adap) < 0.005:
                     continue  # Skip the already-evaluated centre
@@ -3100,10 +3125,11 @@ class PhiStudentTDriftModel:
                 _probit_var = float(np.var(_z_probit_cal, ddof=0))
                 # If σ² > 1: scale too narrow → inflate β (widen σ for PIT)
                 # If σ² < 1: scale too wide → shrink β (tighten σ for CRPS)
-                # Asymmetric bounds: allow more aggressive shrinkage (0.50)
-                # than inflation (1.40) because over-dispersion hurts CRPS
-                # linearly while under-dispersion damages PIT exponentially.
-                _beta_scale_corr = float(np.clip(_probit_var, 0.50, 1.40))
+                # Wide bounds [0.40, 2.50]: short-data assets (OKLO, BZAI,
+                # ANNA) have training probit variance 1.6-1.8 which requires
+                # large β corrections. Capping at 1.40 leaves uncorrected
+                # under-dispersion that causes PIT failure.
+                _beta_scale_corr = float(np.clip(_probit_var, 0.40, 2.50))
             else:
                 _beta_scale_corr = 1.0
             

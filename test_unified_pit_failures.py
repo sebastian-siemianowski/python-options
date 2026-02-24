@@ -1127,8 +1127,18 @@ if __name__ == '__main__':
         # Test metals only (GC=F, SI=F, XAGUSD)
         test_full_tuning_all_assets(assets_to_test=['GC=F', 'SI=F', 'XAGUSD'])
     elif len(sys.argv) > 1 and sys.argv[1] == '--special':
-        # Test special focus assets (current calibration targets)
-        test_full_tuning_all_assets(assets_to_test=['GOOG', 'GOOGL', 'MSTR', 'AMZE', 'ADBE', 'RCAT'])
+        # Test all PIT-failing and CRPS-failing assets (current calibration targets)
+        test_full_tuning_all_assets(assets_to_test=[
+            # PIT failures
+            'OKLO', 'ERMAY', 'BCAL', 'ABTC', 'SAIC', 'CRML', 'SNT', 'ANNA',
+            'TATT', 'AMZE', 'BZAI', 'HII', 'FLTR', 'CNXT', 'QS',
+            # CRPS failures (PIT pass but CRPS fail)
+            'PSIX', 'ARQQ', 'COMM', 'AZBA', 'RGTI', 'MSTR', 'BNZI', 'VRT',
+            'SPCE', 'GORO', 'APLM', 'AIRI', 'ILKAF', 'HOVR', 'KITT', 'QBTS',
+            'PEW', 'PACB', 'SIF', 'ATAI', 'AIFF', 'EH', 'USAS', 'HYMC',
+            'SATL', 'RCAT', 'EVTL', 'SMCI', 'VSAT', 'ABCL', 'DPRO', 'GSAT',
+            'BKSY', 'PGY',
+        ])
     elif len(sys.argv) > 1 and sys.argv[1] == '--full':
         # Test failing assets only
         test_full_tuning_all_assets(mode="failing")
