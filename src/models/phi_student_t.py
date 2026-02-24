@@ -2323,6 +2323,42 @@ class PhiStudentTDriftModel:
             # All estimation on training data — no test data used.
             # =================================================================
             from scipy.stats import t as student_t_dist, kstest as ks_test
+            from scipy.stats import norm as norm_dist
+            
+            def _berkowitz_penalized_ks(pit_arr):
+                """
+                Joint KS + Berkowitz score for calibration selection.
+                
+                Pure KS p-value ignores serial dependence in PITs.
+                For metals (gold, silver), regime transitions create PIT
+                autocorrelation that KS cannot detect but Berkowitz does.
+                
+                Score = ks_p × (1 - |ρ₁|)²
+                
+                The squaring makes the penalty convex — mild autocorrelation
+                (|ρ₁| < 0.1) is barely penalized, but moderate autocorrelation
+                (|ρ₁| > 0.2) is heavily penalized.
+                
+                Returns (score, ks_p, rho1) for diagnostics.
+                """
+                try:
+                    _, ks_p = ks_test(pit_arr, 'uniform')
+                except Exception:
+                    return 0.0, 0.0, 0.0
+                
+                # PIT lag-1 autocorrelation
+                if len(pit_arr) > 10:
+                    pit_c = pit_arr - np.mean(pit_arr)
+                    denom = np.sum(pit_c ** 2)
+                    if denom > 1e-12:
+                        rho1 = float(np.sum(pit_c[1:] * pit_c[:-1]) / denom)
+                    else:
+                        rho1 = 0.0
+                else:
+                    rho1 = 0.0
+                
+                penalty = (1.0 - min(abs(rho1), 0.99)) ** 2
+                return float(ks_p * penalty), float(ks_p), float(rho1)
             
             # Run GARCH on training data for blending estimation
             innovations_train_blend = returns[:n_train] - mu_pred[:n_train] - mu_drift
@@ -2351,7 +2387,7 @@ class PhiStudentTDriftModel:
             n_train_est = int(n_train * 0.6)
             n_val_est = n_train - n_train_est
             
-            GW_CANDIDATES = [0.30, 0.40, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75]
+            GW_CANDIDATES = [0.20, 0.30, 0.40, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85]
             best_gw_base = 0.55  # Default
             best_gw_ks_p = -1.0
             
@@ -2399,9 +2435,9 @@ class PhiStudentTDriftModel:
                 pit_val = np.clip(pit_val, 0.001, 0.999)
                 
                 try:
-                    _, ks_p_cand = ks_test(pit_val, 'uniform')
-                    if ks_p_cand > best_gw_ks_p:
-                        best_gw_ks_p = ks_p_cand
+                    score_cand, _, _ = _berkowitz_penalized_ks(pit_val)
+                    if score_cand > best_gw_ks_p:
+                        best_gw_ks_p = score_cand
                         best_gw_base = gw_cand
                 except Exception:
                     pass
@@ -2409,6 +2445,8 @@ class PhiStudentTDriftModel:
             # Apply data-driven blending weight to TEST data
             gw_up_opt = min(best_gw_base + 0.10, 0.90)
             gw_down_opt = max(best_gw_base - 0.10, 0.15)
+            _debug_gw_base = best_gw_base
+            _debug_gw_score = best_gw_ks_p
             
             S_blended = np.zeros(n_test)
             for t in range(n_test):
@@ -2537,7 +2575,7 @@ class PhiStudentTDriftModel:
                             best_ks_ref = avg_ks
                             best_nu_ref = nu_cand
                 
-                # Only update if materially better (≥1.5x avg KS improvement)
+                # Only update if materially better (≥1.5x improvement)
                 if best_nu_ref != int(nu):
                     # Compute avg KS for original ν using same folds
                     orig_fold_ks = []
@@ -2680,6 +2718,9 @@ class PhiStudentTDriftModel:
             'log_likelihood': ll,
             'n_train': n_train,
             'n_test': n_test,
+            'gw_base': _debug_gw_base if use_garch else 0.0,
+            'gw_score': _debug_gw_score if use_garch else 0.0,
+            'beta_final': beta_final if use_garch else variance_inflation,
         }
         
         return pit_values, pit_pvalue, sigma, crps, diagnostics
@@ -2930,7 +2971,7 @@ class PhiStudentTDriftModel:
                 alpha_asym=0.0,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens,
-                ms_ewm_lambda=_prof_ms_ewm_lambda,
+                ms_ewm_lambda=0.0,
                 q_stress_ratio=_prof_q_stress_ratio,
             )
             try:
@@ -2966,7 +3007,7 @@ class PhiStudentTDriftModel:
                 k_asym=_prof_k_asym,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens_opt,
-                ms_ewm_lambda=_prof_ms_ewm_lambda,
+                ms_ewm_lambda=0.0,
                 q_stress_ratio=_prof_q_stress_ratio,
             )
             try:
@@ -3014,7 +3055,7 @@ class PhiStudentTDriftModel:
                 k_asym=_prof_k_asym,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens_opt,
-                ms_ewm_lambda=_prof_ms_ewm_lambda,
+                ms_ewm_lambda=0.0,
                 q_stress_ratio=_prof_q_stress_ratio,
                 risk_premium_sensitivity=rp,
             )
@@ -3073,7 +3114,7 @@ class PhiStudentTDriftModel:
                 k_asym=_prof_k_asym,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens_opt,
-                ms_ewm_lambda=_prof_ms_ewm_lambda,
+                ms_ewm_lambda=0.0,
                 q_stress_ratio=_prof_q_stress_ratio,
                 risk_premium_sensitivity=risk_premium_opt,
                 skew_score_sensitivity=kappa_val,
@@ -3188,7 +3229,7 @@ class PhiStudentTDriftModel:
         temp_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
             alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
+            ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
             vov_damping=_prof_vov_damping, variance_inflation=1.0,
             risk_premium_sensitivity=risk_premium_opt,
             skew_score_sensitivity=skew_kappa_opt,
@@ -3274,7 +3315,7 @@ class PhiStudentTDriftModel:
                 temp_config = UnifiedStudentTConfig(
                     q=q_opt, c=c_opt, phi=phi_opt, nu_base=float(test_nu),
                     alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
-                    ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
+                    ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
                     vov_damping=_prof_vov_damping, variance_inflation=1.0,
                     risk_premium_sensitivity=risk_premium_opt,
                     skew_score_sensitivity=skew_kappa_opt,
@@ -3346,20 +3387,7 @@ class PhiStudentTDriftModel:
                     if len(pit_values) > 10:
                         pit_values = np.clip(pit_values, 0.001, 0.999)
                         _, ks_p = kstest(pit_values, 'uniform')
-                        
-                        # PIT autocorrelation penalty (Feb 2026 — Berkowitz fix)
-                        # High PIT autocorrelation → Berkowitz test failure.
-                        # Penalize ν values that produce serially correlated PITs.
-                        pit_arr = np.array(pit_values)
-                        pit_c = pit_arr - np.mean(pit_arr)
-                        pit_denom = np.sum(pit_c ** 2)
-                        if pit_denom > 1e-12 and len(pit_c) > 2:
-                            pit_rho = float(np.sum(pit_c[1:] * pit_c[:-1]) / pit_denom)
-                        else:
-                            pit_rho = 0.0
-                        # Adjusted score: ks_p × (1 - |ρ₁|)
-                        ks_p_adj = ks_p * (1.0 - min(abs(pit_rho), 0.99))
-                        fold_ks_pvalues.append(ks_p_adj)
+                        fold_ks_pvalues.append(ks_p)
                 
                 # Average KS p-value across folds
                 if len(fold_ks_pvalues) > 0:
@@ -3380,7 +3408,7 @@ class PhiStudentTDriftModel:
         temp_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt, nu_base=best_nu,
             alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
+            ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
             vov_damping=_prof_vov_damping, variance_inflation=1.0,
             risk_premium_sensitivity=risk_premium_opt,
             skew_score_sensitivity=skew_kappa_opt,
@@ -3568,7 +3596,7 @@ class PhiStudentTDriftModel:
                                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
                                 alpha_asym=alpha_opt, k_asym=_prof_k_asym,
                                 gamma_vov=gamma_opt,
-                                ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
+                                ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
                                 vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
                                 mu_drift=mu_drift_opt,
                                 risk_premium_sensitivity=risk_premium_opt,
@@ -3608,7 +3636,7 @@ class PhiStudentTDriftModel:
                             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
                             alpha_asym=alpha_opt, k_asym=_prof_k_asym,
                             gamma_vov=gamma_opt,
-                            ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
+                            ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
                             vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
                             mu_drift=mu_drift_opt,
                             risk_premium_sensitivity=risk_premium_opt,
@@ -3619,7 +3647,7 @@ class PhiStudentTDriftModel:
                             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
                             alpha_asym=alpha_opt, k_asym=_prof_k_asym,
                             gamma_vov=gamma_opt,
-                            ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda, q_stress_ratio=_prof_q_stress_ratio,
+                            ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
                             vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
                             mu_drift=mu_drift_opt,
                             risk_premium_sensitivity=risk_premium_opt,
