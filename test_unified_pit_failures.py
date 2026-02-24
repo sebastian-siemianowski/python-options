@@ -4,11 +4,13 @@
 import sys
 import os
 import warnings
+import multiprocessing
 
 warnings.filterwarnings('ignore')
 sys.path.insert(0, 'src')
 
-print('Loading test module...')
+if __name__ == '__main__' or multiprocessing.current_process().name == 'MainProcess':
+    pass  # silent load
 
 import numpy as np
 import json
@@ -24,6 +26,7 @@ try:
     from rich.text import Text
     from rich import box
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
+    from rich.live import Live
     from rich.rule import Rule
     from rich.align import Align
     RICH_AVAILABLE = True
@@ -198,24 +201,20 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         # =====================================================================
         # CRPS: Use calibrated predictions (training-data calibration = honest)
         # =====================================================================
-        # For metals: use calibrated sigma and effective ν from filter_and_calibrate.
-        # The calibration (GARCH blending, β, ν refinement) is estimated entirely
-        # on training data — no test look-ahead. Using raw S_pred ignores all
-        # the variance improvements from GARCH blending and β recalibration,
+        # All assets with GARCH now use the adaptive EWM path, so calibrated
+        # sigma captures GARCH blending, β recalibration, and ν refinement.
+        # The calibration is estimated entirely on training data — no test
+        # look-ahead. Using raw S_pred ignores all the variance improvements,
         # producing artificially worse CRPS for well-calibrated models.
-        #
-        # For non-metals: use raw predictions (backward compatible).
         # =====================================================================
         nu_effective_crps = calib_diag.get('nu_effective', config.nu_base)
-        _is_metals_crps = symbol in ('GC=F', 'SI=F', 'XAGUSD', 'XAUUSD', 'XAUUSD=X',
-                                      'XAGUSD=X', 'GLD', 'IAU', 'SLV', 'HG=F', 'PL=F')
         
-        if _is_metals_crps and len(sigma_calibrated) == n_test and np.all(sigma_calibrated > 0):
-            # Metals: calibrated sigma captures GARCH + β + ν refinement
+        if len(sigma_calibrated) == n_test and np.all(sigma_calibrated > 0):
+            # Calibrated sigma captures GARCH + β + ν refinement
             sigma_crps = np.maximum(sigma_calibrated, 1e-10)
             nu_crps = nu_effective_crps
         else:
-            # Non-metals: raw predictions (backward compatible)
+            # Fallback: raw predictions
             nu_crps = config.nu_base
             if nu_crps > 2:
                 sigma_crps = np.sqrt(S_pred_test * (nu_crps - 2) / nu_crps)
@@ -297,6 +296,50 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
             fit_success=False,
             error=str(e)
         )
+
+
+# =============================================================================
+# MULTIPROCESSING WORKER — module level for pickling
+# =============================================================================
+
+def _init_worker():
+    """Initialize worker process."""
+    import warnings
+    warnings.filterwarnings('ignore')
+    import sys
+    if 'src' not in sys.path:
+        sys.path.insert(0, 'src')
+
+
+def _process_asset_worker(symbol):
+    """Process one asset. Returns picklable dict."""
+    try:
+        data = fetch_asset_data(symbol)
+        if data is None:
+            return {'symbol': symbol, 'fit_success': False, 'error': 'No data available'}
+        returns, vol = data
+        result = fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0)
+        return {
+            'symbol': result.symbol, 'pit_pvalue': result.pit_pvalue,
+            'ks_statistic': result.ks_statistic, 'histogram_mad': result.histogram_mad,
+            'calibration_grade': result.calibration_grade,
+            'log10_q': result.log10_q if not np.isnan(result.log10_q) else None,
+            'c': result.c if not np.isnan(result.c) else None,
+            'phi': result.phi if not np.isnan(result.phi) else None,
+            'nu': result.nu, 'alpha_asym': result.alpha_asym,
+            'gamma_vov': result.gamma_vov,
+            'variance_inflation': result.variance_inflation,
+            'berkowitz_pvalue': result.berkowitz_pvalue if np.isfinite(result.berkowitz_pvalue) else 0.0,
+            'bic': result.bic if not np.isnan(result.bic) else None,
+            'hyvarinen': result.hyvarinen if not np.isnan(result.hyvarinen) else None,
+            'crps': result.crps if not np.isnan(result.crps) else None,
+            'log_likelihood': result.log_likelihood if not np.isnan(result.log_likelihood) else None,
+            'n_obs': result.n_obs, 'fit_success': result.fit_success,
+            'error': result.error, 'pit_failed': result.pit_failed,
+            'mad_failed': result.mad_failed,
+        }
+    except Exception as e:
+        return {'symbol': symbol, 'fit_success': False, 'error': str(e)}
 
 
 def fit_unified_model_adaptive_nu(symbol, returns, vol):
@@ -675,146 +718,148 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
     n_pit_failures = 0
     n_mad_failures = 0
     
-    # Use Rich progress if available
-    if RICH_AVAILABLE:
-        with Progress(
-            SpinnerColumn(spinner_name="dots", style="bright_yellow"),
-            TextColumn("[bold cyan]{task.description}[/bold cyan]"),
-            BarColumn(bar_width=30, complete_style="bright_green"),
-            MofNCompleteColumn(),
-            TextColumn("·"),
-            TimeElapsedColumn(),
-            console=console,
-            transient=False,
-        ) as progress:
-            task = progress.add_task("Processing assets", total=len(assets_to_test))
-            
-            for i, symbol in enumerate(assets_to_test):
-                progress.update(task, description=f"[cyan]{symbol}[/cyan]")
-                
-                console.print()
-                idx_text = Text()
-                idx_text.append(f"[{i+1}/{len(assets_to_test)}] ", style="dim")
-                idx_text.append("Processing ", style="dim")
-                idx_text.append(symbol, style="bold bright_white")
-                idx_text.append("...", style="dim")
-                console.print(idx_text)
-                
-                data = fetch_asset_data(symbol)
-                if data is None:
-                    warn_text = Text()
-                    warn_text.append("  ⚠ ", style="yellow")
-                    warn_text.append("No data available, skipping", style="dim")
-                    console.print(warn_text)
-                    results.append({
-                        'symbol': symbol,
-                        'fit_success': False,
-                        'error': 'No data available'
-                    })
-                    progress.advance(task)
-                    continue
-                
-                returns, vol = data
-                data_text = Text()
-                data_text.append("  Data: ", style="dim")
-                data_text.append(f"{len(returns)}", style="bold white")
-                data_text.append(" observations", style="dim")
-                console.print(data_text)
-                
-                result = fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0)
-                
-                result_dict = {
-                    'symbol': result.symbol,
-                    'pit_pvalue': result.pit_pvalue,
-                    'ks_statistic': result.ks_statistic,
-                    'histogram_mad': result.histogram_mad,
-                    'calibration_grade': result.calibration_grade,
-                    'log10_q': result.log10_q if not np.isnan(result.log10_q) else None,
-                    'c': result.c if not np.isnan(result.c) else None,
-                    'phi': result.phi if not np.isnan(result.phi) else None,
-                    'nu': result.nu,
-                    'alpha_asym': result.alpha_asym,
-                    'gamma_vov': result.gamma_vov,
-                    'variance_inflation': result.variance_inflation,
-                    'berkowitz_pvalue': result.berkowitz_pvalue if not np.isnan(result.berkowitz_pvalue) else 0.0,
-                    'bic': result.bic if not np.isnan(result.bic) else None,
-                    'hyvarinen': result.hyvarinen if not np.isnan(result.hyvarinen) else None,
-                    'crps': result.crps if not np.isnan(result.crps) else None,
-                    'log_likelihood': result.log_likelihood if not np.isnan(result.log_likelihood) else None,
-                    'n_obs': result.n_obs,
-                    'fit_success': result.fit_success,
-                    'error': result.error,
-                    'pit_failed': result.pit_failed,
-                    'mad_failed': result.mad_failed,
-                }
-                results.append(result_dict)
-                
-                print_test_result(result)
-                
-                if result.pit_failed:
-                    n_pit_failures += 1
-                if result.mad_failed:
-                    n_mad_failures += 1
-                
-                progress.advance(task)
+    # =========================================================================
+    # MULTIPROCESSING with Rich live progress
+    # =========================================================================
+    import time as _time
+    n_workers = min(os.cpu_count() or 1, len(assets_to_test))
+    use_parallel = n_workers > 1 and len(assets_to_test) > 1
+    t0 = _time.time()
+
+    def _print_detail(rd, idx, total, con):
+        sym = rd.get('symbol', '?')
+        n_obs = rd.get('n_obs', 0)
+        if not rd.get('fit_success', False):
+            err = rd.get('error', '?')
+            con.print(f'  [dim]┌─ [{idx}/{total}][/dim] [bold indian_red1]{sym}[/bold indian_red1] [dim]─ FAILED: {err} ─┐[/dim]')
+            return
+        pit_p = rd.get('pit_pvalue', 0)
+        berk = rd.get('berkowitz_pvalue', 0.0)
+        mad = rd.get('histogram_mad', 0)
+        grade = rd.get('calibration_grade', '?')
+        pf = rd.get('pit_failed', True)
+        mf = rd.get('mad_failed', False)
+        sc = 'indian_red1' if pf else 'bright_green'
+        bc = 'bright_green' if berk >= 0.05 else 'indian_red1'
+        mc = 'bright_green' if not mf else 'indian_red1'
+        gc = 'bright_green' if grade == 'A' else 'yellow' if grade in ('B','C') else 'indian_red1'
+        pm = '✗' if pf else '✓'
+        bm = '✗' if berk < 0.05 else '✓'
+        mm = '✗' if mf else '✓'
+        q = rd.get('log10_q') or 0
+        cv = rd.get('c') or 0
+        phi = rd.get('phi') or 0
+        nu = rd.get('nu', 8)
+        alpha = rd.get('alpha_asym', 0.0)
+        gamma = rd.get('gamma_vov', 0.0)
+        bic = rd.get('bic') or 0
+        hyv = rd.get('hyvarinen') or 0
+        crps = rd.get('crps') or 0
+        vi = rd.get('variance_inflation', 0)
+        w = 68
+        pad = ' ' * 14
+        # Top border
+        tag = f'[{idx}/{total}] {sym}'
+        obs = f'{n_obs} obs'
+        fill = w - len(tag) - len(obs) - 4
+        top = Text()
+        top.append('  ┌─ ', style='dim')
+        top.append(tag, style='bold bright_white')
+        top.append(' ' + '─' * fill + ' ', style='dim')
+        top.append(obs, style='dim')
+        top.append(' ─┐', style='dim')
+        con.print(top)
+        # Calibration line
+        r1 = Text()
+        r1.append('  │  ', style='dim')
+        r1.append('PIT ', style='dim')
+        r1.append(f'p={pit_p:.4f}', style=sc)
+        r1.append(f' {pm}', style=f'bold {sc}')
+        r1.append('   ', style='dim')
+        r1.append('Berk ', style='dim')
+        r1.append(f'{berk:.4f}', style=bc)
+        r1.append(f' {bm}', style=f'bold {bc}')
+        r1.append('   ', style='dim')
+        r1.append('MAD ', style='dim')
+        r1.append(f'{mad:.4f}', style=mc)
+        r1.append(f' {mm}', style=f'bold {mc}')
+        r1.append('   ', style='dim')
+        r1.append('Grade ', style='dim')
+        r1.append(grade, style=f'bold {gc}')
+        con.print(r1)
+        # Model parameters line
+        r2 = Text()
+        r2.append('  │  ', style='dim')
+        r2.append(f'ν={nu:.0f}  φ={phi:+.2f}  α={alpha:+.3f}  c={cv:.3f}  γ={gamma:.2f}  log₁₀q={q:+.2f}', style='bright_cyan')
+        con.print(r2)
+        # Scores line
+        r3 = Text()
+        r3.append('  │  ', style='dim')
+        r3.append(f'BIC={bic:+.1f}   CRPS={crps:.4f}   Hyv={hyv:+.4f}   β={vi:.3f}', style='dim')
+        con.print(r3)
+        # Bottom border
+        con.print(f'  [dim]└' + '─' * (w + 2) + '┘[/dim]')
+
+    if use_parallel and RICH_AVAILABLE:
+        info = Text()
+        info.append('    ⚡ ', style='bold bright_yellow')
+        info.append(f'{n_workers}', style='bold bright_white')
+        info.append(' workers ', style='dim')
+        info.append(f'({os.cpu_count()} CPUs) ', style='dim')
+        info.append(f'│ {len(assets_to_test)} assets', style='bright_cyan')
+        console.print(info)
+        console.print()
+        with multiprocessing.Pool(processes=n_workers, initializer=_init_worker) as pool:
+            completed = 0
+            for rd in pool.imap_unordered(_process_asset_worker, assets_to_test):
+                completed += 1
+                results.append(rd)
+                sym = rd.get('symbol', '?')
+                if rd.get('fit_success', False):
+                    if rd.get('pit_failed', True): n_pit_failures += 1
+                    if rd.get('mad_failed', False): n_mad_failures += 1
+                _print_detail(rd, completed, len(assets_to_test), console)
+        elapsed = _time.time() - t0
+        done = Text()
+        done.append('    ✓ ', style='bold bright_green')
+        done.append(f'Completed {len(results)} assets in ', style='dim')
+        done.append(f'{elapsed:.1f}s', style='bold bright_white')
+        done.append(f' ({elapsed/len(results):.1f}s/asset)', style='dim')
+        console.print(done)
+
+    elif use_parallel:
+        print(f'⚡ MP: {n_workers} workers ({os.cpu_count()} CPUs)')
+        with multiprocessing.Pool(n_workers, _init_worker) as pool:
+            done = 0
+            for rd in pool.imap_unordered(_process_asset_worker, assets_to_test):
+                done += 1
+                results.append(rd)
+                sym = rd.get('symbol', '?')
+                if rd.get('fit_success', False):
+                    p = rd.get('pit_pvalue', 0)
+                    if rd.get('pit_failed', True): n_pit_failures += 1
+                    if rd.get('mad_failed', False): n_mad_failures += 1
+                    print(f'  [{done}/{len(assets_to_test)}] {sym}: p={p:.4f}')
+                else:
+                    print(f'  [{done}/{len(assets_to_test)}] {sym}: FAILED')
     else:
-        # Fallback to plain text
-        for i, symbol in enumerate(FAILING_ASSETS):
-            print(f'\n[{i+1}/{len(FAILING_ASSETS)}] Processing {symbol}...')
-            
-            data = fetch_asset_data(symbol)
-            if data is None:
-                print(f'  WARNING: No data available for {symbol}, skipping')
-                results.append({
-                    'symbol': symbol,
-                    'fit_success': False,
-                    'error': 'No data available'
-                })
-                continue
-            
-            returns, vol = data
-            print(f'  Data: {len(returns)} observations')
-            
-            result = fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0)
-            
-            result_dict = {
-                'symbol': result.symbol,
-                'pit_pvalue': result.pit_pvalue,
-                'ks_statistic': result.ks_statistic,
-                'histogram_mad': result.histogram_mad,
-                'calibration_grade': result.calibration_grade,
-                'log10_q': result.log10_q if not np.isnan(result.log10_q) else None,
-                'c': result.c if not np.isnan(result.c) else None,
-                'phi': result.phi if not np.isnan(result.phi) else None,
-                'nu': result.nu,
-                'alpha_asym': result.alpha_asym,
-                'gamma_vov': result.gamma_vov,
-                'variance_inflation': result.variance_inflation,
-                'berkowitz_pvalue': result.berkowitz_pvalue if not np.isnan(result.berkowitz_pvalue) else 0.0,
-                'bic': result.bic if not np.isnan(result.bic) else None,
-                'hyvarinen': result.hyvarinen if not np.isnan(result.hyvarinen) else None,
-                'crps': result.crps if not np.isnan(result.crps) else None,
-                'log_likelihood': result.log_likelihood if not np.isnan(result.log_likelihood) else None,
-                'n_obs': result.n_obs,
-                'fit_success': result.fit_success,
-                'error': result.error,
-                'pit_failed': result.pit_failed,
-                'mad_failed': result.mad_failed,
-            }
-            results.append(result_dict)
-            
-            print_test_result(result)
-            
-            if result.pit_failed:
-                n_pit_failures += 1
-            if result.mad_failed:
-                n_mad_failures += 1
-    
+        for i, symbol in enumerate(assets_to_test):
+            rd = _process_asset_worker(symbol)
+            results.append(rd)
+            if rd.get('fit_success', False):
+                if rd.get('pit_failed', True): n_pit_failures += 1
+                if rd.get('mad_failed', False): n_mad_failures += 1
+            if RICH_AVAILABLE:
+                _print_detail(rd, i+1, len(assets_to_test), console)
+            else:
+                p = rd.get('pit_pvalue', 0)
+                print(f'  [{i+1}/{len(assets_to_test)}] {symbol}: p={p:.4f}')
+
     # Save results to JSON
     baseline = {
-        'test_date': '2026-02-21',
+        'test_date': '2026-02-24',
         'model': 'phi_student_t_unified_nu_8',
-        'total_assets': len(FAILING_ASSETS),
+        'total_assets': len(assets_to_test),
         'assets_tested': len([r for r in results if r.get('fit_success', False)]),
         'pit_failures': n_pit_failures,
         'mad_failures': n_mad_failures,
@@ -843,10 +888,10 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
         print(f'\nBaseline saved to: {RESULTS_FILE}')
         
         # Print results table
-        print('\n' + '-' * 140)
+        print('\n' + '-' * 160)
         print(f'{"Symbol":10s} {"log₁₀(q)":>8s} {"c":>5s} {"ν":>3s} {"φ":>5s} {"α":>6s} {"γ":>4s} '
-              f'{"BIC":>9s} {"Hyv":>8s} {"CRPS":>7s} {"PIT_p":>7s} {"MAD":>6s} {"Grd":>3s} {"Status":>6s}')
-        print('-' * 140)
+              f'{"BIC":>9s} {"Hyv":>8s} {"CRPS":>7s} {"PIT_p":>7s} {"MAD":>6s} {"Grd":>3s} {"PIT St":>10s} {"CRPS St":>11s}')
+        print('-' * 160)
         
         for r in sorted(results, key=lambda x: x.get('pit_pvalue', 999) if x.get('fit_success') else 999):
             if r.get('fit_success'):
@@ -859,13 +904,14 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
                 bic = r.get('bic') if r.get('bic') else float('nan')
                 hyv = r.get('hyvarinen') if r.get('hyvarinen') else float('nan')
                 crps = r.get('crps') if r.get('crps') else float('nan')
-                st = 'FAIL' if r['pit_failed'] else 'PASS'
+                pit_st = 'FAIL' if r['pit_failed'] else 'PASS'
+                crps_st = 'PASS' if (np.isfinite(crps) and crps < 0.012) else ('WARN' if (np.isfinite(crps) and crps < 0.02) else 'FAIL')
                 print(f'{r["symbol"]:10s} {q:+8.2f} {c:5.3f} {nu:3.0f} {phi:+5.2f} {alpha:+6.3f} {gamma:4.2f} '
                       f'{bic:+9.1f} {hyv:+8.4f} {crps:7.4f} {r["pit_pvalue"]:7.4f} {r["histogram_mad"]:6.4f} '
-                      f'{r["calibration_grade"]:>3s} {st:>6s}')
+                      f'{r["calibration_grade"]:>3s} {pit_st:>10s} {crps_st:>11s}')
             else:
                 print(f'{r["symbol"]:10s} {"---":>8s} {"---":>5s} {"---":>3s} {"---":>5s} {"---":>6s} {"---":>4s} '
-                      f'{"---":>9s} {"---":>8s} {"---":>7s} {"---":>7s} {"---":>6s} {"---":>3s} {"ERROR":>6s}')
+                      f'{"---":>9s} {"---":>8s} {"---":>7s} {"---":>7s} {"---":>6s} {"---":>3s} {"ERROR":>10s} {"---":>11s}')
     
     return baseline
 
@@ -964,61 +1010,55 @@ def render_pit_summary(baseline, results, n_pit_failures, n_mad_failures):
     table.add_column("γ", justify="right", width=5)
     table.add_column("BIC", justify="right", width=10)
     table.add_column("CRPS", justify="right", width=7)
-    table.add_column("Status", justify="center", width=6)
+    table.add_column("PIT Status", justify="center", width=10)
+    table.add_column("CRPS Status", justify="center", width=11)
     
     # Sort by PIT p-value
     sorted_results = sorted(results, key=lambda x: x.get('pit_pvalue', 999) if x.get('fit_success') else 999)
     
     for r in sorted_results:
-        if r.get('fit_success'):
-            q = r['log10_q'] if r['log10_q'] else float('nan')
-            c = r['c'] if r['c'] else float('nan')
-            phi = r['phi'] if r['phi'] else float('nan')
-            nu = r.get('nu', 8)
-            alpha = r.get('alpha_asym', 0.0)
-            gamma = r.get('gamma_vov', 0.0)
-            bic = r.get('bic') if r.get('bic') else float('nan')
-            crps = r.get('crps') if r.get('crps') else float('nan')
-            pit_p = r.get('pit_pvalue', 0)
-            berk_p = r.get('berkowitz_pvalue', 0)
-            mad = r.get('histogram_mad', 0)
-            grade = r.get('calibration_grade', '-')
-            is_fail = r.get('pit_failed', True)
-            
-            # Styling based on status
-            sym_style = "indian_red1" if is_fail else "bright_green"
-            pit_style = "bright_green" if pit_p >= 0.10 else "yellow" if pit_p >= 0.05 else "indian_red1"
-            berk_style = "bright_green" if berk_p >= 0.10 else "yellow" if berk_p >= 0.05 else "indian_red1"
-            mad_style = "bright_green" if mad < 0.03 else "yellow" if mad < 0.05 else "indian_red1"
-            grade_style = "bright_green" if grade == 'A' else "yellow" if grade in ['B', 'C'] else "indian_red1"
-            status_style = "indian_red1 bold" if is_fail else "bright_green bold"
-            status_text = "FAIL" if is_fail else "PASS"
-            
+        if r.get("fit_success"):
+            sym = r["symbol"]
+            q = r.get("log10_q") or 0
+            c_v = r.get("c") or 0
+            phi = r.get("phi") or 0
+            nu = r.get("nu", 8)
+            alpha = r.get("alpha_asym", 0.0)
+            gamma = r.get("gamma_vov", 0.0)
+            berk = r.get("berkowitz_pvalue", 0.0)
+            bic = r.get("bic") or 0
+            crps = r.get("crps") or 0
+            pit_st = "FAIL" if r.get("pit_failed") else "PASS"
+            crps_ok = np.isfinite(crps) and crps < 0.012
+            crps_warn = np.isfinite(crps) and 0.012 <= crps < 0.02
+            crps_st = "PASS" if crps_ok else ("WARN" if crps_warn else "FAIL")
+            pc = "bright_green" if r["pit_pvalue"] >= 0.10 else "yellow" if r["pit_pvalue"] >= 0.05 else "indian_red1"
+            bc = "bright_green" if berk >= 0.10 else "yellow" if berk >= 0.05 else "indian_red1"
+            mc = "bright_green" if r["histogram_mad"] < 0.02 else "yellow" if r["histogram_mad"] < 0.05 else "indian_red1"
+            gc = "bright_green" if r["calibration_grade"] == "A" else "yellow" if r["calibration_grade"] in ["B","C"] else "indian_red1"
+            psc = "bright_green" if pit_st == "PASS" else "indian_red1"
+            csc = "bright_green" if crps_st == "PASS" else "yellow" if crps_st == "WARN" else "indian_red1"
             table.add_row(
-                f"[{sym_style}]{r['symbol']}[/{sym_style}]",
-                f"[{pit_style}]{pit_p:.4f}[/{pit_style}]",
-                f"[{berk_style}]{berk_p:.4f}[/{berk_style}]",
-                f"[{mad_style}]{mad:.4f}[/{mad_style}]",
-                f"[{grade_style}]{grade}[/{grade_style}]",
-                f"{q:+.2f}" if np.isfinite(q) else "[dim]-[/dim]",
-                f"{c:.3f}" if np.isfinite(c) else "[dim]-[/dim]",
-                f"{nu:.0f}",
-                f"{phi:+.2f}" if np.isfinite(phi) else "[dim]-[/dim]",
-                f"{alpha:+.3f}",
-                f"{gamma:.2f}",
-                f"{bic:+.1f}" if np.isfinite(bic) else "[dim]-[/dim]",
-                f"{crps:.4f}" if np.isfinite(crps) else "[dim]-[/dim]",
-                f"[{status_style}]{status_text}[/{status_style}]",
+                f'[bold]{sym}[/bold]',
+                f'[{pc}]{r["pit_pvalue"]:.4f}[/{pc}]',
+                f'[{bc}]{berk:.4f}[/{bc}]',
+                f'[{mc}]{r["histogram_mad"]:.4f}[/{mc}]',
+                f'[{gc}]{r["calibration_grade"]}[/{gc}]',
+                f'{q:+.2f}',
+                f'{c_v:.3f}',
+                f'{nu:.0f}',
+                f'{phi:+.2f}',
+                f'{alpha:+.3f}',
+                f'{gamma:.2f}',
+                f'{bic:+.1f}',
+                f'{crps:.4f}',
+                f'[bold {psc}]{pit_st}[/bold {psc}]',
+                f'[bold {csc}]{crps_st}[/bold {csc}]',
             )
         else:
-            table.add_row(
-                f"[indian_red1]{r['symbol']}[/indian_red1]",
-                "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
-                "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
-                "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]", "[dim]-[/dim]",
-                "[indian_red1 bold]ERROR[/indian_red1 bold]",
-            )
-    
+            sym = r.get("symbol", "?")
+            table.add_row(sym, "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "---", "[indian_red1]ERROR[/]", "---")
+
     console.print(table)
     console.print()
         
@@ -1086,6 +1126,9 @@ if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '--metals':
         # Test metals only (GC=F, SI=F, XAGUSD)
         test_full_tuning_all_assets(assets_to_test=['GC=F', 'SI=F', 'XAGUSD'])
+    elif len(sys.argv) > 1 and sys.argv[1] == '--special':
+        # Test special focus assets (current calibration targets)
+        test_full_tuning_all_assets(assets_to_test=['GOOG', 'GOOGL', 'MSTR', 'AMZE', 'ADBE', 'RCAT'])
     elif len(sys.argv) > 1 and sys.argv[1] == '--full':
         # Test failing assets only
         test_full_tuning_all_assets(mode="failing")
