@@ -388,6 +388,11 @@ pit-metals: .venv/.deps_installed
 	@echo "🥇 Running PIT calibration test (metals: GC=F, SI=F, XAGUSD)..."
 	@.venv/bin/python -B test_unified_pit_failures.py --metals $(ARGS)
 
+# PIT calibration test - special focus assets (GOOG, GOOGL, MSTR, AMZE, ADBE, RCAT)
+pit-special: .venv/.deps_installed
+	@echo "🔬 Running PIT calibration test (special: GOOG, GOOGL, MSTR, AMZE, ADBE, RCAT)..."
+	@.venv/bin/python -B test_unified_pit_failures.py --special $(ARGS)
+
 # PIT calibration test - comprehensive (all assets: failing + passing)
 pit-full: .venv/.deps_installed
 	@echo "🎯 Running COMPREHENSIVE PIT calibration test (all assets)..."

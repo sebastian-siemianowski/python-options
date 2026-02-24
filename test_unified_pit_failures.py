@@ -198,24 +198,20 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         # =====================================================================
         # CRPS: Use calibrated predictions (training-data calibration = honest)
         # =====================================================================
-        # For metals: use calibrated sigma and effective ν from filter_and_calibrate.
-        # The calibration (GARCH blending, β, ν refinement) is estimated entirely
-        # on training data — no test look-ahead. Using raw S_pred ignores all
-        # the variance improvements from GARCH blending and β recalibration,
+        # All assets with GARCH now use the adaptive EWM path, so calibrated
+        # sigma captures GARCH blending, β recalibration, and ν refinement.
+        # The calibration is estimated entirely on training data — no test
+        # look-ahead. Using raw S_pred ignores all the variance improvements,
         # producing artificially worse CRPS for well-calibrated models.
-        #
-        # For non-metals: use raw predictions (backward compatible).
         # =====================================================================
         nu_effective_crps = calib_diag.get('nu_effective', config.nu_base)
-        _is_metals_crps = symbol in ('GC=F', 'SI=F', 'XAGUSD', 'XAUUSD', 'XAUUSD=X',
-                                      'XAGUSD=X', 'GLD', 'IAU', 'SLV', 'HG=F', 'PL=F')
         
-        if _is_metals_crps and len(sigma_calibrated) == n_test and np.all(sigma_calibrated > 0):
-            # Metals: calibrated sigma captures GARCH + β + ν refinement
+        if len(sigma_calibrated) == n_test and np.all(sigma_calibrated > 0):
+            # Calibrated sigma captures GARCH + β + ν refinement
             sigma_crps = np.maximum(sigma_calibrated, 1e-10)
             nu_crps = nu_effective_crps
         else:
-            # Non-metals: raw predictions (backward compatible)
+            # Fallback: raw predictions
             nu_crps = config.nu_base
             if nu_crps > 2:
                 sigma_crps = np.sqrt(S_pred_test * (nu_crps - 2) / nu_crps)
@@ -1086,6 +1082,9 @@ if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '--metals':
         # Test metals only (GC=F, SI=F, XAGUSD)
         test_full_tuning_all_assets(assets_to_test=['GC=F', 'SI=F', 'XAGUSD'])
+    elif len(sys.argv) > 1 and sys.argv[1] == '--special':
+        # Test special focus assets (current calibration targets)
+        test_full_tuning_all_assets(assets_to_test=['GOOG', 'GOOGL', 'MSTR', 'AMZE', 'ADBE', 'RCAT'])
     elif len(sys.argv) > 1 and sys.argv[1] == '--full':
         # Test failing assets only
         test_full_tuning_all_assets(mode="failing")

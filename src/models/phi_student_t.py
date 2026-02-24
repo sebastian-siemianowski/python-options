@@ -2212,47 +2212,33 @@ class PhiStudentTDriftModel:
             neg_indicator = (innovations < 0).astype(np.float64)  # I(ε_{t-1} < 0)
             
             # =================================================================
-            # CONTINUOUS GARCH FOR METALS (February 2026)
+            # CONTINUOUS GARCH (February 2026)
             # =================================================================
             # Standard approach: h_test[0] = unconditional_var (cold start).
-            # Problem for metals: GARCH(1,1) with β≈0.82 has ~6-day half-life,
+            # Problem: GARCH(1,1) with β≈0.82 has ~6-day half-life,
             # so cold-start bias persists for ~30+ test observations.
-            # Gold's test period starts in a different volatility regime than
+            # The test period may start in a different volatility regime than
             # the unconditional average, causing systematic scale mismatch.
             #
             # Fix: run GARCH continuously from t=0 through both training and
             # test. h_test[0] inherits the warm state from training.
             # This is causally valid: h_t depends only on ε²_{t-1}.
+            # Applies to ALL asset classes — cold-start is universal.
             # =================================================================
-            _is_metals_garch = getattr(config, 'ms_ewm_lambda', 0.0) > 0.01
+            innovations_full_garch = returns - mu_pred - mu_drift
+            sq_inn_full_garch = innovations_full_garch ** 2
+            neg_ind_full_garch = (innovations_full_garch < 0).astype(np.float64)
             
-            if _is_metals_garch:
-                # Compute continuous GARCH on full data
-                innovations_full_garch = returns - mu_pred - mu_drift
-                sq_inn_full_garch = innovations_full_garch ** 2
-                neg_ind_full_garch = (innovations_full_garch < 0).astype(np.float64)
-                
-                h_garch_full_cont = np.zeros(n)
-                h_garch_full_cont[0] = garch_unconditional_var
-                for t in range(1, n):
-                    h_garch_full_cont[t] = (garch_omega
-                                            + garch_alpha * sq_inn_full_garch[t-1]
-                                            + garch_leverage * sq_inn_full_garch[t-1] * neg_ind_full_garch[t-1]
-                                            + garch_beta * h_garch_full_cont[t-1])
-                    h_garch_full_cont[t] = max(h_garch_full_cont[t], 1e-12)
-                
-                h_garch = h_garch_full_cont[n_train:]
-            else:
-                h_garch = np.zeros(n_test)
-                h_garch[0] = garch_unconditional_var
-                
-                for t in range(1, n_test):
-                    # GJR-GARCH(1,1): h_t = ω + α·ε²_{t-1} + γ·ε²_{t-1}·I(ε_{t-1}<0) + β·h_{t-1}
-                    h_garch[t] = (garch_omega
-                                  + garch_alpha * sq_innov[t-1]
-                                  + garch_leverage * sq_innov[t-1] * neg_indicator[t-1]
-                                  + garch_beta * h_garch[t-1])
-                    h_garch[t] = max(h_garch[t], 1e-12)
+            h_garch_full_cont = np.zeros(n)
+            h_garch_full_cont[0] = garch_unconditional_var
+            for t in range(1, n):
+                h_garch_full_cont[t] = (garch_omega
+                                        + garch_alpha * sq_inn_full_garch[t-1]
+                                        + garch_leverage * sq_inn_full_garch[t-1] * neg_ind_full_garch[t-1]
+                                        + garch_beta * h_garch_full_cont[t-1])
+                h_garch_full_cont[t] = max(h_garch_full_cont[t], 1e-12)
+            
+            h_garch = h_garch_full_cont[n_train:]
             
             # =================================================================
             # ROUGH VOLATILITY MEMORY (Gatheral-Jaisson-Rosenbaum 2018)
@@ -2421,18 +2407,8 @@ class PhiStudentTDriftModel:
             sq_innov_train_blend = innovations_train_blend ** 2
             neg_ind_train_blend = (innovations_train_blend < 0).astype(np.float64)
             
-            if _is_metals_garch:
-                # Metals: use training portion of continuous GARCH for consistency
-                h_garch_train_est = h_garch_full_cont[:n_train]
-            else:
-                h_garch_train_est = np.zeros(n_train)
-                h_garch_train_est[0] = garch_unconditional_var
-                for t in range(1, n_train):
-                    h_garch_train_est[t] = (garch_omega
-                                            + garch_alpha * sq_innov_train_blend[t-1]
-                                            + garch_leverage * sq_innov_train_blend[t-1] * neg_ind_train_blend[t-1]
-                                            + garch_beta * h_garch_train_est[t-1])
-                    h_garch_train_est[t] = max(h_garch_train_est[t], 1e-12)
+            # Use training portion of continuous GARCH for consistency
+            h_garch_train_est = h_garch_full_cont[:n_train]
             
             S_pred_train_wav = S_pred[:n_train] * wavelet_correction
             
@@ -2700,15 +2676,15 @@ class PhiStudentTDriftModel:
             S_calibrated = S_pred_wavelet * variance_inflation
         
         # =====================================================================
-        # CAUSAL ADAPTIVE EWM FOR METALS (February 2026)
+        # CAUSAL ADAPTIVE EWM (February 2026)
         # =====================================================================
-        # Precious metals exhibit non-stationary drift and variance regimes
-        # (safe-haven demand, inflation hedging, central bank policy) that
-        # cause the static training-estimated β and μ to fail on test data.
-        #
-        # Standard approach: β_static = E[ε²_train] / E[S_blend_train]
-        # Problem: gold 2022–2025 has systematically higher returns and
-        # different volatility structure than the training period.
+        # Non-stationary drift and variance regimes cause the static
+        # training-estimated β and μ to fail on test data. This applies
+        # to ALL asset classes, not just metals:
+        #   - Tech equities: post-2023 AI regime shift (GOOG, GOOGL, ADBE)
+        #   - High-vol names: crypto-correlated vol clustering (MSTR, RCAT)
+        #   - Small-caps: illiquidity-driven variance non-stationarity (AMZE)
+        #   - Metals: safe-haven demand, inflation hedging regimes
         #
         # Solution: online Bayesian learning via exponentially-weighted
         # moving averages of the innovation mean (location) and variance
@@ -2726,43 +2702,46 @@ class PhiStudentTDriftModel:
         # Harrison 1997, "Bayesian Forecasting and Dynamic Models").
         # =====================================================================
         _is_metals_adaptive = getattr(config, 'ms_ewm_lambda', 0.0) > 0.01
-        _use_adaptive_pit = _is_metals_adaptive and use_garch
+        _use_adaptive_pit = use_garch  # Enable for ALL assets with GARCH
         
         if _use_adaptive_pit:
             # =============================================================
-            # METAL-SPECIFIC ADAPTIVE PIT — WALK-FORWARD CV (February 2026)
+            # ADAPTIVE PIT — WALK-FORWARD CV (February 2026)
             # =============================================================
             # Joint (gw, λ, ν) selection via 2-fold walk-forward validation
-            # on training data.  Previous approach used fixed gw=0.85,
-            # λ=0.99 and kurtosis matching for ν, which under-adapted for
-            # gold's non-stationary drift.
+            # on training data. Applies to ALL asset classes with GARCH.
             #
             # Walk-forward CV splits training into 3 equal portions:
             #   Fold 1: estimate on [0, T/3), validate on [T/3, 2T/3)
             #   Fold 2: estimate on [0, 2T/3), validate on [2T/3, T)
             # This mimics true out-of-sample conditions.
             #
-            # Grid:
-            #   gw  ∈ {0.70, 0.75, 0.80, 0.85, 0.90}  — GARCH blend weight
-            #   λ   ∈ {0.98, 0.985, 0.99, 0.995}       — EWM decay
-            #   ν   ∈ kurtosis-informed top-3            — tail thickness
+            # Grid (asset-class adaptive):
+            #   gw  — GARCH blend weight
+            #   λ   — EWM decay
+            #   ν   — kurtosis-informed top candidates
             #
             # Selection criterion: Berkowitz-penalized KS (accounts for
             # PIT serial dependence from regime shifts).
-            #
-            # Total: 5 × 4 × 3 = 60 candidates × 2 folds × O(n_train/3)
-            # ≈ 40K iterations — completes in <1 second.
             # =============================================================
             
             # Step 1: Kurtosis-informed ν pre-filtering
-            # Use gw=0.80 (median of grid) for initial kurtosis estimate
-            _gw_ref = 0.80
+            # Use gw=0.50 (moderate blend) for initial kurtosis estimate
+            _gw_ref = 0.50
             _S_bt_ref = (1 - _gw_ref) * S_pred_train_wav + _gw_ref * h_garch_train_est
             _raw_z_train = innovations_train_blend / np.sqrt(np.maximum(_S_bt_ref, 1e-12))
             _emp_kurt = float(np.mean(_raw_z_train ** 4) / (np.mean(_raw_z_train ** 2) ** 2 + 1e-20))
             
-            _NU_ALL = [5, 6, 7, 8, 10, 12]
-            # Rank by kurtosis mismatch, pick top 3
+            # Asset-class adaptive ν grid:
+            # Metals: [5..12] — heavier tails from macro jumps
+            # Equities: [5..20] — wider range for diverse tail behavior
+            if _is_metals_adaptive:
+                _NU_ALL = [5, 6, 7, 8, 10, 12]
+            else:
+                _NU_ALL = [5, 6, 7, 8, 10, 12, 15, 20]
+            # Rank by kurtosis mismatch, pick top candidates
+            # Metals: top 3 (narrow grid, heavy tails expected)
+            # Equities: top 5 (wide diversity in tail behavior)
             _kurt_ranked = []
             for _nu_c in _NU_ALL:
                 if _nu_c > 4:
@@ -2772,15 +2751,27 @@ class PhiStudentTDriftModel:
                     _mismatch = float('inf')
                 _kurt_ranked.append((_mismatch, _nu_c))
             _kurt_ranked.sort()
-            _NU_CANDIDATES_ADAP = [_nu for _, _nu in _kurt_ranked[:3]]
+            _n_nu_cands = 3 if _is_metals_adaptive else 5
+            _NU_CANDIDATES_ADAP = [_nu for _, _nu in _kurt_ranked[:_n_nu_cands]]
             
             # Step 2: Walk-forward CV grid search
-            _GW_GRID = [0.70, 0.75, 0.80, 0.85, 0.90]
-            _LAM_GRID = [0.98, 0.985, 0.99, 0.995]
-            _fold_size = n_train // 3
+            # Asset-class adaptive grids:
+            # Metals: higher gw (GARCH-heavy), narrower λ
+            # Equities: wider gw range (some need low gw), wider λ
+            if _is_metals_adaptive:
+                _GW_GRID = [0.70, 0.75, 0.80, 0.85, 0.90]
+                _LAM_GRID = [0.98, 0.985, 0.99, 0.995]
+            else:
+                _GW_GRID = [0.0, 0.20, 0.30, 0.40, 0.50, 0.65, 0.80]
+                _LAM_GRID = [0.975, 0.98, 0.985, 0.99, 0.995]
+            # Walk-forward CV: 3 folds for equities (more data → better
+            # generalization), 2 folds for metals (preserve existing behavior)
+            _n_cv_folds = 2 if _is_metals_adaptive else 3
+            _n_cv_portions = _n_cv_folds + 1
+            _fold_size = n_train // _n_cv_portions
             
             _best_adap_score = -1.0
-            _best_gw_adap = 0.80
+            _best_gw_adap = 0.50 if not _is_metals_adaptive else 0.80
             _best_lam_mu = 0.985
             _best_lam_beta = 0.985
             _best_nu_adap = _NU_CANDIDATES_ADAP[0]
@@ -2792,7 +2783,7 @@ class PhiStudentTDriftModel:
                     for _nu_c in _NU_CANDIDATES_ADAP:
                         _fold_scores = []
                         
-                        for _fold_i in range(2):
+                        for _fold_i in range(_n_cv_folds):
                             # Estimation: [0, est_end), Validation: [est_end, val_end)
                             _est_end = (_fold_i + 1) * _fold_size
                             _val_end = min((_fold_i + 2) * _fold_size, n_train)
