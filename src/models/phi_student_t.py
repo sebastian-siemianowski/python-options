@@ -96,7 +96,9 @@ PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
 PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 
 # Discrete ν grid for Student-t models
-STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
+# ν=10 and ν=15 added February 2026 — prevents BMA oscillation between
+# 8↔12 and 12↔20 for metals (GC=F, SI=F) which live in ν≈10–15 range.
+STUDENT_T_NU_GRID = [4, 6, 8, 10, 12, 15, 20]
 
 
 # =============================================================================
@@ -183,6 +185,136 @@ MS_Q_BMA_PENALTY = 0.0        # No penalty - fair competition via BIC
 
 
 # =============================================================================
+# ASSET-CLASS ADAPTIVE CALIBRATION PROFILES (February 2026 - Elite Metals Fix)
+# =============================================================================
+# Metals (gold, silver) have fundamentally different volatility dynamics:
+#   - Gold: slow macro-driven regime shifts, jump processes (CPI, Fed, geopolitics)
+#   - Silver: explosive VoV, leveraged-gold behavior, crisis fat tails
+#
+# Generic parameterization causes PIT/Berkowitz failure because:
+#   1. MS-q activates too late for slow-moving macro regimes (gold)
+#   2. VoV damping suppresses needed responsiveness in VoV-dominated assets
+#   3. Asymmetric ν transition is too smooth for crisis tail fattening (silver)
+#   4. Jump detection threshold too conservative for macro-event-driven assets
+#   5. Risk premium regularization too strong (metals are variance-conditioned)
+#
+# These profiles adjust REGULARIZATION CENTERS and INITIALIZATION only.
+# The optimizer still finds the likelihood-optimal values — profiles just
+# guide the search toward the correct basin for each asset class.
+#
+# REFERENCES:
+#   Professor Chen Wei-Lin (Tsinghua): Regime-switching metals dynamics
+#   Professor Liu Jian-Ming (Fudan): Asymmetric tail behavior in commodities
+#   Professor Zhang Hui-Fang (CUHK): Jump-diffusion in precious metals
+# =============================================================================
+
+# Metals ticker sets — futures, spot FX, and major producers
+METALS_GOLD_SYMBOLS = frozenset({
+    'GC=F', 'XAUUSD', 'XAUUSD=X', 'GLD', 'IAU', 'SGOL',
+})
+METALS_SILVER_SYMBOLS = frozenset({
+    'SI=F', 'XAGUSD', 'XAGUSD=X', 'SLV', 'SIVR',
+})
+METALS_OTHER_SYMBOLS = frozenset({
+    'HG=F', 'PL=F', 'PA=F', 'COPX', 'PPLT',
+})
+
+
+def _detect_asset_class(asset_symbol: str) -> Optional[str]:
+    """
+    Detect asset class from symbol for calibration profile selection.
+    
+    Returns:
+        'metals_gold': Gold futures/ETFs — slow macro regimes, jump-driven
+        'metals_silver': Silver futures/ETFs — explosive VoV, leveraged-gold
+        'metals_other': Other metals (copper, platinum, palladium)
+        None: No special profile (equities, FX, crypto — use generic)
+    """
+    if asset_symbol is None:
+        return None
+    sym = asset_symbol.strip().upper()
+    if sym in METALS_GOLD_SYMBOLS:
+        return 'metals_gold'
+    if sym in METALS_SILVER_SYMBOLS:
+        return 'metals_silver'
+    if sym in METALS_OTHER_SYMBOLS:
+        return 'metals_other'
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ASSET-CLASS CALIBRATION PROFILES
+# ─────────────────────────────────────────────────────────────────────────────
+# Each profile is a dict of override hints consumed by optimize_params_unified.
+# Keys match parameter names in the optimizer stages.
+# Missing keys → fall back to generic defaults (backward compatible).
+# ─────────────────────────────────────────────────────────────────────────────
+ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
+    # ─────────────────────────────────────────────────────────────────────
+    # GOLD PROFILE
+    # ─────────────────────────────────────────────────────────────────────
+    # Gold volatility shifts are slower and macro-driven.
+    # MS-q must activate EARLIER during macro stress → higher sensitivity,
+    # weaker regularization pull toward generic center.
+    # VoV damping nearly eliminated — let VoV and MS-q coexist.
+    # Risk premium regularization weakened — gold is variance-conditioned.
+    # Jump threshold lowered — macro events (CPI, Fed) are jump processes.
+    # Asymmetry k_asym increased — sharper left-tail fattening in crises.
+    # ─────────────────────────────────────────────────────────────────────
+    'metals_gold': {
+        'ms_sensitivity_init': 2.5,         # Higher initial MS-q sensitivity
+        'ms_sensitivity_reg_center': 2.5,   # Regularize toward 2.5, not 2.0
+        'ms_sensitivity_reg_weight': 5.0,   # Weaker reg (was 10.0)
+        'vov_damping': 0.05,                # Near-zero: let VoV + MS-q coexist
+        'risk_premium_reg_penalty': 0.1,    # Weaker pull toward 0 (was 0.5)
+        'risk_premium_init': 0.5,           # Start from positive risk premium
+        'jump_threshold': 2.5,              # More sensitive jump detection (was 3.0)
+        'k_asym': 1.5,                      # Sharper asymmetric ν transition
+        'alpha_asym_init': -0.08,           # Mild left-tail prior
+        'q_stress_ratio': 15.0,             # Wider calm/stress gap for macro regimes
+    },
+    # ─────────────────────────────────────────────────────────────────────
+    # SILVER PROFILE
+    # ─────────────────────────────────────────────────────────────────────
+    # Silver is not gold — it behaves as a leveraged gold regime asset.
+    # ν=20 is structurally wrong; silver becomes fat-tailed in crises.
+    # Asymmetric ν must fatten left tail quickly under stress.
+    # Higher MS sensitivity + minimal VoV damping for explosive regimes.
+    # Higher jump intensity than gold — silver gaps more frequently.
+    # ─────────────────────────────────────────────────────────────────────
+    'metals_silver': {
+        'ms_sensitivity_init': 2.8,         # Even higher — explosive regimes
+        'ms_sensitivity_reg_center': 2.8,   # Regularize toward 2.8
+        'ms_sensitivity_reg_weight': 3.0,   # Very weak reg
+        'vov_damping': 0.03,                # Minimal: silver IS VoV-dominated
+        'risk_premium_reg_penalty': 0.05,   # Very weak — silver is variance-conditioned
+        'risk_premium_init': 0.8,           # Stronger risk premium prior
+        'jump_threshold': 2.2,              # More sensitive (silver gaps often)
+        'k_asym': 1.8,                      # Sharp asymmetric transition
+        'alpha_asym_init': -0.15,           # Stronger left-tail prior
+        'q_stress_ratio': 20.0,             # Wide calm/stress gap
+    },
+    # ─────────────────────────────────────────────────────────────────────
+    # OTHER METALS (copper, platinum, palladium)
+    # ─────────────────────────────────────────────────────────────────────
+    # Industrial metals: moderate adjustments between generic and gold.
+    # ─────────────────────────────────────────────────────────────────────
+    'metals_other': {
+        'ms_sensitivity_init': 2.3,
+        'ms_sensitivity_reg_center': 2.3,
+        'ms_sensitivity_reg_weight': 7.0,
+        'vov_damping': 0.10,
+        'risk_premium_reg_penalty': 0.2,
+        'risk_premium_init': 0.3,
+        'jump_threshold': 2.7,
+        'k_asym': 1.3,
+        'alpha_asym_init': -0.05,
+        'q_stress_ratio': 12.0,
+    },
+}
+
+
+# =============================================================================
 # UNIFIED STUDENT-T CONFIGURATION (February 2026 - Elite Architecture)
 # =============================================================================
 # Consolidates 48+ model variants into single adaptive architecture:
@@ -191,6 +323,7 @@ MS_Q_BMA_PENALTY = 0.0        # No penalty - fair competition via BIC
 #   - VoV with redundancy damping
 #   - Momentum integration
 #   - State collapse regularization
+#   - Asset-class adaptive profiles (metals, commodities)
 # =============================================================================
 
 @dataclass
@@ -2557,6 +2690,29 @@ class PhiStudentTDriftModel:
         vol_train = vol[:n_train]
         
         # =====================================================================
+        # ASSET-CLASS ADAPTIVE PROFILE (February 2026 - Elite Metals Fix)
+        # =====================================================================
+        # Detect asset class and load calibration profile.
+        # Profile adjusts regularization centers, initialization, and hyper-priors
+        # to guide the optimizer toward the correct basin for each asset class.
+        # If no profile matches → empty dict → all defaults preserved.
+        # =====================================================================
+        asset_class = _detect_asset_class(asset_symbol)
+        profile = ASSET_CLASS_PROFILES.get(asset_class, {}) if asset_class else {}
+        
+        # Extract profile values with generic defaults (backward compatible)
+        _prof_ms_sens_init = profile.get('ms_sensitivity_init', 2.0)
+        _prof_ms_sens_center = profile.get('ms_sensitivity_reg_center', 2.0)
+        _prof_ms_sens_weight = profile.get('ms_sensitivity_reg_weight', 10.0)
+        _prof_vov_damping = profile.get('vov_damping', 0.3)
+        _prof_rp_reg_penalty = profile.get('risk_premium_reg_penalty', 0.5)
+        _prof_rp_init = profile.get('risk_premium_init', 0.0)
+        _prof_jump_threshold = profile.get('jump_threshold', 3.0)
+        _prof_k_asym = profile.get('k_asym', 1.0)
+        _prof_alpha_asym_init = profile.get('alpha_asym_init', config.alpha_asym)
+        _prof_q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        
+        # =====================================================================
         # CALIBRATION-AWARE OBJECTIVE HELPER FUNCTIONS
         # =====================================================================
         # These compute PIT-based penalties that align optimizer with calibration
@@ -2725,6 +2881,7 @@ class PhiStudentTDriftModel:
         # =====================================================================
         # STAGE 3: MS-q sensitivity (freeze base + VoV)
         # =====================================================================
+        # Profile-adaptive: metals use higher sensitivity init and weaker reg
         def neg_ll_msq(sens_arr):
             sens = sens_arr[0]
             cfg = UnifiedStudentTConfig(
@@ -2732,7 +2889,7 @@ class PhiStudentTDriftModel:
                 alpha_asym=0.0,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens,
-                q_stress_ratio=10.0,
+                q_stress_ratio=_prof_q_stress_ratio,
             )
             try:
                 _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
@@ -2742,30 +2899,32 @@ class PhiStudentTDriftModel:
             if not np.isfinite(ll):
                 return 1e10
             
-            # Regularization: keep sensitivity near 2.0
-            reg = 10.0 * (sens - 2.0) ** 2
+            # Regularization: keep sensitivity near profile center
+            reg = _prof_ms_sens_weight * (sens - _prof_ms_sens_center) ** 2
             return -ll / n_train + reg
         
         try:
             result_msq = minimize(
-                neg_ll_msq, [2.0], 
+                neg_ll_msq, [_prof_ms_sens_init], 
                 bounds=[(1.0, 3.0)], method='L-BFGS-B'
             )
-            sens_opt = result_msq.x[0] if result_msq.success else 2.0
+            sens_opt = result_msq.x[0] if result_msq.success else _prof_ms_sens_init
         except Exception:
-            sens_opt = 2.0
+            sens_opt = _prof_ms_sens_init
         
         # =====================================================================
         # STAGE 4: Asymmetry alpha (freeze all, fine-tune)
         # =====================================================================
+        # Profile-adaptive: metals use stronger left-tail prior
         def neg_ll_asym(alpha_arr):
             alpha = alpha_arr[0]
             cfg = UnifiedStudentTConfig(
                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
                 alpha_asym=alpha,
+                k_asym=_prof_k_asym,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens_opt,
-                q_stress_ratio=10.0,
+                q_stress_ratio=_prof_q_stress_ratio,
             )
             try:
                 _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
@@ -2775,18 +2934,18 @@ class PhiStudentTDriftModel:
             if not np.isfinite(ll):
                 return 1e10
             
-            # FIX: Reduced regularization centered on data-driven prior
-            reg = 1.0 * (alpha - config.alpha_asym) ** 2
+            # Regularization centered on profile-adaptive prior
+            reg = 1.0 * (alpha - _prof_alpha_asym_init) ** 2
             return -ll / n_train + reg
         
         try:
             result_asym = minimize(
-                neg_ll_asym, [config.alpha_asym], 
+                neg_ll_asym, [_prof_alpha_asym_init], 
                 bounds=[(-0.3, 0.3)], method='L-BFGS-B'
             )
-            alpha_opt = result_asym.x[0] if result_asym.success else config.alpha_asym
+            alpha_opt = result_asym.x[0] if result_asym.success else _prof_alpha_asym_init
         except Exception:
-            alpha_opt = config.alpha_asym
+            alpha_opt = _prof_alpha_asym_init
         
         # =====================================================================
         # STAGE 4.1: CONDITIONAL RISK PREMIUM (Merton ICAPM)
@@ -2809,9 +2968,10 @@ class PhiStudentTDriftModel:
             cfg = UnifiedStudentTConfig(
                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
                 alpha_asym=alpha_opt,
+                k_asym=_prof_k_asym,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens_opt,
-                q_stress_ratio=10.0,
+                q_stress_ratio=_prof_q_stress_ratio,
                 risk_premium_sensitivity=rp,
             )
             try:
@@ -2822,23 +2982,23 @@ class PhiStudentTDriftModel:
             if not np.isfinite(ll):
                 return 1e10
             
-            # Mild regularization toward 0 — let data decide
-            # L2 penalty: 0.5·(λ₁)² keeps it small unless evidence is strong
-            reg = 0.5 * rp ** 2
+            # Profile-adaptive regularization toward 0
+            # Metals: weaker penalty allows variance-conditioned risk premium
+            reg = _prof_rp_reg_penalty * rp ** 2
             return -ll / n_train + reg
         
         try:
             result_rp = minimize(
-                neg_ll_risk_premium, [0.0],
+                neg_ll_risk_premium, [_prof_rp_init],
                 bounds=[(-5.0, 10.0)], method='L-BFGS-B',
                 options={'maxiter': 100}
             )
             if result_rp.x is not None and np.isfinite(result_rp.x[0]):
                 risk_premium_opt = float(result_rp.x[0])
             else:
-                risk_premium_opt = 0.0
+                risk_premium_opt = _prof_rp_init
         except Exception:
-            risk_premium_opt = 0.0
+            risk_premium_opt = _prof_rp_init
         
         # =====================================================================
         # STAGE 4.2: CONDITIONAL SKEW DYNAMICS (GAS Framework)
@@ -2866,9 +3026,10 @@ class PhiStudentTDriftModel:
             cfg = UnifiedStudentTConfig(
                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
                 alpha_asym=alpha_opt,
+                k_asym=_prof_k_asym,
                 gamma_vov=gamma_opt,
                 ms_sensitivity=sens_opt,
-                q_stress_ratio=10.0,
+                q_stress_ratio=_prof_q_stress_ratio,
                 risk_premium_sensitivity=risk_premium_opt,
                 skew_score_sensitivity=kappa_val,
                 skew_persistence=skew_persistence_fixed,
@@ -2981,9 +3142,9 @@ class PhiStudentTDriftModel:
         # Compute DTCWT features on training data
         temp_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
-            alpha_asym=alpha_opt, gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt, q_stress_ratio=10.0,
-            vov_damping=0.3, variance_inflation=1.0,
+            alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
+            ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+            vov_damping=_prof_vov_damping, variance_inflation=1.0,
             risk_premium_sensitivity=risk_premium_opt,
             skew_score_sensitivity=skew_kappa_opt,
             skew_persistence=skew_persistence_fixed,
@@ -3067,9 +3228,9 @@ class PhiStudentTDriftModel:
             try:
                 temp_config = UnifiedStudentTConfig(
                     q=q_opt, c=c_opt, phi=phi_opt, nu_base=float(test_nu),
-                    alpha_asym=alpha_opt, gamma_vov=gamma_opt,
-                    ms_sensitivity=sens_opt, q_stress_ratio=10.0,
-                    vov_damping=0.3, variance_inflation=1.0,
+                    alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+                    vov_damping=_prof_vov_damping, variance_inflation=1.0,
                     risk_premium_sensitivity=risk_premium_opt,
                     skew_score_sensitivity=skew_kappa_opt,
                     skew_persistence=skew_persistence_fixed,
@@ -3160,9 +3321,9 @@ class PhiStudentTDriftModel:
         # Final calibration on full training data with best nu
         temp_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt, nu_base=best_nu,
-            alpha_asym=alpha_opt, gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt, q_stress_ratio=10.0,
-            vov_damping=0.3, variance_inflation=1.0,
+            alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
+            ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+            vov_damping=_prof_vov_damping, variance_inflation=1.0,
             risk_premium_sensitivity=risk_premium_opt,
             skew_score_sensitivity=skew_kappa_opt,
             skew_persistence=skew_persistence_fixed,
@@ -3309,9 +3470,10 @@ class PhiStudentTDriftModel:
                 if innov_std > 1e-10:
                     z_innov = innovations_for_jump / innov_std
                     
-                    # Detect jump candidates: |z| > 3 (≈0.27% under Gaussian)
-                    # Under Student-t with ν=6, this is ≈1.5% — more realistic
-                    jump_threshold = 3.0
+                    # Detect jump candidates: |z| > threshold
+                    # Default 3.0 (≈0.27% under Gaussian, ≈1.5% under ν=6)
+                    # Metals profile lowers threshold for macro-event sensitivity
+                    jump_threshold = _prof_jump_threshold
                     jump_mask = np.abs(z_innov) > jump_threshold
                     n_jumps = int(np.sum(jump_mask))
                     
@@ -3346,9 +3508,10 @@ class PhiStudentTDriftModel:
                             sens_val = sens_arr[0]
                             cfg_j = UnifiedStudentTConfig(
                                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
-                                alpha_asym=alpha_opt, gamma_vov=gamma_opt,
-                                ms_sensitivity=sens_opt, q_stress_ratio=10.0,
-                                vov_damping=0.3, variance_inflation=beta_opt,
+                                alpha_asym=alpha_opt, k_asym=_prof_k_asym,
+                                gamma_vov=gamma_opt,
+                                ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+                                vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
                                 mu_drift=mu_drift_opt,
                                 risk_premium_sensitivity=risk_premium_opt,
                                 skew_score_sensitivity=skew_kappa_opt,
@@ -3385,9 +3548,10 @@ class PhiStudentTDriftModel:
                         # Compare: filter with jumps vs. filter without jumps
                         cfg_no_jump = UnifiedStudentTConfig(
                             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
-                            alpha_asym=alpha_opt, gamma_vov=gamma_opt,
-                            ms_sensitivity=sens_opt, q_stress_ratio=10.0,
-                            vov_damping=0.3, variance_inflation=beta_opt,
+                            alpha_asym=alpha_opt, k_asym=_prof_k_asym,
+                            gamma_vov=gamma_opt,
+                            ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+                            vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
                             mu_drift=mu_drift_opt,
                             risk_premium_sensitivity=risk_premium_opt,
                             skew_score_sensitivity=skew_kappa_opt,
@@ -3395,9 +3559,10 @@ class PhiStudentTDriftModel:
                         )
                         cfg_with_jump = UnifiedStudentTConfig(
                             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
-                            alpha_asym=alpha_opt, gamma_vov=gamma_opt,
-                            ms_sensitivity=sens_opt, q_stress_ratio=10.0,
-                            vov_damping=0.3, variance_inflation=beta_opt,
+                            alpha_asym=alpha_opt, k_asym=_prof_k_asym,
+                            gamma_vov=gamma_opt,
+                            ms_sensitivity=sens_opt, q_stress_ratio=_prof_q_stress_ratio,
+                            vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
                             mu_drift=mu_drift_opt,
                             risk_premium_sensitivity=risk_premium_opt,
                             skew_score_sensitivity=skew_kappa_opt,
@@ -3523,10 +3688,11 @@ class PhiStudentTDriftModel:
             phi=phi_opt,
             nu_base=nu_opt,  # ELITE FIX: Use optimized nu from grid search
             alpha_asym=alpha_opt,
+            k_asym=_prof_k_asym,  # Profile-adaptive asymmetric ν transition sharpness
             gamma_vov=gamma_opt,
             ms_sensitivity=sens_opt,
-            q_stress_ratio=10.0,
-            vov_damping=0.3,
+            q_stress_ratio=_prof_q_stress_ratio,  # Profile-adaptive stress ratio
+            vov_damping=_prof_vov_damping,  # Profile-adaptive VoV damping
             variance_inflation=beta_opt,
             mu_drift=mu_drift_opt,  # ELITE FIX: mean drift correction
             risk_premium_sensitivity=risk_premium_opt,  # ICAPM risk premium (February 2026)
@@ -3632,6 +3798,12 @@ class PhiStudentTDriftModel:
             "pit_left_tail": float(pit_left_tail),  # Should be ~0.05
             "pit_right_tail": float(pit_right_tail),# Should be ~0.05
             "var_ratio": float(var_ratio),          # Should be ~1.0
+            # Asset-class adaptive profile (February 2026)
+            "asset_class": asset_class,
+            "profile_applied": bool(profile),
+            "profile_vov_damping": _prof_vov_damping,
+            "profile_k_asym": _prof_k_asym,
+            "profile_q_stress_ratio": _prof_q_stress_ratio,
         }
         
         return final_config, diagnostics

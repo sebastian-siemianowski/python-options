@@ -3151,8 +3151,11 @@ def fit_all_models_for_regime(
     # Model naming: "phi_student_t_unified_nu_{nu}"
     # =========================================================================
     
-    # Unified models use 3 ν values from grid
-    UNIFIED_NU_GRID = [4, 8, 20]
+    # Unified models use 4 ν values from grid
+    # ν=12 added February 2026 for metals (GC=F, SI=F) which live in ν≈10-15 range.
+    # Internal Stage 5 re-optimizes ν across [5..20], but seeding ν=12 gives
+    # the optimizer a better starting basin for BMA competition.
+    UNIFIED_NU_GRID = [4, 8, 12, 20]
     n_params_unified = 14  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν, garch(3), rough_hurst, risk_premium, skew(2), jump(4-cond)
     
     for nu_fixed in UNIFIED_NU_GRID:
