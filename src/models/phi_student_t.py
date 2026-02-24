@@ -262,11 +262,11 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
     # Asymmetry k_asym increased — sharper left-tail fattening in crises.
     # ─────────────────────────────────────────────────────────────────────
     'metals_gold': {
-        'ms_sensitivity_init': 2.5,         # Higher initial MS-q sensitivity
-        'ms_sensitivity_reg_center': 2.5,   # Regularize toward 2.5, not 2.0
+        'ms_sensitivity_init': 4.0,         # Higher initial MS-q sensitivity
+        'ms_sensitivity_reg_center': 4.0,   # Regularize toward 2.5, not 2.0
         'ms_sensitivity_reg_weight': 5.0,   # Weaker reg (was 10.0)
         'ms_ewm_lambda': 0.97,             # EWM z-score (~33-day half-life)
-        'vov_damping': 0.05,                # Near-zero: let VoV + MS-q coexist
+        'vov_damping': 0.0,                # Near-zero: let VoV + MS-q coexist
         'risk_premium_reg_penalty': 0.1,    # Weaker pull toward 0 (was 0.5)
         'risk_premium_init': 0.5,           # Start from positive risk premium
         'jump_threshold': 2.5,              # More sensitive jump detection (was 3.0)
@@ -284,11 +284,11 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
     # Higher jump intensity than gold — silver gaps more frequently.
     # ─────────────────────────────────────────────────────────────────────
     'metals_silver': {
-        'ms_sensitivity_init': 2.8,         # Even higher — explosive regimes
-        'ms_sensitivity_reg_center': 2.8,   # Regularize toward 2.8
+        'ms_sensitivity_init': 4.5,         # Even higher — explosive regimes
+        'ms_sensitivity_reg_center': 4.5,   # Regularize toward 2.8
         'ms_sensitivity_reg_weight': 3.0,   # Very weak reg
         'ms_ewm_lambda': 0.94,             # Faster EWM (~16-day half-life)
-        'vov_damping': 0.03,                # Minimal: silver IS VoV-dominated
+        'vov_damping': 0.0,                # Minimal: silver IS VoV-dominated
         'risk_premium_reg_penalty': 0.05,   # Very weak — silver is variance-conditioned
         'risk_premium_init': 0.8,           # Stronger risk premium prior
         'jump_threshold': 2.2,              # More sensitive (silver gaps often)
@@ -2506,7 +2506,7 @@ class PhiStudentTDriftModel:
             # Uses 3-fold rolling CV on training data for robustness.
             # Only updates if materially better (≥1.5x KS p-value improvement).
             # =================================================================
-            NU_FULL = [5, 6, 7, 8, 10, 12, 15, 20]
+            NU_FULL = [5, 6, 7, 8, 10, 12] if getattr(config, 'ms_ewm_lambda', 0.0) > 0.01 else [5, 6, 7, 8, 10, 12, 15, 20]
             try:
                 nu_idx = NU_FULL.index(int(nu))
             except ValueError:
@@ -3299,7 +3299,7 @@ class PhiStudentTDriftModel:
         from scipy.stats import t as student_t, kstest
         
         # Nu grid: from 5 to 20 (stable range for daily returns)
-        NU_GRID = [5, 6, 7, 8, 10, 12, 15, 20]
+        NU_GRID = [5, 6, 7, 8, 10, 12] if _prof_ms_ewm_lambda > 0.01 else [5, 6, 7, 8, 10, 12, 15, 20]
         
         # Rolling CV: 5 folds
         n_folds = 5
