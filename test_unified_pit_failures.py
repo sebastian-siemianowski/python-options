@@ -730,12 +730,8 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
         sym = rd.get('symbol', '?')
         n_obs = rd.get('n_obs', 0)
         if not rd.get('fit_success', False):
-            e = Text()
-            e.append(f'  [{idx}/{total}] ', style='dim')
-            e.append(sym, style='bold indian_red1')
             err = rd.get('error', '?')
-            e.append(f'  FAILED: {err}', style='dim')
-            con.print(e)
+            con.print(f'  [dim]┌─ [{idx}/{total}][/dim] [bold indian_red1]{sym}[/bold indian_red1] [dim]─ FAILED: {err} ─┐[/dim]')
             return
         pit_p = rd.get('pit_pvalue', 0)
         berk = rd.get('berkowitz_pvalue', 0.0)
@@ -743,12 +739,13 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
         grade = rd.get('calibration_grade', '?')
         pf = rd.get('pit_failed', True)
         mf = rd.get('mad_failed', False)
-        status = 'X' if pf else 'OK'
-        mad_st = 'X' if mf else 'OK'
-        berk_st = 'OK' if berk >= 0.05 else 'X'
         sc = 'indian_red1' if pf else 'bright_green'
         bc = 'bright_green' if berk >= 0.05 else 'indian_red1'
         mc = 'bright_green' if not mf else 'indian_red1'
+        gc = 'bright_green' if grade == 'A' else 'yellow' if grade in ('B','C') else 'indian_red1'
+        pm = '✗' if pf else '✓'
+        bm = '✗' if berk < 0.05 else '✓'
+        mm = '✗' if mf else '✓'
         q = rd.get('log10_q') or 0
         cv = rd.get('c') or 0
         phi = rd.get('phi') or 0
@@ -759,42 +756,49 @@ def test_full_tuning_all_assets(assets_to_test=None, mode="failing"):
         hyv = rd.get('hyvarinen') or 0
         crps = rd.get('crps') or 0
         vi = rd.get('variance_inflation', 0)
-        # Line 1: header
-        h = Text()
-        h.append(f'  [{idx}/{total}] ', style='dim')
-        h.append('Processing ', style='dim')
-        h.append(f'{sym}', style='bold bright_white')
-        h.append('...', style='dim')
-        con.print(h)
-        # Data line
-        d = Text()
-        d.append(f'  Data: {n_obs} observations', style='dim')
-        con.print(d)
-        # Line 2: PIT | Berk | MAD | Grade
+        w = 68
+        pad = ' ' * 14
+        # Top border
+        tag = f'[{idx}/{total}] {sym}'
+        obs = f'{n_obs} obs'
+        fill = w - len(tag) - len(obs) - 4
+        top = Text()
+        top.append('  ┌─ ', style='dim')
+        top.append(tag, style='bold bright_white')
+        top.append(' ' + '─' * fill + ' ', style='dim')
+        top.append(obs, style='dim')
+        top.append(' ─┐', style='dim')
+        con.print(top)
+        # Calibration line
+        r1 = Text()
+        r1.append('  │  ', style='dim')
+        r1.append('PIT ', style='dim')
+        r1.append(f'p={pit_p:.4f}', style=sc)
+        r1.append(f' {pm}', style=f'bold {sc}')
+        r1.append('   ', style='dim')
+        r1.append('Berk ', style='dim')
+        r1.append(f'{berk:.4f}', style=bc)
+        r1.append(f' {bm}', style=f'bold {bc}')
+        r1.append('   ', style='dim')
+        r1.append('MAD ', style='dim')
+        r1.append(f'{mad:.4f}', style=mc)
+        r1.append(f' {mm}', style=f'bold {mc}')
+        r1.append('   ', style='dim')
+        r1.append('Grade ', style='dim')
+        r1.append(grade, style=f'bold {gc}')
+        con.print(r1)
+        # Model parameters line
         r2 = Text()
-        r2.append(f'  {sym:12s}', style='bold')
-        r2.append('PIT: ', style='dim')
-        r2.append(f'p={pit_p:.4f} ', style=sc)
-        r2.append(status, style=f'bold {sc}')
         r2.append('  │  ', style='dim')
-        r2.append(f'Berk={berk:.4f} ', style=bc)
-        r2.append(berk_st, style=f'bold {bc}')
-        r2.append('  │  ', style='dim')
-        r2.append(f'MAD={mad:.4f} ', style=mc)
-        r2.append(mad_st, style=f'bold {mc}')
-        r2.append('  │  ', style='dim')
-        r2.append(f'Grade={grade}', style='bright_white')
+        r2.append(f'ν={nu:.0f}  φ={phi:+.2f}  α={alpha:+.3f}  c={cv:.3f}  γ={gamma:.2f}  log₁₀q={q:+.2f}', style='bright_cyan')
         con.print(r2)
-        # Line 3: parameters
+        # Scores line
         r3 = Text()
-        r3.append('              ', style='dim')
-        r3.append(f'log₁₀(q)={q:+.2f}  c={cv:.3f}  ν={nu:.0f}  φ={phi:+.2f}  α={alpha:+.3f}  γ={gamma:.2f}', style='dim')
+        r3.append('  │  ', style='dim')
+        r3.append(f'BIC={bic:+.1f}   CRPS={crps:.4f}   Hyv={hyv:+.4f}   β={vi:.3f}', style='dim')
         con.print(r3)
-        # Line 4: scores
-        r4 = Text()
-        r4.append('              ', style='dim')
-        r4.append(f'BIC={bic:+.1f}  Hyv={hyv:+.4f}  CRPS={crps:.4f}  β={vi:.3f}', style='dim')
-        con.print(r4)
+        # Bottom border
+        con.print(f'  [dim]└' + '─' * (w + 2) + '┘[/dim]')
 
     if use_parallel and RICH_AVAILABLE:
         info = Text()
