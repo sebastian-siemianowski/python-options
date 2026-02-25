@@ -4039,427 +4039,307 @@ class PhiStudentTDriftModel:
         
         return pit_values, pit_pvalue, sigma_crps, crps, diagnostics
 
+
+    # =================================================================
+    # OPTIMIZATION STAGE METHODS (February 2026 refactor)
+    #
+    # Each stage is a self-contained @classmethod with explicit
+    # inputs and outputs. The orchestrator optimize_params_unified()
+    # calls them in sequence, threading results forward.
+    #
+    # Stage dependency graph:
+    #   1 (q,c,φ) → 2 (γ_vov) → 3 (ms_sens) → 4 (α_asym)
+    #     → 4.1 (risk_premium) → 4.2 (skew_κ) → [hessian check]
+    #       → 4.5 (DTCWT) → 5 (ν CV) → 5c (GARCH) → 5d (jumps)
+    #         → 5e (Hurst) → 5f (EWM λ) → 5g (leverage+shrinkage)
+    # =================================================================
+
     @classmethod
-    def optimize_params_unified(
-        cls,
-        returns: np.ndarray,
-        vol: np.ndarray,
-        nu_base: float = 8.0,
-        train_frac: float = 0.7,
-        asset_symbol: str = None,
-    ) -> Tuple['UnifiedStudentTConfig', Dict]:
+    def _stage_1_base_params(cls, returns_train, vol_train, n_train, nu_base, config):
         """
-        Staged optimization for unified model.
-        
-        Optimization is performed in stages to avoid feature interaction instability:
-          Stage 1: Base parameters (q, c, φ) with state regularization
-          Stage 2: VoV gamma (freeze base)
-          Stage 3: MS-q sensitivity (freeze base + VoV)
-          Stage 4: Asymmetry alpha (freeze all, fine-tune)
-        
-        Includes:
-          - Data-driven bounds (MAD-based c, scale-aware q_min)
-          - State regularization (prevents φ→1/q→0 collapse)
-          - Parameter regularization (prevents overfitting)
-          - Hessian condition check with graceful degradation
-        
+        Stage 1: Estimate base Kalman filter parameters (q, c, φ).
+
+        Uses likelihood-based objective with state regularization to prevent
+        the φ→1 / q→0 collapse (random walk degeneracy).
+
         Args:
-            returns: Return series
-            vol: EWMA/GK volatility series
-            nu_base: Base degrees of freedom (from discrete grid)
-            train_frac: Fraction for train/test split
-            asset_symbol: Asset symbol for logging
-            
+            returns_train: Training returns array
+            vol_train: Training volatility array
+            n_train: Number of training observations
+            nu_base: Degrees of freedom for Student-t
+            config: Auto-configured UnifiedStudentTConfig
+
         Returns:
-            Tuple of (UnifiedStudentTConfig, diagnostics_dict)
+            dict with keys: q, c, phi, log_q, success
+            On failure: success=False and defaults from config
         """
-        returns = np.asarray(returns).flatten()
-        vol = np.asarray(vol).flatten()
-        
-        # Auto-configure initial bounds from data
-        config = UnifiedStudentTConfig.auto_configure(returns, vol, nu_base)
-        
-        n = len(returns)
-        n_train = int(n * train_frac)
-        returns_train = returns[:n_train]
-        vol_train = vol[:n_train]
-        
-        # =====================================================================
-        # ASSET-CLASS ADAPTIVE PROFILE (February 2026 - Elite Metals Fix)
-        # =====================================================================
-        # Detect asset class and load calibration profile.
-        # Profile adjusts regularization centers, initialization, and hyper-priors
-        # to guide the optimizer toward the correct basin for each asset class.
-        # If no profile matches → empty dict → all defaults preserved.
-        # =====================================================================
-        asset_class = _detect_asset_class(asset_symbol)
-        profile = ASSET_CLASS_PROFILES.get(asset_class, {}) if asset_class else {}
-        
-        # Extract profile values with generic defaults (backward compatible)
-        _prof_ms_sens_init = profile.get('ms_sensitivity_init', 2.0)
-        _prof_ms_sens_center = profile.get('ms_sensitivity_reg_center', 2.0)
-        _prof_ms_sens_weight = profile.get('ms_sensitivity_reg_weight', 10.0)
-        _prof_vov_damping = profile.get('vov_damping', 0.3)
-        _prof_rp_reg_penalty = profile.get('risk_premium_reg_penalty', 0.5)
-        _prof_rp_init = profile.get('risk_premium_init', 0.0)
-        _prof_jump_threshold = profile.get('jump_threshold', 3.0)
-        _prof_k_asym = profile.get('k_asym', 1.0)
-        _prof_alpha_asym_init = profile.get('alpha_asym_init', config.alpha_asym)
-        _prof_q_stress_ratio = profile.get('q_stress_ratio', 10.0)
-        _prof_ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
-        
-        # =====================================================================
-        # CALIBRATION-AWARE OBJECTIVE HELPER FUNCTIONS
-        # =====================================================================
-        # These compute PIT-based penalties that align optimizer with calibration
-        # =====================================================================
-        
-        def compute_pit_autocorr(pit_values: np.ndarray, lag: int = 1) -> float:
-            """
-            Compute PIT autocorrelation at specified lag.
-            
-            High autocorrelation → Berkowitz test failure.
-            Penalty forces optimizer to produce serially independent PITs.
-            """
-            if len(pit_values) < lag + 10:
-                return 0.0
-            pit_centered = pit_values - np.mean(pit_values)
-            denom = np.sum(pit_centered ** 2)
-            if denom < 1e-12:
-                return 0.0
-            numer = np.sum(pit_centered[lag:] * pit_centered[:-lag])
-            return float(numer / denom)
-        
-        def compute_tail_penalty(pit_values: np.ndarray) -> float:
-            """
-            Compute tail mass penalty.
-            
-            For calibrated PIT: P(PIT < 0.05) ≈ 0.05, P(PIT > 0.95) ≈ 0.05.
-            Deviations from this indicate miscalibrated tails.
-            """
-            if len(pit_values) < 20:
-                return 0.0
-            left_tail = np.mean(pit_values < 0.05)
-            right_tail = np.mean(pit_values > 0.95)
-            # Penalty for deviation from expected 5% in each tail
-            penalty = (left_tail - 0.05) ** 2 + (right_tail - 0.05) ** 2
-            return float(penalty)
-        
-        def compute_crps_student_t(y: np.ndarray, mu: np.ndarray, sigma: np.ndarray, nu: float) -> float:
-            """
-            Compute CRPS for Student-t distribution (Gneiting & Raftery 2007).
-            
-            Closed-form proper scoring rule that evaluates full distribution
-            quality — measures both calibration and sharpness simultaneously.
-            
-            CRPS(t_ν(μ,σ), y) = σ·[z·(2T_ν(z)-1) + 2t_ν(z)·(ν+z²)/(ν-1)
-                                  - 2√ν·B(½,ν-½) / ((ν-1)·B(½,ν/2)²)]
-            """
-            if len(y) == 0:
-                return 0.0
-            from scipy.special import gammaln
-            sigma = np.maximum(sigma, 1e-10)
-            nu = max(float(nu), 1.01)
-            z = (y - mu) / sigma
-            
-            if nu > 1:
-                from scipy.stats import t as t_dist_scipy
-                td = t_dist_scipy(df=nu)
-                pdf_z = td.pdf(z)
-                cdf_z = td.cdf(z)
-                
-                log_B_half_nu_minus_half = gammaln(0.5) + gammaln(nu - 0.5) - gammaln(nu)
-                log_B_half_nu_half = gammaln(0.5) + gammaln(nu / 2) - gammaln((nu + 1) / 2)
-                B_ratio = np.exp(log_B_half_nu_minus_half - 2 * log_B_half_nu_half)
-                
-                term1 = z * (2 * cdf_z - 1)
-                term2 = 2 * pdf_z * (nu + z**2) / (nu - 1)
-                term3 = 2 * np.sqrt(nu) * B_ratio / (nu - 1)
-                
-                crps_individual = sigma * (term1 + term2 - term3)
-            else:
-                # Fallback to Gaussian approximation for ν ≤ 1
-                from scipy.stats import norm
-                phi_z = norm.pdf(z)
-                Phi_z = norm.cdf(z)
-                crps_individual = sigma * (z * (2 * Phi_z - 1) + 2 * phi_z - 1.0 / np.sqrt(np.pi))
-            
-            valid = np.isfinite(crps_individual)
-            if not np.any(valid):
-                return float('inf')
-            return float(np.mean(crps_individual[valid]))
-        
-        # =====================================================================
-        # STAGE 1: Base parameters (q, c, φ) with state regularization
-        # =====================================================================
-        # Use likelihood-based objective for stable optimization.
-        # Calibration penalties will be applied in the NU grid search stage.
-        # =====================================================================
-        
+        from scipy.optimize import minimize
+
         def neg_ll_base(params):
             log_q, theta_c, phi = params
             q = 10 ** log_q
-            # Unconstrained c via exp (removes hard bounds)
             c = np.exp(theta_c)
-            c = float(np.clip(c, 0.01, 100.0))  # Safety clip only
-            
-            # Create config with base params only (disable enhancements)
+            c = float(np.clip(c, 0.01, 100.0))
+
             cfg = UnifiedStudentTConfig(
                 q=q, c=c, phi=phi, nu_base=nu_base,
-                alpha_asym=0.0,      # No asymmetry
-                gamma_vov=0.0,       # No VoV
-                q_stress_ratio=1.0,  # No MS-q
+                alpha_asym=0.0, gamma_vov=0.0, q_stress_ratio=1.0,
             )
-            
+
             try:
                 _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
             except Exception:
                 return 1e10
-            
+
             if not np.isfinite(ll):
                 return 1e10
-            
-            # State regularization: smooth quadratic penalty for collapse
+
             phi_pen = max(0.0, abs(phi) - 0.95)
             q_pen = max(0.0, -7.0 - log_q)
             state_reg = 50.0 * (phi_pen ** 2 + q_pen ** 2)
-            
-            # Extra penalty for joint collapse (φ→1 AND q→0)
             if phi_pen > 0 and q_pen > 0:
                 state_reg += 30.0 * phi_pen * q_pen
-            
+
             return -ll / n_train + state_reg
-        
-        # Initial guess - use unconstrained parameterization for c
+
         log_q_init = np.log10(max(config.q_min * 10, 1e-7))
-        # Safety: ensure config.c is positive before taking log
         c_safe = max(config.c, 0.01)
-        theta_c_init = np.log(c_safe)  # Unconstrained c via exp
-        x0_base = [log_q_init, theta_c_init, 0.0]
-        
-        # Relaxed bounds - wider range for theta_c
-        bounds_base = [
-            (np.log10(config.q_min), -2),   # log₁₀(q)
-            (-5.0, 5.0),                     # theta_c: exp(-5) ≈ 0.007 to exp(5) ≈ 148
-            (-0.99, 0.99),                   # φ
+        theta_c_init = np.log(c_safe)
+        x0 = [log_q_init, theta_c_init, 0.0]
+
+        bounds = [
+            (np.log10(config.q_min), -2),
+            (-5.0, 5.0),
+            (-0.99, 0.99),
         ]
-        
+
         try:
-            result_base = minimize(
-                neg_ll_base, x0_base, bounds=bounds_base, 
+            result = minimize(
+                neg_ll_base, x0, bounds=bounds,
                 method='L-BFGS-B', options={'maxiter': 200}
             )
-            # Accept result even if not marked success - check if params are valid
-            if result_base.x is not None and np.all(np.isfinite(result_base.x)):
-                stage1_success = True
-            else:
-                stage1_success = result_base.success
+            if result.x is not None and np.all(np.isfinite(result.x)):
+                log_q, theta_c, phi = result.x
+                q = 10 ** log_q
+                c = float(np.clip(np.exp(theta_c), 0.01, 100.0))
+                return {
+                    'q': q, 'c': c, 'phi': float(phi),
+                    'log_q': float(log_q), 'success': True,
+                    'result': result,
+                }
         except Exception:
-            stage1_success = False
-            result_base = None
-        
-        if not stage1_success:
-            # Graceful degradation: return auto-configured defaults
-            return config, {
-                "stage": 0, 
-                "success": False, 
-                "error": "Stage 1 optimization failed",
-                "degraded": True,
-            }
-        
-        log_q_opt, theta_c_opt, phi_opt = result_base.x
-        q_opt = 10 ** log_q_opt
-        c_opt = np.exp(theta_c_opt)  # Unconstrained parameterization
-        c_opt = float(np.clip(c_opt, 0.01, 100.0))  # Safety clip
-        
-        # =====================================================================
-        # STAGE 2: VoV gamma (freeze base parameters)
-        # =====================================================================
+            pass
+
+        return {'q': config.q, 'c': config.c, 'phi': 0.0,
+                'log_q': np.log10(config.q), 'success': False, 'result': None}
+
+    @classmethod
+    def _stage_2_vov_gamma(cls, returns_train, vol_train, n_train, nu_base,
+                           q_opt, c_opt, phi_opt, config):
+        """
+        Stage 2: Estimate VoV gamma (volatility-of-volatility sensitivity).
+
+        Freezes base parameters from Stage 1. Optimizes γ_vov which controls
+        how much the observation noise R_t responds to changes in log-vol.
+
+        Returns:
+            float: Optimal gamma_vov
+        """
+        from scipy.optimize import minimize
+
         def neg_ll_vov(gamma_arr):
             gamma = gamma_arr[0]
             cfg = UnifiedStudentTConfig(
                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
-                alpha_asym=0.0,
-                gamma_vov=gamma,
-                q_stress_ratio=1.0,
+                alpha_asym=0.0, gamma_vov=gamma, q_stress_ratio=1.0,
             )
             try:
                 _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
             except Exception:
                 return 1e10
-            
             if not np.isfinite(ll):
                 return 1e10
-            
-            # FIX: Reduced reg
             reg = 1.0 * (gamma - config.gamma_vov) ** 2
             return -ll / n_train + reg
-        
+
         try:
-            result_vov = minimize(
-                neg_ll_vov, [config.gamma_vov], 
+            result = minimize(
+                neg_ll_vov, [config.gamma_vov],
                 bounds=[(0.0, 1.0)], method='L-BFGS-B'
             )
-            gamma_opt = result_vov.x[0] if result_vov.success else config.gamma_vov
+            return result.x[0] if result.success else config.gamma_vov
         except Exception:
-            gamma_opt = config.gamma_vov
-        
-        # =====================================================================
-        # STAGE 3: MS-q sensitivity (freeze base + VoV)
-        # =====================================================================
-        # Profile-adaptive: metals use higher sensitivity init and weaker reg
+            return config.gamma_vov
+
+    @classmethod
+    def _stage_3_ms_sensitivity(cls, returns_train, vol_train, n_train, nu_base,
+                                q_opt, c_opt, phi_opt, gamma_opt, profile):
+        """
+        Stage 3: Estimate MS-q sensitivity (Markov-switching process noise).
+
+        Controls how aggressively q transitions between calm and stress regimes.
+        Profile-adaptive: metals use higher sensitivity and weaker regularization.
+
+        Returns:
+            float: Optimal ms_sensitivity
+        """
+        from scipy.optimize import minimize
+
+        sens_init = profile.get('ms_sensitivity_init', 2.0)
+        sens_center = profile.get('ms_sensitivity_reg_center', 2.0)
+        sens_weight = profile.get('ms_sensitivity_reg_weight', 10.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+
         def neg_ll_msq(sens_arr):
             sens = sens_arr[0]
             cfg = UnifiedStudentTConfig(
                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
-                alpha_asym=0.0,
-                gamma_vov=gamma_opt,
-                ms_sensitivity=sens,
-                ms_ewm_lambda=0.0,
-                q_stress_ratio=_prof_q_stress_ratio,
+                alpha_asym=0.0, gamma_vov=gamma_opt,
+                ms_sensitivity=sens, ms_ewm_lambda=0.0,
+                q_stress_ratio=q_stress_ratio,
             )
             try:
                 _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
             except Exception:
                 return 1e10
-            
             if not np.isfinite(ll):
                 return 1e10
-            
-            # Regularization: keep sensitivity near profile center
-            reg = _prof_ms_sens_weight * (sens - _prof_ms_sens_center) ** 2
+            reg = sens_weight * (sens - sens_center) ** 2
             return -ll / n_train + reg
-        
+
         try:
-            result_msq = minimize(
-                neg_ll_msq, [_prof_ms_sens_init], 
+            result = minimize(
+                neg_ll_msq, [sens_init],
                 bounds=[(1.0, 5.0)], method='L-BFGS-B'
             )
-            sens_opt = result_msq.x[0] if result_msq.success else _prof_ms_sens_init
+            return result.x[0] if result.success else sens_init
         except Exception:
-            sens_opt = _prof_ms_sens_init
-        
-        # =====================================================================
-        # STAGE 4: Asymmetry alpha (freeze all, fine-tune)
-        # =====================================================================
-        # Profile-adaptive: metals use stronger left-tail prior
+            return sens_init
+
+    @classmethod
+    def _stage_4_asymmetry(cls, returns_train, vol_train, n_train, nu_base,
+                           q_opt, c_opt, phi_opt, gamma_opt, sens_opt, profile):
+        """
+        Stage 4: Estimate asymmetry alpha (tail thickness direction).
+
+        Controls how ν varies with the sign of standardized innovations:
+          ν_eff = ν_base × (1 + α × tanh(k × z))
+        α > 0: left tail heavier (crash sensitivity)
+        α < 0: right tail heavier
+
+        Returns:
+            float: Optimal alpha_asym
+        """
+        from scipy.optimize import minimize
+
+        k_asym = profile.get('k_asym', 1.0)
+        alpha_init = profile.get('alpha_asym_init', 0.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+
         def neg_ll_asym(alpha_arr):
             alpha = alpha_arr[0]
             cfg = UnifiedStudentTConfig(
                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
-                alpha_asym=alpha,
-                k_asym=_prof_k_asym,
-                gamma_vov=gamma_opt,
-                ms_sensitivity=sens_opt,
-                ms_ewm_lambda=0.0,
-                q_stress_ratio=_prof_q_stress_ratio,
+                alpha_asym=alpha, k_asym=k_asym, gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt, ms_ewm_lambda=0.0,
+                q_stress_ratio=q_stress_ratio,
             )
             try:
                 _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
             except Exception:
                 return 1e10
-            
             if not np.isfinite(ll):
                 return 1e10
-            
-            # Regularization centered on profile-adaptive prior
-            reg = 1.0 * (alpha - _prof_alpha_asym_init) ** 2
+            reg = 1.0 * (alpha - alpha_init) ** 2
             return -ll / n_train + reg
-        
+
         try:
-            result_asym = minimize(
-                neg_ll_asym, [_prof_alpha_asym_init], 
+            result = minimize(
+                neg_ll_asym, [alpha_init],
                 bounds=[(-0.3, 0.3)], method='L-BFGS-B'
             )
-            alpha_opt = result_asym.x[0] if result_asym.success else _prof_alpha_asym_init
+            return result.x[0] if result.success else alpha_init
         except Exception:
-            alpha_opt = _prof_alpha_asym_init
-        
-        # =====================================================================
-        # STAGE 4.1: CONDITIONAL RISK PREMIUM (Merton ICAPM)
-        # =====================================================================
-        # Optimize λ₁: E[r_t | F_{t-1}] = φ·μ_{t-1} + λ₁·σ²_t
-        #
-        # The risk premium captures the intertemporal relation between
-        # expected return and conditional variance.
-        #
-        # λ₁ > 0: higher variance → higher expected return (risk compensation)
-        # λ₁ < 0: higher variance → lower expected return (leverage/fear)
-        # λ₁ = 0: pure AR(1) state (no variance feedback to mean)
-        #
-        # This is optimized AFTER base params, VoV, MS-q, and asymmetry
-        # because it interacts with the variance structure but is a
-        # refinement on the mean dynamics.
-        # =====================================================================
-        def neg_ll_risk_premium(rp_arr):
+            return alpha_init
+
+    @classmethod
+    def _stage_4_1_risk_premium(cls, returns_train, vol_train, n_train, nu_base,
+                                q_opt, c_opt, phi_opt, gamma_opt, sens_opt,
+                                alpha_opt, profile):
+        """
+        Stage 4.1: Estimate conditional risk premium λ₁ (Merton ICAPM).
+
+        E[r_t | F_{t-1}] = φ·μ_{t-1} + λ₁·σ²_t
+        λ₁ > 0: higher variance → higher expected return (risk compensation)
+        λ₁ < 0: higher variance → lower expected return (leverage/fear)
+
+        Returns:
+            float: Optimal risk_premium_sensitivity
+        """
+        from scipy.optimize import minimize
+
+        rp_reg = profile.get('risk_premium_reg_penalty', 0.5)
+        rp_init = profile.get('risk_premium_init', 0.0)
+        k_asym = profile.get('k_asym', 1.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+
+        def neg_ll_rp(rp_arr):
             rp = rp_arr[0]
             cfg = UnifiedStudentTConfig(
                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
-                alpha_asym=alpha_opt,
-                k_asym=_prof_k_asym,
-                gamma_vov=gamma_opt,
-                ms_sensitivity=sens_opt,
-                ms_ewm_lambda=0.0,
-                q_stress_ratio=_prof_q_stress_ratio,
+                alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt, ms_ewm_lambda=0.0,
+                q_stress_ratio=q_stress_ratio,
                 risk_premium_sensitivity=rp,
             )
             try:
                 _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
             except Exception:
                 return 1e10
-            
             if not np.isfinite(ll):
                 return 1e10
-            
-            # Profile-adaptive regularization toward 0
-            # Metals: weaker penalty allows variance-conditioned risk premium
-            reg = _prof_rp_reg_penalty * rp ** 2
+            reg = rp_reg * rp ** 2
             return -ll / n_train + reg
-        
+
         try:
-            result_rp = minimize(
-                neg_ll_risk_premium, [_prof_rp_init],
+            result = minimize(
+                neg_ll_rp, [rp_init],
                 bounds=[(-5.0, 10.0)], method='L-BFGS-B',
                 options={'maxiter': 100}
             )
-            if result_rp.x is not None and np.isfinite(result_rp.x[0]):
-                risk_premium_opt = float(result_rp.x[0])
-            else:
-                risk_premium_opt = _prof_rp_init
+            if result.x is not None and np.isfinite(result.x[0]):
+                return float(result.x[0])
         except Exception:
-            risk_premium_opt = _prof_rp_init
-        
-        # =====================================================================
-        # STAGE 4.2: CONDITIONAL SKEW DYNAMICS (GAS Framework)
-        # =====================================================================
-        # Optimize κ_λ (skew_score_sensitivity):
-        #   α_{t+1} = (1 - ρ_λ)·α₀ + ρ_λ·α_t + κ_λ·s_t
-        #
-        # where s_t = z_t·w_t is the Student-t score for skewness.
-        #
-        # κ_λ > 0: dynamic skew active (tail asymmetry adapts to regime)
-        # κ_λ = 0: pure static asymmetry (alpha_opt from Stage 4)
-        #
-        # The persistence ρ_λ is fixed at 0.97 (empirically robust for daily
-        # equities — corresponds to ~33 day half-life, matching typical
-        # crisis build-up timescale). Joint optimization of κ and ρ leads to
-        # identifiability issues; fixing ρ is standard GAS practice.
-        #
-        # Regularization: 5·κ² pulls toward 0 unless likelihood strongly
-        # favors dynamic skew. This prevents overfitting on short histories.
-        # =====================================================================
-        skew_persistence_fixed = 0.97  # Fixed persistence (robust daily default)
-        
-        def neg_ll_skew_dynamics(kappa_arr):
+            pass
+        return rp_init
+
+    @classmethod
+    def _stage_4_2_skew_dynamics(cls, returns_train, vol_train, n_train, nu_base,
+                                 q_opt, c_opt, phi_opt, gamma_opt, sens_opt,
+                                 alpha_opt, risk_premium_opt, profile):
+        """
+        Stage 4.2: Estimate conditional skew dynamics κ_λ (GAS framework).
+
+        α_{t+1} = (1 - ρ_λ)·α₀ + ρ_λ·α_t + κ_λ·s_t
+        where s_t = z_t·w_t is the Student-t score for skewness.
+        ρ_λ fixed at 0.97 (robust daily default, ~33 day half-life).
+
+        Returns:
+            tuple: (skew_kappa_opt, skew_persistence_fixed)
+        """
+        from scipy.optimize import minimize
+
+        skew_persistence_fixed = 0.97
+        k_asym = profile.get('k_asym', 1.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+
+        def neg_ll_skew(kappa_arr):
             kappa_val = kappa_arr[0]
             cfg = UnifiedStudentTConfig(
                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
-                alpha_asym=alpha_opt,
-                k_asym=_prof_k_asym,
-                gamma_vov=gamma_opt,
-                ms_sensitivity=sens_opt,
-                ms_ewm_lambda=0.0,
-                q_stress_ratio=_prof_q_stress_ratio,
+                alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt, ms_ewm_lambda=0.0,
+                q_stress_ratio=q_stress_ratio,
                 risk_premium_sensitivity=risk_premium_opt,
                 skew_score_sensitivity=kappa_val,
                 skew_persistence=skew_persistence_fixed,
@@ -4468,31 +4348,38 @@ class PhiStudentTDriftModel:
                 _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
             except Exception:
                 return 1e10
-            
             if not np.isfinite(ll):
                 return 1e10
-            
-            # Regularization: mild L2 centered on 0
-            # 5·κ² ensures κ only activates when evidence is clear
             reg = 5.0 * kappa_val ** 2
             return -ll / n_train + reg
-        
+
         try:
-            result_skew = minimize(
-                neg_ll_skew_dynamics, [0.0],
+            result = minimize(
+                neg_ll_skew, [0.0],
                 bounds=[(0.0, 0.10)], method='L-BFGS-B',
                 options={'maxiter': 100}
             )
-            if result_skew.x is not None and np.isfinite(result_skew.x[0]):
-                skew_kappa_opt = float(result_skew.x[0])
-            else:
-                skew_kappa_opt = 0.0
+            if result.x is not None and np.isfinite(result.x[0]):
+                return float(result.x[0]), skew_persistence_fixed
         except Exception:
-            skew_kappa_opt = 0.0
-        
-        # =====================================================================
+            pass
+        return 0.0, skew_persistence_fixed
+
+    @staticmethod
+    def _check_hessian_degradation(result_base, gamma_opt, sens_opt, alpha_opt,
+                                   risk_premium_opt, skew_kappa_opt):
+        """
+        Check Hessian condition number for ill-conditioning.
+
+        If condition number > 1e6, gracefully disable advanced features
+        to prevent unstable parameter estimates propagating downstream.
+
+        Returns:
+            dict with keys: gamma_opt, sens_opt, alpha_opt,
+            risk_premium_opt, skew_kappa_opt, degraded, cond_num
+        """
         try:
-            if hasattr(result_base, 'hess_inv'):
+            if result_base is not None and hasattr(result_base, 'hess_inv'):
                 hess_inv = result_base.hess_inv
                 if hasattr(hess_inv, 'todense'):
                     hess_inv = hess_inv.todense()
@@ -4501,263 +4388,223 @@ class PhiStudentTDriftModel:
                 cond_num = 1.0
         except Exception:
             cond_num = 1e10
-        
+
         degraded = False
         if cond_num > 1e6:
-            # Graceful degradation: disable advanced features
             gamma_opt = 0.0
             sens_opt = 2.0
             alpha_opt = 0.0
             risk_premium_opt = 0.0
             skew_kappa_opt = 0.0
             degraded = True
-        elif cond_num < 1e-6:
-            # Warning: very flat region, optimization may be unstable
-            pass
-        
-        # =====================================================================
-        # STAGE 4.5: DTCWT-INSPIRED ADAPTIVE VARIANCE (February 2026 - Elite)
-        # =====================================================================
-        # Key insight from Dual-Tree Complex Wavelet Transform:
-        #   1. Multi-scale decomposition reveals structure at different timescales
-        #   2. Phase information captures directionality (trends vs mean-reversion)
-        #   3. Scale-dependent q adjustment: q_j = q × 2^j at scale j
-        #
-        # For honest calibration, we compute:
-        #   1. Volatility phase: sign(d_vol) captures vol direction
-        #   2. Volatility magnitude at multiple scales
-        #   3. Optimal scale mixture for variance prediction
-        #
-        # All parameters estimated on TRAINING data only.
-        # =====================================================================
-        def compute_dtcwt_features(returns, vol, n_scales=4):
-            """
-            Compute DTCWT-inspired features for variance prediction.
-            
-            Returns:
-                - phase: Volatility direction indicator
-                - scale_vars: Multi-scale variance estimates
-                - phase_weight: How much phase information helps
-            """
-            n = len(returns)
-            
-            # Phase: direction of volatility changes
-            log_vol = np.log(np.maximum(vol, 1e-10))
-            d_log_vol = np.diff(log_vol, prepend=log_vol[0])
-            phase = np.sign(d_log_vol)  # +1: vol increasing, -1: vol decreasing
-            
-            # Multi-scale variance using Haar-like decomposition
-            scale_vars = np.zeros((n_scales, n))
-            sq_ret = returns ** 2
-            
-            for j in range(n_scales):
-                window = 2 ** (j + 1)  # 2, 4, 8, 16
-                for t in range(n):
-                    start_idx = max(0, t - window + 1)
-                    scale_vars[j, t] = np.mean(sq_ret[start_idx:t+1])
-            
-            # Phase-weighted variance: higher vol in up-phase vs down-phase
-            phase_up = phase > 0
-            phase_down = phase < 0
-            
-            if np.sum(phase_up) > 10 and np.sum(phase_down) > 10:
-                var_up = np.mean(sq_ret[phase_up])
-                var_down = np.mean(sq_ret[phase_down])
-                phase_asymmetry = var_down / (var_up + 1e-12)  # Leverage effect ratio
-            else:
-                phase_asymmetry = 1.0
-            
-            return phase, scale_vars, phase_asymmetry
-        
-        # Compute DTCWT features on training data
+
+        return {
+            'gamma_opt': gamma_opt, 'sens_opt': sens_opt,
+            'alpha_opt': alpha_opt, 'risk_premium_opt': risk_premium_opt,
+            'skew_kappa_opt': skew_kappa_opt,
+            'degraded': degraded, 'cond_num': cond_num,
+        }
+
+    @classmethod
+    def _stage_4_5_dtcwt_features(cls, returns_train, vol_train, n_train,
+                                  q_opt, c_opt, phi_opt, nu_base, alpha_opt,
+                                  gamma_opt, sens_opt, risk_premium_opt,
+                                  skew_kappa_opt, skew_persistence_fixed, profile):
+        """
+        Stage 4.5: DTCWT-inspired adaptive variance estimation.
+
+        Computes multi-scale variance decomposition and phase asymmetry
+        from the Kalman filter innovations. Based on Dual-Tree Complex
+        Wavelet Transform concepts (Selesnick et al. 2005).
+
+        Returns:
+            dict with keys: wavelet_correction, wavelet_weights,
+            phase_asymmetry, mu_pred, S_pred, innovations
+        """
+        k_asym = profile.get('k_asym', 1.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        vov_damping = profile.get('vov_damping', 0.3)
+        ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
+
         temp_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
-            alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
-            vov_damping=_prof_vov_damping, variance_inflation=1.0,
+            alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+            ms_sensitivity=sens_opt, ms_ewm_lambda=0.0,
+            q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+            variance_inflation=1.0,
             risk_premium_sensitivity=risk_premium_opt,
             skew_score_sensitivity=skew_kappa_opt,
             skew_persistence=skew_persistence_fixed,
         )
-        
-        _, _, mu_pred_pre, S_pred_pre, _ = cls.filter_phi_unified(
+
+        _, _, mu_pred, S_pred, _ = cls.filter_phi_unified(
             returns_train, vol_train, temp_config
         )
-        innovations_pre = returns_train - mu_pred_pre
-        
-        phase_train, scale_vars_train, phase_asymmetry = compute_dtcwt_features(
-            innovations_pre, vol_train, n_scales=4
-        )
-        
-        # Compute variance prediction error at each scale
-        actual_sq = innovations_pre ** 2
-        scale_errors = np.zeros(4)
-        for j in range(4):
-            scale_errors[j] = np.mean((scale_vars_train[j, :] - actual_sq) ** 2)
-        
-        # Optimal scale: lowest prediction error
-        best_scale = int(np.argmin(scale_errors))
-        
-        # Compute correction factor using best scale
-        best_scale_var = scale_vars_train[best_scale, :]
-        
-        S_pred_mean = np.mean(S_pred_pre)
-        best_scale_mean = np.mean(best_scale_var)
-        
-        if S_pred_mean > 1e-12 and best_scale_mean > 1e-12:
-            wavelet_correction = best_scale_mean / S_pred_mean
+        innovations = returns_train - mu_pred
+
+        # Multi-scale variance using Haar-like decomposition
+        n = len(returns_train)
+        n_scales = 4
+        sq_ret = innovations ** 2
+        scale_vars = np.zeros((n_scales, n))
+        for j in range(n_scales):
+            window = 2 ** (j + 1)
+            for t in range(n):
+                start_idx = max(0, t - window + 1)
+                scale_vars[j, t] = np.mean(sq_ret[start_idx:t+1])
+
+        # Phase asymmetry (leverage effect)
+        log_vol = np.log(np.maximum(vol_train, 1e-10))
+        d_log_vol = np.diff(log_vol, prepend=log_vol[0])
+        phase = np.sign(d_log_vol)
+        phase_up = phase > 0
+        phase_down = phase < 0
+
+        if np.sum(phase_up) > 10 and np.sum(phase_down) > 10:
+            var_up = np.mean(sq_ret[phase_up])
+            var_down = np.mean(sq_ret[phase_down])
+            phase_asymmetry = var_down / (var_up + 1e-12)
         else:
-            wavelet_correction = 1.0
-        
-        # Phase asymmetry adjustment: if leverage effect is strong,
-        # increase variance estimate slightly
-        if phase_asymmetry > 1.5:
-            wavelet_correction *= 1.1
-        elif phase_asymmetry < 0.7:
-            wavelet_correction *= 0.9
-        
-        # Disable wavelet correction - it was making things worse
-        # Keep code for future experimentation but force correction to 1.0
+            phase_asymmetry = 1.0
+
+        # Scale errors and weights
+        actual_sq = sq_ret
+        scale_errors = np.zeros(n_scales)
+        for j in range(n_scales):
+            scale_errors[j] = np.mean((scale_vars[j, :] - actual_sq) ** 2)
+
+        # Disabled wavelet correction (force 1.0 — kept for experimentation)
         wavelet_correction = 1.0
-        
-        # Store wavelet weights for diagnostics
-        wavelet_weights = np.zeros(4)
+
+        wavelet_weights = np.zeros(n_scales)
         total_inv_error = np.sum(1.0 / (scale_errors + 1e-12))
-        for j in range(4):
+        for j in range(n_scales):
             wavelet_weights[j] = (1.0 / (scale_errors[j] + 1e-12)) / total_inv_error
 
-        # =====================================================================
-        # STAGE 5: ROLLING CV CALIBRATION (February 2026 - Honest OOS)
-        # =====================================================================
-        # Key insight: Training-set calibration doesn't generalize.
-        # We use rolling cross-validation within training to find parameters
-        # that produce calibrated forecasts out-of-sample.
-        #
-        # Rolling CV: Split training into K folds. For each fold:
-        #   - Use previous folds to estimate (beta, mu_drift)
-        #   - Validate on current fold
-        #   - Average KS p-value across all validation folds
-        #
-        # This mimics how parameters will perform on true test data.
-        # =====================================================================
+        return {
+            'wavelet_correction': wavelet_correction,
+            'wavelet_weights': wavelet_weights,
+            'phase_asymmetry': phase_asymmetry,
+            'mu_pred': mu_pred,
+            'S_pred': S_pred,
+            'innovations': innovations,
+        }
+
+    @classmethod
+    def _stage_5_nu_cv_selection(cls, returns_train, vol_train, n_train,
+                                 q_opt, c_opt, phi_opt, alpha_opt, gamma_opt,
+                                 sens_opt, risk_premium_opt, skew_kappa_opt,
+                                 skew_persistence_fixed, nu_base, profile,
+                                 use_heavy_tail_grid):
+        """
+        Stage 5: Rolling cross-validation for ν (degrees of freedom) selection.
+
+        Implements the Gneiting-Raftery (2007) criterion:
+          "Maximize sharpness of predictive distributions,
+           subject to calibration."
+
+        Uses 5-fold rolling CV within training data. For each candidate ν:
+          1. Run filter on full training data
+          2. For each fold: estimate β on previous folds, validate on current
+          3. Compute fold-level KS p-value and CRPS
+          4. Select ν with best calibration-adjusted sharpness score
+
+        Returns:
+            dict with keys: nu_opt, beta_opt, mu_drift_opt, innovations_train,
+            mu_pred_train, S_pred_train
+        """
         from scipy.stats import t as student_t, kstest
-        
-        # Nu grid: from 5 to 20 (stable range for daily returns)
-        # Metals: include lower ν (3, 4) — precious metals exhibit heavier tails
-        # than equities due to macro-driven jump processes and crisis clustering.
-        # Empirical kurtosis for gold ≈ 8–10, silver ≈ 5–7, implying ν ≈ 5–7.
-        # Without ν < 5 in the grid, the CV cannot discover the correct basin.
-        # High-vol equities (MSTR, AMZE, RCAT, etc.): empirical kurtosis >> 6,
-        # need ν ∈ [4,8] for CRPS-optimal calibration — same grid as metals.
-        is_metals_asset = _prof_ms_ewm_lambda > 0.01
-        is_high_vol_asset = asset_class == 'high_vol_equity'
-        use_heavy_tail_grid = is_metals_asset or is_high_vol_asset
+        from scipy.special import gammaln
+
+        k_asym = profile.get('k_asym', 1.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        vov_damping = profile.get('vov_damping', 0.3)
+        ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
+
         NU_GRID = [3, 4, 5, 6, 7, 8, 10, 12] if use_heavy_tail_grid else [5, 6, 7, 8, 10, 12, 15, 20]
-        
-        # Rolling CV: 5 folds
+
         n_folds = 5
         fold_size = n_train // n_folds
-        
+
         best_nu = nu_base
         best_avg_ks_p = 0.0
         best_global_beta = 1.0
         best_global_mu_drift = 0.0
-        _nu_candidates_local = []  # Collect all (ν, ks_p, crps) for two-phase selection
-        
+
         for test_nu in NU_GRID:
             try:
                 temp_config = UnifiedStudentTConfig(
                     q=q_opt, c=c_opt, phi=phi_opt, nu_base=float(test_nu),
-                    alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
-                    ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
-                    vov_damping=_prof_vov_damping, variance_inflation=1.0,
-                    risk_premium_sensitivity=risk_premium_opt,
+                    alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, ms_ewm_lambda=0.0,
+                    q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                    variance_inflation=1.0, risk_premium_sensitivity=risk_premium_opt,
                     skew_score_sensitivity=skew_kappa_opt,
                     skew_persistence=skew_persistence_fixed,
                 )
-                
-                # Run filter on FULL training data
+
                 _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
                     returns_train, vol_train, temp_config
                 )
-                
-                # Note: wavelet_correction is disabled (set to 1.0)
-                # S_pred_train = S_pred_train * wavelet_correction
-                
-                # Compute innovations
+
                 innovations_train = returns_train - mu_pred_train
-                
-                # Rolling CV to estimate optimal beta and validate
+
                 fold_ks_pvalues = []
                 fold_betas = []
                 fold_mu_drifts = []
-                
+
                 for fold_idx in range(1, n_folds):
-                    # Training: all previous folds
                     train_end_idx = fold_idx * fold_size
-                    # Validation: current fold
                     valid_start_idx = train_end_idx
                     valid_end_idx = min((fold_idx + 1) * fold_size, n_train)
-                    
+
                     if valid_end_idx <= valid_start_idx:
                         continue
-                    
-                    # Estimate beta and mu_drift from training portion
+
                     innov_fold_train = innovations_train[:train_end_idx]
                     S_fold_train = S_pred_train[:train_end_idx]
-                    
+
                     fold_mu_drift = float(np.mean(innov_fold_train))
                     centered_innov = innov_fold_train - fold_mu_drift
                     actual_var = float(np.mean(centered_innov ** 2))
                     predicted_var = float(np.mean(S_fold_train))
-                    
+
                     if predicted_var > 1e-12:
                         fold_beta = actual_var / predicted_var
                     else:
                         fold_beta = 1.0
                     fold_beta = float(np.clip(fold_beta, 0.2, 5.0))
-                    
                     fold_betas.append(fold_beta)
                     fold_mu_drifts.append(fold_mu_drift)
-                    
-                    # Validate on current fold
+
                     innov_valid = innovations_train[valid_start_idx:valid_end_idx] - fold_mu_drift
                     S_valid = S_pred_train[valid_start_idx:valid_end_idx]
-                    
+
                     pit_values = []
                     for t in range(len(innov_valid)):
                         inn = innov_valid[t]
                         S_cal = S_valid[t] * fold_beta
-                        
                         if test_nu > 2:
                             t_scale = np.sqrt(S_cal * (test_nu - 2) / test_nu)
                         else:
                             t_scale = np.sqrt(S_cal)
                         t_scale = max(t_scale, 1e-10)
-                        
                         z = inn / t_scale
                         pit_values.append(student_t.cdf(z, df=test_nu))
-                    
+
                     if len(pit_values) > 10:
                         pit_values = np.clip(pit_values, 0.001, 0.999)
                         _, ks_p = kstest(pit_values, 'uniform')
                         fold_ks_pvalues.append(ks_p)
-                        
-                        # ─── CRPS sharpness on validation fold ──────────────
-                        # Compute fold-level CRPS to reward sharper (lower σ)
-                        # distributions among ν values that all pass KS.
-                        # This is the Gneiting-Raftery optimality criterion:
-                        #   "Maximize sharpness subject to calibration."
-                        # ────────────────────────────────────────────────────
+
+                        # CRPS on validation fold (Gneiting-Raftery sharpness)
                         try:
-                            pit_arr = np.array(pit_values)
                             fold_sigma = np.sqrt(np.array([S_valid[t] * fold_beta for t in range(len(innov_valid))]))
                             fold_sigma = np.maximum(fold_sigma, 1e-10)
                             if test_nu > 2:
                                 fold_scale = fold_sigma * np.sqrt((test_nu - 2) / test_nu)
                             else:
                                 fold_scale = fold_sigma
-                            # Real Student-t CRPS (not MAE proxy)
                             _z_fold = innov_valid / fold_scale
                             _pdf_fold = student_t.pdf(_z_fold, df=test_nu)
                             _cdf_fold = student_t.cdf(_z_fold, df=test_nu)
@@ -4771,161 +4618,104 @@ class PhiStudentTDriftModel:
                                 fold_crps = float(np.mean(fold_scale * (_t1 + _t2 - _t3)))
                             else:
                                 fold_crps = float(np.mean(np.abs(innov_valid)))
-                            fold_ks_pvalues[-1] = (ks_p, fold_crps)  # Store as tuple
+                            fold_ks_pvalues[-1] = (ks_p, fold_crps)
                         except Exception:
                             fold_ks_pvalues[-1] = (ks_p, float('inf'))
-                
-                # Average KS p-value and CRPS across folds
+
                 if len(fold_ks_pvalues) > 0:
-                    # Unpack tuples: (ks_p, fold_crps)
                     fold_ks_vals = [x[0] if isinstance(x, tuple) else x for x in fold_ks_pvalues]
                     fold_crps_vals = [x[1] if isinstance(x, tuple) else float('inf') for x in fold_ks_pvalues]
                     avg_ks_p = float(np.mean(fold_ks_vals))
                     avg_crps = float(np.mean([c for c in fold_crps_vals if np.isfinite(c)])) if any(np.isfinite(c) for c in fold_crps_vals) else float('inf')
                     avg_beta = float(np.mean(fold_betas))
                     avg_mu_drift = float(np.mean(fold_mu_drifts))
-                    
-                    # ─── Collect candidate for two-phase selection ─────────
-                    # Store (ν, ks_p, crps, beta, mu_drift) for all candidates.
-                    # Selection uses Gneiting-Raftery criterion (Feb 2026):
-                    #   Phase 1: Among ν with avg_ks_p ≥ 0.05 (calibrated),
-                    #            select the one with LOWEST avg_crps.
-                    #   Phase 2: If none pass, fall back to highest KS p-value
-                    #            with kurtosis coherence bonus.
-                    #
-                    # Mathematical justification (Gneiting & Raftery 2007):
-                    #   CRPS = σ_innov × F(ν) where F(ν) = √((ν-2)/ν) × C(ν)
-                    #   F(3)=0.477, F(5)=0.534, F(8)=0.549, F(20)=0.560
-                    #   ⟹ Lower ν gives 15% lower CRPS (scale shrinks faster
-                    #      than the tail constant C(ν) grows).
-                    #   "Maximize sharpness subject to calibration."
-                    # ────────────────────────────────────────────────────────
-                    _nu_candidates_local.append({
-                        'nu': float(test_nu),
-                        'avg_ks_p': avg_ks_p,
-                        'avg_crps': avg_crps,
-                        'avg_beta': avg_beta,
-                        'avg_mu_drift': avg_mu_drift,
-                    })
-                    
-                    # Also track best by KS (fallback)
-                    # Apply kurtosis coherence for heavy-tail grid
+
+                    # Kurtosis coherence bonus for heavy-tail grid
                     if use_heavy_tail_grid and test_nu > 4:
                         emp_kurt = float(np.mean(innovations_train ** 4) / (np.mean(innovations_train ** 2) ** 2 + 1e-20))
                         theo_kurt = 3.0 * (test_nu - 2.0) / (test_nu - 4.0)
                         kurt_mismatch = abs(emp_kurt - theo_kurt) / (emp_kurt + 1e-8)
                         kurt_bonus = max(0.5, 1.0 - 0.5 * kurt_mismatch)
                         score = avg_ks_p * kurt_bonus
-                    elif use_heavy_tail_grid and test_nu <= 4:
-                        score = avg_ks_p
                     else:
                         score = avg_ks_p
-                    
-                    # ─── CRPS sharpness bonus (Gneiting-Raftery criterion) ──
-                    # Among ν values that pass KS (calibrated), prefer the
-                    # one with lowest CRPS (sharpest forecasts).
-                    # Only apply when avg_ks_p is in the "acceptable" range
-                    # (> 0.05), so we don't sacrifice calibration for sharpness.
-                    # Bonus ∈ [0.8, 1.2]: lower CRPS → higher bonus.
-                    # ────────────────────────────────────────────────────────
+
+                    # CRPS sharpness bonus (Gneiting-Raftery)
                     if avg_ks_p > 0.05 and np.isfinite(avg_crps) and avg_crps > 0:
                         innov_std = float(np.std(innovations_train)) + 1e-10
                         crps_ratio = avg_crps / innov_std
-                        # Stronger CRPS bonus: 1.5 - 0.8×ratio (Feb 2026)
-                        # Range [0.6, 1.5] gives ν with lower CRPS much higher score
                         crps_bonus = max(0.6, min(1.5, 1.5 - 0.8 * crps_ratio))
                         score = score * crps_bonus
-                    
+
                     if score > best_avg_ks_p:
                         best_avg_ks_p = score
                         best_nu = float(test_nu)
                         best_global_beta = avg_beta
                         best_global_mu_drift = avg_mu_drift
-                        
+
             except Exception:
                 continue
-        
-        # =====================================================================
-        # TWO-PHASE ν SELECTION (Gneiting-Raftery Criterion, Feb 2026)
-        # =====================================================================
-        # Phase 1: Among ν with avg_ks_p ≥ 0.05 (PIT-calibrated),
-        #          select the one with LOWEST CRPS.
-        # Phase 2: If none pass PIT, use the KS-optimal ν (already in best_nu).
-        #
-        # This implements the proper scoring rule optimality theorem:
-        #   "Maximize sharpness of predictive distributions,
-        #    subject to calibration." (Gneiting et al. 2007)
-        #
-        # Key mathematical insight:
-        #   CRPS(t_ν) = σ_innov × F(ν) where F(ν) = √((ν-2)/ν) × C(ν)
-        #   F is INCREASING in ν, so LOWER ν → LOWER CRPS.
-        #   This is because the Student-t scale parameter σ = σ_innov × √((ν-2)/ν)
-        #   shrinks faster than the CRPS constant C(ν) grows.
-        # =====================================================================
-        # Stage 5 ν selection remains purely KS-optimal (PIT-first).
-        # CRPS optimization deferred to filter_and_calibrate's adaptive CV,
-        # which has richer guard mechanisms (probit β, Berkowitz, etc.).
-        # _nu_candidates_local collected above for diagnostics only.
-        
+
         # Final calibration on full training data with best nu
         temp_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt, nu_base=best_nu,
-            alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
-            vov_damping=_prof_vov_damping, variance_inflation=1.0,
-            risk_premium_sensitivity=risk_premium_opt,
+            alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+            ms_sensitivity=sens_opt, ms_ewm_lambda=0.0,
+            q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+            variance_inflation=1.0, risk_premium_sensitivity=risk_premium_opt,
             skew_score_sensitivity=skew_kappa_opt,
             skew_persistence=skew_persistence_fixed,
         )
-        
+
         _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
             returns_train, vol_train, temp_config
         )
-        
+
         innovations_train = returns_train - mu_pred_train
         final_mu_drift = float(np.mean(innovations_train))
         centered_innov = innovations_train - final_mu_drift
         actual_var = float(np.mean(centered_innov ** 2))
         predicted_var = float(np.mean(S_pred_train))
-        
+
         if predicted_var > 1e-12:
             final_beta = actual_var / predicted_var
         else:
             final_beta = best_global_beta
         final_beta = float(np.clip(final_beta, 0.2, 5.0))
-        
-        # Blend with CV estimate for robustness
+
         nu_opt = best_nu
         beta_opt = 0.7 * final_beta + 0.3 * best_global_beta
         mu_drift_opt = 0.7 * final_mu_drift + 0.3 * best_global_mu_drift
         beta_opt = float(np.clip(beta_opt, 0.2, 5.0))
-        
-        # =====================================================================
-        # STAGE 5c: GJR-GARCH Parameter Estimation on Training Data
-        # =====================================================================
-        # Estimate GJR-GARCH(1,1) parameters on training innovations.
-        # GJR-GARCH — Glosten, Jagannathan, Runkle (1993):
-        #   h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε_{t-1}<0) + β·h_{t-1}
-        #
-        # The leverage term γ_lev captures asymmetric variance reaction:
-        #   - Negative returns → variance increases by (α + γ_lev)·ε²
-        #   - Positive returns → variance increases by α·ε² only
-        #
-        # This is statistically well-documented across decades of equity data.
-        # Without it, crisis variance response lags and left-tail CRPS suffers.
-        #
-        # These will be used in filter_and_calibrate WITHOUT look-ahead.
-        # =====================================================================
+
+        return {
+            'nu_opt': nu_opt, 'beta_opt': beta_opt, 'mu_drift_opt': mu_drift_opt,
+            'innovations_train': innovations_train,
+            'mu_pred_train': mu_pred_train, 'S_pred_train': S_pred_train,
+        }
+
+    @staticmethod
+    def _stage_5c_garch_estimation(returns_train, mu_pred_train, mu_drift_opt, n_train):
+        """
+        Stage 5c: GJR-GARCH(1,1) parameter estimation (Glosten-Jagannathan-Runkle 1993).
+
+        h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε_{t-1}<0) + β·h_{t-1}
+
+        The leverage term γ_lev captures asymmetric variance reaction:
+          Negative returns → variance increases by (α + γ_lev)·ε²
+          Positive returns → variance increases by α·ε² only
+
+        Returns:
+            dict with keys: garch_omega, garch_alpha, garch_beta,
+            garch_leverage, unconditional_var
+        """
         innovations_train = returns_train - mu_pred_train - mu_drift_opt
         sq_innov = innovations_train ** 2
-        
         unconditional_var = float(np.var(innovations_train))
-        
-        # Estimate GJR-GARCH parameters using Quasi-MLE (Method of Moments)
-        garch_leverage = 0.0  # Default: no leverage (symmetric GARCH)
-        
+
+        garch_leverage = 0.0
+
         if n_train > 100:
-            # Estimate α (ARCH effect) from autocorrelation of squared innovations
             sq_centered = sq_innov - unconditional_var
             denom = np.sum(sq_centered[:-1]**2)
             if denom > 1e-12:
@@ -4933,810 +4723,642 @@ class PhiStudentTDriftModel:
                 garch_alpha = np.clip(garch_alpha, 0.02, 0.25)
             else:
                 garch_alpha = 0.08
-            
-            # -----------------------------------------------------------------
-            # GJR Leverage Estimation (Engle-Ng sign bias approach)
-            # -----------------------------------------------------------------
-            # Regress ε²_t on ε²_{t-1}·I(ε_{t-1}<0) to extract asymmetric
-            # variance response. This is the sign-bias test statistic converted
-            # to the GJR γ coefficient.
-            #
-            # Intuition: If negative innovations at t-1 cause EXTRA variance at t
-            # beyond what the symmetric α·ε²_{t-1} captures, then γ_lev > 0.
-            # -----------------------------------------------------------------
+
             neg_indicator = (innovations_train[:-1] < 0).astype(np.float64)
-            
-            # ε²_{t} | ε_{t-1} < 0  vs  ε²_{t} | ε_{t-1} ≥ 0
             n_neg = max(int(np.sum(neg_indicator)), 1)
             n_pos = max(int(np.sum(1.0 - neg_indicator)), 1)
             mean_sq_after_neg = float(np.sum(sq_innov[1:] * neg_indicator) / n_neg)
             mean_sq_after_pos = float(np.sum(sq_innov[1:] * (1.0 - neg_indicator)) / n_pos)
-            
-            # Leverage ratio: how much more variance after negative vs positive
+
             if mean_sq_after_pos > 1e-12:
                 leverage_ratio = mean_sq_after_neg / mean_sq_after_pos
             else:
                 leverage_ratio = 1.0
-            
-            # Convert ratio to GJR γ coefficient
-            # If leverage_ratio > 1, negative shocks cause more variance
-            # γ_lev ≈ α × (leverage_ratio - 1), but capped for stability
+
             if leverage_ratio > 1.0:
                 garch_leverage = float(np.clip(
-                    garch_alpha * (leverage_ratio - 1.0),
-                    0.0, 0.20  # Cap at 0.20 for stationarity
+                    garch_alpha * (leverage_ratio - 1.0), 0.0, 0.20
                 ))
-            else:
-                garch_leverage = 0.0
-            
-            # GARCH β: target total persistence ≈ 0.97 for daily equities
-            # (Bollerslev 1986, Engle-Patton 2001: empirical α+γ/2+β ≈ 0.95-0.99)
-            # β = target - α - γ/2, adapted to each asset through α and γ
+
             garch_beta = 0.97 - garch_alpha - garch_leverage / 2.0
             garch_beta = float(np.clip(garch_beta, 0.70, 0.95))
-            
-            # Ensure stationarity: α + γ/2 + β < 1
-            # (GJR stationarity requires α + γ_lev/2 + β < 1 since E[I(ε<0)] ≈ 0.5)
+
             total_persistence = garch_alpha + garch_leverage / 2.0 + garch_beta
             if total_persistence >= 0.99:
-                # Scale down β to maintain stationarity
                 garch_beta = 0.98 - garch_alpha - garch_leverage / 2.0
-                garch_beta = max(garch_beta, 0.5)  # Don't let β go too low
-            
+                garch_beta = max(garch_beta, 0.5)
+
             garch_omega = unconditional_var * (1 - garch_alpha - garch_leverage / 2.0 - garch_beta)
             garch_omega = max(garch_omega, 1e-10)
         else:
             garch_omega = unconditional_var * 0.05
             garch_alpha = 0.08
             garch_beta = 0.87
-            garch_leverage = 0.0
-        
-        # =====================================================================
-        # STAGE 5d: MERTON JUMP-DIFFUSION ESTIMATION (February 2026 - Elite)
-        # =====================================================================
-        # Separate discrete jump events from continuous diffusion.
-        # Without jump separation, large shocks inflate diffusion variance,
-        # cause q to over-adapt, vov to overreact → degrades PIT/Berkowitz.
-        #
-        # Estimation procedure (all on TRAINING data):
-        #   1. Detect jump candidates: |z_t| > 3σ (excess kurtosis threshold)
-        #   2. Estimate jump_intensity = count(|z|>threshold) / n_train
-        #   3. Estimate jump_variance = var(jumps) - var(diffusion)
-        #   4. Estimate jump_mean = mean(jumps) (allows asymmetric jumps)
-        #   5. Optimize jump_sensitivity via 1D L-BFGS-B on log-likelihood
-        # =====================================================================
-        jump_intensity_est = 0.0
-        jump_variance_est = 0.0
-        jump_sensitivity_est = 1.0
-        jump_mean_est = 0.0
-        
-        if n_train > 100:
-            try:
-                # Compute standardized innovations from diffusion-only filter
-                innovations_for_jump = returns_train - mu_pred_train - mu_drift_opt
-                innov_std = float(np.std(innovations_for_jump))
-                
-                if innov_std > 1e-10:
-                    z_innov = innovations_for_jump / innov_std
-                    
-                    # Detect jump candidates: |z| > threshold
-                    # Default 3.0 (≈0.27% under Gaussian, ≈1.5% under ν=6)
-                    # Metals profile lowers threshold for macro-event sensitivity
-                    jump_threshold = _prof_jump_threshold
-                    jump_mask = np.abs(z_innov) > jump_threshold
-                    n_jumps = int(np.sum(jump_mask))
-                    
-                    # Require at least 5 jumps to estimate meaningfully
-                    if n_jumps >= 5:
-                        # 1. Jump intensity: fraction of jump days
-                        jump_intensity_est = float(np.clip(n_jumps / n_train, 0.005, 0.15))
-                        
-                        # 2. Jump variance: excess variance from jump observations
-                        # σ²_J = Var(innov|jump) - Var(innov|no_jump)
-                        var_jump = float(np.var(innovations_for_jump[jump_mask]))
-                        var_diffusion = float(np.var(innovations_for_jump[~jump_mask]))
-                        jump_variance_est = float(np.clip(var_jump - var_diffusion, 1e-8, 0.1))
-                        
-                        # 3. Jump mean: allows asymmetric jumps (crashes vs rallies)
-                        jump_mean_est = float(np.clip(
-                            np.mean(innovations_for_jump[jump_mask]),
-                            -0.05, 0.05
-                        ))
-                        
-                        # 4. Optimize jump_sensitivity via 1D search
-                        # Maximize log-likelihood with jump-augmented filter
-                        log_vol_train = np.log(np.maximum(vol_train, 1e-10))
-                        vov_train_rolling = np.zeros(n_train)
-                        w = 20
-                        for tt in range(w, n_train):
-                            vov_train_rolling[tt] = np.std(log_vol_train[tt-w:tt])
-                        if n_train > w:
-                            vov_train_rolling[:w] = vov_train_rolling[w]
-                        
-                        def neg_ll_jump_sens(sens_arr):
-                            sens_val = sens_arr[0]
-                            cfg_j = UnifiedStudentTConfig(
-                                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
-                                alpha_asym=alpha_opt, k_asym=_prof_k_asym,
-                                gamma_vov=gamma_opt,
-                                ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
-                                vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
-                                mu_drift=mu_drift_opt,
-                                risk_premium_sensitivity=risk_premium_opt,
-                                skew_score_sensitivity=skew_kappa_opt,
-                                skew_persistence=skew_persistence_fixed,
-                                jump_intensity=jump_intensity_est,
-                                jump_variance=jump_variance_est,
-                                jump_sensitivity=sens_val,
-                                jump_mean=jump_mean_est,
-                            )
-                            try:
-                                _, _, _, _, ll_j = cls.filter_phi_unified(
-                                    returns_train, vol_train, cfg_j
-                                )
-                            except Exception:
-                                return 1e10
-                            if not np.isfinite(ll_j):
-                                return 1e10
-                            # Mild regularization toward sensitivity=1.0
-                            reg_j = 0.5 * (sens_val - 1.0) ** 2
-                            return -ll_j / n_train + reg_j
-                        
-                        try:
-                            result_jump_sens = minimize(
-                                neg_ll_jump_sens, [1.0],
-                                bounds=[(0.0, 5.0)], method='L-BFGS-B',
-                                options={'maxiter': 50}
-                            )
-                            if result_jump_sens.x is not None and np.isfinite(result_jump_sens.x[0]):
-                                jump_sensitivity_est = float(result_jump_sens.x[0])
-                        except Exception:
-                            jump_sensitivity_est = 1.0
-                        
-                        # 5. Verify jump layer improves likelihood
-                        # Compare: filter with jumps vs. filter without jumps
-                        cfg_no_jump = UnifiedStudentTConfig(
-                            q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
-                            alpha_asym=alpha_opt, k_asym=_prof_k_asym,
-                            gamma_vov=gamma_opt,
-                            ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
-                            vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
-                            mu_drift=mu_drift_opt,
-                            risk_premium_sensitivity=risk_premium_opt,
-                            skew_score_sensitivity=skew_kappa_opt,
-                            skew_persistence=skew_persistence_fixed,
-                        )
-                        cfg_with_jump = UnifiedStudentTConfig(
-                            q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
-                            alpha_asym=alpha_opt, k_asym=_prof_k_asym,
-                            gamma_vov=gamma_opt,
-                            ms_sensitivity=sens_opt, ms_ewm_lambda=0.0, q_stress_ratio=_prof_q_stress_ratio,
-                            vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
-                            mu_drift=mu_drift_opt,
-                            risk_premium_sensitivity=risk_premium_opt,
-                            skew_score_sensitivity=skew_kappa_opt,
-                            skew_persistence=skew_persistence_fixed,
-                            jump_intensity=jump_intensity_est,
-                            jump_variance=jump_variance_est,
-                            jump_sensitivity=jump_sensitivity_est,
-                            jump_mean=jump_mean_est,
-                        )
-                        
-                        _, _, _, _, ll_no_jump = cls.filter_phi_unified(
-                            returns_train, vol_train, cfg_no_jump
-                        )
-                        _, _, _, _, ll_with_jump = cls.filter_phi_unified(
-                            returns_train, vol_train, cfg_with_jump
-                        )
-                        
-                        # BIC-style check: jump layer adds 4 params
-                        # Only enable if ΔLL > 2·ln(n) per extra param
-                        bic_penalty = 4 * np.log(n_train)
-                        ll_improvement = 2 * (ll_with_jump - ll_no_jump)
-                        
-                        if ll_improvement < bic_penalty:
-                            # Jump layer doesn't improve enough — disable
-                            jump_intensity_est = 0.0
-                            jump_variance_est = 0.0
-                            jump_sensitivity_est = 1.0
-                            jump_mean_est = 0.0
-                    
-            except Exception:
-                # Jump estimation failed gracefully — disable
-                jump_intensity_est = 0.0
-                jump_variance_est = 0.0
-                jump_sensitivity_est = 1.0
-                jump_mean_est = 0.0
-        
-        # =====================================================================
-        # STAGE 5e: ROUGH VOLATILITY HURST ESTIMATION (February 2026)
-        # =====================================================================
-        # Estimate Hurst exponent H of volatility using the variogram method
-        # on log absolute innovations (Gatheral-Jaisson-Rosenbaum 2018).
-        #
-        # The variogram at lag τ is:
-        #   m(τ) = E[|log|ε_{t+τ}| - log|ε_t||²]
-        #
-        # For fractional Brownian motion with Hurst H:
-        #   m(τ) ~ C · τ^{2H}
-        #
-        # So: log m(τ) = log(C) + 2H · log(τ)
-        # → OLS regression of log m(τ) on log(τ) gives slope = 2H
-        #
-        # Empirical finding: equity vol H ≈ 0.05-0.15 (rough)
-        # H < 0.5 → rough (long-memory, slow power-law decay)
-        # H = 0.5 → Brownian (GARCH-equivalent, exponential decay)
-        #
-        # All estimation on TRAINING data — no look-ahead.
-        # =====================================================================
-        rough_hurst_est = 0.0  # Default: disabled
-        
-        if n_train > 200:
-            try:
-                # Use innovations from training (already computed)
-                innov_for_hurst = returns_train - mu_pred_train - mu_drift_opt
-                
-                # Log absolute innovations (proxy for log-volatility)
-                abs_innov = np.abs(innov_for_hurst)
-                abs_innov = np.maximum(abs_innov, 1e-12)  # Avoid log(0)
-                log_abs = np.log(abs_innov)
-                
-                # Compute variogram at multiple lags
-                max_tau = min(30, n_train // 10)
-                lags = np.arange(1, max_tau + 1)
-                variogram = np.zeros(max_tau)
-                
-                for i, tau in enumerate(lags):
-                    diffs = log_abs[tau:] - log_abs[:-tau]
-                    variogram[i] = np.mean(diffs ** 2)
-                
-                # Filter valid entries (variogram > 0)
-                valid = variogram > 1e-12
-                if np.sum(valid) >= 5:
-                    log_tau = np.log(lags[valid])
-                    log_var = np.log(variogram[valid])
-                    
-                    # OLS regression: log m(τ) = a + 2H · log(τ)
-                    # Use only short lags (τ ≤ 15) for rough vol estimation
-                    # Long lags are contaminated by regime changes
-                    short_mask = lags[valid] <= 15
-                    if np.sum(short_mask) >= 3:
-                        log_tau_s = log_tau[short_mask]
-                        log_var_s = log_var[short_mask]
-                        
-                        # OLS: slope = cov(x,y) / var(x)
-                        n_pts = len(log_tau_s)
-                        mean_x = np.mean(log_tau_s)
-                        mean_y = np.mean(log_var_s)
-                        cov_xy = np.sum((log_tau_s - mean_x) * (log_var_s - mean_y))
-                        var_x = np.sum((log_tau_s - mean_x) ** 2)
-                        
-                        if var_x > 1e-12:
-                            slope = cov_xy / var_x
-                            # slope = 2H, so H = slope/2
-                            H_est = slope / 2.0
-                            
-                            # Only accept rough regime: H ∈ [0.01, 0.45]
-                            # H ≥ 0.45 is near-Brownian → no benefit over GARCH
-                            # H < 0.01 is pathological
-                            if 0.01 <= H_est <= 0.45:
-                                rough_hurst_est = float(H_est)
-                            else:
-                                rough_hurst_est = 0.0
-                        
-            except Exception:
-                rough_hurst_est = 0.0
-        
-        # =====================================================================
-        # STAGE 5f: CRPS-OPTIMAL EWM LOCATION CORRECTION (February 2026)
-        # =====================================================================
-        # Estimate the optimal EWM decay λ for causal location correction.
-        #
-        # Mathematical foundation (Durbin-Koopman 2012, Harvey 2013):
-        # When the Kalman state equation is misspecified (e.g., missing
-        # short-term momentum, microstructure effects, or non-linear
-        # dynamics), innovations exhibit positive serial correlation:
-        #   ρ₁ = Corr(ε_t, ε_{t-1}) > 0
-        #
-        # The EWM correction acts as a causal auxiliary smoother:
-        #   ewm_μ[t] = λ·ewm_μ[t-1] + (1-λ)·ε_{t-1}
-        #   μ_pred_corrected[t] = μ_pred[t] + ewm_μ[t]
-        #
-        # This reduces innovation variance by:
-        #   Var(ε_corrected) ≈ Var(ε) × (1 - 2ρ₁(1-λ)/(1-λρ₁) + ...)
-        #
-        # For ρ₁ > 0 and λ ∈ (0, 1), the corrected variance is strictly
-        # lower, directly reducing CRPS = σ × C(ν).
-        #
-        # Optimal λ balances bias-variance:
-        #   - Low λ (0.80): fast tracking, captures short autocorrelation
-        #     but adds noise from overfitting recent innovations
-        #   - High λ (0.97): slow tracking, robust but misses dynamics
-        #
-        # We search over a grid and select λ that minimizes CRPS on the
-        # validation portion of training data (honest cross-validation).
-        # Only enable if innovation autocorrelation > threshold.
-        # =====================================================================
-        crps_ewm_lambda_opt = 0.0  # Default: disabled
-        
-        if n_train > 200:
-            try:
-                from tuning.diagnostics import compute_crps_student_t_inline as _crps_inline
-                
-                # Use the final filter output for estimation
-                temp_config_ewm = UnifiedStudentTConfig(
-                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
-                    alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
-                    ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda,
-                    q_stress_ratio=_prof_q_stress_ratio,
-                    vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
-                    mu_drift=mu_drift_opt,
-                    risk_premium_sensitivity=risk_premium_opt,
-                    skew_score_sensitivity=skew_kappa_opt,
-                    skew_persistence=skew_persistence_fixed,
-                    crps_ewm_lambda=0.0,  # No EWM for base filter
-                )
-                _, _, mu_pred_ewm_base, S_pred_ewm_base, _ = cls.filter_phi_unified(
-                    returns_train, vol_train, temp_config_ewm
-                )
-                
-                # Check innovation lag-1 autocorrelation
-                innov_ewm = returns_train - mu_pred_ewm_base
-                innov_centered = innov_ewm - np.mean(innov_ewm)
-                denom_ac = np.sum(innov_centered ** 2)
-                if denom_ac > 1e-12:
-                    rho1_innov = float(np.sum(innov_centered[1:] * innov_centered[:-1]) / denom_ac)
-                else:
-                    rho1_innov = 0.0
-                
-                # Enable EWM CV search if any positive autocorrelation exists.
-                # Even weak autocorrelation (ρ₁ > 0) can improve CRPS via
-                # the EWM's variance-reducing effect on innovations.
-                # The CV search will disable EWM if it doesn't help (1% gate).
-                if rho1_innov > -0.05:  # Allow even slightly negative (noise)
-                    # Cross-validate: use first 60% for estimation, latter 40% for validation
-                    n_est_ewm = int(n_train * 0.6)
-                    n_val_ewm = n_train - n_est_ewm
-                    
-                    if n_val_ewm > 50:
-                        # Compute sigma for CRPS on validation
-                        S_val_ewm = S_pred_ewm_base[n_est_ewm:] * beta_opt
-                        if nu_opt > 2:
-                            sigma_val_ewm = np.sqrt(np.maximum(S_val_ewm, 1e-20) * (nu_opt - 2) / nu_opt)
-                        else:
-                            sigma_val_ewm = np.sqrt(np.maximum(S_val_ewm, 1e-20))
-                        sigma_val_ewm = np.maximum(sigma_val_ewm, 1e-10)
-                        
-                        returns_val_ewm = returns_train[n_est_ewm:]
-                        mu_pred_val_base = mu_pred_ewm_base[n_est_ewm:]
-                        
-                        # Baseline CRPS (no EWM)
-                        crps_baseline = _crps_inline(returns_val_ewm, mu_pred_val_base, sigma_val_ewm, nu_opt)
-                        
-                        # Grid search over λ
-                        # Lower λ = faster tracking → better location for
-                        # non-stationary assets → lower CRPS z-terms.
-                        # Risk: more noise for stationary assets (handled by CV).
-                        LAMBDA_GRID = [0.70, 0.75, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97]
-                        best_crps_ewm = crps_baseline
-                        best_lambda_ewm = 0.0
-                        
-                        for lam_cand in LAMBDA_GRID:
-                            # Apply causal EWM correction to full training mu_pred
-                            ewm_mu_cand = 0.0
-                            mu_corrected_cand = mu_pred_ewm_base.copy()
-                            for t in range(1, n_train):
-                                innov_prev = returns_train[t-1] - mu_pred_ewm_base[t-1]
-                                ewm_mu_cand = lam_cand * ewm_mu_cand + (1.0 - lam_cand) * innov_prev
-                                mu_corrected_cand[t] = mu_pred_ewm_base[t] + ewm_mu_cand
-                            
-                            # CRPS on validation portion only
-                            mu_val_corrected = mu_corrected_cand[n_est_ewm:]
-                            crps_cand = _crps_inline(returns_val_ewm, mu_val_corrected, sigma_val_ewm, nu_opt)
-                            
-                            if np.isfinite(crps_cand) and crps_cand < best_crps_ewm:
-                                best_crps_ewm = crps_cand
-                                best_lambda_ewm = lam_cand
-                        
-                        # Only enable if CRPS improved by at least 0.3%
-                        # (was 1% — too strict, prevented many assets from
-                        # benefiting from even modest location improvements)
-                        if best_lambda_ewm > 0 and best_crps_ewm < crps_baseline * 0.997:
-                            crps_ewm_lambda_opt = best_lambda_ewm
-                
-            except Exception:
-                crps_ewm_lambda_opt = 0.0
-        
-        # =====================================================================
-        # STAGE 5g: LEVERAGE CORRELATION + MEAN REVERSION + CRPS SHRINKAGE
-        # =====================================================================
-        # Joint estimation of Heston-DLSV inspired parameters:
-        #   ρ_lev: quadratic leverage (Black 1976, Heston 1993)
-        #   κ: mean reversion speed toward θ_long (Heston 1993)
-        #   α_crps: CRPS-optimal sigma shrinkage (Gneiting-Raftery 2007)
-        #
-        # All estimated on training data via cross-validated CRPS minimization.
-        # The key insight is that these parameters primarily affect CRPS
-        # (sharpness of predictive distribution) while PIT calibration is
-        # handled by the adaptive CV in filter_and_calibrate.
-        #
-        # Estimation uses the Stage 5 filter output to avoid re-running
-        # the full filter for each candidate. Instead, we build a GARCH
-        # variance series with candidate (ρ_lev, κ) and compute CRPS
-        # on the validation fold.
-        # =====================================================================
-        rho_leverage_opt = 0.0
-        kappa_mean_rev_opt = 0.0
-        theta_long_var_opt = unconditional_var
-        crps_sigma_shrinkage_opt = 1.0
-        # New CRPS-enhancement params (February 2026)
-        sigma_eta_opt = 0.0
-        t_df_asym_opt = 0.0
-        regime_switch_prob_opt = 0.0
-        
-        if n_train > 200:
-            try:
-                from tuning.diagnostics import compute_crps_student_t_inline as _crps_inline_5g
-                
-                # Use Stage 5 filter output
-                temp_config_5g = UnifiedStudentTConfig(
-                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
-                    alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
-                    ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda,
-                    q_stress_ratio=_prof_q_stress_ratio,
-                    vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
-                    mu_drift=mu_drift_opt,
-                    risk_premium_sensitivity=risk_premium_opt,
-                    skew_score_sensitivity=skew_kappa_opt,
-                    skew_persistence=skew_persistence_fixed,
-                    crps_ewm_lambda=crps_ewm_lambda_opt,
-                )
-                _, _, mu_pred_5g, S_pred_5g, _ = cls.filter_phi_unified(
-                    returns_train, vol_train, temp_config_5g
-                )
-                innovations_5g = returns_train - mu_pred_5g
-                sq_inn_5g = innovations_5g ** 2
-                neg_ind_5g = (innovations_5g < 0).astype(np.float64)
-                
-                # Build GARCH series for each (ρ_lev, κ) candidate
-                n_est_5g = int(n_train * 0.6)
-                n_val_5g = n_train - n_est_5g
-                
-                if n_val_5g > 50:
-                    # Sigma for CRPS on validation
-                    returns_val_5g = returns_train[n_est_5g:]
-                    mu_val_5g = mu_pred_5g[n_est_5g:]
-                    
-                    # ─────────────────────────────────────────────────────────
-                    # Helper: build enhanced GARCH variance series
-                    # with all 5 variance params (ρ_lev, κ, σ_η, p_regime)
-                    # ─────────────────────────────────────────────────────────
-                    def _build_garch_5g(rho_c, kap_c, eta_c=0.0, reg_c=0.0):
-                        h_cand = np.zeros(n_train)
-                        h_cand[0] = unconditional_var
-                        _p_st = 0.1
-                        _stress_m = np.sqrt(_prof_q_stress_ratio)
-                        for t_ in range(1, n_train):
-                            h_ = (garch_omega
-                                  + garch_alpha * sq_inn_5g[t_-1]
-                                  + garch_leverage * sq_inn_5g[t_-1] * neg_ind_5g[t_-1]
-                                  + garch_beta * h_cand[t_-1])
-                            if rho_c > 0.01 and h_cand[t_-1] > 1e-12:
-                                nz_ = innovations_5g[t_-1] / np.sqrt(h_cand[t_-1])
-                                if nz_ < 0:
-                                    h_ += rho_c * nz_ * nz_ * h_cand[t_-1]
-                            if eta_c > 0.005 and h_cand[t_-1] > 1e-12:
-                                za_ = abs(innovations_5g[t_-1]) / np.sqrt(h_cand[t_-1])
-                                ex_ = max(0.0, za_ - 1.5)
-                                h_ += eta_c * ex_ * ex_ * h_cand[t_-1]
-                            if reg_c > 0.005 and h_cand[t_-1] > 1e-12:
-                                zr_ = abs(innovations_5g[t_-1]) / np.sqrt(h_cand[t_-1])
-                                _p_st = (1.0 - reg_c) * _p_st + reg_c * (1.0 if zr_ > 2.0 else 0.0)
-                                _p_st = min(max(_p_st, 0.0), 1.0)
-                                h_ = h_ * (1.0 + _p_st * (_stress_m - 1.0))
-                            if kap_c > 0.001:
-                                h_ = (1.0 - kap_c) * h_ + kap_c * unconditional_var
-                            h_cand[t_] = max(h_, 1e-12)
-                        return h_cand
-                    
-                    def _crps_from_h(h_arr, nu_c=nu_opt, df_asym=0.0):
-                        h_v = h_arr[n_est_5g:]
-                        if nu_c > 2:
-                            sig_v = np.sqrt(np.maximum(h_v * beta_opt, 1e-20) * (nu_c - 2) / nu_c)
-                        else:
-                            sig_v = np.sqrt(np.maximum(h_v * beta_opt, 1e-20))
-                        sig_v = np.maximum(sig_v, 1e-10)
-                        # If asymmetric df, compute per-observation CRPS with side-dependent ν
-                        if abs(df_asym) > 0.05:
-                            z_val = (returns_val_5g - mu_val_5g) / sig_v
-                            from scipy.stats import t as _t_dist_5g
-                            from scipy.special import gammaln as _gammaln_5g
-                            nu_L = max(2.5, nu_c - df_asym)
-                            nu_R = max(2.5, nu_c + df_asym)
-                            crps_ind = np.zeros(len(z_val))
-                            for side_nu, mask in [(nu_L, z_val < 0), (nu_R, z_val >= 0)]:
-                                if not np.any(mask):
-                                    continue
-                                z_s = z_val[mask]
-                                pdf_s = _t_dist_5g.pdf(z_s, df=side_nu)
-                                cdf_s = _t_dist_5g.cdf(z_s, df=side_nu)
-                                if side_nu > 1:
-                                    lB1 = _gammaln_5g(0.5) + _gammaln_5g(side_nu - 0.5) - _gammaln_5g(side_nu)
-                                    lB2 = _gammaln_5g(0.5) + _gammaln_5g(side_nu / 2) - _gammaln_5g((side_nu + 1) / 2)
-                                    Br = np.exp(lB1 - 2 * lB2)
-                                    t1 = z_s * (2 * cdf_s - 1)
-                                    t2 = 2 * pdf_s * (side_nu + z_s**2) / (side_nu - 1)
-                                    t3 = 2 * np.sqrt(side_nu) * Br / (side_nu - 1)
-                                    crps_ind[mask] = sig_v[mask] * (t1 + t2 - t3)
-                                else:
-                                    crps_ind[mask] = sig_v[mask] * np.abs(z_s)
-                            valid = np.isfinite(crps_ind)
-                            return float(np.mean(crps_ind[valid])) if np.any(valid) else float('inf')
-                        return _crps_inline_5g(returns_val_5g, mu_val_5g, sig_v, nu_c)
-                    
-                    # Base GARCH (no enhancements)
-                    h_base_5g = _build_garch_5g(0.0, 0.0)
-                    crps_5g_baseline = _crps_from_h(h_base_5g)
-                    
-                    # ─── Phase 1: Grid search (ρ_lev, κ) ───
-                    RHO_GRID = [0.0, 0.1, 0.3, 0.5, 0.8, 1.2]
-                    KAPPA_GRID = [0.0, 0.02, 0.05, 0.10, 0.15, 0.20]
-                    best_crps_5g = crps_5g_baseline
-                    
-                    for rho_c in RHO_GRID:
-                        for kap_c in KAPPA_GRID:
-                            if rho_c == 0.0 and kap_c == 0.0:
-                                continue
-                            h_cand_5g = _build_garch_5g(rho_c, kap_c)
-                            crps_c = _crps_from_h(h_cand_5g)
-                            if np.isfinite(crps_c) and crps_c < best_crps_5g:
-                                best_crps_5g = crps_c
-                                rho_leverage_opt = rho_c
-                                kappa_mean_rev_opt = kap_c
-                    
-                    # Only enable if CRPS improved by at least 0.5%
-                    if best_crps_5g >= crps_5g_baseline * 0.995:
-                        rho_leverage_opt = 0.0
-                        kappa_mean_rev_opt = 0.0
-                    
-                    theta_long_var_opt = unconditional_var
-                    
-                    # ─── Phase 2: sigma_eta (sequential, conditional on ρ,κ) ───
-                    SIGMA_ETA_GRID = [0.0, 0.03, 0.06, 0.10, 0.15, 0.25]
-                    best_crps_eta = best_crps_5g
-                    for eta_c in SIGMA_ETA_GRID:
-                        if eta_c == 0.0:
-                            continue
-                        h_eta = _build_garch_5g(rho_leverage_opt, kappa_mean_rev_opt, eta_c)
-                        crps_eta = _crps_from_h(h_eta)
-                        if np.isfinite(crps_eta) and crps_eta < best_crps_eta:
-                            best_crps_eta = crps_eta
-                            sigma_eta_opt = eta_c
-                    # Only enable if improved by 0.5%
-                    if best_crps_eta >= best_crps_5g * 0.995:
-                        sigma_eta_opt = 0.0
-                    
-                    # ─── Phase 3: regime_switch_prob (sequential) ───
-                    REGIME_GRID = [0.0, 0.02, 0.04, 0.06, 0.08, 0.12]
-                    best_crps_reg = best_crps_eta if sigma_eta_opt > 0 else best_crps_5g
-                    for reg_c in REGIME_GRID:
-                        if reg_c == 0.0:
-                            continue
-                        h_reg = _build_garch_5g(rho_leverage_opt, kappa_mean_rev_opt, sigma_eta_opt, reg_c)
-                        crps_reg = _crps_from_h(h_reg)
-                        if np.isfinite(crps_reg) and crps_reg < best_crps_reg:
-                            best_crps_reg = crps_reg
-                            regime_switch_prob_opt = reg_c
-                    if best_crps_reg >= (best_crps_eta if sigma_eta_opt > 0 else best_crps_5g) * 0.995:
-                        regime_switch_prob_opt = 0.0
-                    
-                    # ─── Phase 4: t_df_asym (asymmetric ν offset) ───
-                    # Uses the best GARCH so far, searches ν offset for CRPS
-                    T_DF_ASYM_GRID = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
-                    h_best_5g = _build_garch_5g(rho_leverage_opt, kappa_mean_rev_opt, sigma_eta_opt, regime_switch_prob_opt)
-                    best_crps_dfasym = _crps_from_h(h_best_5g)
-                    for dfa_c in T_DF_ASYM_GRID:
-                        if dfa_c == 0.0:
-                            continue
-                        crps_dfa = _crps_from_h(h_best_5g, df_asym=dfa_c)
-                        if np.isfinite(crps_dfa) and crps_dfa < best_crps_dfasym:
-                            best_crps_dfasym = crps_dfa
-                            t_df_asym_opt = dfa_c
-                    if best_crps_dfasym >= _crps_from_h(h_best_5g) * 0.995:
-                        t_df_asym_opt = 0.0
-                    
-                    # ─────────────────────────────────────────────────────────
-                    # CRPS-OPTIMAL SIGMA SHRINKAGE (Gneiting-Raftery 2007)
-                    # ─────────────────────────────────────────────────────────
-                    # Search for α ∈ [0.70, 1.00] that minimizes CRPS on
-                    # validation fold. Uses the best enhanced GARCH.
-                    # ─────────────────────────────────────────────────────────
-                    h_val_opt = h_best_5g[n_est_5g:]
-                    
-                    SHRINK_GRID = [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65,
-                                    0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00]
-                    best_crps_shrink = float('inf')
-                    best_shrink = 1.0
-                    
-                    for shrink_c in SHRINK_GRID:
-                        if nu_opt > 2:
-                            sigma_shrink_c = np.sqrt(np.maximum(h_val_opt * beta_opt, 1e-20) * (nu_opt - 2) / nu_opt) * shrink_c
-                        else:
-                            sigma_shrink_c = np.sqrt(np.maximum(h_val_opt * beta_opt, 1e-20)) * shrink_c
-                        sigma_shrink_c = np.maximum(sigma_shrink_c, 1e-10)
-                        crps_shrink_c = _crps_inline_5g(returns_val_5g, mu_val_5g, sigma_shrink_c, nu_opt)
-                        
-                        if np.isfinite(crps_shrink_c) and crps_shrink_c < best_crps_shrink:
-                            best_crps_shrink = crps_shrink_c
-                            best_shrink = shrink_c
-                    
-                    # Fine refinement around best
-                    _lo_5g = max(best_shrink - 0.05, 0.30)
-                    _hi_5g = min(best_shrink + 0.05, 1.00)
-                    _step_5g = 0.01
-                    _fine_5g = _lo_5g
-                    while _fine_5g <= _hi_5g + 0.001:
-                        if nu_opt > 2:
-                            sigma_fine_c = np.sqrt(np.maximum(h_val_opt * beta_opt, 1e-20) * (nu_opt - 2) / nu_opt) * _fine_5g
-                        else:
-                            sigma_fine_c = np.sqrt(np.maximum(h_val_opt * beta_opt, 1e-20)) * _fine_5g
-                        sigma_fine_c = np.maximum(sigma_fine_c, 1e-10)
-                        crps_fine_c = _crps_inline_5g(returns_val_5g, mu_val_5g, sigma_fine_c, nu_opt)
-                        if np.isfinite(crps_fine_c) and crps_fine_c < best_crps_shrink:
-                            best_crps_shrink = crps_fine_c
-                            best_shrink = _fine_5g
-                        _fine_5g += _step_5g
-                    
-                    crps_sigma_shrinkage_opt = best_shrink
-                    
-            except Exception:
-                rho_leverage_opt = 0.0
-                kappa_mean_rev_opt = 0.0
-                theta_long_var_opt = unconditional_var
-                crps_sigma_shrinkage_opt = 1.0
-                sigma_eta_opt = 0.0
-                t_df_asym_opt = 0.0
-                regime_switch_prob_opt = 0.0
-        
-        # =====================================================================
-        # BUILD FINAL CONFIG
-        # =====================================================================
-        # ELITE FIX: Use optimal nu from Stage 5 grid search, not input nu_base
-        final_config = UnifiedStudentTConfig(
-            q=q_opt,
-            c=c_opt,
-            phi=phi_opt,
-            nu_base=nu_opt,  # ELITE FIX: Use optimized nu from grid search
-            alpha_asym=alpha_opt,
-            k_asym=_prof_k_asym,  # Profile-adaptive asymmetric ν transition sharpness
-            gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt,
-            ms_ewm_lambda=_prof_ms_ewm_lambda,  # EWM z-score for metals (Feb 2026)
-            q_stress_ratio=_prof_q_stress_ratio,  # Profile-adaptive stress ratio
-            vov_damping=_prof_vov_damping,  # Profile-adaptive VoV damping
-            variance_inflation=beta_opt,
-            mu_drift=mu_drift_opt,  # ELITE FIX: mean drift correction
-            risk_premium_sensitivity=risk_premium_opt,  # ICAPM risk premium (February 2026)
-            skew_score_sensitivity=skew_kappa_opt,  # GAS dynamic skew (February 2026)
-            skew_persistence=skew_persistence_fixed,  # GAS skew persistence
-            garch_omega=garch_omega,
-            garch_alpha=garch_alpha,
-            garch_beta=garch_beta,
-            garch_leverage=garch_leverage,
-            garch_unconditional_var=unconditional_var,
-            rough_hurst=rough_hurst_est,  # Rough vol memory (February 2026)
-            wavelet_correction=wavelet_correction,  # DTCWT-inspired multi-scale
-            wavelet_weights=wavelet_weights,
-            phase_asymmetry=phase_asymmetry,  # Leverage effect from training
-            # Merton jump-diffusion layer (February 2026)
-            jump_intensity=jump_intensity_est,
-            jump_variance=jump_variance_est,
-            jump_sensitivity=jump_sensitivity_est,
-            jump_mean=jump_mean_est,
-            crps_ewm_lambda=crps_ewm_lambda_opt,  # CRPS-optimal EWM location correction
-            # Heston-DLSV leverage and mean reversion (February 2026)
-            rho_leverage=rho_leverage_opt,
-            kappa_mean_rev=kappa_mean_rev_opt,
-            theta_long_var=theta_long_var_opt,
-            crps_sigma_shrinkage=crps_sigma_shrinkage_opt,
-            # CRPS-enhancement: vol-of-vol noise, asymmetric df, regime switching
-            sigma_eta=sigma_eta_opt,
-            t_df_asym=t_df_asym_opt,
-            regime_switch_prob=regime_switch_prob_opt,
-            q_min=config.q_min,
-            c_min=config.c_min,
-            c_max=config.c_max,
-        )
-        
-        # =====================================================================
-        # CALIBRATION DIAGNOSTICS (computed on training data)
-        # =====================================================================
-        # Compute final PIT metrics to diagnose calibration quality
-        # =====================================================================
+
+        return {
+            'garch_omega': float(garch_omega),
+            'garch_alpha': float(garch_alpha),
+            'garch_beta': float(garch_beta),
+            'garch_leverage': float(garch_leverage),
+            'unconditional_var': float(unconditional_var),
+        }
+
+    @classmethod
+    def _stage_5d_jump_diffusion(cls, returns_train, vol_train, mu_pred_train,
+                                 mu_drift_opt, n_train, q_opt, c_opt, phi_opt,
+                                 nu_opt, alpha_opt, gamma_opt, sens_opt,
+                                 beta_opt, risk_premium_opt, skew_kappa_opt,
+                                 skew_persistence_fixed, profile):
+        """
+        Stage 5d: Merton jump-diffusion estimation.
+
+        Separates discrete jump events from continuous diffusion:
+          1. Detect jumps: |z_t| > threshold
+          2. Estimate jump_intensity, jump_variance, jump_mean
+          3. Optimize jump_sensitivity via 1D MLE
+          4. BIC test: only enable if 2·ΔLL > 4·ln(n)
+
+        Returns:
+            dict with keys: jump_intensity, jump_variance,
+            jump_sensitivity, jump_mean
+        """
+        from scipy.optimize import minimize
+
+        defaults = {'jump_intensity': 0.0, 'jump_variance': 0.0,
+                    'jump_sensitivity': 1.0, 'jump_mean': 0.0}
+
+        if n_train <= 100:
+            return defaults
+
+        k_asym = profile.get('k_asym', 1.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        vov_damping = profile.get('vov_damping', 0.3)
+        jump_threshold = profile.get('jump_threshold', 3.0)
+
         try:
-            # Recompute final PIT on training data with optimal params
+            innovations = returns_train - mu_pred_train - mu_drift_opt
+            innov_std = float(np.std(innovations))
+
+            if innov_std <= 1e-10:
+                return defaults
+
+            z_innov = innovations / innov_std
+            jump_mask = np.abs(z_innov) > jump_threshold
+            n_jumps = int(np.sum(jump_mask))
+
+            if n_jumps < 5:
+                return defaults
+
+            jump_intensity = float(np.clip(n_jumps / n_train, 0.005, 0.15))
+            var_jump = float(np.var(innovations[jump_mask]))
+            var_diffusion = float(np.var(innovations[~jump_mask]))
+            jump_variance = float(np.clip(var_jump - var_diffusion, 1e-8, 0.1))
+            jump_mean = float(np.clip(np.mean(innovations[jump_mask]), -0.05, 0.05))
+
+            # Optimize jump_sensitivity
+            def neg_ll_jump_sens(sens_arr):
+                sens_val = sens_arr[0]
+                cfg = UnifiedStudentTConfig(
+                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                    alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, ms_ewm_lambda=0.0,
+                    q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                    variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                    risk_premium_sensitivity=risk_premium_opt,
+                    skew_score_sensitivity=skew_kappa_opt,
+                    skew_persistence=skew_persistence_fixed,
+                    jump_intensity=jump_intensity,
+                    jump_variance=jump_variance,
+                    jump_sensitivity=sens_val,
+                    jump_mean=jump_mean,
+                )
+                try:
+                    _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+                except Exception:
+                    return 1e10
+                if not np.isfinite(ll):
+                    return 1e10
+                reg = 0.5 * (sens_val - 1.0) ** 2
+                return -ll / n_train + reg
+
+            jump_sensitivity = 1.0
+            try:
+                result = minimize(
+                    neg_ll_jump_sens, [1.0],
+                    bounds=[(0.0, 5.0)], method='L-BFGS-B',
+                    options={'maxiter': 50}
+                )
+                if result.x is not None and np.isfinite(result.x[0]):
+                    jump_sensitivity = float(result.x[0])
+            except Exception:
+                pass
+
+            # BIC verification
+            cfg_no = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt, ms_ewm_lambda=0.0,
+                q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                risk_premium_sensitivity=risk_premium_opt,
+                skew_score_sensitivity=skew_kappa_opt,
+                skew_persistence=skew_persistence_fixed,
+            )
+            cfg_yes = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt, ms_ewm_lambda=0.0,
+                q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                risk_premium_sensitivity=risk_premium_opt,
+                skew_score_sensitivity=skew_kappa_opt,
+                skew_persistence=skew_persistence_fixed,
+                jump_intensity=jump_intensity, jump_variance=jump_variance,
+                jump_sensitivity=jump_sensitivity, jump_mean=jump_mean,
+            )
+
+            _, _, _, _, ll_no = cls.filter_phi_unified(returns_train, vol_train, cfg_no)
+            _, _, _, _, ll_yes = cls.filter_phi_unified(returns_train, vol_train, cfg_yes)
+
+            bic_penalty = 4 * np.log(n_train)
+            if 2 * (ll_yes - ll_no) < bic_penalty:
+                return defaults
+
+            return {'jump_intensity': jump_intensity, 'jump_variance': jump_variance,
+                    'jump_sensitivity': jump_sensitivity, 'jump_mean': jump_mean}
+
+        except Exception:
+            return defaults
+
+    @staticmethod
+    def _stage_5e_rough_hurst(returns_train, mu_pred_train, mu_drift_opt, n_train):
+        """
+        Stage 5e: Rough volatility Hurst exponent estimation.
+
+        Uses the variogram method on log|innovations| (Gatheral-Jaisson-Rosenbaum 2018):
+          m(τ) = E[|log|ε_{t+τ}| - log|ε_t||²] ~ C·τ^{2H}
+        OLS on log-log gives H = slope/2.
+
+        Equity vol H ≈ 0.05-0.15 (rough). H < 0.5 → long memory.
+
+        Returns:
+            float: Hurst exponent H, or 0.0 if not in rough regime
+        """
+        if n_train <= 200:
+            return 0.0
+
+        try:
+            innov = returns_train - mu_pred_train - mu_drift_opt
+            abs_innov = np.maximum(np.abs(innov), 1e-12)
+            log_abs = np.log(abs_innov)
+
+            max_tau = min(30, n_train // 10)
+            lags = np.arange(1, max_tau + 1)
+            variogram = np.zeros(max_tau)
+
+            for i, tau in enumerate(lags):
+                diffs = log_abs[tau:] - log_abs[:-tau]
+                variogram[i] = np.mean(diffs ** 2)
+
+            valid = variogram > 1e-12
+            if np.sum(valid) < 5:
+                return 0.0
+
+            log_tau = np.log(lags[valid])
+            log_var = np.log(variogram[valid])
+
+            short_mask = lags[valid] <= 15
+            if np.sum(short_mask) < 3:
+                return 0.0
+
+            lt = log_tau[short_mask]
+            lv = log_var[short_mask]
+            mx, my = np.mean(lt), np.mean(lv)
+            cov_xy = np.sum((lt - mx) * (lv - my))
+            var_x = np.sum((lt - mx) ** 2)
+
+            if var_x > 1e-12:
+                H = cov_xy / var_x / 2.0
+                if 0.01 <= H <= 0.45:
+                    return float(H)
+
+        except Exception:
+            pass
+        return 0.0
+
+    @classmethod
+    def _stage_5f_ewm_lambda(cls, returns_train, vol_train, n_train,
+                             q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+                             sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+                             skew_kappa_opt, skew_persistence_fixed, profile):
+        """
+        Stage 5f: CRPS-optimal EWM location correction (Durbin-Koopman 2012).
+
+        When Kalman innovations have positive autocorrelation (ρ₁ > 0),
+        an EWM correction reduces innovation variance:
+          ewm_μ[t] = λ·ewm_μ[t-1] + (1-λ)·ε_{t-1}
+          μ_corrected[t] = μ_pred[t] + ewm_μ[t]
+
+        Optimal λ selected via CRPS on validation portion of training data.
+
+        Returns:
+            float: Optimal EWM lambda, or 0.0 if not beneficial
+        """
+        if n_train <= 200:
+            return 0.0
+
+        k_asym = profile.get('k_asym', 1.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        vov_damping = profile.get('vov_damping', 0.3)
+        ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
+
+        try:
+            from tuning.diagnostics import compute_crps_student_t_inline as _crps_inline
+
+            temp_config = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
+                q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                risk_premium_sensitivity=risk_premium_opt,
+                skew_score_sensitivity=skew_kappa_opt,
+                skew_persistence=skew_persistence_fixed,
+                crps_ewm_lambda=0.0,
+            )
+            _, _, mu_pred_base, S_pred_base, _ = cls.filter_phi_unified(
+                returns_train, vol_train, temp_config
+            )
+
+            # Check autocorrelation
+            innov = returns_train - mu_pred_base
+            ic = innov - np.mean(innov)
+            denom = np.sum(ic ** 2)
+            rho1 = float(np.sum(ic[1:] * ic[:-1]) / denom) if denom > 1e-12 else 0.0
+
+            if rho1 <= -0.05:
+                return 0.0
+
+            n_est = int(n_train * 0.6)
+            n_val = n_train - n_est
+            if n_val <= 50:
+                return 0.0
+
+            S_val = S_pred_base[n_est:] * beta_opt
+            if nu_opt > 2:
+                sig_val = np.sqrt(np.maximum(S_val, 1e-20) * (nu_opt - 2) / nu_opt)
+            else:
+                sig_val = np.sqrt(np.maximum(S_val, 1e-20))
+            sig_val = np.maximum(sig_val, 1e-10)
+
+            ret_val = returns_train[n_est:]
+            mu_val_base = mu_pred_base[n_est:]
+            crps_baseline = _crps_inline(ret_val, mu_val_base, sig_val, nu_opt)
+
+            LAMBDA_GRID = [0.70, 0.75, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97]
+            best_crps = crps_baseline
+            best_lam = 0.0
+
+            for lam_c in LAMBDA_GRID:
+                ewm_mu = 0.0
+                mu_corr = mu_pred_base.copy()
+                for t in range(1, n_train):
+                    ewm_mu = lam_c * ewm_mu + (1.0 - lam_c) * (returns_train[t-1] - mu_pred_base[t-1])
+                    mu_corr[t] = mu_pred_base[t] + ewm_mu
+                crps_c = _crps_inline(ret_val, mu_corr[n_est:], sig_val, nu_opt)
+                if np.isfinite(crps_c) and crps_c < best_crps:
+                    best_crps = crps_c
+                    best_lam = lam_c
+
+            if best_lam > 0 and best_crps < crps_baseline * 0.997:
+                return best_lam
+
+        except Exception:
+            pass
+        return 0.0
+
+    @classmethod
+    def _stage_5g_leverage_and_shrinkage(cls, returns_train, vol_train, n_train,
+                                         q_opt, c_opt, phi_opt, nu_opt, alpha_opt,
+                                         gamma_opt, sens_opt, beta_opt, mu_drift_opt,
+                                         risk_premium_opt, skew_kappa_opt,
+                                         skew_persistence_fixed, crps_ewm_lambda_opt,
+                                         garch_omega, garch_alpha, garch_beta,
+                                         garch_leverage, unconditional_var, profile):
+        """
+        Stage 5g: Leverage correlation + mean reversion + CRPS shrinkage.
+
+        Joint estimation of Heston-DLSV inspired parameters via sequential
+        CRPS minimization on cross-validated training data:
+          Phase 1: Grid search (ρ_leverage, κ_mean_rev)
+          Phase 2: sigma_eta (vol-of-vol noise)
+          Phase 3: regime_switch_prob
+          Phase 4: t_df_asym (asymmetric ν offset)
+          Phase 5: CRPS-optimal sigma shrinkage (Gneiting-Raftery 2007)
+
+        Returns:
+            dict with keys: rho_leverage, kappa_mean_rev, theta_long_var,
+            crps_sigma_shrinkage, sigma_eta, t_df_asym, regime_switch_prob
+        """
+        defaults = {
+            'rho_leverage': 0.0, 'kappa_mean_rev': 0.0,
+            'theta_long_var': unconditional_var, 'crps_sigma_shrinkage': 1.0,
+            'sigma_eta': 0.0, 't_df_asym': 0.0, 'regime_switch_prob': 0.0,
+        }
+
+        if n_train <= 200:
+            return defaults
+
+        k_asym = profile.get('k_asym', 1.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        vov_damping = profile.get('vov_damping', 0.3)
+        ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
+
+        try:
+            from tuning.diagnostics import compute_crps_student_t_inline as _crps_inline
+
+            temp_config = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
+                q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                risk_premium_sensitivity=risk_premium_opt,
+                skew_score_sensitivity=skew_kappa_opt,
+                skew_persistence=skew_persistence_fixed,
+                crps_ewm_lambda=crps_ewm_lambda_opt,
+            )
+            _, _, mu_pred, S_pred, _ = cls.filter_phi_unified(
+                returns_train, vol_train, temp_config
+            )
+            innovations = returns_train - mu_pred
+            sq_inn = innovations ** 2
+            neg_ind = (innovations < 0).astype(np.float64)
+
+            n_est = int(n_train * 0.6)
+            n_val = n_train - n_est
+
+            if n_val <= 50:
+                return defaults
+
+            returns_val = returns_train[n_est:]
+            mu_val = mu_pred[n_est:]
+
+            # Helper: build enhanced GARCH variance
+            def _build_garch(rho_c, kap_c, eta_c=0.0, reg_c=0.0):
+                h = np.zeros(n_train)
+                h[0] = unconditional_var
+                _p_st = 0.1
+                _sm = np.sqrt(q_stress_ratio)
+                for t_ in range(1, n_train):
+                    h_ = (garch_omega
+                          + garch_alpha * sq_inn[t_-1]
+                          + garch_leverage * sq_inn[t_-1] * neg_ind[t_-1]
+                          + garch_beta * h[t_-1])
+                    if rho_c > 0.01 and h[t_-1] > 1e-12:
+                        nz_ = innovations[t_-1] / np.sqrt(h[t_-1])
+                        if nz_ < 0:
+                            h_ += rho_c * nz_ * nz_ * h[t_-1]
+                    if eta_c > 0.005 and h[t_-1] > 1e-12:
+                        za_ = abs(innovations[t_-1]) / np.sqrt(h[t_-1])
+                        ex_ = max(0.0, za_ - 1.5)
+                        h_ += eta_c * ex_ * ex_ * h[t_-1]
+                    if reg_c > 0.005 and h[t_-1] > 1e-12:
+                        zr_ = abs(innovations[t_-1]) / np.sqrt(h[t_-1])
+                        _p_st = (1.0 - reg_c) * _p_st + reg_c * (1.0 if zr_ > 2.0 else 0.0)
+                        _p_st = min(max(_p_st, 0.0), 1.0)
+                        h_ = h_ * (1.0 + _p_st * (_sm - 1.0))
+                    if kap_c > 0.001:
+                        h_ = (1.0 - kap_c) * h_ + kap_c * unconditional_var
+                    h[t_] = max(h_, 1e-12)
+                return h
+
+            # Helper: compute CRPS from GARCH variance
+            def _crps_from_h(h_arr, nu_c=nu_opt, df_asym=0.0):
+                h_v = h_arr[n_est:]
+                if nu_c > 2:
+                    sig_v = np.sqrt(np.maximum(h_v * beta_opt, 1e-20) * (nu_c - 2) / nu_c)
+                else:
+                    sig_v = np.sqrt(np.maximum(h_v * beta_opt, 1e-20))
+                sig_v = np.maximum(sig_v, 1e-10)
+                if abs(df_asym) > 0.05:
+                    z_val = (returns_val - mu_val) / sig_v
+                    from scipy.stats import t as _td
+                    from scipy.special import gammaln as _gl
+                    nu_L = max(2.5, nu_c - df_asym)
+                    nu_R = max(2.5, nu_c + df_asym)
+                    crps_ind = np.zeros(len(z_val))
+                    for side_nu, mask in [(nu_L, z_val < 0), (nu_R, z_val >= 0)]:
+                        if not np.any(mask):
+                            continue
+                        zs = z_val[mask]
+                        ps = _td.pdf(zs, df=side_nu)
+                        cs = _td.cdf(zs, df=side_nu)
+                        if side_nu > 1:
+                            lB1 = _gl(0.5) + _gl(side_nu - 0.5) - _gl(side_nu)
+                            lB2 = _gl(0.5) + _gl(side_nu / 2) - _gl((side_nu + 1) / 2)
+                            Br = np.exp(lB1 - 2 * lB2)
+                            crps_ind[mask] = sig_v[mask] * (zs*(2*cs-1) + 2*ps*(side_nu+zs**2)/(side_nu-1) - 2*np.sqrt(side_nu)*Br/(side_nu-1))
+                        else:
+                            crps_ind[mask] = sig_v[mask] * np.abs(zs)
+                    vm = np.isfinite(crps_ind)
+                    return float(np.mean(crps_ind[vm])) if np.any(vm) else float('inf')
+                return _crps_inline(returns_val, mu_val, sig_v, nu_c)
+
+            # Phase 1: (ρ_lev, κ) grid
+            h_base = _build_garch(0.0, 0.0)
+            crps_baseline = _crps_from_h(h_base)
+            rho_opt = 0.0
+            kap_opt = 0.0
+            best_crps = crps_baseline
+
+            for rho_c in [0.0, 0.1, 0.3, 0.5, 0.8, 1.2]:
+                for kap_c in [0.0, 0.02, 0.05, 0.10, 0.15, 0.20]:
+                    if rho_c == 0.0 and kap_c == 0.0:
+                        continue
+                    c = _crps_from_h(_build_garch(rho_c, kap_c))
+                    if np.isfinite(c) and c < best_crps:
+                        best_crps = c
+                        rho_opt = rho_c
+                        kap_opt = kap_c
+
+            if best_crps >= crps_baseline * 0.995:
+                rho_opt = 0.0
+                kap_opt = 0.0
+
+            # Phase 2: sigma_eta
+            sigma_eta = 0.0
+            best_eta = best_crps if (rho_opt > 0 or kap_opt > 0) else crps_baseline
+            for eta_c in [0.03, 0.06, 0.10, 0.15, 0.25]:
+                c = _crps_from_h(_build_garch(rho_opt, kap_opt, eta_c))
+                if np.isfinite(c) and c < best_eta:
+                    best_eta = c
+                    sigma_eta = eta_c
+            if best_eta >= (best_crps if (rho_opt > 0 or kap_opt > 0) else crps_baseline) * 0.995:
+                sigma_eta = 0.0
+
+            # Phase 3: regime_switch_prob
+            regime_prob = 0.0
+            best_reg = best_eta if sigma_eta > 0 else (best_crps if (rho_opt > 0 or kap_opt > 0) else crps_baseline)
+            for reg_c in [0.02, 0.04, 0.06, 0.08, 0.12]:
+                c = _crps_from_h(_build_garch(rho_opt, kap_opt, sigma_eta, reg_c))
+                if np.isfinite(c) and c < best_reg:
+                    best_reg = c
+                    regime_prob = reg_c
+            ref_crps = best_eta if sigma_eta > 0 else (best_crps if (rho_opt > 0 or kap_opt > 0) else crps_baseline)
+            if best_reg >= ref_crps * 0.995:
+                regime_prob = 0.0
+
+            # Phase 4: t_df_asym
+            df_asym = 0.0
+            h_best = _build_garch(rho_opt, kap_opt, sigma_eta, regime_prob)
+            best_dfa = _crps_from_h(h_best)
+            for dfa_c in [0.5, 1.0, 1.5, 2.0, 2.5]:
+                c = _crps_from_h(h_best, df_asym=dfa_c)
+                if np.isfinite(c) and c < best_dfa:
+                    best_dfa = c
+                    df_asym = dfa_c
+            if best_dfa >= _crps_from_h(h_best) * 0.995:
+                df_asym = 0.0
+
+            # Phase 5: CRPS sigma shrinkage
+            h_val = h_best[n_est:]
+            best_shrink_crps = float('inf')
+            best_shrink = 1.0
+
+            for s in [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00]:
+                if nu_opt > 2:
+                    sig = np.sqrt(np.maximum(h_val * beta_opt, 1e-20) * (nu_opt - 2) / nu_opt) * s
+                else:
+                    sig = np.sqrt(np.maximum(h_val * beta_opt, 1e-20)) * s
+                sig = np.maximum(sig, 1e-10)
+                c = _crps_inline(returns_val, mu_val, sig, nu_opt)
+                if np.isfinite(c) and c < best_shrink_crps:
+                    best_shrink_crps = c
+                    best_shrink = s
+
+            # Fine refinement
+            lo = max(best_shrink - 0.05, 0.30)
+            hi = min(best_shrink + 0.05, 1.00)
+            fine = lo
+            while fine <= hi + 0.001:
+                if nu_opt > 2:
+                    sig = np.sqrt(np.maximum(h_val * beta_opt, 1e-20) * (nu_opt - 2) / nu_opt) * fine
+                else:
+                    sig = np.sqrt(np.maximum(h_val * beta_opt, 1e-20)) * fine
+                sig = np.maximum(sig, 1e-10)
+                c = _crps_inline(returns_val, mu_val, sig, nu_opt)
+                if np.isfinite(c) and c < best_shrink_crps:
+                    best_shrink_crps = c
+                    best_shrink = fine
+                fine += 0.01
+
+            return {
+                'rho_leverage': rho_opt,
+                'kappa_mean_rev': kap_opt,
+                'theta_long_var': unconditional_var,
+                'crps_sigma_shrinkage': best_shrink,
+                'sigma_eta': sigma_eta,
+                't_df_asym': df_asym,
+                'regime_switch_prob': regime_prob,
+            }
+
+        except Exception:
+            return defaults
+
+    @classmethod
+    def _build_diagnostics(cls, returns_train, vol_train, final_config,
+                           nu_opt, beta_opt, log_q_opt, q_opt, c_opt, phi_opt,
+                           gamma_opt, sens_opt, alpha_opt, risk_premium_opt,
+                           skew_kappa_opt, skew_persistence_fixed, mu_drift_opt,
+                           garch_alpha, garch_beta, garch_leverage,
+                           rough_hurst_est, wavelet_correction,
+                           jump_intensity_est, jump_variance_est,
+                           jump_sensitivity_est, jump_mean_est,
+                           config, degraded, cond_num, profile,
+                           rho_leverage_opt, kappa_mean_rev_opt,
+                           sigma_eta_opt, t_df_asym_opt,
+                           regime_switch_prob_opt, crps_sigma_shrinkage_opt,
+                           asset_class):
+        """
+        Build calibration diagnostics dict from final optimized config.
+
+        Computes PIT metrics on training data to diagnose calibration quality.
+
+        Returns:
+            dict: Full diagnostics dictionary
+        """
+        from scipy.stats import t as student_t
+
+        try:
             _, _, mu_pred_final, S_pred_final, _ = cls.filter_phi_unified(
                 returns_train, vol_train, final_config
             )
-            innov_final = returns_train - mu_pred_final  # mu_drift already in mu_pred_final
+            innov_final = returns_train - mu_pred_final
             S_cal_final = S_pred_final * beta_opt
-            
+
             if nu_opt > 2:
                 sigma_final = np.sqrt(S_cal_final * (nu_opt - 2) / nu_opt)
             else:
                 sigma_final = np.sqrt(S_cal_final)
             sigma_final = np.maximum(sigma_final, 1e-10)
-            
+
             z_final = innov_final / sigma_final
             pit_final = student_t.cdf(z_final, df=nu_opt)
             pit_final = np.clip(pit_final, 0.001, 0.999)
-            
-            # PIT autocorrelation (for Berkowitz)
+
             pit_centered = pit_final - np.mean(pit_final)
             denom = np.sum(pit_centered ** 2)
-            if denom > 1e-12:
-                pit_rho1 = float(np.sum(pit_centered[1:] * pit_centered[:-1]) / denom)
-            else:
-                pit_rho1 = 0.0
-            
-            # Tail masses
+            pit_rho1 = float(np.sum(pit_centered[1:] * pit_centered[:-1]) / denom) if denom > 1e-12 else 0.0
             pit_left_tail = float(np.mean(pit_final < 0.05))
             pit_right_tail = float(np.mean(pit_final > 0.95))
-            
-            # Variance ratio
             actual_var_final = float(np.var(innov_final))
             pred_var_final = float(np.mean(S_cal_final))
             var_ratio = actual_var_final / (pred_var_final + 1e-12)
-            
+
         except Exception:
             pit_rho1 = 0.0
             pit_left_tail = 0.05
             pit_right_tail = 0.05
             var_ratio = 1.0
-        
-        diagnostics = {
-            "stage": 5,
-            "success": True,
-            "degraded": degraded,
+
+        vov_damping = profile.get('vov_damping', 0.3)
+        k_asym = profile.get('k_asym', 1.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
+
+        return {
+            "stage": 5, "success": True, "degraded": degraded,
             "hessian_cond": cond_num,
-            "q": float(q_opt),
-            "c": float(c_opt),
-            "phi": float(phi_opt),
+            "q": float(q_opt), "c": float(c_opt), "phi": float(phi_opt),
             "log10_q": float(log_q_opt),
-            "gamma_vov": float(gamma_opt),
-            "ms_sensitivity": float(sens_opt),
+            "gamma_vov": float(gamma_opt), "ms_sensitivity": float(sens_opt),
             "alpha_asym": float(alpha_opt),
             "risk_premium_sensitivity": float(risk_premium_opt),
             "skew_score_sensitivity": float(skew_kappa_opt),
             "skew_persistence": float(skew_persistence_fixed),
-            "variance_inflation": float(beta_opt),
-            "mu_drift": float(mu_drift_opt),
-            "garch_alpha": float(garch_alpha),
-            "garch_beta": float(garch_beta),
+            "variance_inflation": float(beta_opt), "mu_drift": float(mu_drift_opt),
+            "garch_alpha": float(garch_alpha), "garch_beta": float(garch_beta),
             "garch_leverage": float(garch_leverage),
             "rough_hurst": float(rough_hurst_est),
             "wavelet_correction": float(wavelet_correction),
             "c_bounds": (float(config.c_min), float(config.c_max)),
             "q_min": float(config.q_min),
-            # Merton jump-diffusion diagnostics (February 2026)
             "jump_intensity": float(jump_intensity_est),
             "jump_variance": float(jump_variance_est),
             "jump_sensitivity": float(jump_sensitivity_est),
             "jump_mean": float(jump_mean_est),
             "jump_enabled": jump_intensity_est > 1e-6 and jump_variance_est > 1e-12,
-            # Calibration diagnostics
-            "pit_rho1": float(pit_rho1),           # Should be near 0 for good Berk
-            "pit_left_tail": float(pit_left_tail),  # Should be ~0.05
-            "pit_right_tail": float(pit_right_tail),# Should be ~0.05
-            "var_ratio": float(var_ratio),          # Should be ~1.0
-            # Asset-class adaptive profile (February 2026)
+            "pit_rho1": float(pit_rho1),
+            "pit_left_tail": float(pit_left_tail),
+            "pit_right_tail": float(pit_right_tail),
+            "var_ratio": float(var_ratio),
             "asset_class": asset_class,
             "profile_applied": bool(profile),
-            "profile_vov_damping": _prof_vov_damping,
-            "profile_k_asym": _prof_k_asym,
-            "profile_q_stress_ratio": _prof_q_stress_ratio,
-            "profile_ms_ewm_lambda": _prof_ms_ewm_lambda,
-            # CRPS-enhancement diagnostics (February 2026)
+            "profile_vov_damping": vov_damping,
+            "profile_k_asym": k_asym,
+            "profile_q_stress_ratio": q_stress_ratio,
+            "profile_ms_ewm_lambda": ms_ewm_lambda,
             "rho_leverage": float(rho_leverage_opt),
             "kappa_mean_rev": float(kappa_mean_rev_opt),
             "sigma_eta": float(sigma_eta_opt),
@@ -5744,5 +5366,219 @@ class PhiStudentTDriftModel:
             "regime_switch_prob": float(regime_switch_prob_opt),
             "crps_sigma_shrinkage": float(crps_sigma_shrinkage_opt),
         }
-        
+
+
+    @classmethod
+    def optimize_params_unified(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        nu_base: float = 8.0,
+        train_frac: float = 0.7,
+        asset_symbol: str = None,
+    ) -> Tuple['UnifiedStudentTConfig', Dict]:
+        """
+        Staged optimization for unified Student-t Kalman filter model.
+
+        Orchestrates 12 optimization stages in sequence, threading results
+        forward. Each stage is a self-contained classmethod for testability.
+
+        Stage dependency chain:
+          1 (q,c,φ) → 2 (γ_vov) → 3 (ms_sens) → 4 (α_asym)
+            → 4.1 (risk_prem) → 4.2 (skew_κ) → [hessian check]
+              → 4.5 (DTCWT) → 5 (ν CV) → 5c (GARCH) → 5d (jumps)
+                → 5e (Hurst) → 5f (EWM λ) → 5g (leverage+shrinkage)
+
+        Args:
+            returns: Return series
+            vol: EWMA/GK volatility series
+            nu_base: Base degrees of freedom (from discrete grid)
+            train_frac: Fraction for train/test split
+            asset_symbol: Asset symbol for profile selection
+
+        Returns:
+            Tuple of (UnifiedStudentTConfig, diagnostics_dict)
+        """
+        returns = np.asarray(returns).flatten()
+        vol = np.asarray(vol).flatten()
+
+        # Auto-configure initial bounds from data
+        config = UnifiedStudentTConfig.auto_configure(returns, vol, nu_base)
+
+        n = len(returns)
+        n_train = int(n * train_frac)
+        returns_train = returns[:n_train]
+        vol_train = vol[:n_train]
+
+        # ── Asset-class adaptive profile ─────────────────────────────
+        asset_class = _detect_asset_class(asset_symbol)
+        profile = ASSET_CLASS_PROFILES.get(asset_class, {}) if asset_class else {}
+
+        # ── STAGE 1: Base parameters (q, c, φ) ──────────────────────
+        s1 = cls._stage_1_base_params(returns_train, vol_train, n_train, nu_base, config)
+        if not s1['success']:
+            return config, {"stage": 0, "success": False,
+                            "error": "Stage 1 optimization failed", "degraded": True}
+
+        q_opt, c_opt, phi_opt = s1['q'], s1['c'], s1['phi']
+        log_q_opt = s1['log_q']
+
+        # ── STAGE 2: VoV gamma ───────────────────────────────────────
+        gamma_opt = cls._stage_2_vov_gamma(
+            returns_train, vol_train, n_train, nu_base,
+            q_opt, c_opt, phi_opt, config)
+
+        # ── STAGE 3: MS-q sensitivity ────────────────────────────────
+        sens_opt = cls._stage_3_ms_sensitivity(
+            returns_train, vol_train, n_train, nu_base,
+            q_opt, c_opt, phi_opt, gamma_opt, profile)
+
+        # ── STAGE 4: Asymmetry alpha ─────────────────────────────────
+        alpha_opt = cls._stage_4_asymmetry(
+            returns_train, vol_train, n_train, nu_base,
+            q_opt, c_opt, phi_opt, gamma_opt, sens_opt, profile)
+
+        # ── STAGE 4.1: Risk premium (ICAPM) ──────────────────────────
+        risk_premium_opt = cls._stage_4_1_risk_premium(
+            returns_train, vol_train, n_train, nu_base,
+            q_opt, c_opt, phi_opt, gamma_opt, sens_opt, alpha_opt, profile)
+
+        # ── STAGE 4.2: Skew dynamics (GAS) ───────────────────────────
+        skew_kappa_opt, skew_persistence_fixed = cls._stage_4_2_skew_dynamics(
+            returns_train, vol_train, n_train, nu_base,
+            q_opt, c_opt, phi_opt, gamma_opt, sens_opt, alpha_opt,
+            risk_premium_opt, profile)
+
+        # ── Hessian condition check ──────────────────────────────────
+        hess = cls._check_hessian_degradation(
+            s1.get('result'), gamma_opt, sens_opt, alpha_opt,
+            risk_premium_opt, skew_kappa_opt)
+        gamma_opt = hess['gamma_opt']
+        sens_opt = hess['sens_opt']
+        alpha_opt = hess['alpha_opt']
+        risk_premium_opt = hess['risk_premium_opt']
+        skew_kappa_opt = hess['skew_kappa_opt']
+        degraded = hess['degraded']
+        cond_num = hess['cond_num']
+
+        # ── STAGE 4.5: DTCWT-inspired features ──────────────────────
+        dtcwt = cls._stage_4_5_dtcwt_features(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_base, alpha_opt,
+            gamma_opt, sens_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, profile)
+        wavelet_correction = dtcwt['wavelet_correction']
+        wavelet_weights = dtcwt['wavelet_weights']
+        phase_asymmetry = dtcwt['phase_asymmetry']
+
+        # ── STAGE 5: Rolling CV ν selection ──────────────────────────
+        _prof_ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
+        is_metals_asset = _prof_ms_ewm_lambda > 0.01
+        is_high_vol_asset = asset_class == 'high_vol_equity'
+        use_heavy_tail_grid = is_metals_asset or is_high_vol_asset
+
+        s5 = cls._stage_5_nu_cv_selection(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, alpha_opt, gamma_opt,
+            sens_opt, risk_premium_opt, skew_kappa_opt,
+            skew_persistence_fixed, nu_base, profile,
+            use_heavy_tail_grid)
+        nu_opt = s5['nu_opt']
+        beta_opt = s5['beta_opt']
+        mu_drift_opt = s5['mu_drift_opt']
+        mu_pred_train = s5['mu_pred_train']
+
+        # ── STAGE 5c: GJR-GARCH ─────────────────────────────────────
+        garch = cls._stage_5c_garch_estimation(
+            returns_train, mu_pred_train, mu_drift_opt, n_train)
+
+        # ── STAGE 5d: Merton jump-diffusion ──────────────────────────
+        jumps = cls._stage_5d_jump_diffusion(
+            returns_train, vol_train, mu_pred_train, mu_drift_opt,
+            n_train, q_opt, c_opt, phi_opt, nu_opt, alpha_opt,
+            gamma_opt, sens_opt, beta_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, profile)
+
+        # ── STAGE 5e: Rough Hurst ────────────────────────────────────
+        rough_hurst_est = cls._stage_5e_rough_hurst(
+            returns_train, mu_pred_train, mu_drift_opt, n_train)
+
+        # ── STAGE 5f: EWM location correction ────────────────────────
+        crps_ewm_lambda_opt = cls._stage_5f_ewm_lambda(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, profile)
+
+        # ── STAGE 5g: Leverage + shrinkage ───────────────────────────
+        s5g = cls._stage_5g_leverage_and_shrinkage(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, crps_ewm_lambda_opt,
+            garch['garch_omega'], garch['garch_alpha'],
+            garch['garch_beta'], garch['garch_leverage'],
+            garch['unconditional_var'], profile)
+
+        # ── BUILD FINAL CONFIG ───────────────────────────────────────
+        _prof_k_asym = profile.get('k_asym', 1.0)
+        _prof_q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        _prof_vov_damping = profile.get('vov_damping', 0.3)
+        _prof_ms_ewm_lambda_val = profile.get('ms_ewm_lambda', 0.0)
+
+        final_config = UnifiedStudentTConfig(
+            q=q_opt, c=c_opt, phi=phi_opt,
+            nu_base=nu_opt,
+            alpha_asym=alpha_opt, k_asym=_prof_k_asym,
+            gamma_vov=gamma_opt,
+            ms_sensitivity=sens_opt,
+            ms_ewm_lambda=_prof_ms_ewm_lambda_val,
+            q_stress_ratio=_prof_q_stress_ratio,
+            vov_damping=_prof_vov_damping,
+            variance_inflation=beta_opt,
+            mu_drift=mu_drift_opt,
+            risk_premium_sensitivity=risk_premium_opt,
+            skew_score_sensitivity=skew_kappa_opt,
+            skew_persistence=skew_persistence_fixed,
+            garch_omega=garch['garch_omega'],
+            garch_alpha=garch['garch_alpha'],
+            garch_beta=garch['garch_beta'],
+            garch_leverage=garch['garch_leverage'],
+            garch_unconditional_var=garch['unconditional_var'],
+            rough_hurst=rough_hurst_est,
+            wavelet_correction=wavelet_correction,
+            wavelet_weights=wavelet_weights,
+            phase_asymmetry=phase_asymmetry,
+            jump_intensity=jumps['jump_intensity'],
+            jump_variance=jumps['jump_variance'],
+            jump_sensitivity=jumps['jump_sensitivity'],
+            jump_mean=jumps['jump_mean'],
+            crps_ewm_lambda=crps_ewm_lambda_opt,
+            rho_leverage=s5g['rho_leverage'],
+            kappa_mean_rev=s5g['kappa_mean_rev'],
+            theta_long_var=s5g['theta_long_var'],
+            crps_sigma_shrinkage=s5g['crps_sigma_shrinkage'],
+            sigma_eta=s5g['sigma_eta'],
+            t_df_asym=s5g['t_df_asym'],
+            regime_switch_prob=s5g['regime_switch_prob'],
+            q_min=config.q_min, c_min=config.c_min, c_max=config.c_max,
+        )
+
+        # ── CALIBRATION DIAGNOSTICS ──────────────────────────────────
+        diagnostics = cls._build_diagnostics(
+            returns_train, vol_train, final_config,
+            nu_opt, beta_opt, log_q_opt, q_opt, c_opt, phi_opt,
+            gamma_opt, sens_opt, alpha_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, mu_drift_opt,
+            garch['garch_alpha'], garch['garch_beta'], garch['garch_leverage'],
+            rough_hurst_est, wavelet_correction,
+            jumps['jump_intensity'], jumps['jump_variance'],
+            jumps['jump_sensitivity'], jumps['jump_mean'],
+            config, degraded, cond_num, profile,
+            s5g['rho_leverage'], s5g['kappa_mean_rev'],
+            s5g['sigma_eta'], s5g['t_df_asym'],
+            s5g['regime_switch_prob'], s5g['crps_sigma_shrinkage'],
+            asset_class)
+
         return final_config, diagnostics
+
