@@ -3222,6 +3222,17 @@ def _kalman_filter_drift(
                 c_min=float(tuned_params.get('c_min', 0.01)),
                 c_max=float(tuned_params.get('c_max', 10.0)),
                 q_min=float(tuned_params.get('q_min', 1e-8)),
+                # CRPS-optimal EWM location correction (February 2026)
+                crps_ewm_lambda=float(tuned_params.get('crps_ewm_lambda', 0.0)),
+                # Heston-DLSV leverage and mean reversion (February 2026)
+                rho_leverage=float(tuned_params.get('rho_leverage', 0.0)),
+                kappa_mean_rev=float(tuned_params.get('kappa_mean_rev', 0.0)),
+                theta_long_var=float(tuned_params.get('theta_long_var', 0.0)),
+                crps_sigma_shrinkage=float(tuned_params.get('crps_sigma_shrinkage', 1.0)),
+                # CRPS-enhancement: vol-of-vol noise, asymmetric df, regime switching
+                sigma_eta=float(tuned_params.get('sigma_eta', 0.0)),
+                t_df_asym=float(tuned_params.get('t_df_asym', 0.0)),
+                regime_switch_prob=float(tuned_params.get('regime_switch_prob', 0.0)),
             )
             
             # Run unified filter
@@ -3233,6 +3244,29 @@ def _kalman_filter_drift(
             log_likelihood = ll_u
             enhanced_result = True
             enhanced_model_type = 'unified'
+            
+            # ─────────────────────────────────────────────────────────
+            # Calibrated variance (February 2026)
+            # Use filter_and_calibrate to get GARCH-blended, β-corrected
+            # predictive variance. This is the same calibrated sigma used
+            # for PIT testing, ensuring signal generation uses the most
+            # accurate variance estimate.
+            # ─────────────────────────────────────────────────────────
+            try:
+                _pit_sig, _pit_p_sig, _sigma_cal_sig, _, _calib_diag_sig = \
+                    PhiStudentTDriftModel.filter_and_calibrate(
+                        y, sigma, unified_config, train_frac=0.7
+                    )
+                _n_train_sig = int(len(y) * 0.7)
+                _nu_eff_sig = _calib_diag_sig.get('nu_effective', unified_config.nu_base)
+                # Store calibrated sigma for downstream signal generation
+                if len(_sigma_cal_sig) == len(y) - _n_train_sig and _np_sig.all(_sigma_cal_sig > 0):
+                    # Extend P_filtered with calibrated variance for test period
+                    _S_cal_full = _np_sig.copy(S_pred_u)
+                    _S_cal_full[_n_train_sig:] = _sigma_cal_sig ** 2 * _nu_eff_sig / max(_nu_eff_sig - 2, 0.1)
+                    P_filtered = _S_cal_full
+            except Exception:
+                pass  # Keep raw P_filtered on failure
             
             if os.getenv("DEBUG"):
                 jump_active = unified_config.jump_intensity > 1e-6 and unified_config.jump_variance > 1e-12

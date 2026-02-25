@@ -3191,22 +3191,52 @@ def fit_all_models_for_regime(
             bic_u = compute_bic(ll_u, effective_n_params, n_obs)
             mean_ll_u = ll_u / max(n_obs, 1)
 
-            # Hyvärinen and CRPS scores using predictive values
-            # Use base nu for scoring (asymmetry is internal adjustment)
-            # CRPS uses mu_pred directly — filter_phi_unified already
-            # incorporates mu_drift into its output predictions.
-            if nu_fixed > 2:
-                forecast_scale_u = np.sqrt(S_pred_u * (nu_fixed - 2) / nu_fixed)
-            else:
-                forecast_scale_u = np.sqrt(S_pred_u)
-
-            mu_effective_u = mu_pred_u  # Already includes mu_drift
+            # Hyvärinen and CRPS scores using calibrated predictive values
+            # ─────────────────────────────────────────────────────────────
+            # Use filter_and_calibrate to get the same calibrated sigma
+            # and effective ν that the PIT test uses. This ensures tuning
+            # optimises against the actual predictive distribution, not
+            # the raw Kalman S_pred which ignores GARCH blending, β
+            # recalibration, and ν refinement.
+            # ─────────────────────────────────────────────────────────────
+            n_train_u = int(n_obs * 0.7)
+            try:
+                _pit_cal_u, _pit_p_u, _sigma_cal_u, _, _calib_diag_u = \
+                    PhiStudentTDriftModel.filter_and_calibrate(
+                        returns, vol, config, train_frac=0.7
+                    )
+                _nu_eff_u = _calib_diag_u.get('nu_effective', float(nu_fixed))
+                returns_test_u = returns[n_train_u:]
+                mu_pred_test_u = mu_pred_u[n_train_u:]
+                
+                if len(_sigma_cal_u) == len(returns_test_u) and np.all(_sigma_cal_u > 0):
+                    forecast_scale_u = np.maximum(_sigma_cal_u, 1e-10)
+                    nu_for_score = _nu_eff_u
+                else:
+                    if nu_fixed > 2:
+                        forecast_scale_u = np.sqrt(S_pred_u[n_train_u:] * (nu_fixed - 2) / nu_fixed)
+                    else:
+                        forecast_scale_u = np.sqrt(S_pred_u[n_train_u:])
+                    forecast_scale_u = np.maximum(forecast_scale_u, 1e-10)
+                    nu_for_score = float(nu_fixed)
+                
+                mu_effective_u = mu_pred_test_u
+            except Exception:
+                # Fallback to raw predictions on full data
+                if nu_fixed > 2:
+                    forecast_scale_u = np.sqrt(S_pred_u * (nu_fixed - 2) / nu_fixed)
+                else:
+                    forecast_scale_u = np.sqrt(S_pred_u)
+                forecast_scale_u = np.maximum(forecast_scale_u, 1e-10)
+                mu_effective_u = mu_pred_u
+                nu_for_score = float(nu_fixed)
+                returns_test_u = returns
 
             hyvarinen_u = compute_hyvarinen_score_student_t(
-                returns, mu_effective_u, forecast_scale_u, nu_fixed
+                returns_test_u, mu_effective_u, forecast_scale_u, nu_for_score
             )
             crps_u = compute_crps_student_t_inline(
-                returns, mu_effective_u, forecast_scale_u, nu_fixed
+                returns_test_u, mu_effective_u, forecast_scale_u, nu_for_score
             )
 
             models[unified_name] = {
@@ -3251,6 +3281,17 @@ def fit_all_models_for_regime(
                 "c_min": float(getattr(config, 'c_min', 0.01)),
                 "c_max": float(getattr(config, 'c_max', 10.0)),
                 "q_min": float(getattr(config, 'q_min', 1e-8)),
+                # CRPS-optimal EWM location correction (February 2026)
+                "crps_ewm_lambda": float(getattr(config, 'crps_ewm_lambda', 0.0)),
+                # Heston-DLSV leverage and mean reversion (February 2026)
+                "rho_leverage": float(getattr(config, 'rho_leverage', 0.0)),
+                "kappa_mean_rev": float(getattr(config, 'kappa_mean_rev', 0.0)),
+                "theta_long_var": float(getattr(config, 'theta_long_var', 0.0)),
+                "crps_sigma_shrinkage": float(getattr(config, 'crps_sigma_shrinkage', 1.0)),
+                # CRPS-enhancement: vol-of-vol noise, asymmetric df, regime switching
+                "sigma_eta": float(getattr(config, 'sigma_eta', 0.0)),
+                "t_df_asym": float(getattr(config, 't_df_asym', 0.0)),
+                "regime_switch_prob": float(getattr(config, 'regime_switch_prob', 0.0)),
                 # Scores
                 "log_likelihood": float(ll_u),
                 "mean_log_likelihood": float(mean_ll_u),
