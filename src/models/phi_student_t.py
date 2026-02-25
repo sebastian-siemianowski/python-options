@@ -1555,7 +1555,87 @@ def _compute_phi_prior_diagnostics(
 
 
 class PhiStudentTDriftModel:
-    """Encapsulates Student-t heavy-tail logic so drift model behavior stays modular."""
+    """
+    Unified Student-t Kalman filter with heavy tails, regime switching, and CRPS tuning.
+
+    Encapsulates Student-t heavy-tail logic so drift model behavior stays modular.
+    Parameter estimation is performed by optimize_params_unified(), which decomposes
+    into 15 sequential stages (13 estimation + 1 safety gate + 1 diagnostics).
+    Each stage freezes all upstream parameters and optimizes <= 2 new ones.
+
+    optimize_params_unified — Stage Dependency Chain
+    =================================================
+
+    Stage 1  (q, c, phi)        Base Kalman filter: process noise q, observation scale c,
+                                persistence phi. L-BFGS-B with regularization to prevent
+                                phi->1 / q->0 random walk degeneracy.
+
+    Stage 2  (gamma_vov)        Volatility-of-volatility: how much R_t responds to
+                                delta-log(sigma_t). Freezes (q,c,phi), optimizes gamma
+                                via 1D MLE.
+
+    Stage 3  (ms_sens)          Markov-switching process noise sensitivity. Controls how
+                                aggressively q transitions calm->stress. Profile-adaptive
+                                (metals use higher sensitivity, weaker regularization).
+
+    Stage 4  (alpha_asym)       Asymmetric tail thickness:
+                                nu_eff = nu_base * (1 + alpha * tanh(k * z)).
+                                alpha > 0 => left tail heavier (crash sensitivity).
+                                alpha < 0 => right tail heavier.
+
+    Stage 4.1 (risk_prem)       ICAPM conditional risk premium:
+                                E[r|F] = phi * mu + lambda_1 * sigma^2.
+                                lambda_1 > 0 => risk compensation.
+                                lambda_1 < 0 => leverage/fear effect.
+
+    Stage 4.2 (skew_kappa)      GAS skew dynamics:
+                                alpha_{t+1} = (1-rho)*alpha_0 + rho*alpha_t + kappa*s_t.
+                                Score-driven time-varying skewness.
+                                rho fixed at 0.97 (~33d half-life).
+
+    Hessian check               Condition number guard: if cond(H^-1) > 1e6, disable
+                                advanced features (gamma->0, alpha->0, etc.) to prevent
+                                ill-conditioned estimates propagating downstream.
+
+    Stage 4.5 (DTCWT)          Multi-scale variance decomposition via dual-tree wavelet
+                                concepts. Computes wavelet_correction, phase_asymmetry,
+                                and innovation diagnostics.
+
+    Stage 5  (nu CV)            Rolling 5-fold cross-validation for degrees of freedom nu.
+                                Gneiting-Raftery criterion: maximize sharpness subject to
+                                calibration. Selects nu with best KS p-value + CRPS.
+
+    Stage 5c (GARCH)            GJR-GARCH(1,1) on Kalman innovations
+                                (Glosten-Jagannathan-Runkle 1993).
+                                h_t = omega + alpha*eps^2 + gamma_lev*eps^2*I(eps<0) + beta*h.
+                                Captures leverage asymmetry in variance dynamics.
+
+    Stage 5d (jumps)            Merton jump-diffusion: detect |z| > threshold, estimate
+                                (lambda_jump, sigma^2_jump). 1D MLE for jump_sensitivity.
+                                BIC gate: only enable if 2*delta_LL > 4*ln(n).
+
+    Stage 5e (Hurst)            Rough volatility Hurst exponent
+                                (Gatheral-Jaisson-Rosenbaum 2018).
+                                Variogram on log|eps| => H = slope/2.
+                                Equity H ~ 0.05-0.15. H < 0.5 = rough.
+
+    Stage 5f (EWM lambda)       CRPS-optimal EWM location correction
+                                (Durbin-Koopman 2012). If innovations have rho_1 > 0,
+                                smoothed correction reduces CRPS.
+
+    Stage 5g (leverage+shrink)  Heston-DLSV inspired joint estimation via sequential
+                                CRPS minimization:
+                                  Phase 1: rho_leverage x kappa_mean_rev grid search
+                                  Phase 2: sigma_eta (vol-of-vol noise)
+                                  Phase 3: regime_switch_prob
+                                  Phase 4: t_df_asym (asymmetric nu offset)
+                                  Phase 5: CRPS-optimal sigma shrinkage
+                                           (Gneiting-Raftery 2007)
+
+    Build diagnostics           Assemble final config, run filter, compute
+                                PIT / KS / CRPS / Berkowitz on training data.
+                                Return full calibration quality report.
+    """
 
     nu_min_default: float = 2.1
     nu_max_default: float = 30.0
