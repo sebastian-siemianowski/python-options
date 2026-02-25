@@ -645,6 +645,76 @@ class UnifiedStudentTConfig:
     # =========================================================================
     crps_sigma_shrinkage: float = 1.0  # CRPS sigma multiplier ∈ [0.5, 1.0], 1.0 = disabled
 
+    # =========================================================================
+    # VOLATILITY-OF-VOLATILITY NOISE σ_η (February 2026 - Heston Extension)
+    # =========================================================================
+    # Amplifies GARCH response to extreme shocks beyond what α captures:
+    #   h_t += σ_η × max(0, |z_{t-1}| - 1.5)² × h_{t-1}
+    #
+    # Where z_{t-1} = ε_{t-1} / √h_{t-1} is the standardized innovation.
+    #
+    # In the Heston SDE: dv_t = κ(θ-v_t)dt + σ_η√v_t dW^v_t
+    # This is the discrete GARCH analog: large |z| → disproportionate
+    # variance amplification, capturing the stochastic vol-of-vol.
+    #
+    # Standard GARCH α responds linearly to ε². σ_η adds a THRESHOLD
+    # nonlinearity: only extreme shocks (|z|>1.5) trigger amplification.
+    # This improves CRPS during crisis transitions where GARCH α alone
+    # under-reacts, and prevents over-reaction to normal-sized shocks.
+    #
+    # σ_η = 0.0: disabled (backward compatible)
+    # σ_η ∈ (0, 0.5): active, typical 0.05-0.20
+    # =========================================================================
+    sigma_eta: float = 0.0  # Vol-of-vol noise ∈ [0, 0.5], 0 = disabled
+
+    # =========================================================================
+    # ASYMMETRIC DEGREES-OF-FREEDOM OFFSET (February 2026 - Two-Piece t)
+    # =========================================================================
+    # Fixed left/right ν split for structural tail asymmetry:
+    #   z < 0: ν_left  = ν_base - t_df_asym  (heavier left tail)
+    #   z ≥ 0: ν_right = ν_base + t_df_asym  (lighter right tail)
+    #
+    # Both ν_left and ν_right are floored at 2.5 for stability.
+    #
+    # This complements the smooth α_asym approach:
+    #   - α_asym: dynamic, modulates ν via tanh(k×z) — adapts per observation
+    #   - t_df_asym: fixed structural asymmetry — persistent across regimes
+    #
+    # Metals (gold, silver) have structurally different crash vs rally
+    # tail behavior. Equities too (leverage effect). The fixed split
+    # captures this time-invariant asymmetry while α_asym handles
+    # time-varying components.
+    #
+    # Impact on CRPS: tighter σ on the light-tail side (rally) while
+    # preserving coverage on the heavy-tail side (crash).
+    #
+    # t_df_asym = 0.0: symmetric (backward compatible)
+    # t_df_asym > 0: heavier left tail, lighter right tail (typical)
+    # t_df_asym < 0: lighter left tail, heavier right tail (rare)
+    # =========================================================================
+    t_df_asym: float = 0.0  # Asymmetric ν offset ∈ [-3, 3], 0 = disabled
+
+    # =========================================================================
+    # MARKOV REGIME SWITCH PROBABILITY (February 2026 - Hamilton 1989)
+    # =========================================================================
+    # Adds a hidden Markov state {calm, stress} to the GARCH variance:
+    #   p_stress_t = (1-p_switch)·p_stress_{t-1} + p_switch·I(|z_{t-1}|>2)
+    #   h_t = (1-p_stress_t)·h_garch_t + p_stress_t·(h_garch_t × stress_mult)
+    #
+    # Where stress_mult is derived from q_stress_ratio (already in config).
+    #
+    # Key insight: this is DIFFERENT from MS-q in the Kalman state.
+    # MS-q modulates process noise q (state uncertainty).
+    # regime_switch_prob modulates OBSERVATION variance h_t directly.
+    # They operate on different layers of the model hierarchy:
+    #   - MS-q → how fast the hidden state μ_t can change
+    #   - regime_switch_prob → how much the PREDICTIVE variance inflates
+    #
+    # p_switch = 0.0: disabled (backward compatible)
+    # p_switch ∈ (0, 0.15): active, typical 0.03-0.10
+    # =========================================================================
+    regime_switch_prob: float = 0.0  # Calm→stress transition ∈ [0, 0.15], 0 = disabled
+
     # Momentum/exogenous input
     exogenous_input: np.ndarray = field(default=None, repr=False)
     
@@ -674,6 +744,10 @@ class UnifiedStudentTConfig:
         self.rho_leverage = float(np.clip(self.rho_leverage, 0.0, 2.0))
         self.kappa_mean_rev = float(np.clip(self.kappa_mean_rev, 0.0, 0.3))
         self.crps_sigma_shrinkage = float(np.clip(self.crps_sigma_shrinkage, 0.5, 1.0))
+        # CRPS-enhancement parameters (February 2026)
+        self.sigma_eta = float(np.clip(self.sigma_eta, 0.0, 0.5))
+        self.t_df_asym = float(np.clip(self.t_df_asym, -3.0, 3.0))
+        self.regime_switch_prob = float(np.clip(self.regime_switch_prob, 0.0, 0.15))
     
     @property
     def q_stress(self) -> float:
@@ -2450,8 +2524,15 @@ class PhiStudentTDriftModel:
             if _theta_lv <= 0:
                 _theta_lv = garch_unconditional_var
             
+            # CRPS-enhancement parameters (February 2026)
+            _sigma_eta = float(getattr(config, 'sigma_eta', 0.0))
+            _regime_sw = float(getattr(config, 'regime_switch_prob', 0.0))
+            _t_df_asym = float(getattr(config, 't_df_asym', 0.0))
+            
             h_garch_full_cont = np.zeros(n)
             h_garch_full_cont[0] = garch_unconditional_var
+            _p_stress_markov = 0.1  # Initial stress probability (mild prior)
+            
             for t in range(1, n):
                 h_t = (garch_omega
                        + garch_alpha * sq_inn_full_garch[t-1]
@@ -2462,6 +2543,23 @@ class PhiStudentTDriftModel:
                     neg_z = innovations_full_garch[t-1] / np.sqrt(h_garch_full_cont[t-1])
                     if neg_z < 0:
                         h_t += _rho_lev * neg_z * neg_z * h_garch_full_cont[t-1]
+                # Vol-of-vol noise σ_η: amplify on extreme shocks (Heston extension)
+                # Only activates for |z| > 1.5 — normal shocks pass through unchanged
+                if _sigma_eta > 0.005 and h_garch_full_cont[t-1] > 1e-12:
+                    _z_abs = abs(innovations_full_garch[t-1]) / np.sqrt(h_garch_full_cont[t-1])
+                    _excess = max(0.0, _z_abs - 1.5)
+                    h_t += _sigma_eta * _excess * _excess * h_garch_full_cont[t-1]
+                # Markov regime switching: hidden stress state modulates h_t
+                # p_stress transitions on extreme |z| via exponential smoothing
+                if _regime_sw > 0.005 and h_garch_full_cont[t-1] > 1e-12:
+                    _z_regime = abs(innovations_full_garch[t-1]) / np.sqrt(h_garch_full_cont[t-1])
+                    _stress_indicator = 1.0 if _z_regime > 2.0 else 0.0
+                    _p_stress_markov = (1.0 - _regime_sw) * _p_stress_markov + _regime_sw * _stress_indicator
+                    _p_stress_markov = min(max(_p_stress_markov, 0.0), 1.0)
+                    # Inflate h_t by stress probability × stress multiplier
+                    # stress_mult = √(q_stress_ratio) ≈ 3-4.5× for typical configs
+                    _stress_mult = np.sqrt(getattr(config, 'q_stress_ratio', 10.0))
+                    h_t = h_t * (1.0 + _p_stress_markov * (_stress_mult - 1.0))
                 # Mean reversion toward long-term variance
                 if _kappa_mr > 0.001:
                     h_t = (1.0 - _kappa_mr) * h_t + _kappa_mr * _theta_lv
@@ -3522,7 +3620,14 @@ class PhiStudentTDriftModel:
                 sigma[_t_p] = max(sigma[_t_p], 1e-10)
                 
                 _z_p = _inn_p / sigma[_t_p]
-                pit_values[_t_p] = student_t_dist.cdf(_z_p, df=nu)
+                # Asymmetric degrees-of-freedom: two-piece Student-t CDF
+                # z < 0: use ν_left = ν - t_df_asym (heavier crash tail)
+                # z ≥ 0: use ν_right = ν + t_df_asym (lighter rally tail)
+                if abs(_t_df_asym) > 0.05:
+                    _nu_side = max(2.5, nu - _t_df_asym) if _z_p < 0 else max(2.5, nu + _t_df_asym)
+                    pit_values[_t_p] = student_t_dist.cdf(_z_p, df=_nu_side)
+                else:
+                    pit_values[_t_p] = student_t_dist.cdf(_z_p, df=nu)
                 
                 # Causal update with current observation
                 _ewm_mu_t = _best_lam_mu * _ewm_mu_t + (1 - _best_lam_mu) * innovations_test_adap[_t_p]
@@ -3607,7 +3712,17 @@ class PhiStudentTDriftModel:
             z = innovations / sigma
             
             # PIT values from Student-t CDF (z already standardized to unit t_ν)
-            pit_values = student_t.cdf(z, df=nu)
+            # Apply asymmetric ν offset if enabled
+            _t_df_asym_non = float(getattr(config, 't_df_asym', 0.0))
+            if abs(_t_df_asym_non) > 0.05:
+                pit_values = np.zeros(len(z))
+                _nu_left_non = max(2.5, nu - _t_df_asym_non)
+                _nu_right_non = max(2.5, nu + _t_df_asym_non)
+                _left_mask = z < 0
+                pit_values[_left_mask] = student_t.cdf(z[_left_mask], df=_nu_left_non)
+                pit_values[~_left_mask] = student_t.cdf(z[~_left_mask], df=_nu_right_non)
+            else:
+                pit_values = student_t.cdf(z, df=nu)
             pit_values = np.clip(pit_values, 0.001, 0.999)
         
         # =====================================================================
@@ -5122,6 +5237,10 @@ class PhiStudentTDriftModel:
         kappa_mean_rev_opt = 0.0
         theta_long_var_opt = unconditional_var
         crps_sigma_shrinkage_opt = 1.0
+        # New CRPS-enhancement params (February 2026)
+        sigma_eta_opt = 0.0
+        t_df_asym_opt = 0.0
+        regime_switch_prob_opt = 0.0
         
         if n_train > 200:
             try:
@@ -5156,26 +5275,78 @@ class PhiStudentTDriftModel:
                     returns_val_5g = returns_train[n_est_5g:]
                     mu_val_5g = mu_pred_5g[n_est_5g:]
                     
-                    # Base GARCH (no leverage corr, no mean rev)
-                    h_base_5g = np.zeros(n_train)
-                    h_base_5g[0] = unconditional_var
-                    for t_5g in range(1, n_train):
-                        h_base_5g[t_5g] = (garch_omega
-                                           + garch_alpha * sq_inn_5g[t_5g-1]
-                                           + garch_leverage * sq_inn_5g[t_5g-1] * neg_ind_5g[t_5g-1]
-                                           + garch_beta * h_base_5g[t_5g-1])
-                        h_base_5g[t_5g] = max(h_base_5g[t_5g], 1e-12)
+                    # ─────────────────────────────────────────────────────────
+                    # Helper: build enhanced GARCH variance series
+                    # with all 5 variance params (ρ_lev, κ, σ_η, p_regime)
+                    # ─────────────────────────────────────────────────────────
+                    def _build_garch_5g(rho_c, kap_c, eta_c=0.0, reg_c=0.0):
+                        h_cand = np.zeros(n_train)
+                        h_cand[0] = unconditional_var
+                        _p_st = 0.1
+                        _stress_m = np.sqrt(_prof_q_stress_ratio)
+                        for t_ in range(1, n_train):
+                            h_ = (garch_omega
+                                  + garch_alpha * sq_inn_5g[t_-1]
+                                  + garch_leverage * sq_inn_5g[t_-1] * neg_ind_5g[t_-1]
+                                  + garch_beta * h_cand[t_-1])
+                            if rho_c > 0.01 and h_cand[t_-1] > 1e-12:
+                                nz_ = innovations_5g[t_-1] / np.sqrt(h_cand[t_-1])
+                                if nz_ < 0:
+                                    h_ += rho_c * nz_ * nz_ * h_cand[t_-1]
+                            if eta_c > 0.005 and h_cand[t_-1] > 1e-12:
+                                za_ = abs(innovations_5g[t_-1]) / np.sqrt(h_cand[t_-1])
+                                ex_ = max(0.0, za_ - 1.5)
+                                h_ += eta_c * ex_ * ex_ * h_cand[t_-1]
+                            if reg_c > 0.005 and h_cand[t_-1] > 1e-12:
+                                zr_ = abs(innovations_5g[t_-1]) / np.sqrt(h_cand[t_-1])
+                                _p_st = (1.0 - reg_c) * _p_st + reg_c * (1.0 if zr_ > 2.0 else 0.0)
+                                _p_st = min(max(_p_st, 0.0), 1.0)
+                                h_ = h_ * (1.0 + _p_st * (_stress_m - 1.0))
+                            if kap_c > 0.001:
+                                h_ = (1.0 - kap_c) * h_ + kap_c * unconditional_var
+                            h_cand[t_] = max(h_, 1e-12)
+                        return h_cand
                     
-                    # Baseline CRPS with no leverage/mean-rev
-                    h_val_base = h_base_5g[n_est_5g:]
-                    if nu_opt > 2:
-                        sigma_val_5g_base = np.sqrt(np.maximum(h_val_base * beta_opt, 1e-20) * (nu_opt - 2) / nu_opt)
-                    else:
-                        sigma_val_5g_base = np.sqrt(np.maximum(h_val_base * beta_opt, 1e-20))
-                    sigma_val_5g_base = np.maximum(sigma_val_5g_base, 1e-10)
-                    crps_5g_baseline = _crps_inline_5g(returns_val_5g, mu_val_5g, sigma_val_5g_base, nu_opt)
+                    def _crps_from_h(h_arr, nu_c=nu_opt, df_asym=0.0):
+                        h_v = h_arr[n_est_5g:]
+                        if nu_c > 2:
+                            sig_v = np.sqrt(np.maximum(h_v * beta_opt, 1e-20) * (nu_c - 2) / nu_c)
+                        else:
+                            sig_v = np.sqrt(np.maximum(h_v * beta_opt, 1e-20))
+                        sig_v = np.maximum(sig_v, 1e-10)
+                        # If asymmetric df, compute per-observation CRPS with side-dependent ν
+                        if abs(df_asym) > 0.05:
+                            z_val = (returns_val_5g - mu_val_5g) / sig_v
+                            from scipy.stats import t as _t_dist_5g
+                            from scipy.special import gammaln as _gammaln_5g
+                            nu_L = max(2.5, nu_c - df_asym)
+                            nu_R = max(2.5, nu_c + df_asym)
+                            crps_ind = np.zeros(len(z_val))
+                            for side_nu, mask in [(nu_L, z_val < 0), (nu_R, z_val >= 0)]:
+                                if not np.any(mask):
+                                    continue
+                                z_s = z_val[mask]
+                                pdf_s = _t_dist_5g.pdf(z_s, df=side_nu)
+                                cdf_s = _t_dist_5g.cdf(z_s, df=side_nu)
+                                if side_nu > 1:
+                                    lB1 = _gammaln_5g(0.5) + _gammaln_5g(side_nu - 0.5) - _gammaln_5g(side_nu)
+                                    lB2 = _gammaln_5g(0.5) + _gammaln_5g(side_nu / 2) - _gammaln_5g((side_nu + 1) / 2)
+                                    Br = np.exp(lB1 - 2 * lB2)
+                                    t1 = z_s * (2 * cdf_s - 1)
+                                    t2 = 2 * pdf_s * (side_nu + z_s**2) / (side_nu - 1)
+                                    t3 = 2 * np.sqrt(side_nu) * Br / (side_nu - 1)
+                                    crps_ind[mask] = sig_v[mask] * (t1 + t2 - t3)
+                                else:
+                                    crps_ind[mask] = sig_v[mask] * np.abs(z_s)
+                            valid = np.isfinite(crps_ind)
+                            return float(np.mean(crps_ind[valid])) if np.any(valid) else float('inf')
+                        return _crps_inline_5g(returns_val_5g, mu_val_5g, sig_v, nu_c)
                     
-                    # Grid search: (ρ_lev, κ)
+                    # Base GARCH (no enhancements)
+                    h_base_5g = _build_garch_5g(0.0, 0.0)
+                    crps_5g_baseline = _crps_from_h(h_base_5g)
+                    
+                    # ─── Phase 1: Grid search (ρ_lev, κ) ───
                     RHO_GRID = [0.0, 0.1, 0.3, 0.5, 0.8, 1.2]
                     KAPPA_GRID = [0.0, 0.02, 0.05, 0.10, 0.15, 0.20]
                     best_crps_5g = crps_5g_baseline
@@ -5183,31 +5354,9 @@ class PhiStudentTDriftModel:
                     for rho_c in RHO_GRID:
                         for kap_c in KAPPA_GRID:
                             if rho_c == 0.0 and kap_c == 0.0:
-                                continue  # Already computed as baseline
-                            
-                            h_cand_5g = np.zeros(n_train)
-                            h_cand_5g[0] = unconditional_var
-                            for t_5g in range(1, n_train):
-                                h_c = (garch_omega
-                                       + garch_alpha * sq_inn_5g[t_5g-1]
-                                       + garch_leverage * sq_inn_5g[t_5g-1] * neg_ind_5g[t_5g-1]
-                                       + garch_beta * h_cand_5g[t_5g-1])
-                                if rho_c > 0.01 and h_cand_5g[t_5g-1] > 1e-12:
-                                    neg_z_c = innovations_5g[t_5g-1] / np.sqrt(h_cand_5g[t_5g-1])
-                                    if neg_z_c < 0:
-                                        h_c += rho_c * neg_z_c * neg_z_c * h_cand_5g[t_5g-1]
-                                if kap_c > 0.001:
-                                    h_c = (1.0 - kap_c) * h_c + kap_c * unconditional_var
-                                h_cand_5g[t_5g] = max(h_c, 1e-12)
-                            
-                            h_val_c = h_cand_5g[n_est_5g:]
-                            if nu_opt > 2:
-                                sigma_val_c = np.sqrt(np.maximum(h_val_c * beta_opt, 1e-20) * (nu_opt - 2) / nu_opt)
-                            else:
-                                sigma_val_c = np.sqrt(np.maximum(h_val_c * beta_opt, 1e-20))
-                            sigma_val_c = np.maximum(sigma_val_c, 1e-10)
-                            crps_c = _crps_inline_5g(returns_val_5g, mu_val_5g, sigma_val_c, nu_opt)
-                            
+                                continue
+                            h_cand_5g = _build_garch_5g(rho_c, kap_c)
+                            crps_c = _crps_from_h(h_cand_5g)
                             if np.isfinite(crps_c) and crps_c < best_crps_5g:
                                 best_crps_5g = crps_c
                                 rho_leverage_opt = rho_c
@@ -5220,31 +5369,57 @@ class PhiStudentTDriftModel:
                     
                     theta_long_var_opt = unconditional_var
                     
+                    # ─── Phase 2: sigma_eta (sequential, conditional on ρ,κ) ───
+                    SIGMA_ETA_GRID = [0.0, 0.03, 0.06, 0.10, 0.15, 0.25]
+                    best_crps_eta = best_crps_5g
+                    for eta_c in SIGMA_ETA_GRID:
+                        if eta_c == 0.0:
+                            continue
+                        h_eta = _build_garch_5g(rho_leverage_opt, kappa_mean_rev_opt, eta_c)
+                        crps_eta = _crps_from_h(h_eta)
+                        if np.isfinite(crps_eta) and crps_eta < best_crps_eta:
+                            best_crps_eta = crps_eta
+                            sigma_eta_opt = eta_c
+                    # Only enable if improved by 0.5%
+                    if best_crps_eta >= best_crps_5g * 0.995:
+                        sigma_eta_opt = 0.0
+                    
+                    # ─── Phase 3: regime_switch_prob (sequential) ───
+                    REGIME_GRID = [0.0, 0.02, 0.04, 0.06, 0.08, 0.12]
+                    best_crps_reg = best_crps_eta if sigma_eta_opt > 0 else best_crps_5g
+                    for reg_c in REGIME_GRID:
+                        if reg_c == 0.0:
+                            continue
+                        h_reg = _build_garch_5g(rho_leverage_opt, kappa_mean_rev_opt, sigma_eta_opt, reg_c)
+                        crps_reg = _crps_from_h(h_reg)
+                        if np.isfinite(crps_reg) and crps_reg < best_crps_reg:
+                            best_crps_reg = crps_reg
+                            regime_switch_prob_opt = reg_c
+                    if best_crps_reg >= (best_crps_eta if sigma_eta_opt > 0 else best_crps_5g) * 0.995:
+                        regime_switch_prob_opt = 0.0
+                    
+                    # ─── Phase 4: t_df_asym (asymmetric ν offset) ───
+                    # Uses the best GARCH so far, searches ν offset for CRPS
+                    T_DF_ASYM_GRID = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
+                    h_best_5g = _build_garch_5g(rho_leverage_opt, kappa_mean_rev_opt, sigma_eta_opt, regime_switch_prob_opt)
+                    best_crps_dfasym = _crps_from_h(h_best_5g)
+                    for dfa_c in T_DF_ASYM_GRID:
+                        if dfa_c == 0.0:
+                            continue
+                        crps_dfa = _crps_from_h(h_best_5g, df_asym=dfa_c)
+                        if np.isfinite(crps_dfa) and crps_dfa < best_crps_dfasym:
+                            best_crps_dfasym = crps_dfa
+                            t_df_asym_opt = dfa_c
+                    if best_crps_dfasym >= _crps_from_h(h_best_5g) * 0.995:
+                        t_df_asym_opt = 0.0
+                    
                     # ─────────────────────────────────────────────────────────
                     # CRPS-OPTIMAL SIGMA SHRINKAGE (Gneiting-Raftery 2007)
                     # ─────────────────────────────────────────────────────────
                     # Search for α ∈ [0.70, 1.00] that minimizes CRPS on
-                    # validation fold. Uses the best (ρ_lev, κ) GARCH.
+                    # validation fold. Uses the best enhanced GARCH.
                     # ─────────────────────────────────────────────────────────
-                    # Rebuild GARCH with optimal (ρ, κ) for shrinkage search
-                    if rho_leverage_opt > 0.01 or kappa_mean_rev_opt > 0.001:
-                        h_opt_5g = np.zeros(n_train)
-                        h_opt_5g[0] = unconditional_var
-                        for t_5g in range(1, n_train):
-                            h_c = (garch_omega
-                                   + garch_alpha * sq_inn_5g[t_5g-1]
-                                   + garch_leverage * sq_inn_5g[t_5g-1] * neg_ind_5g[t_5g-1]
-                                   + garch_beta * h_opt_5g[t_5g-1])
-                            if rho_leverage_opt > 0.01 and h_opt_5g[t_5g-1] > 1e-12:
-                                neg_z_o = innovations_5g[t_5g-1] / np.sqrt(h_opt_5g[t_5g-1])
-                                if neg_z_o < 0:
-                                    h_c += rho_leverage_opt * neg_z_o * neg_z_o * h_opt_5g[t_5g-1]
-                            if kappa_mean_rev_opt > 0.001:
-                                h_c = (1.0 - kappa_mean_rev_opt) * h_c + kappa_mean_rev_opt * unconditional_var
-                            h_opt_5g[t_5g] = max(h_c, 1e-12)
-                        h_val_opt = h_opt_5g[n_est_5g:]
-                    else:
-                        h_val_opt = h_val_base
+                    h_val_opt = h_best_5g[n_est_5g:]
                     
                     SHRINK_GRID = [0.70, 0.75, 0.80, 0.85, 0.88, 0.90, 0.92, 0.94, 0.96, 0.98, 1.00]
                     best_crps_shrink = float('inf')
@@ -5269,6 +5444,9 @@ class PhiStudentTDriftModel:
                 kappa_mean_rev_opt = 0.0
                 theta_long_var_opt = unconditional_var
                 crps_sigma_shrinkage_opt = 1.0
+                sigma_eta_opt = 0.0
+                t_df_asym_opt = 0.0
+                regime_switch_prob_opt = 0.0
         
         # =====================================================================
         # BUILD FINAL CONFIG
@@ -5311,6 +5489,10 @@ class PhiStudentTDriftModel:
             kappa_mean_rev=kappa_mean_rev_opt,
             theta_long_var=theta_long_var_opt,
             crps_sigma_shrinkage=crps_sigma_shrinkage_opt,
+            # CRPS-enhancement: vol-of-vol noise, asymmetric df, regime switching
+            sigma_eta=sigma_eta_opt,
+            t_df_asym=t_df_asym_opt,
+            regime_switch_prob=regime_switch_prob_opt,
             q_min=config.q_min,
             c_min=config.c_min,
             c_max=config.c_max,
@@ -5404,6 +5586,13 @@ class PhiStudentTDriftModel:
             "profile_k_asym": _prof_k_asym,
             "profile_q_stress_ratio": _prof_q_stress_ratio,
             "profile_ms_ewm_lambda": _prof_ms_ewm_lambda,
+            # CRPS-enhancement diagnostics (February 2026)
+            "rho_leverage": float(rho_leverage_opt),
+            "kappa_mean_rev": float(kappa_mean_rev_opt),
+            "sigma_eta": float(sigma_eta_opt),
+            "t_df_asym": float(t_df_asym_opt),
+            "regime_switch_prob": float(regime_switch_prob_opt),
+            "crps_sigma_shrinkage": float(crps_sigma_shrinkage_opt),
         }
         
         return final_config, diagnostics

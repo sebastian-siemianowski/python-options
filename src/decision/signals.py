@@ -3222,6 +3222,17 @@ def _kalman_filter_drift(
                 c_min=float(tuned_params.get('c_min', 0.01)),
                 c_max=float(tuned_params.get('c_max', 10.0)),
                 q_min=float(tuned_params.get('q_min', 1e-8)),
+                # CRPS-optimal EWM location correction (February 2026)
+                crps_ewm_lambda=float(tuned_params.get('crps_ewm_lambda', 0.0)),
+                # Heston-DLSV leverage and mean reversion (February 2026)
+                rho_leverage=float(tuned_params.get('rho_leverage', 0.0)),
+                kappa_mean_rev=float(tuned_params.get('kappa_mean_rev', 0.0)),
+                theta_long_var=float(tuned_params.get('theta_long_var', 0.0)),
+                crps_sigma_shrinkage=float(tuned_params.get('crps_sigma_shrinkage', 1.0)),
+                # CRPS-enhancement: vol-of-vol noise, asymmetric df, regime switching
+                sigma_eta=float(tuned_params.get('sigma_eta', 0.0)),
+                t_df_asym=float(tuned_params.get('t_df_asym', 0.0)),
+                regime_switch_prob=float(tuned_params.get('regime_switch_prob', 0.0)),
             )
             
             # Run unified filter

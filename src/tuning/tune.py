@@ -3281,6 +3281,17 @@ def fit_all_models_for_regime(
                 "c_min": float(getattr(config, 'c_min', 0.01)),
                 "c_max": float(getattr(config, 'c_max', 10.0)),
                 "q_min": float(getattr(config, 'q_min', 1e-8)),
+                # CRPS-optimal EWM location correction (February 2026)
+                "crps_ewm_lambda": float(getattr(config, 'crps_ewm_lambda', 0.0)),
+                # Heston-DLSV leverage and mean reversion (February 2026)
+                "rho_leverage": float(getattr(config, 'rho_leverage', 0.0)),
+                "kappa_mean_rev": float(getattr(config, 'kappa_mean_rev', 0.0)),
+                "theta_long_var": float(getattr(config, 'theta_long_var', 0.0)),
+                "crps_sigma_shrinkage": float(getattr(config, 'crps_sigma_shrinkage', 1.0)),
+                # CRPS-enhancement: vol-of-vol noise, asymmetric df, regime switching
+                "sigma_eta": float(getattr(config, 'sigma_eta', 0.0)),
+                "t_df_asym": float(getattr(config, 't_df_asym', 0.0)),
+                "regime_switch_prob": float(getattr(config, 'regime_switch_prob', 0.0)),
                 # Scores
                 "log_likelihood": float(ll_u),
                 "mean_log_likelihood": float(mean_ll_u),
