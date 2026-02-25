@@ -3234,6 +3234,29 @@ def _kalman_filter_drift(
             enhanced_result = True
             enhanced_model_type = 'unified'
             
+            # ─────────────────────────────────────────────────────────
+            # Calibrated variance (February 2026)
+            # Use filter_and_calibrate to get GARCH-blended, β-corrected
+            # predictive variance. This is the same calibrated sigma used
+            # for PIT testing, ensuring signal generation uses the most
+            # accurate variance estimate.
+            # ─────────────────────────────────────────────────────────
+            try:
+                _pit_sig, _pit_p_sig, _sigma_cal_sig, _, _calib_diag_sig = \
+                    PhiStudentTDriftModel.filter_and_calibrate(
+                        y, sigma, unified_config, train_frac=0.7
+                    )
+                _n_train_sig = int(len(y) * 0.7)
+                _nu_eff_sig = _calib_diag_sig.get('nu_effective', unified_config.nu_base)
+                # Store calibrated sigma for downstream signal generation
+                if len(_sigma_cal_sig) == len(y) - _n_train_sig and _np_sig.all(_sigma_cal_sig > 0):
+                    # Extend P_filtered with calibrated variance for test period
+                    _S_cal_full = _np_sig.copy(S_pred_u)
+                    _S_cal_full[_n_train_sig:] = _sigma_cal_sig ** 2 * _nu_eff_sig / max(_nu_eff_sig - 2, 0.1)
+                    P_filtered = _S_cal_full
+            except Exception:
+                pass  # Keep raw P_filtered on failure
+            
             if os.getenv("DEBUG"):
                 jump_active = unified_config.jump_intensity > 1e-6 and unified_config.jump_variance > 1e-12
                 gjr_active = unified_config.garch_leverage > 1e-6

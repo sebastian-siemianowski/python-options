@@ -3049,6 +3049,83 @@ class PhiStudentTDriftModel:
                             _best_lam_mu = _lam_f
                             _best_lam_beta = _lam_f
             
+            # =============================================================
+            # ν OVERRIDE GUARD (February 2026)
+            # =============================================================
+            # The adaptive CV has 2 walk-forward folds and a complex
+            # multi-objective score — prone to overfitting ν on short data.
+            # The POST-GARCH refinement (above) already selected ν using
+            # 3-fold CV with a conservative 1.5× improvement threshold.
+            #
+            # Guard: if the adaptive CV selected a DIFFERENT ν from the
+            # POST-GARCH refined ν, require the adaptive score to be ≥1.5×
+            # the score of the POST-GARCH ν with the SAME (gw, λ).
+            # This prevents marginal ν changes that overfit CV folds while
+            # allowing genuinely better ν selections (e.g., FLTR: ν=5→4).
+            # =============================================================
+            _nu_post_garch = int(nu)  # ν from POST-GARCH refinement
+            _nu_adap_cand = int(_best_nu_adap)
+            
+            if _nu_adap_cand != _nu_post_garch and not _is_metals_adaptive:
+                # Compute score for POST-GARCH ν using the same gw/λ
+                _pg_fold_scores = []
+                _S_bt_pg = (1 - _best_gw_adap) * S_pred_train_wav + _best_gw_adap * h_garch_train_est
+                for _fold_pg in range(_n_cv_folds):
+                    _est_end_pg = (_fold_pg + 1) * _fold_size
+                    _val_end_pg = min((_fold_pg + 2) * _fold_size, n_train)
+                    if _val_end_pg <= _est_end_pg:
+                        continue
+                    _n_val_pg = _val_end_pg - _est_end_pg
+                    _ewm_mu_pg = float(np.mean(innovations_train_blend[:_est_end_pg]))
+                    _ewm_num_pg = float(np.mean(innovations_train_blend[:_est_end_pg] ** 2))
+                    _ewm_den_pg = float(np.mean(_S_bt_pg[:_est_end_pg]))
+                    for _t_pg in range(_est_end_pg):
+                        _ewm_mu_pg = _best_lam_mu * _ewm_mu_pg + (1 - _best_lam_mu) * innovations_train_blend[_t_pg]
+                        _ewm_num_pg = _best_lam_beta * _ewm_num_pg + (1 - _best_lam_beta) * (innovations_train_blend[_t_pg] ** 2)
+                        _ewm_den_pg = _best_lam_beta * _ewm_den_pg + (1 - _best_lam_beta) * _S_bt_pg[_t_pg]
+                    _pit_pg = np.zeros(_n_val_pg)
+                    _sig_sum_pg = 0.0
+                    _m_pg, _n_pg, _d_pg = _ewm_mu_pg, _ewm_num_pg, _ewm_den_pg
+                    for _t_v_pg in range(_n_val_pg):
+                        _idx_pg = _est_end_pg + _t_v_pg
+                        _b_pg = float(np.clip(_n_pg / (_d_pg + 1e-12), 0.2, 5.0))
+                        _inn_pg = innovations_train_blend[_idx_pg] - _m_pg
+                        _S_pg = _S_bt_pg[_idx_pg] * _b_pg
+                        if _nu_post_garch > 2:
+                            _sv_pg = np.sqrt(_S_pg * (_nu_post_garch - 2) / _nu_post_garch)
+                        else:
+                            _sv_pg = np.sqrt(_S_pg)
+                        _sv_pg = max(_sv_pg, 1e-10)
+                        _sig_sum_pg += _sv_pg
+                        _pit_pg[_t_v_pg] = student_t_dist.cdf(_inn_pg / _sv_pg, df=_nu_post_garch)
+                        _m_pg = _best_lam_mu * _m_pg + (1 - _best_lam_mu) * innovations_train_blend[_idx_pg]
+                        _n_pg = _best_lam_beta * _n_pg + (1 - _best_lam_beta) * (innovations_train_blend[_idx_pg] ** 2)
+                        _d_pg = _best_lam_beta * _d_pg + (1 - _best_lam_beta) * _S_bt_pg[_idx_pg]
+                    _pit_pg = np.clip(_pit_pg, 0.001, 0.999)
+                    _mean_sig_pg = _sig_sum_pg / max(_n_val_pg, 1)
+                    try:
+                        _sc_pg, _, _ = _berkowitz_penalized_ks(_pit_pg)
+                        _h_pg, _ = np.histogram(_pit_pg, bins=10, range=(0, 1))
+                        _md_pg = float(np.mean(np.abs(_h_pg / _n_val_pg - 0.1)))
+                        _mp_pg = max(0.0, 1.0 - _md_pg / 0.05)
+                        _is_pg = float(np.std(innovations_train_blend[:_est_end_pg]))
+                        if _is_pg > 1e-10 and _mean_sig_pg > 1e-10:
+                            _sh_pg = float(np.clip((_is_pg / _mean_sig_pg) ** 1.5, 0.55, 1.45))
+                        else:
+                            _sh_pg = 1.0
+                        _pg_fold_scores.append(_sc_pg * _mp_pg * _sh_pg)
+                    except Exception:
+                        pass
+                
+                _pg_avg = float(np.mean(_pg_fold_scores)) if _pg_fold_scores else 0.0
+                
+                # Require ≥1.5× improvement to override POST-GARCH ν.
+                # This conservative threshold prevents marginal ν changes
+                # that overfit on 2 CV folds while allowing genuinely
+                # better selections (e.g., FLTR: ν=5→4 scores >1.5× better).
+                if _pg_avg > 0 and _best_adap_score < _pg_avg * 1.5:
+                    _best_nu_adap = _nu_post_garch
+            
             # Apply selected adaptive EWM to full train → test
             nu = float(_best_nu_adap)
             
