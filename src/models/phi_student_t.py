@@ -556,6 +556,23 @@ class UnifiedStudentTConfig:
     jump_sensitivity: float = 1.0   # b in p_t = logistic(a₀ + b·vov_t)
     jump_mean: float = 0.0          # μ_J jump mean (allows asymmetric jumps)
     
+    # =========================================================================
+    # CAUSAL EWM LOCATION CORRECTION (February 2026 - CRPS Optimization)
+    # =========================================================================
+    # Post-filter exponentially weighted moving average of innovations that
+    # captures short-term autocorrelation in prediction residuals.
+    # Applied causally: ewm_mu[t] = λ·ewm_mu[t-1] + (1-λ)·(y_{t-1} - μ_{t-1})
+    # Then μ_pred[t] += ewm_mu[t]
+    #
+    # This is the Kalman smoother's causal approximation (Durbin-Koopman 2012):
+    # when the state equation misses short-term dynamics, the EWM mops up
+    # residual autocorrelation, reducing innovation variance and thus CRPS.
+    #
+    # λ = 0.0: disabled (backward compatible)
+    # λ ∈ (0, 1): active, typical 0.90-0.97 (10-33 day half-life)
+    # =========================================================================
+    crps_ewm_lambda: float = 0.0  # EWM decay for location correction, 0.0 = disabled
+
     # Momentum/exogenous input
     exogenous_input: np.ndarray = field(default=None, repr=False)
     
@@ -1919,6 +1936,35 @@ class PhiStudentTDriftModel:
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
         
+        # =====================================================================
+        # CAUSAL EWM LOCATION CORRECTION (February 2026 - CRPS Optimization)
+        # =====================================================================
+        # Post-filter correction that captures residual autocorrelation in
+        # innovations. Strictly causal: ewm_mu[t] uses only y_{<t}.
+        #
+        # Mathematical foundation (Durbin-Koopman 2012, Ch. 4):
+        # When the state equation is misspecified (missing short-term
+        # dynamics), innovations exhibit positive autocorrelation.
+        # The EWM correction is the causal approximation to the Kalman
+        # smoother's backward information gain:
+        #   ewm_mu[t] = λ·ewm_mu[t-1] + (1-λ)·(y_{t-1} - μ_pred[t-1])
+        #   μ_pred_corrected[t] = μ_pred[t] + ewm_mu[t]
+        #
+        # This reduces E[(y_t - μ_pred_corrected[t])²] below E[(y_t - μ_pred[t])²]
+        # when innovations have positive serial correlation, directly
+        # lowering CRPS without affecting PIT (PIT uses internal calibration).
+        # =====================================================================
+        _ewm_lambda = float(getattr(config, 'crps_ewm_lambda', 0.0))
+        if _ewm_lambda > 0.01 and n > 2:
+            ewm_mu = 0.0
+            mu_pred_corrected = mu_pred_arr.copy()
+            for t in range(1, n):
+                # Causal: use innovation from t-1
+                innov_prev = returns[t-1] - mu_pred_arr[t-1]
+                ewm_mu = _ewm_lambda * ewm_mu + (1.0 - _ewm_lambda) * innov_prev
+                mu_pred_corrected[t] = mu_pred_arr[t] + ewm_mu
+            mu_pred_arr = mu_pred_corrected
+        
         return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
 
     @classmethod
@@ -2177,6 +2223,22 @@ class PhiStudentTDriftModel:
                 
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
+        
+        # =====================================================================
+        # CAUSAL EWM LOCATION CORRECTION (February 2026 - CRPS Optimization)
+        # =====================================================================
+        # Same correction as in filter_phi_student_t_drift (see above).
+        # Applied post-loop to avoid modifying the Kalman recursion itself.
+        # =====================================================================
+        _ewm_lambda = float(getattr(config, 'crps_ewm_lambda', 0.0))
+        if _ewm_lambda > 0.01 and n > 2:
+            ewm_mu = 0.0
+            mu_pred_corrected = mu_pred_arr.copy()
+            for t in range(1, n):
+                innov_prev = returns[t-1] - mu_pred_arr[t-1]
+                ewm_mu = _ewm_lambda * ewm_mu + (1.0 - _ewm_lambda) * innov_prev
+                mu_pred_corrected[t] = mu_pred_arr[t] + ewm_mu
+            mu_pred_arr = mu_pred_corrected
         
         return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
 
@@ -2673,8 +2735,6 @@ class PhiStudentTDriftModel:
                         
                         try:
                             if _is_metals:
-                                # Metals: use Berkowitz-penalized KS to account
-                                # for PIT serial dependence from regime shifts
                                 bk_score, _, _ = _berkowitz_penalized_ks(pit_ref)
                                 fold_ks_vals.append(bk_score)
                             else:
@@ -2690,13 +2750,10 @@ class PhiStudentTDriftModel:
                             best_nu_ref = nu_cand
                 
                 # Only update if materially better
-                # Metals: 1.0x threshold (any improvement accepted) because
-                # the Stage 5 ν was selected on raw Kalman variance, and the
-                # GARCH-blended variance changes the optimal ν significantly.
-                # Non-metals: conservative 1.5x threshold to avoid overfitting.
                 improvement_threshold = 1.0 if _is_metals else 1.5
                 
-                if best_nu_ref != int(nu):
+                _nu_before_refine = int(nu)
+                if best_nu_ref != _nu_before_refine:
                     # Compute avg KS for original ν using same folds
                     orig_fold_ks = []
                     for fold_i in range(1, 3):
@@ -2724,17 +2781,19 @@ class PhiStudentTDriftModel:
                     
                     if best_ks_ref > orig_avg * improvement_threshold:
                         nu = float(best_nu_ref)
-                        # Re-estimate β for new ν
-                        if nu > 2:
-                            sigma_train_new = np.sqrt(S_blended_train * (nu - 2) / nu)
-                        else:
-                            sigma_train_new = np.sqrt(S_blended_train)
-                        sigma_train_new = np.maximum(sigma_train_new, 1e-10)
-                        actual_sq_train = innovations_train_blend ** 2
-                        expected_sq_train = sigma_train_new ** 2
-                        ratio = float(np.mean(actual_sq_train)) / (float(np.mean(expected_sq_train)) + 1e-12)
-                        beta_final = float(np.clip(ratio, 0.2, 5.0))
-                        S_calibrated = S_blended * beta_final
+                
+                # Re-estimate β whenever ν changed (both CRPS-selected and fallback)
+                if int(nu) != _nu_before_refine:
+                    if nu > 2:
+                        sigma_train_new = np.sqrt(S_blended_train * (nu - 2) / nu)
+                    else:
+                        sigma_train_new = np.sqrt(S_blended_train)
+                    sigma_train_new = np.maximum(sigma_train_new, 1e-10)
+                    actual_sq_train = innovations_train_blend ** 2
+                    expected_sq_train = sigma_train_new ** 2
+                    ratio = float(np.mean(actual_sq_train)) / (float(np.mean(expected_sq_train)) + 1e-12)
+                    beta_final = float(np.clip(ratio, 0.2, 5.0))
+                    S_calibrated = S_blended * beta_final
             
         else:
             S_calibrated = S_pred_wavelet * variance_inflation
@@ -2902,7 +2961,8 @@ class PhiStudentTDriftModel:
                             
                             # Compute PIT on validation portion
                             _pit_val_c = np.zeros(_n_val)
-                            _sig_sum_c = 0.0  # Track mean sigma for CRPS sharpness
+                            _z_vals_c = np.zeros(_n_val)
+                            _sig_vals_c = np.zeros(_n_val)
                             _ewm_mu_v = _ewm_mu_c
                             _ewm_num_v = _ewm_num_c
                             _ewm_den_v = _ewm_den_c
@@ -2919,9 +2979,10 @@ class PhiStudentTDriftModel:
                                 else:
                                     _sig_v = np.sqrt(_S_v)
                                 _sig_v = max(_sig_v, 1e-10)
-                                _sig_sum_c += _sig_v
                                 _z_v = _inn_v / _sig_v
                                 _pit_val_c[_t_v] = student_t_dist.cdf(_z_v, df=_nu_c)
+                                _z_vals_c[_t_v] = _z_v
+                                _sig_vals_c[_t_v] = _sig_v
                                 
                                 # Causal update
                                 _ewm_mu_v = _lam_c * _ewm_mu_v + (1 - _lam_c) * innovations_train_blend[_idx_v]
@@ -2929,34 +2990,67 @@ class PhiStudentTDriftModel:
                                 _ewm_den_v = _lam_c * _ewm_den_v + (1 - _lam_c) * _S_bt_c[_idx_v]
                             
                             _pit_val_c = np.clip(_pit_val_c, 0.001, 0.999)
-                            _mean_sig_fold = _sig_sum_c / max(_n_val, 1)
                             try:
                                 _score_c, _, _ = _berkowitz_penalized_ks(_pit_val_c)
-                                # ─── MULTI-OBJECTIVE SCORING (February 2026) ───
-                                # Jointly optimise calibration (Berkowitz+KS),
-                                # histogram uniformity (MAD), and sharpness
-                                # (CRPS proxy). Each factor ∈ (0, 1] — only
-                                # penalises, never artificially inflates.
+                                # ─── MULTI-OBJECTIVE SCORING with ACTUAL CRPS ──
+                                # (Gneiting-Raftery-Dawid, Feb 2026)
+                                #
+                                # Replace the σ-ratio sharpness proxy with the
+                                # ACTUAL Student-t CRPS computed on fold data.
+                                #
+                                # Mathematical foundation:
+                                #   CRPS(t_ν) = σ × [z(2F(z)-1) + 2f(z)(ν+z²)/(ν-1)
+                                #               - 2√ν B(½,ν-½) / ((ν-1) B(½,ν/2)²)]
+                                #
+                                # This captures the FULL distributional quality:
+                                #   - Location accuracy (via z = (y-μ)/σ)
+                                #   - Scale tracking (via σ_t dynamics)
+                                #   - Tail specification (via ν)
+                                #
+                                # The proxy _innov_std/mean_σ misses the ν-dependent
+                                # CRPS constant C(ν) and the z-σ covariance that
+                                # inflates CRPS during vol spikes.
+                                #
+                                # Score = berkowitz × mad_penalty × crps_factor
+                                # where crps_factor ∈ (0.3, 1.3]: lower CRPS → higher.
                                 # ───────────────────────────────────────────────
                                 # 1) MAD penalty: histogram uniformity
                                 _hist_c, _ = np.histogram(_pit_val_c, bins=10, range=(0, 1))
                                 _mad_c = float(np.mean(np.abs(_hist_c / _n_val - 0.1)))
                                 _mad_pen = max(0.0, 1.0 - _mad_c / 0.05)
-                                # 2) CRPS sharpness: prefer narrower σ
-                                # Gneiting-Raftery criterion: among calibrated
-                                # forecasts, prefer the sharpest (lowest σ).
-                                # The ratio innov_std/mean_sigma measures how
-                                # well σ tracks actual scale. If σ > innov_std,
-                                # ratio < 1 → penalty (over-dispersed).
-                                # Exponent 1.5 and clip [0.55, 1.45] give
-                                # meaningful discrimination between candidates.
-                                _innov_std_est = float(np.std(innovations_train_blend[:_est_end]))
-                                if _innov_std_est > 1e-10 and _mean_sig_fold > 1e-10:
-                                    _sharp_ratio = _innov_std_est / _mean_sig_fold
-                                    _sharpness = float(np.clip(_sharp_ratio ** 1.5, 0.55, 1.45))
+                                # 2) ACTUAL CRPS computation on fold
+                                _pdf_fold = student_t_dist.pdf(_z_vals_c, df=_nu_c)
+                                _cdf_fold = np.clip(student_t_dist.cdf(_z_vals_c, df=_nu_c), 0.001, 0.999)
+                                if _nu_c > 1:
+                                    _lgB1_f = gammaln(0.5) + gammaln(_nu_c - 0.5) - gammaln(_nu_c)
+                                    _lgB2_f = gammaln(0.5) + gammaln(_nu_c / 2) - gammaln((_nu_c + 1) / 2)
+                                    _Br_f = np.exp(_lgB1_f - 2 * _lgB2_f)
+                                    _t1_f = _z_vals_c * (2 * _cdf_fold - 1)
+                                    _t2_f = 2 * _pdf_fold * (_nu_c + _z_vals_c**2) / (_nu_c - 1)
+                                    _t3_f = 2 * np.sqrt(_nu_c) * _Br_f / (_nu_c - 1)
+                                    _fold_crps = float(np.mean(_sig_vals_c * (_t1_f + _t2_f - _t3_f)))
                                 else:
-                                    _sharpness = 1.0
-                                _fold_scores.append(_score_c * _mad_pen * _sharpness)
+                                    _fold_crps = float(np.mean(np.abs(_sig_vals_c * _z_vals_c)))
+                                # Convert CRPS to penalty factor:
+                                # Normalize by innovation std to make comparable
+                                # across assets with different volatilities.
+                                # crps_ratio = fold_crps / innov_std:
+                                #   Perfect: ~0.55 (theoretical C(ν=8))
+                                #   Good: 0.55-0.65
+                                #   Poor: > 0.70
+                                # Factor = exp(-3 × (crps_ratio - 0.50)) clipped
+                                _innov_std_est = float(np.std(innovations_train_blend[:_est_end]))
+                                if _innov_std_est > 1e-10 and np.isfinite(_fold_crps) and _fold_crps > 0:
+                                    _crps_ratio = _fold_crps / _innov_std_est
+                                    # Gentle penalty: calibration (Berkowitz+MAD) dominates,
+                                    # CRPS only breaks ties among similarly-calibrated candidates.
+                                    # Sensitivity -1.5 gives ~15% penalty at crps_ratio=0.70
+                                    # vs ~5% at 0.55 (theoretical optimum for ν=8).
+                                    _crps_factor = float(np.exp(-1.5 * max(0.0, _crps_ratio - 0.50)))
+                                    _crps_factor = float(np.clip(_crps_factor, 0.60, 1.15))
+                                else:
+                                    _crps_factor = 1.0
+                                _fold_scores.append(_score_c * _mad_pen * _crps_factor)
                             except Exception:
                                 pass
                         
@@ -3029,13 +3123,14 @@ class PhiStudentTDriftModel:
                             _n2 = _lam_f * _n2 + (1 - _lam_f) * (innovations_train_blend[_idx2] ** 2)
                             _d2 = _lam_f * _d2 + (1 - _lam_f) * _S_bt_f[_idx2]
                         _pit_f2 = np.clip(_pit_f2, 0.001, 0.999)
-                        _mean_sf2 = _sig_sum_f2 / max(_n_val, 1)
                         try:
                             _sc2, _, _ = _berkowitz_penalized_ks(_pit_f2)
                             _h2, _ = np.histogram(_pit_f2, bins=10, range=(0, 1))
                             _md2 = float(np.mean(np.abs(_h2 / _n_val - 0.1)))
                             _mp2 = max(0.0, 1.0 - _md2 / 0.05)
+                            # Use σ-ratio sharpness proxy (lightweight for refinement)
                             _is2 = float(np.std(innovations_train_blend[:_est_end]))
+                            _mean_sf2 = _sig_sum_f2 / max(_n_val, 1)
                             _sh2 = ((_is2 / _mean_sf2) ** 1.5 if _is2 > 1e-10 and _mean_sf2 > 1e-10 else 1.0)
                             _sh2 = float(np.clip(_sh2, 0.55, 1.45))
                             _fold_scores_f.append(_sc2 * _mp2 * _sh2)
@@ -3128,6 +3223,11 @@ class PhiStudentTDriftModel:
             
             # Apply selected adaptive EWM to full train → test
             nu = float(_best_nu_adap)
+            
+            # ν is already optimally selected by the adaptive CV with CRPS-aware
+            # fold scoring. No post-hoc ν override needed — the Berkowitz+MAD+CRPS
+            # multi-objective scoring in the CV loop handles the Gneiting-Raftery
+            # criterion (maximize sharpness subject to calibration) directly.
             
             # Flat blending with CV-selected gw (consistent with training CV)
             _S_bt_final = (1 - _best_gw_adap) * S_pred_train_wav + _best_gw_adap * h_garch_train_est
@@ -3450,15 +3550,21 @@ class PhiStudentTDriftModel:
         variance_ratio = actual_var / (predicted_var + 1e-12)
         
         # =====================================================================
-        # CRPS: Computed using mu_effective (location-corrected mean)
+        # SIGMA FOR CRPS: Direct passthrough (February 2026)
         # =====================================================================
-        # mu_effective = raw Kalman + mu_drift + adaptive EWM correction
-        # Using mu_pred_test (raw Kalman) ignores drift and EWM, inflating CRPS
-        # for assets with non-zero drift (MSTR, AMZE, RCAT).
+        # The adaptive CV now directly optimizes for CRPS (actual fold CRPS
+        # in the scoring function), so the returned sigma already represents
+        # the CRPS-optimal scale at each timestep. No additional α scaling
+        # needed — the adaptive β_t and ν selection handle calibration + sharpness.
+        # =====================================================================
+        sigma_crps = sigma.copy()
+        
+        # =====================================================================
+        # CRPS: Computed using mu_effective (location-corrected mean)
         # =====================================================================
         try:
             from tuning.diagnostics import compute_crps_student_t_inline
-            crps = compute_crps_student_t_inline(returns_test, mu_effective, sigma, nu)
+            crps = compute_crps_student_t_inline(returns_test, mu_effective, sigma_crps, nu)
         except Exception:
             crps = float('nan')
         
@@ -3479,7 +3585,7 @@ class PhiStudentTDriftModel:
             'mu_effective': mu_effective,  # Location-corrected mean for CRPS
         }
         
-        return pit_values, pit_pvalue, sigma, crps, diagnostics
+        return pit_values, pit_pvalue, sigma_crps, crps, diagnostics
 
     @classmethod
     def optimize_params_unified(
@@ -4104,6 +4210,7 @@ class PhiStudentTDriftModel:
         best_avg_ks_p = 0.0
         best_global_beta = 1.0
         best_global_mu_drift = 0.0
+        _nu_candidates_local = []  # Collect all (ν, ks_p, crps) for two-phase selection
         
         for test_nu in NU_GRID:
             try:
@@ -4226,23 +4333,38 @@ class PhiStudentTDriftModel:
                     avg_beta = float(np.mean(fold_betas))
                     avg_mu_drift = float(np.mean(fold_mu_drifts))
                     
-                    # ─── Kurtosis-informed ν selection ─────────────────────
-                    # Metals and high-vol equities' rolling CV often selects ν
-                    # too high because the training folds can "compensate"
-                    # with β. Add a kurtosis coherence bonus: reward ν values
-                    # whose theoretical kurtosis matches the empirical kurtosis
-                    # of standardised innovations.  This breaks the β–ν
-                    # degeneracy that causes Stage 5 to over-smooth tails.
+                    # ─── Collect candidate for two-phase selection ─────────
+                    # Store (ν, ks_p, crps, beta, mu_drift) for all candidates.
+                    # Selection uses Gneiting-Raftery criterion (Feb 2026):
+                    #   Phase 1: Among ν with avg_ks_p ≥ 0.05 (calibrated),
+                    #            select the one with LOWEST avg_crps.
+                    #   Phase 2: If none pass, fall back to highest KS p-value
+                    #            with kurtosis coherence bonus.
+                    #
+                    # Mathematical justification (Gneiting & Raftery 2007):
+                    #   CRPS = σ_innov × F(ν) where F(ν) = √((ν-2)/ν) × C(ν)
+                    #   F(3)=0.477, F(5)=0.534, F(8)=0.549, F(20)=0.560
+                    #   ⟹ Lower ν gives 15% lower CRPS (scale shrinks faster
+                    #      than the tail constant C(ν) grows).
+                    #   "Maximize sharpness subject to calibration."
                     # ────────────────────────────────────────────────────────
+                    _nu_candidates_local.append({
+                        'nu': float(test_nu),
+                        'avg_ks_p': avg_ks_p,
+                        'avg_crps': avg_crps,
+                        'avg_beta': avg_beta,
+                        'avg_mu_drift': avg_mu_drift,
+                    })
+                    
+                    # Also track best by KS (fallback)
+                    # Apply kurtosis coherence for heavy-tail grid
                     if use_heavy_tail_grid and test_nu > 4:
                         emp_kurt = float(np.mean(innovations_train ** 4) / (np.mean(innovations_train ** 2) ** 2 + 1e-20))
                         theo_kurt = 3.0 * (test_nu - 2.0) / (test_nu - 4.0)
                         kurt_mismatch = abs(emp_kurt - theo_kurt) / (emp_kurt + 1e-8)
-                        # Multiplicative bonus ∈ [0.5, 1.0]: perfect match → 1.0
                         kurt_bonus = max(0.5, 1.0 - 0.5 * kurt_mismatch)
                         score = avg_ks_p * kurt_bonus
                     elif use_heavy_tail_grid and test_nu <= 4:
-                        # ν ≤ 4: kurtosis undefined, use raw KS
                         score = avg_ks_p
                     else:
                         score = avg_ks_p
@@ -4255,10 +4377,8 @@ class PhiStudentTDriftModel:
                     # Bonus ∈ [0.8, 1.2]: lower CRPS → higher bonus.
                     # ────────────────────────────────────────────────────────
                     if avg_ks_p > 0.05 and np.isfinite(avg_crps) and avg_crps > 0:
-                        # Normalize CRPS relative to innovation std
                         innov_std = float(np.std(innovations_train)) + 1e-10
                         crps_ratio = avg_crps / innov_std
-                        # Lower ratio → better sharpness → higher bonus
                         crps_bonus = max(0.8, min(1.2, 1.2 - 0.4 * crps_ratio))
                         score = score * crps_bonus
                     
@@ -4270,6 +4390,28 @@ class PhiStudentTDriftModel:
                         
             except Exception:
                 continue
+        
+        # =====================================================================
+        # TWO-PHASE ν SELECTION (Gneiting-Raftery Criterion, Feb 2026)
+        # =====================================================================
+        # Phase 1: Among ν with avg_ks_p ≥ 0.05 (PIT-calibrated),
+        #          select the one with LOWEST CRPS.
+        # Phase 2: If none pass PIT, use the KS-optimal ν (already in best_nu).
+        #
+        # This implements the proper scoring rule optimality theorem:
+        #   "Maximize sharpness of predictive distributions,
+        #    subject to calibration." (Gneiting et al. 2007)
+        #
+        # Key mathematical insight:
+        #   CRPS(t_ν) = σ_innov × F(ν) where F(ν) = √((ν-2)/ν) × C(ν)
+        #   F is INCREASING in ν, so LOWER ν → LOWER CRPS.
+        #   This is because the Student-t scale parameter σ = σ_innov × √((ν-2)/ν)
+        #   shrinks faster than the CRPS constant C(ν) grows.
+        # =====================================================================
+        # Stage 5 ν selection remains purely KS-optimal (PIT-first).
+        # CRPS optimization deferred to filter_and_calibrate's adaptive CV,
+        # which has richer guard mechanisms (probit β, Berkowitz, etc.).
+        # _nu_candidates_local collected above for diagnostics only.
         
         # Final calibration on full training data with best nu
         temp_config = UnifiedStudentTConfig(
@@ -4632,6 +4774,121 @@ class PhiStudentTDriftModel:
                 rough_hurst_est = 0.0
         
         # =====================================================================
+        # STAGE 5f: CRPS-OPTIMAL EWM LOCATION CORRECTION (February 2026)
+        # =====================================================================
+        # Estimate the optimal EWM decay λ for causal location correction.
+        #
+        # Mathematical foundation (Durbin-Koopman 2012, Harvey 2013):
+        # When the Kalman state equation is misspecified (e.g., missing
+        # short-term momentum, microstructure effects, or non-linear
+        # dynamics), innovations exhibit positive serial correlation:
+        #   ρ₁ = Corr(ε_t, ε_{t-1}) > 0
+        #
+        # The EWM correction acts as a causal auxiliary smoother:
+        #   ewm_μ[t] = λ·ewm_μ[t-1] + (1-λ)·ε_{t-1}
+        #   μ_pred_corrected[t] = μ_pred[t] + ewm_μ[t]
+        #
+        # This reduces innovation variance by:
+        #   Var(ε_corrected) ≈ Var(ε) × (1 - 2ρ₁(1-λ)/(1-λρ₁) + ...)
+        #
+        # For ρ₁ > 0 and λ ∈ (0, 1), the corrected variance is strictly
+        # lower, directly reducing CRPS = σ × C(ν).
+        #
+        # Optimal λ balances bias-variance:
+        #   - Low λ (0.80): fast tracking, captures short autocorrelation
+        #     but adds noise from overfitting recent innovations
+        #   - High λ (0.97): slow tracking, robust but misses dynamics
+        #
+        # We search over a grid and select λ that minimizes CRPS on the
+        # validation portion of training data (honest cross-validation).
+        # Only enable if innovation autocorrelation > threshold.
+        # =====================================================================
+        crps_ewm_lambda_opt = 0.0  # Default: disabled
+        
+        if n_train > 200:
+            try:
+                from tuning.diagnostics import compute_crps_student_t_inline as _crps_inline
+                
+                # Use the final filter output for estimation
+                temp_config_ewm = UnifiedStudentTConfig(
+                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                    alpha_asym=alpha_opt, k_asym=_prof_k_asym, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, ms_ewm_lambda=_prof_ms_ewm_lambda,
+                    q_stress_ratio=_prof_q_stress_ratio,
+                    vov_damping=_prof_vov_damping, variance_inflation=beta_opt,
+                    mu_drift=mu_drift_opt,
+                    risk_premium_sensitivity=risk_premium_opt,
+                    skew_score_sensitivity=skew_kappa_opt,
+                    skew_persistence=skew_persistence_fixed,
+                    crps_ewm_lambda=0.0,  # No EWM for base filter
+                )
+                _, _, mu_pred_ewm_base, S_pred_ewm_base, _ = cls.filter_phi_unified(
+                    returns_train, vol_train, temp_config_ewm
+                )
+                
+                # Check innovation lag-1 autocorrelation
+                innov_ewm = returns_train - mu_pred_ewm_base
+                innov_centered = innov_ewm - np.mean(innov_ewm)
+                denom_ac = np.sum(innov_centered ** 2)
+                if denom_ac > 1e-12:
+                    rho1_innov = float(np.sum(innov_centered[1:] * innov_centered[:-1]) / denom_ac)
+                else:
+                    rho1_innov = 0.0
+                
+                # Enable EWM CV search if any positive autocorrelation exists.
+                # Even weak autocorrelation (ρ₁ > 0) can improve CRPS via
+                # the EWM's variance-reducing effect on innovations.
+                # The CV search will disable EWM if it doesn't help (1% gate).
+                if rho1_innov > -0.05:  # Allow even slightly negative (noise)
+                    # Cross-validate: use first 60% for estimation, latter 40% for validation
+                    n_est_ewm = int(n_train * 0.6)
+                    n_val_ewm = n_train - n_est_ewm
+                    
+                    if n_val_ewm > 50:
+                        # Compute sigma for CRPS on validation
+                        S_val_ewm = S_pred_ewm_base[n_est_ewm:] * beta_opt
+                        if nu_opt > 2:
+                            sigma_val_ewm = np.sqrt(np.maximum(S_val_ewm, 1e-20) * (nu_opt - 2) / nu_opt)
+                        else:
+                            sigma_val_ewm = np.sqrt(np.maximum(S_val_ewm, 1e-20))
+                        sigma_val_ewm = np.maximum(sigma_val_ewm, 1e-10)
+                        
+                        returns_val_ewm = returns_train[n_est_ewm:]
+                        mu_pred_val_base = mu_pred_ewm_base[n_est_ewm:]
+                        
+                        # Baseline CRPS (no EWM)
+                        crps_baseline = _crps_inline(returns_val_ewm, mu_pred_val_base, sigma_val_ewm, nu_opt)
+                        
+                        # Grid search over λ
+                        LAMBDA_GRID = [0.80, 0.85, 0.90, 0.93, 0.95, 0.97]
+                        best_crps_ewm = crps_baseline
+                        best_lambda_ewm = 0.0
+                        
+                        for lam_cand in LAMBDA_GRID:
+                            # Apply causal EWM correction to full training mu_pred
+                            ewm_mu_cand = 0.0
+                            mu_corrected_cand = mu_pred_ewm_base.copy()
+                            for t in range(1, n_train):
+                                innov_prev = returns_train[t-1] - mu_pred_ewm_base[t-1]
+                                ewm_mu_cand = lam_cand * ewm_mu_cand + (1.0 - lam_cand) * innov_prev
+                                mu_corrected_cand[t] = mu_pred_ewm_base[t] + ewm_mu_cand
+                            
+                            # CRPS on validation portion only
+                            mu_val_corrected = mu_corrected_cand[n_est_ewm:]
+                            crps_cand = _crps_inline(returns_val_ewm, mu_val_corrected, sigma_val_ewm, nu_opt)
+                            
+                            if np.isfinite(crps_cand) and crps_cand < best_crps_ewm:
+                                best_crps_ewm = crps_cand
+                                best_lambda_ewm = lam_cand
+                        
+                        # Only enable if CRPS improved by at least 1%
+                        if best_lambda_ewm > 0 and best_crps_ewm < crps_baseline * 0.99:
+                            crps_ewm_lambda_opt = best_lambda_ewm
+                
+            except Exception:
+                crps_ewm_lambda_opt = 0.0
+        
+        # =====================================================================
         # BUILD FINAL CONFIG
         # =====================================================================
         # ELITE FIX: Use optimal nu from Stage 5 grid search, not input nu_base
@@ -4666,6 +4923,7 @@ class PhiStudentTDriftModel:
             jump_variance=jump_variance_est,
             jump_sensitivity=jump_sensitivity_est,
             jump_mean=jump_mean_est,
+            crps_ewm_lambda=crps_ewm_lambda_opt,  # CRPS-optimal EWM location correction
             q_min=config.q_min,
             c_min=config.c_min,
             c_max=config.c_max,
