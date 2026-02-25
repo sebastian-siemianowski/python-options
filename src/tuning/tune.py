@@ -3292,6 +3292,11 @@ def fit_all_models_for_regime(
                 "sigma_eta": float(getattr(config, 'sigma_eta', 0.0)),
                 "t_df_asym": float(getattr(config, 't_df_asym', 0.0)),
                 "regime_switch_prob": float(getattr(config, 'regime_switch_prob', 0.0)),
+                # GARCH-Kalman reconciliation + Q_t coupling + location bias (February 2026)
+                "garch_kalman_weight": float(getattr(config, 'garch_kalman_weight', 0.0)),
+                "q_vol_coupling": float(getattr(config, 'q_vol_coupling', 0.0)),
+                "loc_bias_var_coeff": float(getattr(config, 'loc_bias_var_coeff', 0.0)),
+                "loc_bias_drift_coeff": float(getattr(config, 'loc_bias_drift_coeff', 0.0)),
                 # Scores
                 "log_likelihood": float(ll_u),
                 "mean_log_likelihood": float(mean_ll_u),

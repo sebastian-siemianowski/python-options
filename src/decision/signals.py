@@ -3233,6 +3233,11 @@ def _kalman_filter_drift(
                 sigma_eta=float(tuned_params.get('sigma_eta', 0.0)),
                 t_df_asym=float(tuned_params.get('t_df_asym', 0.0)),
                 regime_switch_prob=float(tuned_params.get('regime_switch_prob', 0.0)),
+                # GARCH-Kalman reconciliation + Q_t coupling + location bias (February 2026)
+                garch_kalman_weight=float(tuned_params.get('garch_kalman_weight', 0.0)),
+                q_vol_coupling=float(tuned_params.get('q_vol_coupling', 0.0)),
+                loc_bias_var_coeff=float(tuned_params.get('loc_bias_var_coeff', 0.0)),
+                loc_bias_drift_coeff=float(tuned_params.get('loc_bias_drift_coeff', 0.0)),
             )
             
             # Run unified filter

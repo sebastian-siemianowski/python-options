@@ -199,22 +199,20 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         S_pred_test = S_pred[n_train:]
         
         # =====================================================================
-        # CRPS: Use calibrated predictions (training-data calibration = honest)
+        # CRPS: Use calibrated sigma with raw mu_pred (February 2026)
         # =====================================================================
-        # All assets with GARCH now use the adaptive EWM path, so calibrated
-        # sigma captures GARCH blending, β recalibration, and ν refinement.
-        # The calibration is estimated entirely on training data — no test
-        # look-ahead. Using raw S_pred ignores all the variance improvements,
-        # producing artificially worse CRPS for well-calibrated models.
+        # Sigma comes from filter_and_calibrate's adaptive pipeline (GARCH
+        # blending + β recalibration + ν refinement + sigma shrinkage).
+        # Location uses raw mu_pred from filter: the EWM location correction
+        # (mu_effective) helps PIT uniformity but adds noise to CRPS.
+        # Best CRPS = raw mu_pred + calibrated sigma.
         # =====================================================================
         nu_effective_crps = calib_diag.get('nu_effective', config.nu_base)
         
         if len(sigma_calibrated) == n_test and np.all(sigma_calibrated > 0):
-            # Calibrated sigma captures GARCH + β + ν refinement
             sigma_crps = np.maximum(sigma_calibrated, 1e-10)
             nu_crps = nu_effective_crps
         else:
-            # Fallback: raw predictions
             nu_crps = config.nu_base
             if nu_crps > 2:
                 sigma_crps = np.sqrt(S_pred_test * (nu_crps - 2) / nu_crps)

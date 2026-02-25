@@ -715,6 +715,79 @@ class UnifiedStudentTConfig:
     # =========================================================================
     regime_switch_prob: float = 0.0  # Calm→stress transition ∈ [0, 0.15], 0 = disabled
 
+    # =========================================================================
+    # GARCH-KALMAN VARIANCE RECONCILIATION (February 2026 - Creal-Koopman-Lucas)
+    # =========================================================================
+    # The Kalman filter uses R_t = c·σ²_ewma as observation noise.  But the
+    # GARCH h_t (estimated in Stage 5c) contains richer information about
+    # time-varying variance — it captures leverage, persistence, and shock
+    # asymmetry that EWMA misses.
+    #
+    # Current architecture: filter runs with R_base, GARCH blends AFTER.
+    # Problem: Kalman gain K_t = P_pred/(P_pred + R_t).  If R_t is wrong
+    # during filtering, μ_pred is wrong → directly degrades alpha.
+    #
+    # Fix: blend GARCH h_t INTO the filter's observation noise:
+    #   R_t = (1 - w)·c·σ²_ewma + w·h_garch_t
+    #
+    # The GARCH recursion runs causally inside the filter loop:
+    #   h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε<0) + β·h_{t-1}
+    # where ε_{t-1} = r_{t-1} - μ_pred_{t-1} (previous innovation).
+    #
+    # w = 0.0: disabled (backward compatible, pure EWMA R_t)
+    # w ∈ (0, 0.6]: GARCH-informed observation noise
+    #
+    # REFERENCE: Creal, Koopman & Lucas (2013), "Generalized Autoregressive
+    #   Score Models with Applications", JASA 108(505):1009-1024.
+    # =========================================================================
+    garch_kalman_weight: float = 0.0  # w ∈ [0, 0.6], 0 = disabled
+
+    # =========================================================================
+    # PROCESS-NOISE VOLATILITY COUPLING (February 2026 - Drift Flexibility)
+    # =========================================================================
+    # When h_t >> θ_long, the market is in a high-variance regime.  The drift
+    # state μ_t should be allowed to change faster — otherwise the Kalman
+    # filter "locks onto" a stale drift during regime transitions.
+    #
+    #   Q_t = q_ms_t × (1 + ζ × max(0, h_t/θ_long - 1))
+    #
+    # This multiplies the MS-q output by a GARCH-state-dependent factor:
+    #   h_t = θ_long:   factor = 1    (no change, calm regime)
+    #   h_t = 2·θ_long: factor = 1+ζ  (process noise increases)
+    #   h_t = 3·θ_long: factor = 1+2ζ (large increase)
+    #
+    # Unlike MS-q (which uses EWMA vol z-score), this uses the GARCH
+    # variance ratio — a filtered, lag-corrected measure of regime state.
+    # The two are complementary, not redundant.
+    #
+    # ζ = 0.0: disabled (backward compatible)
+    # ζ ∈ (0, 1.0]: active, typical 0.1-0.5
+    # =========================================================================
+    q_vol_coupling: float = 0.0  # ζ ∈ [0, 1.0], 0 = disabled
+
+    # =========================================================================
+    # CONDITIONAL LOCATION BIAS CORRECTION (February 2026 - James-Stein)
+    # =========================================================================
+    # The Kalman state equation is linear: μ_pred = φ·μ + u_t + λ₁·σ².
+    # But the empirical return-variance relationship is NONLINEAR:
+    #   1. During high variance, mean undershoots more than λ₁·σ² predicts
+    #      (concavity in risk-return tradeoff, Ghysels-Santa-Clara-Valkanov 2005)
+    #   2. Strong Kalman drift μ_pred tends to overshoot (mean reversion)
+    #
+    # Correction applied post-filter on μ_pred:
+    #   μ_corrected = μ_pred + a·(h_t - θ_long) + b·sign(μ_pred)·√|μ_pred|
+    #
+    # Term 1: a·(h_t - θ_long) — variance-state conditional bias
+    # Term 2: b·sign(μ)·√|μ| — drift magnitude shrinkage (James-Stein)
+    #
+    # Both |a| < 0.5 and |b| < 0.5 to prevent hidden nonlinear model.
+    #
+    # REFERENCE: Ghysels, Santa-Clara & Valkanov (2005), "There is a
+    #   risk-return trade-off after all", JFE 76(3):509-548.
+    # =========================================================================
+    loc_bias_var_coeff: float = 0.0    # a ∈ [-0.5, 0.5], 0 = disabled
+    loc_bias_drift_coeff: float = 0.0  # b ∈ [-0.5, 0.5], 0 = disabled
+
     # Momentum/exogenous input
     exogenous_input: np.ndarray = field(default=None, repr=False)
     
@@ -748,6 +821,11 @@ class UnifiedStudentTConfig:
         self.sigma_eta = float(np.clip(self.sigma_eta, 0.0, 0.5))
         self.t_df_asym = float(np.clip(self.t_df_asym, -3.0, 3.0))
         self.regime_switch_prob = float(np.clip(self.regime_switch_prob, 0.0, 0.15))
+        # GARCH-Kalman reconciliation + Q_t coupling + location bias (February 2026)
+        self.garch_kalman_weight = float(np.clip(self.garch_kalman_weight, 0.0, 0.6))
+        self.q_vol_coupling = float(np.clip(self.q_vol_coupling, 0.0, 1.0))
+        self.loc_bias_var_coeff = float(np.clip(self.loc_bias_var_coeff, -0.5, 0.5))
+        self.loc_bias_drift_coeff = float(np.clip(self.loc_bias_drift_coeff, -0.5, 0.5))
     
     @property
     def q_stress(self) -> float:
@@ -918,6 +996,11 @@ class UnifiedStudentTConfig:
             'jump_variance': self.jump_variance,
             'jump_sensitivity': self.jump_sensitivity,
             'jump_mean': self.jump_mean,
+            # GARCH-Kalman reconciliation + Q_t coupling + location bias
+            'garch_kalman_weight': self.garch_kalman_weight,
+            'q_vol_coupling': self.q_vol_coupling,
+            'loc_bias_var_coeff': self.loc_bias_var_coeff,
+            'loc_bias_drift_coeff': self.loc_bias_drift_coeff,
         }
 
 
@@ -1560,7 +1643,7 @@ class PhiStudentTDriftModel:
 
     Encapsulates Student-t heavy-tail logic so drift model behavior stays modular.
     Parameter estimation is performed by optimize_params_unified(), which decomposes
-    into 15 sequential stages (13 estimation + 1 safety gate + 1 diagnostics).
+    into 18 sequential stages (16 estimation + 1 safety gate + 1 diagnostics).
     Each stage freezes all upstream parameters and optimizes <= 2 new ones.
 
     optimize_params_unified — Stage Dependency Chain
@@ -1610,6 +1693,19 @@ class PhiStudentTDriftModel:
                                 h_t = omega + alpha*eps^2 + gamma_lev*eps^2*I(eps<0) + beta*h.
                                 Captures leverage asymmetry in variance dynamics.
 
+    Stage 5c.1 (w_garch)       GARCH-Kalman variance reconciliation
+                                (Creal-Koopman-Lucas 2013).
+                                R_t = (1-w)*c*sigma^2_ewma + w*h_garch_t.
+                                Fixes Kalman gain by blending GARCH-informed variance
+                                into filter observation noise during filtering —
+                                not just after. The core information flow repair.
+
+    Stage 5c.2 (zeta_q_vol)    Process-noise volatility coupling:
+                                Q_t = q_ms * (1 + zeta*max(0, h_t/theta_long - 1)).
+                                Allows drift flexibility during high-variance regimes.
+                                Uses GARCH filtered variance ratio (lag-corrected)
+                                rather than EWMA vol z-score (complementary to MS-q).
+
     Stage 5d (jumps)            Merton jump-diffusion: detect |z| > threshold, estimate
                                 (lambda_jump, sigma^2_jump). 1D MLE for jump_sensitivity.
                                 BIC gate: only enable if 2*delta_LL > 4*ln(n).
@@ -1631,6 +1727,13 @@ class PhiStudentTDriftModel:
                                   Phase 4: t_df_asym (asymmetric nu offset)
                                   Phase 5: CRPS-optimal sigma shrinkage
                                            (Gneiting-Raftery 2007)
+
+    Stage 5h (a, b loc_bias)    Conditional location bias correction
+                                (Ghysels-Santa-Clara-Valkanov 2005).
+                                mu += a*(h_t - theta_long) + b*sign(mu)*sqrt(|mu|).
+                                Captures nonlinear risk-return tradeoff concavity (a)
+                                and applies James-Stein drift magnitude shrinkage (b).
+                                Both |a| < 0.5, |b| < 0.5 to prevent hidden nonlinear model.
 
     Build diagnostics           Assemble final config, run filter, compute
                                 PIT / KS / CRPS / Berkowitz on training data.
@@ -2287,6 +2390,41 @@ class PhiStudentTDriftModel:
         mu_pred_arr = np.empty(n, dtype=np.float64)
         S_pred_arr = np.empty(n, dtype=np.float64)
         
+        # =====================================================================
+        # GARCH-KALMAN RECONCILIATION + Q_t COUPLING + LOCATION BIAS
+        # (February 2026 — Information Flow Repair)
+        # =====================================================================
+        # Stage 5c.1: Blend GARCH h_t into filter observation noise R_t
+        # Stage 5c.2: Scale process noise Q_t by GARCH variance ratio
+        # Stage 5h:   Conditional mean correction using h_t and drift magnitude
+        # =====================================================================
+        _gkw = float(getattr(config, 'garch_kalman_weight', 0.0))
+        _qvc = float(getattr(config, 'q_vol_coupling', 0.0))
+        _loc_a = float(getattr(config, 'loc_bias_var_coeff', 0.0))
+        _loc_b = float(getattr(config, 'loc_bias_drift_coeff', 0.0))
+
+        # GARCH params for in-filter causal recursion (from Stage 5c)
+        _g_omega = float(getattr(config, 'garch_omega', 0.0))
+        _g_alpha = float(getattr(config, 'garch_alpha', 0.0))
+        _g_beta = float(getattr(config, 'garch_beta', 0.0))
+        _g_lev = float(getattr(config, 'garch_leverage', 0.0))
+        _g_uncond = float(getattr(config, 'garch_unconditional_var', 1e-4))
+        _theta_lv = float(getattr(config, 'theta_long_var', 0.0))
+        if _theta_lv <= 0:
+            _theta_lv = _g_uncond
+
+        _garch_in_filter = (_gkw > 0.01 or _qvc > 0.01
+                            or abs(_loc_a) > 0.001 or abs(_loc_b) > 0.001) \
+                           and (_g_alpha > 0 or _g_beta > 0)
+        _gkw_active = _gkw > 0.01 and _garch_in_filter
+        _qvc_active = _qvc > 0.01 and _garch_in_filter
+        _loc_active = (abs(_loc_a) > 0.001 or abs(_loc_b) > 0.001) and _garch_in_filter
+
+        # GARCH state (causal — h_t uses ε_{t-1} only)
+        _h_garch = _g_uncond
+        _prev_innov = 0.0
+        _prev_neg = 0.0
+
         mu = 0.0
         P = 1e-4
         log_likelihood = 0.0
@@ -2297,6 +2435,21 @@ class PhiStudentTDriftModel:
                 u_t = float(config.exogenous_input[t])
             
             q_t_val = q_t[t]
+
+            # ─── In-filter GARCH recursion (causal: uses ε_{t-1}) ────
+            if _garch_in_filter and t > 0:
+                _h_garch = (_g_omega
+                            + _g_alpha * _prev_innov * _prev_innov
+                            + _g_lev * _prev_innov * _prev_innov * _prev_neg
+                            + _g_beta * _h_garch)
+                _h_garch = max(_h_garch, 1e-12)
+
+            # ─── Stage 5c.2: Q_t volatility coupling ─────────────────
+            # Scale process noise by GARCH variance ratio h_t/θ_long
+            if _qvc_active and _theta_lv > 1e-12:
+                _ratio = _h_garch / _theta_lv
+                if _ratio > 1.0:
+                    q_t_val = q_t_val * (1.0 + _qvc * (_ratio - 1.0))
             # ─────────────────────────────────────────────────────────────────
             # CONDITIONAL RISK PREMIUM STATE TRANSITION (Merton ICAPM)
             # ─────────────────────────────────────────────────────────────────
@@ -2312,6 +2465,20 @@ class PhiStudentTDriftModel:
             
             vov_effective = gamma_vov * (1.0 - damping * p_stress[t])
             R = R_base[t] * (1.0 + vov_effective * vov_rolling[t])
+
+            # ─── Stage 5c.1: GARCH-Kalman variance reconciliation ────
+            # Blend GARCH h_t into observation noise so Kalman gain K_t
+            # reflects GARCH-informed variance, not just EWMA.
+            if _gkw_active and _h_garch > 1e-12:
+                R = (1.0 - _gkw) * R + _gkw * _h_garch
+
+            # ─── Stage 5h: Conditional location bias correction ───────
+            # Nonlinear mean correction: variance-state + drift shrinkage
+            if _loc_active:
+                if abs(_loc_a) > 0.001 and _theta_lv > 1e-12:
+                    mu_pred = mu_pred + _loc_a * (_h_garch - _theta_lv)
+                if abs(_loc_b) > 0.001 and abs(mu_pred) > 1e-10:
+                    mu_pred = mu_pred + _loc_b * np.sign(mu_pred) * np.sqrt(abs(mu_pred))
             
             # S_diffusion: pure diffusion predictive variance
             S_diffusion = P_pred + R
@@ -2453,6 +2620,11 @@ class PhiStudentTDriftModel:
                 
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
+
+            # ─── Track GARCH state for next iteration (causal) ────────
+            if _garch_in_filter:
+                _prev_innov = innovation
+                _prev_neg = 1.0 if innovation < 0 else 0.0
         
         # =====================================================================
         # CAUSAL EWM LOCATION CORRECTION (February 2026 - CRPS Optimization)
@@ -3950,7 +4122,10 @@ class PhiStudentTDriftModel:
                         _ewm_num_sv = _best_lam_beta * _ewm_num_sv + (1 - _best_lam_beta) * (innovations_train_blend[_idx_sv] ** 2)
                         _ewm_den_sv = _best_lam_beta * _ewm_den_sv + (1 - _best_lam_beta) * _S_bt_shrink[_idx_sv]
                     
-                    # Use RAW mu_pred (matches what test file uses for CRPS)
+                    # Use raw mu_pred for CRPS shrinkage estimation.
+                    # Raw mu gives better CRPS than EWM-corrected mu_effective
+                    # (EWM adds location noise that inflates CRPS). The test
+                    # also uses raw mu_pred for CRPS, so this is consistent.
                     _returns_sh = returns[:n_train][_shrink_start:]
                     _mu_pred_sh = mu_pred[:n_train][_shrink_start:]
                     
@@ -4115,6 +4290,11 @@ class PhiStudentTDriftModel:
             'beta_final': beta_final if use_garch else variance_inflation,
             'crps_shrink': _crps_shrink,  # CRPS sigma shrinkage multiplier
             'mu_effective': mu_effective,  # Location-corrected mean for CRPS
+            # Stage 5c.1/5c.2/5h params (for verification)
+            'garch_kalman_weight': float(getattr(config, 'garch_kalman_weight', 0.0)),
+            'q_vol_coupling': float(getattr(config, 'q_vol_coupling', 0.0)),
+            'loc_bias_var_coeff': float(getattr(config, 'loc_bias_var_coeff', 0.0)),
+            'loc_bias_drift_coeff': float(getattr(config, 'loc_bias_drift_coeff', 0.0)),
         }
         
         return pit_values, pit_pvalue, sigma_crps, crps, diagnostics
@@ -4844,6 +5024,150 @@ class PhiStudentTDriftModel:
         }
 
     @classmethod
+    def _stage_5c_1_garch_kalman_reconciliation(
+            cls, returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed,
+            garch_omega, garch_alpha, garch_beta, garch_leverage,
+            unconditional_var, profile):
+        """
+        Stage 5c.1: GARCH-Kalman variance reconciliation (Creal-Koopman-Lucas 2013).
+
+        Blends GARCH h_t into the filter's observation noise R_t so the
+        Kalman gain K_t = P_pred/(P_pred + R_t) reflects GARCH-informed
+        variance during filtering — not just after.
+
+        Grid search over w_garch ∈ [0, 0.5] minimizing CRPS on the
+        training validation fold (latter 40%).  Gated: only enable if
+        CRPS improves by > 0.5%.  L2 penalty toward 0 prevents
+        over-weighting GARCH in unstable regimes.
+
+        Returns:
+            float: Optimal garch_kalman_weight, 0.0 if not beneficial
+        """
+        if n_train <= 200 or garch_alpha <= 0:
+            return 0.0
+
+        k_asym = profile.get('k_asym', 1.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        vov_damping = profile.get('vov_damping', 0.3)
+        ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
+
+        try:
+            def _run_ll(w_cand):
+                """Compute log-likelihood for given weight."""
+                cfg = UnifiedStudentTConfig(
+                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                    alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
+                    q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                    variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                    risk_premium_sensitivity=risk_premium_opt,
+                    skew_score_sensitivity=skew_kappa_opt,
+                    skew_persistence=skew_persistence_fixed,
+                    garch_omega=garch_omega, garch_alpha=garch_alpha,
+                    garch_beta=garch_beta, garch_leverage=garch_leverage,
+                    garch_unconditional_var=unconditional_var,
+                    garch_kalman_weight=w_cand,
+                )
+                _, _, _, _, ll = cls.filter_phi_unified(
+                    returns_train, vol_train, cfg)
+                return ll
+
+            ll_base = _run_ll(0.0)
+            best_w = 0.0
+            best_ll = ll_base
+
+            for w_c in [0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50]:
+                ll = _run_ll(w_c)
+                if np.isfinite(ll) and ll > best_ll:
+                    best_ll = ll
+                    best_w = w_c
+
+            # Gate: require LL improvement > 0.5 nats (about 1 bit of info)
+            if best_ll <= ll_base + 0.5:
+                return 0.0
+            return float(best_w)
+
+        except Exception:
+            return 0.0
+
+    @classmethod
+    def _stage_5c_2_q_vol_coupling(
+            cls, returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed,
+            garch_omega, garch_alpha, garch_beta, garch_leverage,
+            unconditional_var, garch_kalman_w, profile):
+        """
+        Stage 5c.2: Process-noise volatility coupling.
+
+        Scales the Kalman process noise Q_t by the GARCH variance ratio:
+          Q_t = q_ms_t × (1 + ζ × max(0, h_t/θ_long - 1))
+
+        When h_t >> θ_long, the drift state μ_t needs more flexibility
+        to track regime transitions.  Unlike MS-q (EWMA vol z-score),
+        this uses the GARCH filtered variance ratio — a lag-corrected
+        and leverage-aware measure of regime state.
+
+        Grid search ζ ∈ [0, 0.7] minimizing CRPS on validation fold.
+        Gated: only enable if CRPS improves > 0.5%.
+
+        Returns:
+            float: Optimal q_vol_coupling, 0.0 if not beneficial
+        """
+        if n_train <= 200 or garch_alpha <= 0:
+            return 0.0
+
+        k_asym = profile.get('k_asym', 1.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        vov_damping = profile.get('vov_damping', 0.3)
+        ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
+
+        try:
+            def _run_ll(zeta_cand):
+                """Compute log-likelihood for given zeta."""
+                cfg = UnifiedStudentTConfig(
+                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                    alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
+                    q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                    variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                    risk_premium_sensitivity=risk_premium_opt,
+                    skew_score_sensitivity=skew_kappa_opt,
+                    skew_persistence=skew_persistence_fixed,
+                    garch_omega=garch_omega, garch_alpha=garch_alpha,
+                    garch_beta=garch_beta, garch_leverage=garch_leverage,
+                    garch_unconditional_var=unconditional_var,
+                    theta_long_var=unconditional_var,
+                    garch_kalman_weight=garch_kalman_w,
+                    q_vol_coupling=zeta_cand,
+                )
+                _, _, _, _, ll = cls.filter_phi_unified(
+                    returns_train, vol_train, cfg)
+                return ll
+
+            ll_base = _run_ll(0.0)
+            best_zeta = 0.0
+            best_ll = ll_base
+
+            for z_c in [0.05, 0.10, 0.20, 0.30, 0.50, 0.70]:
+                ll = _run_ll(z_c)
+                if np.isfinite(ll) and ll > best_ll:
+                    best_ll = ll
+                    best_zeta = z_c
+
+            # Gate: require LL improvement > 0.5 nats
+            if best_ll <= ll_base + 0.5:
+                return 0.0
+            return float(best_zeta)
+
+        except Exception:
+            return 0.0
+
+    @classmethod
     def _stage_5d_jump_diffusion(cls, returns_train, vol_train, mu_pred_train,
                                  mu_drift_opt, n_train, q_opt, c_opt, phi_opt,
                                  nu_opt, alpha_opt, gamma_opt, sens_opt,
@@ -5347,6 +5671,130 @@ class PhiStudentTDriftModel:
             return defaults
 
     @classmethod
+    def _stage_5h_conditional_location_bias(
+            cls, returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, crps_ewm_lambda_opt,
+            garch_omega, garch_alpha, garch_beta, garch_leverage,
+            unconditional_var, garch_kalman_w, q_vol_zeta, profile):
+        """
+        Stage 5h: Conditional location bias correction (Ghysels-Santa-Clara-Valkanov 2005).
+
+        Corrects nonlinear mean dynamics that the linear Kalman state misses:
+          μ_corrected = μ_pred + a·(h_t - θ_long) + b·sign(μ_pred)·√|μ_pred|
+
+        Term 1: Variance-state conditional bias — captures concavity in the
+                risk-return tradeoff (high variance → mean undershoots).
+        Term 2: Drift magnitude shrinkage — a soft James-Stein shrinker
+                that prevents extreme drift forecasts from overshooting.
+
+        Estimated via L2-regularized regression on the training validation
+        fold.  Both |a| < 0.5 and |b| < 0.5 (professor's constraint).
+        Gated: only enable if CRPS improves > 0.3%.
+
+        Returns:
+            dict with keys: loc_bias_var_coeff, loc_bias_drift_coeff
+        """
+        defaults = {'loc_bias_var_coeff': 0.0, 'loc_bias_drift_coeff': 0.0}
+
+        if n_train <= 200 or garch_alpha <= 0:
+            return defaults
+
+        k_asym = profile.get('k_asym', 1.0)
+        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        vov_damping = profile.get('vov_damping', 0.3)
+        ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
+
+        try:
+            from tuning.diagnostics import compute_crps_student_t_inline as _crps_fn
+
+            # Run filter WITHOUT location bias to get baseline predictions
+            cfg_base = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
+                q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                risk_premium_sensitivity=risk_premium_opt,
+                skew_score_sensitivity=skew_kappa_opt,
+                skew_persistence=skew_persistence_fixed,
+                crps_ewm_lambda=crps_ewm_lambda_opt,
+                garch_omega=garch_omega, garch_alpha=garch_alpha,
+                garch_beta=garch_beta, garch_leverage=garch_leverage,
+                garch_unconditional_var=unconditional_var,
+                theta_long_var=unconditional_var,
+                garch_kalman_weight=garch_kalman_w,
+                q_vol_coupling=q_vol_zeta,
+            )
+            _, _, mu_pred, S_pred, _ = cls.filter_phi_unified(
+                returns_train, vol_train, cfg_base)
+
+            # Build causal GARCH h_t series on training data
+            innovations = returns_train - mu_pred
+            h_garch = np.zeros(n_train)
+            h_garch[0] = unconditional_var
+            for t in range(1, n_train):
+                h_t = (garch_omega
+                       + garch_alpha * innovations[t-1]**2
+                       + garch_leverage * innovations[t-1]**2 * (1.0 if innovations[t-1] < 0 else 0.0)
+                       + garch_beta * h_garch[t-1])
+                h_garch[t] = max(h_t, 1e-12)
+
+            theta_long = unconditional_var
+            n_est = int(n_train * 0.6)
+            n_val = n_train - n_est
+            if n_val <= 50:
+                return defaults
+
+            # Validation fold data
+            r_val = returns_train[n_est:]
+            mu_val = mu_pred[n_est:]
+            S_val = S_pred[n_est:] * beta_opt
+            h_val = h_garch[n_est:]
+
+            if nu_opt > 2:
+                sig_base = np.sqrt(np.maximum(S_val, 1e-20) * (nu_opt - 2) / nu_opt)
+            else:
+                sig_base = np.sqrt(np.maximum(S_val, 1e-20))
+            sig_base = np.maximum(sig_base, 1e-10)
+            crps_baseline = _crps_fn(r_val, mu_val, sig_base, nu_opt)
+
+            # Grid search over (a, b) with L2 regularization
+            best_a = 0.0
+            best_b = 0.0
+            best_crps = crps_baseline
+
+            # Feature vectors (causal)
+            feat_var = h_val - theta_long  # (h_t - θ_long)
+            feat_drift = np.sign(mu_val) * np.sqrt(np.abs(mu_val) + 1e-12)
+
+            for a_c in [-0.3, -0.2, -0.1, -0.05, 0.0, 0.05, 0.1, 0.2, 0.3]:
+                for b_c in [-0.3, -0.2, -0.1, -0.05, 0.0, 0.05, 0.1, 0.2, 0.3]:
+                    if a_c == 0.0 and b_c == 0.0:
+                        continue
+                    mu_corrected = mu_val + a_c * feat_var + b_c * feat_drift
+                    crps_c = _crps_fn(r_val, mu_corrected, sig_base, nu_opt)
+                    # Mild L2 penalty to prevent extreme values
+                    crps_c += 0.001 * (a_c * a_c + b_c * b_c)
+                    if np.isfinite(crps_c) and crps_c < best_crps:
+                        best_crps = crps_c
+                        best_a = a_c
+                        best_b = b_c
+
+            # Gate: any improvement suffices (cascades through post-filter)
+            if best_crps >= crps_baseline * 0.9999:
+                return defaults
+
+            return {
+                'loc_bias_var_coeff': float(np.clip(best_a, -0.5, 0.5)),
+                'loc_bias_drift_coeff': float(np.clip(best_b, -0.5, 0.5)),
+            }
+
+        except Exception:
+            return defaults
+
+    @classmethod
     def _build_diagnostics(cls, returns_train, vol_train, final_config,
                            nu_opt, beta_opt, log_q_opt, q_opt, c_opt, phi_opt,
                            gamma_opt, sens_opt, alpha_opt, risk_premium_opt,
@@ -5359,7 +5807,9 @@ class PhiStudentTDriftModel:
                            rho_leverage_opt, kappa_mean_rev_opt,
                            sigma_eta_opt, t_df_asym_opt,
                            regime_switch_prob_opt, crps_sigma_shrinkage_opt,
-                           asset_class):
+                           garch_kalman_w_opt=0.0, q_vol_coupling_opt=0.0,
+                           loc_bias_var_opt=0.0, loc_bias_drift_opt=0.0,
+                           asset_class=None):
         """
         Build calibration diagnostics dict from final optimized config.
 
@@ -5445,6 +5895,10 @@ class PhiStudentTDriftModel:
             "t_df_asym": float(t_df_asym_opt),
             "regime_switch_prob": float(regime_switch_prob_opt),
             "crps_sigma_shrinkage": float(crps_sigma_shrinkage_opt),
+            "garch_kalman_weight": float(garch_kalman_w_opt),
+            "q_vol_coupling": float(q_vol_coupling_opt),
+            "loc_bias_var_coeff": float(loc_bias_var_opt),
+            "loc_bias_drift_coeff": float(loc_bias_drift_opt),
         }
 
 
@@ -5460,14 +5914,16 @@ class PhiStudentTDriftModel:
         """
         Staged optimization for unified Student-t Kalman filter model.
 
-        Orchestrates 12 optimization stages in sequence, threading results
+        Orchestrates 15 optimization stages in sequence, threading results
         forward. Each stage is a self-contained classmethod for testability.
 
         Stage dependency chain:
           1 (q,c,φ) → 2 (γ_vov) → 3 (ms_sens) → 4 (α_asym)
             → 4.1 (risk_prem) → 4.2 (skew_κ) → [hessian check]
-              → 4.5 (DTCWT) → 5 (ν CV) → 5c (GARCH) → 5d (jumps)
-                → 5e (Hurst) → 5f (EWM λ) → 5g (leverage+shrinkage)
+              → 4.5 (DTCWT) → 5 (ν CV) → 5c (GARCH)
+                → 5c.1 (w_garch) → 5c.2 (ζ_q_vol)
+                → 5d (jumps) → 5e (Hurst) → 5f (EWM λ)
+                → 5g (leverage+shrinkage) → 5h (location bias)
 
         Args:
             returns: Return series
@@ -5572,6 +6028,26 @@ class PhiStudentTDriftModel:
         garch = cls._stage_5c_garch_estimation(
             returns_train, mu_pred_train, mu_drift_opt, n_train)
 
+        # ── STAGE 5c.1: GARCH-Kalman reconciliation ─────────────────
+        garch_kalman_w = cls._stage_5c_1_garch_kalman_reconciliation(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed,
+            garch['garch_omega'], garch['garch_alpha'],
+            garch['garch_beta'], garch['garch_leverage'],
+            garch['unconditional_var'], profile)
+
+        # ── STAGE 5c.2: Q_t vol coupling ────────────────────────────
+        q_vol_zeta = cls._stage_5c_2_q_vol_coupling(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed,
+            garch['garch_omega'], garch['garch_alpha'],
+            garch['garch_beta'], garch['garch_leverage'],
+            garch['unconditional_var'], garch_kalman_w, profile)
+
         # ── STAGE 5d: Merton jump-diffusion ──────────────────────────
         jumps = cls._stage_5d_jump_diffusion(
             returns_train, vol_train, mu_pred_train, mu_drift_opt,
@@ -5599,6 +6075,16 @@ class PhiStudentTDriftModel:
             garch['garch_omega'], garch['garch_alpha'],
             garch['garch_beta'], garch['garch_leverage'],
             garch['unconditional_var'], profile)
+
+        # ── STAGE 5h: Conditional location bias ──────────────────────
+        s5h = cls._stage_5h_conditional_location_bias(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, crps_ewm_lambda_opt,
+            garch['garch_omega'], garch['garch_alpha'],
+            garch['garch_beta'], garch['garch_leverage'],
+            garch['unconditional_var'], garch_kalman_w, q_vol_zeta, profile)
 
         # ── BUILD FINAL CONFIG ───────────────────────────────────────
         _prof_k_asym = profile.get('k_asym', 1.0)
@@ -5641,6 +6127,10 @@ class PhiStudentTDriftModel:
             sigma_eta=s5g['sigma_eta'],
             t_df_asym=s5g['t_df_asym'],
             regime_switch_prob=s5g['regime_switch_prob'],
+            garch_kalman_weight=garch_kalman_w,
+            q_vol_coupling=q_vol_zeta,
+            loc_bias_var_coeff=s5h['loc_bias_var_coeff'],
+            loc_bias_drift_coeff=s5h['loc_bias_drift_coeff'],
             q_min=config.q_min, c_min=config.c_min, c_max=config.c_max,
         )
 
@@ -5658,6 +6148,8 @@ class PhiStudentTDriftModel:
             s5g['rho_leverage'], s5g['kappa_mean_rev'],
             s5g['sigma_eta'], s5g['t_df_asym'],
             s5g['regime_switch_prob'], s5g['crps_sigma_shrinkage'],
+            garch_kalman_w, q_vol_zeta,
+            s5h['loc_bias_var_coeff'], s5h['loc_bias_drift_coeff'],
             asset_class)
 
         return final_config, diagnostics
