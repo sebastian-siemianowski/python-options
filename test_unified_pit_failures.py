@@ -199,31 +199,34 @@ def fit_unified_model_and_compute_pit(symbol, returns, vol, nu_base=8.0):
         S_pred_test = S_pred[n_train:]
         
         # =====================================================================
-        # CRPS: Use calibrated sigma with raw mu_pred (February 2026)
+        # CRPS: Use filter_and_calibrate's internally-computed CRPS
         # =====================================================================
-        # Sigma comes from filter_and_calibrate's adaptive pipeline (GARCH
-        # blending + β recalibration + ν refinement + sigma shrinkage).
-        # Location uses raw mu_pred from filter: the EWM location correction
-        # (mu_effective) helps PIT uniformity but adds noise to CRPS.
-        # Best CRPS = raw mu_pred + calibrated sigma.
+        # filter_and_calibrate now applies Stage 5h location correction,
+        # GARCH stress amplification (5c.1), and vol coupling (5c.2) in its
+        # pipeline. Its CRPS reflects all these improvements. Using raw
+        # mu_pred + sigma_calibrated would miss the location correction.
         # =====================================================================
         nu_effective_crps = calib_diag.get('nu_effective', config.nu_base)
-        
-        if len(sigma_calibrated) == n_test and np.all(sigma_calibrated > 0):
-            sigma_crps = np.maximum(sigma_calibrated, 1e-10)
-            nu_crps = nu_effective_crps
+        crps_from_calibrate = calib_diag.get('crps', float('nan'))
+
+        if np.isfinite(crps_from_calibrate) and crps_from_calibrate > 0:
+            crps = crps_from_calibrate
         else:
-            nu_crps = config.nu_base
-            if nu_crps > 2:
-                sigma_crps = np.sqrt(S_pred_test * (nu_crps - 2) / nu_crps)
+            # Fallback: compute with raw predictions
+            if len(sigma_calibrated) == n_test and np.all(sigma_calibrated > 0):
+                sigma_crps = np.maximum(sigma_calibrated, 1e-10)
+                nu_crps = nu_effective_crps
             else:
-                sigma_crps = np.sqrt(S_pred_test)
-            sigma_crps = np.maximum(sigma_crps, 1e-10)
-        
-        try:
-            crps = compute_crps_student_t_inline(returns_test, mu_pred_test, sigma_crps, nu_crps)
-        except Exception:
-            crps = float('nan')
+                nu_crps = config.nu_base
+                if nu_crps > 2:
+                    sigma_crps = np.sqrt(S_pred_test * (nu_crps - 2) / nu_crps)
+                else:
+                    sigma_crps = np.sqrt(S_pred_test)
+                sigma_crps = np.maximum(sigma_crps, 1e-10)
+            try:
+                crps = compute_crps_student_t_inline(returns_test, mu_pred_test, sigma_crps, nu_crps)
+            except Exception:
+                crps = float('nan')
         
         pit_values = pit_calibrated
         ks_stat = float(kstest(pit_values, 'uniform').statistic)

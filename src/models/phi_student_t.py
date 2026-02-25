@@ -2413,11 +2413,13 @@ class PhiStudentTDriftModel:
         if _theta_lv <= 0:
             _theta_lv = _g_uncond
 
-        _garch_in_filter = (_gkw > 0.01 or _qvc > 0.01
-                            or abs(_loc_a) > 0.001 or abs(_loc_b) > 0.001) \
+        _garch_in_filter = (_gkw > 0.01 or _qvc > 0.01) \
                            and (_g_alpha > 0 or _g_beta > 0)
         _gkw_active = _gkw > 0.01 and _garch_in_filter
         _qvc_active = _qvc > 0.01 and _garch_in_filter
+        # Location correction runs in filter_and_calibrate's CRPS pipeline,
+        # NOT in filter_phi_unified. It uses GARCH h_t from the post-filter
+        # recursion which is more stable than the in-filter recursion.
         _loc_active = (abs(_loc_a) > 0.001 or abs(_loc_b) > 0.001) and _garch_in_filter
 
         # GARCH state (causal — h_t uses ε_{t-1} only)
@@ -2787,6 +2789,9 @@ class PhiStudentTDriftModel:
             _sigma_eta = float(getattr(config, 'sigma_eta', 0.0))
             _regime_sw = float(getattr(config, 'regime_switch_prob', 0.0))
             _t_df_asym = float(getattr(config, 't_df_asym', 0.0))
+            # Stress amplification + vol coupling from Stages 5c.1/5c.2
+            _gkw_stress = float(getattr(config, 'garch_kalman_weight', 0.0))
+            _q_vol_coupling_fc = float(getattr(config, 'q_vol_coupling', 0.0))
             
             h_garch_full_cont = np.zeros(n)
             h_garch_full_cont[0] = garch_unconditional_var
@@ -2822,6 +2827,19 @@ class PhiStudentTDriftModel:
                 # Mean reversion toward long-term variance
                 if _kappa_mr > 0.001:
                     h_t = (1.0 - _kappa_mr) * h_t + _kappa_mr * _theta_lv
+                # GARCH stress amplification (Stage 5c.1 param)
+                # Amplifies h_t when GARCH variance exceeds unconditional,
+                # compensating for GARCH's exponential memory underreaction
+                if _gkw_stress > 0.01 and h_garch_full_cont[t-1] > 1e-12:
+                    _ratio_gkw = h_garch_full_cont[t-1] / (_theta_lv + 1e-12)
+                    if _ratio_gkw > 1.0:
+                        h_t *= (1.0 + _gkw_stress * min(_ratio_gkw - 1.0, 3.0))
+                # Q_t volatility coupling (Stage 5c.2 param)
+                # Additive variance injection when h > θ
+                if _q_vol_coupling_fc > 0.01 and h_garch_full_cont[t-1] > 1e-12:
+                    _ratio_qvc = h_garch_full_cont[t-1] / (_theta_lv + 1e-12)
+                    if _ratio_qvc > 1.0:
+                        h_t += _q_vol_coupling_fc * _theta_lv * min(_ratio_qvc - 1.0, 5.0)
                 h_garch_full_cont[t] = max(h_t, 1e-12)
             
             h_garch = h_garch_full_cont[n_train:]
@@ -4265,11 +4283,32 @@ class PhiStudentTDriftModel:
                 nu_crps_opt = nu
         
         # =====================================================================
-        # CRPS: Computed using mu_effective (location-corrected mean)
+        # CRPS: Apply location bias correction (Stage 5h params) then compute
         # =====================================================================
+        # The location correction a×(h_t - θ) + b×sign(μ)×√|μ| addresses:
+        #   a: variance-conditional mean bias (Ghysels-Santa-Clara-Valkanov 2005)
+        #   b: James-Stein drift shrinkage
+        # Applied to raw mu_pred (not mu_effective) for CRPS since EWM
+        # location adds noise. PIT uses mu_effective (EWM helps uniformity).
+        # =====================================================================
+        _loc_a_crps = float(getattr(config, 'loc_bias_var_coeff', 0.0))
+        _loc_b_crps = float(getattr(config, 'loc_bias_drift_coeff', 0.0))
+
+        if use_garch and (abs(_loc_a_crps) > 0.001 or abs(_loc_b_crps) > 0.001):
+            _theta_crps = garch_unconditional_var
+            mu_crps = mu_pred_test.copy()
+            for _t_lc in range(n_test):
+                _feat_var_lc = h_garch[_t_lc] - _theta_crps
+                _feat_drift_lc = np.sign(mu_pred_test[_t_lc]) * np.sqrt(
+                    abs(mu_pred_test[_t_lc]) + 1e-12)
+                mu_crps[_t_lc] += (_loc_a_crps * _feat_var_lc
+                                   + _loc_b_crps * _feat_drift_lc)
+        else:
+            mu_crps = mu_effective
+
         try:
             from tuning.diagnostics import compute_crps_student_t_inline
-            crps = compute_crps_student_t_inline(returns_test, mu_effective, sigma_crps, nu_crps_opt)
+            crps = compute_crps_student_t_inline(returns_test, mu_crps, sigma_crps, nu_crps_opt)
         except Exception:
             crps = float('nan')
         
@@ -5032,61 +5071,90 @@ class PhiStudentTDriftModel:
             garch_omega, garch_alpha, garch_beta, garch_leverage,
             unconditional_var, profile):
         """
-        Stage 5c.1: GARCH-Kalman variance reconciliation (Creal-Koopman-Lucas 2013).
+        Stage 5c.1: GARCH stress variance amplification for filter_and_calibrate.
 
-        Blends GARCH h_t into the filter's observation noise R_t so the
-        Kalman gain K_t = P_pred/(P_pred + R_t) reflects GARCH-informed
-        variance during filtering — not just after.
+        Optimizes a stress scaling factor applied to h_t in
+        filter_and_calibrate's GARCH recursion when h_t > θ_long.
+        This amplifies GARCH variance during volatility spikes where
+        standard GARCH underreacts due to exponential memory decay.
 
-        Grid search over w_garch ∈ [0, 0.5] minimizing CRPS on the
-        training validation fold (latter 40%).  Gated: only enable if
-        CRPS improves by > 0.5%.  L2 penalty toward 0 prevents
-        over-weighting GARCH in unstable regimes.
+        Evaluated against GARCH-blended CRPS (mimics filter_and_calibrate).
 
         Returns:
-            float: Optimal garch_kalman_weight, 0.0 if not beneficial
+            float: Optimal garch_kalman_weight (stress scaling), 0.0 if not beneficial
         """
         if n_train <= 200 or garch_alpha <= 0:
             return 0.0
 
-        k_asym = profile.get('k_asym', 1.0)
-        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
-        vov_damping = profile.get('vov_damping', 0.3)
-        ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
-
         try:
-            def _run_ll(w_cand):
-                """Compute log-likelihood for given weight."""
-                cfg = UnifiedStudentTConfig(
-                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
-                    alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
-                    ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
-                    q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
-                    variance_inflation=beta_opt, mu_drift=mu_drift_opt,
-                    risk_premium_sensitivity=risk_premium_opt,
-                    skew_score_sensitivity=skew_kappa_opt,
-                    skew_persistence=skew_persistence_fixed,
-                    garch_omega=garch_omega, garch_alpha=garch_alpha,
-                    garch_beta=garch_beta, garch_leverage=garch_leverage,
-                    garch_unconditional_var=unconditional_var,
-                    garch_kalman_weight=w_cand,
-                )
-                _, _, _, _, ll = cls.filter_phi_unified(
-                    returns_train, vol_train, cfg)
-                return ll
+            from tuning.diagnostics import compute_crps_student_t_inline as _crps_fn
 
-            ll_base = _run_ll(0.0)
+            k_asym = profile.get('k_asym', 1.0)
+            q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+            vov_damping = profile.get('vov_damping', 0.3)
+            ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
+
+            # Run filter once — params don't change the filter for this stage
+            cfg = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
+                q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                risk_premium_sensitivity=risk_premium_opt,
+                skew_score_sensitivity=skew_kappa_opt,
+                skew_persistence=skew_persistence_fixed,
+                garch_omega=garch_omega, garch_alpha=garch_alpha,
+                garch_beta=garch_beta, garch_leverage=garch_leverage,
+                garch_unconditional_var=unconditional_var,
+            )
+            _, _, mu_pred, S_pred, _ = cls.filter_phi_unified(
+                returns_train, vol_train, cfg)
+
+            innovations = returns_train - mu_pred
+            n_est = int(n_train * 0.6)
+            n_val = n_train - n_est
+            if n_val <= 50:
+                return 0.0
+
+            def _eval_crps(w_cand):
+                """Compute CRPS with stress-scaled GARCH blended into S_pred."""
+                h_g = np.zeros(n_train)
+                h_g[0] = unconditional_var
+                for t in range(1, n_train):
+                    h_t = (garch_omega
+                           + garch_alpha * innovations[t-1]**2
+                           + garch_leverage * innovations[t-1]**2 * (1.0 if innovations[t-1] < 0 else 0.0)
+                           + garch_beta * h_g[t-1])
+                    # Stress amplification: when h > θ, scale up
+                    if w_cand > 0.01 and h_g[t-1] > 1e-12:
+                        _ratio = h_g[t-1] / (unconditional_var + 1e-12)
+                        if _ratio > 1.0:
+                            h_t *= (1.0 + w_cand * min(_ratio - 1.0, 3.0))
+                    h_g[t] = max(h_t, 1e-12)
+
+                h_val = h_g[n_est:]
+                S_val = S_pred[n_est:]
+                # Blend GARCH with Kalman S_pred (gw=0.5 moderate blend)
+                S_blend = 0.5 * S_val + 0.5 * h_val
+                if nu_opt > 2:
+                    sig = np.sqrt(np.maximum(S_blend, 1e-20) * (nu_opt - 2) / nu_opt)
+                else:
+                    sig = np.sqrt(np.maximum(S_blend, 1e-20))
+                sig = np.maximum(sig, 1e-10)
+                return _crps_fn(returns_train[n_est:], mu_pred[n_est:], sig, nu_opt)
+
+            crps_base = _eval_crps(0.0)
             best_w = 0.0
-            best_ll = ll_base
+            best_crps = crps_base
 
-            for w_c in [0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50]:
-                ll = _run_ll(w_c)
-                if np.isfinite(ll) and ll > best_ll:
-                    best_ll = ll
+            for w_c in [0.05, 0.10, 0.20, 0.30, 0.50, 0.70, 1.0]:
+                c = _eval_crps(w_c)
+                if np.isfinite(c) and c < best_crps:
+                    best_crps = c
                     best_w = w_c
 
-            # Gate: require LL improvement > 0.5 nats (about 1 bit of info)
-            if best_ll <= ll_base + 0.5:
+            if best_crps >= crps_base * 0.999:
                 return 0.0
             return float(best_w)
 
@@ -5127,40 +5195,76 @@ class PhiStudentTDriftModel:
         ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
 
         try:
-            def _run_ll(zeta_cand):
-                """Compute log-likelihood for given zeta."""
-                cfg = UnifiedStudentTConfig(
-                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
-                    alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
-                    ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
-                    q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
-                    variance_inflation=beta_opt, mu_drift=mu_drift_opt,
-                    risk_premium_sensitivity=risk_premium_opt,
-                    skew_score_sensitivity=skew_kappa_opt,
-                    skew_persistence=skew_persistence_fixed,
-                    garch_omega=garch_omega, garch_alpha=garch_alpha,
-                    garch_beta=garch_beta, garch_leverage=garch_leverage,
-                    garch_unconditional_var=unconditional_var,
-                    theta_long_var=unconditional_var,
-                    garch_kalman_weight=garch_kalman_w,
-                    q_vol_coupling=zeta_cand,
-                )
-                _, _, _, _, ll = cls.filter_phi_unified(
-                    returns_train, vol_train, cfg)
-                return ll
+            from tuning.diagnostics import compute_crps_student_t_inline as _crps_fn
 
-            ll_base = _run_ll(0.0)
+            # Run filter once — q_vol_coupling doesn't affect filter here,
+            # it affects GARCH in filter_and_calibrate
+            cfg = UnifiedStudentTConfig(
+                q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
+                q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                risk_premium_sensitivity=risk_premium_opt,
+                skew_score_sensitivity=skew_kappa_opt,
+                skew_persistence=skew_persistence_fixed,
+                garch_omega=garch_omega, garch_alpha=garch_alpha,
+                garch_beta=garch_beta, garch_leverage=garch_leverage,
+                garch_unconditional_var=unconditional_var,
+                theta_long_var=unconditional_var,
+                garch_kalman_weight=garch_kalman_w,
+            )
+            _, _, mu_pred, S_pred, _ = cls.filter_phi_unified(
+                returns_train, vol_train, cfg)
+
+            innovations = returns_train - mu_pred
+            n_est = int(n_train * 0.6)
+            n_val = n_train - n_est
+            if n_val <= 50:
+                return 0.0
+
+            def _eval_crps(zeta_cand):
+                """Compute CRPS with vol-coupled GARCH blended into S_pred."""
+                h_g = np.zeros(n_train)
+                h_g[0] = unconditional_var
+                for t in range(1, n_train):
+                    h_t = (garch_omega
+                           + garch_alpha * innovations[t-1]**2
+                           + garch_leverage * innovations[t-1]**2 * (1.0 if innovations[t-1] < 0 else 0.0)
+                           + garch_beta * h_g[t-1])
+                    # Stress amplification from Stage 5c.1
+                    if garch_kalman_w > 0.01 and h_g[t-1] > 1e-12:
+                        _ratio = h_g[t-1] / (unconditional_var + 1e-12)
+                        if _ratio > 1.0:
+                            h_t *= (1.0 + garch_kalman_w * min(_ratio - 1.0, 3.0))
+                    # Q_t vol coupling: amplify when h > θ
+                    if zeta_cand > 0.01 and h_g[t-1] > 1e-12:
+                        _ratio = h_g[t-1] / (unconditional_var + 1e-12)
+                        if _ratio > 1.0:
+                            h_t += zeta_cand * unconditional_var * min(_ratio - 1.0, 5.0)
+                    h_g[t] = max(h_t, 1e-12)
+
+                h_val = h_g[n_est:]
+                S_val = S_pred[n_est:]
+                S_blend = 0.5 * S_val + 0.5 * h_val
+                if nu_opt > 2:
+                    sig = np.sqrt(np.maximum(S_blend, 1e-20) * (nu_opt - 2) / nu_opt)
+                else:
+                    sig = np.sqrt(np.maximum(S_blend, 1e-20))
+                sig = np.maximum(sig, 1e-10)
+                return _crps_fn(returns_train[n_est:], mu_pred[n_est:], sig, nu_opt)
+
+            crps_base = _eval_crps(0.0)
             best_zeta = 0.0
-            best_ll = ll_base
+            best_crps = crps_base
 
-            for z_c in [0.05, 0.10, 0.20, 0.30, 0.50, 0.70]:
-                ll = _run_ll(z_c)
-                if np.isfinite(ll) and ll > best_ll:
-                    best_ll = ll
+            for z_c in [0.05, 0.10, 0.20, 0.30, 0.50, 0.70, 1.0]:
+                c = _eval_crps(z_c)
+                if np.isfinite(c) and c < best_crps:
+                    best_crps = c
                     best_zeta = z_c
 
-            # Gate: require LL improvement > 0.5 nats
-            if best_ll <= ll_base + 0.5:
+            if best_crps >= crps_base * 0.999:
                 return 0.0
             return float(best_zeta)
 
@@ -5753,10 +5857,16 @@ class PhiStudentTDriftModel:
             S_val = S_pred[n_est:] * beta_opt
             h_val = h_garch[n_est:]
 
+            # Use GARCH-blended variance (mimics filter_and_calibrate pipeline).
+            # Raw S_pred is re-blended with GARCH in filter_and_calibrate,
+            # so optimizing (a, b) against raw S_pred mismatches the actual
+            # sigma pipeline. Using gw=0.5 as moderate blend.
+            S_blended_val = 0.5 * S_val + 0.5 * h_val
+
             if nu_opt > 2:
-                sig_base = np.sqrt(np.maximum(S_val, 1e-20) * (nu_opt - 2) / nu_opt)
+                sig_base = np.sqrt(np.maximum(S_blended_val, 1e-20) * (nu_opt - 2) / nu_opt)
             else:
-                sig_base = np.sqrt(np.maximum(S_val, 1e-20))
+                sig_base = np.sqrt(np.maximum(S_blended_val, 1e-20))
             sig_base = np.maximum(sig_base, 1e-10)
             crps_baseline = _crps_fn(r_val, mu_val, sig_base, nu_opt)
 
