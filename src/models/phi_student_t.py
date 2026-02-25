@@ -5062,6 +5062,152 @@ class PhiStudentTDriftModel:
             'unconditional_var': float(unconditional_var),
         }
 
+    @staticmethod
+    def _eval_calibrated_crps(
+            returns_train, vol_train, mu_pred, S_pred,
+            n_train, nu_opt, beta_opt,
+            garch_omega, garch_alpha, garch_beta, garch_leverage,
+            unconditional_var, wavelet_correction=1.0,
+            gkw_stress=0.0, q_vol_coupling=0.0,
+            loc_bias_a=0.0, loc_bias_b=0.0,
+            rho_lev=0.0, sigma_eta=0.0, regime_sw=0.0,
+            kappa_mr=0.0, q_stress_ratio=10.0):
+        """
+        Shared CRPS evaluator mirroring filter_and_calibrate's pipeline.
+
+        Faithfully reproduces the key stages that determine final test CRPS:
+          1. GJR-GARCH recursion (with stress amplification + vol coupling)
+          2. Data-driven GARCH blend weight (gw) via validation CV
+          3. β recalibration on blended variance
+          4. Location bias correction (Stage 5h)
+          5. σ shrinkage (coarse grid)
+
+        Used by Stages 5c.1, 5c.2, 5h so they optimize the SAME objective
+        as filter_and_calibrate. Without this, params tuned against a
+        hardcoded gw=0.5 don't transfer to the actual data-driven pipeline.
+
+        All evaluation on latter 40% of training data (n_est:n_train).
+        Returns CRPS (lower is better) or inf on error.
+        """
+        from tuning.diagnostics import compute_crps_student_t_inline as _crps_fn
+        from scipy.stats import t as student_t_dist, kstest as ks_test
+
+        n_est = int(n_train * 0.6)
+        n_val = n_train - n_est
+        if n_val <= 50:
+            return float('inf')
+
+        theta_lv = max(unconditional_var, 1e-12)
+
+        # ── Step 1: GARCH recursion with all enhancement params ──────
+        innovations = returns_train - mu_pred
+        h_garch = np.zeros(n_train)
+        h_garch[0] = unconditional_var
+        for t in range(1, n_train):
+            h_t = (garch_omega
+                   + garch_alpha * innovations[t-1]**2
+                   + garch_leverage * innovations[t-1]**2 * (1.0 if innovations[t-1] < 0 else 0.0)
+                   + garch_beta * h_garch[t-1])
+            # Leverage correlation
+            if rho_lev > 0.01 and h_garch[t-1] > 1e-12:
+                neg_z = innovations[t-1] / np.sqrt(h_garch[t-1])
+                if neg_z < 0:
+                    h_t += rho_lev * neg_z * neg_z * h_garch[t-1]
+            # Vol-of-vol noise
+            if sigma_eta > 0.005 and h_garch[t-1] > 1e-12:
+                _z_abs = abs(innovations[t-1]) / np.sqrt(h_garch[t-1])
+                _excess = max(0.0, _z_abs - 1.5)
+                h_t += sigma_eta * _excess * _excess * h_garch[t-1]
+            # Regime switching
+            if regime_sw > 0.005 and h_garch[t-1] > 1e-12:
+                pass  # Simplified: full Markov state not needed for CRPS eval
+            # Mean reversion
+            if kappa_mr > 0.001:
+                h_t = (1.0 - kappa_mr) * h_t + kappa_mr * theta_lv
+            # Stage 5c.1: stress amplification
+            if gkw_stress > 0.01 and h_garch[t-1] > 1e-12:
+                _ratio = h_garch[t-1] / theta_lv
+                if _ratio > 1.0:
+                    h_t *= (1.0 + gkw_stress * min(_ratio - 1.0, 3.0))
+            # Stage 5c.2: vol coupling
+            if q_vol_coupling > 0.01 and h_garch[t-1] > 1e-12:
+                _ratio = h_garch[t-1] / theta_lv
+                if _ratio > 1.0:
+                    h_t += q_vol_coupling * theta_lv * min(_ratio - 1.0, 5.0)
+            h_garch[t] = max(h_t, 1e-12)
+
+        S_pred_wav = S_pred * wavelet_correction
+
+        # ── Step 2: Data-driven gw selection on validation fold ──────
+        GW_GRID = [0.30, 0.45, 0.55, 0.65, 0.75, 0.85]
+        best_gw = 0.55
+        best_score = -1.0
+
+        for gw_c in GW_GRID:
+            S_blend_c = (1 - gw_c) * S_pred_wav[:n_train] + gw_c * h_garch[:n_train]
+            # β on estimation fold
+            est_var = float(np.mean(innovations[:n_est]**2))
+            est_pred = float(np.mean(S_blend_c[:n_est]))
+            if est_pred > 1e-12:
+                beta_c = float(np.clip(est_var / est_pred, 0.2, 5.0))
+            else:
+                beta_c = 1.0
+            # PIT on validation fold
+            S_val_c = S_blend_c[n_est:] * beta_c
+            if nu_opt > 2:
+                sig_val_c = np.sqrt(np.maximum(S_val_c, 1e-20) * (nu_opt - 2) / nu_opt)
+            else:
+                sig_val_c = np.sqrt(np.maximum(S_val_c, 1e-20))
+            sig_val_c = np.maximum(sig_val_c, 1e-10)
+            z_val_c = innovations[n_est:] / sig_val_c
+            pit_c = student_t_dist.cdf(z_val_c, df=nu_opt)
+            pit_c = np.clip(pit_c, 0.001, 0.999)
+            try:
+                _, ks_p = ks_test(pit_c, 'uniform')
+                if ks_p > best_score:
+                    best_score = ks_p
+                    best_gw = gw_c
+            except Exception:
+                pass
+
+        # ── Step 3: β recalibration with chosen gw ──────────────────
+        S_blend = (1 - best_gw) * S_pred_wav[:n_train] + best_gw * h_garch[:n_train]
+        est_var = float(np.mean(innovations[:n_est]**2))
+        est_pred = float(np.mean(S_blend[:n_est]))
+        if est_pred > 1e-12:
+            beta_final = float(np.clip(est_var / est_pred, 0.2, 5.0))
+        else:
+            beta_final = beta_opt
+
+        # ── Step 4: Compute sigma on validation fold ─────────────────
+        S_val = S_blend[n_est:] * beta_final
+        if nu_opt > 2:
+            sig_val = np.sqrt(np.maximum(S_val, 1e-20) * (nu_opt - 2) / nu_opt)
+        else:
+            sig_val = np.sqrt(np.maximum(S_val, 1e-20))
+        sig_val = np.maximum(sig_val, 1e-10)
+
+        # ── Step 5: Location bias correction (Stage 5h) ─────────────
+        mu_val = mu_pred[n_est:n_train].copy()
+        if abs(loc_bias_a) > 0.001 or abs(loc_bias_b) > 0.001:
+            h_val = h_garch[n_est:n_train]
+            for _t in range(n_val):
+                feat_var = h_val[_t] - theta_lv
+                feat_drift = np.sign(mu_val[_t]) * np.sqrt(abs(mu_val[_t]) + 1e-12)
+                mu_val[_t] += loc_bias_a * feat_var + loc_bias_b * feat_drift
+
+        # ── Step 6: σ shrinkage (coarse) ─────────────────────────────
+        r_val = returns_train[n_est:]
+        crps_base = _crps_fn(r_val, mu_val, sig_val, nu_opt)
+        best_crps = crps_base
+        for sh in [0.50, 0.60, 0.70, 0.80, 0.90, 1.0]:
+            sig_sh = np.maximum(sig_val * sh, 1e-10)
+            c_sh = _crps_fn(r_val, mu_val, sig_sh, nu_opt)
+            if np.isfinite(c_sh) and c_sh < best_crps:
+                best_crps = c_sh
+
+        return float(best_crps) if np.isfinite(best_crps) else float('inf')
+
     @classmethod
     def _stage_5c_1_garch_kalman_reconciliation(
             cls, returns_train, vol_train, n_train,
@@ -5087,14 +5233,12 @@ class PhiStudentTDriftModel:
             return 0.0
 
         try:
-            from tuning.diagnostics import compute_crps_student_t_inline as _crps_fn
-
             k_asym = profile.get('k_asym', 1.0)
             q_stress_ratio = profile.get('q_stress_ratio', 10.0)
             vov_damping = profile.get('vov_damping', 0.3)
             ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
 
-            # Run filter once — params don't change the filter for this stage
+            # Run filter once
             cfg = UnifiedStudentTConfig(
                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
                 alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
@@ -5111,51 +5255,67 @@ class PhiStudentTDriftModel:
             _, _, mu_pred, S_pred, _ = cls.filter_phi_unified(
                 returns_train, vol_train, cfg)
 
-            innovations = returns_train - mu_pred
-            n_est = int(n_train * 0.6)
-            n_val = n_train - n_est
-            if n_val <= 50:
-                return 0.0
-
-            def _eval_crps(w_cand):
-                """Compute CRPS with stress-scaled GARCH blended into S_pred."""
-                h_g = np.zeros(n_train)
-                h_g[0] = unconditional_var
-                for t in range(1, n_train):
-                    h_t = (garch_omega
-                           + garch_alpha * innovations[t-1]**2
-                           + garch_leverage * innovations[t-1]**2 * (1.0 if innovations[t-1] < 0 else 0.0)
-                           + garch_beta * h_g[t-1])
-                    # Stress amplification: when h > θ, scale up
-                    if w_cand > 0.01 and h_g[t-1] > 1e-12:
-                        _ratio = h_g[t-1] / (unconditional_var + 1e-12)
-                        if _ratio > 1.0:
-                            h_t *= (1.0 + w_cand * min(_ratio - 1.0, 3.0))
-                    h_g[t] = max(h_t, 1e-12)
-
-                h_val = h_g[n_est:]
-                S_val = S_pred[n_est:]
-                # Blend GARCH with Kalman S_pred (gw=0.5 moderate blend)
-                S_blend = 0.5 * S_val + 0.5 * h_val
-                if nu_opt > 2:
-                    sig = np.sqrt(np.maximum(S_blend, 1e-20) * (nu_opt - 2) / nu_opt)
-                else:
-                    sig = np.sqrt(np.maximum(S_blend, 1e-20))
-                sig = np.maximum(sig, 1e-10)
-                return _crps_fn(returns_train[n_est:], mu_pred[n_est:], sig, nu_opt)
-
-            crps_base = _eval_crps(0.0)
+            # Evaluate baseline via calibrated pipeline proxy
+            crps_base = cls._eval_calibrated_crps(
+                returns_train, vol_train, mu_pred, S_pred,
+                n_train, nu_opt, beta_opt,
+                garch_omega, garch_alpha, garch_beta, garch_leverage,
+                unconditional_var, q_stress_ratio=q_stress_ratio)
             best_w = 0.0
             best_crps = crps_base
 
             for w_c in [0.05, 0.10, 0.20, 0.30, 0.50, 0.70, 1.0]:
-                c = _eval_crps(w_c)
+                c = cls._eval_calibrated_crps(
+                    returns_train, vol_train, mu_pred, S_pred,
+                    n_train, nu_opt, beta_opt,
+                    garch_omega, garch_alpha, garch_beta, garch_leverage,
+                    unconditional_var, gkw_stress=w_c,
+                    q_stress_ratio=q_stress_ratio)
                 if np.isfinite(c) and c < best_crps:
                     best_crps = c
                     best_w = w_c
 
             if best_crps >= crps_base * 0.999:
                 return 0.0
+
+            # Validate winner via actual filter_and_calibrate (1 extra call)
+            try:
+                cfg_val = UnifiedStudentTConfig(
+                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                    alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
+                    q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                    variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                    risk_premium_sensitivity=risk_premium_opt,
+                    skew_score_sensitivity=skew_kappa_opt,
+                    skew_persistence=skew_persistence_fixed,
+                    garch_omega=garch_omega, garch_alpha=garch_alpha,
+                    garch_beta=garch_beta, garch_leverage=garch_leverage,
+                    garch_unconditional_var=unconditional_var,
+                    garch_kalman_weight=best_w,
+                )
+                _, _, _, crps_fc, _ = cls.filter_and_calibrate(
+                    returns_train, vol_train, cfg_val, train_frac=0.6)
+                cfg_base_val = UnifiedStudentTConfig(
+                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                    alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
+                    q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                    variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                    risk_premium_sensitivity=risk_premium_opt,
+                    skew_score_sensitivity=skew_kappa_opt,
+                    skew_persistence=skew_persistence_fixed,
+                    garch_omega=garch_omega, garch_alpha=garch_alpha,
+                    garch_beta=garch_beta, garch_leverage=garch_leverage,
+                    garch_unconditional_var=unconditional_var,
+                )
+                _, _, _, crps_fc_base, _ = cls.filter_and_calibrate(
+                    returns_train, vol_train, cfg_base_val, train_frac=0.6)
+                if not (np.isfinite(crps_fc) and crps_fc < crps_fc_base * 0.999):
+                    return 0.0
+            except Exception:
+                pass  # Validation failed — accept proxy result
+
             return float(best_w)
 
         except Exception:
@@ -5195,10 +5355,7 @@ class PhiStudentTDriftModel:
         ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
 
         try:
-            from tuning.diagnostics import compute_crps_student_t_inline as _crps_fn
-
-            # Run filter once — q_vol_coupling doesn't affect filter here,
-            # it affects GARCH in filter_and_calibrate
+            # Run filter once
             cfg = UnifiedStudentTConfig(
                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
                 alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
@@ -5217,55 +5374,72 @@ class PhiStudentTDriftModel:
             _, _, mu_pred, S_pred, _ = cls.filter_phi_unified(
                 returns_train, vol_train, cfg)
 
-            innovations = returns_train - mu_pred
-            n_est = int(n_train * 0.6)
-            n_val = n_train - n_est
-            if n_val <= 50:
-                return 0.0
-
-            def _eval_crps(zeta_cand):
-                """Compute CRPS with vol-coupled GARCH blended into S_pred."""
-                h_g = np.zeros(n_train)
-                h_g[0] = unconditional_var
-                for t in range(1, n_train):
-                    h_t = (garch_omega
-                           + garch_alpha * innovations[t-1]**2
-                           + garch_leverage * innovations[t-1]**2 * (1.0 if innovations[t-1] < 0 else 0.0)
-                           + garch_beta * h_g[t-1])
-                    # Stress amplification from Stage 5c.1
-                    if garch_kalman_w > 0.01 and h_g[t-1] > 1e-12:
-                        _ratio = h_g[t-1] / (unconditional_var + 1e-12)
-                        if _ratio > 1.0:
-                            h_t *= (1.0 + garch_kalman_w * min(_ratio - 1.0, 3.0))
-                    # Q_t vol coupling: amplify when h > θ
-                    if zeta_cand > 0.01 and h_g[t-1] > 1e-12:
-                        _ratio = h_g[t-1] / (unconditional_var + 1e-12)
-                        if _ratio > 1.0:
-                            h_t += zeta_cand * unconditional_var * min(_ratio - 1.0, 5.0)
-                    h_g[t] = max(h_t, 1e-12)
-
-                h_val = h_g[n_est:]
-                S_val = S_pred[n_est:]
-                S_blend = 0.5 * S_val + 0.5 * h_val
-                if nu_opt > 2:
-                    sig = np.sqrt(np.maximum(S_blend, 1e-20) * (nu_opt - 2) / nu_opt)
-                else:
-                    sig = np.sqrt(np.maximum(S_blend, 1e-20))
-                sig = np.maximum(sig, 1e-10)
-                return _crps_fn(returns_train[n_est:], mu_pred[n_est:], sig, nu_opt)
-
-            crps_base = _eval_crps(0.0)
+            # Evaluate with calibrated pipeline proxy
+            crps_base = cls._eval_calibrated_crps(
+                returns_train, vol_train, mu_pred, S_pred,
+                n_train, nu_opt, beta_opt,
+                garch_omega, garch_alpha, garch_beta, garch_leverage,
+                unconditional_var, gkw_stress=garch_kalman_w,
+                q_stress_ratio=q_stress_ratio)
             best_zeta = 0.0
             best_crps = crps_base
 
             for z_c in [0.05, 0.10, 0.20, 0.30, 0.50, 0.70, 1.0]:
-                c = _eval_crps(z_c)
+                c = cls._eval_calibrated_crps(
+                    returns_train, vol_train, mu_pred, S_pred,
+                    n_train, nu_opt, beta_opt,
+                    garch_omega, garch_alpha, garch_beta, garch_leverage,
+                    unconditional_var, gkw_stress=garch_kalman_w,
+                    q_vol_coupling=z_c, q_stress_ratio=q_stress_ratio)
                 if np.isfinite(c) and c < best_crps:
                     best_crps = c
                     best_zeta = z_c
 
             if best_crps >= crps_base * 0.999:
                 return 0.0
+
+            # Validate winner via actual filter_and_calibrate
+            try:
+                cfg_val = UnifiedStudentTConfig(
+                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                    alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
+                    q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                    variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                    risk_premium_sensitivity=risk_premium_opt,
+                    skew_score_sensitivity=skew_kappa_opt,
+                    skew_persistence=skew_persistence_fixed,
+                    garch_omega=garch_omega, garch_alpha=garch_alpha,
+                    garch_beta=garch_beta, garch_leverage=garch_leverage,
+                    garch_unconditional_var=unconditional_var,
+                    theta_long_var=unconditional_var,
+                    garch_kalman_weight=garch_kalman_w,
+                    q_vol_coupling=best_zeta,
+                )
+                _, _, _, crps_fc, _ = cls.filter_and_calibrate(
+                    returns_train, vol_train, cfg_val, train_frac=0.6)
+                cfg_base_val = UnifiedStudentTConfig(
+                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
+                    alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
+                    ms_sensitivity=sens_opt, ms_ewm_lambda=ms_ewm_lambda,
+                    q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
+                    variance_inflation=beta_opt, mu_drift=mu_drift_opt,
+                    risk_premium_sensitivity=risk_premium_opt,
+                    skew_score_sensitivity=skew_kappa_opt,
+                    skew_persistence=skew_persistence_fixed,
+                    garch_omega=garch_omega, garch_alpha=garch_alpha,
+                    garch_beta=garch_beta, garch_leverage=garch_leverage,
+                    garch_unconditional_var=unconditional_var,
+                    theta_long_var=unconditional_var,
+                    garch_kalman_weight=garch_kalman_w,
+                )
+                _, _, _, crps_fc_base, _ = cls.filter_and_calibrate(
+                    returns_train, vol_train, cfg_base_val, train_frac=0.6)
+                if not (np.isfinite(crps_fc) and crps_fc < crps_fc_base * 0.999):
+                    return 0.0
+            except Exception:
+                pass
+
             return float(best_zeta)
 
         except Exception:
@@ -5813,7 +5987,7 @@ class PhiStudentTDriftModel:
         try:
             from tuning.diagnostics import compute_crps_student_t_inline as _crps_fn
 
-            # Run filter WITHOUT location bias to get baseline predictions
+            # Run filter WITHOUT location bias
             cfg_base = UnifiedStudentTConfig(
                 q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
                 alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
@@ -5831,10 +6005,30 @@ class PhiStudentTDriftModel:
                 garch_kalman_weight=garch_kalman_w,
                 q_vol_coupling=q_vol_zeta,
             )
+
+            # Call filter_and_calibrate ONCE to get the EXACT sigma pipeline.
+            # This is the definitive reference — no simplified proxy needed.
+            # We treat its sigma as fixed and only search over mu correction.
+            _, _, sigma_crps_fc, _, calib_diag_fc = cls.filter_and_calibrate(
+                returns_train, vol_train, cfg_base, train_frac=0.6)
+
+            # filter_and_calibrate with train_frac=0.6 uses n_est=60%
+            # and evaluates on the latter 40% of returns_train.
+            n_est = int(n_train * 0.6)
+            n_val = n_train - n_est
+            if n_val < 50:
+                return defaults
+
+            r_val = returns_train[n_est:]
+            nu_fc = calib_diag_fc.get('nu_effective', nu_opt)
+            sigma_val = np.maximum(sigma_crps_fc, 1e-10)
+
+            # Also need mu_pred from filter (for the same data)
             _, _, mu_pred, S_pred, _ = cls.filter_phi_unified(
                 returns_train, vol_train, cfg_base)
+            mu_val = mu_pred[n_est:n_train]
 
-            # Build causal GARCH h_t series on training data
+            # Build GARCH h_t for location correction features
             innovations = returns_train - mu_pred
             h_garch = np.zeros(n_train)
             h_garch[0] = unconditional_var
@@ -5845,54 +6039,31 @@ class PhiStudentTDriftModel:
                        + garch_beta * h_garch[t-1])
                 h_garch[t] = max(h_t, 1e-12)
 
+            h_val = h_garch[n_est:n_train]
             theta_long = unconditional_var
-            n_est = int(n_train * 0.6)
-            n_val = n_train - n_est
-            if n_val <= 50:
-                return defaults
 
-            # Validation fold data
-            r_val = returns_train[n_est:]
-            mu_val = mu_pred[n_est:]
-            S_val = S_pred[n_est:] * beta_opt
-            h_val = h_garch[n_est:]
-
-            # Use GARCH-blended variance (mimics filter_and_calibrate pipeline).
-            # Raw S_pred is re-blended with GARCH in filter_and_calibrate,
-            # so optimizing (a, b) against raw S_pred mismatches the actual
-            # sigma pipeline. Using gw=0.5 as moderate blend.
-            S_blended_val = 0.5 * S_val + 0.5 * h_val
-
-            if nu_opt > 2:
-                sig_base = np.sqrt(np.maximum(S_blended_val, 1e-20) * (nu_opt - 2) / nu_opt)
-            else:
-                sig_base = np.sqrt(np.maximum(S_blended_val, 1e-20))
-            sig_base = np.maximum(sig_base, 1e-10)
-            crps_baseline = _crps_fn(r_val, mu_val, sig_base, nu_opt)
-
-            # Grid search over (a, b) with L2 regularization
+            # Baseline CRPS (no location correction) using FC's sigma
+            crps_baseline = _crps_fn(r_val, mu_val, sigma_val, nu_fc)
             best_a = 0.0
             best_b = 0.0
             best_crps = crps_baseline
 
             # Feature vectors (causal)
-            feat_var = h_val - theta_long  # (h_t - θ_long)
+            feat_var = h_val - theta_long
             feat_drift = np.sign(mu_val) * np.sqrt(np.abs(mu_val) + 1e-12)
 
             for a_c in [-0.3, -0.2, -0.1, -0.05, 0.0, 0.05, 0.1, 0.2, 0.3]:
                 for b_c in [-0.3, -0.2, -0.1, -0.05, 0.0, 0.05, 0.1, 0.2, 0.3]:
                     if a_c == 0.0 and b_c == 0.0:
                         continue
-                    mu_corrected = mu_val + a_c * feat_var + b_c * feat_drift
-                    crps_c = _crps_fn(r_val, mu_corrected, sig_base, nu_opt)
-                    # Mild L2 penalty to prevent extreme values
+                    mu_corr = mu_val + a_c * feat_var + b_c * feat_drift
+                    crps_c = _crps_fn(r_val, mu_corr, sigma_val, nu_fc)
                     crps_c += 0.001 * (a_c * a_c + b_c * b_c)
                     if np.isfinite(crps_c) and crps_c < best_crps:
                         best_crps = crps_c
                         best_a = a_c
                         best_b = b_c
 
-            # Gate: any improvement suffices (cascades through post-filter)
             if best_crps >= crps_baseline * 0.9999:
                 return defaults
 
