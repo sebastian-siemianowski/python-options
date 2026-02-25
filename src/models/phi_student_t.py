@@ -2824,17 +2824,8 @@ class PhiStudentTDriftModel:
                     _mismatch = float('inf')
                 _kurt_ranked.append((_mismatch, _nu_c))
             _kurt_ranked.sort()
-            if _is_metals_adaptive:
-                _NU_CANDIDATES_ADAP = [_nu for _, _nu in _kurt_ranked[:3]]
-            else:
-                # Equities: use ALL ν values — no kurtosis pre-filtering.
-                # Pre-filtering excluded the optimal ν for CNXT (ν=5 ranked
-                # 10/10 by kurtosis at reference gw=0.5, but scores 0.85 on
-                # training at the CV-selected gw=0.9). The CV scoring with
-                # its multi-objective criterion (Berkowitz × MAD × Sharpness)
-                # is the proper regularizer — kurtosis matching at a fixed
-                # reference gw is unreliable when optimal gw varies widely.
-                _NU_CANDIDATES_ADAP = [_nu for _, _nu in _kurt_ranked]
+            _n_nu_cands = 3 if _is_metals_adaptive else 8
+            _NU_CANDIDATES_ADAP = [_nu for _, _nu in _kurt_ranked[:_n_nu_cands]]
             
             # Step 2: Walk-forward CV grid search
             # Asset-class adaptive grids:
