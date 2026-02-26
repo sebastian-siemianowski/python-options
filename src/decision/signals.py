@@ -3209,10 +3209,6 @@ def _kalman_filter_drift(
                 garch_unconditional_var=float(tuned_params.get('garch_unconditional_var', 1e-4)),
                 # Rough volatility memory (February 2026 - Gatheral-Jaisson-Rosenbaum)
                 rough_hurst=float(tuned_params.get('rough_hurst', 0.0)),
-                # Wavelet/DTCWT parameters (February 2026)
-                wavelet_correction=float(tuned_params.get('wavelet_correction', 1.0)),
-                wavelet_weights=_np_sig.array(tuned_params['wavelet_weights']) if tuned_params.get('wavelet_weights') is not None else None,
-                phase_asymmetry=float(tuned_params.get('phase_asymmetry', 1.0)),
                 # Merton jump-diffusion parameters (February 2026)
                 jump_intensity=float(tuned_params.get('jump_intensity', 0.0)),
                 jump_variance=float(tuned_params.get('jump_variance', 0.0)),

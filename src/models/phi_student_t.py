@@ -529,12 +529,6 @@ class UnifiedStudentTConfig:
     # =========================================================================
     rough_hurst: float = 0.0  # Hurst exponent H ∈ [0, 0.5], 0.0 = disabled
     
-    # Wavelet correction factor (February 2026 - DTCWT-inspired)
-    # Multi-scale variance correction estimated on training data
-    wavelet_correction: float = 1.0  # Multi-scale variance adjustment
-    wavelet_weights: np.ndarray = field(default=None, repr=False)  # Scale weights
-    phase_asymmetry: float = 1.0  # Leverage effect ratio (var_down / var_up)
-    
     # =========================================================================
     # MERTON JUMP-DIFFUSION LAYER (February 2026 - Elite Institutional)
     # =========================================================================
@@ -1680,9 +1674,9 @@ class PhiStudentTDriftModel:
                                 advanced features (gamma->0, alpha->0, etc.) to prevent
                                 ill-conditioned estimates propagating downstream.
 
-    Stage 4.5 (DTCWT)          Multi-scale variance decomposition via dual-tree wavelet
-                                concepts. Computes wavelet_correction, phase_asymmetry,
-                                and innovation diagnostics.
+    Stage 4.5 (DTCWT)          REMOVED (ablation study Feb 2026). wavelet_correction
+                                was hardcoded to 1.0, phase_asymmetry was never consumed.
+                                Zero CRPS/PIT impact across 8 assets.
 
     Stage 5  (nu CV)            Rolling 5-fold cross-validation for degrees of freedom nu.
                                 Gneiting-Raftery criterion: maximize sharpness subject to
@@ -2629,8 +2623,6 @@ class PhiStudentTDriftModel:
         nu = config.nu_base
         variance_inflation = getattr(config, 'variance_inflation', 1.0)
         mu_drift = getattr(config, 'mu_drift', 0.0)
-        wavelet_correction = getattr(config, 'wavelet_correction', 1.0)
-        phase_asymmetry = getattr(config, 'phase_asymmetry', 1.0)
         
         # GJR-GARCH parameters (estimated on training data)
         garch_omega = getattr(config, 'garch_omega', 0.0)
@@ -2642,7 +2634,7 @@ class PhiStudentTDriftModel:
         use_garch = garch_alpha > 0 or garch_beta > 0
         
         # =====================================================================
-        # HONEST VARIANCE with GJR-GARCH + Wavelet Enhancement
+        # HONEST VARIANCE with GJR-GARCH
         # =====================================================================
         # GJR-GARCH(1,1) — Glosten-Jagannathan-Runkle (1993):
         #   h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε_{t-1}<0) + β·h_{t-1}
@@ -2654,8 +2646,6 @@ class PhiStudentTDriftModel:
         # This is statistically well-documented across decades of equity data.
         # Without it, crisis variance response lags and left-tail CRPS suffers.
         # =====================================================================
-        # Apply wavelet correction factor from training
-        S_pred_wavelet = S_pred_test * wavelet_correction
         
         if use_garch:
             # Use GJR-GARCH variance dynamics (parameters from training)
@@ -2926,7 +2916,7 @@ class PhiStudentTDriftModel:
             # Use training portion of continuous GARCH for consistency
             h_garch_train_est = h_garch_full_cont[:n_train]
             
-            S_pred_train_wav = S_pred[:n_train] * wavelet_correction
+            S_pred_train_wav = S_pred[:n_train]  # was × wavelet_correction (always 1.0)
             
             # Compute phase on training data
             log_vol_train_est = np.log(np.maximum(vol[:n_train], 1e-10))
@@ -3010,7 +3000,7 @@ class PhiStudentTDriftModel:
                     gw = min(gw + 0.10, 0.90)
                 elif vol_relative[t] < 0.7:
                     gw = max(gw - 0.10, 0.15)
-                S_blended[t] = (1 - gw) * S_pred_wavelet[t] + gw * h_garch[t]
+                S_blended[t] = (1 - gw) * S_pred_test[t] + gw * h_garch[t]
             
             # =================================================================
             # POST-GARCH β RECALIBRATION (on training data, no look-ahead)
@@ -3186,7 +3176,7 @@ class PhiStudentTDriftModel:
                     S_calibrated = S_blended * beta_final
             
         else:
-            S_calibrated = S_pred_wavelet * variance_inflation
+            S_calibrated = S_pred_test * variance_inflation
         
         # =====================================================================
         # CAUSAL ADAPTIVE EWM (February 2026)
@@ -3770,7 +3760,7 @@ class PhiStudentTDriftModel:
             _ewm_den_final = float(np.mean(_S_bt_final))
             
             # Flat blending for test data
-            _S_blended_test = (1 - _best_gw_adap) * S_pred_wavelet + _best_gw_adap * h_garch
+            _S_blended_test = (1 - _best_gw_adap) * S_pred_test + _best_gw_adap * h_garch
             
             # Compute test PIT with causal adaptive EWM
             # NOTE: mu_pred_test from filter_phi_unified already includes
@@ -4609,91 +4599,6 @@ class PhiStudentTDriftModel:
             'alpha_opt': alpha_opt, 'risk_premium_opt': risk_premium_opt,
             'skew_kappa_opt': skew_kappa_opt,
             'degraded': degraded, 'cond_num': cond_num,
-        }
-
-    @classmethod
-    def _stage_4_5_dtcwt_features(cls, returns_train, vol_train, n_train,
-                                  q_opt, c_opt, phi_opt, nu_base, alpha_opt,
-                                  gamma_opt, sens_opt, risk_premium_opt,
-                                  skew_kappa_opt, skew_persistence_fixed, profile):
-        """
-        Stage 4.5: DTCWT-inspired adaptive variance estimation.
-
-        Computes multi-scale variance decomposition and phase asymmetry
-        from the Kalman filter innovations. Based on Dual-Tree Complex
-        Wavelet Transform concepts (Selesnick et al. 2005).
-
-        Returns:
-            dict with keys: wavelet_correction, wavelet_weights,
-            phase_asymmetry, mu_pred, S_pred, innovations
-        """
-        k_asym = profile.get('k_asym', 1.0)
-        q_stress_ratio = profile.get('q_stress_ratio', 10.0)
-        vov_damping = profile.get('vov_damping', 0.3)
-        ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
-
-        temp_config = UnifiedStudentTConfig(
-            q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_base,
-            alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt, ms_ewm_lambda=0.0,
-            q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
-            variance_inflation=1.0,
-            risk_premium_sensitivity=risk_premium_opt,
-            skew_score_sensitivity=skew_kappa_opt,
-            skew_persistence=skew_persistence_fixed,
-        )
-
-        _, _, mu_pred, S_pred, _ = cls.filter_phi_unified(
-            returns_train, vol_train, temp_config
-        )
-        innovations = returns_train - mu_pred
-
-        # Multi-scale variance using Haar-like decomposition
-        n = len(returns_train)
-        n_scales = 4
-        sq_ret = innovations ** 2
-        scale_vars = np.zeros((n_scales, n))
-        for j in range(n_scales):
-            window = 2 ** (j + 1)
-            for t in range(n):
-                start_idx = max(0, t - window + 1)
-                scale_vars[j, t] = np.mean(sq_ret[start_idx:t+1])
-
-        # Phase asymmetry (leverage effect)
-        log_vol = np.log(np.maximum(vol_train, 1e-10))
-        d_log_vol = np.diff(log_vol, prepend=log_vol[0])
-        phase = np.sign(d_log_vol)
-        phase_up = phase > 0
-        phase_down = phase < 0
-
-        if np.sum(phase_up) > 10 and np.sum(phase_down) > 10:
-            var_up = np.mean(sq_ret[phase_up])
-            var_down = np.mean(sq_ret[phase_down])
-            phase_asymmetry = var_down / (var_up + 1e-12)
-        else:
-            phase_asymmetry = 1.0
-
-        # Scale errors and weights
-        actual_sq = sq_ret
-        scale_errors = np.zeros(n_scales)
-        for j in range(n_scales):
-            scale_errors[j] = np.mean((scale_vars[j, :] - actual_sq) ** 2)
-
-        # Disabled wavelet correction (force 1.0 — kept for experimentation)
-        wavelet_correction = 1.0
-
-        wavelet_weights = np.zeros(n_scales)
-        total_inv_error = np.sum(1.0 / (scale_errors + 1e-12))
-        for j in range(n_scales):
-            wavelet_weights[j] = (1.0 / (scale_errors[j] + 1e-12)) / total_inv_error
-
-        return {
-            'wavelet_correction': wavelet_correction,
-            'wavelet_weights': wavelet_weights,
-            'phase_asymmetry': phase_asymmetry,
-            'mu_pred': mu_pred,
-            'S_pred': S_pred,
-            'innovations': innovations,
         }
 
     @classmethod
@@ -5605,7 +5510,7 @@ class PhiStudentTDriftModel:
                            gamma_opt, sens_opt, alpha_opt, risk_premium_opt,
                            skew_kappa_opt, skew_persistence_fixed, mu_drift_opt,
                            garch_alpha, garch_beta, garch_leverage,
-                           rough_hurst_est, wavelet_correction,
+                           rough_hurst_est,
                            jump_intensity_est, jump_variance_est,
                            jump_sensitivity_est, jump_mean_est,
                            config, degraded, cond_num, profile,
@@ -5676,7 +5581,6 @@ class PhiStudentTDriftModel:
             "garch_alpha": float(garch_alpha), "garch_beta": float(garch_beta),
             "garch_leverage": float(garch_leverage),
             "rough_hurst": float(rough_hurst_est),
-            "wavelet_correction": float(wavelet_correction),
             "c_bounds": (float(config.c_min), float(config.c_max)),
             "q_min": float(config.q_min),
             "jump_intensity": float(jump_intensity_est),
@@ -5801,15 +5705,11 @@ class PhiStudentTDriftModel:
         degraded = hess['degraded']
         cond_num = hess['cond_num']
 
-        # ── STAGE 4.5: DTCWT-inspired features ──────────────────────
-        dtcwt = cls._stage_4_5_dtcwt_features(
-            returns_train, vol_train, n_train,
-            q_opt, c_opt, phi_opt, nu_base, alpha_opt,
-            gamma_opt, sens_opt, risk_premium_opt,
-            skew_kappa_opt, skew_persistence_fixed, profile)
-        wavelet_correction = dtcwt['wavelet_correction']
-        wavelet_weights = dtcwt['wavelet_weights']
-        phase_asymmetry = dtcwt['phase_asymmetry']
+        # ── STAGE 4.5: REMOVED (ablation study Feb 2026) ─────────────
+        # DTCWT wavelet_correction was hardcoded to 1.0 (no-op multiply).
+        # phase_asymmetry was read but never used in filter_and_calibrate.
+        # wavelet_weights was never used anywhere.
+        # The stage also ran an expensive filter_phi_unified call for nothing.
 
         # ── STAGE 5: Rolling CV ν selection ──────────────────────────
         _prof_ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
@@ -5903,9 +5803,6 @@ class PhiStudentTDriftModel:
             garch_leverage=garch['garch_leverage'],
             garch_unconditional_var=garch['unconditional_var'],
             rough_hurst=rough_hurst_est,
-            wavelet_correction=wavelet_correction,
-            wavelet_weights=wavelet_weights,
-            phase_asymmetry=phase_asymmetry,
             jump_intensity=jumps['jump_intensity'],
             jump_variance=jumps['jump_variance'],
             jump_sensitivity=jumps['jump_sensitivity'],
@@ -5932,7 +5829,7 @@ class PhiStudentTDriftModel:
             gamma_opt, sens_opt, alpha_opt, risk_premium_opt,
             skew_kappa_opt, skew_persistence_fixed, mu_drift_opt,
             garch['garch_alpha'], garch['garch_beta'], garch['garch_leverage'],
-            rough_hurst_est, wavelet_correction,
+            rough_hurst_est,
             jumps['jump_intensity'], jumps['jump_variance'],
             jumps['jump_sensitivity'], jumps['jump_mean'],
             config, degraded, cond_num, profile,

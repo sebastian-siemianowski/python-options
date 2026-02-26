@@ -3268,10 +3268,6 @@ def fit_all_models_for_regime(
                 "garch_unconditional_var": float(getattr(config, 'garch_unconditional_var', 1e-4)),
                 # Rough volatility memory (February 2026 - Gatheral-Jaisson-Rosenbaum)
                 "rough_hurst": float(getattr(config, 'rough_hurst', 0.0)),
-                # Wavelet/DTCWT parameters (February 2026)
-                "wavelet_correction": float(getattr(config, 'wavelet_correction', 1.0)),
-                "wavelet_weights": getattr(config, 'wavelet_weights', None).tolist() if getattr(config, 'wavelet_weights', None) is not None else None,
-                "phase_asymmetry": float(getattr(config, 'phase_asymmetry', 1.0)),
                 # Merton jump-diffusion parameters (February 2026)
                 "jump_intensity": float(getattr(config, 'jump_intensity', 0.0)),
                 "jump_variance": float(getattr(config, 'jump_variance', 0.0)),
