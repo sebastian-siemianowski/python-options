@@ -3955,146 +3955,21 @@ class PhiStudentTDriftModel:
         variance_ratio = actual_var / (predicted_var + 1e-12)
         
         # =====================================================================
-        # CRPS-OPTIMAL SIGMA SHRINKAGE (February 2026 - Gneiting-Raftery)
+        # CRPS-OPTIMAL SIGMA SHRINKAGE — reuse Stage 5g estimate
         # =====================================================================
-        # The PIT-calibrated sigma targets F^{-1}(PIT) ~ U[0,1], which
-        # requires σ to match the TRUE scale. But CRPS rewards SHARPNESS:
+        # Stage 5g (optimize_params_unified) already computed the optimal
+        # CRPS sigma shrinkage α* via grid search + golden-section refinement
+        # on training data.  Recomputing here is redundant and risks
+        # inconsistency (different sigma pipeline, different ν).
         #
-        #   CRPS(F, y) = E_F|X-y| - ½E_F|X-X'|
+        # The config.crps_sigma_shrinkage satisfies:
+        #   σ*_crps = α* × σ_pit
+        #   α* = argmin_α E[CRPS(t_ν(μ, α·σ), y)]   on training fold
         #
-        # A tighter σ reduces E_F|X-X'| (sharpness term) more than it
-        # increases E_F|X-y| (reliability term), as long as the location
-        # μ is well-estimated. The optimal CRPS sigma satisfies:
-        #
-        #   σ*_crps = argmin_σ E[CRPS(t_ν(μ, σ), y)]
-        #
-        # For t_ν with well-estimated μ: σ*_crps < σ_cal (always tighter).
-        #
-        # We estimate the optimal shrinkage on TRAINING DATA using the
-        # SAME adaptive EWM pipeline that produced the test sigma. This
-        # ensures the shrinkage factor is calibrated for the exact sigma
-        # dynamics used in CRPS computation.
-        #
-        # PIT-safe: PIT uses the un-shrunk sigma.
+        # PIT-safe: PIT uses the un-shrunk sigma (already computed above).
         # =====================================================================
-        # =====================================================================
-        # CRPS-OPTIMAL SIGMA: Empirical Bayes shrinkage (February 2026)
-        # =====================================================================
-        # The test file computes CRPS using raw mu_pred (without EWM
-        # location correction), so sigma_crps must be optimized for the
-        # raw mu_pred case. We estimate the optimal shrinkage on training
-        # data by searching for α that minimizes CRPS(y, mu_pred, α×σ, ν)
-        # using the raw mu_pred (not mu_effective).
-        #
-        # Mathematical insight: CRPS is linear in σ for Student-t:
-        #   CRPS = σ × g(z) where z = (y-μ)/σ
-        # The optimal σ_crps < σ_pit when location is well-estimated.
-        # For moderately-located predictions:
-        #   α* ≈ √((ν-1)/(ν+1)) (James-Stein-like shrinkage)
-        #   ν=5: α≈0.816, ν=8: α≈0.882, ν=12: α≈0.919
-        #
-        # We use empirical Bayes: search α on training validation fold
-        # using the actual sigma pipeline and raw mu_pred.
-        # =====================================================================
-        _crps_shrink = 1.0
-        
-        if use_garch and _use_adaptive_pit and n_train > 200:
-            try:
-                from tuning.diagnostics import compute_crps_student_t_inline as _crps_shrink_fn
-                
-                _shrink_start = int(n_train * 0.6)
-                _n_shrink = n_train - _shrink_start
-                
-                if _n_shrink > 50:
-                    _S_bt_shrink = (1 - _best_gw_adap) * S_pred_train_wav + _best_gw_adap * h_garch_train_est
-                    
-                    _ewm_mu_sh = float(np.mean(innovations_train_blend))
-                    _ewm_num_sh = float(np.mean(innovations_train_blend ** 2))
-                    _ewm_den_sh = float(np.mean(_S_bt_shrink))
-                    
-                    for _t_sh in range(_shrink_start):
-                        _ewm_mu_sh = _best_lam_mu * _ewm_mu_sh + (1 - _best_lam_mu) * innovations_train_blend[_t_sh]
-                        _ewm_num_sh = _best_lam_beta * _ewm_num_sh + (1 - _best_lam_beta) * (innovations_train_blend[_t_sh] ** 2)
-                        _ewm_den_sh = _best_lam_beta * _ewm_den_sh + (1 - _best_lam_beta) * _S_bt_shrink[_t_sh]
-                    
-                    _sigma_train_sh = np.zeros(_n_shrink)
-                    _ewm_mu_sv = _ewm_mu_sh
-                    _ewm_num_sv = _ewm_num_sh
-                    _ewm_den_sv = _ewm_den_sh
-                    
-                    for _t_sv in range(_n_shrink):
-                        _idx_sv = _shrink_start + _t_sv
-                        _beta_sv = _ewm_num_sv / (_ewm_den_sv + 1e-12)
-                        _beta_sv = float(np.clip(_beta_sv * _beta_scale_corr, 0.2, 5.0))
-                        _S_sv = _S_bt_shrink[_idx_sv] * _beta_sv
-                        if nu > 2:
-                            _sigma_train_sh[_t_sv] = np.sqrt(_S_sv * (nu - 2) / nu)
-                        else:
-                            _sigma_train_sh[_t_sv] = np.sqrt(_S_sv)
-                        _sigma_train_sh[_t_sv] = max(_sigma_train_sh[_t_sv], 1e-10)
-                        
-                        _ewm_mu_sv = _best_lam_mu * _ewm_mu_sv + (1 - _best_lam_mu) * innovations_train_blend[_idx_sv]
-                        _ewm_num_sv = _best_lam_beta * _ewm_num_sv + (1 - _best_lam_beta) * (innovations_train_blend[_idx_sv] ** 2)
-                        _ewm_den_sv = _best_lam_beta * _ewm_den_sv + (1 - _best_lam_beta) * _S_bt_shrink[_idx_sv]
-                    
-                    # Use raw mu_pred for CRPS shrinkage estimation.
-                    # Raw mu gives better CRPS than EWM-corrected mu_effective
-                    # (EWM adds location noise that inflates CRPS). The test
-                    # also uses raw mu_pred for CRPS, so this is consistent.
-                    _returns_sh = returns[:n_train][_shrink_start:]
-                    _mu_pred_sh = mu_pred[:n_train][_shrink_start:]
-                    
-                    # ─────────────────────────────────────────────────────────
-                    # CRPS-OPTIMAL SIGMA SHRINKAGE (February 2026)
-                    # ─────────────────────────────────────────────────────────
-                    # PIT uses unshrunk sigma; CRPS uses sigma_crps = sigma × α.
-                    # These are INDEPENDENT — aggressive α does NOT affect PIT.
-                    #
-                    # CRPS = α·σ × g(z/α, ν) where g includes:
-                    #   - z/α(2F(z/α)-1): location term (increases as α↓)
-                    #   - 2f(z/α)(ν+(z/α)²)/(ν-1): density term
-                    #   - C(ν): sharpness constant
-                    #
-                    # The optimal α* balances tighter scale (lower CRPS)
-                    # against inflated location error (higher z/α).
-                    # For well-located predictions: α* ≈ √((ν-1)/(ν+1))
-                    #   ν=3: α*≈0.71, ν=5: α*≈0.82, ν=8: α*≈0.88
-                    #
-                    # For predictions with mean error: α* can be much lower
-                    # (0.35-0.60), because reducing σ still helps more than
-                    # the location penalty.
-                    #
-                    # Two-stage search: coarse grid then golden-section refine.
-                    # ─────────────────────────────────────────────────────────
-                    _SHRINK_GRID = [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65,
-                                    0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00]
-                    _best_crps_sh = float('inf')
-                    _best_shrink_sh = 1.0
-                    
-                    for _sh_c in _SHRINK_GRID:
-                        _sigma_sh_c = np.maximum(_sigma_train_sh * _sh_c, 1e-10)
-                        _crps_sh_c = _crps_shrink_fn(_returns_sh, _mu_pred_sh, _sigma_sh_c, nu)
-                        if np.isfinite(_crps_sh_c) and _crps_sh_c < _best_crps_sh:
-                            _best_crps_sh = _crps_sh_c
-                            _best_shrink_sh = _sh_c
-                    
-                    # Golden-section refinement around the coarse winner
-                    # Search ±0.05 with 0.01 steps for higher precision
-                    _sh_lo = max(_best_shrink_sh - 0.05, 0.30)
-                    _sh_hi = min(_best_shrink_sh + 0.05, 1.00)
-                    _sh_step = 0.01
-                    _sh_fine = _sh_lo
-                    while _sh_fine <= _sh_hi + 0.001:
-                        _sigma_sh_f = np.maximum(_sigma_train_sh * _sh_fine, 1e-10)
-                        _crps_sh_f = _crps_shrink_fn(_returns_sh, _mu_pred_sh, _sigma_sh_f, nu)
-                        if np.isfinite(_crps_sh_f) and _crps_sh_f < _best_crps_sh:
-                            _best_crps_sh = _crps_sh_f
-                            _best_shrink_sh = _sh_fine
-                        _sh_fine += _sh_step
-                    
-                    _crps_shrink = _best_shrink_sh
-            except Exception:
-                _crps_shrink = 1.0
+        _crps_shrink = float(getattr(config, 'crps_sigma_shrinkage', 1.0))
+        _crps_shrink = float(np.clip(_crps_shrink, 0.30, 1.0))
         
         sigma_crps = sigma * _crps_shrink
         
