@@ -1349,6 +1349,682 @@ class PhiStudentTDriftModel:
         return float(log_norm + log_kernel)
 
     @classmethod
+    def optimize_params_unified(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        nu_base: float = 8.0,
+        train_frac: float = 0.7,
+        asset_symbol: str = None,
+    ) -> Tuple['UnifiedStudentTConfig', Dict]:
+        """
+        Staged optimization for unified Student-t Kalman filter model.
+
+        Orchestrates 15 optimization stages in sequence, threading results
+        forward. Each stage is a self-contained classmethod for testability.
+
+        Stage dependency chain:
+          1 (q,c,φ) → 2 (γ_vov) → 3 (ms_sens) → 4 (α_asym)
+            → 4.1 (risk_prem) → 4.2 (skew_κ) → [hessian check]
+              → 5 (ν CV) → 5c (GARCH) → 5d (jumps)
+                → 5e (Hurst) → 5f (EWM λ)
+                → 5g (leverage+shrinkage) → 5h (location bias)
+
+        Args:
+            returns: Return series
+            vol: EWMA/GK volatility series
+            nu_base: Base degrees of freedom (from discrete grid)
+            train_frac: Fraction for train/test split
+            asset_symbol: Asset symbol for profile selection
+
+        Returns:
+            Tuple of (UnifiedStudentTConfig, diagnostics_dict)
+        """
+        returns = np.asarray(returns).flatten()
+        vol = np.asarray(vol).flatten()
+
+        # Auto-configure initial bounds from data
+        config = UnifiedStudentTConfig.auto_configure(returns, vol, nu_base)
+
+        n = len(returns)
+        n_train = int(n * train_frac)
+        returns_train = returns[:n_train]
+        vol_train = vol[:n_train]
+
+        # ── Asset-class adaptive profile
+        asset_class = _detect_asset_class(asset_symbol)
+        profile = ASSET_CLASS_PROFILES.get(asset_class, {}) if asset_class else {}
+
+        # ── STAGE 1: Base parameters (q, c, φ)
+        s1 = cls._stage_1_base_params(returns_train, vol_train, n_train, nu_base, config)
+        if not s1['success']:
+            return config, {"stage": 0, "success": False,
+                            "error": "Stage 1 optimization failed", "degraded": True}
+
+        q_opt, c_opt, phi_opt = s1['q'], s1['c'], s1['phi']
+        log_q_opt = s1['log_q']
+
+        # ── STAGE 2: VoV gamma
+        gamma_opt = cls._stage_2_vov_gamma(
+            returns_train, vol_train, n_train, nu_base,
+            q_opt, c_opt, phi_opt, config)
+
+        # ── STAGE 3: MS-q sensitivity
+        sens_opt = cls._stage_3_ms_sensitivity(
+            returns_train, vol_train, n_train, nu_base,
+            q_opt, c_opt, phi_opt, gamma_opt, profile)
+
+        # ── STAGE 4: Asymmetry alpha
+        alpha_opt = cls._stage_4_asymmetry(
+            returns_train, vol_train, n_train, nu_base,
+            q_opt, c_opt, phi_opt, gamma_opt, sens_opt, profile)
+
+        # ── STAGE 4.1: Risk premium (ICAPM)
+        risk_premium_opt = cls._stage_4_1_risk_premium(
+            returns_train, vol_train, n_train, nu_base,
+            q_opt, c_opt, phi_opt, gamma_opt, sens_opt, alpha_opt, profile)
+
+        # ── STAGE 4.2: Skew dynamics (GAS)
+        skew_kappa_opt, skew_persistence_fixed = cls._stage_4_2_skew_dynamics(
+            returns_train, vol_train, n_train, nu_base,
+            q_opt, c_opt, phi_opt, gamma_opt, sens_opt, alpha_opt,
+            risk_premium_opt, profile)
+
+        # ── Hessian condition check
+        hess = cls._check_hessian_degradation(
+            s1.get('result'), gamma_opt, sens_opt, alpha_opt,
+            risk_premium_opt, skew_kappa_opt)
+        gamma_opt = hess['gamma_opt']
+        sens_opt = hess['sens_opt']
+        alpha_opt = hess['alpha_opt']
+        risk_premium_opt = hess['risk_premium_opt']
+        skew_kappa_opt = hess['skew_kappa_opt']
+        degraded = hess['degraded']
+        cond_num = hess['cond_num']
+
+        # ── STAGE 5: Rolling CV ν selection
+        _prof_ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
+        is_metals_asset = _prof_ms_ewm_lambda > 0.01
+        is_high_vol_asset = asset_class == 'high_vol_equity'
+        use_heavy_tail_grid = is_metals_asset or is_high_vol_asset
+
+        s5 = cls._stage_5_nu_cv_selection(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, alpha_opt, gamma_opt,
+            sens_opt, risk_premium_opt, skew_kappa_opt,
+            skew_persistence_fixed, nu_base, profile,
+            use_heavy_tail_grid)
+        nu_opt = s5['nu_opt']
+        beta_opt = s5['beta_opt']
+        mu_drift_opt = s5['mu_drift_opt']
+        mu_pred_train = s5['mu_pred_train']
+
+        # ── STAGE 5c: GJR-GARCH
+        garch = cls._stage_5c_garch_estimation(
+            returns_train, mu_pred_train, mu_drift_opt, n_train)
+
+        # ── STAGE 5c.1/5c.2: DISABLED (ablation study) ──────
+        # Empirically proven zero CRPS benefit across 8 assets.
+        # 5c.1 garch_kalman_weight: 0/8 helped, 1/8 hurt (-1.7% CRPS)
+        # 5c.2 q_vol_coupling: 0/8 helped, 1/8 hurt (-0.1% CRPS)
+        garch_kalman_w = 0.0
+        q_vol_zeta = 0.0
+
+        # ── STAGE 5d: Merton jump-diffusion
+        jumps = cls._stage_5d_jump_diffusion(
+            returns_train, vol_train, mu_pred_train, mu_drift_opt,
+            n_train, q_opt, c_opt, phi_opt, nu_opt, alpha_opt,
+            gamma_opt, sens_opt, beta_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, profile)
+
+        # ── STAGE 5e: Rough Hurst
+        rough_hurst_est = cls._stage_5e_rough_hurst(
+            returns_train, mu_pred_train, mu_drift_opt, n_train)
+
+        # ── STAGE 5f: EWM location correction
+        crps_ewm_lambda_opt = cls._stage_5f_ewm_lambda(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, profile)
+
+        # ── STAGE 5g: Leverage + shrinkage
+        s5g = cls._stage_5g_leverage_and_shrinkage(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, crps_ewm_lambda_opt,
+            garch['garch_omega'], garch['garch_alpha'],
+            garch['garch_beta'], garch['garch_leverage'],
+            garch['unconditional_var'], profile)
+
+        # ── STAGE 5h: Conditional location bias
+        s5h = cls._stage_5h_conditional_location_bias(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
+            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, crps_ewm_lambda_opt,
+            garch['garch_omega'], garch['garch_alpha'],
+            garch['garch_beta'], garch['garch_leverage'],
+            garch['unconditional_var'], garch_kalman_w, q_vol_zeta, profile)
+
+        # ── STAGE 6: Walk-forward calibration params
+        # Build a temp config with all Stages 1-5h params for Stage 6
+        _s6_config = UnifiedStudentTConfig(
+            q=q_opt, c=c_opt, phi=phi_opt,
+            nu_base=nu_opt,
+            alpha_asym=alpha_opt,
+            k_asym=profile.get('k_asym', 1.0),
+            gamma_vov=gamma_opt,
+            ms_sensitivity=sens_opt,
+            ms_ewm_lambda=profile.get('ms_ewm_lambda', 0.0),
+            q_stress_ratio=profile.get('q_stress_ratio', 10.0),
+            vov_damping=profile.get('vov_damping', 0.3),
+            variance_inflation=beta_opt,
+            mu_drift=mu_drift_opt,
+            risk_premium_sensitivity=risk_premium_opt,
+            skew_score_sensitivity=skew_kappa_opt,
+            skew_persistence=skew_persistence_fixed,
+            garch_omega=garch['garch_omega'],
+            garch_alpha=garch['garch_alpha'],
+            garch_beta=garch['garch_beta'],
+            garch_leverage=garch['garch_leverage'],
+            garch_unconditional_var=garch['unconditional_var'],
+            rough_hurst=rough_hurst_est,
+            jump_intensity=jumps['jump_intensity'],
+            jump_variance=jumps['jump_variance'],
+            jump_sensitivity=jumps['jump_sensitivity'],
+            jump_mean=jumps['jump_mean'],
+            crps_ewm_lambda=crps_ewm_lambda_opt,
+            rho_leverage=s5g['rho_leverage'],
+            kappa_mean_rev=s5g['kappa_mean_rev'],
+            theta_long_var=s5g['theta_long_var'],
+            crps_sigma_shrinkage=s5g['crps_sigma_shrinkage'],
+            sigma_eta=s5g['sigma_eta'],
+            t_df_asym=s5g['t_df_asym'],
+            regime_switch_prob=s5g['regime_switch_prob'],
+            garch_kalman_weight=garch_kalman_w,
+            q_vol_coupling=q_vol_zeta,
+            loc_bias_var_coeff=s5h['loc_bias_var_coeff'],
+            loc_bias_drift_coeff=s5h['loc_bias_drift_coeff'],
+            q_min=config.q_min, c_min=config.c_min, c_max=config.c_max,
+        )
+        s6 = cls._stage_6_calibration_pipeline(returns, vol, _s6_config, train_frac)
+
+        # ── BUILD FINAL CONFIG
+        _prof_k_asym = profile.get('k_asym', 1.0)
+        _prof_q_stress_ratio = profile.get('q_stress_ratio', 10.0)
+        _prof_vov_damping = profile.get('vov_damping', 0.3)
+        _prof_ms_ewm_lambda_val = profile.get('ms_ewm_lambda', 0.0)
+
+        final_config = UnifiedStudentTConfig(
+            q=q_opt, c=c_opt, phi=phi_opt,
+            nu_base=nu_opt,
+            alpha_asym=alpha_opt, k_asym=_prof_k_asym,
+            gamma_vov=gamma_opt,
+            ms_sensitivity=sens_opt,
+            ms_ewm_lambda=_prof_ms_ewm_lambda_val,
+            q_stress_ratio=_prof_q_stress_ratio,
+            vov_damping=_prof_vov_damping,
+            variance_inflation=beta_opt,
+            mu_drift=mu_drift_opt,
+            risk_premium_sensitivity=risk_premium_opt,
+            skew_score_sensitivity=skew_kappa_opt,
+            skew_persistence=skew_persistence_fixed,
+            garch_omega=garch['garch_omega'],
+            garch_alpha=garch['garch_alpha'],
+            garch_beta=garch['garch_beta'],
+            garch_leverage=garch['garch_leverage'],
+            garch_unconditional_var=garch['unconditional_var'],
+            rough_hurst=rough_hurst_est,
+            jump_intensity=jumps['jump_intensity'],
+            jump_variance=jumps['jump_variance'],
+            jump_sensitivity=jumps['jump_sensitivity'],
+            jump_mean=jumps['jump_mean'],
+            crps_ewm_lambda=crps_ewm_lambda_opt,
+            rho_leverage=s5g['rho_leverage'],
+            kappa_mean_rev=s5g['kappa_mean_rev'],
+            theta_long_var=s5g['theta_long_var'],
+            crps_sigma_shrinkage=s5g['crps_sigma_shrinkage'],
+            sigma_eta=s5g['sigma_eta'],
+            t_df_asym=s5g['t_df_asym'],
+            regime_switch_prob=s5g['regime_switch_prob'],
+            garch_kalman_weight=garch_kalman_w,
+            q_vol_coupling=q_vol_zeta,
+            loc_bias_var_coeff=s5h['loc_bias_var_coeff'],
+            loc_bias_drift_coeff=s5h['loc_bias_drift_coeff'],
+            q_min=config.q_min, c_min=config.c_min, c_max=config.c_max,
+            # Stage 6: pre-calibrated walk-forward params
+            calibrated_gw=s6['calibrated_gw'],
+            calibrated_nu_pit=s6['calibrated_nu_pit'],
+            calibrated_beta_probit_corr=s6['calibrated_beta_probit_corr'],
+            calibrated_lambda_rho=s6['calibrated_lambda_rho'],
+            calibrated_nu_crps=s6['calibrated_nu_crps'],
+        )
+
+        # ── CALIBRATION DIAGNOSTICS
+        diagnostics = cls._build_diagnostics(
+            returns_train, vol_train, final_config,
+            nu_opt, beta_opt, log_q_opt, q_opt, c_opt, phi_opt,
+            gamma_opt, sens_opt, alpha_opt, risk_premium_opt,
+            skew_kappa_opt, skew_persistence_fixed, mu_drift_opt,
+            garch['garch_alpha'], garch['garch_beta'], garch['garch_leverage'],
+            rough_hurst_est,
+            jumps['jump_intensity'], jumps['jump_variance'],
+            jumps['jump_sensitivity'], jumps['jump_mean'],
+            config, degraded, cond_num, profile,
+            s5g['rho_leverage'], s5g['kappa_mean_rev'],
+            s5g['sigma_eta'], s5g['t_df_asym'],
+            s5g['regime_switch_prob'], s5g['crps_sigma_shrinkage'],
+            garch_kalman_w, q_vol_zeta,
+            s5h['loc_bias_var_coeff'], s5h['loc_bias_drift_coeff'],
+            asset_class)
+
+        # ── TEST-PERIOD EVALUATION (centralised scoring)
+        # Run filter_and_calibrate once here so tune.py can read
+        # test_sigma, test_crps, test_hyvarinen directly from diagnostics
+        # instead of calling filter_and_calibrate a second time.
+        try:
+            _pit_eval, _pitp_eval, _sig_eval, _crps_eval, _diag_eval = \
+                cls.filter_and_calibrate(returns, vol, final_config, train_frac)
+            _nu_eff_eval = _diag_eval.get('nu_effective', nu_opt)
+            _mu_eff_eval = _diag_eval.get('mu_effective', mu_pred_train)
+            _ret_test_eval = returns[n_train:]
+            # Compute Hyvärinen score inline
+            try:
+                from tuning.diagnostics import (
+                    compute_hyvarinen_score_student_t as _hyv_fn,
+                    compute_crps_student_t_inline as _crps_fn,
+                )
+                _hyv_eval = float(_hyv_fn(
+                    _ret_test_eval, _mu_eff_eval, _sig_eval, _nu_eff_eval))
+            except Exception:
+                _hyv_eval = float('-inf')
+            diagnostics['test_sigma'] = _sig_eval
+            diagnostics['test_crps'] = float(_crps_eval)
+            diagnostics['test_hyvarinen'] = _hyv_eval
+            diagnostics['test_nu_effective'] = float(_nu_eff_eval)
+            diagnostics['test_mu_effective'] = _mu_eff_eval
+            diagnostics['test_returns'] = _ret_test_eval
+            diagnostics['test_pit_pvalue'] = float(_pitp_eval)
+        except Exception:
+            pass  # diagnostics won't have test_* keys — tune.py falls back
+
+        return final_config, diagnostics
+
+    # =========================================================================
+
+    @classmethod
+    def _pit_garch_path(
+        cls,
+        returns: np.ndarray,
+        mu_pred: np.ndarray,
+        S_pred: np.ndarray,
+        h_garch_full: np.ndarray,
+        config: 'UnifiedStudentTConfig',
+        n_train: int,
+        n_test: int,
+        nu: float,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        PIT via GARCH-blended adaptive EWM with AR(1) probit whitening.
+
+        Reads Stage 6 pre-calibrated params from config.
+        Returns (pit_values, sigma, mu_effective, S_calibrated).
+        """
+        from scipy.stats import t as student_t_dist, norm as norm_dist
+
+        returns_test = returns[n_train:]
+        mu_pred_test = mu_pred[n_train:]
+        S_pred_test = S_pred[n_train:]
+        h_garch = h_garch_full[n_train:]
+
+        _t_df_asym = float(getattr(config, 't_df_asym', 0.0))
+
+        # Stage 6 pre-calibrated params
+        _best_gw = float(config.calibrated_gw)
+        _best_lam_mu = float(config.calibrated_lambda_rho)
+        _best_lam_beta = _best_lam_mu
+        _best_lam_rho = _best_lam_mu
+        _beta_scale_corr = float(config.calibrated_beta_probit_corr)
+
+        _cal_nu_pit = float(config.calibrated_nu_pit)
+        if _cal_nu_pit > 0:
+            nu = _cal_nu_pit
+
+        # EWM warm-start from training data
+        innovations_train = returns[:n_train] - mu_pred[:n_train]
+        h_garch_train = h_garch_full[:n_train]
+        S_pred_train = S_pred[:n_train]
+        _S_bt = (1 - _best_gw) * S_pred_train + _best_gw * h_garch_train
+
+        # Run EWM through first 60% of training
+        _cal_start = int(n_train * 0.6)
+        _ewm_mu_cal = float(np.mean(innovations_train))
+        _ewm_num_cal = float(np.mean(innovations_train ** 2))
+        _ewm_den_cal = float(np.mean(_S_bt))
+        for _t in range(_cal_start):
+            _ewm_mu_cal = _best_lam_mu * _ewm_mu_cal + (1 - _best_lam_mu) * innovations_train[_t]
+            _ewm_num_cal = _best_lam_beta * _ewm_num_cal + (1 - _best_lam_beta) * (innovations_train[_t] ** 2)
+            _ewm_den_cal = _best_lam_beta * _ewm_den_cal + (1 - _best_lam_beta) * _S_bt[_t]
+
+        # Training probit PITs for whitening warm-start (last 40%)
+        _n_cal = n_train - _cal_start
+        _pit_train_cal = np.zeros(_n_cal)
+        _ewm_mu_cv, _ewm_num_cv, _ewm_den_cv = _ewm_mu_cal, _ewm_num_cal, _ewm_den_cal
+        for _t in range(_n_cal):
+            _idx = _cal_start + _t
+            _beta_cv = float(np.clip(_ewm_num_cv / (_ewm_den_cv + 1e-12) * _beta_scale_corr, 0.2, 5.0))
+            _inn = innovations_train[_idx] - _ewm_mu_cv
+            _S_cv = _S_bt[_idx] * _beta_cv
+            _sig = np.sqrt(_S_cv * (nu - 2) / nu) if nu > 2 else np.sqrt(_S_cv)
+            _sig = max(_sig, 1e-10)
+            _pit_train_cal[_t] = student_t_dist.cdf(_inn / _sig, df=nu)
+            _ewm_mu_cv = _best_lam_mu * _ewm_mu_cv + (1 - _best_lam_mu) * innovations_train[_idx]
+            _ewm_num_cv = _best_lam_beta * _ewm_num_cv + (1 - _best_lam_beta) * (innovations_train[_idx] ** 2)
+            _ewm_den_cv = _best_lam_beta * _ewm_den_cv + (1 - _best_lam_beta) * _S_bt[_idx]
+        _pit_train_cal = np.clip(_pit_train_cal, 0.001, 0.999)
+        _z_probit_cal = norm_dist.ppf(_pit_train_cal)
+        _z_probit_cal = _z_probit_cal[np.isfinite(_z_probit_cal)]
+
+        # Initialize EWM for test from training mean
+        _ewm_mu_t = float(np.mean(innovations_train))
+        _ewm_num_t = float(np.mean(innovations_train ** 2))
+        _ewm_den_t = float(np.mean(_S_bt))
+
+        # Blended test variance
+        _S_blended_test = (1 - _best_gw) * S_pred_test + _best_gw * h_garch
+        innovations_test = returns_test - mu_pred_test
+        sq_inn_test = innovations_test ** 2
+
+        # Test PIT with causal adaptive EWM
+        pit_values = np.zeros(n_test)
+        sigma = np.zeros(n_test)
+        mu_effective = np.zeros(n_test)
+
+        for _t in range(n_test):
+            _beta_p = float(np.clip(_ewm_num_t / (_ewm_den_t + 1e-12) * _beta_scale_corr, 0.2, 5.0))
+            _S_cal = _S_blended_test[_t] * _beta_p
+            _inn = innovations_test[_t] - _ewm_mu_t
+            mu_effective[_t] = mu_pred_test[_t] + _ewm_mu_t
+            sigma[_t] = max(np.sqrt(_S_cal * (nu - 2) / nu) if nu > 2 else np.sqrt(_S_cal), 1e-10)
+
+            _z = _inn / sigma[_t]
+            if abs(_t_df_asym) > 0.05:
+                _nu_side = max(2.5, nu - _t_df_asym) if _z < 0 else max(2.5, nu + _t_df_asym)
+                pit_values[_t] = student_t_dist.cdf(_z, df=_nu_side)
+            else:
+                pit_values[_t] = student_t_dist.cdf(_z, df=nu)
+
+            _ewm_mu_t = _best_lam_mu * _ewm_mu_t + (1 - _best_lam_mu) * innovations_test[_t]
+            _ewm_num_t = _best_lam_beta * _ewm_num_t + (1 - _best_lam_beta) * sq_inn_test[_t]
+            _ewm_den_t = _best_lam_beta * _ewm_den_t + (1 - _best_lam_beta) * _S_blended_test[_t]
+
+        pit_values = np.clip(pit_values, 0.001, 0.999)
+
+        # Causal AR(1) whitening in probit space
+        if _best_lam_rho > 0:
+            _z_probit = norm_dist.ppf(np.clip(pit_values, 0.0001, 0.9999))
+            _z_white = np.zeros(n_test)
+            _z_white[0] = _z_probit[0]
+
+            _ewm_cross, _ewm_sq = 0.0, 1.0
+            if len(_z_probit_cal) > 2:
+                for _t in range(1, len(_z_probit_cal)):
+                    _ewm_cross = _best_lam_rho * _ewm_cross + (1 - _best_lam_rho) * _z_probit_cal[_t - 1] * (_z_probit_cal[_t - 2] if _t > 1 else 0.0)
+                    _ewm_sq = _best_lam_rho * _ewm_sq + (1 - _best_lam_rho) * _z_probit_cal[_t - 1] ** 2
+
+            for _t in range(1, n_test):
+                _ewm_cross = _best_lam_rho * _ewm_cross + (1 - _best_lam_rho) * _z_probit[_t - 1] * (_z_probit[_t - 2] if _t > 1 else (_z_probit_cal[-1] if len(_z_probit_cal) > 0 else 0.0))
+                _ewm_sq = _best_lam_rho * _ewm_sq + (1 - _best_lam_rho) * _z_probit[_t - 1] ** 2
+                _rho_t = float(np.clip(_ewm_cross / _ewm_sq, -0.3, 0.3)) if _ewm_sq > 0.1 else 0.0
+
+                if abs(_rho_t) > 0.01:
+                    _z_white[_t] = (_z_probit[_t] - _rho_t * _z_probit[_t - 1]) / np.sqrt(max(1 - _rho_t ** 2, 0.5))
+                else:
+                    _z_white[_t] = _z_probit[_t]
+
+            pit_values = np.clip(norm_dist.cdf(_z_white), 0.001, 0.999)
+
+        return pit_values, sigma, mu_effective, _S_blended_test
+
+    @staticmethod
+    def _pit_simple_path(returns_test, mu_pred_test, S_calibrated, nu, t_df_asym):
+        """PIT via basic Student-t CDF (non-GARCH path). Returns (pit, sigma, mu_eff)."""
+        from scipy.stats import t as student_t
+        sigma = np.sqrt(S_calibrated * (nu - 2) / nu) if nu > 2 else np.sqrt(S_calibrated)
+        sigma = np.maximum(sigma, 1e-10)
+        innovations = returns_test - mu_pred_test
+        z = innovations / sigma
+        if abs(t_df_asym) > 0.05:
+            pit_values = np.zeros(len(z))
+            _nu_l, _nu_r = max(2.5, nu - t_df_asym), max(2.5, nu + t_df_asym)
+            m = z < 0
+            pit_values[m] = student_t.cdf(z[m], df=_nu_l)
+            pit_values[~m] = student_t.cdf(z[~m], df=_nu_r)
+        else:
+            pit_values = student_t.cdf(z, df=nu)
+        return np.clip(pit_values, 0.001, 0.999), sigma, mu_pred_test
+
+    @staticmethod
+    def _compute_berkowitz_pvalue(pit_values):
+        """Berkowitz (2001) LR test: H0 Phi^-1(PIT)~N(0,1) iid vs H1 AR(1). Chi2(3)."""
+        try:
+            from scipy.stats import norm, chi2
+            z = norm.ppf(np.clip(pit_values, 0.0001, 0.9999))
+            z = z[np.isfinite(z)]
+            n_z = len(z)
+            if n_z <= 20:
+                return float('nan')
+            mu_hat = float(np.mean(z))
+            var_hat = float(np.var(z, ddof=0))
+            z_c = z - mu_hat
+            denom = np.sum(z_c[:-1] ** 2)
+            rho_hat = float(np.clip(np.sum(z_c[1:] * z_c[:-1]) / denom, -0.99, 0.99)) if denom > 1e-12 else 0.0
+            ll_null = -0.5 * n_z * np.log(2 * np.pi) - 0.5 * np.sum(z ** 2)
+            sigma_sq_cond = max(var_hat * (1 - rho_hat ** 2) if abs(rho_hat) < 0.99 else var_hat * 0.01, 1e-6)
+            ll_alt = -0.5 * np.log(2 * np.pi * var_hat) - 0.5 * (z[0] - mu_hat) ** 2 / var_hat
+            for t in range(1, n_z):
+                resid = z[t] - (mu_hat + rho_hat * (z[t - 1] - mu_hat))
+                ll_alt += -0.5 * np.log(2 * np.pi * sigma_sq_cond) - 0.5 * resid ** 2 / sigma_sq_cond
+            return float(1 - chi2.cdf(max(2 * (ll_alt - ll_null), 0), df=3))
+        except Exception:
+            return float('nan')
+
+    @classmethod
+    def _compute_crps_output(cls, returns_test, mu_pred_test, mu_effective, sigma,
+                             h_garch, config, nu, use_garch):
+        """Sigma shrinkage + location bias + CRPS. Returns (crps, sigma_crps, mu_crps, nu_crps)."""
+        _crps_shrink = float(np.clip(float(getattr(config, 'crps_sigma_shrinkage', 1.0)), 0.30, 1.0))
+        sigma_crps = sigma * _crps_shrink
+        _cal_nu = float(getattr(config, 'calibrated_nu_crps', 0.0))
+        nu_crps = _cal_nu if _cal_nu > 0 else nu
+        _loc_a = float(getattr(config, 'loc_bias_var_coeff', 0.0))
+        _loc_b = float(getattr(config, 'loc_bias_drift_coeff', 0.0))
+        garch_uncon = getattr(config, 'garch_unconditional_var', 1e-4)
+        if use_garch and h_garch is not None and (abs(_loc_a) > 0.001 or abs(_loc_b) > 0.001):
+            mu_crps = mu_pred_test.copy()
+            for t in range(len(mu_pred_test)):
+                mu_crps[t] += _loc_a * (h_garch[t] - garch_uncon) + _loc_b * np.sign(mu_pred_test[t]) * np.sqrt(abs(mu_pred_test[t]) + 1e-12)
+        else:
+            mu_crps = mu_effective
+        try:
+            from tuning.diagnostics import compute_crps_student_t_inline
+            crps = compute_crps_student_t_inline(returns_test, mu_crps, sigma_crps, nu_crps)
+        except Exception:
+            crps = float('nan')
+        return crps, sigma_crps, mu_crps, nu_crps
+
+    # =========================================================================
+    # FILTER AND CALIBRATE (orchestrator)
+    # =========================================================================
+
+    @classmethod
+    def filter_and_calibrate(cls, returns, vol, config, train_frac=0.7):
+        """
+        Honest PIT + CRPS. All params from training config, no post-hoc adjustments.
+        Delegates to _pit_garch_path, _pit_simple_path, _compute_berkowitz_pvalue,
+        _compute_crps_output.
+        Returns (pit_values, pit_pvalue, sigma_crps, crps, diagnostics).
+        """
+        from scipy.stats import kstest
+        returns = np.asarray(returns).flatten()
+        vol = np.asarray(vol).flatten()
+        n = len(returns)
+        n_train = int(n * train_frac)
+        n_test = n - n_train
+
+        mu_filt, P_filt, mu_pred, S_pred, ll = cls.filter_phi_unified(returns, vol, config)
+
+        nu = config.nu_base
+        variance_inflation = getattr(config, 'variance_inflation', 1.0)
+        use_garch = getattr(config, 'garch_alpha', 0.0) > 0 or getattr(config, 'garch_beta', 0.0) > 0
+        returns_test = returns[n_train:]
+        mu_pred_test = mu_pred[n_train:]
+        S_calibrated = S_pred[n_train:] * variance_inflation
+        h_garch = None
+        beta_final = variance_inflation
+        _debug_gw_base = 0.0
+
+        if use_garch:
+            h_garch_full = cls._compute_garch_variance(returns - mu_pred, config, n_test_split=n_train)
+            h_garch = h_garch_full[n_train:]
+            pit_values, sigma, mu_effective, S_calibrated = cls._pit_garch_path(
+                returns, mu_pred, S_pred, h_garch_full, config, n_train, n_test, nu)
+            beta_final = 1.0
+            _debug_gw_base = float(config.calibrated_gw)
+        else:
+            pit_values, sigma, mu_effective = cls._pit_simple_path(
+                returns_test, mu_pred_test, S_calibrated, nu,
+                float(getattr(config, 't_df_asym', 0.0)))
+
+        pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
+        hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
+        mad = float(np.mean(np.abs(hist / n_test - 0.1)))
+        berkowitz_pvalue = cls._compute_berkowitz_pvalue(pit_values)
+
+        innovations = returns_test - mu_pred_test
+        variance_ratio = float(np.var(innovations)) / (float(np.mean(S_calibrated)) + 1e-12)
+
+        crps, sigma_crps, mu_crps, nu_crps = cls._compute_crps_output(
+            returns_test, mu_pred_test, mu_effective, sigma, h_garch, config, nu, use_garch)
+
+        _crps_shrink = float(np.clip(float(getattr(config, 'crps_sigma_shrinkage', 1.0)), 0.30, 1.0))
+
+        diagnostics = {
+            'pit_pvalue': pit_pvalue, 'berkowitz_pvalue': berkowitz_pvalue, 'mad': mad,
+            'nu_effective': nu_crps, 'nu_pit': nu, 'variance_ratio': variance_ratio,
+            'skewness': 0.0, 'crps': crps, 'log_likelihood': ll,
+            'n_train': n_train, 'n_test': n_test,
+            'gw_base': _debug_gw_base, 'gw_score': 0.0,
+            'beta_final': beta_final, 'crps_shrink': _crps_shrink,
+            'mu_effective': mu_effective,
+            'garch_kalman_weight': float(getattr(config, 'garch_kalman_weight', 0.0)),
+            'q_vol_coupling': float(getattr(config, 'q_vol_coupling', 0.0)),
+            'loc_bias_var_coeff': float(getattr(config, 'loc_bias_var_coeff', 0.0)),
+            'loc_bias_drift_coeff': float(getattr(config, 'loc_bias_drift_coeff', 0.0)),
+        }
+        return pit_values, pit_pvalue, sigma_crps, crps, diagnostics
+
+    # ---------------------------------------------------------------------------
+    # SHARED GARCH VARIANCE
+    # Used by filter_and_calibrate AND _stage_6_calibration_pipeline.
+    # Eliminates the duplicated 30-line GARCH loop that previously
+    # existed in both locations with identical logic.
+    # ---------------------------------------------------------------------------
+
+    @classmethod
+    def _compute_garch_variance(cls, innovations, config, n_test_split=None):
+        """
+        Compute enhanced GJR-GARCH(1,1) variance with leverage correlation,
+        vol-of-vol noise, Markov regime switching, mean reversion, and
+        optional rough-volatility blending (Gatheral-Jaisson-Rosenbaum 2018).
+
+        Runs CONTINUOUSLY from t=0 through full series to avoid cold-start
+        bias at the train/test boundary (h_test[0] inherits warm state).
+
+        Args:
+            innovations: Full innovation series (returns - mu_pred), length n.
+            config: UnifiedStudentTConfig with GARCH parameters.
+            n_test_split: If provided, apply rough-vol blending only on
+                          the test slice [n_test_split:]. None = no rough blend.
+
+        Returns:
+            h: GARCH variance array of length n (full series).
+        """
+        n = len(innovations)
+        sq = innovations ** 2
+        neg = (innovations < 0).astype(np.float64)
+
+        go = float(getattr(config, 'garch_omega', 0.0))
+        ga = float(getattr(config, 'garch_alpha', 0.0))
+        gb = float(getattr(config, 'garch_beta', 0.0))
+        gl = float(getattr(config, 'garch_leverage', 0.0))
+        gu = float(getattr(config, 'garch_unconditional_var', 1e-4))
+        rl = float(getattr(config, 'rho_leverage', 0.0))
+        km = float(getattr(config, 'kappa_mean_rev', 0.0))
+        tv = float(getattr(config, 'theta_long_var', 0.0))
+        if tv <= 0:
+            tv = gu
+        se = float(getattr(config, 'sigma_eta', 0.0))
+        rs = float(getattr(config, 'regime_switch_prob', 0.0))
+        sm = np.sqrt(float(getattr(config, 'q_stress_ratio', 10.0)))
+
+        h = np.zeros(n)
+        h[0] = gu
+        ps = 0.1  # Initial stress probability
+
+        for t in range(1, n):
+            ht = go + ga * sq[t-1] + gl * sq[t-1] * neg[t-1] + gb * h[t-1]
+            if rl > 0.01 and h[t-1] > 1e-12:
+                z = innovations[t-1] / np.sqrt(h[t-1])
+                if z < 0:
+                    ht += rl * z * z * h[t-1]
+            if se > 0.005 and h[t-1] > 1e-12:
+                z = abs(innovations[t-1]) / np.sqrt(h[t-1])
+                ht += se * max(0.0, z - 1.5) ** 2 * h[t-1]
+            if rs > 0.005 and h[t-1] > 1e-12:
+                z = abs(innovations[t-1]) / np.sqrt(h[t-1])
+                ps = (1.0 - rs) * ps + rs * (1.0 if z > 2.0 else 0.0)
+                ps = min(max(ps, 0.0), 1.0)
+                ht *= (1.0 + ps * (sm - 1.0))
+            if km > 0.001:
+                ht = (1.0 - km) * ht + km * tv
+            h[t] = max(ht, 1e-12)
+
+        # ── Rough volatility blending (Gatheral-Jaisson-Rosenbaum 2018) ──
+        # Fractional differencing kernel (1-L)^d on ε²_t gives power-law
+        # memory decay w_k ~ k^(d-1) vs GARCH's exponential w_k = β^k.
+        rh = float(getattr(config, 'rough_hurst', 0.0))
+        if 0.01 < rh < 0.5 and n_test_split is not None and n_test_split < n:
+            n_test = n - n_test_split
+            sq_test = sq[n_test_split:]
+            d_frac = rh - 0.5  # d ∈ (-0.5, 0) for rough regime
+            max_lag = min(50, n_test - 1)
+            # Fractional differencing weights: w_0=1, w_k = w_{k-1}·(k-1-d)/k
+            frac_w = np.zeros(max_lag + 1)
+            frac_w[0] = 1.0
+            for k in range(1, max_lag + 1):
+                frac_w[k] = frac_w[k-1] * (k - 1 - d_frac) / k
+            frac_w = np.abs(frac_w)
+            ws = np.sum(frac_w)
+            if ws > 1e-10:
+                frac_w /= ws
+            h_rough = np.zeros(n_test)
+            h_rough[0] = gu
+            for t in range(1, n_test):
+                lookback = min(t, max_lag)
+                wv = 0.0
+                for lag in range(lookback):
+                    wv += frac_w[lag] * sq_test[t - 1 - lag]
+                h_rough[t] = max(wv, 1e-12)
+            # Blend weight: H→0 ⟹ strong rough, H→0.5 ⟹ weak
+            rw = max(0.3 * (1.0 - 2.0 * rh), 0.0)
+            h[n_test_split:] = (1.0 - rw) * h[n_test_split:] + rw * h_rough
+
+        return h
+
+    @classmethod
     def filter_phi(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
         """Kalman drift filter with persistence (phi) and Student-t observation noise.
 
@@ -1751,489 +2427,9 @@ class PhiStudentTDriftModel:
 
         return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
 
-    @classmethod
-    def filter_and_calibrate(
-        cls,
-        returns: np.ndarray,
-        vol: np.ndarray,
-        config: 'UnifiedStudentTConfig',
-        train_frac: float = 0.7,
-    ) -> Tuple[np.ndarray, float, np.ndarray, float, Dict]:
-        """
-        HONEST PIT Computation.
 
-        PIT values are computed using ONLY parameters from training data:
-        - config.nu_base: optimized during training
-        - config.variance_inflation: optimized during training
-        - config.mu_drift: computed during training
-        - S_pred: from Kalman filter (trained on training data)
-
-        NO post-hoc adjustments using test data:
-        - No GARCH re-estimation on test data
-        - No nu re-estimation from test kurtosis
-        - No calibration ensemble (Beta/Isotonic/Platt)
-        - No rank smoothing
-        - No AR whitening
-
-        Returns:
-            Tuple of:
-              - pit_values: Raw PIT values from model predictions
-              - pit_pvalue: KS test p-value
-              - sigma: Scale for CRPS computation
-              - crps: Set to nan (computed in test file)
-              - diagnostics: Dict with calibration info
-        """
-        from scipy.stats import kstest
-        from scipy.special import gammaln
-
-        returns = np.asarray(returns).flatten()
-        vol = np.asarray(vol).flatten()
-        n = len(returns)
-        n_train = int(n * train_frac)
-
-        # Run the unified filter (trained on full data, but parameters from training)
-        mu_filt, P_filt, mu_pred, S_pred, ll = cls.filter_phi_unified(returns, vol, config)
-
-        # Extract test data
-        returns_test = returns[n_train:]
-        mu_pred_test = mu_pred[n_train:]
-        S_pred_test = S_pred[n_train:]
-        n_test = len(returns_test)
-
-        # Get config params (ALL from training - no test data used)
-        nu = config.nu_base
-        variance_inflation = getattr(config, 'variance_inflation', 1.0)
-        mu_drift = getattr(config, 'mu_drift', 0.0)
-
-        # GJR-GARCH parameters (estimated on training data)
-        garch_omega = getattr(config, 'garch_omega', 0.0)
-        garch_alpha = getattr(config, 'garch_alpha', 0.0)
-        garch_beta = getattr(config, 'garch_beta', 0.0)
-        garch_leverage = getattr(config, 'garch_leverage', 0.0)
-        garch_unconditional_var = getattr(config, 'garch_unconditional_var', 1e-4)
-        rough_hurst = getattr(config, 'rough_hurst', 0.0)
-        use_garch = garch_alpha > 0 or garch_beta > 0
-
-        # Default S_calibrated for non-GARCH path
-        S_calibrated = S_pred_test * variance_inflation
-
-        if use_garch:
-            # Compute GARCH variance via shared method (single source of truth)
-            # Runs continuously t=0..n to avoid cold-start bias at train/test split
-            innovations_full_garch = returns - mu_pred
-            h_garch_full_cont = cls._compute_garch_variance(
-                innovations_full_garch, config, n_test_split=n_train)
-            h_garch = h_garch_full_cont[n_train:]
-
-            # Test innovations for EWM tracking
-            innovations = returns_test - mu_pred_test
-            sq_innov = innovations ** 2
-
-            # CRPS-enhancement: asymmetric ν offset
-            _t_df_asym = float(getattr(config, 't_df_asym', 0.0))
-
-            # Read Stage 6 pre-calibrated params (one-way: tuning → config → here)
-            from scipy.stats import t as student_t_dist, kstest as ks_test
-            from scipy.stats import norm as norm_dist
-
-            # Read Stage 6 pre-calibrated params directly from config
-            _best_gw_adap = float(config.calibrated_gw)
-            _best_lam_mu = float(config.calibrated_lambda_rho)
-            _best_lam_beta = _best_lam_mu
-            _best_lam_rho = _best_lam_mu
-            _beta_scale_corr = float(config.calibrated_beta_probit_corr)
-            _debug_gw_base = _best_gw_adap
-            _debug_gw_score = 0.0
-
-            # Override ν if Stage 6 selected a PIT-optimal value
-            _cal_nu_pit = float(config.calibrated_nu_pit)
-            if _cal_nu_pit > 0:
-                nu = _cal_nu_pit
-
-            # Training shared variables (needed for EWM warm-start)
-            innovations_train_blend = returns[:n_train] - mu_pred[:n_train]
-            h_garch_train_est = h_garch_full_cont[:n_train]
-            S_pred_train_wav = S_pred[:n_train]
-
-            # Blended training variance for EWM warm-start
-            _S_bt_final = (1 - _best_gw_adap) * S_pred_train_wav + _best_gw_adap * h_garch_train_est
-
-            # Compute training probit PITs for whitening warm-start
-            # (runs adaptive EWM through latter 40% of training data)
-            _cal_start = int(n_train * 0.6)
-            _n_cal = n_train - _cal_start
-            _ewm_mu_cal = float(np.mean(innovations_train_blend))
-            _ewm_num_cal = float(np.mean(innovations_train_blend ** 2))
-            _ewm_den_cal = float(np.mean(_S_bt_final))
-            for _t_cal in range(_cal_start):
-                _ewm_mu_cal = _best_lam_mu * _ewm_mu_cal + (1 - _best_lam_mu) * innovations_train_blend[_t_cal]
-                _ewm_num_cal = _best_lam_beta * _ewm_num_cal + (1 - _best_lam_beta) * (innovations_train_blend[_t_cal] ** 2)
-                _ewm_den_cal = _best_lam_beta * _ewm_den_cal + (1 - _best_lam_beta) * _S_bt_final[_t_cal]
-            _pit_train_cal = np.zeros(_n_cal)
-            _ewm_mu_cv = _ewm_mu_cal
-            _ewm_num_cv = _ewm_num_cal
-            _ewm_den_cv = _ewm_den_cal
-            for _t_cv in range(_n_cal):
-                _idx_cv = _cal_start + _t_cv
-                _beta_cv = _ewm_num_cv / (_ewm_den_cv + 1e-12)
-                _beta_cv = float(np.clip(_beta_cv * _beta_scale_corr, 0.2, 5.0))
-                _inn_cv = innovations_train_blend[_idx_cv] - _ewm_mu_cv
-                _S_cv = _S_bt_final[_idx_cv] * _beta_cv
-                _sig_cv = np.sqrt(_S_cv * (nu - 2) / nu) if nu > 2 else np.sqrt(_S_cv)
-                _sig_cv = max(_sig_cv, 1e-10)
-                _pit_train_cal[_t_cv] = student_t_dist.cdf(_inn_cv / _sig_cv, df=nu)
-                _ewm_mu_cv = _best_lam_mu * _ewm_mu_cv + (1 - _best_lam_mu) * innovations_train_blend[_idx_cv]
-                _ewm_num_cv = _best_lam_beta * _ewm_num_cv + (1 - _best_lam_beta) * (innovations_train_blend[_idx_cv] ** 2)
-                _ewm_den_cv = _best_lam_beta * _ewm_den_cv + (1 - _best_lam_beta) * _S_bt_final[_idx_cv]
-            _pit_train_cal = np.clip(_pit_train_cal, 0.001, 0.999)
-            _z_probit_cal = norm_dist.ppf(_pit_train_cal)
-            _z_probit_cal = _z_probit_cal[np.isfinite(_z_probit_cal)]
-
-            # beta_final for diagnostics (the per-step adaptive β is the real one)
-            beta_final = 1.0
-
-            # Initialize EWM from training mean (no warmup — matches the
-            # estimation-portion initialization used in the CV)
-            _ewm_mu_final = float(np.mean(innovations_train_blend))
-            _ewm_num_final = float(np.mean(innovations_train_blend ** 2))
-            _ewm_den_final = float(np.mean(_S_bt_final))
-
-            # Flat blending for test data
-            _S_blended_test = (1 - _best_gw_adap) * S_pred_test + _best_gw_adap * h_garch
-
-            # Compute test PIT with causal adaptive EWM
-            # NOTE: mu_pred_test from filter_phi_unified already includes
-            # mu_drift, so we do NOT subtract it again here.
-            innovations_test_adap = returns_test - mu_pred_test
-            sq_inn_test_adap = innovations_test_adap ** 2
-
-            pit_values = np.zeros(n_test)
-            sigma = np.zeros(n_test)
-            mu_effective = np.zeros(n_test)  # Location-corrected mean for CRPS
-            _ewm_mu_t = _ewm_mu_final
-            _ewm_num_t = _ewm_num_final
-            _ewm_den_t = _ewm_den_final
-
-            for _t_p in range(n_test):
-                # Current adaptive β with probit-variance correction
-                _beta_p = _ewm_num_t / (_ewm_den_t + 1e-12)
-                _beta_p = float(np.clip(_beta_p * _beta_scale_corr, 0.2, 5.0))
-
-                # Use the CV-selected gw blended variance
-                _S_cal_p = _S_blended_test[_t_p] * _beta_p
-
-                # Location-corrected innovation
-                _inn_p = innovations_test_adap[_t_p] - _ewm_mu_t
-                # Effective predicted mean = mu_pred (includes mu_drift) + adaptive EWM
-                mu_effective[_t_p] = mu_pred_test[_t_p] + _ewm_mu_t
-                if nu > 2:
-                    sigma[_t_p] = np.sqrt(_S_cal_p * (nu - 2) / nu)
-                else:
-                    sigma[_t_p] = np.sqrt(_S_cal_p)
-                sigma[_t_p] = max(sigma[_t_p], 1e-10)
-
-                _z_p = _inn_p / sigma[_t_p]
-                # Asymmetric degrees-of-freedom: two-piece Student-t CDF
-                # z < 0: use ν_left = ν - t_df_asym (heavier crash tail)
-                # z ≥ 0: use ν_right = ν + t_df_asym (lighter rally tail)
-                if abs(_t_df_asym) > 0.05:
-                    _nu_side = max(2.5, nu - _t_df_asym) if _z_p < 0 else max(2.5, nu + _t_df_asym)
-                    pit_values[_t_p] = student_t_dist.cdf(_z_p, df=_nu_side)
-                else:
-                    pit_values[_t_p] = student_t_dist.cdf(_z_p, df=nu)
-
-                # Causal update with current observation
-                _ewm_mu_t = _best_lam_mu * _ewm_mu_t + (1 - _best_lam_mu) * innovations_test_adap[_t_p]
-                _ewm_num_t = _best_lam_beta * _ewm_num_t + (1 - _best_lam_beta) * sq_inn_test_adap[_t_p]
-                _ewm_den_t = _best_lam_beta * _ewm_den_t + (1 - _best_lam_beta) * _S_blended_test[_t_p]
-
-            pit_values = np.clip(pit_values, 0.001, 0.999)
-
-            # Causal AR(1) whitening in probit space (Cochrane-Orcutt)
-            # z_white = (z_t - ρ̂·z_{t-1}) / √(1-ρ̂²),  PIT = Φ(z_white)
-            # Removes serial dependence from adaptive EWM β memory.
-            # λ_ρ selected on training PITs; 0 = disabled.
-            if _best_lam_rho > 0:
-                _z_test_probit = norm_dist.ppf(np.clip(pit_values, 0.0001, 0.9999))
-                _z_test_white = np.zeros(n_test)
-                _z_test_white[0] = _z_test_probit[0]
-
-                # Initialize EWM state from training probit PITs
-                # (warm start — consistent with training CV selection)
-                _ewm_cross_test = 0.0
-                _ewm_sq_test = 1.0
-                if len(_z_probit_cal) > 2:
-                    for _t_init in range(1, len(_z_probit_cal)):
-                        _ewm_cross_test = _best_lam_rho * _ewm_cross_test + (1 - _best_lam_rho) * _z_probit_cal[_t_init - 1] * (_z_probit_cal[_t_init - 2] if _t_init > 1 else 0.0)
-                        _ewm_sq_test = _best_lam_rho * _ewm_sq_test + (1 - _best_lam_rho) * _z_probit_cal[_t_init - 1] ** 2
-
-                for _t_wh in range(1, n_test):
-                    _ewm_cross_test = _best_lam_rho * _ewm_cross_test + (1 - _best_lam_rho) * _z_test_probit[_t_wh - 1] * (_z_test_probit[_t_wh - 2] if _t_wh > 1 else (_z_probit_cal[-1] if len(_z_probit_cal) > 0 else 0.0))
-                    _ewm_sq_test = _best_lam_rho * _ewm_sq_test + (1 - _best_lam_rho) * _z_test_probit[_t_wh - 1] ** 2
-
-                    if _ewm_sq_test > 0.1:
-                        _rho_test_t = _ewm_cross_test / _ewm_sq_test
-                        _rho_test_t = float(np.clip(_rho_test_t, -0.3, 0.3))
-                    else:
-                        _rho_test_t = 0.0
-
-                    if abs(_rho_test_t) > 0.01:
-                        _z_test_white[_t_wh] = (_z_test_probit[_t_wh] - _rho_test_t * _z_test_probit[_t_wh - 1]) / np.sqrt(max(1 - _rho_test_t ** 2, 0.5))
-                    else:
-                        _z_test_white[_t_wh] = _z_test_probit[_t_wh]
-
-                pit_values = norm_dist.cdf(_z_test_white)
-                pit_values = np.clip(pit_values, 0.001, 0.999)
-
-            # Update S_calibrated for diagnostics
-            S_calibrated = _S_blended_test
-
-        else:
-            # ---------------------------------------------------------------------------
-            # HONEST SIGMA: Convert variance to Student-t scale (non-metals path)
-            # ---------------------------------------------------------------------------
-            if nu > 2:
-                sigma = np.sqrt(S_calibrated * (nu - 2) / nu)
-            else:
-                sigma = np.sqrt(S_calibrated)
-            sigma = np.maximum(sigma, 1e-10)
-
-            # ---------------------------------------------------------------------------
-            # HONEST PIT: Compute from model predictions only
-            # ---------------------------------------------------------------------------
-            # mu_pred_test already includes mu_drift from filter_phi_unified
-            innovations = returns_test - mu_pred_test
-            mu_effective = mu_pred_test  # Already location-corrected
-            z = innovations / sigma
-
-            # PIT values from Student-t CDF (z already standardized to unit t_ν)
-            # Apply asymmetric ν offset if enabled
-            _t_df_asym_non = float(getattr(config, 't_df_asym', 0.0))
-            if abs(_t_df_asym_non) > 0.05:
-                pit_values = np.zeros(len(z))
-                _nu_left_non = max(2.5, nu - _t_df_asym_non)
-                _nu_right_non = max(2.5, nu + _t_df_asym_non)
-                _left_mask = z < 0
-                pit_values[_left_mask] = student_t.cdf(z[_left_mask], df=_nu_left_non)
-                pit_values[~_left_mask] = student_t.cdf(z[~_left_mask], df=_nu_right_non)
-            else:
-                pit_values = student_t.cdf(z, df=nu)
-            pit_values = np.clip(pit_values, 0.001, 0.999)
-
-        # ---------------------------------------------------------------------------
-        # HONEST METRICS: No adjustments
-        # ---------------------------------------------------------------------------
-        ks_result = kstest(pit_values, 'uniform')
-        pit_pvalue = float(ks_result.pvalue)
-
-        # Histogram MAD
-        hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
-        mad = float(np.mean(np.abs(hist / n_test - 0.1)))
-
-        # Berkowitz test (honest - no whitening)
-        try:
-            pit_clipped = np.clip(pit_values, 0.0001, 0.9999)
-            z_berk = norm.ppf(pit_clipped)
-            z_berk = z_berk[np.isfinite(z_berk)]
-            n_z = len(z_berk);
-
-            if n_z > 20:
-                mu_hat = float(np.mean(z_berk))
-                var_hat = float(np.var(z_berk, ddof=0))
-
-                z_centered = z_berk - mu_hat
-                if np.sum(z_centered[:-1]**2) > 1e-12:
-                    rho_hat = float(np.sum(z_centered[1:] * z_centered[:-1]) / np.sum(z_centered[:-1]**2))
-                    rho_hat = np.clip(rho_hat, -0.99, 0.99)
-                else:
-                    rho_hat = 0.0
-
-                ll_null = -0.5 * n_z * np.log(2 * np.pi) - 0.5 * np.sum(z_berk**2)
-
-                sigma_sq_cond = var_hat * (1 - rho_hat**2) if abs(rho_hat) < 0.99 else var_hat * 0.01
-                sigma_sq_cond = max(sigma_sq_cond, 1e-6)
-
-                ll_alt = -0.5 * np.log(2 * np.pi * var_hat) - 0.5 * (z_berk[0] - mu_hat)**2 / var_hat
-                for t in range(1, n_z):
-                    mu_cond = mu_hat + rho_hat * (z_berk[t-1] - mu_hat)
-                    resid = z_berk[t] - mu_cond
-                    ll_alt += -0.5 * np.log(2 * np.pi * sigma_sq_cond) - 0.5 * resid**2 / sigma_sq_cond
-
-                lr_stat = 2 * (ll_alt - ll_null)
-
-                from scipy.stats import chi2
-                berkowitz_pvalue = float(1 - chi2.cdf(max(lr_stat, 0), df=3))
-            else:
-                berkowitz_pvalue = float('nan')
-        except Exception:
-            berkowitz_pvalue = float('nan')
-
-        # Variance ratio for diagnostics
-        # mu_pred_test already includes mu_drift from filter_phi_unified
-        innovations = returns_test - mu_pred_test
-        actual_var = float(np.var(innovations))
-        predicted_var = float(np.mean(S_calibrated))
-        variance_ratio = actual_var / (predicted_var + 1e-12)
-
-        # CRPS sigma shrinkage — reuse Stage 5g pre-calibrated α*
-        # σ_crps = α* × σ_pit  (PIT uses un-shrunk sigma)
-        _crps_shrink = float(getattr(config, 'crps_sigma_shrinkage', 1.0))
-        _crps_shrink = float(np.clip(_crps_shrink, 0.30, 1.0))
-
-        sigma_crps = sigma * _crps_shrink
-
-        # CRPS-optimal ν: read from Stage 6 pre-calibrated config
-        _cal_nu_crps = float(getattr(config, 'calibrated_nu_crps', 0.0))
-        nu_crps_opt = _cal_nu_crps if _cal_nu_crps > 0 else nu
-
-        # Location bias correction (Stage 5h): a×(h-θ) + b×sign(μ)×√|μ|
-        # Applied to raw mu_pred for CRPS; PIT uses mu_effective (EWM).
-        _loc_a_crps = float(getattr(config, 'loc_bias_var_coeff', 0.0))
-        _loc_b_crps = float(getattr(config, 'loc_bias_drift_coeff', 0.0))
-
-        if use_garch and (abs(_loc_a_crps) > 0.001 or abs(_loc_b_crps) > 0.001):
-            _theta_crps = garch_unconditional_var
-            mu_crps = mu_pred_test.copy()
-            for _t_lc in range(n_test):
-                _feat_var_lc = h_garch[_t_lc] - _theta_crps
-                _feat_drift_lc = np.sign(mu_pred_test[_t_lc]) * np.sqrt(
-                    abs(mu_pred_test[_t_lc]) + 1e-12)
-                mu_crps[_t_lc] += (_loc_a_crps * _feat_var_lc
-                                   + _loc_b_crps * _feat_drift_lc)
-        else:
-            mu_crps = mu_effective
-
-        try:
-            from tuning.diagnostics import compute_crps_student_t_inline
-            crps = compute_crps_student_t_inline(returns_test, mu_crps, sigma_crps, nu_crps_opt)
-        except Exception:
-            crps = float('nan')
-
-        diagnostics = {
-            'pit_pvalue': pit_pvalue,
-            'berkowitz_pvalue': berkowitz_pvalue,
-            'mad': mad,
-            'nu_effective': nu_crps_opt,  # CRPS-optimal ν (may differ from PIT ν)
-            'nu_pit': nu,  # PIT ν (used for CDF computation)
-            'variance_ratio': variance_ratio,
-            'skewness': 0.0,
-            'crps': crps,
-            'log_likelihood': ll,
-            'n_train': n_train,
-            'n_test': n_test,
-            'gw_base': _debug_gw_base if use_garch else 0.0,
-            'gw_score': _debug_gw_score if use_garch else 0.0,
-            'beta_final': beta_final if use_garch else variance_inflation,
-            'crps_shrink': _crps_shrink,  # CRPS sigma shrinkage multiplier
-            'mu_effective': mu_effective,  # Location-corrected mean for CRPS
-            # Stage 5c.1/5c.2/5h params (for verification)
-            'garch_kalman_weight': float(getattr(config, 'garch_kalman_weight', 0.0)),
-            'q_vol_coupling': float(getattr(config, 'q_vol_coupling', 0.0)),
-            'loc_bias_var_coeff': float(getattr(config, 'loc_bias_var_coeff', 0.0)),
-            'loc_bias_drift_coeff': float(getattr(config, 'loc_bias_drift_coeff', 0.0)),
-        }
-
-        return pit_values, pit_pvalue, sigma_crps, crps, diagnostics
-
-
-    # ---------------------------------------------------------------------------
-    # SHARED GARCH VARIANCE
-    # Used by filter_and_calibrate AND _stage_6_calibration_pipeline.
-    # Eliminates the duplicated 30-line GARCH loop that previously
-    # existed in both locations with identical logic.
-    # ---------------------------------------------------------------------------
-
-    @classmethod
-    def _compute_garch_variance(cls, innovations, config, n_test_split=None):
-        """
-        Compute enhanced GJR-GARCH(1,1) variance with leverage correlation,
-        vol-of-vol noise, Markov regime switching, mean reversion, and
-        optional rough-volatility blending (Gatheral-Jaisson-Rosenbaum 2018).
-
-        Runs CONTINUOUSLY from t=0 through full series to avoid cold-start
-        bias at the train/test boundary (h_test[0] inherits warm state).
-
-        Args:
-            innovations: Full innovation series (returns - mu_pred), length n.
-            config: UnifiedStudentTConfig with GARCH parameters.
-            n_test_split: If provided, apply rough-vol blending only on
-                          the test slice [n_test_split:]. None = no rough blend.
-
-        Returns:
-            h: GARCH variance array of length n (full series).
-        """
-        n = len(innovations)
-        sq = innovations ** 2
-        neg = (innovations < 0).astype(np.float64)
-
-        go = float(getattr(config, 'garch_omega', 0.0))
-        ga = float(getattr(config, 'garch_alpha', 0.0))
-        gb = float(getattr(config, 'garch_beta', 0.0))
-        gl = float(getattr(config, 'garch_leverage', 0.0))
-        gu = float(getattr(config, 'garch_unconditional_var', 1e-4))
-        rl = float(getattr(config, 'rho_leverage', 0.0))
-        km = float(getattr(config, 'kappa_mean_rev', 0.0))
-        tv = float(getattr(config, 'theta_long_var', 0.0))
-        if tv <= 0:
-            tv = gu
-        se = float(getattr(config, 'sigma_eta', 0.0))
-        rs = float(getattr(config, 'regime_switch_prob', 0.0))
-        sm = np.sqrt(float(getattr(config, 'q_stress_ratio', 10.0)))
-
-        h = np.zeros(n)
-        h[0] = gu
-        ps = 0.1  # Initial stress probability
-
-        for t in range(1, n):
-            ht = go + ga * sq[t-1] + gl * sq[t-1] * neg[t-1] + gb * h[t-1]
-            if rl > 0.01 and h[t-1] > 1e-12:
-                z = innovations[t-1] / np.sqrt(h[t-1])
-                if z < 0:
-                    ht += rl * z * z * h[t-1]
-            if se > 0.005 and h[t-1] > 1e-12:
-                z = abs(innovations[t-1]) / np.sqrt(h[t-1])
-                ht += se * max(0.0, z - 1.5) ** 2 * h[t-1]
-            if rs > 0.005 and h[t-1] > 1e-12:
-                z = abs(innovations[t-1]) / np.sqrt(h[t-1])
-                ps = (1.0 - rs) * ps + rs * (1.0 if z > 2.0 else 0.0)
-                ps = min(max(ps, 0.0), 1.0)
-                ht *= (1.0 + ps * (sm - 1.0))
-            if km > 0.001:
-                ht = (1.0 - km) * ht + km * tv
-            h[t] = max(ht, 1e-12)
-
-        # ── Rough volatility blending (Gatheral-Jaisson-Rosenbaum 2018) ──
-        # Fractional differencing kernel (1-L)^d on ε²_t gives power-law
-        # memory decay w_k ~ k^(d-1) vs GARCH's exponential w_k = β^k.
-        rh = float(getattr(config, 'rough_hurst', 0.0))
-        if 0.01 < rh < 0.5 and n_test_split is not None and n_test_split < n:
-            n_test = n - n_test_split
-            sq_test = sq[n_test_split:]
-            d_frac = rh - 0.5  # d ∈ (-0.5, 0) for rough regime
-            max_lag = min(50, n_test - 1)
-            # Fractional differencing weights: w_0=1, w_k = w_{k-1}·(k-1-d)/k
-            frac_w = np.zeros(max_lag + 1)
-            frac_w[0] = 1.0
-            for k in range(1, max_lag + 1):
-                frac_w[k] = frac_w[k-1] * (k - 1 - d_frac) / k
-            frac_w = np.abs(frac_w)
-            ws = np.sum(frac_w)
-            if ws > 1e-10:
-                frac_w /= ws
-            h_rough = np.zeros(n_test)
-            h_rough[0] = gu
-            for t in range(1, n_test):
-                lookback = min(t, max_lag)
-                wv = 0.0
-                for lag in range(lookback):
-                    wv += frac_w[lag] * sq_test[t - 1 - lag]
-                h_rough[t] = max(wv, 1e-12)
-            # Blend weight: H→0 ⟹ strong rough, H→0.5 ⟹ weak
-            rw = max(0.3 * (1.0 - 2.0 * rh), 0.0)
-            h[n_test_split:] = (1.0 - rw) * h[n_test_split:] + rw * h_rough
-
-        return h
-
+    # =========================================================================
+    # CALIBRATION SUB-METHODS (used by filter_and_calibrate)
 
     # ---------------------------------------------------------------------------
     # OPTIMIZATION STAGE METHODS
@@ -3793,309 +3989,3 @@ class PhiStudentTDriftModel:
             "loc_bias_var_coeff": float(loc_bias_var_opt),
             "loc_bias_drift_coeff": float(loc_bias_drift_opt),
         }
-
-
-    @classmethod
-    def optimize_params_unified(
-        cls,
-        returns: np.ndarray,
-        vol: np.ndarray,
-        nu_base: float = 8.0,
-        train_frac: float = 0.7,
-        asset_symbol: str = None,
-    ) -> Tuple['UnifiedStudentTConfig', Dict]:
-        """
-        Staged optimization for unified Student-t Kalman filter model.
-
-        Orchestrates 15 optimization stages in sequence, threading results
-        forward. Each stage is a self-contained classmethod for testability.
-
-        Stage dependency chain:
-          1 (q,c,φ) → 2 (γ_vov) → 3 (ms_sens) → 4 (α_asym)
-            → 4.1 (risk_prem) → 4.2 (skew_κ) → [hessian check]
-              → 5 (ν CV) → 5c (GARCH) → 5d (jumps)
-                → 5e (Hurst) → 5f (EWM λ)
-                → 5g (leverage+shrinkage) → 5h (location bias)
-
-        Args:
-            returns: Return series
-            vol: EWMA/GK volatility series
-            nu_base: Base degrees of freedom (from discrete grid)
-            train_frac: Fraction for train/test split
-            asset_symbol: Asset symbol for profile selection
-
-        Returns:
-            Tuple of (UnifiedStudentTConfig, diagnostics_dict)
-        """
-        returns = np.asarray(returns).flatten()
-        vol = np.asarray(vol).flatten()
-
-        # Auto-configure initial bounds from data
-        config = UnifiedStudentTConfig.auto_configure(returns, vol, nu_base)
-
-        n = len(returns)
-        n_train = int(n * train_frac)
-        returns_train = returns[:n_train]
-        vol_train = vol[:n_train]
-
-        # ── Asset-class adaptive profile
-        asset_class = _detect_asset_class(asset_symbol)
-        profile = ASSET_CLASS_PROFILES.get(asset_class, {}) if asset_class else {}
-
-        # ── STAGE 1: Base parameters (q, c, φ)
-        s1 = cls._stage_1_base_params(returns_train, vol_train, n_train, nu_base, config)
-        if not s1['success']:
-            return config, {"stage": 0, "success": False,
-                            "error": "Stage 1 optimization failed", "degraded": True}
-
-        q_opt, c_opt, phi_opt = s1['q'], s1['c'], s1['phi']
-        log_q_opt = s1['log_q']
-
-        # ── STAGE 2: VoV gamma
-        gamma_opt = cls._stage_2_vov_gamma(
-            returns_train, vol_train, n_train, nu_base,
-            q_opt, c_opt, phi_opt, config)
-
-        # ── STAGE 3: MS-q sensitivity
-        sens_opt = cls._stage_3_ms_sensitivity(
-            returns_train, vol_train, n_train, nu_base,
-            q_opt, c_opt, phi_opt, gamma_opt, profile)
-
-        # ── STAGE 4: Asymmetry alpha
-        alpha_opt = cls._stage_4_asymmetry(
-            returns_train, vol_train, n_train, nu_base,
-            q_opt, c_opt, phi_opt, gamma_opt, sens_opt, profile)
-
-        # ── STAGE 4.1: Risk premium (ICAPM)
-        risk_premium_opt = cls._stage_4_1_risk_premium(
-            returns_train, vol_train, n_train, nu_base,
-            q_opt, c_opt, phi_opt, gamma_opt, sens_opt, alpha_opt, profile)
-
-        # ── STAGE 4.2: Skew dynamics (GAS)
-        skew_kappa_opt, skew_persistence_fixed = cls._stage_4_2_skew_dynamics(
-            returns_train, vol_train, n_train, nu_base,
-            q_opt, c_opt, phi_opt, gamma_opt, sens_opt, alpha_opt,
-            risk_premium_opt, profile)
-
-        # ── Hessian condition check
-        hess = cls._check_hessian_degradation(
-            s1.get('result'), gamma_opt, sens_opt, alpha_opt,
-            risk_premium_opt, skew_kappa_opt)
-        gamma_opt = hess['gamma_opt']
-        sens_opt = hess['sens_opt']
-        alpha_opt = hess['alpha_opt']
-        risk_premium_opt = hess['risk_premium_opt']
-        skew_kappa_opt = hess['skew_kappa_opt']
-        degraded = hess['degraded']
-        cond_num = hess['cond_num']
-
-        # ── STAGE 5: Rolling CV ν selection
-        _prof_ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
-        is_metals_asset = _prof_ms_ewm_lambda > 0.01
-        is_high_vol_asset = asset_class == 'high_vol_equity'
-        use_heavy_tail_grid = is_metals_asset or is_high_vol_asset
-
-        s5 = cls._stage_5_nu_cv_selection(
-            returns_train, vol_train, n_train,
-            q_opt, c_opt, phi_opt, alpha_opt, gamma_opt,
-            sens_opt, risk_premium_opt, skew_kappa_opt,
-            skew_persistence_fixed, nu_base, profile,
-            use_heavy_tail_grid)
-        nu_opt = s5['nu_opt']
-        beta_opt = s5['beta_opt']
-        mu_drift_opt = s5['mu_drift_opt']
-        mu_pred_train = s5['mu_pred_train']
-
-        # ── STAGE 5c: GJR-GARCH
-        garch = cls._stage_5c_garch_estimation(
-            returns_train, mu_pred_train, mu_drift_opt, n_train)
-
-        # ── STAGE 5c.1/5c.2: DISABLED (ablation study) ──────
-        # Empirically proven zero CRPS benefit across 8 assets.
-        # 5c.1 garch_kalman_weight: 0/8 helped, 1/8 hurt (-1.7% CRPS)
-        # 5c.2 q_vol_coupling: 0/8 helped, 1/8 hurt (-0.1% CRPS)
-        garch_kalman_w = 0.0
-        q_vol_zeta = 0.0
-
-        # ── STAGE 5d: Merton jump-diffusion
-        jumps = cls._stage_5d_jump_diffusion(
-            returns_train, vol_train, mu_pred_train, mu_drift_opt,
-            n_train, q_opt, c_opt, phi_opt, nu_opt, alpha_opt,
-            gamma_opt, sens_opt, beta_opt, risk_premium_opt,
-            skew_kappa_opt, skew_persistence_fixed, profile)
-
-        # ── STAGE 5e: Rough Hurst
-        rough_hurst_est = cls._stage_5e_rough_hurst(
-            returns_train, mu_pred_train, mu_drift_opt, n_train)
-
-        # ── STAGE 5f: EWM location correction
-        crps_ewm_lambda_opt = cls._stage_5f_ewm_lambda(
-            returns_train, vol_train, n_train,
-            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
-            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
-            skew_kappa_opt, skew_persistence_fixed, profile)
-
-        # ── STAGE 5g: Leverage + shrinkage
-        s5g = cls._stage_5g_leverage_and_shrinkage(
-            returns_train, vol_train, n_train,
-            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
-            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
-            skew_kappa_opt, skew_persistence_fixed, crps_ewm_lambda_opt,
-            garch['garch_omega'], garch['garch_alpha'],
-            garch['garch_beta'], garch['garch_leverage'],
-            garch['unconditional_var'], profile)
-
-        # ── STAGE 5h: Conditional location bias
-        s5h = cls._stage_5h_conditional_location_bias(
-            returns_train, vol_train, n_train,
-            q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
-            sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
-            skew_kappa_opt, skew_persistence_fixed, crps_ewm_lambda_opt,
-            garch['garch_omega'], garch['garch_alpha'],
-            garch['garch_beta'], garch['garch_leverage'],
-            garch['unconditional_var'], garch_kalman_w, q_vol_zeta, profile)
-
-        # ── STAGE 6: Walk-forward calibration params
-        # Build a temp config with all Stages 1-5h params for Stage 6
-        _s6_config = UnifiedStudentTConfig(
-            q=q_opt, c=c_opt, phi=phi_opt,
-            nu_base=nu_opt,
-            alpha_asym=alpha_opt,
-            k_asym=profile.get('k_asym', 1.0),
-            gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt,
-            ms_ewm_lambda=profile.get('ms_ewm_lambda', 0.0),
-            q_stress_ratio=profile.get('q_stress_ratio', 10.0),
-            vov_damping=profile.get('vov_damping', 0.3),
-            variance_inflation=beta_opt,
-            mu_drift=mu_drift_opt,
-            risk_premium_sensitivity=risk_premium_opt,
-            skew_score_sensitivity=skew_kappa_opt,
-            skew_persistence=skew_persistence_fixed,
-            garch_omega=garch['garch_omega'],
-            garch_alpha=garch['garch_alpha'],
-            garch_beta=garch['garch_beta'],
-            garch_leverage=garch['garch_leverage'],
-            garch_unconditional_var=garch['unconditional_var'],
-            rough_hurst=rough_hurst_est,
-            jump_intensity=jumps['jump_intensity'],
-            jump_variance=jumps['jump_variance'],
-            jump_sensitivity=jumps['jump_sensitivity'],
-            jump_mean=jumps['jump_mean'],
-            crps_ewm_lambda=crps_ewm_lambda_opt,
-            rho_leverage=s5g['rho_leverage'],
-            kappa_mean_rev=s5g['kappa_mean_rev'],
-            theta_long_var=s5g['theta_long_var'],
-            crps_sigma_shrinkage=s5g['crps_sigma_shrinkage'],
-            sigma_eta=s5g['sigma_eta'],
-            t_df_asym=s5g['t_df_asym'],
-            regime_switch_prob=s5g['regime_switch_prob'],
-            garch_kalman_weight=garch_kalman_w,
-            q_vol_coupling=q_vol_zeta,
-            loc_bias_var_coeff=s5h['loc_bias_var_coeff'],
-            loc_bias_drift_coeff=s5h['loc_bias_drift_coeff'],
-            q_min=config.q_min, c_min=config.c_min, c_max=config.c_max,
-        )
-        s6 = cls._stage_6_calibration_pipeline(returns, vol, _s6_config, train_frac)
-
-        # ── BUILD FINAL CONFIG
-        _prof_k_asym = profile.get('k_asym', 1.0)
-        _prof_q_stress_ratio = profile.get('q_stress_ratio', 10.0)
-        _prof_vov_damping = profile.get('vov_damping', 0.3)
-        _prof_ms_ewm_lambda_val = profile.get('ms_ewm_lambda', 0.0)
-
-        final_config = UnifiedStudentTConfig(
-            q=q_opt, c=c_opt, phi=phi_opt,
-            nu_base=nu_opt,
-            alpha_asym=alpha_opt, k_asym=_prof_k_asym,
-            gamma_vov=gamma_opt,
-            ms_sensitivity=sens_opt,
-            ms_ewm_lambda=_prof_ms_ewm_lambda_val,
-            q_stress_ratio=_prof_q_stress_ratio,
-            vov_damping=_prof_vov_damping,
-            variance_inflation=beta_opt,
-            mu_drift=mu_drift_opt,
-            risk_premium_sensitivity=risk_premium_opt,
-            skew_score_sensitivity=skew_kappa_opt,
-            skew_persistence=skew_persistence_fixed,
-            garch_omega=garch['garch_omega'],
-            garch_alpha=garch['garch_alpha'],
-            garch_beta=garch['garch_beta'],
-            garch_leverage=garch['garch_leverage'],
-            garch_unconditional_var=garch['unconditional_var'],
-            rough_hurst=rough_hurst_est,
-            jump_intensity=jumps['jump_intensity'],
-            jump_variance=jumps['jump_variance'],
-            jump_sensitivity=jumps['jump_sensitivity'],
-            jump_mean=jumps['jump_mean'],
-            crps_ewm_lambda=crps_ewm_lambda_opt,
-            rho_leverage=s5g['rho_leverage'],
-            kappa_mean_rev=s5g['kappa_mean_rev'],
-            theta_long_var=s5g['theta_long_var'],
-            crps_sigma_shrinkage=s5g['crps_sigma_shrinkage'],
-            sigma_eta=s5g['sigma_eta'],
-            t_df_asym=s5g['t_df_asym'],
-            regime_switch_prob=s5g['regime_switch_prob'],
-            garch_kalman_weight=garch_kalman_w,
-            q_vol_coupling=q_vol_zeta,
-            loc_bias_var_coeff=s5h['loc_bias_var_coeff'],
-            loc_bias_drift_coeff=s5h['loc_bias_drift_coeff'],
-            q_min=config.q_min, c_min=config.c_min, c_max=config.c_max,
-            # Stage 6: pre-calibrated walk-forward params
-            calibrated_gw=s6['calibrated_gw'],
-            calibrated_nu_pit=s6['calibrated_nu_pit'],
-            calibrated_beta_probit_corr=s6['calibrated_beta_probit_corr'],
-            calibrated_lambda_rho=s6['calibrated_lambda_rho'],
-            calibrated_nu_crps=s6['calibrated_nu_crps'],
-        )
-
-        # ── CALIBRATION DIAGNOSTICS
-        diagnostics = cls._build_diagnostics(
-            returns_train, vol_train, final_config,
-            nu_opt, beta_opt, log_q_opt, q_opt, c_opt, phi_opt,
-            gamma_opt, sens_opt, alpha_opt, risk_premium_opt,
-            skew_kappa_opt, skew_persistence_fixed, mu_drift_opt,
-            garch['garch_alpha'], garch['garch_beta'], garch['garch_leverage'],
-            rough_hurst_est,
-            jumps['jump_intensity'], jumps['jump_variance'],
-            jumps['jump_sensitivity'], jumps['jump_mean'],
-            config, degraded, cond_num, profile,
-            s5g['rho_leverage'], s5g['kappa_mean_rev'],
-            s5g['sigma_eta'], s5g['t_df_asym'],
-            s5g['regime_switch_prob'], s5g['crps_sigma_shrinkage'],
-            garch_kalman_w, q_vol_zeta,
-            s5h['loc_bias_var_coeff'], s5h['loc_bias_drift_coeff'],
-            asset_class)
-
-        # ── TEST-PERIOD EVALUATION (centralised scoring)
-        # Run filter_and_calibrate once here so tune.py can read
-        # test_sigma, test_crps, test_hyvarinen directly from diagnostics
-        # instead of calling filter_and_calibrate a second time.
-        try:
-            _pit_eval, _pitp_eval, _sig_eval, _crps_eval, _diag_eval = \
-                cls.filter_and_calibrate(returns, vol, final_config, train_frac)
-            _nu_eff_eval = _diag_eval.get('nu_effective', nu_opt)
-            _mu_eff_eval = _diag_eval.get('mu_effective', mu_pred_train)
-            _ret_test_eval = returns[n_train:]
-            # Compute Hyvärinen score inline
-            try:
-                from tuning.diagnostics import (
-                    compute_hyvarinen_score_student_t as _hyv_fn,
-                    compute_crps_student_t_inline as _crps_fn,
-                )
-                _hyv_eval = float(_hyv_fn(
-                    _ret_test_eval, _mu_eff_eval, _sig_eval, _nu_eff_eval))
-            except Exception:
-                _hyv_eval = float('-inf')
-            diagnostics['test_sigma'] = _sig_eval
-            diagnostics['test_crps'] = float(_crps_eval)
-            diagnostics['test_hyvarinen'] = _hyv_eval
-            diagnostics['test_nu_effective'] = float(_nu_eff_eval)
-            diagnostics['test_mu_effective'] = _mu_eff_eval
-            diagnostics['test_returns'] = _ret_test_eval
-            diagnostics['test_pit_pvalue'] = float(_pitp_eval)
-        except Exception:
-            pass  # diagnostics won't have test_* keys — tune.py falls back
-
-        return final_config, diagnostics
-
