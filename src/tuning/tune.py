@@ -2695,7 +2695,14 @@ def compute_extended_pit_metrics_gaussian(
     hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
     hist_freq = hist / len(pit_values)
     hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
-    berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_values)
+    # Berkowitz on TEST split (last 30%) — in-sample Berk always gives p≈0
+    # due to serial dependence from volatility clustering not captured by filter
+    n_test_start_g = int(len(pit_values) * 0.7)
+    pit_test_g = pit_values[n_test_start_g:]
+    if len(pit_test_g) >= 30:
+        berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_test_g)
+    else:
+        berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_values)
     if not np.isfinite(berkowitz_p):
         berkowitz_p = 0.0
     return {
@@ -2737,7 +2744,14 @@ def compute_extended_pit_metrics_student_t(
     hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
     hist_freq = hist / len(pit_clean)
     hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
-    berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_clean)
+    # Berkowitz on TEST split (last 30%) — in-sample Berk always gives p≈0
+    # due to serial dependence from overfitting
+    n_test_start = int(len(pit_clean) * 0.7)
+    pit_test = pit_clean[n_test_start:]
+    if len(pit_test) >= 30:
+        berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_test)
+    else:
+        berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_clean)
     if not np.isfinite(berkowitz_p):
         berkowitz_p = 0.0
     return {
