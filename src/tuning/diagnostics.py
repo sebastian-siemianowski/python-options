@@ -373,29 +373,27 @@ def compute_hyvarinen_model_weights(
 
 def robust_standardize_scores(
     scores: Dict[str, float],
-    eps: float = 1e-8
+    eps: float = 1e-8,
+    max_zscore: float = 5.0,
 ) -> Dict[str, float]:
     """
-    Robust cross-model standardization using median and MAD.
+    Robust cross-model standardization using median and MAD, with winsorization.
     
     Preserves ordering while normalizing heterogeneous score scales.
-    This ensures BIC and Hyvärinen can be meaningfully combined without
-    one dominating due to raw scale differences.
+    Winsorizes at ±max_zscore to prevent extreme outliers from collapsing
+    the softmax: without clipping, a single model with CRPS=0.0035 vs
+    others at 0.0050 produces z=-128, making exp(128/λ) dominate everything.
     
     The MAD is scaled by 1.4826 to be consistent with standard deviation
     for Gaussian data: MAD * 1.4826 ≈ σ for N(μ, σ²).
     
-    Why median/MAD:
-    - Robust to Hyvärinen spikes
-    - Stable in low-n regimes
-    - No Gaussian assumptions (but calibrated to be consistent with σ)
-    
     Args:
         scores: Dictionary mapping model name to raw score
         eps: Small constant to prevent division by zero
+        max_zscore: Maximum absolute z-score (winsorization bound, default ±5)
         
     Returns:
-        Dictionary of standardized scores (zero median, unit scale)
+        Dictionary of standardized scores (zero median, unit scale, clipped to ±max_zscore)
     """
     # Gaussian consistency factor: MAD * 1.4826 ≈ σ for normal distributions
     MAD_CONSISTENCY_FACTOR = 1.4826
@@ -420,11 +418,14 @@ def robust_standardize_scores(
     # Scale MAD to be consistent with standard deviation
     scale = mad * MAD_CONSISTENCY_FACTOR if mad > eps else eps
     
-    # Standardize all scores
+    # Standardize all scores with winsorization
     standardized = {}
     for k, v in scores.items():
         if np.isfinite(v):
-            standardized[k] = (v - median) / scale
+            z = (v - median) / scale
+            # Winsorize: clip to ±max_zscore to prevent softmax collapse
+            z = max(-max_zscore, min(max_zscore, z))
+            standardized[k] = z
         else:
             standardized[k] = v  # Keep non-finite as-is (inf, nan)
     
@@ -1193,6 +1194,34 @@ REGIME_SCORING_WEIGHTS = {
     4: (0.50, 0.20, 0.15, 0.05, 0.10),  # Low Vol: calibration + serial independence
 }
 
+# =============================================================================
+# BERKOWITZ CALIBRATION PENALTY — Likelihood-Normalized (February 2026)
+# =============================================================================
+# Replaces heuristic -log10(p) with principled LR/T per-observation penalty.
+# CalPenalty_m = lambda_cal * Berkowitz_LR_m / T_m
+# where LR = 2*(ll_alt - ll_null) is the Berkowitz likelihood ratio statistic
+# and T is the number of PIT observations.
+#
+# This is likelihood-consistent: dividing by T gives per-observation
+# log-likelihood degradation from miscalibration, making the penalty
+# scale-stable across assets of different sample lengths.
+#
+# lambda_cal is regime-aware: crisis regimes penalize miscalibration harder
+# because tail forecasts are safety-critical.
+# =============================================================================
+BERKOWITZ_CALIBRATION_LAMBDA = 2.0  # Default calibration strength
+
+# Regime-specific lambda_cal: crisis uses stronger penalty (3.0),
+# trending/unknown use default (2.0), low-vol/ranging use milder (1.5)
+# because calibration noise in calm markets shouldn't dominate scoring.
+REGIME_BERKOWITZ_LAMBDA = {
+    0: 2.0,   # Unknown: default
+    1: 3.0,   # Crisis: calibration is safety-critical
+    2: 2.0,   # Trending: standard
+    3: 1.5,   # Ranging: mild — calibration noise higher in range-bound markets
+    4: 1.5,   # Low Vol: mild — small miscalibration is acceptable
+}
+
 # Backward-compat aliases kept so old code referencing these doesn't crash
 DEFAULT_BIC_WEIGHT_COMBINED = 0.0
 DEFAULT_HYVARINEN_WEIGHT_COMBINED = 0.0
@@ -1220,10 +1249,45 @@ def _compute_pit_deviation(pit_pvalues: Dict[str, float]) -> Dict[str, float]:
     return result
 
 
+def _compute_berk_calibration_penalty(
+    berkowitz_lr_stats: Dict[str, float],
+    pit_counts: Dict[str, int],
+    lambda_cal: float = BERKOWITZ_CALIBRATION_LAMBDA,
+) -> Dict[str, float]:
+    """
+    Likelihood-normalized Berkowitz calibration penalty (February 2026).
+
+    CalPenalty_m = lambda_cal * LR_m / T_m
+
+    where LR_m = Berkowitz likelihood ratio statistic (Chi2 test for PIT
+    serial dependence) and T_m = number of PIT observations.
+
+    LR/T gives per-observation log-likelihood degradation from miscalibration,
+    making the penalty scale-stable across assets of different sample lengths
+    and additive in log-likelihood space (BMA-compatible).
+
+    Lower = better calibrated (0 = perfectly calibrated iid PIT).
+    """
+    result = {}
+    all_models = set(berkowitz_lr_stats.keys()) | set(pit_counts.keys())
+    for m in all_models:
+        lr = berkowitz_lr_stats.get(m, 0.0)
+        T = pit_counts.get(m, 0)
+        if T > 0 and np.isfinite(lr):
+            result[m] = lambda_cal * lr / T
+        else:
+            # No valid data — assign median penalty (handled by standardization)
+            result[m] = 0.0
+    return result
+
+
 def _compute_berk_penalty(berk_pvalues: Dict[str, float]) -> Dict[str, float]:
     """
-    Berkowitz penalty: -log10(max(p, 1e-10)).
+    Legacy Berkowitz penalty: -log10(max(p, 1e-10)).
     p~1 -> 0 (good), p~0 -> large (bad). Lower is better.
+
+    Kept as fallback when only p-values are available (no raw LR stats).
+    Prefer _compute_berk_calibration_penalty when berkowitz_lr_stats available.
     """
     result = {}
     for m, p in berk_pvalues.items():
@@ -1268,6 +1332,8 @@ def compute_regime_aware_model_weights(
     crps_values: Optional[Dict[str, float]] = None,
     pit_pvalues: Optional[Dict[str, float]] = None,
     berk_pvalues: Optional[Dict[str, float]] = None,
+    berkowitz_lr_stats: Optional[Dict[str, float]] = None,
+    pit_counts: Optional[Dict[str, int]] = None,
     mad_values: Optional[Dict[str, float]] = None,
     regime: Optional[int] = None,
     bic_weight: Optional[float] = None,
@@ -1287,25 +1353,40 @@ def compute_regime_aware_model_weights(
     enter the selection score.
 
     Args:
-        bic_values:       BIC per model (kept for metadata, not used in score)
-        hyvarinen_scores: Hyvarinen per model (kept for metadata, not used in score)
-        crps_values:      CRPS per model (lower = better)
-        pit_pvalues:      PIT KS p-values per model (higher = better calibration)
-        berk_pvalues:     Berkowitz p-values per model (higher = better)
-        mad_values:       Histogram MAD per model (lower = better)
-        regime:           Regime index for adaptive weights (0-4)
-        bic_weight:       Ignored (backward compat)
-        hyvarinen_weight: Ignored (backward compat)
-        crps_weight:      Ignored (backward compat)
-        lambda_entropy:   Entropy regularisation strength
-        epsilon:          Minimum weight floor
+        bic_values:        BIC per model (kept for metadata, not used in score)
+        hyvarinen_scores:  Hyvarinen per model (kept for metadata, not used in score)
+        crps_values:       CRPS per model (lower = better)
+        pit_pvalues:       PIT KS p-values per model (higher = better calibration)
+        berk_pvalues:      Berkowitz p-values per model (fallback when LR stats unavailable)
+        berkowitz_lr_stats: Raw Berkowitz LR statistics per model (preferred over p-values).
+                           When provided with pit_counts, uses likelihood-normalized penalty
+                           CalPenalty = lambda_cal * LR/T instead of heuristic -log10(p).
+        pit_counts:        Number of PIT observations per model (for LR normalization)
+        mad_values:        Histogram MAD per model (lower = better)
+        regime:            Regime index for adaptive weights and lambda_cal (0-4)
+        bic_weight:        Ignored (backward compat)
+        hyvarinen_weight:  Ignored (backward compat)
+        crps_weight:       Ignored (backward compat)
+        lambda_entropy:    Entropy regularisation strength
+        epsilon:           Minimum weight floor
     """
     all_models = set(bic_values.keys())
 
     has_crps = crps_values is not None and len(crps_values) > 0
     has_pit = pit_pvalues is not None and len(pit_pvalues) > 0
     has_berk = berk_pvalues is not None and len(berk_pvalues) > 0
+    has_berk_lr = (berkowitz_lr_stats is not None and len(berkowitz_lr_stats) > 0
+                   and pit_counts is not None and len(pit_counts) > 0)
     has_mad = mad_values is not None and len(mad_values) > 0
+
+    # Berkowitz component is available if we have either LR stats or p-values
+    has_any_berk = has_berk_lr or has_berk
+
+    # Regime-aware lambda_cal for Berkowitz calibration penalty
+    if regime is not None and regime in REGIME_BERKOWITZ_LAMBDA:
+        lambda_cal = REGIME_BERKOWITZ_LAMBDA[regime]
+    else:
+        lambda_cal = BERKOWITZ_CALIBRATION_LAMBDA
 
     # Select regime-aware weights
     if regime is not None and regime in REGIME_SCORING_WEIGHTS:
@@ -1316,7 +1397,7 @@ def compute_regime_aware_model_weights(
     # If components are missing, redistribute their weight to CRPS
     if not has_pit:
         w_crps += w_pit; w_pit = 0.0
-    if not has_berk:
+    if not has_any_berk:
         w_crps += w_berk; w_berk = 0.0
     if not has_mad:
         w_crps += w_mad; w_mad = 0.0
@@ -1350,8 +1431,19 @@ def compute_regime_aware_model_weights(
     pit_dev_raw = _compute_pit_deviation(pit_pvalues) if has_pit else {}
     pit_dev_std = robust_standardize_scores(pit_dev_raw) if pit_dev_raw else {}
 
-    # Berkowitz penalty: -log10(p), lower = better
-    berk_raw = _compute_berk_penalty(berk_pvalues) if has_berk else {}
+    # Berkowitz calibration penalty: LR/T (preferred) or -log10(p) (fallback)
+    # When raw LR stats are available, use likelihood-normalized penalty:
+    #   CalPenalty_m = lambda_cal * LR_m / T_m
+    # This is scale-stable across assets and likelihood-consistent.
+    if has_berk_lr:
+        berk_raw = _compute_berk_calibration_penalty(berkowitz_lr_stats, pit_counts, lambda_cal)
+        berk_method = "lr_normalized"
+    elif has_berk:
+        berk_raw = _compute_berk_penalty(berk_pvalues)
+        berk_method = "log10_pvalue"
+    else:
+        berk_raw = {}
+        berk_method = "none"
     berk_std = robust_standardize_scores(berk_raw) if berk_raw else {}
 
     # Tail error: combined PIT+CRPS proxy, lower = better
@@ -1384,6 +1476,7 @@ def compute_regime_aware_model_weights(
         "crps_standardized": {k: float(v) if np.isfinite(v) else None for k, v in crps_std.items()},
         "pit_dev_standardized": {k: float(v) if np.isfinite(v) else None for k, v in pit_dev_std.items()},
         "berk_standardized": {k: float(v) if np.isfinite(v) else None for k, v in berk_std.items()},
+        "berk_raw": {k: float(v) if np.isfinite(v) else None for k, v in berk_raw.items()},
         "tail_standardized": {k: float(v) if np.isfinite(v) else None for k, v in tail_std.items()},
         "mad_standardized": {k: float(v) if np.isfinite(v) else None for k, v in mad_std.items()},
         "combined_scores_standardized": {k: float(v) if np.isfinite(v) else None for k, v in combined_scores.items()},
@@ -1391,6 +1484,8 @@ def compute_regime_aware_model_weights(
             "crps": float(w_crps), "pit_dev": float(w_pit), "berk": float(w_berk),
             "tail": float(w_tail), "mad": float(w_mad),
         },
+        "berkowitz_method": berk_method,
+        "berkowitz_lambda_cal": float(lambda_cal),
         "regime": regime,
         "lambda_entropy": lambda_entropy,
         "crps_enabled": has_crps,

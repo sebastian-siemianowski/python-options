@@ -1894,7 +1894,7 @@ class PhiStudentTDriftModel:
         pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
         hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
         mad = float(np.mean(np.abs(hist / n_test - 0.1)))
-        berkowitz_pvalue = cls._compute_berkowitz_pvalue(pit_values)
+        berkowitz_pvalue, berkowitz_lr, berkowitz_n_pit = cls._compute_berkowitz_full(pit_values)
 
         innovations = returns_test - mu_pred_test
         variance_ratio = float(np.var(innovations)) / (float(np.mean(S_calibrated)) + 1e-12)
@@ -1905,7 +1905,9 @@ class PhiStudentTDriftModel:
         _crps_shrink = float(np.clip(float(getattr(config, 'crps_sigma_shrinkage', 1.0)), 0.30, 1.0))
 
         diagnostics = {
-            'pit_pvalue': pit_pvalue, 'berkowitz_pvalue': berkowitz_pvalue, 'mad': mad,
+            'pit_pvalue': pit_pvalue, 'berkowitz_pvalue': berkowitz_pvalue,
+            'berkowitz_lr': float(berkowitz_lr), 'pit_count': int(berkowitz_n_pit),
+            'mad': mad,
             'nu_effective': nu_crps, 'nu_pit': nu, 'variance_ratio': variance_ratio,
             'skewness': 0.0, 'crps': crps, 'log_likelihood': ll,
             'n_train': n_train, 'n_test': n_test,
@@ -2094,14 +2096,26 @@ class PhiStudentTDriftModel:
 
     @staticmethod
     def _compute_berkowitz_pvalue(pit_values):
-        """Berkowitz (2001) LR test: H0 Phi^-1(PIT)~N(0,1) iid vs H1 AR(1). Chi2(3)."""
+        """Berkowitz (2001) p-value only. Wrapper around _compute_berkowitz_full."""
+        return PhiStudentTDriftModel._compute_berkowitz_full(pit_values)[0]
+
+    @staticmethod
+    def _compute_berkowitz_full(pit_values):
+        """
+        Berkowitz (2001) LR test: H0 Phi^-1(PIT)~N(0,1) iid vs H1 AR(1). Chi2(3).
+
+        Returns (p_value, lr_statistic, n_pit):
+            p_value:      1 - Chi2_cdf(LR, df=3). Higher = better calibrated.
+            lr_statistic: Raw LR = 2*(ll_alt - ll_null). Per-obs penalty = LR/T.
+            n_pit:        Number of valid PIT observations used in the test.
+        """
         try:
             from scipy.stats import norm, chi2
             z = norm.ppf(np.clip(pit_values, 0.0001, 0.9999))
             z = z[np.isfinite(z)]
             n_z = len(z)
             if n_z <= 20:
-                return float('nan')
+                return (float('nan'), 0.0, n_z)
             mu_hat = float(np.mean(z))
             var_hat = float(np.var(z, ddof=0))
             z_c = z - mu_hat
@@ -2113,9 +2127,11 @@ class PhiStudentTDriftModel:
             for t in range(1, n_z):
                 resid = z[t] - (mu_hat + rho_hat * (z[t - 1] - mu_hat))
                 ll_alt += -0.5 * np.log(2 * np.pi * sigma_sq_cond) - 0.5 * resid ** 2 / sigma_sq_cond
-            return float(1 - chi2.cdf(max(2 * (ll_alt - ll_null), 0), df=3))
+            lr_stat = float(max(2 * (ll_alt - ll_null), 0))
+            p_value = float(1 - chi2.cdf(lr_stat, df=3))
+            return (p_value, lr_stat, n_z)
         except Exception:
-            return float('nan')
+            return (float('nan'), 0.0, 0)
 
     @classmethod
     def _compute_crps_output(cls, returns_test, mu_pred_test, mu_effective, sigma,
@@ -2209,8 +2225,8 @@ class PhiStudentTDriftModel:
         else:
             grade = "F"
 
-        # Compute Berkowitz p-value for serial dependence
-        berkowitz_p = cls._compute_berkowitz_pvalue(pit_clean)
+        # Compute Berkowitz p-value and LR statistic for serial dependence
+        berkowitz_p, berkowitz_lr, berkowitz_n_pit = cls._compute_berkowitz_full(pit_clean)
 
         metrics = {
             "n_samples": len(pit_clean),
@@ -2218,6 +2234,8 @@ class PhiStudentTDriftModel:
             "ks_pvalue": float(ks_result.pvalue),
             "histogram_mad": hist_mad,
             "berkowitz_pvalue": float(berkowitz_p) if np.isfinite(berkowitz_p) else 0.0,
+            "berkowitz_lr": float(berkowitz_lr),
+            "pit_count": int(berkowitz_n_pit),
             "calibration_grade": grade,
             "calibrated": hist_mad < 0.05,
         }

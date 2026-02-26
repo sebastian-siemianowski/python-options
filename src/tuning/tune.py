@@ -1707,12 +1707,19 @@ def tune_asset_q(
         mad_values = {m: models[m]["histogram_mad"] for m in models
                       if models[m].get("fit_success", False)
                       and models[m].get("histogram_mad") is not None}
+        berk_lr_values = {m: models[m]["berkowitz_lr"] for m in models
+                          if models[m].get("fit_success", False)
+                          and models[m].get("berkowitz_lr") is not None}
+        pit_count_values = {m: models[m]["pit_count"] for m in models
+                            if models[m].get("fit_success", False)
+                            and models[m].get("pit_count") is not None}
         
         # Use elite CRPS-dominated scoring with PIT/Berk/MAD penalties
         if crps_values and CRPS_SCORING_ENABLED:
             model_weights, weight_meta = compute_regime_aware_model_weights(
                 bic_values, hyvarinen_values, crps_values,
                 pit_pvalues=pit_pvalues, berk_pvalues=berk_pvalues,
+                berkowitz_lr_stats=berk_lr_values, pit_counts=pit_count_values,
                 mad_values=mad_values, regime=None
             )
         else:
@@ -2690,7 +2697,8 @@ def compute_extended_pit_metrics_gaussian(
     pit_values = _norm_dist.cdf(standardized[valid_mask])
     if len(pit_values) < 20:
         return {"ks_statistic": 1.0, "pit_ks_pvalue": 0.0,
-                "berkowitz_pvalue": 0.0, "histogram_mad": 1.0}
+                "berkowitz_pvalue": 0.0, "berkowitz_lr": 0.0,
+                "pit_count": 0, "histogram_mad": 1.0}
     ks_result = kstest(pit_values, 'uniform')
     hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
     hist_freq = hist / len(pit_values)
@@ -2700,15 +2708,17 @@ def compute_extended_pit_metrics_gaussian(
     n_test_start_g = int(len(pit_values) * 0.7)
     pit_test_g = pit_values[n_test_start_g:]
     if len(pit_test_g) >= 30:
-        berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_test_g)
+        berkowitz_p, berkowitz_lr_g, pit_count_g = PhiStudentTDriftModel._compute_berkowitz_full(pit_test_g)
     else:
-        berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_values)
+        berkowitz_p, berkowitz_lr_g, pit_count_g = PhiStudentTDriftModel._compute_berkowitz_full(pit_values)
     if not np.isfinite(berkowitz_p):
         berkowitz_p = 0.0
     return {
         "ks_statistic": float(ks_result.statistic),
         "pit_ks_pvalue": float(ks_result.pvalue),
         "berkowitz_pvalue": float(berkowitz_p),
+        "berkowitz_lr": float(berkowitz_lr_g),
+        "pit_count": int(pit_count_g),
         "histogram_mad": float(hist_mad),
     }
 
@@ -2739,7 +2749,8 @@ def compute_extended_pit_metrics_student_t(
     pit_clean = np.clip(pit_values[valid], 0, 1)
     if len(pit_clean) < 20:
         return {"ks_statistic": 1.0, "pit_ks_pvalue": 0.0,
-                "berkowitz_pvalue": 0.0, "histogram_mad": 1.0}
+                "berkowitz_pvalue": 0.0, "berkowitz_lr": 0.0,
+                "pit_count": 0, "histogram_mad": 1.0}
     ks_result = kstest(pit_clean, 'uniform')
     hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
     hist_freq = hist / len(pit_clean)
@@ -2749,15 +2760,17 @@ def compute_extended_pit_metrics_student_t(
     n_test_start = int(len(pit_clean) * 0.7)
     pit_test = pit_clean[n_test_start:]
     if len(pit_test) >= 30:
-        berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_test)
+        berkowitz_p, berkowitz_lr_st, pit_count_st = PhiStudentTDriftModel._compute_berkowitz_full(pit_test)
     else:
-        berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_clean)
+        berkowitz_p, berkowitz_lr_st, pit_count_st = PhiStudentTDriftModel._compute_berkowitz_full(pit_clean)
     if not np.isfinite(berkowitz_p):
         berkowitz_p = 0.0
     return {
         "ks_statistic": float(ks_result.statistic),
         "pit_ks_pvalue": float(ks_result.pvalue),
         "berkowitz_pvalue": float(berkowitz_p),
+        "berkowitz_lr": float(berkowitz_lr_st),
+        "pit_count": int(pit_count_st),
         "histogram_mad": float(hist_mad),
     }
 
@@ -3235,6 +3248,8 @@ def fit_all_models_for_regime(
                 "ks_statistic": float(ks_st),
                 "pit_ks_pvalue": float(pit_p_st),
                 "berkowitz_pvalue": float(_berk_st),
+                "berkowitz_lr": float(_pit_ext_base.get("berkowitz_lr", 0.0)),
+                "pit_count": int(_pit_ext_base.get("pit_count", 0)),
                 "histogram_mad": float(_mad_st),
                 "fit_success": True,
                 "diagnostics": diag_st,
@@ -3331,6 +3346,12 @@ def fit_all_models_for_regime(
                 _bd = _calib_diag_u.get('berkowitz_pvalue')
                 if _bd is not None and np.isfinite(_bd):
                     _calibrated_berk_u = float(_bd)
+                _blr = _calib_diag_u.get('berkowitz_lr')
+                if _blr is not None and np.isfinite(_blr):
+                    _calibrated_berk_lr_u = float(_blr)
+                _bpc = _calib_diag_u.get('pit_count')
+                if _bpc is not None and _bpc > 0:
+                    _calibrated_pit_count_u = int(_bpc)
                 _md = _calib_diag_u.get('mad')
                 if _md is not None and np.isfinite(_md):
                     _calibrated_mad_u = float(_md)
@@ -3440,6 +3461,8 @@ def fit_all_models_for_regime(
                 "pit_calibration_grade": pit_metrics.get("calibration_grade", "F"),
                 "histogram_mad": float(_calibrated_mad_u),
                 "berkowitz_pvalue": float(_calibrated_berk_u),
+                "berkowitz_lr": float(_calibrated_berk_lr_u),
+                "pit_count": int(_calibrated_pit_count_u),
                 # Metadata
                 "fit_success": True,
                 "unified_model": True,
@@ -3682,6 +3705,8 @@ def fit_all_models_for_regime(
                 "ks_statistic": float(ks_mom),
                 "pit_ks_pvalue": float(pit_p_mom),
                 "berkowitz_pvalue": float(pit_ext_kg["berkowitz_pvalue"]),
+                "berkowitz_lr": float(pit_ext_kg.get("berkowitz_lr", 0.0)),
+                "pit_count": int(pit_ext_kg.get("pit_count", 0)),
                 "histogram_mad": float(pit_ext_kg["histogram_mad"]),
                 "fit_success": True,
                 "momentum_augmented": True,
@@ -3758,6 +3783,8 @@ def fit_all_models_for_regime(
                 "ks_statistic": float(ks_mom),
                 "pit_ks_pvalue": float(pit_p_mom),
                 "berkowitz_pvalue": float(pit_ext_phig["berkowitz_pvalue"]),
+                "berkowitz_lr": float(pit_ext_phig.get("berkowitz_lr", 0.0)),
+                "pit_count": int(pit_ext_phig.get("pit_count", 0)),
                 "histogram_mad": float(pit_ext_phig["histogram_mad"]),
                 "fit_success": True,
                 "momentum_augmented": True,
@@ -3834,6 +3861,8 @@ def fit_all_models_for_regime(
                         "ks_statistic": float(ks_mom),
                         "pit_ks_pvalue": float(pit_p_mom),
                         "berkowitz_pvalue": float(pit_ext_stm["berkowitz_pvalue"]),
+                        "berkowitz_lr": float(pit_ext_stm.get("berkowitz_lr", 0.0)),
+                        "pit_count": int(pit_ext_stm.get("pit_count", 0)),
                         "histogram_mad": float(pit_ext_stm["histogram_mad"]),
                         "fit_success": True,
                         "momentum_augmented": True,
@@ -3940,6 +3969,8 @@ def fit_all_models_for_regime(
                         "ks_statistic": float(ks_gas),
                         "pit_ks_pvalue": float(pit_p_gas),
                         "berkowitz_pvalue": float(pit_ext_gas["berkowitz_pvalue"]),
+                        "berkowitz_lr": float(pit_ext_gas.get("berkowitz_lr", 0.0)),
+                        "pit_count": int(pit_ext_gas.get("pit_count", 0)),
                         "histogram_mad": float(pit_ext_gas["histogram_mad"]),
                         "fit_success": True,
                         "gas_q_augmented": True,
@@ -4684,6 +4715,12 @@ def fit_regime_model_posterior(
         mad_values = {m: models[m]["histogram_mad"] for m in models
                       if models[m].get("fit_success", False)
                       and models[m].get("histogram_mad") is not None}
+        berk_lr_regime = {m: models[m]["berkowitz_lr"] for m in models
+                         if models[m].get("fit_success", False)
+                         and models[m].get("berkowitz_lr") is not None}
+        pit_count_regime = {m: models[m]["pit_count"] for m in models
+                           if models[m].get("fit_success", False)
+                           and models[m].get("pit_count") is not None}
         
         # LFO-CV scores for proper out-of-sample model selection (February 2026)
         lfo_cv_scores = {}
@@ -4754,6 +4791,9 @@ def fit_regime_model_posterior(
             raw_weights, weight_metadata = compute_regime_aware_model_weights(
                 bic_values, hyvarinen_scores, crps_values,
                 pit_pvalues=pit_pvalues,  # February 2026 - Elite PIT calibration
+                berk_pvalues=berk_pvalues,
+                berkowitz_lr_stats=berk_lr_regime, pit_counts=pit_count_regime,
+                mad_values=mad_values,
                 regime=regime, 
                 bic_weight=0.50, hyvarinen_weight=0.0, crps_weight=0.50,
                 lambda_entropy=DEFAULT_ENTROPY_LAMBDA
@@ -4767,6 +4807,9 @@ def fit_regime_model_posterior(
             raw_weights, weight_metadata = compute_regime_aware_model_weights(
                 bic_values, hyvarinen_scores, crps_values,
                 pit_pvalues=pit_pvalues,  # February 2026 - Elite PIT calibration
+                berk_pvalues=berk_pvalues,
+                berkowitz_lr_stats=berk_lr_regime, pit_counts=pit_count_regime,
+                mad_values=mad_values,
                 regime=regime, lambda_entropy=DEFAULT_ENTROPY_LAMBDA
             )
             w_used = weight_metadata.get('weights_used', {})
@@ -5062,6 +5105,10 @@ def tune_regime_model_averaging(
                   if global_models[m].get("fit_success", False) and global_models[m].get("pit_ks_pvalue") is not None}
     global_berk = {m: global_models[m]["berkowitz_pvalue"] for m in global_models
                    if global_models[m].get("fit_success", False) and global_models[m].get("berkowitz_pvalue") is not None}
+    global_berk_lr = {m: global_models[m]["berkowitz_lr"] for m in global_models
+                      if global_models[m].get("fit_success", False) and global_models[m].get("berkowitz_lr") is not None}
+    global_pit_counts = {m: global_models[m]["pit_count"] for m in global_models
+                         if global_models[m].get("fit_success", False) and global_models[m].get("pit_count") is not None}
     global_mad = {m: global_models[m]["histogram_mad"] for m in global_models
                   if global_models[m].get("fit_success", False) and global_models[m].get("histogram_mad") is not None}
     fallback_weight_metadata = None
@@ -5070,6 +5117,7 @@ def tune_regime_model_averaging(
         global_raw_weights, fallback_weight_metadata = compute_regime_aware_model_weights(
             global_bic, global_hyvarinen, global_crps,
             pit_pvalues=global_pit, berk_pvalues=global_berk,
+            berkowitz_lr_stats=global_berk_lr, pit_counts=global_pit_counts,
             mad_values=global_mad, regime=None,
             lambda_entropy=DEFAULT_ENTROPY_LAMBDA
         )
