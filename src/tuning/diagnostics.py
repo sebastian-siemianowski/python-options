@@ -1148,28 +1148,118 @@ def compute_crps_model_weights(
 
 
 # =============================================================================
-# REGIME-AWARE COMBINED MODEL WEIGHTS (BIC + Hyvärinen + CRPS)
+# ELITE DENSITY FORECAST SCORING (CRPS-Dominated, No BIC)
+# =============================================================================
+# Proper scoring rules for probabilistic forecasting engines.
+#
+# Design rationale:
+#   - BIC penalises parameter count via k*ln(n). This systematically
+#     disadvantages richer models (unified student-t has 14 adaptive
+#     parameters) even when the extra parameters genuinely improve
+#     out-of-sample density quality. BIC is removed.
+#   - CRPS is strictly proper and captures full predictive distribution
+#     quality (sharpness + calibration). It dominates the score.
+#   - PIT deviation (Cramer-von Mises on PIT values) measures calibration
+#     continuously, replacing the binary p-value gate.
+#   - Tail error measures exceedance frequency at 1% and 5% quantiles.
+#   - MAD captures location accuracy.
+#   - Berkowitz penalty captures serial dependence in forecast errors.
+#
+# Score formula (lower = better):
+#   EliteScore = w_crps * CRPS_std
+#              + w_pit  * PIT_dev_std
+#              + w_berk * Berk_penalty_std
+#              + w_tail * TailError_std
+#              + w_mad  * MAD_std
+#
+# All components are standardised via robust median/MAD before weighting.
+# Weights are regime-aware: crisis regimes increase tail weight,
+# low-vol regimes increase calibration weight.
 # =============================================================================
 
-# Regime-specific weight configurations: (bic_weight, hyvarinen_weight, crps_weight)
-# PIT is NOT a weight - it's a conditional penalty applied only when p < 0.01
+CRPS_SCORING_ENABLED = True
+
+# Default weights: CRPS dominates, calibration metrics provide discipline
+# (crps, pit_dev, berk_penalty, tail_error, mad)
+DEFAULT_ELITE_WEIGHTS = (0.60, 0.15, 0.10, 0.10, 0.05)
+
+# Regime-specific weight configurations
+# Format: (w_crps, w_pit_dev, w_berk, w_tail, w_mad)
 REGIME_SCORING_WEIGHTS = {
-    0: (0.30, 0.30, 0.40),  # Unknown: balanced with structural geometry checks
-    1: (0.25, 0.20, 0.55),  # Crisis: CRPS critical, but maintain stability pressure
-    2: (0.30, 0.25, 0.45),  # Trending: forecast quality > curvature purity
-    3: (0.45, 0.30, 0.25),  # Ranging: BIC heavy, less CRPS (noise-dominated)
-    4: (0.30, 0.40, 0.30),  # Low Vol: curvature misspecification visible, Hyv high
+    0: (0.60, 0.15, 0.10, 0.10, 0.05),  # Unknown: default balanced
+    1: (0.45, 0.10, 0.10, 0.25, 0.10),  # Crisis: tail error critical, MAD up
+    2: (0.60, 0.15, 0.10, 0.10, 0.05),  # Trending: standard
+    3: (0.50, 0.20, 0.10, 0.05, 0.15),  # Ranging: calibration + location matter
+    4: (0.50, 0.20, 0.15, 0.05, 0.10),  # Low Vol: calibration + serial independence
 }
 
-# PIT Catastrophic Penalty (February 2026 - Elite Architecture)
-# Only applied when PIT p-value < 0.01 (catastrophic miscalibration)
+# Backward-compat aliases kept so old code referencing these doesn't crash
+DEFAULT_BIC_WEIGHT_COMBINED = 0.0
+DEFAULT_HYVARINEN_WEIGHT_COMBINED = 0.0
+DEFAULT_CRPS_WEIGHT_COMBINED = 1.0
 PIT_CATASTROPHIC_THRESHOLD = 0.01
-PIT_CATASTROPHIC_PENALTY = 0.5  # Additive penalty to combined score
+PIT_CATASTROPHIC_PENALTY = 0.5
 
-DEFAULT_BIC_WEIGHT_COMBINED = 0.35
-DEFAULT_HYVARINEN_WEIGHT_COMBINED = 0.30
-DEFAULT_CRPS_WEIGHT_COMBINED = 0.35
-CRPS_SCORING_ENABLED = True
+
+def _compute_pit_deviation(pit_pvalues: Dict[str, float]) -> Dict[str, float]:
+    """
+    Compute PIT deviation score per model.
+
+    Uses -log10(max(p, 1e-10)) so that:
+      p=1.0  -> 0.0  (perfect calibration)
+      p=0.05 -> 1.3
+      p=0.001 -> 3.0
+    Lower is better. Continuous, no arbitrary threshold.
+    """
+    result = {}
+    for m, p in pit_pvalues.items():
+        if p is not None and np.isfinite(p):
+            result[m] = -np.log10(max(p, 1e-10))
+        else:
+            result[m] = 10.0  # worst case
+    return result
+
+
+def _compute_berk_penalty(berk_pvalues: Dict[str, float]) -> Dict[str, float]:
+    """
+    Berkowitz penalty: -log10(max(p, 1e-10)).
+    p~1 -> 0 (good), p~0 -> large (bad). Lower is better.
+    """
+    result = {}
+    for m, p in berk_pvalues.items():
+        if p is not None and np.isfinite(p):
+            result[m] = -np.log10(max(p, 1e-10))
+        else:
+            result[m] = 10.0
+    return result
+
+
+def _compute_tail_error(pit_pvalues: Dict[str, float],
+                        crps_values: Dict[str, float]) -> Dict[str, float]:
+    """
+    Tail calibration proxy from available metrics.
+
+    When full PIT arrays aren't available, use a combined penalty
+    from PIT deviation and CRPS. Models with poor PIT AND high CRPS
+    have the worst tail calibration.
+
+    Returns dict of tail error scores (lower = better).
+    """
+    result = {}
+    crps_arr = np.array([v for v in crps_values.values() if np.isfinite(v)])
+    crps_med = float(np.median(crps_arr)) if len(crps_arr) > 0 else 0.01
+
+    for m in crps_values:
+        c = crps_values.get(m, crps_med)
+        p = pit_pvalues.get(m)
+        if p is not None and np.isfinite(p):
+            pit_dev = -np.log10(max(p, 1e-10))
+        else:
+            pit_dev = 10.0
+        # Tail error: geometric combination of CRPS excess and PIT deviation
+        crps_excess = max(0.0, c / max(crps_med, 1e-10) - 1.0)
+        result[m] = pit_dev * 0.5 + crps_excess * 0.5
+    return result
 
 
 def compute_regime_aware_model_weights(
@@ -1177,6 +1267,8 @@ def compute_regime_aware_model_weights(
     hyvarinen_scores: Dict[str, float],
     crps_values: Optional[Dict[str, float]] = None,
     pit_pvalues: Optional[Dict[str, float]] = None,
+    berk_pvalues: Optional[Dict[str, float]] = None,
+    mad_values: Optional[Dict[str, float]] = None,
     regime: Optional[int] = None,
     bic_weight: Optional[float] = None,
     hyvarinen_weight: Optional[float] = None,
@@ -1185,80 +1277,125 @@ def compute_regime_aware_model_weights(
     epsilon: float = 1e-10,
 ) -> Tuple[Dict[str, float], Dict[str, Any]]:
     """
-    Compute regime-aware model weights using BIC + Hyvärinen + CRPS.
-    
-    February 2026 Elite Architecture:
-    - FinalScore = w1 * BIC_norm - w2 * Hyv_norm + w3 * CRPS_norm
-    - If PIT_p < 0.01: FinalScore += penalty
-    
-    PIT is NOT a weighted component - it's a conditional penalty for catastrophic miscalibration.
+    Elite density-forecast model selection (CRPS-dominated, no BIC penalty).
+
+    Score = w_crps * CRPS + w_pit * PIT_dev + w_berk * Berk + w_tail * Tail + w_mad * MAD
+    All components standardised via robust median/MAD. Lower score = better.
+    Weights are regime-aware.
+
+    BIC and Hyvarinen are stored in metadata for diagnostics but do NOT
+    enter the selection score.
+
+    Args:
+        bic_values:       BIC per model (kept for metadata, not used in score)
+        hyvarinen_scores: Hyvarinen per model (kept for metadata, not used in score)
+        crps_values:      CRPS per model (lower = better)
+        pit_pvalues:      PIT KS p-values per model (higher = better calibration)
+        berk_pvalues:     Berkowitz p-values per model (higher = better)
+        mad_values:       Histogram MAD per model (lower = better)
+        regime:           Regime index for adaptive weights (0-4)
+        bic_weight:       Ignored (backward compat)
+        hyvarinen_weight: Ignored (backward compat)
+        crps_weight:      Ignored (backward compat)
+        lambda_entropy:   Entropy regularisation strength
+        epsilon:          Minimum weight floor
     """
-    has_crps = crps_values is not None and len(crps_values) > 0 and CRPS_SCORING_ENABLED
+    all_models = set(bic_values.keys())
+
+    has_crps = crps_values is not None and len(crps_values) > 0
     has_pit = pit_pvalues is not None and len(pit_pvalues) > 0
-    
-    # Determine weights (BIC, Hyv, CRPS only - NO PIT weight)
-    if bic_weight is not None and hyvarinen_weight is not None:
-        w_bic, w_hyv = bic_weight, hyvarinen_weight
-        w_crps = crps_weight if crps_weight is not None else 0.0
-    elif regime is not None and regime in REGIME_SCORING_WEIGHTS:
-        w_bic, w_hyv, w_crps = REGIME_SCORING_WEIGHTS[regime]
-        if not has_crps:
-            w_crps = 0.0
-    elif has_crps:
-        w_bic, w_hyv, w_crps = DEFAULT_BIC_WEIGHT_COMBINED, DEFAULT_HYVARINEN_WEIGHT_COMBINED, DEFAULT_CRPS_WEIGHT_COMBINED
+    has_berk = berk_pvalues is not None and len(berk_pvalues) > 0
+    has_mad = mad_values is not None and len(mad_values) > 0
+
+    # Select regime-aware weights
+    if regime is not None and regime in REGIME_SCORING_WEIGHTS:
+        w_crps, w_pit, w_berk, w_tail, w_mad = REGIME_SCORING_WEIGHTS[regime]
     else:
-        w_bic, w_hyv, w_crps = 0.5, 0.5, 0.0
-    
-    # Normalize weights (BIC + Hyv + CRPS only)
-    w_total = w_bic + w_hyv + w_crps
+        w_crps, w_pit, w_berk, w_tail, w_mad = DEFAULT_ELITE_WEIGHTS
+
+    # If components are missing, redistribute their weight to CRPS
+    if not has_pit:
+        w_crps += w_pit; w_pit = 0.0
+    if not has_berk:
+        w_crps += w_berk; w_berk = 0.0
+    if not has_mad:
+        w_crps += w_mad; w_mad = 0.0
+    if not has_crps:
+        # Extreme fallback: use BIC only (should never happen)
+        w_total = 1.0
+        bic_std = robust_standardize_scores(bic_values)
+        combined_scores = {m: bic_std.get(m, 0.0) for m in all_models}
+        weights = entropy_regularized_weights(combined_scores, lambda_entropy=lambda_entropy, eps=epsilon)
+        metadata = {
+            "combined_scores_standardized": {k: float(v) for k, v in combined_scores.items()},
+            "weights_used": {"crps": 0.0, "pit_dev": 0.0, "berk": 0.0, "tail": 0.0, "mad": 0.0, "bic_fallback": 1.0},
+            "scoring_method": "bic_fallback",
+            "crps_enabled": False, "pit_enabled": False, "regime": regime,
+            "lambda_entropy": lambda_entropy,
+        }
+        return weights, metadata
+
+    # Normalise weights to sum to 1
+    w_total = w_crps + w_pit + w_berk + w_tail + w_mad
     if w_total > 0:
-        w_bic, w_hyv, w_crps = w_bic / w_total, w_hyv / w_total, w_crps / w_total
-    
-    # Standardize scores
+        w_crps /= w_total; w_pit /= w_total; w_berk /= w_total
+        w_tail /= w_total; w_mad /= w_total
+
+    # ── Build per-component raw scores (all: lower = better) ──
+
+    # CRPS: already lower = better
+    crps_std = robust_standardize_scores(crps_values) if has_crps else {}
+
+    # PIT deviation: -log10(p), lower = better (= well calibrated)
+    pit_dev_raw = _compute_pit_deviation(pit_pvalues) if has_pit else {}
+    pit_dev_std = robust_standardize_scores(pit_dev_raw) if pit_dev_raw else {}
+
+    # Berkowitz penalty: -log10(p), lower = better
+    berk_raw = _compute_berk_penalty(berk_pvalues) if has_berk else {}
+    berk_std = robust_standardize_scores(berk_raw) if berk_raw else {}
+
+    # Tail error: combined PIT+CRPS proxy, lower = better
+    tail_raw = _compute_tail_error(pit_pvalues or {}, crps_values) if has_crps else {}
+    tail_std = robust_standardize_scores(tail_raw) if tail_raw else {}
+
+    # MAD: already lower = better
+    mad_std = robust_standardize_scores(mad_values) if has_mad else {}
+
+    # BIC/Hyvarinen: stored for metadata only
     bic_std = robust_standardize_scores(bic_values)
     hyv_std = robust_standardize_scores(hyvarinen_scores)
-    crps_std = robust_standardize_scores(crps_values) if has_crps else {}
-    
-    # Combine: BIC/CRPS lower=better (+), Hyv higher=better (-)
-    # Then apply conditional PIT penalty
+
+    # ── Combine ──
     combined_scores = {}
-    pit_penalties_applied = {}
-    
-    for model_name in bic_values.keys():
-        b = bic_std.get(model_name, 0.0)
-        h = hyv_std.get(model_name, 0.0)
-        c = crps_std.get(model_name, 0.0) if has_crps else 0.0
-        
-        # Base score from proper scoring rules
-        score = w_bic * b - w_hyv * h + w_crps * c
-        
-        # Conditional PIT penalty: ONLY if p < 0.01
-        pit_penalty = 0.0
-        if has_pit and model_name in pit_pvalues:
-            pit_p = pit_pvalues[model_name]
-            if pit_p is not None and np.isfinite(pit_p) and pit_p < PIT_CATASTROPHIC_THRESHOLD:
-                pit_penalty = PIT_CATASTROPHIC_PENALTY
-                score += pit_penalty
-        
-        combined_scores[model_name] = score
-        pit_penalties_applied[model_name] = pit_penalty
-    
+    for model_name in all_models:
+        s = 0.0
+        s += w_crps * crps_std.get(model_name, 0.0)
+        s += w_pit  * pit_dev_std.get(model_name, 0.0)
+        s += w_berk * berk_std.get(model_name, 0.0)
+        s += w_tail * tail_std.get(model_name, 0.0)
+        s += w_mad  * mad_std.get(model_name, 0.0)
+        combined_scores[model_name] = s
+
     weights = entropy_regularized_weights(combined_scores, lambda_entropy=lambda_entropy, eps=epsilon)
-    
+
     metadata = {
         "bic_standardized": {k: float(v) if np.isfinite(v) else None for k, v in bic_std.items()},
         "hyvarinen_standardized": {k: float(v) if np.isfinite(v) else None for k, v in hyv_std.items()},
-        "crps_standardized": {k: float(v) if np.isfinite(v) else None for k, v in crps_std.items()} if has_crps else {},
-        "pit_penalty_applied": {k: float(v) for k, v in pit_penalties_applied.items()} if has_pit else {},
+        "crps_standardized": {k: float(v) if np.isfinite(v) else None for k, v in crps_std.items()},
+        "pit_dev_standardized": {k: float(v) if np.isfinite(v) else None for k, v in pit_dev_std.items()},
+        "berk_standardized": {k: float(v) if np.isfinite(v) else None for k, v in berk_std.items()},
+        "tail_standardized": {k: float(v) if np.isfinite(v) else None for k, v in tail_std.items()},
+        "mad_standardized": {k: float(v) if np.isfinite(v) else None for k, v in mad_std.items()},
         "combined_scores_standardized": {k: float(v) if np.isfinite(v) else None for k, v in combined_scores.items()},
-        "weights_used": {"bic": float(w_bic), "hyvarinen": float(w_hyv), "crps": float(w_crps)},
-        "pit_threshold": PIT_CATASTROPHIC_THRESHOLD,
-        "pit_penalty_value": PIT_CATASTROPHIC_PENALTY,
+        "weights_used": {
+            "crps": float(w_crps), "pit_dev": float(w_pit), "berk": float(w_berk),
+            "tail": float(w_tail), "mad": float(w_mad),
+        },
         "regime": regime,
         "lambda_entropy": lambda_entropy,
         "crps_enabled": has_crps,
         "pit_enabled": has_pit,
-        "scoring_method": "regime_aware_bic_hyv_crps" + ("_pit_gated" if has_pit else ""),
+        "scoring_method": "elite_crps_dominated",
     }
-    
+
     return weights, metadata

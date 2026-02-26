@@ -1349,6 +1349,194 @@ class PhiStudentTDriftModel:
         return float(log_norm + log_kernel)
 
     @classmethod
+    def pit_ks_predictive(
+        cls,
+        returns: np.ndarray,
+        mu_pred: np.ndarray,
+        S_pred: np.ndarray,
+        nu: float,
+    ) -> Tuple[float, float]:
+        """
+        PIT/KS using predictive distribution for Student-t.
+
+        Standardises returns by predictive mean/scale, computes Student-t CDF
+        PIT values, and returns (KS statistic, KS p-value).
+        """
+        from scipy.stats import kstest
+        from scipy.stats import t as student_t_dist
+
+        returns = np.asarray(returns).flatten()
+        mu_pred = np.asarray(mu_pred).flatten()
+        S_pred = np.asarray(S_pred).flatten()
+
+        n = min(len(returns), len(mu_pred), len(S_pred))
+        if n < 2:
+            return 1.0, 0.0
+
+        pit_values = np.empty(n)
+        for t in range(n):
+            S_t = max(S_pred[t], 1e-20)
+            if nu > 2:
+                scale = np.sqrt(S_t * (nu - 2) / nu)
+            else:
+                scale = np.sqrt(S_t)
+            scale = max(scale, 1e-10)
+            pit_values[t] = student_t_dist.cdf(returns[t] - mu_pred[t], df=nu, scale=scale)
+
+        valid = np.isfinite(pit_values)
+        pit_clean = np.clip(pit_values[valid], 0, 1)
+        if len(pit_clean) < 2:
+            return 1.0, 0.0
+
+        ks_result = kstest(pit_clean, 'uniform')
+        return float(ks_result.statistic), float(ks_result.pvalue)
+
+    @classmethod
+    def optimize_params_fixed_nu(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        nu: float = 8.0,
+        train_frac: float = 0.7,
+        q_min: float = 1e-10,
+        q_max: float = 1e-1,
+        c_min: float = 0.3,
+        c_max: float = 3.0,
+        phi_min: float = -0.999,
+        phi_max: float = 0.999,
+        prior_log_q_mean: float = -6.0,
+        prior_lambda: float = 1.0,
+        asset_symbol: str = None,
+    ) -> Tuple[float, float, float, float, Dict]:
+        """
+        Optimize (q, c, φ) for a FIXED ν via cross-validated MLE.
+
+        Uses L-BFGS-B with Bayesian regularization on log10(q).
+        Returns (q, c, phi, cv_penalized_ll, diagnostics).
+        """
+        n = len(returns)
+        returns = np.asarray(returns).flatten()
+        vol = np.asarray(vol).flatten()
+
+        # Robust clipping
+        ret_p005 = np.percentile(returns, 0.5)
+        ret_p995 = np.percentile(returns, 99.5)
+        returns_r = np.clip(returns, ret_p005, ret_p995)
+
+        # Scale-aware q_min
+        vol_var_med = float(np.median(vol ** 2))
+        q_min = max(q_min, 0.001 * vol_var_med, 1e-8)
+
+        # Adaptive c bounds for metals/futures
+        if asset_symbol and any(tag in str(asset_symbol).upper() for tag in ["=F", "GC", "SI", "CL", "NG"]):
+            c_max = max(c_max, 10.0)
+
+        # CV folds (expanding window)
+        min_train = min(max(60, int(n * 0.4)), max(n - 5, 1))
+        test_window = min(max(20, int(n * 0.1)), max(n - min_train, 5))
+        folds = []
+        te = min_train
+        while te + test_window <= n:
+            folds.append((0, te, te, min(te + test_window, n)))
+            te += test_window
+        if not folds:
+            sp = int(n * train_frac)
+            folds = [(0, sp, sp, n)]
+
+        nu_val = float(np.clip(nu, cls.nu_min_default, cls.nu_max_default))
+        log_norm_const = gammaln((nu_val + 1.0) / 2.0) - gammaln(nu_val / 2.0) - 0.5 * np.log(nu_val * np.pi)
+        neg_exp = -((nu_val + 1.0) / 2.0)
+        inv_nu = 1.0 / nu_val
+        nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
+
+        def neg_cv_ll(params):
+            log_q, log_c, phi = params
+            q = 10 ** log_q
+            c = 10 ** log_c
+            phi_clip = float(np.clip(phi, phi_min, phi_max))
+            if q <= 0 or c <= 0:
+                return 1e12
+
+            total_ll = 0.0
+            for ts, te_f, vs, ve in folds:
+                ret_tr = returns_r[ts:te_f]
+                vol_tr = vol[ts:te_f]
+                if len(ret_tr) < 3:
+                    continue
+                mu_f, P_f, _ = cls.filter_phi(ret_tr, vol_tr, q, c, phi_clip, nu_val)
+                mu_p = float(mu_f[-1])
+                P_p = float(P_f[-1])
+                for t in range(vs, ve):
+                    mu_p = phi_clip * mu_p
+                    P_p = phi_clip ** 2 * P_p + q
+                    R_t = c * vol[t] ** 2
+                    S = P_p + R_t
+                    if S < 1e-12:
+                        S = 1e-12
+                    inn = returns_r[t] - mu_p
+                    if nu_val > 2:
+                        scale = np.sqrt(S * (nu_val - 2) / nu_val)
+                    else:
+                        scale = np.sqrt(S)
+                    if scale > 1e-12:
+                        z = inn / scale
+                        ll_t = log_norm_const - np.log(scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
+                        if np.isfinite(ll_t):
+                            total_ll += ll_t
+                    K = nu_adjust * P_p / S
+                    mu_p = mu_p + K * inn
+                    P_p = (1.0 - K) * P_p
+                    if P_p < 1e-12:
+                        P_p = 1e-12
+
+            # Bayesian regularization on log10(q)
+            prior_pen = prior_lambda * (log_q - prior_log_q_mean) ** 2
+            return -(total_ll - prior_pen)
+
+        from scipy.optimize import minimize as sp_minimize
+
+        best_result = None
+        best_val = 1e20
+        # Multi-start
+        for log_q0 in [-6.0, -5.0, -4.0]:
+            for log_c0 in [-0.1, 0.0, 0.2]:
+                for phi0 in [0.0, 0.5, -0.2]:
+                    try:
+                        res = sp_minimize(
+                            neg_cv_ll, [log_q0, log_c0, phi0],
+                            method='L-BFGS-B',
+                            bounds=[
+                                (np.log10(q_min), np.log10(q_max)),
+                                (np.log10(c_min), np.log10(c_max)),
+                                (phi_min, phi_max),
+                            ],
+                            options={'maxiter': 200, 'ftol': 1e-10},
+                        )
+                        if res.fun < best_val:
+                            best_val = res.fun
+                            best_result = res
+                    except Exception:
+                        continue
+
+        if best_result is None:
+            raise ValueError("All optimizer starts failed for Student-t fixed-nu")
+
+        log_q_opt, log_c_opt, phi_opt = best_result.x
+        q_opt = 10 ** log_q_opt
+        c_opt = 10 ** log_c_opt
+        phi_opt = float(np.clip(phi_opt, phi_min, phi_max))
+        cv_ll = -best_val
+
+        diagnostics = {
+            "nu_fixed": nu_val,
+            "optimizer_converged": best_result.success,
+            "n_folds": len(folds),
+            "log10_q": log_q_opt,
+        }
+
+        return q_opt, c_opt, phi_opt, cv_ll, diagnostics
+
+    @classmethod
     def optimize_params_unified(
         cls,
         returns: np.ndarray,
@@ -1996,11 +2184,15 @@ class PhiStudentTDriftModel:
         else:
             grade = "F"
 
+        # Compute Berkowitz p-value for serial dependence
+        berkowitz_p = cls._compute_berkowitz_pvalue(pit_clean)
+
         metrics = {
             "n_samples": len(pit_clean),
             "ks_statistic": float(ks_result.statistic),
             "ks_pvalue": float(ks_result.pvalue),
             "histogram_mad": hist_mad,
+            "berkowitz_pvalue": float(berkowitz_p) if np.isfinite(berkowitz_p) else 0.0,
             "calibration_grade": grade,
             "calibrated": hist_mad < 0.05,
         }

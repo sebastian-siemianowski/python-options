@@ -1692,16 +1692,30 @@ def tune_asset_q(
             asset=asset,  # FIX #4: Asset-class adaptive c bounds
         )
         
-        # Compute model weights using regime-aware BIC + Hyvärinen + CRPS + PIT (February 2026)
-        bic_values = {m: models[m].get("bic", float('inf')) for m in models}
-        hyvarinen_values = {m: models[m].get("hyvarinen_score", float('-inf')) for m in models}
-        crps_values = {m: models[m].get("crps", float('inf')) for m in models if models[m].get("crps") is not None}
-        pit_pvalues = {m: models[m].get("pit_ks_pvalue") for m in models if models[m].get("pit_ks_pvalue") is not None}
+        # Compute model weights using elite CRPS-dominated scoring (February 2026)
+        # Only include successfully fitted models with finite metrics
+        bic_values = {m: models[m].get("bic", float('inf')) for m in models if models[m].get("fit_success", False)}
+        hyvarinen_values = {m: models[m].get("hyvarinen_score", float('-inf')) for m in models if models[m].get("fit_success", False)}
+        crps_values = {m: models[m]["crps"] for m in models
+                       if models[m].get("fit_success", False)
+                       and models[m].get("crps") is not None
+                       and np.isfinite(models[m]["crps"])}
+        pit_pvalues = {m: models[m]["pit_ks_pvalue"] for m in models
+                       if models[m].get("fit_success", False)
+                       and models[m].get("pit_ks_pvalue") is not None}
+        berk_pvalues = {m: models[m]["berkowitz_pvalue"] for m in models
+                        if models[m].get("fit_success", False)
+                        and models[m].get("berkowitz_pvalue") is not None}
+        mad_values = {m: models[m]["histogram_mad"] for m in models
+                      if models[m].get("fit_success", False)
+                      and models[m].get("histogram_mad") is not None}
         
-        # Use regime-aware weights with PIT penalty (February 2026 - Elite Architecture)
+        # Use elite CRPS-dominated scoring with PIT/Berk/MAD penalties
         if crps_values and CRPS_SCORING_ENABLED:
             model_weights, weight_meta = compute_regime_aware_model_weights(
-                bic_values, hyvarinen_values, crps_values, pit_pvalues=pit_pvalues, regime=None
+                bic_values, hyvarinen_values, crps_values,
+                pit_pvalues=pit_pvalues, berk_pvalues=berk_pvalues,
+                mad_values=mad_values, regime=None
             )
         else:
             model_weights = compute_bic_model_weights(bic_values)
@@ -2653,6 +2667,89 @@ def compute_pit_from_filtered_gaussian(
     return GaussianDriftModel.pit_ks_predictive(returns, mu_pred, S_pred)
 
 
+def compute_extended_pit_metrics_gaussian(
+    returns: np.ndarray,
+    mu_filtered: np.ndarray,
+    P_filtered: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float = 1.0,
+) -> Dict:
+    """PIT + Berkowitz + histogram MAD for Gaussian models."""
+    from scipy.stats import kstest, norm as _norm_dist
+
+    mu_pred, S_pred = reconstruct_predictive_from_filtered_gaussian(
+        returns, mu_filtered, P_filtered, vol, q, c, phi
+    )
+    returns_flat = np.asarray(returns).flatten()
+    mu_pred_flat = np.asarray(mu_pred).flatten()
+    S_pred_flat = np.asarray(S_pred).flatten()
+    forecast_std = np.sqrt(np.maximum(S_pred_flat, 1e-20))
+    forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
+    standardized = (returns_flat - mu_pred_flat) / forecast_std
+    valid_mask = np.isfinite(standardized)
+    pit_values = _norm_dist.cdf(standardized[valid_mask])
+    if len(pit_values) < 20:
+        return {"ks_statistic": 1.0, "pit_ks_pvalue": 0.0,
+                "berkowitz_pvalue": 0.0, "histogram_mad": 1.0}
+    ks_result = kstest(pit_values, 'uniform')
+    hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
+    hist_freq = hist / len(pit_values)
+    hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
+    berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_values)
+    if not np.isfinite(berkowitz_p):
+        berkowitz_p = 0.0
+    return {
+        "ks_statistic": float(ks_result.statistic),
+        "pit_ks_pvalue": float(ks_result.pvalue),
+        "berkowitz_pvalue": float(berkowitz_p),
+        "histogram_mad": float(hist_mad),
+    }
+
+
+def compute_extended_pit_metrics_student_t(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+) -> Dict:
+    """PIT + Berkowitz + histogram MAD for Student-t models."""
+    from scipy.stats import kstest, t as _st_dist
+
+    mu_filt, P_filt, mu_pred, S_pred, ll = PhiStudentTDriftModel.filter_phi_with_predictive(
+        returns, vol, q, c, phi, nu
+    )
+    returns_flat = np.asarray(returns).flatten()
+    n = min(len(returns_flat), len(mu_pred), len(S_pred))
+    pit_values = np.empty(n)
+    for t in range(n):
+        S_t = max(S_pred[t], 1e-20)
+        scale = np.sqrt(S_t * (nu - 2) / nu) if nu > 2 else np.sqrt(S_t)
+        scale = max(scale, 1e-10)
+        pit_values[t] = _st_dist.cdf(returns_flat[t] - mu_pred[t], df=nu, scale=scale)
+    valid = np.isfinite(pit_values)
+    pit_clean = np.clip(pit_values[valid], 0, 1)
+    if len(pit_clean) < 20:
+        return {"ks_statistic": 1.0, "pit_ks_pvalue": 0.0,
+                "berkowitz_pvalue": 0.0, "histogram_mad": 1.0}
+    ks_result = kstest(pit_clean, 'uniform')
+    hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
+    hist_freq = hist / len(pit_clean)
+    hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
+    berkowitz_p = PhiStudentTDriftModel._compute_berkowitz_pvalue(pit_clean)
+    if not np.isfinite(berkowitz_p):
+        berkowitz_p = 0.0
+    return {
+        "ks_statistic": float(ks_result.statistic),
+        "pit_ks_pvalue": float(ks_result.pvalue),
+        "berkowitz_pvalue": float(berkowitz_p),
+        "histogram_mad": float(hist_mad),
+    }
+
+
 def optimize_q_c_phi_mle(
     returns: np.ndarray,
     vol: np.ndarray,
@@ -3077,14 +3174,16 @@ def fit_all_models_for_regime(
             mu_st, P_st, mu_pred_st, S_pred_st, ll_full_st = PhiStudentTDriftModel.filter_phi_with_predictive(
                 returns, vol, q_st, c_st, phi_st, nu_fixed
             )
-            
-            # ELITE FIX: Compute PIT calibration using PREDICTIVE distribution
-            # This is the mathematically correct formulation:
-            # z_t = (y_t - mu_pred_t) / scale_t, PIT_t = F_ν(z_t)
-            ks_st, pit_p_st = PhiStudentTDriftModel.pit_ks_predictive(
-                returns, mu_pred_st, S_pred_st, nu_fixed
+
+            # Compute PIT with extended metrics (Berkowitz + MAD)
+            _pit_ext_base = compute_extended_pit_metrics_student_t(
+                returns, vol, q_st, c_st, phi_st, nu_fixed
             )
-            
+            ks_st = _pit_ext_base["ks_statistic"]
+            pit_p_st = _pit_ext_base["pit_ks_pvalue"]
+            _berk_st = _pit_ext_base["berkowitz_pvalue"]
+            _mad_st = _pit_ext_base["histogram_mad"]
+
             # Compute information criteria
             aic_st = compute_aic(ll_full_st, n_params_st)
             bic_st = compute_bic(ll_full_st, n_params_st, n_obs)
@@ -3123,6 +3222,8 @@ def fit_all_models_for_regime(
                 "n_params": int(n_params_st),
                 "ks_statistic": float(ks_st),
                 "pit_ks_pvalue": float(pit_p_st),
+                "berkowitz_pvalue": float(_berk_st),
+                "histogram_mad": float(_mad_st),
                 "fit_success": True,
                 "diagnostics": diag_st,
                 "nu_fixed": True,  # Flag indicating ν was fixed, not estimated
@@ -3200,11 +3301,21 @@ def fit_all_models_for_regime(
             # recalibration, and ν refinement.
             # ─────────────────────────────────────────────────────────────
             n_train_u = int(n_obs * 0.7)
+            # Default Berk/MAD from raw PIT; overridden by filter_and_calibrate
+            _calibrated_berk_u = pit_metrics.get("berkowitz_pvalue", 0.0)
+            _calibrated_mad_u = pit_metrics.get("histogram_mad", 1.0)
             try:
                 _pit_cal_u, _pit_p_u, _sigma_cal_u, _, _calib_diag_u = \
                     PhiStudentTDriftModel.filter_and_calibrate(
                         returns, vol, config, train_frac=0.7
                     )
+                # Extract calibrated Berkowitz/MAD from GARCH path
+                _bd = _calib_diag_u.get('berkowitz_pvalue')
+                if _bd is not None and np.isfinite(_bd):
+                    _calibrated_berk_u = float(_bd)
+                _md = _calib_diag_u.get('mad')
+                if _md is not None and np.isfinite(_md):
+                    _calibrated_mad_u = float(_md)
                 _nu_eff_u = _calib_diag_u.get('nu_effective', float(nu_fixed))
                 returns_test_u = returns[n_train_u:]
                 mu_pred_test_u = mu_pred_u[n_train_u:]
@@ -3309,7 +3420,8 @@ def fit_all_models_for_regime(
                 "ks_statistic": float(ks_u),
                 "pit_ks_pvalue": float(pit_p_u),
                 "pit_calibration_grade": pit_metrics.get("calibration_grade", "F"),
-                "histogram_mad": pit_metrics.get("histogram_mad", 1.0),
+                "histogram_mad": float(_calibrated_mad_u),
+                "berkowitz_pvalue": float(_calibrated_berk_u),
                 # Metadata
                 "fit_success": True,
                 "unified_model": True,
@@ -3514,10 +3626,12 @@ def fit_all_models_for_regime(
                 returns, vol, q_gauss, c_gauss, phi=1.0, base_model='gaussian'
             )
             
-            # Compute PIT calibration
-            ks_mom, pit_p_mom = compute_pit_from_filtered_gaussian(
+            # Compute PIT calibration with extended metrics
+            pit_ext_kg = compute_extended_pit_metrics_gaussian(
                 returns, mu_mom, P_mom, vol, q_gauss, c_gauss, phi=1.0
             )
+            ks_mom = pit_ext_kg["ks_statistic"]
+            pit_p_mom = pit_ext_kg["pit_ks_pvalue"]
             
             # Compute information criteria with prior penalty
             n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN]
@@ -3545,10 +3659,12 @@ def fit_all_models_for_regime(
                 "bic_raw": float(bic_raw_mom),
                 "aic": float(aic_mom),
                 "hyvarinen_score": float(hyvarinen_mom),
-                "crps": float(crps_mom),  # CRPS for regime-aware selection
+                "crps": float(crps_mom),
                 "n_params": int(n_params_mom),
                 "ks_statistic": float(ks_mom),
                 "pit_ks_pvalue": float(pit_p_mom),
+                "berkowitz_pvalue": float(pit_ext_kg["berkowitz_pvalue"]),
+                "histogram_mad": float(pit_ext_kg["histogram_mad"]),
                 "fit_success": True,
                 "momentum_augmented": True,
                 "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
@@ -3585,12 +3701,14 @@ def fit_all_models_for_regime(
             mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
                 returns, vol, q_phi, c_phi, phi=phi_opt, base_model='phi_gaussian'
             )
-            
-            # Compute PIT calibration using reconstructed predictive values
-            ks_mom, pit_p_mom = compute_pit_from_filtered_gaussian(
+
+            # Compute PIT calibration with extended metrics (Berkowitz + MAD)
+            pit_ext_phig = compute_extended_pit_metrics_gaussian(
                 returns, mu_mom, P_mom, vol, q_phi, c_phi, phi=phi_opt
             )
-            
+            ks_mom = pit_ext_phig["ks_statistic"]
+            pit_p_mom = pit_ext_phig["pit_ks_pvalue"]
+
             # Compute information criteria with prior penalty
             n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.PHI_GAUSSIAN]
             aic_mom = compute_aic(ll_mom, n_params_mom)
@@ -3617,10 +3735,12 @@ def fit_all_models_for_regime(
                 "bic_raw": float(bic_raw_mom),
                 "aic": float(aic_mom),
                 "hyvarinen_score": float(hyvarinen_mom),
-                "crps": float(crps_mom),  # CRPS for regime-aware selection
+                "crps": float(crps_mom),
                 "n_params": int(n_params_mom),
                 "ks_statistic": float(ks_mom),
                 "pit_ks_pvalue": float(pit_p_mom),
+                "berkowitz_pvalue": float(pit_ext_phig["berkowitz_pvalue"]),
+                "histogram_mad": float(pit_ext_phig["histogram_mad"]),
                 "fit_success": True,
                 "momentum_augmented": True,
                 "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
@@ -3655,9 +3775,15 @@ def fit_all_models_for_regime(
                         base_model='phi_student_t'
                     )
                     
-                    # ELITE FIX: Compute PIT using PREDICTIVE distribution
-                    # Run the base filter to get predictive values for proper PIT
-                    ks_mom, pit_p_mom, mu_pred_mom, S_pred_mom = compute_predictive_pit_student_t(
+                    # Compute PIT with extended metrics
+                    pit_ext_stm = compute_extended_pit_metrics_student_t(
+                        returns, vol, q_mom, c_mom, phi_mom, nu_fixed
+                    )
+                    ks_mom = pit_ext_stm["ks_statistic"]
+                    pit_p_mom = pit_ext_stm["pit_ks_pvalue"]
+                    
+                    # Get predictive values for Hyvärinen/CRPS
+                    _, _, mu_pred_mom, S_pred_mom, _ = PhiStudentTDriftModel.filter_phi_with_predictive(
                         returns, vol, q_mom, c_mom, phi_mom, nu_fixed
                     )
                     
@@ -3685,10 +3811,12 @@ def fit_all_models_for_regime(
                         "bic_raw": float(bic_raw_mom),
                         "aic": float(aic_mom),
                         "hyvarinen_score": float(hyvarinen_mom),
-                        "crps": float(crps_mom),  # CRPS for regime-aware selection
+                        "crps": float(crps_mom),
                         "n_params": int(n_params_mom),
                         "ks_statistic": float(ks_mom),
                         "pit_ks_pvalue": float(pit_p_mom),
+                        "berkowitz_pvalue": float(pit_ext_stm["berkowitz_pvalue"]),
+                        "histogram_mad": float(pit_ext_stm["histogram_mad"]),
                         "fit_success": True,
                         "momentum_augmented": True,
                         "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
@@ -3737,7 +3865,7 @@ def fit_all_models_for_regime(
             try:
                 base_model = models[base_name]
                 c_gas = base_model["c"]
-                phi_gas = base_model.get("phi", 1.0)
+                phi_gas = base_model.get("phi") or 1.0
                 
                 # Optimize GAS-Q parameters
                 gas_config, gas_diag = optimize_gas_q_params(
@@ -3750,12 +3878,13 @@ def fit_all_models_for_regime(
                         returns, vol, c_gas, phi_gas, gas_config
                     )
                     
-                    # Compute PIT calibration using reconstructed predictive values
-                    # Note: GAS-Q has time-varying q, use mean q for reconstruction
-                    ks_gas, pit_p_gas = compute_pit_from_filtered_gaussian(
+                    # Compute PIT with extended metrics (Berkowitz + MAD)
+                    pit_ext_gas = compute_extended_pit_metrics_gaussian(
                         returns, gas_result.mu_filtered, gas_result.P_filtered, 
                         vol, gas_result.q_mean, c_gas, phi=phi_gas
                     )
+                    ks_gas = pit_ext_gas["ks_statistic"]
+                    pit_p_gas = pit_ext_gas["pit_ks_pvalue"]
                     
                     # BIC with extra 3 GAS parameters
                     n_params_gas = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN] + 3
@@ -3778,9 +3907,9 @@ def fit_all_models_for_regime(
                     )
                     
                     models[gas_q_name] = {
-                        "q": float(gas_result.q_mean),
+                        "q": float(gas_result.q_mean or 0.0),
                         "c": float(c_gas),
-                        "phi": float(phi_gas),
+                        "phi": float(phi_gas or 0.0),
                         "nu": None,
                         "log_likelihood": float(gas_result.log_likelihood),
                         "mean_log_likelihood": float(mean_ll_gas),
@@ -3788,18 +3917,20 @@ def fit_all_models_for_regime(
                         "bic": float(bic_gas),
                         "aic": float(aic_gas),
                         "hyvarinen_score": float(hyvarinen_gas),
-                        "crps": float(crps_gas),  # CRPS for regime-aware selection
+                        "crps": float(crps_gas),
                         "n_params": int(n_params_gas),
                         "ks_statistic": float(ks_gas),
                         "pit_ks_pvalue": float(pit_p_gas),
+                        "berkowitz_pvalue": float(pit_ext_gas["berkowitz_pvalue"]),
+                        "histogram_mad": float(pit_ext_gas["histogram_mad"]),
                         "fit_success": True,
                         "gas_q_augmented": True,
-                        "gas_q_omega": float(gas_config.omega),
-                        "gas_q_alpha": float(gas_config.alpha),
-                        "gas_q_beta": float(gas_config.beta),
-                        "gas_q_mean": float(gas_result.q_mean),
-                        "gas_q_std": float(gas_result.q_std),
-                        "gas_q_final": float(gas_result.final_q),
+                        "gas_q_omega": float(gas_config.omega or 0.0),
+                        "gas_q_alpha": float(gas_config.alpha or 0.0),
+                        "gas_q_beta": float(gas_config.beta or 0.0),
+                        "gas_q_mean": float(gas_result.q_mean or 0.0),
+                        "gas_q_std": float(gas_result.q_std or 0.0),
+                        "gas_q_final": float(gas_result.final_q or 0.0),
                         "base_model": base_name,
                         "momentum_augmented": True,  # Inherits from base
                     }
@@ -3860,9 +3991,9 @@ def fit_all_models_for_regime(
                             )
                             
                             models[gas_q_name] = {
-                                "q": float(gas_result.q_mean),
+                                "q": float(gas_result.q_mean or 0.0),
                                 "c": float(c_gas),
-                                "phi": float(phi_gas),
+                                "phi": float(phi_gas or 0.0),
                                 "nu": float(nu_fixed),
                                 "log_likelihood": float(gas_result.log_likelihood),
                                 "mean_log_likelihood": float(mean_ll_gas),
@@ -4529,6 +4660,12 @@ def fit_regime_model_posterior(
         crps_values = {m: models[m].get("crps", float('inf')) for m in models if models[m].get("crps") is not None}
         # February 2026 - Elite PIT calibration: extract PIT p-values for regime-aware scoring
         pit_pvalues = {m: models[m].get("pit_ks_pvalue") for m in models if models[m].get("pit_ks_pvalue") is not None}
+        berk_pvalues = {m: models[m]["berkowitz_pvalue"] for m in models
+                        if models[m].get("fit_success", False)
+                        and models[m].get("berkowitz_pvalue") is not None}
+        mad_values = {m: models[m]["histogram_mad"] for m in models
+                      if models[m].get("fit_success", False)
+                      and models[m].get("histogram_mad") is not None}
         
         # LFO-CV scores for proper out-of-sample model selection (February 2026)
         lfo_cv_scores = {}
@@ -4898,17 +5035,31 @@ def tune_regime_model_averaging(
         asset=asset,  # FIX #4: Asset-class adaptive c bounds
     )
     
-    # Compute global model posterior using specified method
-    global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models}
-    global_hyvarinen = {m: global_models[m].get("hyvarinen_score", float('-inf')) for m in global_models}
+    # Compute global model posterior using elite CRPS-dominated scoring
+    global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models if global_models[m].get("fit_success", False)}
+    global_hyvarinen = {m: global_models[m].get("hyvarinen_score", float('-inf')) for m in global_models if global_models[m].get("fit_success", False)}
+    global_crps = {m: global_models[m]["crps"] for m in global_models
+                   if global_models[m].get("fit_success", False) and global_models[m].get("crps") is not None and np.isfinite(global_models[m]["crps"])}
+    global_pit = {m: global_models[m]["pit_ks_pvalue"] for m in global_models
+                  if global_models[m].get("fit_success", False) and global_models[m].get("pit_ks_pvalue") is not None}
+    global_berk = {m: global_models[m]["berkowitz_pvalue"] for m in global_models
+                   if global_models[m].get("fit_success", False) and global_models[m].get("berkowitz_pvalue") is not None}
+    global_mad = {m: global_models[m]["histogram_mad"] for m in global_models
+                  if global_models[m].get("fit_success", False) and global_models[m].get("histogram_mad") is not None}
     fallback_weight_metadata = None
     
-    if model_selection_method == 'bic':
+    if global_crps and CRPS_SCORING_ENABLED:
+        global_raw_weights, fallback_weight_metadata = compute_regime_aware_model_weights(
+            global_bic, global_hyvarinen, global_crps,
+            pit_pvalues=global_pit, berk_pvalues=global_berk,
+            mad_values=global_mad, regime=None,
+            lambda_entropy=DEFAULT_ENTROPY_LAMBDA
+        )
+    elif model_selection_method == 'bic':
         global_raw_weights = compute_bic_model_weights(global_bic)
     elif model_selection_method == 'hyvarinen':
         global_raw_weights = compute_hyvarinen_model_weights(global_hyvarinen)
     else:
-        # Default: combined with entropy regularization
         global_raw_weights, fallback_weight_metadata = compute_combined_model_weights(
             global_bic, global_hyvarinen, bic_weight=bic_weight,
             lambda_entropy=DEFAULT_ENTROPY_LAMBDA
@@ -4925,16 +5076,10 @@ def tune_regime_model_averaging(
             global_models[m]['standardized_bic'] = float(bic_std_val) if bic_std_val is not None else None
             hyv_std_val = fallback_weight_metadata.get('hyvarinen_standardized', {}).get(m)
             global_models[m]['standardized_hyvarinen'] = float(hyv_std_val) if hyv_std_val is not None else None
-            # CRPS standardized (February 2026 - regime-aware scoring)
             crps_std_val = fallback_weight_metadata.get('crps_standardized', {}).get(m)
             global_models[m]['standardized_crps'] = float(crps_std_val) if crps_std_val is not None else None
-            # Store scoring weights used
             scoring_weights = fallback_weight_metadata.get('weights_used', {})
-            global_models[m]['scoring_weights'] = {
-                'bic': float(scoring_weights.get('bic', 0.0)),
-                'hyvarinen': float(scoring_weights.get('hyvarinen', 0.0)),
-                'crps': float(scoring_weights.get('crps', 0.0)),
-            }
+            global_models[m]['scoring_weights'] = dict(scoring_weights)
             global_models[m]['crps_scoring_enabled'] = fallback_weight_metadata.get('crps_enabled', False)
             global_models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
         else:
