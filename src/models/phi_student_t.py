@@ -1653,6 +1653,79 @@ class PhiStudentTDriftModel:
         return final_config, diagnostics
 
     # =========================================================================
+    # FILTER AND CALIBRATE (orchestrator)
+    # =========================================================================
+
+    @classmethod
+    def filter_and_calibrate(cls, returns, vol, config, train_frac=0.7):
+        """
+        Honest PIT + CRPS. All params from training config, no post-hoc adjustments.
+        Delegates to _pit_garch_path, _pit_simple_path, _compute_berkowitz_pvalue,
+        _compute_crps_output.
+        Returns (pit_values, pit_pvalue, sigma_crps, crps, diagnostics).
+        """
+        from scipy.stats import kstest
+        returns = np.asarray(returns).flatten()
+        vol = np.asarray(vol).flatten()
+        n = len(returns)
+        n_train = int(n * train_frac)
+        n_test = n - n_train
+
+        mu_filt, P_filt, mu_pred, S_pred, ll = cls.filter_phi_unified(returns, vol, config)
+
+        nu = config.nu_base
+        variance_inflation = getattr(config, 'variance_inflation', 1.0)
+        use_garch = getattr(config, 'garch_alpha', 0.0) > 0 or getattr(config, 'garch_beta', 0.0) > 0
+        returns_test = returns[n_train:]
+        mu_pred_test = mu_pred[n_train:]
+        S_calibrated = S_pred[n_train:] * variance_inflation
+        h_garch = None
+        beta_final = variance_inflation
+        _debug_gw_base = 0.0
+
+        if use_garch:
+            h_garch_full = cls._compute_garch_variance(returns - mu_pred, config, n_test_split=n_train)
+            h_garch = h_garch_full[n_train:]
+            pit_values, sigma, mu_effective, S_calibrated = cls._pit_garch_path(
+                returns, mu_pred, S_pred, h_garch_full, config, n_train, n_test, nu)
+            beta_final = 1.0
+            _debug_gw_base = float(config.calibrated_gw)
+        else:
+            pit_values, sigma, mu_effective = cls._pit_simple_path(
+                returns_test, mu_pred_test, S_calibrated, nu,
+                float(getattr(config, 't_df_asym', 0.0)))
+
+        pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
+        hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
+        mad = float(np.mean(np.abs(hist / n_test - 0.1)))
+        berkowitz_pvalue = cls._compute_berkowitz_pvalue(pit_values)
+
+        innovations = returns_test - mu_pred_test
+        variance_ratio = float(np.var(innovations)) / (float(np.mean(S_calibrated)) + 1e-12)
+
+        crps, sigma_crps, mu_crps, nu_crps = cls._compute_crps_output(
+            returns_test, mu_pred_test, mu_effective, sigma, h_garch, config, nu, use_garch)
+
+        _crps_shrink = float(np.clip(float(getattr(config, 'crps_sigma_shrinkage', 1.0)), 0.30, 1.0))
+
+        diagnostics = {
+            'pit_pvalue': pit_pvalue, 'berkowitz_pvalue': berkowitz_pvalue, 'mad': mad,
+            'nu_effective': nu_crps, 'nu_pit': nu, 'variance_ratio': variance_ratio,
+            'skewness': 0.0, 'crps': crps, 'log_likelihood': ll,
+            'n_train': n_train, 'n_test': n_test,
+            'gw_base': _debug_gw_base, 'gw_score': 0.0,
+            'beta_final': beta_final, 'crps_shrink': _crps_shrink,
+            'mu_effective': mu_effective,
+            'garch_kalman_weight': float(getattr(config, 'garch_kalman_weight', 0.0)),
+            'q_vol_coupling': float(getattr(config, 'q_vol_coupling', 0.0)),
+            'loc_bias_var_coeff': float(getattr(config, 'loc_bias_var_coeff', 0.0)),
+            'loc_bias_drift_coeff': float(getattr(config, 'loc_bias_drift_coeff', 0.0)),
+        }
+        return pit_values, pit_pvalue, sigma_crps, crps, diagnostics
+
+    # =========================================================================
+    # CALIBRATION HELPERS (private, called by filter_and_calibrate)
+    # =========================================================================
 
     @classmethod
     def _pit_garch_path(
@@ -1854,77 +1927,6 @@ class PhiStudentTDriftModel:
         except Exception:
             crps = float('nan')
         return crps, sigma_crps, mu_crps, nu_crps
-
-    # =========================================================================
-    # FILTER AND CALIBRATE (orchestrator)
-    # =========================================================================
-
-    @classmethod
-    def filter_and_calibrate(cls, returns, vol, config, train_frac=0.7):
-        """
-        Honest PIT + CRPS. All params from training config, no post-hoc adjustments.
-        Delegates to _pit_garch_path, _pit_simple_path, _compute_berkowitz_pvalue,
-        _compute_crps_output.
-        Returns (pit_values, pit_pvalue, sigma_crps, crps, diagnostics).
-        """
-        from scipy.stats import kstest
-        returns = np.asarray(returns).flatten()
-        vol = np.asarray(vol).flatten()
-        n = len(returns)
-        n_train = int(n * train_frac)
-        n_test = n - n_train
-
-        mu_filt, P_filt, mu_pred, S_pred, ll = cls.filter_phi_unified(returns, vol, config)
-
-        nu = config.nu_base
-        variance_inflation = getattr(config, 'variance_inflation', 1.0)
-        use_garch = getattr(config, 'garch_alpha', 0.0) > 0 or getattr(config, 'garch_beta', 0.0) > 0
-        returns_test = returns[n_train:]
-        mu_pred_test = mu_pred[n_train:]
-        S_calibrated = S_pred[n_train:] * variance_inflation
-        h_garch = None
-        beta_final = variance_inflation
-        _debug_gw_base = 0.0
-
-        if use_garch:
-            h_garch_full = cls._compute_garch_variance(returns - mu_pred, config, n_test_split=n_train)
-            h_garch = h_garch_full[n_train:]
-            pit_values, sigma, mu_effective, S_calibrated = cls._pit_garch_path(
-                returns, mu_pred, S_pred, h_garch_full, config, n_train, n_test, nu)
-            beta_final = 1.0
-            _debug_gw_base = float(config.calibrated_gw)
-        else:
-            pit_values, sigma, mu_effective = cls._pit_simple_path(
-                returns_test, mu_pred_test, S_calibrated, nu,
-                float(getattr(config, 't_df_asym', 0.0)))
-
-        pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
-        hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
-        mad = float(np.mean(np.abs(hist / n_test - 0.1)))
-        berkowitz_pvalue = cls._compute_berkowitz_pvalue(pit_values)
-
-        innovations = returns_test - mu_pred_test
-        variance_ratio = float(np.var(innovations)) / (float(np.mean(S_calibrated)) + 1e-12)
-
-        crps, sigma_crps, mu_crps, nu_crps = cls._compute_crps_output(
-            returns_test, mu_pred_test, mu_effective, sigma, h_garch, config, nu, use_garch)
-
-        _crps_shrink = float(np.clip(float(getattr(config, 'crps_sigma_shrinkage', 1.0)), 0.30, 1.0))
-
-        diagnostics = {
-            'pit_pvalue': pit_pvalue, 'berkowitz_pvalue': berkowitz_pvalue, 'mad': mad,
-            'nu_effective': nu_crps, 'nu_pit': nu, 'variance_ratio': variance_ratio,
-            'skewness': 0.0, 'crps': crps, 'log_likelihood': ll,
-            'n_train': n_train, 'n_test': n_test,
-            'gw_base': _debug_gw_base, 'gw_score': 0.0,
-            'beta_final': beta_final, 'crps_shrink': _crps_shrink,
-            'mu_effective': mu_effective,
-            'garch_kalman_weight': float(getattr(config, 'garch_kalman_weight', 0.0)),
-            'q_vol_coupling': float(getattr(config, 'q_vol_coupling', 0.0)),
-            'loc_bias_var_coeff': float(getattr(config, 'loc_bias_var_coeff', 0.0)),
-            'loc_bias_drift_coeff': float(getattr(config, 'loc_bias_drift_coeff', 0.0)),
-        }
-        return pit_values, pit_pvalue, sigma_crps, crps, diagnostics
 
     # ---------------------------------------------------------------------------
     # SHARED GARCH VARIANCE
@@ -2427,9 +2429,6 @@ class PhiStudentTDriftModel:
 
         return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
 
-
-    # =========================================================================
-    # CALIBRATION SUB-METHODS (used by filter_and_calibrate)
 
     # ---------------------------------------------------------------------------
     # OPTIMIZATION STAGE METHODS
