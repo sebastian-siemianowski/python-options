@@ -110,7 +110,7 @@ def test_pit_across_nu_values():
     
     vol = np.ones(n) * 0.02
     
-    nu_grid = [4, 6, 8, 12, 20]
+    nu_grid = [4, 8, 20]
     results = []
     
     for nu in nu_grid:

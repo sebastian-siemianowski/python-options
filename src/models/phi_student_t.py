@@ -82,9 +82,11 @@ PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
 PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 
 # Discrete ν grid for Student-t models
-# ν=10 and ν=15 added prevents BMA oscillation between
-# 8↔12 and 12↔20 for metals (GC=F, SI=F) which live in ν≈10–15 range.
-STUDENT_T_NU_GRID = [4, 6, 8, 10, 12, 15, 20]
+# 3 BMA flavours: fat tails (4), moderate (8), near-Gaussian (20).
+# Intermediate ν values are still explored internally by Stage 5 CV
+# inside optimize_params_unified — this grid only controls how many
+# *separate models* compete in BMA at the tune.py level.
+STUDENT_T_NU_GRID = [4, 8, 20]
 
 
 # ---------------------------------------------------------------------------

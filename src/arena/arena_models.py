@@ -73,7 +73,7 @@ def get_standard_model_specs() -> List[Dict[str, Any]]:
     })
     
     # Student-t momentum (discrete nu grid)
-    for nu in [4, 6, 8, 12, 20]:
+    for nu in [4, 8, 20]:
         specs.append({
             "name": f"phi_student_t_nu_{nu}_momentum",
             "family": "student_t",

@@ -32,9 +32,7 @@ For EACH regime r:
        - kalman_gaussian_momentum:          q, c           (2 params) [ENABLED - momentum Gaussian]
        - kalman_phi_gaussian_momentum:      q, c, φ        (3 params) [ENABLED - momentum φ-Gaussian]
        - phi_student_t_nu_4:    q, c, φ        (3 params, ν=4 FIXED)
-       - phi_student_t_nu_6:    q, c, φ        (3 params, ν=6 FIXED)
        - phi_student_t_nu_8:    q, c, φ        (3 params, ν=8 FIXED)
-       - phi_student_t_nu_12:   q, c, φ        (3 params, ν=12 FIXED)
        - phi_student_t_nu_20:   q, c, φ        (3 params, ν=20 FIXED)
        - phi_student_t_nu_{ν}_momentum: q, c, φ     (3 params, ν FIXED) [ENABLED]
        - phi_skew_t_nu_{ν}_gamma_{γ}: q, c, φ  (3 params, ν and γ FIXED)
@@ -815,8 +813,8 @@ except ImportError as e:
     
     def make_student_t_name(nu: int) -> str:
         return f"phi_student_t_nu_{nu}"
-    
-    STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
+
+    STUDENT_T_NU_GRID = [4, 8, 20]
 
 # =============================================================================
 # IMPORT DIAGNOSTICS & REPORTING
@@ -1138,7 +1136,7 @@ def is_heavy_tailed_model(model_name: str) -> bool:
 # The following constants and functions have been moved to src/models/base.py
 # for modularity and reuse across the codebase:
 #
-#   STUDENT_T_NU_GRID              - Discrete ν grid [4, 6, 8, 12, 20]
+#   STUDENT_T_NU_GRID              - Discrete ν grid [4, 8, 20]
 #   PHI_SHRINKAGE_TAU_MIN          - Minimum τ for numerical stability
 #   PHI_SHRINKAGE_GLOBAL_DEFAULT   - Center of shrinkage prior (0.0)
 #   PHI_SHRINKAGE_LAMBDA_DEFAULT   - Prior strength (0.05)
@@ -3252,11 +3250,11 @@ def fit_all_models_for_regime(
     # Model naming: "phi_student_t_unified_nu_{nu}"
     # =========================================================================
     
-    # Unified models use 4 ν values from grid
-    # ν=12 added February 2026 for metals (GC=F, SI=F) which live in ν≈10-15 range.
-    # Internal Stage 5 re-optimizes ν across [5..20], but seeding ν=12 gives
-    # the optimizer a better starting basin for BMA competition.
-    UNIFIED_NU_GRID = [4, 8, 12, 20]
+    # Unified models use 3 ν flavours matching STUDENT_T_NU_GRID.
+    # Internal Stage 5 re-optimizes ν across a finer grid [3..20],
+    # so intermediate values (6, 10, 12, 15) are still explored —
+    # we just don't spawn separate BMA models for them.
+    UNIFIED_NU_GRID = [4, 8, 20]
     n_params_unified = 14  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν, garch(3), rough_hurst, risk_premium, skew(2), jump(4-cond)
     
     for nu_fixed in UNIFIED_NU_GRID:
@@ -5736,7 +5734,7 @@ Examples:
     print(f"Prior on q: log10(q) ~ N({args.prior_mean:.1f}, λ={args.prior_lambda:.1f})")
     print(f"Prior on φ: φ ~ N(0, τ) with λ_φ=0.05 (explicit Gaussian shrinkage)")
     print(f"Hierarchical shrinkage: λ_regime={args.lambda_regime:.3f}")
-    print("Models: Gaussian, φ-Gaussian, φ-Student-t (ν ∈ {4, 6, 8, 12, 20})")
+    print("Models: Gaussian, φ-Gaussian, φ-Student-t (ν ∈ {4, 8, 20})")
     if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
         print(f"Momentum: ENABLED (prior penalty={args.momentum_penalty:.2f})")
     else:
@@ -5918,7 +5916,7 @@ Examples:
     print(f"Calibration warnings:   {calibration_warnings}")
     print(f"\nModel Selection (BIC + Hyvärinen combined scoring):")
     print(f"  Gaussian/φ-Gaussian:  {gaussian_count}")
-    print(f"  φ-Student-t:          {student_t_count} (discrete ν ∈ {{4, 6, 8, 12, 20}})")
+    print(f"  φ-Student-t:          {student_t_count} (discrete ν ∈ {{4, 8, 20}})")
     print(f"\nPrior Configuration:")
     print(f"  q prior:              log₁₀(q) ~ N({args.prior_mean:.1f}, λ={args.prior_lambda:.1f})")
     print(f"  φ prior:              φ ~ N(0, τ) with λ_φ=0.05 (explicit shrinkage)")

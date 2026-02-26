@@ -24,7 +24,7 @@ Parameters:
 
 DISCRETE ν GRID:
     Instead of continuously optimizing ν (which causes identifiability issues),
-    we use a discrete grid: ν ∈ {4, 6, 8, 12, 20}
+    we use a discrete grid: ν ∈ {4, 8, 20}
     Each ν value becomes a separate sub-model in Bayesian Model Averaging.
 
 The model includes an explicit Gaussian shrinkage prior on φ:
@@ -96,7 +96,7 @@ PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
 PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 
 # Discrete ν grid for Student-t models
-STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
+STUDENT_T_NU_GRID = [4, 8, 20]
 
 
 # =============================================================================

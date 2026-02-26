@@ -115,7 +115,7 @@ except ImportError as e:
     OPTION_MODEL_REGISTRY_AVAILABLE = False
     _import_error = str(e)
     warnings.warn(f"Options model registry not available: {e}")
-    OPTION_STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
+    OPTION_STUDENT_T_NU_GRID = [4, 8, 20]
     _import_error = str(e)
 else:
     _import_error = None
@@ -979,7 +979,7 @@ def equity_signal_to_vol_prior(
     equity_regime_weight = 0
     if model_posterior:
         regime_models = ["kalman_gaussian", "kalman_phi_gaussian"] + \
-                       [f"phi_student_t_nu_{nu}" for nu in [4, 6, 8, 12, 20]]
+                       [f"phi_student_t_nu_{nu}" for nu in [4, 8, 20]]
         equity_regime_weight = sum(
             model_posterior.get(m, 0) 
             for m in regime_models
@@ -1721,7 +1721,7 @@ def _render_tuning_summary(tune_cache: Dict[str, Dict], console) -> None:
     summary_table.add_column("Model", style="white", width=32)
     summary_table.add_column("Won", justify="right", style="bright_magenta", width=5)
     summary_table.add_column("Avg Wt", justify="right", style="cyan", width=7)
-    summary_table.add_column("Bar", style="magenta", width=20)
+    summary_table.add_column("Bar", style="magenta", width=20);
     
     model_display_names = {
         # Legacy models

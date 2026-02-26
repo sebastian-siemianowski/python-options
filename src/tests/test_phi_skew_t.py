@@ -31,7 +31,7 @@ class TestPhiSkewTModel:
         )
         
         assert PhiSkewTDriftModel is not None
-        assert SKEW_T_NU_GRID == [4, 6, 8, 12, 20]
+        assert SKEW_T_NU_GRID == [4, 8, 20]
         assert 0.7 in SKEW_T_GAMMA_GRID
         assert 1.0 in SKEW_T_GAMMA_GRID
         assert 1.3 in SKEW_T_GAMMA_GRID

@@ -3629,9 +3629,9 @@ def compute_features(
     # Load tuned parameters and model selection results
     tuned_params = None
     best_model = 'kalman_gaussian'
-    # Valid Kalman model names (discrete nu grid for Student-t)
+    # Valid Kalman model names (primary grid [4, 8, 20] + adaptive refinement + legacy)
     kalman_keys = {'kalman_gaussian', 'kalman_phi_gaussian'}
-    kalman_keys.update({f'phi_student_t_nu_{nu}' for nu in [4, 6, 8, 12, 20]})
+    kalman_keys.update({f'phi_student_t_nu_{nu}' for nu in [3, 4, 5, 6, 7, 8, 10, 12, 14, 15, 16, 20, 25]})
     tuned_noise_model = 'gaussian'
     tuned_nu = None
     if asset_symbol is not None:
@@ -3682,33 +3682,36 @@ def compute_features(
             'kalman_phi_gaussian_momentum': {'short': 'φ-Gaussian+Momentum', 'desc': 'AR(1) with momentum', 'family': 'momentum'},
             
             # ═══════════════════════════════════════════════════════════════════
-            # STUDENT-T MODELS (Discrete ν grid: 4, 6, 8, 12, 20)
+            # STUDENT-T MODELS (Discrete ν grid: 4, 8, 20)
             # ═══════════════════════════════════════════════════════════════════
             'phi_student_t_nu_4': {'short': 'φ-T(ν=4)', 'desc': 'Very heavy tails', 'family': 'student_t'},
-            'phi_student_t_nu_6': {'short': 'φ-T(ν=6)', 'desc': 'Heavy tails', 'family': 'student_t'},
             'phi_student_t_nu_8': {'short': 'φ-T(ν=8)', 'desc': 'Moderate-heavy tails', 'family': 'student_t'},
-            'phi_student_t_nu_12': {'short': 'φ-T(ν=12)', 'desc': 'Moderate tails', 'family': 'student_t'},
             'phi_student_t_nu_20': {'short': 'φ-T(ν=20)', 'desc': 'Light tails', 'family': 'student_t'},
             
             # ═══════════════════════════════════════════════════════════════════
             # MOMENTUM-AUGMENTED STUDENT-T MODELS
             # ═══════════════════════════════════════════════════════════════════
             'phi_student_t_nu_4_momentum': {'short': 'φ-T(ν=4)+Momentum', 'desc': 'Very heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_6_momentum': {'short': 'φ-T(ν=6)+Momentum', 'desc': 'Heavy tails with momentum', 'family': 'momentum'},
             'phi_student_t_nu_8_momentum': {'short': 'φ-T(ν=8)+Momentum', 'desc': 'Moderate-heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_12_momentum': {'short': 'φ-T(ν=12)+Momentum', 'desc': 'Moderate tails with momentum', 'family': 'momentum'},
             'phi_student_t_nu_20_momentum': {'short': 'φ-T(ν=20)+Momentum', 'desc': 'Light tails with momentum', 'family': 'momentum'},
             
             # ═══════════════════════════════════════════════════════════════════
-            # ADAPTIVE ν REFINEMENT CANDIDATES (intermediate values)
+            # ADAPTIVE ν REFINEMENT / LEGACY CANDIDATES (intermediate values)
             # ═══════════════════════════════════════════════════════════════════
             'phi_student_t_nu_3': {'short': 'φ-T(ν=3)', 'desc': 'Extreme tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_5': {'short': 'φ-T(ν=5)', 'desc': 'Heavy tails (refined)', 'family': 'student_t'},
+            'phi_student_t_nu_6': {'short': 'φ-T(ν=6)', 'desc': 'Heavy tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_7': {'short': 'φ-T(ν=7)', 'desc': 'Heavy tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_10': {'short': 'φ-T(ν=10)', 'desc': 'Moderate tails (refined)', 'family': 'student_t'},
+            'phi_student_t_nu_12': {'short': 'φ-T(ν=12)', 'desc': 'Moderate tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_14': {'short': 'φ-T(ν=14)', 'desc': 'Light tails (refined)', 'family': 'student_t'},
+            'phi_student_t_nu_15': {'short': 'φ-T(ν=15)', 'desc': 'Light tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_16': {'short': 'φ-T(ν=16)', 'desc': 'Light tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_25': {'short': 'φ-T(ν=25)', 'desc': 'Near-Gaussian (refined)', 'family': 'student_t'},
+            # Momentum variants for refined/legacy ν values
+            'phi_student_t_nu_6_momentum': {'short': 'φ-T(ν=6)+Momentum', 'desc': 'Heavy tails with momentum (refined)', 'family': 'momentum'},
+            'phi_student_t_nu_12_momentum': {'short': 'φ-T(ν=12)+Momentum', 'desc': 'Moderate tails with momentum (refined)', 'family': 'momentum'},
+            'phi_student_t_nu_15_momentum': {'short': 'φ-T(ν=15)+Momentum', 'desc': 'Light tails with momentum (refined)', 'family': 'momentum'},
             
             # ═══════════════════════════════════════════════════════════════════
             # ENHANCED STUDENT-T MODELS (February 2026)
