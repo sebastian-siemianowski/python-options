@@ -3309,6 +3309,12 @@ def fit_all_models_for_regime(
                     PhiStudentTDriftModel.filter_and_calibrate(
                         returns, vol, config, train_frac=0.7
                     )
+                # Use calibrated PIT p-value from filter_and_calibrate
+                # (raw pit_ks_unified runs on full data without GARCH blending;
+                #  filter_and_calibrate applies GARCH + beta recalibration on
+                #  the test fold, matching what make pit-metals reports)
+                if _pit_p_u is not None and np.isfinite(_pit_p_u):
+                    pit_p_u = float(_pit_p_u)
                 # Extract calibrated Berkowitz/MAD from GARCH path
                 _bd = _calib_diag_u.get('berkowitz_pvalue')
                 if _bd is not None and np.isfinite(_bd):
