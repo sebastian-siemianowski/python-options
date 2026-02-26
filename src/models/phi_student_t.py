@@ -1,34 +1,20 @@
 """
-===============================================================================
-PHI-STUDENT-T DRIFT MODEL — Kalman Filter with AR(1) Drift and Student-t Noise
-===============================================================================
+Phi-Student-t Drift Model — Kalman Filter with AR(1) Drift and Student-t Noise.
 
-Implements a state-space model with AR(1) drift and heavy-tailed observation noise:
+    State:        μ_t = φ·μ_{t-1} + w_t,  w_t ~ N(0, q)
+    Observation:  r_t = μ_t + ε_t,         ε_t ~ Student-t(ν, 0, scale_t)
 
-    State equation:    μ_t = φ·μ_{t-1} + w_t,  w_t ~ N(0, q)
-    Observation:       r_t = μ_t + ε_t,         ε_t ~ Student-t(ν, 0, scale_t)
-    
-    Where:
-        - Observation variance: Var(ε_t) = c·σ_t²
-        - Student-t scale: scale_t = sqrt(c·σ_t² × (ν-2)/ν) for ν > 2
-        
-    CRITICAL: The c parameter scales the observation VARIANCE, not the scale.
-    For Student-t with ν degrees of freedom: Var = scale² × ν/(ν-2).
-    So scale = sqrt(Var × (ν-2)/ν) = sqrt(c·σ_t² × (ν-2)/ν).
+    Var(ε_t) = c·σ_t²;  scale_t = sqrt(c·σ_t² × (ν-2)/ν) for ν > 2.
 
 Parameters:
-    q:   Process noise variance (drift evolution uncertainty)
-    c:   Observation noise variance multiplier (scales EWMA variance σ_t²)
-    φ:   AR(1) persistence coefficient (φ=1 is random walk, φ=0 is mean reversion)
-    ν:   Degrees of freedom (controls tail heaviness; ν→∞ approaches Gaussian)
+    q   Process noise variance (drift evolution speed)
+    c   Observation noise multiplier (scales EWMA σ_t²)
+    φ   AR(1) persistence (1=random walk, 0=mean-reverting)
+    ν   Degrees of freedom (tail heaviness; ν→∞ → Gaussian)
 
-DISCRETE ν GRID:
-    Instead of continuously optimizing ν (which causes identifiability issues),
-    we use a discrete grid: ν ∈ {4, 6, 8, 12, 20}
-    Each ν value becomes a separate sub-model in Bayesian Model Averaging.
-
-The model includes an explicit Gaussian shrinkage prior on φ:
-    φ_r ~ N(φ_global, τ²)
+ν is selected from a discrete grid to avoid identifiability issues;
+each ν value becomes a separate BMA sub-model.
+Gaussian shrinkage prior on φ: φ_r ~ N(φ_global, τ²).
 """
 
 from __future__ import annotations
@@ -64,11 +50,11 @@ try:
         is_numba_available,
         run_phi_student_t_filter,
         run_phi_student_t_filter_batch,
-        # MS-q and fused LFO-CV wrappers (February 2026)
+        # MS-q and fused LFO-CV wrappers
         run_ms_q_student_t_filter,
         run_student_t_filter_with_lfo_cv,
         run_student_t_filter_with_lfo_cv_batch,
-        # Unified filter (February 2026)
+        # Unified filter
         run_unified_phi_student_t_filter,
         is_unified_filter_available,
     )
@@ -87,32 +73,28 @@ except ImportError:
     run_unified_phi_student_t_filter = None
 
 
-# =============================================================================
+# ---------------------------------------------------------------------------
 # φ SHRINKAGE PRIOR CONSTANTS (self-contained, no external dependencies)
-# =============================================================================
+# ---------------------------------------------------------------------------
 
 PHI_SHRINKAGE_TAU_MIN = 1e-3
 PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
 PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 
 # Discrete ν grid for Student-t models
-# ν=10 and ν=15 added February 2026 — prevents BMA oscillation between
+# ν=10 and ν=15 added prevents BMA oscillation between
 # 8↔12 and 12↔20 for metals (GC=F, SI=F) which live in ν≈10–15 range.
 STUDENT_T_NU_GRID = [4, 6, 8, 10, 12, 15, 20]
 
 
-# =============================================================================
-# ENHANCED STUDENT-T CONFIGURATION (February 2026)
-# =============================================================================
-# Three enhancements to improve Hyvarinen/PIT calibration:
-#   1. Vol-of-Vol (VoV): R_t = c × σ² × (1 + γ × |Δlog(σ)|)
-#   2. Two-Piece: Different νL (crash) vs νR (recovery) tails
-#   3. Two-Component Mixture: Blend νcalm and νstress with dynamic weights
-#
-# NOTE: No BMA penalties - all models compete fairly on equal footing.
-# Standard Student-t has no penalty, so enhanced variants should not either.
-# Model complexity is already penalized by BIC's parameter count.
-# =============================================================================
+# ---------------------------------------------------------------------------
+# ENHANCED STUDENT-T CONFIGURATION
+# Three enhancements for Hyvarinen/PIT calibration:
+#   1. VoV:         R_t = c × σ² × (1 + γ × |Δlog(σ)|)
+#   2. Two-Piece:   Different νL (crash) vs νR (recovery)
+#   3. Mixture:     Blend νcalm/νstress with dynamic weights
+# No BMA penalties — BIC's parameter count handles complexity.
+# ---------------------------------------------------------------------------
 
 # Vol-of-Vol (VoV) Enhancement
 GAMMA_VOV_GRID = [0.3, 0.5, 0.7]
@@ -130,16 +112,11 @@ MIXTURE_WEIGHT_DEFAULT = 0.8
 MIXTURE_WEIGHT_K = 2.0  # Sigmoid sensitivity to vol_relative
 MIXTURE_BMA_PENALTY = 0.0  # REMOVED: Equal competition with base Student-t
 
-# =============================================================================
-# ENHANCED MIXTURE WEIGHT DYNAMICS (February 2026 - Expert Panel)
-# =============================================================================
-# Upgraded from reactive (vol-only) to multi-factor conditioning:
-#   w_t = sigmoid(a × z_t + b × Δσ_t + c × M_t)
-# Where:
-#   z_t = standardized residuals (shock detection)
-#   Δσ_t = vol acceleration (regime change detection)  
-#   M_t = momentum (trend structure)
-# =============================================================================
+# ---------------------------------------------------------------------------
+# ENHANCED MIXTURE WEIGHT DYNAMICS
+# w_t = sigmoid(a×z_t + b×Δσ_t + c×M_t)
+# Multi-factor: shocks (z_t), vol acceleration (Δσ_t), momentum (M_t).
+# ---------------------------------------------------------------------------
 
 # Default mixture weight sensitivity parameters
 MIXTURE_WEIGHT_A_SHOCK = 1.0       # Sensitivity to standardized residuals
@@ -147,33 +124,15 @@ MIXTURE_WEIGHT_B_VOL_ACCEL = 0.5   # Sensitivity to vol acceleration
 MIXTURE_WEIGHT_C_MOMENTUM = 0.3    # Sensitivity to momentum
 
 
-# =============================================================================
-# MARKOV-SWITCHING PROCESS NOISE (MS-q) — February 2026
-# =============================================================================
-# Proactive regime-switching q based on volatility structure.
-# Unlike GAS-Q (reactive to errors), MS-q shifts BEFORE errors materialize.
+# ---------------------------------------------------------------------------
+# MARKOV-SWITCHING PROCESS NOISE (MS-q)
+# ---------------------------------------------------------------------------
+# Two-state (calm, stress) process noise driven by vol structure:
+#   q_t = (1 - p_stress) × q_calm + p_stress × q_stress
+#   p_stress = sigmoid(sensitivity × (vol_relative - threshold))
 #
-# PROBLEM WITH STATIC q:
-#   Static process noise doesn't adapt to market regime changes.
-#   During regime transitions, forecast errors spike before q catches up.
-#
-# PROBLEM WITH GAS-Q:
-#   GAS-Q is reactive — it responds AFTER seeing large errors.
-#   But regime changes are predictable from volatility structure.
-#
-# SOLUTION (MS-q):
-#   Markov-Switching Process Noise with 2 states (calm, stress):
-#       q_t = (1 - p_stress_t) × q_calm + p_stress_t × q_stress
-#   where:
-#       p_stress_t = sigmoid(sensitivity × (vol_relative_t - threshold))
-#
-# The transition probability is PROACTIVE — it shifts q BEFORE errors materialize.
-#
-# THEORETICAL BASIS:
-# - Hamilton (1989) Markov-switching models
-# - Regime-switching variance in financial econometrics
-# - Consistent with Contaminated Student-t philosophy for nu
-# =============================================================================
+# Proactive: shifts q BEFORE forecast errors materialize (unlike GAS-Q).
+# ---------------------------------------------------------------------------
 
 # MS-q Configuration
 MS_Q_ENABLED = True           # Master switch for MS-q models
@@ -184,29 +143,16 @@ MS_Q_THRESHOLD = 1.3          # vol_relative threshold for transition
 MS_Q_BMA_PENALTY = 0.0        # No penalty - fair competition via BIC
 
 
-# =============================================================================
-# ASSET-CLASS ADAPTIVE CALIBRATION PROFILES (February 2026 - Elite Metals Fix)
-# =============================================================================
-# Metals (gold, silver) have fundamentally different volatility dynamics:
-#   - Gold: slow macro-driven regime shifts, jump processes (CPI, Fed, geopolitics)
-#   - Silver: explosive VoV, leveraged-gold behavior, crisis fat tails
+# ---------------------------------------------------------------------------
+# ASSET-CLASS ADAPTIVE CALIBRATION PROFILES
+# ---------------------------------------------------------------------------
+# Metals have fundamentally different vol dynamics than equities:
+#   Gold — slow macro-driven regimes, jump processes (CPI, Fed)
+#   Silver — explosive VoV, leveraged-gold, crisis fat tails
 #
-# Generic parameterization causes PIT/Berkowitz failure because:
-#   1. MS-q activates too late for slow-moving macro regimes (gold)
-#   2. VoV damping suppresses needed responsiveness in VoV-dominated assets
-#   3. Asymmetric ν transition is too smooth for crisis tail fattening (silver)
-#   4. Jump detection threshold too conservative for macro-event-driven assets
-#   5. Risk premium regularization too strong (metals are variance-conditioned)
-#
-# These profiles adjust REGULARIZATION CENTERS and INITIALIZATION only.
-# The optimizer still finds the likelihood-optimal values — profiles just
-# guide the search toward the correct basin for each asset class.
-#
-# REFERENCES:
-#   Professor Chen Wei-Lin (Tsinghua): Regime-switching metals dynamics
-#   Professor Liu Jian-Ming (Fudan): Asymmetric tail behavior in commodities
-#   Professor Zhang Hui-Fang (CUHK): Jump-diffusion in precious metals
-# =============================================================================
+# Profiles adjust REGULARIZATION CENTERS and INITIALIZATION only.
+# The optimizer still finds likelihood-optimal values.
+# ---------------------------------------------------------------------------
 
 # Metals ticker sets — futures, spot FX, and major producers
 METALS_GOLD_SYMBOLS = frozenset({
@@ -219,18 +165,12 @@ METALS_OTHER_SYMBOLS = frozenset({
     'HG=F', 'PL=F', 'PA=F', 'COPX', 'PPLT',
 })
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # HIGH-VOLATILITY EQUITY SYMBOLS
-# ─────────────────────────────────────────────────────────────────────────────
-# Crypto-correlated, meme, and micro-cap stocks with extreme kurtosis (>8).
-# These assets exhibit fat tails during crises, frequent jumps, and strong
-# mean reversion — they need lower ν, sharper asymmetry, and weaker VoV
-# damping to achieve proper CRPS calibration.
-#
-# REFERENCE: Professor Li Xiao-Ming (Shanghai Jiao Tong):
-#   "Tail risk in speculative equities follows jump-diffusion dynamics
-#    closer to commodities than to broad equity indices."
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Crypto-correlated, meme, and micro-cap stocks with kurtosis >> 6.
+# Need lower ν, sharper asymmetry, and weaker VoV damping for CRPS.
+# ---------------------------------------------------------------------------
 HIGH_VOL_EQUITY_SYMBOLS = frozenset({
     'MSTR', 'AMZE', 'RCAT', 'SMCI', 'RGTI', 'QBTS', 'BKSY',
     'SPCE', 'ABTC', 'BZAI', 'BNZI', 'AIRI',
@@ -240,7 +180,7 @@ HIGH_VOL_EQUITY_SYMBOLS = frozenset({
 def _detect_asset_class(asset_symbol: str) -> Optional[str]:
     """
     Detect asset class from symbol for calibration profile selection.
-    
+
     Returns:
         'metals_gold': Gold futures/ETFs — slow macro regimes, jump-driven
         'metals_silver': Silver futures/ETFs — explosive VoV, leveraged-gold
@@ -262,25 +202,17 @@ def _detect_asset_class(asset_symbol: str) -> Optional[str]:
     return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # ASSET-CLASS CALIBRATION PROFILES
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Each profile is a dict of override hints consumed by optimize_params_unified.
 # Keys match parameter names in the optimizer stages.
 # Missing keys → fall back to generic defaults (backward compatible).
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
-    # ─────────────────────────────────────────────────────────────────────
-    # GOLD PROFILE
-    # ─────────────────────────────────────────────────────────────────────
-    # Gold volatility shifts are slower and macro-driven.
-    # MS-q must activate EARLIER during macro stress → higher sensitivity,
-    # weaker regularization pull toward generic center.
-    # VoV damping nearly eliminated — let VoV and MS-q coexist.
-    # Risk premium regularization weakened — gold is variance-conditioned.
-    # Jump threshold lowered — macro events (CPI, Fed) are jump processes.
-    # Asymmetry k_asym increased — sharper left-tail fattening in crises.
-    # ─────────────────────────────────────────────────────────────────────
+    # ---------------------------------------------------------------------------
+    # GOLD — slow macro regimes, higher MS sensitivity, near-zero VoV damping
+    # ---------------------------------------------------------------------------
     'metals_gold': {
         'ms_sensitivity_init': 4.0,         # Higher initial MS-q sensitivity
         'ms_sensitivity_reg_center': 4.0,   # Regularize toward 2.5, not 2.0
@@ -294,15 +226,9 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'alpha_asym_init': -0.08,           # Mild left-tail prior
         'q_stress_ratio': 15.0,             # Wider calm/stress gap for macro regimes
     },
-    # ─────────────────────────────────────────────────────────────────────
-    # SILVER PROFILE
-    # ─────────────────────────────────────────────────────────────────────
-    # Silver is not gold — it behaves as a leveraged gold regime asset.
-    # ν=20 is structurally wrong; silver becomes fat-tailed in crises.
-    # Asymmetric ν must fatten left tail quickly under stress.
-    # Higher MS sensitivity + minimal VoV damping for explosive regimes.
-    # Higher jump intensity than gold — silver gaps more frequently.
-    # ─────────────────────────────────────────────────────────────────────
+    # ---------------------------------------------------------------------------
+    # SILVER — leveraged-gold, explosive VoV, sharp left-tail fattening
+    # ---------------------------------------------------------------------------
     'metals_silver': {
         'ms_sensitivity_init': 4.5,         # Even higher — explosive regimes
         'ms_sensitivity_reg_center': 4.5,   # Regularize toward 2.8
@@ -316,11 +242,9 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'alpha_asym_init': -0.15,           # Stronger left-tail prior
         'q_stress_ratio': 20.0,             # Wide calm/stress gap
     },
-    # ─────────────────────────────────────────────────────────────────────
-    # OTHER METALS (copper, platinum, palladium)
-    # ─────────────────────────────────────────────────────────────────────
-    # Industrial metals: moderate adjustments between generic and gold.
-    # ─────────────────────────────────────────────────────────────────────
+    # ---------------------------------------------------------------------------
+    # OTHER METALS — moderate adjustments between generic and gold
+    # ---------------------------------------------------------------------------
     'metals_other': {
         'ms_sensitivity_init': 2.3,
         'ms_sensitivity_reg_center': 2.3,
@@ -334,25 +258,10 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'alpha_asym_init': -0.05,
         'q_stress_ratio': 12.0,
     },
-    # ─────────────────────────────────────────────────────────────────────
-    # HIGH-VOLATILITY EQUITY PROFILE
-    # ─────────────────────────────────────────────────────────────────────
-    # Crypto-correlated and speculative equities (MSTR, AMZE, RCAT, etc.)
-    # exhibit:
-    #   - Empirical kurtosis >> 6 → need lower ν (4-7 range)
-    #   - Frequent gap moves → lower jump threshold
-    #   - Strong mean reversion (|φ| > 0.3) → weaker VoV damping
-    #   - Asymmetric tail behavior in crashes → higher k_asym
-    #
-    # The key CRPS insight: these assets have predictive distributions
-    # that are too wide (over-dispersed) with generic ν=12-20.  Lower ν
-    # concentrates probability mass closer to the mean, producing sharper
-    # (lower CRPS) forecasts while preserving tail coverage.
-    #
-    # REFERENCE: Professor Wang Shou-Yang (AMSS, Chinese Academy of Sciences):
-    #   "Speculative equity tail indices require ν ∈ [4,8] for proper
-    #    CRPS-optimal calibration under jump-diffusion dynamics."
-    # ─────────────────────────────────────────────────────────────────────
+    # ---------------------------------------------------------------------------
+    # HIGH-VOL EQUITY — lower ν, frequent gaps, weaker VoV damping
+    # Lower ν concentrates mass closer to mean → sharper CRPS forecasts.
+    # ---------------------------------------------------------------------------
     'high_vol_equity': {
         'ms_sensitivity_init': 3.0,         # Faster regime detection
         'ms_sensitivity_reg_center': 3.0,   # Regularize toward 3.0
@@ -369,9 +278,9 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
 }
 
 
-# =============================================================================
-# UNIFIED STUDENT-T CONFIGURATION (February 2026 - Elite Architecture)
-# =============================================================================
+# ---------------------------------------------------------------------------
+# UNIFIED STUDENT-T CONFIGURATION
+# ---------------------------------------------------------------------------
 # Consolidates 48+ model variants into single adaptive architecture:
 #   - Smooth asymmetric ν (replaces Two-Piece)
 #   - Probabilistic MS-q (replaces threshold-based)
@@ -379,13 +288,13 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
 #   - Momentum integration
 #   - State collapse regularization
 #   - Asset-class adaptive profiles (metals, commodities)
-# =============================================================================
+# ---------------------------------------------------------------------------
 
 @dataclass
 class UnifiedStudentTConfig:
     """
-    Configuration for Unified Elite Student-T Model.
-    
+    Configuration for Unified Student-T Model.
+
     Combines ALL enhancements into single coherent architecture:
       1. Smooth Asymmetric ν: tanh-modulated tail heaviness
       2. Probabilistic MS-q: sigmoid regime switching
@@ -394,18 +303,18 @@ class UnifiedStudentTConfig:
       5. State regularization: prevents φ→1/q→0 collapse
       6. Merton Jump-Diffusion: separates discrete jumps from continuous diffusion
     """
-    
+
     # Core parameters
     q: float = 1e-6
     c: float = 1.0
     phi: float = 0.0
     nu_base: float = 8.0
-    
+
     # Smooth asymmetric ν: ν_eff = ν_base × (1 + α × tanh(k × z))
     # α < 0: heavier left tail (crashes), α > 0: heavier right tail
     alpha_asym: float = 0.0      # [-0.3, 0.3], asymmetry magnitude
     k_asym: float = 1.0          # [0.5, 2.0], transition sharpness
-    
+
     # Probabilistic MS-q: p_stress = sigmoid(sensitivity × vol_zscore)
     q_calm: float = None         # Defaults to q if None
     q_stress_ratio: float = 10.0 # q_stress = q_calm × ratio
@@ -414,88 +323,46 @@ class UnifiedStudentTConfig:
                                   # 0.0 = expanding window (backward-compatible).
                                   # 0.94-0.99 = EWM with corresponding half-life.
                                   # Gold: 0.97 (~33-day). Silver: 0.94 (~16-day).
-    
+
     # VoV with MS-q redundancy damping
     gamma_vov: float = 0.3       # [0, 1.0], VoV sensitivity
     vov_damping: float = 0.3     # [0, 0.5], reduce VoV when MS-q active
     vov_window: int = 20         # Rolling window for VoV
-    
-    # =========================================================================
-    # CONDITIONAL RISK PREMIUM STATE (February 2026 - Merton ICAPM)
-    # =========================================================================
-    # Equity returns are conditionally heteroskedastic AND risk-premium driven:
-    #   E[r_t | F_{t-1}] = φ·μ_{t-1} + λ₁·σ²_t
-    #
-    # The risk premium λ₁ captures the intertemporal relation between expected
-    # return and conditional variance (Merton 1973, French-Schwert-Stambaugh 1987).
-    # Without this, the model treats variance purely as noise rather than
-    # information — missing the fundamental risk-return tradeoff.
-    #
-    # λ₁ > 0: higher variance → higher expected return (risk compensation)
-    # λ₁ < 0: higher variance → lower expected return (leverage/fear effect)
-    # λ₁ = 0: disabled (pure AR(1) state, default for backward compatibility)
-    #
-    # Empirically: λ₁ ∈ [-2, 5] for daily equities (small magnitude)
-    # Typical: λ₁ ≈ 0.5-2.0 for broad equities, can be negative for high-vol
-    #
-    # Alpha impact: ⭐⭐⭐⭐ — subtle but powerful for medium-horizon alpha.
-    # =========================================================================
+
+    # ---------------------------------------------------------------------------
+    # CONDITIONAL RISK PREMIUM (Merton ICAPM)
+    # E[r_t | F_{t-1}] = φ·μ_{t-1} + λ₁·σ²_t
+    # λ₁ > 0: risk compensation,  λ₁ < 0: leverage/fear effect,  λ₁ = 0: disabled
+    # Typical: λ₁ ∈ [-2, 5] for daily equities
+    # ---------------------------------------------------------------------------
     risk_premium_sensitivity: float = 0.0  # λ₁ ∈ [-5, 10], 0.0 = disabled
-    
-    # =========================================================================
-    # CONDITIONAL SKEW DYNAMICS (February 2026 - GAS Framework)
-    # =========================================================================
-    # Time-varying skewness via Generalized Autoregressive Score (GAS):
-    #   Creal, Koopman & Lucas (2013), Harvey (2013)
-    #
-    # The static asymmetry α_asym treats tail heaviness as constant.
-    # In reality, skewness shifts across regimes:
-    #   - Pre-crash: markets become negatively skewed (left tail fattens)
-    #   - Momentum: markets become positively skewed (right tail fattens)
-    #   - Recovery: skewness mean-reverts to baseline
-    #
-    # GAS update for the dynamic asymmetry parameter α_t:
-    #   α_{t+1} = (1 - ρ_λ) · α₀ + ρ_λ · α_t + κ_λ · s_t
-    #
-    # where:
-    #   α₀ = alpha_asym (static baseline from Stage 4 optimization)
-    #   ρ_λ = skew_persistence ∈ [0.90, 0.99] (how slowly skew reverts)
-    #   κ_λ = skew_score_sensitivity (how fast skew reacts to new data)
-    #   s_t = z_t · w_t (Student-t score = weighted standardized innovation)
-    #   z_t = innovation / scale
-    #   w_t = (ν+1) / (ν + z_t²)  (Student-t weight, already in filter)
-    #
-    # The score s_t is the optimal information-theoretic direction:
-    #   - Large negative z → s_t strongly negative → α_t decreases → heavier left tail
-    #   - Large positive z → s_t strongly positive → α_t increases → heavier right tail
-    #   - Small z → s_t ≈ 0 → α_t mean-reverts to α₀
-    #
-    # α_t is clipped to [-0.3, 0.3] for stability (same as static α bounds).
-    #
-    # κ_λ = 0.0: disabled (pure static α, backward compatible)
-    # κ_λ > 0: dynamic skew active
-    #
-    # Typical values: κ_λ ∈ [0.001, 0.05], ρ_λ ∈ [0.90, 0.99]
-    #
-    # Alpha impact: ⭐⭐⭐⭐ — tail asymmetry is a leading crisis signal.
-    # =========================================================================
+
+    # ---------------------------------------------------------------------------
+    # CONDITIONAL SKEW DYNAMICS (GAS framework, Creal-Koopman-Lucas 2013)
+    # α_{t+1} = (1 - ρ_λ)·α₀ + ρ_λ·α_t + κ_λ·s_t
+    #   s_t = z_t·w_t  (Student-t score: standardized innovation × tail weight)
+    #   ρ_λ ∈ [0.90, 0.99]  (mean-reversion speed of skew)
+    #   κ_λ ∈ [0, 0.05]     (score sensitivity; 0 = static α)
+    # Large negative z → heavier left tail; large positive z → heavier right.
+    # α_t clipped to [-0.3, 0.3] for stability.
+    # ---------------------------------------------------------------------------
     skew_score_sensitivity: float = 0.0  # κ_λ ≥ 0, 0.0 = disabled
     skew_persistence: float = 0.97       # ρ_λ ∈ [0.90, 0.99], skew mean-reversion speed
-    
-    # ELITE CALIBRATION FIX (February 2026): Variance inflation
+
+    # CALIBRATION Variance inflation
     # Multiplies S_pred by β to ensure predictive variance ≈ returns variance
     # β < 1: model was over-estimating variance (rare)
     # β > 1: model was under-estimating variance (common for q→0 collapse)
     variance_inflation: float = 1.0  # [0.5, 5.0], optimized for PIT uniformity
-    
-    # ELITE CALIBRATION FIX (February 2026): Mean drift correction
+
+    # CALIBRATION Mean drift correction
     # Equities have positive risk premium (~15-25% annualized) that the zero-mean
     # Kalman filter doesn't capture. This causes systematic positive innovations
     # and right-skewed PIT histogram.
     # mu_drift = mean(returns - mu_pred) on training data
     mu_drift: float = 0.0  # Mean bias correction for PIT
-    
-    # GJR-GARCH parameters for honest variance dynamics (February 2026)
+
+    # GJR-GARCH parameters for honest variance dynamics
     # Estimated on TRAINING data, applied to TEST data without look-ahead
     # h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε_{t-1}<0) + β·h_{t-1}
     # The leverage term γ_lev captures the asymmetric variance reaction:
@@ -507,288 +374,124 @@ class UnifiedStudentTConfig:
     garch_beta: float = 0.0       # GARCH coefficient (lagged variance)
     garch_leverage: float = 0.0   # GJR leverage coefficient γ_lev ≥ 0
     garch_unconditional_var: float = 1e-4  # For initialization
-    
-    # =========================================================================
-    # ROUGH VOLATILITY MEMORY (February 2026 - Gatheral-Jaisson-Rosenbaum)
-    # =========================================================================
-    # Real market volatility has long-memory (rough) behavior:
-    #   σ²_t ~ (1-L)^d · ε²_t    where d = H - 0.5
-    #
-    # Standard GARCH decays exponentially: w_k = β^k
-    # Rough vol decays as power law:       w_k ~ k^(H-3/2) / Γ(H-1/2)
-    #
-    # For H < 0.5 (rough regime, empirically H ≈ 0.1 for equities):
-    #   - Slower post-crisis variance decay (power law vs exponential)
-    #   - More realistic volatility clustering
-    #   - Better medium-horizon forecasting
-    #   - Less artificial need for extreme γ persistence
-    #
-    # H = 0.0 → disabled (pure GJR-GARCH)
-    # H ∈ (0, 0.5) → rough vol active, blended with GJR-GARCH
-    # H = 0.5 → Brownian (equivalent to GARCH memory)
-    # =========================================================================
+
+    # ---------------------------------------------------------------------------
+    # ROUGH VOLATILITY MEMORY (Gatheral-Jaisson-Rosenbaum 2018)
+    # Power-law decay w_k ~ k^(H-3/2) vs GARCH exponential w_k = β^k.
+    # H < 0.5 → rough regime (equity H ≈ 0.1): slower post-crisis decay.
+    # H = 0 → disabled,  H ∈ (0, 0.5) → blended with GJR-GARCH.
+    # ---------------------------------------------------------------------------
     rough_hurst: float = 0.0  # Hurst exponent H ∈ [0, 0.5], 0.0 = disabled
-    
-    # =========================================================================
-    # MERTON JUMP-DIFFUSION LAYER (February 2026 - Elite Institutional)
-    # =========================================================================
-    # Separates discrete jump events from continuous diffusion:
-    #   r_t = μ_t + σ_t·ε_t + J_t
-    #   J_t ~ Bernoulli(p_t) · N(μ_J, σ²_J)
-    #   p_t = logistic(a₀ + b·vov_t)  where a₀ = logit(jump_intensity)
-    #
-    # Without jump separation, large shocks inflate diffusion variance,
-    # cause q to over-adapt, vov to overreact, and stress ratio to spike.
-    # This directly degrades PIT calibration (MAD, Berkowitz).
-    #
-    # With jump layer: diffusion stays clean, tails model correctly,
-    # crisis transitions are smoother, forecast consistency improves.
-    # =========================================================================
+
+    # ---------------------------------------------------------------------------
+    # MERTON JUMP-DIFFUSION
+    # r_t = μ_t + σ_t·ε_t + J_t,  J_t ~ Bernoulli(p_t)·N(μ_J, σ²_J)
+    # p_t = logistic(logit(p₀) + b·vov_t)
+    # Separates discrete jumps from continuous diffusion — keeps GARCH clean.
+    # ---------------------------------------------------------------------------
     jump_intensity: float = 0.0     # Base jump probability p₀ ∈ [0, 0.15]
                                      # 0.0 = disabled, 0.02 ≈ 5 jumps/year
     jump_variance: float = 0.0      # σ²_J jump size variance, 0.0 = disabled
     jump_sensitivity: float = 1.0   # b in p_t = logistic(a₀ + b·vov_t)
     jump_mean: float = 0.0          # μ_J jump mean (allows asymmetric jumps)
-    
-    # =========================================================================
-    # CAUSAL EWM LOCATION CORRECTION (February 2026 - CRPS Optimization)
-    # =========================================================================
-    # Post-filter exponentially weighted moving average of innovations that
-    # captures short-term autocorrelation in prediction residuals.
-    # Applied causally: ewm_mu[t] = λ·ewm_mu[t-1] + (1-λ)·(y_{t-1} - μ_{t-1})
-    # Then μ_pred[t] += ewm_mu[t]
-    #
-    # This is the Kalman smoother's causal approximation (Durbin-Koopman 2012):
-    # when the state equation misses short-term dynamics, the EWM mops up
-    # residual autocorrelation, reducing innovation variance and thus CRPS.
-    #
-    # λ = 0.0: disabled (backward compatible)
-    # λ ∈ (0, 1): active, typical 0.90-0.97 (10-33 day half-life)
-    # =========================================================================
+
+    # ---------------------------------------------------------------------------
+    # CAUSAL EWM LOCATION CORRECTION (Durbin-Koopman 2012)
+    # ewm_μ[t] = λ·ewm_μ[t-1] + (1-λ)·(y_{t-1} - μ_{t-1});  μ_pred[t] += ewm_μ[t]
+    # Mops up residual autocorrelation when the state equation misses short-term dynamics.
+    # λ = 0: disabled,  λ ∈ (0.90, 0.97): typical (10-33 day half-life)
+    # ---------------------------------------------------------------------------
     crps_ewm_lambda: float = 0.0  # EWM decay for location correction, 0.0 = disabled
 
-    # =========================================================================
-    # LEVERAGE CORRELATION (February 2026 - Heston/DLSV Inspired)
-    # =========================================================================
-    # Dynamic asymmetry between return and volatility innovations:
-    #   h_t = h_garch_t × (1 + ρ_lev × min(ε_{t-1}/σ_{t-1}, 0)²)
-    #
-    # This captures the leverage effect (Black 1976, Christie 1982):
-    #   - Negative returns → volatility increases MORE than positive returns
-    #   - GJR-GARCH captures this via γ_lev·I(ε<0), but only for the sign
-    #   - rho_leverage adds MAGNITUDE-dependent scaling: bigger drops → bigger
-    #     variance increase, matching the Heston stochastic vol model:
-    #     dv_t = κ(θ-v_t)dt + σ_η√v_t(ρdW¹_t + √(1-ρ²)dW²_t)
-    #
-    # Combined with GJR-GARCH, this gives a richer variance dynamic:
-    #   - GJR: linear asymmetry (sign-based)
-    #   - rho_leverage: quadratic asymmetry (magnitude-based)
-    #   - Together: Heston-like leverage with GARCH persistence
-    #
-    # ρ_lev = 0.0: disabled (backward compatible)
-    # ρ_lev ∈ (0, 2): active, typical 0.3-1.0
-    # =========================================================================
+    # ---------------------------------------------------------------------------
+    # LEVERAGE CORRELATION (Black 1976, Heston 1993)
+    # h_t = h_garch × (1 + ρ_lev × min(ε_{t-1}/σ_{t-1}, 0)²)
+    # GJR captures sign-based asymmetry; ρ_lev adds magnitude-dependent scaling.
+    # ρ = 0: disabled,  ρ ∈ (0, 2): typical 0.3-1.0
+    # ---------------------------------------------------------------------------
     rho_leverage: float = 0.0  # Leverage correlation ∈ [0, 2], 0 = disabled
-    
-    # =========================================================================
-    # MEAN REVERSION SPEED FOR VARIANCE (February 2026 - Heston κ)
-    # =========================================================================
-    # Variance mean reversion toward long-term level θ:
-    #   h_t = (1-κ)·h_garch_t + κ·θ_long
-    #
-    # This implements the Heston (1993) mean reversion component:
-    #   dv_t = κ(θ - v_t)dt + ...
-    #
-    # Standard GARCH has implicit mean reversion through ω/(1-α-β-γ/2),
-    # but the speed is fixed by persistence (α+β+γ/2). Adding explicit κ
-    # allows faster/slower adjustment:
-    #   - κ > 0: pulls variance toward θ faster (reduces forecast bias
-    #     in mean-reverting regimes, improving CRPS)
-    #   - κ = 0: pure GARCH dynamics (backward compatible)
-    #
-    # θ_long is estimated as the unconditional variance on training data.
-    # κ is cross-validated to minimize CRPS on validation folds.
-    # =========================================================================
+
+    # ---------------------------------------------------------------------------
+    # VARIANCE MEAN REVERSION (Heston 1993)
+    # h_t = (1-κ)·h_garch + κ·θ_long
+    # Adds explicit mean-reversion speed beyond GARCH's implicit ω/(1-α-β-γ/2).
+    # κ = 0: pure GARCH,  κ ∈ (0, 0.3): faster pull toward θ_long
+    # ---------------------------------------------------------------------------
     kappa_mean_rev: float = 0.0    # Mean reversion speed ∈ [0, 0.3], 0 = disabled
     theta_long_var: float = 0.0    # Long-term variance target, 0 = use unconditional
-    
-    # =========================================================================
-    # CRPS-OPTIMAL SIGMA SHRINKAGE (February 2026 - Gneiting-Raftery)
-    # =========================================================================
-    # After PIT calibration, apply an optimal shrinkage to sigma for CRPS:
-    #   σ_crps = σ_pit × α_crps
-    #
-    # Mathematical foundation (Gneiting & Raftery 2007, Theorem 1):
-    #   CRPS(F, y) = E_F|X-y| - ½E_F|X-X'|
-    #
-    # For location-scale families t_ν(μ, σ):
-    #   CRPS = σ × C(ν) × f(z) where z = (y-μ)/σ
-    #
-    # The optimal σ that minimizes expected CRPS is NOT the calibrated σ
-    # (which targets PIT uniformity) but a slightly TIGHTER σ:
-    #   σ*_crps = σ_cal × √(E[z²]/(1 + 1/ν))
-    #
-    # For well-calibrated models, E[z²] ≈ ν/(ν-2) (Student-t second moment),
-    # so σ*_crps ≈ σ_cal × √(ν/((ν-2)(1+1/ν))) < σ_cal.
-    #
-    # In practice, we estimate α_crps on training data via golden section
-    # search minimizing actual CRPS on the validation fold.
-    #
-    # α_crps = 1.0: no shrinkage (backward compatible)
-    # α_crps < 1.0: tighter distribution (lower CRPS, PIT unchanged)
-    # =========================================================================
+
+    # ---------------------------------------------------------------------------
+    # CRPS-OPTIMAL SIGMA SHRINKAGE (Gneiting & Raftery 2007)
+    # σ_crps = σ_pit × α_crps
+    # The CRPS-optimal σ is slightly TIGHTER than the PIT-calibrated σ:
+    #   σ*_crps ≈ σ_cal × √(ν/((ν-2)(1+1/ν))) < σ_cal
+    # Estimated via golden section on training CRPS.
+    # α = 1.0: no shrinkage,  α < 1.0: tighter (lower CRPS, PIT unchanged)
+    # ---------------------------------------------------------------------------
     crps_sigma_shrinkage: float = 1.0  # CRPS sigma multiplier ∈ [0.5, 1.0], 1.0 = disabled
 
-    # =========================================================================
-    # VOLATILITY-OF-VOLATILITY NOISE σ_η (February 2026 - Heston Extension)
-    # =========================================================================
-    # Amplifies GARCH response to extreme shocks beyond what α captures:
-    #   h_t += σ_η × max(0, |z_{t-1}| - 1.5)² × h_{t-1}
-    #
-    # Where z_{t-1} = ε_{t-1} / √h_{t-1} is the standardized innovation.
-    #
-    # In the Heston SDE: dv_t = κ(θ-v_t)dt + σ_η√v_t dW^v_t
-    # This is the discrete GARCH analog: large |z| → disproportionate
-    # variance amplification, capturing the stochastic vol-of-vol.
-    #
-    # Standard GARCH α responds linearly to ε². σ_η adds a THRESHOLD
-    # nonlinearity: only extreme shocks (|z|>1.5) trigger amplification.
-    # This improves CRPS during crisis transitions where GARCH α alone
-    # under-reacts, and prevents over-reaction to normal-sized shocks.
-    #
-    # σ_η = 0.0: disabled (backward compatible)
-    # σ_η ∈ (0, 0.5): active, typical 0.05-0.20
-    # =========================================================================
+    # ---------------------------------------------------------------------------
+    # VOL-OF-VOL NOISE σ_η (Heston discrete analog)
+    # h_t += σ_η × max(0, |z_{t-1}| - 1.5)² × h_{t-1}
+    # Threshold nonlinearity: only extreme shocks (|z|>1.5) amplify variance.
+    # σ_η = 0: disabled,  σ_η ∈ (0, 0.5): typical 0.05-0.20
+    # ---------------------------------------------------------------------------
     sigma_eta: float = 0.0  # Vol-of-vol noise ∈ [0, 0.5], 0 = disabled
 
-    # =========================================================================
-    # ASYMMETRIC DEGREES-OF-FREEDOM OFFSET (February 2026 - Two-Piece t)
-    # =========================================================================
-    # Fixed left/right ν split for structural tail asymmetry:
-    #   z < 0: ν_left  = ν_base - t_df_asym  (heavier left tail)
-    #   z ≥ 0: ν_right = ν_base + t_df_asym  (lighter right tail)
-    #
-    # Both ν_left and ν_right are floored at 2.5 for stability.
-    #
-    # This complements the smooth α_asym approach:
-    #   - α_asym: dynamic, modulates ν via tanh(k×z) — adapts per observation
-    #   - t_df_asym: fixed structural asymmetry — persistent across regimes
-    #
-    # Metals (gold, silver) have structurally different crash vs rally
-    # tail behavior. Equities too (leverage effect). The fixed split
-    # captures this time-invariant asymmetry while α_asym handles
-    # time-varying components.
-    #
-    # Impact on CRPS: tighter σ on the light-tail side (rally) while
-    # preserving coverage on the heavy-tail side (crash).
-    #
-    # t_df_asym = 0.0: symmetric (backward compatible)
-    # t_df_asym > 0: heavier left tail, lighter right tail (typical)
-    # t_df_asym < 0: lighter left tail, heavier right tail (rare)
-    # =========================================================================
+    # ---------------------------------------------------------------------------
+    # ASYMMETRIC ν OFFSET (structural two-piece tails)
+    # z < 0: ν_left  = ν_base - t_df_asym  (heavier crash tail)
+    # z ≥ 0: ν_right = ν_base + t_df_asym  (lighter rally tail)
+    # Complements dynamic α_asym with a fixed structural split.
+    # 0: symmetric,  > 0: heavier left (typical),  < 0: heavier right
+    # ---------------------------------------------------------------------------
     t_df_asym: float = 0.0  # Asymmetric ν offset ∈ [-3, 3], 0 = disabled
 
-    # =========================================================================
-    # MARKOV REGIME SWITCH PROBABILITY (February 2026 - Hamilton 1989)
-    # =========================================================================
-    # Adds a hidden Markov state {calm, stress} to the GARCH variance:
-    #   p_stress_t = (1-p_switch)·p_stress_{t-1} + p_switch·I(|z_{t-1}|>2)
-    #   h_t = (1-p_stress_t)·h_garch_t + p_stress_t·(h_garch_t × stress_mult)
-    #
-    # Where stress_mult is derived from q_stress_ratio (already in config).
-    #
-    # Key insight: this is DIFFERENT from MS-q in the Kalman state.
-    # MS-q modulates process noise q (state uncertainty).
-    # regime_switch_prob modulates OBSERVATION variance h_t directly.
-    # They operate on different layers of the model hierarchy:
-    #   - MS-q → how fast the hidden state μ_t can change
-    #   - regime_switch_prob → how much the PREDICTIVE variance inflates
-    #
-    # p_switch = 0.0: disabled (backward compatible)
-    # p_switch ∈ (0, 0.15): active, typical 0.03-0.10
-    # =========================================================================
+    # ---------------------------------------------------------------------------
+    # MARKOV REGIME SWITCH (observation variance layer)
+    # p_stress_t = (1-p_switch)·p_stress_{t-1} + p_switch·I(|z|>2)
+    # h_t = (1-p_stress)·h_garch + p_stress·(h_garch × stress_mult)
+    # Different from MS-q: MS-q modulates state noise q,
+    # this modulates observation variance h_t.
+    # p = 0: disabled,  p ∈ (0, 0.15): typical 0.03-0.10
+    # ---------------------------------------------------------------------------
     regime_switch_prob: float = 0.0  # Calm→stress transition ∈ [0, 0.15], 0 = disabled
 
-    # =========================================================================
-    # GARCH-KALMAN VARIANCE RECONCILIATION (February 2026 - Creal-Koopman-Lucas)
-    # =========================================================================
-    # The Kalman filter uses R_t = c·σ²_ewma as observation noise.  But the
-    # GARCH h_t (estimated in Stage 5c) contains richer information about
-    # time-varying variance — it captures leverage, persistence, and shock
-    # asymmetry that EWMA misses.
-    #
-    # Current architecture: filter runs with R_base, GARCH blends AFTER.
-    # Problem: Kalman gain K_t = P_pred/(P_pred + R_t).  If R_t is wrong
-    # during filtering, μ_pred is wrong → directly degrades alpha.
-    #
-    # Fix: blend GARCH h_t INTO the filter's observation noise:
-    #   R_t = (1 - w)·c·σ²_ewma + w·h_garch_t
-    #
-    # The GARCH recursion runs causally inside the filter loop:
-    #   h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε<0) + β·h_{t-1}
-    # where ε_{t-1} = r_{t-1} - μ_pred_{t-1} (previous innovation).
-    #
-    # w = 0.0: disabled (backward compatible, pure EWMA R_t)
-    # w ∈ (0, 0.6]: GARCH-informed observation noise
-    #
-    # REFERENCE: Creal, Koopman & Lucas (2013), "Generalized Autoregressive
-    #   Score Models with Applications", JASA 108(505):1009-1024.
-    # =========================================================================
+    # ---------------------------------------------------------------------------
+    # GARCH-KALMAN VARIANCE RECONCILIATION
+    # R_t = (1-w)·c·σ²_ewma + w·h_garch_t
+    # Blends GARCH h_t into filter observation noise so Kalman gain
+    # K_t = P_pred/(P_pred + R_t) uses a more accurate R_t.
+    # w = 0: pure EWMA (default),  w ∈ (0, 0.6]: GARCH-informed R_t
+    # ---------------------------------------------------------------------------
     garch_kalman_weight: float = 0.0  # w ∈ [0, 0.6], 0 = disabled
 
-    # =========================================================================
-    # PROCESS-NOISE VOLATILITY COUPLING (February 2026 - Drift Flexibility)
-    # =========================================================================
-    # When h_t >> θ_long, the market is in a high-variance regime.  The drift
-    # state μ_t should be allowed to change faster — otherwise the Kalman
-    # filter "locks onto" a stale drift during regime transitions.
-    #
-    #   Q_t = q_ms_t × (1 + ζ × max(0, h_t/θ_long - 1))
-    #
-    # This multiplies the MS-q output by a GARCH-state-dependent factor:
-    #   h_t = θ_long:   factor = 1    (no change, calm regime)
-    #   h_t = 2·θ_long: factor = 1+ζ  (process noise increases)
-    #   h_t = 3·θ_long: factor = 1+2ζ (large increase)
-    #
-    # Unlike MS-q (which uses EWMA vol z-score), this uses the GARCH
-    # variance ratio — a filtered, lag-corrected measure of regime state.
-    # The two are complementary, not redundant.
-    #
-    # ζ = 0.0: disabled (backward compatible)
-    # ζ ∈ (0, 1.0]: active, typical 0.1-0.5
-    # =========================================================================
+    # ---------------------------------------------------------------------------
+    # PROCESS-NOISE VOLATILITY COUPLING
+    # Q_t = q_ms × (1 + ζ × max(0, h_t/θ_long - 1))
+    # When h_t >> θ_long, drift state μ_t can change faster.
+    # Uses GARCH variance ratio (lag-corrected), complementary to MS-q.
+    # ζ = 0: disabled,  ζ ∈ (0, 1.0]: typical 0.1-0.5
+    # ---------------------------------------------------------------------------
     q_vol_coupling: float = 0.0  # ζ ∈ [0, 1.0], 0 = disabled
 
-    # =========================================================================
-    # CONDITIONAL LOCATION BIAS CORRECTION (February 2026 - James-Stein)
-    # =========================================================================
-    # The Kalman state equation is linear: μ_pred = φ·μ + u_t + λ₁·σ².
-    # But the empirical return-variance relationship is NONLINEAR:
-    #   1. During high variance, mean undershoots more than λ₁·σ² predicts
-    #      (concavity in risk-return tradeoff, Ghysels-Santa-Clara-Valkanov 2005)
-    #   2. Strong Kalman drift μ_pred tends to overshoot (mean reversion)
-    #
-    # Correction applied post-filter on μ_pred:
-    #   μ_corrected = μ_pred + a·(h_t - θ_long) + b·sign(μ_pred)·√|μ_pred|
-    #
-    # Term 1: a·(h_t - θ_long) — variance-state conditional bias
-    # Term 2: b·sign(μ)·√|μ| — drift magnitude shrinkage (James-Stein)
-    #
-    # Both |a| < 0.5 and |b| < 0.5 to prevent hidden nonlinear model.
-    #
-    # REFERENCE: Ghysels, Santa-Clara & Valkanov (2005), "There is a
-    #   risk-return trade-off after all", JFE 76(3):509-548.
-    # =========================================================================
+    # ---------------------------------------------------------------------------
+    # CONDITIONAL LOCATION BIAS CORRECTION
+    # μ_corrected = μ_pred + a·(h_t - θ_long) + b·sign(μ)·√|μ|
+    # Term a: variance-state bias (risk-return concavity)
+    # Term b: James-Stein drift magnitude shrinkage
+    # Both |a|, |b| < 0.5.  Gated: only enabled if CRPS improves > 0.3%.
+    # ---------------------------------------------------------------------------
     loc_bias_var_coeff: float = 0.0    # a ∈ [-0.5, 0.5], 0 = disabled
     loc_bias_drift_coeff: float = 0.0  # b ∈ [-0.5, 0.5], 0 = disabled
 
-    # =========================================================================
-    # PRE-CALIBRATED PIPELINE PARAMETERS (February 2026 - Stage 6)
-    # =========================================================================
+    # ---------------------------------------------------------------------------
+    # PRE-CALIBRATED PIPELINE PARAMETERS
+    # ---------------------------------------------------------------------------
     # Estimated ONCE during tuning (Stage 6) and read directly in
     # filter_and_calibrate. No search/CV in filter_and_calibrate.
     # One-way flow: optimize_params_unified → config → filter_and_calibrate.
-    # =========================================================================
+    # ---------------------------------------------------------------------------
     calibrated_gw: float = 0.50          # GARCH blend weight
     calibrated_nu_pit: float = 0.0       # ν for PIT (0 = use nu_base)
     calibrated_nu_crps: float = 0.0      # ν for CRPS (0 = use nu_base)
@@ -797,12 +500,12 @@ class UnifiedStudentTConfig:
 
     # Momentum/exogenous input
     exogenous_input: np.ndarray = field(default=None, repr=False)
-    
+
     # Data-driven bounds (auto-computed)
     c_min: float = 0.01
     c_max: float = 10.0
     q_min: float = 1e-8
-    
+
     def __post_init__(self):
         """Validate and set defaults."""
         if self.q_calm is None:
@@ -824,21 +527,21 @@ class UnifiedStudentTConfig:
         self.rho_leverage = float(np.clip(self.rho_leverage, 0.0, 2.0))
         self.kappa_mean_rev = float(np.clip(self.kappa_mean_rev, 0.0, 0.3))
         self.crps_sigma_shrinkage = float(np.clip(self.crps_sigma_shrinkage, 0.3, 1.0))
-        # CRPS-enhancement parameters (February 2026)
+        # CRPS-enhancement parameters
         self.sigma_eta = float(np.clip(self.sigma_eta, 0.0, 0.5))
         self.t_df_asym = float(np.clip(self.t_df_asym, -3.0, 3.0))
         self.regime_switch_prob = float(np.clip(self.regime_switch_prob, 0.0, 0.15))
-        # GARCH-Kalman reconciliation + Q_t coupling + location bias (February 2026)
+        # GARCH-Kalman reconciliation + Q_t coupling + location bias
         self.garch_kalman_weight = float(np.clip(self.garch_kalman_weight, 0.0, 0.6))
         self.q_vol_coupling = float(np.clip(self.q_vol_coupling, 0.0, 1.0))
         self.loc_bias_var_coeff = float(np.clip(self.loc_bias_var_coeff, -0.5, 0.5))
         self.loc_bias_drift_coeff = float(np.clip(self.loc_bias_drift_coeff, -0.5, 0.5))
-    
+
     @property
     def q_stress(self) -> float:
         """Compute stress regime process noise."""
         return self.q_calm * self.q_stress_ratio
-    
+
     @classmethod
     def auto_configure(
         cls,
@@ -848,26 +551,26 @@ class UnifiedStudentTConfig:
     ) -> 'UnifiedStudentTConfig':
         """
         Auto-configure from data characteristics.
-        
+
         Uses robust statistics (MAD) for c bounds and
         data-driven initialization for asymmetry and VoV.
         """
         returns = np.asarray(returns).flatten()
         vol = np.asarray(vol).flatten()
-        
+
         # Filter valid data
         valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
         returns_clean = returns[valid_mask]
         vol_clean = vol[valid_mask]
-        
+
         if len(returns_clean) < 30:
             # Not enough data, use defaults
             return cls(nu_base=nu_base)
-        
+
         # Data-driven c bounds using robust MAD scale
         returns_mad = float(np.median(np.abs(returns_clean - np.median(returns_clean))))
         vol_median = float(np.median(vol_clean))
-        
+
         if vol_median > 1e-10 and returns_mad > 0:
             # c_target such that c × vol² ≈ returns_variance
             returns_scale = returns_mad / 0.6745  # MAD to σ conversion
@@ -879,9 +582,9 @@ class UnifiedStudentTConfig:
             c_target = 1.0
             c_min = 0.01
             c_max = 10.0
-        
+
         # VoV from realized vol-of-vol
-        # FIX (Feb 2026): More sensitive formula for gamma variation across assets
+        # More sensitive formula for gamma variation across assets
         log_vol = np.log(np.maximum(vol_clean, 1e-10))
         if len(log_vol) > 1:
             vol_cv = float(np.std(np.diff(log_vol)))
@@ -890,7 +593,7 @@ class UnifiedStudentTConfig:
             gamma_vov = float(np.clip(15.0 * vol_cv, 0.0, 1.0)) if vol_cv > 0.005 else 0.0
         else:
             gamma_vov = 0.0
-        
+
         # Asymmetry from skewness (α = -0.1 × skewness)
         if len(returns_clean) > 30:
             ret_std = float(np.std(returns_clean))
@@ -902,42 +605,26 @@ class UnifiedStudentTConfig:
                 alpha_asym = 0.0
         else:
             alpha_asym = 0.0
-        
+
         # MS-q: enable stronger switching if vol is volatile
         if len(log_vol) > 1:
             vol_cv = float(np.std(np.diff(log_vol)))
             q_stress_ratio = 10.0 if vol_cv > 0.02 else 5.0
         else:
             q_stress_ratio = 5.0
-        
-        # =====================================================================
-        # ELITE CALIBRATION FIX (February 2026): Scale-aware q_min
-        # =====================================================================
-        # Previous: q_min = max(1e-8, 0.001 * vol_median²) was too aggressive
-        # This caused log₁₀(q) → -7.0 collapse for low-vol assets (COST, SO, IBM, FX)
-        # 
-        # Mathematical insight: For proper PIT calibration, process noise q must
-        # contribute meaningfully to predictive variance S = P_pred + R
-        # 
-        # If q → 0, then in steady state P_pred → q/(1-φ²) → 0
-        # This makes S ≈ R = c×σ², and any mismatch between EWMA σ and true vol
-        # causes systematic under-estimation of predictive variance → U-shaped PIT
-        #
-        # Fix: Set q_min so that q contributes at least 5% of observation variance
+
+        # Scale-aware q_min: q must contribute meaningfully to S = P_pred + R.
+        # If q → 0 then P_pred → 0, S ≈ R, and EWMA mismatches → U-shaped PIT.
         obs_var = vol_median ** 2
         ret_var = float(np.var(returns_clean)) if len(returns_clean) > 30 else obs_var
-        
-        # q_min should be:
-        # 1. At least 1e-6 (absolute floor - prevents numerical issues)
-        # 2. At least 5% of observation variance (ensures q contributes to S)
-        # 3. At least 2% of return variance (ensures calibration feasibility)
+
+        # q_min: at least 1e-6 (numerical), 5% of obs_var, 2% of ret_var
         q_min = max(1e-6, 0.05 * obs_var, 0.02 * ret_var)
-        
-        # Compute calibration-aware initial q from excess return variance
-        # If ret_var >> c×vol², q should absorb ~50% of the difference
+
+        # Initial q from excess return variance (q absorbs ~50% of gap)
         excess_var = max(0.0, ret_var - c_target * obs_var)
         q_init = max(q_min, 0.5 * excess_var) if excess_var > 0 else q_min * 10
-        
+
         return cls(
             nu_base=nu_base,
             q=q_init,  # Initialize with calibration-aware value
@@ -949,7 +636,7 @@ class UnifiedStudentTConfig:
             alpha_asym=alpha_asym,
             q_stress_ratio=q_stress_ratio,
         )
-    
+
     @classmethod
     def from_legacy(
         cls,
@@ -971,7 +658,7 @@ class UnifiedStudentTConfig:
             q_stress_ratio=10.0, # Standard stress ratio
             **kwargs,
         )
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -1020,88 +707,70 @@ def compute_ms_process_noise_smooth(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute smooth probabilistic MS process noise.
-    
-    Two modes of operation:
-      1. ewm_lambda = 0.0: Expanding-window z-score (original, backward-compatible)
-      2. ewm_lambda > 0.0: Exponentially-weighted moving statistics (EWM)
-    
-    EWM mode (February 2026 - Elite Metals Fix):
-      The expanding window divides by counts that grow to N.
-      After 2600+ observations the z-score baseline is anchored to distant
-      history. Gold vol permanently shifted post-2020 — the expanding
-      window does not adapt. EWM with lambda=0.97 has ~33-day half-life,
-      making regime detection 10-50x faster for long series.
-    
-    Args:
-        vol: Time series of volatility estimates
-        q_calm: Process noise for calm regime
-        q_stress: Process noise for stress regime
-        sensitivity: Sigmoid sensitivity (bounded to [1.0, 5.0])
-        ewm_lambda: EWM decay factor. 0.0 = expanding window (default).
-                     0.94-0.99 = EWM with corresponding half-life.
-        
-    Returns:
-        Tuple of (q_t, p_stress):
-        - q_t: Time-varying process noise array
-        - p_stress: Probability of stress regime array
+
+    Two modes:
+      ewm_lambda = 0: Expanding-window z-score (backward-compatible)
+      ewm_lambda > 0: EWM with corresponding half-life (faster regime detection)
+
+    Returns (q_t, p_stress): time-varying process noise and stress probability.
     """
     vol = np.asarray(vol).flatten()
     n = len(vol)
-    
-    # Bound sensitivity — widened to [1.0, 5.0] for metals (Feb 2026)
+
+    # Bound sensitivity — widened to [1.0, 5.0] for metals
     sensitivity = float(np.clip(sensitivity, 1.0, 5.0))
-    
+
     if ewm_lambda > 0.01:
-        # ─────────────────────────────────────────────────────────────
+        # ---------------------------------------------------------------------------
         # EWM MODE: Exponentially-weighted moving statistics
-        # ─────────────────────────────────────────────────────────────
+        # ---------------------------------------------------------------------------
         lam = float(np.clip(ewm_lambda, 0.5, 0.999))
-        
+
         warmup = min(20, n)
         ewm_mean = float(np.mean(vol[:warmup])) if warmup > 0 else float(vol[0])
         ewm_var = float(np.var(vol[:warmup])) if warmup > 1 else 1e-6
         ewm_var = max(ewm_var, 1e-12)
-        
+
         vol_zscore = np.zeros(n)
         for t in range(n):
             ewm_std = np.sqrt(ewm_var)
             ewm_std = max(ewm_std, 1e-6)
             vol_zscore[t] = (vol[t] - ewm_mean) / ewm_std
-            
+
             # Update AFTER computing z-score (no look-ahead)
             ewm_mean = lam * ewm_mean + (1.0 - lam) * vol[t]
             diff = vol[t] - ewm_mean
             ewm_var = lam * ewm_var + (1.0 - lam) * (diff * diff)
             ewm_var = max(ewm_var, 1e-12)
     else:
-        # ─────────────────────────────────────────────────────────────
+        # ---------------------------------------------------------------------------
         # EXPANDING-WINDOW MODE: Original behavior (backward-compatible)
-        # ─────────────────────────────────────────────────────────────
+        # ---------------------------------------------------------------------------
         vol_cumsum = np.cumsum(vol)
         vol_sq_cumsum = np.cumsum(vol ** 2)
         counts = np.arange(1, n + 1, dtype=np.float64)
-        
+
         vol_mean = vol_cumsum / counts
         vol_var = vol_sq_cumsum / counts - vol_mean ** 2
         vol_var = np.maximum(vol_var, 1e-12)
         vol_std = np.sqrt(vol_var)
-        
+
         warmup = min(20, n)
         if n > warmup:
             init_mean = np.mean(vol[:warmup])
             init_std = max(np.std(vol[:warmup]), 1e-6)
             vol_mean[:warmup] = init_mean
             vol_std[:warmup] = init_std
-        
+
         vol_zscore = (vol - vol_mean) / np.maximum(vol_std, 1e-6)
-    
+
     # Smooth sigmoid transition
     p_stress = 1.0 / (1.0 + np.exp(-sensitivity * vol_zscore))
     p_stress = np.clip(p_stress, 0.01, 0.99)
-    
+
     # Time-varying q
     q_t = (1.0 - p_stress) * q_calm + p_stress * q_stress
-    
+
     return q_t, p_stress
 
 
@@ -1136,7 +805,7 @@ def filter_phi_ms_q(
     vol = np.asarray(vol).flatten()
     n = len(y)
     nu = max(float(nu), 2.01)
-    
+
     # Inline MS process noise: vol_relative → sigmoid → q_t
     vol_cumsum = np.cumsum(vol)
     vol_count = np.arange(1, n + 1)
@@ -1148,62 +817,62 @@ def filter_phi_ms_q(
     z_ms = sensitivity * (vol_relative - threshold)
     p_stress = np.clip(1.0 / (1.0 + np.exp(-z_ms)), 0.01, 0.99)
     q_t = (1.0 - p_stress) * q_calm + p_stress * q_stress
-    
+
     # Initialize state
     mu = np.zeros(n)
     P = np.zeros(n)
     mu_t = 0.0
     P_t = 1.0
-    
+
     # Log-likelihood accumulation
     total_ll = 0.0
-    
+
     # Log of gamma function ratios for Student-t PDF
     log_gamma_ratio = gammaln((nu + 1) / 2) - gammaln(nu / 2)
     log_norm_const = log_gamma_ratio - 0.5 * np.log(nu * np.pi)
-    
+
     for t in range(n):
         # Observation variance
         R_t = c * (vol[t] ** 2)
-        
+
         # Predictive variance
         S_t = P_t + R_t
-        
+
         # Student-t scale
         if nu > 2:
             scale_t = np.sqrt(S_t * (nu - 2) / nu)
         else:
             scale_t = np.sqrt(S_t)
-        
+
         # Innovation
         innovation = y[t] - mu_t
         z = innovation / scale_t
-        
+
         # Log-likelihood contribution
         ll_t = log_norm_const - np.log(scale_t) - ((nu + 1) / 2) * np.log(1 + z**2 / nu)
         if np.isfinite(ll_t):
             total_ll += ll_t
-        
+
         # Robust weighting for Student-t (downweight outliers)
-        # FIX: Use z² = innovation² / scale_t² (consistent with log-likelihood)
+        # Use z² = innovation² / scale_t² (consistent with log-likelihood)
         z_sq = z ** 2  # z = innovation / scale_t already computed above
         w_t = (nu + 1) / (nu + z_sq)
-        
+
         # Kalman gain
         K_t = P_t / S_t if S_t > 1e-12 else 0.0
-        
+
         # Weighted update
         mu_t = mu_t + K_t * w_t * innovation
         P_t = (1 - w_t * K_t) * P_t
-        
+
         # Store filtered state
         mu[t] = mu_t
         P[t] = P_t
-        
+
         # State prediction with TIME-VARYING q
         mu_t = phi * mu_t
         P_t = (phi ** 2) * P_t + q_t[t]
-    
+
     return mu, P, total_ll, q_t, p_stress
 
 
@@ -1216,59 +885,59 @@ def optimize_params_ms_q(
 ) -> Tuple[float, float, float, float, float, float, Dict]:
     """
     Optimize MS-q model parameters: (c, phi, q_calm, q_stress).
-    
+
     Uses concentrated likelihood over q_calm and q_stress while
     jointly optimizing c and phi.
-    
+
     Args:
         returns: Time series of returns
         vol: Time series of volatility estimates
         nu: Degrees of freedom (fixed)
         prior_log_q_mean: Prior mean for log10(q)
         prior_lambda: Prior strength
-        
+
     Returns:
         Tuple of (c_opt, phi_opt, q_calm_opt, q_stress_opt, log_likelihood, lfo_cv_score, diagnostics)
     """
     returns = np.asarray(returns).flatten()
     vol = np.asarray(vol).flatten()
     n = len(returns)
-    
+
     # Grid search over q_calm/q_stress ratios
     q_calm_grid = [1e-7, 5e-7, 1e-6, 5e-6, 1e-5]
     q_ratio_grid = [10, 50, 100, 200]  # q_stress / q_calm
-    
+
     best_ll = float('-inf')
     best_params = None
-    
+
     for q_calm in q_calm_grid:
         for ratio in q_ratio_grid:
             q_stress = q_calm * ratio
-            
+
             # Optimize c, phi for this (q_calm, q_stress) pair
             def neg_ll(params):
                 c_try, phi_try = params
                 if c_try <= 0 or abs(phi_try) >= 1:
                     return 1e12
-                
+
                 try:
                     _, _, ll, _, _ = filter_phi_ms_q(
                         returns, vol, c_try, phi_try, nu,
                         q_calm=q_calm, q_stress=q_stress
                     )
-                    
+
                     # Add regularization
                     log_q_avg = np.log10((q_calm + q_stress) / 2)
                     prior_penalty = prior_lambda * (log_q_avg - prior_log_q_mean) ** 2
-                    
+
                     return -ll + prior_penalty
                 except Exception:
                     return 1e12
-            
+
             # Initial guess
             c_init = 1.0
             phi_init = 0.0
-            
+
             try:
                 result = minimize(
                     neg_ll,
@@ -1277,13 +946,13 @@ def optimize_params_ms_q(
                     bounds=[(0.01, 10.0), (-0.99, 0.99)],
                     options={'maxiter': 100}
                 )
-                
+
                 if result.success and -result.fun > best_ll:
                     best_ll = -result.fun
                     best_params = (result.x[0], result.x[1], q_calm, q_stress)
             except Exception:
                 continue
-    
+
     if best_params is None:
         # Fallback to defaults
         c_opt, phi_opt = 1.0, 0.0
@@ -1292,7 +961,7 @@ def optimize_params_ms_q(
     else:
         c_opt, phi_opt, q_calm_opt, q_stress_opt = best_params
         ll_opt = best_ll
-    
+
     # Compute LFO-CV score for model comparison
     try:
         from tuning.diagnostics import compute_lfo_cv_score_student_t
@@ -1304,7 +973,7 @@ def optimize_params_ms_q(
     except ImportError:
         lfo_cv_score = float('-inf')
         lfo_diag = {"error": "lfo_cv_not_available"}
-    
+
     diagnostics = {
         "fit_success": best_params is not None,
         "n_obs": n,
@@ -1312,18 +981,15 @@ def optimize_params_ms_q(
         "q_ratio": q_stress_opt / q_calm_opt if q_calm_opt > 0 else 0,
         "lfo_cv_diagnostics": lfo_diag,
     }
-    
+
     return c_opt, phi_opt, q_calm_opt, q_stress_opt, ll_opt, lfo_cv_score, diagnostics
 
 
-# =============================================================================
-# ELITE TUNING CONFIGURATION (v2.0 - February 2026)
-# =============================================================================
-# Plateau-optimal parameter selection with:
-# - Directional curvature awareness (φ-q coupling more dangerous)
-# - Ridge vs basin detection
-# - Drift vs noise decomposition in coherence
-# =============================================================================
+# ---------------------------------------------------------------------------
+# TUNING CONFIGURATION (v2.0)
+# Plateau-optimal parameter selection with curvature awareness,
+# ridge vs basin detection, drift vs noise coherence decomposition.
+# ---------------------------------------------------------------------------
 
 ELITE_TUNING_ENABLED = True  # Master switch for elite tuning diagnostics
 CURVATURE_PENALTY_WEIGHT = 0.1
@@ -1341,7 +1007,7 @@ def _compute_curvature_penalty(
 ) -> Tuple[float, float, Dict]:
     """
     Compute curvature penalty from local Hessian approximation.
-    
+
     Returns:
         - penalty: Soft penalty based on condition number
         - condition_number: κ(H)
@@ -1350,26 +1016,26 @@ def _compute_curvature_penalty(
     n = len(optimal_params)
     H = np.zeros((n, n))
     f_x = objective_fn(optimal_params)
-    
+
     # Compute Hessian via finite differences
     for i in range(n):
         x_plus = optimal_params.copy()
         x_minus = optimal_params.copy()
-        
+
         step = epsilon
         if bounds:
             lo, hi = bounds[i]
             step = min(epsilon, (hi - optimal_params[i]) / 2, (optimal_params[i] - lo) / 2)
             step = max(step, 1e-8)
-        
+
         x_plus[i] += step
         x_minus[i] -= step
-        
+
         f_plus = objective_fn(x_plus)
         f_minus = objective_fn(x_minus)
-        
+
         H[i, i] = (f_plus - 2 * f_x + f_minus) / (step ** 2)
-    
+
     # Off-diagonal elements
     for i in range(n):
         for j in range(i + 1, n):
@@ -1377,7 +1043,7 @@ def _compute_curvature_penalty(
             x_pm = optimal_params.copy()
             x_mp = optimal_params.copy()
             x_mm = optimal_params.copy()
-            
+
             step_i = step_j = epsilon
             if bounds:
                 lo_i, hi_i = bounds[i]
@@ -1386,39 +1052,39 @@ def _compute_curvature_penalty(
                 step_j = min(epsilon, (hi_j - optimal_params[j]) / 2, (optimal_params[j] - lo_j) / 2)
                 step_i = max(step_i, 1e-8)
                 step_j = max(step_j, 1e-8)
-            
+
             x_pp[i] += step_i; x_pp[j] += step_j
             x_pm[i] += step_i; x_pm[j] -= step_j
             x_mp[i] -= step_i; x_mp[j] += step_j
             x_mm[i] -= step_i; x_mm[j] -= step_j
-            
+
             f_pp = objective_fn(x_pp)
             f_pm = objective_fn(x_pm)
             f_mp = objective_fn(x_mp)
             f_mm = objective_fn(x_mm)
-            
+
             H[i, j] = (f_pp - f_pm - f_mp + f_mm) / (4 * step_i * step_j)
             H[j, i] = H[i, j]
-    
+
     # Compute condition number
     try:
         eigenvalues = np.linalg.eigvalsh(H)
         eigenvalues = np.real(eigenvalues)
         eigenvalues = eigenvalues[np.isfinite(eigenvalues)]
-        
+
         if len(eigenvalues) == 0:
             return 0.0, 1.0, {'error': 'no_valid_eigenvalues'}
-        
+
         abs_eig = np.abs(eigenvalues)
         max_eig = np.max(abs_eig)
         min_eig = np.max([np.min(abs_eig[abs_eig > 1e-12]), 1e-12])
         condition_number = max_eig / min_eig
-        
+
         if condition_number > max_condition_number:
             penalty = np.log(condition_number / max_condition_number)
         else:
             penalty = 0.0
-        
+
         return penalty, condition_number, {
             'eigenvalues': eigenvalues.tolist(),
             'max_eigenvalue': float(max_eig),
@@ -1438,7 +1104,7 @@ def _compute_fragility_index(
 ) -> Tuple[float, Dict[str, float]]:
     """
     Compute unified fragility index (PURE PARAMETER FRAGILITY v2.0).
-    
+
     Components:
         1. Curvature fragility: Sharp optima are fragile
         2. Coherence fragility: Inconsistent parameters are fragile
@@ -1447,33 +1113,33 @@ def _compute_fragility_index(
         5. Drift fragility: Drifting parameters are unstable
     """
     components = {}
-    
+
     # 1. Curvature fragility
     if condition_number > 0 and np.isfinite(condition_number):
         curvature_fragility = min(np.log10(max(condition_number, 1)) / 10, 1.0)
     else:
         curvature_fragility = 0.5
     components['curvature'] = curvature_fragility
-    
+
     # 2. Coherence fragility
     if len(coherence_variance) > 0:
         coherence_fragility = min(np.mean(coherence_variance) * 10, 1.0)
     else:
         coherence_fragility = 0.5
     components['coherence'] = coherence_fragility
-    
+
     # 3. Plateau fragility
     plateau_fragility = 1.0 - min(plateau_score, 1.0)
     components['plateau'] = plateau_fragility
-    
+
     # 4. Basin fragility (v2.0)
     basin_fragility = 1.0 - min(basin_score, 1.0)
     components['basin'] = basin_fragility
-    
+
     # 5. Drift fragility (v2.0)
     drift_fragility = min(drift_ratio * 2, 1.0)
     components['drift'] = drift_fragility
-    
+
     # Weighted combination (v2.0 weights)
     weights = {
         'curvature': 0.25,
@@ -1482,9 +1148,9 @@ def _compute_fragility_index(
         'basin': 0.25,
         'drift': 0.15,
     }
-    
+
     fragility_index = sum(weights[k] * components[k] for k in weights)
-    
+
     return fragility_index, components
 
 
@@ -1541,7 +1207,7 @@ class PhiStudentTDriftModel:
     Each stage freezes all upstream parameters and optimizes <= 2 new ones.
 
     optimize_params_unified — Stage Dependency Chain
-    =================================================
+    =============================================================================
 
     Stage 1  (q, c, phi)        Base Kalman filter: process noise q, observation scale c,
                                 persistence phi. L-BFGS-B with regularization to prevent
@@ -1574,7 +1240,7 @@ class PhiStudentTDriftModel:
                                 advanced features (gamma->0, alpha->0, etc.) to prevent
                                 ill-conditioned estimates propagating downstream.
 
-    Stage 4.5 (DTCWT)          REMOVED (ablation study Feb 2026). wavelet_correction
+    Stage 4.5 (DTCWT)          REMOVED (ablation study). wavelet_correction
                                 was hardcoded to 1.0, phase_asymmetry was never consumed.
                                 Zero CRPS/PIT impact across 8 assets.
 
@@ -1587,10 +1253,10 @@ class PhiStudentTDriftModel:
                                 h_t = omega + alpha*eps^2 + gamma_lev*eps^2*I(eps<0) + beta*h.
                                 Captures leverage asymmetry in variance dynamics.
 
-    Stage 5c.1 (w_garch)       DISABLED (ablation Feb 2026): zero CRPS benefit.
+    Stage 5c.1 (w_garch)       DISABLED (ablation): zero CRPS benefit.
                                 Always returns 0.0.
 
-    Stage 5c.2 (zeta_q_vol)    DISABLED (ablation Feb 2026): zero CRPS benefit.
+    Stage 5c.2 (zeta_q_vol)    DISABLED (ablation): zero CRPS benefit.
                                 Always returns 0.0.
 
     Stage 5d (jumps)            Merton jump-diffusion: detect |z| > threshold, estimate
@@ -1636,26 +1302,7 @@ class PhiStudentTDriftModel:
 
     @staticmethod
     def _variance_to_scale(variance: float, nu: float) -> float:
-        """
-        Convert predictive variance to Student-t scale parameter.
-        
-        For Student-t with ν degrees of freedom:
-            Var(X) = scale² × ν/(ν-2)  when ν > 2
-            
-        So:
-            scale = sqrt(Var × (ν-2)/ν)
-            
-        This is critical for correct PIT calibration. Using sqrt(Var) directly
-        inflates the scale by sqrt(ν/(ν-2)), causing standardized residuals
-        to be too small and PIT values to concentrate around 0.5.
-        
-        Args:
-            variance: Predictive variance (P_pred + R)
-            nu: Degrees of freedom
-            
-        Returns:
-            Student-t scale parameter
-        """
+        """Convert predictive variance to Student-t scale: scale = √(Var × (ν-2)/ν) for ν > 2."""
         if variance <= 1e-20:
             return 1e-10
         if nu > 2:
@@ -1685,45 +1332,22 @@ class PhiStudentTDriftModel:
         nu_max: float = 50.0,
     ) -> float:
         """
-        Compute smooth asymmetric effective ν using tanh modulation.
-        
-        Formula:
-            ν_eff = ν_base × (1 + α × tanh(k × z))
-            
-        where z = innovation / scale is the standardized residual.
-        
-        Properties:
-            - Differentiable everywhere (smooth, no discontinuities)
-            - Bounded: ν_eff ∈ [ν_base×0.7, ν_base×1.3] for |α|≤0.3
-            - α < 0: heavier left tail (crashes get lower ν)
-            - α > 0: heavier right tail (recoveries get lower ν)
-            - CRITICAL: Always returns ν_eff > 2.1 to ensure variance defined
-        
-        This replaces the hard Two-Piece switch with smooth, differentiable
-        asymmetry that doesn't create optimizer instability.
-        
-        Args:
-            nu_base: Base degrees of freedom
-            innovation: y_t - μ_pred (residual)
-            scale: Predictive standard deviation sqrt(S)
-            alpha: Asymmetry parameter in [-0.3, 0.3]
-            k: Transition sharpness in [0.5, 2.0]
-            nu_min: Minimum ν (must be > 2 for finite variance)
-            nu_max: Maximum ν
-            
-        Returns:
-            Effective degrees of freedom ν_eff
+        Smooth asymmetric ν via tanh: ν_eff = ν_base × (1 + α·tanh(k·z)).
+
+        α < 0: heavier left tail (crashes get lower ν)
+        α > 0: heavier right tail
+        Differentiable, bounded, always returns ν > 2.1.
         """
         # Standardized residual
         scale_safe = max(abs(scale), 1e-10)
         z = innovation / scale_safe
-        
+
         # Smooth asymmetric modulation via tanh
         # tanh is bounded in [-1, 1] and smooth everywhere
         modulation = 1.0 + alpha * np.tanh(k * z)
         nu_raw = nu_base * modulation
-        
-        # CRITICAL: Ensure ν > 2 (finite variance requirement)
+
+        # Ensure ν > 2 (finite variance requirement)
         return float(np.clip(nu_raw, nu_min, nu_max))
 
     @staticmethod
@@ -1743,7 +1367,7 @@ class PhiStudentTDriftModel:
     @classmethod
     def filter_phi(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
         """Kalman drift filter with persistence (phi) and Student-t observation noise.
-        
+
         This is the PRIMARY Student-t filter. There is no bare Student-t model.
         Uses Numba JIT-compiled kernel when available (10-50× speedup).
         """
@@ -1753,9 +1377,9 @@ class PhiStudentTDriftModel:
                 return run_phi_student_t_filter(returns, vol, q, c, phi, nu)
             except Exception:
                 pass  # Fall through to Python implementation
-        
+
         return cls._filter_phi_python_optimized(returns, vol, q, c, phi, nu)
-    
+
     @classmethod
     def _filter_phi_core(
         cls,
@@ -1867,7 +1491,7 @@ class PhiStudentTDriftModel:
     ) -> Tuple[np.ndarray, np.ndarray, float]:
         """
         Kalman filter with exogenous input and robust Student-t weighting.
-        
+
         STATE-EQUATION INTEGRATION:
             mu_t = phi * mu_{t-1} + u_t + w_t
             r_t = mu_t + eps_t,  eps_t ~ t(nu)
@@ -1899,14 +1523,14 @@ class PhiStudentTDriftModel:
         config: 'UnifiedStudentTConfig',
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
         """
-        UNIFIED Elite φ-Student-t filter combining ALL enhancements.
-        
+        UNIFIED φ-Student-t filter combining ALL enhancements.
+
         Returns PREDICTIVE values (mu_pred, S_pred) for proper PIT computation.
         """
         n = len(returns)
         returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
         vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
-        
+
         q_base = float(config.q)
         c_val = float(config.c)
         phi_val = float(np.clip(config.phi, -0.999, 0.999))
@@ -1915,11 +1539,11 @@ class PhiStudentTDriftModel:
         k_asym = float(config.k_asym)
         gamma_vov = float(config.gamma_vov)
         damping = float(config.vov_damping)
-        
+
         q_calm = float(config.q_calm) if config.q_calm is not None else q_base
         q_stress = q_calm * float(config.q_stress_ratio)
         ms_enabled = abs(q_stress - q_calm) > 1e-12
-        
+
         if ms_enabled:
             q_t, p_stress = compute_ms_process_noise_smooth(
                 vol, q_calm, q_stress, config.ms_sensitivity,
@@ -1928,7 +1552,7 @@ class PhiStudentTDriftModel:
         else:
             q_t = np.full(n, q_base)
             p_stress = np.zeros(n)
-        
+
         log_vol = np.log(np.maximum(vol, 1e-10))
         vov_rolling = np.zeros(n)
         window = config.vov_window
@@ -1936,38 +1560,38 @@ class PhiStudentTDriftModel:
             vov_rolling[t] = np.std(log_vol[t-window:t])
         if n > window:
             vov_rolling[:window] = vov_rolling[window] if n > window else 0.0
-        
+
         phi_sq = phi_val * phi_val
         R_base = c_val * (vol ** 2)
-        
+
         # Conditional Risk Premium: λ₁ (Merton ICAPM)
         risk_prem = float(getattr(config, 'risk_premium_sensitivity', 0.0))
-        
+
         # Conditional Skew Dynamics: GAS-driven α_t (Creal-Koopman-Lucas 2013)
         skew_kappa = float(getattr(config, 'skew_score_sensitivity', 0.0))
         skew_rho = float(getattr(config, 'skew_persistence', 0.97))
         skew_enabled = skew_kappa > 1e-8
         alpha_t = alpha  # Initialize dynamic α at static baseline α₀
-        
+
         # Calibrated drift bias: E[y_t - mu_pred_t]
         # Estimated in optimize_params_unified Stage 5, included in prediction
         # to align filter output with filter_and_calibrate's mu_effective.
         _mu_drift_val = float(getattr(config, 'mu_drift', 0.0))
-        
+
         log_norm_const = gammaln((nu_base + 1.0) / 2.0) - gammaln(nu_base / 2.0) - 0.5 * np.log(nu_base * np.pi)
         neg_exp = -((nu_base + 1.0) / 2.0)
         inv_nu = 1.0 / nu_base
-        
-        # =====================================================================
-        # MERTON JUMP-DIFFUSION LAYER (February 2026 - Elite Institutional)
-        # =====================================================================
+
+        # ---------------------------------------------------------------------------
+        # MERTON JUMP-DIFFUSION LAYER
+        # ---------------------------------------------------------------------------
         # Extract jump parameters; layer is fully disabled when jump_variance=0
         jump_var = float(getattr(config, 'jump_variance', 0.0))
         jump_intensity = float(getattr(config, 'jump_intensity', 0.0))
         jump_sensitivity = float(getattr(config, 'jump_sensitivity', 1.0))
         jump_mean = float(getattr(config, 'jump_mean', 0.0))
         jump_enabled = jump_var > 1e-12 and jump_intensity > 1e-6
-        
+
         # Pre-compute logit of base jump intensity for dynamic modulation
         if jump_enabled:
             # a₀ = logit(p₀) = log(p₀ / (1 - p₀))
@@ -1975,44 +1599,35 @@ class PhiStudentTDriftModel:
             logit_p0 = np.log(p0_safe / (1.0 - p0_safe))
             # Pre-compute Gaussian normalization for jump component
             log_gauss_norm = -0.5 * np.log(2.0 * np.pi)
-        
+
         mu_filtered = np.empty(n, dtype=np.float64)
         P_filtered = np.empty(n, dtype=np.float64)
         mu_pred_arr = np.empty(n, dtype=np.float64)
         S_pred_arr = np.empty(n, dtype=np.float64)
-        
+
         mu = 0.0
         P = 1e-4
         log_likelihood = 0.0
-        
+
         for t in range(n):
             u_t = 0.0
             if config.exogenous_input is not None and t < len(config.exogenous_input):
                 u_t = float(config.exogenous_input[t])
-            
+
             q_t_val = q_t[t]
 
-            # ─────────────────────────────────────────────────────────────────
-            # CONDITIONAL RISK PREMIUM STATE TRANSITION (Merton ICAPM)
-            # ─────────────────────────────────────────────────────────────────
-            # μ_pred = φ·μ_{t-1} + u_t + λ₁·R_t
-            #
-            # R_t = c·σ²_vol is the observation variance — a CAUSAL proxy for
-            # conditional variance (vol[t] uses data strictly before t).
-            # λ₁ captures the risk-return tradeoff: investors demand higher
-            # expected return for bearing higher conditional variance.
-            # ─────────────────────────────────────────────────────────────────
+            # Risk premium: μ_pred = φ·μ + u_t + λ₁·R_t + drift
             mu_pred = phi_val * mu + u_t + risk_prem * R_base[t] + _mu_drift_val
             P_pred = phi_sq * P + q_t_val
-            
+
             vov_effective = gamma_vov * (1.0 - damping * p_stress[t])
             R = R_base[t] * (1.0 + vov_effective * vov_rolling[t])
-            
+
             # S_diffusion: pure diffusion predictive variance
             S_diffusion = P_pred + R
             if S_diffusion <= 1e-12:
                 S_diffusion = 1e-12
-            
+
             # -----------------------------------------------------------------
             # Jump-augmented predictive variance
             # S_total = (1 - p_t)·S_diffusion + p_t·(S_diffusion + σ²_J)
@@ -2027,19 +1642,19 @@ class PhiStudentTDriftModel:
             else:
                 p_t = 0.0
                 S = S_diffusion
-            
+
             mu_pred_arr[t] = mu_pred
             S_pred_arr[t] = S  # Predictive variance INCLUDES jump risk
-            
+
             innovation = returns[t] - mu_pred
-            
+
             scale = np.sqrt(S)
-            # ─────────────────────────────────────────────────────────────────
+            # ---------------------------------------------------------------------------
             # CONDITIONAL SKEW DYNAMICS: use dynamic α_t instead of static α
             # α_t evolves via GAS score, capturing regime-dependent asymmetry
-            # ─────────────────────────────────────────────────────────────────
+            # ---------------------------------------------------------------------------
             nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha_t, k_asym)
-            
+
             # -----------------------------------------------------------------
             # Kalman gain and state update use DIFFUSION-ONLY variance
             # Key insight: the Kalman state tracks the continuous drift μ_t.
@@ -2047,20 +1662,20 @@ class PhiStudentTDriftModel:
             # -----------------------------------------------------------------
             nu_adjust = min(nu_eff / (nu_eff + 3.0), 1.0)
             K = nu_adjust * P_pred / S_diffusion  # Use S_diffusion, NOT S
-            
+
             z_sq_diffusion = (innovation ** 2) / S_diffusion
             w_t = (nu_eff + 1.0) / (nu_eff + z_sq_diffusion)
-            
+
             if jump_enabled:
                 # Posterior jump probability via Bayes' rule:
                 # p(jump|y) ∝ p_t · N(innovation; μ_J, S_diff + σ²_J)
                 # p(no_jump|y) ∝ (1-p_t) · t(innovation; ν, 0, S_diff)
                 S_jump_total = S_diffusion + jump_var
                 innov_centered = innovation - jump_mean
-                
+
                 # Log-likelihood under jump component (Gaussian)
                 ll_jump = log_gauss_norm - 0.5 * np.log(S_jump_total) - 0.5 * (innov_centered ** 2) / S_jump_total
-                
+
                 # Log-likelihood under diffusion component (Student-t)
                 if nu_eff > 2:
                     sf = (nu_eff - 2.0) / nu_eff
@@ -2073,7 +1688,7 @@ class PhiStudentTDriftModel:
                     ll_diff = log_n_diff - np.log(fs_diff) + (-((nu_eff + 1.0) / 2.0)) * np.log(1.0 + z_diff * z_diff / nu_eff)
                 else:
                     ll_diff = -1e10
-                
+
                 # Posterior jump probability via log-sum-exp
                 log_num = np.log(max(p_t, 1e-15)) + ll_jump
                 log_den_parts = [np.log(max(1.0 - p_t, 1e-15)) + ll_diff, log_num]
@@ -2081,39 +1696,26 @@ class PhiStudentTDriftModel:
                 log_den = log_den_max + np.log(sum(np.exp(lp - log_den_max) for lp in log_den_parts))
                 p_jump_post = np.exp(log_num - log_den) if np.isfinite(log_den) else p_t
                 p_jump_post = float(np.clip(p_jump_post, 0.0, 1.0))
-                
+
                 # Reduce Kalman update weight for likely jumps
                 # This prevents jump shocks from contaminating the drift state
                 w_t *= (1.0 - 0.7 * p_jump_post)
-            
+
             mu = mu_pred + K * w_t * innovation
             P = (1.0 - w_t * K) * P_pred
             if P < 1e-12:
                 P = 1e-12
-            
+
             mu_filtered[t] = mu
             P_filtered[t] = P
-            
-            # -----------------------------------------------------------------
-            # GAS SKEW UPDATE: α_{t+1} = (1-ρ)·α₀ + ρ·α_t + κ·s_t
-            # -----------------------------------------------------------------
-            # s_t = z_t · w_t  (Student-t score for skewness)
-            #   z_t = innovation / sqrt(S_diffusion)  (standardized residual)
-            #   w_t = (ν+1)/(ν + z²)  (Student-t tail weight, already computed)
-            #
-            # Properties of the score:
-            #   - s_t < 0 when z_t < 0 (negative shocks → left tail fattens)
-            #   - s_t > 0 when z_t > 0 (positive shocks → right tail fattens)
-            #   - |s_t| is bounded by w_t ∈ (0,1] × |z_t| (robust to outliers)
-            #   - For Student-t: w_t downweights extreme z, providing natural
-            #     robustness that Gaussian scores lack
-            # -----------------------------------------------------------------
+
+            # GAS skew: α_{t+1} = (1-ρ)·α₀ + ρ·α_t + κ·(z_t·w_t)
             if skew_enabled:
                 z_for_score = innovation / max(np.sqrt(S_diffusion), 1e-10)
                 score_t = z_for_score * w_t  # Student-t score
                 alpha_t = (1.0 - skew_rho) * alpha + skew_rho * alpha_t + skew_kappa * score_t
                 alpha_t = float(np.clip(alpha_t, -0.3, 0.3))  # Stability clip
-            
+
             # -----------------------------------------------------------------
             # Log-likelihood: mixture of diffusion + jump components
             # ll_t = log[(1-p_t)·t(innov; ν, S_diff) + p_t·N(innov; μ_J, S_diff+σ²_J)]
@@ -2123,21 +1725,21 @@ class PhiStudentTDriftModel:
             else:
                 scale_factor = 0.5
             forecast_scale = np.sqrt(S_diffusion * scale_factor)
-            
+
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
                 log_norm_eff = gammaln((nu_eff + 1.0) / 2.0) - gammaln(nu_eff / 2.0) - 0.5 * np.log(nu_eff * np.pi)
                 neg_exp_eff = -((nu_eff + 1.0) / 2.0)
                 inv_nu_eff = 1.0 / nu_eff
-                
+
                 ll_diffusion = log_norm_eff - np.log(forecast_scale) + neg_exp_eff * np.log(1.0 + z * z * inv_nu_eff)
-                
+
                 if jump_enabled and p_t > 1e-6:
                     # Mixture log-likelihood via log-sum-exp
                     S_jt = S_diffusion + jump_var
                     ic = innovation - jump_mean
                     ll_jmp = log_gauss_norm - 0.5 * np.log(S_jt) - 0.5 * (ic ** 2) / S_jt
-                    
+
                     ll_max = max(ll_diffusion, ll_jmp)
                     ll_t = ll_max + np.log(
                         (1.0 - p_t) * np.exp(ll_diffusion - ll_max)
@@ -2145,21 +1747,12 @@ class PhiStudentTDriftModel:
                     )
                 else:
                     ll_t = ll_diffusion
-                
+
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
-        
-        # =====================================================================
-        # CAUSAL EWM LOCATION CORRECTION (February 2026 - CRPS Optimization)
-        # =====================================================================
-        # Corrects systematic bias in mu_pred by tracking innovation mean.
-        # Uses the Stage 5f lambda if selected, otherwise falls back to
-        # a conservative lambda=0.95 (slow tracking, ~20-day half-life).
-        #
-        # Even conservative tracking helps CRPS significantly because:
-        # CRPS ∝ |y - μ| (location term dominates for high-vol assets).
-        # Reducing mean prediction error by even 5-10% directly reduces CRPS.
-        # =====================================================================
+
+        # Causal EWM location correction: tracks innovation mean bias
+        # Uses Stage 5f lambda, fallback 0.95 (~20-day half-life)
         _ewm_lambda = float(getattr(config, 'crps_ewm_lambda', 0.0))
         if _ewm_lambda < 0.01:
             _ewm_lambda = 0.95  # Default fallback: conservative tracking
@@ -2171,7 +1764,7 @@ class PhiStudentTDriftModel:
                 ewm_mu = _ewm_lambda * ewm_mu + (1.0 - _ewm_lambda) * innov_prev
                 mu_pred_corrected[t] = mu_pred_arr[t] + ewm_mu
             mu_pred_arr = mu_pred_corrected
-        
+
         return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
 
     @classmethod
@@ -2183,21 +1776,21 @@ class PhiStudentTDriftModel:
         train_frac: float = 0.7,
     ) -> Tuple[np.ndarray, float, np.ndarray, float, Dict]:
         """
-        HONEST PIT Computation (February 2026 - No Cheating).
-        
+        HONEST PIT Computation.
+
         PIT values are computed using ONLY parameters from training data:
         - config.nu_base: optimized during training
-        - config.variance_inflation: optimized during training  
+        - config.variance_inflation: optimized during training
         - config.mu_drift: computed during training
         - S_pred: from Kalman filter (trained on training data)
-        
+
         NO post-hoc adjustments using test data:
         - No GARCH re-estimation on test data
         - No nu re-estimation from test kurtosis
         - No calibration ensemble (Beta/Isotonic/Platt)
         - No rank smoothing
         - No AR whitening
-        
+
         Returns:
             Tuple of:
               - pit_values: Raw PIT values from model predictions
@@ -2208,26 +1801,26 @@ class PhiStudentTDriftModel:
         """
         from scipy.stats import kstest
         from scipy.special import gammaln
-        
+
         returns = np.asarray(returns).flatten()
         vol = np.asarray(vol).flatten()
         n = len(returns)
         n_train = int(n * train_frac)
-        
+
         # Run the unified filter (trained on full data, but parameters from training)
         mu_filt, P_filt, mu_pred, S_pred, ll = cls.filter_phi_unified(returns, vol, config)
-        
+
         # Extract test data
         returns_test = returns[n_train:]
         mu_pred_test = mu_pred[n_train:]
         S_pred_test = S_pred[n_train:]
         n_test = len(returns_test)
-        
+
         # Get config params (ALL from training - no test data used)
         nu = config.nu_base
         variance_inflation = getattr(config, 'variance_inflation', 1.0)
         mu_drift = getattr(config, 'mu_drift', 0.0)
-        
+
         # GJR-GARCH parameters (estimated on training data)
         garch_omega = getattr(config, 'garch_omega', 0.0)
         garch_alpha = getattr(config, 'garch_alpha', 0.0)
@@ -2236,10 +1829,10 @@ class PhiStudentTDriftModel:
         garch_unconditional_var = getattr(config, 'garch_unconditional_var', 1e-4)
         rough_hurst = getattr(config, 'rough_hurst', 0.0)
         use_garch = garch_alpha > 0 or garch_beta > 0
-        
+
         # Default S_calibrated for non-GARCH path
         S_calibrated = S_pred_test * variance_inflation
-        
+
         if use_garch:
             # Compute GARCH variance via shared method (single source of truth)
             # Runs continuously t=0..n to avoid cold-start bias at train/test split
@@ -2254,17 +1847,11 @@ class PhiStudentTDriftModel:
 
             # CRPS-enhancement: asymmetric ν offset
             _t_df_asym = float(getattr(config, 't_df_asym', 0.0))
-            
-            # =================================================================
-            # READ PRE-CALIBRATED PARAMS FROM CONFIG (February 2026)
-            # =================================================================
-            # All walk-forward CV (gw, ν, β, λ) is done ONCE in Stage 6 of
-            # optimize_params_unified. filter_and_calibrate reads directly.
-            # One-way: optimize_params_unified → config → here.
-            # =================================================================
+
+            # Read Stage 6 pre-calibrated params (one-way: tuning → config → here)
             from scipy.stats import t as student_t_dist, kstest as ks_test
             from scipy.stats import norm as norm_dist
-            
+
             # Read Stage 6 pre-calibrated params directly from config
             _best_gw_adap = float(config.calibrated_gw)
             _best_lam_mu = float(config.calibrated_lambda_rho)
@@ -2329,28 +1916,28 @@ class PhiStudentTDriftModel:
 
             # Flat blending for test data
             _S_blended_test = (1 - _best_gw_adap) * S_pred_test + _best_gw_adap * h_garch
-            
+
             # Compute test PIT with causal adaptive EWM
             # NOTE: mu_pred_test from filter_phi_unified already includes
             # mu_drift, so we do NOT subtract it again here.
             innovations_test_adap = returns_test - mu_pred_test
             sq_inn_test_adap = innovations_test_adap ** 2
-            
+
             pit_values = np.zeros(n_test)
             sigma = np.zeros(n_test)
             mu_effective = np.zeros(n_test)  # Location-corrected mean for CRPS
             _ewm_mu_t = _ewm_mu_final
             _ewm_num_t = _ewm_num_final
             _ewm_den_t = _ewm_den_final
-            
+
             for _t_p in range(n_test):
                 # Current adaptive β with probit-variance correction
                 _beta_p = _ewm_num_t / (_ewm_den_t + 1e-12)
                 _beta_p = float(np.clip(_beta_p * _beta_scale_corr, 0.2, 5.0))
-                
+
                 # Use the CV-selected gw blended variance
                 _S_cal_p = _S_blended_test[_t_p] * _beta_p
-                
+
                 # Location-corrected innovation
                 _inn_p = innovations_test_adap[_t_p] - _ewm_mu_t
                 # Effective predicted mean = mu_pred (includes mu_drift) + adaptive EWM
@@ -2360,7 +1947,7 @@ class PhiStudentTDriftModel:
                 else:
                     sigma[_t_p] = np.sqrt(_S_cal_p)
                 sigma[_t_p] = max(sigma[_t_p], 1e-10)
-                
+
                 _z_p = _inn_p / sigma[_t_p]
                 # Asymmetric degrees-of-freedom: two-piece Student-t CDF
                 # z < 0: use ν_left = ν - t_df_asym (heavier crash tail)
@@ -2370,41 +1957,23 @@ class PhiStudentTDriftModel:
                     pit_values[_t_p] = student_t_dist.cdf(_z_p, df=_nu_side)
                 else:
                     pit_values[_t_p] = student_t_dist.cdf(_z_p, df=nu)
-                
+
                 # Causal update with current observation
                 _ewm_mu_t = _best_lam_mu * _ewm_mu_t + (1 - _best_lam_mu) * innovations_test_adap[_t_p]
                 _ewm_num_t = _best_lam_beta * _ewm_num_t + (1 - _best_lam_beta) * sq_inn_test_adap[_t_p]
                 _ewm_den_t = _best_lam_beta * _ewm_den_t + (1 - _best_lam_beta) * _S_blended_test[_t_p]
-            
+
             pit_values = np.clip(pit_values, 0.001, 0.999)
-            
-            # =============================================================
-            # CAUSAL ONLINE AR(1) WHITENING (February 2026)
-            # =============================================================
-            # Apply Cochrane-Orcutt whitening in probit space using
-            # causally estimated ρ from EWM of past probit PITs.
-            #
-            # At time t:
-            #   z_t = Φ⁻¹(PIT_t)
-            #   ρ̂_t = EWM(z_{t-1}·z_{t-2}) / EWM(z_{t-1}²)  [causal]
-            #   z_white_t = (z_t - ρ̂_t·z_{t-1}) / √(1 - ρ̂_t²)
-            #   PIT_white_t = Φ(z_white_t)
-            #
-            # This removes the AR(1) serial dependence created by the
-            # adaptive EWM's β_t memory, directly targeting the Berkowitz
-            # ρ component which dominates for assets like MSTR and RCAT.
-            #
-            # The EWM rho estimator adapts to sign changes (MSTR: rho
-            # flips from + to - between train and test) — impossible
-            # with static training-estimated rho.
-            #
-            # λ_ρ selected on training PITs; 0 = no whitening applied.
-            # =============================================================
+
+            # Causal AR(1) whitening in probit space (Cochrane-Orcutt)
+            # z_white = (z_t - ρ̂·z_{t-1}) / √(1-ρ̂²),  PIT = Φ(z_white)
+            # Removes serial dependence from adaptive EWM β memory.
+            # λ_ρ selected on training PITs; 0 = disabled.
             if _best_lam_rho > 0:
                 _z_test_probit = norm_dist.ppf(np.clip(pit_values, 0.0001, 0.9999))
                 _z_test_white = np.zeros(n_test)
                 _z_test_white[0] = _z_test_probit[0]
-                
+
                 # Initialize EWM state from training probit PITs
                 # (warm start — consistent with training CV selection)
                 _ewm_cross_test = 0.0
@@ -2413,46 +1982,46 @@ class PhiStudentTDriftModel:
                     for _t_init in range(1, len(_z_probit_cal)):
                         _ewm_cross_test = _best_lam_rho * _ewm_cross_test + (1 - _best_lam_rho) * _z_probit_cal[_t_init - 1] * (_z_probit_cal[_t_init - 2] if _t_init > 1 else 0.0)
                         _ewm_sq_test = _best_lam_rho * _ewm_sq_test + (1 - _best_lam_rho) * _z_probit_cal[_t_init - 1] ** 2
-                
+
                 for _t_wh in range(1, n_test):
                     _ewm_cross_test = _best_lam_rho * _ewm_cross_test + (1 - _best_lam_rho) * _z_test_probit[_t_wh - 1] * (_z_test_probit[_t_wh - 2] if _t_wh > 1 else (_z_probit_cal[-1] if len(_z_probit_cal) > 0 else 0.0))
                     _ewm_sq_test = _best_lam_rho * _ewm_sq_test + (1 - _best_lam_rho) * _z_test_probit[_t_wh - 1] ** 2
-                    
+
                     if _ewm_sq_test > 0.1:
                         _rho_test_t = _ewm_cross_test / _ewm_sq_test
                         _rho_test_t = float(np.clip(_rho_test_t, -0.3, 0.3))
                     else:
                         _rho_test_t = 0.0
-                    
+
                     if abs(_rho_test_t) > 0.01:
                         _z_test_white[_t_wh] = (_z_test_probit[_t_wh] - _rho_test_t * _z_test_probit[_t_wh - 1]) / np.sqrt(max(1 - _rho_test_t ** 2, 0.5))
                     else:
                         _z_test_white[_t_wh] = _z_test_probit[_t_wh]
-                
+
                 pit_values = norm_dist.cdf(_z_test_white)
                 pit_values = np.clip(pit_values, 0.001, 0.999)
-            
+
             # Update S_calibrated for diagnostics
             S_calibrated = _S_blended_test
-        
+
         else:
-            # =====================================================================
+            # ---------------------------------------------------------------------------
             # HONEST SIGMA: Convert variance to Student-t scale (non-metals path)
-            # =====================================================================
+            # ---------------------------------------------------------------------------
             if nu > 2:
                 sigma = np.sqrt(S_calibrated * (nu - 2) / nu)
             else:
                 sigma = np.sqrt(S_calibrated)
             sigma = np.maximum(sigma, 1e-10)
-            
-            # =================================================================
+
+            # ---------------------------------------------------------------------------
             # HONEST PIT: Compute from model predictions only
-            # =================================================================
+            # ---------------------------------------------------------------------------
             # mu_pred_test already includes mu_drift from filter_phi_unified
             innovations = returns_test - mu_pred_test
             mu_effective = mu_pred_test  # Already location-corrected
             z = innovations / sigma
-            
+
             # PIT values from Student-t CDF (z already standardized to unit t_ν)
             # Apply asymmetric ν offset if enabled
             _t_df_asym_non = float(getattr(config, 't_df_asym', 0.0))
@@ -2466,94 +2035,75 @@ class PhiStudentTDriftModel:
             else:
                 pit_values = student_t.cdf(z, df=nu)
             pit_values = np.clip(pit_values, 0.001, 0.999)
-        
-        # =====================================================================
+
+        # ---------------------------------------------------------------------------
         # HONEST METRICS: No adjustments
-        # =====================================================================
+        # ---------------------------------------------------------------------------
         ks_result = kstest(pit_values, 'uniform')
         pit_pvalue = float(ks_result.pvalue)
-        
+
         # Histogram MAD
         hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
         mad = float(np.mean(np.abs(hist / n_test - 0.1)))
-        
+
         # Berkowitz test (honest - no whitening)
         try:
             pit_clipped = np.clip(pit_values, 0.0001, 0.9999)
             z_berk = norm.ppf(pit_clipped)
             z_berk = z_berk[np.isfinite(z_berk)]
             n_z = len(z_berk);
-            
+
             if n_z > 20:
                 mu_hat = float(np.mean(z_berk))
                 var_hat = float(np.var(z_berk, ddof=0))
-                
+
                 z_centered = z_berk - mu_hat
                 if np.sum(z_centered[:-1]**2) > 1e-12:
                     rho_hat = float(np.sum(z_centered[1:] * z_centered[:-1]) / np.sum(z_centered[:-1]**2))
                     rho_hat = np.clip(rho_hat, -0.99, 0.99)
                 else:
                     rho_hat = 0.0
-                
+
                 ll_null = -0.5 * n_z * np.log(2 * np.pi) - 0.5 * np.sum(z_berk**2)
-                
+
                 sigma_sq_cond = var_hat * (1 - rho_hat**2) if abs(rho_hat) < 0.99 else var_hat * 0.01
                 sigma_sq_cond = max(sigma_sq_cond, 1e-6)
-                
+
                 ll_alt = -0.5 * np.log(2 * np.pi * var_hat) - 0.5 * (z_berk[0] - mu_hat)**2 / var_hat
                 for t in range(1, n_z):
                     mu_cond = mu_hat + rho_hat * (z_berk[t-1] - mu_hat)
                     resid = z_berk[t] - mu_cond
                     ll_alt += -0.5 * np.log(2 * np.pi * sigma_sq_cond) - 0.5 * resid**2 / sigma_sq_cond
-                
+
                 lr_stat = 2 * (ll_alt - ll_null)
-                
+
                 from scipy.stats import chi2
                 berkowitz_pvalue = float(1 - chi2.cdf(max(lr_stat, 0), df=3))
             else:
                 berkowitz_pvalue = float('nan')
         except Exception:
             berkowitz_pvalue = float('nan')
-        
+
         # Variance ratio for diagnostics
         # mu_pred_test already includes mu_drift from filter_phi_unified
         innovations = returns_test - mu_pred_test
         actual_var = float(np.var(innovations))
         predicted_var = float(np.mean(S_calibrated))
         variance_ratio = actual_var / (predicted_var + 1e-12)
-        
-        # =====================================================================
-        # CRPS-OPTIMAL SIGMA SHRINKAGE — reuse Stage 5g estimate
-        # =====================================================================
-        # Stage 5g (optimize_params_unified) already computed the optimal
-        # CRPS sigma shrinkage α* via grid search + golden-section refinement
-        # on training data.  Recomputing here is redundant and risks
-        # inconsistency (different sigma pipeline, different ν).
-        #
-        # The config.crps_sigma_shrinkage satisfies:
-        #   σ*_crps = α* × σ_pit
-        #   α* = argmin_α E[CRPS(t_ν(μ, α·σ), y)]   on training fold
-        #
-        # PIT-safe: PIT uses the un-shrunk sigma (already computed above).
-        # =====================================================================
+
+        # CRPS sigma shrinkage — reuse Stage 5g pre-calibrated α*
+        # σ_crps = α* × σ_pit  (PIT uses un-shrunk sigma)
         _crps_shrink = float(getattr(config, 'crps_sigma_shrinkage', 1.0))
         _crps_shrink = float(np.clip(_crps_shrink, 0.30, 1.0))
-        
+
         sigma_crps = sigma * _crps_shrink
-        
+
         # CRPS-optimal ν: read from Stage 6 pre-calibrated config
         _cal_nu_crps = float(getattr(config, 'calibrated_nu_crps', 0.0))
         nu_crps_opt = _cal_nu_crps if _cal_nu_crps > 0 else nu
-        
-        # =====================================================================
-        # CRPS: Apply location bias correction (Stage 5h params) then compute
-        # =====================================================================
-        # The location correction a×(h_t - θ) + b×sign(μ)×√|μ| addresses:
-        #   a: variance-conditional mean bias (Ghysels-Santa-Clara-Valkanov 2005)
-        #   b: James-Stein drift shrinkage
-        # Applied to raw mu_pred (not mu_effective) for CRPS since EWM
-        # location adds noise. PIT uses mu_effective (EWM helps uniformity).
-        # =====================================================================
+
+        # Location bias correction (Stage 5h): a×(h-θ) + b×sign(μ)×√|μ|
+        # Applied to raw mu_pred for CRPS; PIT uses mu_effective (EWM).
         _loc_a_crps = float(getattr(config, 'loc_bias_var_coeff', 0.0))
         _loc_b_crps = float(getattr(config, 'loc_bias_drift_coeff', 0.0))
 
@@ -2574,7 +2124,7 @@ class PhiStudentTDriftModel:
             crps = compute_crps_student_t_inline(returns_test, mu_crps, sigma_crps, nu_crps_opt)
         except Exception:
             crps = float('nan')
-        
+
         diagnostics = {
             'pit_pvalue': pit_pvalue,
             'berkowitz_pvalue': berkowitz_pvalue,
@@ -2598,16 +2148,16 @@ class PhiStudentTDriftModel:
             'loc_bias_var_coeff': float(getattr(config, 'loc_bias_var_coeff', 0.0)),
             'loc_bias_drift_coeff': float(getattr(config, 'loc_bias_drift_coeff', 0.0)),
         }
-        
+
         return pit_values, pit_pvalue, sigma_crps, crps, diagnostics
 
 
-    # =================================================================
-    # SHARED GARCH VARIANCE (February 2026 — single source of truth)
+    # ---------------------------------------------------------------------------
+    # SHARED GARCH VARIANCE
     # Used by filter_and_calibrate AND _stage_6_calibration_pipeline.
     # Eliminates the duplicated 30-line GARCH loop that previously
     # existed in both locations with identical logic.
-    # =================================================================
+    # ---------------------------------------------------------------------------
 
     @classmethod
     def _compute_garch_variance(cls, innovations, config, n_test_split=None):
@@ -2701,8 +2251,8 @@ class PhiStudentTDriftModel:
         return h
 
 
-    # =================================================================
-    # OPTIMIZATION STAGE METHODS (February 2026 refactor)
+    # ---------------------------------------------------------------------------
+    # OPTIMIZATION STAGE METHODS
     #
     # Each stage is a self-contained @classmethod with explicit
     # inputs and outputs. The orchestrator optimize_params_unified()
@@ -2713,7 +2263,7 @@ class PhiStudentTDriftModel:
     #     → 4.1 (risk_premium) → 4.2 (skew_κ) → [hessian check]
     #       → 4.5 (DTCWT) → 5 (ν CV) → 5c (GARCH) → 5d (jumps)
     #         → 5e (Hurst) → 5f (EWM λ) → 5g (leverage+shrinkage)
-    # =================================================================
+    # ---------------------------------------------------------------------------
 
     @classmethod
     def _stage_1_base_params(cls, returns_train, vol_train, n_train, nu_base, config):
@@ -4304,11 +3854,11 @@ class PhiStudentTDriftModel:
         returns_train = returns[:n_train]
         vol_train = vol[:n_train]
 
-        # ── Asset-class adaptive profile ─────────────────────────────
+        # ── Asset-class adaptive profile
         asset_class = _detect_asset_class(asset_symbol)
         profile = ASSET_CLASS_PROFILES.get(asset_class, {}) if asset_class else {}
 
-        # ── STAGE 1: Base parameters (q, c, φ) ──────────────────────
+        # ── STAGE 1: Base parameters (q, c, φ)
         s1 = cls._stage_1_base_params(returns_train, vol_train, n_train, nu_base, config)
         if not s1['success']:
             return config, {"stage": 0, "success": False,
@@ -4317,33 +3867,33 @@ class PhiStudentTDriftModel:
         q_opt, c_opt, phi_opt = s1['q'], s1['c'], s1['phi']
         log_q_opt = s1['log_q']
 
-        # ── STAGE 2: VoV gamma ───────────────────────────────────────
+        # ── STAGE 2: VoV gamma
         gamma_opt = cls._stage_2_vov_gamma(
             returns_train, vol_train, n_train, nu_base,
             q_opt, c_opt, phi_opt, config)
 
-        # ── STAGE 3: MS-q sensitivity ────────────────────────────────
+        # ── STAGE 3: MS-q sensitivity
         sens_opt = cls._stage_3_ms_sensitivity(
             returns_train, vol_train, n_train, nu_base,
             q_opt, c_opt, phi_opt, gamma_opt, profile)
 
-        # ── STAGE 4: Asymmetry alpha ─────────────────────────────────
+        # ── STAGE 4: Asymmetry alpha
         alpha_opt = cls._stage_4_asymmetry(
             returns_train, vol_train, n_train, nu_base,
             q_opt, c_opt, phi_opt, gamma_opt, sens_opt, profile)
 
-        # ── STAGE 4.1: Risk premium (ICAPM) ──────────────────────────
+        # ── STAGE 4.1: Risk premium (ICAPM)
         risk_premium_opt = cls._stage_4_1_risk_premium(
             returns_train, vol_train, n_train, nu_base,
             q_opt, c_opt, phi_opt, gamma_opt, sens_opt, alpha_opt, profile)
 
-        # ── STAGE 4.2: Skew dynamics (GAS) ───────────────────────────
+        # ── STAGE 4.2: Skew dynamics (GAS)
         skew_kappa_opt, skew_persistence_fixed = cls._stage_4_2_skew_dynamics(
             returns_train, vol_train, n_train, nu_base,
             q_opt, c_opt, phi_opt, gamma_opt, sens_opt, alpha_opt,
             risk_premium_opt, profile)
 
-        # ── Hessian condition check ──────────────────────────────────
+        # ── Hessian condition check
         hess = cls._check_hessian_degradation(
             s1.get('result'), gamma_opt, sens_opt, alpha_opt,
             risk_premium_opt, skew_kappa_opt)
@@ -4355,13 +3905,13 @@ class PhiStudentTDriftModel:
         degraded = hess['degraded']
         cond_num = hess['cond_num']
 
-        # ── STAGE 4.5: REMOVED (ablation study Feb 2026) ─────────────
+        # ── STAGE 4.5: REMOVED (ablation study)
         # DTCWT wavelet_correction was hardcoded to 1.0 (no-op multiply).
         # phase_asymmetry was read but never used in filter_and_calibrate.
         # wavelet_weights was never used anywhere.
         # The stage also ran an expensive filter_phi_unified call for nothing.
 
-        # ── STAGE 5: Rolling CV ν selection ──────────────────────────
+        # ── STAGE 5: Rolling CV ν selection
         _prof_ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
         is_metals_asset = _prof_ms_ewm_lambda > 0.01
         is_high_vol_asset = asset_class == 'high_vol_equity'
@@ -4378,36 +3928,36 @@ class PhiStudentTDriftModel:
         mu_drift_opt = s5['mu_drift_opt']
         mu_pred_train = s5['mu_pred_train']
 
-        # ── STAGE 5c: GJR-GARCH ─────────────────────────────────────
+        # ── STAGE 5c: GJR-GARCH
         garch = cls._stage_5c_garch_estimation(
             returns_train, mu_pred_train, mu_drift_opt, n_train)
 
-        # ── STAGE 5c.1/5c.2: DISABLED (ablation study Feb 2026) ──────
+        # ── STAGE 5c.1/5c.2: DISABLED (ablation study) ──────
         # Empirically proven zero CRPS benefit across 8 assets.
         # 5c.1 garch_kalman_weight: 0/8 helped, 1/8 hurt (-1.7% CRPS)
         # 5c.2 q_vol_coupling: 0/8 helped, 1/8 hurt (-0.1% CRPS)
         garch_kalman_w = 0.0
         q_vol_zeta = 0.0
 
-        # ── STAGE 5d: Merton jump-diffusion ──────────────────────────
+        # ── STAGE 5d: Merton jump-diffusion
         jumps = cls._stage_5d_jump_diffusion(
             returns_train, vol_train, mu_pred_train, mu_drift_opt,
             n_train, q_opt, c_opt, phi_opt, nu_opt, alpha_opt,
             gamma_opt, sens_opt, beta_opt, risk_premium_opt,
             skew_kappa_opt, skew_persistence_fixed, profile)
 
-        # ── STAGE 5e: Rough Hurst ────────────────────────────────────
+        # ── STAGE 5e: Rough Hurst
         rough_hurst_est = cls._stage_5e_rough_hurst(
             returns_train, mu_pred_train, mu_drift_opt, n_train)
 
-        # ── STAGE 5f: EWM location correction ────────────────────────
+        # ── STAGE 5f: EWM location correction
         crps_ewm_lambda_opt = cls._stage_5f_ewm_lambda(
             returns_train, vol_train, n_train,
             q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
             sens_opt, beta_opt, mu_drift_opt, risk_premium_opt,
             skew_kappa_opt, skew_persistence_fixed, profile)
 
-        # ── STAGE 5g: Leverage + shrinkage ───────────────────────────
+        # ── STAGE 5g: Leverage + shrinkage
         s5g = cls._stage_5g_leverage_and_shrinkage(
             returns_train, vol_train, n_train,
             q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
@@ -4417,7 +3967,7 @@ class PhiStudentTDriftModel:
             garch['garch_beta'], garch['garch_leverage'],
             garch['unconditional_var'], profile)
 
-        # ── STAGE 5h: Conditional location bias ──────────────────────
+        # ── STAGE 5h: Conditional location bias
         s5h = cls._stage_5h_conditional_location_bias(
             returns_train, vol_train, n_train,
             q_opt, c_opt, phi_opt, nu_opt, alpha_opt, gamma_opt,
@@ -4427,7 +3977,7 @@ class PhiStudentTDriftModel:
             garch['garch_beta'], garch['garch_leverage'],
             garch['unconditional_var'], garch_kalman_w, q_vol_zeta, profile)
 
-        # ── STAGE 6: Walk-forward calibration params ─────────────────
+        # ── STAGE 6: Walk-forward calibration params
         # Build a temp config with all Stages 1-5h params for Stage 6
         _s6_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt,
@@ -4470,7 +4020,7 @@ class PhiStudentTDriftModel:
         )
         s6 = cls._stage_6_calibration_pipeline(returns, vol, _s6_config, train_frac)
 
-        # ── BUILD FINAL CONFIG ───────────────────────────────────────
+        # ── BUILD FINAL CONFIG
         _prof_k_asym = profile.get('k_asym', 1.0)
         _prof_q_stress_ratio = profile.get('q_stress_ratio', 10.0)
         _prof_vov_damping = profile.get('vov_damping', 0.3)
@@ -4521,7 +4071,7 @@ class PhiStudentTDriftModel:
             calibrated_nu_crps=s6['calibrated_nu_crps'],
         )
 
-        # ── CALIBRATION DIAGNOSTICS ──────────────────────────────────
+        # ── CALIBRATION DIAGNOSTICS
         diagnostics = cls._build_diagnostics(
             returns_train, vol_train, final_config,
             nu_opt, beta_opt, log_q_opt, q_opt, c_opt, phi_opt,
@@ -4539,7 +4089,7 @@ class PhiStudentTDriftModel:
             s5h['loc_bias_var_coeff'], s5h['loc_bias_drift_coeff'],
             asset_class)
 
-        # ── TEST-PERIOD EVALUATION (centralised scoring) ─────────────
+        # ── TEST-PERIOD EVALUATION (centralised scoring)
         # Run filter_and_calibrate once here so tune.py can read
         # test_sigma, test_crps, test_hyvarinen directly from diagnostics
         # instead of calling filter_and_calibrate a second time.
