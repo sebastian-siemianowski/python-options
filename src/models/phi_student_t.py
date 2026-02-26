@@ -3276,23 +3276,7 @@ class PhiStudentTDriftModel:
                 _GW_GRID = [0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.95, 1.0]
             else:
                 _GW_GRID = [0.0, 0.15, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.0]
-            
-            # =============================================================
-            # EWM λ: REUSE Stage 5f pre-calibrated value (February 2026)
-            # =============================================================
-            # Stage 5f estimated crps_ewm_lambda via CRPS-optimal grid
-            # search on raw Kalman innovations. That λ captures the
-            # innovation autocorrelation structure.
-            #
-            # For filter_and_calibrate's GARCH-blended pipeline, the
-            # residual autocorrelation is lower (GARCH absorbs part),
-            # so the FC λ needs to be ≥ 0.975 (slower decay).
-            #
-            # Mapping: λ_fc = max(λ_5f, 0.975), clipped to [0.975, 0.995]
-            #
-            # This removes the _LAM_GRID search (4-7 candidates), giving
-            # a proportional speedup to the walk-forward CV.
-            # =============================================================
+
             _stage5f_lam = float(getattr(config, 'crps_ewm_lambda', 0.0))
             if _stage5f_lam >= 0.50:
                 _fixed_lam = float(np.clip(max(_stage5f_lam, 0.975), 0.975, 0.995))
