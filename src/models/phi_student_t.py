@@ -1928,6 +1928,85 @@ class PhiStudentTDriftModel:
             crps = float('nan')
         return crps, sigma_crps, mu_crps, nu_crps
 
+    # =========================================================================
+    # PIT / KS CALIBRATION (called by tune.py for model scoring)
+    # =========================================================================
+
+    @classmethod
+    def pit_ks_unified(
+        cls,
+        returns: np.ndarray,
+        mu_pred: np.ndarray,
+        S_pred: np.ndarray,
+        config: 'UnifiedStudentTConfig',
+    ) -> Tuple[float, float, Dict]:
+        """
+        PIT/KS calibration for unified model using predictive distribution.
+
+        Applies variance_inflation to S_pred, computes Student-t CDF PIT values
+        with smooth asymmetric nu, then returns KS statistic, p-value, and
+        calibration metrics (histogram MAD, grade A/B/C/F).
+
+        Called by tune.py to score unified models for BMA selection.
+        """
+        from scipy.stats import kstest
+
+        returns = np.asarray(returns).flatten()
+        mu_pred = np.asarray(mu_pred).flatten()
+        S_pred = np.asarray(S_pred).flatten()
+
+        n = len(returns)
+        pit_values = np.empty(n)
+
+        nu_base = config.nu_base
+        alpha = config.alpha_asym
+        k_asym = config.k_asym
+        variance_inflation = getattr(config, 'variance_inflation', 1.0)
+
+        for t in range(n):
+            innovation = returns[t] - mu_pred[t]
+            S_calibrated = S_pred[t] * variance_inflation
+            scale = np.sqrt(max(S_calibrated, 1e-12))
+            nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
+            if nu_eff > 2:
+                t_scale = np.sqrt(S_calibrated * (nu_eff - 2) / nu_eff)
+            else:
+                t_scale = scale
+            t_scale = max(t_scale, 1e-10)
+            pit_values[t] = student_t.cdf(innovation, df=nu_eff, loc=0, scale=t_scale)
+
+        valid = np.isfinite(pit_values)
+        pit_clean = np.clip(pit_values[valid], 0, 1)
+
+        if len(pit_clean) < 20:
+            return 1.0, 0.0, {"n_samples": len(pit_clean), "calibrated": False}
+
+        ks_result = kstest(pit_clean, 'uniform')
+
+        hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
+        hist_freq = hist / len(pit_clean)
+        hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
+
+        if hist_mad < 0.02:
+            grade = "A"
+        elif hist_mad < 0.05:
+            grade = "B"
+        elif hist_mad < 0.10:
+            grade = "C"
+        else:
+            grade = "F"
+
+        metrics = {
+            "n_samples": len(pit_clean),
+            "ks_statistic": float(ks_result.statistic),
+            "ks_pvalue": float(ks_result.pvalue),
+            "histogram_mad": hist_mad,
+            "calibration_grade": grade,
+            "calibrated": hist_mad < 0.05,
+        }
+
+        return float(ks_result.statistic), float(ks_result.pvalue), metrics
+
     # ---------------------------------------------------------------------------
     # SHARED GARCH VARIANCE
     # Used by filter_and_calibrate AND _stage_6_calibration_pipeline.
