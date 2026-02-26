@@ -3215,18 +3215,19 @@ class PhiStudentTDriftModel:
             # =============================================================
             # ADAPTIVE PIT — WALK-FORWARD CV (February 2026)
             # =============================================================
-            # Joint (gw, λ, ν) selection via 2-fold walk-forward validation
-            # on training data. Applies to ALL asset classes with GARCH.
+            # Joint (gw, ν) selection via walk-forward validation on
+            # training data. λ is fixed from Stage 5f pre-calibrated
+            # crps_ewm_lambda — eliminates redundant λ search.
             #
-            # Walk-forward CV splits training into 3 equal portions:
+            # Walk-forward CV splits training into equal portions:
             #   Fold 1: estimate on [0, T/3), validate on [T/3, 2T/3)
             #   Fold 2: estimate on [0, 2T/3), validate on [2T/3, T)
             # This mimics true out-of-sample conditions.
             #
             # Grid (asset-class adaptive):
             #   gw  — GARCH blend weight
-            #   λ   — EWM decay
             #   ν   — kurtosis-informed top candidates
+            #   λ   — fixed from Stage 5f (no search)
             #
             # Selection criterion: Berkowitz-penalized KS (accounts for
             # PIT serial dependence from regime shifts).
@@ -3267,31 +3268,36 @@ class PhiStudentTDriftModel:
             _NU_CANDIDATES_ADAP = [_nu for _, _nu in _kurt_ranked[:_n_nu_cands]]
             
             # Step 2: Walk-forward CV grid search
-            # Asset-class adaptive grids:
-            # Metals: higher gw (GARCH-heavy), narrower λ
-            # High-vol equities: faster EWM (lower λ), high gw for rapid tracking
-            # Regular equities: wider gw range, wider λ
+            # Asset-class adaptive gw grids. λ fixed from Stage 5f.
             
             if _is_metals_adaptive:
                 _GW_GRID = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.0]
-                _LAM_GRID = [0.98, 0.985, 0.99, 0.995]
             elif _is_high_vol:
-                # High-vol equities: faster decay, GARCH-heavy
-                # λ = 0.96 → ~25-day half-life, tracks vol swings
-                # gw=1.0 = pure GARCH (no Kalman S_pred at all)
                 _GW_GRID = [0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.95, 1.0]
-                _LAM_GRID = [0.96, 0.965, 0.97, 0.975, 0.98, 0.985]
             else:
-                # Regular equities: wide gw range (0→pure GARCH)
-                # gw=1.0 essential for extreme-c assets (ERMAY c=10.2,
-                # CNXT c=10.0) where any Kalman contribution is toxic.
                 _GW_GRID = [0.0, 0.15, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.0]
-                # For short data: add faster λ (0.95-0.97) for quicker
-                # EWM convergence within limited warmup periods
-                if n_train < 350:
-                    _LAM_GRID = [0.95, 0.96, 0.97, 0.975, 0.98, 0.985, 0.99]
-                else:
-                    _LAM_GRID = [0.975, 0.98, 0.983, 0.985, 0.988, 0.99, 0.995]
+            
+            # =============================================================
+            # EWM λ: REUSE Stage 5f pre-calibrated value (February 2026)
+            # =============================================================
+            # Stage 5f estimated crps_ewm_lambda via CRPS-optimal grid
+            # search on raw Kalman innovations. That λ captures the
+            # innovation autocorrelation structure.
+            #
+            # For filter_and_calibrate's GARCH-blended pipeline, the
+            # residual autocorrelation is lower (GARCH absorbs part),
+            # so the FC λ needs to be ≥ 0.975 (slower decay).
+            #
+            # Mapping: λ_fc = max(λ_5f, 0.975), clipped to [0.975, 0.995]
+            #
+            # This removes the _LAM_GRID search (4-7 candidates), giving
+            # a proportional speedup to the walk-forward CV.
+            # =============================================================
+            _stage5f_lam = float(getattr(config, 'crps_ewm_lambda', 0.0))
+            if _stage5f_lam >= 0.50:
+                _fixed_lam = float(np.clip(max(_stage5f_lam, 0.975), 0.975, 0.995))
+            else:
+                _fixed_lam = 0.985  # Conservative default
             # Walk-forward CV: adaptive fold count based on data length.
             # Each fold needs ≥80 observations for reliable KS test and
             # histogram MAD computation. Very short data (n_train<200)
@@ -3309,15 +3315,14 @@ class PhiStudentTDriftModel:
             
             _best_adap_score = -1.0
             _best_gw_adap = 0.50 if not _is_metals_adaptive else 0.80
-            _best_lam_mu = 0.985
-            _best_lam_beta = 0.985
+            _best_lam_mu = _fixed_lam
+            _best_lam_beta = _fixed_lam
             _best_nu_adap = _NU_CANDIDATES_ADAP[0]
             
             for _gw_c in _GW_GRID:
                 _S_bt_c = (1 - _gw_c) * S_pred_train_wav + _gw_c * h_garch_train_est
                 
-                for _lam_c in _LAM_GRID:
-                    for _nu_c in _NU_CANDIDATES_ADAP:
+                for _nu_c in _NU_CANDIDATES_ADAP:
                         _fold_scores = []
                         
                         for _fold_i in range(_n_cv_folds):
@@ -3335,9 +3340,9 @@ class PhiStudentTDriftModel:
                             
                             # Warm up EWM through estimation portion
                             for _t_c in range(_est_end):
-                                _ewm_mu_c = _lam_c * _ewm_mu_c + (1 - _lam_c) * innovations_train_blend[_t_c]
-                                _ewm_num_c = _lam_c * _ewm_num_c + (1 - _lam_c) * (innovations_train_blend[_t_c] ** 2)
-                                _ewm_den_c = _lam_c * _ewm_den_c + (1 - _lam_c) * _S_bt_c[_t_c]
+                                _ewm_mu_c = _fixed_lam * _ewm_mu_c + (1 - _fixed_lam) * innovations_train_blend[_t_c]
+                                _ewm_num_c = _fixed_lam * _ewm_num_c + (1 - _fixed_lam) * (innovations_train_blend[_t_c] ** 2)
+                                _ewm_den_c = _fixed_lam * _ewm_den_c + (1 - _fixed_lam) * _S_bt_c[_t_c]
                             
                             # Compute PIT on validation portion
                             _pit_val_c = np.zeros(_n_val)
@@ -3365,9 +3370,9 @@ class PhiStudentTDriftModel:
                                 _sig_vals_c[_t_v] = _sig_v
                                 
                                 # Causal update
-                                _ewm_mu_v = _lam_c * _ewm_mu_v + (1 - _lam_c) * innovations_train_blend[_idx_v]
-                                _ewm_num_v = _lam_c * _ewm_num_v + (1 - _lam_c) * (innovations_train_blend[_idx_v] ** 2)
-                                _ewm_den_v = _lam_c * _ewm_den_v + (1 - _lam_c) * _S_bt_c[_idx_v]
+                                _ewm_mu_v = _fixed_lam * _ewm_mu_v + (1 - _fixed_lam) * innovations_train_blend[_idx_v]
+                                _ewm_num_v = _fixed_lam * _ewm_num_v + (1 - _fixed_lam) * (innovations_train_blend[_idx_v] ** 2)
+                                _ewm_den_v = _fixed_lam * _ewm_den_v + (1 - _fixed_lam) * _S_bt_c[_idx_v]
                             
                             _pit_val_c = np.clip(_pit_val_c, 0.001, 0.999)
                             try:
@@ -3447,90 +3452,76 @@ class PhiStudentTDriftModel:
                             if _avg_score > _best_adap_score:
                                 _best_adap_score = _avg_score
                                 _best_gw_adap = _gw_c
-                                _best_lam_mu = _lam_c
-                                _best_lam_beta = _lam_c
                                 _best_nu_adap = _nu_c
             
             # =============================================================
-            # STAGE 2: LOCAL REFINEMENT (February 2026 — Elite)
+            # STAGE 2: LOCAL gw REFINEMENT (February 2026 — Elite)
             # =============================================================
-            # The coarse grid may miss the optimum by up to half a grid
-            # spacing.  A local refinement around the Stage 1 winner with
-            # Δgw = 0.03 and Δλ = 0.001 closes this gap cheaply.
+            # The coarse gw grid may miss the optimum by up to half a
+            # grid spacing. Refine around the winner with Δgw = 0.03.
+            # λ is fixed from Stage 5f — no refinement needed.
             #
-            # Grid: 5 gw × 5 λ × 1 ν = 25 candidates × n_folds,
-            # completes in < 50 ms.
-            #
-            # Skip for short data (n_train < 300): fold sizes too small
-            # for reliable fine-grained scoring — refinement adds noise.
+            # Grid: 5 gw × 1 ν = 5 candidates × n_folds.
+            # Skip for short data (n_train < 300).
             # =============================================================
             _skip_refinement = n_train < 300
             _gw_fine_lo = max(_best_gw_adap - 0.06, 0.0)
             _gw_fine_hi = min(_best_gw_adap + 0.06, 1.0)
-            _lam_fine_lo = max(_best_lam_mu - 0.003, 0.970)
-            _lam_fine_hi = min(_best_lam_mu + 0.003, 0.998)
             _GW_FINE = np.arange(_gw_fine_lo, _gw_fine_hi + 0.01, 0.03)
-            _LAM_FINE = np.arange(_lam_fine_lo, _lam_fine_hi + 0.0005, 0.001)
             
             for _gw_f in (_GW_FINE if not _skip_refinement else []):
                 _gw_f = float(_gw_f)
                 if abs(_gw_f - _best_gw_adap) < 0.005:
                     continue  # Skip the already-evaluated centre
                 _S_bt_f = (1 - _gw_f) * S_pred_train_wav + _gw_f * h_garch_train_est
-                for _lam_f in _LAM_FINE:
-                    _lam_f = float(_lam_f)
-                    if abs(_lam_f - _best_lam_mu) < 0.0002:
+                _fold_scores_f = []
+                for _fold_i in range(_n_cv_folds):
+                    _est_end = (_fold_i + 1) * _fold_size
+                    _val_end = min((_fold_i + 2) * _fold_size, n_train)
+                    if _val_end <= _est_end:
                         continue
-                    _fold_scores_f = []
-                    for _fold_i in range(_n_cv_folds):
-                        _est_end = (_fold_i + 1) * _fold_size
-                        _val_end = min((_fold_i + 2) * _fold_size, n_train)
-                        if _val_end <= _est_end:
-                            continue
-                        _n_val = _val_end - _est_end
-                        _ewm_mu_f2 = float(np.mean(innovations_train_blend[:_est_end]))
-                        _ewm_num_f2 = float(np.mean(innovations_train_blend[:_est_end] ** 2))
-                        _ewm_den_f2 = float(np.mean(_S_bt_f[:_est_end]))
-                        for _t_f2 in range(_est_end):
-                            _ewm_mu_f2 = _lam_f * _ewm_mu_f2 + (1 - _lam_f) * innovations_train_blend[_t_f2]
-                            _ewm_num_f2 = _lam_f * _ewm_num_f2 + (1 - _lam_f) * (innovations_train_blend[_t_f2] ** 2)
-                            _ewm_den_f2 = _lam_f * _ewm_den_f2 + (1 - _lam_f) * _S_bt_f[_t_f2]
-                        _pit_f2 = np.zeros(_n_val)
-                        _sig_sum_f2 = 0.0
-                        _m2 = _ewm_mu_f2; _n2 = _ewm_num_f2; _d2 = _ewm_den_f2
-                        for _t_v2 in range(_n_val):
-                            _idx2 = _est_end + _t_v2
-                            _b2 = float(np.clip(_n2 / (_d2 + 1e-12), 0.2, 5.0))
-                            _inn2 = innovations_train_blend[_idx2] - _m2
-                            _Sv2 = _S_bt_f[_idx2] * _b2
-                            _sv2 = np.sqrt(_Sv2 * max(_best_nu_adap - 2, 0.1) / _best_nu_adap) if _best_nu_adap > 2 else np.sqrt(_Sv2)
-                            _sv2 = max(_sv2, 1e-10)
-                            _sig_sum_f2 += _sv2
-                            _pit_f2[_t_v2] = student_t_dist.cdf(_inn2 / _sv2, df=_best_nu_adap)
-                            _m2 = _lam_f * _m2 + (1 - _lam_f) * innovations_train_blend[_idx2]
-                            _n2 = _lam_f * _n2 + (1 - _lam_f) * (innovations_train_blend[_idx2] ** 2)
-                            _d2 = _lam_f * _d2 + (1 - _lam_f) * _S_bt_f[_idx2]
-                        _pit_f2 = np.clip(_pit_f2, 0.001, 0.999)
-                        try:
-                            _sc2, _, _ = _berkowitz_penalized_ks(_pit_f2)
-                            _h2, _ = np.histogram(_pit_f2, bins=10, range=(0, 1))
-                            _md2 = float(np.mean(np.abs(_h2 / _n_val - 0.1)))
-                            _mp2 = max(0.0, 1.0 - _md2 / 0.05)
-                            # Use σ-ratio sharpness proxy (lightweight for refinement)
-                            _is2 = float(np.std(innovations_train_blend[:_est_end]))
-                            _mean_sf2 = _sig_sum_f2 / max(_n_val, 1)
-                            _sh2 = ((_is2 / _mean_sf2) ** 1.5 if _is2 > 1e-10 and _mean_sf2 > 1e-10 else 1.0)
-                            _sh2 = float(np.clip(_sh2, 0.55, 1.45))
-                            _fold_scores_f.append(_sc2 * _mp2 * _sh2)
-                        except Exception:
-                            pass
-                    if _fold_scores_f:
-                        _avg_f = float(np.mean(_fold_scores_f))
-                        if _avg_f > _best_adap_score:
-                            _best_adap_score = _avg_f
-                            _best_gw_adap = _gw_f
-                            _best_lam_mu = _lam_f
-                            _best_lam_beta = _lam_f
+                    _n_val = _val_end - _est_end
+                    _ewm_mu_f2 = float(np.mean(innovations_train_blend[:_est_end]))
+                    _ewm_num_f2 = float(np.mean(innovations_train_blend[:_est_end] ** 2))
+                    _ewm_den_f2 = float(np.mean(_S_bt_f[:_est_end]))
+                    for _t_f2 in range(_est_end):
+                        _ewm_mu_f2 = _fixed_lam * _ewm_mu_f2 + (1 - _fixed_lam) * innovations_train_blend[_t_f2]
+                        _ewm_num_f2 = _fixed_lam * _ewm_num_f2 + (1 - _fixed_lam) * (innovations_train_blend[_t_f2] ** 2)
+                        _ewm_den_f2 = _fixed_lam * _ewm_den_f2 + (1 - _fixed_lam) * _S_bt_f[_t_f2]
+                    _pit_f2 = np.zeros(_n_val)
+                    _sig_sum_f2 = 0.0
+                    _m2 = _ewm_mu_f2; _n2 = _ewm_num_f2; _d2 = _ewm_den_f2
+                    for _t_v2 in range(_n_val):
+                        _idx2 = _est_end + _t_v2
+                        _b2 = float(np.clip(_n2 / (_d2 + 1e-12), 0.2, 5.0))
+                        _inn2 = innovations_train_blend[_idx2] - _m2
+                        _Sv2 = _S_bt_f[_idx2] * _b2
+                        _sv2 = np.sqrt(_Sv2 * max(_best_nu_adap - 2, 0.1) / _best_nu_adap) if _best_nu_adap > 2 else np.sqrt(_Sv2)
+                        _sv2 = max(_sv2, 1e-10)
+                        _sig_sum_f2 += _sv2
+                        _pit_f2[_t_v2] = student_t_dist.cdf(_inn2 / _sv2, df=_best_nu_adap)
+                        _m2 = _fixed_lam * _m2 + (1 - _fixed_lam) * innovations_train_blend[_idx2]
+                        _n2 = _fixed_lam * _n2 + (1 - _fixed_lam) * (innovations_train_blend[_idx2] ** 2)
+                        _d2 = _fixed_lam * _d2 + (1 - _fixed_lam) * _S_bt_f[_idx2]
+                    _pit_f2 = np.clip(_pit_f2, 0.001, 0.999)
+                    try:
+                        _sc2, _, _ = _berkowitz_penalized_ks(_pit_f2)
+                        _h2, _ = np.histogram(_pit_f2, bins=10, range=(0, 1))
+                        _md2 = float(np.mean(np.abs(_h2 / _n_val - 0.1)))
+                        _mp2 = max(0.0, 1.0 - _md2 / 0.05)
+                        # Use σ-ratio sharpness proxy (lightweight for refinement)
+                        _is2 = float(np.std(innovations_train_blend[:_est_end]))
+                        _mean_sf2 = _sig_sum_f2 / max(_n_val, 1)
+                        _sh2 = ((_is2 / _mean_sf2) ** 1.5 if _is2 > 1e-10 and _mean_sf2 > 1e-10 else 1.0)
+                        _sh2 = float(np.clip(_sh2, 0.55, 1.45))
+                        _fold_scores_f.append(_sc2 * _mp2 * _sh2)
+                    except Exception:
+                        pass
+                if _fold_scores_f:
+                    _avg_f = float(np.mean(_fold_scores_f))
+                    if _avg_f > _best_adap_score:
+                        _best_adap_score = _avg_f
+                        _best_gw_adap = _gw_f
             
             # =============================================================
             # ν OVERRIDE GUARD (February 2026)
