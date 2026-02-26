@@ -727,22 +727,23 @@ def compute_ms_process_noise_smooth(
         # EWM MODE: Exponentially-weighted moving statistics
         # ---------------------------------------------------------------------------
         lam = float(np.clip(ewm_lambda, 0.5, 0.999))
+        one_minus_lam = 1.0 - lam
 
         warmup = min(20, n)
         ewm_mean = float(np.mean(vol[:warmup])) if warmup > 0 else float(vol[0])
         ewm_var = float(np.var(vol[:warmup])) if warmup > 1 else 1e-6
         ewm_var = max(ewm_var, 1e-12)
 
-        vol_zscore = np.zeros(n)
+        vol_zscore = np.empty(n)
         for t in range(n):
-            ewm_std = np.sqrt(ewm_var)
+            ewm_std = math.sqrt(ewm_var)
             ewm_std = max(ewm_std, 1e-6)
             vol_zscore[t] = (vol[t] - ewm_mean) / ewm_std
 
             # Update AFTER computing z-score (no look-ahead)
-            ewm_mean = lam * ewm_mean + (1.0 - lam) * vol[t]
+            ewm_mean = lam * ewm_mean + one_minus_lam * vol[t]
             diff = vol[t] - ewm_mean
-            ewm_var = lam * ewm_var + (1.0 - lam) * (diff * diff)
+            ewm_var = lam * ewm_var + one_minus_lam * (diff * diff)
             ewm_var = max(ewm_var, 1e-12)
     else:
         # ---------------------------------------------------------------------------
@@ -1330,11 +1331,16 @@ class PhiStudentTDriftModel:
 
         # Smooth asymmetric modulation via tanh
         # tanh is bounded in [-1, 1] and smooth everywhere
-        modulation = 1.0 + alpha * np.tanh(k * z)
+        # Use math.tanh for scalar — avoids numpy array overhead
+        modulation = 1.0 + alpha * math.tanh(k * z)
         nu_raw = nu_base * modulation
 
         # Ensure ν > 2 (finite variance requirement)
-        return float(np.clip(nu_raw, nu_min, nu_max))
+        if nu_raw < nu_min:
+            return nu_min
+        if nu_raw > nu_max:
+            return nu_max
+        return nu_raw
 
     @staticmethod
     def logpdf(x: float, nu: float, mu: float, scale: float) -> float:
@@ -2248,18 +2254,19 @@ class PhiStudentTDriftModel:
         h = np.zeros(n)
         h[0] = gu
         ps = 0.1  # Initial stress probability
+        _msqrt = math.sqrt
 
         for t in range(1, n):
             ht = go + ga * sq[t-1] + gl * sq[t-1] * neg[t-1] + gb * h[t-1]
             if rl > 0.01 and h[t-1] > 1e-12:
-                z = innovations[t-1] / np.sqrt(h[t-1])
+                z = innovations[t-1] / _msqrt(h[t-1])
                 if z < 0:
                     ht += rl * z * z * h[t-1]
             if se > 0.005 and h[t-1] > 1e-12:
-                z = abs(innovations[t-1]) / np.sqrt(h[t-1])
+                z = abs(innovations[t-1]) / _msqrt(h[t-1])
                 ht += se * max(0.0, z - 1.5) ** 2 * h[t-1]
             if rs > 0.005 and h[t-1] > 1e-12:
-                z = abs(innovations[t-1]) / np.sqrt(h[t-1])
+                z = abs(innovations[t-1]) / _msqrt(h[t-1])
                 ps = (1.0 - rs) * ps + rs * (1.0 if z > 2.0 else 0.0)
                 ps = min(max(ps, 0.0), 1.0)
                 ht *= (1.0 + ps * (sm - 1.0))
@@ -2352,7 +2359,7 @@ class PhiStudentTDriftModel:
 
         phi_sq = phi_val * phi_val
         nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
-        log_norm_const = gammaln((nu_val + 1.0) / 2.0) - gammaln(nu_val / 2.0) - 0.5 * np.log(nu_val * np.pi)
+        log_norm_const = math.lgamma((nu_val + 1.0) / 2.0) - math.lgamma(nu_val / 2.0) - 0.5 * math.log(nu_val * math.pi)
         neg_exp = -((nu_val + 1.0) / 2.0)
         inv_nu = 1.0 / nu_val
         R = c_val * (vol * vol)
@@ -2366,6 +2373,9 @@ class PhiStudentTDriftModel:
         P = 1e-4
         log_likelihood = 0.0
         has_exo = exogenous_input is not None
+        _msqrt = math.sqrt
+        _mlog = math.log
+        _misfinite = math.isfinite
 
         for t in range(n):
             u_t = exogenous_input[t] if has_exo and t < len(exogenous_input) else 0.0
@@ -2382,7 +2392,7 @@ class PhiStudentTDriftModel:
             K = nu_adjust * P_pred / S
 
             if robust_wt:
-                z_sq = (innovation ** 2) / S
+                z_sq = (innovation * innovation) / S
                 w_t = (nu_val + 1.0) / (nu_val + z_sq)
                 mu = mu_pred + K * w_t * innovation
                 P = (1.0 - w_t * K) * P_pred
@@ -2396,13 +2406,13 @@ class PhiStudentTDriftModel:
             P_filtered[t] = P
 
             if nu_val > 2:
-                forecast_scale = np.sqrt(S * (nu_val - 2) / nu_val)
+                forecast_scale = _msqrt(S * (nu_val - 2) / nu_val)
             else:
-                forecast_scale = np.sqrt(S)
+                forecast_scale = _msqrt(S)
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
-                ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
-                if np.isfinite(ll_t):
+                ll_t = log_norm_const - _mlog(forecast_scale) + neg_exp * _mlog(1.0 + z * z * inv_nu)
+                if _misfinite(ll_t):
                     log_likelihood += ll_t
 
         return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
@@ -2489,12 +2499,24 @@ class PhiStudentTDriftModel:
             p_stress = np.zeros(n)
 
         log_vol = np.log(np.maximum(vol, 1e-10))
-        vov_rolling = np.zeros(n)
         window = config.vov_window
-        for t in range(window, n):
-            vov_rolling[t] = np.std(log_vol[t-window:t])
-        if n > window:
+        # Vectorized rolling std via cumulative sums (replaces Python loop)
+        # Computes std(log_vol[t-window:t]) for each t using O(n) cumsum trick
+        if n > window and gamma_vov > 1e-12:
+            cs1 = np.concatenate(([0.0], np.cumsum(log_vol)))
+            cs2 = np.concatenate(([0.0], np.cumsum(log_vol * log_vol)))
+            inv_w = 1.0 / float(window)
+            # For t in [window, n): sum of log_vol[t-window:t]
+            # cs1[t] - cs1[t-window], for t = window..n-1
+            idx_end = np.arange(window, n)    # t values
+            s1 = cs1[idx_end] - cs1[idx_end - window]
+            s2 = cs2[idx_end] - cs2[idx_end - window]
+            var_arr = np.maximum(s2 * inv_w - (s1 * inv_w) ** 2, 0.0)
+            vov_rolling = np.empty(n, dtype=np.float64)
+            vov_rolling[window:] = np.sqrt(var_arr)
             vov_rolling[:window] = vov_rolling[window] if n > window else 0.0
+        else:
+            vov_rolling = np.zeros(n)
 
         phi_sq = phi_val * phi_val
         R_base = c_val * (vol ** 2)
@@ -2513,7 +2535,7 @@ class PhiStudentTDriftModel:
         # to align filter output with filter_and_calibrate's mu_effective.
         _mu_drift_val = float(getattr(config, 'mu_drift', 0.0))
 
-        log_norm_const = gammaln((nu_base + 1.0) / 2.0) - gammaln(nu_base / 2.0) - 0.5 * np.log(nu_base * np.pi)
+        log_norm_const = math.lgamma((nu_base + 1.0) / 2.0) - math.lgamma(nu_base / 2.0) - 0.5 * math.log(nu_base * math.pi)
         neg_exp = -((nu_base + 1.0) / 2.0)
         inv_nu = 1.0 / nu_base
 
@@ -2530,10 +2552,10 @@ class PhiStudentTDriftModel:
         # Pre-compute logit of base jump intensity for dynamic modulation
         if jump_enabled:
             # a₀ = logit(p₀) = log(p₀ / (1 - p₀))
-            p0_safe = float(np.clip(jump_intensity, 1e-4, 0.999))
-            logit_p0 = np.log(p0_safe / (1.0 - p0_safe))
+            p0_safe = max(min(jump_intensity, 0.999), 1e-4)
+            logit_p0 = math.log(p0_safe / (1.0 - p0_safe))
             # Pre-compute Gaussian normalization for jump component
-            log_gauss_norm = -0.5 * np.log(2.0 * np.pi)
+            log_gauss_norm = -0.5 * math.log(2.0 * math.pi)
 
         mu_filtered = np.empty(n, dtype=np.float64)
         P_filtered = np.empty(n, dtype=np.float64)
@@ -2544,10 +2566,22 @@ class PhiStudentTDriftModel:
         P = 1e-4
         log_likelihood = 0.0
 
+        # Pre-extract exogenous input flag (avoid repeated getattr in loop)
+        _has_exo = config.exogenous_input is not None
+        _exo_arr = config.exogenous_input if _has_exo else None
+        _exo_len = len(_exo_arr) if _has_exo else 0
+
+        # Local aliases for tight inner loop (avoid method/attribute lookup)
+        _math_sqrt = math.sqrt
+        _math_log = math.log
+        _math_exp = math.exp
+        _math_lgamma = math.lgamma
+        _math_isfinite = math.isfinite
+
         for t in range(n):
             u_t = 0.0
-            if config.exogenous_input is not None and t < len(config.exogenous_input):
-                u_t = float(config.exogenous_input[t])
+            if _has_exo and t < _exo_len:
+                u_t = float(_exo_arr[t])
 
             q_t_val = q_t[t]
 
@@ -2565,14 +2599,21 @@ class PhiStudentTDriftModel:
 
             # -----------------------------------------------------------------
             # Jump-augmented predictive variance
-            # S_total = (1 - p_t)·S_diffusion + p_t·(S_diffusion + σ²_J)
-            #         = S_diffusion + p_t·σ²_J
-            # This is the PREDICTIVE variance including jump risk
+            # S_total = S_diffusion + p_t·σ²_J
             # -----------------------------------------------------------------
             if jump_enabled:
                 # Dynamic jump probability: p_t = logistic(a₀ + b·vov_t)
-                p_t = 1.0 / (1.0 + np.exp(-(logit_p0 + jump_sensitivity * vov_rolling[t])))
-                p_t = float(np.clip(p_t, 1e-4, 0.5))  # Cap at 50% (beyond → nonsensical)
+                _arg = -(logit_p0 + jump_sensitivity * vov_rolling[t])
+                if _arg > 20.0:
+                    p_t = 1e-4
+                elif _arg < -20.0:
+                    p_t = 0.5
+                else:
+                    p_t = 1.0 / (1.0 + _math_exp(_arg))
+                    if p_t < 1e-4:
+                        p_t = 1e-4
+                    elif p_t > 0.5:
+                        p_t = 0.5
                 S = S_diffusion + p_t * jump_var
             else:
                 p_t = 0.0
@@ -2583,57 +2624,59 @@ class PhiStudentTDriftModel:
 
             innovation = returns[t] - mu_pred
 
-            scale = np.sqrt(S)
+            scale = _math_sqrt(S)
             # ---------------------------------------------------------------------------
             # CONDITIONAL SKEW DYNAMICS: use dynamic α_t instead of static α
-            # α_t evolves via GAS score, capturing regime-dependent asymmetry
             # ---------------------------------------------------------------------------
             nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha_t, k_asym)
 
             # -----------------------------------------------------------------
             # Kalman gain and state update use DIFFUSION-ONLY variance
-            # Key insight: the Kalman state tracks the continuous drift μ_t.
-            # Jumps are transient events that should NOT contaminate the state.
             # -----------------------------------------------------------------
-            nu_adjust = min(nu_eff / (nu_eff + 3.0), 1.0)
-            K = nu_adjust * P_pred / S_diffusion  # Use S_diffusion, NOT S
+            nu_adjust = nu_eff / (nu_eff + 3.0)
+            if nu_adjust > 1.0:
+                nu_adjust = 1.0
+            K = nu_adjust * P_pred / S_diffusion
 
-            z_sq_diffusion = (innovation ** 2) / S_diffusion
+            z_sq_diffusion = (innovation * innovation) / S_diffusion
             w_t = (nu_eff + 1.0) / (nu_eff + z_sq_diffusion)
 
             if jump_enabled:
-                # Posterior jump probability via Bayes' rule:
-                # p(jump|y) ∝ p_t · N(innovation; μ_J, S_diff + σ²_J)
-                # p(no_jump|y) ∝ (1-p_t) · t(innovation; ν, 0, S_diff)
+                # Posterior jump probability via Bayes' rule
                 S_jump_total = S_diffusion + jump_var
                 innov_centered = innovation - jump_mean
 
                 # Log-likelihood under jump component (Gaussian)
-                ll_jump = log_gauss_norm - 0.5 * np.log(S_jump_total) - 0.5 * (innov_centered ** 2) / S_jump_total
+                ll_jump = log_gauss_norm - 0.5 * _math_log(S_jump_total) - 0.5 * (innov_centered * innov_centered) / S_jump_total
 
                 # Log-likelihood under diffusion component (Student-t)
-                if nu_eff > 2:
-                    sf = (nu_eff - 2.0) / nu_eff
-                else:
-                    sf = 0.5
-                fs_diff = np.sqrt(S_diffusion * sf)
+                sf = (nu_eff - 2.0) / nu_eff if nu_eff > 2 else 0.5
+                fs_diff = _math_sqrt(S_diffusion * sf)
                 if fs_diff > 1e-12:
                     z_diff = innovation / fs_diff
-                    log_n_diff = gammaln((nu_eff + 1.0) / 2.0) - gammaln(nu_eff / 2.0) - 0.5 * np.log(nu_eff * np.pi)
-                    ll_diff = log_n_diff - np.log(fs_diff) + (-((nu_eff + 1.0) / 2.0)) * np.log(1.0 + z_diff * z_diff / nu_eff)
+                    log_n_diff = _math_lgamma((nu_eff + 1.0) / 2.0) - _math_lgamma(nu_eff / 2.0) - 0.5 * _math_log(nu_eff * math.pi)
+                    ll_diff = log_n_diff - _math_log(fs_diff) + (-((nu_eff + 1.0) / 2.0)) * _math_log(1.0 + z_diff * z_diff / nu_eff)
                 else:
                     ll_diff = -1e10
 
                 # Posterior jump probability via log-sum-exp
-                log_num = np.log(max(p_t, 1e-15)) + ll_jump
-                log_den_parts = [np.log(max(1.0 - p_t, 1e-15)) + ll_diff, log_num]
-                log_den_max = max(log_den_parts)
-                log_den = log_den_max + np.log(sum(np.exp(lp - log_den_max) for lp in log_den_parts))
-                p_jump_post = np.exp(log_num - log_den) if np.isfinite(log_den) else p_t
-                p_jump_post = float(np.clip(p_jump_post, 0.0, 1.0))
+                _log_1mp = _math_log(max(1.0 - p_t, 1e-15))
+                _log_p = _math_log(max(p_t, 1e-15))
+                log_num = _log_p + ll_jump
+                _lp0 = _log_1mp + ll_diff
+                _lp1 = log_num
+                log_den_max = _lp0 if _lp0 > _lp1 else _lp1
+                log_den = log_den_max + _math_log(_math_exp(_lp0 - log_den_max) + _math_exp(_lp1 - log_den_max))
+                if _math_isfinite(log_den):
+                    p_jump_post = _math_exp(log_num - log_den)
+                    if p_jump_post < 0.0:
+                        p_jump_post = 0.0
+                    elif p_jump_post > 1.0:
+                        p_jump_post = 1.0
+                else:
+                    p_jump_post = p_t
 
                 # Reduce Kalman update weight for likely jumps
-                # This prevents jump shocks from contaminating the drift state
                 w_t *= (1.0 - 0.7 * p_jump_post)
 
             mu = mu_pred + K * w_t * innovation
@@ -2646,44 +2689,43 @@ class PhiStudentTDriftModel:
 
             # GAS skew: α_{t+1} = (1-ρ)·α₀ + ρ·α_t + κ·(z_t·w_t)
             if skew_enabled:
-                z_for_score = innovation / max(np.sqrt(S_diffusion), 1e-10)
-                score_t = z_for_score * w_t  # Student-t score
+                z_for_score = innovation / max(_math_sqrt(S_diffusion), 1e-10)
+                score_t = z_for_score * w_t
                 alpha_t = (1.0 - skew_rho) * alpha + skew_rho * alpha_t + skew_kappa * score_t
-                alpha_t = float(np.clip(alpha_t, -0.3, 0.3))  # Stability clip
+                if alpha_t < -0.3:
+                    alpha_t = -0.3
+                elif alpha_t > 0.3:
+                    alpha_t = 0.3
 
             # -----------------------------------------------------------------
             # Log-likelihood: mixture of diffusion + jump components
-            # ll_t = log[(1-p_t)·t(innov; ν, S_diff) + p_t·N(innov; μ_J, S_diff+σ²_J)]
             # -----------------------------------------------------------------
-            if nu_eff > 2:
-                scale_factor = (nu_eff - 2) / nu_eff
-            else:
-                scale_factor = 0.5
-            forecast_scale = np.sqrt(S_diffusion * scale_factor)
+            scale_factor = (nu_eff - 2.0) / nu_eff if nu_eff > 2 else 0.5
+            forecast_scale = _math_sqrt(S_diffusion * scale_factor)
 
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
-                log_norm_eff = gammaln((nu_eff + 1.0) / 2.0) - gammaln(nu_eff / 2.0) - 0.5 * np.log(nu_eff * np.pi)
+                log_norm_eff = _math_lgamma((nu_eff + 1.0) / 2.0) - _math_lgamma(nu_eff / 2.0) - 0.5 * _math_log(nu_eff * math.pi)
                 neg_exp_eff = -((nu_eff + 1.0) / 2.0)
                 inv_nu_eff = 1.0 / nu_eff
 
-                ll_diffusion = log_norm_eff - np.log(forecast_scale) + neg_exp_eff * np.log(1.0 + z * z * inv_nu_eff)
+                ll_diffusion = log_norm_eff - _math_log(forecast_scale) + neg_exp_eff * _math_log(1.0 + z * z * inv_nu_eff)
 
                 if jump_enabled and p_t > 1e-6:
                     # Mixture log-likelihood via log-sum-exp
                     S_jt = S_diffusion + jump_var
                     ic = innovation - jump_mean
-                    ll_jmp = log_gauss_norm - 0.5 * np.log(S_jt) - 0.5 * (ic ** 2) / S_jt
+                    ll_jmp = log_gauss_norm - 0.5 * _math_log(S_jt) - 0.5 * (ic * ic) / S_jt
 
-                    ll_max = max(ll_diffusion, ll_jmp)
-                    ll_t = ll_max + np.log(
-                        (1.0 - p_t) * np.exp(ll_diffusion - ll_max)
-                        + p_t * np.exp(ll_jmp - ll_max)
+                    ll_max = ll_diffusion if ll_diffusion > ll_jmp else ll_jmp
+                    ll_t = ll_max + _math_log(
+                        (1.0 - p_t) * _math_exp(ll_diffusion - ll_max)
+                        + p_t * _math_exp(ll_jmp - ll_max)
                     )
                 else:
                     ll_t = ll_diffusion
 
-                if np.isfinite(ll_t):
+                if _math_isfinite(ll_t):
                     log_likelihood += ll_t
 
         # Causal EWM location correction: tracks innovation mean bias
@@ -2692,13 +2734,20 @@ class PhiStudentTDriftModel:
         if _ewm_lambda < 0.01:
             _ewm_lambda = 0.95  # Default fallback: conservative tracking
         if n > 2:
-            ewm_mu = 0.0
-            mu_pred_corrected = mu_pred_arr.copy()
-            for t in range(1, n):
-                innov_prev = returns[t-1] - mu_pred_arr[t-1]
-                ewm_mu = _ewm_lambda * ewm_mu + (1.0 - _ewm_lambda) * innov_prev
-                mu_pred_corrected[t] = mu_pred_arr[t] + ewm_mu
-            mu_pred_arr = mu_pred_corrected
+            # Vectorized EWM: ewm_mu[t] = λ·ewm_mu[t-1] + (1-λ)·ε_{t-1}
+            # Equivalent to exponential filter on lagged innovations
+            innov_lagged = returns[:-1] - mu_pred_arr[:-1]  # ε_{t-1} for t=1..n-1
+            alpha_ewm = 1.0 - _ewm_lambda
+            # Recursive filter: use scipy.signal.lfilter for O(n)
+            # ewm_mu[t] = λ^t·ewm_mu[0] + α·Σ_{k=0}^{t-1} λ^{t-1-k}·innov[k]
+            # This is a 1st-order IIR filter: y[t] = λ·y[t-1] + α·x[t]
+            ewm_corrections = np.empty(n, dtype=np.float64)
+            ewm_corrections[0] = 0.0
+            ewm_mu_val = 0.0
+            for t in range(n - 1):
+                ewm_mu_val = _ewm_lambda * ewm_mu_val + alpha_ewm * innov_lagged[t]
+                ewm_corrections[t + 1] = ewm_mu_val
+            mu_pred_arr = mu_pred_arr + ewm_corrections
 
         return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
 
@@ -3158,17 +3207,15 @@ class PhiStudentTDriftModel:
                     innov_valid = innovations_train[valid_start_idx:valid_end_idx] - fold_mu_drift
                     S_valid = S_pred_train[valid_start_idx:valid_end_idx]
 
-                    pit_values = []
-                    for t in range(len(innov_valid)):
-                        inn = innov_valid[t]
-                        S_cal = S_valid[t] * fold_beta
-                        if test_nu > 2:
-                            t_scale = np.sqrt(S_cal * (test_nu - 2) / test_nu)
-                        else:
-                            t_scale = np.sqrt(S_cal)
-                        t_scale = max(t_scale, 1e-10)
-                        z = inn / t_scale
-                        pit_values.append(student_t.cdf(z, df=test_nu))
+                    # Vectorized PIT (replaces per-element loop)
+                    S_cal_vec = S_valid * fold_beta
+                    if test_nu > 2:
+                        t_scale_vec = np.sqrt(S_cal_vec * (test_nu - 2) / test_nu)
+                    else:
+                        t_scale_vec = np.sqrt(S_cal_vec)
+                    t_scale_vec = np.maximum(t_scale_vec, 1e-10)
+                    z_vec = innov_valid / t_scale_vec
+                    pit_values = student_t.cdf(z_vec, df=test_nu)
 
                     if len(pit_values) > 10:
                         pit_values = np.clip(pit_values, 0.001, 0.999)
@@ -3177,7 +3224,7 @@ class PhiStudentTDriftModel:
 
                         # CRPS on validation fold (Gneiting-Raftery sharpness)
                         try:
-                            fold_sigma = np.sqrt(np.array([S_valid[t] * fold_beta for t in range(len(innov_valid))]))
+                            fold_sigma = np.sqrt(S_cal_vec)
                             fold_sigma = np.maximum(fold_sigma, 1e-10)
                             if test_nu > 2:
                                 fold_scale = fold_sigma * np.sqrt((test_nu - 2) / test_nu)
