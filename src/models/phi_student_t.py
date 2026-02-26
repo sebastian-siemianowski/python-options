@@ -1105,59 +1105,6 @@ def compute_ms_process_noise_smooth(
     return q_t, p_stress
 
 
-def compute_optimal_variance_inflation(
-    returns: np.ndarray,
-    mu_pred: np.ndarray,
-    S_pred: np.ndarray,
-    nu: float,
-    beta_min: float = 0.1,
-    beta_max: float = 5.0,
-) -> float:
-    """
-    ELITE CALIBRATION FIX (February 2026): Find optimal variance scaling beta.
-    
-    FIX: Use ANALYTICAL SOLUTION based on variance ratio, not histogram MAD.
-    
-    The core insight: For calibrated PIT, we need:
-        Var(innovations) = mean(beta * S_pred)
-    
-    Therefore:
-        beta_optimal = Var(innovations) / mean(S_pred)
-    
-    Args:
-        returns: Observed returns
-        mu_pred: Predictive means from filter
-        S_pred: Predictive variances from filter
-        nu: Degrees of freedom for Student-t
-        beta_min: Minimum variance inflation
-        beta_max: Maximum variance inflation
-        
-    Returns:
-        Optimal beta that calibrates variance
-    """
-    returns = np.asarray(returns).flatten()
-    mu_pred = np.asarray(mu_pred).flatten()
-    S_pred = np.asarray(S_pred).flatten()
-    
-    # Compute actual innovation variance
-    innovations = returns - mu_pred
-    actual_var = float(np.var(innovations))
-    
-    # Mean predicted variance
-    mean_S = float(np.mean(S_pred))
-    
-    # Analytical solution: beta = actual_var / mean_S
-    if mean_S > 1e-12:
-        beta_analytical = actual_var / mean_S
-    else:
-        beta_analytical = 1.0
-    
-    # Clip to valid range
-    beta_opt = float(np.clip(beta_analytical, beta_min, beta_max))
-    
-    return beta_opt
-
-
 def compute_ms_process_noise(
     vol: np.ndarray,
     q_calm: float = MS_Q_CALM_DEFAULT,
@@ -1166,59 +1113,8 @@ def compute_ms_process_noise(
     threshold: float = MS_Q_THRESHOLD,
     vol_median: float = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Compute Markov-switching process noise based on volatility regime.
-    
-    The key insight: volatility structure PREDICTS regime changes.
-    When vol rises above median, we proactively increase q BEFORE
-    forecast errors materialize.
-    
-    Args:
-        vol: Time series of volatility estimates
-        q_calm: Process noise for calm regime
-        q_stress: Process noise for stress regime
-        sensitivity: Sigmoid sensitivity to vol_relative
-        threshold: vol_relative threshold for regime transition
-        vol_median: Median volatility (computed if None)
-        
-    Returns:
-        Tuple of (q_t, p_stress_t):
-        - q_t: Time-varying process noise array
-        - p_stress_t: Probability of stress regime array
-    """
-    vol = np.asarray(vol).flatten()
-    n = len(vol)
-    
-    # Compute expanding median for normalization (no future leakage)
-    if vol_median is None:
-        vol_cumsum = np.cumsum(vol)
-        vol_count = np.arange(1, n + 1)
-        # Use expanding mean as proxy for median (faster, similar result)
-        vol_baseline = vol_cumsum / vol_count
-        # Warm-up: use first 20 observations for initial baseline
-        if n > 20:
-            vol_baseline[:20] = np.mean(vol[:20])
-    else:
-        vol_baseline = np.full(n, vol_median)
-    
-    # Prevent division by zero
-    vol_baseline = np.maximum(vol_baseline, 1e-10)
-    
-    # Compute vol_relative
-    vol_relative = vol / vol_baseline
-    
-    # Compute stress probability via sigmoid
-    # p_stress = sigmoid(sensitivity × (vol_relative - threshold))
-    z = sensitivity * (vol_relative - threshold)
-    p_stress = 1.0 / (1.0 + np.exp(-z))
-    
-    # Clip to [0.01, 0.99] for numerical stability
-    p_stress = np.clip(p_stress, 0.01, 0.99)
-    
-    # Compute time-varying q
-    q_t = (1.0 - p_stress) * q_calm + p_stress * q_stress
-    
-    return q_t, p_stress
+    """Backward-compatible alias — delegates to compute_ms_process_noise_smooth."""
+    return compute_ms_process_noise_smooth(vol, q_calm, q_stress, sensitivity, ewm_lambda=0.0)
 
 
 def filter_phi_ms_q(
@@ -1234,33 +1130,24 @@ def filter_phi_ms_q(
 ) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray, np.ndarray]:
     """
     Kalman filter with Markov-switching process noise for Student-t.
-    
-    Unlike static q or reactive GAS-q, MS-q adapts PROACTIVELY
-    based on volatility regime before errors materialize.
-    
-    Args:
-        y: Observations (returns)
-        vol: Volatility estimates
-        c: Observation noise scale
-        phi: AR(1) coefficient
-        nu: Degrees of freedom for Student-t
-        q_calm: Process noise in calm regime
-        q_stress: Process noise in stress regime
-        sensitivity: Sigmoid sensitivity
-        threshold: Vol_relative threshold
-        
-    Returns:
-        Tuple of (mu_filtered, P_filtered, log_likelihood, q_t, p_stress_t)
+    Uses vol_relative threshold (legacy MS-q path used by tune.py/signals.py).
     """
     y = np.asarray(y).flatten()
     vol = np.asarray(vol).flatten()
     n = len(y)
     nu = max(float(nu), 2.01)
     
-    # Compute time-varying q
-    q_t, p_stress = compute_ms_process_noise(
-        vol, q_calm, q_stress, sensitivity, threshold
-    )
+    # Inline MS process noise: vol_relative → sigmoid → q_t
+    vol_cumsum = np.cumsum(vol)
+    vol_count = np.arange(1, n + 1)
+    vol_baseline = vol_cumsum / vol_count
+    if n > 20:
+        vol_baseline[:20] = np.mean(vol[:20])
+    vol_baseline = np.maximum(vol_baseline, 1e-10)
+    vol_relative = vol / vol_baseline
+    z_ms = sensitivity * (vol_relative - threshold)
+    p_stress = np.clip(1.0 / (1.0 + np.exp(-z_ms)), 0.01, 0.99)
+    q_t = (1.0 - p_stress) * q_calm + p_stress * q_stress
     
     # Initialize state
     mu = np.zeros(n)
@@ -1853,138 +1740,6 @@ class PhiStudentTDriftModel:
         log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
         return float(log_norm + log_kernel)
 
-    @staticmethod
-    def logpdf_two_piece(x: float, nu_left: float, nu_right: float, mu: float, scale: float) -> float:
-        """
-        Log-density of Two-Piece Student-t with different ν for left/right tails.
-        
-        Two-Piece Student-t (Fernández & Steel inspired):
-            p(x) ∝ t(x; νL) if x < μ
-            p(x) ∝ t(x; νR) if x ≥ μ
-        
-        This allows crash tails (νL small) to be heavier than recovery tails (νR larger).
-        
-        Args:
-            x: Observation value
-            nu_left: Degrees of freedom for x < μ (crash tail)
-            nu_right: Degrees of freedom for x ≥ μ (recovery tail)
-            mu: Location parameter
-            scale: Scale parameter
-            
-        Returns:
-            Log-density value
-        """
-        if scale <= 0 or nu_left <= 0 or nu_right <= 0:
-            return -1e12
-        
-        z = (x - mu) / scale
-        
-        # Choose ν based on sign of innovation
-        if z < 0:
-            nu = nu_left
-        else:
-            nu = nu_right
-        
-        # Standard Student-t log-density with chosen ν
-        log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
-        log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
-        
-        # Normalization correction for two-piece (approximate - assumes similar scales)
-        # True normalization: 2 / (1/σL + 1/σR) but for same scale, just log(2) - log(2) = 0
-        return float(log_norm + log_kernel)
-
-    @staticmethod
-    def logpdf_mixture(x: float, nu_calm: float, nu_stress: float, w_calm: float, mu: float, scale: float) -> float:
-        """
-        Log-density of Two-Component Student-t mixture.
-        
-        Mixture model:
-            p(x) = w_calm × t(x; νcalm) + (1 - w_calm) × t(x; νstress)
-        
-        This captures two curvature regimes in the central body:
-            - Calm regime: lighter tails (νcalm > νstress)
-            - Stress regime: heavier tails (νstress < νcalm)
-        
-        Args:
-            x: Observation value
-            nu_calm: Degrees of freedom for calm component (lighter tails)
-            nu_stress: Degrees of freedom for stress component (heavier tails)
-            w_calm: Weight on calm component ∈ [0, 1]
-            mu: Location parameter
-            scale: Scale parameter
-            
-        Returns:
-            Log-density value
-        """
-        if scale <= 0 or nu_calm <= 0 or nu_stress <= 0:
-            return -1e12
-        
-        w_calm = float(np.clip(w_calm, 0.001, 0.999))
-        z = (x - mu) / scale
-        
-        # Compute both component log-densities
-        def _t_logpdf(nu):
-            log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))
-            log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
-            return log_norm + log_kernel
-        
-        ll_calm = _t_logpdf(nu_calm)
-        ll_stress = _t_logpdf(nu_stress)
-        
-        # Log-sum-exp for numerical stability
-        # log(w1*exp(ll1) + w2*exp(ll2)) = ll_max + log(w1*exp(ll1-ll_max) + w2*exp(ll2-ll_max))
-        ll_max = max(ll_calm, ll_stress)
-        log_mix = ll_max + np.log(
-            w_calm * np.exp(ll_calm - ll_max) + 
-            (1 - w_calm) * np.exp(ll_stress - ll_max)
-        )
-        
-        return float(log_mix) if np.isfinite(log_mix) else -1e12
-
-    @classmethod
-    def filter(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
-        """Kalman drift filter with Student-t observation noise (no AR persistence)."""
-        n = len(returns)
-        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, 'item') else float(q)
-        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, 'item') else float(c)
-        nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
-
-        mu = 0.0
-        P = 1e-4
-        mu_filtered = np.zeros(n)
-        P_filtered = np.zeros(n)
-        log_likelihood = 0.0
-
-        for t in range(n):
-            mu_pred = float(mu)
-            P_pred = float(P) + q_val
-
-            vol_t = vol[t]
-            vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
-            obs_scale = np.sqrt(c_val) * vol_scalar
-
-            nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
-            R = c_val * (vol_scalar ** 2)
-            K = nu_adjust * P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
-
-            ret_t = returns[t]
-            r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
-            innovation = r_val - mu_pred
-
-            mu = float(mu_pred + K * innovation)
-            P = float((1.0 - K) * P_pred)
-
-            mu_filtered[t] = mu
-            P_filtered[t] = P
-
-            forecast_scale = np.sqrt(P_pred + R)
-            if forecast_scale > 1e-12:
-                ll_t = cls.logpdf(r_val, nu_val, mu_pred, forecast_scale)
-                if np.isfinite(ll_t):
-                    log_likelihood += ll_t
-
-        return mu_filtered, P_filtered, log_likelihood
-
     @classmethod
     def filter_phi(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
         """Kalman drift filter with persistence (phi) and Student-t observation noise.
@@ -2002,76 +1757,85 @@ class PhiStudentTDriftModel:
         return cls._filter_phi_python_optimized(returns, vol, q, c, phi, nu)
     
     @classmethod
-    def _filter_phi_python_optimized(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
+    def _filter_phi_core(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        nu: float,
+        exogenous_input: np.ndarray = None,
+        robust_wt: bool = False,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
         """
-        Optimized pure Python φ-Student-t filter with reduced overhead.
-        
-        Performance optimizations (February 2026):
-        - Pre-compute constants outside the loop (log_norm_const, phi_sq, nu_adjust, inv_nu)
-        - Pre-compute R array once (c * vol**2)
-        - Use np.empty instead of np.zeros
-        - Inline logpdf calculation to avoid function call overhead
-        - Ensure contiguous array access
+        Consolidated phi-Student-t Kalman filter (pure Python path).
+
+        Returns (mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood).
+        All four filter variants dispatch to this single loop:
+          - filter_phi  (via Numba or this fallback)
+          - filter_phi_augmented  (robust_wt=True + exogenous_input)
+          - filter_phi_with_predictive  (thin wrapper)
+
+        Args:
+            returns, vol, q, c, phi, nu: standard Kalman params
+            exogenous_input: optional u_t injected into state prediction
+            robust_wt: if True use Student-t w_t = (nu+1)/(nu+z^2) weighting
         """
         n = len(returns)
-        
-        # Convert to contiguous float64 arrays once
         returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
         vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
-        
-        # Extract scalar values once
-        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
-        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+
+        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, 'item') else float(q)
+        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, 'item') else float(c)
         phi_val = float(np.clip(phi, -0.999, 0.999))
         nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
-        
-        # Pre-compute constants (computed once, used n times)
+
         phi_sq = phi_val * phi_val
         nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
-        
-        # Pre-compute log-pdf constants (avoids gammaln call in loop)
         log_norm_const = gammaln((nu_val + 1.0) / 2.0) - gammaln(nu_val / 2.0) - 0.5 * np.log(nu_val * np.pi)
         neg_exp = -((nu_val + 1.0) / 2.0)
         inv_nu = 1.0 / nu_val
-        
-        # Pre-compute R values (vectorized)
         R = c_val * (vol * vol)
-        
-        # Allocate output arrays
+
         mu_filtered = np.empty(n, dtype=np.float64)
         P_filtered = np.empty(n, dtype=np.float64)
-        
-        # State initialization
+        mu_pred_arr = np.empty(n, dtype=np.float64)
+        S_pred_arr = np.empty(n, dtype=np.float64)
+
         mu = 0.0
         P = 1e-4
         log_likelihood = 0.0
-        
-        # Main filter loop (optimized)
+        has_exo = exogenous_input is not None
+
         for t in range(n):
-            # Prediction step
-            mu_pred = phi_val * mu
+            u_t = exogenous_input[t] if has_exo and t < len(exogenous_input) else 0.0
+            mu_pred = phi_val * mu + u_t
             P_pred = phi_sq * P + q_val
-            
-            # Observation update
             S = P_pred + R[t]
             if S <= 1e-12:
                 S = 1e-12
-            
+
+            mu_pred_arr[t] = mu_pred
+            S_pred_arr[t] = S
+
             innovation = returns[t] - mu_pred
             K = nu_adjust * P_pred / S
-            
-            # State update
-            mu = mu_pred + K * innovation
-            P = (1.0 - K) * P_pred
+
+            if robust_wt:
+                z_sq = (innovation ** 2) / S
+                w_t = (nu_val + 1.0) / (nu_val + z_sq)
+                mu = mu_pred + K * w_t * innovation
+                P = (1.0 - w_t * K) * P_pred
+            else:
+                mu = mu_pred + K * innovation
+                P = (1.0 - K) * P_pred
+
             if P < 1e-12:
                 P = 1e-12
-            
-            # Store filtered values
             mu_filtered[t] = mu
             P_filtered[t] = P
-            
-            # Inlined log-pdf calculation (avoids function call + gammaln per step)
-            # FIX: Convert variance S to Student-t scale: scale = sqrt(S × (ν-2)/ν)
+
             if nu_val > 2:
                 forecast_scale = np.sqrt(S * (nu_val - 2) / nu_val)
             else:
@@ -2081,9 +1845,15 @@ class PhiStudentTDriftModel:
                 ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
                 if np.isfinite(ll_t):
                     log_likelihood += ll_t
-        
-        return mu_filtered, P_filtered, float(log_likelihood)
-    
+
+        return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
+
+    @classmethod
+    def _filter_phi_python_optimized(cls, returns, vol, q, c, phi, nu):
+        """Backward-compatible wrapper — returns (mu, P, ll) only."""
+        mu, P, _, _, ll = cls._filter_phi_core(returns, vol, q, c, phi, nu)
+        return mu, P, ll
+
     @classmethod
     def filter_phi_augmented(
         cls,
@@ -2096,108 +1866,18 @@ class PhiStudentTDriftModel:
         exogenous_input: np.ndarray = None,
     ) -> Tuple[np.ndarray, np.ndarray, float]:
         """
-        Kalman filter with exogenous input in state equation.
+        Kalman filter with exogenous input and robust Student-t weighting.
         
-        STATE-EQUATION INTEGRATION (Elite Upgrade - February 2026):
-            μ_t = φ × μ_{t-1} + u_t + w_t
-            r_t = μ_t + ε_t,  ε_t ~ t(ν)
-        
-        Preserves probabilistic coherence — likelihood computed correctly.
-        
-        EXPERT VALIDATED:
-        - mu_pred includes u_t (coherent likelihood)
-        - scale_t uses variance parameterization (consistent with rest of codebase)
-        - gammaln imported at module level (Expert #2)
-        
-        Args:
-            returns: Array of returns
-            vol: Array of volatility estimates
-            q: Process noise variance
-            c: Observation noise scale
-            phi: AR(1) persistence
-            nu: Degrees of freedom
-            exogenous_input: Array of u_t values (α×MOM - β×MR)
-            
-        Returns:
-            Tuple of (mu_filtered, P_filtered, log_likelihood)
+        STATE-EQUATION INTEGRATION:
+            mu_t = phi * mu_{t-1} + u_t + w_t
+            r_t = mu_t + eps_t,  eps_t ~ t(nu)
         """
-        n = len(returns)
-        
-        # Convert to contiguous float64 arrays
-        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
-        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
-        
-        # Extract scalar values
-        q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
-        c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
-        phi_val = float(np.clip(phi, -0.999, 0.999))
-        nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
-        
-        # Pre-compute constants
-        phi_sq = phi_val * phi_val
-        nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
-        
-        # Pre-compute log-pdf constants (gammaln imported at module level - Expert #2)
-        log_norm_const = gammaln((nu_val + 1.0) / 2.0) - gammaln(nu_val / 2.0) - 0.5 * np.log(nu_val * np.pi)
-        neg_exp = -((nu_val + 1.0) / 2.0)
-        inv_nu = 1.0 / nu_val
-        
-        # Pre-compute R values
-        R = c_val * (vol * vol)
-        
-        # Allocate output arrays
-        mu_filtered = np.empty(n, dtype=np.float64)
-        P_filtered = np.empty(n, dtype=np.float64)
-        
-        # State initialization
-        mu = 0.0
-        P = 1e-4
-        log_likelihood = 0.0
-        
-        # Main filter loop with exogenous input
-        for t in range(n):
-            # Exogenous input (KEY: injected into state equation)
-            u_t = exogenous_input[t] if exogenous_input is not None and t < len(exogenous_input) else 0.0
-            
-            # Prediction step INCLUDES exogenous input (Expert #1: coherent)
-            mu_pred = phi_val * mu + u_t
-            P_pred = phi_sq * P + q_val
-            
-            # Observation update
-            S = P_pred + R[t]
-            if S <= 1e-12:
-                S = 1e-12
-            
-            innovation = returns[t] - mu_pred
-            K = nu_adjust * P_pred / S
-            
-            # State update with robust Student-t weighting
-            z_sq = (innovation ** 2) / S
-            w_t = (nu_val + 1.0) / (nu_val + z_sq)
-            
-            mu = mu_pred + K * w_t * innovation
-            P = (1.0 - w_t * K) * P_pred
-            if P < 1e-12:
-                P = 1e-12
-            
-            # Store filtered values
-            mu_filtered[t] = mu
-            P_filtered[t] = P
-            
-            # Log-likelihood (coherent with u_t - Expert #1)
-            # FIX: Convert variance S to Student-t scale
-            if nu_val > 2:
-                forecast_scale = np.sqrt(S * (nu_val - 2) / nu_val)
-            else:
-                forecast_scale = np.sqrt(S)
-            if forecast_scale > 1e-12:
-                z = innovation / forecast_scale
-                ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
-                if np.isfinite(ll_t):
-                    log_likelihood += ll_t
-        
-        return mu_filtered, P_filtered, float(log_likelihood)
-    
+        mu, P, _, _, ll = cls._filter_phi_core(
+            returns, vol, q, c, phi, nu,
+            exogenous_input=exogenous_input, robust_wt=True,
+        )
+        return mu, P, ll
+
     @classmethod
     def filter_phi_with_predictive(
         cls,
@@ -2208,97 +1888,8 @@ class PhiStudentTDriftModel:
         phi: float,
         nu: float,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
-        """
-        φ-Student-t filter returning PREDICTIVE values for proper PIT.
-        """
-        n = len(returns)
-        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
-        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
-        
-        q_val = float(q)
-        c_val = float(c)
-        phi_val = float(np.clip(phi, -0.999, 0.999))
-        nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
-        
-        phi_sq = phi_val * phi_val
-        nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
-        
-        log_norm_const = gammaln((nu_val + 1.0) / 2.0) - gammaln(nu_val / 2.0) - 0.5 * np.log(nu_val * np.pi)
-        neg_exp = -((nu_val + 1.0) / 2.0)
-        inv_nu = 1.0 / nu_val
-        
-        R = c_val * (vol * vol)
-        
-        mu_filtered = np.empty(n, dtype=np.float64)
-        P_filtered = np.empty(n, dtype=np.float64)
-        mu_pred_arr = np.empty(n, dtype=np.float64)
-        S_pred_arr = np.empty(n, dtype=np.float64)
-        
-        mu = 0.0
-        P = 1e-4
-        log_likelihood = 0.0
-        
-        for t in range(n):
-            mu_pred = phi_val * mu
-            P_pred = phi_sq * P + q_val
-            S = P_pred + R[t]
-            if S <= 1e-12:
-                S = 1e-12
-            
-            mu_pred_arr[t] = mu_pred
-            S_pred_arr[t] = S
-            
-            innovation = returns[t] - mu_pred
-            K = nu_adjust * P_pred / S
-            
-            mu = mu_pred + K * innovation
-            P = (1.0 - K) * P_pred
-            if P < 1e-12:
-                P = 1e-12
-            
-            mu_filtered[t] = mu
-            P_filtered[t] = P
-            
-            if nu_val > 2:
-                forecast_scale = np.sqrt(S * (nu_val - 2) / nu_val)
-            else:
-                forecast_scale = np.sqrt(S)
-            if forecast_scale > 1e-12:
-                z = innovation / forecast_scale
-                ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
-                if np.isfinite(ll_t):
-                    log_likelihood += ll_t
-        
-        # =====================================================================
-        # CAUSAL EWM LOCATION CORRECTION (February 2026 - CRPS Optimization)
-        # =====================================================================
-        # Post-filter correction that captures residual autocorrelation in
-        # innovations. Strictly causal: ewm_mu[t] uses only y_{<t}.
-        #
-        # Mathematical foundation (Durbin-Koopman 2012, Ch. 4):
-        # When the state equation is misspecified (missing short-term
-        # dynamics), innovations exhibit positive autocorrelation.
-        # The EWM correction is the causal approximation to the Kalman
-        # smoother's backward information gain:
-        #   ewm_mu[t] = λ·ewm_mu[t-1] + (1-λ)·(y_{t-1} - μ_pred[t-1])
-        #   μ_pred_corrected[t] = μ_pred[t] + ewm_mu[t]
-        #
-        # This reduces E[(y_t - μ_pred_corrected[t])²] below E[(y_t - μ_pred[t])²]
-        # when innovations have positive serial correlation, directly
-        # lowering CRPS without affecting PIT (PIT uses internal calibration).
-        # =====================================================================
-        _ewm_lambda = float(getattr(config, 'crps_ewm_lambda', 0.0))
-        if _ewm_lambda > 0.01 and n > 2:
-            ewm_mu = 0.0
-            mu_pred_corrected = mu_pred_arr.copy()
-            for t in range(1, n):
-                # Causal: use innovation from t-1
-                innov_prev = returns[t-1] - mu_pred_arr[t-1]
-                ewm_mu = _ewm_lambda * ewm_mu + (1.0 - _ewm_lambda) * innov_prev
-                mu_pred_corrected[t] = mu_pred_arr[t] + ewm_mu
-            mu_pred_arr = mu_pred_corrected
-        
-        return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
+        """phi-Student-t filter returning predictive mu_pred and S_pred for PIT."""
+        return cls._filter_phi_core(returns, vol, q, c, phi, nu)
 
     @classmethod
     def filter_phi_unified(
