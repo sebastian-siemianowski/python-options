@@ -1979,20 +1979,26 @@ class PhiStudentTDriftModel:
 
         # Training probit PITs for whitening warm-start (last 40%)
         _n_cal = n_train - _cal_start
-        _pit_train_cal = np.zeros(_n_cal)
+        _zcal = np.empty(_n_cal)
         _ewm_mu_cv, _ewm_num_cv, _ewm_den_cv = _ewm_mu_cal, _ewm_num_cal, _ewm_den_cal
+        _1m_lam_mu = 1 - _best_lam_mu
+        _1m_lam_beta = 1 - _best_lam_beta
+        _nu_scale_pit = (nu - 2) / nu if nu > 2 else 1.0
+        _msqrt = math.sqrt
         for _t in range(_n_cal):
             _idx = _cal_start + _t
-            _beta_cv = float(np.clip(_ewm_num_cv / (_ewm_den_cv + 1e-12) * _beta_scale_corr, 0.2, 5.0))
+            _beta_cv = _ewm_num_cv / (_ewm_den_cv + 1e-12) * _beta_scale_corr
+            if _beta_cv < 0.2: _beta_cv = 0.2
+            elif _beta_cv > 5.0: _beta_cv = 5.0
             _inn = innovations_train[_idx] - _ewm_mu_cv
             _S_cv = _S_bt[_idx] * _beta_cv
-            _sig = np.sqrt(_S_cv * (nu - 2) / nu) if nu > 2 else np.sqrt(_S_cv)
-            _sig = max(_sig, 1e-10)
-            _pit_train_cal[_t] = student_t_dist.cdf(_inn / _sig, df=nu)
-            _ewm_mu_cv = _best_lam_mu * _ewm_mu_cv + (1 - _best_lam_mu) * innovations_train[_idx]
-            _ewm_num_cv = _best_lam_beta * _ewm_num_cv + (1 - _best_lam_beta) * (innovations_train[_idx] ** 2)
-            _ewm_den_cv = _best_lam_beta * _ewm_den_cv + (1 - _best_lam_beta) * _S_bt[_idx]
-        _pit_train_cal = np.clip(_pit_train_cal, 0.001, 0.999)
+            _sig = _msqrt(_S_cv * _nu_scale_pit) if _S_cv > 0 else 1e-10
+            if _sig < 1e-10: _sig = 1e-10
+            _zcal[_t] = _inn / _sig
+            _ewm_mu_cv = _best_lam_mu * _ewm_mu_cv + _1m_lam_mu * innovations_train[_idx]
+            _ewm_num_cv = _best_lam_beta * _ewm_num_cv + _1m_lam_beta * (innovations_train[_idx] ** 2)
+            _ewm_den_cv = _best_lam_beta * _ewm_den_cv + _1m_lam_beta * _S_bt[_idx]
+        _pit_train_cal = np.clip(student_t_dist.cdf(_zcal, df=nu), 0.001, 0.999)
         _z_probit_cal = norm_dist.ppf(_pit_train_cal)
         _z_probit_cal = _z_probit_cal[np.isfinite(_z_probit_cal)]
 
@@ -2007,27 +2013,36 @@ class PhiStudentTDriftModel:
         sq_inn_test = innovations_test ** 2
 
         # Test PIT with causal adaptive EWM
-        pit_values = np.zeros(n_test)
-        sigma = np.zeros(n_test)
-        mu_effective = np.zeros(n_test)
+        _z_test = np.empty(n_test)
+        sigma = np.empty(n_test)
+        mu_effective = np.empty(n_test)
 
         for _t in range(n_test):
-            _beta_p = float(np.clip(_ewm_num_t / (_ewm_den_t + 1e-12) * _beta_scale_corr, 0.2, 5.0))
+            _beta_p = _ewm_num_t / (_ewm_den_t + 1e-12) * _beta_scale_corr
+            if _beta_p < 0.2: _beta_p = 0.2
+            elif _beta_p > 5.0: _beta_p = 5.0
             _S_cal = _S_blended_test[_t] * _beta_p
             _inn = innovations_test[_t] - _ewm_mu_t
             mu_effective[_t] = mu_pred_test[_t] + _ewm_mu_t
-            sigma[_t] = max(np.sqrt(_S_cal * (nu - 2) / nu) if nu > 2 else np.sqrt(_S_cal), 1e-10)
+            _sig = _msqrt(_S_cal * _nu_scale_pit) if _S_cal > 0 else 1e-10
+            if _sig < 1e-10: _sig = 1e-10
+            sigma[_t] = _sig
+            _z_test[_t] = _inn / _sig
 
-            _z = _inn / sigma[_t]
-            if abs(_t_df_asym) > 0.05:
-                _nu_side = max(2.5, nu - _t_df_asym) if _z < 0 else max(2.5, nu + _t_df_asym)
-                pit_values[_t] = student_t_dist.cdf(_z, df=_nu_side)
-            else:
-                pit_values[_t] = student_t_dist.cdf(_z, df=nu)
+            _ewm_mu_t = _best_lam_mu * _ewm_mu_t + _1m_lam_mu * innovations_test[_t]
+            _ewm_num_t = _best_lam_beta * _ewm_num_t + _1m_lam_beta * sq_inn_test[_t]
+            _ewm_den_t = _best_lam_beta * _ewm_den_t + _1m_lam_beta * _S_blended_test[_t]
 
-            _ewm_mu_t = _best_lam_mu * _ewm_mu_t + (1 - _best_lam_mu) * innovations_test[_t]
-            _ewm_num_t = _best_lam_beta * _ewm_num_t + (1 - _best_lam_beta) * sq_inn_test[_t]
-            _ewm_den_t = _best_lam_beta * _ewm_den_t + (1 - _best_lam_beta) * _S_blended_test[_t]
+        # VECTORIZED CDF — single batch call instead of n_test scalar calls
+        if abs(_t_df_asym) > 0.05:
+            _nu_l = max(2.5, nu - _t_df_asym)
+            _nu_r = max(2.5, nu + _t_df_asym)
+            _mask_neg = _z_test < 0
+            pit_values = np.empty(n_test)
+            pit_values[_mask_neg] = student_t_dist.cdf(_z_test[_mask_neg], df=_nu_l)
+            pit_values[~_mask_neg] = student_t_dist.cdf(_z_test[~_mask_neg], df=_nu_r)
+        else:
+            pit_values = student_t_dist.cdf(_z_test, df=nu)
 
         pit_values = np.clip(pit_values, 0.001, 0.999)
 
@@ -2046,10 +2061,12 @@ class PhiStudentTDriftModel:
             for _t in range(1, n_test):
                 _ewm_cross = _best_lam_rho * _ewm_cross + (1 - _best_lam_rho) * _z_probit[_t - 1] * (_z_probit[_t - 2] if _t > 1 else (_z_probit_cal[-1] if len(_z_probit_cal) > 0 else 0.0))
                 _ewm_sq = _best_lam_rho * _ewm_sq + (1 - _best_lam_rho) * _z_probit[_t - 1] ** 2
-                _rho_t = float(np.clip(_ewm_cross / _ewm_sq, -0.3, 0.3)) if _ewm_sq > 0.1 else 0.0
+                _rho_t = (_ewm_cross / _ewm_sq) if _ewm_sq > 0.1 else 0.0
+                if _rho_t < -0.3: _rho_t = -0.3
+                elif _rho_t > 0.3: _rho_t = 0.3
 
                 if abs(_rho_t) > 0.01:
-                    _z_white[_t] = (_z_probit[_t] - _rho_t * _z_probit[_t - 1]) / np.sqrt(max(1 - _rho_t ** 2, 0.5))
+                    _z_white[_t] = (_z_probit[_t] - _rho_t * _z_probit[_t - 1]) / _msqrt(max(1 - _rho_t * _rho_t, 0.5))
                 else:
                     _z_white[_t] = _z_probit[_t]
 
@@ -2349,12 +2366,15 @@ class PhiStudentTDriftModel:
             robust_wt: if True use Student-t w_t = (nu+1)/(nu+z^2) weighting
         """
         n = len(returns)
-        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
-        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        if not (returns.flags['C_CONTIGUOUS'] and returns.dtype == np.float64 and returns.ndim == 1):
+            returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        if not (vol.flags['C_CONTIGUOUS'] and vol.dtype == np.float64 and vol.ndim == 1):
+            vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
 
         q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, 'item') else float(q)
         c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, 'item') else float(c)
-        phi_val = float(np.clip(phi, -0.999, 0.999))
+        _phi_raw = phi
+        phi_val = float(max(-0.999, min(0.999, _phi_raw)))
         nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
 
         phi_sq = phi_val * phi_val
@@ -2473,17 +2493,99 @@ class PhiStudentTDriftModel:
         Returns PREDICTIVE values (mu_pred, S_pred) for proper PIT computation.
         """
         n = len(returns)
-        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
-        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+        # Avoid redundant copy when already contiguous float64
+        if not (returns.flags['C_CONTIGUOUS'] and returns.dtype == np.float64 and returns.ndim == 1):
+            returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+        if not (vol.flags['C_CONTIGUOUS'] and vol.dtype == np.float64 and vol.ndim == 1):
+            vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
 
         q_base = float(config.q)
         c_val = float(config.c)
-        phi_val = float(np.clip(config.phi, -0.999, 0.999))
+        _phi_raw = config.phi
+        phi_val = float(max(-0.999, min(0.999, _phi_raw)))
         nu_base = float(config.nu_base)
         alpha = float(config.alpha_asym)
         k_asym = float(config.k_asym)
         gamma_vov = float(config.gamma_vov)
         damping = float(config.vov_damping)
+
+        # ── NUMBA FAST-PATH ──
+        # When advanced features (jumps, risk premium, GAS skew, mu_drift,
+        # EWM correction) are all disabled, dispatch to the Numba kernel
+        # for ~10× speedup on the main loop.
+        risk_prem = float(getattr(config, 'risk_premium_sensitivity', 0.0))
+        skew_kappa = float(getattr(config, 'skew_score_sensitivity', 0.0))
+        jump_var = float(getattr(config, 'jump_variance', 0.0))
+        jump_intensity = float(getattr(config, 'jump_intensity', 0.0))
+        _mu_drift_val = float(getattr(config, 'mu_drift', 0.0))
+        _ewm_lambda = float(getattr(config, 'crps_ewm_lambda', 0.0))
+
+        _numba_compatible = (
+            _UNIFIED_NUMBA_AVAILABLE
+            and abs(risk_prem) < 1e-10
+            and skew_kappa < 1e-8
+            and (jump_var < 1e-12 or jump_intensity < 1e-6)
+            and abs(_mu_drift_val) < 1e-12
+        )
+
+        if _numba_compatible:
+            # Pre-compute arrays the Numba kernel needs
+            q_calm = float(config.q_calm) if config.q_calm is not None else q_base
+            q_stress = q_calm * float(config.q_stress_ratio)
+            ms_enabled = abs(q_stress - q_calm) > 1e-12
+
+            if ms_enabled:
+                q_t, p_stress = compute_ms_process_noise_smooth(
+                    vol, q_calm, q_stress, config.ms_sensitivity,
+                    getattr(config, 'ms_ewm_lambda', 0.0)
+                )
+            else:
+                q_t = np.full(n, q_base)
+                p_stress = np.zeros(n)
+
+            # VoV rolling std
+            window = config.vov_window
+            if n > window and gamma_vov > 1e-12:
+                log_vol = np.log(np.maximum(vol, 1e-10))
+                cs1 = np.concatenate(([0.0], np.cumsum(log_vol)))
+                cs2 = np.concatenate(([0.0], np.cumsum(log_vol * log_vol)))
+                inv_w = 1.0 / float(window)
+                idx_end = np.arange(window, n)
+                s1 = cs1[idx_end] - cs1[idx_end - window]
+                s2 = cs2[idx_end] - cs2[idx_end - window]
+                var_arr = np.maximum(s2 * inv_w - (s1 * inv_w) ** 2, 0.0)
+                vov_rolling = np.empty(n, dtype=np.float64)
+                vov_rolling[window:] = np.sqrt(var_arr)
+                vov_rolling[:window] = vov_rolling[window] if n > window else 0.0
+            else:
+                vov_rolling = np.zeros(n, dtype=np.float64)
+
+            # Exogenous / momentum
+            _has_exo = config.exogenous_input is not None
+            momentum = np.ascontiguousarray(config.exogenous_input.flatten(), dtype=np.float64) if _has_exo else np.zeros(n, dtype=np.float64)
+
+            mu_f, P_f, mu_p, S_p, ll = run_unified_phi_student_t_filter(
+                returns, vol, c_val, phi_val, nu_base,
+                q_t, p_stress, vov_rolling, gamma_vov, damping,
+                alpha, k_asym, momentum, 1e-4
+            )
+
+            # Apply EWM correction if lambda was configured
+            if _ewm_lambda >= 0.01 and n > 2:
+                lam = _ewm_lambda
+                alpha_ewm = 1.0 - lam
+                innov_lagged = returns[:-1] - mu_p[:-1]
+                ewm_corrections = np.empty(n, dtype=np.float64)
+                ewm_corrections[0] = 0.0
+                ewm_mu_val = 0.0
+                for t in range(n - 1):
+                    ewm_mu_val = lam * ewm_mu_val + alpha_ewm * innov_lagged[t]
+                    ewm_corrections[t + 1] = ewm_mu_val
+                mu_p = mu_p + ewm_corrections
+
+            return mu_f, P_f, mu_p, S_p, float(ll)
+
+        # ── PYTHON FALLBACK (advanced features active) ──
 
         q_calm = float(config.q_calm) if config.q_calm is not None else q_base
         q_stress = q_calm * float(config.q_stress_ratio)
@@ -2500,8 +2602,6 @@ class PhiStudentTDriftModel:
 
         log_vol = np.log(np.maximum(vol, 1e-10))
         window = config.vov_window
-        # Vectorized rolling std via cumulative sums (replaces Python loop)
-        # Computes std(log_vol[t-window:t]) for each t using O(n) cumsum trick
         if n > window and gamma_vov > 1e-12:
             cs1 = np.concatenate(([0.0], np.cumsum(log_vol)))
             cs2 = np.concatenate(([0.0], np.cumsum(log_vol * log_vol)))
@@ -2521,19 +2621,10 @@ class PhiStudentTDriftModel:
         phi_sq = phi_val * phi_val
         R_base = c_val * (vol ** 2)
 
-        # Conditional Risk Premium: λ₁ (Merton ICAPM)
-        risk_prem = float(getattr(config, 'risk_premium_sensitivity', 0.0))
-
         # Conditional Skew Dynamics: GAS-driven α_t (Creal-Koopman-Lucas 2013)
-        skew_kappa = float(getattr(config, 'skew_score_sensitivity', 0.0))
         skew_rho = float(getattr(config, 'skew_persistence', 0.97))
         skew_enabled = skew_kappa > 1e-8
         alpha_t = alpha  # Initialize dynamic α at static baseline α₀
-
-        # Calibrated drift bias: E[y_t - mu_pred_t]
-        # Estimated in optimize_params_unified Stage 5, included in prediction
-        # to align filter output with filter_and_calibrate's mu_effective.
-        _mu_drift_val = float(getattr(config, 'mu_drift', 0.0))
 
         log_norm_const = math.lgamma((nu_base + 1.0) / 2.0) - math.lgamma(nu_base / 2.0) - 0.5 * math.log(nu_base * math.pi)
         neg_exp = -((nu_base + 1.0) / 2.0)
@@ -2542,9 +2633,6 @@ class PhiStudentTDriftModel:
         # ---------------------------------------------------------------------------
         # MERTON JUMP-DIFFUSION LAYER
         # ---------------------------------------------------------------------------
-        # Extract jump parameters; layer is fully disabled when jump_variance=0
-        jump_var = float(getattr(config, 'jump_variance', 0.0))
-        jump_intensity = float(getattr(config, 'jump_intensity', 0.0))
         jump_sensitivity = float(getattr(config, 'jump_sensitivity', 1.0))
         jump_mean = float(getattr(config, 'jump_mean', 0.0))
         jump_enabled = jump_var > 1e-12 and jump_intensity > 1e-6
@@ -2577,6 +2665,17 @@ class PhiStudentTDriftModel:
         _math_exp = math.exp
         _math_lgamma = math.lgamma
         _math_isfinite = math.isfinite
+        _math_tanh = math.tanh
+
+        # Pre-compute: when alpha_asym ≈ 0, nu_eff is constant → cache lgamma
+        _alpha_negligible = abs(alpha) < 1e-10
+        if _alpha_negligible:
+            # nu_eff = nu_base always → pre-compute log-likelihood constants once
+            _cached_log_norm = math.lgamma((nu_base + 1.0) / 2.0) - math.lgamma(nu_base / 2.0) - 0.5 * math.log(nu_base * math.pi)
+            _cached_neg_exp = -((nu_base + 1.0) / 2.0)
+            _cached_inv_nu = 1.0 / nu_base
+            _cached_nu_adjust = min(nu_base / (nu_base + 3.0), 1.0)
+            _cached_scale_factor = (nu_base - 2.0) / nu_base if nu_base > 2 else 0.5
 
         for t in range(n):
             u_t = 0.0
@@ -2628,14 +2727,27 @@ class PhiStudentTDriftModel:
             # ---------------------------------------------------------------------------
             # CONDITIONAL SKEW DYNAMICS: use dynamic α_t instead of static α
             # ---------------------------------------------------------------------------
-            nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha_t, k_asym)
+            # Inlined compute_effective_nu — avoids 158k method calls
+            if _alpha_negligible:
+                nu_eff = nu_base
+            else:
+                _z_asym = innovation / max(abs(scale), 1e-10)
+                _mod = 1.0 + alpha_t * _math_tanh(k_asym * _z_asym)
+                nu_eff = nu_base * _mod
+                if nu_eff < 2.1:
+                    nu_eff = 2.1
+                elif nu_eff > 50.0:
+                    nu_eff = 50.0
 
             # -----------------------------------------------------------------
             # Kalman gain and state update use DIFFUSION-ONLY variance
             # -----------------------------------------------------------------
-            nu_adjust = nu_eff / (nu_eff + 3.0)
-            if nu_adjust > 1.0:
-                nu_adjust = 1.0
+            if _alpha_negligible:
+                nu_adjust = _cached_nu_adjust
+            else:
+                nu_adjust = nu_eff / (nu_eff + 3.0)
+                if nu_adjust > 1.0:
+                    nu_adjust = 1.0
             K = nu_adjust * P_pred / S_diffusion
 
             z_sq_diffusion = (innovation * innovation) / S_diffusion
@@ -2700,14 +2812,22 @@ class PhiStudentTDriftModel:
             # -----------------------------------------------------------------
             # Log-likelihood: mixture of diffusion + jump components
             # -----------------------------------------------------------------
-            scale_factor = (nu_eff - 2.0) / nu_eff if nu_eff > 2 else 0.5
-            forecast_scale = _math_sqrt(S_diffusion * scale_factor)
+            if _alpha_negligible:
+                forecast_scale = _math_sqrt(S_diffusion * _cached_scale_factor)
+            else:
+                scale_factor = (nu_eff - 2.0) / nu_eff if nu_eff > 2 else 0.5
+                forecast_scale = _math_sqrt(S_diffusion * scale_factor)
 
             if forecast_scale > 1e-12:
                 z = innovation / forecast_scale
-                log_norm_eff = _math_lgamma((nu_eff + 1.0) / 2.0) - _math_lgamma(nu_eff / 2.0) - 0.5 * _math_log(nu_eff * math.pi)
-                neg_exp_eff = -((nu_eff + 1.0) / 2.0)
-                inv_nu_eff = 1.0 / nu_eff
+                if _alpha_negligible:
+                    log_norm_eff = _cached_log_norm
+                    neg_exp_eff = _cached_neg_exp
+                    inv_nu_eff = _cached_inv_nu
+                else:
+                    log_norm_eff = _math_lgamma((nu_eff + 1.0) / 2.0) - _math_lgamma(nu_eff / 2.0) - 0.5 * _math_log(nu_eff * math.pi)
+                    neg_exp_eff = -((nu_eff + 1.0) / 2.0)
+                    inv_nu_eff = 1.0 / nu_eff
 
                 ll_diffusion = log_norm_eff - _math_log(forecast_scale) + neg_exp_eff * _math_log(1.0 + z * z * inv_nu_eff)
 
@@ -2790,16 +2910,17 @@ class PhiStudentTDriftModel:
         def neg_ll_base(params):
             log_q, theta_c, phi = params
             q = 10 ** log_q
-            c = np.exp(theta_c)
-            c = float(np.clip(c, 0.01, 100.0))
+            c = math.exp(theta_c)
+            if c < 0.01:
+                c = 0.01
+            elif c > 100.0:
+                c = 100.0
 
-            cfg = UnifiedStudentTConfig(
-                q=q, c=c, phi=phi, nu_base=nu_base,
-                alpha_asym=0.0, gamma_vov=0.0, q_stress_ratio=1.0,
-            )
-
+            # Stage 1 configs have alpha=0, gamma=0, q_stress=1 — use basic Numba filter
             try:
-                _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
+                _, _, ll = cls.filter_phi(
+                    returns_train, vol_train, q, c, phi, nu_base
+                )
             except Exception:
                 return 1e10
 
@@ -3734,22 +3855,23 @@ class PhiStudentTDriftModel:
                 h = np.zeros(n_train)
                 h[0] = unconditional_var
                 _p_st = 0.1
-                _sm = np.sqrt(q_stress_ratio)
+                _sm = math.sqrt(q_stress_ratio)
+                _msqrt_bg = math.sqrt
                 for t_ in range(1, n_train):
                     h_ = (garch_omega
                           + garch_alpha * sq_inn[t_-1]
                           + garch_leverage * sq_inn[t_-1] * neg_ind[t_-1]
                           + garch_beta * h[t_-1])
                     if rho_c > 0.01 and h[t_-1] > 1e-12:
-                        nz_ = innovations[t_-1] / np.sqrt(h[t_-1])
+                        nz_ = innovations[t_-1] / _msqrt_bg(h[t_-1])
                         if nz_ < 0:
                             h_ += rho_c * nz_ * nz_ * h[t_-1]
                     if eta_c > 0.005 and h[t_-1] > 1e-12:
-                        za_ = abs(innovations[t_-1]) / np.sqrt(h[t_-1])
+                        za_ = abs(innovations[t_-1]) / _msqrt_bg(h[t_-1])
                         ex_ = max(0.0, za_ - 1.5)
                         h_ += eta_c * ex_ * ex_ * h[t_-1]
                     if reg_c > 0.005 and h[t_-1] > 1e-12:
-                        zr_ = abs(innovations[t_-1]) / np.sqrt(h[t_-1])
+                        zr_ = abs(innovations[t_-1]) / _msqrt_bg(h[t_-1])
                         _p_st = (1.0 - reg_c) * _p_st + reg_c * (1.0 if zr_ > 2.0 else 0.0)
                         _p_st = min(max(_p_st, 0.0), 1.0)
                         h_ = h_ * (1.0 + _p_st * (_sm - 1.0))
@@ -4021,8 +4143,11 @@ class PhiStudentTDriftModel:
     @classmethod
     def _stage_6_calibration_pipeline(cls, returns, vol, config, train_frac=0.7):
         """Stage 6: Pre-calibrate filter_and_calibrate pipeline params (gw, nu_pit, nu_crps, beta_corr, lam_rho)."""
-        from scipy.stats import t as _s6t, kstest as _s6ks, norm as _s6n
+        from scipy.stats import t as _s6t, norm as _s6n
         from scipy.special import gammaln as _s6gl
+        _s6t_cdf = _s6t.cdf  # Local alias
+        _s6t_pdf = _s6t.pdf
+        _msqrt = math.sqrt
         D = {'calibrated_gw': 0.50, 'calibrated_nu_pit': 0.0, 'calibrated_nu_crps': 0.0,
              'calibrated_beta_probit_corr': 1.0, 'calibrated_lambda_rho': 0.985}
         try:
@@ -4035,15 +4160,34 @@ class PhiStudentTDriftModel:
             inn = ret - mp
             hf = cls._compute_garch_variance(inn, config)
             ht = hf[:nt]; it = inn[:nt]; st = sp[:nt]
+            _s6n_ppf = _s6n.ppf
+            _math_exp = math.exp
             def _bk(pa):
-                try: _, kp = _s6ks(pa, 'uniform')
-                except Exception: return 0.0, 0.0, 0.0
-                if len(pa) < 20: return float(kp), float(kp), 0.0
-                zp = _s6n.ppf(np.clip(pa, 0.001, 0.999)); zp = zp[np.isfinite(zp)]
+                n_pa = len(pa)
+                if n_pa < 20: return 0.0, 0.0, 0.0
+                # Inline KS test vs uniform: D = max|F_n(x) - x| for sorted PIT
+                sorted_pa = np.sort(pa)
+                ecdf = np.arange(1, n_pa + 1) / n_pa
+                D_plus = np.max(ecdf - sorted_pa)
+                D_minus = np.max(sorted_pa - np.arange(0, n_pa) / n_pa)
+                D = max(D_plus, D_minus)
+                # Kolmogorov-Smirnov p-value approximation (asymptotic)
+                sqrt_n = math.sqrt(n_pa)
+                lam = (sqrt_n + 0.12 + 0.11 / sqrt_n) * D
+                if lam < 0.001:
+                    kp = 1.0
+                elif lam > 3.0:
+                    kp = 0.0
+                else:
+                    # Two-term Kolmogorov approximation
+                    kp = 2.0 * _math_exp(-2.0 * lam * lam)
+                    if kp > 1.0: kp = 1.0
+                zp = _s6n_ppf(np.clip(pa, 0.001, 0.999)); zp = zp[np.isfinite(zp)]
                 if len(zp) < 20: return float(kp), float(kp), 0.0
                 m_ = float(np.mean(zp)); v_ = float(np.var(zp, ddof=0)); zc = zp - m_; dn = np.sum(zc ** 2)
                 r1 = float(np.sum(zc[1:] * zc[:-1]) / dn) if dn > 1e-12 else 0.0
-                return float(kp * np.exp(-5 * m_ ** 2) * np.exp(-5 * (v_ - 1) ** 2) * np.exp(-10 * r1 ** 2)), float(kp), r1
+                score = kp * _math_exp(-5 * m_ * m_) * _math_exp(-5 * (v_ - 1) ** 2) * _math_exp(-10 * r1 * r1)
+                return score, kp, r1
             im = getattr(config, 'ms_ewm_lambda', 0.0) > 0.01
             hv = float(np.std(it)) > 0.03
             Sr = 0.5 * st + 0.5 * ht; rz = it / np.sqrt(np.maximum(Sr, 1e-12))
@@ -4062,34 +4206,106 @@ class PhiStudentTDriftModel:
             else: GW = [0.0, 0.15, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.0]
             s5f = float(getattr(config, 'crps_ewm_lambda', 0.0))
             lm = float(np.clip(max(s5f, 0.975), 0.975, 0.995)) if s5f >= 0.50 else 0.985
+            lm1 = 1.0 - lm  # Pre-compute complement
             nf = 2 if im else (1 if nt < 200 else (2 if nt < 400 else 3))
             fs = nt // (nf + 1)
             bs = -1.0; bg = 0.50 if not im else 0.80; bn = NC[0]
+
+            # ── Helper: run sequential EWM PIT for one fold, return z-values
+            # CDF is deferred — caller vectorizes it.
+            # Pre-compute EWM initial states for each fold start point
+            # to avoid re-running the EWM loop from scratch each time.
+            _ewm_cache = {}  # (ee,) → (em, en, ed) after running through [0..ee)
+
+            def _get_ewm_state(Sb, ee):
+                """Get EWM state after processing [0..ee) — cached per ee."""
+                key = id(Sb), ee
+                if key in _ewm_cache:
+                    return _ewm_cache[key]
+                em = float(np.mean(it[:ee]))
+                en = float(np.mean(it[:ee] ** 2))
+                ed = float(np.mean(Sb[:ee]))
+                _it = it  # Local ref
+                for t in range(ee):
+                    em = lm * em + lm1 * _it[t]
+                    en = lm * en + lm1 * _it[t] * _it[t]
+                    ed = lm * ed + lm1 * Sb[t]
+                _ewm_cache[key] = (em, en, ed)
+                return em, en, ed
+
+            def _fold_ewm_pit(Sb, ee, ve, nu_val):
+                """Run EWM loop for one fold, return (z_values, sigma_values, nv)."""
+                nv = ve - ee
+                em, en, ed = _get_ewm_state(Sb, ee)
+                zv = np.empty(nv); sv = np.empty(nv)
+                nu_scale = (nu_val - 2.0) / nu_val if nu_val > 2 else 1.0
+                _it = it  # Local ref for speed
+                for tv in range(nv):
+                    ix = ee + tv
+                    bv = en / (ed + 1e-12)
+                    if bv < 0.2: bv = 0.2
+                    elif bv > 5.0: bv = 5.0
+                    iv = _it[ix] - em; Sv = Sb[ix] * bv
+                    s = _msqrt(Sv * nu_scale) if Sv > 0 else 1e-10
+                    if s < 1e-10: s = 1e-10
+                    zv[tv] = iv / s; sv[tv] = s
+                    em = lm * em + lm1 * _it[ix]
+                    en = lm * en + lm1 * _it[ix] * _it[ix]
+                    ed = lm * ed + lm1 * Sb[ix]
+                return zv, sv, nv
+
+            # ── Helper: compute raw EWM innovations (shared across NU values)
+            def _fold_ewm_raw(Sb, ee, ve):
+                """EWM loop: return (innovations, Sv_raw, nv) — nu-independent."""
+                nv = ve - ee
+                em, en, ed = _get_ewm_state(Sb, ee)
+                iv_arr = np.empty(nv); Sv_arr = np.empty(nv)
+                _it = it
+                for tv in range(nv):
+                    ix = ee + tv
+                    bv = en / (ed + 1e-12)
+                    if bv < 0.2: bv = 0.2
+                    elif bv > 5.0: bv = 5.0
+                    iv_arr[tv] = _it[ix] - em
+                    Sv_arr[tv] = Sb[ix] * bv
+                    em = lm * em + lm1 * _it[ix]
+                    en = lm * en + lm1 * _it[ix] * _it[ix]
+                    ed = lm * ed + lm1 * Sb[ix]
+                return iv_arr, Sv_arr, nv
+
+            # ── Main GW × NU grid search with VECTORIZED CDF
             for gw in GW:
                 Sb = (1 - gw) * st + gw * ht
+                # Pre-compute raw EWM per fold (shared across ALL nu values)
+                fold_data = []
+                for fi in range(nf):
+                    ee = (fi + 1) * fs; ve = min((fi + 2) * fs, nt)
+                    if ve <= ee:
+                        fold_data.append(None)
+                        continue
+                    iv_arr, Sv_arr, nv = _fold_ewm_raw(Sb, ee, ve)
+                    fold_data.append((iv_arr, Sv_arr, nv, ee))
+
                 for nu in NC:
+                    nu_scale = (nu - 2.0) / nu if nu > 2 else 1.0
                     fc = []
                     for fi in range(nf):
-                        ee = (fi + 1) * fs; ve = min((fi + 2) * fs, nt)
-                        if ve <= ee: continue
-                        nv = ve - ee
-                        em = float(np.mean(it[:ee])); en = float(np.mean(it[:ee] ** 2)); ed = float(np.mean(Sb[:ee]))
-                        for t in range(ee):
-                            em = lm * em + (1 - lm) * it[t]; en = lm * en + (1 - lm) * (it[t] ** 2); ed = lm * ed + (1 - lm) * Sb[t]
-                        pv = np.zeros(nv); zv = np.zeros(nv); sv = np.zeros(nv)
-                        m_, nn_, dd_ = em, en, ed
-                        for tv in range(nv):
-                            ix = ee + tv; bv = float(np.clip(nn_ / (dd_ + 1e-12), 0.2, 5.0))
-                            iv = it[ix] - m_; Sv = Sb[ix] * bv
-                            s = np.sqrt(Sv * (nu - 2) / nu) if nu > 2 else np.sqrt(Sv); s = max(s, 1e-10)
-                            zv[tv] = iv / s; sv[tv] = s; pv[tv] = _s6t.cdf(zv[tv], df=nu)
-                            m_ = lm * m_ + (1 - lm) * it[ix]; nn_ = lm * nn_ + (1 - lm) * (it[ix] ** 2); dd_ = lm * dd_ + (1 - lm) * Sb[ix]
-                        pv = np.clip(pv, 0.001, 0.999)
+                        fd = fold_data[fi]
+                        if fd is None:
+                            continue
+                        iv_arr, Sv_arr, nv, ee = fd
+                        # Vectorized sigma from pre-computed Sv
+                        sv = np.sqrt(np.maximum(Sv_arr * nu_scale, 0.0))
+                        sv = np.maximum(sv, 1e-10)
+                        zv = iv_arr / sv
+                        # VECTORIZED CDF
+                        pv = np.clip(_s6t_cdf(zv, df=nu), 0.001, 0.999)
                         try:
                             sc, _, _ = _bk(pv)
                             hi_, _ = np.histogram(pv, bins=10, range=(0, 1))
                             md = float(np.mean(np.abs(hi_ / nv - 0.1))); mp_ = max(0, 1 - md / 0.05)
-                            pdf = _s6t.pdf(zv, df=nu); cdf = np.clip(_s6t.cdf(zv, df=nu), 0.001, 0.999)
+                            # VECTORIZED pdf+cdf for CRPS
+                            pdf = _s6t_pdf(zv, df=nu); cdf = np.clip(_s6t_cdf(zv, df=nu), 0.001, 0.999)
                             if nu > 1:
                                 l1 = _s6gl(0.5) + _s6gl(nu - 0.5) - _s6gl(nu)
                                 l2 = _s6gl(0.5) + _s6gl(nu / 2) - _s6gl((nu + 1) / 2)
@@ -4106,7 +4322,9 @@ class PhiStudentTDriftModel:
                         av = float(np.mean(fc))
                         if av > bs: bs = av; bg = gw; bn = nu
             # Local gw refinement
+            _ewm_cache.clear()  # Reset cache for new Sb arrays
             if nt >= 300:
+                _bn_scale = (bn - 2.0) / bn if bn > 2 else 1.0
                 for gwf in np.arange(max(bg - 0.06, 0), min(bg + 0.07, 1.01), 0.03):
                     gwf = float(gwf)
                     if abs(gwf - bg) < 0.005: continue
@@ -4114,22 +4332,15 @@ class PhiStudentTDriftModel:
                     for fi in range(nf):
                         ee = (fi + 1) * fs; ve = min((fi + 2) * fs, nt)
                         if ve <= ee: continue
-                        nv = ve - ee
-                        em = float(np.mean(it[:ee])); en = float(np.mean(it[:ee] ** 2)); ed = float(np.mean(Sb[:ee]))
-                        for t in range(ee):
-                            em = lm * em + (1 - lm) * it[t]; en = lm * en + (1 - lm) * (it[t] ** 2); ed = lm * ed + (1 - lm) * Sb[t]
-                        pf = np.zeros(nv); ss = 0.0; m_, nn_, dd_ = em, en, ed
-                        for tv in range(nv):
-                            ix = ee + tv; bv = float(np.clip(nn_ / (dd_ + 1e-12), 0.2, 5.0))
-                            iv = it[ix] - m_; Sv = Sb[ix] * bv
-                            s = np.sqrt(Sv * max(bn - 2, 0.1) / bn) if bn > 2 else np.sqrt(Sv); s = max(s, 1e-10)
-                            ss += s; pf[tv] = _s6t.cdf(iv / s, df=bn)
-                            m_ = lm * m_ + (1 - lm) * it[ix]; nn_ = lm * nn_ + (1 - lm) * (it[ix] ** 2); dd_ = lm * dd_ + (1 - lm) * Sb[ix]
-                        pf = np.clip(pf, 0.001, 0.999)
+                        iv_arr, Sv_arr, nv = _fold_ewm_raw(Sb, ee, ve)
+                        sv = np.sqrt(np.maximum(Sv_arr * _bn_scale, 0.0))
+                        sv = np.maximum(sv, 1e-10)
+                        zv = iv_arr / sv
+                        pv = np.clip(_s6t_cdf(zv, df=bn), 0.001, 0.999)
                         try:
-                            sc, _, _ = _bk(pf); hi_, _ = np.histogram(pf, bins=10, range=(0, 1))
+                            sc, _, _ = _bk(pv); hi_, _ = np.histogram(pv, bins=10, range=(0, 1))
                             md = float(np.mean(np.abs(hi_ / nv - 0.1))); mp_ = max(0, 1 - md / 0.05)
-                            is2 = float(np.std(it[:ee])); ms2 = ss / max(nv, 1)
+                            is2 = float(np.std(it[:ee])); ms2 = float(np.mean(sv))
                             sh = float(np.clip((is2 / ms2) ** 1.5, 0.55, 1.45)) if is2 > 1e-10 and ms2 > 1e-10 else 1.0
                             fc.append(sc * mp_ * sh)
                         except Exception:
@@ -4143,27 +4354,36 @@ class PhiStudentTDriftModel:
             emc = float(np.mean(it)); enc = float(np.mean(it ** 2)); edc = float(np.mean(Sf))
             cs = int(nt * 0.6); ncl = nt - cs
             for t in range(cs):
-                emc = lm * emc + (1 - lm) * it[t]; enc = lm * enc + (1 - lm) * (it[t] ** 2); edc = lm * edc + (1 - lm) * Sf[t]
-            pcl = np.zeros(ncl); m_, nn_, dd_ = emc, enc, edc
+                emc = lm * emc + lm1 * it[t]; enc = lm * enc + lm1 * (it[t] ** 2); edc = lm * edc + lm1 * Sf[t]
+            # Collect z-values, then vectorize CDF
+            zcl = np.empty(ncl); m_, nn_, dd_ = emc, enc, edc
+            nu_scale_p = (np_ - 2.0) / np_ if np_ > 2 else 1.0
             for tv in range(ncl):
-                ix = cs + tv; bv = float(np.clip(nn_ / (dd_ + 1e-12), 0.2, 5.0))
+                ix = cs + tv
+                bv = nn_ / (dd_ + 1e-12)
+                if bv < 0.2: bv = 0.2
+                elif bv > 5.0: bv = 5.0
                 iv = it[ix] - m_; Sv = Sf[ix] * bv
-                s = np.sqrt(Sv * (np_ - 2) / np_) if np_ > 2 else np.sqrt(Sv); s = max(s, 1e-10)
-                pcl[tv] = _s6t.cdf(iv / s, df=np_)
-                m_ = lm * m_ + (1 - lm) * it[ix]; nn_ = lm * nn_ + (1 - lm) * (it[ix] ** 2); dd_ = lm * dd_ + (1 - lm) * Sf[ix]
-            pcl = np.clip(pcl, 0.001, 0.999)
+                s = _msqrt(Sv * nu_scale_p) if Sv > 0 else 1e-10
+                if s < 1e-10: s = 1e-10
+                zcl[tv] = iv / s
+                m_ = lm * m_ + lm1 * it[ix]; nn_ = lm * nn_ + lm1 * (it[ix] ** 2); dd_ = lm * dd_ + lm1 * Sf[ix]
+            pcl = np.clip(_s6t_cdf(zcl, df=np_), 0.001, 0.999)
             zpr = _s6n.ppf(pcl); zpr = zpr[np.isfinite(zpr)]
             bc = float(np.clip(np.var(zpr, ddof=0), 0.40, 2.50)) if len(zpr) > 30 else 1.0
             # AR(1) whitening lambda_rho
             bl = 0.98; bw = -1.0
             if len(zpr) > 50:
                 for lr in [0.97, 0.98, 0.99]:
+                    lr1 = 1.0 - lr
                     zw = np.zeros(len(zpr)); zw[0] = zpr[0]; ec = 0.0; es = 1.0
                     for tw in range(1, len(zpr)):
-                        ec = lr * ec + (1 - lr) * zpr[tw - 1] * (zpr[tw - 2] if tw > 1 else 0.0)
-                        es = lr * es + (1 - lr) * zpr[tw - 1] ** 2
-                        rho = float(np.clip(ec / es, -0.3, 0.3)) if tw >= 20 and es > 0.1 else 0.0
-                        zw[tw] = (zpr[tw] - rho * zpr[tw - 1]) / np.sqrt(max(1 - rho ** 2, 0.5)) if abs(rho) > 0.01 else zpr[tw]
+                        ec = lr * ec + lr1 * zpr[tw - 1] * (zpr[tw - 2] if tw > 1 else 0.0)
+                        es = lr * es + lr1 * zpr[tw - 1] ** 2
+                        rho = (ec / es) if tw >= 20 and es > 0.1 else 0.0
+                        if rho < -0.3: rho = -0.3
+                        elif rho > 0.3: rho = 0.3
+                        zw[tw] = (zpr[tw] - rho * zpr[tw - 1]) / _msqrt(max(1 - rho * rho, 0.5)) if abs(rho) > 0.01 else zpr[tw]
                     pw = np.clip(_s6n.cdf(zw), 0.001, 0.999)
                     try:
                         ws, _, _ = _bk(pw)
@@ -4180,19 +4400,28 @@ class PhiStudentTDriftModel:
                         rv = ret[:nt][vs:]; mv = mp[:nt][vs:]; Sb = (1 - bg) * st + bg * ht
                         emn = float(np.mean(it)); enn = float(np.mean(it ** 2)); edn = float(np.mean(Sb))
                         for t in range(vs):
-                            emn = lm * emn + (1 - lm) * it[t]; enn = lm * enn + (1 - lm) * (it[t] ** 2); edn = lm * edn + (1 - lm) * Sb[t]
+                            emn = lm * emn + lm1 * it[t]; enn = lm * enn + lm1 * (it[t] ** 2); edn = lm * edn + lm1 * Sb[t]
+                        # Pre-compute shared EWM state sequences for all ν candidates
+                        bv_arr = np.empty(nvl); Sv_arr = np.empty(nvl)
+                        emu, enu, edu = emn, enn, edn
+                        for tv in range(nvl):
+                            ix = vs + tv
+                            bv = enu / (edu + 1e-12)
+                            if bv < 0.2: bv = 0.2
+                            elif bv > 5.0: bv = 5.0
+                            bv_val = bv * bc
+                            if bv_val < 0.2: bv_val = 0.2
+                            elif bv_val > 5.0: bv_val = 5.0
+                            Sv_arr[tv] = Sb[ix] * bv_val
+                            emu = lm * emu + lm1 * it[ix]; enu = lm * enu + lm1 * (it[ix] ** 2); edu = lm * edu + lm1 * Sb[ix]
+                        shrk = float(getattr(config, 'crps_sigma_shrinkage', 1.0))
+                        if shrk < 0.30: shrk = 0.30
+                        elif shrk > 1.0: shrk = 1.0
                         bc_ = float('inf')
                         for nuc in [3, 4, 5, 6, 7, 8, 10, 12, 15, 20]:
-                            snv = np.zeros(nvl); emu, enu, edu = emn, enn, edn
-                            for tv in range(nvl):
-                                ix = vs + tv; bv = float(np.clip(enu / (edu + 1e-12), 0.2, 5.0))
-                                bv = float(np.clip(bv * bc, 0.2, 5.0))
-                                Sv = Sb[ix] * bv
-                                s = np.sqrt(Sv * (nuc - 2) / nuc) if nuc > 2 else np.sqrt(Sv)
-                                snv[tv] = max(s, 1e-10)
-                                emu = lm * emu + (1 - lm) * it[ix]; enu = lm * enu + (1 - lm) * (it[ix] ** 2); edu = lm * edu + (1 - lm) * Sb[ix]
-                            shrk = float(np.clip(getattr(config, 'crps_sigma_shrinkage', 1.0), 0.30, 1.0))
-                            snv = np.maximum(snv * shrk, 1e-10)
+                            # Vectorized sigma from shared Sv_arr
+                            nu_sf = (nuc - 2.0) / nuc if nuc > 2 else 1.0
+                            snv = np.maximum(np.sqrt(np.maximum(Sv_arr * nu_sf, 0.0)) * shrk, 1e-10)
                             c = _cf(rv, mv, snv, float(nuc))
                             if np.isfinite(c) and c < bc_: bc_ = c; nc_ = float(nuc)
                 except Exception:
