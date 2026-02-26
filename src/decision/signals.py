@@ -3235,11 +3235,11 @@ def _kalman_filter_drift(
                 loc_bias_var_coeff=float(tuned_params.get('loc_bias_var_coeff', 0.0)),
                 loc_bias_drift_coeff=float(tuned_params.get('loc_bias_drift_coeff', 0.0)),
                 # Stage 6: pre-calibrated walk-forward CV params
-                calibrated_gw=float(tuned_params.get('calibrated_gw', -1.0)),
-                calibrated_nu_pit=float(tuned_params.get('calibrated_nu_pit', -1.0)),
-                calibrated_beta_probit_corr=float(tuned_params.get('calibrated_beta_probit_corr', -1.0)),
-                calibrated_lambda_rho=float(tuned_params.get('calibrated_lambda_rho', -1.0)),
-                calibrated_nu_crps=float(tuned_params.get('calibrated_nu_crps', -1.0)),
+                calibrated_gw=float(tuned_params.get('calibrated_gw', 0.50)),
+                calibrated_nu_pit=float(tuned_params.get('calibrated_nu_pit', 0.0)),
+                calibrated_beta_probit_corr=float(tuned_params.get('calibrated_beta_probit_corr', 1.0)),
+                calibrated_lambda_rho=float(tuned_params.get('calibrated_lambda_rho', 0.985)),
+                calibrated_nu_crps=float(tuned_params.get('calibrated_nu_crps', 0.0)),
             )
             
             # Run unified filter

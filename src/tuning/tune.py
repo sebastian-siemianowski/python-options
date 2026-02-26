@@ -3294,11 +3294,11 @@ def fit_all_models_for_regime(
                 "loc_bias_var_coeff": float(getattr(config, 'loc_bias_var_coeff', 0.0)),
                 "loc_bias_drift_coeff": float(getattr(config, 'loc_bias_drift_coeff', 0.0)),
                 # Stage 6: pre-calibrated walk-forward CV params
-                "calibrated_gw": float(getattr(config, 'calibrated_gw', -1.0)),
-                "calibrated_nu_pit": float(getattr(config, 'calibrated_nu_pit', -1.0)),
-                "calibrated_beta_probit_corr": float(getattr(config, 'calibrated_beta_probit_corr', -1.0)),
-                "calibrated_lambda_rho": float(getattr(config, 'calibrated_lambda_rho', -1.0)),
-                "calibrated_nu_crps": float(getattr(config, 'calibrated_nu_crps', -1.0)),
+                "calibrated_gw": float(getattr(config, 'calibrated_gw', 0.50)),
+                "calibrated_nu_pit": float(getattr(config, 'calibrated_nu_pit', 0.0)),
+                "calibrated_beta_probit_corr": float(getattr(config, 'calibrated_beta_probit_corr', 1.0)),
+                "calibrated_lambda_rho": float(getattr(config, 'calibrated_lambda_rho', 0.985)),
+                "calibrated_nu_crps": float(getattr(config, 'calibrated_nu_crps', 0.0)),
                 # Scores
                 "log_likelihood": float(ll_u),
                 "mean_log_likelihood": float(mean_ll_u),

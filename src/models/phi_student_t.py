@@ -2646,194 +2646,23 @@ class PhiStudentTDriftModel:
         rough_hurst = getattr(config, 'rough_hurst', 0.0)
         use_garch = garch_alpha > 0 or garch_beta > 0
         
-        # =====================================================================
-        # HONEST VARIANCE with GJR-GARCH
-        # =====================================================================
-        # GJR-GARCH(1,1) — Glosten-Jagannathan-Runkle (1993):
-        #   h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε_{t-1}<0) + β·h_{t-1}
-        #
-        # The leverage term γ_lev captures variance asymmetry:
-        #   negative ε → variance increases by (α + γ_lev)·ε²
-        #   positive ε → variance increases by α·ε² only
-        #
-        # This is statistically well-documented across decades of equity data.
-        # Without it, crisis variance response lags and left-tail CRPS suffers.
-        # =====================================================================
+        # Default S_calibrated for non-GARCH path
+        S_calibrated = S_pred_test * variance_inflation
         
         if use_garch:
-            # Use GJR-GARCH variance dynamics (parameters from training)
-            # The GARCH model is CAUSAL - h_t only depends on ε²_{t-1}
-            # mu_pred_test already includes mu_drift from filter_phi_unified
+            # Compute GARCH variance via shared method (single source of truth)
+            # Runs continuously t=0..n to avoid cold-start bias at train/test split
+            innovations_full_garch = returns - mu_pred
+            h_garch_full_cont = cls._compute_garch_variance(
+                innovations_full_garch, config, n_test_split=n_train)
+            h_garch = h_garch_full_cont[n_train:]
+
+            # Test innovations for EWM tracking
             innovations = returns_test - mu_pred_test
             sq_innov = innovations ** 2
-            neg_indicator = (innovations < 0).astype(np.float64)  # I(ε_{t-1} < 0)
-            
-            # =================================================================
-            # CONTINUOUS GARCH (February 2026)
-            # =================================================================
-            # Standard approach: h_test[0] = unconditional_var (cold start).
-            # Problem: GARCH(1,1) with β≈0.82 has ~6-day half-life,
-            # so cold-start bias persists for ~30+ test observations.
-            # The test period may start in a different volatility regime than
-            # the unconditional average, causing systematic scale mismatch.
-            #
-            # Fix: run GARCH continuously from t=0 through both training and
-            # test. h_test[0] inherits the warm state from training.
-            # This is causally valid: h_t depends only on ε²_{t-1}.
-            # Applies to ALL asset classes — cold-start is universal.
-            # =================================================================
-            # mu_pred already includes mu_drift from filter_phi_unified
-            innovations_full_garch = returns - mu_pred
-            sq_inn_full_garch = innovations_full_garch ** 2
-            neg_ind_full_garch = (innovations_full_garch < 0).astype(np.float64)
-            
-            # =================================================================
-            # LEVERAGE CORRELATION + MEAN REVERSION (Heston-DLSV, Feb 2026)
-            # =================================================================
-            # Enhanced GARCH with two additional dynamics from Heston (1993):
-            #
-            # 1. Leverage correlation ρ_lev (Black 1976, Christie 1982):
-            #    h_t += ρ_lev × max(-ε_{t-1}/√h_{t-1}, 0)² × h_{t-1}
-            #    This adds QUADRATIC asymmetry: bigger negative shocks →
-            #    disproportionately larger variance increases. Complements
-            #    GJR's LINEAR asymmetry (sign-only indicator).
-            #
-            # 2. Mean reversion κ toward θ_long (Heston 1993):
-            #    h_t = (1-κ)·h_garch_t + κ·θ_long
-            #    Pulls variance toward its long-term unconditional level,
-            #    reducing forecast bias in mean-reverting regimes.
-            #
-            # Both estimated on training data, applied causally.
-            # =================================================================
-            _rho_lev = float(getattr(config, 'rho_leverage', 0.0))
-            _kappa_mr = float(getattr(config, 'kappa_mean_rev', 0.0))
-            _theta_lv = float(getattr(config, 'theta_long_var', 0.0))
-            if _theta_lv <= 0:
-                _theta_lv = garch_unconditional_var
-            
-            # CRPS-enhancement parameters (February 2026)
-            _sigma_eta = float(getattr(config, 'sigma_eta', 0.0))
-            _regime_sw = float(getattr(config, 'regime_switch_prob', 0.0))
+
+            # CRPS-enhancement: asymmetric ν offset
             _t_df_asym = float(getattr(config, 't_df_asym', 0.0))
-            
-            h_garch_full_cont = np.zeros(n)
-            h_garch_full_cont[0] = garch_unconditional_var
-            _p_stress_markov = 0.1  # Initial stress probability (mild prior)
-            
-            for t in range(1, n):
-                h_t = (garch_omega
-                       + garch_alpha * sq_inn_full_garch[t-1]
-                       + garch_leverage * sq_inn_full_garch[t-1] * neg_ind_full_garch[t-1]
-                       + garch_beta * h_garch_full_cont[t-1])
-                # Leverage correlation: quadratic asymmetry for negative shocks
-                if _rho_lev > 0.01 and h_garch_full_cont[t-1] > 1e-12:
-                    neg_z = innovations_full_garch[t-1] / np.sqrt(h_garch_full_cont[t-1])
-                    if neg_z < 0:
-                        h_t += _rho_lev * neg_z * neg_z * h_garch_full_cont[t-1]
-                # Vol-of-vol noise σ_η: amplify on extreme shocks (Heston extension)
-                # Only activates for |z| > 1.5 — normal shocks pass through unchanged
-                if _sigma_eta > 0.005 and h_garch_full_cont[t-1] > 1e-12:
-                    _z_abs = abs(innovations_full_garch[t-1]) / np.sqrt(h_garch_full_cont[t-1])
-                    _excess = max(0.0, _z_abs - 1.5)
-                    h_t += _sigma_eta * _excess * _excess * h_garch_full_cont[t-1]
-                # Markov regime switching: hidden stress state modulates h_t
-                # p_stress transitions on extreme |z| via exponential smoothing
-                if _regime_sw > 0.005 and h_garch_full_cont[t-1] > 1e-12:
-                    _z_regime = abs(innovations_full_garch[t-1]) / np.sqrt(h_garch_full_cont[t-1])
-                    _stress_indicator = 1.0 if _z_regime > 2.0 else 0.0
-                    _p_stress_markov = (1.0 - _regime_sw) * _p_stress_markov + _regime_sw * _stress_indicator
-                    _p_stress_markov = min(max(_p_stress_markov, 0.0), 1.0)
-                    # Inflate h_t by stress probability × stress multiplier
-                    # stress_mult = √(q_stress_ratio) ≈ 3-4.5× for typical configs
-                    _stress_mult = np.sqrt(getattr(config, 'q_stress_ratio', 10.0))
-                    h_t = h_t * (1.0 + _p_stress_markov * (_stress_mult - 1.0))
-                # Mean reversion toward long-term variance
-                if _kappa_mr > 0.001:
-                    h_t = (1.0 - _kappa_mr) * h_t + _kappa_mr * _theta_lv
-                h_garch_full_cont[t] = max(h_t, 1e-12)
-            
-            h_garch = h_garch_full_cont[n_train:]
-            
-            # =================================================================
-            # ROUGH VOLATILITY MEMORY (Gatheral-Jaisson-Rosenbaum 2018)
-            # =================================================================
-            # Fractional differencing operator (1-L)^d applied to ε²_t
-            # d = H - 0.5, H = Hurst exponent < 0.5 for rough regime
-            #
-            # Standard GARCH: exponential memory decay  w_k = β^k
-            # Rough vol:      power-law memory decay    w_k ~ k^(d-1)
-            #
-            # This gives:
-            #   - Slower post-crisis variance decay
-            #   - More realistic volatility clustering
-            #   - Better medium-horizon forecasting
-            #
-            # The fractional kernel weights are:
-            #   w_0 = 1
-            #   w_k = w_{k-1} · (k - 1 - d) / k   for k ≥ 1
-            #
-            # These are the coefficients of the binomial series (1-L)^d.
-            # For d < 0 (rough, H < 0.5): weights are positive and decay
-            # slowly as k^(d-1), giving long memory.
-            # =================================================================
-            use_rough = rough_hurst > 0.01 and rough_hurst < 0.5
-            
-            if use_rough:
-                d_frac = rough_hurst - 0.5  # d ∈ (-0.5, 0) for rough regime
-                
-                # Truncated kernel length: balance accuracy vs performance
-                # Empirically, 50 lags captures >95% of the kernel mass
-                max_lag = min(50, n_test - 1)
-                
-                # Precompute fractional differencing weights
-                # w_0 = 1, w_k = w_{k-1} × (k-1-d)/k
-                frac_weights = np.zeros(max_lag + 1)
-                frac_weights[0] = 1.0
-                for k in range(1, max_lag + 1):
-                    frac_weights[k] = frac_weights[k-1] * (k - 1 - d_frac) / k
-                
-                # Normalize to sum to 1 (proper probability kernel)
-                frac_weights = np.abs(frac_weights)
-                weight_sum = np.sum(frac_weights)
-                if weight_sum > 1e-10:
-                    frac_weights /= weight_sum
-                
-                # Compute rough variance: weighted sum of past ε²
-                h_rough = np.zeros(n_test)
-                h_rough[0] = garch_unconditional_var
-                
-                for t in range(1, n_test):
-                    # Apply fractional kernel to past squared innovations
-                    lookback = min(t, max_lag)
-                    weighted_var = 0.0
-                    for lag in range(lookback):
-                        weighted_var += frac_weights[lag] * sq_innov[t - 1 - lag]
-                    h_rough[t] = max(weighted_var, 1e-12)
-                
-                # Blend: adaptive weight based on H
-                # H close to 0 → strong rough component (slow decay)
-                # H close to 0.5 → weak rough (nearly GARCH-equivalent)
-                rough_weight = 0.3 * (1.0 - 2.0 * rough_hurst)  # ∈ [0, 0.3]
-                rough_weight = max(rough_weight, 0.0)
-                
-                # Blend rough vol into GARCH variance
-                h_garch = (1.0 - rough_weight) * h_garch + rough_weight * h_rough
-            
-            # =================================================================
-            # PHASE-AWARE KALMAN/GARCH BLENDING (blend first, calibrate after)
-            # =================================================================
-            # Key architectural fix: blend Kalman and GARCH FIRST, then apply
-            # variance_inflation β to the BLENDED output. Previously β was only
-            # applied to Kalman, leaving GARCH uncalibrated.
-            # =================================================================
-            log_vol_test = np.log(np.maximum(vol[n_train:], 1e-10))
-            d_log_vol = np.zeros(n_test)
-            d_log_vol[1:] = log_vol_test[1:] - log_vol_test[:-1]
-            vol_phase = np.sign(d_log_vol)
-            
-            vol_test = vol[n_train:]
-            vol_median = np.median(vol[:n_train])
-            vol_relative = vol_test / (vol_median + 1e-10)
             
             # =================================================================
             # READ PRE-CALIBRATED PARAMS FROM CONFIG (February 2026)
@@ -3180,6 +3009,105 @@ class PhiStudentTDriftModel:
         }
         
         return pit_values, pit_pvalue, sigma_crps, crps, diagnostics
+
+
+    # =================================================================
+    # SHARED GARCH VARIANCE (February 2026 — single source of truth)
+    # Used by filter_and_calibrate AND _stage_6_calibration_pipeline.
+    # Eliminates the duplicated 30-line GARCH loop that previously
+    # existed in both locations with identical logic.
+    # =================================================================
+
+    @classmethod
+    def _compute_garch_variance(cls, innovations, config, n_test_split=None):
+        """
+        Compute enhanced GJR-GARCH(1,1) variance with leverage correlation,
+        vol-of-vol noise, Markov regime switching, mean reversion, and
+        optional rough-volatility blending (Gatheral-Jaisson-Rosenbaum 2018).
+
+        Runs CONTINUOUSLY from t=0 through full series to avoid cold-start
+        bias at the train/test boundary (h_test[0] inherits warm state).
+
+        Args:
+            innovations: Full innovation series (returns - mu_pred), length n.
+            config: UnifiedStudentTConfig with GARCH parameters.
+            n_test_split: If provided, apply rough-vol blending only on
+                          the test slice [n_test_split:]. None = no rough blend.
+
+        Returns:
+            h: GARCH variance array of length n (full series).
+        """
+        n = len(innovations)
+        sq = innovations ** 2
+        neg = (innovations < 0).astype(np.float64)
+
+        go = float(getattr(config, 'garch_omega', 0.0))
+        ga = float(getattr(config, 'garch_alpha', 0.0))
+        gb = float(getattr(config, 'garch_beta', 0.0))
+        gl = float(getattr(config, 'garch_leverage', 0.0))
+        gu = float(getattr(config, 'garch_unconditional_var', 1e-4))
+        rl = float(getattr(config, 'rho_leverage', 0.0))
+        km = float(getattr(config, 'kappa_mean_rev', 0.0))
+        tv = float(getattr(config, 'theta_long_var', 0.0))
+        if tv <= 0:
+            tv = gu
+        se = float(getattr(config, 'sigma_eta', 0.0))
+        rs = float(getattr(config, 'regime_switch_prob', 0.0))
+        sm = np.sqrt(float(getattr(config, 'q_stress_ratio', 10.0)))
+
+        h = np.zeros(n)
+        h[0] = gu
+        ps = 0.1  # Initial stress probability
+
+        for t in range(1, n):
+            ht = go + ga * sq[t-1] + gl * sq[t-1] * neg[t-1] + gb * h[t-1]
+            if rl > 0.01 and h[t-1] > 1e-12:
+                z = innovations[t-1] / np.sqrt(h[t-1])
+                if z < 0:
+                    ht += rl * z * z * h[t-1]
+            if se > 0.005 and h[t-1] > 1e-12:
+                z = abs(innovations[t-1]) / np.sqrt(h[t-1])
+                ht += se * max(0.0, z - 1.5) ** 2 * h[t-1]
+            if rs > 0.005 and h[t-1] > 1e-12:
+                z = abs(innovations[t-1]) / np.sqrt(h[t-1])
+                ps = (1.0 - rs) * ps + rs * (1.0 if z > 2.0 else 0.0)
+                ps = min(max(ps, 0.0), 1.0)
+                ht *= (1.0 + ps * (sm - 1.0))
+            if km > 0.001:
+                ht = (1.0 - km) * ht + km * tv
+            h[t] = max(ht, 1e-12)
+
+        # ── Rough volatility blending (Gatheral-Jaisson-Rosenbaum 2018) ──
+        # Fractional differencing kernel (1-L)^d on ε²_t gives power-law
+        # memory decay w_k ~ k^(d-1) vs GARCH's exponential w_k = β^k.
+        rh = float(getattr(config, 'rough_hurst', 0.0))
+        if 0.01 < rh < 0.5 and n_test_split is not None and n_test_split < n:
+            n_test = n - n_test_split
+            sq_test = sq[n_test_split:]
+            d_frac = rh - 0.5  # d ∈ (-0.5, 0) for rough regime
+            max_lag = min(50, n_test - 1)
+            # Fractional differencing weights: w_0=1, w_k = w_{k-1}·(k-1-d)/k
+            frac_w = np.zeros(max_lag + 1)
+            frac_w[0] = 1.0
+            for k in range(1, max_lag + 1):
+                frac_w[k] = frac_w[k-1] * (k - 1 - d_frac) / k
+            frac_w = np.abs(frac_w)
+            ws = np.sum(frac_w)
+            if ws > 1e-10:
+                frac_w /= ws
+            h_rough = np.zeros(n_test)
+            h_rough[0] = gu
+            for t in range(1, n_test):
+                lookback = min(t, max_lag)
+                wv = 0.0
+                for lag in range(lookback):
+                    wv += frac_w[lag] * sq_test[t - 1 - lag]
+                h_rough[t] = max(wv, 1e-12)
+            # Blend weight: H→0 ⟹ strong rough, H→0.5 ⟹ weak
+            rw = max(0.3 * (1.0 - 2.0 * rh), 0.0)
+            h[n_test_split:] = (1.0 - rw) * h[n_test_split:] + rw * h_rough
+
+        return h
 
 
     # =================================================================
@@ -4464,31 +4392,8 @@ class PhiStudentTDriftModel:
             if not ug or nt < 150:
                 return D
             _, _, mp, sp, _ = cls.filter_phi_unified(ret, vl, config)
-            inn = ret - mp; sq = inn ** 2; neg = (inn < 0).astype(np.float64)
-            go, ga, gb, gl_ = [getattr(config, k, 0.0) for k in ('garch_omega', 'garch_alpha', 'garch_beta', 'garch_leverage')]
-            gu = getattr(config, 'garch_unconditional_var', 1e-4)
-            rl = float(getattr(config, 'rho_leverage', 0.0))
-            km = float(getattr(config, 'kappa_mean_rev', 0.0))
-            tv = float(getattr(config, 'theta_long_var', 0.0))
-            if tv <= 0: tv = gu
-            se = float(getattr(config, 'sigma_eta', 0.0))
-            rs = float(getattr(config, 'regime_switch_prob', 0.0))
-            hf = np.zeros(n); hf[0] = gu; ps = 0.1
-            for t in range(1, n):
-                h = go + ga * sq[t-1] + gl_ * sq[t-1] * neg[t-1] + gb * hf[t-1]
-                if rl > 0.01 and hf[t-1] > 1e-12:
-                    z = inn[t-1] / np.sqrt(hf[t-1])
-                    if z < 0: h += rl * z * z * hf[t-1]
-                if se > 0.005 and hf[t-1] > 1e-12:
-                    z = abs(inn[t-1]) / np.sqrt(hf[t-1])
-                    h += se * max(0, z - 1.5) ** 2 * hf[t-1]
-                if rs > 0.005 and hf[t-1] > 1e-12:
-                    z = abs(inn[t-1]) / np.sqrt(hf[t-1])
-                    ps = (1 - rs) * ps + rs * (1.0 if z > 2 else 0.0)
-                    ps = min(max(ps, 0), 1)
-                    h *= (1 + ps * (np.sqrt(getattr(config, 'q_stress_ratio', 10.0)) - 1))
-                if km > 0.001: h = (1 - km) * h + km * tv
-                hf[t] = max(h, 1e-12)
+            inn = ret - mp
+            hf = cls._compute_garch_variance(inn, config)
             ht = hf[:nt]; it = inn[:nt]; st = sp[:nt]
             def _bk(pa):
                 try: _, kp = _s6ks(pa, 'uniform')
@@ -5042,6 +4947,36 @@ class PhiStudentTDriftModel:
             garch_kalman_w, q_vol_zeta,
             s5h['loc_bias_var_coeff'], s5h['loc_bias_drift_coeff'],
             asset_class)
+
+        # ── TEST-PERIOD EVALUATION (centralised scoring) ─────────────
+        # Run filter_and_calibrate once here so tune.py can read
+        # test_sigma, test_crps, test_hyvarinen directly from diagnostics
+        # instead of calling filter_and_calibrate a second time.
+        try:
+            _pit_eval, _pitp_eval, _sig_eval, _crps_eval, _diag_eval = \
+                cls.filter_and_calibrate(returns, vol, final_config, train_frac)
+            _nu_eff_eval = _diag_eval.get('nu_effective', nu_opt)
+            _mu_eff_eval = _diag_eval.get('mu_effective', mu_pred_train)
+            _ret_test_eval = returns[n_train:]
+            # Compute Hyvärinen score inline
+            try:
+                from tuning.diagnostics import (
+                    compute_hyvarinen_score_student_t as _hyv_fn,
+                    compute_crps_student_t_inline as _crps_fn,
+                )
+                _hyv_eval = float(_hyv_fn(
+                    _ret_test_eval, _mu_eff_eval, _sig_eval, _nu_eff_eval))
+            except Exception:
+                _hyv_eval = float('-inf')
+            diagnostics['test_sigma'] = _sig_eval
+            diagnostics['test_crps'] = float(_crps_eval)
+            diagnostics['test_hyvarinen'] = _hyv_eval
+            diagnostics['test_nu_effective'] = float(_nu_eff_eval)
+            diagnostics['test_mu_effective'] = _mu_eff_eval
+            diagnostics['test_returns'] = _ret_test_eval
+            diagnostics['test_pit_pvalue'] = float(_pitp_eval)
+        except Exception:
+            pass  # diagnostics won't have test_* keys — tune.py falls back
 
         return final_config, diagnostics
 
