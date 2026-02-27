@@ -1747,12 +1747,12 @@ def tune_asset_q(
                 }
                 models[m]['crps_scoring_enabled'] = weight_meta.get('crps_enabled', False)
         
-        # Find best model by COMBINED SCORE (BIC + Hyvärinen + CRPS)
-        # Combined score formula: w_bic * BIC_std - w_hyv * Hyv_std + w_crps * CRPS_std
-        # Lower combined score = better model (February 2026 - Elite Architecture Fix)
-        combined_scores = weight_meta.get('combined_scores_standardized', {})
-        best_model = min(
-            ((m, s) for m, s in combined_scores.items() if s is not None and np.isfinite(s)),
+        # Find best model by WEIGHT (after calibration veto gate)
+        # The veto gate forces catastrophically miscalibrated models (PIT<0.01 or
+        # Berk<0.01) to floor weight, redistributing to well-calibrated models.
+        # Selecting by weight ensures the winner is always well-calibrated.
+        best_model = max(
+            ((m, w) for m, w in model_weights.items() if w is not None),
             key=lambda x: x[1]
         )[0]
         best_params = models[best_model]

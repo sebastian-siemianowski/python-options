@@ -1406,6 +1406,7 @@ def compute_regime_aware_model_weights(
         w_total = 1.0
         bic_std = robust_standardize_scores(bic_values)
         combined_scores = {m: bic_std.get(m, 0.0) for m in all_models}
+
         weights = entropy_regularized_weights(combined_scores, lambda_entropy=lambda_entropy, eps=epsilon)
         metadata = {
             "combined_scores_standardized": {k: float(v) for k, v in combined_scores.items()},
@@ -1468,7 +1469,67 @@ def compute_regime_aware_model_weights(
         s += w_mad  * mad_std.get(model_name, 0.0)
         combined_scores[model_name] = s
 
+    # ── Compute initial weights from combined scores ──
     weights = entropy_regularized_weights(combined_scores, lambda_entropy=lambda_entropy, eps=epsilon)
+
+    # ── Calibration veto gate (February 2026) ──
+    # A density forecast with catastrophic PIT or Berkowitz miscalibration is
+    # structurally wrong — its CRPS measures sharpness of a WRONG distribution.
+    # No amount of CRPS advantage can justify selecting such a model.
+    #
+    # Post-softmax veto: after computing weights via the normal scoring pipeline,
+    # force miscalibrated models to floor weight and redistribute their excess
+    # to well-calibrated models.
+    #
+    # Veto conditions (any triggers veto):
+    #   PIT_p < 0.01   when a model with PIT_p >= 0.05 exists
+    #   Berk_p < 0.01  when a model with Berk_p >= 0.05 exists
+    n_models_total = len(weights)
+    veto_floor = max(epsilon, 0.01 / max(n_models_total, 1))
+
+    def _pit_ok(m):
+        if not has_pit:
+            return True
+        p = pit_pvalues.get(m)
+        return p is not None and np.isfinite(p) and p >= 0.01
+
+    def _berk_ok(m):
+        if not has_berk:
+            return True
+        p = berk_pvalues.get(m)
+        return p is not None and np.isfinite(p) and p >= 0.01
+
+    def _passes_calibration(m):
+        return _pit_ok(m) and _berk_ok(m)
+
+    any_cal_passes = any(_passes_calibration(m) for m in weights)
+
+    if any_cal_passes:
+        vetoed = set()
+        passed = set()
+        for m in weights:
+            if _passes_calibration(m):
+                passed.add(m)
+            else:
+                vetoed.add(m)
+
+        if vetoed and passed:
+            vetoed_excess = 0.0
+            for m in vetoed:
+                excess = weights[m] - veto_floor
+                if excess > 0:
+                    vetoed_excess += excess
+                    weights[m] = veto_floor
+
+            if vetoed_excess > 0:
+                pass_total = sum(weights[m] for m in passed)
+                if pass_total > 0:
+                    for m in passed:
+                        weights[m] += vetoed_excess * (weights[m] / pass_total)
+
+            w_sum = sum(weights.values())
+            if w_sum > 0:
+                weights = {m: w / w_sum for m, w in weights.items()}
 
     metadata = {
         "bic_standardized": {k: float(v) if np.isfinite(v) else None for k, v in bic_std.items()},
