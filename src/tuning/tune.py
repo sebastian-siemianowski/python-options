@@ -2138,7 +2138,7 @@ def tune_asset_q(
             "phi": best_params.get("phi"),
             "nu": best_params.get("nu"),
             "noise_model": best_model,
-            "best_model": best_model,  # Selected by combined BIC+Hyv+CRPS score
+            "best_model": best_model,  # Selected by max weight (after calibration veto gate)
             # Unified Student-t specific parameters (February 2026 - Elite Architecture)
             "unified_model": best_params.get("unified_model", False),
             "alpha_asym": best_params.get("alpha_asym"),
@@ -5916,7 +5916,7 @@ Examples:
                             model_comparisons[asset_name] = {
                                 'model_comparison': global_result['model_comparison'],
                                 'selected_model': global_result.get('noise_model', 'unknown'),
-                                'best_model': global_result.get('best_model', global_result.get('best_model_by_bic', 'unknown')),
+                                'best_model': global_result.get('best_model', global_result.get('noise_model', 'unknown')),
                                 'q': global_result.get('q'),
                                 'c': global_result.get('c'),
                                 'phi': global_result.get('phi'),
@@ -6081,7 +6081,7 @@ Examples:
             bic_val = data.get('bic', float('nan'))
             pit_p = data.get('pit_ks_pvalue', float('nan'))
             model = _model_label(raw_data)
-            best_model = data.get('best_model', data.get('best_model_by_bic', 'kalman_drift'))
+            best_model = data.get('best_model', data.get('noise_model', 'kalman_drift'))
 
             log10_q = np.log10(q_val) if q_val > 0 else float('nan')
 
@@ -6161,7 +6161,7 @@ Examples:
             mc = model_comparisons[asset_name]
             model_comp = mc.get('model_comparison', {})
             selected = mc.get('selected_model', 'unknown')
-            best_bic = mc.get('best_model', mc.get('best_model_by_bic', 'unknown'))
+            best_bic = mc.get('best_model', mc.get('noise_model', 'unknown'))
             model_sel_method = mc.get('model_selection_method', 'combined')
             
             print(f"\n  {asset_name} (selection: {model_sel_method}):")
