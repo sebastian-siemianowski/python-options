@@ -323,7 +323,7 @@ def run_phi_student_t_filter_batch(
     
     Returns dict mapping ν -> (mu_filtered, P_filtered, log_likelihood)
     
-    Used for Bayesian Model Averaging over ν ∈ {4, 6, 8, 12, 20}
+    Used for Bayesian Model Averaging over ν ∈ {4, 8, 20}
     
     This batch function amortizes the cost of:
     - Array preparation (done once)
@@ -332,7 +332,7 @@ def run_phi_student_t_filter_batch(
     Parameters
     ----------
     nu_grid : List[float]
-        List of ν values to evaluate (e.g., [4, 6, 8, 12, 20])
+        List of ν values to evaluate (e.g., [4, 8, 20])
     """
     if not _NUMBA_AVAILABLE:
         raise ImportError("Numba kernels not available")

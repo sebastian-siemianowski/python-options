@@ -1277,7 +1277,7 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
             data = data['global']
         phi_val = data.get('phi')
         noise_model = data.get('noise_model', 'gaussian')
-        best_model = data.get('best_model_by_bic', noise_model)
+        best_model = data.get('best_model', noise_model)
         nu_val = data.get('nu')
         
         # Check for unified model first
@@ -1402,7 +1402,7 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
         hyv_val = float('nan')
         crps_val = float('nan')
         models_dict = data.get('models', {})
-        best_model_name = data.get('best_model_by_bic', data.get('noise_model', ''))
+        best_model_name = data.get('best_model', data.get('noise_model', ''))
         if best_model_name and best_model_name in models_dict:
             best_model = models_dict[best_model_name]
             hyv_val = best_model.get('hyvarinen_score', float('nan'))
@@ -2431,7 +2431,7 @@ Examples:
                             model_comparisons[asset_name] = {
                                 'model_comparison': global_result['model_comparison'],
                                 'selected_model': global_result.get('noise_model', 'unknown'),
-                                'best_model': global_result.get('best_model', global_result.get('best_model_by_bic', 'unknown')),
+                                'best_model': global_result.get('best_model', global_result.get('noise_model', 'unknown')),
                                 'q': global_result.get('q'),
                                 'c': global_result.get('c'),
                                 'phi': global_result.get('phi'),

@@ -7,7 +7,7 @@ Comprehensive tests for Numba JIT optimization of Kalman filters.
 
 Coverage:
     - Gaussian vs φ-Gaussian correctness vs Python
-    - φ-Student-t correctness across ν ∈ {4, 6, 8, 12, 20}
+    - φ-Student-t correctness across ν ∈ {4, 8, 20}
     - Momentum-augmented Gaussian correctness
     - Momentum-augmented φ-Student-t correctness
     - Batch ν execution consistency
@@ -30,7 +30,7 @@ import time
 from typing import List
 
 # Discrete ν grid for Student-t BMA
-NU_GRID: List[float] = [4, 6, 8, 12, 20]
+NU_GRID: List[float] = [4, 8, 20]
 
 
 # =============================================================================

@@ -263,8 +263,8 @@ def parse_cst_name(name: str) -> Optional[Tuple[float, float, float]]:
 # PARAMETER GRIDS — Canonical grids for tuning
 # =============================================================================
 
-# Student-t ν grid (original discrete grid)
-STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
+# Student-t ν grid (3 BMA flavours: fat, moderate, near-Gaussian)
+STUDENT_T_NU_GRID = [4, 8, 20]
 
 # Student-t ν grid (adaptive refinement candidates)
 STUDENT_T_NU_REFINED_GRID = [3, 5, 7, 10, 14, 16, 25]
@@ -273,7 +273,7 @@ STUDENT_T_NU_REFINED_GRID = [3, 5, 7, 10, 14, 16, 25]
 HANSEN_LAMBDA_GRID = [-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3]
 
 # Hansen ν grid (same as Student-t for consistency)
-HANSEN_NU_GRID = [4, 6, 8, 12, 20]
+HANSEN_NU_GRID = [4, 8, 20]
 
 # NIG α grid (tail heaviness)
 NIG_ALPHA_GRID = [0.5, 1.0, 1.5, 2.0, 3.0]

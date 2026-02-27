@@ -488,7 +488,7 @@ def fit_contaminated_student_t_profile(
     
     # Compute comparison metrics
     # Single Student-t log-likelihood for comparison
-    single_nu_candidates = [4, 6, 8, 10, 12, 15, 20]
+    single_nu_candidates = [4, 8, 20]
     best_single_ll = -np.inf
     best_single_nu = 10
     for nu in single_nu_candidates:

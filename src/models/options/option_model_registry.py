@@ -85,7 +85,7 @@ class OptionModelSpec:
 # =============================================================================
 
 # Student-t degrees of freedom grid (matching equity tune.py)
-OPTION_STUDENT_T_NU_GRID = [4, 6, 8, 12, 20]
+OPTION_STUDENT_T_NU_GRID = [4, 8, 20]
 
 # Mean-reversion kappa grid
 OPTION_KAPPA_GRID = [0.1, 0.3, 0.5, 0.7]

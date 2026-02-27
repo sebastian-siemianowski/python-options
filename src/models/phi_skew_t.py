@@ -60,7 +60,7 @@ PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
 PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 
 # Discrete ν grid for Skew-t models (same as Student-t for BMA compatibility)
-SKEW_T_NU_GRID = [4, 6, 8, 12, 20]
+SKEW_T_NU_GRID = [4, 8, 20]
 
 # Discrete γ grid for skewness (Fernández-Steel parameterization)
 # γ = 1 is symmetric, γ < 1 is left-skewed, γ > 1 is right-skewed

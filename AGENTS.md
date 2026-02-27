@@ -5,6 +5,7 @@
 # 2. NEVER put multiline code directly in terminal commands
 # 3. For multiline code: CREATE A FILE first, then run the file
 # 4. For shell scripts: Write to a .sh file, then execute it
+# 5. Prefer insert_edit_into_file for editing files
 
 Shell Rules (MANDATORY):
 
