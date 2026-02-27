@@ -2709,6 +2709,8 @@ Examples:
         evt_data = global_data.get('evt')
         cst_data = global_data.get('contaminated_student_t')
         
+        is_unified = 'unified' in noise_model.lower()
+        is_unified_batch = is_unified or global_data.get('unified_model', False)
         # Detect momentum and strip suffix for base model determination
         is_momentum_model = '_momentum' in noise_model
         base_noise_model = noise_model.replace('_momentum', '')
@@ -2750,15 +2752,15 @@ Examples:
         
         # Create augmentation suffix for tracking
         aug_suffix = ""
-        if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False):
+        if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False) and not is_unified_batch:
             aug_suffix += "+GMM"
-        if hansen_data is not None and isinstance(hansen_data, dict):
+        if hansen_data is not None and isinstance(hansen_data, dict) and not is_unified_batch:
             hansen_lambda = hansen_data.get('lambda')
             if hansen_lambda is not None and abs(hansen_lambda) > 0.01:
                 aug_suffix += "+Hλ"
-        if evt_data is not None and isinstance(evt_data, dict) and evt_data.get('fit_success', False):
+        if evt_data is not None and isinstance(evt_data, dict) and evt_data.get('fit_success', False) and not is_unified_batch:
             aug_suffix += "+EVT"
-        if cst_data is not None and isinstance(cst_data, dict) and cst_data.get('nu_normal') is not None:
+        if cst_data is not None and isinstance(cst_data, dict) and cst_data.get('nu_normal') is not None and not is_unified_batch:
             aug_suffix += "+CST"
         
         # Store both base model and augmented model for breakdown
@@ -2803,24 +2805,24 @@ Examples:
                     # models, so count them for each regime that has any fit (fallback or not)
                     # This ensures proper display in REGIME COVERAGE table
                     # ==================================================================
-                    if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False):
+                    if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False) and not is_unified_batch:
                         if "GMM" not in regime_model_breakdown[r_int]:
                             regime_model_breakdown[r_int]["GMM"] = 0
                         regime_model_breakdown[r_int]["GMM"] += 1
                     
-                    if hansen_data is not None and isinstance(hansen_data, dict):
+                    if hansen_data is not None and isinstance(hansen_data, dict) and not is_unified_batch:
                         hansen_lambda = hansen_data.get('lambda')
                         if hansen_lambda is not None and abs(hansen_lambda) > 0.01:
                             if "Hansen-λ" not in regime_model_breakdown[r_int]:
                                 regime_model_breakdown[r_int]["Hansen-λ"] = 0
                             regime_model_breakdown[r_int]["Hansen-λ"] += 1
                     
-                    if evt_data is not None and isinstance(evt_data, dict) and evt_data.get('fit_success', False):
+                    if evt_data is not None and isinstance(evt_data, dict) and evt_data.get('fit_success', False) and not is_unified_batch:
                         if "EVT" not in regime_model_breakdown[r_int]:
                             regime_model_breakdown[r_int]["EVT"] = 0
                         regime_model_breakdown[r_int]["EVT"] += 1
                     
-                    if cst_data is not None and isinstance(cst_data, dict) and cst_data.get('nu_normal') is not None:
+                    if cst_data is not None and isinstance(cst_data, dict) and cst_data.get('nu_normal') is not None and not is_unified_batch:
                         if "CST" not in regime_model_breakdown[r_int]:
                             regime_model_breakdown[r_int]["CST"] = 0
                         regime_model_breakdown[r_int]["CST"] += 1
@@ -2909,13 +2911,14 @@ Examples:
                 momentum_gaussian_count += 1
                 momentum_count += 1
         
-        # Count augmentation layers from cache
+        # Count augmentation layers from cache (disabled for unified models)
+        is_unified_batch = is_unified or global_data.get('unified_model', False)
         gmm_data = global_data.get('gmm')
-        if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False):
+        if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False) and not is_unified_batch:
             gmm_fitted_count += 1
         
         hansen_data = global_data.get('hansen_skew_t')
-        if hansen_data is not None and isinstance(hansen_data, dict):
+        if hansen_data is not None and isinstance(hansen_data, dict) and not is_unified_batch:
             hansen_lambda = hansen_data.get('lambda')
             if hansen_lambda is not None and abs(hansen_lambda) > 0.01:
                 hansen_fitted_count += 1
@@ -2925,7 +2928,7 @@ Examples:
                     hansen_right_skew_count += 1
         
         evt_data = global_data.get('evt')
-        if evt_data is not None and isinstance(evt_data, dict) and evt_data.get('fit_success', False):
+        if evt_data is not None and isinstance(evt_data, dict) and evt_data.get('fit_success', False) and not is_unified_batch:
             evt_fitted_count += 1
             evt_xi = evt_data.get('xi', 0)
             if evt_xi > 0.2:
@@ -2936,7 +2939,7 @@ Examples:
                 evt_light_tail_count += 1
         
         cst_data = global_data.get('contaminated_student_t')
-        if cst_data is not None and isinstance(cst_data, dict):
+        if cst_data is not None and isinstance(cst_data, dict) and not is_unified_batch:
             if cst_data.get('nu_normal') is not None and cst_data.get('nu_crisis') is not None:
                 contaminated_t_count += 1
         

@@ -6127,17 +6127,21 @@ def bayesian_model_average_mc(
     # ========================================================================
     # EXTRACT AUGMENTATION LAYER DATA
     # ========================================================================
-    # Hansen Skew-t data
+    # When unified model is selected, external augmentation layers are disabled
+    # because unified models already incorporate VoV, asymmetry, and MS-q.
+    is_unified_model = global_data.get('unified_model', False) if global_data else False
+    
+    # Hansen Skew-t data (disabled for unified models — α_asym supersedes Hansen-λ)
     hansen_data = global_data.get('hansen_skew_t', {})
-    hansen_lambda_global = hansen_data.get('lambda') if hansen_data else None
-    hansen_nu_global = hansen_data.get('nu') if hansen_data else None
+    hansen_lambda_global = hansen_data.get('lambda') if hansen_data and not is_unified_model else None
+    hansen_nu_global = hansen_data.get('nu') if hansen_data and not is_unified_model else None
     hansen_skew_t_enabled = hansen_lambda_global is not None and abs(hansen_lambda_global) > 0.01
     
-    # Contaminated Student-t data
+    # Contaminated Student-t data (disabled for unified models — MS-q supersedes CST)
     cst_data = global_data.get('contaminated_student_t', {})
-    cst_nu_normal_global = cst_data.get('nu_normal') if cst_data else None
-    cst_nu_crisis_global = cst_data.get('nu_crisis') if cst_data else None
-    cst_epsilon_global = cst_data.get('epsilon') if cst_data else None
+    cst_nu_normal_global = cst_data.get('nu_normal') if cst_data and not is_unified_model else None
+    cst_nu_crisis_global = cst_data.get('nu_crisis') if cst_data and not is_unified_model else None
+    cst_epsilon_global = cst_data.get('epsilon') if cst_data and not is_unified_model else None
     cst_enabled = cst_nu_normal_global is not None and cst_epsilon_global is not None and cst_epsilon_global > 0.001
 
     # Get current regime's model_posterior and models

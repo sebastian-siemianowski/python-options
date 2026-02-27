@@ -1757,6 +1757,8 @@ def tune_asset_q(
         )[0]
         best_params = models[best_model]
         
+        # Gate external augmentation layers for unified models (they already have internal calibration)
+        is_unified_winner = "unified" in best_model.lower() if best_model else False
         # =====================================================================
         # FIT 2-STATE GAUSSIAN MIXTURE MODEL (GMM)
         # =====================================================================
@@ -1813,45 +1815,50 @@ def tune_asset_q(
         hansen_skew_t_diagnostics = None
         hansen_comparison = None
         
-        try:
-            nu_hansen, lambda_hansen, ll_hansen, hansen_diag = fit_hansen_skew_t_mle(
-                returns,
-                nu_init=HANSEN_NU_DEFAULT,
-                lambda_init=HANSEN_LAMBDA_DEFAULT,
-                nu_bounds=(HANSEN_NU_MIN, HANSEN_NU_MAX),
-                lambda_bounds=(HANSEN_LAMBDA_MIN, HANSEN_LAMBDA_MAX)
-            )
-            
-            if hansen_diag.get("fit_success", False):
-                # Compute comparison with symmetric Student-t
-                best_nu = best_params.get("nu", HANSEN_NU_DEFAULT)
-                hansen_comparison = compare_symmetric_vs_hansen(
-                    returns, 
-                    nu_symmetric=best_nu if best_nu else HANSEN_NU_DEFAULT,
-                    nu_hansen=nu_hansen,
-                    lambda_hansen=lambda_hansen
+        if is_unified_winner:
+            _log(f"     ⊘ Hansen Skew-t: disabled (unified α_asym supersedes Hansen-λ)")
+            hansen_skew_t_diagnostics = {"fit_success": False, "reason": "unified_model_supersedes"}
+        
+        if not is_unified_winner:
+            try:
+                nu_hansen, lambda_hansen, ll_hansen, hansen_diag = fit_hansen_skew_t_mle(
+                    returns,
+                    nu_init=HANSEN_NU_DEFAULT,
+                    lambda_init=HANSEN_LAMBDA_DEFAULT,
+                    nu_bounds=(HANSEN_NU_MIN, HANSEN_NU_MAX),
+                    lambda_bounds=(HANSEN_LAMBDA_MIN, HANSEN_LAMBDA_MAX)
                 )
                 
-                hansen_skew_t_result = {
-                    "nu": float(nu_hansen),
-                    "lambda": float(lambda_hansen),
-                    "log_likelihood": float(ll_hansen),
-                    "skew_direction": "left" if lambda_hansen < -0.01 else ("right" if lambda_hansen > 0.01 else "symmetric"),
-                }
-                hansen_skew_t_diagnostics = hansen_diag
-                
-                # Log the result with color-coded direction
-                skew_indicator = "←" if lambda_hansen < -0.01 else ("→" if lambda_hansen > 0.01 else "—")
-                preference = hansen_comparison.get("preference", "unknown")
-                _log(f"     ✓ Hansen Skew-t: ν={nu_hansen:.1f}, λ={lambda_hansen:+.3f} {skew_indicator} "
-                     f"| ΔAic={hansen_comparison.get('delta_aic', 0):.1f} [{preference}]")
-            else:
-                error_msg = hansen_diag.get("error", "unknown")
-                _log(f"     ⚠️ Hansen Skew-t fit failed: {error_msg}")
-                hansen_skew_t_diagnostics = hansen_diag
-        except Exception as hansen_err:
-            _log(f"     ⚠️ Hansen Skew-t fitting exception: {hansen_err}")
-            hansen_skew_t_diagnostics = {"fit_success": False, "error": str(hansen_err)}
+                if hansen_diag.get("fit_success", False):
+                    # Compute comparison with symmetric Student-t
+                    best_nu = best_params.get("nu", HANSEN_NU_DEFAULT)
+                    hansen_comparison = compare_symmetric_vs_hansen(
+                        returns, 
+                        nu_symmetric=best_nu if best_nu else HANSEN_NU_DEFAULT,
+                        nu_hansen=nu_hansen,
+                        lambda_hansen=lambda_hansen
+                    )
+                    
+                    hansen_skew_t_result = {
+                        "nu": float(nu_hansen),
+                        "lambda": float(lambda_hansen),
+                        "log_likelihood": float(ll_hansen),
+                        "skew_direction": "left" if lambda_hansen < -0.01 else ("right" if lambda_hansen > 0.01 else "symmetric"),
+                    }
+                    hansen_skew_t_diagnostics = hansen_diag
+                    
+                    # Log the result with color-coded direction
+                    skew_indicator = "←" if lambda_hansen < -0.01 else ("→" if lambda_hansen > 0.01 else "—")
+                    preference = hansen_comparison.get("preference", "unknown")
+                    _log(f"     ✓ Hansen Skew-t: ν={nu_hansen:.1f}, λ={lambda_hansen:+.3f} {skew_indicator} "
+                         f"| ΔAic={hansen_comparison.get('delta_aic', 0):.1f} [{preference}]")
+                else:
+                    error_msg = hansen_diag.get("error", "unknown")
+                    _log(f"     ⚠️ Hansen Skew-t fit failed: {error_msg}")
+                    hansen_skew_t_diagnostics = hansen_diag
+            except Exception as hansen_err:
+                _log(f"     ⚠️ Hansen Skew-t fitting exception: {hansen_err}")
+                hansen_skew_t_diagnostics = {"fit_success": False, "error": str(hansen_err)}
         
         # =====================================================================
         # FIT EVT/GPD DISTRIBUTION (Extreme Value Theory for Tail Risk)
@@ -1872,7 +1879,7 @@ def tune_asset_q(
         evt_diagnostics = None
         evt_consistency = None
         
-        if EVT_AVAILABLE:
+        if EVT_AVAILABLE and not is_unified_winner:
             try:
                 # Compute losses (positive values)
                 losses = -returns[returns < 0]
@@ -1946,7 +1953,8 @@ def tune_asset_q(
         cst_diagnostics = None
         cst_comparison = None
         
-        try:
+        if not is_unified_winner:
+          try:
             if n_obs >= CST_MIN_OBS:
                 # Identify high-volatility observations for regime labeling
                 vol_threshold = np.percentile(vol, 80)
@@ -1986,9 +1994,9 @@ def tune_asset_q(
                     "error": "insufficient_data",
                     "n_obs": n_obs,
                 }
-        except Exception as cst_err:
-            _log(f"     ⚠️ Contaminated-t fitting exception: {cst_err}")
-            cst_diagnostics = {"fit_success": False, "error": str(cst_err)}
+          except Exception as cst_err:
+              _log(f"     ⚠️ Contaminated-t fitting exception: {cst_err}")
+              cst_diagnostics = {"fit_success": False, "error": str(cst_err)}
         
         # =====================================================================
         # PIT-DRIVEN ESCALATION: ν-REFINEMENT (L1 → L2)
