@@ -426,6 +426,8 @@ def main():
                         help='Number of parallel workers (default: CPU count - 1)')
     parser.add_argument('--no-parallel', action='store_true',
                         help='Disable parallel processing')
+    parser.add_argument('--pit-only', action='store_true',
+                        help='Only show PIT summary table (skip per-asset details)')
     args = parser.parse_args()
 
     # Determine asset list
@@ -448,11 +450,18 @@ def main():
     n_total = len(assets)
 
     console.print()
-    console.print(Panel(
-        "[bold bright_white]COMPREHENSIVE MODEL DIAGNOSTICS — LOW PIT ASSETS[/bold bright_white]\n"
-        f"[dim]{n_total} assets · {n_critical} critical (p<0.01) · {n_warning} warning (p<0.05) · All models · All metrics[/dim]",
-        border_style="bright_cyan", padding=(1, 4),
-    ))
+    if args.pit_only:
+        console.print(Panel(
+            "[bold bright_white]PIT SUMMARY — LOW PIT ASSETS[/bold bright_white]\n"
+            f"[dim]{n_total} assets · Fitting all models for PIT p-values...[/dim]",
+            border_style="bright_cyan", padding=(1, 4),
+        ))
+    else:
+        console.print(Panel(
+            "[bold bright_white]COMPREHENSIVE MODEL DIAGNOSTICS — LOW PIT ASSETS[/bold bright_white]\n"
+            f"[dim]{n_total} assets · {n_critical} critical (p<0.01) · {n_warning} warning (p<0.05) · All models · All metrics[/dim]",
+            border_style="bright_cyan", padding=(1, 4),
+        ))
 
     # Determine parallelism
     n_workers = args.workers or max(1, (mp.cpu_count() or 4) - 1)
@@ -487,7 +496,8 @@ def main():
                     else:
                         console.print(f"  [bright_green][{completed}/{n_total}] {sym} ✓[/bright_green]")
                         all_results[sym] = models
-                        render_asset(sym, models, weights, meta, is_reference=is_ref)
+                        if not args.pit_only:
+                            render_asset(sym, models, weights, meta, is_reference=is_ref)
                 except Exception as e:
                     console.print(f"  [indian_red1][{completed}/{n_total}] {symbol}: {e}[/indian_red1]")
                     failed_assets.append(symbol)
@@ -512,7 +522,8 @@ def main():
             try:
                 models, weights, meta = fit_models(symbol, returns, vol)
                 all_results[symbol] = models
-                render_asset(symbol, models, weights, meta, is_reference=is_ref)
+                if not args.pit_only:
+                    render_asset(symbol, models, weights, meta, is_reference=is_ref)
             except Exception as e:
                 console.print(f"  [indian_red1]Error fitting {symbol}: {e}[/indian_red1]")
                 failed_assets.append(symbol)
