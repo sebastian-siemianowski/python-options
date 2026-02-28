@@ -2057,6 +2057,100 @@ class PhiStudentTDriftModel:
             _ewm_num_t = _best_lam_beta * _ewm_num_t + _1m_lam_beta * sq_inn_test[_t]
             _ewm_den_t = _best_lam_beta * _ewm_den_t + _1m_lam_beta * _S_blended_test[_t]
 
+        # ── CHI-SQUARED VARIANCE CORRECTION (Causal Second-Pass) ────────
+        #
+        # For Student-t(ν), E[z²] = ν/(ν-2).  If the EWM β correction
+        # leaves residual variance miscalibration, z² will systematically
+        # deviate from this target.
+        #
+        # We track EWM(z²) causally and scale z values to match:
+        #   ratio_t  = EWM(z²)_{t-1} / target       (uses only PAST z)
+        #   adj_t    = √(ratio_t)  with soft dead-zone
+        #   z_corr_t = z_t / adj_t
+        #
+        # Asymmetric soft dead-zone:
+        #   ratio > 1 (model too narrow, excess tails): wider dead-zone (25%)
+        #     — excess tails are less harmful and harder to diagnose
+        #   ratio < 1 (model too wide, concentrated PIT): narrower dead-zone (10%)
+        #     — PIT concentration is a clear signal, easy to correct
+        #
+        # Properties:
+        #   • Fully causal: correction at t uses only z[0:t-1]
+        #   • Self-balancing: if model is well-calibrated, ratio ≈ 1 → no change
+        #   • Targets correct chi-squared moment for Student-t distribution
+        #   • Warm-started from training z² values (last 40% of training)
+        #   • Safe: asymmetric dead-zone prevents noise on calibrated assets
+        # ─────────────────────────────────────────────────────────────────
+        _CHI2_LAMBDA = 0.98        # ~35 day half-life (slow, stable)
+        _CHI2_MIN_RATIO = 0.3      # Floor
+        _CHI2_MAX_RATIO = 3.0      # Cap
+        # Asymmetric dead-zones
+        _CHI2_DZ_LO_WIDE = 0.25   # ratio > 1: dead-zone up to 25%
+        _CHI2_DZ_HI_WIDE = 0.50   # ratio > 1: full correction at 50%
+        _CHI2_DZ_RANGE_WIDE = _CHI2_DZ_HI_WIDE - _CHI2_DZ_LO_WIDE
+        _CHI2_DZ_LO_NARROW = 0.10 # ratio < 1: dead-zone up to 10%
+        _CHI2_DZ_HI_NARROW = 0.25 # ratio < 1: full correction at 25%
+        _CHI2_DZ_RANGE_NARROW = _CHI2_DZ_HI_NARROW - _CHI2_DZ_LO_NARROW
+        _chi2_target = nu / (nu - 2.0) if nu > 2.0 else 1.0
+
+        # ── ROBUST z² WINSORIZATION ─────────────────────────────────
+        # A single extreme z² (e.g., market crash) can contaminate the
+        # EWM tracker for weeks (with λ=0.98, half-life ~35 days).
+        # Clip z² at WINSOR_MULT × target before EWM update.
+        # Use generous multiplier (50×) to preserve legitimate tail
+        # behavior for heavy-tailed t(ν). Protects against truly
+        # pathological outliers (z²>1000) while keeping 99.99% of
+        # the t(ν) distribution intact.
+        # ───────────────────────────────────────────────────────────
+        _CHI2_WINSOR_MULT = 50.0   # Clip z² at 50× target
+        _chi2_winsor_cap = _chi2_target * _CHI2_WINSOR_MULT
+
+        # Warm-start from training z² values
+        _ewm_z2 = _chi2_target     # Start at theoretical target
+        _CHI2_1M = 1.0 - _CHI2_LAMBDA
+        for _t in range(len(_zcal)):
+            _z2_raw = _zcal[_t] * _zcal[_t]
+            _z2_w = _z2_raw if _z2_raw < _chi2_winsor_cap else _chi2_winsor_cap
+            _ewm_z2 = _CHI2_LAMBDA * _ewm_z2 + _CHI2_1M * _z2_w
+
+        # Apply causal correction to test z values
+        for _t in range(n_test):
+            _ratio = _ewm_z2 / _chi2_target
+            if _ratio < _CHI2_MIN_RATIO:
+                _ratio = _CHI2_MIN_RATIO
+            elif _ratio > _CHI2_MAX_RATIO:
+                _ratio = _CHI2_MAX_RATIO
+
+            # Asymmetric soft dead-zone
+            _deviation = abs(_ratio - 1.0)
+            if _ratio >= 1.0:
+                # Model too narrow (excess tails): wider dead-zone
+                _dz_lo = _CHI2_DZ_LO_WIDE
+                _dz_range = _CHI2_DZ_RANGE_WIDE
+            else:
+                # Model too wide (concentrated PIT): narrower dead-zone
+                _dz_lo = _CHI2_DZ_LO_NARROW
+                _dz_range = _CHI2_DZ_RANGE_NARROW
+
+            if _deviation < _dz_lo:
+                _adj = 1.0   # Within dead-zone — no correction
+            elif _deviation >= _dz_lo + _dz_range:
+                _adj = _msqrt(_ratio)  # Full correction
+            else:
+                # Linear blend between no correction and full
+                _strength = (_deviation - _dz_lo) / _dz_range
+                _adj_raw = _msqrt(_ratio)
+                _adj = 1.0 + _strength * (_adj_raw - 1.0)
+
+            _z_test[_t] /= _adj
+            # Also correct sigma for downstream CRPS consistency
+            sigma[_t] *= _adj
+            # Update EWM with RAW z² (pre-correction, for future corrections)
+            _raw_z = _z_test[_t] * _adj  # Recover raw z
+            _raw_z2 = _raw_z * _raw_z
+            _raw_z2_w = _raw_z2 if _raw_z2 < _chi2_winsor_cap else _chi2_winsor_cap
+            _ewm_z2 = _CHI2_LAMBDA * _ewm_z2 + _CHI2_1M * _raw_z2_w
+
         # VECTORIZED CDF — single batch call instead of n_test scalar calls
         if abs(_t_df_asym) > 0.05:
             _nu_l = max(2.5, nu - _t_df_asym)
@@ -2067,6 +2161,94 @@ class PhiStudentTDriftModel:
             pit_values[~_mask_neg] = student_t_dist.cdf(_z_test[~_mask_neg], df=_nu_r)
         else:
             pit_values = student_t_dist.cdf(_z_test, df=nu)
+
+        pit_values = np.clip(pit_values, 0.001, 0.999)
+
+        # ── PIT VARIANCE RECALIBRATION (Causal Shape Correction) ─────
+        #
+        # After chi² corrects the z-space 2nd moment (scale), there
+        # can remain a SHAPE mismatch: the z distribution doesn't
+        # match t(ν) in its tails, even with correct variance.
+        #
+        # This manifests as Var[PIT] ≠ 1/12:
+        #   Var < 1/12: PITs concentrated around 0.5 → model tails
+        #               too heavy (ν too small), needs stretching
+        #   Var > 1/12: PITs U-shaped (piled near 0,1) → model tails
+        #               too light (ν too large), needs compression
+        #
+        # Correction:  pit_corr = 0.5 + (pit - 0.5) × √(1/12 / V_obs)
+        #
+        # This is the PIT-space analog of chi² variance correction:
+        # chi² fixes E[z²] = ν/(ν-2) in z-space (scale) while this
+        # fixes E[(PIT-0.5)²] = 1/12 in PIT-space (shape).
+        #
+        # Mathematically equivalent to fitting a symmetric Beta(a,a)
+        # recalibration: when a > 1 PITs are concentrated, when a < 1
+        # they're U-shaped. The stretching maps toward a = 1 (uniform).
+        #
+        # Properties:
+        #   • Fully causal: correction at t uses only PIT[0:t-1]
+        #   • Self-balancing: if PITs are uniform, V ≈ 1/12 → no change
+        #   • Complements chi²: chi² fixes scale, this fixes shape
+        #   • Dead-zone prevents noise on calibrated assets
+        #   • Warm-started from training PIT values
+        # ─────────────────────────────────────────────────────────────
+        _PIT_VAR_TARGET = 1.0 / 12.0   # Var[U(0,1)] = 0.08333
+        _PIT_VAR_LAMBDA = 0.97         # ~23 day half-life (responsive)
+        _PIT_VAR_1M = 1.0 - _PIT_VAR_LAMBDA
+        # Dead-zone: |Var_ratio - 1| thresholds (fractional deviation)
+        # With eff sample size ~33 (λ=0.97), SD ~ √(2/33) ≈ 0.25
+        # DZ_LO = 0.30 is ~1.2σ — only corrects clear miscalibration
+        _PIT_VAR_DZ_LO = 0.30         # Start correcting at 30% deviation
+        _PIT_VAR_DZ_HI = 0.55         # Full correction at 55% deviation
+        _PIT_VAR_DZ_RANGE = _PIT_VAR_DZ_HI - _PIT_VAR_DZ_LO
+        _PIT_VAR_MIN_STRETCH = 0.70   # Don't compress more than 30%
+        _PIT_VAR_MAX_STRETCH = 1.50   # Don't stretch more than 50%
+
+        # Warm-start EWM from training PIT values
+        # (Training warm-start gives the tracker a head-start so
+        #  correction can begin earlier during the test period)
+        _ewm_pit_m = 0.5              # E[PIT] for U(0,1) = 0.5
+        _ewm_pit_sq = 1.0 / 3.0       # E[PIT²] for U(0,1) = 1/3
+        for _t in range(len(_pit_train_cal)):
+            _p = float(_pit_train_cal[_t])
+            _ewm_pit_m = _PIT_VAR_LAMBDA * _ewm_pit_m + _PIT_VAR_1M * _p
+            _ewm_pit_sq = _PIT_VAR_LAMBDA * _ewm_pit_sq + _PIT_VAR_1M * _p * _p
+
+        # Apply causal PIT variance correction
+        for _t in range(n_test):
+            _obs_var = _ewm_pit_sq - _ewm_pit_m * _ewm_pit_m
+            if _obs_var < 0.005:
+                _obs_var = 0.005  # Floor to prevent division issues
+
+            _var_ratio = _obs_var / _PIT_VAR_TARGET
+            _var_dev = abs(_var_ratio - 1.0)
+            _raw_pit = pit_values[_t]  # Save pre-correction value
+
+            if _var_dev > _PIT_VAR_DZ_LO:
+                _raw_stretch = _msqrt(_PIT_VAR_TARGET / _obs_var)
+                if _raw_stretch < _PIT_VAR_MIN_STRETCH:
+                    _raw_stretch = _PIT_VAR_MIN_STRETCH
+                elif _raw_stretch > _PIT_VAR_MAX_STRETCH:
+                    _raw_stretch = _PIT_VAR_MAX_STRETCH
+
+                if _var_dev >= _PIT_VAR_DZ_HI:
+                    _stretch = _raw_stretch  # Full correction
+                else:
+                    # Linear blend between no correction and full
+                    _strength = (_var_dev - _PIT_VAR_DZ_LO) / _PIT_VAR_DZ_RANGE
+                    _stretch = 1.0 + _strength * (_raw_stretch - 1.0)
+
+                _corrected = 0.5 + (_raw_pit - 0.5) * _stretch
+                if _corrected < 0.001:
+                    _corrected = 0.001
+                elif _corrected > 0.999:
+                    _corrected = 0.999
+                pit_values[_t] = _corrected
+
+            # Update EWM with RAW PIT (pre-correction, for future tracking)
+            _ewm_pit_m = _PIT_VAR_LAMBDA * _ewm_pit_m + _PIT_VAR_1M * _raw_pit
+            _ewm_pit_sq = _PIT_VAR_LAMBDA * _ewm_pit_sq + _PIT_VAR_1M * _raw_pit * _raw_pit
 
         pit_values = np.clip(pit_values, 0.001, 0.999)
 
