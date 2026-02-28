@@ -923,6 +923,7 @@ from models import (
     CST_MIN_OBS,
     # Model classes
     GaussianDriftModel,
+    GaussianUnifiedConfig,
     PhiGaussianDriftModel,
     PhiStudentTDriftModel,
     PhiNIGDriftModel,
@@ -3509,6 +3510,86 @@ def fit_all_models_for_regime(
                 "nu": float(nu_fixed),
                 "unified_model": True,
                 "nu_fixed": True,
+            }
+
+    # =========================================================================
+    # Model 2b: UNIFIED Gaussian (Feb 2026 - nu-free Calibration Pipeline)
+    # =========================================================================
+    n_params_gaussian_unified = 8
+
+    for phi_mode, model_prefix in [(False, "kalman_gaussian_unified"),
+                                    (True, "kalman_phi_gaussian_unified")]:
+        try:
+            g_config, g_diag = GaussianDriftModel.optimize_params_unified(
+                returns, vol, phi_mode=phi_mode, train_frac=0.7, asset_symbol=asset)
+            if not g_diag.get("success", False):
+                raise ValueError("Gaussian unified: " + str(g_diag.get("error", "?")))
+            _, _, mu_pred_gu, S_pred_gu, ll_gu = GaussianDriftModel.filter_phi_with_predictive(
+                returns, vol, float(g_config.q), float(g_config.c), float(g_config.phi))
+            _pit_gu, _pit_p_gu, _sigma_gu, _crps_gu, _calib_gu = GaussianDriftModel.filter_and_calibrate(
+                returns, vol, g_config, train_frac=0.7)
+            pit_p_gu = float(_pit_p_gu) if np.isfinite(_pit_p_gu) else 0.0
+            _berk_p_gu = float(_calib_gu.get("berkowitz_pvalue", 0.0))
+            _berk_lr_gu = float(_calib_gu.get("berkowitz_lr", 0.0))
+            _pit_count_gu = int(_calib_gu.get("pit_count", 0))
+            _mad_gu = float(_calib_gu.get("mad", 1.0))
+            aic_gu = compute_aic(ll_gu, n_params_gaussian_unified)
+            bic_gu = compute_bic(ll_gu, n_params_gaussian_unified, n_obs)
+            n_train_gu = int(n_obs * 0.7)
+            returns_test_gu = returns[n_train_gu:]
+            mu_eff_gu = _calib_gu.get("mu_effective", mu_pred_gu[n_train_gu:])
+            if isinstance(mu_eff_gu, np.ndarray) and len(mu_eff_gu) == len(returns_test_gu):
+                forecast_std_gu = np.maximum(_sigma_gu, 1e-10)
+            else:
+                forecast_std_gu = np.sqrt(np.maximum(S_pred_gu[n_train_gu:], 1e-20))
+                mu_eff_gu = mu_pred_gu[n_train_gu:]
+            hyvarinen_gu = compute_hyvarinen_score_gaussian(returns_test_gu, mu_eff_gu, forecast_std_gu)
+            crps_final_gu = compute_crps_gaussian_inline(returns_test_gu, mu_eff_gu, forecast_std_gu)
+            _ks_stat_gu = 1.0
+            if hasattr(_pit_gu, "__len__") and len(_pit_gu) > 0:
+                _ps_gu = np.sort(np.asarray(_pit_gu))
+                _n_ps_gu = len(_ps_gu)
+                _dp_gu = np.max(np.arange(1, _n_ps_gu + 1) / _n_ps_gu - _ps_gu)
+                _dm_gu = np.max(_ps_gu - np.arange(0, _n_ps_gu) / _n_ps_gu)
+                _ks_stat_gu = float(max(_dp_gu, _dm_gu))
+            models[model_prefix] = {
+                "q": float(g_config.q), "c": float(g_config.c), "phi": float(g_config.phi),
+                "variance_inflation": float(g_config.variance_inflation),
+                "mu_drift": float(g_config.mu_drift),
+                "garch_omega": float(g_config.garch_omega),
+                "garch_alpha": float(g_config.garch_alpha),
+                "garch_beta": float(g_config.garch_beta),
+                "garch_leverage": float(g_config.garch_leverage),
+                "garch_unconditional_var": float(g_config.garch_unconditional_var),
+                "crps_ewm_lambda": float(g_config.crps_ewm_lambda),
+                "crps_sigma_shrinkage": float(g_config.crps_sigma_shrinkage),
+                "calibrated_gw": float(g_config.calibrated_gw),
+                "calibrated_lambda_rho": float(g_config.calibrated_lambda_rho),
+                "calibrated_beta_probit_corr": float(g_config.calibrated_beta_probit_corr),
+                "log_likelihood": float(ll_gu),
+                "mean_log_likelihood": float(ll_gu / max(n_obs, 1)),
+                "bic": float(bic_gu), "aic": float(aic_gu),
+                "hyvarinen_score": float(hyvarinen_gu),
+                "crps": float(crps_final_gu),
+                "ks_statistic": _ks_stat_gu,
+                "pit_ks_pvalue": float(pit_p_gu),
+                "pit_calibration_grade": "A" if _mad_gu < 0.02 else ("B" if _mad_gu < 0.05 else ("C" if _mad_gu < 0.10 else "F")),
+                "histogram_mad": float(_mad_gu),
+                "berkowitz_pvalue": float(_berk_p_gu),
+                "berkowitz_lr": float(_berk_lr_gu),
+                "pit_count": int(_pit_count_gu),
+                "fit_success": True, "unified_model": True,
+                "gaussian_unified": True,
+                "phi_mode": phi_mode,
+                "n_params": n_params_gaussian_unified,
+                "model_type": "gaussian_unified",
+            }
+        except Exception as e:
+            models[model_prefix] = {
+                "fit_success": False, "error": str(e),
+                "bic": float('inf'), "aic": float('inf'),
+                "hyvarinen_score": float('-inf'), "crps": float('inf'),
+                "unified_model": True, "gaussian_unified": True,
             }
 
     # =========================================================================

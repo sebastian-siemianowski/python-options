@@ -3170,8 +3170,67 @@ def _kalman_filter_drift(
     enhanced_model_type = None
     ms_q_diagnostics = None
     
+    # Check for Unified Gaussian model (February 2026 - ν-free Calibration Pipeline)
+    if tuned_params is not None and tuned_params.get('gaussian_unified') and gas_q_result is None:
+        try:
+            from models.gaussian import GaussianDriftModel, GaussianUnifiedConfig
+            import numpy as _np_sig
+            
+            # Build GaussianUnifiedConfig from tuned params
+            g_unified_config = GaussianUnifiedConfig(
+                q=float(tuned_params.get('q', 1e-6)),
+                c=float(tuned_params.get('c', 1.0)),
+                phi=float(tuned_params.get('phi', 0.0)),
+                variance_inflation=float(tuned_params.get('variance_inflation', 1.0)),
+                mu_drift=float(tuned_params.get('mu_drift', 0.0)),
+                garch_omega=float(tuned_params.get('garch_omega', 0.0)),
+                garch_alpha=float(tuned_params.get('garch_alpha', 0.0)),
+                garch_beta=float(tuned_params.get('garch_beta', 0.0)),
+                garch_leverage=float(tuned_params.get('garch_leverage', 0.0)),
+                garch_unconditional_var=float(tuned_params.get('garch_unconditional_var', 1e-4)),
+                crps_ewm_lambda=float(tuned_params.get('crps_ewm_lambda', 0.0)),
+                crps_sigma_shrinkage=float(tuned_params.get('crps_sigma_shrinkage', 1.0)),
+                calibrated_gw=float(tuned_params.get('calibrated_gw', 0.0)),
+                calibrated_lambda_rho=float(tuned_params.get('calibrated_lambda_rho', 0.985)),
+                calibrated_beta_probit_corr=float(tuned_params.get('calibrated_beta_probit_corr', 1.0)),
+            )
+            
+            # Run filter with predictive output
+            mu_g, P_g, mu_pred_g, S_pred_g, ll_g = GaussianDriftModel.filter_phi_with_predictive(
+                y, sigma, g_unified_config.q, g_unified_config.c, g_unified_config.phi
+            )
+            mu_filtered = mu_g
+            P_filtered = P_g
+            log_likelihood = ll_g
+            enhanced_result = True
+            enhanced_model_type = 'gaussian_unified'
+            
+            # Get calibrated variance from filter_and_calibrate
+            try:
+                _pit_gu, _pit_p_gu, _sigma_cal_gu, _, _calib_diag_gu = \
+                    GaussianDriftModel.filter_and_calibrate(
+                        y, sigma, g_unified_config, train_frac=0.7
+                    )
+                _n_train_gu = int(len(y) * 0.7)
+                if len(_sigma_cal_gu) == len(y) - _n_train_gu and _np_sig.all(_sigma_cal_gu > 0):
+                    _S_cal_full_gu = _np_sig.copy(S_pred_g)
+                    _S_cal_full_gu[_n_train_gu:] = _sigma_cal_gu ** 2
+                    P_filtered = _S_cal_full_gu
+            except Exception:
+                pass  # Keep raw P_filtered on failure
+            
+            if os.getenv("DEBUG"):
+                print(f"Using unified Gaussian filter: φ={g_unified_config.phi:.3f}, "
+                      f"β={g_unified_config.variance_inflation:.3f}, "
+                      f"garch=({g_unified_config.garch_alpha:.3f},{g_unified_config.garch_beta:.3f}), "
+                      f"gw={g_unified_config.calibrated_gw:.3f}")
+        except Exception as gu_e:
+            if os.getenv("DEBUG"):
+                print(f"Unified Gaussian filter failed, falling back: {gu_e}")
+            enhanced_result = None
+    
     # Check for Unified Student-T model (February 2026 - Elite Architecture)
-    if tuned_params is not None and tuned_params.get('unified_model') and gas_q_result is None:
+    if tuned_params is not None and tuned_params.get('unified_model') and not tuned_params.get('gaussian_unified') and gas_q_result is None:
         try:
             from models.phi_student_t import UnifiedStudentTConfig
             import numpy as _np_sig
