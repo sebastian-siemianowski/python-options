@@ -28,6 +28,10 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import kstest, norm
 
+# Pre-computed constants (module level — computed once at import)
+_LOG_2PI = math.log(2.0 * math.pi)
+_LOG10_C_TARGET = math.log10(0.9)
+
 # Filter cache for deterministic result reuse
 try:
     from .filter_cache import (
@@ -75,6 +79,20 @@ try:
 except ImportError:
     _ELITE_TUNING_AVAILABLE = False
     ELITE_TUNING_ENABLED = False
+
+
+def _fast_ks_statistic(pit_values: np.ndarray) -> float:
+    """Lightweight KS statistic against Uniform(0,1) without scipy overhead.
+
+    ~10× faster than scipy.stats.kstest for 200-1000 element arrays.
+    """
+    n = len(pit_values)
+    if n == 0:
+        return 1.0
+    pit_sorted = np.sort(pit_values)
+    d_plus = np.max(np.arange(1, n + 1) / n - pit_sorted)
+    d_minus = np.max(pit_sorted - np.arange(0, n) / n)
+    return float(max(d_plus, d_minus))
 
 
 # =============================================================================
@@ -133,28 +151,18 @@ def _kalman_filter_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float,
     """
     Optimized Kalman filter with persistent/mean-reverting drift μ_t = φ μ_{t-1} + w_t.
     
-    Performance optimizations (February 2026):
-    - Pre-compute phi_sq and R array once
-    - Pre-compute log_2pi constant
-    - Use np.empty instead of np.zeros
-    - Ensure contiguous array access
+    Uses math.log for scalar operations (~5× faster than np.log for scalars).
     """
     n = len(returns)
-    
-    # Convert to contiguous float64 arrays once
     returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
     vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
     
-    # Extract scalar values once
-    q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
-    c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
+    q_val = float(q)
+    c_val = float(c)
     phi_val = float(np.clip(phi, -0.999, 0.999))
-    
-    # Pre-compute constants
     phi_sq = phi_val * phi_val
-    log_2pi = np.log(2 * np.pi)
+    _mlog = math.log
     
-    # Pre-compute R array (vectorized)
     R = c_val * (vol * vol)
 
     mu = 0.0
@@ -182,8 +190,7 @@ def _kalman_filter_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float,
         mu_filtered[t] = mu
         P_filtered[t] = P
 
-        # Inlined log-likelihood
-        log_likelihood += -0.5 * (log_2pi + np.log(S) + (innovation * innovation) / S)
+        log_likelihood += -0.5 * (_LOG_2PI + _mlog(S) + (innovation * innovation) / S)
 
     return mu_filtered, P_filtered, float(log_likelihood)
 
@@ -382,7 +389,8 @@ class PhiGaussianDriftModel:
 
             total_ll_oos = 0.0
             total_obs = 0
-            all_standardized = []
+            std_buf = np.empty(1000, dtype=np.float64)
+            std_count = 0
 
             for train_start, train_end, test_start, test_end in fold_splits:
                 try:
@@ -409,8 +417,9 @@ class PhiGaussianDriftModel:
 
                         if forecast_var > 1e-12:
                             ll_fold += -0.5 * (_LOG_2PI + _mlog(forecast_var) + (innovation * innovation) / forecast_var)
-                            if len(all_standardized) < 1000:
-                                all_standardized.append(innovation / _msqrt(forecast_var))
+                            if std_count < 1000:
+                                std_buf[std_count] = innovation / _msqrt(forecast_var)
+                                std_count += 1
 
                         S_total = P_pred + R
                         K = P_pred / S_total if S_total > 1e-12 else 0.0
@@ -429,12 +438,10 @@ class PhiGaussianDriftModel:
             avg_ll_oos = total_ll_oos / max(total_obs, 1)
 
             calibration_penalty = 0.0
-            if len(all_standardized) >= 30:
+            if std_count >= 30:
                 try:
-                    pit_values = norm.cdf(all_standardized)
-
-                    ks_result = kstest(pit_values, 'uniform')
-                    ks_stat = float(ks_result.statistic)
+                    pit_values = norm.cdf(std_buf[:std_count])
+                    ks_stat = _fast_ks_statistic(pit_values)
 
                     if ks_stat > 0.05:
                         calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)

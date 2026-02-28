@@ -2689,7 +2689,7 @@ def compute_extended_pit_metrics_gaussian(
     phi: float = 1.0,
 ) -> Dict:
     """PIT + Berkowitz + histogram MAD for Gaussian models."""
-    from scipy.stats import kstest, norm as _norm_dist
+    # kstest, norm already imported at module level (line 280)
 
     mu_pred, S_pred = reconstruct_predictive_from_filtered_gaussian(
         returns, mu_filtered, P_filtered, vol, q, c, phi
@@ -2701,7 +2701,7 @@ def compute_extended_pit_metrics_gaussian(
     forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
     standardized = (returns_flat - mu_pred_flat) / forecast_std
     valid_mask = np.isfinite(standardized)
-    pit_values = _norm_dist.cdf(standardized[valid_mask])
+    pit_values = norm.cdf(standardized[valid_mask])
     if len(pit_values) < 20:
         return {"ks_statistic": 1.0, "pit_ks_pvalue": 0.0,
                 "berkowitz_pvalue": 0.0, "berkowitz_lr": 0.0,
@@ -2746,7 +2746,8 @@ def compute_extended_pit_metrics_student_t(
     skips the expensive filter_phi_with_predictive call entirely.
     PIT CDF computation is vectorized (~5x faster than per-element loop).
     """
-    from scipy.stats import kstest, t as _st_dist
+    # student_t (as t), kstest already imported at module level
+    _st_dist = student_t
 
     if mu_pred_precomputed is not None and S_pred_precomputed is not None:
         mu_pred = mu_pred_precomputed

@@ -457,59 +457,56 @@ class GaussianDriftModel:
             split_idx = int(n * train_frac)
             fold_splits = [(0, split_idx, split_idx, n)]
 
+        # Pre-compute arrays for inner loop (avoid per-element np.ndim checks)
+        _returns_r = np.ascontiguousarray(returns_robust.flatten(), dtype=np.float64)
+        _vol_sq = np.ascontiguousarray((vol * vol).flatten(), dtype=np.float64)
+        _mlog = math.log
+        _msqrt = math.sqrt
+
         def negative_penalized_ll_cv(params: np.ndarray) -> float:
             log_q, log_c = params
             q = 10 ** log_q
             c = 10 ** log_c
 
-            if q <= 0 or c <= 0 or not np.isfinite(q) or not np.isfinite(c):
+            if q <= 0 or c <= 0 or not math.isfinite(q) or not math.isfinite(c):
                 return 1e12
 
             total_ll_oos = 0.0
             total_obs = 0
-            all_standardized = []
+            # Pre-allocated array for standardized residuals (avoids list append overhead)
+            std_buf = np.empty(1000, dtype=np.float64)
+            std_count = 0
 
             for train_start, train_end, test_start, test_end in fold_splits:
                 try:
-                    ret_train = returns_robust[train_start:train_end]
+                    ret_train = _returns_r[train_start:train_end]
                     vol_train = vol[train_start:train_end]
 
                     if len(ret_train) < 3:
                         continue
 
-                    mu_filt_train, P_filt_train, _ = cls.filter(returns_robust[train_start:train_end], vol_train, q, c)
+                    mu_filt_train, P_filt_train, _ = cls.filter(ret_train, vol_train, q, c)
 
-                    mu_final = float(mu_filt_train[-1])
-                    P_final = float(P_filt_train[-1])
+                    mu_pred = float(mu_filt_train[-1])
+                    P_pred = float(P_filt_train[-1])
 
                     ll_fold = 0.0
-                    mu_pred = mu_final
-                    P_pred = P_final
 
                     for t in range(test_start, test_end):
                         P_pred = P_pred + q
 
-                        if np.ndim(returns_robust[t]) == 0:
-                            ret_t = float(returns_robust[t])
-                        else:
-                            ret_t = float(returns_robust[t].item())
-                        if np.ndim(vol[t]) == 0:
-                            vol_t = float(vol[t])
-                        else:
-                            vol_t = float(vol[t].item())
-
-                        R = c * (vol_t ** 2)
-                        innovation = ret_t - mu_pred
+                        R = c * _vol_sq[t]
+                        innovation = _returns_r[t] - mu_pred
                         forecast_var = P_pred + R
 
                         if forecast_var > 1e-12:
-                            ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
-                            standardized_innov = innovation / np.sqrt(forecast_var)
-                            if len(all_standardized) < 1000:
-                                all_standardized.append(float(standardized_innov))
-                            ll_fold += ll_contrib
+                            ll_fold += -0.5 * (_LOG_2PI + _mlog(forecast_var) + (innovation * innovation) / forecast_var)
+                            if std_count < 1000:
+                                std_buf[std_count] = innovation / _msqrt(forecast_var)
+                                std_count += 1
 
-                        K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
+                        S_total = P_pred + R
+                        K = P_pred / S_total if S_total > 1e-12 else 0.0
                         mu_pred = mu_pred + K * innovation
                         P_pred = (1.0 - K) * P_pred
 
@@ -525,12 +522,10 @@ class GaussianDriftModel:
             avg_ll_oos = total_ll_oos / max(total_obs, 1)
 
             calibration_penalty = 0.0
-            if len(all_standardized) >= 30:
+            if std_count >= 30:
                 try:
-                    pit_values = norm.cdf(all_standardized)
-
-                    ks_result = kstest(pit_values, 'uniform')
-                    ks_stat = float(ks_result.statistic)
+                    pit_values = norm.cdf(std_buf[:std_count])
+                    ks_stat = _fast_ks_statistic(pit_values)
 
                     if ks_stat > 0.05:
                         calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
@@ -545,14 +540,11 @@ class GaussianDriftModel:
 
             prior_scale = 1.0 / max(total_obs, 100)
             log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
-
-            c_target = 0.9
-            log_c_target = np.log10(c_target)
-            log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
+            log_prior_c = -0.1 * prior_scale * (log_c - _LOG10_C_TARGET) ** 2
 
             penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + calibration_penalty
 
-            if not np.isfinite(penalized_ll):
+            if not math.isfinite(penalized_ll):
                 return 1e12
 
             return -penalized_ll
