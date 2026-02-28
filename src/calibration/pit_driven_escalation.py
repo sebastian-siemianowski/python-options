@@ -654,6 +654,9 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
     unified_t_12_count = 0
     unified_t_20_count = 0
     
+    # Gaussian Unified models (February 2026)
+    gaussian_unified_count = 0
+    
     # Regular Student-t by ν (non-unified)
     student_t_nu_4_count = 0
     student_t_nu_6_count = 0
@@ -713,6 +716,7 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
         is_phi = 'phi' in noise_model or global_data.get('phi') is not None
         is_student_t = 'student_t' in noise_model or 'student-t' in noise_model
         is_unified = 'unified' in noise_model
+        is_gaussian_unified = is_unified and not is_student_t and ('gaussian' in noise_model or global_data.get('gaussian_unified', False))
         is_nu_refined = nu_ref.get('improvement_achieved', False)
         
         # Categorize each asset into exactly one model category
@@ -722,6 +726,8 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             gh_count += 1
         elif global_data.get('mixture_selected'):
             mixture_count += 1
+        elif is_gaussian_unified:
+            gaussian_unified_count += 1
         elif is_unified and is_student_t:
             # Unified Student-t model - count by ν
             nu_int = int(nu_val) if nu_val else 8
@@ -809,6 +815,7 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
     # Calculate totals
     total_momentum = gaussian_momentum_count + phi_gaussian_momentum_count + student_t_momentum_count + student_t_momentum_refined_count
     total_unified = unified_t_4_count + unified_t_6_count + unified_t_8_count + unified_t_12_count + unified_t_20_count
+    total_gaussian_unified = gaussian_unified_count
     total_student_t_regular = student_t_nu_4_count + student_t_nu_6_count + student_t_nu_8_count + student_t_nu_12_count + student_t_nu_20_count
     total_student_t = total_unified + total_student_t_regular + student_t_base_refined_count + student_t_momentum_count + student_t_momentum_refined_count
     escalations = total_student_t + mixture_count + gh_count + tvvm_count
@@ -835,6 +842,8 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             'φ-t-Unified-8': unified_t_8_count,
             'φ-t-Unified-12': unified_t_12_count,
             'φ-t-Unified-20': unified_t_20_count,
+            # Gaussian Unified models (February 2026)
+            'φ-Gaussian-Unified': gaussian_unified_count,
             # Regular Student-t by ν (non-unified)
             'φ-t(ν=4)': student_t_nu_4_count,
             'φ-t(ν=6)': student_t_nu_6_count,
@@ -866,6 +875,7 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             'unified-t-8': unified_t_8_count,
             'unified-t-12': unified_t_12_count,
             'unified-t-20': unified_t_20_count,
+            'gaussian-unified': gaussian_unified_count,
             'mixture': mixture_count,
             'gh': gh_count,
             'tvvm': tvvm_count,
@@ -877,6 +887,8 @@ def _compute_summary_directly_from_cache(cache: Dict[str, Dict]) -> Dict[str, An
             'unified_t_8': unified_t_8_count,
             'unified_t_12': unified_t_12_count,
             'unified_t_20': unified_t_20_count,
+            'gaussian_unified': gaussian_unified_count,
+            'total_gaussian_unified': total_gaussian_unified,
         },
         'momentum_counts': {
             'total_momentum': total_momentum,
