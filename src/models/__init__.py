@@ -46,7 +46,7 @@ USAGE:
     from models.hansen_skew_t import hansen_skew_t_cdf, hansen_skew_t_rvs
 """
 
-from models.gaussian import GaussianDriftModel
+from models.gaussian import GaussianDriftModel, GaussianUnifiedConfig
 from models.phi_gaussian import PhiGaussianDriftModel
 from models.phi_student_t import PhiStudentTDriftModel
 
@@ -192,6 +192,7 @@ except ImportError:
 __all__ = [
     # Models
     'GaussianDriftModel',
+    'GaussianUnifiedConfig',
     'PhiGaussianDriftModel',
     'PhiStudentTDriftModel',
     'PhiSkewTDriftModel',

@@ -29,18 +29,19 @@ WHAT THIS FILE DOES
 For EACH regime r:
 
     1. Fits ALL candidate model classes m independently:
-       - kalman_gaussian_momentum:          q, c           (2 params) [ENABLED - momentum Gaussian]
-       - kalman_phi_gaussian_momentum:      q, c, φ        (3 params) [ENABLED - momentum φ-Gaussian]
+       - kalman_gaussian_unified:           (8+ params) [ENABLED - unified Gaussian with momentum + GAS-Q]
+       - kalman_phi_gaussian_unified:       (9+ params) [ENABLED - unified phi-Gaussian with momentum + GAS-Q]
        - phi_student_t_nu_4:    q, c, φ        (3 params, ν=4 FIXED)
        - phi_student_t_nu_8:    q, c, φ        (3 params, ν=8 FIXED)
        - phi_student_t_nu_20:   q, c, φ        (3 params, ν=20 FIXED)
-       - phi_student_t_nu_{ν}_momentum: q, c, φ     (3 params, ν FIXED) [ENABLED]
+       NOTE: Momentum augmentation is now an INTERNAL pipeline step within each Student-t model.
+             Activated only if it improves CRPS. No separate _momentum model names.
        - phi_skew_t_nu_{ν}_gamma_{γ}: q, c, φ  (3 params, ν and γ FIXED)
        - phi_nig_alpha_{α}_beta_{β}: q, c, φ   (3 params, α and β FIXED)
        - phi_fisher_rao_w{W}_d{D}_momentum: q, c, φ (5 params) [ENABLED - Fisher-Rao geometry]
 
-    NOTE: Pure Gaussian and φ-Gaussian are NOT exposed in BMA (February 2026).
-    Only momentum-augmented versions (kalman_gaussian_momentum, kalman_phi_gaussian_momentum) participate.
+    NOTE: Legacy kalman_gaussian_momentum retired (Feb 2026). Unified Gaussian models subsume their functionality.
+    Unified models use Stage 1.5 momentum + Stage 4.5 GAS-Q internally.
 
     NOTE: Student-t, Skew-t, and NIG use DISCRETE grids (not continuous optimization).
     Each parameter combination is treated as a separate sub-model in BMA.
@@ -923,6 +924,7 @@ from models import (
     CST_MIN_OBS,
     # Model classes
     GaussianDriftModel,
+    GaussianUnifiedConfig,
     PhiGaussianDriftModel,
     PhiStudentTDriftModel,
     PhiNIGDriftModel,
@@ -966,6 +968,7 @@ try:
         compute_ablation_result,
         MomentumAblationResult,
         MOMENTUM_BMA_PRIOR_PENALTY,
+        apply_phi_shrinkage_for_mr,
     )
     MOMENTUM_AUGMENTATION_AVAILABLE = True
 except ImportError as e:
@@ -1757,6 +1760,8 @@ def tune_asset_q(
         )[0]
         best_params = models[best_model]
         
+        # Gate external augmentation layers for unified models (they already have internal calibration)
+        is_unified_winner = "unified" in best_model.lower() if best_model else False
         # =====================================================================
         # FIT 2-STATE GAUSSIAN MIXTURE MODEL (GMM)
         # =====================================================================
@@ -1813,45 +1818,50 @@ def tune_asset_q(
         hansen_skew_t_diagnostics = None
         hansen_comparison = None
         
-        try:
-            nu_hansen, lambda_hansen, ll_hansen, hansen_diag = fit_hansen_skew_t_mle(
-                returns,
-                nu_init=HANSEN_NU_DEFAULT,
-                lambda_init=HANSEN_LAMBDA_DEFAULT,
-                nu_bounds=(HANSEN_NU_MIN, HANSEN_NU_MAX),
-                lambda_bounds=(HANSEN_LAMBDA_MIN, HANSEN_LAMBDA_MAX)
-            )
-            
-            if hansen_diag.get("fit_success", False):
-                # Compute comparison with symmetric Student-t
-                best_nu = best_params.get("nu", HANSEN_NU_DEFAULT)
-                hansen_comparison = compare_symmetric_vs_hansen(
-                    returns, 
-                    nu_symmetric=best_nu if best_nu else HANSEN_NU_DEFAULT,
-                    nu_hansen=nu_hansen,
-                    lambda_hansen=lambda_hansen
+        if is_unified_winner:
+            _log(f"     ⊘ Hansen Skew-t: disabled (unified α_asym supersedes Hansen-λ)")
+            hansen_skew_t_diagnostics = {"fit_success": False, "reason": "unified_model_supersedes"}
+        
+        if not is_unified_winner:
+            try:
+                nu_hansen, lambda_hansen, ll_hansen, hansen_diag = fit_hansen_skew_t_mle(
+                    returns,
+                    nu_init=HANSEN_NU_DEFAULT,
+                    lambda_init=HANSEN_LAMBDA_DEFAULT,
+                    nu_bounds=(HANSEN_NU_MIN, HANSEN_NU_MAX),
+                    lambda_bounds=(HANSEN_LAMBDA_MIN, HANSEN_LAMBDA_MAX)
                 )
                 
-                hansen_skew_t_result = {
-                    "nu": float(nu_hansen),
-                    "lambda": float(lambda_hansen),
-                    "log_likelihood": float(ll_hansen),
-                    "skew_direction": "left" if lambda_hansen < -0.01 else ("right" if lambda_hansen > 0.01 else "symmetric"),
-                }
-                hansen_skew_t_diagnostics = hansen_diag
-                
-                # Log the result with color-coded direction
-                skew_indicator = "←" if lambda_hansen < -0.01 else ("→" if lambda_hansen > 0.01 else "—")
-                preference = hansen_comparison.get("preference", "unknown")
-                _log(f"     ✓ Hansen Skew-t: ν={nu_hansen:.1f}, λ={lambda_hansen:+.3f} {skew_indicator} "
-                     f"| ΔAic={hansen_comparison.get('delta_aic', 0):.1f} [{preference}]")
-            else:
-                error_msg = hansen_diag.get("error", "unknown")
-                _log(f"     ⚠️ Hansen Skew-t fit failed: {error_msg}")
-                hansen_skew_t_diagnostics = hansen_diag
-        except Exception as hansen_err:
-            _log(f"     ⚠️ Hansen Skew-t fitting exception: {hansen_err}")
-            hansen_skew_t_diagnostics = {"fit_success": False, "error": str(hansen_err)}
+                if hansen_diag.get("fit_success", False):
+                    # Compute comparison with symmetric Student-t
+                    best_nu = best_params.get("nu", HANSEN_NU_DEFAULT)
+                    hansen_comparison = compare_symmetric_vs_hansen(
+                        returns, 
+                        nu_symmetric=best_nu if best_nu else HANSEN_NU_DEFAULT,
+                        nu_hansen=nu_hansen,
+                        lambda_hansen=lambda_hansen
+                    )
+                    
+                    hansen_skew_t_result = {
+                        "nu": float(nu_hansen),
+                        "lambda": float(lambda_hansen),
+                        "log_likelihood": float(ll_hansen),
+                        "skew_direction": "left" if lambda_hansen < -0.01 else ("right" if lambda_hansen > 0.01 else "symmetric"),
+                    }
+                    hansen_skew_t_diagnostics = hansen_diag
+                    
+                    # Log the result with color-coded direction
+                    skew_indicator = "←" if lambda_hansen < -0.01 else ("→" if lambda_hansen > 0.01 else "—")
+                    preference = hansen_comparison.get("preference", "unknown")
+                    _log(f"     ✓ Hansen Skew-t: ν={nu_hansen:.1f}, λ={lambda_hansen:+.3f} {skew_indicator} "
+                         f"| ΔAic={hansen_comparison.get('delta_aic', 0):.1f} [{preference}]")
+                else:
+                    error_msg = hansen_diag.get("error", "unknown")
+                    _log(f"     ⚠️ Hansen Skew-t fit failed: {error_msg}")
+                    hansen_skew_t_diagnostics = hansen_diag
+            except Exception as hansen_err:
+                _log(f"     ⚠️ Hansen Skew-t fitting exception: {hansen_err}")
+                hansen_skew_t_diagnostics = {"fit_success": False, "error": str(hansen_err)}
         
         # =====================================================================
         # FIT EVT/GPD DISTRIBUTION (Extreme Value Theory for Tail Risk)
@@ -1872,7 +1882,7 @@ def tune_asset_q(
         evt_diagnostics = None
         evt_consistency = None
         
-        if EVT_AVAILABLE:
+        if EVT_AVAILABLE and not is_unified_winner:
             try:
                 # Compute losses (positive values)
                 losses = -returns[returns < 0]
@@ -1946,7 +1956,8 @@ def tune_asset_q(
         cst_diagnostics = None
         cst_comparison = None
         
-        try:
+        if not is_unified_winner:
+          try:
             if n_obs >= CST_MIN_OBS:
                 # Identify high-volatility observations for regime labeling
                 vol_threshold = np.percentile(vol, 80)
@@ -1986,9 +1997,9 @@ def tune_asset_q(
                     "error": "insufficient_data",
                     "n_obs": n_obs,
                 }
-        except Exception as cst_err:
-            _log(f"     ⚠️ Contaminated-t fitting exception: {cst_err}")
-            cst_diagnostics = {"fit_success": False, "error": str(cst_err)}
+          except Exception as cst_err:
+              _log(f"     ⚠️ Contaminated-t fitting exception: {cst_err}")
+              cst_diagnostics = {"fit_success": False, "error": str(cst_err)}
         
         # =====================================================================
         # PIT-DRIVEN ESCALATION: ν-REFINEMENT (L1 → L2)
@@ -2141,6 +2152,7 @@ def tune_asset_q(
             "best_model": best_model,  # Selected by max weight (after calibration veto gate)
             # Unified Student-t specific parameters (February 2026 - Elite Architecture)
             "unified_model": best_params.get("unified_model", False),
+            "gaussian_unified": best_params.get("gaussian_unified", False),
             "alpha_asym": best_params.get("alpha_asym"),
             "gamma_vov": best_params.get("gamma_vov"),
             "ms_sensitivity": best_params.get("ms_sensitivity"),
@@ -2616,25 +2628,24 @@ def reconstruct_predictive_from_filtered_gaussian(
         Tuple of (mu_pred, S_pred) predictive arrays
     """
     n = len(returns)
-    mu_pred = np.zeros(n)
-    S_pred = np.zeros(n)
-    
-    # Initial values (t=0)
-    mu_pred[0] = 0.0  # Prior mean
-    P_pred_0 = 1e-4 + q  # Prior variance + process noise
-    S_pred[0] = P_pred_0 + c * (vol[0] ** 2)
-    
-    # Reconstruct for t >= 1
-    for t in range(1, n):
-        # Predictive mean: φ × μ_{t-1|t-1}
-        mu_pred[t] = phi * mu_filtered[t - 1]
-        
-        # Predictive state variance: φ² × P_{t-1|t-1} + q
-        P_pred_t = (phi ** 2) * P_filtered[t - 1] + q
-        
-        # Total predictive variance: P_pred + observation noise
-        S_pred[t] = P_pred_t + c * (vol[t] ** 2)
-    
+    vol_flat = np.asarray(vol).flatten()
+    mu_flat = np.asarray(mu_filtered).flatten()
+    P_flat = np.asarray(P_filtered).flatten()
+    phi_sq = phi * phi
+
+    # Vectorized reconstruction (replaces per-element Python loop)
+    mu_pred = np.empty(n, dtype=np.float64)
+    S_pred = np.empty(n, dtype=np.float64)
+
+    # t=0: prior
+    mu_pred[0] = 0.0
+    S_pred[0] = (1e-4 + q) + c * (vol_flat[0] * vol_flat[0])
+
+    # t>=1: vectorized
+    if n > 1:
+        mu_pred[1:] = phi * mu_flat[:n - 1]
+        S_pred[1:] = phi_sq * P_flat[:n - 1] + q + c * (vol_flat[1:] * vol_flat[1:])
+
     return mu_pred, S_pred
 
 
@@ -2682,7 +2693,7 @@ def compute_extended_pit_metrics_gaussian(
     phi: float = 1.0,
 ) -> Dict:
     """PIT + Berkowitz + histogram MAD for Gaussian models."""
-    from scipy.stats import kstest, norm as _norm_dist
+    # kstest, norm already imported at module level (line 280)
 
     mu_pred, S_pred = reconstruct_predictive_from_filtered_gaussian(
         returns, mu_filtered, P_filtered, vol, q, c, phi
@@ -2694,7 +2705,7 @@ def compute_extended_pit_metrics_gaussian(
     forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
     standardized = (returns_flat - mu_pred_flat) / forecast_std
     valid_mask = np.isfinite(standardized)
-    pit_values = _norm_dist.cdf(standardized[valid_mask])
+    pit_values = norm.cdf(standardized[valid_mask])
     if len(pit_values) < 20:
         return {"ks_statistic": 1.0, "pit_ks_pvalue": 0.0,
                 "berkowitz_pvalue": 0.0, "berkowitz_lr": 0.0,
@@ -2730,21 +2741,37 @@ def compute_extended_pit_metrics_student_t(
     c: float,
     phi: float,
     nu: float,
+    mu_pred_precomputed: np.ndarray = None,
+    S_pred_precomputed: np.ndarray = None,
 ) -> Dict:
-    """PIT + Berkowitz + histogram MAD for Student-t models."""
-    from scipy.stats import kstest, t as _st_dist
+    """PIT + Berkowitz + histogram MAD for Student-t models.
 
-    mu_filt, P_filt, mu_pred, S_pred, ll = PhiStudentTDriftModel.filter_phi_with_predictive(
-        returns, vol, q, c, phi, nu
-    )
+    Performance: if mu_pred_precomputed and S_pred_precomputed are provided,
+    skips the expensive filter_phi_with_predictive call entirely.
+    PIT CDF computation is vectorized (~5x faster than per-element loop).
+    """
+    # student_t (as t), kstest already imported at module level
+    _st_dist = student_t
+
+    if mu_pred_precomputed is not None and S_pred_precomputed is not None:
+        mu_pred = mu_pred_precomputed
+        S_pred = S_pred_precomputed
+    else:
+        _, _, mu_pred, S_pred, _ = PhiStudentTDriftModel.filter_phi_with_predictive(
+            returns, vol, q, c, phi, nu
+        )
+
     returns_flat = np.asarray(returns).flatten()
     n = min(len(returns_flat), len(mu_pred), len(S_pred))
-    pit_values = np.empty(n)
-    for t in range(n):
-        S_t = max(S_pred[t], 1e-20)
-        scale = np.sqrt(S_t * (nu - 2) / nu) if nu > 2 else np.sqrt(S_t)
-        scale = max(scale, 1e-10)
-        pit_values[t] = _st_dist.cdf(returns_flat[t] - mu_pred[t], df=nu, scale=scale)
+
+    # Vectorized PIT computation (replaces per-element Python loop)
+    S_clamped = np.maximum(S_pred[:n], 1e-20)
+    if nu > 2:
+        scale_arr = np.sqrt(S_clamped * (nu - 2) / nu)
+    else:
+        scale_arr = np.sqrt(S_clamped)
+    scale_arr = np.maximum(scale_arr, 1e-10)
+    pit_values = _st_dist.cdf(returns_flat[:n] - mu_pred[:n], df=nu, scale=scale_arr)
     valid = np.isfinite(pit_values)
     pit_clean = np.clip(pit_values[valid], 0, 1)
     if len(pit_clean) < 20:
@@ -3174,9 +3201,28 @@ def fit_all_models_for_regime(
     # in BMA, eliminating ν-σ identifiability issues.
     #
     # Model naming: "phi_student_t_nu_{nu}" (e.g., "phi_student_t_nu_4")
+    #
+    # MOMENTUM INTERNALIZATION (February 2026):
+    # Momentum augmentation is an internal pipeline step, not a separate model.
+    # After fitting base params, we try momentum augmentation and compare CRPS.
+    # If momentum improves CRPS, we use the momentum-augmented results under
+    # the base model name. The flag "momentum_augmented: True" tracks this.
     # =========================================================================
     
     n_params_st = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T]  # 3 (q, c, phi)
+
+    # Pre-create momentum wrapper for internal CRPS comparison (if available)
+    _st_momentum_wrapper = None
+    if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
+        _st_momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
+        if prices is not None:
+            q_for_scaling = 1e-6
+            _st_momentum_wrapper.precompute_signals(
+                returns=returns, prices=prices, vol=vol,
+                regime_labels=regime_labels, q=q_for_scaling,
+            )
+        else:
+            _st_momentum_wrapper.precompute_momentum(returns)
     
     for nu_fixed in STUDENT_T_NU_GRID:
         model_name = f"phi_student_t_nu_{nu_fixed}"
@@ -3201,8 +3247,10 @@ def fit_all_models_for_regime(
             )
 
             # Compute PIT with extended metrics (Berkowitz + MAD)
+            # PERF: Pass precomputed predictive values to skip redundant filter run
             _pit_ext_base = compute_extended_pit_metrics_student_t(
-                returns, vol, q_st, c_st, phi_st, nu_fixed
+                returns, vol, q_st, c_st, phi_st, nu_fixed,
+                mu_pred_precomputed=mu_pred_st, S_pred_precomputed=S_pred_st,
             )
             ks_st = _pit_ext_base["ks_statistic"]
             pit_p_st = _pit_ext_base["pit_ks_pvalue"]
@@ -3231,6 +3279,56 @@ def fit_all_models_for_regime(
             crps_st = compute_crps_student_t_inline(
                 returns, mu_pred_st, forecast_scale_st, nu_fixed
             )
+
+            # -----------------------------------------------------------------
+            # INTERNAL MOMENTUM AUGMENTATION — activate only if CRPS improves
+            # -----------------------------------------------------------------
+            _mom_activated = False
+            _mom_diag = None
+            if _st_momentum_wrapper is not None:
+                try:
+                    mu_mom, P_mom, ll_mom = _st_momentum_wrapper.filter(
+                        returns, vol, q_st, c_st, phi=phi_st, nu=nu_fixed,
+                        base_model='phi_student_t'
+                    )
+                    # Get momentum-augmented predictive values using the
+                    # wrapper's exogenous_input (u_t) and effective phi.
+                    _mom_u_t = _st_momentum_wrapper._exogenous_input
+                    _mom_phi_eff = apply_phi_shrinkage_for_mr(phi_st, _st_momentum_wrapper.config)
+                    _, _, mu_pred_mom, S_pred_mom, _ = PhiStudentTDriftModel.filter_phi_with_predictive(
+                        returns, vol, q_st, c_st, _mom_phi_eff, nu_fixed,
+                        exogenous_input=_mom_u_t,
+                    )
+                    if nu_fixed > 2:
+                        forecast_scale_mom = np.sqrt(S_pred_mom * (nu_fixed - 2) / nu_fixed)
+                    else:
+                        forecast_scale_mom = np.sqrt(S_pred_mom)
+                    crps_mom = compute_crps_student_t_inline(
+                        returns, mu_pred_mom, forecast_scale_mom, nu_fixed
+                    )
+                    # Only activate momentum if CRPS improves (lower is better)
+                    if np.isfinite(crps_mom) and crps_mom < crps_st:
+                        _mom_activated = True
+                        _mom_diag = _st_momentum_wrapper.get_diagnostics()
+                        # Recompute all scores with momentum filter results
+                        pit_ext_mom = compute_extended_pit_metrics_student_t(
+                            returns, vol, q_st, c_st, phi_st, nu_fixed,
+                            mu_pred_precomputed=mu_pred_mom, S_pred_precomputed=S_pred_mom,
+                        )
+                        ks_st = pit_ext_mom["ks_statistic"]
+                        pit_p_st = pit_ext_mom["pit_ks_pvalue"]
+                        _berk_st = pit_ext_mom["berkowitz_pvalue"]
+                        _mad_st = pit_ext_mom["histogram_mad"]
+                        ll_full_st = ll_mom
+                        mean_ll_st = ll_mom / max(n_obs, 1)
+                        bic_st = compute_bic(ll_mom, n_params_st, n_obs)
+                        aic_st = compute_aic(ll_mom, n_params_st)
+                        hyvarinen_st = compute_hyvarinen_score_student_t(
+                            returns, mu_pred_mom, forecast_scale_mom, nu_fixed
+                        )
+                        crps_st = crps_mom
+                except Exception:
+                    pass  # Momentum failed — use base model scores
             
             models[model_name] = {
                 "q": float(q_st),
@@ -3254,6 +3352,8 @@ def fit_all_models_for_regime(
                 "fit_success": True,
                 "diagnostics": diag_st,
                 "nu_fixed": True,  # Flag indicating ν was fixed, not estimated
+                "momentum_augmented": _mom_activated,
+                "momentum_diagnostics": _mom_diag,
             }
         except Exception as e:
             models[model_name] = {
@@ -3487,6 +3587,124 @@ def fit_all_models_for_regime(
             }
 
     # =========================================================================
+    # Model 2b: UNIFIED Gaussian (Feb 2026 - nu-free Calibration Pipeline)
+    # =========================================================================
+    # Includes internal momentum integration (Stage 1.5) and GAS-Q adaptive
+    # process noise (Stage 4.5), both with degradation guards.
+    # Momentum and GAS-Q are tuned INSIDE optimize_params_unified — not as
+    # separate external model variants.
+    # =========================================================================
+    n_params_gaussian_unified = 8  # base params; momentum/GAS-Q add 1+3 conditionally
+
+    # Pre-compute momentum signal for unified Gaussian (reused for both phi modes)
+    _gu_momentum_signal = None
+    if MOMENTUM_AUGMENTATION_AVAILABLE and MOMENTUM_AUGMENTATION_ENABLED:
+        try:
+            _gu_mom_features = compute_momentum_features(returns)
+            _gu_momentum_signal = compute_momentum_signal(_gu_mom_features)
+        except Exception:
+            _gu_momentum_signal = None
+
+    for phi_mode, model_prefix in [(False, "kalman_gaussian_unified"),
+                                    (True, "kalman_phi_gaussian_unified")]:
+        try:
+            g_config, g_diag = GaussianDriftModel.optimize_params_unified(
+                returns, vol, phi_mode=phi_mode, train_frac=0.7,
+                asset_symbol=asset, momentum_signal=_gu_momentum_signal)
+            if not g_diag.get("success", False):
+                raise ValueError("Gaussian unified: " + str(g_diag.get("error", "?")))
+
+            # Reconstruct momentum signal for filter_and_calibrate
+            _gu_mom_for_calib = _gu_momentum_signal if g_config.momentum_enabled else None
+
+            _, _, mu_pred_gu, S_pred_gu, ll_gu = GaussianDriftModel._filter_phi_with_momentum(
+                returns, vol, float(g_config.q), float(g_config.c), float(g_config.phi),
+                _gu_mom_for_calib, float(g_config.momentum_weight))
+            _pit_gu, _pit_p_gu, _sigma_gu, _crps_gu, _calib_gu = GaussianDriftModel.filter_and_calibrate(
+                returns, vol, g_config, train_frac=0.7,
+                momentum_signal=_gu_mom_for_calib)
+            pit_p_gu = float(_pit_p_gu) if np.isfinite(_pit_p_gu) else 0.0
+            _berk_p_gu = float(_calib_gu.get("berkowitz_pvalue", 0.0))
+            _berk_lr_gu = float(_calib_gu.get("berkowitz_lr", 0.0))
+            _pit_count_gu = int(_calib_gu.get("pit_count", 0))
+            _mad_gu = float(_calib_gu.get("mad", 1.0))
+
+            # Parameter count: base 8 + momentum (1) + GAS-Q (3) when active
+            _eff_n_params_gu = n_params_gaussian_unified
+            if g_config.momentum_enabled:
+                _eff_n_params_gu += 1
+            if g_config.gas_q_enabled:
+                _eff_n_params_gu += 3
+
+            aic_gu = compute_aic(ll_gu, _eff_n_params_gu)
+            bic_gu = compute_bic(ll_gu, _eff_n_params_gu, n_obs)
+            n_train_gu = int(n_obs * 0.7)
+            returns_test_gu = returns[n_train_gu:]
+            mu_eff_gu = _calib_gu.get("mu_effective", mu_pred_gu[n_train_gu:])
+            if isinstance(mu_eff_gu, np.ndarray) and len(mu_eff_gu) == len(returns_test_gu):
+                forecast_std_gu = np.maximum(_sigma_gu, 1e-10)
+            else:
+                forecast_std_gu = np.sqrt(np.maximum(S_pred_gu[n_train_gu:], 1e-20))
+                mu_eff_gu = mu_pred_gu[n_train_gu:]
+            hyvarinen_gu = compute_hyvarinen_score_gaussian(returns_test_gu, mu_eff_gu, forecast_std_gu)
+            crps_final_gu = compute_crps_gaussian_inline(returns_test_gu, mu_eff_gu, forecast_std_gu)
+            _ks_stat_gu = 1.0
+            if hasattr(_pit_gu, "__len__") and len(_pit_gu) > 0:
+                _ps_gu = np.sort(np.asarray(_pit_gu))
+                _n_ps_gu = len(_ps_gu)
+                _dp_gu = np.max(np.arange(1, _n_ps_gu + 1) / _n_ps_gu - _ps_gu)
+                _dm_gu = np.max(_ps_gu - np.arange(0, _n_ps_gu) / _n_ps_gu)
+                _ks_stat_gu = float(max(_dp_gu, _dm_gu))
+            models[model_prefix] = {
+                "q": float(g_config.q), "c": float(g_config.c), "phi": float(g_config.phi),
+                "variance_inflation": float(g_config.variance_inflation),
+                "mu_drift": float(g_config.mu_drift),
+                "garch_omega": float(g_config.garch_omega),
+                "garch_alpha": float(g_config.garch_alpha),
+                "garch_beta": float(g_config.garch_beta),
+                "garch_leverage": float(g_config.garch_leverage),
+                "garch_unconditional_var": float(g_config.garch_unconditional_var),
+                "crps_ewm_lambda": float(g_config.crps_ewm_lambda),
+                "crps_sigma_shrinkage": float(g_config.crps_sigma_shrinkage),
+                "calibrated_gw": float(g_config.calibrated_gw),
+                "calibrated_lambda_rho": float(g_config.calibrated_lambda_rho),
+                "calibrated_beta_probit_corr": float(g_config.calibrated_beta_probit_corr),
+                # Momentum integration (Stage 1.5)
+                "momentum_weight": float(g_config.momentum_weight),
+                "momentum_augmented": g_config.momentum_enabled,
+                # GAS-Q adaptive process noise (Stage 4.5)
+                "gas_q_omega": float(g_config.gas_q_omega),
+                "gas_q_alpha": float(g_config.gas_q_alpha),
+                "gas_q_beta": float(g_config.gas_q_beta),
+                "gas_q_enabled": g_config.gas_q_enabled,
+                # Scores
+                "log_likelihood": float(ll_gu),
+                "mean_log_likelihood": float(ll_gu / max(n_obs, 1)),
+                "bic": float(bic_gu), "aic": float(aic_gu),
+                "hyvarinen_score": float(hyvarinen_gu),
+                "crps": float(crps_final_gu),
+                "ks_statistic": _ks_stat_gu,
+                "pit_ks_pvalue": float(pit_p_gu),
+                "pit_calibration_grade": "A" if _mad_gu < 0.02 else ("B" if _mad_gu < 0.05 else ("C" if _mad_gu < 0.10 else "F")),
+                "histogram_mad": float(_mad_gu),
+                "berkowitz_pvalue": float(_berk_p_gu),
+                "berkowitz_lr": float(_berk_lr_gu),
+                "pit_count": int(_pit_count_gu),
+                "fit_success": True, "unified_model": True,
+                "gaussian_unified": True,
+                "phi_mode": phi_mode,
+                "n_params": _eff_n_params_gu,
+                "model_type": "gaussian_unified",
+            }
+        except Exception as e:
+            models[model_prefix] = {
+                "fit_success": False, "error": str(e),
+                "bic": float('inf'), "aic": float('inf'),
+                "hyvarinen_score": float('-inf'), "crps": float('inf'),
+                "unified_model": True, "gaussian_unified": True,
+            }
+
+    # =========================================================================
     # Model 3: Phi-NIG with DISCRETE α and β GRID (Normal-Inverse Gaussian)
     # =========================================================================
     # NIG (Normal-Inverse Gaussian) distribution captures both:
@@ -3603,286 +3821,15 @@ def fit_all_models_for_regime(
                     }
     
     # =========================================================================
-    # MOMENTUM-AUGMENTED MODELS (February 2026)
+    # MOMENTUM AUGMENTED STUDENT-T — RETIRED AS SEPARATE MODELS (Feb 2026)
     # =========================================================================
-    # Momentum-augmented variants of base models compete as conditional
-    # hypotheses in BMA. Momentum enters model selection, not filter equations.
+    # Momentum augmentation is now an INTERNAL pipeline step within each
+    # phi_student_t_nu_X base model (see Model 1 block above).
+    # Activated ONLY if CRPS improves. No separate _momentum model names.
     #
-    # DESIGN PHILOSOPHY:
-    #   "Momentum is a hypothesis, not a certainty."
-    #   Momentum-augmented models receive a prior penalty in BMA.
-    #   They must earn their weight through superior predictive likelihood.
-    #
-    # MODELS:
-    #   - kalman_gaussian_momentum
-    #   - kalman_phi_gaussian_momentum
-    #   - phi_student_t_nu_{nu}_momentum (for each nu in grid)
-    #
-    # BIC ADJUSTMENT:
-    #   Momentum models receive a prior penalty implemented as BIC adjustment.
-    #   This prevents slow drift toward momentum dominance in noisy assets.
+    # Legacy Gaussian momentum models similarly retired — functionality
+    # subsumed by unified Gaussian models with internal momentum + GAS-Q.
     # =========================================================================
-    
-    if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
-        # Create momentum wrapper with MR integration (February 2026)
-        momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
-        
-        # Use precompute_signals for state-equation MR integration
-        # Falls back to momentum-only if prices not available
-        if prices is not None:
-            # Get process noise q from base Gaussian model for dynamic max_u scaling
-            q_for_scaling = 1e-6  # Default
-            if 'kalman_gaussian' in models and models['kalman_gaussian'].get('q'):
-                q_for_scaling = models['kalman_gaussian']['q']
-            
-            momentum_wrapper.precompute_signals(
-                returns=returns,
-                prices=prices,
-                vol=vol,
-                regime_labels=regime_labels,
-                q=q_for_scaling,
-            )
-        else:
-            # Legacy path: momentum-only (no MR)
-            momentum_wrapper.precompute_momentum(returns)
-        
-        # =====================================================================
-        # Momentum-augmented Gaussian (inline parameter fitting)
-        # =====================================================================
-        # Fit Gaussian parameters directly, then apply momentum augmentation.
-        # This is the ONLY Gaussian model in BMA - no pure Gaussian variant.
-        # =====================================================================
-        mom_name = "kalman_gaussian_momentum"  
-        
-        try:
-            # Fit Gaussian parameters (q, c)
-            q_gauss, c_gauss, ll_cv_gauss, diag_gauss = GaussianDriftModel.optimize_params(
-                returns, vol,
-                prior_log_q_mean=prior_log_q_mean,
-                prior_lambda=prior_lambda
-            )
-            
-            # Run filter with momentum augmentation
-            mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
-                returns, vol, q_gauss, c_gauss, phi=1.0, base_model='gaussian'
-            )
-            
-            # Compute PIT calibration with extended metrics
-            pit_ext_kg = compute_extended_pit_metrics_gaussian(
-                returns, mu_mom, P_mom, vol, q_gauss, c_gauss, phi=1.0
-            )
-            ks_mom = pit_ext_kg["ks_statistic"]
-            pit_p_mom = pit_ext_kg["pit_ks_pvalue"]
-            
-            # Compute information criteria with prior penalty
-            n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN]
-            aic_mom = compute_aic(ll_mom, n_params_mom)
-            bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
-            bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
-            mean_ll_mom = ll_mom / max(n_obs, 1)
-            
-            # Compute Hyvärinen score
-            forecast_std_mom = np.sqrt(c_gauss * (vol ** 2) + P_mom)
-            hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
-            
-            # Compute CRPS for regime-aware model selection (February 2026)
-            crps_mom = compute_crps_gaussian_inline(returns, mu_mom, forecast_std_mom)
-            
-            models[mom_name] = {
-                "q": float(q_gauss),
-                "c": float(c_gauss),
-                "phi": None,
-                "nu": None,
-                "log_likelihood": float(ll_mom),
-                "mean_log_likelihood": float(mean_ll_mom),
-                "cv_penalized_ll": float(ll_mom),
-                "bic": float(bic_mom),
-                "bic_raw": float(bic_raw_mom),
-                "aic": float(aic_mom),
-                "hyvarinen_score": float(hyvarinen_mom),
-                "crps": float(crps_mom),
-                "n_params": int(n_params_mom),
-                "ks_statistic": float(ks_mom),
-                "pit_ks_pvalue": float(pit_p_mom),
-                "berkowitz_pvalue": float(pit_ext_kg["berkowitz_pvalue"]),
-                "berkowitz_lr": float(pit_ext_kg.get("berkowitz_lr", 0.0)),
-                "pit_count": int(pit_ext_kg.get("pit_count", 0)),
-                "histogram_mad": float(pit_ext_kg["histogram_mad"]),
-                "fit_success": True,
-                "momentum_augmented": True,
-                "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
-                "diagnostics": {**diag_gauss, **momentum_wrapper.get_diagnostics()},
-            }
-        except Exception as e:
-            models[mom_name] = {
-                "fit_success": False,
-                "error": str(e),
-                "bic": float('inf'),
-                "aic": float('inf'),
-                "hyvarinen_score": float('-inf'),
-                "crps": float('inf'),  # CRPS for failed models
-                "momentum_augmented": True,
-            }
-        
-        # =====================================================================
-        # Momentum-augmented Phi-Gaussian (inline parameter fitting)
-        # =====================================================================
-        # Fit φ-Gaussian parameters directly, then apply momentum augmentation.
-        # This is the ONLY φ-Gaussian model in BMA - no pure variant.
-        # =====================================================================
-        mom_name = "kalman_phi_gaussian_momentum"  
-        
-        try:
-            # Fit Phi-Gaussian parameters (q, c, phi)
-            q_phi, c_phi, phi_opt, ll_cv_phi, diag_phi = PhiGaussianDriftModel.optimize_params(
-                returns, vol,
-                prior_log_q_mean=prior_log_q_mean,
-                prior_lambda=prior_lambda
-            )
-            
-            # Run filter with momentum augmentation
-            mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
-                returns, vol, q_phi, c_phi, phi=phi_opt, base_model='phi_gaussian'
-            )
-
-            # Compute PIT calibration with extended metrics (Berkowitz + MAD)
-            pit_ext_phig = compute_extended_pit_metrics_gaussian(
-                returns, mu_mom, P_mom, vol, q_phi, c_phi, phi=phi_opt
-            )
-            ks_mom = pit_ext_phig["ks_statistic"]
-            pit_p_mom = pit_ext_phig["pit_ks_pvalue"]
-
-            # Compute information criteria with prior penalty
-            n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.PHI_GAUSSIAN]
-            aic_mom = compute_aic(ll_mom, n_params_mom)
-            bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
-            bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
-            mean_ll_mom = ll_mom / max(n_obs, 1)
-            
-            # Compute Hyvärinen score
-            forecast_std_mom = np.sqrt(c_phi * (vol ** 2) + P_mom)
-            hyvarinen_mom = compute_hyvarinen_score_gaussian(returns, mu_mom, forecast_std_mom)
-            
-            # Compute CRPS for regime-aware model selection (February 2026)
-            crps_mom = compute_crps_gaussian_inline(returns, mu_mom, forecast_std_mom)
-            
-            models[mom_name] = {
-                "q": float(q_phi),
-                "c": float(c_phi),
-                "phi": float(phi_opt),
-                "nu": None,
-                "log_likelihood": float(ll_mom),
-                "mean_log_likelihood": float(mean_ll_mom),
-                "cv_penalized_ll": float(ll_mom),
-                "bic": float(bic_mom),
-                "bic_raw": float(bic_raw_mom),
-                "aic": float(aic_mom),
-                "hyvarinen_score": float(hyvarinen_mom),
-                "crps": float(crps_mom),
-                "n_params": int(n_params_mom),
-                "ks_statistic": float(ks_mom),
-                "pit_ks_pvalue": float(pit_p_mom),
-                "berkowitz_pvalue": float(pit_ext_phig["berkowitz_pvalue"]),
-                "berkowitz_lr": float(pit_ext_phig.get("berkowitz_lr", 0.0)),
-                "pit_count": int(pit_ext_phig.get("pit_count", 0)),
-                "histogram_mad": float(pit_ext_phig["histogram_mad"]),
-                "fit_success": True,
-                "momentum_augmented": True,
-                "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
-                "diagnostics": {**diag_phi, **momentum_wrapper.get_diagnostics()},
-            }
-        except Exception as e:
-            models[mom_name] = {
-                "fit_success": False,
-                "error": str(e),
-                "bic": float('inf'),
-                "aic": float('inf'),
-                "hyvarinen_score": float('-inf'),
-                "crps": float('inf'),  # CRPS for failed models
-                "momentum_augmented": True,
-            }
-        
-        # Momentum-augmented Student-t (for each nu in grid)
-        for nu_fixed in STUDENT_T_NU_GRID:
-            base_name = f"phi_student_t_nu_{nu_fixed}"
-            mom_name = get_momentum_augmented_model_name(base_name)
-            
-            if base_name in models and models[base_name].get("fit_success", False):
-                try:
-                    base_model = models[base_name]
-                    q_mom = base_model["q"]
-                    c_mom = base_model["c"]
-                    phi_mom = base_model["phi"]
-                    
-                    # Run filter with momentum augmentation
-                    mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
-                        returns, vol, q_mom, c_mom, phi=phi_mom, nu=nu_fixed, 
-                        base_model='phi_student_t'
-                    )
-                    
-                    # Compute PIT with extended metrics
-                    pit_ext_stm = compute_extended_pit_metrics_student_t(
-                        returns, vol, q_mom, c_mom, phi_mom, nu_fixed
-                    )
-                    ks_mom = pit_ext_stm["ks_statistic"]
-                    pit_p_mom = pit_ext_stm["pit_ks_pvalue"]
-                    
-                    # Get predictive values for Hyvärinen/CRPS
-                    _, _, mu_pred_mom, S_pred_mom, _ = PhiStudentTDriftModel.filter_phi_with_predictive(
-                        returns, vol, q_mom, c_mom, phi_mom, nu_fixed
-                    )
-                    
-                    # Compute information criteria with prior penalty
-                    n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T]
-                    aic_mom = compute_aic(ll_mom, n_params_mom)
-                    bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
-                    bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
-                    mean_ll_mom = ll_mom / max(n_obs, 1)
-                    
-                    # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
-                    hyvarinen_mom, crps_mom = compute_predictive_scores_student_t(
-                        returns, mu_pred_mom, S_pred_mom, nu_fixed
-                    )
-
-                    models[mom_name] = {
-                        "q": float(q_mom),
-                        "c": float(c_mom),
-                        "phi": float(phi_mom),
-                        "nu": float(nu_fixed),
-                        "log_likelihood": float(ll_mom),
-                        "mean_log_likelihood": float(mean_ll_mom),
-                        "cv_penalized_ll": float(ll_mom),
-                        "bic": float(bic_mom),
-                        "bic_raw": float(bic_raw_mom),
-                        "aic": float(aic_mom),
-                        "hyvarinen_score": float(hyvarinen_mom),
-                        "crps": float(crps_mom),
-                        "n_params": int(n_params_mom),
-                        "ks_statistic": float(ks_mom),
-                        "pit_ks_pvalue": float(pit_p_mom),
-                        "berkowitz_pvalue": float(pit_ext_stm["berkowitz_pvalue"]),
-                        "berkowitz_lr": float(pit_ext_stm.get("berkowitz_lr", 0.0)),
-                        "pit_count": int(pit_ext_stm.get("pit_count", 0)),
-                        "histogram_mad": float(pit_ext_stm["histogram_mad"]),
-                        "fit_success": True,
-                        "momentum_augmented": True,
-                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
-                        "base_model": base_name,
-                        "nu_fixed": True,
-                        "diagnostics": momentum_wrapper.get_diagnostics(),
-                    }
-                except Exception as e:
-                    models[mom_name] = {
-                        "fit_success": False,
-                        "error": str(e),
-                        "bic": float('inf'),
-                        "aic": float('inf'),
-                        "hyvarinen_score": float('-inf'),
-                        "crps": float('inf'),  # CRPS for failed models
-                        "momentum_augmented": True,
-                        "base_model": base_name,
-                        "nu": float(nu_fixed),
-                    }
     
     # =========================================================================
     # GAS-Q AUGMENTED MODELS (February 2026)
@@ -3904,102 +3851,14 @@ def fit_all_models_for_regime(
             DEFAULT_GAS_Q_CONFIG,
         )
         
-        # GAS-Q augmented Gaussian+Momentum (stack on top of momentum)
-        base_name = "kalman_gaussian_momentum"
-        gas_q_name = get_gas_q_model_name(base_name)
+        # NOTE: GAS-Q Gaussian+Momentum removed (February 2026).
+        # GAS-Q is now integrated into kalman_gaussian_unified [U] via Stage 4.5.
         
-        if base_name in models and models[base_name].get("fit_success", False):
-            try:
-                base_model = models[base_name]
-                c_gas = base_model["c"]
-                phi_gas = base_model.get("phi") or 1.0
-                
-                # Optimize GAS-Q parameters
-                gas_config, gas_diag = optimize_gas_q_params(
-                    returns, vol, c_gas, phi_gas, nu=None, train_frac=0.7
-                )
-                
-                if gas_diag.get("fit_success", False):
-                    # Run GAS-Q filter
-                    gas_result = gas_q_filter_gaussian(
-                        returns, vol, c_gas, phi_gas, gas_config
-                    )
-                    
-                    # Compute PIT with extended metrics (Berkowitz + MAD)
-                    pit_ext_gas = compute_extended_pit_metrics_gaussian(
-                        returns, gas_result.mu_filtered, gas_result.P_filtered, 
-                        vol, gas_result.q_mean, c_gas, phi=phi_gas
-                    )
-                    ks_gas = pit_ext_gas["ks_statistic"]
-                    pit_p_gas = pit_ext_gas["pit_ks_pvalue"]
-                    
-                    # BIC with extra 3 GAS parameters
-                    n_params_gas = MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN] + 3
-                    bic_gas = compute_gas_q_bic(
-                        gas_result.log_likelihood, n_obs, 
-                        MODEL_CLASS_N_PARAMS[ModelClass.KALMAN_GAUSSIAN], 3
-                    )
-                    aic_gas = compute_aic(gas_result.log_likelihood, n_params_gas)
-                    mean_ll_gas = gas_result.log_likelihood / max(n_obs, 1)
-                    
-                    # Compute Hyvärinen score
-                    forecast_std_gas = np.sqrt(c_gas * (vol ** 2) + gas_result.P_filtered)
-                    hyvarinen_gas = compute_hyvarinen_score_gaussian(
-                        returns, gas_result.mu_filtered, forecast_std_gas
-                    )
-                    
-                    # Compute CRPS for regime-aware model selection (February 2026)
-                    crps_gas = compute_crps_gaussian_inline(
-                        returns, gas_result.mu_filtered, forecast_std_gas
-                    )
-                    
-                    models[gas_q_name] = {
-                        "q": float(gas_result.q_mean or 0.0),
-                        "c": float(c_gas),
-                        "phi": float(phi_gas or 0.0),
-                        "nu": None,
-                        "log_likelihood": float(gas_result.log_likelihood),
-                        "mean_log_likelihood": float(mean_ll_gas),
-                        "cv_penalized_ll": float(gas_result.log_likelihood),
-                        "bic": float(bic_gas),
-                        "aic": float(aic_gas),
-                        "hyvarinen_score": float(hyvarinen_gas),
-                        "crps": float(crps_gas),
-                        "n_params": int(n_params_gas),
-                        "ks_statistic": float(ks_gas),
-                        "pit_ks_pvalue": float(pit_p_gas),
-                        "berkowitz_pvalue": float(pit_ext_gas["berkowitz_pvalue"]),
-                        "berkowitz_lr": float(pit_ext_gas.get("berkowitz_lr", 0.0)),
-                        "pit_count": int(pit_ext_gas.get("pit_count", 0)),
-                        "histogram_mad": float(pit_ext_gas["histogram_mad"]),
-                        "fit_success": True,
-                        "gas_q_augmented": True,
-                        "gas_q_omega": float(gas_config.omega or 0.0),
-                        "gas_q_alpha": float(gas_config.alpha or 0.0),
-                        "gas_q_beta": float(gas_config.beta or 0.0),
-                        "gas_q_mean": float(gas_result.q_mean or 0.0),
-                        "gas_q_std": float(gas_result.q_std or 0.0),
-                        "gas_q_final": float(gas_result.final_q or 0.0),
-                        "base_model": base_name,
-                        "momentum_augmented": True,  # Inherits from base
-                    }
-            except Exception as e:
-                models[gas_q_name] = {
-                    "fit_success": False,
-                    "error": str(e),
-                    "bic": float('inf'),
-                    "aic": float('inf'),
-                    "hyvarinen_score": float('-inf'),
-                    "crps": float('inf'),  # CRPS for failed models
-                    "gas_q_augmented": True,
-                    "base_model": base_name,
-                }
-        
-        # GAS-Q augmented Student-t+Momentum (for each nu)
+        # GAS-Q augmented Student-t (for each nu)
         # DISABLED when UNIFIED_STUDENT_T_ONLY=True - unified models include adaptive q
         if not UNIFIED_STUDENT_T_ONLY:
             for nu_fixed in STUDENT_T_NU_GRID:
-                base_name = f"phi_student_t_nu_{nu_fixed}_momentum"
+                base_name = f"phi_student_t_nu_{nu_fixed}"
                 gas_q_name = get_gas_q_model_name(base_name)
                 
                 if base_name in models and models[base_name].get("fit_success", False):
@@ -4098,8 +3957,8 @@ def fit_all_models_for_regime(
     if MS_Q_ENABLED and MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE and not UNIFIED_STUDENT_T_ONLY:
         
         for nu_fixed in STUDENT_T_NU_GRID:
-            base_name = f"phi_student_t_nu_{nu_fixed}_momentum"
-            ms_q_name = f"phi_student_t_nu_{nu_fixed}_ms_q_momentum"
+            base_name = f"phi_student_t_nu_{nu_fixed}"
+            ms_q_name = f"phi_student_t_nu_{nu_fixed}_ms_q"
             
             if base_name in models and models[base_name].get("fit_success", False):
                 try:
@@ -4187,7 +4046,6 @@ def fit_all_models_for_regime(
     #   3. Two-Component Mixture: Blend νcalm and νstress with dynamic weights
     #
     # These compete in BMA with appropriate penalties for extra parameters.
-    # Only momentum variants are fitted (as per existing architecture).
     #
     # DISABLED when UNIFIED_STUDENT_T_ONLY=True - unified models incorporate
     # VoV, smooth asymmetric ν, and probabilistic MS-q into single architecture.
@@ -4201,21 +4059,8 @@ def fit_all_models_for_regime(
             NU_CALM_GRID, NU_STRESS_GRID, MIXTURE_BMA_PENALTY,
         )
         
-        # Reuse momentum wrapper from above
-        if 'momentum_wrapper' not in dir():
-            momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
-            # Use precompute_signals for MR integration if prices available
-            if prices is not None:
-                q_for_scaling = models.get('kalman_gaussian', {}).get('q', 1e-6)
-                momentum_wrapper.precompute_signals(
-                    returns=returns, prices=prices, vol=vol,
-                    regime_labels=regime_labels, q=q_for_scaling,
-                )
-            else:
-                momentum_wrapper.precompute_momentum(returns)
-        
         # =====================================================================
-        # Vol-of-Vol Enhanced Student-t + Momentum
+        # Vol-of-Vol Enhanced Student-t
         # =====================================================================
         # For each (nu, gamma_vov) combination, fit enhanced model.
         # γ=0 is equivalent to base model, so skip γ=0 to avoid duplication.
@@ -4238,7 +4083,7 @@ def fit_all_models_for_regime(
                 
                 # Format gamma for model name (remove decimal point)
                 gamma_str = f"{gamma_vov:.1f}".replace(".", "")
-                vov_name = f"phi_student_t_nu_{nu_fixed}_vov_{gamma_str}_momentum"
+                vov_name = f"phi_student_t_nu_{nu_fixed}_vov_{gamma_str}"
                 
                 try:
                     # Run VoV-enhanced filter
@@ -4246,25 +4091,16 @@ def fit_all_models_for_regime(
                         returns, vol, q_base, c_base, phi_base, nu_fixed, gamma_vov
                     )
                     
-                    # Apply momentum augmentation to drift estimate
-                    # (momentum adjusts the drift, VoV adjusts observation noise)
-                    momentum_signal = momentum_wrapper._momentum_signal
-                    if momentum_signal is not None:
-                        mu_vov_mom = mu_vov + momentum_signal * momentum_wrapper.config.adjustment_scale
-                    else:
-                        mu_vov_mom = mu_vov
-                    
                     # ELITE FIX: Compute PIT using PREDICTIVE distribution
                     ks_vov, pit_p_vov, mu_pred_vov, S_pred_vov = compute_predictive_pit_student_t(
                         returns, vol, q_base, c_base, phi_base, nu_fixed
                     )
                     
-                    # Compute information criteria with VoV + momentum penalties
+                    # Compute information criteria with VoV penalties
                     n_params_vov = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 1  # +1 for γ
                     aic_vov = compute_aic(ll_vov, n_params_vov)
                     bic_raw_vov = compute_bic(ll_vov, n_params_vov, n_obs)
-                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + VOV_BMA_PENALTY
-                    bic_vov = compute_momentum_model_bic_adjustment(bic_raw_vov, combined_penalty)
+                    bic_vov = bic_raw_vov + VOV_BMA_PENALTY
                     mean_ll_vov = ll_vov / max(n_obs, 1)
                     
                     # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
@@ -4291,9 +4127,7 @@ def fit_all_models_for_regime(
                         "pit_ks_pvalue": float(pit_p_vov),
                         "fit_success": True,
                         "vov_enhanced": True,
-                        "momentum_augmented": True,
                         "vov_penalty": VOV_BMA_PENALTY,
-                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
                         "base_model": base_name,
                         "nu_fixed": True,
                         "model_type": "phi_student_t_vov",
@@ -4307,13 +4141,12 @@ def fit_all_models_for_regime(
                         "hyvarinen_score": float('-inf'),
                         "crps": float('inf'),  # CRPS for failed models
                         "vov_enhanced": True,
-                        "momentum_augmented": True,
                         "nu": float(nu_fixed),
                         "gamma_vov": float(gamma_vov),
                     }
         
         # =====================================================================
-        # Two-Piece Student-t + Momentum
+        # Two-Piece Student-t
         # =====================================================================
         # Different ν for left (crash) vs right (recovery) tails.
         # Captures empirical asymmetry: crashes are more extreme than rallies.
@@ -4332,20 +4165,13 @@ def fit_all_models_for_regime(
                 c_2p = base_model["c"]
                 phi_2p = base_model["phi"]
                 
-                two_piece_name = f"phi_student_t_nuL{nu_left}_nuR{nu_right}_momentum"
+                two_piece_name = f"phi_student_t_nuL{nu_left}_nuR{nu_right}"
                 
                 try:
                     # Run Two-Piece filter
                     mu_2p, P_2p, ll_2p = PhiStudentTDriftModel.filter_phi_two_piece(
                         returns, vol, q_2p, c_2p, phi_2p, nu_left, nu_right
                     )
-                    
-                    # Apply momentum augmentation (use precomputed momentum signal)
-                    momentum_signal = momentum_wrapper._momentum_signal
-                    if momentum_signal is not None:
-                        mu_2p_mom = mu_2p + momentum_signal * momentum_wrapper.config.adjustment_scale
-                    else:
-                        mu_2p_mom = mu_2p
                     
                     # ELITE FIX: Compute PIT using PREDICTIVE distribution
                     # Use average ν for predictive computation
@@ -4354,13 +4180,12 @@ def fit_all_models_for_regime(
                         returns, vol, q_2p, c_2p, phi_2p, nu_avg
                     )
                     
-                    # Compute information criteria with Two-Piece + momentum penalties
+                    # Compute information criteria with Two-Piece penalties
                     # +2 params: nu_left, nu_right instead of single nu
                     n_params_2p = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 1
                     aic_2p = compute_aic(ll_2p, n_params_2p)
                     bic_raw_2p = compute_bic(ll_2p, n_params_2p, n_obs)
-                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + TWO_PIECE_BMA_PENALTY
-                    bic_2p = compute_momentum_model_bic_adjustment(bic_raw_2p, combined_penalty)
+                    bic_2p = bic_raw_2p + TWO_PIECE_BMA_PENALTY
                     mean_ll_2p = ll_2p / max(n_obs, 1)
                     
                     # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
@@ -4388,9 +4213,7 @@ def fit_all_models_for_regime(
                         "pit_ks_pvalue": float(pit_p_2p),
                         "fit_success": True,
                         "two_piece": True,
-                        "momentum_augmented": True,
                         "two_piece_penalty": TWO_PIECE_BMA_PENALTY,
-                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
                         "base_model": base_name,
                         "model_type": "phi_student_t_two_piece",
                     }
@@ -4403,13 +4226,12 @@ def fit_all_models_for_regime(
                         "hyvarinen_score": float('-inf'),
                         "crps": float('inf'),  # CRPS for failed models
                         "two_piece": True,
-                        "momentum_augmented": True,
                         "nu_left": float(nu_left),
                         "nu_right": float(nu_right),
                     }
         
         # =====================================================================
-        # Two-Component Mixture Student-t + Momentum
+        # Two-Component Mixture Student-t
         # =====================================================================
         # Blend νcalm and νstress with dynamic vol-based weights.
         # Captures two curvature regimes in the central body.
@@ -4427,7 +4249,7 @@ def fit_all_models_for_regime(
                 c_mix = base_model["c"]
                 phi_mix = base_model["phi"]
                 
-                mixture_name = f"phi_student_t_mix_{nu_calm}_{nu_stress}_momentum"
+                mixture_name = f"phi_student_t_mix_{nu_calm}_{nu_stress}"
                 
                 try:
                     # Run Mixture filter (enhanced or standard based on config)
@@ -4448,13 +4270,6 @@ def fit_all_models_for_regime(
                             nu_calm, nu_stress, MIXTURE_WEIGHT_DEFAULT
                         )
                     
-                    # Apply momentum augmentation (use precomputed momentum signal)
-                    momentum_signal = momentum_wrapper._momentum_signal
-                    if momentum_signal is not None:
-                        mu_mix_mom = mu_mix + momentum_signal * momentum_wrapper.config.adjustment_scale
-                    else:
-                        mu_mix_mom = mu_mix
-                    
                     # ELITE FIX: Compute PIT using PREDICTIVE distribution
                     # Use effective ν (average) for predictive computation
                     nu_eff = (nu_calm + nu_stress) / 2
@@ -4462,13 +4277,12 @@ def fit_all_models_for_regime(
                         returns, vol, q_mix, c_mix, phi_mix, nu_eff
                     )
                     
-                    # Compute information criteria with Mixture + momentum penalties
+                    # Compute information criteria with Mixture penalties
                     # +3 params: nu_calm, nu_stress, w_base instead of single nu
                     n_params_mix = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 2
                     aic_mix = compute_aic(ll_mix, n_params_mix)
                     bic_raw_mix = compute_bic(ll_mix, n_params_mix, n_obs)
-                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + MIXTURE_BMA_PENALTY
-                    bic_mix = compute_momentum_model_bic_adjustment(bic_raw_mix, combined_penalty)
+                    bic_mix = bic_raw_mix + MIXTURE_BMA_PENALTY
                     mean_ll_mix = ll_mix / max(n_obs, 1)
                     
                     # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
@@ -4497,9 +4311,7 @@ def fit_all_models_for_regime(
                         "pit_ks_pvalue": float(pit_p_mix),
                         "fit_success": True,
                         "mixture_model": True,
-                        "momentum_augmented": True,
                         "mixture_penalty": MIXTURE_BMA_PENALTY,
-                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
                         "base_model": base_name,
                         "model_type": "phi_student_t_mixture",
                     }
@@ -4512,7 +4324,6 @@ def fit_all_models_for_regime(
                         "hyvarinen_score": float('-inf'),
                         "crps": float('inf'),  # CRPS for failed models
                         "mixture_model": True,
-                        "momentum_augmented": True,
                         "nu_calm": float(nu_calm),
                         "nu_stress": float(nu_stress),
                     }

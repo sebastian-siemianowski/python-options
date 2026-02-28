@@ -51,14 +51,14 @@ class TestArenaModels(unittest.TestCase):
     
     def test_standard_model_specs(self):
         """Test standard model specifications."""
-        from arena.arena_models import get_standard_model_specs, STANDARD_MOMENTUM_MODELS
+        from arena.arena_models import get_standard_model_specs, STANDARD_MODELS
         
         specs = get_standard_model_specs()
-        self.assertEqual(len(specs), len(STANDARD_MOMENTUM_MODELS))
+        self.assertEqual(len(specs), len(STANDARD_MODELS))
         
-        # Check Gaussian momentum
-        gaussian_spec = next(s for s in specs if "gaussian" in s["name"] and "phi" not in s["name"])
-        self.assertEqual(gaussian_spec["n_params"], 2)
+        # Check unified Gaussian (momentum + GAS-Q internal)
+        gaussian_spec = next(s for s in specs if "gaussian_unified" in s["name"] and "phi" not in s["name"])
+        self.assertGreaterEqual(gaussian_spec["n_params"], 6)
     
     def test_experimental_model_specs(self):
         """Test experimental model specifications."""

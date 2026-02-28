@@ -200,8 +200,8 @@ def load_disabled_models() -> Dict[str, Dict]:
         {
             "model_name": {
                 "disabled_at": "2026-02-07T10:30:00",
-                "reason": "Failed against kalman_gaussian_momentum by -45.2%",
-                "best_std_model": "kalman_gaussian_momentum",
+                "reason": "Failed against kalman_gaussian_unified by -45.2%",
+                "best_std_model": "kalman_gaussian_unified",
                 "score_gap": -0.452
             }
         }

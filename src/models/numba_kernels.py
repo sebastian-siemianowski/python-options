@@ -1117,3 +1117,167 @@ def unified_phi_student_t_filter_kernel(
                 log_likelihood += ll_t
     
     return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood
+
+
+# =============================================================================
+# CV TEST-FOLD FORWARD-PASS KERNELS (fastmath=True safe)
+# =============================================================================
+# These kernels accelerate the inner loop of the cross-validated optimizer
+# objective. Given the final filtered state from training, they propagate
+# forward through the test fold computing out-of-sample log-likelihood and
+# standardized innovations for PIT calibration.
+#
+# Called ~100-200× per asset during L-BFGS-B + grid search optimisation.
+# Moving from Python to Numba gives ~5× speedup on the optimizer hot path.
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def gaussian_cv_test_fold_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    mu_init: float,
+    P_init: float,
+    test_start: int,
+    test_end: int,
+    std_buf: np.ndarray,
+    std_offset: int,
+    std_max: int,
+) -> tuple:
+    """
+    Gaussian (φ=1) forward pass on a single CV test fold.
+
+    Propagates the Kalman filter from the end of the training fold through
+    the test observations, accumulating log-likelihood and standardized
+    innovations. The standardized innovations are written into std_buf
+    starting at std_offset for later PIT/KS computation in Python.
+
+    Parameters
+    ----------
+    returns : np.ndarray
+        Full contiguous returns array (indexed by absolute t).
+    vol_sq : np.ndarray
+        Pre-computed vol² array (c is multiplied inside this kernel).
+    q : float
+        Process noise variance.
+    c : float
+        Observation noise scale.
+    mu_init : float
+        Last filtered mean from training fold.
+    P_init : float
+        Last filtered covariance from training fold.
+    test_start, test_end : int
+        Absolute indices of the test window [test_start, test_end).
+    std_buf : np.ndarray
+        Pre-allocated buffer for standardized innovations (mutated in-place).
+    std_offset : int
+        Current write position in std_buf.
+    std_max : int
+        Maximum number of standardized residuals to store.
+
+    Returns
+    -------
+    ll_fold : float
+        Total out-of-sample log-likelihood for this fold.
+    n_obs : int
+        Number of test observations processed.
+    std_written : int
+        Number of standardized innovations written to std_buf.
+    """
+    mu_pred = mu_init
+    P_pred = P_init
+    ll_fold = 0.0
+    n_obs = test_end - test_start
+    std_written = 0
+
+    for t in range(test_start, test_end):
+        P_pred = P_pred + q
+
+        R = c * vol_sq[t]
+        innovation = returns[t] - mu_pred
+        forecast_var = P_pred + R
+
+        if forecast_var > _MIN_VARIANCE:
+            ll_fold += -0.5 * (_LOG_2PI + np.log(forecast_var)
+                               + (innovation * innovation) / forecast_var)
+            if std_offset + std_written < std_max:
+                std_buf[std_offset + std_written] = innovation / np.sqrt(forecast_var)
+                std_written += 1
+
+        S_total = P_pred + R
+        if S_total > _MIN_VARIANCE:
+            K = P_pred / S_total
+        else:
+            K = 0.0
+        mu_pred = mu_pred + K * innovation
+        P_pred = (1.0 - K) * P_pred
+
+    return ll_fold, n_obs, std_written
+
+
+@njit(cache=True, fastmath=True)
+def phi_gaussian_cv_test_fold_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    mu_init: float,
+    P_init: float,
+    test_start: int,
+    test_end: int,
+    std_buf: np.ndarray,
+    std_offset: int,
+    std_max: int,
+) -> tuple:
+    """
+    φ-Gaussian (AR(1)) forward pass on a single CV test fold.
+
+    Same as gaussian_cv_test_fold_kernel but with AR(1) drift dynamics:
+        μ_pred = φ × μ_{t-1}
+        P_pred = φ² × P_{t-1} + q
+
+    Parameters
+    ----------
+    phi : float
+        AR(1) persistence coefficient.
+    (other parameters identical to gaussian_cv_test_fold_kernel)
+
+    Returns
+    -------
+    ll_fold : float
+    n_obs : int
+    std_written : int
+    """
+    mu_pred = mu_init
+    P_pred = P_init
+    ll_fold = 0.0
+    n_obs = test_end - test_start
+    std_written = 0
+    phi_sq = phi * phi
+
+    for t in range(test_start, test_end):
+        mu_pred = phi * mu_pred
+        P_pred = phi_sq * P_pred + q
+
+        R = c * vol_sq[t]
+        innovation = returns[t] - mu_pred
+        forecast_var = P_pred + R
+
+        if forecast_var > _MIN_VARIANCE:
+            ll_fold += -0.5 * (_LOG_2PI + np.log(forecast_var)
+                               + (innovation * innovation) / forecast_var)
+            if std_offset + std_written < std_max:
+                std_buf[std_offset + std_written] = innovation / np.sqrt(forecast_var)
+                std_written += 1
+
+        S_total = P_pred + R
+        if S_total > _MIN_VARIANCE:
+            K = P_pred / S_total
+        else:
+            K = 0.0
+        mu_pred = mu_pred + K * innovation
+        P_pred = (1.0 - K) * P_pred
+
+    return ll_fold, n_obs, std_written

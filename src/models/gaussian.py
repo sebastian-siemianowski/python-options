@@ -13,11 +13,38 @@ Parameters:
     c: Observation noise scale (multiplier on EWMA variance)
 
 The model is estimated via cross-validated MLE with Bayesian regularization.
+
+Unified Gaussian Pipeline (February 2026)
+=========================================
+GaussianUnifiedConfig + optimize_params_unified + filter_and_calibrate
+brings Gaussian models to the same calibration quality as unified Student-t
+by adding GJR-GARCH variance dynamics, EWM location correction,
+walk-forward calibration, and proper Berkowitz testing — while keeping
+Gaussian observation noise (no ν parameter).
+
+    optimize_params_unified — Stage Dependency Chain
+    ================================================
+    Stage 1    (q, c, φ)       Base Kalman: process noise q, observation scale c,
+                                persistence φ. L-BFGS-B with state regularization.
+    Stage 1.5  (mom_w)         Momentum injection weight via CRPS grid search.
+                                Degradation guard: 0.0 always competes.
+    Stage 2    (β)             Variance inflation via PIT MAD grid search.
+    Stage 3    (GARCH)         GJR-GARCH(1,1) on Kalman innovations.
+    Stage 4    (EWM λ, σ_s)   Causal EWM location correction + CRPS σ shrinkage.
+    Stage 4.5  (ω, α, β_gas)  GAS-Q adaptive process noise (Creal-Koopman-Lucas).
+                                Degradation guard: must improve CRPS by >1%.
+    Stage 5    (gw, λ_ρ, β_p) Walk-forward calibration: GARCH blend weight,
+                                EWM decay, probit-variance correction.
+
+    Momentum and GAS-Q are tuned INSIDE optimize_params_unified, making the
+    legacy standalone models (kalman_gaussian_momentum, kalman_phi_gaussian_momentum,
+    kalman_gaussian_momentum+GAS-Q) redundant.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+import math
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 from scipy.optimize import minimize
@@ -29,12 +56,136 @@ try:
         is_numba_available,
         run_gaussian_filter,
         run_phi_gaussian_filter,
+        is_cv_kernel_available,
+        run_gaussian_cv_test_fold,
     )
     _USE_NUMBA = is_numba_available()
+    _USE_CV_KERNEL = is_cv_kernel_available()
 except ImportError:
     _USE_NUMBA = False
+    _USE_CV_KERNEL = False
     run_gaussian_filter = None
     run_phi_gaussian_filter = None
+    run_gaussian_cv_test_fold = None
+
+# Pre-computed constants
+_LOG_2PI = math.log(2.0 * math.pi)
+_LOG10_C_TARGET = math.log10(0.9)
+
+
+def _fast_ks_statistic(pit_values):
+    """Lightweight KS statistic against Uniform(0,1) without scipy overhead."""
+    n = len(pit_values)
+    if n == 0:
+        return 1.0
+    pit_sorted = np.sort(pit_values)
+    d_plus = np.max(np.arange(1, n + 1) / n - pit_sorted)
+    d_minus = np.max(pit_sorted - np.arange(0, n) / n)
+    return float(max(d_plus, d_minus))
+
+
+# =============================================================================
+# GAUSSIAN UNIFIED CONFIG
+# =============================================================================
+
+class GaussianUnifiedConfig:
+    """
+    Configuration for Unified Gaussian Model.
+
+    Mirrors UnifiedStudentTConfig but with Gaussian-only fields:
+      1. Core Kalman: q, c, φ
+      2. Variance inflation β for PIT calibration
+      3. GJR-GARCH(1,1) on innovations for dynamic variance
+      4. EWM causal location correction
+      5. CRPS σ shrinkage
+      6. Pre-calibrated walk-forward params (Stage 5)
+
+    No ν parameter — observation noise is Gaussian throughout.
+    """
+
+    # Core Kalman
+    q: float = 1e-6
+    c: float = 1.0
+    phi: float = 0.0
+
+    # Variance inflation β: S_cal = S_pred × β
+    variance_inflation: float = 1.0
+
+    # Mean drift correction: μ_pred += mu_drift
+    mu_drift: float = 0.0
+
+    # GJR-GARCH(1,1) on innovations
+    garch_omega: float = 0.0
+    garch_alpha: float = 0.0
+    garch_beta: float = 0.0
+    garch_leverage: float = 0.0
+    garch_unconditional_var: float = 1e-4
+
+    # Causal EWM location correction: λ ∈ (0.90, 0.97), 0 = disabled
+    crps_ewm_lambda: float = 0.0
+
+    # CRPS σ shrinkage: σ_crps = σ × α, α ∈ [0.5, 1.0]
+    crps_sigma_shrinkage: float = 1.0
+
+    # Pre-calibrated walk-forward CV params (read-only at inference)
+    calibrated_gw: float = 0.0           # GARCH blend weight
+    calibrated_lambda_rho: float = 0.985  # EWM decay
+    calibrated_beta_probit_corr: float = 1.0  # Probit β correction
+
+    # Data-driven bounds (from auto_configure)
+    q_min: float = 1e-8
+    c_min: float = 0.01
+    c_max: float = 10.0
+
+    def __init__(self, **kwargs):
+        self.q = 1e-6
+        self.c = 1.0
+        self.phi = 0.0
+        self.variance_inflation = 1.0
+        self.mu_drift = 0.0
+        self.garch_omega = 0.0
+        self.garch_alpha = 0.0
+        self.garch_beta = 0.0
+        self.garch_leverage = 0.0
+        self.garch_unconditional_var = 1e-4
+        self.crps_ewm_lambda = 0.0
+        self.crps_sigma_shrinkage = 1.0
+        self.calibrated_gw = 0.0
+        self.calibrated_lambda_rho = 0.985
+        self.calibrated_beta_probit_corr = 1.0
+        self.momentum_weight = 0.0
+        self.gas_q_omega = 0.0
+        self.gas_q_alpha = 0.0
+        self.gas_q_beta = 0.0
+        self.q_min = 1e-8
+        self.c_min = 0.01
+        self.c_max = 10.0
+        self.momentum_lookbacks = [5, 10, 20, 60]
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    @property
+    def momentum_enabled(self) -> bool:
+        return abs(self.momentum_weight) > 1e-10
+
+    @property
+    def gas_q_enabled(self) -> bool:
+        return (abs(self.gas_q_alpha) > 1e-10 or abs(self.gas_q_beta) > 1e-10)
+
+    @classmethod
+    def auto_configure(cls, returns: np.ndarray, vol: np.ndarray) -> 'GaussianUnifiedConfig':
+        """Data-driven initial bounds for Gaussian unified model."""
+        config = cls()
+        ret_var = float(np.var(returns))
+        vol_var_median = float(np.median(vol ** 2))
+
+        config.q_min = max(1e-10, 0.001 * vol_var_median)
+        config.c_min = max(0.01, 0.1 * ret_var / (vol_var_median + 1e-12))
+        config.c_max = min(10.0, 10.0 * ret_var / (vol_var_median + 1e-12))
+        if config.c_min >= config.c_max:
+            config.c_min, config.c_max = 0.1, 5.0
+
+        return config
 
 
 class GaussianDriftModel:
@@ -355,47 +506,1071 @@ class GaussianDriftModel:
         
         return mu_filtered, P_filtered, float(log_likelihood)
 
-    @staticmethod
-    def pit_ks(returns: np.ndarray, mu_filtered: np.ndarray, vol: np.ndarray, P_filtered: np.ndarray, c: float = 1.0) -> Tuple[float, float]:
-        """PIT/KS for Gaussian forecasts including parameter uncertainty.
-        
-        Computes the Probability Integral Transform (PIT) and performs a 
-        Kolmogorov-Smirnov test for uniformity. If the model is well-calibrated,
-        the PIT values should be uniformly distributed on [0, 1].
-        
-        Numerical stability: We enforce a minimum floor on forecast_std to prevent
-        division by zero. When forecast_std is effectively zero, the model has
-        collapsed to a degenerate distribution, which indicates calibration failure.
-        """
-        returns_flat = np.asarray(returns).flatten()
-        mu_flat = np.asarray(mu_filtered).flatten()
-        vol_flat = np.asarray(vol).flatten()
-        P_flat = np.asarray(P_filtered).flatten()
+    # =========================================================================
+    # UNIFIED GAUSSIAN PIPELINE (February 2026)
+    # =========================================================================
 
-        # Compute forecast standard deviation with numerical floor
-        forecast_var = c * (vol_flat ** 2) + P_flat
-        forecast_std = np.sqrt(np.maximum(forecast_var, 1e-20))
-        
-        # Additional safety: ensure no zero values slip through
-        forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
-        
-        standardized = (returns_flat - mu_flat) / forecast_std
-        
-        # Handle any remaining NaN/Inf values that could arise from edge cases
-        valid_mask = np.isfinite(standardized)
-        if not np.any(valid_mask):
-            # All values invalid - return worst-case KS statistic
-            return 1.0, 0.0
-        
-        standardized_clean = standardized[valid_mask]
-        pit_values = norm.cdf(standardized_clean)
-        
-        # Need at least 2 points for KS test
-        if len(pit_values) < 2:
-            return 1.0, 0.0
-            
-        ks_result = kstest(pit_values, 'uniform')
-        return float(ks_result.statistic), float(ks_result.pvalue)
+    @classmethod
+    def optimize_params_unified(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        phi_mode: bool = True,
+        train_frac: float = 0.7,
+        asset_symbol: str = None,
+        momentum_signal: np.ndarray = None,
+    ) -> Tuple['GaussianUnifiedConfig', Dict]:
+        """
+        Staged optimization for unified Gaussian Kalman filter model.
+
+        Orchestrates 5 stages in sequence, threading results forward.
+        Each stage freezes upstream parameters and optimizes <= 3 new ones.
+
+        Stage chain:
+          1 (q,c,φ) → 2 (β) → 3 (GARCH) → 4 (EWM λ, σ_s) → 5 (gw, λ_ρ, β_p)
+
+        Args:
+            returns: Return series
+            vol: EWMA/GK volatility series
+            phi_mode: If True, estimate φ (AR(1) drift). If False, φ=1 (random walk).
+            train_frac: Fraction for train/test split
+            asset_symbol: Asset symbol for diagnostics
+
+        Returns:
+            Tuple of (GaussianUnifiedConfig, diagnostics_dict)
+        """
+        returns = np.asarray(returns).flatten()
+        vol = np.asarray(vol).flatten()
+
+        config = GaussianUnifiedConfig.auto_configure(returns, vol)
+        n = len(returns)
+        n_train = int(n * train_frac)
+        returns_train = returns[:n_train]
+        vol_train = vol[:n_train]
+
+        # ── STAGE 1: Base params (q, c, φ) ──
+        s1 = cls._gaussian_stage_1(returns_train, vol_train, n_train, config, phi_mode)
+        if not s1['success']:
+            config.q = 1e-6
+            config.c = 1.0
+            config.phi = 0.0 if phi_mode else 1.0
+            return config, {"stage": 0, "success": False, "error": "Stage 1 failed"}
+
+        q_opt, c_opt, phi_opt = s1['q'], s1['c'], s1['phi']
+        config.q = q_opt
+        config.c = c_opt
+        config.phi = phi_opt
+
+        # -- STAGE 1.5: Momentum injection weight --
+        _mom_sig_train = None
+        _momentum_weight = 0.0
+        try:
+            if momentum_signal is not None and len(momentum_signal) >= n_train:
+                _mom_sig_train = momentum_signal[:n_train]
+            else:
+                from models.momentum_augmented import compute_momentum_features, compute_momentum_signal
+                _mom_feats = compute_momentum_features(returns_train)
+                _mom_sig_train = compute_momentum_signal(_mom_feats)
+            s15 = cls._gaussian_stage_1_5_momentum(
+                returns_train, vol_train, n_train,
+                q_opt, c_opt, phi_opt, _mom_sig_train)
+            _momentum_weight = s15['momentum_weight']
+            config.momentum_weight = _momentum_weight
+        except Exception:
+            config.momentum_weight = 0.0
+
+        # Get predictive values for downstream stages (with momentum if active)
+        _, _, mu_pred_train, S_pred_train, _ = cls._filter_phi_with_momentum(
+            returns_train, vol_train, q_opt, c_opt, phi_opt,
+            _mom_sig_train, _momentum_weight)
+        innovations_train = returns_train - mu_pred_train
+
+        # ── STAGE 2: Variance inflation β ──
+        beta_opt = cls._gaussian_stage_2_variance_inflation(
+            returns_train, mu_pred_train, S_pred_train, n_train)
+        config.variance_inflation = beta_opt
+
+        # Mean drift correction
+        mu_drift = float(np.mean(innovations_train))
+        config.mu_drift = mu_drift
+
+        # ── STAGE 3: GJR-GARCH on innovations ──
+        garch = cls._gaussian_stage_3_garch(innovations_train, mu_drift, n_train)
+        config.garch_omega = garch['garch_omega']
+        config.garch_alpha = garch['garch_alpha']
+        config.garch_beta = garch['garch_beta']
+        config.garch_leverage = garch['garch_leverage']
+        config.garch_unconditional_var = garch['unconditional_var']
+
+        # ── STAGE 4: EWM λ + CRPS σ shrinkage ──
+        s4 = cls._gaussian_stage_4_ewm_and_shrinkage(
+            returns_train, vol_train, n_train,
+            q_opt, c_opt, phi_opt, beta_opt, mu_drift, garch)
+        config.crps_ewm_lambda = s4['crps_ewm_lambda']
+        config.crps_sigma_shrinkage = s4['crps_sigma_shrinkage']
+
+        # ── STAGE 4.5: GAS-Q adaptive process noise ──
+        try:
+            s45 = cls._gaussian_stage_4_5_gas_q(
+                returns_train, vol_train, n_train,
+                q_opt, c_opt, phi_opt, beta_opt, mu_drift, garch,
+                _mom_sig_train, _momentum_weight)
+            config.gas_q_omega = s45['gas_q_omega']
+            config.gas_q_alpha = s45['gas_q_alpha']
+            config.gas_q_beta = s45['gas_q_beta']
+        except Exception:
+            config.gas_q_omega = 0.0
+            config.gas_q_alpha = 0.0
+            config.gas_q_beta = 0.0
+
+        # ── STAGE 5: Walk-forward calibration (ν-free) ──
+        s5 = cls._gaussian_stage_5_calibration(
+            returns, vol, config, train_frac)
+        config.calibrated_gw = s5['calibrated_gw']
+        config.calibrated_lambda_rho = s5['calibrated_lambda_rho']
+        config.calibrated_beta_probit_corr = s5['calibrated_beta_probit_corr']
+
+        diagnostics = {
+            "success": True,
+            "stage": 5,
+            "q": q_opt, "c": c_opt, "phi": phi_opt,
+            "variance_inflation": beta_opt,
+            "mu_drift": mu_drift,
+            "momentum_weight": float(config.momentum_weight),
+            "momentum_enabled": config.momentum_enabled,
+            "garch_alpha": garch['garch_alpha'],
+            "garch_beta": garch['garch_beta'],
+            "garch_leverage": garch['garch_leverage'],
+            "gas_q_omega": float(config.gas_q_omega),
+            "gas_q_alpha": float(config.gas_q_alpha),
+            "gas_q_beta": float(config.gas_q_beta),
+            "gas_q_enabled": config.gas_q_enabled,
+            "crps_ewm_lambda": s4['crps_ewm_lambda'],
+            "crps_sigma_shrinkage": s4['crps_sigma_shrinkage'],
+            "calibrated_gw": s5['calibrated_gw'],
+            "calibrated_lambda_rho": s5['calibrated_lambda_rho'],
+            "calibrated_beta_probit_corr": s5['calibrated_beta_probit_corr'],
+            "phi_mode": phi_mode,
+            "asset_symbol": asset_symbol,
+        }
+
+        return config, diagnostics
+
+    @classmethod
+    def filter_and_calibrate(cls, returns, vol, config, train_frac=0.7, momentum_signal=None):
+        """
+        Honest PIT + CRPS for unified Gaussian. All params from training config.
+
+        Mirrors PhiStudentTDriftModel.filter_and_calibrate but uses Gaussian CDF
+        (no ν parameter). Delegates to GARCH path when GARCH params are active.
+
+        Returns (pit_values, pit_pvalue, sigma_crps, crps, diagnostics).
+        """
+        returns = np.asarray(returns).flatten()
+        vol = np.asarray(vol).flatten()
+        n = len(returns)
+        n_train = int(n * train_frac)
+        n_test = n - n_train
+
+        q = float(config.q)
+        c = float(config.c)
+        phi = float(config.phi)
+        mom_w = float(getattr(config, 'momentum_weight', 0.0))
+
+        # Use momentum-augmented filter when momentum is active
+        _, _, mu_pred, S_pred, ll = cls._filter_phi_with_momentum(
+            returns, vol, q, c, phi, momentum_signal, mom_w)
+
+        variance_inflation = float(getattr(config, 'variance_inflation', 1.0))
+        use_garch = (getattr(config, 'garch_alpha', 0.0) > 0 or
+                     getattr(config, 'garch_beta', 0.0) > 0)
+
+        returns_test = returns[n_train:]
+        mu_pred_test = mu_pred[n_train:]
+        S_pred_test = S_pred[n_train:]
+
+        if use_garch:
+            innovations = returns - mu_pred
+            h_garch_full = cls._compute_garch_variance_gaussian(innovations, config)
+            h_garch = h_garch_full[n_train:]
+
+            pit_values, sigma, mu_effective, S_calibrated = cls._gaussian_pit_garch_path(
+                returns, mu_pred, S_pred, h_garch_full, config, n_train, n_test)
+        else:
+            S_calibrated = S_pred_test * variance_inflation
+            sigma = np.sqrt(np.maximum(S_calibrated, 1e-20))
+            sigma = np.maximum(sigma, 1e-10)
+            z = (returns_test - mu_pred_test) / sigma
+            pit_values = np.clip(norm.cdf(z), 0.001, 0.999)
+            mu_effective = mu_pred_test
+
+        pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
+        hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
+        mad = float(np.mean(np.abs(hist / n_test - 0.1)))
+
+        # Berkowitz on test split
+        berkowitz_pvalue, berkowitz_lr, berkowitz_n_pit = cls._compute_berkowitz_full(pit_values)
+
+        # CRPS
+        _crps_shrink = float(np.clip(float(getattr(config, 'crps_sigma_shrinkage', 1.0)), 0.30, 1.0))
+        sigma_crps = sigma * _crps_shrink
+        try:
+            from tuning.diagnostics import compute_crps_gaussian_inline
+            crps = compute_crps_gaussian_inline(returns_test, mu_effective, sigma_crps)
+        except Exception:
+            crps = float('nan')
+
+        diagnostics = {
+            'pit_pvalue': pit_pvalue,
+            'berkowitz_pvalue': float(berkowitz_pvalue),
+            'berkowitz_lr': float(berkowitz_lr),
+            'pit_count': int(berkowitz_n_pit),
+            'mad': mad,
+            'crps': crps,
+            'log_likelihood': ll,
+            'n_train': n_train,
+            'n_test': n_test,
+            'variance_inflation': variance_inflation,
+            'crps_shrink': _crps_shrink,
+            'mu_effective': mu_effective,
+            'calibrated_gw': float(getattr(config, 'calibrated_gw', 0.0)),
+        }
+        return pit_values, pit_pvalue, sigma_crps, crps, diagnostics
+
+    # =========================================================================
+    # MOMENTUM-AUGMENTED FILTER
+    # =========================================================================
+
+    @classmethod
+    def _filter_phi_with_momentum(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        momentum_signal: np.ndarray = None,
+        momentum_weight: float = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+        """
+        φ-Gaussian filter with optional momentum injection into state equation.
+
+        When momentum is active:
+            μ_pred[t] = φ·μ_{t-1} + w·mom[t]·σ_t
+
+        Degrades gracefully to filter_phi_with_predictive when momentum_weight=0
+        or momentum_signal is None.
+
+        Returns (mu_filtered, P_filtered, mu_pred, S_pred, log_likelihood).
+        """
+        if momentum_signal is None or abs(momentum_weight) < 1e-10:
+            return cls.filter_phi_with_predictive(returns, vol, q, c, phi)
+
+        n = len(returns)
+        q_val = float(q)
+        c_val = float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+        mom_w = float(momentum_weight)
+
+        mu = 0.0
+        P = 1e-4
+        mu_filtered = np.zeros(n)
+        P_filtered = np.zeros(n)
+        mu_pred_arr = np.zeros(n)
+        S_pred_arr = np.zeros(n)
+        log_likelihood = 0.0
+
+        phi_sq = phi_val * phi_val
+        log_2pi = math.log(2.0 * math.pi)
+
+        for t in range(n):
+            # Momentum-augmented prediction
+            mom_adj = mom_w * float(momentum_signal[t]) * float(vol[t])
+            mu_pred = phi_val * mu + mom_adj
+            P_pred = phi_sq * P + q_val
+
+            vol_t = float(vol[t])
+            R = c_val * (vol_t * vol_t)
+            S = P_pred + R
+            if S <= 1e-12:
+                S = 1e-12
+
+            mu_pred_arr[t] = mu_pred
+            S_pred_arr[t] = S
+
+            innovation = float(returns[t]) - mu_pred
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
+
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+
+            log_likelihood += -0.5 * (log_2pi + math.log(S) + (innovation * innovation) / S)
+
+        return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
+
+    # =========================================================================
+    # UNIFIED STAGE METHODS
+    # =========================================================================
+
+    @classmethod
+    def _gaussian_stage_1_5_momentum(cls, returns_train, vol_train, n_train,
+                                      q, c, phi, momentum_signal):
+        """
+        Stage 1.5: Momentum injection weight via CRPS grid search.
+
+        Tests momentum_weight ∈ {0.0, 0.05, 0.10, 0.15}.
+        Degradation guard: 0.0 always competes. Only activates momentum
+        if it improves validation-fold CRPS vs no-momentum baseline.
+
+        Returns dict with 'momentum_weight'.
+        """
+        from scipy.stats import norm as _norm
+
+        # Validation fold: last 30% of training data
+        n_val = max(50, n_train // 3)
+        val_start = n_train - n_val
+
+        WEIGHT_GRID = [0.0, 0.05, 0.10, 0.15]
+        best_crps = float('inf')
+        best_weight = 0.0
+
+        for w in WEIGHT_GRID:
+            try:
+                _, _, mu_pred, S_pred, _ = cls._filter_phi_with_momentum(
+                    returns_train, vol_train, q, c, phi, momentum_signal, w)
+
+                # Compute CRPS on validation fold
+                crps_sum = 0.0
+                for t in range(val_start, n_train):
+                    sig = math.sqrt(max(S_pred[t], 1e-20))
+                    if sig < 1e-10:
+                        sig = 1e-10
+                    z = (returns_train[t] - mu_pred[t]) / sig
+                    crps_t = sig * (z * (2 * _norm.cdf(z) - 1)
+                                    + 2 * _norm.pdf(z)
+                                    - 1.0 / math.sqrt(math.pi))
+                    crps_sum += crps_t
+                avg_crps = crps_sum / n_val
+
+                if avg_crps < best_crps:
+                    best_crps = avg_crps
+                    best_weight = w
+            except Exception:
+                continue
+
+        return {'momentum_weight': best_weight}
+
+    @classmethod
+    def _gaussian_stage_4_5_gas_q(cls, returns_train, vol_train, n_train,
+                                   q, c, phi, beta, mu_drift, garch,
+                                   momentum_signal, momentum_weight):
+        """
+        Stage 4.5: GAS-Q adaptive process noise estimation.
+
+        Optimizes (ω, α, β_gas) via concentrated likelihood from gas_q.py.
+        Degradation guard: only enables GAS-Q if validation-fold CRPS
+        improves by > 1% relative to static q baseline.
+
+        Returns dict with gas_q_omega, gas_q_alpha, gas_q_beta, gas_q_enabled.
+        """
+        DISABLED = {
+            'gas_q_omega': 0.0, 'gas_q_alpha': 0.0, 'gas_q_beta': 0.0,
+            'gas_q_enabled': False
+        }
+
+        if n_train < 200:
+            return DISABLED
+
+        try:
+            from models.gas_q import optimize_gas_q_params, gas_q_filter_gaussian
+        except ImportError:
+            try:
+                from .gas_q import optimize_gas_q_params, gas_q_filter_gaussian
+            except ImportError:
+                return DISABLED
+
+        try:
+            gas_config, gas_diag = optimize_gas_q_params(
+                returns_train, vol_train, c, phi, nu=None, train_frac=0.7)
+
+            if not gas_diag.get('fit_success', False):
+                return DISABLED
+
+            # ── Degradation guard: compare CRPS on validation fold ──
+            from scipy.stats import norm as _norm
+            n_val = max(50, n_train // 3)
+            val_start = n_train - n_val
+
+            # Baseline CRPS (static q)
+            _, _, mu_base, S_base, _ = cls._filter_phi_with_momentum(
+                returns_train, vol_train, q, c, phi,
+                momentum_signal, momentum_weight)
+
+            def _fold_crps(mu_p, S_p):
+                total = 0.0
+                for t in range(val_start, n_train):
+                    sig = math.sqrt(max(S_p[t], 1e-20))
+                    if sig < 1e-10:
+                        sig = 1e-10
+                    z = (returns_train[t] - mu_p[t]) / sig
+                    total += sig * (z * (2 * _norm.cdf(z) - 1)
+                                    + 2 * _norm.pdf(z)
+                                    - 1.0 / math.sqrt(math.pi))
+                return total / n_val
+
+            crps_baseline = _fold_crps(mu_base, S_base)
+
+            # GAS-Q CRPS
+            gas_result = gas_q_filter_gaussian(
+                returns_train, vol_train, c, phi, gas_config)
+
+            if gas_result is None or not hasattr(gas_result, 'mu_filtered'):
+                return DISABLED
+
+            # Build S_pred from GAS-Q filter (P + R)
+            P_gas = gas_result.P_filtered
+            R = c * (vol_train ** 2)
+            S_gas = P_gas + R
+
+            crps_gas = _fold_crps(gas_result.mu_filtered, S_gas)
+
+            # Gate: must improve CRPS by >1%
+            if crps_baseline > 0 and crps_gas < crps_baseline * 0.99:
+                return {
+                    'gas_q_omega': float(gas_config.omega),
+                    'gas_q_alpha': float(gas_config.alpha),
+                    'gas_q_beta': float(gas_config.beta),
+                    'gas_q_enabled': True,
+                }
+
+            return DISABLED
+
+        except Exception:
+            return DISABLED
+
+    @classmethod
+    def _gaussian_stage_1(cls, returns_train, vol_train, n_train, config, phi_mode):
+        """Stage 1: Base params (q, c, φ) via CV MLE with state regularization."""
+        _returns_r = np.ascontiguousarray(returns_train.flatten(), dtype=np.float64)
+        _vol_sq = np.ascontiguousarray((vol_train ** 2).flatten(), dtype=np.float64)
+
+        ret_std = float(np.std(_returns_r))
+        vol_var_median = float(np.median(_vol_sq))
+
+        q_min = max(config.q_min, 1e-8)
+        _log_q_min = np.log10(q_min)
+        _log_q_max = np.log10(1e-1)
+        _log_c_min = np.log10(max(config.c_min, 0.01))
+        _log_c_max = np.log10(min(config.c_max, 10.0))
+        phi_min = -0.999 if phi_mode else 0.999
+        phi_max = 0.999
+
+        # Adaptive prior
+        vol_mean = float(np.mean(np.sqrt(_vol_sq)))
+        vol_cv = float(np.std(np.sqrt(_vol_sq))) / (vol_mean + 1e-12)
+        prior_mean = -5.0 + (0.5 if vol_cv > 0.5 else (-0.3 if vol_cv < 0.2 else 0.0))
+
+        # Rolling folds
+        min_train = min(max(60, int(n_train * 0.4)), max(n_train - 5, 1))
+        test_window = min(max(20, int(n_train * 0.1)), max(n_train - min_train, 5))
+        folds = []
+        train_end = min_train
+        while train_end + test_window <= n_train:
+            test_end = min(train_end + test_window, n_train)
+            if test_end - train_end >= 20:
+                folds.append((0, train_end, train_end, test_end))
+            train_end += test_window
+        if not folds:
+            split = int(n_train * 0.7)
+            folds = [(0, split, split, n_train)]
+
+        _mlog = math.log
+        _msqrt = math.sqrt
+
+        def neg_cv_ll(params):
+            if phi_mode:
+                log_q, log_c, phi = params
+            else:
+                log_q, log_c = params
+                phi = 1.0
+            q = 10 ** log_q
+            c = 10 ** log_c
+            phi = float(np.clip(phi, -0.999, 0.999))
+            phi_sq = phi * phi
+
+            if q <= 0 or c <= 0 or not math.isfinite(q) or not math.isfinite(c):
+                return 1e12
+
+            total_ll = 0.0
+            total_obs = 0
+
+            for ts, te, vs, ve in folds:
+                try:
+                    mu_f, P_f, _ = cls.filter_phi(_returns_r[ts:te], vol_train[ts:te], q, c, phi)
+                    mu_p = float(mu_f[-1])
+                    P_p = float(P_f[-1])
+
+                    ll_fold = 0.0
+                    for t in range(vs, ve):
+                        mu_p = phi * mu_p
+                        P_p = phi_sq * P_p + q
+                        R = c * _vol_sq[t]
+                        inn = _returns_r[t] - mu_p
+                        fv = P_p + R
+                        if fv > 1e-12:
+                            ll_fold += -0.5 * (_LOG_2PI + _mlog(fv) + inn * inn / fv)
+                        S = P_p + R
+                        K = P_p / S if S > 1e-12 else 0.0
+                        mu_p = mu_p + K * inn
+                        P_p = (1.0 - K) * P_p
+                    total_ll += ll_fold
+                    total_obs += (ve - vs)
+                except Exception:
+                    continue
+
+            if total_obs == 0:
+                return 1e12
+
+            avg_ll = total_ll / total_obs
+            ps = 1.0 / max(total_obs, 100)
+            prior_q = -1.0 * ps * (log_q - prior_mean) ** 2
+            prior_c = -0.1 * ps * (log_c - _LOG10_C_TARGET) ** 2
+
+            # State regularization: prevent φ→1/q→0 collapse
+            phi_near = max(0.0, abs(phi) - 0.95) ** 2
+            q_small = max(0.0, -7.0 - log_q) ** 2
+            state_reg = -500.0 * (phi_near + q_small)
+
+            val = avg_ll + prior_q + prior_c + state_reg
+            return -val if math.isfinite(val) else 1e12
+
+        # Grid search
+        lq_grid = np.linspace(max(_log_q_min, prior_mean - 1.5),
+                              min(_log_q_max, prior_mean + 1.5), 4)
+        lc_grid = np.array([_log_c_min, 0.0, _log_c_max * 0.6])
+        phi_grid = np.array([-0.3, 0.0, 0.3]) if phi_mode else np.array([1.0])
+
+        best_val = 1e20
+        best_lq, best_lc, best_ph = prior_mean, 0.0, 0.0
+
+        for lq in lq_grid:
+            for lc in lc_grid:
+                for ph in phi_grid:
+                    try:
+                        p = np.array([lq, lc, ph]) if phi_mode else np.array([lq, lc])
+                        v = neg_cv_ll(p)
+                        if v < best_val:
+                            best_val = v
+                            best_lq, best_lc, best_ph = lq, lc, ph
+                    except Exception:
+                        continue
+
+        # L-BFGS-B refinement
+        if phi_mode:
+            bounds = [(_log_q_min, _log_q_max), (_log_c_min, _log_c_max), (phi_min, phi_max)]
+            starts = [
+                np.array([best_lq, best_lc, best_ph]),
+                np.array([prior_mean, 0.0, 0.0]),
+            ]
+        else:
+            bounds = [(_log_q_min, _log_q_max), (_log_c_min, _log_c_max)]
+            starts = [
+                np.array([best_lq, best_lc]),
+                np.array([prior_mean, 0.0]),
+            ]
+
+        best_result = None
+        best_fun = best_val
+        for x0 in starts:
+            try:
+                res = minimize(neg_cv_ll, x0, method='L-BFGS-B', bounds=bounds,
+                               options={'maxiter': 200, 'ftol': 1e-10})
+                if res.fun < best_fun:
+                    best_fun = res.fun
+                    best_result = res
+            except Exception:
+                continue
+
+        if best_result is not None:
+            if phi_mode:
+                lq, lc, ph = best_result.x
+            else:
+                lq, lc = best_result.x
+                ph = 1.0
+        else:
+            lq, lc, ph = best_lq, best_lc, best_ph
+
+        return {
+            'success': True,
+            'q': 10 ** lq,
+            'c': 10 ** lc,
+            'phi': float(np.clip(ph, -0.999, 0.999)),
+            'log_q': lq,
+        }
+
+    @staticmethod
+    def _gaussian_stage_2_variance_inflation(returns_train, mu_pred_train, S_pred_train, n_train):
+        """Stage 2: Variance inflation β via PIT MAD grid search on training data."""
+        n_val = max(50, n_train // 3)
+        val_start = n_train - n_val
+
+        best_beta, best_mad = 1.0, 1.0
+        for beta in [0.80, 0.85, 0.90, 0.95, 1.0, 1.05, 1.10, 1.15, 1.20, 1.30, 1.50]:
+            S_cal = S_pred_train[val_start:] * beta
+            sigma = np.sqrt(np.maximum(S_cal, 1e-20))
+            sigma = np.maximum(sigma, 1e-10)
+            z = (returns_train[val_start:] - mu_pred_train[val_start:]) / sigma
+            pit = np.clip(norm.cdf(z), 0.001, 0.999)
+            hist, _ = np.histogram(pit, bins=10, range=(0, 1))
+            mad = float(np.mean(np.abs(hist / len(pit) - 0.1)))
+            if mad < best_mad:
+                best_mad = mad
+                best_beta = beta
+
+        return best_beta
+
+    @staticmethod
+    def _gaussian_stage_3_garch(innovations_train, mu_drift, n_train):
+        """
+        Stage 3: GJR-GARCH(1,1) on Kalman innovations.
+
+        h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε<0) + β·h_{t-1}
+
+        Reuses the same estimation logic as PhiStudentTDriftModel._stage_5c.
+        """
+        inn = innovations_train - mu_drift
+        sq = inn ** 2
+        uvar = float(np.var(inn))
+        garch_leverage = 0.0
+
+        if n_train > 100:
+            sq_c = sq - uvar
+            denom = np.sum(sq_c[:-1] ** 2)
+            if denom > 1e-12:
+                ga = float(np.sum(sq_c[1:] * sq_c[:-1]) / denom)
+                ga = np.clip(ga, 0.02, 0.25)
+            else:
+                ga = 0.08
+
+            neg_ind = (inn[:-1] < 0).astype(np.float64)
+            n_neg = max(int(np.sum(neg_ind)), 1)
+            n_pos = max(int(np.sum(1.0 - neg_ind)), 1)
+            mean_sq_neg = float(np.sum(sq[1:] * neg_ind) / n_neg)
+            mean_sq_pos = float(np.sum(sq[1:] * (1.0 - neg_ind)) / n_pos)
+
+            if mean_sq_pos > 1e-12:
+                lev_ratio = mean_sq_neg / mean_sq_pos
+            else:
+                lev_ratio = 1.0
+
+            if lev_ratio > 1.0:
+                garch_leverage = float(np.clip(ga * (lev_ratio - 1.0), 0.0, 0.20))
+
+            gb = 0.97 - ga - garch_leverage / 2.0
+            gb = float(np.clip(gb, 0.70, 0.95))
+
+            total_p = ga + garch_leverage / 2.0 + gb
+            if total_p >= 0.99:
+                gb = 0.98 - ga - garch_leverage / 2.0
+                gb = max(gb, 0.5)
+
+            go = uvar * (1 - ga - garch_leverage / 2.0 - gb)
+            go = max(go, 1e-10)
+        else:
+            go = uvar * 0.05
+            ga = 0.08
+            gb = 0.87
+
+        return {
+            'garch_omega': float(go),
+            'garch_alpha': float(ga),
+            'garch_beta': float(gb),
+            'garch_leverage': float(garch_leverage),
+            'unconditional_var': float(uvar),
+        }
+
+    @classmethod
+    def _gaussian_stage_4_ewm_and_shrinkage(cls, returns_train, vol_train, n_train,
+                                             q, c, phi, beta, mu_drift, garch):
+        """Stage 4: EWM location correction λ + CRPS σ shrinkage."""
+        crps_ewm_lambda = 0.0
+        crps_sigma_shrinkage = 1.0
+
+        if n_train < 150:
+            return {'crps_ewm_lambda': crps_ewm_lambda,
+                    'crps_sigma_shrinkage': crps_sigma_shrinkage}
+
+        _, _, mu_pred, S_pred, _ = cls.filter_phi_with_predictive(
+            returns_train, vol_train, q, c, phi)
+        innovations = returns_train - mu_pred
+
+        # Compute GARCH variance for blending
+        h = np.zeros(n_train)
+        h[0] = garch['unconditional_var']
+        sq = innovations ** 2
+        neg = (innovations < 0).astype(np.float64)
+        go, ga, gb, gl = garch['garch_omega'], garch['garch_alpha'], garch['garch_beta'], garch['garch_leverage']
+
+        for t in range(1, n_train):
+            h[t] = max(go + ga * sq[t-1] + gl * sq[t-1] * neg[t-1] + gb * h[t-1], 1e-12)
+
+        # Test EWM λ candidates on last 30% of training
+        n_test_inner = max(50, n_train // 3)
+        test_start = n_train - n_test_inner
+
+        best_crps = float('inf')
+        from scipy.stats import norm as _norm
+
+        for lam in [0.0, 0.92, 0.94, 0.96, 0.98]:
+            ewm_mu = float(np.mean(innovations[:test_start]))
+            alpha_e = 1.0 - lam if lam > 0 else 0.0
+
+            crps_sum = 0.0
+            for t in range(test_start, n_train):
+                mu_eff = mu_pred[t] + ewm_mu + mu_drift
+                S_t = S_pred[t] * beta
+                sig = math.sqrt(max(S_t, 1e-20))
+                if sig < 1e-10:
+                    sig = 1e-10
+                # Gaussian CRPS: σ × [z·(2Φ(z)-1) + 2φ(z) - 1/√π]
+                z = (returns_train[t] - mu_eff) / sig
+                crps_t = sig * (z * (2 * _norm.cdf(z) - 1) + 2 * _norm.pdf(z) - 1.0 / math.sqrt(math.pi))
+                crps_sum += crps_t
+
+                if lam > 0:
+                    ewm_mu = lam * ewm_mu + alpha_e * innovations[t]
+
+            avg_crps = crps_sum / n_test_inner
+            if avg_crps < best_crps:
+                best_crps = avg_crps
+                crps_ewm_lambda = lam
+
+        # CRPS σ shrinkage: golden section on [0.7, 1.0]
+        best_shrink = 1.0
+        best_crps_s = best_crps
+        for s in [0.75, 0.80, 0.85, 0.90, 0.95, 1.0]:
+            ewm_mu = float(np.mean(innovations[:test_start]))
+            alpha_e = 1.0 - crps_ewm_lambda if crps_ewm_lambda > 0 else 0.0
+
+            crps_sum = 0.0
+            for t in range(test_start, n_train):
+                mu_eff = mu_pred[t] + ewm_mu + mu_drift
+                S_t = S_pred[t] * beta
+                sig = math.sqrt(max(S_t, 1e-20)) * s
+                if sig < 1e-10:
+                    sig = 1e-10
+                z = (returns_train[t] - mu_eff) / sig
+                crps_t = sig * (z * (2 * _norm.cdf(z) - 1) + 2 * _norm.pdf(z) - 1.0 / math.sqrt(math.pi))
+                crps_sum += crps_t
+
+                if crps_ewm_lambda > 0:
+                    ewm_mu = crps_ewm_lambda * ewm_mu + alpha_e * innovations[t]
+
+            avg_crps = crps_sum / n_test_inner
+            if avg_crps < best_crps_s:
+                best_crps_s = avg_crps
+                best_shrink = s
+
+        return {'crps_ewm_lambda': crps_ewm_lambda,
+                'crps_sigma_shrinkage': best_shrink}
+
+    @classmethod
+    def _gaussian_stage_5_calibration(cls, returns, vol, config, train_frac=0.7):
+        """
+        Stage 5: Walk-forward calibration (ν-free Gaussian variant).
+
+        Searches over (gw, λ_ρ) grid — no ν dimension since Gaussian.
+        Pre-computes calibration params read by filter_and_calibrate.
+        """
+        D = {'calibrated_gw': 0.0, 'calibrated_lambda_rho': 0.985,
+             'calibrated_beta_probit_corr': 1.0}
+
+        ret = np.asarray(returns).flatten()
+        vl = np.asarray(vol).flatten()
+        n = len(ret)
+        nt = int(n * train_frac)
+
+        use_garch = (getattr(config, 'garch_alpha', 0.0) > 0 or
+                     getattr(config, 'garch_beta', 0.0) > 0)
+        if not use_garch or nt < 150:
+            return D
+
+        q, c, phi = float(config.q), float(config.c), float(config.phi)
+        _, _, mp, sp, _ = cls.filter_phi_with_predictive(ret, vl, q, c, phi)
+        inn = ret - mp
+
+        h = cls._compute_garch_variance_gaussian(inn, config)
+        ht = h[:nt]
+        it = inn[:nt]
+        st = sp[:nt]
+
+        _msqrt = math.sqrt
+        _norm_cdf = norm.cdf
+
+        def _score_fold(Sb, ee, ve, lam):
+            """Run EWM PIT for one fold, return (ks_p_approx, mad)."""
+            nv = ve - ee
+            if nv < 20:
+                return 0.0, 1.0
+            em = float(np.mean(it[:ee]))
+            en = float(np.mean(it[:ee] ** 2))
+            ed = float(np.mean(Sb[:ee]))
+            lm1 = 1.0 - lam
+
+            zv = np.empty(nv)
+            for tv in range(nv):
+                ix = ee + tv
+                bv = en / (ed + 1e-12)
+                if bv < 0.2: bv = 0.2
+                elif bv > 5.0: bv = 5.0
+                iv = it[ix] - em
+                Sv = Sb[ix] * bv
+                s = _msqrt(Sv) if Sv > 0 else 1e-10
+                if s < 1e-10: s = 1e-10
+                zv[tv] = iv / s
+                em = lam * em + lm1 * it[ix]
+                en = lam * en + lm1 * (it[ix] ** 2)
+                ed = lam * ed + lm1 * Sb[ix]
+
+            pv = np.clip(_norm_cdf(zv), 0.001, 0.999)
+            # KS approximation
+            ps = np.sort(pv)
+            dp = np.max(np.arange(1, nv+1) / nv - ps)
+            dm = np.max(ps - np.arange(0, nv) / nv)
+            D_ks = max(dp, dm)
+            sq_n = math.sqrt(nv)
+            lam_ks = (sq_n + 0.12 + 0.11 / sq_n) * D_ks
+            if lam_ks < 0.001: kp = 1.0
+            elif lam_ks > 3.0: kp = 0.0
+            else: kp = min(2.0 * math.exp(-2.0 * lam_ks * lam_ks), 1.0)
+
+            hi, _ = np.histogram(pv, bins=10, range=(0, 1))
+            md = float(np.mean(np.abs(hi / nv - 0.1)))
+            return kp, md
+
+        # Build folds
+        s5f = float(getattr(config, 'crps_ewm_lambda', 0.0))
+        lam = float(np.clip(max(s5f, 0.975), 0.975, 0.995)) if s5f >= 0.50 else 0.985
+
+        nf = 1 if nt < 200 else (2 if nt < 400 else 3)
+        fs = nt // (nf + 1)
+
+        GW_GRID = [0.0, 0.15, 0.30, 0.50, 0.65, 0.80, 0.95, 1.0]
+        LAM_GRID = [0.975, 0.980, 0.985, 0.990]
+
+        bs = -1.0
+        bg, bl = 0.0, 0.985
+
+        for gw in GW_GRID:
+            Sb = (1 - gw) * st + gw * ht
+            for lam_c in LAM_GRID:
+                total_score = 0.0
+                total_folds = 0
+                for fi in range(nf):
+                    ee = (fi + 1) * fs
+                    ve = min((fi + 2) * fs, nt)
+                    if ve <= ee:
+                        continue
+                    kp, md = _score_fold(Sb, ee, ve, lam_c)
+                    # Combined score: KS p-value × (1 - mad_penalty)
+                    mp_ = max(0, 1 - md / 0.05)
+                    score = kp * mp_
+                    total_score += score
+                    total_folds += 1
+
+                if total_folds > 0:
+                    avg_score = total_score / total_folds
+                    if avg_score > bs:
+                        bs = avg_score
+                        bg = gw
+                        bl = lam_c
+
+        return {
+            'calibrated_gw': bg,
+            'calibrated_lambda_rho': bl,
+            'calibrated_beta_probit_corr': 1.0,  # No ν-based correction for Gaussian
+        }
+
+    # =========================================================================
+    # CALIBRATION HELPERS
+    # =========================================================================
+
+    @staticmethod
+    def _compute_garch_variance_gaussian(innovations, config):
+        """
+        GJR-GARCH(1,1) variance for Gaussian model.
+
+        Runs continuously from t=0 to avoid cold-start at train/test boundary.
+        """
+        n = len(innovations)
+        sq = innovations ** 2
+        neg = (innovations < 0).astype(np.float64)
+
+        go = float(getattr(config, 'garch_omega', 0.0))
+        ga = float(getattr(config, 'garch_alpha', 0.0))
+        gb = float(getattr(config, 'garch_beta', 0.0))
+        gl = float(getattr(config, 'garch_leverage', 0.0))
+        gu = float(getattr(config, 'garch_unconditional_var', 1e-4))
+
+        h = np.zeros(n)
+        h[0] = gu
+        for t in range(1, n):
+            ht = go + ga * sq[t-1] + gl * sq[t-1] * neg[t-1] + gb * h[t-1]
+            h[t] = max(ht, 1e-12)
+
+        return h
+
+    @classmethod
+    def _gaussian_pit_garch_path(cls, returns, mu_pred, S_pred, h_garch_full,
+                                  config, n_train, n_test):
+        """
+        PIT via GARCH-blended adaptive EWM for Gaussian model.
+
+        Reads Stage 5 pre-calibrated params from config.
+        Uses Gaussian CDF (no ν parameter). Includes AR(1) probit whitening.
+
+        Returns (pit_values, sigma, mu_effective, S_calibrated).
+        """
+        returns_test = returns[n_train:]
+        mu_pred_test = mu_pred[n_train:]
+        S_pred_test = S_pred[n_train:]
+        h_garch = h_garch_full[n_train:]
+
+        _best_gw = float(config.calibrated_gw)
+        _best_lam = float(config.calibrated_lambda_rho)
+        _beta_corr = float(config.calibrated_beta_probit_corr)
+        _1m_lam = 1.0 - _best_lam
+        _msqrt = math.sqrt
+
+        # EWM warm-start from training data
+        inn_train = returns[:n_train] - mu_pred[:n_train]
+        S_bt = (1 - _best_gw) * S_pred[:n_train] + _best_gw * h_garch_full[:n_train]
+
+        _cal_start = int(n_train * 0.6)
+        _ewm_mu = float(np.mean(inn_train))
+        _ewm_num = float(np.mean(inn_train ** 2))
+        _ewm_den = float(np.mean(S_bt))
+        for _t in range(_cal_start):
+            _ewm_mu = _best_lam * _ewm_mu + _1m_lam * inn_train[_t]
+            _ewm_num = _best_lam * _ewm_num + _1m_lam * (inn_train[_t] ** 2)
+            _ewm_den = _best_lam * _ewm_den + _1m_lam * S_bt[_t]
+
+        # Training probit PITs for whitening warm-start
+        _n_cal = n_train - _cal_start
+        _zcal = np.empty(_n_cal)
+        _em, _en, _ed = _ewm_mu, _ewm_num, _ewm_den
+        for _t in range(_n_cal):
+            _idx = _cal_start + _t
+            _bv = _en / (_ed + 1e-12) * _beta_corr
+            if _bv < 0.2: _bv = 0.2
+            elif _bv > 5.0: _bv = 5.0
+            _inn = inn_train[_idx] - _em
+            _S_cv = S_bt[_idx] * _bv
+            _sig = _msqrt(_S_cv) if _S_cv > 0 else 1e-10
+            if _sig < 1e-10: _sig = 1e-10
+            _zcal[_t] = _inn / _sig
+            _em = _best_lam * _em + _1m_lam * inn_train[_idx]
+            _en = _best_lam * _en + _1m_lam * (inn_train[_idx] ** 2)
+            _ed = _best_lam * _ed + _1m_lam * S_bt[_idx]
+
+        _pit_train_cal = np.clip(norm.cdf(_zcal), 0.001, 0.999)
+        _z_probit_cal = norm.ppf(_pit_train_cal)
+        _z_probit_cal = _z_probit_cal[np.isfinite(_z_probit_cal)]
+
+        # Init test EWM
+        _ewm_mu_t = float(np.mean(inn_train))
+        _ewm_num_t = float(np.mean(inn_train ** 2))
+        _ewm_den_t = float(np.mean(S_bt))
+
+        _S_blend = (1 - _best_gw) * S_pred_test + _best_gw * h_garch
+        inn_test = returns_test - mu_pred_test
+        sq_inn = inn_test ** 2
+
+        _z_test = np.empty(n_test)
+        sigma = np.empty(n_test)
+        mu_effective = np.empty(n_test)
+
+        for _t in range(n_test):
+            _bv = _ewm_num_t / (_ewm_den_t + 1e-12) * _beta_corr
+            if _bv < 0.2: _bv = 0.2
+            elif _bv > 5.0: _bv = 5.0
+            _S_cal = _S_blend[_t] * _bv
+            _inn = inn_test[_t] - _ewm_mu_t
+            mu_effective[_t] = mu_pred_test[_t] + _ewm_mu_t
+            _sig = _msqrt(_S_cal) if _S_cal > 0 else 1e-10
+            if _sig < 1e-10: _sig = 1e-10
+            sigma[_t] = _sig
+            _z_test[_t] = _inn / _sig
+
+            _ewm_mu_t = _best_lam * _ewm_mu_t + _1m_lam * inn_test[_t]
+            _ewm_num_t = _best_lam * _ewm_num_t + _1m_lam * sq_inn[_t]
+            _ewm_den_t = _best_lam * _ewm_den_t + _1m_lam * _S_blend[_t]
+
+        # Gaussian CDF — ν-free
+        pit_values = np.clip(norm.cdf(_z_test), 0.001, 0.999)
+
+        # AR(1) probit whitening
+        if _best_lam > 0:
+            _z_probit = norm.ppf(np.clip(pit_values, 0.0001, 0.9999))
+            _z_white = np.zeros(n_test)
+            _z_white[0] = _z_probit[0]
+
+            _ewm_cross, _ewm_sq = 0.0, 1.0
+            if len(_z_probit_cal) > 2:
+                for _t in range(1, len(_z_probit_cal)):
+                    _ewm_cross = _best_lam * _ewm_cross + _1m_lam * _z_probit_cal[_t-1] * (_z_probit_cal[_t-2] if _t > 1 else 0.0)
+                    _ewm_sq = _best_lam * _ewm_sq + _1m_lam * _z_probit_cal[_t-1] ** 2
+
+            for _t in range(1, n_test):
+                _ewm_cross = _best_lam * _ewm_cross + _1m_lam * _z_probit[_t-1] * (_z_probit[_t-2] if _t > 1 else (_z_probit_cal[-1] if len(_z_probit_cal) > 0 else 0.0))
+                _ewm_sq = _best_lam * _ewm_sq + _1m_lam * _z_probit[_t-1] ** 2
+                _rho_t = (_ewm_cross / _ewm_sq) if _ewm_sq > 0.1 else 0.0
+                _rho_t = max(-0.3, min(0.3, _rho_t))
+
+                if abs(_rho_t) > 0.01:
+                    _z_white[_t] = (_z_probit[_t] - _rho_t * _z_probit[_t-1]) / _msqrt(max(1 - _rho_t * _rho_t, 0.5))
+                else:
+                    _z_white[_t] = _z_probit[_t]
+
+            pit_values = np.clip(norm.cdf(_z_white), 0.001, 0.999)
+
+        return pit_values, sigma, mu_effective, _S_blend
+
+    @staticmethod
+    def _compute_berkowitz_full(pit_values):
+        """
+        Berkowitz (2001) LR test for Gaussian unified models.
+
+        H0: Φ^{-1}(PIT) ~ N(0,1) iid vs H1: AR(1).
+        Returns (p_value, lr_statistic, n_pit).
+        """
+        try:
+            from scipy.stats import chi2
+            z = norm.ppf(np.clip(pit_values, 0.0001, 0.9999))
+            z = z[np.isfinite(z)]
+            n_z = len(z)
+            if n_z <= 20:
+                return (float('nan'), 0.0, n_z)
+            mu_hat = float(np.mean(z))
+            var_hat = float(np.var(z, ddof=0))
+            z_c = z - mu_hat
+            denom = np.sum(z_c[:-1] ** 2)
+            rho_hat = float(np.clip(np.sum(z_c[1:] * z_c[:-1]) / denom, -0.99, 0.99)) if denom > 1e-12 else 0.0
+            ll_null = -0.5 * n_z * np.log(2 * np.pi) - 0.5 * np.sum(z ** 2)
+            sigma_sq = max(var_hat * (1 - rho_hat ** 2) if abs(rho_hat) < 0.99 else var_hat * 0.01, 1e-6)
+            ll_alt = -0.5 * np.log(2 * np.pi * var_hat) - 0.5 * (z[0] - mu_hat) ** 2 / var_hat
+            for t in range(1, n_z):
+                resid = z[t] - (mu_hat + rho_hat * (z[t-1] - mu_hat))
+                ll_alt += -0.5 * np.log(2 * np.pi * sigma_sq) - 0.5 * resid ** 2 / sigma_sq
+            lr_stat = float(max(2 * (ll_alt - ll_null), 0))
+            p_value = float(1 - chi2.cdf(lr_stat, df=3))
+            return (p_value, lr_stat, n_z)
+        except Exception:
+            return (float('nan'), 0.0, 0)
 
     @classmethod
     def optimize_params(
@@ -457,64 +1632,72 @@ class GaussianDriftModel:
             split_idx = int(n * train_frac)
             fold_splits = [(0, split_idx, split_idx, n)]
 
+        # Pre-compute arrays for inner loop (avoid per-element np.ndim checks)
+        _returns_r = np.ascontiguousarray(returns_robust.flatten(), dtype=np.float64)
+        _vol_sq = np.ascontiguousarray((vol * vol).flatten(), dtype=np.float64)
+        _mlog = math.log
+        _msqrt = math.sqrt
+
         def negative_penalized_ll_cv(params: np.ndarray) -> float:
             log_q, log_c = params
             q = 10 ** log_q
             c = 10 ** log_c
 
-            if q <= 0 or c <= 0 or not np.isfinite(q) or not np.isfinite(c):
+            if q <= 0 or c <= 0 or not math.isfinite(q) or not math.isfinite(c):
                 return 1e12
 
             total_ll_oos = 0.0
             total_obs = 0
-            all_standardized = []
+            # Pre-allocated array for standardized residuals (avoids list append overhead)
+            std_buf = np.empty(1000, dtype=np.float64)
+            std_count = 0
 
             for train_start, train_end, test_start, test_end in fold_splits:
                 try:
-                    ret_train = returns_robust[train_start:train_end]
+                    ret_train = _returns_r[train_start:train_end]
                     vol_train = vol[train_start:train_end]
 
                     if len(ret_train) < 3:
                         continue
 
-                    mu_filt_train, P_filt_train, _ = cls.filter(returns_robust[train_start:train_end], vol_train, q, c)
+                    mu_filt_train, P_filt_train, _ = cls.filter(ret_train, vol_train, q, c)
 
-                    mu_final = float(mu_filt_train[-1])
-                    P_final = float(P_filt_train[-1])
+                    mu_pred = float(mu_filt_train[-1])
+                    P_pred = float(P_filt_train[-1])
 
-                    ll_fold = 0.0
-                    mu_pred = mu_final
-                    P_pred = P_final
+                    if _USE_CV_KERNEL:
+                        ll_fold, n_fold, n_written = run_gaussian_cv_test_fold(
+                            _returns_r, _vol_sq, q, c,
+                            mu_pred, P_pred,
+                            test_start, test_end,
+                            std_buf, std_count, 1000,
+                        )
+                        total_ll_oos += ll_fold
+                        total_obs += n_fold
+                        std_count += n_written
+                    else:
+                        ll_fold = 0.0
 
-                    for t in range(test_start, test_end):
-                        P_pred = P_pred + q
+                        for t in range(test_start, test_end):
+                            P_pred = P_pred + q
 
-                        if np.ndim(returns_robust[t]) == 0:
-                            ret_t = float(returns_robust[t])
-                        else:
-                            ret_t = float(returns_robust[t].item())
-                        if np.ndim(vol[t]) == 0:
-                            vol_t = float(vol[t])
-                        else:
-                            vol_t = float(vol[t].item())
+                            R = c * _vol_sq[t]
+                            innovation = _returns_r[t] - mu_pred
+                            forecast_var = P_pred + R
 
-                        R = c * (vol_t ** 2)
-                        innovation = ret_t - mu_pred
-                        forecast_var = P_pred + R
+                            if forecast_var > 1e-12:
+                                ll_fold += -0.5 * (_LOG_2PI + _mlog(forecast_var) + (innovation * innovation) / forecast_var)
+                                if std_count < 1000:
+                                    std_buf[std_count] = innovation / _msqrt(forecast_var)
+                                    std_count += 1
 
-                        if forecast_var > 1e-12:
-                            ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
-                            standardized_innov = innovation / np.sqrt(forecast_var)
-                            if len(all_standardized) < 1000:
-                                all_standardized.append(float(standardized_innov))
-                            ll_fold += ll_contrib
+                            S_total = P_pred + R
+                            K = P_pred / S_total if S_total > 1e-12 else 0.0
+                            mu_pred = mu_pred + K * innovation
+                            P_pred = (1.0 - K) * P_pred
 
-                        K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
-                        mu_pred = mu_pred + K * innovation
-                        P_pred = (1.0 - K) * P_pred
-
-                    total_ll_oos += ll_fold
-                    total_obs += (test_end - test_start)
+                        total_ll_oos += ll_fold
+                        total_obs += (test_end - test_start)
 
                 except Exception:
                     continue
@@ -525,12 +1708,10 @@ class GaussianDriftModel:
             avg_ll_oos = total_ll_oos / max(total_obs, 1)
 
             calibration_penalty = 0.0
-            if len(all_standardized) >= 30:
+            if std_count >= 30:
                 try:
-                    pit_values = norm.cdf(all_standardized)
-
-                    ks_result = kstest(pit_values, 'uniform')
-                    ks_stat = float(ks_result.statistic)
+                    pit_values = norm.cdf(std_buf[:std_count])
+                    ks_stat = _fast_ks_statistic(pit_values)
 
                     if ks_stat > 0.05:
                         calibration_penalty = -50.0 * ((ks_stat - 0.05) ** 2)
@@ -545,14 +1726,11 @@ class GaussianDriftModel:
 
             prior_scale = 1.0 / max(total_obs, 100)
             log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
-
-            c_target = 0.9
-            log_c_target = np.log10(c_target)
-            log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
+            log_prior_c = -0.1 * prior_scale * (log_c - _LOG10_C_TARGET) ** 2
 
             penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + calibration_penalty
 
-            if not np.isfinite(penalized_ll):
+            if not math.isfinite(penalized_ll):
                 return 1e12
 
             return -penalized_ll
@@ -562,17 +1740,12 @@ class GaussianDriftModel:
         log_c_min = np.log10(c_min)
         log_c_max = np.log10(c_max)
 
-        log_q_grid = np.concatenate([
-            np.linspace(log_q_min, adaptive_prior_mean - 1.0, 5),
-            np.linspace(adaptive_prior_mean - 1.0, adaptive_prior_mean + 1.0, 7),
-            np.linspace(adaptive_prior_mean + 1.0, log_q_max, 3)
-        ])
+        log_q_grid = np.linspace(
+            max(log_q_min, adaptive_prior_mean - 2.0),
+            min(log_q_max, adaptive_prior_mean + 2.0),
+            8)
 
-        log_c_grid = np.concatenate([
-            np.linspace(log_c_min, np.log10(0.7), 3),
-            np.linspace(np.log10(0.7), np.log10(1.0), 7),
-            np.linspace(np.log10(1.0), log_c_max, 2)
-        ])
+        log_c_grid = np.linspace(log_c_min, log_c_max, 8)
 
         best_neg_ll = float('inf')
         best_log_q_grid = adaptive_prior_mean
@@ -600,14 +1773,9 @@ class GaussianDriftModel:
         start_points = [
             np.array([best_log_q_grid, best_log_c_grid]),
             np.array([adaptive_prior_mean, np.log10(0.9)]),
-            np.array([adaptive_prior_mean, np.log10(0.7)]),
-            np.array([adaptive_prior_mean, np.log10(1.2)]),
             np.array([best_log_q_grid - 0.5, best_log_c_grid]),
             np.array([best_log_q_grid + 0.5, best_log_c_grid]),
-            np.array([best_log_q_grid, best_log_c_grid - 0.2]),
-            np.array([best_log_q_grid, best_log_c_grid + 0.2]),
-            np.array([-7.0, 0.0]),
-            np.array([-5.0, 0.0]),
+            np.array([best_log_q_grid, best_log_c_grid + 0.15]),
         ]
 
         for x0 in start_points:

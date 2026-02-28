@@ -41,6 +41,8 @@ try:
         gaussian_filter_with_lfo_cv_kernel,
         ms_q_student_t_filter_kernel,
         unified_phi_student_t_filter_kernel,
+        gaussian_cv_test_fold_kernel,
+        phi_gaussian_cv_test_fold_kernel,
     )
     _NUMBA_AVAILABLE = True
 except ImportError:
@@ -677,4 +679,64 @@ def run_unified_phi_student_t_filter(
 
 def is_unified_filter_available() -> bool:
     """Check if Numba unified filter kernel is available."""
+    return _NUMBA_AVAILABLE
+
+
+# =============================================================================
+# CV TEST-FOLD FORWARD-PASS WRAPPERS
+# =============================================================================
+
+def run_gaussian_cv_test_fold(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    mu_init: float,
+    P_init: float,
+    test_start: int,
+    test_end: int,
+    std_buf: np.ndarray,
+    std_offset: int,
+    std_max: int,
+) -> Tuple[float, int, int]:
+    """Run Numba-accelerated Gaussian CV test-fold forward pass."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    return gaussian_cv_test_fold_kernel(
+        returns, vol_sq,
+        float(q), float(c),
+        float(mu_init), float(P_init),
+        int(test_start), int(test_end),
+        std_buf, int(std_offset), int(std_max),
+    )
+
+
+def run_phi_gaussian_cv_test_fold(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    mu_init: float,
+    P_init: float,
+    test_start: int,
+    test_end: int,
+    std_buf: np.ndarray,
+    std_offset: int,
+    std_max: int,
+) -> Tuple[float, int, int]:
+    """Run Numba-accelerated φ-Gaussian CV test-fold forward pass."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    return phi_gaussian_cv_test_fold_kernel(
+        returns, vol_sq,
+        float(q), float(c), float(phi),
+        float(mu_init), float(P_init),
+        int(test_start), int(test_end),
+        std_buf, int(std_offset), int(std_max),
+    )
+
+
+def is_cv_kernel_available() -> bool:
+    """Check if Numba CV test-fold kernels are compiled and available."""
     return _NUMBA_AVAILABLE

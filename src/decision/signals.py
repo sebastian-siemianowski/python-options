@@ -2555,18 +2555,22 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         return None
 
     # Helper to check if model is Student-t (phi_student_t_nu_* naming)
-    # Also handles momentum-augmented variants (phi_student_t_nu_*_momentum)
     # Also handles unified variants (phi_student_t_unified_nu_*)
+    # Also handles legacy momentum-augmented variants (phi_student_t_nu_*_momentum) for cached compatibility
     def _is_student_t(model_name: str) -> bool:
-        # Strip momentum suffix if present
+        # Strip momentum suffix if present (legacy cache compatibility)
         base_name = model_name[:-9] if model_name.endswith('_momentum') else model_name
         return base_name.startswith('phi_student_t_nu_') or base_name.startswith('phi_student_t_unified_nu_')
     
-    # Helper to check if model is momentum-augmented
+    # Helper to check if model has internal momentum augmentation active
+    # (either via legacy _momentum suffix or via internal momentum_augmented flag)
     def _is_momentum_augmented(model_name: str) -> bool:
-        return model_name.endswith('_momentum')
+        if model_name.endswith('_momentum'):
+            return True  # Legacy cache compatibility
+        m_params = models.get(model_name, {})
+        return isinstance(m_params, dict) and m_params.get('momentum_augmented', False)
     
-    # Helper to get base model name (strip _momentum suffix)
+    # Helper to get base model name (strip _momentum suffix for legacy cache)
     def _get_base_model_name(model_name: str) -> str:
         return model_name[:-9] if model_name.endswith('_momentum') else model_name
     
@@ -2618,7 +2622,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
 
     # Derive noise_model from best model name
     # Normalize to standard categories for downstream processing
-    # Handle momentum-augmented models by getting their base model type
+    # Handle legacy _momentum suffix for cached compatibility
     base_model_for_noise = _get_base_model_name(best_model)
     
     if _is_student_t(best_model):
@@ -2628,11 +2632,10 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
     else:
         noise_model = 'gaussian'
     
-    # Track if momentum model was selected
+    # Track if momentum augmentation is active (internal flag or legacy suffix)
     is_momentum_model = _is_momentum_augmented(best_model)
     
-    # Also store the full model name (includes _momentum suffix) for tracking/display
-    # This differs from noise_model which is normalized to base type
+    # Full model name for tracking/display
     full_model_name = best_model
 
     # Validate required params
@@ -3170,8 +3173,87 @@ def _kalman_filter_drift(
     enhanced_model_type = None
     ms_q_diagnostics = None
     
+    # Check for Unified Gaussian model (February 2026 - ν-free Calibration Pipeline)
+    if tuned_params is not None and tuned_params.get('gaussian_unified') and gas_q_result is None:
+        try:
+            from models.gaussian import GaussianDriftModel, GaussianUnifiedConfig
+            import numpy as _np_sig
+            
+            # Build GaussianUnifiedConfig from tuned params (including momentum + GAS-Q)
+            g_unified_config = GaussianUnifiedConfig(
+                q=float(tuned_params.get('q', 1e-6)),
+                c=float(tuned_params.get('c', 1.0)),
+                phi=float(tuned_params.get('phi', 0.0)),
+                variance_inflation=float(tuned_params.get('variance_inflation', 1.0)),
+                mu_drift=float(tuned_params.get('mu_drift', 0.0)),
+                garch_omega=float(tuned_params.get('garch_omega', 0.0)),
+                garch_alpha=float(tuned_params.get('garch_alpha', 0.0)),
+                garch_beta=float(tuned_params.get('garch_beta', 0.0)),
+                garch_leverage=float(tuned_params.get('garch_leverage', 0.0)),
+                garch_unconditional_var=float(tuned_params.get('garch_unconditional_var', 1e-4)),
+                crps_ewm_lambda=float(tuned_params.get('crps_ewm_lambda', 0.0)),
+                crps_sigma_shrinkage=float(tuned_params.get('crps_sigma_shrinkage', 1.0)),
+                calibrated_gw=float(tuned_params.get('calibrated_gw', 0.0)),
+                calibrated_lambda_rho=float(tuned_params.get('calibrated_lambda_rho', 0.985)),
+                calibrated_beta_probit_corr=float(tuned_params.get('calibrated_beta_probit_corr', 1.0)),
+                # Momentum integration (Stage 1.5)
+                momentum_weight=float(tuned_params.get('momentum_weight', 0.0)),
+                # GAS-Q adaptive process noise (Stage 4.5)
+                gas_q_omega=float(tuned_params.get('gas_q_omega', 0.0)),
+                gas_q_alpha=float(tuned_params.get('gas_q_alpha', 0.0)),
+                gas_q_beta=float(tuned_params.get('gas_q_beta', 0.0)),
+            )
+            
+            # Reconstruct momentum signal at inference time (deterministic given returns)
+            _gu_mom_signal = None
+            if g_unified_config.momentum_enabled:
+                try:
+                    from models.momentum_augmented import compute_momentum_features, compute_momentum_signal
+                    _gu_mom_feats = compute_momentum_features(y)
+                    _gu_mom_signal = compute_momentum_signal(_gu_mom_feats)
+                except Exception:
+                    _gu_mom_signal = None
+            
+            # Run filter with momentum augmentation (if active)
+            mu_g, P_g, mu_pred_g, S_pred_g, ll_g = GaussianDriftModel._filter_phi_with_momentum(
+                y, sigma, g_unified_config.q, g_unified_config.c, g_unified_config.phi,
+                _gu_mom_signal, g_unified_config.momentum_weight
+            )
+            mu_filtered = mu_g
+            P_filtered = P_g
+            log_likelihood = ll_g
+            enhanced_result = True
+            enhanced_model_type = 'gaussian_unified'
+            
+            # Get calibrated variance from filter_and_calibrate
+            try:
+                _pit_gu, _pit_p_gu, _sigma_cal_gu, _, _calib_diag_gu = \
+                    GaussianDriftModel.filter_and_calibrate(
+                        y, sigma, g_unified_config, train_frac=0.7,
+                        momentum_signal=_gu_mom_signal
+                    )
+                _n_train_gu = int(len(y) * 0.7)
+                if len(_sigma_cal_gu) == len(y) - _n_train_gu and _np_sig.all(_sigma_cal_gu > 0):
+                    _S_cal_full_gu = _np_sig.copy(S_pred_g)
+                    _S_cal_full_gu[_n_train_gu:] = _sigma_cal_gu ** 2
+                    P_filtered = _S_cal_full_gu
+            except Exception:
+                pass  # Keep raw P_filtered on failure
+            
+            if os.getenv("DEBUG"):
+                print(f"Using unified Gaussian filter: φ={g_unified_config.phi:.3f}, "
+                      f"β={g_unified_config.variance_inflation:.3f}, "
+                      f"garch=({g_unified_config.garch_alpha:.3f},{g_unified_config.garch_beta:.3f}), "
+                      f"gw={g_unified_config.calibrated_gw:.3f}, "
+                      f"mom_w={g_unified_config.momentum_weight:.3f}, "
+                      f"gas_q={'ON' if g_unified_config.gas_q_enabled else 'OFF'}")
+        except Exception as gu_e:
+            if os.getenv("DEBUG"):
+                print(f"Unified Gaussian filter failed, falling back: {gu_e}")
+            enhanced_result = None
+    
     # Check for Unified Student-T model (February 2026 - Elite Architecture)
-    if tuned_params is not None and tuned_params.get('unified_model') and gas_q_result is None:
+    if tuned_params is not None and tuned_params.get('unified_model') and not tuned_params.get('gaussian_unified') and gas_q_result is None:
         try:
             from models.phi_student_t import UnifiedStudentTConfig
             import numpy as _np_sig
@@ -3676,24 +3758,31 @@ def compute_features(
             'kalman_phi_gaussian': {'short': 'φ-Gaussian', 'desc': 'AR(1) mean-reverting drift', 'family': 'gaussian'},
             
             # ═══════════════════════════════════════════════════════════════════
-            # MOMENTUM-AUGMENTED GAUSSIAN MODELS
+            # UNIFIED GAUSSIAN MODELS (February 2026 — replaces legacy momentum/GAS-Q)
             # ═══════════════════════════════════════════════════════════════════
-            'kalman_gaussian_momentum': {'short': 'Gaussian+Momentum', 'desc': 'Random walk with momentum', 'family': 'momentum'},
-            'kalman_phi_gaussian_momentum': {'short': 'φ-Gaussian+Momentum', 'desc': 'AR(1) with momentum', 'family': 'momentum'},
+            'kalman_gaussian_unified': {'short': 'Gaussian-Uni [U]', 'desc': 'Unified Gaussian with internal momentum + GAS-Q', 'family': 'gaussian_unified'},
+            'kalman_phi_gaussian_unified': {'short': 'φ-Gaussian-Uni [U]', 'desc': 'Unified φ-Gaussian with internal momentum + GAS-Q', 'family': 'gaussian_unified'},
+
+            # ═══════════════════════════════════════════════════════════════════
+            # LEGACY MOMENTUM-AUGMENTED GAUSSIAN (deprecated — kept for cached compatibility)
+            # ═══════════════════════════════════════════════════════════════════
+            'kalman_gaussian_momentum': {'short': 'Gaussian+Momentum', 'desc': 'Random walk with momentum (legacy)', 'family': 'momentum'},
+            'kalman_phi_gaussian_momentum': {'short': 'φ-Gaussian+Momentum', 'desc': 'AR(1) with momentum (legacy)', 'family': 'momentum'},
             
             # ═══════════════════════════════════════════════════════════════════
             # STUDENT-T MODELS (Discrete ν grid: 4, 8, 20)
+            # Momentum augmentation is internal (activated if CRPS improves)
             # ═══════════════════════════════════════════════════════════════════
             'phi_student_t_nu_4': {'short': 'φ-T(ν=4)', 'desc': 'Very heavy tails', 'family': 'student_t'},
             'phi_student_t_nu_8': {'short': 'φ-T(ν=8)', 'desc': 'Moderate-heavy tails', 'family': 'student_t'},
             'phi_student_t_nu_20': {'short': 'φ-T(ν=20)', 'desc': 'Light tails', 'family': 'student_t'},
             
             # ═══════════════════════════════════════════════════════════════════
-            # MOMENTUM-AUGMENTED STUDENT-T MODELS
+            # LEGACY MOMENTUM-AUGMENTED STUDENT-T (kept for cached compatibility)
             # ═══════════════════════════════════════════════════════════════════
-            'phi_student_t_nu_4_momentum': {'short': 'φ-T(ν=4)+Momentum', 'desc': 'Very heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_8_momentum': {'short': 'φ-T(ν=8)+Momentum', 'desc': 'Moderate-heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_20_momentum': {'short': 'φ-T(ν=20)+Momentum', 'desc': 'Light tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_4_momentum': {'short': 'φ-T(ν=4)+Mom', 'desc': 'Very heavy tails with momentum (legacy)', 'family': 'student_t'},
+            'phi_student_t_nu_8_momentum': {'short': 'φ-T(ν=8)+Mom', 'desc': 'Moderate-heavy tails with momentum (legacy)', 'family': 'student_t'},
+            'phi_student_t_nu_20_momentum': {'short': 'φ-T(ν=20)+Mom', 'desc': 'Light tails with momentum (legacy)', 'family': 'student_t'},
             
             # ═══════════════════════════════════════════════════════════════════
             # ADAPTIVE ν REFINEMENT / LEGACY CANDIDATES (intermediate values)
@@ -3708,10 +3797,10 @@ def compute_features(
             'phi_student_t_nu_15': {'short': 'φ-T(ν=15)', 'desc': 'Light tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_16': {'short': 'φ-T(ν=16)', 'desc': 'Light tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_25': {'short': 'φ-T(ν=25)', 'desc': 'Near-Gaussian (refined)', 'family': 'student_t'},
-            # Momentum variants for refined/legacy ν values
-            'phi_student_t_nu_6_momentum': {'short': 'φ-T(ν=6)+Momentum', 'desc': 'Heavy tails with momentum (refined)', 'family': 'momentum'},
-            'phi_student_t_nu_12_momentum': {'short': 'φ-T(ν=12)+Momentum', 'desc': 'Moderate tails with momentum (refined)', 'family': 'momentum'},
-            'phi_student_t_nu_15_momentum': {'short': 'φ-T(ν=15)+Momentum', 'desc': 'Light tails with momentum (refined)', 'family': 'momentum'},
+            # Momentum variants for refined/legacy ν values (legacy cached compatibility)
+            'phi_student_t_nu_6_momentum': {'short': 'φ-T(ν=6)+Mom', 'desc': 'Heavy tails with momentum (legacy)', 'family': 'student_t'},
+            'phi_student_t_nu_12_momentum': {'short': 'φ-T(ν=12)+Mom', 'desc': 'Moderate tails with momentum (legacy)', 'family': 'student_t'},
+            'phi_student_t_nu_15_momentum': {'short': 'φ-T(ν=15)+Mom', 'desc': 'Light tails with momentum (legacy)', 'family': 'student_t'},
             
             # ═══════════════════════════════════════════════════════════════════
             # ENHANCED STUDENT-T MODELS (February 2026)
@@ -3812,11 +3901,11 @@ def compute_features(
                     nu_val = int(base_name.split('_')[-1])
                     short = f'φ-T(ν={nu_val})'
                     if is_momentum:
-                        short += '+Momentum'
-                    family = 'momentum' if is_momentum else 'student_t'
+                        short += '+Mom'  # Legacy cache compatibility
+                    family = 'student_t'
                     desc = f'Student-t with ν={nu_val}'
                     if is_momentum:
-                        desc += ' and momentum'
+                        desc += ' (legacy momentum)'
                     return {'short': short, 'desc': desc, 'family': family}
                 except ValueError:
                     pass
@@ -6127,17 +6216,21 @@ def bayesian_model_average_mc(
     # ========================================================================
     # EXTRACT AUGMENTATION LAYER DATA
     # ========================================================================
-    # Hansen Skew-t data
+    # When unified model is selected, external augmentation layers are disabled
+    # because unified models already incorporate VoV, asymmetry, and MS-q.
+    is_unified_model = global_data.get('unified_model', False) if global_data else False
+    
+    # Hansen Skew-t data (disabled for unified models — α_asym supersedes Hansen-λ)
     hansen_data = global_data.get('hansen_skew_t', {})
-    hansen_lambda_global = hansen_data.get('lambda') if hansen_data else None
-    hansen_nu_global = hansen_data.get('nu') if hansen_data else None
+    hansen_lambda_global = hansen_data.get('lambda') if hansen_data and not is_unified_model else None
+    hansen_nu_global = hansen_data.get('nu') if hansen_data and not is_unified_model else None
     hansen_skew_t_enabled = hansen_lambda_global is not None and abs(hansen_lambda_global) > 0.01
     
-    # Contaminated Student-t data
+    # Contaminated Student-t data (disabled for unified models — MS-q supersedes CST)
     cst_data = global_data.get('contaminated_student_t', {})
-    cst_nu_normal_global = cst_data.get('nu_normal') if cst_data else None
-    cst_nu_crisis_global = cst_data.get('nu_crisis') if cst_data else None
-    cst_epsilon_global = cst_data.get('epsilon') if cst_data else None
+    cst_nu_normal_global = cst_data.get('nu_normal') if cst_data and not is_unified_model else None
+    cst_nu_crisis_global = cst_data.get('nu_crisis') if cst_data and not is_unified_model else None
+    cst_epsilon_global = cst_data.get('epsilon') if cst_data and not is_unified_model else None
     cst_enabled = cst_nu_normal_global is not None and cst_epsilon_global is not None and cst_epsilon_global > 0.001
 
     # Get current regime's model_posterior and models
@@ -9285,6 +9378,8 @@ def main() -> None:
             model_info_lookup = {
                 'kalman_gaussian': 'Gaussian',
                 'kalman_phi_gaussian': 'φ-Gaussian',
+                'kalman_gaussian_unified': 'Gaussian-Uni [U]',
+                'kalman_phi_gaussian_unified': 'φ-Gaussian-Uni [U]',
                 'kalman_gaussian_momentum': 'Gaussian+Momentum',
                 'kalman_phi_gaussian_momentum': 'φ-Gaussian+Momentum',
                 'gaussian': 'Gaussian',
