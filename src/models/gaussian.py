@@ -562,17 +562,12 @@ class GaussianDriftModel:
         log_c_min = np.log10(c_min)
         log_c_max = np.log10(c_max)
 
-        log_q_grid = np.concatenate([
-            np.linspace(log_q_min, adaptive_prior_mean - 1.0, 5),
-            np.linspace(adaptive_prior_mean - 1.0, adaptive_prior_mean + 1.0, 7),
-            np.linspace(adaptive_prior_mean + 1.0, log_q_max, 3)
-        ])
+        log_q_grid = np.linspace(
+            max(log_q_min, adaptive_prior_mean - 2.0),
+            min(log_q_max, adaptive_prior_mean + 2.0),
+            8)
 
-        log_c_grid = np.concatenate([
-            np.linspace(log_c_min, np.log10(0.7), 3),
-            np.linspace(np.log10(0.7), np.log10(1.0), 7),
-            np.linspace(np.log10(1.0), log_c_max, 2)
-        ])
+        log_c_grid = np.linspace(log_c_min, log_c_max, 8)
 
         best_neg_ll = float('inf')
         best_log_q_grid = adaptive_prior_mean
@@ -600,14 +595,9 @@ class GaussianDriftModel:
         start_points = [
             np.array([best_log_q_grid, best_log_c_grid]),
             np.array([adaptive_prior_mean, np.log10(0.9)]),
-            np.array([adaptive_prior_mean, np.log10(0.7)]),
-            np.array([adaptive_prior_mean, np.log10(1.2)]),
             np.array([best_log_q_grid - 0.5, best_log_c_grid]),
             np.array([best_log_q_grid + 0.5, best_log_c_grid]),
-            np.array([best_log_q_grid, best_log_c_grid - 0.2]),
-            np.array([best_log_q_grid, best_log_c_grid + 0.2]),
-            np.array([-7.0, 0.0]),
-            np.array([-5.0, 0.0]),
+            np.array([best_log_q_grid, best_log_c_grid + 0.15]),
         ]
 
         for x0 in start_points:

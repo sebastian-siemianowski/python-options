@@ -195,42 +195,45 @@ def _kalman_filter_phi_with_trajectory(returns: np.ndarray, vol: np.ndarray, q: 
     Returns (mu_filtered, P_filtered, total_log_likelihood, loglik_trajectory).
     """
     n = len(returns)
+    returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+    vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
     q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
     c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
     phi_val = float(np.clip(phi, -0.999, 0.999))
+    phi_sq = phi_val * phi_val
+
+    # Pre-compute R array and bind math.log locally
+    R = c_val * (vol * vol)
+    _LOG_2PI = math.log(2.0 * math.pi)
+    _mlog = math.log
 
     mu = 0.0
     P = 1e-4
-    mu_filtered = np.zeros(n)
-    P_filtered = np.zeros(n)
-    loglik_trajectory = np.zeros(n)
+    mu_filtered = np.empty(n, dtype=np.float64)
+    P_filtered = np.empty(n, dtype=np.float64)
+    loglik_trajectory = np.empty(n, dtype=np.float64)
     log_likelihood = 0.0
 
     for t in range(n):
         mu_pred = phi_val * mu
-        P_pred = (phi_val ** 2) * P + q_val
+        P_pred = phi_sq * P + q_val
 
-        vol_t = vol[t]
-        vol_scalar = float(vol_t) if np.ndim(vol_t) == 0 else float(vol_t.item())
-        R = c_val * (vol_scalar ** 2)
-
-        ret_t = returns[t]
-        r_val = float(ret_t) if np.ndim(ret_t) == 0 else float(ret_t.item())
-        innovation = r_val - mu_pred
-
-        S = P_pred + R
+        S = P_pred + R[t]
         if S <= 1e-12:
             S = 1e-12
+
+        innovation = returns[t] - mu_pred
         K = P_pred / S
 
         mu = mu_pred + K * innovation
         P = (1.0 - K) * P_pred
-        P = float(max(P, 1e-12))
+        if P < 1e-12:
+            P = 1e-12
 
         mu_filtered[t] = mu
         P_filtered[t] = P
 
-        ll_t = -0.5 * (np.log(2 * np.pi * S) + (innovation ** 2) / S)
+        ll_t = -0.5 * (_LOG_2PI + _mlog(S) + (innovation * innovation) / S)
         loglik_trajectory[t] = ll_t
         log_likelihood += ll_t
 
@@ -359,13 +362,22 @@ class PhiGaussianDriftModel:
             split_idx = int(n * train_frac)
             fold_splits = [(0, split_idx, split_idx, n)]
 
+        # Pre-compute vol^2 array for inner loop and constants
+        _vol_sq = np.ascontiguousarray((vol * vol).flatten(), dtype=np.float64)
+        _returns_r = np.ascontiguousarray(returns_robust.flatten(), dtype=np.float64)
+        _LOG_2PI = math.log(2.0 * math.pi)
+        _mlog = math.log
+        _msqrt = math.sqrt
+        _log_c_target = math.log10(0.9)
+
         def negative_penalized_ll_cv_phi(params: np.ndarray) -> float:
             log_q, log_c, phi = params
             q = 10 ** log_q
             c = 10 ** log_c
             phi_clip = float(np.clip(phi, phi_min, phi_max))
+            phi_clip_sq = phi_clip * phi_clip
 
-            if q <= 0 or c <= 0 or not np.isfinite(q) or not np.isfinite(c):
+            if q <= 0 or c <= 0 or not math.isfinite(q) or not math.isfinite(c):
                 return 1e12
 
             total_ll_oos = 0.0
@@ -374,7 +386,7 @@ class PhiGaussianDriftModel:
 
             for train_start, train_end, test_start, test_end in fold_splits:
                 try:
-                    ret_train = returns_robust[train_start:train_end]
+                    ret_train = _returns_r[train_start:train_end]
                     vol_train = vol[train_start:train_end]
 
                     if len(ret_train) < 3:
@@ -382,32 +394,26 @@ class PhiGaussianDriftModel:
 
                     mu_filt_train, P_filt_train, _ = cls.filter(ret_train, vol_train, q, c, phi_clip)
 
-                    mu_final = float(mu_filt_train[-1])
-                    P_final = float(P_filt_train[-1])
+                    mu_pred = float(mu_filt_train[-1])
+                    P_pred = float(P_filt_train[-1])
 
                     ll_fold = 0.0
-                    mu_pred = mu_final
-                    P_pred = P_final
 
                     for t in range(test_start, test_end):
                         mu_pred = phi_clip * mu_pred
-                        P_pred = (phi_clip ** 2) * P_pred + q
+                        P_pred = phi_clip_sq * P_pred + q
 
-                        ret_t = float(returns_robust[t]) if np.ndim(returns_robust[t]) == 0 else float(returns_robust[t].item())
-                        vol_t = float(vol[t]) if np.ndim(vol[t]) == 0 else float(vol[t].item())
-
-                        R = c * (vol_t ** 2)
-                        innovation = ret_t - mu_pred
+                        R = c * _vol_sq[t]
+                        innovation = _returns_r[t] - mu_pred
                         forecast_var = P_pred + R
 
                         if forecast_var > 1e-12:
-                            ll_contrib = -0.5 * np.log(2 * np.pi * forecast_var) - 0.5 * (innovation ** 2) / forecast_var
-                            standardized_innov = innovation / np.sqrt(forecast_var)
+                            ll_fold += -0.5 * (_LOG_2PI + _mlog(forecast_var) + (innovation * innovation) / forecast_var)
                             if len(all_standardized) < 1000:
-                                all_standardized.append(float(standardized_innov))
-                            ll_fold += ll_contrib
+                                all_standardized.append(innovation / _msqrt(forecast_var))
 
-                        K = P_pred / (P_pred + R) if (P_pred + R) > 1e-12 else 0.0
+                        S_total = P_pred + R
+                        K = P_pred / S_total if S_total > 1e-12 else 0.0
                         mu_pred = mu_pred + K * innovation
                         P_pred = (1.0 - K) * P_pred
 
@@ -443,8 +449,7 @@ class PhiGaussianDriftModel:
 
             prior_scale = 1.0 / max(total_obs, 100)
             log_prior_q = -adaptive_lambda * prior_scale * (log_q - adaptive_prior_mean) ** 2
-            log_c_target = np.log10(0.9)
-            log_prior_c = -0.1 * prior_scale * (log_c - log_c_target) ** 2
+            log_prior_c = -0.1 * prior_scale * (log_c - _log_c_target) ** 2
             
             # Explicit φ shrinkage prior (Gaussian)
             phi_lambda_effective = PHI_SHRINKAGE_LAMBDA_DEFAULT * prior_scale
@@ -455,29 +460,23 @@ class PhiGaussianDriftModel:
                 tau=phi_tau
             )
             
-            # ================================================================
-            # ELITE FIX 3: Strong φ-q regularization for deterministic collapse
-            # ================================================================
-            # When |φ| > 0.95: state becomes near-deterministic
-            # When log_q < -7: no state uncertainty propagation
-            # Both together cause overconfident forecasts → PIT failure
-            #
-            # Use STRONG penalty (500x) because φ→1 collapse is severe
-            # ================================================================
+            # Strong φ-q regularization for deterministic collapse
             phi_near_one_penalty = max(0.0, abs(phi_clip) - 0.95) ** 2
             q_very_small_penalty = max(0.0, -7.0 - log_q) ** 2
             state_regularization = -500.0 * (phi_near_one_penalty + q_very_small_penalty)
 
             penalized_ll = avg_ll_oos + log_prior_q + log_prior_c + log_prior_phi + calibration_penalty + state_regularization
-            return -penalized_ll if np.isfinite(penalized_ll) else 1e12
+            return -penalized_ll if math.isfinite(penalized_ll) else 1e12
 
         log_q_min = np.log10(q_min)
         log_q_max = np.log10(q_max)
         log_c_min = np.log10(c_min)
         log_c_max = np.log10(c_max)
-        phi_grid = np.linspace(phi_min, phi_max, 5)
-        log_q_grid = np.linspace(log_q_min, log_q_max, 4)
-        log_c_grid = np.linspace(log_c_min, log_c_max, 3)
+        phi_grid = np.array([phi_min, 0.0, phi_max * 0.5])
+        log_q_grid = np.linspace(
+            max(log_q_min, adaptive_prior_mean - 1.5),
+            min(log_q_max, adaptive_prior_mean + 1.5), 3)
+        log_c_grid = np.array([log_c_min, 0.0, log_c_max * 0.6])
 
         best_neg_ll = float('inf')
         best_log_q_grid = adaptive_prior_mean
@@ -505,12 +504,8 @@ class PhiGaussianDriftModel:
         start_points = [
             np.array([best_log_q_grid, best_log_c_grid, best_phi_grid]),
             np.array([adaptive_prior_mean, np.log10(0.9), 0.0]),
-            np.array([adaptive_prior_mean, np.log10(0.7), 0.3]),
-            np.array([adaptive_prior_mean, np.log10(1.2), -0.3]),
             np.array([best_log_q_grid + 0.5, best_log_c_grid, best_phi_grid]),
             np.array([best_log_q_grid - 0.5, best_log_c_grid, best_phi_grid]),
-            np.array([best_log_q_grid, best_log_c_grid + 0.2, best_phi_grid]),
-            np.array([best_log_q_grid, best_log_c_grid - 0.2, best_phi_grid]),
         ]
 
         best_result = None

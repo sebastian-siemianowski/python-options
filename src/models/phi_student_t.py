@@ -1457,17 +1457,27 @@ class PhiStudentTDriftModel:
         inv_nu = 1.0 / nu_val
         nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
 
+        # Pre-compute vol^2 for inner-loop access
+        _vol_sq = np.ascontiguousarray((vol * vol).flatten(), dtype=np.float64)
+        _returns_r = np.ascontiguousarray(returns_r.flatten(), dtype=np.float64)
+        _mlog = math.log
+        _msqrt = math.sqrt
+        _misfinite = math.isfinite
+        # Pre-compute Student-t scale factor
+        _nu_scale = ((nu_val - 2) / nu_val) if nu_val > 2 else 1.0
+
         def neg_cv_ll(params):
             log_q, log_c, phi = params
             q = 10 ** log_q
             c = 10 ** log_c
             phi_clip = float(np.clip(phi, phi_min, phi_max))
+            phi_clip_sq = phi_clip * phi_clip
             if q <= 0 or c <= 0:
                 return 1e12
 
             total_ll = 0.0
             for ts, te_f, vs, ve in folds:
-                ret_tr = returns_r[ts:te_f]
+                ret_tr = _returns_r[ts:te_f]
                 vol_tr = vol[ts:te_f]
                 if len(ret_tr) < 3:
                     continue
@@ -1476,20 +1486,17 @@ class PhiStudentTDriftModel:
                 P_p = float(P_f[-1])
                 for t in range(vs, ve):
                     mu_p = phi_clip * mu_p
-                    P_p = phi_clip ** 2 * P_p + q
-                    R_t = c * vol[t] ** 2
+                    P_p = phi_clip_sq * P_p + q
+                    R_t = c * _vol_sq[t]
                     S = P_p + R_t
                     if S < 1e-12:
                         S = 1e-12
-                    inn = returns_r[t] - mu_p
-                    if nu_val > 2:
-                        scale = np.sqrt(S * (nu_val - 2) / nu_val)
-                    else:
-                        scale = np.sqrt(S)
+                    inn = _returns_r[t] - mu_p
+                    scale = _msqrt(S * _nu_scale)
                     if scale > 1e-12:
                         z = inn / scale
-                        ll_t = log_norm_const - np.log(scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
-                        if np.isfinite(ll_t):
+                        ll_t = log_norm_const - _mlog(scale) + neg_exp * _mlog(1.0 + z * z * inv_nu)
+                        if _misfinite(ll_t):
                             total_ll += ll_t
                     K = nu_adjust * P_p / S
                     mu_p = mu_p + K * inn
@@ -1503,28 +1510,43 @@ class PhiStudentTDriftModel:
 
         from scipy.optimize import minimize as sp_minimize
 
-        best_result = None
-        best_val = 1e20
-        # Multi-start
+        # Phase 1: Coarse grid evaluation (3×2×2 = 12 points)
+        _log_q_min = np.log10(q_min)
+        _log_q_max = np.log10(q_max)
+        _log_c_min = np.log10(c_min)
+        _log_c_max = np.log10(c_max)
+        grid_candidates = []
         for log_q0 in [-6.0, -5.0, -4.0]:
-            for log_c0 in [-0.1, 0.0, 0.2]:
-                for phi0 in [0.0, 0.5, -0.2]:
+            for log_c0 in [-0.05, 0.15]:
+                for phi0 in [0.0, 0.3]:
                     try:
-                        res = sp_minimize(
-                            neg_cv_ll, [log_q0, log_c0, phi0],
-                            method='L-BFGS-B',
-                            bounds=[
-                                (np.log10(q_min), np.log10(q_max)),
-                                (np.log10(c_min), np.log10(c_max)),
-                                (phi_min, phi_max),
-                            ],
-                            options={'maxiter': 200, 'ftol': 1e-10},
-                        )
-                        if res.fun < best_val:
-                            best_val = res.fun
-                            best_result = res
+                        val = neg_cv_ll([log_q0, log_c0, phi0])
+                        grid_candidates.append((val, log_q0, log_c0, phi0))
                     except Exception:
                         continue
+
+        # Sort by objective, take top 3 for L-BFGS-B
+        grid_candidates.sort(key=lambda x: x[0])
+        top_starts = grid_candidates[:3] if grid_candidates else [
+            (1e20, -5.0, 0.0, 0.0)]
+
+        best_result = None
+        best_val = 1e20
+        for _, lq0, lc0, ph0 in top_starts:
+            try:
+                res = sp_minimize(
+                    neg_cv_ll, [lq0, lc0, ph0],
+                    method='L-BFGS-B',
+                    bounds=[(_log_q_min, _log_q_max),
+                            (_log_c_min, _log_c_max),
+                            (phi_min, phi_max)],
+                    options={'maxiter': 200, 'ftol': 1e-10},
+                )
+                if res.fun < best_val:
+                    best_val = res.fun
+                    best_result = res
+            except Exception:
+                continue
 
         if best_result is None:
             raise ValueError("All optimizer starts failed for Student-t fixed-nu")
