@@ -109,7 +109,10 @@ def fetch_data(symbol):
         vol = log_ret.ewm(span=21).std().values
     mn = min(len(returns), len(vol))
     returns, vol = returns[:mn], vol[:mn]
-    ok = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+    # Filter stale-price observations (zero-return days from illiquid assets)
+    _STALE_RETURN_THRESHOLD = 1e-10
+    ok = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+          & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
     returns, vol = returns[ok], vol[ok]
     if len(returns) < 100:
         return None

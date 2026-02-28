@@ -2164,6 +2164,54 @@ class PhiStudentTDriftModel:
 
         pit_values = np.clip(pit_values, 0.001, 0.999)
 
+        # ── RANDOMIZED PIT FOR STALE OBSERVATIONS (Czado et al. 2009) ─
+        #
+        # Illiquid assets (e.g. BCAL, ERMAY) have 60-80% zero-return
+        # days where O=H=L=C ("stale prices"). For a continuous model,
+        # return = 0 always maps to PIT ≈ 0.5, creating a massive
+        # point mass that destroys KS uniformity.
+        #
+        # Solution: Randomized PIT (Czado, Gneiting & Held 2009,
+        # "Predictive Model Assessment for Count Data"):
+        #   For stale obs t:
+        #     PIT_t = F(0⁻) + v_t × [F(0⁺) - F(0⁻)]
+        #   where F(0⁻) = (1-p_stale)/2, F(0⁺) = 0.5 + p_stale/2,
+        #   v_t = frac(t × φ) with φ = golden ratio (deterministic hash)
+        #
+        # The interval [F(0⁻), F(0⁺)] spans the probability mass at
+        # zero, and v_t uniformly samples it. For p_stale=0.7, this
+        # gives PIT ~ U(0.15, 0.85) instead of a spike at 0.5.
+        #
+        # Activation: only when EWM p_stale > 5% (no-op on liquid assets)
+        # ─────────────────────────────────────────────────────────────
+        _STALE_RETURN_THRESHOLD = 1e-10
+        _STALE_EWM_LAMBDA = 0.97
+        _STALE_ACTIVATION = 0.05
+        _GOLDEN_RATIO = 1.6180339887498949
+
+        # Warm-start: estimate stale fraction from training data
+        _returns_train = returns[:n_train]
+        _p_stale_train = float(np.mean(np.abs(_returns_train) < _STALE_RETURN_THRESHOLD))
+
+        if _p_stale_train > _STALE_ACTIVATION:
+            # Asset has material stale-price contamination
+            _p_stale = _p_stale_train
+            _n_randomized = 0
+            for _t in range(n_test):
+                _is_stale_t = abs(returns_test[_t]) < _STALE_RETURN_THRESHOLD
+                if _is_stale_t and _p_stale > _STALE_ACTIVATION:
+                    # Czado (2009) randomized PIT
+                    _F_lo = (1.0 - _p_stale) / 2.0   # F(0⁻)
+                    _F_hi = 0.5 + _p_stale / 2.0      # F(0⁺)
+                    # Deterministic golden ratio hash for reproducibility
+                    _v_t = (_t * _GOLDEN_RATIO) % 1.0
+                    _pit_randomized = _F_lo + _v_t * (_F_hi - _F_lo)
+                    pit_values[_t] = max(0.001, min(0.999, _pit_randomized))
+                    _n_randomized += 1
+                # Update EWM stale fraction (causal)
+                _stale_indicator = 1.0 if _is_stale_t else 0.0
+                _p_stale = _STALE_EWM_LAMBDA * _p_stale + (1.0 - _STALE_EWM_LAMBDA) * _stale_indicator
+
         # ── PIT VARIANCE RECALIBRATION (Causal Shape Correction) ─────
         #
         # After chi² corrects the z-space 2nd moment (scale), there

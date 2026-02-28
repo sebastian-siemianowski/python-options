@@ -1660,8 +1660,16 @@ def tune_asset_q(
         returns = returns[:min_len]
         vol = vol[:min_len]
 
-        # Remove NaN/Inf
-        valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+        # Remove NaN/Inf and stale-price observations (zero-return days)
+        # Stale days (O=H=L=C, vol=0) produce degenerate GK variance ≈ 1e-12
+        # and contaminate model parameters. Threshold 1e-10 is well below any
+        # genuine trade return but catches exact zeros and float near-zeros.
+        _STALE_RETURN_THRESHOLD = 1e-10
+        valid_mask = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+                      & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
+        n_stale = int(np.sum(np.abs(returns) <= _STALE_RETURN_THRESHOLD))
+        if n_stale > 0:
+            _log(f"     🧹  Filtered {n_stale}/{len(returns)} stale-price rows ({100*n_stale/len(returns):.1f}%)")
         returns = returns[valid_mask]
         vol = vol[valid_mask]
 
@@ -5244,8 +5252,13 @@ def tune_asset_with_bma(
         returns = returns[:min_len]
         vol = vol[:min_len]
 
-        # Remove NaN/Inf
-        valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+        # Remove NaN/Inf and stale-price observations (zero-return days)
+        _STALE_RETURN_THRESHOLD = 1e-10
+        valid_mask = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+                      & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
+        n_stale = int(np.sum(np.abs(returns) <= _STALE_RETURN_THRESHOLD))
+        if n_stale > 0:
+            _log(f"     🧹  Filtered {n_stale}/{len(returns)} stale-price rows ({100*n_stale/len(returns):.1f}%)")
         returns = returns[valid_mask]
         vol = vol[valid_mask]
 

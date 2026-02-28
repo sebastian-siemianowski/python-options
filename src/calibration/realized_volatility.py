@@ -87,7 +87,10 @@ DEFAULT_VOL_SPAN = 21
 ANNUALIZATION_FACTOR = 252
 
 # Minimum variance floor (prevents division by zero)
-MIN_VARIANCE = 1e-12
+# Raised from 1e-12 to 1e-8 to limit HAR contamination from stale-price
+# days where GK variance = 0 (O=H=L=C). At 1e-12 the HAR rolling mean of
+# near-zero GK values produces vol ≈ 1e-6 which causes pathological z-scores.
+MIN_VARIANCE = 1e-8
 
 
 # =============================================================================
