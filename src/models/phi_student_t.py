@@ -2516,9 +2516,16 @@ class PhiStudentTDriftModel:
         c: float,
         phi: float,
         nu: float,
+        exogenous_input: np.ndarray = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
-        """phi-Student-t filter returning predictive mu_pred and S_pred for PIT."""
-        return cls._filter_phi_core(returns, vol, q, c, phi, nu)
+        """phi-Student-t filter returning predictive mu_pred and S_pred for PIT.
+        
+        Args:
+            exogenous_input: Optional u_t array (momentum/MR signal) injected
+                into the state prediction: mu_pred_t = phi * mu_{t-1} + u_t.
+        """
+        return cls._filter_phi_core(returns, vol, q, c, phi, nu,
+                                     exogenous_input=exogenous_input)
 
     @classmethod
     def filter_phi_unified(

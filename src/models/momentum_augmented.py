@@ -603,12 +603,26 @@ class MomentumAugmentedDriftModel:
             self._momentum_signal = None
             return
         
+        n = len(returns)
         self._momentum_features = compute_momentum_features(
             returns,
             lookbacks=self.config.lookbacks,
             normalization=self.config.normalization,
         )
         self._momentum_signal = compute_momentum_signal(self._momentum_features)
+        
+        # Initialize MR and blend fields so _compute_exogenous_input() works
+        if self._mr_signal is None:
+            self._mr_signal = np.zeros(n)
+        if self._kappa is None:
+            self._kappa = self.config.mr_kappa_prior
+        if self._alpha_t is None or self._beta_t is None:
+            self._alpha_t, self._beta_t = compute_adaptive_blend_weights(n)
+        if self._q is None:
+            self._q = 1e-6
+        
+        # Compute exogenous input for state-equation injection
+        self._exogenous_input = self._compute_exogenous_input()
     
     def precompute_signals(
         self,

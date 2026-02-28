@@ -2555,18 +2555,22 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         return None
 
     # Helper to check if model is Student-t (phi_student_t_nu_* naming)
-    # Also handles momentum-augmented variants (phi_student_t_nu_*_momentum)
     # Also handles unified variants (phi_student_t_unified_nu_*)
+    # Also handles legacy momentum-augmented variants (phi_student_t_nu_*_momentum) for cached compatibility
     def _is_student_t(model_name: str) -> bool:
-        # Strip momentum suffix if present
+        # Strip momentum suffix if present (legacy cache compatibility)
         base_name = model_name[:-9] if model_name.endswith('_momentum') else model_name
         return base_name.startswith('phi_student_t_nu_') or base_name.startswith('phi_student_t_unified_nu_')
     
-    # Helper to check if model is momentum-augmented
+    # Helper to check if model has internal momentum augmentation active
+    # (either via legacy _momentum suffix or via internal momentum_augmented flag)
     def _is_momentum_augmented(model_name: str) -> bool:
-        return model_name.endswith('_momentum')
+        if model_name.endswith('_momentum'):
+            return True  # Legacy cache compatibility
+        m_params = models.get(model_name, {})
+        return isinstance(m_params, dict) and m_params.get('momentum_augmented', False)
     
-    # Helper to get base model name (strip _momentum suffix)
+    # Helper to get base model name (strip _momentum suffix for legacy cache)
     def _get_base_model_name(model_name: str) -> str:
         return model_name[:-9] if model_name.endswith('_momentum') else model_name
     
@@ -2618,7 +2622,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
 
     # Derive noise_model from best model name
     # Normalize to standard categories for downstream processing
-    # Handle momentum-augmented models by getting their base model type
+    # Handle legacy _momentum suffix for cached compatibility
     base_model_for_noise = _get_base_model_name(best_model)
     
     if _is_student_t(best_model):
@@ -2628,11 +2632,10 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
     else:
         noise_model = 'gaussian'
     
-    # Track if momentum model was selected
+    # Track if momentum augmentation is active (internal flag or legacy suffix)
     is_momentum_model = _is_momentum_augmented(best_model)
     
-    # Also store the full model name (includes _momentum suffix) for tracking/display
-    # This differs from noise_model which is normalized to base type
+    # Full model name for tracking/display
     full_model_name = best_model
 
     # Validate required params
@@ -3768,17 +3771,18 @@ def compute_features(
             
             # ═══════════════════════════════════════════════════════════════════
             # STUDENT-T MODELS (Discrete ν grid: 4, 8, 20)
+            # Momentum augmentation is internal (activated if CRPS improves)
             # ═══════════════════════════════════════════════════════════════════
             'phi_student_t_nu_4': {'short': 'φ-T(ν=4)', 'desc': 'Very heavy tails', 'family': 'student_t'},
             'phi_student_t_nu_8': {'short': 'φ-T(ν=8)', 'desc': 'Moderate-heavy tails', 'family': 'student_t'},
             'phi_student_t_nu_20': {'short': 'φ-T(ν=20)', 'desc': 'Light tails', 'family': 'student_t'},
             
             # ═══════════════════════════════════════════════════════════════════
-            # MOMENTUM-AUGMENTED STUDENT-T MODELS
+            # LEGACY MOMENTUM-AUGMENTED STUDENT-T (kept for cached compatibility)
             # ═══════════════════════════════════════════════════════════════════
-            'phi_student_t_nu_4_momentum': {'short': 'φ-T(ν=4)+Momentum', 'desc': 'Very heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_8_momentum': {'short': 'φ-T(ν=8)+Momentum', 'desc': 'Moderate-heavy tails with momentum', 'family': 'momentum'},
-            'phi_student_t_nu_20_momentum': {'short': 'φ-T(ν=20)+Momentum', 'desc': 'Light tails with momentum', 'family': 'momentum'},
+            'phi_student_t_nu_4_momentum': {'short': 'φ-T(ν=4)+Mom', 'desc': 'Very heavy tails with momentum (legacy)', 'family': 'student_t'},
+            'phi_student_t_nu_8_momentum': {'short': 'φ-T(ν=8)+Mom', 'desc': 'Moderate-heavy tails with momentum (legacy)', 'family': 'student_t'},
+            'phi_student_t_nu_20_momentum': {'short': 'φ-T(ν=20)+Mom', 'desc': 'Light tails with momentum (legacy)', 'family': 'student_t'},
             
             # ═══════════════════════════════════════════════════════════════════
             # ADAPTIVE ν REFINEMENT / LEGACY CANDIDATES (intermediate values)
@@ -3793,10 +3797,10 @@ def compute_features(
             'phi_student_t_nu_15': {'short': 'φ-T(ν=15)', 'desc': 'Light tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_16': {'short': 'φ-T(ν=16)', 'desc': 'Light tails (refined)', 'family': 'student_t'},
             'phi_student_t_nu_25': {'short': 'φ-T(ν=25)', 'desc': 'Near-Gaussian (refined)', 'family': 'student_t'},
-            # Momentum variants for refined/legacy ν values
-            'phi_student_t_nu_6_momentum': {'short': 'φ-T(ν=6)+Momentum', 'desc': 'Heavy tails with momentum (refined)', 'family': 'momentum'},
-            'phi_student_t_nu_12_momentum': {'short': 'φ-T(ν=12)+Momentum', 'desc': 'Moderate tails with momentum (refined)', 'family': 'momentum'},
-            'phi_student_t_nu_15_momentum': {'short': 'φ-T(ν=15)+Momentum', 'desc': 'Light tails with momentum (refined)', 'family': 'momentum'},
+            # Momentum variants for refined/legacy ν values (legacy cached compatibility)
+            'phi_student_t_nu_6_momentum': {'short': 'φ-T(ν=6)+Mom', 'desc': 'Heavy tails with momentum (legacy)', 'family': 'student_t'},
+            'phi_student_t_nu_12_momentum': {'short': 'φ-T(ν=12)+Mom', 'desc': 'Moderate tails with momentum (legacy)', 'family': 'student_t'},
+            'phi_student_t_nu_15_momentum': {'short': 'φ-T(ν=15)+Mom', 'desc': 'Light tails with momentum (legacy)', 'family': 'student_t'},
             
             # ═══════════════════════════════════════════════════════════════════
             # ENHANCED STUDENT-T MODELS (February 2026)
@@ -3897,11 +3901,11 @@ def compute_features(
                     nu_val = int(base_name.split('_')[-1])
                     short = f'φ-T(ν={nu_val})'
                     if is_momentum:
-                        short += '+Momentum'
-                    family = 'momentum' if is_momentum else 'student_t'
+                        short += '+Mom'  # Legacy cache compatibility
+                    family = 'student_t'
                     desc = f'Student-t with ν={nu_val}'
                     if is_momentum:
-                        desc += ' and momentum'
+                        desc += ' (legacy momentum)'
                     return {'short': short, 'desc': desc, 'family': family}
                 except ValueError:
                     pass

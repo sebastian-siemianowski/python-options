@@ -34,7 +34,8 @@ For EACH regime r:
        - phi_student_t_nu_4:    q, c, φ        (3 params, ν=4 FIXED)
        - phi_student_t_nu_8:    q, c, φ        (3 params, ν=8 FIXED)
        - phi_student_t_nu_20:   q, c, φ        (3 params, ν=20 FIXED)
-       - phi_student_t_nu_{ν}_momentum: q, c, φ     (3 params, ν FIXED) [ENABLED]
+       NOTE: Momentum augmentation is now an INTERNAL pipeline step within each Student-t model.
+             Activated only if it improves CRPS. No separate _momentum model names.
        - phi_skew_t_nu_{ν}_gamma_{γ}: q, c, φ  (3 params, ν and γ FIXED)
        - phi_nig_alpha_{α}_beta_{β}: q, c, φ   (3 params, α and β FIXED)
        - phi_fisher_rao_w{W}_d{D}_momentum: q, c, φ (5 params) [ENABLED - Fisher-Rao geometry]
@@ -967,6 +968,7 @@ try:
         compute_ablation_result,
         MomentumAblationResult,
         MOMENTUM_BMA_PRIOR_PENALTY,
+        apply_phi_shrinkage_for_mr,
     )
     MOMENTUM_AUGMENTATION_AVAILABLE = True
 except ImportError as e:
@@ -2150,6 +2152,7 @@ def tune_asset_q(
             "best_model": best_model,  # Selected by max weight (after calibration veto gate)
             # Unified Student-t specific parameters (February 2026 - Elite Architecture)
             "unified_model": best_params.get("unified_model", False),
+            "gaussian_unified": best_params.get("gaussian_unified", False),
             "alpha_asym": best_params.get("alpha_asym"),
             "gamma_vov": best_params.get("gamma_vov"),
             "ms_sensitivity": best_params.get("ms_sensitivity"),
@@ -3198,9 +3201,28 @@ def fit_all_models_for_regime(
     # in BMA, eliminating ν-σ identifiability issues.
     #
     # Model naming: "phi_student_t_nu_{nu}" (e.g., "phi_student_t_nu_4")
+    #
+    # MOMENTUM INTERNALIZATION (February 2026):
+    # Momentum augmentation is an internal pipeline step, not a separate model.
+    # After fitting base params, we try momentum augmentation and compare CRPS.
+    # If momentum improves CRPS, we use the momentum-augmented results under
+    # the base model name. The flag "momentum_augmented: True" tracks this.
     # =========================================================================
     
     n_params_st = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T]  # 3 (q, c, phi)
+
+    # Pre-create momentum wrapper for internal CRPS comparison (if available)
+    _st_momentum_wrapper = None
+    if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
+        _st_momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
+        if prices is not None:
+            q_for_scaling = 1e-6
+            _st_momentum_wrapper.precompute_signals(
+                returns=returns, prices=prices, vol=vol,
+                regime_labels=regime_labels, q=q_for_scaling,
+            )
+        else:
+            _st_momentum_wrapper.precompute_momentum(returns)
     
     for nu_fixed in STUDENT_T_NU_GRID:
         model_name = f"phi_student_t_nu_{nu_fixed}"
@@ -3257,6 +3279,56 @@ def fit_all_models_for_regime(
             crps_st = compute_crps_student_t_inline(
                 returns, mu_pred_st, forecast_scale_st, nu_fixed
             )
+
+            # -----------------------------------------------------------------
+            # INTERNAL MOMENTUM AUGMENTATION — activate only if CRPS improves
+            # -----------------------------------------------------------------
+            _mom_activated = False
+            _mom_diag = None
+            if _st_momentum_wrapper is not None:
+                try:
+                    mu_mom, P_mom, ll_mom = _st_momentum_wrapper.filter(
+                        returns, vol, q_st, c_st, phi=phi_st, nu=nu_fixed,
+                        base_model='phi_student_t'
+                    )
+                    # Get momentum-augmented predictive values using the
+                    # wrapper's exogenous_input (u_t) and effective phi.
+                    _mom_u_t = _st_momentum_wrapper._exogenous_input
+                    _mom_phi_eff = apply_phi_shrinkage_for_mr(phi_st, _st_momentum_wrapper.config)
+                    _, _, mu_pred_mom, S_pred_mom, _ = PhiStudentTDriftModel.filter_phi_with_predictive(
+                        returns, vol, q_st, c_st, _mom_phi_eff, nu_fixed,
+                        exogenous_input=_mom_u_t,
+                    )
+                    if nu_fixed > 2:
+                        forecast_scale_mom = np.sqrt(S_pred_mom * (nu_fixed - 2) / nu_fixed)
+                    else:
+                        forecast_scale_mom = np.sqrt(S_pred_mom)
+                    crps_mom = compute_crps_student_t_inline(
+                        returns, mu_pred_mom, forecast_scale_mom, nu_fixed
+                    )
+                    # Only activate momentum if CRPS improves (lower is better)
+                    if np.isfinite(crps_mom) and crps_mom < crps_st:
+                        _mom_activated = True
+                        _mom_diag = _st_momentum_wrapper.get_diagnostics()
+                        # Recompute all scores with momentum filter results
+                        pit_ext_mom = compute_extended_pit_metrics_student_t(
+                            returns, vol, q_st, c_st, phi_st, nu_fixed,
+                            mu_pred_precomputed=mu_pred_mom, S_pred_precomputed=S_pred_mom,
+                        )
+                        ks_st = pit_ext_mom["ks_statistic"]
+                        pit_p_st = pit_ext_mom["pit_ks_pvalue"]
+                        _berk_st = pit_ext_mom["berkowitz_pvalue"]
+                        _mad_st = pit_ext_mom["histogram_mad"]
+                        ll_full_st = ll_mom
+                        mean_ll_st = ll_mom / max(n_obs, 1)
+                        bic_st = compute_bic(ll_mom, n_params_st, n_obs)
+                        aic_st = compute_aic(ll_mom, n_params_st)
+                        hyvarinen_st = compute_hyvarinen_score_student_t(
+                            returns, mu_pred_mom, forecast_scale_mom, nu_fixed
+                        )
+                        crps_st = crps_mom
+                except Exception:
+                    pass  # Momentum failed — use base model scores
             
             models[model_name] = {
                 "q": float(q_st),
@@ -3280,6 +3352,8 @@ def fit_all_models_for_regime(
                 "fit_success": True,
                 "diagnostics": diag_st,
                 "nu_fixed": True,  # Flag indicating ν was fixed, not estimated
+                "momentum_augmented": _mom_activated,
+                "momentum_diagnostics": _mom_diag,
             }
         except Exception as e:
             models[model_name] = {
@@ -3747,136 +3821,15 @@ def fit_all_models_for_regime(
                     }
     
     # =========================================================================
-    # MOMENTUM-AUGMENTED STUDENT-T MODELS (February 2026)
+    # MOMENTUM AUGMENTED STUDENT-T — RETIRED AS SEPARATE MODELS (Feb 2026)
     # =========================================================================
-    # Momentum-augmented Student-t variants compete as conditional hypotheses
-    # in BMA. Momentum enters model selection, not filter equations.
+    # Momentum augmentation is now an INTERNAL pipeline step within each
+    # phi_student_t_nu_X base model (see Model 1 block above).
+    # Activated ONLY if CRPS improves. No separate _momentum model names.
     #
-    # NOTE: Legacy Gaussian momentum models (kalman_gaussian_momentum,
-    # kalman_phi_gaussian_momentum) have been RETIRED. Their functionality is
-    # subsumed by unified Gaussian models (kalman_gaussian_unified,
-    # kalman_phi_gaussian_unified) with internal Stage 1.5 momentum +
-    # Stage 4.5 GAS-Q.
-    #
-    # REMAINING:
-    #   - phi_student_t_nu_{nu}_momentum (for each nu in grid)
-    #
-    # BIC ADJUSTMENT:
-    #   Momentum models receive a prior penalty implemented as BIC adjustment.
-    #   This prevents slow drift toward momentum dominance in noisy assets.
+    # Legacy Gaussian momentum models similarly retired — functionality
+    # subsumed by unified Gaussian models with internal momentum + GAS-Q.
     # =========================================================================
-    
-    if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
-        # Create momentum wrapper with MR integration (February 2026)
-        momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
-        
-        # Use precompute_signals for state-equation MR integration
-        # Falls back to momentum-only if prices not available
-        if prices is not None:
-            # Get process noise q from base Gaussian model for dynamic max_u scaling
-            q_for_scaling = 1e-6  # Default
-            if 'kalman_gaussian' in models and models['kalman_gaussian'].get('q'):
-                q_for_scaling = models['kalman_gaussian']['q']
-            
-            momentum_wrapper.precompute_signals(
-                returns=returns,
-                prices=prices,
-                vol=vol,
-                regime_labels=regime_labels,
-                q=q_for_scaling,
-            )
-        else:
-            # Legacy path: momentum-only (no MR)
-            momentum_wrapper.precompute_momentum(returns)
-        
-        
-        # NOTE: Legacy kalman_gaussian_momentum and kalman_phi_gaussian_momentum
-        # blocks removed (February 2026). Functionality now inside
-        # kalman_gaussian_unified [U] and kalman_phi_gaussian_unified [U].
-        
-        # Momentum-augmented Student-t (for each nu in grid)
-        for nu_fixed in STUDENT_T_NU_GRID:
-            base_name = f"phi_student_t_nu_{nu_fixed}"
-            mom_name = get_momentum_augmented_model_name(base_name)
-            
-            if base_name in models and models[base_name].get("fit_success", False):
-                try:
-                    base_model = models[base_name]
-                    q_mom = base_model["q"]
-                    c_mom = base_model["c"]
-                    phi_mom = base_model["phi"]
-                    
-                    # Run filter with momentum augmentation
-                    mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
-                        returns, vol, q_mom, c_mom, phi=phi_mom, nu=nu_fixed, 
-                        base_model='phi_student_t'
-                    )
-                    
-                    # PERF: Single filter call for both PIT and scoring
-                    # (eliminates 2 redundant filter runs per nu variant)
-                    _, _, mu_pred_mom, S_pred_mom, _ = PhiStudentTDriftModel.filter_phi_with_predictive(
-                        returns, vol, q_mom, c_mom, phi_mom, nu_fixed
-                    )
-                    
-                    # Compute PIT with precomputed predictive values
-                    pit_ext_stm = compute_extended_pit_metrics_student_t(
-                        returns, vol, q_mom, c_mom, phi_mom, nu_fixed,
-                        mu_pred_precomputed=mu_pred_mom, S_pred_precomputed=S_pred_mom,
-                    )
-                    ks_mom = pit_ext_stm["ks_statistic"]
-                    pit_p_mom = pit_ext_stm["pit_ks_pvalue"]
-                    
-                    # Compute information criteria with prior penalty
-                    n_params_mom = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T]
-                    aic_mom = compute_aic(ll_mom, n_params_mom)
-                    bic_raw_mom = compute_bic(ll_mom, n_params_mom, n_obs)
-                    bic_mom = compute_momentum_model_bic_adjustment(bic_raw_mom, MOMENTUM_BMA_PRIOR_PENALTY)
-                    mean_ll_mom = ll_mom / max(n_obs, 1)
-                    
-                    # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
-                    hyvarinen_mom, crps_mom = compute_predictive_scores_student_t(
-                        returns, mu_pred_mom, S_pred_mom, nu_fixed
-                    )
-
-                    models[mom_name] = {
-                        "q": float(q_mom),
-                        "c": float(c_mom),
-                        "phi": float(phi_mom),
-                        "nu": float(nu_fixed),
-                        "log_likelihood": float(ll_mom),
-                        "mean_log_likelihood": float(mean_ll_mom),
-                        "cv_penalized_ll": float(ll_mom),
-                        "bic": float(bic_mom),
-                        "bic_raw": float(bic_raw_mom),
-                        "aic": float(aic_mom),
-                        "hyvarinen_score": float(hyvarinen_mom),
-                        "crps": float(crps_mom),
-                        "n_params": int(n_params_mom),
-                        "ks_statistic": float(ks_mom),
-                        "pit_ks_pvalue": float(pit_p_mom),
-                        "berkowitz_pvalue": float(pit_ext_stm["berkowitz_pvalue"]),
-                        "berkowitz_lr": float(pit_ext_stm.get("berkowitz_lr", 0.0)),
-                        "pit_count": int(pit_ext_stm.get("pit_count", 0)),
-                        "histogram_mad": float(pit_ext_stm["histogram_mad"]),
-                        "fit_success": True,
-                        "momentum_augmented": True,
-                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
-                        "base_model": base_name,
-                        "nu_fixed": True,
-                        "diagnostics": momentum_wrapper.get_diagnostics(),
-                    }
-                except Exception as e:
-                    models[mom_name] = {
-                        "fit_success": False,
-                        "error": str(e),
-                        "bic": float('inf'),
-                        "aic": float('inf'),
-                        "hyvarinen_score": float('-inf'),
-                        "crps": float('inf'),  # CRPS for failed models
-                        "momentum_augmented": True,
-                        "base_model": base_name,
-                        "nu": float(nu_fixed),
-                    }
     
     # =========================================================================
     # GAS-Q AUGMENTED MODELS (February 2026)
@@ -3901,11 +3854,11 @@ def fit_all_models_for_regime(
         # NOTE: GAS-Q Gaussian+Momentum removed (February 2026).
         # GAS-Q is now integrated into kalman_gaussian_unified [U] via Stage 4.5.
         
-        # GAS-Q augmented Student-t+Momentum (for each nu)
+        # GAS-Q augmented Student-t (for each nu)
         # DISABLED when UNIFIED_STUDENT_T_ONLY=True - unified models include adaptive q
         if not UNIFIED_STUDENT_T_ONLY:
             for nu_fixed in STUDENT_T_NU_GRID:
-                base_name = f"phi_student_t_nu_{nu_fixed}_momentum"
+                base_name = f"phi_student_t_nu_{nu_fixed}"
                 gas_q_name = get_gas_q_model_name(base_name)
                 
                 if base_name in models and models[base_name].get("fit_success", False):
@@ -4004,8 +3957,8 @@ def fit_all_models_for_regime(
     if MS_Q_ENABLED and MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE and not UNIFIED_STUDENT_T_ONLY:
         
         for nu_fixed in STUDENT_T_NU_GRID:
-            base_name = f"phi_student_t_nu_{nu_fixed}_momentum"
-            ms_q_name = f"phi_student_t_nu_{nu_fixed}_ms_q_momentum"
+            base_name = f"phi_student_t_nu_{nu_fixed}"
+            ms_q_name = f"phi_student_t_nu_{nu_fixed}_ms_q"
             
             if base_name in models and models[base_name].get("fit_success", False):
                 try:
@@ -4093,7 +4046,6 @@ def fit_all_models_for_regime(
     #   3. Two-Component Mixture: Blend νcalm and νstress with dynamic weights
     #
     # These compete in BMA with appropriate penalties for extra parameters.
-    # Only momentum variants are fitted (as per existing architecture).
     #
     # DISABLED when UNIFIED_STUDENT_T_ONLY=True - unified models incorporate
     # VoV, smooth asymmetric ν, and probabilistic MS-q into single architecture.
@@ -4107,21 +4059,8 @@ def fit_all_models_for_regime(
             NU_CALM_GRID, NU_STRESS_GRID, MIXTURE_BMA_PENALTY,
         )
         
-        # Reuse momentum wrapper from above
-        if 'momentum_wrapper' not in dir():
-            momentum_wrapper = MomentumAugmentedDriftModel(DEFAULT_MOMENTUM_CONFIG)
-            # Use precompute_signals for MR integration if prices available
-            if prices is not None:
-                q_for_scaling = models.get('kalman_gaussian', {}).get('q', 1e-6)
-                momentum_wrapper.precompute_signals(
-                    returns=returns, prices=prices, vol=vol,
-                    regime_labels=regime_labels, q=q_for_scaling,
-                )
-            else:
-                momentum_wrapper.precompute_momentum(returns)
-        
         # =====================================================================
-        # Vol-of-Vol Enhanced Student-t + Momentum
+        # Vol-of-Vol Enhanced Student-t
         # =====================================================================
         # For each (nu, gamma_vov) combination, fit enhanced model.
         # γ=0 is equivalent to base model, so skip γ=0 to avoid duplication.
@@ -4144,7 +4083,7 @@ def fit_all_models_for_regime(
                 
                 # Format gamma for model name (remove decimal point)
                 gamma_str = f"{gamma_vov:.1f}".replace(".", "")
-                vov_name = f"phi_student_t_nu_{nu_fixed}_vov_{gamma_str}_momentum"
+                vov_name = f"phi_student_t_nu_{nu_fixed}_vov_{gamma_str}"
                 
                 try:
                     # Run VoV-enhanced filter
@@ -4152,25 +4091,16 @@ def fit_all_models_for_regime(
                         returns, vol, q_base, c_base, phi_base, nu_fixed, gamma_vov
                     )
                     
-                    # Apply momentum augmentation to drift estimate
-                    # (momentum adjusts the drift, VoV adjusts observation noise)
-                    momentum_signal = momentum_wrapper._momentum_signal
-                    if momentum_signal is not None:
-                        mu_vov_mom = mu_vov + momentum_signal * momentum_wrapper.config.adjustment_scale
-                    else:
-                        mu_vov_mom = mu_vov
-                    
                     # ELITE FIX: Compute PIT using PREDICTIVE distribution
                     ks_vov, pit_p_vov, mu_pred_vov, S_pred_vov = compute_predictive_pit_student_t(
                         returns, vol, q_base, c_base, phi_base, nu_fixed
                     )
                     
-                    # Compute information criteria with VoV + momentum penalties
+                    # Compute information criteria with VoV penalties
                     n_params_vov = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 1  # +1 for γ
                     aic_vov = compute_aic(ll_vov, n_params_vov)
                     bic_raw_vov = compute_bic(ll_vov, n_params_vov, n_obs)
-                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + VOV_BMA_PENALTY
-                    bic_vov = compute_momentum_model_bic_adjustment(bic_raw_vov, combined_penalty)
+                    bic_vov = bic_raw_vov + VOV_BMA_PENALTY
                     mean_ll_vov = ll_vov / max(n_obs, 1)
                     
                     # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
@@ -4197,9 +4127,7 @@ def fit_all_models_for_regime(
                         "pit_ks_pvalue": float(pit_p_vov),
                         "fit_success": True,
                         "vov_enhanced": True,
-                        "momentum_augmented": True,
                         "vov_penalty": VOV_BMA_PENALTY,
-                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
                         "base_model": base_name,
                         "nu_fixed": True,
                         "model_type": "phi_student_t_vov",
@@ -4213,13 +4141,12 @@ def fit_all_models_for_regime(
                         "hyvarinen_score": float('-inf'),
                         "crps": float('inf'),  # CRPS for failed models
                         "vov_enhanced": True,
-                        "momentum_augmented": True,
                         "nu": float(nu_fixed),
                         "gamma_vov": float(gamma_vov),
                     }
         
         # =====================================================================
-        # Two-Piece Student-t + Momentum
+        # Two-Piece Student-t
         # =====================================================================
         # Different ν for left (crash) vs right (recovery) tails.
         # Captures empirical asymmetry: crashes are more extreme than rallies.
@@ -4238,20 +4165,13 @@ def fit_all_models_for_regime(
                 c_2p = base_model["c"]
                 phi_2p = base_model["phi"]
                 
-                two_piece_name = f"phi_student_t_nuL{nu_left}_nuR{nu_right}_momentum"
+                two_piece_name = f"phi_student_t_nuL{nu_left}_nuR{nu_right}"
                 
                 try:
                     # Run Two-Piece filter
                     mu_2p, P_2p, ll_2p = PhiStudentTDriftModel.filter_phi_two_piece(
                         returns, vol, q_2p, c_2p, phi_2p, nu_left, nu_right
                     )
-                    
-                    # Apply momentum augmentation (use precomputed momentum signal)
-                    momentum_signal = momentum_wrapper._momentum_signal
-                    if momentum_signal is not None:
-                        mu_2p_mom = mu_2p + momentum_signal * momentum_wrapper.config.adjustment_scale
-                    else:
-                        mu_2p_mom = mu_2p
                     
                     # ELITE FIX: Compute PIT using PREDICTIVE distribution
                     # Use average ν for predictive computation
@@ -4260,13 +4180,12 @@ def fit_all_models_for_regime(
                         returns, vol, q_2p, c_2p, phi_2p, nu_avg
                     )
                     
-                    # Compute information criteria with Two-Piece + momentum penalties
+                    # Compute information criteria with Two-Piece penalties
                     # +2 params: nu_left, nu_right instead of single nu
                     n_params_2p = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 1
                     aic_2p = compute_aic(ll_2p, n_params_2p)
                     bic_raw_2p = compute_bic(ll_2p, n_params_2p, n_obs)
-                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + TWO_PIECE_BMA_PENALTY
-                    bic_2p = compute_momentum_model_bic_adjustment(bic_raw_2p, combined_penalty)
+                    bic_2p = bic_raw_2p + TWO_PIECE_BMA_PENALTY
                     mean_ll_2p = ll_2p / max(n_obs, 1)
                     
                     # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
@@ -4294,9 +4213,7 @@ def fit_all_models_for_regime(
                         "pit_ks_pvalue": float(pit_p_2p),
                         "fit_success": True,
                         "two_piece": True,
-                        "momentum_augmented": True,
                         "two_piece_penalty": TWO_PIECE_BMA_PENALTY,
-                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
                         "base_model": base_name,
                         "model_type": "phi_student_t_two_piece",
                     }
@@ -4309,13 +4226,12 @@ def fit_all_models_for_regime(
                         "hyvarinen_score": float('-inf'),
                         "crps": float('inf'),  # CRPS for failed models
                         "two_piece": True,
-                        "momentum_augmented": True,
                         "nu_left": float(nu_left),
                         "nu_right": float(nu_right),
                     }
         
         # =====================================================================
-        # Two-Component Mixture Student-t + Momentum
+        # Two-Component Mixture Student-t
         # =====================================================================
         # Blend νcalm and νstress with dynamic vol-based weights.
         # Captures two curvature regimes in the central body.
@@ -4333,7 +4249,7 @@ def fit_all_models_for_regime(
                 c_mix = base_model["c"]
                 phi_mix = base_model["phi"]
                 
-                mixture_name = f"phi_student_t_mix_{nu_calm}_{nu_stress}_momentum"
+                mixture_name = f"phi_student_t_mix_{nu_calm}_{nu_stress}"
                 
                 try:
                     # Run Mixture filter (enhanced or standard based on config)
@@ -4354,13 +4270,6 @@ def fit_all_models_for_regime(
                             nu_calm, nu_stress, MIXTURE_WEIGHT_DEFAULT
                         )
                     
-                    # Apply momentum augmentation (use precomputed momentum signal)
-                    momentum_signal = momentum_wrapper._momentum_signal
-                    if momentum_signal is not None:
-                        mu_mix_mom = mu_mix + momentum_signal * momentum_wrapper.config.adjustment_scale
-                    else:
-                        mu_mix_mom = mu_mix
-                    
                     # ELITE FIX: Compute PIT using PREDICTIVE distribution
                     # Use effective ν (average) for predictive computation
                     nu_eff = (nu_calm + nu_stress) / 2
@@ -4368,13 +4277,12 @@ def fit_all_models_for_regime(
                         returns, vol, q_mix, c_mix, phi_mix, nu_eff
                     )
                     
-                    # Compute information criteria with Mixture + momentum penalties
+                    # Compute information criteria with Mixture penalties
                     # +3 params: nu_calm, nu_stress, w_base instead of single nu
                     n_params_mix = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T] + 2
                     aic_mix = compute_aic(ll_mix, n_params_mix)
                     bic_raw_mix = compute_bic(ll_mix, n_params_mix, n_obs)
-                    combined_penalty = MOMENTUM_BMA_PRIOR_PENALTY + MIXTURE_BMA_PENALTY
-                    bic_mix = compute_momentum_model_bic_adjustment(bic_raw_mix, combined_penalty)
+                    bic_mix = bic_raw_mix + MIXTURE_BMA_PENALTY
                     mean_ll_mix = ll_mix / max(n_obs, 1)
                     
                     # ELITE FIX: Compute Hyvärinen/CRPS using PREDICTIVE distribution
@@ -4403,9 +4311,7 @@ def fit_all_models_for_regime(
                         "pit_ks_pvalue": float(pit_p_mix),
                         "fit_success": True,
                         "mixture_model": True,
-                        "momentum_augmented": True,
                         "mixture_penalty": MIXTURE_BMA_PENALTY,
-                        "momentum_prior_penalty": MOMENTUM_BMA_PRIOR_PENALTY,
                         "base_model": base_name,
                         "model_type": "phi_student_t_mixture",
                     }
@@ -4418,7 +4324,6 @@ def fit_all_models_for_regime(
                         "hyvarinen_score": float('-inf'),
                         "crps": float('inf'),  # CRPS for failed models
                         "mixture_model": True,
-                        "momentum_augmented": True,
                         "nu_calm": float(nu_calm),
                         "nu_stress": float(nu_stress),
                     }

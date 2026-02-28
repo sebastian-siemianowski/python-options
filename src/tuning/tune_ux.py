@@ -1282,7 +1282,7 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
         
         # Check for unified Gaussian first (no ν parameter)
         if data.get('gaussian_unified') or (best_model and 'gaussian_unified' in str(best_model).lower()):
-            base = 'φ-Gauss-Uni' if (phi_val is not None and phi_val != 1.0) else 'Gauss-Uni'
+            base = 'φ-Gaussian-Unified' if (phi_val is not None and phi_val != 1.0) else 'Gaussian-Unified'
             suffixes = []
             if data.get('momentum_augmented') or data.get('momentum_weight', 0.0) > 1e-10:
                 suffixes.append('Mom')
@@ -1295,7 +1295,25 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
         # Check for unified Student-t model
         if data.get('unified_model') or (best_model and 'unified' in str(best_model).lower()):
             nu_str = f"ν={int(nu_val)}" if nu_val else "ν=8"
-            return f"φ-t-Uni({nu_str})"
+            base = f"φ-StudentT-Unified({nu_str})"
+            enhancements = []
+            alpha_asym = data.get('alpha_asym', 0)
+            gamma_vov = data.get('gamma_vov', 0)
+            ms_sens = data.get('ms_sensitivity', 2.0)
+            if alpha_asym and abs(alpha_asym) > 0.01:
+                skew_dir = "L" if alpha_asym < 0 else "R"
+                enhancements.append(f"α{skew_dir}")
+            if gamma_vov and gamma_vov > 0.05:
+                enhancements.append("VoV")
+            if ms_sens and abs(ms_sens - 2.0) > 0.1:
+                enhancements.append("MS-q")
+            if data.get('momentum_augmented'):
+                enhancements.append("Mom")
+            if enhancements:
+                base += "+" + "+".join(enhancements)
+            if data.get('degraded'):
+                base += "⚠"
+            return base
         
         # Check for specific Student-t variants
         if noise_model and 'student_t' in noise_model.lower():
@@ -1779,8 +1797,25 @@ def render_calibration_report(cache: Dict, failure_reasons: Dict[str, str], cons
         if has_issue:
             # Determine model display name
             if 'unified' in noise_model.lower():
-                # Unified Student-t model
-                model_str = f"φ-T-Uni(ν={int(nu_val)})" if nu_val else "φ-T-Unified"
+                # Check Gaussian unified vs Student-t unified
+                if 'gaussian_unified' in noise_model.lower():
+                    model_str = "φ-Gaussian-Unified" if phi_val else "Gaussian-Unified"
+                else:
+                    # Unified Student-t model with enhancement indicators
+                    nu_part = f"ν={int(nu_val)}" if nu_val else ""
+                    model_str = f"φ-StudentT-Unified({nu_part})"
+                    _enh = []
+                    _a = data.get('alpha_asym', 0)
+                    _g = data.get('gamma_vov', 0)
+                    _ms = data.get('ms_sensitivity', 2.0)
+                    if _a and abs(_a) > 0.01:
+                        _enh.append(f"α{'L' if _a < 0 else 'R'}")
+                    if _g and _g > 0.05:
+                        _enh.append("VoV")
+                    if _ms and abs(_ms - 2.0) > 0.1:
+                        _enh.append("MS-q")
+                    if _enh:
+                        model_str += "+" + "+".join(_enh)
             elif 'student_t' in noise_model:
                 model_str = f"φ-T(ν={int(nu_val)})" if nu_val else "Student-t"
             elif 'gaussian' in noise_model and 'momentum' in noise_model.lower():
@@ -2494,31 +2529,48 @@ Examples:
                             else:
                                 model_str = "Skew-t"
                         elif global_result.get('unified_model') or (model_type and 'unified' in str(model_type).lower()):
-                            # UNIFIED Elite Student-t Model (February 2026)
-                            alpha_asym = global_result.get('alpha_asym', 0)
-                            gamma_vov_u = global_result.get('gamma_vov', 0)
-                            ms_sens = global_result.get('ms_sensitivity', 2.0)
-                            degraded = global_result.get('degraded', False)
+                            # Check if this is a Gaussian unified (no ν) vs Student-t unified
+                            is_gaussian_unified = (
+                                global_result.get('gaussian_unified') or
+                                (model_type and 'gaussian_unified' in str(model_type).lower())
+                            )
                             
-                            # Build unified model string with ν
-                            nu_str = f"ν={int(nu_val)}" if nu_val else ""
-                            model_str = f"φ-t-Uni({nu_str})"
+                            if is_gaussian_unified:
+                                # Gaussian unified model (no ν parameter)
+                                if phi_val is not None and phi_val != 1.0:
+                                    model_str = "φ-Gaussian-Unified"
+                                else:
+                                    model_str = "Gaussian-Unified"
+                                if global_result.get('momentum_augmented'):
+                                    model_str += "+Mom"
+                            else:
+                                # UNIFIED Elite Student-t Model (February 2026)
+                                alpha_asym = global_result.get('alpha_asym', 0)
+                                gamma_vov_u = global_result.get('gamma_vov', 0)
+                                ms_sens = global_result.get('ms_sensitivity', 2.0)
+                                degraded = global_result.get('degraded', False)
                             
-                            # Add enhancement indicators
-                            enhancements = []
-                            if alpha_asym and abs(alpha_asym) > 0.01:
-                                skew_dir = "L" if alpha_asym < 0 else "R"
-                                enhancements.append(f"α{skew_dir}")
-                            if gamma_vov_u and gamma_vov_u > 0.05:
-                                enhancements.append("VoV")
-                            if ms_sens and abs(ms_sens - 2.0) > 0.1:
-                                enhancements.append("MS-q")
+                                # Build unified model string with ν
+                                nu_str = f"ν={int(nu_val)}" if nu_val else ""
+                                model_str = f"φ-StudentT-Unified({nu_str})"
                             
-                            if enhancements:
-                                model_str += "+" + "+".join(enhancements)
+                                # Add enhancement indicators
+                                enhancements = []
+                                if alpha_asym and abs(alpha_asym) > 0.01:
+                                    skew_dir = "L" if alpha_asym < 0 else "R"
+                                    enhancements.append(f"α{skew_dir}")
+                                if gamma_vov_u and gamma_vov_u > 0.05:
+                                    enhancements.append("VoV")
+                                if ms_sens and abs(ms_sens - 2.0) > 0.1:
+                                    enhancements.append("MS-q")
+                                if global_result.get('momentum_augmented'):
+                                    enhancements.append("Mom")
                             
-                            if degraded:
-                                model_str += "⚠"
+                                if enhancements:
+                                    model_str += "+" + "+".join(enhancements)
+                            
+                                if degraded:
+                                    model_str += "⚠"
                             
                             unified_model_count += 1
                         elif model_type.startswith('phi_student_t_nu_') and nu_val is not None:
@@ -2537,15 +2589,18 @@ Examples:
                                 model_str = "Student-t+Mix"
                             else:
                                 model_str = "Student-t"
+                            if global_result.get('momentum_augmented'):
+                                model_str += "+Mom"
                         elif phi_val is not None:
                             model_str = "φ-Gaussian"
                         else:
                             model_str = "Gaussian"
                         
-                        # Check for momentum augmentation
-                        is_momentum_model = global_result.get('is_momentum_model', False)
+                        # Check for momentum augmentation (legacy _momentum suffix or new internal flag)
+                        is_momentum_model = global_result.get('is_momentum_model', False) or global_result.get('momentum_augmented', False)
                         if is_momentum_model or (model_type and '_momentum' in str(model_type)):
-                            model_str += "+Momentum"
+                            if '+Mom' not in model_str and '+Momentum' not in model_str:
+                                model_str += "+Mom"
                         
                         # Check for GMM availability
                         gmm_data = global_result.get('gmm')
@@ -2746,6 +2801,12 @@ Examples:
                 model_key = f"φ-Skew-t({skew_dir})"
             else:
                 model_key = "φ-Skew-t"
+        elif 'gaussian_unified' in base_noise_model.lower():
+            # Unified Gaussian model (February 2026 - no ν parameter)
+            if phi_val is not None and phi_val != 1.0:
+                model_key = "φ-Gaussian-Unified"
+            else:
+                model_key = "Gaussian-Unified"
         elif 'unified' in base_noise_model.lower() and nu_val is not None:
             # Unified Student-t model (February 2026 - Elite Architecture)
             nu_int = int(nu_val)
