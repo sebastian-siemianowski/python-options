@@ -3176,7 +3176,7 @@ def _kalman_filter_drift(
             from models.gaussian import GaussianDriftModel, GaussianUnifiedConfig
             import numpy as _np_sig
             
-            # Build GaussianUnifiedConfig from tuned params
+            # Build GaussianUnifiedConfig from tuned params (including momentum + GAS-Q)
             g_unified_config = GaussianUnifiedConfig(
                 q=float(tuned_params.get('q', 1e-6)),
                 c=float(tuned_params.get('c', 1.0)),
@@ -3193,11 +3193,28 @@ def _kalman_filter_drift(
                 calibrated_gw=float(tuned_params.get('calibrated_gw', 0.0)),
                 calibrated_lambda_rho=float(tuned_params.get('calibrated_lambda_rho', 0.985)),
                 calibrated_beta_probit_corr=float(tuned_params.get('calibrated_beta_probit_corr', 1.0)),
+                # Momentum integration (Stage 1.5)
+                momentum_weight=float(tuned_params.get('momentum_weight', 0.0)),
+                # GAS-Q adaptive process noise (Stage 4.5)
+                gas_q_omega=float(tuned_params.get('gas_q_omega', 0.0)),
+                gas_q_alpha=float(tuned_params.get('gas_q_alpha', 0.0)),
+                gas_q_beta=float(tuned_params.get('gas_q_beta', 0.0)),
             )
             
-            # Run filter with predictive output
-            mu_g, P_g, mu_pred_g, S_pred_g, ll_g = GaussianDriftModel.filter_phi_with_predictive(
-                y, sigma, g_unified_config.q, g_unified_config.c, g_unified_config.phi
+            # Reconstruct momentum signal at inference time (deterministic given returns)
+            _gu_mom_signal = None
+            if g_unified_config.momentum_enabled:
+                try:
+                    from models.momentum_augmented import compute_momentum_features, compute_momentum_signal
+                    _gu_mom_feats = compute_momentum_features(y)
+                    _gu_mom_signal = compute_momentum_signal(_gu_mom_feats)
+                except Exception:
+                    _gu_mom_signal = None
+            
+            # Run filter with momentum augmentation (if active)
+            mu_g, P_g, mu_pred_g, S_pred_g, ll_g = GaussianDriftModel._filter_phi_with_momentum(
+                y, sigma, g_unified_config.q, g_unified_config.c, g_unified_config.phi,
+                _gu_mom_signal, g_unified_config.momentum_weight
             )
             mu_filtered = mu_g
             P_filtered = P_g
@@ -3209,7 +3226,8 @@ def _kalman_filter_drift(
             try:
                 _pit_gu, _pit_p_gu, _sigma_cal_gu, _, _calib_diag_gu = \
                     GaussianDriftModel.filter_and_calibrate(
-                        y, sigma, g_unified_config, train_frac=0.7
+                        y, sigma, g_unified_config, train_frac=0.7,
+                        momentum_signal=_gu_mom_signal
                     )
                 _n_train_gu = int(len(y) * 0.7)
                 if len(_sigma_cal_gu) == len(y) - _n_train_gu and _np_sig.all(_sigma_cal_gu > 0):
@@ -3223,7 +3241,9 @@ def _kalman_filter_drift(
                 print(f"Using unified Gaussian filter: φ={g_unified_config.phi:.3f}, "
                       f"β={g_unified_config.variance_inflation:.3f}, "
                       f"garch=({g_unified_config.garch_alpha:.3f},{g_unified_config.garch_beta:.3f}), "
-                      f"gw={g_unified_config.calibrated_gw:.3f}")
+                      f"gw={g_unified_config.calibrated_gw:.3f}, "
+                      f"mom_w={g_unified_config.momentum_weight:.3f}, "
+                      f"gas_q={'ON' if g_unified_config.gas_q_enabled else 'OFF'}")
         except Exception as gu_e:
             if os.getenv("DEBUG"):
                 print(f"Unified Gaussian filter failed, falling back: {gu_e}")
@@ -3735,10 +3755,16 @@ def compute_features(
             'kalman_phi_gaussian': {'short': 'φ-Gaussian', 'desc': 'AR(1) mean-reverting drift', 'family': 'gaussian'},
             
             # ═══════════════════════════════════════════════════════════════════
-            # MOMENTUM-AUGMENTED GAUSSIAN MODELS
+            # UNIFIED GAUSSIAN MODELS (February 2026 — replaces legacy momentum/GAS-Q)
             # ═══════════════════════════════════════════════════════════════════
-            'kalman_gaussian_momentum': {'short': 'Gaussian+Momentum', 'desc': 'Random walk with momentum', 'family': 'momentum'},
-            'kalman_phi_gaussian_momentum': {'short': 'φ-Gaussian+Momentum', 'desc': 'AR(1) with momentum', 'family': 'momentum'},
+            'kalman_gaussian_unified': {'short': 'Gaussian-Uni [U]', 'desc': 'Unified Gaussian with internal momentum + GAS-Q', 'family': 'gaussian_unified'},
+            'kalman_phi_gaussian_unified': {'short': 'φ-Gaussian-Uni [U]', 'desc': 'Unified φ-Gaussian with internal momentum + GAS-Q', 'family': 'gaussian_unified'},
+
+            # ═══════════════════════════════════════════════════════════════════
+            # LEGACY MOMENTUM-AUGMENTED GAUSSIAN (deprecated — kept for cached compatibility)
+            # ═══════════════════════════════════════════════════════════════════
+            'kalman_gaussian_momentum': {'short': 'Gaussian+Momentum', 'desc': 'Random walk with momentum (legacy)', 'family': 'momentum'},
+            'kalman_phi_gaussian_momentum': {'short': 'φ-Gaussian+Momentum', 'desc': 'AR(1) with momentum (legacy)', 'family': 'momentum'},
             
             # ═══════════════════════════════════════════════════════════════════
             # STUDENT-T MODELS (Discrete ν grid: 4, 8, 20)
@@ -9348,6 +9374,8 @@ def main() -> None:
             model_info_lookup = {
                 'kalman_gaussian': 'Gaussian',
                 'kalman_phi_gaussian': 'φ-Gaussian',
+                'kalman_gaussian_unified': 'Gaussian-Uni [U]',
+                'kalman_phi_gaussian_unified': 'φ-Gaussian-Uni [U]',
                 'kalman_gaussian_momentum': 'Gaussian+Momentum',
                 'kalman_phi_gaussian_momentum': 'φ-Gaussian+Momentum',
                 'gaussian': 'Gaussian',

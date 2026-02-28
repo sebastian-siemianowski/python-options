@@ -24,13 +24,21 @@ Gaussian observation noise (no ν parameter).
 
     optimize_params_unified — Stage Dependency Chain
     ================================================
-    Stage 1  (q, c, φ)       Base Kalman: process noise q, observation scale c,
-                              persistence φ. L-BFGS-B with state regularization.
-    Stage 2  (β)              Variance inflation via PIT MAD grid search.
-    Stage 3  (GARCH)          GJR-GARCH(1,1) on Kalman innovations.
-    Stage 4  (EWM λ, σ_s)    Causal EWM location correction + CRPS σ shrinkage.
-    Stage 5  (gw, λ_ρ, β_p)  Walk-forward calibration: GARCH blend weight,
-                              EWM decay, probit-variance correction.
+    Stage 1    (q, c, φ)       Base Kalman: process noise q, observation scale c,
+                                persistence φ. L-BFGS-B with state regularization.
+    Stage 1.5  (mom_w)         Momentum injection weight via CRPS grid search.
+                                Degradation guard: 0.0 always competes.
+    Stage 2    (β)             Variance inflation via PIT MAD grid search.
+    Stage 3    (GARCH)         GJR-GARCH(1,1) on Kalman innovations.
+    Stage 4    (EWM λ, σ_s)   Causal EWM location correction + CRPS σ shrinkage.
+    Stage 4.5  (ω, α, β_gas)  GAS-Q adaptive process noise (Creal-Koopman-Lucas).
+                                Degradation guard: must improve CRPS by >1%.
+    Stage 5    (gw, λ_ρ, β_p) Walk-forward calibration: GARCH blend weight,
+                                EWM decay, probit-variance correction.
+
+    Momentum and GAS-Q are tuned INSIDE optimize_params_unified, making the
+    legacy standalone models (kalman_gaussian_momentum, kalman_phi_gaussian_momentum,
+    kalman_gaussian_momentum+GAS-Q) redundant.
 """
 
 from __future__ import annotations
@@ -130,8 +138,39 @@ class GaussianUnifiedConfig:
     c_max: float = 10.0
 
     def __init__(self, **kwargs):
+        self.q = 1e-6
+        self.c = 1.0
+        self.phi = 0.0
+        self.variance_inflation = 1.0
+        self.mu_drift = 0.0
+        self.garch_omega = 0.0
+        self.garch_alpha = 0.0
+        self.garch_beta = 0.0
+        self.garch_leverage = 0.0
+        self.garch_unconditional_var = 1e-4
+        self.crps_ewm_lambda = 0.0
+        self.crps_sigma_shrinkage = 1.0
+        self.calibrated_gw = 0.0
+        self.calibrated_lambda_rho = 0.985
+        self.calibrated_beta_probit_corr = 1.0
+        self.momentum_weight = 0.0
+        self.gas_q_omega = 0.0
+        self.gas_q_alpha = 0.0
+        self.gas_q_beta = 0.0
+        self.q_min = 1e-8
+        self.c_min = 0.01
+        self.c_max = 10.0
+        self.momentum_lookbacks = [5, 10, 20, 60]
         for k, v in kwargs.items():
             setattr(self, k, v)
+
+    @property
+    def momentum_enabled(self) -> bool:
+        return abs(self.momentum_weight) > 1e-10
+
+    @property
+    def gas_q_enabled(self) -> bool:
+        return (abs(self.gas_q_alpha) > 1e-10 or abs(self.gas_q_beta) > 1e-10)
 
     @classmethod
     def auto_configure(cls, returns: np.ndarray, vol: np.ndarray) -> 'GaussianUnifiedConfig':
@@ -479,6 +518,7 @@ class GaussianDriftModel:
         phi_mode: bool = True,
         train_frac: float = 0.7,
         asset_symbol: str = None,
+        momentum_signal: np.ndarray = None,
     ) -> Tuple['GaussianUnifiedConfig', Dict]:
         """
         Staged optimization for unified Gaussian Kalman filter model.
@@ -521,9 +561,28 @@ class GaussianDriftModel:
         config.c = c_opt
         config.phi = phi_opt
 
-        # Get predictive values for downstream stages
-        _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_with_predictive(
-            returns_train, vol_train, q_opt, c_opt, phi_opt)
+        # -- STAGE 1.5: Momentum injection weight --
+        _mom_sig_train = None
+        _momentum_weight = 0.0
+        try:
+            if momentum_signal is not None and len(momentum_signal) >= n_train:
+                _mom_sig_train = momentum_signal[:n_train]
+            else:
+                from models.momentum_augmented import compute_momentum_features, compute_momentum_signal
+                _mom_feats = compute_momentum_features(returns_train)
+                _mom_sig_train = compute_momentum_signal(_mom_feats)
+            s15 = cls._gaussian_stage_1_5_momentum(
+                returns_train, vol_train, n_train,
+                q_opt, c_opt, phi_opt, _mom_sig_train)
+            _momentum_weight = s15['momentum_weight']
+            config.momentum_weight = _momentum_weight
+        except Exception:
+            config.momentum_weight = 0.0
+
+        # Get predictive values for downstream stages (with momentum if active)
+        _, _, mu_pred_train, S_pred_train, _ = cls._filter_phi_with_momentum(
+            returns_train, vol_train, q_opt, c_opt, phi_opt,
+            _mom_sig_train, _momentum_weight)
         innovations_train = returns_train - mu_pred_train
 
         # ── STAGE 2: Variance inflation β ──
@@ -550,6 +609,20 @@ class GaussianDriftModel:
         config.crps_ewm_lambda = s4['crps_ewm_lambda']
         config.crps_sigma_shrinkage = s4['crps_sigma_shrinkage']
 
+        # ── STAGE 4.5: GAS-Q adaptive process noise ──
+        try:
+            s45 = cls._gaussian_stage_4_5_gas_q(
+                returns_train, vol_train, n_train,
+                q_opt, c_opt, phi_opt, beta_opt, mu_drift, garch,
+                _mom_sig_train, _momentum_weight)
+            config.gas_q_omega = s45['gas_q_omega']
+            config.gas_q_alpha = s45['gas_q_alpha']
+            config.gas_q_beta = s45['gas_q_beta']
+        except Exception:
+            config.gas_q_omega = 0.0
+            config.gas_q_alpha = 0.0
+            config.gas_q_beta = 0.0
+
         # ── STAGE 5: Walk-forward calibration (ν-free) ──
         s5 = cls._gaussian_stage_5_calibration(
             returns, vol, config, train_frac)
@@ -563,9 +636,15 @@ class GaussianDriftModel:
             "q": q_opt, "c": c_opt, "phi": phi_opt,
             "variance_inflation": beta_opt,
             "mu_drift": mu_drift,
+            "momentum_weight": float(config.momentum_weight),
+            "momentum_enabled": config.momentum_enabled,
             "garch_alpha": garch['garch_alpha'],
             "garch_beta": garch['garch_beta'],
             "garch_leverage": garch['garch_leverage'],
+            "gas_q_omega": float(config.gas_q_omega),
+            "gas_q_alpha": float(config.gas_q_alpha),
+            "gas_q_beta": float(config.gas_q_beta),
+            "gas_q_enabled": config.gas_q_enabled,
             "crps_ewm_lambda": s4['crps_ewm_lambda'],
             "crps_sigma_shrinkage": s4['crps_sigma_shrinkage'],
             "calibrated_gw": s5['calibrated_gw'],
@@ -578,7 +657,7 @@ class GaussianDriftModel:
         return config, diagnostics
 
     @classmethod
-    def filter_and_calibrate(cls, returns, vol, config, train_frac=0.7):
+    def filter_and_calibrate(cls, returns, vol, config, train_frac=0.7, momentum_signal=None):
         """
         Honest PIT + CRPS for unified Gaussian. All params from training config.
 
@@ -596,9 +675,11 @@ class GaussianDriftModel:
         q = float(config.q)
         c = float(config.c)
         phi = float(config.phi)
+        mom_w = float(getattr(config, 'momentum_weight', 0.0))
 
-        _, _, mu_pred, S_pred, ll = cls.filter_phi_with_predictive(
-            returns, vol, q, c, phi)
+        # Use momentum-augmented filter when momentum is active
+        _, _, mu_pred, S_pred, ll = cls._filter_phi_with_momentum(
+            returns, vol, q, c, phi, momentum_signal, mom_w)
 
         variance_inflation = float(getattr(config, 'variance_inflation', 1.0))
         use_garch = (getattr(config, 'garch_alpha', 0.0) > 0 or
@@ -657,8 +738,219 @@ class GaussianDriftModel:
         return pit_values, pit_pvalue, sigma_crps, crps, diagnostics
 
     # =========================================================================
+    # MOMENTUM-AUGMENTED FILTER
+    # =========================================================================
+
+    @classmethod
+    def _filter_phi_with_momentum(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        q: float,
+        c: float,
+        phi: float,
+        momentum_signal: np.ndarray = None,
+        momentum_weight: float = 0.0,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+        """
+        φ-Gaussian filter with optional momentum injection into state equation.
+
+        When momentum is active:
+            μ_pred[t] = φ·μ_{t-1} + w·mom[t]·σ_t
+
+        Degrades gracefully to filter_phi_with_predictive when momentum_weight=0
+        or momentum_signal is None.
+
+        Returns (mu_filtered, P_filtered, mu_pred, S_pred, log_likelihood).
+        """
+        if momentum_signal is None or abs(momentum_weight) < 1e-10:
+            return cls.filter_phi_with_predictive(returns, vol, q, c, phi)
+
+        n = len(returns)
+        q_val = float(q)
+        c_val = float(c)
+        phi_val = float(np.clip(phi, -0.999, 0.999))
+        mom_w = float(momentum_weight)
+
+        mu = 0.0
+        P = 1e-4
+        mu_filtered = np.zeros(n)
+        P_filtered = np.zeros(n)
+        mu_pred_arr = np.zeros(n)
+        S_pred_arr = np.zeros(n)
+        log_likelihood = 0.0
+
+        phi_sq = phi_val * phi_val
+        log_2pi = math.log(2.0 * math.pi)
+
+        for t in range(n):
+            # Momentum-augmented prediction
+            mom_adj = mom_w * float(momentum_signal[t]) * float(vol[t])
+            mu_pred = phi_val * mu + mom_adj
+            P_pred = phi_sq * P + q_val
+
+            vol_t = float(vol[t])
+            R = c_val * (vol_t * vol_t)
+            S = P_pred + R
+            if S <= 1e-12:
+                S = 1e-12
+
+            mu_pred_arr[t] = mu_pred
+            S_pred_arr[t] = S
+
+            innovation = float(returns[t]) - mu_pred
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < 1e-12:
+                P = 1e-12
+
+            mu_filtered[t] = mu
+            P_filtered[t] = P
+
+            log_likelihood += -0.5 * (log_2pi + math.log(S) + (innovation * innovation) / S)
+
+        return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
+
+    # =========================================================================
     # UNIFIED STAGE METHODS
     # =========================================================================
+
+    @classmethod
+    def _gaussian_stage_1_5_momentum(cls, returns_train, vol_train, n_train,
+                                      q, c, phi, momentum_signal):
+        """
+        Stage 1.5: Momentum injection weight via CRPS grid search.
+
+        Tests momentum_weight ∈ {0.0, 0.05, 0.10, 0.15}.
+        Degradation guard: 0.0 always competes. Only activates momentum
+        if it improves validation-fold CRPS vs no-momentum baseline.
+
+        Returns dict with 'momentum_weight'.
+        """
+        from scipy.stats import norm as _norm
+
+        # Validation fold: last 30% of training data
+        n_val = max(50, n_train // 3)
+        val_start = n_train - n_val
+
+        WEIGHT_GRID = [0.0, 0.05, 0.10, 0.15]
+        best_crps = float('inf')
+        best_weight = 0.0
+
+        for w in WEIGHT_GRID:
+            try:
+                _, _, mu_pred, S_pred, _ = cls._filter_phi_with_momentum(
+                    returns_train, vol_train, q, c, phi, momentum_signal, w)
+
+                # Compute CRPS on validation fold
+                crps_sum = 0.0
+                for t in range(val_start, n_train):
+                    sig = math.sqrt(max(S_pred[t], 1e-20))
+                    if sig < 1e-10:
+                        sig = 1e-10
+                    z = (returns_train[t] - mu_pred[t]) / sig
+                    crps_t = sig * (z * (2 * _norm.cdf(z) - 1)
+                                    + 2 * _norm.pdf(z)
+                                    - 1.0 / math.sqrt(math.pi))
+                    crps_sum += crps_t
+                avg_crps = crps_sum / n_val
+
+                if avg_crps < best_crps:
+                    best_crps = avg_crps
+                    best_weight = w
+            except Exception:
+                continue
+
+        return {'momentum_weight': best_weight}
+
+    @classmethod
+    def _gaussian_stage_4_5_gas_q(cls, returns_train, vol_train, n_train,
+                                   q, c, phi, beta, mu_drift, garch,
+                                   momentum_signal, momentum_weight):
+        """
+        Stage 4.5: GAS-Q adaptive process noise estimation.
+
+        Optimizes (ω, α, β_gas) via concentrated likelihood from gas_q.py.
+        Degradation guard: only enables GAS-Q if validation-fold CRPS
+        improves by > 1% relative to static q baseline.
+
+        Returns dict with gas_q_omega, gas_q_alpha, gas_q_beta, gas_q_enabled.
+        """
+        DISABLED = {
+            'gas_q_omega': 0.0, 'gas_q_alpha': 0.0, 'gas_q_beta': 0.0,
+            'gas_q_enabled': False
+        }
+
+        if n_train < 200:
+            return DISABLED
+
+        try:
+            from models.gas_q import optimize_gas_q_params, gas_q_filter_gaussian
+        except ImportError:
+            try:
+                from .gas_q import optimize_gas_q_params, gas_q_filter_gaussian
+            except ImportError:
+                return DISABLED
+
+        try:
+            gas_config, gas_diag = optimize_gas_q_params(
+                returns_train, vol_train, c, phi, nu=None, train_frac=0.7)
+
+            if not gas_diag.get('fit_success', False):
+                return DISABLED
+
+            # ── Degradation guard: compare CRPS on validation fold ──
+            from scipy.stats import norm as _norm
+            n_val = max(50, n_train // 3)
+            val_start = n_train - n_val
+
+            # Baseline CRPS (static q)
+            _, _, mu_base, S_base, _ = cls._filter_phi_with_momentum(
+                returns_train, vol_train, q, c, phi,
+                momentum_signal, momentum_weight)
+
+            def _fold_crps(mu_p, S_p):
+                total = 0.0
+                for t in range(val_start, n_train):
+                    sig = math.sqrt(max(S_p[t], 1e-20))
+                    if sig < 1e-10:
+                        sig = 1e-10
+                    z = (returns_train[t] - mu_p[t]) / sig
+                    total += sig * (z * (2 * _norm.cdf(z) - 1)
+                                    + 2 * _norm.pdf(z)
+                                    - 1.0 / math.sqrt(math.pi))
+                return total / n_val
+
+            crps_baseline = _fold_crps(mu_base, S_base)
+
+            # GAS-Q CRPS
+            gas_result = gas_q_filter_gaussian(
+                returns_train, vol_train, c, phi, gas_config)
+
+            if gas_result is None or not hasattr(gas_result, 'mu_filtered'):
+                return DISABLED
+
+            # Build S_pred from GAS-Q filter (P + R)
+            P_gas = gas_result.P_filtered
+            R = c * (vol_train ** 2)
+            S_gas = P_gas + R
+
+            crps_gas = _fold_crps(gas_result.mu_filtered, S_gas)
+
+            # Gate: must improve CRPS by >1%
+            if crps_baseline > 0 and crps_gas < crps_baseline * 0.99:
+                return {
+                    'gas_q_omega': float(gas_config.omega),
+                    'gas_q_alpha': float(gas_config.alpha),
+                    'gas_q_beta': float(gas_config.beta),
+                    'gas_q_enabled': True,
+                }
+
+            return DISABLED
+
+        except Exception:
+            return DISABLED
 
     @classmethod
     def _gaussian_stage_1(cls, returns_train, vol_train, n_train, config, phi_mode):

@@ -1280,10 +1280,22 @@ def render_parameter_table(cache: Dict[str, Dict], console: Console = None) -> N
         best_model = data.get('best_model', noise_model)
         nu_val = data.get('nu')
         
-        # Check for unified model first
+        # Check for unified Gaussian first (no ν parameter)
+        if data.get('gaussian_unified') or (best_model and 'gaussian_unified' in str(best_model).lower()):
+            base = 'φ-Gauss-Uni' if (phi_val is not None and phi_val != 1.0) else 'Gauss-Uni'
+            suffixes = []
+            if data.get('momentum_augmented') or data.get('momentum_weight', 0.0) > 1e-10:
+                suffixes.append('Mom')
+            if data.get('gas_q_enabled'):
+                suffixes.append('GAS-Q')
+            if suffixes:
+                return f"{base}+{'·'.join(suffixes)}"
+            return base
+        
+        # Check for unified Student-t model
         if data.get('unified_model') or (best_model and 'unified' in str(best_model).lower()):
             nu_str = f"ν={int(nu_val)}" if nu_val else "ν=8"
-            return f"φ-t-Unified({nu_str})"
+            return f"φ-t-Uni({nu_str})"
         
         # Check for specific Student-t variants
         if noise_model and 'student_t' in noise_model.lower():

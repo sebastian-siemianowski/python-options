@@ -73,11 +73,12 @@ def test_momentum_bma_competition():
     print(f'Total base model weight: {1 - total_mom_weight:.4f}')
     
     # Assertions
-    assert len(momentum_models) == 7, f"Expected 7 momentum models, got {len(momentum_models)}"
-    assert len(base_models) == 7, f"Expected 7 base models, got {len(base_models)}"
-    assert total_mom_weight > 0, "Momentum models should have non-zero weight"
+    # Unified Gaussian models include momentum internally
+    assert len(models) >= 8, f"Expected at least 8 models, got {len(models)}"
+    assert 'kalman_gaussian_unified' in models, "Missing kalman_gaussian_unified"
+    assert 'kalman_phi_gaussian_unified' in models, "Missing kalman_phi_gaussian_unified"
     
-    print('\n✅ All assertions passed - momentum models are properly competing in BMA')
+    print('\n✅ All assertions passed - models are properly competing in BMA')
     return True
 
 
