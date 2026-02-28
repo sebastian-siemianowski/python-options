@@ -293,6 +293,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from ingestion.data_utils import fetch_px, _download_prices, get_default_asset_universe
+from ingestion.adaptive_quality import adaptive_data_quality
 
 # K=2 Mixture Model REMOVED - empirically falsified (206 attempts, 0 selections)
 # The HMM regime-switching + Student-t already captures regime heterogeneity.
@@ -1607,6 +1608,12 @@ def tune_asset_q(
             _log(f"     ⚠️  No price data for {asset}")
             return None
         
+        # Adaptive data quality filter (February 2026)
+        # Detects phantom/synthetic data via Volume analysis
+        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=True)
+        if _dq_report.get('rows_purged_leading', 0) > 0 or _dq_report.get('window_applied', False):
+            _log(f"     🔬  Data quality: {_dq_report['rows_original']} → {_dq_report['rows_final']} rows")
+        
         # Extract Close prices from OHLC DataFrame
         cols = {c.lower(): c for c in df.columns}
         if 'close' in cols:
@@ -1625,6 +1632,7 @@ def tune_asset_q(
         
         # Compute volatility using Garman-Klass or HAR (7.4x more efficient than EWMA)
         vol_estimator_used = "EWMA"
+        _volume_arr = None  # For Volume-based stale filter
         if GK_VOLATILITY_AVAILABLE and df is not None and not df.empty:
             try:
                 # Check for OHLC columns
@@ -1636,6 +1644,11 @@ def tune_asset_q(
                     high = df_aligned[cols['high']].values
                     low = df_aligned[cols['low']].values
                     close = df_aligned[cols['close']].values
+                    
+                    # Extract Volume for stale-price detection (February 2026)
+                    _vol_col = cols.get('volume')
+                    if _vol_col is not None:
+                        _volume_arr = df_aligned[_vol_col].values
                     
                     # ENFORCE HAR-GK ONLY (February 2026)
                     # HAR-GK provides multi-horizon memory for crash detection
@@ -1664,9 +1677,19 @@ def tune_asset_q(
         # Stale days (O=H=L=C, vol=0) produce degenerate GK variance ≈ 1e-12
         # and contaminate model parameters. Threshold 1e-10 is well below any
         # genuine trade return but catches exact zeros and float near-zeros.
+        # Also filter Volume=0 phantom quotes (February 2026) — catches
+        # illiquid OTC assets (GPUS) where prices move without genuine trades.
         _STALE_RETURN_THRESHOLD = 1e-10
         valid_mask = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
                       & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
+        # Add Volume > 0 filter if Volume data available
+        if _volume_arr is not None:
+            _vol_aligned = _volume_arr[:min_len]
+            _vol_mask = _vol_aligned > 0
+            n_zero_vol = int(np.sum(~_vol_mask & valid_mask))
+            if n_zero_vol > 0:
+                _log(f"     🧹  Filtered {n_zero_vol} additional zero-volume phantom rows")
+            valid_mask = valid_mask & _vol_mask
         n_stale = int(np.sum(np.abs(returns) <= _STALE_RETURN_THRESHOLD))
         if n_stale > 0:
             _log(f"     🧹  Filtered {n_stale}/{len(returns)} stale-price rows ({100*n_stale/len(returns):.1f}%)")
@@ -5163,6 +5186,11 @@ def tune_asset_with_bma(
             _log(f"     ⚠️  No price data for {asset}")
             return None
         
+        # Adaptive data quality filter (February 2026)
+        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=True)
+        if _dq_report.get('rows_purged_leading', 0) > 0 or _dq_report.get('window_applied', False):
+            _log(f"     🔬  Data quality: {_dq_report['rows_original']} → {_dq_report['rows_final']} rows")
+        
         # Extract Close prices from OHLC DataFrame
         cols = {c.lower(): c for c in df.columns}
         if 'close' in cols:
@@ -5217,6 +5245,7 @@ def tune_asset_with_bma(
 
         # Compute volatility using Garman-Klass or HAR (7.4x more efficient than EWMA)
         vol_estimator_used = "EWMA"
+        _volume_arr = None  # For Volume-based stale filter
         if GK_VOLATILITY_AVAILABLE and df is not None and not df.empty:
             try:
                 # Check for OHLC columns
@@ -5228,6 +5257,11 @@ def tune_asset_with_bma(
                     high = df_aligned[cols['high']].values
                     low = df_aligned[cols['low']].values
                     close = df_aligned[cols['close']].values
+                    
+                    # Extract Volume for stale-price detection (February 2026)
+                    _vol_col = cols.get('volume')
+                    if _vol_col is not None:
+                        _volume_arr = df_aligned[_vol_col].values
                     
                     # ENFORCE HAR-GK ONLY (February 2026)
                     # HAR-GK provides multi-horizon memory for crash detection
@@ -5253,9 +5287,18 @@ def tune_asset_with_bma(
         vol = vol[:min_len]
 
         # Remove NaN/Inf and stale-price observations (zero-return days)
+        # Also filter Volume=0 phantom quotes (February 2026)
         _STALE_RETURN_THRESHOLD = 1e-10
         valid_mask = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
                       & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
+        # Add Volume > 0 filter if Volume data available
+        if _volume_arr is not None:
+            _vol_aligned = _volume_arr[:min_len]
+            _vol_mask = _vol_aligned > 0
+            n_zero_vol = int(np.sum(~_vol_mask & valid_mask))
+            if n_zero_vol > 0:
+                _log(f"     🧹  Filtered {n_zero_vol} additional zero-volume phantom rows")
+            valid_mask = valid_mask & _vol_mask
         n_stale = int(np.sum(np.abs(returns) <= _STALE_RETURN_THRESHOLD))
         if n_stale > 0:
             _log(f"     🧹  Filtered {n_stale}/{len(returns)} stale-price rows ({100*n_stale/len(returns):.1f}%)")

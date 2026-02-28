@@ -87,15 +87,19 @@ def _wc(val):
 
 def fetch_data(symbol):
     from tuning.tune import _download_prices, compute_hybrid_volatility_har
+    from ingestion.adaptive_quality import adaptive_data_quality
     df = _download_prices(symbol, '2015-01-01', None)
     if df is None or df.empty:
         return None
+    # Adaptive data quality filter (February 2026)
+    df, _dq_report = adaptive_data_quality(df, asset=symbol, verbose=False)
     cols = {c.lower(): c for c in df.columns}
     if 'close' not in cols:
         return None
     px = df[cols['close']]
     log_ret = np.log(px / px.shift(1)).dropna()
     returns = log_ret.values
+    _volume_arr = None
     if all(c in cols for c in ['open', 'high', 'low', 'close']):
         df_a = df.iloc[1:].copy()
         vol, _ = compute_hybrid_volatility_har(
@@ -105,14 +109,22 @@ def fetch_data(symbol):
             close=df_a[cols['close']].values,
             span=21, annualize=False, use_har=True,
         )
+        # Extract Volume for stale-price detection (February 2026)
+        _vol_col = cols.get('volume')
+        if _vol_col is not None:
+            _volume_arr = df_a[_vol_col].values
     else:
         vol = log_ret.ewm(span=21).std().values
     mn = min(len(returns), len(vol))
     returns, vol = returns[:mn], vol[:mn]
     # Filter stale-price observations (zero-return days from illiquid assets)
+    # Also filter Volume=0 phantom quotes (February 2026)
     _STALE_RETURN_THRESHOLD = 1e-10
     ok = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
           & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
+    if _volume_arr is not None:
+        _vol_aligned = _volume_arr[:mn]
+        ok = ok & (_vol_aligned > 0)
     returns, vol = returns[ok], vol[ok]
     if len(returns) < 100:
         return None
