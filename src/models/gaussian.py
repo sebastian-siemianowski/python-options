@@ -17,6 +17,7 @@ The model is estimated via cross-validated MLE with Bayesian regularization.
 
 from __future__ import annotations
 
+import math
 from typing import Dict, Tuple
 
 import numpy as np
@@ -29,12 +30,32 @@ try:
         is_numba_available,
         run_gaussian_filter,
         run_phi_gaussian_filter,
+        is_cv_kernel_available,
+        run_gaussian_cv_test_fold,
     )
     _USE_NUMBA = is_numba_available()
+    _USE_CV_KERNEL = is_cv_kernel_available()
 except ImportError:
     _USE_NUMBA = False
+    _USE_CV_KERNEL = False
     run_gaussian_filter = None
     run_phi_gaussian_filter = None
+    run_gaussian_cv_test_fold = None
+
+# Pre-computed constants
+_LOG_2PI = math.log(2.0 * math.pi)
+_LOG10_C_TARGET = math.log10(0.9)
+
+
+def _fast_ks_statistic(pit_values):
+    """Lightweight KS statistic against Uniform(0,1) without scipy overhead."""
+    n = len(pit_values)
+    if n == 0:
+        return 1.0
+    pit_sorted = np.sort(pit_values)
+    d_plus = np.max(np.arange(1, n + 1) / n - pit_sorted)
+    d_minus = np.max(pit_sorted - np.arange(0, n) / n)
+    return float(max(d_plus, d_minus))
 
 
 class GaussianDriftModel:
@@ -490,28 +511,39 @@ class GaussianDriftModel:
                     mu_pred = float(mu_filt_train[-1])
                     P_pred = float(P_filt_train[-1])
 
-                    ll_fold = 0.0
+                    if _USE_CV_KERNEL:
+                        ll_fold, n_fold, n_written = run_gaussian_cv_test_fold(
+                            _returns_r, _vol_sq, q, c,
+                            mu_pred, P_pred,
+                            test_start, test_end,
+                            std_buf, std_count, 1000,
+                        )
+                        total_ll_oos += ll_fold
+                        total_obs += n_fold
+                        std_count += n_written
+                    else:
+                        ll_fold = 0.0
 
-                    for t in range(test_start, test_end):
-                        P_pred = P_pred + q
+                        for t in range(test_start, test_end):
+                            P_pred = P_pred + q
 
-                        R = c * _vol_sq[t]
-                        innovation = _returns_r[t] - mu_pred
-                        forecast_var = P_pred + R
+                            R = c * _vol_sq[t]
+                            innovation = _returns_r[t] - mu_pred
+                            forecast_var = P_pred + R
 
-                        if forecast_var > 1e-12:
-                            ll_fold += -0.5 * (_LOG_2PI + _mlog(forecast_var) + (innovation * innovation) / forecast_var)
-                            if std_count < 1000:
-                                std_buf[std_count] = innovation / _msqrt(forecast_var)
-                                std_count += 1
+                            if forecast_var > 1e-12:
+                                ll_fold += -0.5 * (_LOG_2PI + _mlog(forecast_var) + (innovation * innovation) / forecast_var)
+                                if std_count < 1000:
+                                    std_buf[std_count] = innovation / _msqrt(forecast_var)
+                                    std_count += 1
 
-                        S_total = P_pred + R
-                        K = P_pred / S_total if S_total > 1e-12 else 0.0
-                        mu_pred = mu_pred + K * innovation
-                        P_pred = (1.0 - K) * P_pred
+                            S_total = P_pred + R
+                            K = P_pred / S_total if S_total > 1e-12 else 0.0
+                            mu_pred = mu_pred + K * innovation
+                            P_pred = (1.0 - K) * P_pred
 
-                    total_ll_oos += ll_fold
-                    total_obs += (test_end - test_start)
+                        total_ll_oos += ll_fold
+                        total_obs += (test_end - test_start)
 
                 except Exception:
                     continue

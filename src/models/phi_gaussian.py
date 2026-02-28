@@ -51,12 +51,17 @@ try:
         is_numba_available,
         run_phi_gaussian_filter,
         run_gaussian_filter,
+        is_cv_kernel_available,
+        run_phi_gaussian_cv_test_fold,
     )
     _USE_NUMBA = is_numba_available()
+    _USE_CV_KERNEL = is_cv_kernel_available()
 except ImportError:
     _USE_NUMBA = False
+    _USE_CV_KERNEL = False
     run_phi_gaussian_filter = None
     run_gaussian_filter = None
+    run_phi_gaussian_cv_test_fold = None
 
 
 # =============================================================================
@@ -405,29 +410,42 @@ class PhiGaussianDriftModel:
                     mu_pred = float(mu_filt_train[-1])
                     P_pred = float(P_filt_train[-1])
 
-                    ll_fold = 0.0
+                    if _USE_CV_KERNEL:
+                        # Numba-accelerated test-fold forward pass (~5× faster)
+                        ll_fold, n_fold, n_written = run_phi_gaussian_cv_test_fold(
+                            _returns_r, _vol_sq, q, c, phi_clip,
+                            mu_pred, P_pred,
+                            test_start, test_end,
+                            std_buf, std_count, 1000,
+                        )
+                        total_ll_oos += ll_fold
+                        total_obs += n_fold
+                        std_count += n_written
+                    else:
+                        # Python fallback
+                        ll_fold = 0.0
 
-                    for t in range(test_start, test_end):
-                        mu_pred = phi_clip * mu_pred
-                        P_pred = phi_clip_sq * P_pred + q
+                        for t in range(test_start, test_end):
+                            mu_pred = phi_clip * mu_pred
+                            P_pred = phi_clip_sq * P_pred + q
 
-                        R = c * _vol_sq[t]
-                        innovation = _returns_r[t] - mu_pred
-                        forecast_var = P_pred + R
+                            R = c * _vol_sq[t]
+                            innovation = _returns_r[t] - mu_pred
+                            forecast_var = P_pred + R
 
-                        if forecast_var > 1e-12:
-                            ll_fold += -0.5 * (_LOG_2PI + _mlog(forecast_var) + (innovation * innovation) / forecast_var)
-                            if std_count < 1000:
-                                std_buf[std_count] = innovation / _msqrt(forecast_var)
-                                std_count += 1
+                            if forecast_var > 1e-12:
+                                ll_fold += -0.5 * (_LOG_2PI + _mlog(forecast_var) + (innovation * innovation) / forecast_var)
+                                if std_count < 1000:
+                                    std_buf[std_count] = innovation / _msqrt(forecast_var)
+                                    std_count += 1
 
-                        S_total = P_pred + R
-                        K = P_pred / S_total if S_total > 1e-12 else 0.0
-                        mu_pred = mu_pred + K * innovation
-                        P_pred = (1.0 - K) * P_pred
+                            S_total = P_pred + R
+                            K = P_pred / S_total if S_total > 1e-12 else 0.0
+                            mu_pred = mu_pred + K * innovation
+                            P_pred = (1.0 - K) * P_pred
 
-                    total_ll_oos += ll_fold
-                    total_obs += (test_end - test_start)
+                        total_ll_oos += ll_fold
+                        total_obs += (test_end - test_start)
 
                 except Exception:
                     continue
