@@ -105,6 +105,19 @@ def _fast_t_cdf(z, nu):
     return _t.cdf(z, df=nu)
 
 
+def _fast_t_pdf(z, nu):
+    """
+    Vectorized Student-t PDF: uses Numba array kernel when available, scipy fallback.
+    """
+    if _NUMBA_CDF_ARRAY and run_student_t_pdf_array is not None:
+        try:
+            return run_student_t_pdf_array(np.ascontiguousarray(z, dtype=np.float64), float(nu))
+        except Exception:
+            pass
+    from scipy.stats import t as _t
+    return _t.pdf(z, df=nu)
+
+
 # ---------------------------------------------------------------------------
 # φ SHRINKAGE PRIOR CONSTANTS (self-contained, no external dependencies)
 # ---------------------------------------------------------------------------
@@ -2602,8 +2615,9 @@ class PhiStudentTDriftModel:
             n_pit:        Number of valid PIT observations used in the test.
         """
         try:
-            from scipy.stats import norm, chi2
-            z = norm.ppf(np.clip(pit_values, 0.0001, 0.9999))
+            from scipy.special import ndtri
+            from scipy.stats import chi2
+            z = ndtri(np.clip(pit_values, 0.0001, 0.9999))
             z = z[np.isfinite(z)]
             n_z = len(z)
             if n_z <= 20:
@@ -2615,10 +2629,12 @@ class PhiStudentTDriftModel:
             rho_hat = float(np.clip(np.sum(z_c[1:] * z_c[:-1]) / denom, -0.99, 0.99)) if denom > 1e-12 else 0.0
             ll_null = -0.5 * n_z * np.log(2 * np.pi) - 0.5 * np.sum(z ** 2)
             sigma_sq_cond = max(var_hat * (1 - rho_hat ** 2) if abs(rho_hat) < 0.99 else var_hat * 0.01, 1e-6)
-            ll_alt = -0.5 * np.log(2 * np.pi * var_hat) - 0.5 * (z[0] - mu_hat) ** 2 / var_hat
-            for t in range(1, n_z):
-                resid = z[t] - (mu_hat + rho_hat * (z[t - 1] - mu_hat))
-                ll_alt += -0.5 * np.log(2 * np.pi * sigma_sq_cond) - 0.5 * resid ** 2 / sigma_sq_cond
+            # Vectorized AR(1) log-likelihood (replaces per-element Python loop)
+            resid = z[1:] - (mu_hat + rho_hat * (z[:-1] - mu_hat))
+            ll_alt = (-0.5 * np.log(2 * np.pi * var_hat)
+                      - 0.5 * (z[0] - mu_hat) ** 2 / var_hat
+                      - 0.5 * (n_z - 1) * np.log(2 * np.pi * sigma_sq_cond)
+                      - 0.5 * np.sum(resid ** 2) / sigma_sq_cond)
             lr_stat = float(max(2 * (ll_alt - ll_null), 0))
             p_value = float(1 - chi2.cdf(lr_stat, df=3))
             return (p_value, lr_stat, n_z)
@@ -3930,7 +3946,7 @@ class PhiStudentTDriftModel:
                         t_scale_vec = np.sqrt(S_cal_vec)
                     t_scale_vec = np.maximum(t_scale_vec, 1e-10)
                     z_vec = innov_valid / t_scale_vec
-                    pit_values = student_t.cdf(z_vec, df=test_nu)
+                    pit_values = _fast_t_cdf(z_vec, test_nu)
 
                     if len(pit_values) > 10:
                         pit_values = np.clip(pit_values, 0.001, 0.999)
@@ -3946,8 +3962,8 @@ class PhiStudentTDriftModel:
                             else:
                                 fold_scale = fold_sigma
                             _z_fold = innov_valid / fold_scale
-                            _pdf_fold = student_t.pdf(_z_fold, df=test_nu)
-                            _cdf_fold = student_t.cdf(_z_fold, df=test_nu)
+                            _pdf_fold = _fast_t_pdf(_z_fold, test_nu)
+                            _cdf_fold = _fast_t_cdf(_z_fold, test_nu)
                             if test_nu > 1:
                                 _lgB1 = gammaln(0.5) + gammaln(test_nu - 0.5) - gammaln(test_nu)
                                 _lgB2 = gammaln(0.5) + gammaln(test_nu / 2) - gammaln((test_nu + 1) / 2)
@@ -3990,12 +4006,12 @@ class PhiStudentTDriftModel:
                         # Compute AD on mean PIT across folds
                         _last_fold_ks = fold_ks_vals[-1] if fold_ks_vals else 0.0
                         _, _ad_p = anderson_darling_uniform(
-                            student_t.cdf(
+                            _fast_t_cdf(
                                 innovations_train[n_train - fold_size:] /
                                 np.maximum(np.sqrt(S_pred_train[n_train - fold_size:] *
                                     float(np.mean(fold_betas)) *
                                     ((test_nu - 2) / test_nu if test_nu > 2 else 1.0)), 1e-10),
-                                df=test_nu
+                                test_nu
                             )
                         )
                     except Exception:
@@ -4560,7 +4576,6 @@ class PhiStudentTDriftModel:
                 sig_v = np.maximum(sig_v, 1e-10)
                 if abs(df_asym) > 0.05:
                     z_val = (returns_val - mu_val) / sig_v
-                    from scipy.stats import t as _td
                     from scipy.special import gammaln as _gl
                     nu_L = max(2.5, nu_c - df_asym)
                     nu_R = max(2.5, nu_c + df_asym)
@@ -4569,8 +4584,8 @@ class PhiStudentTDriftModel:
                         if not np.any(mask):
                             continue
                         zs = z_val[mask]
-                        ps = _td.pdf(zs, df=side_nu)
-                        cs = _td.cdf(zs, df=side_nu)
+                        ps = _fast_t_pdf(zs, side_nu)
+                        cs = _fast_t_cdf(zs, side_nu)
                         if side_nu > 1:
                             lB1 = _gl(0.5) + _gl(side_nu - 0.5) - _gl(side_nu)
                             lB2 = _gl(0.5) + _gl(side_nu / 2) - _gl((side_nu + 1) / 2)
@@ -5258,7 +5273,7 @@ class PhiStudentTDriftModel:
             sigma_final = np.maximum(sigma_final, 1e-10)
 
             z_final = innov_final / sigma_final
-            pit_final = student_t.cdf(z_final, df=nu_opt)
+            pit_final = _fast_t_cdf(z_final, nu_opt)
             pit_final = np.clip(pit_final, 0.001, 0.999)
 
             pit_centered = pit_final - np.mean(pit_final)

@@ -59,6 +59,7 @@ try:
         is_cv_kernel_available,
         run_gaussian_cv_test_fold,
         run_phi_gaussian_filter_with_predictive,
+        run_momentum_phi_gaussian_filter,
     )
     _USE_NUMBA = is_numba_available()
     _USE_CV_KERNEL = is_cv_kernel_available()
@@ -69,6 +70,7 @@ except ImportError:
     run_phi_gaussian_filter = None
     run_gaussian_cv_test_fold = None
     run_phi_gaussian_filter_with_predictive = None
+    run_momentum_phi_gaussian_filter = None
 
 # Pre-computed constants
 _LOG_2PI = math.log(2.0 * math.pi)
@@ -203,12 +205,20 @@ class GaussianDriftModel:
         """
         Optimized Kalman filter for drift estimation.
         
-        Performance optimizations (February 2026):
+        Performance optimizations (February/March 2026):
+        - Numba JIT-compiled kernel when available (10-50x speedup)
         - Pre-compute R array once
         - Pre-compute log_2pi constant
         - Use np.empty instead of np.zeros
         - Ensure contiguous array access
         """
+        # Try Numba-accelerated version first
+        if _USE_NUMBA:
+            try:
+                return run_gaussian_filter(returns, vol, q, c)
+            except Exception:
+                pass  # Fall through to Python implementation
+
         n = len(returns)
         
         # Convert to contiguous float64 arrays once
@@ -837,6 +847,30 @@ class GaussianDriftModel:
         phi_val = float(np.clip(phi, -0.999, 0.999))
         mom_w = float(momentum_weight)
 
+        # Try Numba-accelerated kernel first
+        if _USE_NUMBA and run_momentum_phi_gaussian_filter is not None:
+            try:
+                # Pre-compute momentum_adjustment = w * mom[t] * vol[t]
+                mom_adj = mom_w * np.asarray(momentum_signal, dtype=np.float64) * np.asarray(vol, dtype=np.float64)
+                mu_f, P_f, ll = run_momentum_phi_gaussian_filter(
+                    returns, vol, q_val, c_val, phi_val, mom_adj)
+                # Reconstruct predictive arrays from filtered values
+                phi_sq = phi_val * phi_val
+                mu_pred_arr = np.empty(n, dtype=np.float64)
+                S_pred_arr = np.empty(n, dtype=np.float64)
+                mu_pred_arr[0] = mom_w * float(momentum_signal[0]) * float(vol[0])
+                mu_pred_arr[1:] = phi_val * mu_f[:-1] + mom_adj[1:]
+                P_pred_0 = 1e-4 + q_val  # phi_sq * P0 + q where P0=1e-4, but kernel uses P0=1e-4
+                R = c_val * (np.asarray(vol, dtype=np.float64) ** 2)
+                P_pred_arr = np.empty(n, dtype=np.float64)
+                P_pred_arr[0] = phi_sq * 1e-4 + q_val
+                P_pred_arr[1:] = phi_sq * P_f[:-1] + q_val
+                S_pred_arr = P_pred_arr + R
+                S_pred_arr = np.maximum(S_pred_arr, 1e-12)
+                return mu_f, P_f, mu_pred_arr, S_pred_arr, float(ll)
+            except Exception:
+                pass  # Fall through to Python implementation
+
         mu = 0.0
         P = 1e-4
         mu_filtered = np.zeros(n)
@@ -908,18 +942,15 @@ class GaussianDriftModel:
                 _, _, mu_pred, S_pred, _ = cls._filter_phi_with_momentum(
                     returns_train, vol_train, q, c, phi, momentum_signal, w)
 
-                # Compute CRPS on validation fold
-                crps_sum = 0.0
-                for t in range(val_start, n_train):
-                    sig = math.sqrt(max(S_pred[t], 1e-20))
-                    if sig < 1e-10:
-                        sig = 1e-10
-                    z = (returns_train[t] - mu_pred[t]) / sig
-                    crps_t = sig * (z * (2 * _norm.cdf(z) - 1)
-                                    + 2 * _norm.pdf(z)
-                                    - 1.0 / math.sqrt(math.pi))
-                    crps_sum += crps_t
-                avg_crps = crps_sum / n_val
+                # Compute CRPS on validation fold (vectorized)
+                _sig_arr = np.sqrt(np.maximum(S_pred[val_start:n_train], 1e-20))
+                _sig_arr = np.maximum(_sig_arr, 1e-10)
+                _z_arr = (returns_train[val_start:n_train] - mu_pred[val_start:n_train]) / _sig_arr
+                _cdf_arr = _norm.cdf(_z_arr)
+                _pdf_arr = _norm.pdf(_z_arr)
+                _inv_sqrt_pi = 1.0 / math.sqrt(math.pi)
+                _crps_arr = _sig_arr * (_z_arr * (2 * _cdf_arr - 1) + 2 * _pdf_arr - _inv_sqrt_pi)
+                avg_crps = float(np.mean(_crps_arr))
 
                 if avg_crps < best_crps:
                     best_crps = avg_crps
@@ -975,17 +1006,16 @@ class GaussianDriftModel:
                 returns_train, vol_train, q, c, phi,
                 momentum_signal, momentum_weight)
 
+            _inv_sqrt_pi = 1.0 / math.sqrt(math.pi)
+
             def _fold_crps(mu_p, S_p):
-                total = 0.0
-                for t in range(val_start, n_train):
-                    sig = math.sqrt(max(S_p[t], 1e-20))
-                    if sig < 1e-10:
-                        sig = 1e-10
-                    z = (returns_train[t] - mu_p[t]) / sig
-                    total += sig * (z * (2 * _norm.cdf(z) - 1)
-                                    + 2 * _norm.pdf(z)
-                                    - 1.0 / math.sqrt(math.pi))
-                return total / n_val
+                _sig = np.sqrt(np.maximum(S_p[val_start:n_train], 1e-20))
+                _sig = np.maximum(_sig, 1e-10)
+                _z = (returns_train[val_start:n_train] - mu_p[val_start:n_train]) / _sig
+                _cdf = _norm.cdf(_z)
+                _pdf = _norm.pdf(_z)
+                _crps = _sig * (_z * (2 * _cdf - 1) + 2 * _pdf - _inv_sqrt_pi)
+                return float(np.mean(_crps))
 
             crps_baseline = _fold_crps(mu_base, S_base)
 
