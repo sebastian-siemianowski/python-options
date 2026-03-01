@@ -161,6 +161,11 @@ class GaussianUnifiedConfig:
         self.c_min = 0.01
         self.c_max = 10.0
         self.momentum_lookbacks = [5, 10, 20, 60]
+        # Chi-squared + PIT-var calibration (March 2026 — asset-adaptive)
+        self.chisq_ewm_lambda = 0.98     # Default ~35d half-life
+        self.pit_var_lambda = 0.97        # PIT-var EWM decay
+        self.pit_var_dz_lo = 0.30         # Dead-zone: start correcting
+        self.pit_var_dz_hi = 0.55         # Dead-zone: full correction
         for k, v in kwargs.items():
             setattr(self, k, v)
 
@@ -543,6 +548,46 @@ class GaussianDriftModel:
         vol = np.asarray(vol).flatten()
 
         config = GaussianUnifiedConfig.auto_configure(returns, vol)
+
+        # ── ASSET-CLASS CALIBRATION PROFILE (March 2026) ──
+        # Apply asset-class-specific chi² and PIT-var parameters.
+        # Mirrors phi_student_t.py profile lookup.
+        _GAUSSIAN_PROFILES = {
+            'metals_gold':    {'chisq_ewm_lambda': 0.985, 'pit_var_lambda': 0.975, 'pit_var_dz_lo': 0.35, 'pit_var_dz_hi': 0.60},
+            'metals_silver':  {'chisq_ewm_lambda': 0.96,  'pit_var_lambda': 0.95,  'pit_var_dz_lo': 0.25, 'pit_var_dz_hi': 0.50},
+            'metals_other':   {'chisq_ewm_lambda': 0.97,  'pit_var_lambda': 0.96,  'pit_var_dz_lo': 0.30, 'pit_var_dz_hi': 0.55},
+            'high_vol_equity':{'chisq_ewm_lambda': 0.94,  'pit_var_lambda': 0.94,  'pit_var_dz_lo': 0.20, 'pit_var_dz_hi': 0.45},
+            'forex':          {'chisq_ewm_lambda': 0.99,  'pit_var_lambda': 0.98,  'pit_var_dz_lo': 0.35, 'pit_var_dz_hi': 0.60},
+        }
+        _gaussian_asset_class = None
+        if asset_symbol is not None:
+            _sym = asset_symbol.strip().upper()
+            # Import asset-class detection from phi_student_t
+            try:
+                from models.phi_student_t import _detect_asset_class
+                _gaussian_asset_class = _detect_asset_class(_sym)
+            except ImportError:
+                # Inline fallback detection
+                _METALS_GOLD = {'GC=F', 'GLD', 'IAU', 'XAUUSD=X'}
+                _METALS_SILVER = {'SI=F', 'SLV', 'XAGUSD=X'}
+                _METALS_OTHER = {'HG=F', 'PL=F', 'PA=F', 'COPX', 'PPLT'}
+                _HIGH_VOL = {'MSTR', 'AMZE', 'RCAT', 'SMCI', 'RGTI', 'QBTS', 'BKSY',
+                             'SPCE', 'ABTC', 'BZAI', 'BNZI', 'AIRI',
+                             'ESLT', 'QS', 'QUBT', 'PACB', 'APLM', 'NVTS',
+                             'ACHR', 'GORO', 'USAS', 'APLT', 'ONDS', 'GPUS'}
+                if _sym in _METALS_GOLD: _gaussian_asset_class = 'metals_gold'
+                elif _sym in _METALS_SILVER: _gaussian_asset_class = 'metals_silver'
+                elif _sym in _METALS_OTHER: _gaussian_asset_class = 'metals_other'
+                elif _sym in _HIGH_VOL: _gaussian_asset_class = 'high_vol_equity'
+                elif _sym.endswith('=X'): _gaussian_asset_class = 'forex'
+
+            if _gaussian_asset_class and _gaussian_asset_class in _GAUSSIAN_PROFILES:
+                _g_prof = _GAUSSIAN_PROFILES[_gaussian_asset_class]
+                config.chisq_ewm_lambda = _g_prof.get('chisq_ewm_lambda', 0.98)
+                config.pit_var_lambda = _g_prof.get('pit_var_lambda', 0.97)
+                config.pit_var_dz_lo = _g_prof.get('pit_var_dz_lo', 0.30)
+                config.pit_var_dz_hi = _g_prof.get('pit_var_dz_hi', 0.55)
+
         n = len(returns)
         n_train = int(n * train_frac)
         returns_train = returns[:n_train]
@@ -705,6 +750,12 @@ class GaussianDriftModel:
             mu_effective = mu_pred_test
 
         pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
+        # Anderson-Darling test (tail-sensitive complement to KS)
+        try:
+            from calibration.pit_calibration import anderson_darling_uniform
+            _ad_stat, _ad_pvalue = anderson_darling_uniform(pit_values)
+        except Exception:
+            _ad_pvalue = float('nan')
         hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
         mad = float(np.mean(np.abs(hist / n_test - 0.1)))
 
@@ -722,6 +773,7 @@ class GaussianDriftModel:
 
         diagnostics = {
             'pit_pvalue': pit_pvalue,
+            'ad_pvalue': _ad_pvalue,
             'berkowitz_pvalue': float(berkowitz_pvalue),
             'berkowitz_lr': float(berkowitz_lr),
             'pit_count': int(berkowitz_n_pit),
@@ -991,6 +1043,16 @@ class GaussianDriftModel:
         _mlog = math.log
         _msqrt = math.sqrt
 
+        # Try Numba-accelerated CV test fold kernel
+        try:
+            from models.numba_wrappers import run_phi_gaussian_cv_test_fold as _numba_cv_fold
+            _use_numba_cv = True
+        except (ImportError, Exception):
+            _use_numba_cv = False
+
+        # Pre-allocate standardized residuals buffer for Numba kernel
+        _std_buf = np.zeros(n_train, dtype=np.float64) if _use_numba_cv else None
+
         def neg_cv_ll(params):
             if phi_mode:
                 log_q, log_c, phi = params
@@ -1014,21 +1076,30 @@ class GaussianDriftModel:
                     mu_p = float(mu_f[-1])
                     P_p = float(P_f[-1])
 
-                    ll_fold = 0.0
-                    for t in range(vs, ve):
-                        mu_p = phi * mu_p
-                        P_p = phi_sq * P_p + q
-                        R = c * _vol_sq[t]
-                        inn = _returns_r[t] - mu_p
-                        fv = P_p + R
-                        if fv > 1e-12:
-                            ll_fold += -0.5 * (_LOG_2PI + _mlog(fv) + inn * inn / fv)
-                        S = P_p + R
-                        K = P_p / S if S > 1e-12 else 0.0
-                        mu_p = mu_p + K * inn
-                        P_p = (1.0 - K) * P_p
-                    total_ll += ll_fold
-                    total_obs += (ve - vs)
+                    if _use_numba_cv:
+                        ll_fold, n_obs_fold, _ = _numba_cv_fold(
+                            _returns_r, _vol_sq, q, c, phi,
+                            mu_p, P_p, vs, ve,
+                            _std_buf, 0, 0,
+                        )
+                        total_ll += ll_fold
+                        total_obs += n_obs_fold
+                    else:
+                        ll_fold = 0.0
+                        for t in range(vs, ve):
+                            mu_p = phi * mu_p
+                            P_p = phi_sq * P_p + q
+                            R = c * _vol_sq[t]
+                            inn = _returns_r[t] - mu_p
+                            fv = P_p + R
+                            if fv > 1e-12:
+                                ll_fold += -0.5 * (_LOG_2PI + _mlog(fv) + inn * inn / fv)
+                            S = P_p + R
+                            K = P_p / S if S > 1e-12 else 0.0
+                            mu_p = mu_p + K * inn
+                            P_p = (1.0 - K) * P_p
+                        total_ll += ll_fold
+                        total_obs += (ve - vs)
                 except Exception:
                     continue
 
@@ -1088,7 +1159,7 @@ class GaussianDriftModel:
         for x0 in starts:
             try:
                 res = minimize(neg_cv_ll, x0, method='L-BFGS-B', bounds=bounds,
-                               options={'maxiter': 200, 'ftol': 1e-10})
+                               options={'maxiter': 100, 'ftol': 1e-8})
                 if res.fun < best_fun:
                     best_fun = res.fun
                     best_result = res
@@ -1225,26 +1296,28 @@ class GaussianDriftModel:
         best_crps = float('inf')
         from scipy.stats import norm as _norm
 
+        _inv_sqrt_pi = 1.0 / math.sqrt(math.pi)
+        _S_test = S_pred[test_start:n_train] * beta
+        _sig_base = np.sqrt(np.maximum(_S_test, 1e-20))
+        _sig_base = np.maximum(_sig_base, 1e-10)
+        _ret_test = returns_train[test_start:n_train]
+
         for lam in [0.0, 0.92, 0.94, 0.96, 0.98]:
+            # Build mu_eff array with EWM correction
+            mu_eff_arr = np.empty(n_test_inner)
             ewm_mu = float(np.mean(innovations[:test_start]))
             alpha_e = 1.0 - lam if lam > 0 else 0.0
-
-            crps_sum = 0.0
             for t in range(test_start, n_train):
-                mu_eff = mu_pred[t] + ewm_mu + mu_drift
-                S_t = S_pred[t] * beta
-                sig = math.sqrt(max(S_t, 1e-20))
-                if sig < 1e-10:
-                    sig = 1e-10
-                # Gaussian CRPS: σ × [z·(2Φ(z)-1) + 2φ(z) - 1/√π]
-                z = (returns_train[t] - mu_eff) / sig
-                crps_t = sig * (z * (2 * _norm.cdf(z) - 1) + 2 * _norm.pdf(z) - 1.0 / math.sqrt(math.pi))
-                crps_sum += crps_t
-
+                mu_eff_arr[t - test_start] = mu_pred[t] + ewm_mu + mu_drift
                 if lam > 0:
                     ewm_mu = lam * ewm_mu + alpha_e * innovations[t]
 
-            avg_crps = crps_sum / n_test_inner
+            # Vectorized CRPS computation
+            z_arr = (_ret_test - mu_eff_arr) / _sig_base
+            cdf_arr = _norm.cdf(z_arr)
+            pdf_arr = _norm.pdf(z_arr)
+            crps_arr = _sig_base * (z_arr * (2 * cdf_arr - 1) + 2 * pdf_arr - _inv_sqrt_pi)
+            avg_crps = float(np.mean(crps_arr))
             if avg_crps < best_crps:
                 best_crps = avg_crps
                 crps_ewm_lambda = lam
@@ -1253,24 +1326,22 @@ class GaussianDriftModel:
         best_shrink = 1.0
         best_crps_s = best_crps
         for s in [0.75, 0.80, 0.85, 0.90, 0.95, 1.0]:
+            # Build mu_eff array with best EWM lambda
+            mu_eff_arr = np.empty(n_test_inner)
             ewm_mu = float(np.mean(innovations[:test_start]))
             alpha_e = 1.0 - crps_ewm_lambda if crps_ewm_lambda > 0 else 0.0
-
-            crps_sum = 0.0
             for t in range(test_start, n_train):
-                mu_eff = mu_pred[t] + ewm_mu + mu_drift
-                S_t = S_pred[t] * beta
-                sig = math.sqrt(max(S_t, 1e-20)) * s
-                if sig < 1e-10:
-                    sig = 1e-10
-                z = (returns_train[t] - mu_eff) / sig
-                crps_t = sig * (z * (2 * _norm.cdf(z) - 1) + 2 * _norm.pdf(z) - 1.0 / math.sqrt(math.pi))
-                crps_sum += crps_t
-
+                mu_eff_arr[t - test_start] = mu_pred[t] + ewm_mu + mu_drift
                 if crps_ewm_lambda > 0:
                     ewm_mu = crps_ewm_lambda * ewm_mu + alpha_e * innovations[t]
 
-            avg_crps = crps_sum / n_test_inner
+            # Vectorized CRPS with shrinkage
+            sig_s = _sig_base * s
+            z_arr = (_ret_test - mu_eff_arr) / sig_s
+            cdf_arr = _norm.cdf(z_arr)
+            pdf_arr = _norm.pdf(z_arr)
+            crps_arr = sig_s * (z_arr * (2 * cdf_arr - 1) + 2 * pdf_arr - _inv_sqrt_pi)
+            avg_crps = float(np.mean(crps_arr))
             if avg_crps < best_crps_s:
                 best_crps_s = avg_crps
                 best_shrink = s
@@ -1311,11 +1382,28 @@ class GaussianDriftModel:
         _msqrt = math.sqrt
         _norm_cdf = norm.cdf
 
+        # Try Numba-accelerated score fold kernel
+        try:
+            from models.numba_wrappers import run_gaussian_score_fold as _numba_score_fold
+            _use_numba_score = True
+        except (ImportError, Exception):
+            _use_numba_score = False
+
         def _score_fold(Sb, ee, ve, lam):
             """Run EWM PIT for one fold, return (ks_p_approx, mad)."""
             nv = ve - ee
             if nv < 20:
                 return 0.0, 1.0
+
+            if _use_numba_score:
+                init_em = float(np.mean(it[:ee]))
+                init_en = float(np.mean(it[:ee] ** 2))
+                init_ed = float(np.mean(Sb[:ee]))
+                return _numba_score_fold(
+                    it, Sb, ee, ve, lam,
+                    init_em, init_en, init_ed,
+                )
+
             em = float(np.mean(it[:ee]))
             en = float(np.mean(it[:ee] ** 2))
             ed = float(np.mean(Sb[:ee]))
@@ -1478,6 +1566,74 @@ class GaussianDriftModel:
             _ed = _best_lam * _ed + _1m_lam * S_bt[_idx]
 
         _pit_train_cal = np.clip(norm.cdf(_zcal), 0.001, 0.999)
+
+        # ── DOMAIN-MATCHED TRAINING PIT CORRECTIONS (March 2026) ────
+        # Apply the SAME chi² and PIT-var corrections to training PITs
+        # that will be applied to test PITs. Prevents isotonic domain shift.
+        # ────────────────────────────────────────────────────────────
+        _CHI2_LAMBDA_TR = float(getattr(config, 'chisq_ewm_lambda', 0.98))
+        _chi2_target_tr = 1.0  # Gaussian: E[z²] = 1
+        _CHI2_WINSOR_CAP_TR = _chi2_target_tr * 50.0
+        _CHI2_1M_TR = 1.0 - _CHI2_LAMBDA_TR
+        _ewm_z2_tr = _chi2_target_tr
+
+        # Chi² correct training z-values
+        _zcal_corrected = np.empty_like(_zcal)
+        for _t in range(len(_zcal)):
+            _ratio_tr = _ewm_z2_tr / _chi2_target_tr
+            if _ratio_tr < 0.3: _ratio_tr = 0.3
+            elif _ratio_tr > 3.0: _ratio_tr = 3.0
+            _dev_tr = abs(_ratio_tr - 1.0)
+            if _ratio_tr >= 1.0:
+                _dz_lo_tr = 0.25; _dz_rng_tr = 0.25
+            else:
+                _dz_lo_tr = 0.10; _dz_rng_tr = 0.15
+            if _dev_tr < _dz_lo_tr:
+                _adj_tr = 1.0
+            elif _dev_tr >= _dz_lo_tr + _dz_rng_tr:
+                _adj_tr = _msqrt(_ratio_tr)
+            else:
+                _str_tr = (_dev_tr - _dz_lo_tr) / _dz_rng_tr
+                _adj_tr = 1.0 + _str_tr * (_msqrt(_ratio_tr) - 1.0)
+            _zcal_corrected[_t] = _zcal[_t] / _adj_tr
+            _raw_z2_tr = _zcal[_t] * _zcal[_t]
+            _raw_z2_w_tr = _raw_z2_tr if _raw_z2_tr < _CHI2_WINSOR_CAP_TR else _CHI2_WINSOR_CAP_TR
+            _ewm_z2_tr = _CHI2_LAMBDA_TR * _ewm_z2_tr + _CHI2_1M_TR * _raw_z2_w_tr
+
+        _pit_train_cal = np.clip(norm.cdf(_zcal_corrected), 0.001, 0.999)
+
+        # PIT-var correction on training PITs
+        _PIT_VAR_LAMBDA_TR = float(getattr(config, 'pit_var_lambda', 0.97))
+        _PIT_VAR_1M_TR = 1.0 - _PIT_VAR_LAMBDA_TR
+        _PIT_VAR_DZ_LO_TR = float(getattr(config, 'pit_var_dz_lo', 0.30))
+        _PIT_VAR_DZ_HI_TR = float(getattr(config, 'pit_var_dz_hi', 0.55))
+        _PIT_VAR_DZ_RANGE_TR = _PIT_VAR_DZ_HI_TR - _PIT_VAR_DZ_LO_TR
+        _ewm_pit_m_tr = 0.5
+        _ewm_pit_sq_tr = 1.0 / 3.0
+        for _t in range(len(_pit_train_cal)):
+            _obs_var_tr = _ewm_pit_sq_tr - _ewm_pit_m_tr * _ewm_pit_m_tr
+            if _obs_var_tr < 0.005: _obs_var_tr = 0.005
+            _var_ratio_tr = _obs_var_tr / (1.0 / 12.0)
+            _var_dev_tr = abs(_var_ratio_tr - 1.0)
+            _raw_pit_tr = _pit_train_cal[_t]
+            if _var_dev_tr > _PIT_VAR_DZ_LO_TR:
+                _raw_stretch_tr = _msqrt((1.0 / 12.0) / _obs_var_tr)
+                if _raw_stretch_tr < 0.70: _raw_stretch_tr = 0.70
+                elif _raw_stretch_tr > 1.50: _raw_stretch_tr = 1.50
+                if _var_dev_tr >= _PIT_VAR_DZ_HI_TR:
+                    _stretch_tr = _raw_stretch_tr
+                else:
+                    _s_tr = (_var_dev_tr - _PIT_VAR_DZ_LO_TR) / _PIT_VAR_DZ_RANGE_TR
+                    _stretch_tr = 1.0 + _s_tr * (_raw_stretch_tr - 1.0)
+                _corrected_tr = 0.5 + (_raw_pit_tr - 0.5) * _stretch_tr
+                if _corrected_tr < 0.001: _corrected_tr = 0.001
+                elif _corrected_tr > 0.999: _corrected_tr = 0.999
+                _pit_train_cal[_t] = _corrected_tr
+            _ewm_pit_m_tr = _PIT_VAR_LAMBDA_TR * _ewm_pit_m_tr + _PIT_VAR_1M_TR * _raw_pit_tr
+            _ewm_pit_sq_tr = _PIT_VAR_LAMBDA_TR * _ewm_pit_sq_tr + _PIT_VAR_1M_TR * _raw_pit_tr * _raw_pit_tr
+        _pit_train_cal = np.clip(_pit_train_cal, 0.001, 0.999)
+        # ── END DOMAIN-MATCHED TRAINING PIT CORRECTIONS ─────────────
+
         _z_probit_cal = norm.ppf(_pit_train_cal)
         _z_probit_cal = _z_probit_cal[np.isfinite(_z_probit_cal)]
 
@@ -1511,7 +1667,143 @@ class GaussianDriftModel:
             _ewm_den_t = _best_lam * _ewm_den_t + _1m_lam * _S_blend[_t]
 
         # Gaussian CDF — ν-free
+        # (Defer CDF until after chi-squared correction below)
+
+        # ── CHI-SQUARED VARIANCE CORRECTION (Causal — Gaussian) ─────
+        #
+        # For Gaussian, E[z²] = 1.0. If the EWM β correction leaves
+        # residual variance miscalibration, z² will deviate from 1.0.
+        # Same algorithm as Student-t path, with target = 1.0.
+        # Asset-adaptive λ from config (March 2026).
+        # ────────────────────────────────────────────────────────────
+        _CHI2_LAMBDA = float(getattr(config, 'chisq_ewm_lambda', 0.98))
+        _CHI2_MIN_RATIO = 0.3
+        _CHI2_MAX_RATIO = 3.0
+        _CHI2_DZ_LO_WIDE = 0.25
+        _CHI2_DZ_HI_WIDE = 0.50
+        _CHI2_DZ_RANGE_WIDE = _CHI2_DZ_HI_WIDE - _CHI2_DZ_LO_WIDE
+        _CHI2_DZ_LO_NARROW = 0.10
+        _CHI2_DZ_HI_NARROW = 0.25
+        _CHI2_DZ_RANGE_NARROW = _CHI2_DZ_HI_NARROW - _CHI2_DZ_LO_NARROW
+        _chi2_target = 1.0  # Gaussian: E[z²] = 1
+        _CHI2_WINSOR_MULT = 50.0
+        _chi2_winsor_cap = _chi2_target * _CHI2_WINSOR_MULT
+        _CHI2_1M = 1.0 - _CHI2_LAMBDA
+
+        # Warm-start from training z² values
+        _ewm_z2 = _chi2_target
+        for _t in range(len(_zcal)):
+            _z2_raw = _zcal[_t] * _zcal[_t]
+            _z2_w = _z2_raw if _z2_raw < _chi2_winsor_cap else _chi2_winsor_cap
+            _ewm_z2 = _CHI2_LAMBDA * _ewm_z2 + _CHI2_1M * _z2_w
+
+        # Apply causal correction to test z values
+        for _t in range(n_test):
+            _ratio = _ewm_z2 / _chi2_target
+            if _ratio < _CHI2_MIN_RATIO:
+                _ratio = _CHI2_MIN_RATIO
+            elif _ratio > _CHI2_MAX_RATIO:
+                _ratio = _CHI2_MAX_RATIO
+
+            _deviation = abs(_ratio - 1.0)
+            if _ratio >= 1.0:
+                _dz_lo = _CHI2_DZ_LO_WIDE
+                _dz_range = _CHI2_DZ_RANGE_WIDE
+            else:
+                _dz_lo = _CHI2_DZ_LO_NARROW
+                _dz_range = _CHI2_DZ_RANGE_NARROW
+
+            if _deviation < _dz_lo:
+                _adj = 1.0
+            elif _deviation >= _dz_lo + _dz_range:
+                _adj = _msqrt(_ratio)
+            else:
+                _strength = (_deviation - _dz_lo) / _dz_range
+                _adj_raw = _msqrt(_ratio)
+                _adj = 1.0 + _strength * (_adj_raw - 1.0)
+
+            _z_test[_t] /= _adj
+            sigma[_t] *= _adj
+            _raw_z = _z_test[_t] * _adj
+            _raw_z2 = _raw_z * _raw_z
+            _raw_z2_w = _raw_z2 if _raw_z2 < _chi2_winsor_cap else _chi2_winsor_cap
+            _ewm_z2 = _CHI2_LAMBDA * _ewm_z2 + _CHI2_1M * _raw_z2_w
+
+        # Now compute Gaussian PIT after chi-squared correction
         pit_values = np.clip(norm.cdf(_z_test), 0.001, 0.999)
+
+        # ── RANDOMIZED PIT FOR STALE OBSERVATIONS (Czado et al. 2009)
+        _STALE_RETURN_THRESHOLD = 1e-10
+        _STALE_EWM_LAMBDA = 0.97
+        _STALE_ACTIVATION = 0.05
+        _GOLDEN_RATIO = 1.6180339887498949
+
+        _returns_train = returns[:n_train]
+        _p_stale_train = float(np.mean(np.abs(_returns_train) < _STALE_RETURN_THRESHOLD))
+
+        if _p_stale_train > _STALE_ACTIVATION:
+            _p_stale = _p_stale_train
+            for _t in range(n_test):
+                _is_stale_t = abs(returns_test[_t]) < _STALE_RETURN_THRESHOLD
+                if _is_stale_t and _p_stale > _STALE_ACTIVATION:
+                    _F_lo = (1.0 - _p_stale) / 2.0
+                    _F_hi = 0.5 + _p_stale / 2.0
+                    _v_t = (_t * _GOLDEN_RATIO) % 1.0
+                    _pit_rand = _F_lo + _v_t * (_F_hi - _F_lo)
+                    pit_values[_t] = max(0.001, min(0.999, _pit_rand))
+                _stale_ind = 1.0 if _is_stale_t else 0.0
+                _p_stale = _STALE_EWM_LAMBDA * _p_stale + (1.0 - _STALE_EWM_LAMBDA) * _stale_ind
+
+        # ── PIT VARIANCE RECALIBRATION (Beta(a,a) analog) ───────────
+        _PIT_VAR_TARGET = 1.0 / 12.0
+        _PIT_VAR_LAMBDA = float(getattr(config, 'pit_var_lambda', 0.97))
+        _PIT_VAR_1M = 1.0 - _PIT_VAR_LAMBDA
+        _PIT_VAR_DZ_LO = float(getattr(config, 'pit_var_dz_lo', 0.30))
+        _PIT_VAR_DZ_HI = float(getattr(config, 'pit_var_dz_hi', 0.55))
+        _PIT_VAR_DZ_RANGE = _PIT_VAR_DZ_HI - _PIT_VAR_DZ_LO
+        _PIT_VAR_MIN_STRETCH = 0.70
+        _PIT_VAR_MAX_STRETCH = 1.50
+
+        _ewm_pit_m = 0.5
+        _ewm_pit_sq = 1.0 / 3.0
+        for _t in range(len(_pit_train_cal)):
+            _p = float(_pit_train_cal[_t])
+            _ewm_pit_m = _PIT_VAR_LAMBDA * _ewm_pit_m + _PIT_VAR_1M * _p
+            _ewm_pit_sq = _PIT_VAR_LAMBDA * _ewm_pit_sq + _PIT_VAR_1M * _p * _p
+
+        for _t in range(n_test):
+            _obs_var = _ewm_pit_sq - _ewm_pit_m * _ewm_pit_m
+            if _obs_var < 0.005:
+                _obs_var = 0.005
+
+            _var_ratio = _obs_var / _PIT_VAR_TARGET
+            _var_dev = abs(_var_ratio - 1.0)
+            _raw_pit = pit_values[_t]
+
+            if _var_dev > _PIT_VAR_DZ_LO:
+                _raw_stretch = _msqrt(_PIT_VAR_TARGET / _obs_var)
+                if _raw_stretch < _PIT_VAR_MIN_STRETCH:
+                    _raw_stretch = _PIT_VAR_MIN_STRETCH
+                elif _raw_stretch > _PIT_VAR_MAX_STRETCH:
+                    _raw_stretch = _PIT_VAR_MAX_STRETCH
+
+                if _var_dev >= _PIT_VAR_DZ_HI:
+                    _stretch = _raw_stretch
+                else:
+                    _str = (_var_dev - _PIT_VAR_DZ_LO) / _PIT_VAR_DZ_RANGE
+                    _stretch = 1.0 + _str * (_raw_stretch - 1.0)
+
+                _corrected = 0.5 + (_raw_pit - 0.5) * _stretch
+                if _corrected < 0.001:
+                    _corrected = 0.001
+                elif _corrected > 0.999:
+                    _corrected = 0.999
+                pit_values[_t] = _corrected
+
+            _ewm_pit_m = _PIT_VAR_LAMBDA * _ewm_pit_m + _PIT_VAR_1M * _raw_pit
+            _ewm_pit_sq = _PIT_VAR_LAMBDA * _ewm_pit_sq + _PIT_VAR_1M * _raw_pit * _raw_pit
+
+        pit_values = np.clip(pit_values, 0.001, 0.999)
 
         # AR(1) probit whitening
         if _best_lam > 0:
@@ -1537,6 +1829,20 @@ class GaussianDriftModel:
                     _z_white[_t] = _z_probit[_t]
 
             pit_values = np.clip(norm.cdf(_z_white), 0.001, 0.999)
+
+        # ── ISOTONIC RECALIBRATION (Kuleshov et al. 2018) ───────────
+        _ISO_BLEND_ALPHA = 0.4  # Conservative: 40% isotonic, 60% identity
+        try:
+            from calibration.isotonic_recalibration import IsotonicRecalibrator
+            if len(_pit_train_cal) >= 50:
+                _iso_recal = IsotonicRecalibrator()
+                _iso_result = _iso_recal.fit(_pit_train_cal)
+                if _iso_result.fit_success and not _iso_result.is_identity:
+                    _pit_iso = _iso_recal.transform(pit_values)
+                    pit_values = (1.0 - _ISO_BLEND_ALPHA) * pit_values + _ISO_BLEND_ALPHA * _pit_iso
+                    pit_values = np.clip(pit_values, 0.001, 0.999)
+        except Exception:
+            pass  # Graceful degradation
 
         return pit_values, sigma, mu_effective, _S_blend
 

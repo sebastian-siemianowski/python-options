@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -412,8 +412,22 @@ metals-diag: .venv/.deps_installed
 # Comprehensive model diagnostics for all low-PIT assets + Gold & Silver
 # Options: --critical-only (p<0.01 only), --assets SYM1,SYM2, --no-reference
 diag: .venv/.deps_installed
-	@echo "⚙️  Running low-PIT model diagnostics (50 assets + GC=F, SI=F)..."
+	@echo "⚙️  Running low-PIT model diagnostics (69 assets + GC=F, SI=F)..."
 	@.venv/bin/python -B low_pit_diagnostics.py $(ARGS)
+
+# PIT summary table only (no per-asset details)
+diag-pit: .venv/.deps_installed
+	@.venv/bin/python -B low_pit_diagnostics.py --pit-only $(ARGS)
+
+# Deep PIT calibration debug (chi-squared correction simulation)
+# Options: --assets SYM1,SYM2  --models U-t4,U-t8,U-t20
+diag-debug: .venv/.deps_installed
+	@.venv/bin/python -B debug_pit_calibration.py $(ARGS)
+
+# PIT refinement debug (ν-MLE + location debiasing)
+# Options: --assets SYM1,SYM2  --models U-t4,U-t8,U-t20
+diag-refine: .venv/.deps_installed
+	@.venv/bin/python -B debug_pit_refinement.py $(ARGS)
 
 # Manually (re)install requirements and refresh the dependency stamp
 doctor: .venv/bin/python

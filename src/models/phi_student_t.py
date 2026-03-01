@@ -82,11 +82,11 @@ PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
 PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 
 # Discrete ν grid for Student-t models
-# 3 BMA flavours: fat tails (4), moderate (8), near-Gaussian (20).
+# 4 BMA flavours: heavy tails (3), fat tails (4), moderate (8), near-Gaussian (20).
 # Intermediate ν values are still explored internally by Stage 5 CV
 # inside optimize_params_unified — this grid only controls how many
 # *separate models* compete in BMA at the tune.py level.
-STUDENT_T_NU_GRID = [4, 8, 20]
+STUDENT_T_NU_GRID = [3, 4, 8, 20]
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +176,9 @@ METALS_OTHER_SYMBOLS = frozenset({
 HIGH_VOL_EQUITY_SYMBOLS = frozenset({
     'MSTR', 'AMZE', 'RCAT', 'SMCI', 'RGTI', 'QBTS', 'BKSY',
     'SPCE', 'ABTC', 'BZAI', 'BNZI', 'AIRI',
+    # March 2026 expansion — micro/small-cap with annualized vol > 50%
+    'ESLT', 'QS', 'QUBT', 'PACB', 'APLM', 'NVTS',
+    'ACHR', 'GORO', 'USAS', 'APLT', 'ONDS', 'GPUS',
 })
 
 
@@ -201,6 +204,9 @@ def _detect_asset_class(asset_symbol: str) -> Optional[str]:
         return 'metals_other'
     if sym in HIGH_VOL_EQUITY_SYMBOLS:
         return 'high_vol_equity'
+    # Forex pairs: symbol ends with =X (e.g. CNYJPY=X, AUDUSD=X)
+    if sym.endswith('=X'):
+        return 'forex'
     return None
 
 
@@ -227,6 +233,10 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'k_asym': 1.5,                      # Sharper asymmetric ν transition
         'alpha_asym_init': -0.08,           # Mild left-tail prior
         'q_stress_ratio': 15.0,             # Wider calm/stress gap for macro regimes
+        'chisq_ewm_lambda': 0.985,          # Slower chi² tracker (~46d) for macro trends
+        'pit_var_lambda': 0.975,            # Slow PIT-var (gold is smooth)
+        'pit_var_dz_lo': 0.35,              # Wider dead-zone
+        'pit_var_dz_hi': 0.60,
     },
     # ---------------------------------------------------------------------------
     # SILVER — leveraged-gold, explosive VoV, sharp left-tail fattening
@@ -243,6 +253,10 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'k_asym': 1.8,                      # Sharp asymmetric transition
         'alpha_asym_init': -0.15,           # Stronger left-tail prior
         'q_stress_ratio': 20.0,             # Wide calm/stress gap
+        'chisq_ewm_lambda': 0.96,           # Faster chi² tracker (~25d) for explosive regimes
+        'pit_var_lambda': 0.95,             # Fast PIT-var (silver is jumpy)
+        'pit_var_dz_lo': 0.25,              # Narrower dead-zone
+        'pit_var_dz_hi': 0.50,
     },
     # ---------------------------------------------------------------------------
     # OTHER METALS — moderate adjustments between generic and gold
@@ -259,6 +273,10 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'k_asym': 1.3,
         'alpha_asym_init': -0.05,
         'q_stress_ratio': 12.0,
+        'chisq_ewm_lambda': 0.97,           # Moderate chi² tracker (~23d)
+        'pit_var_lambda': 0.96,             # Moderate PIT-var
+        'pit_var_dz_lo': 0.30,
+        'pit_var_dz_hi': 0.55,
     },
     # ---------------------------------------------------------------------------
     # HIGH-VOL EQUITY — lower ν, frequent gaps, weaker VoV damping
@@ -276,6 +294,27 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'k_asym': 1.5,                      # Sharper asymmetric ν transition
         'alpha_asym_init': -0.10,           # Left-tail fattening prior
         'q_stress_ratio': 15.0,             # Wide calm/stress gap
+        'chisq_ewm_lambda': 0.94,           # Fast chi² tracker (~16d) for regime shifts
+        'pit_var_lambda': 0.94,             # Fastest PIT-var tracking
+        'pit_var_dz_lo': 0.20,              # Narrowest dead-zone
+        'pit_var_dz_hi': 0.45,
+    },
+    # ---------------------------------------------------------------------------
+    # FOREX — very persistent regimes, slow chi-squared correction
+    # Expanded March 2026: add MS-q, asymmetry, PIT-var for FX calibration
+    # ---------------------------------------------------------------------------
+    'forex': {
+        'chisq_ewm_lambda': 0.99,           # Slow chi² tracker (~69d) for persistent FX regimes
+        'ms_sensitivity_init': 1.5,         # FX regimes are smoother
+        'ms_sensitivity_reg_center': 1.5,
+        'ms_sensitivity_reg_weight': 8.0,   # Stronger reg: FX is well-behaved
+        'ms_ewm_lambda': 0.97,             # Moderate EWM (~33d)
+        'vov_damping': 0.20,               # FX vol is less spiky
+        'jump_threshold': 3.5,              # FX has fewer jumps
+        'alpha_asym_init': 0.0,             # FX is roughly symmetric
+        'pit_var_lambda': 0.98,             # Slow PIT-var tracker
+        'pit_var_dz_lo': 0.35,              # Wider dead-zone (persistent)
+        'pit_var_dz_hi': 0.60,
     },
 }
 
@@ -499,6 +538,17 @@ class UnifiedStudentTConfig:
     calibrated_nu_crps: float = 0.0      # ν for CRPS (0 = use nu_base)
     calibrated_beta_probit_corr: float = 1.0  # Probit-variance β correction
     calibrated_lambda_rho: float = 0.985 # EWM decay / AR(1) whitening λ
+
+    # Chi-squared variance correction EWM decay (asset-class adaptive)
+    # Higher λ = slower tracker = more stable for persistent regimes
+    # Lower λ = faster tracker = better for regime-switching assets
+    chisq_ewm_lambda: float = 0.98       # Default ~35d half-life
+
+    # PIT-variance recalibration parameters (asset-class adaptive)
+    # March 2026: previously hardcoded, now profile-driven.
+    pit_var_lambda: float = 0.97          # EWM decay (~23d default)
+    pit_var_dz_lo: float = 0.30           # Dead-zone: start correcting at 30% deviation
+    pit_var_dz_hi: float = 0.55           # Dead-zone: full correction at 55% deviation
 
     # Momentum/exogenous input
     exogenous_input: np.ndarray = field(default=None, repr=False)
@@ -734,17 +784,22 @@ def compute_ms_process_noise_smooth(
         ewm_var = float(np.var(vol[:warmup])) if warmup > 1 else 1e-6
         ewm_var = max(ewm_var, 1e-12)
 
-        vol_zscore = np.empty(n)
-        for t in range(n):
-            ewm_std = math.sqrt(ewm_var)
-            ewm_std = max(ewm_std, 1e-6)
-            vol_zscore[t] = (vol[t] - ewm_mean) / ewm_std
+        # Try Numba-accelerated EWM z-score computation
+        try:
+            from models.numba_wrappers import run_compute_ms_process_noise_ewm
+            vol_zscore = run_compute_ms_process_noise_ewm(vol, lam, ewm_mean, ewm_var)
+        except (ImportError, Exception):
+            vol_zscore = np.empty(n)
+            for t in range(n):
+                ewm_std = math.sqrt(ewm_var)
+                ewm_std = max(ewm_std, 1e-6)
+                vol_zscore[t] = (vol[t] - ewm_mean) / ewm_std
 
-            # Update AFTER computing z-score (no look-ahead)
-            ewm_mean = lam * ewm_mean + one_minus_lam * vol[t]
-            diff = vol[t] - ewm_mean
-            ewm_var = lam * ewm_var + one_minus_lam * (diff * diff)
-            ewm_var = max(ewm_var, 1e-12)
+                # Update AFTER computing z-score (no look-ahead)
+                ewm_mean = lam * ewm_mean + one_minus_lam * vol[t]
+                diff = vol[t] - ewm_mean
+                ewm_var = lam * ewm_var + one_minus_lam * (diff * diff)
+                ewm_var = max(ewm_var, 1e-12)
     else:
         # ---------------------------------------------------------------------------
         # EXPANDING-WINDOW MODE: Original behavior (backward-compatible)
@@ -1410,7 +1465,7 @@ class PhiStudentTDriftModel:
         q_max: float = 1e-1,
         c_min: float = 0.3,
         c_max: float = 3.0,
-        phi_min: float = -0.999,
+        phi_min: float = -0.8,
         phi_max: float = 0.999,
         prior_log_q_mean: float = -6.0,
         prior_lambda: float = 1.0,
@@ -1466,12 +1521,18 @@ class PhiStudentTDriftModel:
         # Pre-compute Student-t scale factor
         _nu_scale = ((nu_val - 2) / nu_val) if nu_val > 2 else 1.0
 
+        # Try Numba-accelerated CV test fold kernel
+        try:
+            from models.numba_wrappers import run_phi_student_t_cv_test_fold as _numba_cv_fold
+            _use_numba_cv = True
+        except (ImportError, Exception):
+            _use_numba_cv = False
+
         def neg_cv_ll(params):
             log_q, log_c, phi = params
             q = 10 ** log_q
             c = 10 ** log_c
             phi_clip = float(np.clip(phi, phi_min, phi_max))
-            phi_clip_sq = phi_clip * phi_clip
             if q <= 0 or c <= 0:
                 return 1e12
 
@@ -1484,29 +1545,46 @@ class PhiStudentTDriftModel:
                 mu_f, P_f, _ = cls.filter_phi(ret_tr, vol_tr, q, c, phi_clip, nu_val)
                 mu_p = float(mu_f[-1])
                 P_p = float(P_f[-1])
-                for t in range(vs, ve):
-                    mu_p = phi_clip * mu_p
-                    P_p = phi_clip_sq * P_p + q
-                    R_t = c * _vol_sq[t]
-                    S = P_p + R_t
-                    if S < 1e-12:
-                        S = 1e-12
-                    inn = _returns_r[t] - mu_p
-                    scale = _msqrt(S * _nu_scale)
-                    if scale > 1e-12:
-                        z = inn / scale
-                        ll_t = log_norm_const - _mlog(scale) + neg_exp * _mlog(1.0 + z * z * inv_nu)
-                        if _misfinite(ll_t):
-                            total_ll += ll_t
-                    K = nu_adjust * P_p / S
-                    mu_p = mu_p + K * inn
-                    P_p = (1.0 - K) * P_p
-                    if P_p < 1e-12:
-                        P_p = 1e-12
+                if _use_numba_cv:
+                    total_ll += _numba_cv_fold(
+                        _returns_r, _vol_sq, q, c, phi_clip,
+                        _nu_scale, log_norm_const, neg_exp, inv_nu, nu_adjust,
+                        mu_p, P_p, vs, ve,
+                    )
+                else:
+                    phi_clip_sq = phi_clip * phi_clip
+                    for t in range(vs, ve):
+                        mu_p = phi_clip * mu_p
+                        P_p = phi_clip_sq * P_p + q
+                        R_t = c * _vol_sq[t]
+                        S = P_p + R_t
+                        if S < 1e-12:
+                            S = 1e-12
+                        inn = _returns_r[t] - mu_p
+                        scale = _msqrt(S * _nu_scale)
+                        if scale > 1e-12:
+                            z = inn / scale
+                            ll_t = log_norm_const - _mlog(scale) + neg_exp * _mlog(1.0 + z * z * inv_nu)
+                            if _misfinite(ll_t):
+                                total_ll += ll_t
+                        K = nu_adjust * P_p / S
+                        mu_p = mu_p + K * inn
+                        P_p = (1.0 - K) * P_p
+                        if P_p < 1e-12:
+                            P_p = 1e-12
 
             # Bayesian regularization on log10(q)
             prior_pen = prior_lambda * (log_q - prior_log_q_mean) ** 2
-            return -(total_ll - prior_pen)
+
+            # Explicit φ shrinkage prior (Gaussian centered at 0)
+            # Prevents fitting noise (bid-ask bounce → pathological phi≈-1)
+            # Reference: Roll (1984), Hansen & Lunde (2005)
+            _n_obs_shrink = max(len(_returns_r), 100)
+            _phi_tau = 1.0 / _msqrt(2.0 * max(PHI_SHRINKAGE_LAMBDA_DEFAULT / _n_obs_shrink, 1e-12))
+            _phi_tau = max(_phi_tau, PHI_SHRINKAGE_TAU_MIN)
+            _phi_shrink_pen = 0.5 * (phi_clip ** 2) / (_phi_tau ** 2)
+
+            return -(total_ll - prior_pen - _phi_shrink_pen)
 
         from scipy.optimize import minimize as sp_minimize
 
@@ -1540,7 +1618,7 @@ class PhiStudentTDriftModel:
                     bounds=[(_log_q_min, _log_q_max),
                             (_log_c_min, _log_c_max),
                             (phi_min, phi_max)],
-                    options={'maxiter': 200, 'ftol': 1e-10},
+                    options={'maxiter': 100, 'ftol': 1e-10},
                 )
                 if res.fun < best_val:
                     best_val = res.fun
@@ -1728,6 +1806,10 @@ class PhiStudentTDriftModel:
 
         # ── STAGE 6: Walk-forward calibration params
         # Build a temp config with all Stages 1-5h params for Stage 6
+        _prof_chisq_lambda = profile.get('chisq_ewm_lambda', 0.98)
+        _prof_pit_var_lambda = profile.get('pit_var_lambda', 0.97)
+        _prof_pit_var_dz_lo = profile.get('pit_var_dz_lo', 0.30)
+        _prof_pit_var_dz_hi = profile.get('pit_var_dz_hi', 0.55)
         _s6_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt,
             nu_base=nu_opt,
@@ -1738,6 +1820,10 @@ class PhiStudentTDriftModel:
             ms_ewm_lambda=profile.get('ms_ewm_lambda', 0.0),
             q_stress_ratio=profile.get('q_stress_ratio', 10.0),
             vov_damping=profile.get('vov_damping', 0.3),
+            chisq_ewm_lambda=_prof_chisq_lambda,
+            pit_var_lambda=_prof_pit_var_lambda,
+            pit_var_dz_lo=_prof_pit_var_dz_lo,
+            pit_var_dz_hi=_prof_pit_var_dz_hi,
             variance_inflation=beta_opt,
             mu_drift=mu_drift_opt,
             risk_premium_sensitivity=risk_premium_opt,
@@ -1812,6 +1898,10 @@ class PhiStudentTDriftModel:
             loc_bias_var_coeff=s5h['loc_bias_var_coeff'],
             loc_bias_drift_coeff=s5h['loc_bias_drift_coeff'],
             q_min=config.q_min, c_min=config.c_min, c_max=config.c_max,
+            chisq_ewm_lambda=_prof_chisq_lambda,
+            pit_var_lambda=_prof_pit_var_lambda,
+            pit_var_dz_lo=_prof_pit_var_dz_lo,
+            pit_var_dz_hi=_prof_pit_var_dz_hi,
             # Stage 6: pre-calibrated walk-forward params
             calibrated_gw=s6['calibrated_gw'],
             calibrated_nu_pit=s6['calibrated_nu_pit'],
@@ -1865,6 +1955,8 @@ class PhiStudentTDriftModel:
             diagnostics['test_mu_effective'] = _mu_eff_eval
             diagnostics['test_returns'] = _ret_test_eval
             diagnostics['test_pit_pvalue'] = float(_pitp_eval)
+            diagnostics['test_pit_values'] = _pit_eval
+            diagnostics['test_calib_diag'] = _diag_eval
         except Exception:
             pass  # diagnostics won't have test_* keys — tune.py falls back
 
@@ -1914,6 +2006,12 @@ class PhiStudentTDriftModel:
                 float(getattr(config, 't_df_asym', 0.0)))
 
         pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
+        # Anderson-Darling test (tail-sensitive complement to KS)
+        try:
+            from calibration.pit_calibration import anderson_darling_uniform
+            _ad_stat, _ad_pvalue = anderson_darling_uniform(pit_values)
+        except Exception:
+            _ad_pvalue = float('nan')
         hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
         mad = float(np.mean(np.abs(hist / n_test - 0.1)))
         berkowitz_pvalue, berkowitz_lr, berkowitz_n_pit = cls._compute_berkowitz_full(pit_values)
@@ -1927,7 +2025,8 @@ class PhiStudentTDriftModel:
         _crps_shrink = float(np.clip(float(getattr(config, 'crps_sigma_shrinkage', 1.0)), 0.30, 1.0))
 
         diagnostics = {
-            'pit_pvalue': pit_pvalue, 'berkowitz_pvalue': berkowitz_pvalue,
+            'pit_pvalue': pit_pvalue, 'ad_pvalue': _ad_pvalue,
+            'berkowitz_pvalue': berkowitz_pvalue,
             'berkowitz_lr': float(berkowitz_lr), 'pit_count': int(berkowitz_n_pit),
             'mad': mad,
             'nu_effective': nu_crps, 'nu_pit': nu, 'variance_ratio': variance_ratio,
@@ -2023,6 +2122,88 @@ class PhiStudentTDriftModel:
             _ewm_num_cv = _best_lam_beta * _ewm_num_cv + _1m_lam_beta * (innovations_train[_idx] ** 2)
             _ewm_den_cv = _best_lam_beta * _ewm_den_cv + _1m_lam_beta * _S_bt[_idx]
         _pit_train_cal = np.clip(student_t_dist.cdf(_zcal, df=nu), 0.001, 0.999)
+
+        # ── DOMAIN-MATCHED TRAINING PIT CORRECTIONS (March 2026) ────
+        # Apply the SAME chi² and PIT-var corrections to training PITs
+        # that will be applied to test PITs. Without this, isotonic
+        # recalibrator trains on uncorrected PITs but applies to corrected
+        # PITs → domain shift → overcorrection or undercorrection.
+        # ────────────────────────────────────────────────────────────
+        _CHI2_LAMBDA_TRAIN = float(getattr(config, 'chisq_ewm_lambda', 0.98))
+        _chi2_target_train = nu / (nu - 2.0) if nu > 2.0 else 1.0
+        _CHI2_WINSOR_CAP_TRAIN = _chi2_target_train * 50.0
+        _CHI2_1M_TRAIN = 1.0 - _CHI2_LAMBDA_TRAIN
+        _ewm_z2_train = _chi2_target_train
+
+        # Chi² correct training z-values (same algorithm as test path)
+        _zcal_corrected = np.empty_like(_zcal)
+        for _t in range(len(_zcal)):
+            _ratio = _ewm_z2_train / _chi2_target_train
+            if _ratio < 0.3: _ratio = 0.3
+            elif _ratio > 3.0: _ratio = 3.0
+            _deviation = abs(_ratio - 1.0)
+            if _ratio >= 1.0:
+                _dz_lo_t = 0.25; _dz_range_t = 0.25
+            else:
+                _dz_lo_t = 0.10; _dz_range_t = 0.15
+            if _deviation < _dz_lo_t:
+                _adj_t = 1.0
+            elif _deviation >= _dz_lo_t + _dz_range_t:
+                _adj_t = _msqrt(_ratio)
+            else:
+                _str_t = (_deviation - _dz_lo_t) / _dz_range_t
+                _adj_t = 1.0 + _str_t * (_msqrt(_ratio) - 1.0)
+            _zcal_corrected[_t] = _zcal[_t] / _adj_t
+            # Update EWM with RAW z² (pre-correction)
+            _raw_z2_t = _zcal[_t] * _zcal[_t]
+            _raw_z2_w_t = _raw_z2_t if _raw_z2_t < _CHI2_WINSOR_CAP_TRAIN else _CHI2_WINSOR_CAP_TRAIN
+            _ewm_z2_train = _CHI2_LAMBDA_TRAIN * _ewm_z2_train + _CHI2_1M_TRAIN * _raw_z2_w_t
+
+        # Recompute training PITs from chi²-corrected z-values
+        if abs(_t_df_asym) > 0.05:
+            _nu_l_tr = max(2.5, nu - _t_df_asym)
+            _nu_r_tr = max(2.5, nu + _t_df_asym)
+            _mask_neg_tr = _zcal_corrected < 0
+            _pit_train_cal = np.empty(len(_zcal_corrected))
+            _pit_train_cal[_mask_neg_tr] = student_t_dist.cdf(_zcal_corrected[_mask_neg_tr], df=_nu_l_tr)
+            _pit_train_cal[~_mask_neg_tr] = student_t_dist.cdf(_zcal_corrected[~_mask_neg_tr], df=_nu_r_tr)
+        else:
+            _pit_train_cal = student_t_dist.cdf(_zcal_corrected, df=nu)
+        _pit_train_cal = np.clip(_pit_train_cal, 0.001, 0.999)
+
+        # PIT-var correction on training PITs (same algorithm as test path)
+        _PIT_VAR_LAMBDA_TR = float(getattr(config, 'pit_var_lambda', 0.97))
+        _PIT_VAR_1M_TR = 1.0 - _PIT_VAR_LAMBDA_TR
+        _PIT_VAR_DZ_LO_TR = float(getattr(config, 'pit_var_dz_lo', 0.30))
+        _PIT_VAR_DZ_HI_TR = float(getattr(config, 'pit_var_dz_hi', 0.55))
+        _PIT_VAR_DZ_RANGE_TR = _PIT_VAR_DZ_HI_TR - _PIT_VAR_DZ_LO_TR
+        _ewm_pit_m_tr = 0.5
+        _ewm_pit_sq_tr = 1.0 / 3.0
+        for _t in range(len(_pit_train_cal)):
+            _obs_var_tr = _ewm_pit_sq_tr - _ewm_pit_m_tr * _ewm_pit_m_tr
+            if _obs_var_tr < 0.005: _obs_var_tr = 0.005
+            _var_ratio_tr = _obs_var_tr / (1.0 / 12.0)
+            _var_dev_tr = abs(_var_ratio_tr - 1.0)
+            _raw_pit_tr = _pit_train_cal[_t]
+            if _var_dev_tr > _PIT_VAR_DZ_LO_TR:
+                _raw_stretch_tr = _msqrt((1.0 / 12.0) / _obs_var_tr)
+                if _raw_stretch_tr < 0.70: _raw_stretch_tr = 0.70
+                elif _raw_stretch_tr > 1.50: _raw_stretch_tr = 1.50
+                if _var_dev_tr >= _PIT_VAR_DZ_HI_TR:
+                    _stretch_tr = _raw_stretch_tr
+                else:
+                    _str_tr = (_var_dev_tr - _PIT_VAR_DZ_LO_TR) / _PIT_VAR_DZ_RANGE_TR
+                    _stretch_tr = 1.0 + _str_tr * (_raw_stretch_tr - 1.0)
+                _corrected_tr = 0.5 + (_raw_pit_tr - 0.5) * _stretch_tr
+                if _corrected_tr < 0.001: _corrected_tr = 0.001
+                elif _corrected_tr > 0.999: _corrected_tr = 0.999
+                _pit_train_cal[_t] = _corrected_tr
+            # Update EWM with RAW PIT (pre-correction)
+            _ewm_pit_m_tr = _PIT_VAR_LAMBDA_TR * _ewm_pit_m_tr + _PIT_VAR_1M_TR * _raw_pit_tr
+            _ewm_pit_sq_tr = _PIT_VAR_LAMBDA_TR * _ewm_pit_sq_tr + _PIT_VAR_1M_TR * _raw_pit_tr * _raw_pit_tr
+        _pit_train_cal = np.clip(_pit_train_cal, 0.001, 0.999)
+        # ── END DOMAIN-MATCHED TRAINING PIT CORRECTIONS ─────────────
+
         _z_probit_cal = norm_dist.ppf(_pit_train_cal)
         _z_probit_cal = _z_probit_cal[np.isfinite(_z_probit_cal)]
 
@@ -2057,6 +2238,100 @@ class PhiStudentTDriftModel:
             _ewm_num_t = _best_lam_beta * _ewm_num_t + _1m_lam_beta * sq_inn_test[_t]
             _ewm_den_t = _best_lam_beta * _ewm_den_t + _1m_lam_beta * _S_blended_test[_t]
 
+        # ── CHI-SQUARED VARIANCE CORRECTION (Causal Second-Pass) ────────
+        #
+        # For Student-t(ν), E[z²] = ν/(ν-2).  If the EWM β correction
+        # leaves residual variance miscalibration, z² will systematically
+        # deviate from this target.
+        #
+        # We track EWM(z²) causally and scale z values to match:
+        #   ratio_t  = EWM(z²)_{t-1} / target       (uses only PAST z)
+        #   adj_t    = √(ratio_t)  with soft dead-zone
+        #   z_corr_t = z_t / adj_t
+        #
+        # Asymmetric soft dead-zone:
+        #   ratio > 1 (model too narrow, excess tails): wider dead-zone (25%)
+        #     — excess tails are less harmful and harder to diagnose
+        #   ratio < 1 (model too wide, concentrated PIT): narrower dead-zone (10%)
+        #     — PIT concentration is a clear signal, easy to correct
+        #
+        # Properties:
+        #   • Fully causal: correction at t uses only z[0:t-1]
+        #   • Self-balancing: if model is well-calibrated, ratio ≈ 1 → no change
+        #   • Targets correct chi-squared moment for Student-t distribution
+        #   • Warm-started from training z² values (last 40% of training)
+        #   • Safe: asymmetric dead-zone prevents noise on calibrated assets
+        # ─────────────────────────────────────────────────────────────────
+        _CHI2_LAMBDA = float(getattr(config, 'chisq_ewm_lambda', 0.98))  # Asset-adaptive half-life
+        _CHI2_MIN_RATIO = 0.3      # Floor
+        _CHI2_MAX_RATIO = 3.0      # Cap
+        # Asymmetric dead-zones
+        _CHI2_DZ_LO_WIDE = 0.25   # ratio > 1: dead-zone up to 25%
+        _CHI2_DZ_HI_WIDE = 0.50   # ratio > 1: full correction at 50%
+        _CHI2_DZ_RANGE_WIDE = _CHI2_DZ_HI_WIDE - _CHI2_DZ_LO_WIDE
+        _CHI2_DZ_LO_NARROW = 0.10 # ratio < 1: dead-zone up to 10%
+        _CHI2_DZ_HI_NARROW = 0.25 # ratio < 1: full correction at 25%
+        _CHI2_DZ_RANGE_NARROW = _CHI2_DZ_HI_NARROW - _CHI2_DZ_LO_NARROW
+        _chi2_target = nu / (nu - 2.0) if nu > 2.0 else 1.0
+
+        # ── ROBUST z² WINSORIZATION ─────────────────────────────────
+        # A single extreme z² (e.g., market crash) can contaminate the
+        # EWM tracker for weeks (with λ=0.98, half-life ~35 days).
+        # Clip z² at WINSOR_MULT × target before EWM update.
+        # Use generous multiplier (50×) to preserve legitimate tail
+        # behavior for heavy-tailed t(ν). Protects against truly
+        # pathological outliers (z²>1000) while keeping 99.99% of
+        # the t(ν) distribution intact.
+        # ───────────────────────────────────────────────────────────
+        _CHI2_WINSOR_MULT = 50.0   # Clip z² at 50× target
+        _chi2_winsor_cap = _chi2_target * _CHI2_WINSOR_MULT
+
+        # Warm-start from training z² values
+        _ewm_z2 = _chi2_target     # Start at theoretical target
+        _CHI2_1M = 1.0 - _CHI2_LAMBDA
+        for _t in range(len(_zcal)):
+            _z2_raw = _zcal[_t] * _zcal[_t]
+            _z2_w = _z2_raw if _z2_raw < _chi2_winsor_cap else _chi2_winsor_cap
+            _ewm_z2 = _CHI2_LAMBDA * _ewm_z2 + _CHI2_1M * _z2_w
+
+        # Apply causal correction to test z values
+        for _t in range(n_test):
+            _ratio = _ewm_z2 / _chi2_target
+            if _ratio < _CHI2_MIN_RATIO:
+                _ratio = _CHI2_MIN_RATIO
+            elif _ratio > _CHI2_MAX_RATIO:
+                _ratio = _CHI2_MAX_RATIO
+
+            # Asymmetric soft dead-zone
+            _deviation = abs(_ratio - 1.0)
+            if _ratio >= 1.0:
+                # Model too narrow (excess tails): wider dead-zone
+                _dz_lo = _CHI2_DZ_LO_WIDE
+                _dz_range = _CHI2_DZ_RANGE_WIDE
+            else:
+                # Model too wide (concentrated PIT): narrower dead-zone
+                _dz_lo = _CHI2_DZ_LO_NARROW
+                _dz_range = _CHI2_DZ_RANGE_NARROW
+
+            if _deviation < _dz_lo:
+                _adj = 1.0   # Within dead-zone — no correction
+            elif _deviation >= _dz_lo + _dz_range:
+                _adj = _msqrt(_ratio)  # Full correction
+            else:
+                # Linear blend between no correction and full
+                _strength = (_deviation - _dz_lo) / _dz_range
+                _adj_raw = _msqrt(_ratio)
+                _adj = 1.0 + _strength * (_adj_raw - 1.0)
+
+            _z_test[_t] /= _adj
+            # Also correct sigma for downstream CRPS consistency
+            sigma[_t] *= _adj
+            # Update EWM with RAW z² (pre-correction, for future corrections)
+            _raw_z = _z_test[_t] * _adj  # Recover raw z
+            _raw_z2 = _raw_z * _raw_z
+            _raw_z2_w = _raw_z2 if _raw_z2 < _chi2_winsor_cap else _chi2_winsor_cap
+            _ewm_z2 = _CHI2_LAMBDA * _ewm_z2 + _CHI2_1M * _raw_z2_w
+
         # VECTORIZED CDF — single batch call instead of n_test scalar calls
         if abs(_t_df_asym) > 0.05:
             _nu_l = max(2.5, nu - _t_df_asym)
@@ -2067,6 +2342,142 @@ class PhiStudentTDriftModel:
             pit_values[~_mask_neg] = student_t_dist.cdf(_z_test[~_mask_neg], df=_nu_r)
         else:
             pit_values = student_t_dist.cdf(_z_test, df=nu)
+
+        pit_values = np.clip(pit_values, 0.001, 0.999)
+
+        # ── RANDOMIZED PIT FOR STALE OBSERVATIONS (Czado et al. 2009) ─
+        #
+        # Illiquid assets (e.g. BCAL, ERMAY) have 60-80% zero-return
+        # days where O=H=L=C ("stale prices"). For a continuous model,
+        # return = 0 always maps to PIT ≈ 0.5, creating a massive
+        # point mass that destroys KS uniformity.
+        #
+        # Solution: Randomized PIT (Czado, Gneiting & Held 2009,
+        # "Predictive Model Assessment for Count Data"):
+        #   For stale obs t:
+        #     PIT_t = F(0⁻) + v_t × [F(0⁺) - F(0⁻)]
+        #   where F(0⁻) = (1-p_stale)/2, F(0⁺) = 0.5 + p_stale/2,
+        #   v_t = frac(t × φ) with φ = golden ratio (deterministic hash)
+        #
+        # The interval [F(0⁻), F(0⁺)] spans the probability mass at
+        # zero, and v_t uniformly samples it. For p_stale=0.7, this
+        # gives PIT ~ U(0.15, 0.85) instead of a spike at 0.5.
+        #
+        # Activation: only when EWM p_stale > 5% (no-op on liquid assets)
+        # ─────────────────────────────────────────────────────────────
+        _STALE_RETURN_THRESHOLD = 1e-10
+        _STALE_EWM_LAMBDA = 0.97
+        _STALE_ACTIVATION = 0.05
+        _GOLDEN_RATIO = 1.6180339887498949
+
+        # Warm-start: estimate stale fraction from training data
+        _returns_train = returns[:n_train]
+        _p_stale_train = float(np.mean(np.abs(_returns_train) < _STALE_RETURN_THRESHOLD))
+
+        if _p_stale_train > _STALE_ACTIVATION:
+            # Asset has material stale-price contamination
+            _p_stale = _p_stale_train
+            _n_randomized = 0
+            for _t in range(n_test):
+                _is_stale_t = abs(returns_test[_t]) < _STALE_RETURN_THRESHOLD
+                if _is_stale_t and _p_stale > _STALE_ACTIVATION:
+                    # Czado (2009) randomized PIT
+                    _F_lo = (1.0 - _p_stale) / 2.0   # F(0⁻)
+                    _F_hi = 0.5 + _p_stale / 2.0      # F(0⁺)
+                    # Deterministic golden ratio hash for reproducibility
+                    _v_t = (_t * _GOLDEN_RATIO) % 1.0
+                    _pit_randomized = _F_lo + _v_t * (_F_hi - _F_lo)
+                    pit_values[_t] = max(0.001, min(0.999, _pit_randomized))
+                    _n_randomized += 1
+                # Update EWM stale fraction (causal)
+                _stale_indicator = 1.0 if _is_stale_t else 0.0
+                _p_stale = _STALE_EWM_LAMBDA * _p_stale + (1.0 - _STALE_EWM_LAMBDA) * _stale_indicator
+
+        # ── PIT VARIANCE RECALIBRATION (Causal Shape Correction) ─────
+        #
+        # After chi² corrects the z-space 2nd moment (scale), there
+        # can remain a SHAPE mismatch: the z distribution doesn't
+        # match t(ν) in its tails, even with correct variance.
+        #
+        # This manifests as Var[PIT] ≠ 1/12:
+        #   Var < 1/12: PITs concentrated around 0.5 → model tails
+        #               too heavy (ν too small), needs stretching
+        #   Var > 1/12: PITs U-shaped (piled near 0,1) → model tails
+        #               too light (ν too large), needs compression
+        #
+        # Correction:  pit_corr = 0.5 + (pit - 0.5) × √(1/12 / V_obs)
+        #
+        # This is the PIT-space analog of chi² variance correction:
+        # chi² fixes E[z²] = ν/(ν-2) in z-space (scale) while this
+        # fixes E[(PIT-0.5)²] = 1/12 in PIT-space (shape).
+        #
+        # Mathematically equivalent to fitting a symmetric Beta(a,a)
+        # recalibration: when a > 1 PITs are concentrated, when a < 1
+        # they're U-shaped. The stretching maps toward a = 1 (uniform).
+        #
+        # Properties:
+        #   • Fully causal: correction at t uses only PIT[0:t-1]
+        #   • Self-balancing: if PITs are uniform, V ≈ 1/12 → no change
+        #   • Complements chi²: chi² fixes scale, this fixes shape
+        #   • Dead-zone prevents noise on calibrated assets
+        #   • Warm-started from training PIT values
+        # ─────────────────────────────────────────────────────────────
+        _PIT_VAR_TARGET = 1.0 / 12.0   # Var[U(0,1)] = 0.08333
+        _PIT_VAR_LAMBDA = float(getattr(config, 'pit_var_lambda', 0.97))  # Asset-adaptive
+        _PIT_VAR_1M = 1.0 - _PIT_VAR_LAMBDA
+        # Dead-zone: |Var_ratio - 1| thresholds (fractional deviation)
+        # With eff sample size ~33 (λ=0.97), SD ~ √(2/33) ≈ 0.25
+        # DZ_LO = 0.30 is ~1.2σ — only corrects clear miscalibration
+        _PIT_VAR_DZ_LO = float(getattr(config, 'pit_var_dz_lo', 0.30))   # Asset-adaptive
+        _PIT_VAR_DZ_HI = float(getattr(config, 'pit_var_dz_hi', 0.55))   # Asset-adaptive
+        _PIT_VAR_DZ_RANGE = _PIT_VAR_DZ_HI - _PIT_VAR_DZ_LO
+        _PIT_VAR_MIN_STRETCH = 0.70   # Don't compress more than 30%
+        _PIT_VAR_MAX_STRETCH = 1.50   # Don't stretch more than 50%
+
+        # Warm-start EWM from training PIT values
+        # (Training warm-start gives the tracker a head-start so
+        #  correction can begin earlier during the test period)
+        _ewm_pit_m = 0.5              # E[PIT] for U(0,1) = 0.5
+        _ewm_pit_sq = 1.0 / 3.0       # E[PIT²] for U(0,1) = 1/3
+        for _t in range(len(_pit_train_cal)):
+            _p = float(_pit_train_cal[_t])
+            _ewm_pit_m = _PIT_VAR_LAMBDA * _ewm_pit_m + _PIT_VAR_1M * _p
+            _ewm_pit_sq = _PIT_VAR_LAMBDA * _ewm_pit_sq + _PIT_VAR_1M * _p * _p
+
+        # Apply causal PIT variance correction
+        for _t in range(n_test):
+            _obs_var = _ewm_pit_sq - _ewm_pit_m * _ewm_pit_m
+            if _obs_var < 0.005:
+                _obs_var = 0.005  # Floor to prevent division issues
+
+            _var_ratio = _obs_var / _PIT_VAR_TARGET
+            _var_dev = abs(_var_ratio - 1.0)
+            _raw_pit = pit_values[_t]  # Save pre-correction value
+
+            if _var_dev > _PIT_VAR_DZ_LO:
+                _raw_stretch = _msqrt(_PIT_VAR_TARGET / _obs_var)
+                if _raw_stretch < _PIT_VAR_MIN_STRETCH:
+                    _raw_stretch = _PIT_VAR_MIN_STRETCH
+                elif _raw_stretch > _PIT_VAR_MAX_STRETCH:
+                    _raw_stretch = _PIT_VAR_MAX_STRETCH
+
+                if _var_dev >= _PIT_VAR_DZ_HI:
+                    _stretch = _raw_stretch  # Full correction
+                else:
+                    # Linear blend between no correction and full
+                    _strength = (_var_dev - _PIT_VAR_DZ_LO) / _PIT_VAR_DZ_RANGE
+                    _stretch = 1.0 + _strength * (_raw_stretch - 1.0)
+
+                _corrected = 0.5 + (_raw_pit - 0.5) * _stretch
+                if _corrected < 0.001:
+                    _corrected = 0.001
+                elif _corrected > 0.999:
+                    _corrected = 0.999
+                pit_values[_t] = _corrected
+
+            # Update EWM with RAW PIT (pre-correction, for future tracking)
+            _ewm_pit_m = _PIT_VAR_LAMBDA * _ewm_pit_m + _PIT_VAR_1M * _raw_pit
+            _ewm_pit_sq = _PIT_VAR_LAMBDA * _ewm_pit_sq + _PIT_VAR_1M * _raw_pit * _raw_pit
 
         pit_values = np.clip(pit_values, 0.001, 0.999)
 
@@ -2095,6 +2506,34 @@ class PhiStudentTDriftModel:
                     _z_white[_t] = _z_probit[_t]
 
             pit_values = np.clip(norm_dist.cdf(_z_white), 0.001, 0.999)
+
+        # ── ISOTONIC RECALIBRATION (Kuleshov et al. 2018) ───────────
+        #
+        # Final transport map: learn systematic PIT miscalibration from
+        # training PITs and correct test PITs.  Isotonic regression
+        # guarantees monotonicity (probability ordering preserved).
+        #
+        # Built-in safety:
+        #   • If training KS p ≥ 0.10 → returns identity (no correction)
+        #   • min_observations = 50 → skips if insufficient data
+        #   • Monotonic → cannot make in-sample calibration worse
+        #   • Validation split detects out-of-sample degradation
+        #   • Blended application (α=0.4) prevents overcorrection when
+        #     training PITs lack chi²/Beta(a,a) corrections present in test
+        # ────────────────────────────────────────────────────────────
+        _ISO_BLEND_ALPHA = 0.4  # Conservative blending: 40% isotonic, 60% identity
+        try:
+            from calibration.isotonic_recalibration import IsotonicRecalibrator
+            if len(_pit_train_cal) >= 50:
+                _iso_recal = IsotonicRecalibrator()
+                _iso_result = _iso_recal.fit(_pit_train_cal)
+                if _iso_result.fit_success and not _iso_result.is_identity:
+                    _pit_iso = _iso_recal.transform(pit_values)
+                    # Blend: prevent overcorrection from train/test correction mismatch
+                    pit_values = (1.0 - _ISO_BLEND_ALPHA) * pit_values + _ISO_BLEND_ALPHA * _pit_iso
+                    pit_values = np.clip(pit_values, 0.001, 0.999)
+        except Exception:
+            pass  # Graceful degradation — sklearn may not be available
 
         return pit_values, sigma, mu_effective, _S_blended_test
 
@@ -2557,9 +2996,9 @@ class PhiStudentTDriftModel:
         damping = float(config.vov_damping)
 
         # ── NUMBA FAST-PATH ──
-        # When advanced features (jumps, risk premium, GAS skew, mu_drift,
-        # EWM correction) are all disabled, dispatch to the Numba kernel
-        # for ~10× speedup on the main loop.
+        # Two Numba paths available:
+        #   1. Base kernel: when no advanced features are active (~marginally faster)
+        #   2. Extended kernel: handles ALL features (risk prem, skew, jumps, drift, EWM)
         risk_prem = float(getattr(config, 'risk_premium_sensitivity', 0.0))
         skew_kappa = float(getattr(config, 'skew_score_sensitivity', 0.0))
         jump_var = float(getattr(config, 'jump_variance', 0.0))
@@ -2567,13 +3006,14 @@ class PhiStudentTDriftModel:
         _mu_drift_val = float(getattr(config, 'mu_drift', 0.0))
         _ewm_lambda = float(getattr(config, 'crps_ewm_lambda', 0.0))
 
-        _numba_compatible = (
-            _UNIFIED_NUMBA_AVAILABLE
-            and abs(risk_prem) < 1e-10
+        _simple_mode = (
+            abs(risk_prem) < 1e-10
             and skew_kappa < 1e-8
             and (jump_var < 1e-12 or jump_intensity < 1e-6)
             and abs(_mu_drift_val) < 1e-12
         )
+
+        _numba_compatible = _UNIFIED_NUMBA_AVAILABLE
 
         if _numba_compatible:
             # Pre-compute arrays the Numba kernel needs
@@ -2611,24 +3051,49 @@ class PhiStudentTDriftModel:
             _has_exo = config.exogenous_input is not None
             momentum = np.ascontiguousarray(config.exogenous_input.flatten(), dtype=np.float64) if _has_exo else np.zeros(n, dtype=np.float64)
 
-            mu_f, P_f, mu_p, S_p, ll = run_unified_phi_student_t_filter(
-                returns, vol, c_val, phi_val, nu_base,
-                q_t, p_stress, vov_rolling, gamma_vov, damping,
-                alpha, k_asym, momentum, 1e-4
-            )
+            if _simple_mode:
+                # Base kernel: no advanced features — marginally faster
+                mu_f, P_f, mu_p, S_p, ll = run_unified_phi_student_t_filter(
+                    returns, vol, c_val, phi_val, nu_base,
+                    q_t, p_stress, vov_rolling, gamma_vov, damping,
+                    alpha, k_asym, momentum, 1e-4
+                )
 
-            # Apply EWM correction if lambda was configured
-            if _ewm_lambda >= 0.01 and n > 2:
-                lam = _ewm_lambda
-                alpha_ewm = 1.0 - lam
-                innov_lagged = returns[:-1] - mu_p[:-1]
-                ewm_corrections = np.empty(n, dtype=np.float64)
-                ewm_corrections[0] = 0.0
-                ewm_mu_val = 0.0
-                for t in range(n - 1):
-                    ewm_mu_val = lam * ewm_mu_val + alpha_ewm * innov_lagged[t]
-                    ewm_corrections[t + 1] = ewm_mu_val
-                mu_p = mu_p + ewm_corrections
+                # Apply EWM correction if lambda was configured
+                if _ewm_lambda >= 0.01 and n > 2:
+                    lam = _ewm_lambda
+                    alpha_ewm = 1.0 - lam
+                    innov_lagged = returns[:-1] - mu_p[:-1]
+                    ewm_corrections = np.empty(n, dtype=np.float64)
+                    ewm_corrections[0] = 0.0
+                    ewm_mu_val = 0.0
+                    for t in range(n - 1):
+                        ewm_mu_val = lam * ewm_mu_val + alpha_ewm * innov_lagged[t]
+                        ewm_corrections[t + 1] = ewm_mu_val
+                    mu_p = mu_p + ewm_corrections
+            else:
+                # Extended kernel: handles risk prem, skew, jumps, drift, EWM
+                from models.numba_wrappers import run_unified_phi_student_t_filter_extended
+                skew_rho = float(getattr(config, 'skew_persistence', 0.97))
+                jump_sensitivity = float(getattr(config, 'jump_sensitivity', 1.0))
+                jump_mean = float(getattr(config, 'jump_mean', 0.0))
+                # Compute EWM lambda with default fallback
+                ewm_lam = _ewm_lambda if _ewm_lambda >= 0.01 else 0.95
+
+                mu_f, P_f, mu_p, S_p, ll = run_unified_phi_student_t_filter_extended(
+                    returns, vol, c_val, phi_val, nu_base,
+                    q_t, p_stress, vov_rolling, gamma_vov, damping,
+                    alpha, k_asym, momentum, 1e-4,
+                    risk_prem=risk_prem,
+                    mu_drift=_mu_drift_val,
+                    skew_kappa=skew_kappa,
+                    skew_rho=skew_rho,
+                    jump_var=jump_var,
+                    jump_intensity=jump_intensity,
+                    jump_sensitivity=jump_sensitivity,
+                    jump_mean=jump_mean,
+                    ewm_lambda=ewm_lam,
+                )
 
             return mu_f, P_f, mu_p, S_p, float(ll)
 
@@ -2976,11 +3441,16 @@ class PhiStudentTDriftModel:
 
             phi_pen = max(0.0, abs(phi) - 0.95)
             q_pen = max(0.0, -7.0 - log_q)
-            state_reg = 50.0 * (phi_pen ** 2 + q_pen ** 2)
+            state_reg = 200.0 * (phi_pen ** 2 + q_pen ** 2)
             if phi_pen > 0 and q_pen > 0:
-                state_reg += 30.0 * phi_pen * q_pen
+                state_reg += 80.0 * phi_pen * q_pen
 
-            return -ll / n_train + state_reg
+            # φ shrinkage prior (centered at 0, same as phi_gaussian)
+            _phi_tau_s1 = 1.0 / math.sqrt(2.0 * max(PHI_SHRINKAGE_LAMBDA_DEFAULT / max(n_train, 100), 1e-12))
+            _phi_tau_s1 = max(_phi_tau_s1, PHI_SHRINKAGE_TAU_MIN)
+            phi_shrink = 0.5 * (phi ** 2) / (_phi_tau_s1 ** 2) / n_train
+
+            return -ll / n_train + state_reg + phi_shrink
 
         log_q_init = np.log10(max(config.q_min * 10, 1e-7))
         c_safe = max(config.c, 0.01)
@@ -2990,7 +3460,7 @@ class PhiStudentTDriftModel:
         bounds = [
             (np.log10(config.q_min), -2),
             (-5.0, 5.0),
-            (-0.99, 0.99),
+            (-0.8, 0.99),
         ]
 
         try:
@@ -3045,7 +3515,8 @@ class PhiStudentTDriftModel:
         try:
             result = minimize(
                 neg_ll_vov, [config.gamma_vov],
-                bounds=[(0.0, 1.0)], method='L-BFGS-B'
+                bounds=[(0.0, 1.0)], method='L-BFGS-B',
+                options={'maxiter': 50, 'ftol': 1e-8}
             )
             return result.x[0] if result.success else config.gamma_vov
         except Exception:
@@ -3090,7 +3561,8 @@ class PhiStudentTDriftModel:
         try:
             result = minimize(
                 neg_ll_msq, [sens_init],
-                bounds=[(1.0, 5.0)], method='L-BFGS-B'
+                bounds=[(1.0, 5.0)], method='L-BFGS-B',
+                options={'maxiter': 50, 'ftol': 1e-8}
             )
             return result.x[0] if result.success else sens_init
         except Exception:
@@ -3136,7 +3608,8 @@ class PhiStudentTDriftModel:
         try:
             result = minimize(
                 neg_ll_asym, [alpha_init],
-                bounds=[(-0.3, 0.3)], method='L-BFGS-B'
+                bounds=[(-0.3, 0.3)], method='L-BFGS-B',
+                options={'maxiter': 50, 'ftol': 1e-8}
             )
             return result.x[0] if result.success else alpha_init
         except Exception:
@@ -3185,7 +3658,7 @@ class PhiStudentTDriftModel:
             result = minimize(
                 neg_ll_rp, [rp_init],
                 bounds=[(-5.0, 10.0)], method='L-BFGS-B',
-                options={'maxiter': 100}
+                options={'maxiter': 50, 'ftol': 1e-8}
             )
             if result.x is not None and np.isfinite(result.x[0]):
                 return float(result.x[0])
@@ -3237,7 +3710,7 @@ class PhiStudentTDriftModel:
             result = minimize(
                 neg_ll_skew, [0.0],
                 bounds=[(0.0, 0.10)], method='L-BFGS-B',
-                options={'maxiter': 100}
+                options={'maxiter': 50, 'ftol': 1e-8}
             )
             if result.x is not None and np.isfinite(result.x[0]):
                 return float(result.x[0]), skew_persistence_fixed
@@ -3316,7 +3789,7 @@ class PhiStudentTDriftModel:
         vov_damping = profile.get('vov_damping', 0.3)
         ms_ewm_lambda = profile.get('ms_ewm_lambda', 0.0)
 
-        NU_GRID = [3, 4, 5, 6, 7, 8, 10, 12] if use_heavy_tail_grid else [5, 6, 7, 8, 10, 12, 15, 20]
+        NU_GRID = [2.5, 3, 4, 5, 6, 7, 8, 10, 12] if use_heavy_tail_grid else [5, 6, 7, 8, 10, 12, 15, 20]
 
         n_folds = 5
         fold_size = n_train // n_folds
@@ -3423,22 +3896,69 @@ class PhiStudentTDriftModel:
                     avg_beta = float(np.mean(fold_betas))
                     avg_mu_drift = float(np.mean(fold_mu_drifts))
 
+                    # ── CRPS-PRIMARY ν SELECTION (Gneiting-Raftery 2007) ──
+                    # "Maximize sharpness subject to calibration."
+                    # CRPS is primary when calibration constraint is met.
+                    #
+                    # Anderson-Darling test provides tail-sensitive calibration
+                    # assessment alongside KS.
+                    #
+                    # Gate: reject ν where KS p < 0.01 (tail-insensitive but
+                    # stable) — this is the calibration CONSTRAINT.
+                    # Among passing ν values: select lowest CRPS (OBJECTIVE).
+                    # Fallback: if no ν passes gate, use KS-primary scoring.
+                    # ────────────────────────────────────────────────────
+
+                    # Anderson-Darling test on last fold for tail sensitivity
+                    _ad_p = 1.0
+                    try:
+                        from calibration.pit_calibration import anderson_darling_uniform
+                        # Compute AD on mean PIT across folds
+                        _last_fold_ks = fold_ks_vals[-1] if fold_ks_vals else 0.0
+                        _, _ad_p = anderson_darling_uniform(
+                            student_t.cdf(
+                                innovations_train[n_train - fold_size:] /
+                                np.maximum(np.sqrt(S_pred_train[n_train - fold_size:] *
+                                    float(np.mean(fold_betas)) *
+                                    ((test_nu - 2) / test_nu if test_nu > 2 else 1.0)), 1e-10),
+                                df=test_nu
+                            )
+                        )
+                    except Exception:
+                        _ad_p = avg_ks_p  # Fallback: treat AD = KS
+
+                    # Calibration gate: max(KS, AD) >= 0.01
+                    _cal_ok = max(avg_ks_p, _ad_p) >= 0.01
+
                     # Kurtosis coherence bonus for heavy-tail grid
                     if use_heavy_tail_grid and test_nu > 4:
                         emp_kurt = float(np.mean(innovations_train ** 4) / (np.mean(innovations_train ** 2) ** 2 + 1e-20))
                         theo_kurt = 3.0 * (test_nu - 2.0) / (test_nu - 4.0)
                         kurt_mismatch = abs(emp_kurt - theo_kurt) / (emp_kurt + 1e-8)
                         kurt_bonus = max(0.5, 1.0 - 0.5 * kurt_mismatch)
-                        score = avg_ks_p * kurt_bonus
                     else:
-                        score = avg_ks_p
+                        kurt_bonus = 1.0
 
-                    # CRPS sharpness bonus (Gneiting-Raftery)
-                    if avg_ks_p > 0.05 and np.isfinite(avg_crps) and avg_crps > 0:
+                    if _cal_ok and np.isfinite(avg_crps) and avg_crps > 0:
+                        # CRPS-primary: lower CRPS = better, invert for score
                         innov_std = float(np.std(innovations_train)) + 1e-10
                         crps_ratio = avg_crps / innov_std
-                        crps_bonus = max(0.6, min(1.5, 1.5 - 0.8 * crps_ratio))
-                        score = score * crps_bonus
+                        # Calibration quality: KS-based with floor.
+                        # AD informs the gate above, not the quality metric,
+                        # because AD p-values are consistently lower than KS
+                        # and would crush the score for well-calibrated assets.
+                        cal_quality = max(avg_ks_p, 0.05) ** 0.3  # Compressed: [0.05→0.38, 0.5→0.81, 0.9→0.97]
+                        score = (1.0 / max(crps_ratio, 0.01)) * kurt_bonus * cal_quality
+                    else:
+                        # Fallback: KS-primary scoring (calibration constraint not met)
+                        score = avg_ks_p * kurt_bonus
+
+                        # CRPS sharpness bonus (Gneiting-Raftery) — only if calibrated
+                        if avg_ks_p > 0.05 and np.isfinite(avg_crps) and avg_crps > 0:
+                            innov_std = float(np.std(innovations_train)) + 1e-10
+                            crps_ratio = avg_crps / innov_std
+                            crps_bonus = max(0.6, min(1.5, 1.5 - 0.8 * crps_ratio))
+                            score = score * crps_bonus
 
                     if score > best_avg_ks_p:
                         best_avg_ks_p = score
@@ -3673,7 +4193,13 @@ class PhiStudentTDriftModel:
             _, _, _, _, ll_no = cls.filter_phi_unified(returns_train, vol_train, cfg_no)
             _, _, _, _, ll_yes = cls.filter_phi_unified(returns_train, vol_train, cfg_yes)
 
-            bic_penalty = 4 * np.log(n_train)
+            # Adaptive BIC penalty: relax for extreme-kurtosis assets
+            # where contaminated-t finds ε≥0.15 crisis contamination.
+            # Standard: 4·ln(n) for 4 jump params. Relaxed: 2·ln(n)
+            # when empirical excess kurtosis > 6 (ν<4 regime).
+            _ek_jump = float(np.mean(z_innov ** 4) / max(np.mean(z_innov ** 2) ** 2, 1e-20))
+            _bic_mult = 2.0 if _ek_jump > 6.0 else 4.0
+            bic_penalty = _bic_mult * np.log(n_train)
             if 2 * (ll_yes - ll_no) < bic_penalty:
                 return defaults
 
@@ -3812,12 +4338,22 @@ class PhiStudentTDriftModel:
             best_crps = crps_baseline
             best_lam = 0.0
 
+            # Try Numba-accelerated EWM correction
+            try:
+                from models.numba_wrappers import run_ewm_mu_correction as _numba_ewm_corr
+                _use_numba_ewm = True
+            except (ImportError, Exception):
+                _use_numba_ewm = False
+
             for lam_c in LAMBDA_GRID:
-                ewm_mu = 0.0
-                mu_corr = mu_pred_base.copy()
-                for t in range(1, n_train):
-                    ewm_mu = lam_c * ewm_mu + (1.0 - lam_c) * (returns_train[t-1] - mu_pred_base[t-1])
-                    mu_corr[t] = mu_pred_base[t] + ewm_mu
+                if _use_numba_ewm:
+                    mu_corr = _numba_ewm_corr(returns_train, mu_pred_base, lam_c, n_train)
+                else:
+                    ewm_mu = 0.0
+                    mu_corr = mu_pred_base.copy()
+                    for t in range(1, n_train):
+                        ewm_mu = lam_c * ewm_mu + (1.0 - lam_c) * (returns_train[t-1] - mu_pred_base[t-1])
+                        mu_corr[t] = mu_pred_base[t] + ewm_mu
                 crps_c = _crps_inline(ret_val, mu_corr[n_est:], sig_val, nu_opt)
                 if np.isfinite(crps_c) and crps_c < best_crps:
                     best_crps = crps_c
@@ -3897,8 +4433,21 @@ class PhiStudentTDriftModel:
             returns_val = returns_train[n_est:]
             mu_val = mu_pred[n_est:]
 
-            # Helper: build enhanced GARCH variance
+            # Helper: build enhanced GARCH variance (Numba-accelerated)
+            try:
+                from models.numba_wrappers import run_build_garch as _numba_garch
+                _use_numba_garch = True
+            except (ImportError, Exception):
+                _use_numba_garch = False
+
             def _build_garch(rho_c, kap_c, eta_c=0.0, reg_c=0.0):
+                if _use_numba_garch:
+                    return _numba_garch(
+                        n_train, innovations, sq_inn, neg_ind,
+                        garch_omega, garch_alpha, garch_leverage, garch_beta,
+                        unconditional_var, q_stress_ratio,
+                        rho_c, kap_c, eta_c, reg_c,
+                    )
                 h = np.zeros(n_train)
                 h[0] = unconditional_var
                 _p_st = 0.1
@@ -3966,8 +4515,8 @@ class PhiStudentTDriftModel:
             kap_opt = 0.0
             best_crps = crps_baseline
 
-            for rho_c in [0.0, 0.1, 0.3, 0.5, 0.8, 1.2]:
-                for kap_c in [0.0, 0.02, 0.05, 0.10, 0.15, 0.20]:
+            for rho_c in [0.0, 0.2, 0.5, 1.0]:
+                for kap_c in [0.0, 0.03, 0.10, 0.20]:
                     if rho_c == 0.0 and kap_c == 0.0:
                         continue
                     c = _crps_from_h(_build_garch(rho_c, kap_c))
@@ -4209,6 +4758,11 @@ class PhiStudentTDriftModel:
             ht = hf[:nt]; it = inn[:nt]; st = sp[:nt]
             _s6n_ppf = _s6n.ppf
             _math_exp = math.exp
+            # Import Anderson-Darling test for tail-sensitive PIT assessment
+            try:
+                from calibration.pit_calibration import anderson_darling_uniform as _ad_test
+            except Exception:
+                _ad_test = None
             def _bk(pa):
                 n_pa = len(pa)
                 if n_pa < 20: return 0.0, 0.0, 0.0
@@ -4229,22 +4783,50 @@ class PhiStudentTDriftModel:
                     # Two-term Kolmogorov approximation
                     kp = 2.0 * _math_exp(-2.0 * lam * lam)
                     if kp > 1.0: kp = 1.0
+                # Anderson-Darling test: 3-10× more tail-sensitive than KS
+                # Use AD as a soft penalty on KS rather than geometric mean,
+                # because AD is systematically stricter and would crush Stage 6
+                # calibration search for assets with moderate tail issues.
+                if _ad_test is not None:
+                    try:
+                        _, ap = _ad_test(pa)
+                        # Soft penalty: reduce KS p-value by up to 30% when
+                        # AD flags severe tail miscalibration (AD_p < 0.01)
+                        if ap < 0.01:
+                            cp = kp * 0.7  # Severe AD failure: 30% penalty
+                        elif ap < 0.05:
+                            # Moderate AD concern: 0-15% penalty (linear)
+                            _ad_pen = 0.15 * (0.05 - ap) / 0.04
+                            cp = kp * (1.0 - _ad_pen)
+                        else:
+                            cp = kp  # AD passes: no penalty
+                    except Exception:
+                        cp = kp
+                else:
+                    cp = kp
                 zp = _s6n_ppf(np.clip(pa, 0.001, 0.999)); zp = zp[np.isfinite(zp)]
-                if len(zp) < 20: return float(kp), float(kp), 0.0
+                if len(zp) < 20: return float(cp), float(cp), 0.0
                 m_ = float(np.mean(zp)); v_ = float(np.var(zp, ddof=0)); zc = zp - m_; dn = np.sum(zc ** 2)
                 r1 = float(np.sum(zc[1:] * zc[:-1]) / dn) if dn > 1e-12 else 0.0
-                score = kp * _math_exp(-5 * m_ * m_) * _math_exp(-5 * (v_ - 1) ** 2) * _math_exp(-10 * r1 * r1)
-                return score, kp, r1
+                score = cp * _math_exp(-5 * m_ * m_) * _math_exp(-5 * (v_ - 1) ** 2) * _math_exp(-10 * r1 * r1)
+                return score, cp, r1
             im = getattr(config, 'ms_ewm_lambda', 0.0) > 0.01
             hv = float(np.std(it)) > 0.03
             Sr = 0.5 * st + 0.5 * ht; rz = it / np.sqrt(np.maximum(Sr, 1e-12))
             ek = float(np.mean(rz ** 4) / (np.mean(rz ** 2) ** 2 + 1e-20))
-            NA = [5, 6, 7, 8, 10, 12] if im else [3, 4, 5, 6, 7, 8, 10, 12, 15, 20]
+            # ν grid for PIT calibration — extended with ν=2.5 for
+            # extreme heavy-tail assets (February 2026).
+            # ν=2.5 has finite variance but undefined kurtosis,
+            # appropriate for power-law returns (EVT ξ>0.25).
+            _base_na = [3, 4, 5, 6, 7, 8, 10, 12, 15, 20]
+            if not im and ek > 8.0:
+                _base_na = [2.5] + _base_na
+            NA = [5, 6, 7, 8, 10, 12] if im else _base_na
             kl = []
             for nc in NA:
                 if nc > 4: mm = abs(ek - 3 * (nc - 2) / (nc - 4))
                 elif nc == 4: mm = max(0, 6 - ek) * 0.5
-                elif nc == 3: mm = max(0, 8 - ek) * 0.4
+                elif nc >= 2.5: mm = max(0, 10 - ek) * 0.3
                 else: mm = float('inf')
                 kl.append((mm, nc))
             kl.sort(); NC = [v for _, v in kl[:3 if im else 8]]
@@ -4302,9 +4884,25 @@ class PhiStudentTDriftModel:
                 return zv, sv, nv
 
             # ── Helper: compute raw EWM innovations (shared across NU values)
+            # Try Numba-accelerated Stage 6 EWM fold kernel
+            try:
+                from models.numba_wrappers import run_stage6_ewm_fold as _numba_s6_fold
+                _use_numba_s6 = True
+            except (ImportError, Exception):
+                _use_numba_s6 = False
+
             def _fold_ewm_raw(Sb, ee, ve):
                 """EWM loop: return (innovations, Sv_raw, nv) — nu-independent."""
                 nv = ve - ee
+                if _use_numba_s6:
+                    init_em = float(np.mean(it[:ee]))
+                    init_en = float(np.mean(it[:ee] ** 2))
+                    init_ed = float(np.mean(Sb[:ee]))
+                    iv_arr, Sv_arr = _numba_s6_fold(
+                        it, Sb, ee, ve, lm,
+                        init_em, init_en, init_ed,
+                    )
+                    return iv_arr, Sv_arr, nv
                 em, en, ed = _get_ewm_state(Sb, ee)
                 iv_arr = np.empty(nv); Sv_arr = np.empty(nv)
                 _it = it
@@ -4321,6 +4919,50 @@ class PhiStudentTDriftModel:
                 return iv_arr, Sv_arr, nv
 
             # ── Main GW × NU grid search with VECTORIZED CDF
+            # Chi² lambda for Stage 6 scoring correction (March 2026)
+            _s6_chi2_lam = float(getattr(config, 'chisq_ewm_lambda', 0.98))
+            _s6_chi2_1m = 1.0 - _s6_chi2_lam
+
+            # Numba-accelerated chi² correction (try import once)
+            try:
+                from models.numba_wrappers import run_chi2_ewm_correction as _numba_chi2
+                _use_numba_chi2 = True
+            except (ImportError, Exception):
+                _use_numba_chi2 = False
+
+            def _chi2_correct_z(zv, nu_val):
+                """Lightweight chi² correction on z-values for Stage 6 scoring.
+                Applies the same causal EWM z² → scale correction as filter_and_calibrate
+                so that Stage 6 scores domain-matched PITs."""
+                _target = nu_val / (nu_val - 2.0) if nu_val > 2 else 1.0
+                if _use_numba_chi2:
+                    scale_adj = _numba_chi2(zv, _target, _s6_chi2_lam)
+                    return zv / scale_adj
+                _winsor = _target * 50.0
+                _ewm = _target
+                zv_corrected = np.empty_like(zv)
+                for _ti in range(len(zv)):
+                    _ratio_i = _ewm / _target
+                    if _ratio_i < 0.3: _ratio_i = 0.3
+                    elif _ratio_i > 3.0: _ratio_i = 3.0
+                    _dev_i = abs(_ratio_i - 1.0)
+                    if _ratio_i >= 1.0:
+                        _dz0 = 0.25; _dzr = 0.25
+                    else:
+                        _dz0 = 0.10; _dzr = 0.15
+                    if _dev_i < _dz0:
+                        _adj_i = 1.0
+                    elif _dev_i >= _dz0 + _dzr:
+                        _adj_i = _msqrt(_ratio_i)
+                    else:
+                        _s_i = (_dev_i - _dz0) / _dzr
+                        _adj_i = 1.0 + _s_i * (_msqrt(_ratio_i) - 1.0)
+                    zv_corrected[_ti] = zv[_ti] / _adj_i
+                    _raw_z2_i = zv[_ti] * zv[_ti]
+                    _raw_z2_wi = _raw_z2_i if _raw_z2_i < _winsor else _winsor
+                    _ewm = _s6_chi2_lam * _ewm + _s6_chi2_1m * _raw_z2_wi
+                return zv_corrected
+
             for gw in GW:
                 Sb = (1 - gw) * st + gw * ht
                 # Pre-compute raw EWM per fold (shared across ALL nu values)
@@ -4345,6 +4987,8 @@ class PhiStudentTDriftModel:
                         sv = np.sqrt(np.maximum(Sv_arr * nu_scale, 0.0))
                         sv = np.maximum(sv, 1e-10)
                         zv = iv_arr / sv
+                        # Chi² correction on z-values before CDF (March 2026)
+                        zv = _chi2_correct_z(zv, nu)
                         # VECTORIZED CDF
                         pv = np.clip(_s6t_cdf(zv, df=nu), 0.001, 0.999)
                         try:
@@ -4383,6 +5027,7 @@ class PhiStudentTDriftModel:
                         sv = np.sqrt(np.maximum(Sv_arr * _bn_scale, 0.0))
                         sv = np.maximum(sv, 1e-10)
                         zv = iv_arr / sv
+                        zv = _chi2_correct_z(zv, bn)  # Chi² correction (March 2026)
                         pv = np.clip(_s6t_cdf(zv, df=bn), 0.001, 0.999)
                         try:
                             sc, _, _ = _bk(pv); hi_, _ = np.histogram(pv, bins=10, range=(0, 1))

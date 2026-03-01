@@ -1336,6 +1336,7 @@ def compute_regime_aware_model_weights(
     pit_counts: Optional[Dict[str, int]] = None,
     mad_values: Optional[Dict[str, float]] = None,
     regime: Optional[int] = None,
+    ad_pvalues: Optional[Dict[str, float]] = None,
     bic_weight: Optional[float] = None,
     hyvarinen_weight: Optional[float] = None,
     crps_weight: Optional[float] = None,
@@ -1358,6 +1359,7 @@ def compute_regime_aware_model_weights(
         crps_values:       CRPS per model (lower = better)
         pit_pvalues:       PIT KS p-values per model (higher = better calibration)
         berk_pvalues:      Berkowitz p-values per model (fallback when LR stats unavailable)
+        ad_pvalues:        Anderson-Darling p-values per model (March 2026 - tail-sensitive veto)
         berkowitz_lr_stats: Raw Berkowitz LR statistics per model (preferred over p-values).
                            When provided with pit_counts, uses likelihood-normalized penalty
                            CalPenalty = lambda_cal * LR/T instead of heuristic -log10(p).
@@ -1499,8 +1501,16 @@ def compute_regime_aware_model_weights(
         p = berk_pvalues.get(m)
         return p is not None and np.isfinite(p) and p >= 0.01
 
+    def _ad_ok(m):
+        """Anderson-Darling veto: softer threshold (0.005) because AD is
+        more tail-sensitive than KS and produces systematically lower p-values."""
+        if ad_pvalues is None or len(ad_pvalues) == 0:
+            return True
+        p = ad_pvalues.get(m)
+        return p is not None and np.isfinite(p) and p >= 0.005
+
     def _passes_calibration(m):
-        return _pit_ok(m) and _berk_ok(m)
+        return _pit_ok(m) and _berk_ok(m) and _ad_ok(m)
 
     any_cal_passes = any(_passes_calibration(m) for m in weights)
 

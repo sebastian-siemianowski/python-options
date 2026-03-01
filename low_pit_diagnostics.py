@@ -42,9 +42,13 @@ LOW_PIT_ASSETS = [
     'VSH', 'ALMU', 'SIF', 'PSIX', 'SI=F', 'AZBA', 'MSTR', 'SGLP',
     'HWM', 'HII', 'MMM', 'ASML', 'SMCI', 'UPS', 'ALB', 'MRK',
     'PEW', 'GDX', 'ASTS', 'SGDJPY=X', 'JPYSGD=X', 'ABTC', 'PYPL',
-    'SNT', 'QS', 'ON', 'AIRI', 'BNKK', 'CRS', 'BNZI', 'EXA',
+    'QS', 'ON', 'AIRI', 'BNKK', 'CRS', 'BNZI', 'EXA',
     'ESLT', 'ACN', 'DFSC', 'ASTC', 'KGC', 'FOUR', 'ADBE', 'OPXS',
     'TFC', 'NVTS', 'GRND', 'XLE', '000660.KS',
+    # Added batch
+    'RGTI', 'PACB', 'QUBT', 'GORO', 'USAS', 'APLT', 'APLM', 'RCAT',
+    'CVS', 'MDLZ', 'VZ', '8035.T', '005930.KS', 'CNYJPY=X', 'JPYCNY=X',
+    'ONDS', 'ACHR', 'HO.PA', 'QCOM', 'MRCY',
 ]
 
 # Reference assets (always included)
@@ -87,15 +91,19 @@ def _wc(val):
 
 def fetch_data(symbol):
     from tuning.tune import _download_prices, compute_hybrid_volatility_har
+    from ingestion.adaptive_quality import adaptive_data_quality
     df = _download_prices(symbol, '2015-01-01', None)
     if df is None or df.empty:
         return None
+    # Adaptive data quality filter (February 2026)
+    df, _dq_report = adaptive_data_quality(df, asset=symbol, verbose=False)
     cols = {c.lower(): c for c in df.columns}
     if 'close' not in cols:
         return None
     px = df[cols['close']]
     log_ret = np.log(px / px.shift(1)).dropna()
     returns = log_ret.values
+    _volume_arr = None
     if all(c in cols for c in ['open', 'high', 'low', 'close']):
         df_a = df.iloc[1:].copy()
         vol, _ = compute_hybrid_volatility_har(
@@ -105,11 +113,24 @@ def fetch_data(symbol):
             close=df_a[cols['close']].values,
             span=21, annualize=False, use_har=True,
         )
+        # Extract Volume for stale-price detection (February 2026)
+        _vol_col = cols.get('volume')
+        if _vol_col is not None:
+            _volume_arr = df_a[_vol_col].values
     else:
         vol = log_ret.ewm(span=21).std().values
     mn = min(len(returns), len(vol))
     returns, vol = returns[:mn], vol[:mn]
-    ok = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+    # Filter stale-price observations (zero-return days from illiquid assets)
+    # Also filter Volume=0 phantom quotes (February 2026)
+    _STALE_RETURN_THRESHOLD = 1e-10
+    ok = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+          & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
+    _MIN_GENUINE_VOLUME = 100  # Floor of genuine price discovery
+    _skip_vol = (symbol.endswith('=X') or symbol.startswith('^')) if symbol else False
+    if _volume_arr is not None and not _skip_vol:
+        _vol_aligned = _volume_arr[:mn]
+        ok = ok & (_vol_aligned >= _MIN_GENUINE_VOLUME)
     returns, vol = returns[ok], vol[ok]
     if len(returns) < 100:
         return None
@@ -216,6 +237,7 @@ def render_asset(symbol, models, weights, meta, is_reference=False):
     t.add_column("CRPS", justify="right", min_width=6)
     t.add_column("Hyv", justify="right", min_width=7)
     t.add_column("PIT_p", justify="right", min_width=6)
+    t.add_column("AD_p", justify="right", min_width=6)
     t.add_column("Berk", justify="right", min_width=6)
     t.add_column("MAD", justify="right", min_width=6)
     t.add_column("Score", justify="right", min_width=6)
@@ -236,6 +258,7 @@ def render_asset(symbol, models, weights, meta, is_reference=False):
         crps = d.get('crps', float('nan'))
         hyv = d.get('hyvarinen_score', float('nan'))
         pit_p = d.get('pit_ks_pvalue', float('nan'))
+        ad_p = d.get('ad_pvalue', float('nan'))
         berk = d.get('berkowitz_pvalue', float('nan'))
         mad = d.get('histogram_mad', float('nan'))
         score = d.get('combined_score', float('nan'))
@@ -270,6 +293,7 @@ def render_asset(symbol, models, weights, meta, is_reference=False):
             Text(_f(crps, "%.4f"), style=_cc(crps)),
             Text(_f(hyv, "%.0f"), style="white"),
             Text(_f(pit_p, "%.4f"), style=_pc(pit_p)),
+            Text(_f(ad_p, "%.4f"), style=_pc(ad_p)),
             Text(_f(berk, "%.4f"), style=_pc(berk)),
             Text(_f(mad, "%.4f"), style=_mc(mad)),
             Text(_f(score, "%.2f"), style="bold bright_yellow" if is_w else "white"),
@@ -426,6 +450,8 @@ def main():
                         help='Number of parallel workers (default: CPU count - 1)')
     parser.add_argument('--no-parallel', action='store_true',
                         help='Disable parallel processing')
+    parser.add_argument('--pit-only', action='store_true',
+                        help='Only show PIT summary table (skip per-asset details)')
     args = parser.parse_args()
 
     # Determine asset list
@@ -448,11 +474,18 @@ def main():
     n_total = len(assets)
 
     console.print()
-    console.print(Panel(
-        "[bold bright_white]COMPREHENSIVE MODEL DIAGNOSTICS — LOW PIT ASSETS[/bold bright_white]\n"
-        f"[dim]{n_total} assets · {n_critical} critical (p<0.01) · {n_warning} warning (p<0.05) · All models · All metrics[/dim]",
-        border_style="bright_cyan", padding=(1, 4),
-    ))
+    if args.pit_only:
+        console.print(Panel(
+            "[bold bright_white]PIT SUMMARY — LOW PIT ASSETS[/bold bright_white]\n"
+            f"[dim]{n_total} assets · Fitting all models for PIT p-values...[/dim]",
+            border_style="bright_cyan", padding=(1, 4),
+        ))
+    else:
+        console.print(Panel(
+            "[bold bright_white]COMPREHENSIVE MODEL DIAGNOSTICS — LOW PIT ASSETS[/bold bright_white]\n"
+            f"[dim]{n_total} assets · {n_critical} critical (p<0.01) · {n_warning} warning (p<0.05) · All models · All metrics[/dim]",
+            border_style="bright_cyan", padding=(1, 4),
+        ))
 
     # Determine parallelism
     n_workers = args.workers or max(1, (mp.cpu_count() or 4) - 1)
@@ -487,7 +520,8 @@ def main():
                     else:
                         console.print(f"  [bright_green][{completed}/{n_total}] {sym} ✓[/bright_green]")
                         all_results[sym] = models
-                        render_asset(sym, models, weights, meta, is_reference=is_ref)
+                        if not args.pit_only:
+                            render_asset(sym, models, weights, meta, is_reference=is_ref)
                 except Exception as e:
                     console.print(f"  [indian_red1][{completed}/{n_total}] {symbol}: {e}[/indian_red1]")
                     failed_assets.append(symbol)
@@ -512,7 +546,8 @@ def main():
             try:
                 models, weights, meta = fit_models(symbol, returns, vol)
                 all_results[symbol] = models
-                render_asset(symbol, models, weights, meta, is_reference=is_ref)
+                if not args.pit_only:
+                    render_asset(symbol, models, weights, meta, is_reference=is_ref)
             except Exception as e:
                 console.print(f"  [indian_red1]Error fitting {symbol}: {e}[/indian_red1]")
                 failed_assets.append(symbol)

@@ -293,6 +293,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from ingestion.data_utils import fetch_px, _download_prices, get_default_asset_universe
+from ingestion.adaptive_quality import adaptive_data_quality
 
 # K=2 Mixture Model REMOVED - empirically falsified (206 attempts, 0 selections)
 # The HMM regime-switching + Student-t already captures regime heterogeneity.
@@ -815,7 +816,7 @@ except ImportError as e:
     def make_student_t_name(nu: int) -> str:
         return f"phi_student_t_nu_{nu}"
 
-    STUDENT_T_NU_GRID = [4, 8, 20]
+    STUDENT_T_NU_GRID = [3, 4, 8, 20]
 
 # =============================================================================
 # IMPORT DIAGNOSTICS & REPORTING
@@ -1607,6 +1608,12 @@ def tune_asset_q(
             _log(f"     ⚠️  No price data for {asset}")
             return None
         
+        # Adaptive data quality filter (February 2026)
+        # Detects phantom/synthetic data via Volume analysis
+        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=True)
+        if _dq_report.get('rows_purged_leading', 0) > 0 or _dq_report.get('window_applied', False):
+            _log(f"     🔬  Data quality: {_dq_report['rows_original']} → {_dq_report['rows_final']} rows")
+        
         # Extract Close prices from OHLC DataFrame
         cols = {c.lower(): c for c in df.columns}
         if 'close' in cols:
@@ -1625,6 +1632,7 @@ def tune_asset_q(
         
         # Compute volatility using Garman-Klass or HAR (7.4x more efficient than EWMA)
         vol_estimator_used = "EWMA"
+        _volume_arr = None  # For Volume-based stale filter
         if GK_VOLATILITY_AVAILABLE and df is not None and not df.empty:
             try:
                 # Check for OHLC columns
@@ -1636,6 +1644,11 @@ def tune_asset_q(
                     high = df_aligned[cols['high']].values
                     low = df_aligned[cols['low']].values
                     close = df_aligned[cols['close']].values
+                    
+                    # Extract Volume for stale-price detection (February 2026)
+                    _vol_col = cols.get('volume')
+                    if _vol_col is not None:
+                        _volume_arr = df_aligned[_vol_col].values
                     
                     # ENFORCE HAR-GK ONLY (February 2026)
                     # HAR-GK provides multi-horizon memory for crash detection
@@ -1660,8 +1673,29 @@ def tune_asset_q(
         returns = returns[:min_len]
         vol = vol[:min_len]
 
-        # Remove NaN/Inf
-        valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+        # Remove NaN/Inf and stale-price observations (zero-return days)
+        # Stale days (O=H=L=C, vol=0) produce degenerate GK variance ≈ 1e-12
+        # and contaminate model parameters. Threshold 1e-10 is well below any
+        # genuine trade return but catches exact zeros and float near-zeros.
+        # Also filter Volume=0 phantom quotes (February 2026) — catches
+        # illiquid OTC assets (GPUS) where prices move without genuine trades.
+        _STALE_RETURN_THRESHOLD = 1e-10
+        valid_mask = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+                      & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
+        # Add Volume >= 100 filter if Volume data available
+        # Skip for FX pairs (=X) and indices (^) — Yahoo reports Volume=0
+        _MIN_GENUINE_VOLUME = 100  # Floor of genuine price discovery
+        _skip_vol = (asset.endswith('=X') or asset.startswith('^')) if asset else False
+        if _volume_arr is not None and not _skip_vol:
+            _vol_aligned = _volume_arr[:min_len]
+            _vol_mask = _vol_aligned >= _MIN_GENUINE_VOLUME
+            n_zero_vol = int(np.sum(~_vol_mask & valid_mask))
+            if n_zero_vol > 0:
+                _log(f"     🧹  Filtered {n_zero_vol} additional low-volume phantom rows (Volume<{_MIN_GENUINE_VOLUME})")
+            valid_mask = valid_mask & _vol_mask
+        n_stale = int(np.sum(np.abs(returns) <= _STALE_RETURN_THRESHOLD))
+        if n_stale > 0:
+            _log(f"     🧹  Filtered {n_stale}/{len(returns)} stale-price rows ({100*n_stale/len(returns):.1f}%)")
         returns = returns[valid_mask]
         vol = vol[valid_mask]
 
@@ -2704,8 +2738,78 @@ def compute_extended_pit_metrics_gaussian(
     forecast_std = np.sqrt(np.maximum(S_pred_flat, 1e-20))
     forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
     standardized = (returns_flat - mu_pred_flat) / forecast_std
-    valid_mask = np.isfinite(standardized)
-    pit_values = norm.cdf(standardized[valid_mask])
+
+    # ── Chi² EWM variance correction (causal scale adaptation) ────────
+    # Same algorithm as Student-t version but with chi2_target = 1.0
+    _n_g = len(standardized)
+    _chi2_lam_g = 0.98
+    try:
+        from models.numba_wrappers import run_chi2_ewm_correction as _numba_chi2_g
+        _std_adj = _numba_chi2_g(standardized, 1.0, _chi2_lam_g)
+    except (ImportError, Exception):
+        import math as _m
+        _chi2_1m_g = 0.02
+        _chi2_wcap_g = 50.0  # target=1.0 so cap=50
+        _ewm_z2_g = 1.0
+        _std_adj = np.ones(_n_g)
+        for _t in range(_n_g):
+            _ratio = _ewm_z2_g  # / 1.0
+            _ratio = max(0.3, min(3.0, _ratio))
+            _dev = abs(_ratio - 1.0)
+            if _ratio >= 1.0:
+                _dz_lo, _dz_rng = 0.25, 0.25
+            else:
+                _dz_lo, _dz_rng = 0.10, 0.15
+            if _dev < _dz_lo:
+                _adj = 1.0
+            elif _dev >= _dz_lo + _dz_rng:
+                _adj = _m.sqrt(_ratio)
+            else:
+                _s = (_dev - _dz_lo) / _dz_rng
+                _adj = 1.0 + _s * (_m.sqrt(_ratio) - 1.0)
+            _std_adj[_t] = _adj
+            _z2 = standardized[_t] ** 2
+            _z2w = min(_z2, _chi2_wcap_g)
+            _ewm_z2_g = _chi2_lam_g * _ewm_z2_g + _chi2_1m_g * _z2w
+    standardized_corrected = standardized / _std_adj
+
+    valid_mask = np.isfinite(standardized_corrected)
+    pit_values = norm.cdf(standardized_corrected[valid_mask])
+
+    # ── PIT-Variance stretching (Var[PIT] → 1/12) ────────────────────
+    try:
+        from models.numba_wrappers import run_pit_var_stretching as _numba_pvs_g
+        pit_values = _numba_pvs_g(pit_values)
+    except (ImportError, Exception):
+        import math as _m
+        _pv_tgt_g = 1.0 / 12.0
+        _pv_lam_g = 0.97
+        _pv_1m_g = 0.03
+        _pv_dz_lo_g = 0.30
+        _pv_dz_hi_g = 0.55
+        _pv_dz_rng_g = _pv_dz_hi_g - _pv_dz_lo_g
+        _ewm_pm_g = 0.5
+        _ewm_psq_g = 1.0 / 3.0
+        for _t in range(len(pit_values)):
+            _ov = _ewm_psq_g - _ewm_pm_g * _ewm_pm_g
+            if _ov < 0.005:
+                _ov = 0.005
+            _vr = _ov / _pv_tgt_g
+            _vd = abs(_vr - 1.0)
+            _rp = float(pit_values[_t])
+            if _vd > _pv_dz_lo_g:
+                _rs = _m.sqrt(_pv_tgt_g / _ov)
+                _rs = max(0.70, min(1.50, _rs))
+                if _vd >= _pv_dz_hi_g:
+                    _st = _rs
+                else:
+                    _sg = (_vd - _pv_dz_lo_g) / _pv_dz_rng_g
+                    _st = 1.0 + _sg * (_rs - 1.0)
+                _c = 0.5 + (_rp - 0.5) * _st
+                pit_values[_t] = max(0.001, min(0.999, _c))
+            _ewm_pm_g = _pv_lam_g * _ewm_pm_g + _pv_1m_g * _rp
+            _ewm_psq_g = _pv_lam_g * _ewm_psq_g + _pv_1m_g * _rp * _rp
+
     if len(pit_values) < 20:
         return {"ks_statistic": 1.0, "pit_ks_pvalue": 0.0,
                 "berkowitz_pvalue": 0.0, "berkowitz_lr": 0.0,
@@ -2771,7 +2875,81 @@ def compute_extended_pit_metrics_student_t(
     else:
         scale_arr = np.sqrt(S_clamped)
     scale_arr = np.maximum(scale_arr, 1e-10)
-    pit_values = _st_dist.cdf(returns_flat[:n] - mu_pred[:n], df=nu, scale=scale_arr)
+
+    # ── Chi² EWM variance correction (causal scale adaptation) ────────
+    # Tracks E[z²] and corrects scale when filter variance is systematically
+    # off. Same algorithm as unified models but applied to base models.
+    # This is the #1 fix for systemic PIT < 0.05 across all assets.
+    _z_raw = (returns_flat[:n] - mu_pred[:n]) / scale_arr
+    _chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
+    _chi2_lam = 0.98
+    try:
+        from models.numba_wrappers import run_chi2_ewm_correction as _numba_chi2_t
+        _scale_adj = _numba_chi2_t(_z_raw, _chi2_tgt, _chi2_lam)
+    except (ImportError, Exception):
+        import math as _m
+        _chi2_1m = 0.02
+        _chi2_wcap = _chi2_tgt * 50.0
+        _ewm_z2 = _chi2_tgt
+        _scale_adj = np.ones(n)
+        for _t in range(n):
+            _ratio = _ewm_z2 / _chi2_tgt
+            _ratio = max(0.3, min(3.0, _ratio))
+            _dev = abs(_ratio - 1.0)
+            if _ratio >= 1.0:
+                _dz_lo, _dz_rng = 0.25, 0.25
+            else:
+                _dz_lo, _dz_rng = 0.10, 0.15
+            if _dev < _dz_lo:
+                _adj = 1.0
+            elif _dev >= _dz_lo + _dz_rng:
+                _adj = _m.sqrt(_ratio)
+            else:
+                _s = (_dev - _dz_lo) / _dz_rng
+                _adj = 1.0 + _s * (_m.sqrt(_ratio) - 1.0)
+            _scale_adj[_t] = _adj
+            _z2 = _z_raw[_t] ** 2
+            _z2w = min(_z2, _chi2_wcap)
+            _ewm_z2 = _chi2_lam * _ewm_z2 + _chi2_1m * _z2w
+    scale_corrected = scale_arr * _scale_adj
+
+    pit_values = _st_dist.cdf(returns_flat[:n] - mu_pred[:n], df=nu, scale=scale_corrected)
+
+    # ── PIT-Variance stretching (Var[PIT] → 1/12) ────────────────────
+    # Fixes shape miscalibration not caught by chi² (scale) correction.
+    try:
+        from models.numba_wrappers import run_pit_var_stretching as _numba_pvs_t
+        pit_values = _numba_pvs_t(pit_values)
+    except (ImportError, Exception):
+        import math as _m
+        _pv_tgt = 1.0 / 12.0
+        _pv_lam = 0.97
+        _pv_1m = 0.03
+        _pv_dz_lo = 0.30
+        _pv_dz_hi = 0.55
+        _pv_dz_rng = _pv_dz_hi - _pv_dz_lo
+        _ewm_pm = 0.5
+        _ewm_psq = 1.0 / 3.0
+        for _t in range(n):
+            _ov = _ewm_psq - _ewm_pm * _ewm_pm
+            if _ov < 0.005:
+                _ov = 0.005
+            _vr = _ov / _pv_tgt
+            _vd = abs(_vr - 1.0)
+            _rp = float(pit_values[_t])
+            if _vd > _pv_dz_lo:
+                _rs = _m.sqrt(_pv_tgt / _ov)
+                _rs = max(0.70, min(1.50, _rs))
+                if _vd >= _pv_dz_hi:
+                    _st = _rs
+                else:
+                    _sg = (_vd - _pv_dz_lo) / _pv_dz_rng
+                    _st = 1.0 + _sg * (_rs - 1.0)
+                _c = 0.5 + (_rp - 0.5) * _st
+                pit_values[_t] = max(0.001, min(0.999, _c))
+            _ewm_pm = _pv_lam * _ewm_pm + _pv_1m * _rp
+            _ewm_psq = _pv_lam * _ewm_psq + _pv_1m * _rp * _rp
+
     valid = np.isfinite(pit_values)
     pit_clean = np.clip(pit_values[valid], 0, 1)
     if len(pit_clean) < 20:
@@ -2779,6 +2957,12 @@ def compute_extended_pit_metrics_student_t(
                 "berkowitz_pvalue": 0.0, "berkowitz_lr": 0.0,
                 "pit_count": 0, "histogram_mad": 1.0}
     ks_result = kstest(pit_clean, 'uniform')
+    # Anderson-Darling test (tail-sensitive)
+    try:
+        from calibration.pit_calibration import anderson_darling_uniform
+        _ad_stat, _ad_pval = anderson_darling_uniform(pit_clean)
+    except Exception:
+        _ad_pval = float('nan')
     hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
     hist_freq = hist / len(pit_clean)
     hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
@@ -2795,6 +2979,7 @@ def compute_extended_pit_metrics_student_t(
     return {
         "ks_statistic": float(ks_result.statistic),
         "pit_ks_pvalue": float(ks_result.pvalue),
+        "ad_pvalue": float(_ad_pval),
         "berkowitz_pvalue": float(berkowitz_p),
         "berkowitz_lr": float(berkowitz_lr_st),
         "pit_count": int(pit_count_st),
@@ -3254,6 +3439,7 @@ def fit_all_models_for_regime(
             )
             ks_st = _pit_ext_base["ks_statistic"]
             pit_p_st = _pit_ext_base["pit_ks_pvalue"]
+            _ad_p_st = _pit_ext_base.get("ad_pvalue", float('nan'))
             _berk_st = _pit_ext_base["berkowitz_pvalue"]
             _mad_st = _pit_ext_base["histogram_mad"]
 
@@ -3317,6 +3503,7 @@ def fit_all_models_for_regime(
                         )
                         ks_st = pit_ext_mom["ks_statistic"]
                         pit_p_st = pit_ext_mom["pit_ks_pvalue"]
+                        _ad_p_st = pit_ext_mom.get("ad_pvalue", float('nan'))
                         _berk_st = pit_ext_mom["berkowitz_pvalue"]
                         _mad_st = pit_ext_mom["histogram_mad"]
                         ll_full_st = ll_mom
@@ -3345,6 +3532,7 @@ def fit_all_models_for_regime(
                 "n_params": int(n_params_st),
                 "ks_statistic": float(ks_st),
                 "pit_ks_pvalue": float(pit_p_st),
+                "ad_pvalue": float(_ad_p_st),
                 "berkowitz_pvalue": float(_berk_st),
                 "berkowitz_lr": float(_pit_ext_base.get("berkowitz_lr", 0.0)),
                 "pit_count": int(_pit_ext_base.get("pit_count", 0)),
@@ -3383,7 +3571,7 @@ def fit_all_models_for_regime(
     # Internal Stage 5 re-optimizes ν across a finer grid [3..20],
     # so intermediate values (6, 10, 12, 15) are still explored —
     # we just don't spawn separate BMA models for them.
-    UNIFIED_NU_GRID = [4, 8, 20]
+    UNIFIED_NU_GRID = [3, 4, 8, 20]
     n_params_unified = 14  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν, garch(3), rough_hurst, risk_premium, skew(2), jump(4-cond)
     
     for nu_fixed in UNIFIED_NU_GRID:
@@ -3431,11 +3619,25 @@ def fit_all_models_for_regime(
             # Default Berk/MAD from raw PIT; overridden by filter_and_calibrate
             _calibrated_berk_u = pit_metrics.get("berkowitz_pvalue", 0.0)
             _calibrated_mad_u = pit_metrics.get("histogram_mad", 1.0)
+            _ad_p_u = float('nan')
             try:
-                _pit_cal_u, _pit_p_u, _sigma_cal_u, _, _calib_diag_u = \
-                    PhiStudentTDriftModel.filter_and_calibrate(
-                        returns, vol, config, train_frac=0.7
-                    )
+                # ── PERFORMANCE: Reuse test-period evaluation from optimize_params_unified
+                # instead of calling filter_and_calibrate a second time (saves ~1 full
+                # pipeline pass per unified model: filter + GARCH + Stage 6 calibration)
+                _calib_diag_u = diagnostics.get('test_calib_diag')
+                if (_calib_diag_u is not None
+                    and diagnostics.get('test_sigma') is not None
+                    and diagnostics.get('test_pit_pvalue') is not None):
+                    # Reuse cached results from optimize_params_unified
+                    _sigma_cal_u = diagnostics['test_sigma']
+                    _pit_p_u = diagnostics['test_pit_pvalue']
+                    _pit_cal_u = diagnostics.get('test_pit_values')
+                else:
+                    # Fallback: call filter_and_calibrate (shouldn't normally happen)
+                    _pit_cal_u, _pit_p_u, _sigma_cal_u, _, _calib_diag_u = \
+                        PhiStudentTDriftModel.filter_and_calibrate(
+                            returns, vol, config, train_frac=0.7
+                        )
                 # Use calibrated PIT p-value from filter_and_calibrate
                 # (raw pit_ks_unified runs on full data without GARCH blending;
                 #  filter_and_calibrate applies GARCH + beta recalibration on
@@ -3455,6 +3657,7 @@ def fit_all_models_for_regime(
                 _md = _calib_diag_u.get('mad')
                 if _md is not None and np.isfinite(_md):
                     _calibrated_mad_u = float(_md)
+                _ad_p_u = _calib_diag_u.get('ad_pvalue', float('nan'))
                 _nu_eff_u = _calib_diag_u.get('nu_effective', float(nu_fixed))
                 returns_test_u = returns[n_train_u:]
                 mu_pred_test_u = mu_pred_u[n_train_u:]
@@ -3558,6 +3761,7 @@ def fit_all_models_for_regime(
                 "crps": float(crps_u),
                 "ks_statistic": float(ks_u),
                 "pit_ks_pvalue": float(pit_p_u),
+                "ad_pvalue": float(_ad_p_u),
                 "pit_calibration_grade": pit_metrics.get("calibration_grade", "F"),
                 "histogram_mad": float(_calibrated_mad_u),
                 "berkowitz_pvalue": float(_calibrated_berk_u),
@@ -3624,6 +3828,7 @@ def fit_all_models_for_regime(
                 returns, vol, g_config, train_frac=0.7,
                 momentum_signal=_gu_mom_for_calib)
             pit_p_gu = float(_pit_p_gu) if np.isfinite(_pit_p_gu) else 0.0
+            _ad_p_gu = float(_calib_gu.get("ad_pvalue", float('nan')))
             _berk_p_gu = float(_calib_gu.get("berkowitz_pvalue", 0.0))
             _berk_lr_gu = float(_calib_gu.get("berkowitz_lr", 0.0))
             _pit_count_gu = int(_calib_gu.get("pit_count", 0))
@@ -3685,6 +3890,7 @@ def fit_all_models_for_regime(
                 "crps": float(crps_final_gu),
                 "ks_statistic": _ks_stat_gu,
                 "pit_ks_pvalue": float(pit_p_gu),
+                "ad_pvalue": float(_ad_p_gu),
                 "pit_calibration_grade": "A" if _mad_gu < 0.02 else ("B" if _mad_gu < 0.05 else ("C" if _mad_gu < 0.10 else "F")),
                 "histogram_mad": float(_mad_gu),
                 "berkowitz_pvalue": float(_berk_p_gu),
@@ -4532,6 +4738,9 @@ def fit_regime_model_posterior(
         pit_count_regime = {m: models[m]["pit_count"] for m in models
                            if models[m].get("fit_success", False)
                            and models[m].get("pit_count") is not None}
+        ad_pvalues_regime = {m: models[m]["ad_pvalue"] for m in models
+                            if models[m].get("fit_success", False)
+                            and models[m].get("ad_pvalue") is not None}
         
         # LFO-CV scores for proper out-of-sample model selection (February 2026)
         lfo_cv_scores = {}
@@ -4603,6 +4812,7 @@ def fit_regime_model_posterior(
                 bic_values, hyvarinen_scores, crps_values,
                 pit_pvalues=pit_pvalues,  # February 2026 - Elite PIT calibration
                 berk_pvalues=berk_pvalues,
+                ad_pvalues=ad_pvalues_regime,  # AD veto gate
                 berkowitz_lr_stats=berk_lr_regime, pit_counts=pit_count_regime,
                 mad_values=mad_values,
                 regime=regime, 
@@ -4619,6 +4829,7 @@ def fit_regime_model_posterior(
                 bic_values, hyvarinen_scores, crps_values,
                 pit_pvalues=pit_pvalues,  # February 2026 - Elite PIT calibration
                 berk_pvalues=berk_pvalues,
+                ad_pvalues=ad_pvalues_regime,  # AD veto gate
                 berkowitz_lr_stats=berk_lr_regime, pit_counts=pit_count_regime,
                 mad_values=mad_values,
                 regime=regime, lambda_entropy=DEFAULT_ENTROPY_LAMBDA
@@ -4922,12 +5133,15 @@ def tune_regime_model_averaging(
                          if global_models[m].get("fit_success", False) and global_models[m].get("pit_count") is not None}
     global_mad = {m: global_models[m]["histogram_mad"] for m in global_models
                   if global_models[m].get("fit_success", False) and global_models[m].get("histogram_mad") is not None}
+    global_ad = {m: global_models[m]["ad_pvalue"] for m in global_models
+                 if global_models[m].get("fit_success", False) and global_models[m].get("ad_pvalue") is not None}
     fallback_weight_metadata = None
     
     if global_crps and CRPS_SCORING_ENABLED:
         global_raw_weights, fallback_weight_metadata = compute_regime_aware_model_weights(
             global_bic, global_hyvarinen, global_crps,
             pit_pvalues=global_pit, berk_pvalues=global_berk,
+            ad_pvalues=global_ad,  # AD veto gate
             berkowitz_lr_stats=global_berk_lr, pit_counts=global_pit_counts,
             mad_values=global_mad, regime=None,
             lambda_entropy=DEFAULT_ENTROPY_LAMBDA
@@ -5155,6 +5369,11 @@ def tune_asset_with_bma(
             _log(f"     ⚠️  No price data for {asset}")
             return None
         
+        # Adaptive data quality filter (February 2026)
+        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=True)
+        if _dq_report.get('rows_purged_leading', 0) > 0 or _dq_report.get('window_applied', False):
+            _log(f"     🔬  Data quality: {_dq_report['rows_original']} → {_dq_report['rows_final']} rows")
+        
         # Extract Close prices from OHLC DataFrame
         cols = {c.lower(): c for c in df.columns}
         if 'close' in cols:
@@ -5209,6 +5428,7 @@ def tune_asset_with_bma(
 
         # Compute volatility using Garman-Klass or HAR (7.4x more efficient than EWMA)
         vol_estimator_used = "EWMA"
+        _volume_arr = None  # For Volume-based stale filter
         if GK_VOLATILITY_AVAILABLE and df is not None and not df.empty:
             try:
                 # Check for OHLC columns
@@ -5220,6 +5440,11 @@ def tune_asset_with_bma(
                     high = df_aligned[cols['high']].values
                     low = df_aligned[cols['low']].values
                     close = df_aligned[cols['close']].values
+                    
+                    # Extract Volume for stale-price detection (February 2026)
+                    _vol_col = cols.get('volume')
+                    if _vol_col is not None:
+                        _volume_arr = df_aligned[_vol_col].values
                     
                     # ENFORCE HAR-GK ONLY (February 2026)
                     # HAR-GK provides multi-horizon memory for crash detection
@@ -5244,8 +5469,26 @@ def tune_asset_with_bma(
         returns = returns[:min_len]
         vol = vol[:min_len]
 
-        # Remove NaN/Inf
-        valid_mask = np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+        # Remove NaN/Inf and stale-price observations (zero-return days)
+        # Also filter Volume=0 phantom quotes (February 2026)
+        _STALE_RETURN_THRESHOLD = 1e-10
+        valid_mask = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
+                      & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
+        # Add Volume >= 100 filter if Volume data available (February 2026)
+        # Volume < 100 indicates phantom OTC quotes without genuine price discovery
+        # Skip for FX pairs (=X) and indices (^) — Yahoo reports Volume=0
+        _MIN_GENUINE_VOLUME = 100
+        _skip_vol = (asset.endswith('=X') or asset.startswith('^')) if asset else False
+        if _volume_arr is not None and not _skip_vol:
+            _vol_aligned = _volume_arr[:min_len]
+            _vol_mask = _vol_aligned >= _MIN_GENUINE_VOLUME
+            n_zero_vol = int(np.sum(~_vol_mask & valid_mask))
+            if n_zero_vol > 0:
+                _log(f"     🧹  Filtered {n_zero_vol} additional low-volume phantom rows (Volume<{_MIN_GENUINE_VOLUME})")
+            valid_mask = valid_mask & _vol_mask
+        n_stale = int(np.sum(np.abs(returns) <= _STALE_RETURN_THRESHOLD))
+        if n_stale > 0:
+            _log(f"     🧹  Filtered {n_stale}/{len(returns)} stale-price rows ({100*n_stale/len(returns):.1f}%)")
         returns = returns[valid_mask]
         vol = vol[valid_mask]
 
@@ -5609,7 +5852,7 @@ Examples:
     print(f"Hierarchical shrinkage: λ_regime={args.lambda_regime:.3f}")
     print("Models: Gaussian, φ-Gaussian, φ-Student-t (ν ∈ {4, 8, 20})")
     if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
-        print(f"Momentum: ENABLED (prior penalty={args.momentum_penalty:.2f})")
+        print("Momentum: ENABLED")
     else:
         print("Momentum: DISABLED")
     print("Selection: BIC + Hyvärinen combined scoring")

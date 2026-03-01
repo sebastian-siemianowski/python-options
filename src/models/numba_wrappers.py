@@ -41,8 +41,18 @@ try:
         gaussian_filter_with_lfo_cv_kernel,
         ms_q_student_t_filter_kernel,
         unified_phi_student_t_filter_kernel,
+        unified_phi_student_t_filter_extended_kernel,
         gaussian_cv_test_fold_kernel,
         phi_gaussian_cv_test_fold_kernel,
+        gas_q_filter_gaussian_kernel,
+        build_garch_kernel,
+        chi2_ewm_correction_kernel,
+        pit_var_stretching_kernel,
+        phi_student_t_cv_test_fold_kernel,
+        compute_ms_process_noise_ewm_kernel,
+        stage6_ewm_fold_kernel,
+        ewm_mu_correction_kernel,
+        gaussian_score_fold_kernel,
     )
     _NUMBA_AVAILABLE = True
 except ImportError:
@@ -682,6 +692,63 @@ def is_unified_filter_available() -> bool:
     return _NUMBA_AVAILABLE
 
 
+def run_unified_phi_student_t_filter_extended(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    c: float,
+    phi: float,
+    nu_base: float,
+    q_t: np.ndarray,
+    p_stress: np.ndarray,
+    vov_rolling: np.ndarray,
+    gamma_vov: float,
+    vov_damping: float,
+    alpha_asym: float,
+    k_asym: float,
+    momentum: np.ndarray,
+    P0: float,
+    # Extended parameters
+    risk_prem: float = 0.0,
+    mu_drift: float = 0.0,
+    skew_kappa: float = 0.0,
+    skew_rho: float = 0.0,
+    jump_var: float = 0.0,
+    jump_intensity: float = 0.0,
+    jump_sensitivity: float = 0.0,
+    jump_mean: float = 0.0,
+    ewm_lambda: float = 0.0,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    Run extended unified phi-Student-t filter kernel.
+
+    Handles all features: risk premium, mu drift, GAS skew,
+    Merton jump-diffusion, and causal EWM correction.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available for extended unified filter")
+
+    returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
+    vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
+    q_t = np.ascontiguousarray(q_t.flatten(), dtype=np.float64)
+    p_stress = np.ascontiguousarray(p_stress.flatten(), dtype=np.float64)
+    vov_rolling = np.ascontiguousarray(vov_rolling.flatten(), dtype=np.float64)
+    momentum = np.ascontiguousarray(momentum.flatten(), dtype=np.float64)
+
+    return unified_phi_student_t_filter_extended_kernel(
+        returns, vol,
+        float(c), float(phi), float(nu_base),
+        q_t, p_stress,
+        vov_rolling, float(gamma_vov), float(vov_damping),
+        float(alpha_asym), float(k_asym),
+        momentum, float(P0),
+        float(risk_prem), float(mu_drift),
+        float(skew_kappa), float(skew_rho),
+        float(jump_var), float(jump_intensity),
+        float(jump_sensitivity), float(jump_mean),
+        float(ewm_lambda),
+    )
+
+
 # =============================================================================
 # CV TEST-FOLD FORWARD-PASS WRAPPERS
 # =============================================================================
@@ -740,3 +807,263 @@ def run_phi_gaussian_cv_test_fold(
 def is_cv_kernel_available() -> bool:
     """Check if Numba CV test-fold kernels are compiled and available."""
     return _NUMBA_AVAILABLE
+
+# =============================================================================
+# GAS-Q GAUSSIAN FILTER WRAPPER
+# =============================================================================
+
+def run_gas_q_filter_gaussian(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    c: float,
+    phi: float,
+    omega: float,
+    alpha: float,
+    beta: float,
+    q_init: float,
+    q_min: float,
+    q_max: float,
+    score_scale: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    Run Numba-accelerated GAS-Q Gaussian filter.
+
+    Returns
+    -------
+    mu_filtered, P_filtered, q_path, score_path, log_likelihood
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+
+    returns, vol = prepare_arrays(returns, vol)
+    vol_sq = vol * vol
+    n = len(returns)
+    mu_filtered = np.zeros(n, dtype=np.float64)
+    P_filtered = np.zeros(n, dtype=np.float64)
+    q_path = np.zeros(n, dtype=np.float64)
+    score_path = np.zeros(n, dtype=np.float64)
+
+    log_ll = gas_q_filter_gaussian_kernel(
+        returns, vol_sq, float(c), float(phi),
+        float(omega), float(alpha), float(beta),
+        float(q_init), float(q_min), float(q_max), float(score_scale),
+        mu_filtered, P_filtered, q_path, score_path,
+    )
+    return mu_filtered, P_filtered, q_path, score_path, float(log_ll)
+
+
+# =============================================================================
+# BUILD-GARCH WRAPPER
+# =============================================================================
+
+def run_build_garch(
+    n_train: int,
+    innovations: np.ndarray,
+    sq_inn: np.ndarray,
+    neg_ind: np.ndarray,
+    garch_omega: float,
+    garch_alpha: float,
+    garch_leverage: float,
+    garch_beta: float,
+    unconditional_var: float,
+    q_stress_ratio: float,
+    rho_c: float,
+    kap_c: float,
+    eta_c: float = 0.0,
+    reg_c: float = 0.0,
+) -> np.ndarray:
+    """
+    Run Numba-accelerated GJR-GARCH variance construction.
+
+    Returns h array of length n_train.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+
+    h_out = np.zeros(n_train, dtype=np.float64)
+    build_garch_kernel(
+        int(n_train),
+        np.ascontiguousarray(innovations, dtype=np.float64),
+        np.ascontiguousarray(sq_inn, dtype=np.float64),
+        np.ascontiguousarray(neg_ind, dtype=np.float64),
+        float(garch_omega), float(garch_alpha),
+        float(garch_leverage), float(garch_beta),
+        float(unconditional_var), float(q_stress_ratio),
+        float(rho_c), float(kap_c), float(eta_c), float(reg_c),
+        h_out,
+    )
+    return h_out
+
+
+# =============================================================================
+# CHI² EWM CORRECTION WRAPPER
+# =============================================================================
+
+def run_chi2_ewm_correction(
+    z_raw: np.ndarray,
+    chi2_target: float,
+    chi2_lambda: float = 0.98,
+) -> np.ndarray:
+    """
+    Run Numba-accelerated chi² EWM scale correction.
+
+    Returns scale adjustment array (same length as z_raw).
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+
+    z_raw = np.ascontiguousarray(z_raw, dtype=np.float64)
+    scale_adj = np.ones(len(z_raw), dtype=np.float64)
+    chi2_ewm_correction_kernel(z_raw, float(chi2_target), float(chi2_lambda), scale_adj)
+    return scale_adj
+
+
+# =============================================================================
+# PIT-VARIANCE STRETCHING WRAPPER
+# =============================================================================
+
+def run_pit_var_stretching(
+    pit_values: np.ndarray,
+) -> np.ndarray:
+    """
+    Run Numba-accelerated PIT-variance stretching in-place.
+
+    Returns the modified pit_values array.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+
+    pit_values = np.ascontiguousarray(pit_values, dtype=np.float64)
+    pit_var_stretching_kernel(pit_values)
+    return pit_values
+
+
+def is_gas_q_kernel_available() -> bool:
+    """Check if GAS-Q Numba kernel is available."""
+    return _NUMBA_AVAILABLE
+
+
+# =============================================================================
+# phi-STUDENT-T CV TEST-FOLD WRAPPER
+# =============================================================================
+
+def run_phi_student_t_cv_test_fold(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu_scale: float,
+    log_norm_const: float,
+    neg_exp: float,
+    inv_nu: float,
+    nu_adjust: float,
+    mu_init: float,
+    P_init: float,
+    test_start: int,
+    test_end: int,
+) -> float:
+    """
+    Run Numba-accelerated phi-Student-t CV test-fold forward pass.
+
+    Returns log-likelihood of the validation fold.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    return phi_student_t_cv_test_fold_kernel(
+        returns, vol_sq,
+        float(q), float(c), float(phi),
+        float(nu_scale), float(log_norm_const), float(neg_exp),
+        float(inv_nu), float(nu_adjust),
+        float(mu_init), float(P_init),
+        int(test_start), int(test_end),
+    )
+
+
+# =============================================================================
+# MS PROCESS NOISE EWM WRAPPER
+# =============================================================================
+
+def run_compute_ms_process_noise_ewm(
+    vol: np.ndarray,
+    lam: float,
+    warmup_mean: float,
+    warmup_var: float,
+) -> np.ndarray:
+    """Run Numba-accelerated EWM z-score computation for MS process noise."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    return compute_ms_process_noise_ewm_kernel(
+        np.ascontiguousarray(vol.flatten(), dtype=np.float64),
+        float(lam), float(warmup_mean), float(warmup_var),
+    )
+
+
+# =============================================================================
+# STAGE 6 EWM FOLD WRAPPER
+# =============================================================================
+
+def run_stage6_ewm_fold(
+    it_arr: np.ndarray,
+    Sb_arr: np.ndarray,
+    ee: int,
+    ve: int,
+    lam: float,
+    init_em: float,
+    init_en: float,
+    init_ed: float,
+) -> tuple:
+    """Run Numba-accelerated Stage 6 EWM fold computation."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    return stage6_ewm_fold_kernel(
+        np.ascontiguousarray(it_arr, dtype=np.float64),
+        np.ascontiguousarray(Sb_arr, dtype=np.float64),
+        int(ee), int(ve), float(lam),
+        float(init_em), float(init_en), float(init_ed),
+    )
+
+
+# =============================================================================
+# STAGE 5f EWM CORRECTION WRAPPER
+# =============================================================================
+
+def run_ewm_mu_correction(
+    returns: np.ndarray,
+    mu_pred: np.ndarray,
+    lam: float,
+    n_train: int,
+) -> np.ndarray:
+    """Run Numba-accelerated Stage 5f EWM bias correction."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    return ewm_mu_correction_kernel(
+        np.ascontiguousarray(returns, dtype=np.float64),
+        np.ascontiguousarray(mu_pred, dtype=np.float64),
+        float(lam), int(n_train),
+    )
+
+
+# =============================================================================
+# GAUSSIAN SCORE FOLD WRAPPER
+# =============================================================================
+
+def run_gaussian_score_fold(
+    it_arr: np.ndarray,
+    Sb_arr: np.ndarray,
+    ee: int,
+    ve: int,
+    lam: float,
+    init_em: float,
+    init_en: float,
+    init_ed: float,
+) -> tuple:
+    """Run Numba-accelerated Gaussian Stage 5 _score_fold."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    return gaussian_score_fold_kernel(
+        np.ascontiguousarray(it_arr, dtype=np.float64),
+        np.ascontiguousarray(Sb_arr, dtype=np.float64),
+        int(ee), int(ve), float(lam),
+        float(init_em), float(init_en), float(init_ed),
+    )

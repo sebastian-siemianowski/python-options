@@ -263,11 +263,13 @@ def parse_cst_name(name: str) -> Optional[Tuple[float, float, float]]:
 # PARAMETER GRIDS — Canonical grids for tuning
 # =============================================================================
 
-# Student-t ν grid (3 BMA flavours: fat, moderate, near-Gaussian)
-STUDENT_T_NU_GRID = [4, 8, 20]
+# Student-t ν grid (4 BMA flavours: extreme-fat, fat, moderate, near-Gaussian)
+# ν=3 added February 2026: EVT analysis shows MSTR ξ=0.302 → ν≈3.3;
+# the previous grid's closest (ν=4, kurtosis=6) under-represents power-law tails.
+STUDENT_T_NU_GRID = [3, 4, 8, 20]
 
 # Student-t ν grid (adaptive refinement candidates)
-STUDENT_T_NU_REFINED_GRID = [3, 5, 7, 10, 14, 16, 25]
+STUDENT_T_NU_REFINED_GRID = [5, 7, 10, 14, 16, 25]
 
 # Hansen λ grid (skewness)
 HANSEN_LAMBDA_GRID = [-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3]
