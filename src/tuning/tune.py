@@ -2939,7 +2939,13 @@ def compute_extended_pit_metrics_student_t(
             _ewm_z2 = _chi2_lam * _ewm_z2 + _chi2_1m * _z2w
     scale_corrected = scale_arr * _scale_adj
 
-    pit_values = _st_dist.cdf(returns_flat[:n] - mu_pred[:n], df=nu, scale=scale_corrected)
+    # Pre-standardize then use Numba CDF (avoids scipy per-element scale dispatch)
+    _z_std = (returns_flat[:n] - mu_pred[:n]) / scale_corrected
+    try:
+        from models.phi_student_t import _fast_t_cdf as _tune_fast_t_cdf
+        pit_values = _tune_fast_t_cdf(_z_std, nu)
+    except (ImportError, Exception):
+        pit_values = _st_dist.cdf(_z_std, df=nu)
 
     # ── PIT-Variance stretching (Var[PIT] → 1/12) ────────────────────
     # Fixes shape miscalibration not caught by chi² (scale) correction.

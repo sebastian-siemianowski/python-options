@@ -2649,7 +2649,6 @@ class PhiStudentTDriftModel:
         """
         try:
             from scipy.special import ndtri
-            from scipy.stats import chi2
             z = ndtri(np.clip(pit_values, 0.0001, 0.9999))
             z = z[np.isfinite(z)]
             n_z = len(z)
@@ -2669,7 +2668,8 @@ class PhiStudentTDriftModel:
                       - 0.5 * (n_z - 1) * np.log(2 * np.pi * sigma_sq_cond)
                       - 0.5 * np.sum(resid ** 2) / sigma_sq_cond)
             lr_stat = float(max(2 * (ll_alt - ll_null), 0))
-            p_value = float(1 - chi2.cdf(lr_stat, df=3))
+            from scipy.special import chdtrc as _chdtrc_berk
+            p_value = float(_chdtrc_berk(3, lr_stat))
             return (p_value, lr_stat, n_z)
         except Exception:
             return (float('nan'), 0.0, 0)
@@ -4811,14 +4811,20 @@ class PhiStudentTDriftModel:
 
             # Build GARCH h_t for location correction features
             innovations = returns_train - mu_pred
-            h_garch = np.zeros(n_train)
-            h_garch[0] = unconditional_var
-            for t in range(1, n_train):
-                h_t = (garch_omega
-                       + garch_alpha * innovations[t-1]**2
-                       + garch_leverage * innovations[t-1]**2 * (1.0 if innovations[t-1] < 0 else 0.0)
-                       + garch_beta * h_garch[t-1])
-                h_garch[t] = max(h_t, 1e-12)
+            try:
+                h_garch = run_garch_variance(
+                    np.ascontiguousarray(innovations, dtype=np.float64),
+                    garch_omega, garch_alpha, garch_beta, garch_leverage,
+                    unconditional_var, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+            except Exception:
+                h_garch = np.zeros(n_train)
+                h_garch[0] = unconditional_var
+                for t in range(1, n_train):
+                    h_t = (garch_omega
+                           + garch_alpha * innovations[t-1]**2
+                           + garch_leverage * innovations[t-1]**2 * (1.0 if innovations[t-1] < 0 else 0.0)
+                           + garch_beta * h_garch[t-1])
+                    h_garch[t] = max(h_t, 1e-12)
 
             h_val = h_garch[n_est:n_train]
             theta_long = unconditional_var
