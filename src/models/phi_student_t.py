@@ -62,18 +62,23 @@ try:
         run_garch_variance,
         # Filter accelerators
         run_phi_student_t_augmented_filter,
+        # CDF/PDF array kernels (vectorized replacements for scipy)
+        run_student_t_cdf_array,
+        run_student_t_pdf_array,
     )
     _USE_NUMBA = is_numba_available()
     _MS_Q_NUMBA_AVAILABLE = _USE_NUMBA
     _UNIFIED_NUMBA_AVAILABLE = is_unified_filter_available() if is_numba_available() else False
     _NUMBA_PIT_KS = _USE_NUMBA
     _NUMBA_GARCH = _USE_NUMBA
+    _NUMBA_CDF_ARRAY = _USE_NUMBA
 except ImportError:
     _USE_NUMBA = False
     _MS_Q_NUMBA_AVAILABLE = False
     _UNIFIED_NUMBA_AVAILABLE = False
     _NUMBA_PIT_KS = False
     _NUMBA_GARCH = False
+    _NUMBA_CDF_ARRAY = False
     run_phi_student_t_filter = None
     run_phi_student_t_filter_batch = None
     run_ms_q_student_t_filter = None
@@ -83,6 +88,21 @@ except ImportError:
     run_pit_ks_unified = None
     run_garch_variance = None
     run_phi_student_t_augmented_filter = None
+    run_student_t_cdf_array = None
+    run_student_t_pdf_array = None
+
+
+def _fast_t_cdf(z, nu):
+    """
+    Vectorized Student-t CDF: uses Numba array kernel when available, scipy fallback.
+    """
+    if _NUMBA_CDF_ARRAY:
+        try:
+            return run_student_t_cdf_array(np.ascontiguousarray(z, dtype=np.float64), float(nu))
+        except Exception:
+            pass
+    from scipy.stats import t as _t
+    return _t.cdf(z, df=nu)
 
 
 # ---------------------------------------------------------------------------
@@ -1436,9 +1456,9 @@ class PhiStudentTDriftModel:
 
         Standardises returns by predictive mean/scale, computes Student-t CDF
         PIT values, and returns (KS statistic, KS p-value).
+        Vectorized: single batch CDF call instead of per-element loop.
         """
         from scipy.stats import kstest
-        from scipy.stats import t as student_t_dist
 
         returns = np.asarray(returns).flatten()
         mu_pred = np.asarray(mu_pred).flatten()
@@ -1448,15 +1468,15 @@ class PhiStudentTDriftModel:
         if n < 2:
             return 1.0, 0.0
 
-        pit_values = np.empty(n)
-        for t in range(n):
-            S_t = max(S_pred[t], 1e-20)
-            if nu > 2:
-                scale = np.sqrt(S_t * (nu - 2) / nu)
-            else:
-                scale = np.sqrt(S_t)
-            scale = max(scale, 1e-10)
-            pit_values[t] = student_t_dist.cdf(returns[t] - mu_pred[t], df=nu, scale=scale)
+        S_clamped = np.maximum(S_pred[:n], 1e-20)
+        if nu > 2:
+            scale = np.sqrt(S_clamped * (nu - 2) / nu)
+        else:
+            scale = np.sqrt(S_clamped)
+        scale = np.maximum(scale, 1e-10)
+
+        z = (returns[:n] - mu_pred[:n]) / scale
+        pit_values = _fast_t_cdf(z, nu)
 
         valid = np.isfinite(pit_values)
         pit_clean = np.clip(pit_values[valid], 0, 1)
@@ -2133,7 +2153,7 @@ class PhiStudentTDriftModel:
             _ewm_mu_cv = _best_lam_mu * _ewm_mu_cv + _1m_lam_mu * innovations_train[_idx]
             _ewm_num_cv = _best_lam_beta * _ewm_num_cv + _1m_lam_beta * (innovations_train[_idx] ** 2)
             _ewm_den_cv = _best_lam_beta * _ewm_den_cv + _1m_lam_beta * _S_bt[_idx]
-        _pit_train_cal = np.clip(student_t_dist.cdf(_zcal, df=nu), 0.001, 0.999)
+        _pit_train_cal = np.clip(_fast_t_cdf(_zcal, nu), 0.001, 0.999)
 
         # ── DOMAIN-MATCHED TRAINING PIT CORRECTIONS (March 2026) ────
         # Apply the SAME chi² and PIT-var corrections to training PITs
@@ -2177,10 +2197,10 @@ class PhiStudentTDriftModel:
             _nu_r_tr = max(2.5, nu + _t_df_asym)
             _mask_neg_tr = _zcal_corrected < 0
             _pit_train_cal = np.empty(len(_zcal_corrected))
-            _pit_train_cal[_mask_neg_tr] = student_t_dist.cdf(_zcal_corrected[_mask_neg_tr], df=_nu_l_tr)
-            _pit_train_cal[~_mask_neg_tr] = student_t_dist.cdf(_zcal_corrected[~_mask_neg_tr], df=_nu_r_tr)
+            _pit_train_cal[_mask_neg_tr] = _fast_t_cdf(_zcal_corrected[_mask_neg_tr], _nu_l_tr)
+            _pit_train_cal[~_mask_neg_tr] = _fast_t_cdf(_zcal_corrected[~_mask_neg_tr], _nu_r_tr)
         else:
-            _pit_train_cal = student_t_dist.cdf(_zcal_corrected, df=nu)
+            _pit_train_cal = _fast_t_cdf(_zcal_corrected, nu)
         _pit_train_cal = np.clip(_pit_train_cal, 0.001, 0.999)
 
         # PIT-var correction on training PITs (same algorithm as test path)
@@ -2350,10 +2370,10 @@ class PhiStudentTDriftModel:
             _nu_r = max(2.5, nu + _t_df_asym)
             _mask_neg = _z_test < 0
             pit_values = np.empty(n_test)
-            pit_values[_mask_neg] = student_t_dist.cdf(_z_test[_mask_neg], df=_nu_l)
-            pit_values[~_mask_neg] = student_t_dist.cdf(_z_test[~_mask_neg], df=_nu_r)
+            pit_values[_mask_neg] = _fast_t_cdf(_z_test[_mask_neg], _nu_l)
+            pit_values[~_mask_neg] = _fast_t_cdf(_z_test[~_mask_neg], _nu_r)
         else:
-            pit_values = student_t_dist.cdf(_z_test, df=nu)
+            pit_values = _fast_t_cdf(_z_test, nu)
 
         pit_values = np.clip(pit_values, 0.001, 0.999)
 
@@ -2552,7 +2572,6 @@ class PhiStudentTDriftModel:
     @staticmethod
     def _pit_simple_path(returns_test, mu_pred_test, S_calibrated, nu, t_df_asym):
         """PIT via basic Student-t CDF (non-GARCH path). Returns (pit, sigma, mu_eff)."""
-        from scipy.stats import t as student_t
         sigma = np.sqrt(S_calibrated * (nu - 2) / nu) if nu > 2 else np.sqrt(S_calibrated)
         sigma = np.maximum(sigma, 1e-10)
         innovations = returns_test - mu_pred_test
@@ -2561,10 +2580,10 @@ class PhiStudentTDriftModel:
             pit_values = np.zeros(len(z))
             _nu_l, _nu_r = max(2.5, nu - t_df_asym), max(2.5, nu + t_df_asym)
             m = z < 0
-            pit_values[m] = student_t.cdf(z[m], df=_nu_l)
-            pit_values[~m] = student_t.cdf(z[~m], df=_nu_r)
+            pit_values[m] = _fast_t_cdf(z[m], _nu_l)
+            pit_values[~m] = _fast_t_cdf(z[~m], _nu_r)
         else:
-            pit_values = student_t.cdf(z, df=nu)
+            pit_values = _fast_t_cdf(z, nu)
         return np.clip(pit_values, 0.001, 0.999), sigma, mu_pred_test
 
     @staticmethod
@@ -4796,8 +4815,27 @@ class PhiStudentTDriftModel:
         """Stage 6: Pre-calibrate filter_and_calibrate pipeline params (gw, nu_pit, nu_crps, beta_corr, lam_rho)."""
         from scipy.stats import t as _s6t, norm as _s6n
         from scipy.special import gammaln as _s6gl
-        _s6t_cdf = _s6t.cdf  # Local alias
-        _s6t_pdf = _s6t.pdf
+        # Numba-accelerated CDF/PDF (eliminate scipy overhead in inner grid loop)
+        try:
+            from models.numba_wrappers import run_student_t_cdf_array as _numba_cdf_arr
+            from models.numba_wrappers import run_student_t_pdf_array as _numba_pdf_arr
+            _s6_use_numba = True
+        except (ImportError, Exception):
+            _s6_use_numba = False
+        def _s6t_cdf(z, df):
+            if _s6_use_numba:
+                try:
+                    return _numba_cdf_arr(z, float(df))
+                except Exception:
+                    pass
+            return _s6t.cdf(z, df=df)
+        def _s6t_pdf(z, df):
+            if _s6_use_numba:
+                try:
+                    return _numba_pdf_arr(z, float(df))
+                except Exception:
+                    pass
+            return _s6t.pdf(z, df=df)
         _msqrt = math.sqrt
         D = {'calibrated_gw': 0.50, 'calibrated_nu_pit': 0.0, 'calibrated_nu_crps': 0.0,
              'calibrated_beta_probit_corr': 1.0, 'calibrated_lambda_rho': 0.985}
@@ -5045,13 +5083,14 @@ class PhiStudentTDriftModel:
                         # Chi² correction on z-values before CDF (March 2026)
                         zv = _chi2_correct_z(zv, nu)
                         # VECTORIZED CDF
-                        pv = np.clip(_s6t_cdf(zv, df=nu), 0.001, 0.999)
+                        cdf_raw = _s6t_cdf(zv, df=nu)
+                        pv = np.clip(cdf_raw, 0.001, 0.999)
                         try:
                             sc, _, _ = _bk(pv)
                             hi_, _ = np.histogram(pv, bins=10, range=(0, 1))
                             md = float(np.mean(np.abs(hi_ / nv - 0.1))); mp_ = max(0, 1 - md / 0.05)
-                            # VECTORIZED pdf+cdf for CRPS
-                            pdf = _s6t_pdf(zv, df=nu); cdf = np.clip(_s6t_cdf(zv, df=nu), 0.001, 0.999)
+                            # VECTORIZED pdf for CRPS (reuse CDF from above)
+                            pdf = _s6t_pdf(zv, df=nu); cdf = pv  # Reuse cached CDF
                             if nu > 1:
                                 l1 = _s6gl(0.5) + _s6gl(nu - 0.5) - _s6gl(nu)
                                 l2 = _s6gl(0.5) + _s6gl(nu / 2) - _s6gl((nu + 1) / 2)

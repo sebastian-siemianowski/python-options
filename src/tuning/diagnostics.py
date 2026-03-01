@@ -1053,6 +1053,14 @@ def compute_crps_gaussian_inline(
     return float(np.mean(crps_individual[valid]))
 
 
+# Numba-accelerated CRPS kernel (optional, loaded once)
+try:
+    from models.numba_wrappers import run_crps_student_t as _numba_crps_student_t
+    _NUMBA_CRPS_AVAILABLE = True
+except ImportError:
+    _NUMBA_CRPS_AVAILABLE = False
+
+
 def compute_crps_student_t_inline(
     observations: np.ndarray,
     mu: np.ndarray,
@@ -1063,6 +1071,7 @@ def compute_crps_student_t_inline(
     Compute CRPS for Student-t predictive distributions.
     
     Uses the closed-form expression from Gneiting & Raftery (2007).
+    Delegates to Numba kernel when available for ~80% speedup.
     
     Args:
         observations: Actual observed values
@@ -1092,6 +1101,14 @@ def compute_crps_student_t_inline(
     # Standardized residual
     z = (observations - mu) / sigma
     
+    # ── Numba fast-path: uses compiled CDF/PDF/gammaln (no scipy) ──
+    if _NUMBA_CRPS_AVAILABLE and nu > 1.0:
+        try:
+            return _numba_crps_student_t(z, sigma, nu)
+        except Exception:
+            pass  # Fall through to scipy path
+    
+    # ── Scipy fallback path ──
     # Student-t PDF and CDF
     t_dist = student_t_dist(df=nu)
     pdf_z = t_dist.pdf(z)

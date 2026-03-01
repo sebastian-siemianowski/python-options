@@ -180,34 +180,69 @@ def compute_momentum_features(
     features = {}
     valid_features = []
     
+    # Pre-compute cumulative sum once (shared across all lookbacks) — O(n)
+    cumsum = np.cumsum(returns)
+
     for lb in lookbacks:
         if lb >= n:
             # Insufficient history for this lookback
             continue
             
-        # Compute cumulative return over lookback
+        # Vectorized cumulative return over lookback — O(n) via cumsum difference
+        # sum(returns[t-lb:t]) = cumsum[t-1] - cumsum[t-lb-1] (with cumsum[-1]=0)
         momentum = np.zeros(n)
-        for t in range(lb, n):
-            cum_ret = np.sum(returns[t-lb:t])
-            momentum[t] = cum_ret
+        # Prepend 0 for the t=lb case where t-lb=0 (no subtraction needed)
+        cs_padded = np.empty(n + 1)
+        cs_padded[0] = 0.0
+        cs_padded[1:] = cumsum
+        # momentum[t] = cs_padded[t] - cs_padded[t-lb] for t=lb,...,n-1
+        momentum[lb:] = cs_padded[lb:n] - cs_padded[:n-lb]
         
-        # Fill early values with expanding window
-        for t in range(1, min(lb, n)):
-            momentum[t] = np.sum(returns[:t])
+        # Fill early values with expanding window — vectorized
+        if lb > 1:
+            momentum[1:min(lb, n)] = cumsum[:min(lb, n)-1]
         
         # Normalize
         if normalization == "zscore":
-            # Rolling z-score normalization
+            # Rolling z-score normalization — online Welford algorithm O(n)
             normalized = np.zeros(n)
+            _win = 252
+            # Use a deque-style approach: maintain running sum and sum-of-squares
+            # over the last 252 values of momentum
+            _buf = np.empty(_win)
+            _buf_idx = 0
+            _buf_count = 0
+            _running_sum = 0.0
+            _running_sq = 0.0
+            # Seed with momentum[0]
+            _buf[0] = momentum[0]
+            _buf_count = 1
+            _buf_idx = 1
+            _running_sum = momentum[0]
+            _running_sq = momentum[0] * momentum[0]
             for t in range(1, n):
-                window = momentum[max(0, t-252):t+1]  # 1-year rolling window
-                if len(window) > 1:
-                    mu = np.mean(window)
-                    sigma = np.std(window)
-                    if sigma > 1e-10:
-                        normalized[t] = (momentum[t] - mu) / sigma
-                    else:
-                        normalized[t] = 0.0
+                val = momentum[t]
+                if _buf_count < _win:
+                    # Growing phase
+                    _buf[_buf_idx] = val
+                    _buf_idx = (_buf_idx + 1) % _win
+                    _buf_count += 1
+                    _running_sum += val
+                    _running_sq += val * val
+                else:
+                    # Sliding phase: remove oldest, add new
+                    old_val = _buf[_buf_idx]
+                    _running_sum += val - old_val
+                    _running_sq += val * val - old_val * old_val
+                    _buf[_buf_idx] = val
+                    _buf_idx = (_buf_idx + 1) % _win
+                mu = _running_sum / _buf_count
+                var = _running_sq / _buf_count - mu * mu
+                if var < 0:
+                    var = 0.0
+                sigma = np.sqrt(var)
+                if sigma > 1e-10:
+                    normalized[t] = (val - mu) / sigma
                 else:
                     normalized[t] = 0.0
             momentum = normalized

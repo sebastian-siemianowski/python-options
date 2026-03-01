@@ -396,6 +396,7 @@ class GaussianDriftModel:
         ELITE FIX: Proper PIT/KS using PREDICTIVE distribution for Gaussian.
         
         For Gaussian, scale = sqrt(S_pred) (no adjustment needed).
+        Vectorized: single scipy call instead of per-element loop.
         """
         returns_flat = np.asarray(returns).flatten()
         mu_pred_flat = np.asarray(mu_pred).flatten()
