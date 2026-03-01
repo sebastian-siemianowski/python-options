@@ -201,6 +201,9 @@ def _detect_asset_class(asset_symbol: str) -> Optional[str]:
         return 'metals_other'
     if sym in HIGH_VOL_EQUITY_SYMBOLS:
         return 'high_vol_equity'
+    # Forex pairs: symbol ends with =X (e.g. CNYJPY=X, AUDUSD=X)
+    if sym.endswith('=X'):
+        return 'forex'
     return None
 
 
@@ -227,6 +230,7 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'k_asym': 1.5,                      # Sharper asymmetric ν transition
         'alpha_asym_init': -0.08,           # Mild left-tail prior
         'q_stress_ratio': 15.0,             # Wider calm/stress gap for macro regimes
+        'chisq_ewm_lambda': 0.985,          # Slower chi² tracker (~46d) for macro trends
     },
     # ---------------------------------------------------------------------------
     # SILVER — leveraged-gold, explosive VoV, sharp left-tail fattening
@@ -243,6 +247,7 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'k_asym': 1.8,                      # Sharp asymmetric transition
         'alpha_asym_init': -0.15,           # Stronger left-tail prior
         'q_stress_ratio': 20.0,             # Wide calm/stress gap
+        'chisq_ewm_lambda': 0.96,           # Faster chi² tracker (~25d) for explosive regimes
     },
     # ---------------------------------------------------------------------------
     # OTHER METALS — moderate adjustments between generic and gold
@@ -259,6 +264,7 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'k_asym': 1.3,
         'alpha_asym_init': -0.05,
         'q_stress_ratio': 12.0,
+        'chisq_ewm_lambda': 0.97,           # Moderate chi² tracker (~23d)
     },
     # ---------------------------------------------------------------------------
     # HIGH-VOL EQUITY — lower ν, frequent gaps, weaker VoV damping
@@ -276,6 +282,13 @@ ASSET_CLASS_PROFILES: Dict[str, Dict[str, float]] = {
         'k_asym': 1.5,                      # Sharper asymmetric ν transition
         'alpha_asym_init': -0.10,           # Left-tail fattening prior
         'q_stress_ratio': 15.0,             # Wide calm/stress gap
+        'chisq_ewm_lambda': 0.94,           # Fast chi² tracker (~16d) for regime shifts
+    },
+    # ---------------------------------------------------------------------------
+    # FOREX — very persistent regimes, slow chi-squared correction
+    # ---------------------------------------------------------------------------
+    'forex': {
+        'chisq_ewm_lambda': 0.99,           # Slow chi² tracker (~69d) for persistent FX regimes
     },
 }
 
@@ -499,6 +512,11 @@ class UnifiedStudentTConfig:
     calibrated_nu_crps: float = 0.0      # ν for CRPS (0 = use nu_base)
     calibrated_beta_probit_corr: float = 1.0  # Probit-variance β correction
     calibrated_lambda_rho: float = 0.985 # EWM decay / AR(1) whitening λ
+
+    # Chi-squared variance correction EWM decay (asset-class adaptive)
+    # Higher λ = slower tracker = more stable for persistent regimes
+    # Lower λ = faster tracker = better for regime-switching assets
+    chisq_ewm_lambda: float = 0.98       # Default ~35d half-life
 
     # Momentum/exogenous input
     exogenous_input: np.ndarray = field(default=None, repr=False)
@@ -1737,6 +1755,7 @@ class PhiStudentTDriftModel:
 
         # ── STAGE 6: Walk-forward calibration params
         # Build a temp config with all Stages 1-5h params for Stage 6
+        _prof_chisq_lambda = profile.get('chisq_ewm_lambda', 0.98)
         _s6_config = UnifiedStudentTConfig(
             q=q_opt, c=c_opt, phi=phi_opt,
             nu_base=nu_opt,
@@ -1747,6 +1766,7 @@ class PhiStudentTDriftModel:
             ms_ewm_lambda=profile.get('ms_ewm_lambda', 0.0),
             q_stress_ratio=profile.get('q_stress_ratio', 10.0),
             vov_damping=profile.get('vov_damping', 0.3),
+            chisq_ewm_lambda=_prof_chisq_lambda,
             variance_inflation=beta_opt,
             mu_drift=mu_drift_opt,
             risk_premium_sensitivity=risk_premium_opt,
@@ -1821,6 +1841,7 @@ class PhiStudentTDriftModel:
             loc_bias_var_coeff=s5h['loc_bias_var_coeff'],
             loc_bias_drift_coeff=s5h['loc_bias_drift_coeff'],
             q_min=config.q_min, c_min=config.c_min, c_max=config.c_max,
+            chisq_ewm_lambda=_prof_chisq_lambda,
             # Stage 6: pre-calibrated walk-forward params
             calibrated_gw=s6['calibrated_gw'],
             calibrated_nu_pit=s6['calibrated_nu_pit'],
@@ -1923,6 +1944,12 @@ class PhiStudentTDriftModel:
                 float(getattr(config, 't_df_asym', 0.0)))
 
         pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
+        # Anderson-Darling test (tail-sensitive complement to KS)
+        try:
+            from calibration.pit_calibration import anderson_darling_uniform
+            _ad_stat, _ad_pvalue = anderson_darling_uniform(pit_values)
+        except Exception:
+            _ad_pvalue = float('nan')
         hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
         mad = float(np.mean(np.abs(hist / n_test - 0.1)))
         berkowitz_pvalue, berkowitz_lr, berkowitz_n_pit = cls._compute_berkowitz_full(pit_values)
@@ -1936,7 +1963,8 @@ class PhiStudentTDriftModel:
         _crps_shrink = float(np.clip(float(getattr(config, 'crps_sigma_shrinkage', 1.0)), 0.30, 1.0))
 
         diagnostics = {
-            'pit_pvalue': pit_pvalue, 'berkowitz_pvalue': berkowitz_pvalue,
+            'pit_pvalue': pit_pvalue, 'ad_pvalue': _ad_pvalue,
+            'berkowitz_pvalue': berkowitz_pvalue,
             'berkowitz_lr': float(berkowitz_lr), 'pit_count': int(berkowitz_n_pit),
             'mad': mad,
             'nu_effective': nu_crps, 'nu_pit': nu, 'variance_ratio': variance_ratio,
@@ -2090,7 +2118,7 @@ class PhiStudentTDriftModel:
         #   • Warm-started from training z² values (last 40% of training)
         #   • Safe: asymmetric dead-zone prevents noise on calibrated assets
         # ─────────────────────────────────────────────────────────────────
-        _CHI2_LAMBDA = 0.98        # ~35 day half-life (slow, stable)
+        _CHI2_LAMBDA = float(getattr(config, 'chisq_ewm_lambda', 0.98))  # Asset-adaptive half-life
         _CHI2_MIN_RATIO = 0.3      # Floor
         _CHI2_MAX_RATIO = 3.0      # Cap
         # Asymmetric dead-zones
@@ -2334,6 +2362,34 @@ class PhiStudentTDriftModel:
                     _z_white[_t] = _z_probit[_t]
 
             pit_values = np.clip(norm_dist.cdf(_z_white), 0.001, 0.999)
+
+        # ── ISOTONIC RECALIBRATION (Kuleshov et al. 2018) ───────────
+        #
+        # Final transport map: learn systematic PIT miscalibration from
+        # training PITs and correct test PITs.  Isotonic regression
+        # guarantees monotonicity (probability ordering preserved).
+        #
+        # Built-in safety:
+        #   • If training KS p ≥ 0.10 → returns identity (no correction)
+        #   • min_observations = 50 → skips if insufficient data
+        #   • Monotonic → cannot make in-sample calibration worse
+        #   • Validation split detects out-of-sample degradation
+        #   • Blended application (α=0.4) prevents overcorrection when
+        #     training PITs lack chi²/Beta(a,a) corrections present in test
+        # ────────────────────────────────────────────────────────────
+        _ISO_BLEND_ALPHA = 0.4  # Conservative blending: 40% isotonic, 60% identity
+        try:
+            from calibration.isotonic_recalibration import IsotonicRecalibrator
+            if len(_pit_train_cal) >= 50:
+                _iso_recal = IsotonicRecalibrator()
+                _iso_result = _iso_recal.fit(_pit_train_cal)
+                if _iso_result.fit_success and not _iso_result.is_identity:
+                    _pit_iso = _iso_recal.transform(pit_values)
+                    # Blend: prevent overcorrection from train/test correction mismatch
+                    pit_values = (1.0 - _ISO_BLEND_ALPHA) * pit_values + _ISO_BLEND_ALPHA * _pit_iso
+                    pit_values = np.clip(pit_values, 0.001, 0.999)
+        except Exception:
+            pass  # Graceful degradation — sklearn may not be available
 
         return pit_values, sigma, mu_effective, _S_blended_test
 
@@ -3667,22 +3723,69 @@ class PhiStudentTDriftModel:
                     avg_beta = float(np.mean(fold_betas))
                     avg_mu_drift = float(np.mean(fold_mu_drifts))
 
+                    # ── CRPS-PRIMARY ν SELECTION (Gneiting-Raftery 2007) ──
+                    # "Maximize sharpness subject to calibration."
+                    # CRPS is primary when calibration constraint is met.
+                    #
+                    # Anderson-Darling test provides tail-sensitive calibration
+                    # assessment alongside KS.
+                    #
+                    # Gate: reject ν where KS p < 0.01 (tail-insensitive but
+                    # stable) — this is the calibration CONSTRAINT.
+                    # Among passing ν values: select lowest CRPS (OBJECTIVE).
+                    # Fallback: if no ν passes gate, use KS-primary scoring.
+                    # ────────────────────────────────────────────────────
+
+                    # Anderson-Darling test on last fold for tail sensitivity
+                    _ad_p = 1.0
+                    try:
+                        from calibration.pit_calibration import anderson_darling_uniform
+                        # Compute AD on mean PIT across folds
+                        _last_fold_ks = fold_ks_vals[-1] if fold_ks_vals else 0.0
+                        _, _ad_p = anderson_darling_uniform(
+                            student_t.cdf(
+                                innovations_train[n_train - fold_size:] /
+                                np.maximum(np.sqrt(S_pred_train[n_train - fold_size:] *
+                                    float(np.mean(fold_betas)) *
+                                    ((test_nu - 2) / test_nu if test_nu > 2 else 1.0)), 1e-10),
+                                df=test_nu
+                            )
+                        )
+                    except Exception:
+                        _ad_p = avg_ks_p  # Fallback: treat AD = KS
+
+                    # Calibration gate: max(KS, AD) >= 0.01
+                    _cal_ok = max(avg_ks_p, _ad_p) >= 0.01
+
                     # Kurtosis coherence bonus for heavy-tail grid
                     if use_heavy_tail_grid and test_nu > 4:
                         emp_kurt = float(np.mean(innovations_train ** 4) / (np.mean(innovations_train ** 2) ** 2 + 1e-20))
                         theo_kurt = 3.0 * (test_nu - 2.0) / (test_nu - 4.0)
                         kurt_mismatch = abs(emp_kurt - theo_kurt) / (emp_kurt + 1e-8)
                         kurt_bonus = max(0.5, 1.0 - 0.5 * kurt_mismatch)
-                        score = avg_ks_p * kurt_bonus
                     else:
-                        score = avg_ks_p
+                        kurt_bonus = 1.0
 
-                    # CRPS sharpness bonus (Gneiting-Raftery)
-                    if avg_ks_p > 0.05 and np.isfinite(avg_crps) and avg_crps > 0:
+                    if _cal_ok and np.isfinite(avg_crps) and avg_crps > 0:
+                        # CRPS-primary: lower CRPS = better, invert for score
                         innov_std = float(np.std(innovations_train)) + 1e-10
                         crps_ratio = avg_crps / innov_std
-                        crps_bonus = max(0.6, min(1.5, 1.5 - 0.8 * crps_ratio))
-                        score = score * crps_bonus
+                        # Calibration quality: KS-based with floor.
+                        # AD informs the gate above, not the quality metric,
+                        # because AD p-values are consistently lower than KS
+                        # and would crush the score for well-calibrated assets.
+                        cal_quality = max(avg_ks_p, 0.05) ** 0.3  # Compressed: [0.05→0.38, 0.5→0.81, 0.9→0.97]
+                        score = (1.0 / max(crps_ratio, 0.01)) * kurt_bonus * cal_quality
+                    else:
+                        # Fallback: KS-primary scoring (calibration constraint not met)
+                        score = avg_ks_p * kurt_bonus
+
+                        # CRPS sharpness bonus (Gneiting-Raftery) — only if calibrated
+                        if avg_ks_p > 0.05 and np.isfinite(avg_crps) and avg_crps > 0:
+                            innov_std = float(np.std(innovations_train)) + 1e-10
+                            crps_ratio = avg_crps / innov_std
+                            crps_bonus = max(0.6, min(1.5, 1.5 - 0.8 * crps_ratio))
+                            score = score * crps_bonus
 
                     if score > best_avg_ks_p:
                         best_avg_ks_p = score
@@ -4459,6 +4562,11 @@ class PhiStudentTDriftModel:
             ht = hf[:nt]; it = inn[:nt]; st = sp[:nt]
             _s6n_ppf = _s6n.ppf
             _math_exp = math.exp
+            # Import Anderson-Darling test for tail-sensitive PIT assessment
+            try:
+                from calibration.pit_calibration import anderson_darling_uniform as _ad_test
+            except Exception:
+                _ad_test = None
             def _bk(pa):
                 n_pa = len(pa)
                 if n_pa < 20: return 0.0, 0.0, 0.0
@@ -4479,12 +4587,33 @@ class PhiStudentTDriftModel:
                     # Two-term Kolmogorov approximation
                     kp = 2.0 * _math_exp(-2.0 * lam * lam)
                     if kp > 1.0: kp = 1.0
+                # Anderson-Darling test: 3-10× more tail-sensitive than KS
+                # Use AD as a soft penalty on KS rather than geometric mean,
+                # because AD is systematically stricter and would crush Stage 6
+                # calibration search for assets with moderate tail issues.
+                if _ad_test is not None:
+                    try:
+                        _, ap = _ad_test(pa)
+                        # Soft penalty: reduce KS p-value by up to 30% when
+                        # AD flags severe tail miscalibration (AD_p < 0.01)
+                        if ap < 0.01:
+                            cp = kp * 0.7  # Severe AD failure: 30% penalty
+                        elif ap < 0.05:
+                            # Moderate AD concern: 0-15% penalty (linear)
+                            _ad_pen = 0.15 * (0.05 - ap) / 0.04
+                            cp = kp * (1.0 - _ad_pen)
+                        else:
+                            cp = kp  # AD passes: no penalty
+                    except Exception:
+                        cp = kp
+                else:
+                    cp = kp
                 zp = _s6n_ppf(np.clip(pa, 0.001, 0.999)); zp = zp[np.isfinite(zp)]
-                if len(zp) < 20: return float(kp), float(kp), 0.0
+                if len(zp) < 20: return float(cp), float(cp), 0.0
                 m_ = float(np.mean(zp)); v_ = float(np.var(zp, ddof=0)); zc = zp - m_; dn = np.sum(zc ** 2)
                 r1 = float(np.sum(zc[1:] * zc[:-1]) / dn) if dn > 1e-12 else 0.0
-                score = kp * _math_exp(-5 * m_ * m_) * _math_exp(-5 * (v_ - 1) ** 2) * _math_exp(-10 * r1 * r1)
-                return score, kp, r1
+                score = cp * _math_exp(-5 * m_ * m_) * _math_exp(-5 * (v_ - 1) ** 2) * _math_exp(-10 * r1 * r1)
+                return score, cp, r1
             im = getattr(config, 'ms_ewm_lambda', 0.0) > 0.01
             hv = float(np.std(it)) > 0.03
             Sr = 0.5 * st + 0.5 * ht; rz = it / np.sqrt(np.maximum(Sr, 1e-12))

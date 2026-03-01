@@ -705,6 +705,12 @@ class GaussianDriftModel:
             mu_effective = mu_pred_test
 
         pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
+        # Anderson-Darling test (tail-sensitive complement to KS)
+        try:
+            from calibration.pit_calibration import anderson_darling_uniform
+            _ad_stat, _ad_pvalue = anderson_darling_uniform(pit_values)
+        except Exception:
+            _ad_pvalue = float('nan')
         hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
         mad = float(np.mean(np.abs(hist / n_test - 0.1)))
 
@@ -722,6 +728,7 @@ class GaussianDriftModel:
 
         diagnostics = {
             'pit_pvalue': pit_pvalue,
+            'ad_pvalue': _ad_pvalue,
             'berkowitz_pvalue': float(berkowitz_pvalue),
             'berkowitz_lr': float(berkowitz_lr),
             'pit_count': int(berkowitz_n_pit),
@@ -1511,7 +1518,142 @@ class GaussianDriftModel:
             _ewm_den_t = _best_lam * _ewm_den_t + _1m_lam * _S_blend[_t]
 
         # Gaussian CDF — ν-free
+        # (Defer CDF until after chi-squared correction below)
+
+        # ── CHI-SQUARED VARIANCE CORRECTION (Causal — Gaussian) ─────
+        #
+        # For Gaussian, E[z²] = 1.0. If the EWM β correction leaves
+        # residual variance miscalibration, z² will deviate from 1.0.
+        # Same algorithm as Student-t path, with target = 1.0.
+        # ────────────────────────────────────────────────────────────
+        _CHI2_LAMBDA = 0.98
+        _CHI2_MIN_RATIO = 0.3
+        _CHI2_MAX_RATIO = 3.0
+        _CHI2_DZ_LO_WIDE = 0.25
+        _CHI2_DZ_HI_WIDE = 0.50
+        _CHI2_DZ_RANGE_WIDE = _CHI2_DZ_HI_WIDE - _CHI2_DZ_LO_WIDE
+        _CHI2_DZ_LO_NARROW = 0.10
+        _CHI2_DZ_HI_NARROW = 0.25
+        _CHI2_DZ_RANGE_NARROW = _CHI2_DZ_HI_NARROW - _CHI2_DZ_LO_NARROW
+        _chi2_target = 1.0  # Gaussian: E[z²] = 1
+        _CHI2_WINSOR_MULT = 50.0
+        _chi2_winsor_cap = _chi2_target * _CHI2_WINSOR_MULT
+        _CHI2_1M = 1.0 - _CHI2_LAMBDA
+
+        # Warm-start from training z² values
+        _ewm_z2 = _chi2_target
+        for _t in range(len(_zcal)):
+            _z2_raw = _zcal[_t] * _zcal[_t]
+            _z2_w = _z2_raw if _z2_raw < _chi2_winsor_cap else _chi2_winsor_cap
+            _ewm_z2 = _CHI2_LAMBDA * _ewm_z2 + _CHI2_1M * _z2_w
+
+        # Apply causal correction to test z values
+        for _t in range(n_test):
+            _ratio = _ewm_z2 / _chi2_target
+            if _ratio < _CHI2_MIN_RATIO:
+                _ratio = _CHI2_MIN_RATIO
+            elif _ratio > _CHI2_MAX_RATIO:
+                _ratio = _CHI2_MAX_RATIO
+
+            _deviation = abs(_ratio - 1.0)
+            if _ratio >= 1.0:
+                _dz_lo = _CHI2_DZ_LO_WIDE
+                _dz_range = _CHI2_DZ_RANGE_WIDE
+            else:
+                _dz_lo = _CHI2_DZ_LO_NARROW
+                _dz_range = _CHI2_DZ_RANGE_NARROW
+
+            if _deviation < _dz_lo:
+                _adj = 1.0
+            elif _deviation >= _dz_lo + _dz_range:
+                _adj = _msqrt(_ratio)
+            else:
+                _strength = (_deviation - _dz_lo) / _dz_range
+                _adj_raw = _msqrt(_ratio)
+                _adj = 1.0 + _strength * (_adj_raw - 1.0)
+
+            _z_test[_t] /= _adj
+            sigma[_t] *= _adj
+            _raw_z = _z_test[_t] * _adj
+            _raw_z2 = _raw_z * _raw_z
+            _raw_z2_w = _raw_z2 if _raw_z2 < _chi2_winsor_cap else _chi2_winsor_cap
+            _ewm_z2 = _CHI2_LAMBDA * _ewm_z2 + _CHI2_1M * _raw_z2_w
+
+        # Now compute Gaussian PIT after chi-squared correction
         pit_values = np.clip(norm.cdf(_z_test), 0.001, 0.999)
+
+        # ── RANDOMIZED PIT FOR STALE OBSERVATIONS (Czado et al. 2009)
+        _STALE_RETURN_THRESHOLD = 1e-10
+        _STALE_EWM_LAMBDA = 0.97
+        _STALE_ACTIVATION = 0.05
+        _GOLDEN_RATIO = 1.6180339887498949
+
+        _returns_train = returns[:n_train]
+        _p_stale_train = float(np.mean(np.abs(_returns_train) < _STALE_RETURN_THRESHOLD))
+
+        if _p_stale_train > _STALE_ACTIVATION:
+            _p_stale = _p_stale_train
+            for _t in range(n_test):
+                _is_stale_t = abs(returns_test[_t]) < _STALE_RETURN_THRESHOLD
+                if _is_stale_t and _p_stale > _STALE_ACTIVATION:
+                    _F_lo = (1.0 - _p_stale) / 2.0
+                    _F_hi = 0.5 + _p_stale / 2.0
+                    _v_t = (_t * _GOLDEN_RATIO) % 1.0
+                    _pit_rand = _F_lo + _v_t * (_F_hi - _F_lo)
+                    pit_values[_t] = max(0.001, min(0.999, _pit_rand))
+                _stale_ind = 1.0 if _is_stale_t else 0.0
+                _p_stale = _STALE_EWM_LAMBDA * _p_stale + (1.0 - _STALE_EWM_LAMBDA) * _stale_ind
+
+        # ── PIT VARIANCE RECALIBRATION (Beta(a,a) analog) ───────────
+        _PIT_VAR_TARGET = 1.0 / 12.0
+        _PIT_VAR_LAMBDA = 0.97
+        _PIT_VAR_1M = 1.0 - _PIT_VAR_LAMBDA
+        _PIT_VAR_DZ_LO = 0.30
+        _PIT_VAR_DZ_HI = 0.55
+        _PIT_VAR_DZ_RANGE = _PIT_VAR_DZ_HI - _PIT_VAR_DZ_LO
+        _PIT_VAR_MIN_STRETCH = 0.70
+        _PIT_VAR_MAX_STRETCH = 1.50
+
+        _ewm_pit_m = 0.5
+        _ewm_pit_sq = 1.0 / 3.0
+        for _t in range(len(_pit_train_cal)):
+            _p = float(_pit_train_cal[_t])
+            _ewm_pit_m = _PIT_VAR_LAMBDA * _ewm_pit_m + _PIT_VAR_1M * _p
+            _ewm_pit_sq = _PIT_VAR_LAMBDA * _ewm_pit_sq + _PIT_VAR_1M * _p * _p
+
+        for _t in range(n_test):
+            _obs_var = _ewm_pit_sq - _ewm_pit_m * _ewm_pit_m
+            if _obs_var < 0.005:
+                _obs_var = 0.005
+
+            _var_ratio = _obs_var / _PIT_VAR_TARGET
+            _var_dev = abs(_var_ratio - 1.0)
+            _raw_pit = pit_values[_t]
+
+            if _var_dev > _PIT_VAR_DZ_LO:
+                _raw_stretch = _msqrt(_PIT_VAR_TARGET / _obs_var)
+                if _raw_stretch < _PIT_VAR_MIN_STRETCH:
+                    _raw_stretch = _PIT_VAR_MIN_STRETCH
+                elif _raw_stretch > _PIT_VAR_MAX_STRETCH:
+                    _raw_stretch = _PIT_VAR_MAX_STRETCH
+
+                if _var_dev >= _PIT_VAR_DZ_HI:
+                    _stretch = _raw_stretch
+                else:
+                    _str = (_var_dev - _PIT_VAR_DZ_LO) / _PIT_VAR_DZ_RANGE
+                    _stretch = 1.0 + _str * (_raw_stretch - 1.0)
+
+                _corrected = 0.5 + (_raw_pit - 0.5) * _stretch
+                if _corrected < 0.001:
+                    _corrected = 0.001
+                elif _corrected > 0.999:
+                    _corrected = 0.999
+                pit_values[_t] = _corrected
+
+            _ewm_pit_m = _PIT_VAR_LAMBDA * _ewm_pit_m + _PIT_VAR_1M * _raw_pit
+            _ewm_pit_sq = _PIT_VAR_LAMBDA * _ewm_pit_sq + _PIT_VAR_1M * _raw_pit * _raw_pit
+
+        pit_values = np.clip(pit_values, 0.001, 0.999)
 
         # AR(1) probit whitening
         if _best_lam > 0:
@@ -1537,6 +1679,20 @@ class GaussianDriftModel:
                     _z_white[_t] = _z_probit[_t]
 
             pit_values = np.clip(norm.cdf(_z_white), 0.001, 0.999)
+
+        # ── ISOTONIC RECALIBRATION (Kuleshov et al. 2018) ───────────
+        _ISO_BLEND_ALPHA = 0.4  # Conservative: 40% isotonic, 60% identity
+        try:
+            from calibration.isotonic_recalibration import IsotonicRecalibrator
+            if len(_pit_train_cal) >= 50:
+                _iso_recal = IsotonicRecalibrator()
+                _iso_result = _iso_recal.fit(_pit_train_cal)
+                if _iso_result.fit_success and not _iso_result.is_identity:
+                    _pit_iso = _iso_recal.transform(pit_values)
+                    pit_values = (1.0 - _ISO_BLEND_ALPHA) * pit_values + _ISO_BLEND_ALPHA * _pit_iso
+                    pit_values = np.clip(pit_values, 0.001, 0.999)
+        except Exception:
+            pass  # Graceful degradation
 
         return pit_values, sigma, mu_effective, _S_blend
 

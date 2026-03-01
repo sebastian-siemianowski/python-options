@@ -2813,6 +2813,12 @@ def compute_extended_pit_metrics_student_t(
                 "berkowitz_pvalue": 0.0, "berkowitz_lr": 0.0,
                 "pit_count": 0, "histogram_mad": 1.0}
     ks_result = kstest(pit_clean, 'uniform')
+    # Anderson-Darling test (tail-sensitive)
+    try:
+        from calibration.pit_calibration import anderson_darling_uniform
+        _ad_stat, _ad_pval = anderson_darling_uniform(pit_clean)
+    except Exception:
+        _ad_pval = float('nan')
     hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
     hist_freq = hist / len(pit_clean)
     hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
@@ -2829,6 +2835,7 @@ def compute_extended_pit_metrics_student_t(
     return {
         "ks_statistic": float(ks_result.statistic),
         "pit_ks_pvalue": float(ks_result.pvalue),
+        "ad_pvalue": float(_ad_pval),
         "berkowitz_pvalue": float(berkowitz_p),
         "berkowitz_lr": float(berkowitz_lr_st),
         "pit_count": int(pit_count_st),
@@ -3288,6 +3295,7 @@ def fit_all_models_for_regime(
             )
             ks_st = _pit_ext_base["ks_statistic"]
             pit_p_st = _pit_ext_base["pit_ks_pvalue"]
+            _ad_p_st = _pit_ext_base.get("ad_pvalue", float('nan'))
             _berk_st = _pit_ext_base["berkowitz_pvalue"]
             _mad_st = _pit_ext_base["histogram_mad"]
 
@@ -3351,6 +3359,7 @@ def fit_all_models_for_regime(
                         )
                         ks_st = pit_ext_mom["ks_statistic"]
                         pit_p_st = pit_ext_mom["pit_ks_pvalue"]
+                        _ad_p_st = pit_ext_mom.get("ad_pvalue", float('nan'))
                         _berk_st = pit_ext_mom["berkowitz_pvalue"]
                         _mad_st = pit_ext_mom["histogram_mad"]
                         ll_full_st = ll_mom
@@ -3379,6 +3388,7 @@ def fit_all_models_for_regime(
                 "n_params": int(n_params_st),
                 "ks_statistic": float(ks_st),
                 "pit_ks_pvalue": float(pit_p_st),
+                "ad_pvalue": float(_ad_p_st),
                 "berkowitz_pvalue": float(_berk_st),
                 "berkowitz_lr": float(_pit_ext_base.get("berkowitz_lr", 0.0)),
                 "pit_count": int(_pit_ext_base.get("pit_count", 0)),
@@ -3465,6 +3475,7 @@ def fit_all_models_for_regime(
             # Default Berk/MAD from raw PIT; overridden by filter_and_calibrate
             _calibrated_berk_u = pit_metrics.get("berkowitz_pvalue", 0.0)
             _calibrated_mad_u = pit_metrics.get("histogram_mad", 1.0)
+            _ad_p_u = float('nan')
             try:
                 _pit_cal_u, _pit_p_u, _sigma_cal_u, _, _calib_diag_u = \
                     PhiStudentTDriftModel.filter_and_calibrate(
@@ -3489,6 +3500,7 @@ def fit_all_models_for_regime(
                 _md = _calib_diag_u.get('mad')
                 if _md is not None and np.isfinite(_md):
                     _calibrated_mad_u = float(_md)
+                _ad_p_u = _calib_diag_u.get('ad_pvalue', float('nan'))
                 _nu_eff_u = _calib_diag_u.get('nu_effective', float(nu_fixed))
                 returns_test_u = returns[n_train_u:]
                 mu_pred_test_u = mu_pred_u[n_train_u:]
@@ -3592,6 +3604,7 @@ def fit_all_models_for_regime(
                 "crps": float(crps_u),
                 "ks_statistic": float(ks_u),
                 "pit_ks_pvalue": float(pit_p_u),
+                "ad_pvalue": float(_ad_p_u),
                 "pit_calibration_grade": pit_metrics.get("calibration_grade", "F"),
                 "histogram_mad": float(_calibrated_mad_u),
                 "berkowitz_pvalue": float(_calibrated_berk_u),
@@ -3658,6 +3671,7 @@ def fit_all_models_for_regime(
                 returns, vol, g_config, train_frac=0.7,
                 momentum_signal=_gu_mom_for_calib)
             pit_p_gu = float(_pit_p_gu) if np.isfinite(_pit_p_gu) else 0.0
+            _ad_p_gu = float(_calib_gu.get("ad_pvalue", float('nan')))
             _berk_p_gu = float(_calib_gu.get("berkowitz_pvalue", 0.0))
             _berk_lr_gu = float(_calib_gu.get("berkowitz_lr", 0.0))
             _pit_count_gu = int(_calib_gu.get("pit_count", 0))
@@ -3719,6 +3733,7 @@ def fit_all_models_for_regime(
                 "crps": float(crps_final_gu),
                 "ks_statistic": _ks_stat_gu,
                 "pit_ks_pvalue": float(pit_p_gu),
+                "ad_pvalue": float(_ad_p_gu),
                 "pit_calibration_grade": "A" if _mad_gu < 0.02 else ("B" if _mad_gu < 0.05 else ("C" if _mad_gu < 0.10 else "F")),
                 "histogram_mad": float(_mad_gu),
                 "berkowitz_pvalue": float(_berk_p_gu),

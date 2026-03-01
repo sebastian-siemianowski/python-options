@@ -237,6 +237,7 @@ def render_asset(symbol, models, weights, meta, is_reference=False):
     t.add_column("CRPS", justify="right", min_width=6)
     t.add_column("Hyv", justify="right", min_width=7)
     t.add_column("PIT_p", justify="right", min_width=6)
+    t.add_column("AD_p", justify="right", min_width=6)
     t.add_column("Berk", justify="right", min_width=6)
     t.add_column("MAD", justify="right", min_width=6)
     t.add_column("Score", justify="right", min_width=6)
@@ -257,6 +258,7 @@ def render_asset(symbol, models, weights, meta, is_reference=False):
         crps = d.get('crps', float('nan'))
         hyv = d.get('hyvarinen_score', float('nan'))
         pit_p = d.get('pit_ks_pvalue', float('nan'))
+        ad_p = d.get('ad_pvalue', float('nan'))
         berk = d.get('berkowitz_pvalue', float('nan'))
         mad = d.get('histogram_mad', float('nan'))
         score = d.get('combined_score', float('nan'))
@@ -291,6 +293,7 @@ def render_asset(symbol, models, weights, meta, is_reference=False):
             Text(_f(crps, "%.4f"), style=_cc(crps)),
             Text(_f(hyv, "%.0f"), style="white"),
             Text(_f(pit_p, "%.4f"), style=_pc(pit_p)),
+            Text(_f(ad_p, "%.4f"), style=_pc(ad_p)),
             Text(_f(berk, "%.4f"), style=_pc(berk)),
             Text(_f(mad, "%.4f"), style=_mc(mad)),
             Text(_f(score, "%.2f"), style="bold bright_yellow" if is_w else "white"),
