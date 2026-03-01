@@ -4244,6 +4244,11 @@ class PhiStudentTDriftModel:
                 return defaults
 
             jump_intensity = float(np.clip(n_jumps / n_train, 0.005, 0.15))
+
+            # Gate: skip costly BIC optimisation when jumps are negligible
+            if jump_intensity < 0.01:
+                return defaults
+
             var_jump = float(np.var(innovations[jump_mask]))
             var_diffusion = float(np.var(innovations[~jump_mask]))
             jump_variance = float(np.clip(var_jump - var_diffusion, 1e-8, 0.1))
@@ -4865,8 +4870,8 @@ class PhiStudentTDriftModel:
     @classmethod
     def _stage_6_calibration_pipeline(cls, returns, vol, config, train_frac=0.7):
         """Stage 6: Pre-calibrate filter_and_calibrate pipeline params (gw, nu_pit, nu_crps, beta_corr, lam_rho)."""
-        from scipy.stats import t as _s6t, norm as _s6n
-        from scipy.special import gammaln as _s6gl
+        from scipy.stats import t as _s6t
+        from scipy.special import gammaln as _s6gl, ndtr as _s6_ndtr
         # Numba-accelerated CDF/PDF (eliminate scipy overhead in inner grid loop)
         try:
             from models.numba_wrappers import run_student_t_cdf_array as _numba_cdf_arr
@@ -5223,7 +5228,7 @@ class PhiStudentTDriftModel:
                         if rho < -0.3: rho = -0.3
                         elif rho > 0.3: rho = 0.3
                         zw[tw] = (zpr[tw] - rho * zpr[tw - 1]) / _msqrt(max(1 - rho * rho, 0.5)) if abs(rho) > 0.01 else zpr[tw]
-                    pw = np.clip(_s6n.cdf(zw), 0.001, 0.999)
+                    pw = np.clip(_s6_ndtr(zw), 0.001, 0.999)
                     try:
                         ws, _, _ = _bk(pw)
                         if ws > bw: bw = ws; bl = lr

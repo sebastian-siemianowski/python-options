@@ -18,9 +18,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
+import math
+
 import numpy as np
-from scipy.special import gammaln
+from scipy.special import gammaln, ndtr as _ndtr
 from scipy.stats import norm, t as student_t_dist
+
+_INV_SQRT_2PI = 1.0 / math.sqrt(2.0 * math.pi)
 
 
 # =============================================================================
@@ -64,8 +68,6 @@ def compute_pit_calibration_metrics(
         - practical_calibration: Boolean for practical adequacy (MAD < 0.05)
         - calibration_score: Score from 0-1 (1 = perfect calibration)
     """
-    from scipy.stats import kstest
-    
     pit_clean = np.asarray(pit_values).flatten()
     pit_clean = pit_clean[np.isfinite(pit_clean)]
     n = len(pit_clean)
@@ -80,10 +82,20 @@ def compute_pit_calibration_metrics(
             "calibration_score": 0.0,
         }
     
-    # Standard KS test
-    ks_result = kstest(pit_clean, 'uniform')
-    ks_stat = float(ks_result.statistic)
-    ks_p = float(ks_result.pvalue)
+    # Inline KS test against Uniform(0,1) — avoids scipy.stats.kstest overhead
+    sorted_pit = np.sort(pit_clean)
+    ecdf = np.arange(1, n + 1) / n
+    D_plus = float(np.max(ecdf - sorted_pit))
+    D_minus = float(np.max(sorted_pit - np.arange(0, n) / n))
+    ks_stat = max(D_plus, D_minus)
+    sqrt_n = math.sqrt(n)
+    lam_ks = (sqrt_n + 0.12 + 0.11 / sqrt_n) * ks_stat
+    if lam_ks < 0.001:
+        ks_p = 1.0
+    elif lam_ks > 3.0:
+        ks_p = 0.0
+    else:
+        ks_p = min(2.0 * math.exp(-2.0 * lam_ks * lam_ks), 1.0)
     
     # Empirical CDF comparison to uniform
     pit_sorted = np.sort(pit_clean)
@@ -1038,9 +1050,9 @@ def compute_crps_gaussian_inline(
     # Standardized residual
     z = (observations - mu) / sigma
     
-    # Standard normal PDF and CDF
-    phi_z = norm.pdf(z)
-    Phi_z = norm.cdf(z)
+    # Standard normal PDF and CDF (fast: ndtr + closed-form PDF)
+    phi_z = _INV_SQRT_2PI * np.exp(-0.5 * z * z)
+    Phi_z = _ndtr(z)
     
     # CRPS for each observation (closed-form for Gaussian)
     crps_individual = sigma * (z * (2 * Phi_z - 1) + 2 * phi_z - 1.0 / np.sqrt(np.pi))
@@ -1127,8 +1139,8 @@ def compute_crps_student_t_inline(
         crps_individual = sigma * (term1 + term2 - term3)
     else:
         # Fallback to Gaussian approximation
-        phi_z = norm.pdf(z)
-        Phi_z = norm.cdf(z)
+        phi_z = _INV_SQRT_2PI * np.exp(-0.5 * z * z)
+        Phi_z = _ndtr(z)
         crps_individual = sigma * (z * (2 * Phi_z - 1) + 2 * phi_z - 1.0 / np.sqrt(np.pi))
     
     valid = np.isfinite(crps_individual)
