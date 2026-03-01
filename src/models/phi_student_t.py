@@ -1780,6 +1780,28 @@ class PhiStudentTDriftModel:
     _GAMMA_VOV_DEFAULT = 0.3
 
     # =====================================================================
+    # Cramér-von Mises statistic (Anderson 1962)
+    # =====================================================================
+    @staticmethod
+    def _compute_cvm_statistic(pit_values: np.ndarray) -> float:
+        """
+        Cramér-von Mises W² for Uniform(0,1).
+
+        W² = Σ(u_(i) - (2i-1)/(2n))² + 1/(12n)
+
+        More sensitive to the middle of the distribution than KS
+        (which only captures max deviation). Lower = better calibrated.
+        """
+        n = len(pit_values)
+        if n < 2:
+            return float('inf')
+        u = np.sort(pit_values)
+        i_vals = np.arange(1, n + 1)
+        w2 = float(np.sum((u - (2.0 * i_vals - 1.0) / (2.0 * n)) ** 2)
+                   ) + 1.0 / (12.0 * n)
+        return w2
+
+    # =====================================================================
     # tune_and_calibrate — COMPLETE φ-t pipeline in the model
     # =====================================================================
     @classmethod
@@ -1915,8 +1937,22 @@ class PhiStudentTDriftModel:
                 if _h_garch[_gi] < 1e-12:
                     _h_garch[_gi] = 1e-12
             _h_mean = max(float(np.mean(_h_garch)), 1e-12)
-            _garch_blend_w = 0.3
-            S_pred_blended = S_pred_st * (_garch_blend_w * _h_garch / _h_mean
+            _garch_h_ratio = _h_garch / _h_mean
+            # Adaptive GARCH blend weight: grid search (was hardcoded 0.3)
+            _garch_blend_w = 0.3  # default fallback
+            _best_garch_crps = float('inf')
+            for _gw in (0.1, 0.2, 0.3, 0.4, 0.5):
+                _S_gw = S_pred_st * (_gw * _garch_h_ratio + (1.0 - _gw))
+                if nu_fixed > 2:
+                    _fs_gw = np.sqrt(_S_gw * (nu_fixed - 2) / nu_fixed)
+                else:
+                    _fs_gw = np.sqrt(_S_gw)
+                _crps_gw = compute_crps_student_t_inline(
+                    returns, mu_pred_st, _fs_gw, nu_fixed)
+                if np.isfinite(_crps_gw) and _crps_gw < _best_garch_crps:
+                    _best_garch_crps = _crps_gw
+                    _garch_blend_w = _gw
+            S_pred_blended = S_pred_st * (_garch_blend_w * _garch_h_ratio
                                           + (1.0 - _garch_blend_w))
             if nu_fixed > 2:
                 _fs_bl = np.sqrt(S_pred_blended * (nu_fixed - 2) / nu_fixed)
@@ -1958,32 +1994,35 @@ class PhiStudentTDriftModel:
         # =================================================================
         _nu_refine_grid = list(cls._NU_REFINE.get(nu_fixed, []))
 
-        # ── Continuous ν via score equation (Lange-Little-Taylor 1989) ──
+        # ── Continuous ν via Newton-Raphson (Lange-Little-Taylor 1989) ──
+        # Vectorised: 3 NR iters vs brentq's ~20 scalar iters → ~7× faster
         try:
-            from scipy.special import digamma as _digamma
-            from scipy.optimize import brentq as _brentq
+            from scipy.special import digamma as _digamma, polygamma as _pg_nr
             _z_nu = (returns - mu_pred_st) / np.maximum(forecast_scale_st, 1e-10)
             _z2_nu = _z_nu * _z_nu
-            _n_z = len(_z2_nu)
-
-            def _nu_score_fn(_nv):
-                _ph = _digamma(_nv / 2.0)
-                _ph1 = _digamma((_nv + 1.0) / 2.0)
-                _ln = math.log(_nv)
-                _s = 0.0
-                for _iz in range(_n_z):
-                    _s += (-_ph + _ph1 + _ln
-                           - math.log(_nv + _z2_nu[_iz])
-                           + (_z2_nu[_iz] - 1.0) / (_nv + _z2_nu[_iz]))
-                return _s / (2.0 * _n_z)
-
-            _s_lo = _nu_score_fn(2.1)
-            _s_hi = _nu_score_fn(30.0)
-            if _s_lo * _s_hi < 0:
-                _nu_cont = float(_brentq(
-                    _nu_score_fn, 2.1, 30.0, xtol=0.1, maxiter=20))
-                if all(abs(_nu_cont - _g) > 0.3 for _g in _nu_refine_grid):
-                    _nu_refine_grid.append(_nu_cont)
+            _nu_nr = float(nu_fixed)
+            for _nr_iter in range(3):
+                _nv = _nu_nr
+                _nv2 = _nv / 2.0
+                _nvp = (_nv + 1.0) / 2.0
+                _ph = _digamma(_nv2)
+                _ph1 = _digamma(_nvp)
+                _tr = _pg_nr(1, _nv2)
+                _tr1 = _pg_nr(1, _nvp)
+                _nz_arr = _nv + _z2_nu
+                _s_vec = (-_ph + _ph1 + math.log(_nv) - np.log(_nz_arr)
+                          + (_z2_nu - 1.0) / _nz_arr)
+                _ds_vec = (-0.5 * _tr + 0.5 * _tr1 + 1.0 / _nv
+                           - 1.0 / _nz_arr
+                           - (_z2_nu - 1.0) / (_nz_arr ** 2))
+                _s_mean = float(np.mean(_s_vec)) / 2.0
+                _ds_mean = float(np.mean(_ds_vec)) / 2.0
+                if abs(_ds_mean) < 1e-15:
+                    break
+                _nu_nr = max(2.1, min(30.0, _nu_nr - _s_mean / _ds_mean))
+            if 2.1 <= _nu_nr <= 30.0:
+                if all(abs(_nu_nr - _g) > 0.3 for _g in _nu_refine_grid):
+                    _nu_refine_grid.append(_nu_nr)
         except Exception:
             pass
 
@@ -2012,8 +2051,11 @@ class PhiStudentTDriftModel:
                          + math.log(_nu_t / (_nu_t + _z2_gas[_ig]))
                          + (_nu_t + 1.0) * _z2_gas[_ig]
                          / (_nu_t * (_nu_t + _z2_gas[_ig]))))
-                # Fisher information for ν (inverse for scaling)
-                _fisher_inv_sqrt = 1.0  # Simplified: full I_ν is expensive
+                # Fisher information I_ν (trigamma-based, Creal et al. 2013)
+                _I_nu = 0.5 * (_pg(1, _nvp) - _pg(1, _nv2)
+                               - 2.0 * (_nu_t + 3.0)
+                               / (_nu_t * (_nu_t + 1.0) ** 2))
+                _fisher_inv_sqrt = 1.0 / math.sqrt(max(_I_nu, 1e-8))
                 _nu_t = _omega_gas + _beta_gas * _nu_t + _alpha_gas * _s_t * _fisher_inv_sqrt
             # Use median of ν series as refinement candidate
             _nu_gas_med = float(np.median(_nu_series[max(0, _n_gas // 4):]))
@@ -2026,9 +2068,14 @@ class PhiStudentTDriftModel:
         # ── Grid search over all ν candidates ──────────────────────────
         _best_nu_eff = float(nu_fixed)
         _base_pit_passing = pit_p_st >= 0.05
-        _base_crps_inv = 1.0 / max(crps_st, 1e-12)
-        _base_pit_log = max(np.log10(max(pit_p_st, 1e-8)), -8.0)
-        _best_refine_score = _base_crps_inv + 5.0 * _base_pit_log
+        _base_pit_vals = _pit_ext_base.get("pit_values", np.array([]))
+        _base_cvm = cls._compute_cvm_statistic(_base_pit_vals)
+        if not np.isfinite(_base_cvm) or _base_cvm < 1e-12:
+            _base_cvm = 1.0
+        # Balanced scoring: CRPS_ratio + CvM_ratio (both ~1 at baseline)
+        _orig_crps = crps_st
+        _orig_cvm = _base_cvm
+        _best_refine_score = 2.0  # Baseline: 1.0 + 1.0
 
         for _nu_trial in _nu_refine_grid:
             if abs(_nu_trial - nu_fixed) < 0.01:
@@ -2055,9 +2102,10 @@ class PhiStudentTDriftModel:
                 _pit_p_ref = _pit_ref["pit_ks_pvalue"]
                 if _base_pit_passing and _pit_p_ref < 0.05:
                     continue
-                _crps_inv_ref = 1.0 / max(_crps_ref, 1e-12)
-                _pit_log_ref = max(np.log10(max(_pit_p_ref, 1e-8)), -8.0)
-                _score_ref = _crps_inv_ref + 5.0 * _pit_log_ref
+                _cvm_ref = cls._compute_cvm_statistic(
+                    _pit_ref.get("pit_values", np.array([])))
+                _score_ref = (min(_orig_crps / max(_crps_ref, 1e-12), 5.0)
+                              + min(_orig_cvm / max(_cvm_ref, 1e-12), 5.0))
                 if np.isfinite(_score_ref) and _score_ref > _best_refine_score:
                     _best_refine_score = _score_ref
                     _best_nu_eff = _nu_trial
@@ -2215,6 +2263,14 @@ class PhiStudentTDriftModel:
                     if _p_iso > pit_p_st * 1.05:
                         pit_p_st = float(_p_iso)
                         ks_st = float(_ks_iso)
+                        # Update Berkowitz for downstream consistency
+                        _n_bt = int(len(_blended_pit) * 0.7)
+                        _berk_test = _blended_pit[_n_bt:]
+                        if len(_berk_test) >= 30:
+                            _bp, _, _ = cls._compute_berkowitz_full(
+                                _berk_test)
+                            if np.isfinite(_bp):
+                                _berk_st = float(_bp)
         except Exception:
             pass
 
