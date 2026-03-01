@@ -161,6 +161,11 @@ class GaussianUnifiedConfig:
         self.c_min = 0.01
         self.c_max = 10.0
         self.momentum_lookbacks = [5, 10, 20, 60]
+        # Chi-squared + PIT-var calibration (March 2026 — asset-adaptive)
+        self.chisq_ewm_lambda = 0.98     # Default ~35d half-life
+        self.pit_var_lambda = 0.97        # PIT-var EWM decay
+        self.pit_var_dz_lo = 0.30         # Dead-zone: start correcting
+        self.pit_var_dz_hi = 0.55         # Dead-zone: full correction
         for k, v in kwargs.items():
             setattr(self, k, v)
 
@@ -543,6 +548,46 @@ class GaussianDriftModel:
         vol = np.asarray(vol).flatten()
 
         config = GaussianUnifiedConfig.auto_configure(returns, vol)
+
+        # ── ASSET-CLASS CALIBRATION PROFILE (March 2026) ──
+        # Apply asset-class-specific chi² and PIT-var parameters.
+        # Mirrors phi_student_t.py profile lookup.
+        _GAUSSIAN_PROFILES = {
+            'metals_gold':    {'chisq_ewm_lambda': 0.985, 'pit_var_lambda': 0.975, 'pit_var_dz_lo': 0.35, 'pit_var_dz_hi': 0.60},
+            'metals_silver':  {'chisq_ewm_lambda': 0.96,  'pit_var_lambda': 0.95,  'pit_var_dz_lo': 0.25, 'pit_var_dz_hi': 0.50},
+            'metals_other':   {'chisq_ewm_lambda': 0.97,  'pit_var_lambda': 0.96,  'pit_var_dz_lo': 0.30, 'pit_var_dz_hi': 0.55},
+            'high_vol_equity':{'chisq_ewm_lambda': 0.94,  'pit_var_lambda': 0.94,  'pit_var_dz_lo': 0.20, 'pit_var_dz_hi': 0.45},
+            'forex':          {'chisq_ewm_lambda': 0.99,  'pit_var_lambda': 0.98,  'pit_var_dz_lo': 0.35, 'pit_var_dz_hi': 0.60},
+        }
+        _gaussian_asset_class = None
+        if asset_symbol is not None:
+            _sym = asset_symbol.strip().upper()
+            # Import asset-class detection from phi_student_t
+            try:
+                from models.phi_student_t import _detect_asset_class
+                _gaussian_asset_class = _detect_asset_class(_sym)
+            except ImportError:
+                # Inline fallback detection
+                _METALS_GOLD = {'GC=F', 'GLD', 'IAU', 'XAUUSD=X'}
+                _METALS_SILVER = {'SI=F', 'SLV', 'XAGUSD=X'}
+                _METALS_OTHER = {'HG=F', 'PL=F', 'PA=F', 'COPX', 'PPLT'}
+                _HIGH_VOL = {'MSTR', 'AMZE', 'RCAT', 'SMCI', 'RGTI', 'QBTS', 'BKSY',
+                             'SPCE', 'ABTC', 'BZAI', 'BNZI', 'AIRI',
+                             'ESLT', 'QS', 'QUBT', 'PACB', 'APLM', 'NVTS',
+                             'ACHR', 'GORO', 'USAS', 'APLT', 'ONDS', 'GPUS'}
+                if _sym in _METALS_GOLD: _gaussian_asset_class = 'metals_gold'
+                elif _sym in _METALS_SILVER: _gaussian_asset_class = 'metals_silver'
+                elif _sym in _METALS_OTHER: _gaussian_asset_class = 'metals_other'
+                elif _sym in _HIGH_VOL: _gaussian_asset_class = 'high_vol_equity'
+                elif _sym.endswith('=X'): _gaussian_asset_class = 'forex'
+
+            if _gaussian_asset_class and _gaussian_asset_class in _GAUSSIAN_PROFILES:
+                _g_prof = _GAUSSIAN_PROFILES[_gaussian_asset_class]
+                config.chisq_ewm_lambda = _g_prof.get('chisq_ewm_lambda', 0.98)
+                config.pit_var_lambda = _g_prof.get('pit_var_lambda', 0.97)
+                config.pit_var_dz_lo = _g_prof.get('pit_var_dz_lo', 0.30)
+                config.pit_var_dz_hi = _g_prof.get('pit_var_dz_hi', 0.55)
+
         n = len(returns)
         n_train = int(n * train_frac)
         returns_train = returns[:n_train]
@@ -1485,6 +1530,74 @@ class GaussianDriftModel:
             _ed = _best_lam * _ed + _1m_lam * S_bt[_idx]
 
         _pit_train_cal = np.clip(norm.cdf(_zcal), 0.001, 0.999)
+
+        # ── DOMAIN-MATCHED TRAINING PIT CORRECTIONS (March 2026) ────
+        # Apply the SAME chi² and PIT-var corrections to training PITs
+        # that will be applied to test PITs. Prevents isotonic domain shift.
+        # ────────────────────────────────────────────────────────────
+        _CHI2_LAMBDA_TR = float(getattr(config, 'chisq_ewm_lambda', 0.98))
+        _chi2_target_tr = 1.0  # Gaussian: E[z²] = 1
+        _CHI2_WINSOR_CAP_TR = _chi2_target_tr * 50.0
+        _CHI2_1M_TR = 1.0 - _CHI2_LAMBDA_TR
+        _ewm_z2_tr = _chi2_target_tr
+
+        # Chi² correct training z-values
+        _zcal_corrected = np.empty_like(_zcal)
+        for _t in range(len(_zcal)):
+            _ratio_tr = _ewm_z2_tr / _chi2_target_tr
+            if _ratio_tr < 0.3: _ratio_tr = 0.3
+            elif _ratio_tr > 3.0: _ratio_tr = 3.0
+            _dev_tr = abs(_ratio_tr - 1.0)
+            if _ratio_tr >= 1.0:
+                _dz_lo_tr = 0.25; _dz_rng_tr = 0.25
+            else:
+                _dz_lo_tr = 0.10; _dz_rng_tr = 0.15
+            if _dev_tr < _dz_lo_tr:
+                _adj_tr = 1.0
+            elif _dev_tr >= _dz_lo_tr + _dz_rng_tr:
+                _adj_tr = _msqrt(_ratio_tr)
+            else:
+                _str_tr = (_dev_tr - _dz_lo_tr) / _dz_rng_tr
+                _adj_tr = 1.0 + _str_tr * (_msqrt(_ratio_tr) - 1.0)
+            _zcal_corrected[_t] = _zcal[_t] / _adj_tr
+            _raw_z2_tr = _zcal[_t] * _zcal[_t]
+            _raw_z2_w_tr = _raw_z2_tr if _raw_z2_tr < _CHI2_WINSOR_CAP_TR else _CHI2_WINSOR_CAP_TR
+            _ewm_z2_tr = _CHI2_LAMBDA_TR * _ewm_z2_tr + _CHI2_1M_TR * _raw_z2_w_tr
+
+        _pit_train_cal = np.clip(norm.cdf(_zcal_corrected), 0.001, 0.999)
+
+        # PIT-var correction on training PITs
+        _PIT_VAR_LAMBDA_TR = float(getattr(config, 'pit_var_lambda', 0.97))
+        _PIT_VAR_1M_TR = 1.0 - _PIT_VAR_LAMBDA_TR
+        _PIT_VAR_DZ_LO_TR = float(getattr(config, 'pit_var_dz_lo', 0.30))
+        _PIT_VAR_DZ_HI_TR = float(getattr(config, 'pit_var_dz_hi', 0.55))
+        _PIT_VAR_DZ_RANGE_TR = _PIT_VAR_DZ_HI_TR - _PIT_VAR_DZ_LO_TR
+        _ewm_pit_m_tr = 0.5
+        _ewm_pit_sq_tr = 1.0 / 3.0
+        for _t in range(len(_pit_train_cal)):
+            _obs_var_tr = _ewm_pit_sq_tr - _ewm_pit_m_tr * _ewm_pit_m_tr
+            if _obs_var_tr < 0.005: _obs_var_tr = 0.005
+            _var_ratio_tr = _obs_var_tr / (1.0 / 12.0)
+            _var_dev_tr = abs(_var_ratio_tr - 1.0)
+            _raw_pit_tr = _pit_train_cal[_t]
+            if _var_dev_tr > _PIT_VAR_DZ_LO_TR:
+                _raw_stretch_tr = _msqrt((1.0 / 12.0) / _obs_var_tr)
+                if _raw_stretch_tr < 0.70: _raw_stretch_tr = 0.70
+                elif _raw_stretch_tr > 1.50: _raw_stretch_tr = 1.50
+                if _var_dev_tr >= _PIT_VAR_DZ_HI_TR:
+                    _stretch_tr = _raw_stretch_tr
+                else:
+                    _s_tr = (_var_dev_tr - _PIT_VAR_DZ_LO_TR) / _PIT_VAR_DZ_RANGE_TR
+                    _stretch_tr = 1.0 + _s_tr * (_raw_stretch_tr - 1.0)
+                _corrected_tr = 0.5 + (_raw_pit_tr - 0.5) * _stretch_tr
+                if _corrected_tr < 0.001: _corrected_tr = 0.001
+                elif _corrected_tr > 0.999: _corrected_tr = 0.999
+                _pit_train_cal[_t] = _corrected_tr
+            _ewm_pit_m_tr = _PIT_VAR_LAMBDA_TR * _ewm_pit_m_tr + _PIT_VAR_1M_TR * _raw_pit_tr
+            _ewm_pit_sq_tr = _PIT_VAR_LAMBDA_TR * _ewm_pit_sq_tr + _PIT_VAR_1M_TR * _raw_pit_tr * _raw_pit_tr
+        _pit_train_cal = np.clip(_pit_train_cal, 0.001, 0.999)
+        # ── END DOMAIN-MATCHED TRAINING PIT CORRECTIONS ─────────────
+
         _z_probit_cal = norm.ppf(_pit_train_cal)
         _z_probit_cal = _z_probit_cal[np.isfinite(_z_probit_cal)]
 
@@ -1525,8 +1638,9 @@ class GaussianDriftModel:
         # For Gaussian, E[z²] = 1.0. If the EWM β correction leaves
         # residual variance miscalibration, z² will deviate from 1.0.
         # Same algorithm as Student-t path, with target = 1.0.
+        # Asset-adaptive λ from config (March 2026).
         # ────────────────────────────────────────────────────────────
-        _CHI2_LAMBDA = 0.98
+        _CHI2_LAMBDA = float(getattr(config, 'chisq_ewm_lambda', 0.98))
         _CHI2_MIN_RATIO = 0.3
         _CHI2_MAX_RATIO = 3.0
         _CHI2_DZ_LO_WIDE = 0.25
@@ -1606,10 +1720,10 @@ class GaussianDriftModel:
 
         # ── PIT VARIANCE RECALIBRATION (Beta(a,a) analog) ───────────
         _PIT_VAR_TARGET = 1.0 / 12.0
-        _PIT_VAR_LAMBDA = 0.97
+        _PIT_VAR_LAMBDA = float(getattr(config, 'pit_var_lambda', 0.97))
         _PIT_VAR_1M = 1.0 - _PIT_VAR_LAMBDA
-        _PIT_VAR_DZ_LO = 0.30
-        _PIT_VAR_DZ_HI = 0.55
+        _PIT_VAR_DZ_LO = float(getattr(config, 'pit_var_dz_lo', 0.30))
+        _PIT_VAR_DZ_HI = float(getattr(config, 'pit_var_dz_hi', 0.55))
         _PIT_VAR_DZ_RANGE = _PIT_VAR_DZ_HI - _PIT_VAR_DZ_LO
         _PIT_VAR_MIN_STRETCH = 0.70
         _PIT_VAR_MAX_STRETCH = 1.50

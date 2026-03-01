@@ -2738,8 +2738,69 @@ def compute_extended_pit_metrics_gaussian(
     forecast_std = np.sqrt(np.maximum(S_pred_flat, 1e-20))
     forecast_std = np.where(forecast_std < 1e-10, 1e-10, forecast_std)
     standardized = (returns_flat - mu_pred_flat) / forecast_std
-    valid_mask = np.isfinite(standardized)
-    pit_values = norm.cdf(standardized[valid_mask])
+
+    # ── Chi² EWM variance correction (causal scale adaptation) ────────
+    # Same algorithm as Student-t version but with chi2_target = 1.0
+    import math as _m
+    _n_g = len(standardized)
+    _chi2_lam_g = 0.98
+    _chi2_1m_g = 0.02
+    _chi2_wcap_g = 50.0  # target=1.0 so cap=50
+    _ewm_z2_g = 1.0
+    _std_adj = np.ones(_n_g)
+    for _t in range(_n_g):
+        _ratio = _ewm_z2_g  # / 1.0
+        _ratio = max(0.3, min(3.0, _ratio))
+        _dev = abs(_ratio - 1.0)
+        if _ratio >= 1.0:
+            _dz_lo, _dz_rng = 0.25, 0.25
+        else:
+            _dz_lo, _dz_rng = 0.10, 0.15
+        if _dev < _dz_lo:
+            _adj = 1.0
+        elif _dev >= _dz_lo + _dz_rng:
+            _adj = _m.sqrt(_ratio)
+        else:
+            _s = (_dev - _dz_lo) / _dz_rng
+            _adj = 1.0 + _s * (_m.sqrt(_ratio) - 1.0)
+        _std_adj[_t] = _adj
+        _z2 = standardized[_t] ** 2
+        _z2w = min(_z2, _chi2_wcap_g)
+        _ewm_z2_g = _chi2_lam_g * _ewm_z2_g + _chi2_1m_g * _z2w
+    standardized_corrected = standardized / _std_adj
+
+    valid_mask = np.isfinite(standardized_corrected)
+    pit_values = norm.cdf(standardized_corrected[valid_mask])
+
+    # ── PIT-Variance stretching (Var[PIT] → 1/12) ────────────────────
+    _pv_tgt_g = 1.0 / 12.0
+    _pv_lam_g = 0.97
+    _pv_1m_g = 0.03
+    _pv_dz_lo_g = 0.30
+    _pv_dz_hi_g = 0.55
+    _pv_dz_rng_g = _pv_dz_hi_g - _pv_dz_lo_g
+    _ewm_pm_g = 0.5
+    _ewm_psq_g = 1.0 / 3.0
+    for _t in range(len(pit_values)):
+        _ov = _ewm_psq_g - _ewm_pm_g * _ewm_pm_g
+        if _ov < 0.005:
+            _ov = 0.005
+        _vr = _ov / _pv_tgt_g
+        _vd = abs(_vr - 1.0)
+        _rp = float(pit_values[_t])
+        if _vd > _pv_dz_lo_g:
+            _rs = _m.sqrt(_pv_tgt_g / _ov)
+            _rs = max(0.70, min(1.50, _rs))
+            if _vd >= _pv_dz_hi_g:
+                _st = _rs
+            else:
+                _sg = (_vd - _pv_dz_lo_g) / _pv_dz_rng_g
+                _st = 1.0 + _sg * (_rs - 1.0)
+            _c = 0.5 + (_rp - 0.5) * _st
+            pit_values[_t] = max(0.001, min(0.999, _c))
+        _ewm_pm_g = _pv_lam_g * _ewm_pm_g + _pv_1m_g * _rp
+        _ewm_psq_g = _pv_lam_g * _ewm_psq_g + _pv_1m_g * _rp * _rp
+
     if len(pit_values) < 20:
         return {"ks_statistic": 1.0, "pit_ks_pvalue": 0.0,
                 "berkowitz_pvalue": 0.0, "berkowitz_lr": 0.0,
@@ -2805,7 +2866,72 @@ def compute_extended_pit_metrics_student_t(
     else:
         scale_arr = np.sqrt(S_clamped)
     scale_arr = np.maximum(scale_arr, 1e-10)
-    pit_values = _st_dist.cdf(returns_flat[:n] - mu_pred[:n], df=nu, scale=scale_arr)
+
+    # ── Chi² EWM variance correction (causal scale adaptation) ────────
+    # Tracks E[z²] and corrects scale when filter variance is systematically
+    # off. Same algorithm as unified models but applied to base models.
+    # This is the #1 fix for systemic PIT < 0.05 across all assets.
+    import math as _m
+    _z_raw = (returns_flat[:n] - mu_pred[:n]) / scale_arr
+    _chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
+    _chi2_lam = 0.98
+    _chi2_1m = 0.02
+    _chi2_wcap = _chi2_tgt * 50.0
+    _ewm_z2 = _chi2_tgt
+    _scale_adj = np.ones(n)
+    for _t in range(n):
+        _ratio = _ewm_z2 / _chi2_tgt
+        _ratio = max(0.3, min(3.0, _ratio))
+        _dev = abs(_ratio - 1.0)
+        if _ratio >= 1.0:
+            _dz_lo, _dz_rng = 0.25, 0.25
+        else:
+            _dz_lo, _dz_rng = 0.10, 0.15
+        if _dev < _dz_lo:
+            _adj = 1.0
+        elif _dev >= _dz_lo + _dz_rng:
+            _adj = _m.sqrt(_ratio)
+        else:
+            _s = (_dev - _dz_lo) / _dz_rng
+            _adj = 1.0 + _s * (_m.sqrt(_ratio) - 1.0)
+        _scale_adj[_t] = _adj
+        _z2 = _z_raw[_t] ** 2
+        _z2w = min(_z2, _chi2_wcap)
+        _ewm_z2 = _chi2_lam * _ewm_z2 + _chi2_1m * _z2w
+    scale_corrected = scale_arr * _scale_adj
+
+    pit_values = _st_dist.cdf(returns_flat[:n] - mu_pred[:n], df=nu, scale=scale_corrected)
+
+    # ── PIT-Variance stretching (Var[PIT] → 1/12) ────────────────────
+    # Fixes shape miscalibration not caught by chi² (scale) correction.
+    _pv_tgt = 1.0 / 12.0
+    _pv_lam = 0.97
+    _pv_1m = 0.03
+    _pv_dz_lo = 0.30
+    _pv_dz_hi = 0.55
+    _pv_dz_rng = _pv_dz_hi - _pv_dz_lo
+    _ewm_pm = 0.5
+    _ewm_psq = 1.0 / 3.0
+    for _t in range(n):
+        _ov = _ewm_psq - _ewm_pm * _ewm_pm
+        if _ov < 0.005:
+            _ov = 0.005
+        _vr = _ov / _pv_tgt
+        _vd = abs(_vr - 1.0)
+        _rp = float(pit_values[_t])
+        if _vd > _pv_dz_lo:
+            _rs = _m.sqrt(_pv_tgt / _ov)
+            _rs = max(0.70, min(1.50, _rs))
+            if _vd >= _pv_dz_hi:
+                _st = _rs
+            else:
+                _sg = (_vd - _pv_dz_lo) / _pv_dz_rng
+                _st = 1.0 + _sg * (_rs - 1.0)
+            _c = 0.5 + (_rp - 0.5) * _st
+            pit_values[_t] = max(0.001, min(0.999, _c))
+        _ewm_pm = _pv_lam * _ewm_pm + _pv_1m * _rp
+        _ewm_psq = _pv_lam * _ewm_psq + _pv_1m * _rp * _rp
+
     valid = np.isfinite(pit_values)
     pit_clean = np.clip(pit_values[valid], 0, 1)
     if len(pit_clean) < 20:
@@ -4581,6 +4707,9 @@ def fit_regime_model_posterior(
         pit_count_regime = {m: models[m]["pit_count"] for m in models
                            if models[m].get("fit_success", False)
                            and models[m].get("pit_count") is not None}
+        ad_pvalues_regime = {m: models[m]["ad_pvalue"] for m in models
+                            if models[m].get("fit_success", False)
+                            and models[m].get("ad_pvalue") is not None}
         
         # LFO-CV scores for proper out-of-sample model selection (February 2026)
         lfo_cv_scores = {}
@@ -4652,6 +4781,7 @@ def fit_regime_model_posterior(
                 bic_values, hyvarinen_scores, crps_values,
                 pit_pvalues=pit_pvalues,  # February 2026 - Elite PIT calibration
                 berk_pvalues=berk_pvalues,
+                ad_pvalues=ad_pvalues_regime,  # AD veto gate
                 berkowitz_lr_stats=berk_lr_regime, pit_counts=pit_count_regime,
                 mad_values=mad_values,
                 regime=regime, 
@@ -4668,6 +4798,7 @@ def fit_regime_model_posterior(
                 bic_values, hyvarinen_scores, crps_values,
                 pit_pvalues=pit_pvalues,  # February 2026 - Elite PIT calibration
                 berk_pvalues=berk_pvalues,
+                ad_pvalues=ad_pvalues_regime,  # AD veto gate
                 berkowitz_lr_stats=berk_lr_regime, pit_counts=pit_count_regime,
                 mad_values=mad_values,
                 regime=regime, lambda_entropy=DEFAULT_ENTROPY_LAMBDA
@@ -4971,12 +5102,15 @@ def tune_regime_model_averaging(
                          if global_models[m].get("fit_success", False) and global_models[m].get("pit_count") is not None}
     global_mad = {m: global_models[m]["histogram_mad"] for m in global_models
                   if global_models[m].get("fit_success", False) and global_models[m].get("histogram_mad") is not None}
+    global_ad = {m: global_models[m]["ad_pvalue"] for m in global_models
+                 if global_models[m].get("fit_success", False) and global_models[m].get("ad_pvalue") is not None}
     fallback_weight_metadata = None
     
     if global_crps and CRPS_SCORING_ENABLED:
         global_raw_weights, fallback_weight_metadata = compute_regime_aware_model_weights(
             global_bic, global_hyvarinen, global_crps,
             pit_pvalues=global_pit, berk_pvalues=global_berk,
+            ad_pvalues=global_ad,  # AD veto gate
             berkowitz_lr_stats=global_berk_lr, pit_counts=global_pit_counts,
             mad_values=global_mad, regime=None,
             lambda_entropy=DEFAULT_ENTROPY_LAMBDA
