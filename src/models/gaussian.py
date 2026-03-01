@@ -1563,10 +1563,63 @@ class GaussianDriftModel:
                         bg = gw
                         bl = lam_c
 
+        # ── Golden-section refinement around winning GW (March 2026) ──
+        # The 8-point GW grid has spacing ~0.15; golden-section refines to
+        # ~0.01 precision in 10 iters around the best grid point.
+        _gr = (math.sqrt(5) + 1) / 2
+        _gw_lo = max(0.0, bg - 0.15)
+        _gw_hi = min(1.0, bg + 0.15)
+        for _ in range(10):
+            _gw1r = _gw_hi - (_gw_hi - _gw_lo) / _gr
+            _gw2r = _gw_lo + (_gw_hi - _gw_lo) / _gr
+            # Score at probe 1
+            Sb1 = (1 - _gw1r) * st + _gw1r * ht
+            s1_total, s1_folds = 0.0, 0
+            for fi in range(nf):
+                ee = (fi + 1) * fs
+                ve = min((fi + 2) * fs, nt)
+                if ve <= ee:
+                    continue
+                kp, md = _score_fold(Sb1, ee, ve, bl)
+                s1_total += kp * max(0, 1 - md / 0.05)
+                s1_folds += 1
+            s1 = s1_total / max(s1_folds, 1)
+            # Score at probe 2
+            Sb2 = (1 - _gw2r) * st + _gw2r * ht
+            s2_total, s2_folds = 0.0, 0
+            for fi in range(nf):
+                ee = (fi + 1) * fs
+                ve = min((fi + 2) * fs, nt)
+                if ve <= ee:
+                    continue
+                kp, md = _score_fold(Sb2, ee, ve, bl)
+                s2_total += kp * max(0, 1 - md / 0.05)
+                s2_folds += 1
+            s2 = s2_total / max(s2_folds, 1)
+            if s1 > s2:
+                _gw_hi = _gw2r
+            else:
+                _gw_lo = _gw1r
+        _gw_refined = (_gw_lo + _gw_hi) / 2.0
+        # Accept refinement only if it improves over grid winner
+        Sb_ref = (1 - _gw_refined) * st + _gw_refined * ht
+        ref_total, ref_folds = 0.0, 0
+        for fi in range(nf):
+            ee = (fi + 1) * fs
+            ve = min((fi + 2) * fs, nt)
+            if ve <= ee:
+                continue
+            kp, md = _score_fold(Sb_ref, ee, ve, bl)
+            ref_total += kp * max(0, 1 - md / 0.05)
+            ref_folds += 1
+        if ref_folds > 0 and ref_total / ref_folds > bs:
+            bg = _gw_refined
+            bs = ref_total / ref_folds
+
         return {
             'calibrated_gw': bg,
             'calibrated_lambda_rho': bl,
-            'calibrated_beta_probit_corr': 1.0,  # No ν-based correction for Gaussian
+            'calibrated_beta_probit_corr': 1.0,
         }
 
     # =========================================================================
