@@ -1746,6 +1746,509 @@ class PhiStudentTDriftModel:
 
         return q_opt, c_opt, phi_opt, cv_ll, diagnostics
 
+    # =====================================================================
+    # VoV precomputation (Barndorff-Nielsen & Shephard 2002)
+    # =====================================================================
+    @staticmethod
+    def _precompute_vov(vol: np.ndarray, window: int = 20) -> np.ndarray:
+        """Rolling std of log-vol (O(n) via cumulative sums). Shared across ν."""
+        n = len(vol)
+        if n <= window:
+            return np.zeros(n, dtype=np.float64)
+        log_vol = np.log(np.maximum(vol, 1e-10))
+        cs1 = np.concatenate(([0.0], np.cumsum(log_vol)))
+        cs2 = np.concatenate(([0.0], np.cumsum(log_vol * log_vol)))
+        inv_w = 1.0 / float(window)
+        idx = np.arange(window, n)
+        s1 = cs1[idx] - cs1[idx - window]
+        s2 = cs2[idx] - cs2[idx - window]
+        var_arr = np.maximum(s2 * inv_w - (s1 * inv_w) ** 2, 0.0)
+        vov = np.empty(n, dtype=np.float64)
+        vov[window:] = np.sqrt(var_arr)
+        vov[:window] = vov[window]
+        return vov
+
+    # =====================================================================
+    # NU_REFINE grids (Lange, Little & Taylor 1989)
+    # =====================================================================
+    _NU_REFINE = {
+        3:  [2.5, 3.0, 3.5, 4.0],
+        4:  [3.5, 4.0, 5.0, 6.0],
+        8:  [6.0, 7.0, 8.0, 10.0, 12.0],
+        20: [15.0, 18.0, 20.0, 25.0],
+    }
+    _GAMMA_VOV_DEFAULT = 0.3
+
+    # =====================================================================
+    # tune_and_calibrate — COMPLETE φ-t pipeline in the model
+    # =====================================================================
+    @classmethod
+    def tune_and_calibrate(
+        cls,
+        returns: np.ndarray,
+        vol: np.ndarray,
+        nu_fixed: int,
+        *,
+        prior_log_q_mean: float = -6.0,
+        prior_lambda: float = 1.0,
+        asset_symbol: str = None,
+        n_obs: int = None,
+        vov_rolling: np.ndarray = None,
+        gamma_vov: float = None,
+        momentum_wrapper=None,
+        prices: np.ndarray = None,
+        regime_labels: np.ndarray = None,
+    ) -> dict:
+        """
+        Complete tune-filter-calibrate pipeline for a FIXED ν sub-model.
+
+        Encapsulates all stages that were previously scattered in tune.py:
+          1. MLE optimisation (q, c, φ) via cross-validated L-BFGS-B
+          2. Enhanced Kalman filter (robust_wt + VoV + online_scale_adapt)
+          3. PIT / Hyvärinen / CRPS metrics
+          4. Post-hoc GARCH innovation blending (Engle 1982, GJR 1993)
+          5. ν-refinement: discrete grid + continuous brentq solver
+             (Lange-Little-Taylor 1989)
+          6. Score-driven GAS time-varying ν (Creal-Koopman-Lucas 2013)
+          7. CRPS-optimal scale shrinkage (Gneiting & Raftery 2007)
+          8. Momentum augmentation (if wrapper supplied)
+          9. Isotonic recalibration (Kuleshov et al. 2018)
+
+        Returns a dict ready for direct insertion into models[model_name].
+        """
+        # ── Lazy imports (avoids circular deps: tune → model → tune) ──
+        from tuning.diagnostics import (
+            compute_crps_student_t_inline,
+            compute_hyvarinen_score_student_t,
+        )
+        from calibration.model_selection import compute_aic, compute_bic
+
+        if n_obs is None:
+            n_obs = len(returns)
+        if gamma_vov is None:
+            gamma_vov = cls._GAMMA_VOV_DEFAULT
+        if vov_rolling is None:
+            vov_rolling = cls._precompute_vov(vol)
+        n_params = 3  # q, c, phi
+
+        # =================================================================
+        # STAGE 1: Optimize (q, c, φ) — cross-validated MLE
+        # =================================================================
+        q_st, c_st, phi_st, ll_cv_st, diag_st = cls.optimize_params_fixed_nu(
+            returns, vol,
+            nu=nu_fixed,
+            prior_log_q_mean=prior_log_q_mean,
+            prior_lambda=prior_lambda,
+            asset_symbol=asset_symbol,
+            gamma_vov=gamma_vov,
+            vov_rolling=vov_rolling,
+        )
+
+        # =================================================================
+        # STAGE 2: Enhanced Kalman filter with predictive output
+        # =================================================================
+        # Adaptive: online_scale_adapt for ν ≤ 5 only
+        # (χ²-target = ν/(ν-2) ≥ 1.67 → needs in-filter correction)
+        _use_osa = (nu_fixed <= 5)
+        mu_st, P_st, mu_pred_st, S_pred_st, ll_full_st = cls.filter_phi_with_predictive(
+            returns, vol, q_st, c_st, phi_st, nu_fixed,
+            robust_wt=True,
+            online_scale_adapt=_use_osa,
+            gamma_vov=gamma_vov,
+            vov_rolling=vov_rolling,
+        )
+
+        # =================================================================
+        # STAGE 3: PIT + Berkowitz + histogram MAD
+        # =================================================================
+        from tuning.tune import compute_extended_pit_metrics_student_t
+        _pit_ext_base = compute_extended_pit_metrics_student_t(
+            returns, vol, q_st, c_st, phi_st, nu_fixed,
+            mu_pred_precomputed=mu_pred_st, S_pred_precomputed=S_pred_st,
+            scale_already_adapted=_use_osa,
+        )
+        ks_st = _pit_ext_base["ks_statistic"]
+        pit_p_st = _pit_ext_base["pit_ks_pvalue"]
+        _ad_p_st = _pit_ext_base.get("ad_pvalue", float('nan'))
+        _berk_st = _pit_ext_base["berkowitz_pvalue"]
+        _mad_st = _pit_ext_base["histogram_mad"]
+
+        # Information criteria
+        aic_st = compute_aic(ll_full_st, n_params)
+        bic_st = compute_bic(ll_full_st, n_params, n_obs)
+        mean_ll_st = ll_full_st / max(n_obs, 1)
+
+        # Forecast scale: σ = √(S × (ν-2)/ν)
+        if nu_fixed > 2:
+            forecast_scale_st = np.sqrt(S_pred_st * (nu_fixed - 2) / nu_fixed)
+        else:
+            forecast_scale_st = np.sqrt(S_pred_st)
+        hyvarinen_st = compute_hyvarinen_score_student_t(
+            returns, mu_pred_st, forecast_scale_st, nu_fixed
+        )
+        crps_st = compute_crps_student_t_inline(
+            returns, mu_pred_st, forecast_scale_st, nu_fixed
+        )
+
+        # =================================================================
+        # STAGE 4: Post-hoc GARCH innovation blending (GJR 1993)
+        # =================================================================
+        try:
+            _innovations_st = returns[:len(mu_pred_st)] - mu_pred_st
+            _garch_params = cls._stage_5c_garch_estimation(
+                returns[:len(mu_pred_st)], mu_pred_st, 0.0, len(mu_pred_st)
+            )
+            _g_omega = _garch_params['garch_omega']
+            _g_alpha = _garch_params['garch_alpha']
+            _g_beta = _garch_params['garch_beta']
+            _g_lev = _garch_params['garch_leverage']
+            _g_uvar = _garch_params['unconditional_var']
+            _n_inn = len(_innovations_st)
+            _h_garch = np.empty(_n_inn, dtype=np.float64)
+            _h_garch[0] = _g_uvar
+            for _gi in range(1, _n_inn):
+                _e2 = _innovations_st[_gi - 1] ** 2
+                _neg = 1.0 if _innovations_st[_gi - 1] < 0 else 0.0
+                _h_garch[_gi] = (_g_omega + _g_alpha * _e2
+                                 + _g_lev * _e2 * _neg
+                                 + _g_beta * _h_garch[_gi - 1])
+                if _h_garch[_gi] < 1e-12:
+                    _h_garch[_gi] = 1e-12
+            _h_mean = max(float(np.mean(_h_garch)), 1e-12)
+            _garch_blend_w = 0.3
+            S_pred_blended = S_pred_st * (_garch_blend_w * _h_garch / _h_mean
+                                          + (1.0 - _garch_blend_w))
+            if nu_fixed > 2:
+                _fs_bl = np.sqrt(S_pred_blended * (nu_fixed - 2) / nu_fixed)
+            else:
+                _fs_bl = np.sqrt(S_pred_blended)
+            crps_blended = compute_crps_student_t_inline(
+                returns, mu_pred_st, _fs_bl, nu_fixed
+            )
+            if np.isfinite(crps_blended) and crps_blended <= crps_st * 1.01:
+                _pit_ext_garch = compute_extended_pit_metrics_student_t(
+                    returns, vol, q_st, c_st, phi_st, nu_fixed,
+                    mu_pred_precomputed=mu_pred_st,
+                    S_pred_precomputed=S_pred_blended,
+                    scale_already_adapted=_use_osa,
+                )
+                _pit_p_garch = _pit_ext_garch["pit_ks_pvalue"]
+                if not (pit_p_st >= 0.05 and _pit_p_garch < 0.05):
+                    crps_st = crps_blended
+                    S_pred_st = S_pred_blended
+                    _pit_ext_base = _pit_ext_garch
+                    ks_st = _pit_ext_base["ks_statistic"]
+                    pit_p_st = _pit_ext_base["pit_ks_pvalue"]
+                    _ad_p_st = _pit_ext_base.get("ad_pvalue", float('nan'))
+                    _berk_st = _pit_ext_base["berkowitz_pvalue"]
+                    _mad_st = _pit_ext_base["histogram_mad"]
+                    if nu_fixed > 2:
+                        forecast_scale_st = np.sqrt(
+                            S_pred_blended * (nu_fixed - 2) / nu_fixed)
+                    else:
+                        forecast_scale_st = np.sqrt(S_pred_blended)
+                    hyvarinen_st = compute_hyvarinen_score_student_t(
+                        returns, mu_pred_st, forecast_scale_st, nu_fixed
+                    )
+        except Exception:
+            pass
+
+        # =================================================================
+        # STAGE 5: ν-refinement (grid + continuous brentq solver)
+        # =================================================================
+        _nu_refine_grid = list(cls._NU_REFINE.get(nu_fixed, []))
+
+        # ── Continuous ν via score equation (Lange-Little-Taylor 1989) ──
+        try:
+            from scipy.special import digamma as _digamma
+            from scipy.optimize import brentq as _brentq
+            _z_nu = (returns - mu_pred_st) / np.maximum(forecast_scale_st, 1e-10)
+            _z2_nu = _z_nu * _z_nu
+            _n_z = len(_z2_nu)
+
+            def _nu_score_fn(_nv):
+                _ph = _digamma(_nv / 2.0)
+                _ph1 = _digamma((_nv + 1.0) / 2.0)
+                _ln = math.log(_nv)
+                _s = 0.0
+                for _iz in range(_n_z):
+                    _s += (-_ph + _ph1 + _ln
+                           - math.log(_nv + _z2_nu[_iz])
+                           + (_z2_nu[_iz] - 1.0) / (_nv + _z2_nu[_iz]))
+                return _s / (2.0 * _n_z)
+
+            _s_lo = _nu_score_fn(2.1)
+            _s_hi = _nu_score_fn(30.0)
+            if _s_lo * _s_hi < 0:
+                _nu_cont = float(_brentq(
+                    _nu_score_fn, 2.1, 30.0, xtol=0.1, maxiter=20))
+                if all(abs(_nu_cont - _g) > 0.3 for _g in _nu_refine_grid):
+                    _nu_refine_grid.append(_nu_cont)
+        except Exception:
+            pass
+
+        # ── Score-driven GAS ν (Creal-Koopman-Lucas 2013) ──────────────
+        # Compute time-varying ν via the scaled score of the Student-t.
+        # Use the *median* ν_t as refinement candidate — captures the
+        # data-adaptive tail index without forcing a single static ν.
+        try:
+            from scipy.special import digamma as _dg, polygamma as _pg
+            _z_gas = (returns - mu_pred_st) / np.maximum(forecast_scale_st, 1e-10)
+            _z2_gas = _z_gas * _z_gas
+            _n_gas = len(_z2_gas)
+            # GAS recursion: ν_{t+1} = ω + β·ν_t + α·s_t / √I_t
+            _nu_t = float(nu_fixed)
+            _omega_gas = float(nu_fixed) * 0.02  # Small intercept
+            _beta_gas = 0.98   # High persistence
+            _alpha_gas = 0.15  # Score sensitivity
+            _nu_series = np.empty(_n_gas, dtype=np.float64)
+            for _ig in range(_n_gas):
+                _nu_t = max(2.2, min(50.0, _nu_t))
+                _nu_series[_ig] = _nu_t
+                # Score: ∂log f / ∂ν (Creal et al. 2013, eq. 7)
+                _nv2 = _nu_t / 2.0
+                _nvp = (_nu_t + 1.0) / 2.0
+                _s_t = (0.5 * (_dg(_nvp) - _dg(_nv2) - 1.0 / _nu_t
+                         + math.log(_nu_t / (_nu_t + _z2_gas[_ig]))
+                         + (_nu_t + 1.0) * _z2_gas[_ig]
+                         / (_nu_t * (_nu_t + _z2_gas[_ig]))))
+                # Fisher information for ν (inverse for scaling)
+                _fisher_inv_sqrt = 1.0  # Simplified: full I_ν is expensive
+                _nu_t = _omega_gas + _beta_gas * _nu_t + _alpha_gas * _s_t * _fisher_inv_sqrt
+            # Use median of ν series as refinement candidate
+            _nu_gas_med = float(np.median(_nu_series[max(0, _n_gas // 4):]))
+            _nu_gas_med = max(2.2, min(30.0, _nu_gas_med))
+            if all(abs(_nu_gas_med - _g) > 0.3 for _g in _nu_refine_grid):
+                _nu_refine_grid.append(_nu_gas_med)
+        except Exception:
+            pass
+
+        # ── Grid search over all ν candidates ──────────────────────────
+        _best_nu_eff = float(nu_fixed)
+        _base_pit_passing = pit_p_st >= 0.05
+        _base_crps_inv = 1.0 / max(crps_st, 1e-12)
+        _base_pit_log = max(np.log10(max(pit_p_st, 1e-8)), -8.0)
+        _best_refine_score = _base_crps_inv + 5.0 * _base_pit_log
+
+        for _nu_trial in _nu_refine_grid:
+            if abs(_nu_trial - nu_fixed) < 0.01:
+                continue
+            try:
+                _use_osa_trial = (_nu_trial <= 5.0)
+                _, _, _mu_ref, _S_ref, _ll_ref = cls.filter_phi_with_predictive(
+                    returns, vol, q_st, c_st, phi_st, _nu_trial,
+                    robust_wt=True, online_scale_adapt=_use_osa_trial,
+                    gamma_vov=gamma_vov, vov_rolling=vov_rolling,
+                )
+                if _nu_trial > 2:
+                    _scale_ref = np.sqrt(_S_ref * (_nu_trial - 2) / _nu_trial)
+                else:
+                    _scale_ref = np.sqrt(_S_ref)
+                _crps_ref = compute_crps_student_t_inline(
+                    returns, _mu_ref, _scale_ref, _nu_trial)
+                _pit_ref = compute_extended_pit_metrics_student_t(
+                    returns, vol, q_st, c_st, phi_st, _nu_trial,
+                    mu_pred_precomputed=_mu_ref,
+                    S_pred_precomputed=_S_ref,
+                    scale_already_adapted=_use_osa_trial,
+                )
+                _pit_p_ref = _pit_ref["pit_ks_pvalue"]
+                if _base_pit_passing and _pit_p_ref < 0.05:
+                    continue
+                _crps_inv_ref = 1.0 / max(_crps_ref, 1e-12)
+                _pit_log_ref = max(np.log10(max(_pit_p_ref, 1e-8)), -8.0)
+                _score_ref = _crps_inv_ref + 5.0 * _pit_log_ref
+                if np.isfinite(_score_ref) and _score_ref > _best_refine_score:
+                    _best_refine_score = _score_ref
+                    _best_nu_eff = _nu_trial
+                    mu_pred_st = _mu_ref
+                    S_pred_st = _S_ref
+                    ll_full_st = _ll_ref
+                    forecast_scale_st = _scale_ref
+                    crps_st = _crps_ref
+                    pit_p_st = _pit_p_ref
+                    ks_st = _pit_ref["ks_statistic"]
+                    _ad_p_st = _pit_ref.get("ad_pvalue", float('nan'))
+                    _berk_st = _pit_ref["berkowitz_pvalue"]
+                    _mad_st = _pit_ref["histogram_mad"]
+                    hyvarinen_st = compute_hyvarinen_score_student_t(
+                        returns, _mu_ref, _scale_ref, _nu_trial)
+                    bic_st = compute_bic(_ll_ref, n_params, n_obs)
+                    aic_st = compute_aic(_ll_ref, n_params)
+                    mean_ll_st = _ll_ref / max(n_obs, 1)
+            except Exception:
+                continue
+
+        # =================================================================
+        # STAGE 6: CRPS-optimal scale shrinkage (Gneiting & Raftery 2007)
+        # =================================================================
+        try:
+            _n_shrink = len(returns)
+            _n_train_shrink = int(_n_shrink * 0.7)
+            if _n_train_shrink > 30:
+                _returns_sh = returns[:_n_train_shrink]
+                _mu_sh = mu_pred_st[:_n_train_shrink]
+                _scale_sh = forecast_scale_st[:_n_train_shrink]
+                _gr = (math.sqrt(5) + 1) / 2
+                _a_lo, _a_hi = 0.80, 1.0
+                for _ in range(15):
+                    _a1 = _a_hi - (_a_hi - _a_lo) / _gr
+                    _a2 = _a_lo + (_a_hi - _a_lo) / _gr
+                    _c1 = compute_crps_student_t_inline(
+                        _returns_sh, _mu_sh, _a1 * _scale_sh, _best_nu_eff)
+                    _c2 = compute_crps_student_t_inline(
+                        _returns_sh, _mu_sh, _a2 * _scale_sh, _best_nu_eff)
+                    if _c1 < _c2:
+                        _a_hi = _a2
+                    else:
+                        _a_lo = _a1
+                _alpha_opt = (_a_lo + _a_hi) / 2.0
+                if _alpha_opt < 0.995:
+                    _scale_shrunk = forecast_scale_st * _alpha_opt
+                    _crps_shrunk = compute_crps_student_t_inline(
+                        returns, mu_pred_st, _scale_shrunk, _best_nu_eff)
+                    if np.isfinite(_crps_shrunk) and _crps_shrunk < crps_st:
+                        _nu_eff = _best_nu_eff
+                        _S_shrunk = ((_scale_shrunk ** 2) * (_nu_eff / (_nu_eff - 2))
+                                     if _nu_eff > 2 else _scale_shrunk ** 2)
+                        _pit_shrunk = compute_extended_pit_metrics_student_t(
+                            returns, vol, q_st, c_st, phi_st, _nu_eff,
+                            mu_pred_precomputed=mu_pred_st,
+                            S_pred_precomputed=_S_shrunk,
+                            scale_already_adapted=_use_osa,
+                        )
+                        _pit_p_shrunk = _pit_shrunk["pit_ks_pvalue"]
+                        _accept = False
+                        if pit_p_st >= 0.05 and _pit_p_shrunk >= 0.05:
+                            _accept = True
+                        elif _pit_p_shrunk > pit_p_st:
+                            _accept = True
+                        if _accept:
+                            forecast_scale_st = _scale_shrunk
+                            crps_st = _crps_shrunk
+                            S_pred_st = _S_shrunk
+                            pit_p_st = _pit_p_shrunk
+                            ks_st = _pit_shrunk["ks_statistic"]
+                            _ad_p_st = _pit_shrunk.get("ad_pvalue", float('nan'))
+                            _berk_st = _pit_shrunk["berkowitz_pvalue"]
+                            _mad_st = _pit_shrunk["histogram_mad"]
+                            hyvarinen_st = compute_hyvarinen_score_student_t(
+                                returns, mu_pred_st, forecast_scale_st,
+                                _best_nu_eff)
+        except Exception:
+            pass
+
+        # =================================================================
+        # STAGE 7: Momentum augmentation
+        # =================================================================
+        _mom_activated = False
+        _mom_diag = None
+        if momentum_wrapper is not None:
+            try:
+                from models.momentum_augmented import apply_phi_shrinkage_for_mr
+                mu_mom, P_mom, ll_mom = momentum_wrapper.filter(
+                    returns, vol, q_st, c_st,
+                    phi=phi_st, nu=_best_nu_eff,
+                    base_model='phi_student_t',
+                )
+                _mom_u_t = momentum_wrapper._exogenous_input
+                _mom_phi_eff = apply_phi_shrinkage_for_mr(
+                    phi_st, momentum_wrapper.config)
+                _use_osa_mom = (_best_nu_eff <= 5.0)
+                _, _, mu_pred_mom, S_pred_mom, _ = cls.filter_phi_with_predictive(
+                    returns, vol, q_st, c_st, _mom_phi_eff, _best_nu_eff,
+                    exogenous_input=_mom_u_t,
+                    robust_wt=True,
+                    online_scale_adapt=_use_osa_mom,
+                    gamma_vov=gamma_vov,
+                    vov_rolling=vov_rolling,
+                )
+                if _best_nu_eff > 2:
+                    _fs_mom = np.sqrt(
+                        S_pred_mom * (_best_nu_eff - 2) / _best_nu_eff)
+                else:
+                    _fs_mom = np.sqrt(S_pred_mom)
+                crps_mom = compute_crps_student_t_inline(
+                    returns, mu_pred_mom, _fs_mom, _best_nu_eff)
+                if np.isfinite(crps_mom) and crps_mom < crps_st:
+                    _mom_activated = True
+                    _mom_diag = momentum_wrapper.get_diagnostics()
+                    pit_ext_mom = compute_extended_pit_metrics_student_t(
+                        returns, vol, q_st, c_st, phi_st, _best_nu_eff,
+                        mu_pred_precomputed=mu_pred_mom,
+                        S_pred_precomputed=S_pred_mom,
+                        scale_already_adapted=_use_osa_mom,
+                    )
+                    ks_st = pit_ext_mom["ks_statistic"]
+                    pit_p_st = pit_ext_mom["pit_ks_pvalue"]
+                    _ad_p_st = pit_ext_mom.get("ad_pvalue", float('nan'))
+                    _berk_st = pit_ext_mom["berkowitz_pvalue"]
+                    _mad_st = pit_ext_mom["histogram_mad"]
+                    ll_full_st = ll_mom
+                    mean_ll_st = ll_mom / max(n_obs, 1)
+                    bic_st = compute_bic(ll_mom, n_params, n_obs)
+                    aic_st = compute_aic(ll_mom, n_params)
+                    hyvarinen_st = compute_hyvarinen_score_student_t(
+                        returns, mu_pred_mom, _fs_mom, _best_nu_eff)
+                    crps_st = crps_mom
+                    forecast_scale_st = _fs_mom
+                    _pit_ext_base = pit_ext_mom
+            except Exception:
+                pass
+
+        # =================================================================
+        # STAGE 8: Isotonic recalibration (Kuleshov et al. 2018)
+        # =================================================================
+        try:
+            _raw_pit = _pit_ext_base.get("pit_values", None)
+            if _raw_pit is not None and len(_raw_pit) >= 50:
+                from calibration.isotonic_recalibration import IsotonicRecalibrator
+                _iso_recal = IsotonicRecalibrator()
+                _iso_result = _iso_recal.fit(_raw_pit)
+                if _iso_result.fit_success and not _iso_result.is_identity:
+                    _iso_pit = _iso_recal.transform(_raw_pit)
+                    _blend_w = 0.4
+                    _blended_pit = ((1.0 - _blend_w) * _raw_pit
+                                    + _blend_w * _iso_pit)
+                    _blended_pit = np.clip(_blended_pit, 0.001, 0.999)
+                    _ks_iso, _p_iso = _fast_ks_uniform(_blended_pit)
+                    if _p_iso > pit_p_st * 1.05:
+                        pit_p_st = float(_p_iso)
+                        ks_st = float(_ks_iso)
+        except Exception:
+            pass
+
+        # =================================================================
+        # Assemble result dict
+        # =================================================================
+        return {
+            "q": float(q_st),
+            "c": float(c_st),
+            "phi": float(phi_st),
+            "nu": float(_best_nu_eff),
+            "nu_grid": float(nu_fixed),
+            "log_likelihood": float(ll_full_st),
+            "mean_log_likelihood": float(mean_ll_st),
+            "cv_penalized_ll": float(ll_cv_st),
+            "bic": float(bic_st),
+            "aic": float(aic_st),
+            "hyvarinen_score": float(hyvarinen_st),
+            "crps": float(crps_st),
+            "n_params": int(n_params),
+            "ks_statistic": float(ks_st),
+            "pit_ks_pvalue": float(pit_p_st),
+            "ad_pvalue": float(_ad_p_st),
+            "berkowitz_pvalue": float(_berk_st),
+            "berkowitz_lr": float(_pit_ext_base.get("berkowitz_lr", 0.0)),
+            "pit_count": int(_pit_ext_base.get("pit_count", 0)),
+            "histogram_mad": float(_mad_st),
+            "fit_success": True,
+            "diagnostics": diag_st,
+            "nu_fixed": True,
+            "momentum_augmented": _mom_activated,
+            "momentum_diagnostics": _mom_diag,
+        }
+
     @classmethod
     def optimize_params_unified(
         cls,
