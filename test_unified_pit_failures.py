@@ -47,7 +47,7 @@ FAILING_ASSETS = [
     'PACB', 'AMZE', 'RCAT', 'LDOS', 'FINMY', 'VRT', 'GOOG', 'MOTG',
     'SI=F', 'XAGUSD', 'GOOGL', 'KITT', 'JCI', 'LLY', 'HII', 'MET',
     'SAIC', 'BKSY', 'ESLT', 'AFK', 'MSTR', 'HEI', 'PEW', 'RGTI',
-    'AIG', 'TATT', 'SATL', 'SMCI', 'QBTS', 'NLR', 'SNT', 'VSAT',
+    'AIG', 'TATT', 'SATL', 'SMCI', 'QBTS', 'NLR', 'VSAT',
     'SIF', 'ARQQ', 'ISRG', 'AIRI', 'OKLO',
 ]
 
@@ -1131,7 +1131,7 @@ if __name__ == '__main__':
         # Test all PIT-failing and CRPS-failing assets (current calibration targets)
         test_full_tuning_all_assets(assets_to_test=[
             # PIT failures
-            'OKLO', 'ERMAY', 'BCAL', 'ABTC', 'SAIC', 'CRML', 'SNT', 'ANNA',
+            'OKLO', 'ERMAY', 'BCAL', 'ABTC', 'SAIC', 'CRML', 'ANNA',
             'TATT', 'AMZE', 'BZAI', 'HII', 'FLTR', 'CNXT', 'QS',
             # CRPS failures (PIT pass but CRPS fail)
             'PSIX', 'ARQQ', 'COMM', 'AZBA', 'RGTI', 'MSTR', 'BNZI', 'VRT',

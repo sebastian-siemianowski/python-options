@@ -42,9 +42,13 @@ LOW_PIT_ASSETS = [
     'VSH', 'ALMU', 'SIF', 'PSIX', 'SI=F', 'AZBA', 'MSTR', 'SGLP',
     'HWM', 'HII', 'MMM', 'ASML', 'SMCI', 'UPS', 'ALB', 'MRK',
     'PEW', 'GDX', 'ASTS', 'SGDJPY=X', 'JPYSGD=X', 'ABTC', 'PYPL',
-    'SNT', 'QS', 'ON', 'AIRI', 'BNKK', 'CRS', 'BNZI', 'EXA',
+    'QS', 'ON', 'AIRI', 'BNKK', 'CRS', 'BNZI', 'EXA',
     'ESLT', 'ACN', 'DFSC', 'ASTC', 'KGC', 'FOUR', 'ADBE', 'OPXS',
     'TFC', 'NVTS', 'GRND', 'XLE', '000660.KS',
+    # Added batch
+    'RGTI', 'PACB', 'QUBT', 'GORO', 'USAS', 'APLT', 'APLM', 'RCAT',
+    'CVS', 'MDLZ', 'VZ', '8035.T', '005930.KS', 'CNYJPY=X', 'JPYCNY=X',
+    'ONDS', 'ACHR', 'HO.PA', 'QCOM', 'MRCY',
 ]
 
 # Reference assets (always included)
@@ -122,9 +126,11 @@ def fetch_data(symbol):
     _STALE_RETURN_THRESHOLD = 1e-10
     ok = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
           & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
-    if _volume_arr is not None:
+    _MIN_GENUINE_VOLUME = 100  # Floor of genuine price discovery
+    _skip_vol = (symbol.endswith('=X') or symbol.startswith('^')) if symbol else False
+    if _volume_arr is not None and not _skip_vol:
         _vol_aligned = _volume_arr[:mn]
-        ok = ok & (_vol_aligned > 0)
+        ok = ok & (_vol_aligned >= _MIN_GENUINE_VOLUME)
     returns, vol = returns[ok], vol[ok]
     if len(returns) < 100:
         return None

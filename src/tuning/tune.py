@@ -816,7 +816,7 @@ except ImportError as e:
     def make_student_t_name(nu: int) -> str:
         return f"phi_student_t_nu_{nu}"
 
-    STUDENT_T_NU_GRID = [4, 8, 20]
+    STUDENT_T_NU_GRID = [3, 4, 8, 20]
 
 # =============================================================================
 # IMPORT DIAGNOSTICS & REPORTING
@@ -1682,13 +1682,16 @@ def tune_asset_q(
         _STALE_RETURN_THRESHOLD = 1e-10
         valid_mask = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
                       & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
-        # Add Volume > 0 filter if Volume data available
-        if _volume_arr is not None:
+        # Add Volume >= 100 filter if Volume data available
+        # Skip for FX pairs (=X) and indices (^) — Yahoo reports Volume=0
+        _MIN_GENUINE_VOLUME = 100  # Floor of genuine price discovery
+        _skip_vol = (asset.endswith('=X') or asset.startswith('^')) if asset else False
+        if _volume_arr is not None and not _skip_vol:
             _vol_aligned = _volume_arr[:min_len]
-            _vol_mask = _vol_aligned > 0
+            _vol_mask = _vol_aligned >= _MIN_GENUINE_VOLUME
             n_zero_vol = int(np.sum(~_vol_mask & valid_mask))
             if n_zero_vol > 0:
-                _log(f"     🧹  Filtered {n_zero_vol} additional zero-volume phantom rows")
+                _log(f"     🧹  Filtered {n_zero_vol} additional low-volume phantom rows (Volume<{_MIN_GENUINE_VOLUME})")
             valid_mask = valid_mask & _vol_mask
         n_stale = int(np.sum(np.abs(returns) <= _STALE_RETURN_THRESHOLD))
         if n_stale > 0:
@@ -3414,7 +3417,7 @@ def fit_all_models_for_regime(
     # Internal Stage 5 re-optimizes ν across a finer grid [3..20],
     # so intermediate values (6, 10, 12, 15) are still explored —
     # we just don't spawn separate BMA models for them.
-    UNIFIED_NU_GRID = [4, 8, 20]
+    UNIFIED_NU_GRID = [3, 4, 8, 20]
     n_params_unified = 14  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν, garch(3), rough_hurst, risk_premium, skew(2), jump(4-cond)
     
     for nu_fixed in UNIFIED_NU_GRID:
@@ -5291,13 +5294,17 @@ def tune_asset_with_bma(
         _STALE_RETURN_THRESHOLD = 1e-10
         valid_mask = (np.isfinite(returns) & np.isfinite(vol) & (vol > 0)
                       & (np.abs(returns) > _STALE_RETURN_THRESHOLD))
-        # Add Volume > 0 filter if Volume data available
-        if _volume_arr is not None:
+        # Add Volume >= 100 filter if Volume data available (February 2026)
+        # Volume < 100 indicates phantom OTC quotes without genuine price discovery
+        # Skip for FX pairs (=X) and indices (^) — Yahoo reports Volume=0
+        _MIN_GENUINE_VOLUME = 100
+        _skip_vol = (asset.endswith('=X') or asset.startswith('^')) if asset else False
+        if _volume_arr is not None and not _skip_vol:
             _vol_aligned = _volume_arr[:min_len]
-            _vol_mask = _vol_aligned > 0
+            _vol_mask = _vol_aligned >= _MIN_GENUINE_VOLUME
             n_zero_vol = int(np.sum(~_vol_mask & valid_mask))
             if n_zero_vol > 0:
-                _log(f"     🧹  Filtered {n_zero_vol} additional zero-volume phantom rows")
+                _log(f"     🧹  Filtered {n_zero_vol} additional low-volume phantom rows (Volume<{_MIN_GENUINE_VOLUME})")
             valid_mask = valid_mask & _vol_mask
         n_stale = int(np.sum(np.abs(returns) <= _STALE_RETURN_THRESHOLD))
         if n_stale > 0:
@@ -5665,7 +5672,7 @@ Examples:
     print(f"Hierarchical shrinkage: λ_regime={args.lambda_regime:.3f}")
     print("Models: Gaussian, φ-Gaussian, φ-Student-t (ν ∈ {4, 8, 20})")
     if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
-        print(f"Momentum: ENABLED (prior penalty={args.momentum_penalty:.2f})")
+        print("Momentum: ENABLED")
     else:
         print("Momentum: DISABLED")
     print("Selection: BIC + Hyvärinen combined scoring")

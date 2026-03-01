@@ -412,7 +412,7 @@ metals-diag: .venv/.deps_installed
 # Comprehensive model diagnostics for all low-PIT assets + Gold & Silver
 # Options: --critical-only (p<0.01 only), --assets SYM1,SYM2, --no-reference
 diag: .venv/.deps_installed
-	@echo "⚙️  Running low-PIT model diagnostics (50 assets + GC=F, SI=F)..."
+	@echo "⚙️  Running low-PIT model diagnostics (69 assets + GC=F, SI=F)..."
 	@.venv/bin/python -B low_pit_diagnostics.py $(ARGS)
 
 # PIT summary table only (no per-asset details)

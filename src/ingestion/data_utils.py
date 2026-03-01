@@ -1020,7 +1020,6 @@ COMPANY_NAMES: Dict[str, str] = {
     
     # Polish Companies
     "ACP": "Asseco Poland S.A.",
-    "SNT": "Synektik S.A.",
     
     # Options/Structured Products
     "TSLD": "iShares Tesla Options ETF",
@@ -2170,7 +2169,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "SAF",   # Safran SA
     "SGLP",  # Invesco Physical Gold
     "SLVI",  # IS Silver Yield Options
-    "SNT",   # Synektik SA
+
     "METI",  # IS Meta Options
     "MRCY",  # Mercury Systems Inc
     "MSFI",  # IS Microsoft Options
@@ -2939,7 +2938,6 @@ SECTOR_MAP = {
     },
     "Defense & Aerospace": {
         "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HEI.A", "HEI-A", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MOG-A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE", "R3NK", "R3NK.DE", "KOG.OL", "SAABY", "SAF", "FINMY", "EXA", "EXA.PA", "BKSY", "ASTS", "THEON", "THEON.AS", "KOG", "KOG.OL",
-        "SNT"
     },
     "Communication Services": {"CMCSA", "DIS", "T", "TMUS", "VZ"},
     "Consumer Staples": {"CL", "COST", "KO", "MDLZ", "MO", "PEP", "PG", "PM", "WMT"},
@@ -3253,7 +3251,7 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     # =========================================================================
     # Polish Stocks (PLN)
     # =========================================================================
-    "ACP": "PLN", "SNT": "PLN",
+    "ACP": "PLN",
     
     # =========================================================================
     # FX Pairs

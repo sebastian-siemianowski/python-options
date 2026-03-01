@@ -17,7 +17,7 @@ from scipy.stats import kstest
 ASSETS = [
     'GC=F', 'SGLP', 'HII', 'ADBE', 'HWM', 'PSIX', 'ABTC', 'GPUS',
     'NVTS', 'UPS', 'ASTS', 'BNZI', 'MSTR', 'PYPL', 'CRS',
-    'ASML', 'SMCI', 'SNT', 'AIRI', 'OPXS',
+    'ASML', 'SMCI', 'AIRI', 'OPXS',
     # Good assets for comparison
     'BWXT', 'MMM', 'ACN', 'MRK', 'ASTC', 'ON',
 ]

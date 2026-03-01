@@ -82,11 +82,11 @@ PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
 PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 
 # Discrete ν grid for Student-t models
-# 3 BMA flavours: fat tails (4), moderate (8), near-Gaussian (20).
+# 4 BMA flavours: heavy tails (3), fat tails (4), moderate (8), near-Gaussian (20).
 # Intermediate ν values are still explored internally by Stage 5 CV
 # inside optimize_params_unified — this grid only controls how many
 # *separate models* compete in BMA at the tune.py level.
-STUDENT_T_NU_GRID = [4, 8, 20]
+STUDENT_T_NU_GRID = [3, 4, 8, 20]
 
 
 # ---------------------------------------------------------------------------
@@ -1410,7 +1410,7 @@ class PhiStudentTDriftModel:
         q_max: float = 1e-1,
         c_min: float = 0.3,
         c_max: float = 3.0,
-        phi_min: float = -0.999,
+        phi_min: float = -0.8,
         phi_max: float = 0.999,
         prior_log_q_mean: float = -6.0,
         prior_lambda: float = 1.0,
@@ -1506,7 +1506,16 @@ class PhiStudentTDriftModel:
 
             # Bayesian regularization on log10(q)
             prior_pen = prior_lambda * (log_q - prior_log_q_mean) ** 2
-            return -(total_ll - prior_pen)
+
+            # Explicit φ shrinkage prior (Gaussian centered at 0)
+            # Prevents fitting noise (bid-ask bounce → pathological phi≈-1)
+            # Reference: Roll (1984), Hansen & Lunde (2005)
+            _n_obs_shrink = max(len(_returns_r), 100)
+            _phi_tau = 1.0 / _msqrt(2.0 * max(PHI_SHRINKAGE_LAMBDA_DEFAULT / _n_obs_shrink, 1e-12))
+            _phi_tau = max(_phi_tau, PHI_SHRINKAGE_TAU_MIN)
+            _phi_shrink_pen = 0.5 * (phi_clip ** 2) / (_phi_tau ** 2)
+
+            return -(total_ll - prior_pen - _phi_shrink_pen)
 
         from scipy.optimize import minimize as sp_minimize
 
@@ -3206,11 +3215,16 @@ class PhiStudentTDriftModel:
 
             phi_pen = max(0.0, abs(phi) - 0.95)
             q_pen = max(0.0, -7.0 - log_q)
-            state_reg = 50.0 * (phi_pen ** 2 + q_pen ** 2)
+            state_reg = 200.0 * (phi_pen ** 2 + q_pen ** 2)
             if phi_pen > 0 and q_pen > 0:
-                state_reg += 30.0 * phi_pen * q_pen
+                state_reg += 80.0 * phi_pen * q_pen
 
-            return -ll / n_train + state_reg
+            # φ shrinkage prior (centered at 0, same as phi_gaussian)
+            _phi_tau_s1 = 1.0 / math.sqrt(2.0 * max(PHI_SHRINKAGE_LAMBDA_DEFAULT / max(n_train, 100), 1e-12))
+            _phi_tau_s1 = max(_phi_tau_s1, PHI_SHRINKAGE_TAU_MIN)
+            phi_shrink = 0.5 * (phi ** 2) / (_phi_tau_s1 ** 2) / n_train
+
+            return -ll / n_train + state_reg + phi_shrink
 
         log_q_init = np.log10(max(config.q_min * 10, 1e-7))
         c_safe = max(config.c, 0.01)
@@ -3220,7 +3234,7 @@ class PhiStudentTDriftModel:
         bounds = [
             (np.log10(config.q_min), -2),
             (-5.0, 5.0),
-            (-0.99, 0.99),
+            (-0.8, 0.99),
         ]
 
         try:
@@ -3903,7 +3917,13 @@ class PhiStudentTDriftModel:
             _, _, _, _, ll_no = cls.filter_phi_unified(returns_train, vol_train, cfg_no)
             _, _, _, _, ll_yes = cls.filter_phi_unified(returns_train, vol_train, cfg_yes)
 
-            bic_penalty = 4 * np.log(n_train)
+            # Adaptive BIC penalty: relax for extreme-kurtosis assets
+            # where contaminated-t finds ε≥0.15 crisis contamination.
+            # Standard: 4·ln(n) for 4 jump params. Relaxed: 2·ln(n)
+            # when empirical excess kurtosis > 6 (ν<4 regime).
+            _ek_jump = float(np.mean(z_innov ** 4) / max(np.mean(z_innov ** 2) ** 2, 1e-20))
+            _bic_mult = 2.0 if _ek_jump > 6.0 else 4.0
+            bic_penalty = _bic_mult * np.log(n_train)
             if 2 * (ll_yes - ll_no) < bic_penalty:
                 return defaults
 
@@ -4469,12 +4489,19 @@ class PhiStudentTDriftModel:
             hv = float(np.std(it)) > 0.03
             Sr = 0.5 * st + 0.5 * ht; rz = it / np.sqrt(np.maximum(Sr, 1e-12))
             ek = float(np.mean(rz ** 4) / (np.mean(rz ** 2) ** 2 + 1e-20))
-            NA = [5, 6, 7, 8, 10, 12] if im else [3, 4, 5, 6, 7, 8, 10, 12, 15, 20]
+            # ν grid for PIT calibration — extended with ν=2.5 for
+            # extreme heavy-tail assets (February 2026).
+            # ν=2.5 has finite variance but undefined kurtosis,
+            # appropriate for power-law returns (EVT ξ>0.25).
+            _base_na = [3, 4, 5, 6, 7, 8, 10, 12, 15, 20]
+            if not im and ek > 8.0:
+                _base_na = [2.5] + _base_na
+            NA = [5, 6, 7, 8, 10, 12] if im else _base_na
             kl = []
             for nc in NA:
                 if nc > 4: mm = abs(ek - 3 * (nc - 2) / (nc - 4))
                 elif nc == 4: mm = max(0, 6 - ek) * 0.5
-                elif nc == 3: mm = max(0, 8 - ek) * 0.4
+                elif nc >= 2.5: mm = max(0, 10 - ek) * 0.3
                 else: mm = float('inf')
                 kl.append((mm, nc))
             kl.sort(); NC = [v for _, v in kl[:3 if im else 8]]
