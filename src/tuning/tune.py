@@ -2874,6 +2874,7 @@ def compute_extended_pit_metrics_student_t(
     mu_pred_precomputed: np.ndarray = None,
     S_pred_precomputed: np.ndarray = None,
     scale_already_adapted: bool = False,
+    forecast_scale_override: np.ndarray = None,
 ) -> Dict:
     """PIT + Berkowitz + histogram MAD for Student-t models.
 
@@ -2885,6 +2886,9 @@ def compute_extended_pit_metrics_student_t(
         scale_already_adapted: if True, S_pred was produced by filter with
             online_scale_adapt=True. Skips chi² EWM and PIT-variance
             stretching to avoid double-correction.
+        forecast_scale_override: if provided, use this scale array directly
+            instead of computing from S_pred. Used by isotonic scale
+            correction (Stage 8) to pass corrected scale.
     """
     # student_t (as t), kstest already imported at module level
     _st_dist = student_t
@@ -2900,13 +2904,17 @@ def compute_extended_pit_metrics_student_t(
     returns_flat = np.asarray(returns).flatten()
     n = min(len(returns_flat), len(mu_pred), len(S_pred))
 
-    # Vectorized PIT computation (replaces per-element Python loop)
-    S_clamped = np.maximum(S_pred[:n], 1e-20)
-    if nu > 2:
-        scale_arr = np.sqrt(S_clamped * (nu - 2) / nu)
+    # Use override scale (from isotonic scale correction) if provided
+    if forecast_scale_override is not None:
+        scale_arr = np.maximum(forecast_scale_override[:n], 1e-10)
     else:
-        scale_arr = np.sqrt(S_clamped)
-    scale_arr = np.maximum(scale_arr, 1e-10)
+        # Vectorized PIT computation (replaces per-element Python loop)
+        S_clamped = np.maximum(S_pred[:n], 1e-20)
+        if nu > 2:
+            scale_arr = np.sqrt(S_clamped * (nu - 2) / nu)
+        else:
+            scale_arr = np.sqrt(S_clamped)
+        scale_arr = np.maximum(scale_arr, 1e-10)
 
     # ── Chi² EWM variance correction (causal scale adaptation) ────────
     # Tracks E[z²] and corrects scale when filter variance is systematically
@@ -3449,6 +3457,7 @@ def fit_all_models_for_regime(
         else:
             _st_momentum_wrapper.precompute_momentum(returns)
 
+    _st_warm_start = None  # Cross-ν warm-starting (March 2026)
     for nu_fixed in STUDENT_T_NU_GRID:
         model_name = f"phi_student_t_nu_{nu_fixed}"
         try:
@@ -3458,12 +3467,18 @@ def fit_all_models_for_regime(
                 prior_lambda=prior_lambda,
                 asset_symbol=asset,
                 n_obs=n_obs,
+                n_train=int(n_obs * 0.7),
                 vov_rolling=_vov_rolling,
                 gamma_vov=_gamma_vov_fixed,
                 momentum_wrapper=_st_momentum_wrapper,
                 prices=prices,
                 regime_labels=regime_labels,
+                warm_start_params=_st_warm_start,
             )
+            # Extract optimised (q, c, φ) for warm-starting next ν
+            _m = models[model_name]
+            if _m.get("fit_success", False):
+                _st_warm_start = (_m.get("q", 1e-5), _m.get("c", 1.0), _m.get("phi", 0.0))
         except Exception as e:
             models[model_name] = {
                 "fit_success": False,
@@ -3537,8 +3552,10 @@ def fit_all_models_for_regime(
             # recalibration, and ν refinement.
             # ─────────────────────────────────────────────────────────────
             n_train_u = int(n_obs * 0.7)
-            # Default Berk/MAD from raw PIT; overridden by filter_and_calibrate
+            # Default Berk/MAD/LR/count from raw PIT; overridden by filter_and_calibrate
             _calibrated_berk_u = pit_metrics.get("berkowitz_pvalue", 0.0)
+            _calibrated_berk_lr_u = pit_metrics.get("berkowitz_lr", 0.0)
+            _calibrated_pit_count_u = int(pit_metrics.get("pit_count", 0))
             _calibrated_mad_u = pit_metrics.get("histogram_mad", 1.0)
             _ad_p_u = float('nan')
             try:
@@ -3747,7 +3764,10 @@ def fit_all_models_for_regime(
                 _gu_mom_for_calib, float(g_config.momentum_weight))
             _pit_gu, _pit_p_gu, _sigma_gu, _crps_gu, _calib_gu = GaussianDriftModel.filter_and_calibrate(
                 returns, vol, g_config, train_frac=0.7,
-                momentum_signal=_gu_mom_for_calib)
+                momentum_signal=_gu_mom_for_calib,
+                mu_pred_precomputed=mu_pred_gu,
+                S_pred_precomputed=S_pred_gu,
+                ll_precomputed=ll_gu)
             pit_p_gu = float(_pit_p_gu) if np.isfinite(_pit_p_gu) else 0.0
             _ad_p_gu = float(_calib_gu.get("ad_pvalue", float('nan')))
             _berk_p_gu = float(_calib_gu.get("berkowitz_pvalue", 0.0))

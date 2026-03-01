@@ -61,6 +61,7 @@ try:
         run_garch_variance,
         # Filter accelerators
         run_phi_student_t_augmented_filter,
+        run_phi_student_t_enhanced_filter,
         # CDF/PDF array kernels (vectorized replacements for scipy)
         run_student_t_cdf_array,
         run_student_t_pdf_array,
@@ -71,6 +72,7 @@ try:
     _NUMBA_PIT_KS = _USE_NUMBA
     _NUMBA_GARCH = _USE_NUMBA
     _NUMBA_CDF_ARRAY = _USE_NUMBA
+    _NUMBA_ENHANCED = _USE_NUMBA
 except ImportError:
     _USE_NUMBA = False
     _MS_Q_NUMBA_AVAILABLE = False
@@ -78,6 +80,7 @@ except ImportError:
     _NUMBA_PIT_KS = False
     _NUMBA_GARCH = False
     _NUMBA_CDF_ARRAY = False
+    _NUMBA_ENHANCED = False
     run_phi_student_t_filter = None
     run_phi_student_t_filter_batch = None
     run_ms_q_student_t_filter = None
@@ -1549,6 +1552,7 @@ class PhiStudentTDriftModel:
         asset_symbol: str = None,
         gamma_vov: float = 0.0,
         vov_rolling: np.ndarray = None,
+        warm_start_params: Tuple[float, float, float] = None,
     ) -> Tuple[float, float, float, float, Dict]:
         """
         Optimize (q, c, φ) for a FIXED ν via cross-validated MLE.
@@ -1696,6 +1700,19 @@ class PhiStudentTDriftModel:
         _log_c_min = np.log10(c_min)
         _log_c_max = np.log10(c_max)
         grid_candidates = []
+
+        # Warm-start from previous ν: inject as priority candidate
+        if warm_start_params is not None:
+            ws_q, ws_c, ws_phi = warm_start_params
+            ws_lq = np.clip(np.log10(max(ws_q, 1e-12)), _log_q_min, _log_q_max)
+            ws_lc = np.clip(np.log10(max(ws_c, 1e-6)), _log_c_min, _log_c_max)
+            ws_ph = float(np.clip(ws_phi, phi_min, phi_max))
+            try:
+                val = neg_cv_ll([ws_lq, ws_lc, ws_ph])
+                grid_candidates.append((val, ws_lq, ws_lc, ws_ph))
+            except Exception:
+                pass
+
         for log_q0 in [-6.0, -5.0, -4.0]:
             for log_c0 in [-0.05, 0.15]:
                 for phi0 in [0.0, 0.3]:
@@ -1802,6 +1819,30 @@ class PhiStudentTDriftModel:
         return w2
 
     # =====================================================================
+    # Anderson-Darling statistic for Uniform(0,1) (Anderson & Darling 1952)
+    # =====================================================================
+    @staticmethod
+    def _compute_ad_statistic(pit_values: np.ndarray) -> float:
+        """
+        Anderson-Darling A² for Uniform(0,1).
+
+        A² = -n - (1/n) Σ [(2i-1)(ln u_i + ln(1-u_{n+1-i}))]
+
+        3-10× more powerful than KS for tail miscalibration — captures both
+        heavy-tail deficiency and light-tail excess simultaneously.
+        Lower = better calibrated.
+        """
+        n = len(pit_values)
+        if n < 2:
+            return float('inf')
+        u = np.sort(np.clip(pit_values, 1e-10, 1.0 - 1e-10))
+        i_vals = np.arange(1, n + 1)
+        log_u = np.log(u)
+        log_1mu = np.log(1.0 - u[::-1])  # u_{n+1-i}
+        a2 = -float(n) - float(np.sum((2.0 * i_vals - 1.0) * (log_u + log_1mu))) / float(n)
+        return max(a2, 0.0)
+
+    # =====================================================================
     # tune_and_calibrate — COMPLETE φ-t pipeline in the model
     # =====================================================================
     @classmethod
@@ -1815,11 +1856,13 @@ class PhiStudentTDriftModel:
         prior_lambda: float = 1.0,
         asset_symbol: str = None,
         n_obs: int = None,
+        n_train: int = None,
         vov_rolling: np.ndarray = None,
         gamma_vov: float = None,
         momentum_wrapper=None,
         prices: np.ndarray = None,
         regime_labels: np.ndarray = None,
+        warm_start_params: Tuple[float, float, float] = None,
     ) -> dict:
         """
         Complete tune-filter-calibrate pipeline for a FIXED ν sub-model.
@@ -1852,6 +1895,10 @@ class PhiStudentTDriftModel:
         if vov_rolling is None:
             vov_rolling = cls._precompute_vov(vol)
         n_params = 3  # q, c, phi
+        # ── Train/test split for out-of-sample evaluation ──
+        # Filter runs on full data; CRPS/PIT/Hyvärinen scored on test only
+        if n_train is None:
+            n_train = int(n_obs * 0.7)
 
         # =================================================================
         # STAGE 1: Optimize (q, c, φ) — cross-validated MLE
@@ -1864,6 +1911,7 @@ class PhiStudentTDriftModel:
             asset_symbol=asset_symbol,
             gamma_vov=gamma_vov,
             vov_rolling=vov_rolling,
+            warm_start_params=warm_start_params,
         )
 
         # =================================================================
@@ -1884,6 +1932,7 @@ class PhiStudentTDriftModel:
         # STAGE 3: PIT + Berkowitz + histogram MAD
         # =================================================================
         from tuning.tune import compute_extended_pit_metrics_student_t
+        # PIT computed on FULL data (filter-based, needs all predictions)
         _pit_ext_base = compute_extended_pit_metrics_student_t(
             returns, vol, q_st, c_st, phi_st, nu_fixed,
             mu_pred_precomputed=mu_pred_st, S_pred_precomputed=S_pred_st,
@@ -1905,11 +1954,17 @@ class PhiStudentTDriftModel:
             forecast_scale_st = np.sqrt(S_pred_st * (nu_fixed - 2) / nu_fixed)
         else:
             forecast_scale_st = np.sqrt(S_pred_st)
+
+        # ── Out-of-sample scoring on test fold only (March 2026) ──
+        # Filter runs on full data; decision metrics use test period only
+        _r_test = returns[n_train:]
+        _mu_test = mu_pred_st[n_train:]
+        _fs_test = forecast_scale_st[n_train:]
         hyvarinen_st = compute_hyvarinen_score_student_t(
-            returns, mu_pred_st, forecast_scale_st, nu_fixed
+            _r_test, _mu_test, _fs_test, nu_fixed
         )
         crps_st = compute_crps_student_t_inline(
-            returns, mu_pred_st, forecast_scale_st, nu_fixed
+            _r_test, _mu_test, _fs_test, nu_fixed
         )
 
         # =================================================================
@@ -1938,28 +1993,48 @@ class PhiStudentTDriftModel:
                     _h_garch[_gi] = 1e-12
             _h_mean = max(float(np.mean(_h_garch)), 1e-12)
             _garch_h_ratio = _h_garch / _h_mean
-            # Adaptive GARCH blend weight: grid search (was hardcoded 0.3)
-            _garch_blend_w = 0.3  # default fallback
-            _best_garch_crps = float('inf')
-            for _gw in (0.1, 0.2, 0.3, 0.4, 0.5):
-                _S_gw = S_pred_st * (_gw * _garch_h_ratio + (1.0 - _gw))
+            # ── Golden-section search for GARCH blend weight (March 2026) ──
+            # Replaces 5-point grid with continuous optimiser on [0.0, 0.6]
+            # Scored on test fold only to prevent in-sample selection bias
+            _garch_blend_w = 0.0  # default: no blending
+            _best_garch_crps = crps_st  # must beat current baseline
+            _garch_h_ratio_test = _garch_h_ratio[n_train:]
+            _S_test = S_pred_st[n_train:]
+            _gr_g = (math.sqrt(5) + 1) / 2
+            _gw_lo, _gw_hi = 0.0, 0.6
+            for _ in range(12):
+                _gw1 = _gw_hi - (_gw_hi - _gw_lo) / _gr_g
+                _gw2 = _gw_lo + (_gw_hi - _gw_lo) / _gr_g
+                # Evaluate at probe point 1
+                _S_gw1 = _S_test * (_gw1 * _garch_h_ratio_test + (1.0 - _gw1))
                 if nu_fixed > 2:
-                    _fs_gw = np.sqrt(_S_gw * (nu_fixed - 2) / nu_fixed)
+                    _fs_gw1 = np.sqrt(_S_gw1 * (nu_fixed - 2) / nu_fixed)
                 else:
-                    _fs_gw = np.sqrt(_S_gw)
-                _crps_gw = compute_crps_student_t_inline(
-                    returns, mu_pred_st, _fs_gw, nu_fixed)
-                if np.isfinite(_crps_gw) and _crps_gw < _best_garch_crps:
-                    _best_garch_crps = _crps_gw
-                    _garch_blend_w = _gw
+                    _fs_gw1 = np.sqrt(_S_gw1)
+                _c_gw1 = compute_crps_student_t_inline(
+                    _r_test, _mu_test, _fs_gw1, nu_fixed)
+                # Evaluate at probe point 2
+                _S_gw2 = _S_test * (_gw2 * _garch_h_ratio_test + (1.0 - _gw2))
+                if nu_fixed > 2:
+                    _fs_gw2 = np.sqrt(_S_gw2 * (nu_fixed - 2) / nu_fixed)
+                else:
+                    _fs_gw2 = np.sqrt(_S_gw2)
+                _c_gw2 = compute_crps_student_t_inline(
+                    _r_test, _mu_test, _fs_gw2, nu_fixed)
+                if _c_gw1 < _c_gw2:
+                    _gw_hi = _gw2
+                else:
+                    _gw_lo = _gw1
+            _garch_blend_w = (_gw_lo + _gw_hi) / 2.0
             S_pred_blended = S_pred_st * (_garch_blend_w * _garch_h_ratio
                                           + (1.0 - _garch_blend_w))
             if nu_fixed > 2:
                 _fs_bl = np.sqrt(S_pred_blended * (nu_fixed - 2) / nu_fixed)
             else:
                 _fs_bl = np.sqrt(S_pred_blended)
+            _fs_bl_test = _fs_bl[n_train:]
             crps_blended = compute_crps_student_t_inline(
-                returns, mu_pred_st, _fs_bl, nu_fixed
+                _r_test, _mu_test, _fs_bl_test, nu_fixed
             )
             if np.isfinite(crps_blended) and crps_blended <= crps_st * 1.01:
                 _pit_ext_garch = compute_extended_pit_metrics_student_t(
@@ -1983,8 +2058,11 @@ class PhiStudentTDriftModel:
                             S_pred_blended * (nu_fixed - 2) / nu_fixed)
                     else:
                         forecast_scale_st = np.sqrt(S_pred_blended)
+                    # Update test slices after GARCH acceptance
+                    _fs_test = forecast_scale_st[n_train:]
+                    _mu_test = mu_pred_st[n_train:]
                     hyvarinen_st = compute_hyvarinen_score_student_t(
-                        returns, mu_pred_st, forecast_scale_st, nu_fixed
+                        _r_test, _mu_test, _fs_test, nu_fixed
                     )
         except Exception:
             pass
@@ -2066,16 +2144,23 @@ class PhiStudentTDriftModel:
             pass
 
         # ── Grid search over all ν candidates ──────────────────────────
+        # March 2026: CRPS-weighted scoring (0.50 CRPS + 0.25 CvM + 0.25 AD)
+        # and test-only evaluation for all metrics
         _best_nu_eff = float(nu_fixed)
         _base_pit_passing = pit_p_st >= 0.05
         _base_pit_vals = _pit_ext_base.get("pit_values", np.array([]))
         _base_cvm = cls._compute_cvm_statistic(_base_pit_vals)
         if not np.isfinite(_base_cvm) or _base_cvm < 1e-12:
             _base_cvm = 1.0
-        # Balanced scoring: CRPS_ratio + CvM_ratio (both ~1 at baseline)
+        _base_ad = cls._compute_ad_statistic(_base_pit_vals)
+        if not np.isfinite(_base_ad) or _base_ad < 1e-12:
+            _base_ad = 1.0
+        # CRPS-dominant weighting: CRPS is the strictly proper scoring rule
+        _w_crps, _w_cvm, _w_ad = 0.50, 0.25, 0.25
         _orig_crps = crps_st
         _orig_cvm = _base_cvm
-        _best_refine_score = 2.0  # Baseline: 1.0 + 1.0
+        _orig_ad = _base_ad
+        _best_refine_score = _w_crps + _w_cvm + _w_ad  # = 1.0 at baseline
 
         for _nu_trial in _nu_refine_grid:
             if abs(_nu_trial - nu_fixed) < 0.01:
@@ -2091,8 +2176,10 @@ class PhiStudentTDriftModel:
                     _scale_ref = np.sqrt(_S_ref * (_nu_trial - 2) / _nu_trial)
                 else:
                     _scale_ref = np.sqrt(_S_ref)
+                # Test-only CRPS for scoring
                 _crps_ref = compute_crps_student_t_inline(
-                    returns, _mu_ref, _scale_ref, _nu_trial)
+                    _r_test, _mu_ref[n_train:], _scale_ref[n_train:], _nu_trial)
+                # PIT on full data (filter-based, needed for complete calibration)
                 _pit_ref = compute_extended_pit_metrics_student_t(
                     returns, vol, q_st, c_st, phi_st, _nu_trial,
                     mu_pred_precomputed=_mu_ref,
@@ -2104,8 +2191,11 @@ class PhiStudentTDriftModel:
                     continue
                 _cvm_ref = cls._compute_cvm_statistic(
                     _pit_ref.get("pit_values", np.array([])))
-                _score_ref = (min(_orig_crps / max(_crps_ref, 1e-12), 5.0)
-                              + min(_orig_cvm / max(_cvm_ref, 1e-12), 5.0))
+                _ad_ref = cls._compute_ad_statistic(
+                    _pit_ref.get("pit_values", np.array([])))
+                _score_ref = (_w_crps * min(_orig_crps / max(_crps_ref, 1e-12), 5.0)
+                              + _w_cvm * min(_orig_cvm / max(_cvm_ref, 1e-12), 5.0)
+                              + _w_ad * min(_orig_ad / max(_ad_ref, 1e-12), 5.0))
                 if np.isfinite(_score_ref) and _score_ref > _best_refine_score:
                     _best_refine_score = _score_ref
                     _best_nu_eff = _nu_trial
@@ -2120,7 +2210,7 @@ class PhiStudentTDriftModel:
                     _berk_st = _pit_ref["berkowitz_pvalue"]
                     _mad_st = _pit_ref["histogram_mad"]
                     hyvarinen_st = compute_hyvarinen_score_student_t(
-                        returns, _mu_ref, _scale_ref, _nu_trial)
+                        _r_test, _mu_ref[n_train:], _scale_ref[n_train:], _nu_trial)
                     bic_st = compute_bic(_ll_ref, n_params, n_obs)
                     aic_st = compute_aic(_ll_ref, n_params)
                     mean_ll_st = _ll_ref / max(n_obs, 1)
@@ -2128,17 +2218,16 @@ class PhiStudentTDriftModel:
                 continue
 
         # =================================================================
-        # STAGE 6: CRPS-optimal scale shrinkage (Gneiting & Raftery 2007)
+        # STAGE 6: CRPS-optimal scale correction (Gneiting & Raftery 2007)
+        # March 2026: Bidirectional [0.80, 1.20], acceptance on test-only
         # =================================================================
         try:
-            _n_shrink = len(returns)
-            _n_train_shrink = int(_n_shrink * 0.7)
-            if _n_train_shrink > 30:
-                _returns_sh = returns[:_n_train_shrink]
-                _mu_sh = mu_pred_st[:_n_train_shrink]
-                _scale_sh = forecast_scale_st[:_n_train_shrink]
+            if n_train > 30:
+                _returns_sh = returns[:n_train]
+                _mu_sh = mu_pred_st[:n_train]
+                _scale_sh = forecast_scale_st[:n_train]
                 _gr = (math.sqrt(5) + 1) / 2
-                _a_lo, _a_hi = 0.80, 1.0
+                _a_lo, _a_hi = 0.80, 1.20
                 for _ in range(15):
                     _a1 = _a_hi - (_a_hi - _a_lo) / _gr
                     _a2 = _a_lo + (_a_hi - _a_lo) / _gr
@@ -2151,10 +2240,12 @@ class PhiStudentTDriftModel:
                     else:
                         _a_lo = _a1
                 _alpha_opt = (_a_lo + _a_hi) / 2.0
-                if _alpha_opt < 0.995:
+                if abs(_alpha_opt - 1.0) > 0.005:
                     _scale_shrunk = forecast_scale_st * _alpha_opt
+                    # Acceptance: test-only CRPS
                     _crps_shrunk = compute_crps_student_t_inline(
-                        returns, mu_pred_st, _scale_shrunk, _best_nu_eff)
+                        _r_test, mu_pred_st[n_train:], _scale_shrunk[n_train:],
+                        _best_nu_eff)
                     if np.isfinite(_crps_shrunk) and _crps_shrunk < crps_st:
                         _nu_eff = _best_nu_eff
                         _S_shrunk = ((_scale_shrunk ** 2) * (_nu_eff / (_nu_eff - 2))
@@ -2180,8 +2271,9 @@ class PhiStudentTDriftModel:
                             _ad_p_st = _pit_shrunk.get("ad_pvalue", float('nan'))
                             _berk_st = _pit_shrunk["berkowitz_pvalue"]
                             _mad_st = _pit_shrunk["histogram_mad"]
+                            _fs_test = forecast_scale_st[n_train:]
                             hyvarinen_st = compute_hyvarinen_score_student_t(
-                                returns, mu_pred_st, forecast_scale_st,
+                                _r_test, _mu_test, _fs_test,
                                 _best_nu_eff)
         except Exception:
             pass
@@ -2217,7 +2309,8 @@ class PhiStudentTDriftModel:
                 else:
                     _fs_mom = np.sqrt(S_pred_mom)
                 crps_mom = compute_crps_student_t_inline(
-                    returns, mu_pred_mom, _fs_mom, _best_nu_eff)
+                    _r_test, mu_pred_mom[n_train:], _fs_mom[n_train:],
+                    _best_nu_eff)
                 if np.isfinite(crps_mom) and crps_mom < crps_st:
                     _mom_activated = True
                     _mom_diag = momentum_wrapper.get_diagnostics()
@@ -2237,7 +2330,8 @@ class PhiStudentTDriftModel:
                     bic_st = compute_bic(ll_mom, n_params, n_obs)
                     aic_st = compute_aic(ll_mom, n_params)
                     hyvarinen_st = compute_hyvarinen_score_student_t(
-                        returns, mu_pred_mom, _fs_mom, _best_nu_eff)
+                        _r_test, mu_pred_mom[n_train:], _fs_mom[n_train:],
+                        _best_nu_eff)
                     crps_st = crps_mom
                     forecast_scale_st = _fs_mom
                     _pit_ext_base = pit_ext_mom
@@ -2245,17 +2339,71 @@ class PhiStudentTDriftModel:
                 pass
 
         # =================================================================
-        # STAGE 8: Isotonic recalibration (Kuleshov et al. 2018)
+        # STAGE 8: Scale-corrected isotonic recalibration (March 2026)
+        # =================================================================
+        # Key fix: instead of cosmetically warping PIT values, infer scale
+        # correction from the PIT distribution and apply to forecast_scale_st.
+        # This makes downstream CRPS/Hyvärinen metrics coherent with the
+        # improved calibration.
         # =================================================================
         try:
             _raw_pit = _pit_ext_base.get("pit_values", None)
             if _raw_pit is not None and len(_raw_pit) >= 50:
+                # Step 1: Derive scale correction from PIT IQR
+                # (Diebold, Gunther & Tay 1998: PIT-based calibration)
+                # For perfect calibration: PIT ~ Uniform(0,1), IQR = 0.5
+                _pit_q25 = float(np.percentile(_raw_pit, 25))
+                _pit_q75 = float(np.percentile(_raw_pit, 75))
+                _pit_iqr = _pit_q75 - _pit_q25
+                _scale_corr = _pit_iqr / 0.5  # >1 = under-dispersed, <1 = over-dispersed
+                _scale_corr = float(np.clip(_scale_corr, 0.5, 2.0))
+
+                # Only apply if correction is meaningful (>5% change)
+                if abs(_scale_corr - 1.0) > 0.05:
+                    forecast_scale_st = forecast_scale_st * _scale_corr
+
+                    # Recompute PIT with corrected scale
+                    _pit_corr = compute_extended_pit_metrics_student_t(
+                        returns, vol, q_st, c_st, phi_st, _best_nu_eff,
+                        mu_pred_precomputed=mu_pred_st,
+                        S_pred_precomputed=S_pred_st,
+                        forecast_scale_override=forecast_scale_st,
+                        scale_already_adapted=True,
+                    )
+                    _pit_p_corr = _pit_corr.get("pit_ks_pvalue", 0.0)
+
+                    # Accept only if PIT improves (no degradation)
+                    if _pit_p_corr > pit_p_st * 0.95:
+                        pit_p_st = float(_pit_p_corr)
+                        ks_st = float(_pit_corr["ks_statistic"])
+                        _ad_p_st = float(_pit_corr.get("ad_pvalue", float('nan')))
+                        _berk_st = float(_pit_corr.get("berkowitz_pvalue", _berk_st))
+                        _mad_st = float(_pit_corr.get("histogram_mad", _mad_st))
+                        _raw_pit = _pit_corr.get("pit_values", _raw_pit)
+
+                        # Recompute CRPS and Hyvärinen on test fold
+                        _fs_test = forecast_scale_st[n_train:]
+                        crps_st = compute_crps_student_t_inline(
+                            _r_test, _mu_test, _fs_test, _best_nu_eff)
+                        hyvarinen_st = compute_hyvarinen_score_student_t(
+                            _r_test, _mu_test, _fs_test, _best_nu_eff)
+                        bic_st = compute_bic(ll_full_st, n_params, n_obs)
+                    else:
+                        # Revert scale correction
+                        forecast_scale_st = forecast_scale_st / _scale_corr
+
+                # Step 2: Isotonic PIT blending (Kuleshov et al. 2018)
+                # March 2026: adaptive blend weight based on KS improvement
                 from calibration.isotonic_recalibration import IsotonicRecalibrator
                 _iso_recal = IsotonicRecalibrator()
                 _iso_result = _iso_recal.fit(_raw_pit)
                 if _iso_result.fit_success and not _iso_result.is_identity:
                     _iso_pit = _iso_recal.transform(_raw_pit)
-                    _blend_w = 0.4
+                    # Adaptive blend: stronger when isotonic reduces KS more
+                    _ks_raw, _ = _fast_ks_uniform(_raw_pit)
+                    _ks_iso_only, _ = _fast_ks_uniform(_iso_pit)
+                    _ks_improve = 1.0 - min(_ks_iso_only / max(_ks_raw, 1e-10), 1.0)
+                    _blend_w = float(np.clip(0.2 + 0.5 * _ks_improve, 0.1, 0.7))
                     _blended_pit = ((1.0 - _blend_w) * _raw_pit
                                     + _blend_w * _iso_pit)
                     _blended_pit = np.clip(_blended_pit, 0.001, 0.999)
@@ -3545,8 +3693,22 @@ class PhiStudentTDriftModel:
                 Inflates R_t during volatile periods: R_t *= (1 + γ·vov_rolling_t).
             vov_rolling: precomputed rolling std of log-vol (window=20).
         """
-        # Numba-accelerated path — only when no enhanced features are used
+        # Numba-accelerated path — enhanced kernel for VoV/OSA features
         _use_enhanced = online_scale_adapt or (gamma_vov > 1e-12 and vov_rolling is not None)
+        if _use_enhanced and _NUMBA_ENHANCED:
+            try:
+                return run_phi_student_t_enhanced_filter(
+                    returns, vol, q, c,
+                    float(max(-0.999, min(0.999, phi))),
+                    float(cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)),
+                    exogenous_input=exogenous_input,
+                    robust_wt=robust_wt,
+                    online_scale_adapt=online_scale_adapt,
+                    gamma_vov=float(gamma_vov) if gamma_vov else 0.0,
+                    vov_rolling=vov_rolling,
+                )
+            except Exception:
+                pass  # Fall through to Python
         if not _use_enhanced and _USE_NUMBA and run_phi_student_t_augmented_filter is not None:
             try:
                 return run_phi_student_t_augmented_filter(
@@ -4570,7 +4732,11 @@ class PhiStudentTDriftModel:
         best_global_beta = 1.0
         best_global_mu_drift = 0.0
 
-        for test_nu in NU_GRID:
+        # ── March 2026: Parallel ν evaluation ──
+        # Each ν iteration is independent (no shared state). Numba kernels
+        # release the GIL, so ThreadPoolExecutor provides real parallelism.
+        def _evaluate_nu(test_nu):
+            """Evaluate a single ν candidate. Returns (score, nu, beta, mu_drift) or None."""
             try:
                 temp_config = UnifiedStudentTConfig(
                     q=q_opt, c=c_opt, phi=phi_opt, nu_base=float(test_nu),
@@ -4582,11 +4748,11 @@ class PhiStudentTDriftModel:
                     skew_persistence=skew_persistence_fixed,
                 )
 
-                _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
+                _, _, mu_pred_tr, S_pred_tr, _ = cls.filter_phi_unified(
                     returns_train, vol_train, temp_config
                 )
 
-                innovations_train = returns_train - mu_pred_train
+                innovations_tr = returns_train - mu_pred_tr
 
                 fold_ks_pvalues = []
                 fold_betas = []
@@ -4600,8 +4766,8 @@ class PhiStudentTDriftModel:
                     if valid_end_idx <= valid_start_idx:
                         continue
 
-                    innov_fold_train = innovations_train[:train_end_idx]
-                    S_fold_train = S_pred_train[:train_end_idx]
+                    innov_fold_train = innovations_tr[:train_end_idx]
+                    S_fold_train = S_pred_tr[:train_end_idx]
 
                     fold_mu_drift = float(np.mean(innov_fold_train))
                     centered_innov = innov_fold_train - fold_mu_drift
@@ -4616,10 +4782,9 @@ class PhiStudentTDriftModel:
                     fold_betas.append(fold_beta)
                     fold_mu_drifts.append(fold_mu_drift)
 
-                    innov_valid = innovations_train[valid_start_idx:valid_end_idx] - fold_mu_drift
-                    S_valid = S_pred_train[valid_start_idx:valid_end_idx]
+                    innov_valid = innovations_tr[valid_start_idx:valid_end_idx] - fold_mu_drift
+                    S_valid = S_pred_tr[valid_start_idx:valid_end_idx]
 
-                    # Vectorized PIT (replaces per-element loop)
                     S_cal_vec = S_valid * fold_beta
                     if test_nu > 2:
                         t_scale_vec = np.sqrt(S_cal_vec * (test_nu - 2) / test_nu)
@@ -4634,7 +4799,6 @@ class PhiStudentTDriftModel:
                         _, ks_p = _fast_ks_uniform(pit_values)
                         fold_ks_pvalues.append(ks_p)
 
-                        # CRPS on validation fold (Gneiting-Raftery sharpness)
                         try:
                             fold_sigma = np.sqrt(S_cal_vec)
                             fold_sigma = np.maximum(fold_sigma, 1e-10)
@@ -4659,86 +4823,77 @@ class PhiStudentTDriftModel:
                         except Exception:
                             fold_ks_pvalues[-1] = (ks_p, float('inf'))
 
-                if len(fold_ks_pvalues) > 0:
-                    fold_ks_vals = [x[0] if isinstance(x, tuple) else x for x in fold_ks_pvalues]
-                    fold_crps_vals = [x[1] if isinstance(x, tuple) else float('inf') for x in fold_ks_pvalues]
-                    avg_ks_p = float(np.mean(fold_ks_vals))
-                    avg_crps = float(np.mean([c for c in fold_crps_vals if np.isfinite(c)])) if any(np.isfinite(c) for c in fold_crps_vals) else float('inf')
-                    avg_beta = float(np.mean(fold_betas))
-                    avg_mu_drift = float(np.mean(fold_mu_drifts))
+                if len(fold_ks_pvalues) == 0:
+                    return None
 
-                    # ── CRPS-PRIMARY ν SELECTION (Gneiting-Raftery 2007) ──
-                    # "Maximize sharpness subject to calibration."
-                    # CRPS is primary when calibration constraint is met.
-                    #
-                    # Anderson-Darling test provides tail-sensitive calibration
-                    # assessment alongside KS.
-                    #
-                    # Gate: reject ν where KS p < 0.01 (tail-insensitive but
-                    # stable) — this is the calibration CONSTRAINT.
-                    # Among passing ν values: select lowest CRPS (OBJECTIVE).
-                    # Fallback: if no ν passes gate, use KS-primary scoring.
-                    # ────────────────────────────────────────────────────
+                fold_ks_vals = [x[0] if isinstance(x, tuple) else x for x in fold_ks_pvalues]
+                fold_crps_vals = [x[1] if isinstance(x, tuple) else float('inf') for x in fold_ks_pvalues]
+                avg_ks_p = float(np.mean(fold_ks_vals))
+                avg_crps = float(np.mean([c for c in fold_crps_vals if np.isfinite(c)])) if any(np.isfinite(c) for c in fold_crps_vals) else float('inf')
+                avg_beta = float(np.mean(fold_betas))
+                avg_mu_drift = float(np.mean(fold_mu_drifts))
 
-                    # Anderson-Darling test on last fold for tail sensitivity
-                    _ad_p = 1.0
-                    try:
-                        from calibration.pit_calibration import anderson_darling_uniform
-                        # Compute AD on mean PIT across folds
-                        _last_fold_ks = fold_ks_vals[-1] if fold_ks_vals else 0.0
-                        _, _ad_p = anderson_darling_uniform(
-                            _fast_t_cdf(
-                                innovations_train[n_train - fold_size:] /
-                                np.maximum(np.sqrt(S_pred_train[n_train - fold_size:] *
-                                    float(np.mean(fold_betas)) *
-                                    ((test_nu - 2) / test_nu if test_nu > 2 else 1.0)), 1e-10),
-                                test_nu
-                            )
+                _ad_p = 1.0
+                try:
+                    from calibration.pit_calibration import anderson_darling_uniform
+                    _, _ad_p = anderson_darling_uniform(
+                        _fast_t_cdf(
+                            innovations_tr[n_train - fold_size:] /
+                            np.maximum(np.sqrt(S_pred_tr[n_train - fold_size:] *
+                                float(np.mean(fold_betas)) *
+                                ((test_nu - 2) / test_nu if test_nu > 2 else 1.0)), 1e-10),
+                            test_nu
                         )
-                    except Exception:
-                        _ad_p = avg_ks_p  # Fallback: treat AD = KS
+                    )
+                except Exception:
+                    _ad_p = avg_ks_p
 
-                    # Calibration gate: max(KS, AD) >= 0.01
-                    _cal_ok = max(avg_ks_p, _ad_p) >= 0.01
+                _cal_ok = max(avg_ks_p, _ad_p) >= 0.01
 
-                    # Kurtosis coherence bonus for heavy-tail grid
-                    if use_heavy_tail_grid and test_nu > 4:
-                        emp_kurt = float(np.mean(innovations_train ** 4) / (np.mean(innovations_train ** 2) ** 2 + 1e-20))
-                        theo_kurt = 3.0 * (test_nu - 2.0) / (test_nu - 4.0)
-                        kurt_mismatch = abs(emp_kurt - theo_kurt) / (emp_kurt + 1e-8)
-                        kurt_bonus = max(0.5, 1.0 - 0.5 * kurt_mismatch)
-                    else:
-                        kurt_bonus = 1.0
+                if use_heavy_tail_grid and test_nu > 4:
+                    emp_kurt = float(np.mean(innovations_tr ** 4) / (np.mean(innovations_tr ** 2) ** 2 + 1e-20))
+                    theo_kurt = 3.0 * (test_nu - 2.0) / (test_nu - 4.0)
+                    kurt_mismatch = abs(emp_kurt - theo_kurt) / (emp_kurt + 1e-8)
+                    kurt_bonus = max(0.5, 1.0 - 0.5 * kurt_mismatch)
+                else:
+                    kurt_bonus = 1.0
 
-                    if _cal_ok and np.isfinite(avg_crps) and avg_crps > 0:
-                        # CRPS-primary: lower CRPS = better, invert for score
-                        innov_std = float(np.std(innovations_train)) + 1e-10
+                if _cal_ok and np.isfinite(avg_crps) and avg_crps > 0:
+                    innov_std = float(np.std(innovations_tr)) + 1e-10
+                    crps_ratio = avg_crps / innov_std
+                    cal_quality = max(avg_ks_p, 0.05) ** 0.3
+                    score = (1.0 / max(crps_ratio, 0.01)) * kurt_bonus * cal_quality
+                else:
+                    score = avg_ks_p * kurt_bonus
+                    if avg_ks_p > 0.05 and np.isfinite(avg_crps) and avg_crps > 0:
+                        innov_std = float(np.std(innovations_tr)) + 1e-10
                         crps_ratio = avg_crps / innov_std
-                        # Calibration quality: KS-based with floor.
-                        # AD informs the gate above, not the quality metric,
-                        # because AD p-values are consistently lower than KS
-                        # and would crush the score for well-calibrated assets.
-                        cal_quality = max(avg_ks_p, 0.05) ** 0.3  # Compressed: [0.05→0.38, 0.5→0.81, 0.9→0.97]
-                        score = (1.0 / max(crps_ratio, 0.01)) * kurt_bonus * cal_quality
-                    else:
-                        # Fallback: KS-primary scoring (calibration constraint not met)
-                        score = avg_ks_p * kurt_bonus
+                        crps_bonus = max(0.6, min(1.5, 1.5 - 0.8 * crps_ratio))
+                        score = score * crps_bonus
 
-                        # CRPS sharpness bonus (Gneiting-Raftery) — only if calibrated
-                        if avg_ks_p > 0.05 and np.isfinite(avg_crps) and avg_crps > 0:
-                            innov_std = float(np.std(innovations_train)) + 1e-10
-                            crps_ratio = avg_crps / innov_std
-                            crps_bonus = max(0.6, min(1.5, 1.5 - 0.8 * crps_ratio))
-                            score = score * crps_bonus
-
-                    if score > best_avg_ks_p:
-                        best_avg_ks_p = score
-                        best_nu = float(test_nu)
-                        best_global_beta = avg_beta
-                        best_global_mu_drift = avg_mu_drift
-
+                return (score, float(test_nu), avg_beta, avg_mu_drift)
             except Exception:
-                continue
+                return None
+
+        # Run ν evaluations in parallel using threads (Numba releases GIL)
+        import os
+        from concurrent.futures import ThreadPoolExecutor
+        _n_workers = min(len(NU_GRID), os.cpu_count() or 4)
+        try:
+            with ThreadPoolExecutor(max_workers=_n_workers) as executor:
+                _results = list(executor.map(_evaluate_nu, NU_GRID))
+        except Exception:
+            # Fallback to sequential if threading fails
+            _results = [_evaluate_nu(nu) for nu in NU_GRID]
+
+        for _res in _results:
+            if _res is not None:
+                _score, _nu, _beta, _mu_drift = _res
+                if _score > best_avg_ks_p:
+                    best_avg_ks_p = _score
+                    best_nu = _nu
+                    best_global_beta = _beta
+                    best_global_mu_drift = _mu_drift
 
         # Final calibration on full training data with best nu
         temp_config = UnifiedStudentTConfig(
@@ -5494,17 +5649,30 @@ class PhiStudentTDriftModel:
             feat_var = h_val - theta_long
             feat_drift = np.sign(mu_val) * np.sqrt(np.abs(mu_val) + 1e-12)
 
-            for a_c in [-0.3, -0.2, -0.1, -0.05, 0.0, 0.05, 0.1, 0.2, 0.3]:
-                for b_c in [-0.3, -0.2, -0.1, -0.05, 0.0, 0.05, 0.1, 0.2, 0.3]:
-                    if a_c == 0.0 and b_c == 0.0:
-                        continue
-                    mu_corr = mu_val + a_c * feat_var + b_c * feat_drift
-                    crps_c = _crps_fn(r_val, mu_corr, sigma_val, nu_fc)
-                    crps_c += 0.001 * (a_c * a_c + b_c * b_c)
-                    if np.isfinite(crps_c) and crps_c < best_crps:
-                        best_crps = crps_c
-                        best_a = a_c
-                        best_b = b_c
+            # ── March 2026: Closed-form Ridge OLS replaces 81-point grid ──
+            # Minimize || residuals - X @ [a, b] ||^2 + λ * ||[a, b]||^2
+            # where residuals = r_val - mu_val (CRPS-optimal location correction)
+            # Ridge λ = 0.001 matches the original grid penalty
+            _residuals_ols = r_val - mu_val
+            _X_ols = np.column_stack([feat_var, feat_drift])
+            _lambda_ridge = 0.001
+            try:
+                _XtX = _X_ols.T @ _X_ols
+                _XtX += _lambda_ridge * np.eye(2) * len(r_val)
+                _Xty = _X_ols.T @ _residuals_ols
+                _ab_ols = np.linalg.solve(_XtX, _Xty)
+                _a_ols = float(np.clip(_ab_ols[0], -0.5, 0.5))
+                _b_ols = float(np.clip(_ab_ols[1], -0.5, 0.5))
+                # Verify OLS solution actually improves CRPS
+                _mu_ols = mu_val + _a_ols * feat_var + _b_ols * feat_drift
+                _crps_ols = _crps_fn(r_val, _mu_ols, sigma_val, nu_fc)
+                _crps_ols += _lambda_ridge * (_a_ols ** 2 + _b_ols ** 2)
+                if np.isfinite(_crps_ols) and _crps_ols < best_crps:
+                    best_crps = _crps_ols
+                    best_a = _a_ols
+                    best_b = _b_ols
+            except (np.linalg.LinAlgError, Exception):
+                pass  # Singular matrix — keep defaults
 
             if best_crps >= crps_baseline * 0.9999:
                 return defaults

@@ -760,12 +760,16 @@ class GaussianDriftModel:
         return config, diagnostics
 
     @classmethod
-    def filter_and_calibrate(cls, returns, vol, config, train_frac=0.7, momentum_signal=None):
+    def filter_and_calibrate(cls, returns, vol, config, train_frac=0.7, momentum_signal=None,
+                             mu_pred_precomputed=None, S_pred_precomputed=None, ll_precomputed=None):
         """
         Honest PIT + CRPS for unified Gaussian. All params from training config.
 
         Mirrors PhiStudentTDriftModel.filter_and_calibrate but uses Gaussian CDF
         (no ν parameter). Delegates to GARCH path when GARCH params are active.
+
+        If mu_pred_precomputed / S_pred_precomputed / ll_precomputed are supplied,
+        skip the internal filter call (avoids redundant O(n) Kalman pass).
 
         Returns (pit_values, pit_pvalue, sigma_crps, crps, diagnostics).
         """
@@ -780,9 +784,15 @@ class GaussianDriftModel:
         phi = float(config.phi)
         mom_w = float(getattr(config, 'momentum_weight', 0.0))
 
-        # Use momentum-augmented filter when momentum is active
-        _, _, mu_pred, S_pred, ll = cls._filter_phi_with_momentum(
-            returns, vol, q, c, phi, momentum_signal, mom_w)
+        # Reuse precomputed filter outputs when available (March 2026)
+        if mu_pred_precomputed is not None and S_pred_precomputed is not None and ll_precomputed is not None:
+            mu_pred = mu_pred_precomputed
+            S_pred = S_pred_precomputed
+            ll = ll_precomputed
+        else:
+            # Use momentum-augmented filter when momentum is active
+            _, _, mu_pred, S_pred, ll = cls._filter_phi_with_momentum(
+                returns, vol, q, c, phi, momentum_signal, mom_w)
 
         variance_inflation = float(getattr(config, 'variance_inflation', 1.0))
         use_garch = (getattr(config, 'garch_alpha', 0.0) > 0 or

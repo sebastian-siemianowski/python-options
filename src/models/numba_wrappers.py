@@ -1277,3 +1277,58 @@ def run_phi_student_t_augmented_filter(
         exogenous_input, has_exo, robust_wt,
         float(P0),
     )
+
+
+# =============================================================================
+# STUDENT-T ENHANCED FILTER WRAPPER (VoV + Online Scale Adapt)
+# =============================================================================
+
+def run_phi_student_t_enhanced_filter(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    exogenous_input: np.ndarray = None,
+    robust_wt: bool = False,
+    online_scale_adapt: bool = False,
+    gamma_vov: float = 0.0,
+    vov_rolling: np.ndarray = None,
+    P0: float = 1e-4,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    φ-Student-t filter with VoV + online scale adaptation.
+
+    Numba-compiled replacement for the Python fallback in _filter_phi_core
+    when VoV or online_scale_adapt are active. Provides 5-10× speedup
+    for ν=3,4 optimization in Stage 1.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    from models.numba_kernels import phi_student_t_enhanced_filter_kernel
+
+    returns, vol = prepare_arrays(returns, vol)
+    log_g1, log_g2 = precompute_gamma_values(nu)
+    has_exo = exogenous_input is not None
+    if has_exo:
+        exogenous_input = np.ascontiguousarray(
+            exogenous_input.ravel(), dtype=np.float64
+        )
+    else:
+        exogenous_input = np.empty(0, dtype=np.float64)
+    has_vov = gamma_vov > 1e-12 and vov_rolling is not None
+    if has_vov:
+        vov_rolling = np.ascontiguousarray(
+            vov_rolling.ravel(), dtype=np.float64
+        )
+    else:
+        vov_rolling = np.empty(0, dtype=np.float64)
+    return phi_student_t_enhanced_filter_kernel(
+        returns, vol,
+        float(q), float(c), float(phi), float(nu),
+        log_g1, log_g2,
+        exogenous_input, has_exo, robust_wt,
+        online_scale_adapt, float(gamma_vov), vov_rolling, has_vov,
+        float(P0),
+    )

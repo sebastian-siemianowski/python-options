@@ -293,20 +293,19 @@ class IsotonicRecalibrator:
             return self.result
         
         # Split into training and validation sets
+        # TEMPORAL split (March 2026): use first n_train observations for
+        # fitting, last n_val for validation. Prevents look-ahead bias
+        # that random shuffling introduces in time series data.
         n_val = max(int(n * self.config.validation_split), 10)
         n_train = n - n_val
         
         if n_train < self.config.min_observations // 2:
             # Not enough for train/val split - use all data
-            indices = np.arange(n)
-            np.random.shuffle(indices)
-            train_idx = indices
+            train_idx = np.arange(n)
             val_idx = None
         else:
-            indices = np.arange(n)
-            np.random.shuffle(indices)
-            train_idx = indices[:n_train]
-            val_idx = indices[n_train:]
+            train_idx = np.arange(n_train)
+            val_idx = np.arange(n_train, n)
         
         train_pit = raw_pit_clipped[train_idx]
         

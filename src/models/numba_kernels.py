@@ -974,6 +974,145 @@ def phi_student_t_augmented_filter_kernel(
 
 
 # =============================================================================
+# φ-STUDENT-T ENHANCED FILTER (VoV + Online Scale Adapt)  — March 2026
+# =============================================================================
+# Extends phi_student_t_augmented_filter_kernel with:
+#   1. VoV (gamma_vov * vov_rolling) R_t inflation
+#   2. Online scale adaptation (chi² EWM _c_adj tracking)
+# This eliminates the Python fallback for ν=3,4 in optimize_params_fixed_nu.
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def phi_student_t_enhanced_filter_kernel(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    log_gamma_half_nu: float,
+    log_gamma_half_nu_plus_half: float,
+    exogenous_input: np.ndarray,
+    has_exogenous: bool,
+    robust_wt: bool,
+    online_scale_adapt: bool,
+    gamma_vov: float,
+    vov_rolling: np.ndarray,
+    has_vov: bool,
+    P0: float = 1e-4,
+) -> tuple:
+    """
+    φ-Student-t filter with VoV + online scale adaptation + robust weighting.
+
+    Identical to _filter_phi_core Python loop but fully JIT-compiled.
+    Provides 5-10× speedup for ν≤5 where online_scale_adapt is active.
+    """
+    n = len(returns)
+    phi_sq = phi * phi
+    nu_adjust = nu / (nu + 3.0)
+    if nu_adjust > 1.0:
+        nu_adjust = 1.0
+    log_norm_const = (log_gamma_half_nu_plus_half - log_gamma_half_nu
+                      - 0.5 * np.log(nu * np.pi))
+    neg_exp = -((nu + 1.0) / 2.0)
+    inv_nu = 1.0 / nu
+
+    # Pre-compute vol²
+    vol_sq = np.empty(n)
+    for t in range(n):
+        vol_sq[t] = vol[t] * vol[t]
+
+    mu_filtered = np.empty(n)
+    P_filtered = np.empty(n)
+    mu_pred_arr = np.empty(n)
+    S_pred_arr = np.empty(n)
+
+    mu = 0.0
+    P = P0
+    log_likelihood = 0.0
+
+    # Online scale adaptation state (Harvey 1989)
+    chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
+    chi2_lam = 0.98
+    chi2_1m = 1.0 - chi2_lam
+    chi2_cap = chi2_tgt * 50.0
+    ewm_z2 = chi2_tgt
+    c_adj = 1.0
+
+    for t in range(n):
+        u_t = exogenous_input[t] if has_exogenous and t < len(exogenous_input) else 0.0
+        mu_pred = phi * mu + u_t
+        P_pred = phi_sq * P + q
+
+        # Observation noise R_t with optional VoV and online scale adapt
+        c_eff = c * c_adj if online_scale_adapt else c
+        R_t = c_eff * vol_sq[t]
+        if has_vov:
+            R_t = R_t * (1.0 + gamma_vov * vov_rolling[t])
+
+        S = P_pred + R_t
+        if S < 1e-12:
+            S = 1e-12
+
+        mu_pred_arr[t] = mu_pred
+        S_pred_arr[t] = S
+
+        innovation = returns[t] - mu_pred
+        K = nu_adjust * P_pred / S
+
+        if robust_wt:
+            z_sq = (innovation * innovation) / S
+            w_t = (nu + 1.0) / (nu + z_sq)
+            mu = mu_pred + K * w_t * innovation
+            P = (1.0 - w_t * K) * P_pred
+        else:
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+
+        if P < 1e-12:
+            P = 1e-12
+        mu_filtered[t] = mu
+        P_filtered[t] = P if P > 1e-12 else 1e-12
+
+        if nu > 2.0:
+            forecast_scale = np.sqrt(S * (nu - 2.0) / nu)
+        else:
+            forecast_scale = np.sqrt(S)
+        if forecast_scale > 1e-12:
+            z = innovation / forecast_scale
+            ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
+            if ll_t == ll_t:  # NaN check
+                log_likelihood += ll_t
+
+            # Online scale adaptation: track E[z²], adjust c for next step
+            if online_scale_adapt:
+                z2_raw = z * z
+                z2w = z2_raw if z2_raw < chi2_cap else chi2_cap
+                ewm_z2 = chi2_lam * ewm_z2 + chi2_1m * z2w
+                ratio = ewm_z2 / chi2_tgt
+                if ratio < 0.3:
+                    ratio = 0.3
+                elif ratio > 3.0:
+                    ratio = 3.0
+                dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+                if ratio >= 1.0:
+                    dz_lo = 0.25
+                    dz_rng = 0.25
+                else:
+                    dz_lo = 0.05
+                    dz_rng = 0.10
+                if dev < dz_lo:
+                    c_adj = 1.0
+                elif dev >= dz_lo + dz_rng:
+                    c_adj = np.sqrt(ratio)
+                else:
+                    s_frac = (dev - dz_lo) / dz_rng
+                    c_adj = 1.0 + s_frac * (np.sqrt(ratio) - 1.0)
+
+    return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood
+
+
+# =============================================================================
 # φ-STUDENT-T KERNELS (fastmath=False for tail correctness)
 # =============================================================================
 
