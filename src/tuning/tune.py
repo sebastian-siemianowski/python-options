@@ -2741,65 +2741,74 @@ def compute_extended_pit_metrics_gaussian(
 
     # ── Chi² EWM variance correction (causal scale adaptation) ────────
     # Same algorithm as Student-t version but with chi2_target = 1.0
-    import math as _m
     _n_g = len(standardized)
     _chi2_lam_g = 0.98
-    _chi2_1m_g = 0.02
-    _chi2_wcap_g = 50.0  # target=1.0 so cap=50
-    _ewm_z2_g = 1.0
-    _std_adj = np.ones(_n_g)
-    for _t in range(_n_g):
-        _ratio = _ewm_z2_g  # / 1.0
-        _ratio = max(0.3, min(3.0, _ratio))
-        _dev = abs(_ratio - 1.0)
-        if _ratio >= 1.0:
-            _dz_lo, _dz_rng = 0.25, 0.25
-        else:
-            _dz_lo, _dz_rng = 0.10, 0.15
-        if _dev < _dz_lo:
-            _adj = 1.0
-        elif _dev >= _dz_lo + _dz_rng:
-            _adj = _m.sqrt(_ratio)
-        else:
-            _s = (_dev - _dz_lo) / _dz_rng
-            _adj = 1.0 + _s * (_m.sqrt(_ratio) - 1.0)
-        _std_adj[_t] = _adj
-        _z2 = standardized[_t] ** 2
-        _z2w = min(_z2, _chi2_wcap_g)
-        _ewm_z2_g = _chi2_lam_g * _ewm_z2_g + _chi2_1m_g * _z2w
+    try:
+        from models.numba_wrappers import run_chi2_ewm_correction as _numba_chi2_g
+        _std_adj = _numba_chi2_g(standardized, 1.0, _chi2_lam_g)
+    except (ImportError, Exception):
+        import math as _m
+        _chi2_1m_g = 0.02
+        _chi2_wcap_g = 50.0  # target=1.0 so cap=50
+        _ewm_z2_g = 1.0
+        _std_adj = np.ones(_n_g)
+        for _t in range(_n_g):
+            _ratio = _ewm_z2_g  # / 1.0
+            _ratio = max(0.3, min(3.0, _ratio))
+            _dev = abs(_ratio - 1.0)
+            if _ratio >= 1.0:
+                _dz_lo, _dz_rng = 0.25, 0.25
+            else:
+                _dz_lo, _dz_rng = 0.10, 0.15
+            if _dev < _dz_lo:
+                _adj = 1.0
+            elif _dev >= _dz_lo + _dz_rng:
+                _adj = _m.sqrt(_ratio)
+            else:
+                _s = (_dev - _dz_lo) / _dz_rng
+                _adj = 1.0 + _s * (_m.sqrt(_ratio) - 1.0)
+            _std_adj[_t] = _adj
+            _z2 = standardized[_t] ** 2
+            _z2w = min(_z2, _chi2_wcap_g)
+            _ewm_z2_g = _chi2_lam_g * _ewm_z2_g + _chi2_1m_g * _z2w
     standardized_corrected = standardized / _std_adj
 
     valid_mask = np.isfinite(standardized_corrected)
     pit_values = norm.cdf(standardized_corrected[valid_mask])
 
     # ── PIT-Variance stretching (Var[PIT] → 1/12) ────────────────────
-    _pv_tgt_g = 1.0 / 12.0
-    _pv_lam_g = 0.97
-    _pv_1m_g = 0.03
-    _pv_dz_lo_g = 0.30
-    _pv_dz_hi_g = 0.55
-    _pv_dz_rng_g = _pv_dz_hi_g - _pv_dz_lo_g
-    _ewm_pm_g = 0.5
-    _ewm_psq_g = 1.0 / 3.0
-    for _t in range(len(pit_values)):
-        _ov = _ewm_psq_g - _ewm_pm_g * _ewm_pm_g
-        if _ov < 0.005:
-            _ov = 0.005
-        _vr = _ov / _pv_tgt_g
-        _vd = abs(_vr - 1.0)
-        _rp = float(pit_values[_t])
-        if _vd > _pv_dz_lo_g:
-            _rs = _m.sqrt(_pv_tgt_g / _ov)
-            _rs = max(0.70, min(1.50, _rs))
-            if _vd >= _pv_dz_hi_g:
-                _st = _rs
-            else:
-                _sg = (_vd - _pv_dz_lo_g) / _pv_dz_rng_g
-                _st = 1.0 + _sg * (_rs - 1.0)
-            _c = 0.5 + (_rp - 0.5) * _st
-            pit_values[_t] = max(0.001, min(0.999, _c))
-        _ewm_pm_g = _pv_lam_g * _ewm_pm_g + _pv_1m_g * _rp
-        _ewm_psq_g = _pv_lam_g * _ewm_psq_g + _pv_1m_g * _rp * _rp
+    try:
+        from models.numba_wrappers import run_pit_var_stretching as _numba_pvs_g
+        pit_values = _numba_pvs_g(pit_values)
+    except (ImportError, Exception):
+        import math as _m
+        _pv_tgt_g = 1.0 / 12.0
+        _pv_lam_g = 0.97
+        _pv_1m_g = 0.03
+        _pv_dz_lo_g = 0.30
+        _pv_dz_hi_g = 0.55
+        _pv_dz_rng_g = _pv_dz_hi_g - _pv_dz_lo_g
+        _ewm_pm_g = 0.5
+        _ewm_psq_g = 1.0 / 3.0
+        for _t in range(len(pit_values)):
+            _ov = _ewm_psq_g - _ewm_pm_g * _ewm_pm_g
+            if _ov < 0.005:
+                _ov = 0.005
+            _vr = _ov / _pv_tgt_g
+            _vd = abs(_vr - 1.0)
+            _rp = float(pit_values[_t])
+            if _vd > _pv_dz_lo_g:
+                _rs = _m.sqrt(_pv_tgt_g / _ov)
+                _rs = max(0.70, min(1.50, _rs))
+                if _vd >= _pv_dz_hi_g:
+                    _st = _rs
+                else:
+                    _sg = (_vd - _pv_dz_lo_g) / _pv_dz_rng_g
+                    _st = 1.0 + _sg * (_rs - 1.0)
+                _c = 0.5 + (_rp - 0.5) * _st
+                pit_values[_t] = max(0.001, min(0.999, _c))
+            _ewm_pm_g = _pv_lam_g * _ewm_pm_g + _pv_1m_g * _rp
+            _ewm_psq_g = _pv_lam_g * _ewm_psq_g + _pv_1m_g * _rp * _rp
 
     if len(pit_values) < 20:
         return {"ks_statistic": 1.0, "pit_ks_pvalue": 0.0,
@@ -2871,66 +2880,75 @@ def compute_extended_pit_metrics_student_t(
     # Tracks E[z²] and corrects scale when filter variance is systematically
     # off. Same algorithm as unified models but applied to base models.
     # This is the #1 fix for systemic PIT < 0.05 across all assets.
-    import math as _m
     _z_raw = (returns_flat[:n] - mu_pred[:n]) / scale_arr
     _chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
     _chi2_lam = 0.98
-    _chi2_1m = 0.02
-    _chi2_wcap = _chi2_tgt * 50.0
-    _ewm_z2 = _chi2_tgt
-    _scale_adj = np.ones(n)
-    for _t in range(n):
-        _ratio = _ewm_z2 / _chi2_tgt
-        _ratio = max(0.3, min(3.0, _ratio))
-        _dev = abs(_ratio - 1.0)
-        if _ratio >= 1.0:
-            _dz_lo, _dz_rng = 0.25, 0.25
-        else:
-            _dz_lo, _dz_rng = 0.10, 0.15
-        if _dev < _dz_lo:
-            _adj = 1.0
-        elif _dev >= _dz_lo + _dz_rng:
-            _adj = _m.sqrt(_ratio)
-        else:
-            _s = (_dev - _dz_lo) / _dz_rng
-            _adj = 1.0 + _s * (_m.sqrt(_ratio) - 1.0)
-        _scale_adj[_t] = _adj
-        _z2 = _z_raw[_t] ** 2
-        _z2w = min(_z2, _chi2_wcap)
-        _ewm_z2 = _chi2_lam * _ewm_z2 + _chi2_1m * _z2w
+    try:
+        from models.numba_wrappers import run_chi2_ewm_correction as _numba_chi2_t
+        _scale_adj = _numba_chi2_t(_z_raw, _chi2_tgt, _chi2_lam)
+    except (ImportError, Exception):
+        import math as _m
+        _chi2_1m = 0.02
+        _chi2_wcap = _chi2_tgt * 50.0
+        _ewm_z2 = _chi2_tgt
+        _scale_adj = np.ones(n)
+        for _t in range(n):
+            _ratio = _ewm_z2 / _chi2_tgt
+            _ratio = max(0.3, min(3.0, _ratio))
+            _dev = abs(_ratio - 1.0)
+            if _ratio >= 1.0:
+                _dz_lo, _dz_rng = 0.25, 0.25
+            else:
+                _dz_lo, _dz_rng = 0.10, 0.15
+            if _dev < _dz_lo:
+                _adj = 1.0
+            elif _dev >= _dz_lo + _dz_rng:
+                _adj = _m.sqrt(_ratio)
+            else:
+                _s = (_dev - _dz_lo) / _dz_rng
+                _adj = 1.0 + _s * (_m.sqrt(_ratio) - 1.0)
+            _scale_adj[_t] = _adj
+            _z2 = _z_raw[_t] ** 2
+            _z2w = min(_z2, _chi2_wcap)
+            _ewm_z2 = _chi2_lam * _ewm_z2 + _chi2_1m * _z2w
     scale_corrected = scale_arr * _scale_adj
 
     pit_values = _st_dist.cdf(returns_flat[:n] - mu_pred[:n], df=nu, scale=scale_corrected)
 
     # ── PIT-Variance stretching (Var[PIT] → 1/12) ────────────────────
     # Fixes shape miscalibration not caught by chi² (scale) correction.
-    _pv_tgt = 1.0 / 12.0
-    _pv_lam = 0.97
-    _pv_1m = 0.03
-    _pv_dz_lo = 0.30
-    _pv_dz_hi = 0.55
-    _pv_dz_rng = _pv_dz_hi - _pv_dz_lo
-    _ewm_pm = 0.5
-    _ewm_psq = 1.0 / 3.0
-    for _t in range(n):
-        _ov = _ewm_psq - _ewm_pm * _ewm_pm
-        if _ov < 0.005:
-            _ov = 0.005
-        _vr = _ov / _pv_tgt
-        _vd = abs(_vr - 1.0)
-        _rp = float(pit_values[_t])
-        if _vd > _pv_dz_lo:
-            _rs = _m.sqrt(_pv_tgt / _ov)
-            _rs = max(0.70, min(1.50, _rs))
-            if _vd >= _pv_dz_hi:
-                _st = _rs
-            else:
-                _sg = (_vd - _pv_dz_lo) / _pv_dz_rng
-                _st = 1.0 + _sg * (_rs - 1.0)
-            _c = 0.5 + (_rp - 0.5) * _st
-            pit_values[_t] = max(0.001, min(0.999, _c))
-        _ewm_pm = _pv_lam * _ewm_pm + _pv_1m * _rp
-        _ewm_psq = _pv_lam * _ewm_psq + _pv_1m * _rp * _rp
+    try:
+        from models.numba_wrappers import run_pit_var_stretching as _numba_pvs_t
+        pit_values = _numba_pvs_t(pit_values)
+    except (ImportError, Exception):
+        import math as _m
+        _pv_tgt = 1.0 / 12.0
+        _pv_lam = 0.97
+        _pv_1m = 0.03
+        _pv_dz_lo = 0.30
+        _pv_dz_hi = 0.55
+        _pv_dz_rng = _pv_dz_hi - _pv_dz_lo
+        _ewm_pm = 0.5
+        _ewm_psq = 1.0 / 3.0
+        for _t in range(n):
+            _ov = _ewm_psq - _ewm_pm * _ewm_pm
+            if _ov < 0.005:
+                _ov = 0.005
+            _vr = _ov / _pv_tgt
+            _vd = abs(_vr - 1.0)
+            _rp = float(pit_values[_t])
+            if _vd > _pv_dz_lo:
+                _rs = _m.sqrt(_pv_tgt / _ov)
+                _rs = max(0.70, min(1.50, _rs))
+                if _vd >= _pv_dz_hi:
+                    _st = _rs
+                else:
+                    _sg = (_vd - _pv_dz_lo) / _pv_dz_rng
+                    _st = 1.0 + _sg * (_rs - 1.0)
+                _c = 0.5 + (_rp - 0.5) * _st
+                pit_values[_t] = max(0.001, min(0.999, _c))
+            _ewm_pm = _pv_lam * _ewm_pm + _pv_1m * _rp
+            _ewm_psq = _pv_lam * _ewm_psq + _pv_1m * _rp * _rp
 
     valid = np.isfinite(pit_values)
     pit_clean = np.clip(pit_values[valid], 0, 1)
@@ -3603,10 +3621,23 @@ def fit_all_models_for_regime(
             _calibrated_mad_u = pit_metrics.get("histogram_mad", 1.0)
             _ad_p_u = float('nan')
             try:
-                _pit_cal_u, _pit_p_u, _sigma_cal_u, _, _calib_diag_u = \
-                    PhiStudentTDriftModel.filter_and_calibrate(
-                        returns, vol, config, train_frac=0.7
-                    )
+                # ── PERFORMANCE: Reuse test-period evaluation from optimize_params_unified
+                # instead of calling filter_and_calibrate a second time (saves ~1 full
+                # pipeline pass per unified model: filter + GARCH + Stage 6 calibration)
+                _calib_diag_u = diagnostics.get('test_calib_diag')
+                if (_calib_diag_u is not None
+                    and diagnostics.get('test_sigma') is not None
+                    and diagnostics.get('test_pit_pvalue') is not None):
+                    # Reuse cached results from optimize_params_unified
+                    _sigma_cal_u = diagnostics['test_sigma']
+                    _pit_p_u = diagnostics['test_pit_pvalue']
+                    _pit_cal_u = diagnostics.get('test_pit_values')
+                else:
+                    # Fallback: call filter_and_calibrate (shouldn't normally happen)
+                    _pit_cal_u, _pit_p_u, _sigma_cal_u, _, _calib_diag_u = \
+                        PhiStudentTDriftModel.filter_and_calibrate(
+                            returns, vol, config, train_frac=0.7
+                        )
                 # Use calibrated PIT p-value from filter_and_calibrate
                 # (raw pit_ks_unified runs on full data without GARCH blending;
                 #  filter_and_calibrate applies GARCH + beta recalibration on

@@ -784,17 +784,22 @@ def compute_ms_process_noise_smooth(
         ewm_var = float(np.var(vol[:warmup])) if warmup > 1 else 1e-6
         ewm_var = max(ewm_var, 1e-12)
 
-        vol_zscore = np.empty(n)
-        for t in range(n):
-            ewm_std = math.sqrt(ewm_var)
-            ewm_std = max(ewm_std, 1e-6)
-            vol_zscore[t] = (vol[t] - ewm_mean) / ewm_std
+        # Try Numba-accelerated EWM z-score computation
+        try:
+            from models.numba_wrappers import run_compute_ms_process_noise_ewm
+            vol_zscore = run_compute_ms_process_noise_ewm(vol, lam, ewm_mean, ewm_var)
+        except (ImportError, Exception):
+            vol_zscore = np.empty(n)
+            for t in range(n):
+                ewm_std = math.sqrt(ewm_var)
+                ewm_std = max(ewm_std, 1e-6)
+                vol_zscore[t] = (vol[t] - ewm_mean) / ewm_std
 
-            # Update AFTER computing z-score (no look-ahead)
-            ewm_mean = lam * ewm_mean + one_minus_lam * vol[t]
-            diff = vol[t] - ewm_mean
-            ewm_var = lam * ewm_var + one_minus_lam * (diff * diff)
-            ewm_var = max(ewm_var, 1e-12)
+                # Update AFTER computing z-score (no look-ahead)
+                ewm_mean = lam * ewm_mean + one_minus_lam * vol[t]
+                diff = vol[t] - ewm_mean
+                ewm_var = lam * ewm_var + one_minus_lam * (diff * diff)
+                ewm_var = max(ewm_var, 1e-12)
     else:
         # ---------------------------------------------------------------------------
         # EXPANDING-WINDOW MODE: Original behavior (backward-compatible)
@@ -1516,12 +1521,18 @@ class PhiStudentTDriftModel:
         # Pre-compute Student-t scale factor
         _nu_scale = ((nu_val - 2) / nu_val) if nu_val > 2 else 1.0
 
+        # Try Numba-accelerated CV test fold kernel
+        try:
+            from models.numba_wrappers import run_phi_student_t_cv_test_fold as _numba_cv_fold
+            _use_numba_cv = True
+        except (ImportError, Exception):
+            _use_numba_cv = False
+
         def neg_cv_ll(params):
             log_q, log_c, phi = params
             q = 10 ** log_q
             c = 10 ** log_c
             phi_clip = float(np.clip(phi, phi_min, phi_max))
-            phi_clip_sq = phi_clip * phi_clip
             if q <= 0 or c <= 0:
                 return 1e12
 
@@ -1534,25 +1545,33 @@ class PhiStudentTDriftModel:
                 mu_f, P_f, _ = cls.filter_phi(ret_tr, vol_tr, q, c, phi_clip, nu_val)
                 mu_p = float(mu_f[-1])
                 P_p = float(P_f[-1])
-                for t in range(vs, ve):
-                    mu_p = phi_clip * mu_p
-                    P_p = phi_clip_sq * P_p + q
-                    R_t = c * _vol_sq[t]
-                    S = P_p + R_t
-                    if S < 1e-12:
-                        S = 1e-12
-                    inn = _returns_r[t] - mu_p
-                    scale = _msqrt(S * _nu_scale)
-                    if scale > 1e-12:
-                        z = inn / scale
-                        ll_t = log_norm_const - _mlog(scale) + neg_exp * _mlog(1.0 + z * z * inv_nu)
-                        if _misfinite(ll_t):
-                            total_ll += ll_t
-                    K = nu_adjust * P_p / S
-                    mu_p = mu_p + K * inn
-                    P_p = (1.0 - K) * P_p
-                    if P_p < 1e-12:
-                        P_p = 1e-12
+                if _use_numba_cv:
+                    total_ll += _numba_cv_fold(
+                        _returns_r, _vol_sq, q, c, phi_clip,
+                        _nu_scale, log_norm_const, neg_exp, inv_nu, nu_adjust,
+                        mu_p, P_p, vs, ve,
+                    )
+                else:
+                    phi_clip_sq = phi_clip * phi_clip
+                    for t in range(vs, ve):
+                        mu_p = phi_clip * mu_p
+                        P_p = phi_clip_sq * P_p + q
+                        R_t = c * _vol_sq[t]
+                        S = P_p + R_t
+                        if S < 1e-12:
+                            S = 1e-12
+                        inn = _returns_r[t] - mu_p
+                        scale = _msqrt(S * _nu_scale)
+                        if scale > 1e-12:
+                            z = inn / scale
+                            ll_t = log_norm_const - _mlog(scale) + neg_exp * _mlog(1.0 + z * z * inv_nu)
+                            if _misfinite(ll_t):
+                                total_ll += ll_t
+                        K = nu_adjust * P_p / S
+                        mu_p = mu_p + K * inn
+                        P_p = (1.0 - K) * P_p
+                        if P_p < 1e-12:
+                            P_p = 1e-12
 
             # Bayesian regularization on log10(q)
             prior_pen = prior_lambda * (log_q - prior_log_q_mean) ** 2
@@ -1599,7 +1618,7 @@ class PhiStudentTDriftModel:
                     bounds=[(_log_q_min, _log_q_max),
                             (_log_c_min, _log_c_max),
                             (phi_min, phi_max)],
-                    options={'maxiter': 200, 'ftol': 1e-10},
+                    options={'maxiter': 100, 'ftol': 1e-10},
                 )
                 if res.fun < best_val:
                     best_val = res.fun
@@ -1936,6 +1955,8 @@ class PhiStudentTDriftModel:
             diagnostics['test_mu_effective'] = _mu_eff_eval
             diagnostics['test_returns'] = _ret_test_eval
             diagnostics['test_pit_pvalue'] = float(_pitp_eval)
+            diagnostics['test_pit_values'] = _pit_eval
+            diagnostics['test_calib_diag'] = _diag_eval
         except Exception:
             pass  # diagnostics won't have test_* keys — tune.py falls back
 
@@ -2975,9 +2996,9 @@ class PhiStudentTDriftModel:
         damping = float(config.vov_damping)
 
         # ── NUMBA FAST-PATH ──
-        # When advanced features (jumps, risk premium, GAS skew, mu_drift,
-        # EWM correction) are all disabled, dispatch to the Numba kernel
-        # for ~10× speedup on the main loop.
+        # Two Numba paths available:
+        #   1. Base kernel: when no advanced features are active (~marginally faster)
+        #   2. Extended kernel: handles ALL features (risk prem, skew, jumps, drift, EWM)
         risk_prem = float(getattr(config, 'risk_premium_sensitivity', 0.0))
         skew_kappa = float(getattr(config, 'skew_score_sensitivity', 0.0))
         jump_var = float(getattr(config, 'jump_variance', 0.0))
@@ -2985,13 +3006,14 @@ class PhiStudentTDriftModel:
         _mu_drift_val = float(getattr(config, 'mu_drift', 0.0))
         _ewm_lambda = float(getattr(config, 'crps_ewm_lambda', 0.0))
 
-        _numba_compatible = (
-            _UNIFIED_NUMBA_AVAILABLE
-            and abs(risk_prem) < 1e-10
+        _simple_mode = (
+            abs(risk_prem) < 1e-10
             and skew_kappa < 1e-8
             and (jump_var < 1e-12 or jump_intensity < 1e-6)
             and abs(_mu_drift_val) < 1e-12
         )
+
+        _numba_compatible = _UNIFIED_NUMBA_AVAILABLE
 
         if _numba_compatible:
             # Pre-compute arrays the Numba kernel needs
@@ -3029,24 +3051,49 @@ class PhiStudentTDriftModel:
             _has_exo = config.exogenous_input is not None
             momentum = np.ascontiguousarray(config.exogenous_input.flatten(), dtype=np.float64) if _has_exo else np.zeros(n, dtype=np.float64)
 
-            mu_f, P_f, mu_p, S_p, ll = run_unified_phi_student_t_filter(
-                returns, vol, c_val, phi_val, nu_base,
-                q_t, p_stress, vov_rolling, gamma_vov, damping,
-                alpha, k_asym, momentum, 1e-4
-            )
+            if _simple_mode:
+                # Base kernel: no advanced features — marginally faster
+                mu_f, P_f, mu_p, S_p, ll = run_unified_phi_student_t_filter(
+                    returns, vol, c_val, phi_val, nu_base,
+                    q_t, p_stress, vov_rolling, gamma_vov, damping,
+                    alpha, k_asym, momentum, 1e-4
+                )
 
-            # Apply EWM correction if lambda was configured
-            if _ewm_lambda >= 0.01 and n > 2:
-                lam = _ewm_lambda
-                alpha_ewm = 1.0 - lam
-                innov_lagged = returns[:-1] - mu_p[:-1]
-                ewm_corrections = np.empty(n, dtype=np.float64)
-                ewm_corrections[0] = 0.0
-                ewm_mu_val = 0.0
-                for t in range(n - 1):
-                    ewm_mu_val = lam * ewm_mu_val + alpha_ewm * innov_lagged[t]
-                    ewm_corrections[t + 1] = ewm_mu_val
-                mu_p = mu_p + ewm_corrections
+                # Apply EWM correction if lambda was configured
+                if _ewm_lambda >= 0.01 and n > 2:
+                    lam = _ewm_lambda
+                    alpha_ewm = 1.0 - lam
+                    innov_lagged = returns[:-1] - mu_p[:-1]
+                    ewm_corrections = np.empty(n, dtype=np.float64)
+                    ewm_corrections[0] = 0.0
+                    ewm_mu_val = 0.0
+                    for t in range(n - 1):
+                        ewm_mu_val = lam * ewm_mu_val + alpha_ewm * innov_lagged[t]
+                        ewm_corrections[t + 1] = ewm_mu_val
+                    mu_p = mu_p + ewm_corrections
+            else:
+                # Extended kernel: handles risk prem, skew, jumps, drift, EWM
+                from models.numba_wrappers import run_unified_phi_student_t_filter_extended
+                skew_rho = float(getattr(config, 'skew_persistence', 0.97))
+                jump_sensitivity = float(getattr(config, 'jump_sensitivity', 1.0))
+                jump_mean = float(getattr(config, 'jump_mean', 0.0))
+                # Compute EWM lambda with default fallback
+                ewm_lam = _ewm_lambda if _ewm_lambda >= 0.01 else 0.95
+
+                mu_f, P_f, mu_p, S_p, ll = run_unified_phi_student_t_filter_extended(
+                    returns, vol, c_val, phi_val, nu_base,
+                    q_t, p_stress, vov_rolling, gamma_vov, damping,
+                    alpha, k_asym, momentum, 1e-4,
+                    risk_prem=risk_prem,
+                    mu_drift=_mu_drift_val,
+                    skew_kappa=skew_kappa,
+                    skew_rho=skew_rho,
+                    jump_var=jump_var,
+                    jump_intensity=jump_intensity,
+                    jump_sensitivity=jump_sensitivity,
+                    jump_mean=jump_mean,
+                    ewm_lambda=ewm_lam,
+                )
 
             return mu_f, P_f, mu_p, S_p, float(ll)
 
@@ -3468,7 +3515,8 @@ class PhiStudentTDriftModel:
         try:
             result = minimize(
                 neg_ll_vov, [config.gamma_vov],
-                bounds=[(0.0, 1.0)], method='L-BFGS-B'
+                bounds=[(0.0, 1.0)], method='L-BFGS-B',
+                options={'maxiter': 50, 'ftol': 1e-8}
             )
             return result.x[0] if result.success else config.gamma_vov
         except Exception:
@@ -3513,7 +3561,8 @@ class PhiStudentTDriftModel:
         try:
             result = minimize(
                 neg_ll_msq, [sens_init],
-                bounds=[(1.0, 5.0)], method='L-BFGS-B'
+                bounds=[(1.0, 5.0)], method='L-BFGS-B',
+                options={'maxiter': 50, 'ftol': 1e-8}
             )
             return result.x[0] if result.success else sens_init
         except Exception:
@@ -3559,7 +3608,8 @@ class PhiStudentTDriftModel:
         try:
             result = minimize(
                 neg_ll_asym, [alpha_init],
-                bounds=[(-0.3, 0.3)], method='L-BFGS-B'
+                bounds=[(-0.3, 0.3)], method='L-BFGS-B',
+                options={'maxiter': 50, 'ftol': 1e-8}
             )
             return result.x[0] if result.success else alpha_init
         except Exception:
@@ -3608,7 +3658,7 @@ class PhiStudentTDriftModel:
             result = minimize(
                 neg_ll_rp, [rp_init],
                 bounds=[(-5.0, 10.0)], method='L-BFGS-B',
-                options={'maxiter': 100}
+                options={'maxiter': 50, 'ftol': 1e-8}
             )
             if result.x is not None and np.isfinite(result.x[0]):
                 return float(result.x[0])
@@ -3660,7 +3710,7 @@ class PhiStudentTDriftModel:
             result = minimize(
                 neg_ll_skew, [0.0],
                 bounds=[(0.0, 0.10)], method='L-BFGS-B',
-                options={'maxiter': 100}
+                options={'maxiter': 50, 'ftol': 1e-8}
             )
             if result.x is not None and np.isfinite(result.x[0]):
                 return float(result.x[0]), skew_persistence_fixed
@@ -4288,12 +4338,22 @@ class PhiStudentTDriftModel:
             best_crps = crps_baseline
             best_lam = 0.0
 
+            # Try Numba-accelerated EWM correction
+            try:
+                from models.numba_wrappers import run_ewm_mu_correction as _numba_ewm_corr
+                _use_numba_ewm = True
+            except (ImportError, Exception):
+                _use_numba_ewm = False
+
             for lam_c in LAMBDA_GRID:
-                ewm_mu = 0.0
-                mu_corr = mu_pred_base.copy()
-                for t in range(1, n_train):
-                    ewm_mu = lam_c * ewm_mu + (1.0 - lam_c) * (returns_train[t-1] - mu_pred_base[t-1])
-                    mu_corr[t] = mu_pred_base[t] + ewm_mu
+                if _use_numba_ewm:
+                    mu_corr = _numba_ewm_corr(returns_train, mu_pred_base, lam_c, n_train)
+                else:
+                    ewm_mu = 0.0
+                    mu_corr = mu_pred_base.copy()
+                    for t in range(1, n_train):
+                        ewm_mu = lam_c * ewm_mu + (1.0 - lam_c) * (returns_train[t-1] - mu_pred_base[t-1])
+                        mu_corr[t] = mu_pred_base[t] + ewm_mu
                 crps_c = _crps_inline(ret_val, mu_corr[n_est:], sig_val, nu_opt)
                 if np.isfinite(crps_c) and crps_c < best_crps:
                     best_crps = crps_c
@@ -4373,8 +4433,21 @@ class PhiStudentTDriftModel:
             returns_val = returns_train[n_est:]
             mu_val = mu_pred[n_est:]
 
-            # Helper: build enhanced GARCH variance
+            # Helper: build enhanced GARCH variance (Numba-accelerated)
+            try:
+                from models.numba_wrappers import run_build_garch as _numba_garch
+                _use_numba_garch = True
+            except (ImportError, Exception):
+                _use_numba_garch = False
+
             def _build_garch(rho_c, kap_c, eta_c=0.0, reg_c=0.0):
+                if _use_numba_garch:
+                    return _numba_garch(
+                        n_train, innovations, sq_inn, neg_ind,
+                        garch_omega, garch_alpha, garch_leverage, garch_beta,
+                        unconditional_var, q_stress_ratio,
+                        rho_c, kap_c, eta_c, reg_c,
+                    )
                 h = np.zeros(n_train)
                 h[0] = unconditional_var
                 _p_st = 0.1
@@ -4442,8 +4515,8 @@ class PhiStudentTDriftModel:
             kap_opt = 0.0
             best_crps = crps_baseline
 
-            for rho_c in [0.0, 0.1, 0.3, 0.5, 0.8, 1.2]:
-                for kap_c in [0.0, 0.02, 0.05, 0.10, 0.15, 0.20]:
+            for rho_c in [0.0, 0.2, 0.5, 1.0]:
+                for kap_c in [0.0, 0.03, 0.10, 0.20]:
                     if rho_c == 0.0 and kap_c == 0.0:
                         continue
                     c = _crps_from_h(_build_garch(rho_c, kap_c))
@@ -4811,9 +4884,25 @@ class PhiStudentTDriftModel:
                 return zv, sv, nv
 
             # ── Helper: compute raw EWM innovations (shared across NU values)
+            # Try Numba-accelerated Stage 6 EWM fold kernel
+            try:
+                from models.numba_wrappers import run_stage6_ewm_fold as _numba_s6_fold
+                _use_numba_s6 = True
+            except (ImportError, Exception):
+                _use_numba_s6 = False
+
             def _fold_ewm_raw(Sb, ee, ve):
                 """EWM loop: return (innovations, Sv_raw, nv) — nu-independent."""
                 nv = ve - ee
+                if _use_numba_s6:
+                    init_em = float(np.mean(it[:ee]))
+                    init_en = float(np.mean(it[:ee] ** 2))
+                    init_ed = float(np.mean(Sb[:ee]))
+                    iv_arr, Sv_arr = _numba_s6_fold(
+                        it, Sb, ee, ve, lm,
+                        init_em, init_en, init_ed,
+                    )
+                    return iv_arr, Sv_arr, nv
                 em, en, ed = _get_ewm_state(Sb, ee)
                 iv_arr = np.empty(nv); Sv_arr = np.empty(nv)
                 _it = it
@@ -4834,11 +4923,21 @@ class PhiStudentTDriftModel:
             _s6_chi2_lam = float(getattr(config, 'chisq_ewm_lambda', 0.98))
             _s6_chi2_1m = 1.0 - _s6_chi2_lam
 
+            # Numba-accelerated chi² correction (try import once)
+            try:
+                from models.numba_wrappers import run_chi2_ewm_correction as _numba_chi2
+                _use_numba_chi2 = True
+            except (ImportError, Exception):
+                _use_numba_chi2 = False
+
             def _chi2_correct_z(zv, nu_val):
                 """Lightweight chi² correction on z-values for Stage 6 scoring.
                 Applies the same causal EWM z² → scale correction as filter_and_calibrate
                 so that Stage 6 scores domain-matched PITs."""
                 _target = nu_val / (nu_val - 2.0) if nu_val > 2 else 1.0
+                if _use_numba_chi2:
+                    scale_adj = _numba_chi2(zv, _target, _s6_chi2_lam)
+                    return zv / scale_adj
                 _winsor = _target * 50.0
                 _ewm = _target
                 zv_corrected = np.empty_like(zv)

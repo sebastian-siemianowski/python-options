@@ -1043,6 +1043,16 @@ class GaussianDriftModel:
         _mlog = math.log
         _msqrt = math.sqrt
 
+        # Try Numba-accelerated CV test fold kernel
+        try:
+            from models.numba_wrappers import run_phi_gaussian_cv_test_fold as _numba_cv_fold
+            _use_numba_cv = True
+        except (ImportError, Exception):
+            _use_numba_cv = False
+
+        # Pre-allocate standardized residuals buffer for Numba kernel
+        _std_buf = np.zeros(n_train, dtype=np.float64) if _use_numba_cv else None
+
         def neg_cv_ll(params):
             if phi_mode:
                 log_q, log_c, phi = params
@@ -1066,21 +1076,30 @@ class GaussianDriftModel:
                     mu_p = float(mu_f[-1])
                     P_p = float(P_f[-1])
 
-                    ll_fold = 0.0
-                    for t in range(vs, ve):
-                        mu_p = phi * mu_p
-                        P_p = phi_sq * P_p + q
-                        R = c * _vol_sq[t]
-                        inn = _returns_r[t] - mu_p
-                        fv = P_p + R
-                        if fv > 1e-12:
-                            ll_fold += -0.5 * (_LOG_2PI + _mlog(fv) + inn * inn / fv)
-                        S = P_p + R
-                        K = P_p / S if S > 1e-12 else 0.0
-                        mu_p = mu_p + K * inn
-                        P_p = (1.0 - K) * P_p
-                    total_ll += ll_fold
-                    total_obs += (ve - vs)
+                    if _use_numba_cv:
+                        ll_fold, n_obs_fold, _ = _numba_cv_fold(
+                            _returns_r, _vol_sq, q, c, phi,
+                            mu_p, P_p, vs, ve,
+                            _std_buf, 0, 0,
+                        )
+                        total_ll += ll_fold
+                        total_obs += n_obs_fold
+                    else:
+                        ll_fold = 0.0
+                        for t in range(vs, ve):
+                            mu_p = phi * mu_p
+                            P_p = phi_sq * P_p + q
+                            R = c * _vol_sq[t]
+                            inn = _returns_r[t] - mu_p
+                            fv = P_p + R
+                            if fv > 1e-12:
+                                ll_fold += -0.5 * (_LOG_2PI + _mlog(fv) + inn * inn / fv)
+                            S = P_p + R
+                            K = P_p / S if S > 1e-12 else 0.0
+                            mu_p = mu_p + K * inn
+                            P_p = (1.0 - K) * P_p
+                        total_ll += ll_fold
+                        total_obs += (ve - vs)
                 except Exception:
                     continue
 
@@ -1140,7 +1159,7 @@ class GaussianDriftModel:
         for x0 in starts:
             try:
                 res = minimize(neg_cv_ll, x0, method='L-BFGS-B', bounds=bounds,
-                               options={'maxiter': 200, 'ftol': 1e-10})
+                               options={'maxiter': 100, 'ftol': 1e-8})
                 if res.fun < best_fun:
                     best_fun = res.fun
                     best_result = res
@@ -1277,26 +1296,28 @@ class GaussianDriftModel:
         best_crps = float('inf')
         from scipy.stats import norm as _norm
 
+        _inv_sqrt_pi = 1.0 / math.sqrt(math.pi)
+        _S_test = S_pred[test_start:n_train] * beta
+        _sig_base = np.sqrt(np.maximum(_S_test, 1e-20))
+        _sig_base = np.maximum(_sig_base, 1e-10)
+        _ret_test = returns_train[test_start:n_train]
+
         for lam in [0.0, 0.92, 0.94, 0.96, 0.98]:
+            # Build mu_eff array with EWM correction
+            mu_eff_arr = np.empty(n_test_inner)
             ewm_mu = float(np.mean(innovations[:test_start]))
             alpha_e = 1.0 - lam if lam > 0 else 0.0
-
-            crps_sum = 0.0
             for t in range(test_start, n_train):
-                mu_eff = mu_pred[t] + ewm_mu + mu_drift
-                S_t = S_pred[t] * beta
-                sig = math.sqrt(max(S_t, 1e-20))
-                if sig < 1e-10:
-                    sig = 1e-10
-                # Gaussian CRPS: σ × [z·(2Φ(z)-1) + 2φ(z) - 1/√π]
-                z = (returns_train[t] - mu_eff) / sig
-                crps_t = sig * (z * (2 * _norm.cdf(z) - 1) + 2 * _norm.pdf(z) - 1.0 / math.sqrt(math.pi))
-                crps_sum += crps_t
-
+                mu_eff_arr[t - test_start] = mu_pred[t] + ewm_mu + mu_drift
                 if lam > 0:
                     ewm_mu = lam * ewm_mu + alpha_e * innovations[t]
 
-            avg_crps = crps_sum / n_test_inner
+            # Vectorized CRPS computation
+            z_arr = (_ret_test - mu_eff_arr) / _sig_base
+            cdf_arr = _norm.cdf(z_arr)
+            pdf_arr = _norm.pdf(z_arr)
+            crps_arr = _sig_base * (z_arr * (2 * cdf_arr - 1) + 2 * pdf_arr - _inv_sqrt_pi)
+            avg_crps = float(np.mean(crps_arr))
             if avg_crps < best_crps:
                 best_crps = avg_crps
                 crps_ewm_lambda = lam
@@ -1305,24 +1326,22 @@ class GaussianDriftModel:
         best_shrink = 1.0
         best_crps_s = best_crps
         for s in [0.75, 0.80, 0.85, 0.90, 0.95, 1.0]:
+            # Build mu_eff array with best EWM lambda
+            mu_eff_arr = np.empty(n_test_inner)
             ewm_mu = float(np.mean(innovations[:test_start]))
             alpha_e = 1.0 - crps_ewm_lambda if crps_ewm_lambda > 0 else 0.0
-
-            crps_sum = 0.0
             for t in range(test_start, n_train):
-                mu_eff = mu_pred[t] + ewm_mu + mu_drift
-                S_t = S_pred[t] * beta
-                sig = math.sqrt(max(S_t, 1e-20)) * s
-                if sig < 1e-10:
-                    sig = 1e-10
-                z = (returns_train[t] - mu_eff) / sig
-                crps_t = sig * (z * (2 * _norm.cdf(z) - 1) + 2 * _norm.pdf(z) - 1.0 / math.sqrt(math.pi))
-                crps_sum += crps_t
-
+                mu_eff_arr[t - test_start] = mu_pred[t] + ewm_mu + mu_drift
                 if crps_ewm_lambda > 0:
                     ewm_mu = crps_ewm_lambda * ewm_mu + alpha_e * innovations[t]
 
-            avg_crps = crps_sum / n_test_inner
+            # Vectorized CRPS with shrinkage
+            sig_s = _sig_base * s
+            z_arr = (_ret_test - mu_eff_arr) / sig_s
+            cdf_arr = _norm.cdf(z_arr)
+            pdf_arr = _norm.pdf(z_arr)
+            crps_arr = sig_s * (z_arr * (2 * cdf_arr - 1) + 2 * pdf_arr - _inv_sqrt_pi)
+            avg_crps = float(np.mean(crps_arr))
             if avg_crps < best_crps_s:
                 best_crps_s = avg_crps
                 best_shrink = s
@@ -1363,11 +1382,28 @@ class GaussianDriftModel:
         _msqrt = math.sqrt
         _norm_cdf = norm.cdf
 
+        # Try Numba-accelerated score fold kernel
+        try:
+            from models.numba_wrappers import run_gaussian_score_fold as _numba_score_fold
+            _use_numba_score = True
+        except (ImportError, Exception):
+            _use_numba_score = False
+
         def _score_fold(Sb, ee, ve, lam):
             """Run EWM PIT for one fold, return (ks_p_approx, mad)."""
             nv = ve - ee
             if nv < 20:
                 return 0.0, 1.0
+
+            if _use_numba_score:
+                init_em = float(np.mean(it[:ee]))
+                init_en = float(np.mean(it[:ee] ** 2))
+                init_ed = float(np.mean(Sb[:ee]))
+                return _numba_score_fold(
+                    it, Sb, ee, ve, lam,
+                    init_em, init_en, init_ed,
+                )
+
             em = float(np.mean(it[:ee]))
             en = float(np.mean(it[:ee] ** 2))
             ed = float(np.mean(Sb[:ee]))

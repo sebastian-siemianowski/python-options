@@ -25,6 +25,7 @@ Date: 2026-02-04
 
 from numba import njit
 import numpy as np
+import math
 
 # =============================================================================
 # CONSTANTS
@@ -1119,9 +1120,296 @@ def unified_phi_student_t_filter_kernel(
     return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood
 
 
-# =============================================================================
-# CV TEST-FOLD FORWARD-PASS KERNELS (fastmath=True safe)
-# =============================================================================
+@njit(cache=True, fastmath=False)
+def unified_phi_student_t_filter_extended_kernel(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    # Base parameters
+    c: float,
+    phi: float,
+    nu_base: float,
+    # MS-q arrays (precomputed in Python)
+    q_t: np.ndarray,
+    p_stress: np.ndarray,
+    # VoV arrays (precomputed in Python)
+    vov_rolling: np.ndarray,
+    gamma_vov: float,
+    vov_damping: float,
+    # Smooth asymmetric ν parameters
+    alpha_asym: float,
+    k_asym: float,
+    # Momentum array
+    momentum: np.ndarray,
+    # Initial covariance
+    P0: float,
+    # --- Extended parameters (Tier 3) ---
+    risk_prem: float,
+    mu_drift: float,
+    skew_kappa: float,
+    skew_rho: float,
+    jump_var: float,
+    jump_intensity: float,
+    jump_sensitivity: float,
+    jump_mean: float,
+    # EWM correction parameters
+    ewm_lambda: float,
+) -> tuple:
+    """
+    EXTENDED UNIFIED phi-Student-t Kalman filter kernel.
+
+    Adds risk premium, mu drift, GAS skew dynamics, Merton jump-diffusion,
+    and causal EWM correction to the base unified kernel.
+    
+    Conditional branches have zero overhead in Numba JIT when inactive.
+    """
+    n = len(returns)
+
+    # Allocate output arrays
+    mu_filtered = np.empty(n, dtype=np.float64)
+    P_filtered = np.empty(n, dtype=np.float64)
+    mu_pred_arr = np.empty(n, dtype=np.float64)
+    S_pred_arr = np.empty(n, dtype=np.float64)
+
+    # Pre-compute constants
+    phi_sq = phi * phi
+    _alpha_negligible = abs(alpha_asym) < 1e-10
+
+    # Feature flags (constant for entire call — JIT eliminates dead branches)
+    skew_enabled = skew_kappa > 1e-8
+    jump_enabled = jump_var > 1e-12 and jump_intensity > 1e-6
+    has_risk_drift = abs(risk_prem) > 1e-10 or abs(mu_drift) > 1e-12
+
+    # Pre-compute R_base array for risk premium
+    R_base_arr = np.empty(n, dtype=np.float64)
+    for t in range(n):
+        R_base_arr[t] = c * vol[t] * vol[t]
+
+    # Pre-compute log-norm const for diffusion likelihood
+    log_norm_const = _stirling_gammaln((nu_base + 1.0) / 2.0) - _stirling_gammaln(nu_base / 2.0) - 0.5 * np.log(nu_base * np.pi)
+    neg_exp = -((nu_base + 1.0) / 2.0)
+    inv_nu = 1.0 / nu_base
+
+    # Pre-compute for alpha_negligible case
+    if _alpha_negligible:
+        _cached_log_norm = log_norm_const
+        _cached_neg_exp = neg_exp
+        _cached_inv_nu = inv_nu
+        _cached_nu_adjust = nu_base / (nu_base + 3.0)
+        if _cached_nu_adjust > 1.0:
+            _cached_nu_adjust = 1.0
+        _cached_scale_factor = (nu_base - 2.0) / nu_base if nu_base > 2 else 0.5
+    else:
+        _cached_log_norm = 0.0
+        _cached_neg_exp = 0.0
+        _cached_inv_nu = 0.0
+        _cached_nu_adjust = 0.0
+        _cached_scale_factor = 0.0
+
+    # Jump-diffusion pre-computation
+    if jump_enabled:
+        p0_safe = jump_intensity
+        if p0_safe > 0.999:
+            p0_safe = 0.999
+        elif p0_safe < 1e-4:
+            p0_safe = 1e-4
+        logit_p0 = np.log(p0_safe / (1.0 - p0_safe))
+        log_gauss_norm = -0.5 * np.log(2.0 * np.pi)
+    else:
+        logit_p0 = 0.0
+        log_gauss_norm = 0.0
+
+    # GAS skew dynamic state
+    alpha_t = alpha_asym
+
+    # State initialization
+    mu = 0.0
+    P = P0
+    log_likelihood = 0.0
+
+    # Main filter loop
+    for t in range(n):
+        # === PREDICTION STEP ===
+        u_t = momentum[t]
+        q_t_val = q_t[t]
+
+        if has_risk_drift:
+            mu_pred = phi * mu + u_t + risk_prem * R_base_arr[t] + mu_drift
+        else:
+            mu_pred = phi * mu + u_t
+        P_pred = phi_sq * P + q_t_val
+
+        # VoV-adjusted observation noise with redundancy damping
+        vov_effective = gamma_vov * (1.0 - vov_damping * p_stress[t])
+        R = R_base_arr[t] * (1.0 + vov_effective * vov_rolling[t])
+
+        # S_diffusion: pure diffusion predictive variance
+        S_diffusion = P_pred + R
+        if S_diffusion < _MIN_VARIANCE:
+            S_diffusion = _MIN_VARIANCE
+
+        # Jump-augmented predictive variance
+        if jump_enabled:
+            _arg = -(logit_p0 + jump_sensitivity * vov_rolling[t])
+            if _arg > 20.0:
+                p_t = 1e-4
+            elif _arg < -20.0:
+                p_t = 0.5
+            else:
+                p_t = 1.0 / (1.0 + np.exp(_arg))
+                if p_t < 1e-4:
+                    p_t = 1e-4
+                elif p_t > 0.5:
+                    p_t = 0.5
+            S = S_diffusion + p_t * jump_var
+        else:
+            p_t = 0.0
+            S = S_diffusion
+
+        # Store predictive values
+        mu_pred_arr[t] = mu_pred
+        S_pred_arr[t] = S
+
+        # Innovation
+        innovation = returns[t] - mu_pred
+
+        # === UPDATE STEP ===
+        scale = np.sqrt(S_diffusion)
+
+        # Smooth asymmetric ν (or use dynamic alpha_t from GAS skew)
+        if _alpha_negligible and not skew_enabled:
+            nu_eff = nu_base
+        else:
+            _z_asym = innovation / scale if scale > 1e-10 else 0.0
+            _mod = 1.0 + alpha_t * np.tanh(k_asym * _z_asym)
+            nu_eff = nu_base * _mod
+            if nu_eff < 2.1:
+                nu_eff = 2.1
+            elif nu_eff > 50.0:
+                nu_eff = 50.0
+
+        # nu-adjusted Kalman gain
+        if _alpha_negligible and not skew_enabled:
+            nu_adjust = _cached_nu_adjust
+        else:
+            nu_adjust = nu_eff / (nu_eff + 3.0)
+            if nu_adjust > 1.0:
+                nu_adjust = 1.0
+        K = nu_adjust * P_pred / S_diffusion
+
+        # Robust Student-t weighting
+        z_sq_diffusion = (innovation * innovation) / S_diffusion
+        w_t = (nu_eff + 1.0) / (nu_eff + z_sq_diffusion)
+
+        # Jump posterior — reduce Kalman update weight for likely jumps
+        if jump_enabled:
+            S_jump_total = S_diffusion + jump_var
+            innov_centered = innovation - jump_mean
+
+            # Log-likelihood under jump component (Gaussian)
+            ll_jump = log_gauss_norm - 0.5 * np.log(S_jump_total) - 0.5 * (innov_centered * innov_centered) / S_jump_total
+
+            # Log-likelihood under diffusion component (Student-t)
+            sf = (nu_eff - 2.0) / nu_eff if nu_eff > 2.0 else 0.5
+            fs_diff = np.sqrt(S_diffusion * sf)
+            if fs_diff > 1e-12:
+                z_diff = innovation / fs_diff
+                log_n_diff = _stirling_gammaln((nu_eff + 1.0) / 2.0) - _stirling_gammaln(nu_eff / 2.0) - 0.5 * np.log(nu_eff * np.pi)
+                ll_diff = log_n_diff - np.log(fs_diff) + (-((nu_eff + 1.0) / 2.0)) * np.log(1.0 + z_diff * z_diff / nu_eff)
+            else:
+                ll_diff = -1e10
+
+            # Posterior jump probability via log-sum-exp
+            _log_1mp = np.log(max(1.0 - p_t, 1e-15))
+            _log_p = np.log(max(p_t, 1e-15))
+            log_num = _log_p + ll_jump
+            _lp0 = _log_1mp + ll_diff
+            _lp1 = log_num
+            log_den_max = _lp0 if _lp0 > _lp1 else _lp1
+            log_den = log_den_max + np.log(np.exp(_lp0 - log_den_max) + np.exp(_lp1 - log_den_max))
+            if log_den == log_den:  # isfinite check
+                p_jump_post = np.exp(log_num - log_den)
+                if p_jump_post < 0.0:
+                    p_jump_post = 0.0
+                elif p_jump_post > 1.0:
+                    p_jump_post = 1.0
+            else:
+                p_jump_post = p_t
+
+            # Reduce Kalman update weight for likely jumps
+            w_t *= (1.0 - 0.7 * p_jump_post)
+
+        # State update with robust weighting
+        mu = mu_pred + K * w_t * innovation
+        P = (1.0 - w_t * K) * P_pred
+        if P < _MIN_VARIANCE:
+            P = _MIN_VARIANCE
+
+        mu_filtered[t] = mu
+        P_filtered[t] = P
+
+        # GAS skew: alpha_{t+1} = (1-rho)*alpha_0 + rho*alpha_t + kappa*(z_t*w_t)
+        if skew_enabled:
+            z_for_score = innovation / scale if scale > 1e-10 else 0.0
+            score_t = z_for_score * w_t
+            alpha_t = (1.0 - skew_rho) * alpha_asym + skew_rho * alpha_t + skew_kappa * score_t
+            if alpha_t < -0.3:
+                alpha_t = -0.3
+            elif alpha_t > 0.3:
+                alpha_t = 0.3
+
+        # === LOG-LIKELIHOOD ===
+        if _alpha_negligible and not skew_enabled:
+            forecast_scale = np.sqrt(S_diffusion * _cached_scale_factor)
+        else:
+            scale_factor = (nu_eff - 2.0) / nu_eff if nu_eff > 2.0 else 0.5
+            forecast_scale = np.sqrt(S_diffusion * scale_factor)
+
+        if forecast_scale > _MIN_VARIANCE:
+            z = innovation / forecast_scale
+            if _alpha_negligible and not skew_enabled:
+                log_norm_eff = _cached_log_norm
+                neg_exp_eff = _cached_neg_exp
+                inv_nu_eff = _cached_inv_nu
+            else:
+                log_norm_eff = _stirling_gammaln((nu_eff + 1.0) / 2.0) - _stirling_gammaln(nu_eff / 2.0) - 0.5 * np.log(nu_eff * np.pi)
+                neg_exp_eff = -((nu_eff + 1.0) / 2.0)
+                inv_nu_eff = 1.0 / nu_eff
+
+            ll_diffusion = log_norm_eff - np.log(forecast_scale) + neg_exp_eff * np.log(1.0 + z * z * inv_nu_eff)
+
+            if jump_enabled and p_t > 1e-6:
+                # Mixture log-likelihood via log-sum-exp
+                S_jt = S_diffusion + jump_var
+                ic = innovation - jump_mean
+                ll_jmp = log_gauss_norm - 0.5 * np.log(S_jt) - 0.5 * (ic * ic) / S_jt
+
+                ll_max = ll_diffusion if ll_diffusion > ll_jmp else ll_jmp
+                ll_t = ll_max + np.log(
+                    (1.0 - p_t) * np.exp(ll_diffusion - ll_max)
+                    + p_t * np.exp(ll_jmp - ll_max)
+                )
+            else:
+                ll_t = ll_diffusion
+
+            # Clamp contribution
+            if ll_t < -_MAX_LL_CONTRIB:
+                ll_t = -_MAX_LL_CONTRIB
+            elif ll_t > _MAX_LL_CONTRIB:
+                ll_t = _MAX_LL_CONTRIB
+
+            if ll_t == ll_t:  # NaN check
+                log_likelihood += ll_t
+
+    # === CAUSAL EWM LOCATION CORRECTION ===
+    if ewm_lambda >= 0.01 and n > 2:
+        alpha_ewm = 1.0 - ewm_lambda
+        ewm_mu_val = 0.0
+        for t in range(n - 1):
+            innov_t = returns[t] - mu_pred_arr[t]
+            ewm_mu_val = ewm_lambda * ewm_mu_val + alpha_ewm * innov_t
+            mu_pred_arr[t + 1] = mu_pred_arr[t + 1] + ewm_mu_val
+
+    return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood
 # These kernels accelerate the inner loop of the cross-validated optimizer
 # objective. Given the final filtered state from training, they propagate
 # forward through the test fold computing out-of-sample log-likelihood and
@@ -1214,6 +1502,673 @@ def gaussian_cv_test_fold_kernel(
         P_pred = (1.0 - K) * P_pred
 
     return ll_fold, n_obs, std_written
+
+
+# =============================================================================
+# MS PROCESS NOISE EWM KERNEL
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def compute_ms_process_noise_ewm_kernel(
+    vol: np.ndarray,
+    lam: float,
+    warmup_mean: float,
+    warmup_var: float,
+) -> np.ndarray:
+    """
+    Compute EWM z-scores for vol array (MS process noise smooth EWM path).
+
+    Parameters
+    ----------
+    vol : np.ndarray
+        Volatility array (contiguous float64)
+    lam : float
+        EWM decay factor in (0, 1)
+    warmup_mean : float
+        Pre-computed warmup mean of vol[:warmup]
+    warmup_var : float
+        Pre-computed warmup variance of vol[:warmup]
+
+    Returns
+    -------
+    vol_zscore : np.ndarray
+        Z-scored volatility (same length as vol)
+    """
+    n = len(vol)
+    vol_zscore = np.empty(n, dtype=np.float64)
+    one_minus_lam = 1.0 - lam
+
+    ewm_mean = warmup_mean
+    ewm_var = warmup_var
+    if ewm_var < 1e-12:
+        ewm_var = 1e-12
+
+    for t in range(n):
+        ewm_std = np.sqrt(ewm_var)
+        if ewm_std < 1e-6:
+            ewm_std = 1e-6
+        vol_zscore[t] = (vol[t] - ewm_mean) / ewm_std
+
+        # Update AFTER computing z-score (no look-ahead)
+        ewm_mean = lam * ewm_mean + one_minus_lam * vol[t]
+        diff = vol[t] - ewm_mean
+        ewm_var = lam * ewm_var + one_minus_lam * (diff * diff)
+        if ewm_var < 1e-12:
+            ewm_var = 1e-12
+
+    return vol_zscore
+
+
+# =============================================================================
+# STAGE 6 EWM FOLD KERNEL
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def stage6_ewm_fold_kernel(
+    it_arr: np.ndarray,
+    Sb_arr: np.ndarray,
+    ee: int,
+    ve: int,
+    lam: float,
+    init_em: float,
+    init_en: float,
+    init_ed: float,
+) -> tuple:
+    """
+    Stage 6 EWM fold computation — combines _get_ewm_state warmup + _fold_ewm_raw.
+
+    Parameters
+    ----------
+    it_arr : np.ndarray
+        Innovation array (full training set)
+    Sb_arr : np.ndarray
+        Predictive variance array (full training set)
+    ee : int
+        Train end / validation start index
+    ve : int
+        Validation end index
+    lam : float
+        EWM decay factor
+    init_em, init_en, init_ed : float
+        Initial EWM state estimates (from np.mean of it[:ee] etc.)
+
+    Returns
+    -------
+    iv_arr : np.ndarray
+        EWM-corrected innovations for validation fold
+    Sv_arr : np.ndarray
+        EWM-corrected variances for validation fold
+    """
+    lm1 = 1.0 - lam
+
+    # Phase 1: Run EWM warmup through [0..ee) to get final state
+    em = init_em
+    en = init_en
+    ed = init_ed
+    for t in range(ee):
+        v = it_arr[t]
+        em = lam * em + lm1 * v
+        en = lam * en + lm1 * v * v
+        ed = lam * ed + lm1 * Sb_arr[t]
+
+    # Phase 2: Compute validation fold outputs
+    nv = ve - ee
+    iv_arr = np.empty(nv, dtype=np.float64)
+    Sv_arr = np.empty(nv, dtype=np.float64)
+
+    for tv in range(nv):
+        ix = ee + tv
+        bv = en / (ed + 1e-12)
+        if bv < 0.2:
+            bv = 0.2
+        elif bv > 5.0:
+            bv = 5.0
+        iv_arr[tv] = it_arr[ix] - em
+        Sv_arr[tv] = Sb_arr[ix] * bv
+        v = it_arr[ix]
+        em = lam * em + lm1 * v
+        en = lam * en + lm1 * v * v
+        ed = lam * ed + lm1 * Sb_arr[ix]
+
+    return iv_arr, Sv_arr
+
+
+# =============================================================================
+# STAGE 5f EWM CORRECTION KERNEL
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def ewm_mu_correction_kernel(
+    returns: np.ndarray,
+    mu_pred: np.ndarray,
+    lam: float,
+    n_train: int,
+) -> np.ndarray:
+    """
+    EWM bias correction for Stage 5f.
+
+    Computes: mu_corr[t] = mu_pred[t] + ewm_mu_t
+    where ewm_mu_t tracks exponentially weighted innovation residuals.
+
+    Parameters
+    ----------
+    returns : np.ndarray
+        Return series
+    mu_pred : np.ndarray
+        Base predicted means
+    lam : float
+        EWM decay factor
+    n_train : int
+        Number of training samples
+
+    Returns
+    -------
+    mu_corr : np.ndarray
+        Corrected predicted means (length n_train)
+    """
+    mu_corr = np.empty(n_train, dtype=np.float64)
+    mu_corr[0] = mu_pred[0]
+    one_minus_lam = 1.0 - lam
+    ewm_mu = 0.0
+
+    for t in range(1, n_train):
+        ewm_mu = lam * ewm_mu + one_minus_lam * (returns[t - 1] - mu_pred[t - 1])
+        mu_corr[t] = mu_pred[t] + ewm_mu
+
+    return mu_corr
+
+
+# =============================================================================
+# GAUSSIAN SCORE FOLD KERNEL
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def gaussian_score_fold_kernel(
+    it_arr: np.ndarray,
+    Sb_arr: np.ndarray,
+    ee: int,
+    ve: int,
+    lam: float,
+    init_em: float,
+    init_en: float,
+    init_ed: float,
+) -> tuple:
+    """
+    Gaussian Stage 5 _score_fold — EWM PIT with KS approximation.
+
+    Parameters
+    ----------
+    it_arr : np.ndarray
+        Innovation array
+    Sb_arr : np.ndarray
+        Predictive variance array
+    ee : int
+        Train end / validation start
+    ve : int
+        Validation end
+    lam : float
+        EWM decay factor
+    init_em, init_en, init_ed : float
+        Initial EWM state (from np.mean of training slice)
+
+    Returns
+    -------
+    kp : float
+        Approximate KS p-value
+    md : float
+        MAD of PIT histogram bins
+    """
+    lm1 = 1.0 - lam
+    nv = ve - ee
+    if nv < 20:
+        return 0.0, 1.0
+
+    # Phase 1: Run EWM warmup through [0..ee)
+    em = init_em
+    en = init_en
+    ed = init_ed
+    for t in range(ee):
+        v = it_arr[t]
+        em = lam * em + lm1 * v
+        en = lam * en + lm1 * v * v
+        ed = lam * ed + lm1 * Sb_arr[t]
+
+    # Phase 2: Compute z-values for validation fold
+    zv = np.empty(nv, dtype=np.float64)
+    for tv in range(nv):
+        ix = ee + tv
+        bv = en / (ed + 1e-12)
+        if bv < 0.2:
+            bv = 0.2
+        elif bv > 5.0:
+            bv = 5.0
+        iv = it_arr[ix] - em
+        Sv = Sb_arr[ix] * bv
+        s = np.sqrt(Sv) if Sv > 0.0 else 1e-10
+        if s < 1e-10:
+            s = 1e-10
+        zv[tv] = iv / s
+        v = it_arr[ix]
+        em = lam * em + lm1 * v
+        en = lam * en + lm1 * v * v
+        ed = lam * ed + lm1 * Sb_arr[ix]
+
+    # Phase 3: Compute PIT values using erfc-based Gaussian CDF
+    pv = np.empty(nv, dtype=np.float64)
+    _SQRT_2 = np.sqrt(2.0)
+    for i in range(nv):
+        p = 0.5 * math.erfc(-zv[i] / _SQRT_2)
+        if p < 0.001:
+            p = 0.001
+        elif p > 0.999:
+            p = 0.999
+        pv[i] = p
+
+    # Phase 4: Sort for KS test
+    # Simple insertion sort (nv is small, typically <200)
+    ps = np.copy(pv)
+    for i in range(1, nv):
+        key = ps[i]
+        j = i - 1
+        while j >= 0 and ps[j] > key:
+            ps[j + 1] = ps[j]
+            j -= 1
+        ps[j + 1] = key
+
+    # KS statistic
+    dp_max = 0.0
+    dm_max = 0.0
+    inv_nv = 1.0 / nv
+    for i in range(nv):
+        dp = (i + 1) * inv_nv - ps[i]
+        dm = ps[i] - i * inv_nv
+        if dp > dp_max:
+            dp_max = dp
+        if dm > dm_max:
+            dm_max = dm
+    D_ks = dp_max if dp_max > dm_max else dm_max
+
+    sq_n = np.sqrt(float(nv))
+    lam_ks = (sq_n + 0.12 + 0.11 / sq_n) * D_ks
+    if lam_ks < 0.001:
+        kp = 1.0
+    elif lam_ks > 3.0:
+        kp = 0.0
+    else:
+        kp = 2.0 * np.exp(-2.0 * lam_ks * lam_ks)
+        if kp > 1.0:
+            kp = 1.0
+
+    # PIT histogram MAD (10 bins)
+    hi = np.zeros(10, dtype=np.float64)
+    for i in range(nv):
+        b = int(pv[i] * 10.0)
+        if b >= 10:
+            b = 9
+        hi[b] += 1.0
+
+    total_md = 0.0
+    for b in range(10):
+        total_md += abs(hi[b] / float(nv) - 0.1)
+    md = total_md / 10.0
+
+    return kp, md
+# =============================================================================
+# GAS-Q GAUSSIAN FILTER KERNEL
+# =============================================================================
+# Pure scalar loop implementing GAS-Q dynamics with inlined score/update.
+# Profiling shows gas_q_filter_gaussian at 3.9s (2254 calls) — 2nd largest
+# bottleneck. This kernel inlines compute_gaussian_score_q and gas_q_update.
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def gas_q_filter_gaussian_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    c: float,
+    phi: float,
+    omega: float,
+    alpha: float,
+    beta: float,
+    q_init: float,
+    q_min: float,
+    q_max: float,
+    score_scale: float,
+    mu_filtered: np.ndarray,
+    P_filtered: np.ndarray,
+    q_path: np.ndarray,
+    score_path: np.ndarray,
+) -> float:
+    """
+    Numba-compiled GAS-Q Gaussian Kalman filter.
+
+    Inlines score computation and GAS update for maximum throughput.
+    Returns log-likelihood; filtered arrays are written in-place.
+    """
+    n = len(returns)
+    mu = 0.0
+    P = 1e-4
+    q_t = q_init
+    log_ll = 0.0
+    phi_sq = phi * phi
+    log_2pi = 1.8378770664093453  # np.log(2*pi)
+    _EPS = 1e-12
+
+    for t in range(n):
+        q_path[t] = q_t
+
+        # Predict
+        mu_pred = phi * mu
+        P_pred = phi_sq * P + q_t
+
+        # Innovation
+        R_t = c * vol_sq[t]
+        S_t = P_pred + R_t
+        if S_t < _EPS:
+            S_t = _EPS
+        innovation = returns[t] - mu_pred
+
+        # Kalman gain + update
+        K = P_pred / S_t
+        mu = mu_pred + K * innovation
+        P = (1.0 - K) * P_pred
+        if P < _EPS:
+            P = _EPS
+
+        mu_filtered[t] = mu
+        P_filtered[t] = P
+
+        # Inlined Gaussian score: (z² - 1) / (2·S_t) * scale
+        z_sq = (innovation * innovation) / S_t
+        raw_score = (z_sq - 1.0) / (2.0 * S_t)
+        score_val = score_scale * raw_score
+        if score_val > 1e6:
+            score_val = 1e6
+        elif score_val < -1e6:
+            score_val = -1e6
+        score_path[t] = score_val
+
+        # Log-likelihood
+        ll_t = -0.5 * (log_2pi + np.log(S_t) + z_sq)
+        if ll_t == ll_t:  # isfinite check in Numba
+            log_ll += ll_t
+
+        # Inlined GAS update: q_t = omega + alpha*s_{t-1} + beta*q_{t-1}
+        q_new = omega + alpha * score_val + beta * q_t
+        if q_new < q_min:
+            q_new = q_min
+        elif q_new > q_max:
+            q_new = q_max
+        q_t = q_new
+
+    return log_ll
+
+
+# =============================================================================
+# BUILD GARCH KERNEL
+# =============================================================================
+# Pure scalar GJR-GARCH loop with leverage, jump-eta, regime-switch, and
+# mean-reversion enhancements. Called ~27 times per model in Stage 5g.
+# Profiling shows 0.64s across 540 calls.
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def build_garch_kernel(
+    n_train: int,
+    innovations: np.ndarray,
+    sq_inn: np.ndarray,
+    neg_ind: np.ndarray,
+    garch_omega: float,
+    garch_alpha: float,
+    garch_leverage: float,
+    garch_beta: float,
+    unconditional_var: float,
+    q_stress_ratio: float,
+    rho_c: float,
+    kap_c: float,
+    eta_c: float,
+    reg_c: float,
+    h_out: np.ndarray,
+) -> None:
+    """
+    Numba-compiled GJR-GARCH(1,1) variance construction with enhancements.
+    Writes results into h_out in-place.
+    """
+    h_out[0] = unconditional_var
+    _p_st = 0.1
+    _sm = np.sqrt(q_stress_ratio)
+
+    for t_ in range(1, n_train):
+        h_ = (garch_omega
+              + garch_alpha * sq_inn[t_ - 1]
+              + garch_leverage * sq_inn[t_ - 1] * neg_ind[t_ - 1]
+              + garch_beta * h_out[t_ - 1])
+
+        if rho_c > 0.01 and h_out[t_ - 1] > 1e-12:
+            nz_ = innovations[t_ - 1] / np.sqrt(h_out[t_ - 1])
+            if nz_ < 0:
+                h_ += rho_c * nz_ * nz_ * h_out[t_ - 1]
+
+        if eta_c > 0.005 and h_out[t_ - 1] > 1e-12:
+            za_ = abs(innovations[t_ - 1]) / np.sqrt(h_out[t_ - 1])
+            ex_ = za_ - 1.5
+            if ex_ < 0.0:
+                ex_ = 0.0
+            h_ += eta_c * ex_ * ex_ * h_out[t_ - 1]
+
+        if reg_c > 0.005 and h_out[t_ - 1] > 1e-12:
+            zr_ = abs(innovations[t_ - 1]) / np.sqrt(h_out[t_ - 1])
+            _p_st = (1.0 - reg_c) * _p_st + reg_c * (1.0 if zr_ > 2.0 else 0.0)
+            if _p_st < 0.0:
+                _p_st = 0.0
+            elif _p_st > 1.0:
+                _p_st = 1.0
+            h_ = h_ * (1.0 + _p_st * (_sm - 1.0))
+
+        if kap_c > 0.001:
+            h_ = (1.0 - kap_c) * h_ + kap_c * unconditional_var
+
+        if h_ < 1e-12:
+            h_ = 1e-12
+        h_out[t_] = h_
+
+
+# =============================================================================
+# CHI² EWM CORRECTION KERNEL
+# =============================================================================
+# Causal EWM z² → scale correction for domain-matched PIT computation.
+# Used in Stage 6 scoring (phi_student_t.py) and compute_extended_pit_metrics
+# (tune.py). Profiling shows 0.25s across 1012 calls in phi_student_t alone.
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def chi2_ewm_correction_kernel(
+    z_raw: np.ndarray,
+    chi2_target: float,
+    chi2_lambda: float,
+    scale_adj_out: np.ndarray,
+) -> None:
+    """
+    Numba-compiled chi² EWM variance correction.
+
+    Tracks E[z²] via exponential weighted mean, computes adaptive scale
+    adjustment. Writes adjustment factors into scale_adj_out in-place.
+    """
+    n = len(z_raw)
+    chi2_1m = 1.0 - chi2_lambda
+    winsor_cap = chi2_target * 50.0
+    ewm_z2 = chi2_target
+
+    for t in range(n):
+        ratio = ewm_z2 / chi2_target
+        if ratio < 0.3:
+            ratio = 0.3
+        elif ratio > 3.0:
+            ratio = 3.0
+
+        dev = abs(ratio - 1.0)
+
+        if ratio >= 1.0:
+            dz_lo = 0.25
+            dz_rng = 0.25
+        else:
+            dz_lo = 0.10
+            dz_rng = 0.15
+
+        if dev < dz_lo:
+            adj = 1.0
+        elif dev >= dz_lo + dz_rng:
+            adj = np.sqrt(ratio)
+        else:
+            s = (dev - dz_lo) / dz_rng
+            adj = 1.0 + s * (np.sqrt(ratio) - 1.0)
+
+        scale_adj_out[t] = adj
+
+        z2 = z_raw[t] * z_raw[t]
+        z2w = z2 if z2 < winsor_cap else winsor_cap
+        ewm_z2 = chi2_lambda * ewm_z2 + chi2_1m * z2w
+
+
+# =============================================================================
+# PIT-VARIANCE STRETCHING KERNEL
+# =============================================================================
+# Fixes shape miscalibration not caught by chi² correction.
+# Used in compute_extended_pit_metrics for both Student-t and Gaussian.
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def pit_var_stretching_kernel(
+    pit_values: np.ndarray,
+) -> None:
+    """
+    Numba-compiled PIT-variance stretching (Var[PIT] → 1/12).
+    Modifies pit_values in-place.
+    """
+    n = len(pit_values)
+    pv_tgt = 1.0 / 12.0
+    pv_lam = 0.97
+    pv_1m = 0.03
+    pv_dz_lo = 0.30
+    pv_dz_hi = 0.55
+    pv_dz_rng = pv_dz_hi - pv_dz_lo
+    ewm_pm = 0.5
+    ewm_psq = 1.0 / 3.0
+
+    for t in range(n):
+        ov = ewm_psq - ewm_pm * ewm_pm
+        if ov < 0.005:
+            ov = 0.005
+        vr = ov / pv_tgt
+        vd = abs(vr - 1.0)
+        rp = pit_values[t]
+
+        if vd > pv_dz_lo:
+            rs = np.sqrt(pv_tgt / ov)
+            if rs < 0.70:
+                rs = 0.70
+            elif rs > 1.50:
+                rs = 1.50
+
+            if vd >= pv_dz_hi:
+                st = rs
+            else:
+                sg = (vd - pv_dz_lo) / pv_dz_rng
+                st = 1.0 + sg * (rs - 1.0)
+
+            c = 0.5 + (rp - 0.5) * st
+            if c < 0.001:
+                c = 0.001
+            elif c > 0.999:
+                c = 0.999
+            pit_values[t] = c
+
+        # Update EWM trackers
+        ewm_pm = pv_lam * ewm_pm + pv_1m * pit_values[t]
+        ewm_psq = pv_lam * ewm_psq + pv_1m * pit_values[t] * pit_values[t]
+
+
+# =============================================================================
+# φ-STUDENT-T CV TEST-FOLD KERNEL
+# =============================================================================
+# Profiling shows neg_cv_ll at 6.7s (8516 calls) — the #1 remaining
+# bottleneck. This kernel replaces the Python validation loop with a
+# Numba-compiled loop using Student-t likelihood and constant nu-adjust gain.
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def phi_student_t_cv_test_fold_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu_scale: float,
+    log_norm_const: float,
+    neg_exp: float,
+    inv_nu: float,
+    nu_adjust: float,
+    mu_init: float,
+    P_init: float,
+    test_start: int,
+    test_end: int,
+) -> float:
+    """
+    Numba-compiled φ-Student-t forward pass on a single CV test fold.
+
+    Computes log-likelihood of validation data given initial state from
+    training fold. Uses Student-t likelihood with constant nu-adjust gain.
+
+    Parameters
+    ----------
+    returns : contiguous float64 array
+    vol_sq : contiguous float64 array (vol²)
+    q : process noise
+    c : observation noise scale
+    phi : AR(1) persistence
+    nu_scale : (nu-2)/nu if nu>2 else 1.0
+    log_norm_const : gammaln((nu+1)/2) - gammaln(nu/2) - 0.5*log(nu*pi)
+    neg_exp : -(nu+1)/2
+    inv_nu : 1/nu
+    nu_adjust : min(nu/(nu+3), 1.0)
+    mu_init : initial state mean (from training fold)
+    P_init : initial state variance (from training fold)
+    test_start : first index of validation range
+    test_end : one-past-last index of validation range
+
+    Returns
+    -------
+    ll_fold : total log-likelihood of the validation fold
+    """
+    mu_p = mu_init
+    P_p = P_init
+    ll_fold = 0.0
+    phi_sq = phi * phi
+
+    for t in range(test_start, test_end):
+        mu_p = phi * mu_p
+        P_p = phi_sq * P_p + q
+
+        R_t = c * vol_sq[t]
+        S = P_p + R_t
+        if S < 1e-12:
+            S = 1e-12
+
+        inn = returns[t] - mu_p
+        scale = np.sqrt(S * nu_scale)
+        if scale > 1e-12:
+            z = inn / scale
+            ll_t = log_norm_const - np.log(scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
+            if ll_t == ll_t:  # isfinite check in Numba
+                ll_fold += ll_t
+
+        K = nu_adjust * P_p / S
+        mu_p = mu_p + K * inn
+        P_p = (1.0 - K) * P_p
+        if P_p < 1e-12:
+            P_p = 1e-12
+
+    return ll_fold
 
 
 @njit(cache=True, fastmath=True)
