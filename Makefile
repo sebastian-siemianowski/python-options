@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine verify verify-quick
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -428,6 +428,22 @@ diag-debug: .venv/.deps_installed
 # Options: --assets SYM1,SYM2  --models U-t4,U-t8,U-t20
 diag-refine: .venv/.deps_installed
 	@.venv/bin/python -B debug_pit_refinement.py $(ARGS)
+
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │  ✅ FORECAST VERIFICATION                                                    │
+# ├──────────────────────────────────────────────────────────────────────────────┤
+# │  make verify       Walk-forward verify all forecasts (252d, full universe)   │
+# │  make verify-quick Quick verify on 8 key assets (90d)                        │
+# └──────────────────────────────────────────────────────────────────────────────┘
+
+# Full forecast verification (all assets, 252 trading days, every 5th day)
+# Options: --assets SYM1,SYM2  --eval-days 180  --workers 8  --sort hit7d
+verify: .venv/.deps_installed
+	@OFFLINE_MODE=1 .venv/bin/python -B src/decision/verify_forecasts.py $(ARGS)
+
+# Quick smoke test (8 diverse assets, 90 days)
+verify-quick: .venv/.deps_installed
+	@OFFLINE_MODE=1 .venv/bin/python -B src/decision/verify_forecasts.py --assets SPY,QQQ,AAPL,NVDA,MSFT,GC=F,EURUSD=X,BTC-USD --eval-days 90 $(ARGS)
 
 # Manually (re)install requirements and refresh the dependency stamp
 doctor: .venv/bin/python
