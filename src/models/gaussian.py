@@ -48,7 +48,7 @@ from typing import Dict, Tuple, Optional
 
 import numpy as np
 from scipy.optimize import minimize
-from scipy.stats import kstest, norm
+from scipy.stats import norm
 
 # Numba wrappers for JIT-compiled filters (optional performance enhancement)
 try:
@@ -86,6 +86,34 @@ def _fast_ks_statistic(pit_values):
     d_plus = np.max(np.arange(1, n + 1) / n - pit_sorted)
     d_minus = np.max(pit_sorted - np.arange(0, n) / n)
     return float(max(d_plus, d_minus))
+
+
+def _fast_ks_uniform(pit_values):
+    """
+    Inline KS test against Uniform(0,1) — replaces scipy.stats.kstest.
+    
+    Returns (statistic, p_value).
+    Uses Kolmogorov asymptotic approximation for p-value.
+    """
+    n = len(pit_values)
+    if n < 2:
+        return 1.0, 0.0
+    sorted_pit = np.sort(pit_values)
+    ecdf = np.arange(1, n + 1) / n
+    D_plus = float(np.max(ecdf - sorted_pit))
+    D_minus = float(np.max(sorted_pit - np.arange(0, n) / n))
+    D = max(D_plus, D_minus)
+    sqrt_n = math.sqrt(n)
+    lam = (sqrt_n + 0.12 + 0.11 / sqrt_n) * D
+    if lam < 0.001:
+        p = 1.0
+    elif lam > 3.0:
+        p = 0.0
+    else:
+        p = 2.0 * math.exp(-2.0 * lam * lam)
+        if p > 1.0:
+            p = 1.0
+    return D, p
 
 
 # =============================================================================
@@ -427,8 +455,8 @@ class GaussianDriftModel:
         if len(pit_values) < 2:
             return 1.0, 0.0
         
-        ks_result = kstest(pit_values, 'uniform')
-        return float(ks_result.statistic), float(ks_result.pvalue)
+        ks_stat, ks_p = _fast_ks_uniform(pit_values)
+        return float(ks_stat), float(ks_p)
 
     @staticmethod
     def filter_augmented(
@@ -772,7 +800,8 @@ class GaussianDriftModel:
             pit_values = np.clip(norm.cdf(z), 0.001, 0.999)
             mu_effective = mu_pred_test
 
-        pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
+        _, pit_pvalue = _fast_ks_uniform(pit_values)
+        pit_pvalue = float(pit_pvalue)
         # Anderson-Darling test (tail-sensitive complement to KS)
         try:
             from calibration.pit_calibration import anderson_darling_uniform
@@ -1899,7 +1928,8 @@ class GaussianDriftModel:
         """
         try:
             from scipy.stats import chi2
-            z = norm.ppf(np.clip(pit_values, 0.0001, 0.9999))
+            from scipy.special import ndtri
+            z = ndtri(np.clip(pit_values, 0.0001, 0.9999))
             z = z[np.isfinite(z)]
             n_z = len(z)
             if n_z <= 20:
@@ -1912,9 +1942,9 @@ class GaussianDriftModel:
             ll_null = -0.5 * n_z * np.log(2 * np.pi) - 0.5 * np.sum(z ** 2)
             sigma_sq = max(var_hat * (1 - rho_hat ** 2) if abs(rho_hat) < 0.99 else var_hat * 0.01, 1e-6)
             ll_alt = -0.5 * np.log(2 * np.pi * var_hat) - 0.5 * (z[0] - mu_hat) ** 2 / var_hat
-            for t in range(1, n_z):
-                resid = z[t] - (mu_hat + rho_hat * (z[t-1] - mu_hat))
-                ll_alt += -0.5 * np.log(2 * np.pi * sigma_sq) - 0.5 * resid ** 2 / sigma_sq
+            # Vectorized AR(1) residual log-likelihood (replaces Python loop)
+            resid_vec = z[1:] - (mu_hat + rho_hat * (z[:-1] - mu_hat))
+            ll_alt += float(-0.5 * (n_z - 1) * np.log(2 * np.pi * sigma_sq) - 0.5 * np.sum(resid_vec ** 2) / sigma_sq)
             lr_stat = float(max(2 * (ll_alt - ll_null), 0))
             p_value = float(1 - chi2.cdf(lr_stat, df=3))
             return (p_value, lr_stat, n_z)

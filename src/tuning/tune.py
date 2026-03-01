@@ -278,7 +278,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize_scalar, minimize
-from scipy.stats import norm, kstest, t as student_t
+from scipy.stats import norm, t as student_t
 from scipy.special import gammaln
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import warnings
@@ -294,6 +294,32 @@ if SCRIPT_DIR not in sys.path:
 
 from ingestion.data_utils import fetch_px, _download_prices, get_default_asset_universe
 from ingestion.adaptive_quality import adaptive_data_quality
+
+
+def _fast_ks_uniform(pit_values):
+    """
+    Inline KS test against Uniform(0,1) — replaces scipy.stats.kstest.
+    Returns (statistic, p_value) using Kolmogorov asymptotic approximation.
+    """
+    n = len(pit_values)
+    if n < 2:
+        return 1.0, 0.0
+    sorted_pit = np.sort(pit_values)
+    ecdf = np.arange(1, n + 1) / n
+    D_plus = float(np.max(ecdf - sorted_pit))
+    D_minus = float(np.max(sorted_pit - np.arange(0, n) / n))
+    D = max(D_plus, D_minus)
+    sqrt_n = math.sqrt(n)
+    lam = (sqrt_n + 0.12 + 0.11 / sqrt_n) * D
+    if lam < 0.001:
+        p = 1.0
+    elif lam > 3.0:
+        p = 0.0
+    else:
+        p = 2.0 * math.exp(-2.0 * lam * lam)
+        if p > 1.0:
+            p = 1.0
+    return D, p
 
 # K=2 Mixture Model REMOVED - empirically falsified (206 attempts, 0 selections)
 # The HMM regime-switching + Student-t already captures regime heterogeneity.
@@ -2814,7 +2840,7 @@ def compute_extended_pit_metrics_gaussian(
         return {"ks_statistic": 1.0, "pit_ks_pvalue": 0.0,
                 "berkowitz_pvalue": 0.0, "berkowitz_lr": 0.0,
                 "pit_count": 0, "histogram_mad": 1.0}
-    ks_result = kstest(pit_values, 'uniform')
+    ks_stat_g, ks_pval_g = _fast_ks_uniform(pit_values)
     hist, _ = np.histogram(pit_values, bins=10, range=(0, 1))
     hist_freq = hist / len(pit_values)
     hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
@@ -2829,8 +2855,8 @@ def compute_extended_pit_metrics_gaussian(
     if not np.isfinite(berkowitz_p):
         berkowitz_p = 0.0
     return {
-        "ks_statistic": float(ks_result.statistic),
-        "pit_ks_pvalue": float(ks_result.pvalue),
+        "ks_statistic": float(ks_stat_g),
+        "pit_ks_pvalue": float(ks_pval_g),
         "berkowitz_pvalue": float(berkowitz_p),
         "berkowitz_lr": float(berkowitz_lr_g),
         "pit_count": int(pit_count_g),
@@ -2956,7 +2982,7 @@ def compute_extended_pit_metrics_student_t(
         return {"ks_statistic": 1.0, "pit_ks_pvalue": 0.0,
                 "berkowitz_pvalue": 0.0, "berkowitz_lr": 0.0,
                 "pit_count": 0, "histogram_mad": 1.0}
-    ks_result = kstest(pit_clean, 'uniform')
+    ks_stat_st, ks_pval_st = _fast_ks_uniform(pit_clean)
     # Anderson-Darling test (tail-sensitive)
     try:
         from calibration.pit_calibration import anderson_darling_uniform
@@ -2977,8 +3003,8 @@ def compute_extended_pit_metrics_student_t(
     if not np.isfinite(berkowitz_p):
         berkowitz_p = 0.0
     return {
-        "ks_statistic": float(ks_result.statistic),
-        "pit_ks_pvalue": float(ks_result.pvalue),
+        "ks_statistic": float(ks_stat_st),
+        "pit_ks_pvalue": float(ks_pval_st),
         "ad_pvalue": float(_ad_pval),
         "berkowitz_pvalue": float(berkowitz_p),
         "berkowitz_lr": float(berkowitz_lr_st),

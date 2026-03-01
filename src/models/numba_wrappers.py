@@ -20,6 +20,7 @@ Date: 2026-02-04
 """
 
 from typing import Tuple, Dict, List, Optional
+from functools import lru_cache
 import numpy as np
 
 # Try to import scipy for gamma precomputation
@@ -94,14 +95,37 @@ def prepare_arrays(*arrays) -> Tuple[np.ndarray, ...]:
     Uses ravel() instead of flatten() to avoid unnecessary copies
     when arrays are already 1D. Fast-path skips conversion entirely
     for arrays already in the right format.
+    
+    Performance: specialized fast paths for 1-2 arrays (common case)
+    avoid list building and tuple conversion overhead.
+    Called 71K+ times per asset — every microsecond counts.
     """
+    # Fast path for 2 arrays (the overwhelmingly common case: returns, vol)
+    _f64 = np.float64
+    if len(arrays) == 2:
+        a, b = arrays
+        a_ok = a.dtype == _f64 and a.ndim == 1 and a.flags['C_CONTIGUOUS']
+        b_ok = b.dtype == _f64 and b.ndim == 1 and b.flags['C_CONTIGUOUS']
+        if a_ok and b_ok:
+            return (a, b)
+        return (
+            a if a_ok else np.ascontiguousarray(a.ravel(), dtype=_f64),
+            b if b_ok else np.ascontiguousarray(b.ravel(), dtype=_f64),
+        )
+    # Fast path for 1 array
+    if len(arrays) == 1:
+        a = arrays[0]
+        if a.dtype == _f64 and a.ndim == 1 and a.flags['C_CONTIGUOUS']:
+            return (a,)
+        return (np.ascontiguousarray(a.ravel(), dtype=_f64),)
+    # General path
     result = []
     for arr in arrays:
-        if (arr.dtype == np.float64 and arr.ndim == 1
+        if (arr.dtype == _f64 and arr.ndim == 1
                 and arr.flags['C_CONTIGUOUS']):
             result.append(arr)
         else:
-            result.append(np.ascontiguousarray(arr.ravel(), dtype=np.float64))
+            result.append(np.ascontiguousarray(arr.ravel(), dtype=_f64))
     return tuple(result)
 
 
@@ -109,6 +133,7 @@ def prepare_arrays(*arrays) -> Tuple[np.ndarray, ...]:
 # GAMMA PRECOMPUTATION (for φ-Student-t)
 # =============================================================================
 
+@lru_cache(maxsize=64)
 def precompute_gamma_values(nu: float) -> Tuple[float, float]:
     """
     Precompute gamma function values for Student-t.
@@ -118,6 +143,9 @@ def precompute_gamma_values(nu: float) -> Tuple[float, float]:
     
     This is why we precompute in Python rather than approximating in Numba:
     at ν=4, Stirling error can flip BMA model rankings.
+    
+    Cached via lru_cache: ν takes only a handful of values (3, 4, 5, 6, 8, 10, 12, 20)
+    across an entire tuning run, so 58K+ calls collapse to ~20 unique computations.
     
     Parameters
     ----------

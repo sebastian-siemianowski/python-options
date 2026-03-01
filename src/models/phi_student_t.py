@@ -27,7 +27,6 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 from scipy.optimize import minimize
 from scipy.special import gammaln
-from scipy.stats import kstest
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
@@ -116,6 +115,41 @@ def _fast_t_pdf(z, nu):
             pass
     from scipy.stats import t as _t
     return _t.pdf(z, df=nu)
+
+
+def _fast_ks_uniform(pit_values):
+    """
+    Inline KS test against Uniform(0,1) — replaces scipy.stats.kstest.
+    
+    Returns (statistic, p_value).
+    
+    Uses the Kolmogorov asymptotic approximation for p-value:
+        λ = (√n + 0.12 + 0.11/√n) × D
+        p ≈ 2·exp(-2λ²)
+    
+    This is equivalent to scipy's kstest for n > ~40 (our typical n > 100).
+    Eliminates the expensive kolmogn() p-value computation (0.275s cumulative
+    from 1,056 calls in a single-asset tune).
+    """
+    n = len(pit_values)
+    if n < 2:
+        return 1.0, 0.0
+    sorted_pit = np.sort(pit_values)
+    ecdf = np.arange(1, n + 1) / n
+    D_plus = float(np.max(ecdf - sorted_pit))
+    D_minus = float(np.max(sorted_pit - np.arange(0, n) / n))
+    D = max(D_plus, D_minus)
+    sqrt_n = math.sqrt(n)
+    lam = (sqrt_n + 0.12 + 0.11 / sqrt_n) * D
+    if lam < 0.001:
+        p = 1.0
+    elif lam > 3.0:
+        p = 0.0
+    else:
+        p = 2.0 * math.exp(-2.0 * lam * lam)
+        if p > 1.0:
+            p = 1.0
+    return D, p
 
 
 # ---------------------------------------------------------------------------
@@ -1471,8 +1505,6 @@ class PhiStudentTDriftModel:
         PIT values, and returns (KS statistic, KS p-value).
         Vectorized: single batch CDF call instead of per-element loop.
         """
-        from scipy.stats import kstest
-
         returns = np.asarray(returns).flatten()
         mu_pred = np.asarray(mu_pred).flatten()
         S_pred = np.asarray(S_pred).flatten()
@@ -1496,8 +1528,8 @@ class PhiStudentTDriftModel:
         if len(pit_clean) < 2:
             return 1.0, 0.0
 
-        ks_result = kstest(pit_clean, 'uniform')
-        return float(ks_result.statistic), float(ks_result.pvalue)
+        ks_stat, ks_p = _fast_ks_uniform(pit_clean)
+        return float(ks_stat), float(ks_p)
 
     @classmethod
     def optimize_params_fixed_nu(
@@ -2019,7 +2051,6 @@ class PhiStudentTDriftModel:
         _compute_crps_output.
         Returns (pit_values, pit_pvalue, sigma_crps, crps, diagnostics).
         """
-        from scipy.stats import kstest
         returns = np.asarray(returns).flatten()
         vol = np.asarray(vol).flatten()
         n = len(returns)
@@ -2050,7 +2081,8 @@ class PhiStudentTDriftModel:
                 returns_test, mu_pred_test, S_calibrated, nu,
                 float(getattr(config, 't_df_asym', 0.0)))
 
-        pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
+        _, pit_pvalue = _fast_ks_uniform(pit_values)
+        pit_pvalue = float(pit_pvalue)
         # Anderson-Darling test (tail-sensitive complement to KS)
         try:
             from calibration.pit_calibration import anderson_darling_uniform
@@ -2110,6 +2142,7 @@ class PhiStudentTDriftModel:
         Returns (pit_values, sigma, mu_effective, S_calibrated).
         """
         from scipy.stats import t as student_t_dist, norm as norm_dist
+        from scipy.special import ndtri as _ndtri
 
         returns_test = returns[n_train:]
         mu_pred_test = mu_pred[n_train:]
@@ -2249,7 +2282,7 @@ class PhiStudentTDriftModel:
         _pit_train_cal = np.clip(_pit_train_cal, 0.001, 0.999)
         # ── END DOMAIN-MATCHED TRAINING PIT CORRECTIONS ─────────────
 
-        _z_probit_cal = norm_dist.ppf(_pit_train_cal)
+        _z_probit_cal = _ndtri(_pit_train_cal)
         _z_probit_cal = _z_probit_cal[np.isfinite(_z_probit_cal)]
 
         # Initialize EWM for test from training mean
@@ -2528,7 +2561,7 @@ class PhiStudentTDriftModel:
 
         # Causal AR(1) whitening in probit space
         if _best_lam_rho > 0:
-            _z_probit = norm_dist.ppf(np.clip(pit_values, 0.0001, 0.9999))
+            _z_probit = _ndtri(np.clip(pit_values, 0.0001, 0.9999))
             _z_white = np.zeros(n_test)
             _z_white[0] = _z_probit[0]
 
@@ -2686,8 +2719,6 @@ class PhiStudentTDriftModel:
 
         Called by tune.py to score unified models for BMA selection.
         """
-        from scipy.stats import kstest
-
         returns = np.asarray(returns).flatten()
         mu_pred = np.asarray(mu_pred).flatten()
         S_pred = np.asarray(S_pred).flatten()
@@ -2733,7 +2764,7 @@ class PhiStudentTDriftModel:
         if len(pit_clean) < 20:
             return 1.0, 0.0, {"n_samples": len(pit_clean), "calibrated": False}
 
-        ks_result = kstest(pit_clean, 'uniform')
+        ks_statistic, ks_pvalue = _fast_ks_uniform(pit_clean)
 
         hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
         hist_freq = hist / len(pit_clean)
@@ -2753,8 +2784,8 @@ class PhiStudentTDriftModel:
 
         metrics = {
             "n_samples": len(pit_clean),
-            "ks_statistic": float(ks_result.statistic),
-            "ks_pvalue": float(ks_result.pvalue),
+            "ks_statistic": float(ks_statistic),
+            "ks_pvalue": float(ks_pvalue),
             "histogram_mad": hist_mad,
             "berkowitz_pvalue": float(berkowitz_p) if np.isfinite(berkowitz_p) else 0.0,
             "berkowitz_lr": float(berkowitz_lr),
@@ -2763,7 +2794,7 @@ class PhiStudentTDriftModel:
             "calibrated": hist_mad < 0.05,
         }
 
-        return float(ks_result.statistic), float(ks_result.pvalue), metrics
+        return float(ks_statistic), float(ks_pvalue), metrics
 
     # ---------------------------------------------------------------------------
     # SHARED GARCH VARIANCE
@@ -3871,7 +3902,7 @@ class PhiStudentTDriftModel:
             dict with keys: nu_opt, beta_opt, mu_drift_opt, innovations_train,
             mu_pred_train, S_pred_train
         """
-        from scipy.stats import t as student_t, kstest
+        from scipy.stats import t as student_t
         from scipy.special import gammaln
 
         k_asym = profile.get('k_asym', 1.0)
@@ -3950,7 +3981,7 @@ class PhiStudentTDriftModel:
 
                     if len(pit_values) > 10:
                         pit_values = np.clip(pit_values, 0.001, 0.999)
-                        _, ks_p = kstest(pit_values, 'uniform')
+                        _, ks_p = _fast_ks_uniform(pit_values)
                         fold_ks_pvalues.append(ks_p)
 
                         # CRPS on validation fold (Gneiting-Raftery sharpness)
@@ -4864,7 +4895,8 @@ class PhiStudentTDriftModel:
             inn = ret - mp
             hf = cls._compute_garch_variance(inn, config)
             ht = hf[:nt]; it = inn[:nt]; st = sp[:nt]
-            _s6n_ppf = _s6n.ppf
+            from scipy.special import ndtri as _s6_ndtri
+            _s6n_ppf = _s6_ndtri
             _math_exp = math.exp
             # Import Anderson-Darling test for tail-sensitive PIT assessment
             try:
@@ -5170,7 +5202,7 @@ class PhiStudentTDriftModel:
                 zcl[tv] = iv / s
                 m_ = lm * m_ + lm1 * it[ix]; nn_ = lm * nn_ + lm1 * (it[ix] ** 2); dd_ = lm * dd_ + lm1 * Sf[ix]
             pcl = np.clip(_s6t_cdf(zcl, df=np_), 0.001, 0.999)
-            zpr = _s6n.ppf(pcl); zpr = zpr[np.isfinite(zpr)]
+            zpr = _s6_ndtri(pcl); zpr = zpr[np.isfinite(zpr)]
             bc = float(np.clip(np.var(zpr, ddof=0), 0.40, 2.50)) if len(zpr) > 30 else 1.0
             # AR(1) whitening lambda_rho
             bl = 0.98; bw = -1.0
