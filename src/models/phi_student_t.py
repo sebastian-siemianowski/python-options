@@ -1547,6 +1547,8 @@ class PhiStudentTDriftModel:
         prior_log_q_mean: float = -6.0,
         prior_lambda: float = 1.0,
         asset_symbol: str = None,
+        gamma_vov: float = 0.0,
+        vov_rolling: np.ndarray = None,
     ) -> Tuple[float, float, float, float, Dict]:
         """
         Optimize (q, c, φ) for a FIXED ν via cross-validated MLE.
@@ -1598,12 +1600,20 @@ class PhiStudentTDriftModel:
         # Pre-compute Student-t scale factor
         _nu_scale = ((nu_val - 2) / nu_val) if nu_val > 2 else 1.0
 
+        # Enhanced filter flags for optimizer-filter consistency
+        # (March 2026: fixes parameter bias from train/inference mismatch)
+        _has_vov_opt = gamma_vov > 1e-12 and vov_rolling is not None
+        _use_osa_opt = (nu_val <= 5.0)
+
         # Try Numba-accelerated CV test fold kernel
-        try:
-            from models.numba_wrappers import run_phi_student_t_cv_test_fold as _numba_cv_fold
-            _use_numba_cv = True
-        except (ImportError, Exception):
-            _use_numba_cv = False
+        # Disable when enhanced features active (VoV/osa not in Numba kernel)
+        _use_numba_cv = False
+        if not (_has_vov_opt or _use_osa_opt):
+            try:
+                from models.numba_wrappers import run_phi_student_t_cv_test_fold as _numba_cv_fold
+                _use_numba_cv = True
+            except (ImportError, Exception):
+                pass
 
         def neg_cv_ll(params):
             log_q, log_c, phi = params
@@ -1619,7 +1629,16 @@ class PhiStudentTDriftModel:
                 vol_tr = vol[ts:te_f]
                 if len(ret_tr) < 3:
                     continue
-                mu_f, P_f, _ = cls.filter_phi(ret_tr, vol_tr, q, c, phi_clip, nu_val)
+                # Use enhanced filter for training fold (March 2026)
+                # Ensures parameters optimized against the same filter used in inference
+                _vov_tr = vov_rolling[ts:te_f] if _has_vov_opt else None
+                mu_f, P_f, _, _, _ = cls._filter_phi_core(
+                    ret_tr, vol_tr, q, c, phi_clip, nu_val,
+                    robust_wt=True,
+                    online_scale_adapt=_use_osa_opt,
+                    gamma_vov=gamma_vov if _has_vov_opt else 0.0,
+                    vov_rolling=_vov_tr,
+                )
                 mu_p = float(mu_f[-1])
                 P_p = float(P_f[-1])
                 if _use_numba_cv:
@@ -1635,6 +1654,8 @@ class PhiStudentTDriftModel:
                         mu_p = phi_clip * mu_p
                         P_p = phi_clip_sq * P_p + q
                         R_t = c * _vol_sq[t]
+                        if _has_vov_opt:
+                            R_t *= (1.0 + gamma_vov * vov_rolling[t])
                         S = P_p + R_t
                         if S < 1e-12:
                             S = 1e-12
@@ -3079,7 +3100,7 @@ class PhiStudentTDriftModel:
                     if _ratio >= 1.0:
                         _dz_lo, _dz_rng = 0.25, 0.25
                     else:
-                        _dz_lo, _dz_rng = 0.10, 0.15
+                        _dz_lo, _dz_rng = 0.05, 0.10  # Tighter for under-dispersion
                     if _dev < _dz_lo:
                         _c_adj = 1.0
                     elif _dev >= _dz_lo + _dz_rng:
