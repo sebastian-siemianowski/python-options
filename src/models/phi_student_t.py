@@ -57,20 +57,32 @@ try:
         # Unified filter
         run_unified_phi_student_t_filter,
         is_unified_filter_available,
+        # PIT + GARCH accelerators
+        run_pit_ks_unified,
+        run_garch_variance,
+        # Filter accelerators
+        run_phi_student_t_augmented_filter,
     )
     _USE_NUMBA = is_numba_available()
     _MS_Q_NUMBA_AVAILABLE = _USE_NUMBA
     _UNIFIED_NUMBA_AVAILABLE = is_unified_filter_available() if is_numba_available() else False
+    _NUMBA_PIT_KS = _USE_NUMBA
+    _NUMBA_GARCH = _USE_NUMBA
 except ImportError:
     _USE_NUMBA = False
     _MS_Q_NUMBA_AVAILABLE = False
     _UNIFIED_NUMBA_AVAILABLE = False
+    _NUMBA_PIT_KS = False
+    _NUMBA_GARCH = False
     run_phi_student_t_filter = None
     run_phi_student_t_filter_batch = None
     run_ms_q_student_t_filter = None
     run_student_t_filter_with_lfo_cv = None
     run_student_t_filter_with_lfo_cv_batch = None
     run_unified_phi_student_t_filter = None
+    run_pit_ks_unified = None
+    run_garch_variance = None
+    run_phi_student_t_augmented_filter = None
 
 
 # ---------------------------------------------------------------------------
@@ -2646,24 +2658,39 @@ class PhiStudentTDriftModel:
         S_pred = np.asarray(S_pred).flatten()
 
         n = len(returns)
-        pit_values = np.empty(n)
 
         nu_base = config.nu_base
         alpha = config.alpha_asym
         k_asym = config.k_asym
         variance_inflation = getattr(config, 'variance_inflation', 1.0)
 
-        for t in range(n):
-            innovation = returns[t] - mu_pred[t]
-            S_calibrated = S_pred[t] * variance_inflation
-            scale = np.sqrt(max(S_calibrated, 1e-12))
-            nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
-            if nu_eff > 2:
-                t_scale = np.sqrt(S_calibrated * (nu_eff - 2) / nu_eff)
-            else:
-                t_scale = scale
-            t_scale = max(t_scale, 1e-10)
-            pit_values[t] = student_t.cdf(innovation, df=nu_eff, loc=0, scale=t_scale)
+        # Numba-accelerated path: eliminates per-element scipy CDF overhead
+        if _NUMBA_PIT_KS:
+            try:
+                pit_values = run_pit_ks_unified(
+                    returns, mu_pred, S_pred,
+                    float(nu_base), float(alpha), float(k_asym),
+                    float(variance_inflation),
+                )
+            except Exception:
+                pit_values = None
+        else:
+            pit_values = None
+
+        if pit_values is None:
+            # Python fallback: per-element loop with scipy CDF
+            pit_values = np.empty(n)
+            for t in range(n):
+                innovation = returns[t] - mu_pred[t]
+                S_calibrated = S_pred[t] * variance_inflation
+                scale = np.sqrt(max(S_calibrated, 1e-12))
+                nu_eff = cls.compute_effective_nu(nu_base, innovation, scale, alpha, k_asym)
+                if nu_eff > 2:
+                    t_scale = np.sqrt(S_calibrated * (nu_eff - 2) / nu_eff)
+                else:
+                    t_scale = scale
+                t_scale = max(t_scale, 1e-10)
+                pit_values[t] = student_t.cdf(innovation, df=nu_eff, loc=0, scale=t_scale)
 
         valid = np.isfinite(pit_values)
         pit_clean = np.clip(pit_values[valid], 0, 1)
@@ -2747,28 +2774,41 @@ class PhiStudentTDriftModel:
         rs = float(getattr(config, 'regime_switch_prob', 0.0))
         sm = np.sqrt(float(getattr(config, 'q_stress_ratio', 10.0)))
 
-        h = np.zeros(n)
-        h[0] = gu
-        ps = 0.1  # Initial stress probability
-        _msqrt = math.sqrt
+        # Numba-accelerated GARCH core loop
+        if _NUMBA_GARCH:
+            try:
+                h = run_garch_variance(
+                    innovations, go, ga, gb, gl, gu, rl, km, tv, se, rs, sm,
+                )
+            except Exception:
+                h = None
+        else:
+            h = None
 
-        for t in range(1, n):
-            ht = go + ga * sq[t-1] + gl * sq[t-1] * neg[t-1] + gb * h[t-1]
-            if rl > 0.01 and h[t-1] > 1e-12:
-                z = innovations[t-1] / _msqrt(h[t-1])
-                if z < 0:
-                    ht += rl * z * z * h[t-1]
-            if se > 0.005 and h[t-1] > 1e-12:
-                z = abs(innovations[t-1]) / _msqrt(h[t-1])
-                ht += se * max(0.0, z - 1.5) ** 2 * h[t-1]
-            if rs > 0.005 and h[t-1] > 1e-12:
-                z = abs(innovations[t-1]) / _msqrt(h[t-1])
-                ps = (1.0 - rs) * ps + rs * (1.0 if z > 2.0 else 0.0)
-                ps = min(max(ps, 0.0), 1.0)
-                ht *= (1.0 + ps * (sm - 1.0))
-            if km > 0.001:
-                ht = (1.0 - km) * ht + km * tv
-            h[t] = max(ht, 1e-12)
+        if h is None:
+            # Python fallback
+            h = np.zeros(n)
+            h[0] = gu
+            ps = 0.1  # Initial stress probability
+            _msqrt = math.sqrt
+
+            for t in range(1, n):
+                ht = go + ga * sq[t-1] + gl * sq[t-1] * neg[t-1] + gb * h[t-1]
+                if rl > 0.01 and h[t-1] > 1e-12:
+                    z = innovations[t-1] / _msqrt(h[t-1])
+                    if z < 0:
+                        ht += rl * z * z * h[t-1]
+                if se > 0.005 and h[t-1] > 1e-12:
+                    z = abs(innovations[t-1]) / _msqrt(h[t-1])
+                    ht += se * max(0.0, z - 1.5) ** 2 * h[t-1]
+                if rs > 0.005 and h[t-1] > 1e-12:
+                    z = abs(innovations[t-1]) / _msqrt(h[t-1])
+                    ps = (1.0 - rs) * ps + rs * (1.0 if z > 2.0 else 0.0)
+                    ps = min(max(ps, 0.0), 1.0)
+                    ht *= (1.0 + ps * (sm - 1.0))
+                if km > 0.001:
+                    ht = (1.0 - km) * ht + km * tv
+                h[t] = max(ht, 1e-12)
 
         # ── Rough volatility blending (Gatheral-Jaisson-Rosenbaum 2018) ──
         # Fractional differencing kernel (1-L)^d on ε²_t gives power-law
@@ -2831,7 +2871,9 @@ class PhiStudentTDriftModel:
         robust_wt: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
         """
-        Consolidated phi-Student-t Kalman filter (pure Python path).
+        Consolidated phi-Student-t Kalman filter.
+
+        Uses Numba-compiled kernel when available, falls back to Python.
 
         Returns (mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood).
         All four filter variants dispatch to this single loop:
@@ -2844,6 +2886,19 @@ class PhiStudentTDriftModel:
             exogenous_input: optional u_t injected into state prediction
             robust_wt: if True use Student-t w_t = (nu+1)/(nu+z^2) weighting
         """
+        # Numba-accelerated path
+        if _USE_NUMBA and run_phi_student_t_augmented_filter is not None:
+            try:
+                return run_phi_student_t_augmented_filter(
+                    returns, vol, q, c,
+                    float(max(-0.999, min(0.999, phi))),
+                    float(cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)),
+                    exogenous_input=exogenous_input,
+                    robust_wt=robust_wt,
+                )
+            except Exception:
+                pass  # Fall through to Python
+
         n = len(returns)
         if not (returns.flags['C_CONTIGUOUS'] and returns.dtype == np.float64 and returns.ndim == 1):
             returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)

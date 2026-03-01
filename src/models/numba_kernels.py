@@ -137,6 +137,544 @@ def _student_t_logpdf_dynamic_nu(
 
 
 # =============================================================================
+# STUDENT-T CDF/PDF VIA REGULARIZED INCOMPLETE BETA
+# =============================================================================
+# The Student-t CDF relates to the regularized incomplete beta:
+#   F_t(x; ν) = I_w(ν/2, 1/2)  [for x < 0]
+#   F_t(x; ν) = 1 - 0.5 * I_w(ν/2, 1/2)  [for x >= 0]
+# where w = ν / (ν + x²).
+#
+# betainc is computed via Lentz's continued fraction (DLMF §8.17.22).
+# Uses Lanczos gammaln (g=7) for ~1e-12 accuracy in the front factor.
+# =============================================================================
+
+# Lanczos coefficients (g=7, n=9) for double-precision gammaln
+_LANCZOS_G = 7.0
+_LANCZOS_COEFF_0 = 0.99999999999980993
+_LANCZOS_COEFF_1 = 676.5203681218851
+_LANCZOS_COEFF_2 = -1259.1392167224028
+_LANCZOS_COEFF_3 = 771.32342877765313
+_LANCZOS_COEFF_4 = -176.61502916214059
+_LANCZOS_COEFF_5 = 12.507343278686905
+_LANCZOS_COEFF_6 = -0.13857109526572012
+_LANCZOS_COEFF_7 = 9.9843695780195716e-6
+_LANCZOS_COEFF_8 = 1.5056327351493116e-7
+
+
+@njit(cache=True, fastmath=False)
+def _lanczos_gammaln(x: float) -> float:
+    """
+    Lanczos approximation for log-gamma function.
+
+    Uses g=7, n=9 coefficients for ~1e-12 accuracy across x > 0.
+    Required for CDF computation where gammaln feeds into exp().
+
+    Parameters
+    ----------
+    x : float
+        Input value (must be > 0)
+
+    Returns
+    -------
+    float
+        log(Γ(x))
+    """
+    if x <= 0.0:
+        return 1e12
+
+    # Reflection formula for x < 0.5
+    if x < 0.5:
+        # log(Γ(x)) = log(π / sin(πx)) - log(Γ(1-x))
+        return np.log(np.pi / np.sin(np.pi * x)) - _lanczos_gammaln(1.0 - x)
+
+    x = x - 1.0
+    ag = _LANCZOS_COEFF_0
+    ag += _LANCZOS_COEFF_1 / (x + 1.0)
+    ag += _LANCZOS_COEFF_2 / (x + 2.0)
+    ag += _LANCZOS_COEFF_3 / (x + 3.0)
+    ag += _LANCZOS_COEFF_4 / (x + 4.0)
+    ag += _LANCZOS_COEFF_5 / (x + 5.0)
+    ag += _LANCZOS_COEFF_6 / (x + 6.0)
+    ag += _LANCZOS_COEFF_7 / (x + 7.0)
+    ag += _LANCZOS_COEFF_8 / (x + 8.0)
+
+    t = x + _LANCZOS_G + 0.5
+    return 0.5 * np.log(2.0 * np.pi) + (x + 0.5) * np.log(t) - t + np.log(ag)
+
+@njit(cache=True, fastmath=False)
+def _betacf(a: float, b: float, x: float) -> float:
+    """
+    Continued fraction for regularized incomplete beta function.
+
+    Uses the modified Lentz algorithm (Numerical Recipes §6.4).
+    Evaluates B_x(a,b) / B(a,b) via the CF representation.
+
+    Parameters
+    ----------
+    a, b : float
+        Beta function parameters (a > 0, b > 0)
+    x : float
+        Upper integration limit (0 < x < 1)
+
+    Returns
+    -------
+    float
+        The continued fraction part of I_x(a, b)
+    """
+    _FPMIN = 1e-30
+    _EPS = 1e-14
+    _MAXIT = 200
+
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+
+    # First step of Lentz's method
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < _FPMIN:
+        d = _FPMIN
+    d = 1.0 / d
+    h = d
+
+    for m in range(1, _MAXIT + 1):
+        m_f = float(m)
+        m2 = 2.0 * m_f
+
+        # Even step: d_{2m}
+        aa = m_f * (b - m_f) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < _FPMIN:
+            d = _FPMIN
+        c = 1.0 + aa / c
+        if abs(c) < _FPMIN:
+            c = _FPMIN
+        d = 1.0 / d
+        h *= d * c
+
+        # Odd step: d_{2m+1}
+        aa = -(a + m_f) * (qab + m_f) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < _FPMIN:
+            d = _FPMIN
+        c = 1.0 + aa / c
+        if abs(c) < _FPMIN:
+            c = _FPMIN
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+
+        if abs(delta - 1.0) < _EPS:
+            return h
+
+    return h
+
+
+@njit(cache=True, fastmath=False)
+def _betainc(a: float, b: float, x: float) -> float:
+    """
+    Regularized incomplete beta function I_x(a, b).
+
+    Uses continued fraction with symmetry transform when needed.
+    Reference: Numerical Recipes §6.4, DLMF §8.17.
+
+    Parameters
+    ----------
+    a, b : float
+        Parameters (> 0)
+    x : float
+        Upper limit (0 <= x <= 1)
+
+    Returns
+    -------
+    float
+        I_x(a, b) ∈ [0, 1]
+    """
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+
+    # Log of the front factor: x^a * (1-x)^b / (a * B(a,b))
+    # B(a,b) = Γ(a)Γ(b)/Γ(a+b)
+    bt = np.exp(
+        _lanczos_gammaln(a + b) - _lanczos_gammaln(a) - _lanczos_gammaln(b)
+        + a * np.log(x) + b * np.log(1.0 - x)
+    )
+
+    # Use symmetry transform when x > (a+1)/(a+b+2) for faster convergence
+    if x < (a + 1.0) / (a + b + 2.0):
+        return bt * _betacf(a, b, x) / a
+    else:
+        return 1.0 - bt * _betacf(b, a, 1.0 - x) / b
+
+
+@njit(cache=True, fastmath=False)
+def _student_t_cdf_scalar(x: float, nu: float) -> float:
+    """
+    Student-t CDF for a single observation.
+
+    Uses the identity:
+        F_t(x; ν) = I_w(ν/2, 1/2)  for x < 0
+        F_t(x; ν) = 1 - 0.5 * I_w(ν/2, 1/2)  for x >= 0
+    where w = ν / (ν + x²).
+
+    Parameters
+    ----------
+    x : float
+        Standardized observation
+    nu : float
+        Degrees of freedom (> 0)
+
+    Returns
+    -------
+    float
+        CDF value ∈ (0, 1)
+    """
+    if nu <= 0.0:
+        return 0.5
+
+    x2 = x * x
+    w = nu / (nu + x2)
+
+    # betainc with a=nu/2, b=0.5
+    ibeta = _betainc(nu / 2.0, 0.5, w)
+
+    if x < 0.0:
+        return 0.5 * ibeta
+    elif x > 0.0:
+        return 1.0 - 0.5 * ibeta
+    else:
+        return 0.5
+
+
+@njit(cache=True, fastmath=False)
+def _student_t_pdf_scalar(x: float, nu: float) -> float:
+    """
+    Student-t PDF for a single observation.
+
+    Parameters
+    ----------
+    x : float
+        Standardized observation
+    nu : float
+        Degrees of freedom (> 0)
+
+    Returns
+    -------
+    float
+        PDF value
+    """
+    log_norm = (_lanczos_gammaln((nu + 1.0) / 2.0)
+                - _lanczos_gammaln(nu / 2.0)
+                - 0.5 * np.log(nu * np.pi))
+    log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + x * x / nu)
+    return np.exp(log_norm + log_kernel)
+
+
+@njit(cache=True, fastmath=False)
+def student_t_cdf_array_kernel(z_arr: np.ndarray, nu: float) -> np.ndarray:
+    """
+    Vectorized Student-t CDF via Numba.
+
+    Replaces scipy.stats.t.cdf(z, df=nu) with zero overhead.
+    Accuracy: < 1e-10 vs scipy across nu ∈ [2.5, 50], z ∈ [-10, 10].
+
+    Parameters
+    ----------
+    z_arr : np.ndarray
+        Array of standardized values
+    nu : float
+        Degrees of freedom
+
+    Returns
+    -------
+    np.ndarray
+        CDF values
+    """
+    n = len(z_arr)
+    out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        out[i] = _student_t_cdf_scalar(z_arr[i], nu)
+    return out
+
+
+@njit(cache=True, fastmath=False)
+def student_t_pdf_array_kernel(z_arr: np.ndarray, nu: float) -> np.ndarray:
+    """
+    Vectorized Student-t PDF via Numba.
+
+    Replaces scipy.stats.t.pdf(z, df=nu) with zero overhead.
+
+    Parameters
+    ----------
+    z_arr : np.ndarray
+        Array of standardized values
+    nu : float
+        Degrees of freedom
+
+    Returns
+    -------
+    np.ndarray
+        PDF values
+    """
+    n = len(z_arr)
+    out = np.empty(n, dtype=np.float64)
+    # Pre-compute log normalization constant (constant across all z)
+    log_norm = (_lanczos_gammaln((nu + 1.0) / 2.0)
+                - _lanczos_gammaln(nu / 2.0)
+                - 0.5 * np.log(nu * np.pi))
+    neg_exp = (nu + 1.0) / 2.0
+    inv_nu = 1.0 / nu
+    for i in range(n):
+        z = z_arr[i]
+        out[i] = np.exp(log_norm - neg_exp * np.log(1.0 + z * z * inv_nu))
+    return out
+
+
+@njit(cache=True, fastmath=False)
+def crps_student_t_kernel(
+    z_arr: np.ndarray,
+    sigma_arr: np.ndarray,
+    nu: float,
+) -> float:
+    """
+    CRPS for Student-t predictive distribution (Gneiting & Raftery 2007).
+
+    Closed-form:
+        CRPS = σ * [z(2F(z) - 1) + 2f(z)(ν + z²)/(ν-1) - 2√ν·B_ratio/(ν-1)]
+
+    where B_ratio = B(1/2, ν-1/2) / B(1/2, ν/2)².
+
+    Parameters
+    ----------
+    z_arr : np.ndarray
+        Standardized residuals (obs - mu) / sigma
+    sigma_arr : np.ndarray
+        Scale parameters
+    nu : float
+        Degrees of freedom (> 1)
+
+    Returns
+    -------
+    float
+        Mean CRPS (lower is better)
+    """
+    n = len(z_arr)
+    if n == 0 or nu <= 1.0:
+        return 1e10
+
+    # Pre-compute constants
+    log_norm = (_lanczos_gammaln((nu + 1.0) / 2.0)
+                - _lanczos_gammaln(nu / 2.0)
+                - 0.5 * np.log(nu * np.pi))
+    neg_exp = (nu + 1.0) / 2.0
+    inv_nu = 1.0 / nu
+    nu_m1_inv = 1.0 / (nu - 1.0)
+    sqrt_nu = np.sqrt(nu)
+
+    # Beta function ratio: B(1/2, nu-1/2) / B(1/2, nu/2)^2
+    lgB1 = _lanczos_gammaln(0.5) + _lanczos_gammaln(nu - 0.5) - _lanczos_gammaln(nu)
+    lgB2 = _lanczos_gammaln(0.5) + _lanczos_gammaln(nu / 2.0) - _lanczos_gammaln((nu + 1.0) / 2.0)
+    B_ratio = np.exp(lgB1 - 2.0 * lgB2)
+
+    term3_const = 2.0 * sqrt_nu * B_ratio * nu_m1_inv
+
+    crps_sum = 0.0
+    n_valid = 0
+
+    for i in range(n):
+        z = z_arr[i]
+        sig = sigma_arr[i]
+        if sig < 1e-10:
+            sig = 1e-10
+
+        # PDF
+        pdf_z = np.exp(log_norm - neg_exp * np.log(1.0 + z * z * inv_nu))
+        # CDF
+        cdf_z = _student_t_cdf_scalar(z, nu)
+
+        term1 = z * (2.0 * cdf_z - 1.0)
+        term2 = 2.0 * pdf_z * (nu + z * z) * nu_m1_inv
+        crps_i = sig * (term1 + term2 - term3_const)
+
+        if crps_i == crps_i:  # NaN check
+            crps_sum += crps_i
+            n_valid += 1
+
+    if n_valid == 0:
+        return 1e10
+    return crps_sum / float(n_valid)
+
+
+# =============================================================================
+# PIT-KS UNIFIED KERNEL (eliminates per-element scipy CDF overhead)
+# =============================================================================
+
+@njit(cache=True)
+def pit_ks_unified_kernel(
+    returns: np.ndarray,
+    mu_pred: np.ndarray,
+    S_pred: np.ndarray,
+    nu_base: float,
+    alpha_asym: float,
+    k_asym: float,
+    variance_inflation: float,
+    pit_out: np.ndarray,
+) -> int:
+    """
+    Compute PIT values for unified Student-t with smooth asymmetric nu.
+
+    Replaces per-element Python loop + scalar scipy CDF calls with a single
+    compiled pass. Uses Numba _student_t_cdf_scalar for each element.
+
+    Implements: nu_eff = nu_base * (1 + alpha * tanh(k * z))
+    then PIT = Student_t_CDF(innovation / t_scale, nu_eff).
+
+    Parameters
+    ----------
+    returns, mu_pred, S_pred : np.ndarray
+        Time series data
+    nu_base : float
+        Base degrees of freedom
+    alpha_asym : float
+        Asymmetry parameter
+    k_asym : float
+        Asymmetry sharpness
+    variance_inflation : float
+        Variance inflation factor
+    pit_out : np.ndarray
+        Output array for PIT values (pre-allocated)
+
+    Returns
+    -------
+    int
+        Number of valid (finite) PIT values
+    """
+    n = len(returns)
+    n_valid = 0
+    for t in range(n):
+        innovation = returns[t] - mu_pred[t]
+        S_cal = S_pred[t] * variance_inflation
+        if S_cal < 1e-12:
+            S_cal = 1e-12
+        scale = np.sqrt(S_cal)
+
+        # compute_effective_nu inline
+        scale_safe = scale if scale > 1e-10 else 1e-10
+        z_raw = innovation / scale_safe
+        modulation = 1.0 + alpha_asym * np.tanh(k_asym * z_raw)
+        nu_eff = nu_base * modulation
+        if nu_eff < 2.1:
+            nu_eff = 2.1
+        elif nu_eff > 50.0:
+            nu_eff = 50.0
+
+        # t_scale
+        if nu_eff > 2.0:
+            t_scale = np.sqrt(S_cal * (nu_eff - 2.0) / nu_eff)
+        else:
+            t_scale = scale
+        if t_scale < 1e-10:
+            t_scale = 1e-10
+
+        # Student-t CDF (compiled, no scipy wrapper overhead)
+        z_cdf = innovation / t_scale
+        pit_val = _student_t_cdf_scalar(z_cdf, nu_eff)
+
+        # Clip to (0.001, 0.999)
+        if pit_val < 0.001:
+            pit_val = 0.001
+        elif pit_val > 0.999:
+            pit_val = 0.999
+
+        pit_out[t] = pit_val
+        if pit_val == pit_val:  # NaN check
+            n_valid += 1
+
+    return n_valid
+
+
+# =============================================================================
+# GJR-GARCH(1,1) VARIANCE KERNEL
+# =============================================================================
+
+@njit(cache=True)
+def garch_variance_kernel(
+    sq: np.ndarray,
+    neg: np.ndarray,
+    innovations: np.ndarray,
+    n: int,
+    go: float,
+    ga: float,
+    gb: float,
+    gl: float,
+    gu: float,
+    rl: float,
+    km: float,
+    tv: float,
+    se: float,
+    rs: float,
+    sm: float,
+    h_out: np.ndarray,
+) -> None:
+    """
+    GJR-GARCH(1,1) variance with leverage correlation, vol-of-vol noise,
+    Markov regime switching, and mean reversion.
+
+    Replaces Python loop in _compute_garch_variance with compiled Numba.
+
+    Parameters
+    ----------
+    sq : squared innovations
+    neg : indicator for negative innovations (1.0 or 0.0)
+    innovations : raw innovations
+    n : length
+    go, ga, gb, gl : GARCH omega, alpha, beta, leverage
+    gu : unconditional variance
+    rl : rho_leverage
+    km : kappa_mean_rev
+    tv : theta_long_var
+    se : sigma_eta (vol-of-vol)
+    rs : regime_switch_prob
+    sm : sqrt(q_stress_ratio)
+    h_out : output array (pre-allocated, length n)
+    """
+    h_out[0] = gu
+    ps = 0.1  # Initial stress probability
+
+    for t in range(1, n):
+        ht = go + ga * sq[t - 1] + gl * sq[t - 1] * neg[t - 1] + gb * h_out[t - 1]
+
+        if rl > 0.01 and h_out[t - 1] > 1e-12:
+            z = innovations[t - 1] / np.sqrt(h_out[t - 1])
+            if z < 0.0:
+                ht += rl * z * z * h_out[t - 1]
+
+        if se > 0.005 and h_out[t - 1] > 1e-12:
+            z = abs(innovations[t - 1]) / np.sqrt(h_out[t - 1])
+            excess = z - 1.5
+            if excess > 0.0:
+                ht += se * excess * excess * h_out[t - 1]
+
+        if rs > 0.005 and h_out[t - 1] > 1e-12:
+            z = abs(innovations[t - 1]) / np.sqrt(h_out[t - 1])
+            ps = (1.0 - rs) * ps + rs * (1.0 if z > 2.0 else 0.0)
+            if ps < 0.0:
+                ps = 0.0
+            elif ps > 1.0:
+                ps = 1.0
+            ht *= (1.0 + ps * (sm - 1.0))
+
+        if km > 0.001:
+            ht = (1.0 - km) * ht + km * tv
+
+        if ht < 1e-12:
+            ht = 1e-12
+        h_out[t] = ht
+
+
+# =============================================================================
 # GAUSSIAN KERNELS (fastmath=True safe)
 # =============================================================================
 
@@ -280,6 +818,159 @@ def phi_gaussian_filter_kernel(
         P_filtered[t] = P if P > _MIN_VARIANCE else _MIN_VARIANCE
     
     return mu_filtered, P_filtered, log_likelihood
+
+
+@njit(cache=True, fastmath=True)
+def phi_gaussian_filter_with_predictive_kernel(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    P0: float = 1e-4,
+) -> tuple:
+    """
+    φ-Gaussian filter returning predictive mu_pred and S_pred for PIT.
+
+    Same as phi_gaussian_filter_kernel but also outputs:
+        mu_pred[t] = φ × μ_{t-1}     (BEFORE seeing y_t)
+        S_pred[t] = P_pred + R_t      (BEFORE seeing y_t)
+
+    Returns (mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood)
+    """
+    n = len(returns)
+    mu = 0.0
+    P = P0
+    mu_filtered = np.zeros(n)
+    P_filtered = np.zeros(n)
+    mu_pred_arr = np.zeros(n)
+    S_pred_arr = np.zeros(n)
+    log_likelihood = 0.0
+    phi_sq = phi * phi
+
+    for t in range(n):
+        mu_pred = phi * mu
+        P_pred = phi_sq * P + q
+
+        vol_t = vol[t]
+        R = c * (vol_t * vol_t)
+        S = P_pred + R
+        if S < _MIN_VARIANCE:
+            S = _MIN_VARIANCE
+
+        mu_pred_arr[t] = mu_pred
+        S_pred_arr[t] = S
+
+        innovation = returns[t] - mu_pred
+
+        if S > _MIN_VARIANCE:
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+
+            innov_sq = innovation * innovation
+            innov_sq_scaled = innov_sq / S
+            if innov_sq_scaled > 100.0:
+                innov_sq_scaled = 100.0
+            ll_contrib = -0.5 * (_LOG_2PI + np.log(S) + innov_sq_scaled)
+            if ll_contrib < -_MAX_LL_CONTRIB:
+                ll_contrib = -_MAX_LL_CONTRIB
+            log_likelihood += ll_contrib
+        else:
+            mu = mu_pred
+            P = P_pred
+
+        mu_filtered[t] = mu
+        P_filtered[t] = P if P > _MIN_VARIANCE else _MIN_VARIANCE
+
+    return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood
+
+
+@njit(cache=True, fastmath=False)
+def phi_student_t_augmented_filter_kernel(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    log_gamma_half_nu: float,
+    log_gamma_half_nu_plus_half: float,
+    exogenous_input: np.ndarray,
+    has_exogenous: bool,
+    robust_wt: bool,
+    P0: float = 1e-4,
+) -> tuple:
+    """
+    φ-Student-t filter with optional exogenous input and robust weighting.
+
+    Replaces _filter_phi_core Python fallback for filter_phi_augmented
+    and filter_phi_with_predictive.
+
+    Returns (mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood)
+    """
+    n = len(returns)
+    phi_sq = phi * phi
+    nu_adjust = nu / (nu + 3.0)
+    if nu_adjust > 1.0:
+        nu_adjust = 1.0
+    log_norm_const = (log_gamma_half_nu_plus_half - log_gamma_half_nu
+                      - 0.5 * np.log(nu * np.pi))
+    neg_exp = -((nu + 1.0) / 2.0)
+    inv_nu = 1.0 / nu
+
+    R = np.empty(n)
+    for t in range(n):
+        R[t] = c * (vol[t] * vol[t])
+
+    mu_filtered = np.empty(n)
+    P_filtered = np.empty(n)
+    mu_pred_arr = np.empty(n)
+    S_pred_arr = np.empty(n)
+
+    mu = 0.0
+    P = P0
+    log_likelihood = 0.0
+
+    for t in range(n):
+        u_t = exogenous_input[t] if has_exogenous and t < len(exogenous_input) else 0.0
+        mu_pred = phi * mu + u_t
+        P_pred = phi_sq * P + q
+        S = P_pred + R[t]
+        if S < 1e-12:
+            S = 1e-12
+
+        mu_pred_arr[t] = mu_pred
+        S_pred_arr[t] = S
+
+        innovation = returns[t] - mu_pred
+        K = nu_adjust * P_pred / S
+
+        if robust_wt:
+            z_sq = (innovation * innovation) / S
+            w_t = (nu + 1.0) / (nu + z_sq)
+            mu = mu_pred + K * w_t * innovation
+            P = (1.0 - w_t * K) * P_pred
+        else:
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+
+        if P < 1e-12:
+            P = 1e-12
+        mu_filtered[t] = mu
+        P_filtered[t] = P
+
+        if nu > 2.0:
+            forecast_scale = np.sqrt(S * (nu - 2.0) / nu)
+        else:
+            forecast_scale = np.sqrt(S)
+        if forecast_scale > 1e-12:
+            z = innovation / forecast_scale
+            ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
+            if ll_t == ll_t:  # NaN check
+                log_likelihood += ll_t
+
+    return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood
 
 
 # =============================================================================

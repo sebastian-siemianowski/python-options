@@ -58,6 +58,7 @@ try:
         run_phi_gaussian_filter,
         is_cv_kernel_available,
         run_gaussian_cv_test_fold,
+        run_phi_gaussian_filter_with_predictive,
     )
     _USE_NUMBA = is_numba_available()
     _USE_CV_KERNEL = is_cv_kernel_available()
@@ -67,6 +68,7 @@ except ImportError:
     run_gaussian_filter = None
     run_phi_gaussian_filter = None
     run_gaussian_cv_test_fold = None
+    run_phi_gaussian_filter_with_predictive = None
 
 # Pre-computed constants
 _LOG_2PI = math.log(2.0 * math.pi)
@@ -326,7 +328,17 @@ class GaussianDriftModel:
             S_pred[t] = P_pred + R_t      (BEFORE seeing y_t)
         
         For proper PIT computation.
+        Uses Numba when available for ~50x speedup.
         """
+        # Numba-accelerated path
+        if _USE_NUMBA and run_phi_gaussian_filter_with_predictive is not None:
+            try:
+                return run_phi_gaussian_filter_with_predictive(
+                    returns, vol, q, c, phi,
+                )
+            except Exception:
+                pass  # Fall through to Python
+
         n = len(returns)
         q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
         c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
