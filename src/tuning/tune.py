@@ -2873,12 +2873,18 @@ def compute_extended_pit_metrics_student_t(
     nu: float,
     mu_pred_precomputed: np.ndarray = None,
     S_pred_precomputed: np.ndarray = None,
+    scale_already_adapted: bool = False,
 ) -> Dict:
     """PIT + Berkowitz + histogram MAD for Student-t models.
 
     Performance: if mu_pred_precomputed and S_pred_precomputed are provided,
     skips the expensive filter_phi_with_predictive call entirely.
     PIT CDF computation is vectorized (~5x faster than per-element loop).
+
+    Args:
+        scale_already_adapted: if True, S_pred was produced by filter with
+            online_scale_adapt=True. Skips chi² EWM and PIT-variance
+            stretching to avoid double-correction.
     """
     # student_t (as t), kstest already imported at module level
     _st_dist = student_t
@@ -2906,38 +2912,44 @@ def compute_extended_pit_metrics_student_t(
     # Tracks E[z²] and corrects scale when filter variance is systematically
     # off. Same algorithm as unified models but applied to base models.
     # This is the #1 fix for systemic PIT < 0.05 across all assets.
-    _z_raw = (returns_flat[:n] - mu_pred[:n]) / scale_arr
-    _chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
-    _chi2_lam = 0.98
-    try:
-        from models.numba_wrappers import run_chi2_ewm_correction as _numba_chi2_t
-        _scale_adj = _numba_chi2_t(_z_raw, _chi2_tgt, _chi2_lam)
-    except (ImportError, Exception):
-        import math as _m
-        _chi2_1m = 0.02
-        _chi2_wcap = _chi2_tgt * 50.0
-        _ewm_z2 = _chi2_tgt
-        _scale_adj = np.ones(n)
-        for _t in range(n):
-            _ratio = _ewm_z2 / _chi2_tgt
-            _ratio = max(0.3, min(3.0, _ratio))
-            _dev = abs(_ratio - 1.0)
-            if _ratio >= 1.0:
-                _dz_lo, _dz_rng = 0.25, 0.25
-            else:
-                _dz_lo, _dz_rng = 0.10, 0.15
-            if _dev < _dz_lo:
-                _adj = 1.0
-            elif _dev >= _dz_lo + _dz_rng:
-                _adj = _m.sqrt(_ratio)
-            else:
-                _s = (_dev - _dz_lo) / _dz_rng
-                _adj = 1.0 + _s * (_m.sqrt(_ratio) - 1.0)
-            _scale_adj[_t] = _adj
-            _z2 = _z_raw[_t] ** 2
-            _z2w = min(_z2, _chi2_wcap)
-            _ewm_z2 = _chi2_lam * _ewm_z2 + _chi2_1m * _z2w
-    scale_corrected = scale_arr * _scale_adj
+    # SKIP when scale_already_adapted (filter did online_scale_adapt) to
+    # avoid double-correction that ruins calibration (March 2026 fix).
+    if scale_already_adapted:
+        # Filter already did chi² EWM in _filter_phi_core — no post-hoc needed
+        scale_corrected = scale_arr
+    else:
+        _z_raw = (returns_flat[:n] - mu_pred[:n]) / scale_arr
+        _chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
+        _chi2_lam = 0.98
+        try:
+            from models.numba_wrappers import run_chi2_ewm_correction as _numba_chi2_t
+            _scale_adj = _numba_chi2_t(_z_raw, _chi2_tgt, _chi2_lam)
+        except (ImportError, Exception):
+            import math as _m
+            _chi2_1m = 0.02
+            _chi2_wcap = _chi2_tgt * 50.0
+            _ewm_z2 = _chi2_tgt
+            _scale_adj = np.ones(n)
+            for _t in range(n):
+                _ratio = _ewm_z2 / _chi2_tgt
+                _ratio = max(0.3, min(3.0, _ratio))
+                _dev = abs(_ratio - 1.0)
+                if _ratio >= 1.0:
+                    _dz_lo, _dz_rng = 0.25, 0.25
+                else:
+                    _dz_lo, _dz_rng = 0.10, 0.15
+                if _dev < _dz_lo:
+                    _adj = 1.0
+                elif _dev >= _dz_lo + _dz_rng:
+                    _adj = _m.sqrt(_ratio)
+                else:
+                    _s = (_dev - _dz_lo) / _dz_rng
+                    _adj = 1.0 + _s * (_m.sqrt(_ratio) - 1.0)
+                _scale_adj[_t] = _adj
+                _z2 = _z_raw[_t] ** 2
+                _z2w = min(_z2, _chi2_wcap)
+                _ewm_z2 = _chi2_lam * _ewm_z2 + _chi2_1m * _z2w
+        scale_corrected = scale_arr * _scale_adj
 
     # Pre-standardize then use Numba CDF (avoids scipy per-element scale dispatch)
     _z_std = (returns_flat[:n] - mu_pred[:n]) / scale_corrected
@@ -2949,38 +2961,40 @@ def compute_extended_pit_metrics_student_t(
 
     # ── PIT-Variance stretching (Var[PIT] → 1/12) ────────────────────
     # Fixes shape miscalibration not caught by chi² (scale) correction.
-    try:
-        from models.numba_wrappers import run_pit_var_stretching as _numba_pvs_t
-        pit_values = _numba_pvs_t(pit_values)
-    except (ImportError, Exception):
-        import math as _m
-        _pv_tgt = 1.0 / 12.0
-        _pv_lam = 0.97
-        _pv_1m = 0.03
-        _pv_dz_lo = 0.30
-        _pv_dz_hi = 0.55
-        _pv_dz_rng = _pv_dz_hi - _pv_dz_lo
-        _ewm_pm = 0.5
-        _ewm_psq = 1.0 / 3.0
-        for _t in range(n):
-            _ov = _ewm_psq - _ewm_pm * _ewm_pm
-            if _ov < 0.005:
-                _ov = 0.005
-            _vr = _ov / _pv_tgt
-            _vd = abs(_vr - 1.0)
-            _rp = float(pit_values[_t])
-            if _vd > _pv_dz_lo:
-                _rs = _m.sqrt(_pv_tgt / _ov)
-                _rs = max(0.70, min(1.50, _rs))
-                if _vd >= _pv_dz_hi:
-                    _st = _rs
-                else:
-                    _sg = (_vd - _pv_dz_lo) / _pv_dz_rng
-                    _st = 1.0 + _sg * (_rs - 1.0)
-                _c = 0.5 + (_rp - 0.5) * _st
-                pit_values[_t] = max(0.001, min(0.999, _c))
-            _ewm_pm = _pv_lam * _ewm_pm + _pv_1m * _rp
-            _ewm_psq = _pv_lam * _ewm_psq + _pv_1m * _rp * _rp
+    # Also skip when filter already adapted the scale (double-correction).
+    if not scale_already_adapted:
+        try:
+            from models.numba_wrappers import run_pit_var_stretching as _numba_pvs_t
+            pit_values = _numba_pvs_t(pit_values)
+        except (ImportError, Exception):
+            import math as _m
+            _pv_tgt = 1.0 / 12.0
+            _pv_lam = 0.97
+            _pv_1m = 0.03
+            _pv_dz_lo = 0.30
+            _pv_dz_hi = 0.55
+            _pv_dz_rng = _pv_dz_hi - _pv_dz_lo
+            _ewm_pm = 0.5
+            _ewm_psq = 1.0 / 3.0
+            for _t in range(n):
+                _ov = _ewm_psq - _ewm_pm * _ewm_pm
+                if _ov < 0.005:
+                    _ov = 0.005
+                _vr = _ov / _pv_tgt
+                _vd = abs(_vr - 1.0)
+                _rp = float(pit_values[_t])
+                if _vd > _pv_dz_lo:
+                    _rs = _m.sqrt(_pv_tgt / _ov)
+                    _rs = max(0.70, min(1.50, _rs))
+                    if _vd >= _pv_dz_hi:
+                        _st = _rs
+                    else:
+                        _sg = (_vd - _pv_dz_lo) / _pv_dz_rng
+                        _st = 1.0 + _sg * (_rs - 1.0)
+                    _c = 0.5 + (_rp - 0.5) * _st
+                    pit_values[_t] = max(0.001, min(0.999, _c))
+                _ewm_pm = _pv_lam * _ewm_pm + _pv_1m * _rp
+                _ewm_psq = _pv_lam * _ewm_psq + _pv_1m * _rp * _rp
 
     valid = np.isfinite(pit_values)
     pit_clean = np.clip(pit_values[valid], 0, 1)
@@ -3428,6 +3442,34 @@ def fit_all_models_for_regime(
     
     n_params_st = MODEL_CLASS_N_PARAMS[ModelClass.PHI_STUDENT_T]  # 3 (q, c, phi)
 
+    # ── VoV precomputation (Barndorff-Nielsen & Shephard 2002) ────────
+    # Rolling std of log-vol (window=20) — data-only, shared across all ν.
+    _vov_window = 20
+    _n_vol = len(vol)
+    if _n_vol > _vov_window:
+        _log_vol = np.log(np.maximum(vol, 1e-10))
+        _cs1 = np.concatenate(([0.0], np.cumsum(_log_vol)))
+        _cs2 = np.concatenate(([0.0], np.cumsum(_log_vol * _log_vol)))
+        _inv_w = 1.0 / float(_vov_window)
+        _idx_e = np.arange(_vov_window, _n_vol)
+        _s1 = _cs1[_idx_e] - _cs1[_idx_e - _vov_window]
+        _s2 = _cs2[_idx_e] - _cs2[_idx_e - _vov_window]
+        _var_arr = np.maximum(_s2 * _inv_w - (_s1 * _inv_w) ** 2, 0.0)
+        _vov_rolling = np.empty(_n_vol, dtype=np.float64)
+        _vov_rolling[_vov_window:] = np.sqrt(_var_arr)
+        _vov_rolling[:_vov_window] = _vov_rolling[_vov_window] if _n_vol > _vov_window else 0.0
+    else:
+        _vov_rolling = np.zeros(_n_vol, dtype=np.float64)
+    _gamma_vov_fixed = 0.3  # Well-calibrated default from unified pipeline
+
+    # ── ν-refinement grids (Lange, Little & Taylor 1989) ──────────────
+    _NU_REFINE = {
+        3:  [2.5, 3.0, 3.5, 4.0],
+        4:  [3.5, 4.0, 5.0, 6.0],
+        8:  [6.0, 7.0, 8.0, 10.0, 12.0],
+        20: [15.0, 18.0, 20.0, 25.0],
+    }
+
     # Pre-create momentum wrapper for internal CRPS comparison (if available)
     _st_momentum_wrapper = None
     if MOMENTUM_AUGMENTATION_ENABLED and MOMENTUM_AUGMENTATION_AVAILABLE:
@@ -3459,15 +3501,26 @@ def fit_all_models_for_regime(
             # The key insight: PIT requires PRIOR PREDICTIVE values (before y_t),
             # not posterior values (after update). Using posterior values causes
             # systematic miscalibration (residuals appear too concentrated).
+            # Enhanced (March 2026): robust_wt + adaptive online_scale_adapt + VoV
+            # Adaptive: online_scale_adapt for low ν only (χ²-target far from 1.0)
+            # For ν≤5: chi2_target = ν/(ν-2) ≥ 1.67 → large correction needed
+            # For ν>5: chi2_target ≈ 1.0 → post-hoc chi² EWM handles it better
+            _use_osa = (nu_fixed <= 5)
             mu_st, P_st, mu_pred_st, S_pred_st, ll_full_st = PhiStudentTDriftModel.filter_phi_with_predictive(
-                returns, vol, q_st, c_st, phi_st, nu_fixed
+                returns, vol, q_st, c_st, phi_st, nu_fixed,
+                robust_wt=True,
+                online_scale_adapt=_use_osa,
+                gamma_vov=_gamma_vov_fixed,
+                vov_rolling=_vov_rolling,
             )
 
             # Compute PIT with extended metrics (Berkowitz + MAD)
             # PERF: Pass precomputed predictive values to skip redundant filter run
+            # scale_already_adapted matches _use_osa to avoid double-correction
             _pit_ext_base = compute_extended_pit_metrics_student_t(
                 returns, vol, q_st, c_st, phi_st, nu_fixed,
                 mu_pred_precomputed=mu_pred_st, S_pred_precomputed=S_pred_st,
+                scale_already_adapted=_use_osa,
             )
             ks_st = _pit_ext_base["ks_statistic"]
             pit_p_st = _pit_ext_base["pit_ks_pvalue"]
@@ -3498,6 +3551,144 @@ def fit_all_models_for_regime(
                 returns, mu_pred_st, forecast_scale_st, nu_fixed
             )
 
+            # =================================================================
+            # POST-HOC GARCH INNOVATION BLENDING (Engle 1982, GJR 1993)
+            # =================================================================
+            # Compute GARCH variance from Kalman innovations and blend with S_pred
+            # to capture volatility clustering that P_t + R_t misses.
+            try:
+                _innovations_st = returns[:len(mu_pred_st)] - mu_pred_st
+                _garch_params = PhiStudentTDriftModel._stage_5c_garch_estimation(
+                    returns[:len(mu_pred_st)], mu_pred_st, 0.0, len(mu_pred_st)
+                )
+                _g_omega = _garch_params['garch_omega']
+                _g_alpha = _garch_params['garch_alpha']
+                _g_beta = _garch_params['garch_beta']
+                _g_lev = _garch_params['garch_leverage']
+                _g_uvar = _garch_params['unconditional_var']
+                _n_inn = len(_innovations_st)
+                _h_garch = np.empty(_n_inn, dtype=np.float64)
+                _h_garch[0] = _g_uvar
+                for _gi in range(1, _n_inn):
+                    _e2 = _innovations_st[_gi - 1] ** 2
+                    _neg = 1.0 if _innovations_st[_gi - 1] < 0 else 0.0
+                    _h_garch[_gi] = _g_omega + _g_alpha * _e2 + _g_lev * _e2 * _neg + _g_beta * _h_garch[_gi - 1]
+                    if _h_garch[_gi] < 1e-12:
+                        _h_garch[_gi] = 1e-12
+                _h_mean = max(float(np.mean(_h_garch)), 1e-12)
+                _garch_blend_w = 0.3  # Conservative blend weight
+                S_pred_blended = S_pred_st * (_garch_blend_w * _h_garch / _h_mean + (1.0 - _garch_blend_w))
+                # Re-derive forecast_scale from blended S_pred
+                if nu_fixed > 2:
+                    forecast_scale_st = np.sqrt(S_pred_blended * (nu_fixed - 2) / nu_fixed)
+                else:
+                    forecast_scale_st = np.sqrt(S_pred_blended)
+                # Recompute CRPS and PIT with GARCH-blended scale
+                crps_blended = compute_crps_student_t_inline(
+                    returns, mu_pred_st, forecast_scale_st, nu_fixed
+                )
+                if np.isfinite(crps_blended) and crps_blended <= crps_st * 1.01:
+                    # Check PIT before accepting — avoid PIT regression
+                    _pit_ext_garch = compute_extended_pit_metrics_student_t(
+                        returns, vol, q_st, c_st, phi_st, nu_fixed,
+                        mu_pred_precomputed=mu_pred_st, S_pred_precomputed=S_pred_blended,
+                        scale_already_adapted=_use_osa,
+                    )
+                    _pit_p_garch = _pit_ext_garch["pit_ks_pvalue"]
+                    # Guard: don't drop PIT below 0.05 if it was passing
+                    if pit_p_st >= 0.05 and _pit_p_garch < 0.05:
+                        pass  # Reject GARCH blend — PIT regression
+                    else:
+                        crps_st = crps_blended
+                        S_pred_st = S_pred_blended
+                        _pit_ext_base = _pit_ext_garch
+                        ks_st = _pit_ext_base["ks_statistic"]
+                        pit_p_st = _pit_ext_base["pit_ks_pvalue"]
+                        _ad_p_st = _pit_ext_base.get("ad_pvalue", float('nan'))
+                        _berk_st = _pit_ext_base["berkowitz_pvalue"]
+                        _mad_st = _pit_ext_base["histogram_mad"]
+                        # Re-derive forecast_scale for Hyvarinen
+                        if nu_fixed > 2:
+                            forecast_scale_st = np.sqrt(S_pred_blended * (nu_fixed - 2) / nu_fixed)
+                        else:
+                            forecast_scale_st = np.sqrt(S_pred_blended)
+                        hyvarinen_st = compute_hyvarinen_score_student_t(
+                            returns, mu_pred_st, forecast_scale_st, nu_fixed
+                        )
+            except Exception:
+                pass  # GARCH failed — use base scale
+
+            # =================================================================
+            # ν-REFINEMENT VIA PROFILE LIKELIHOOD (Lange-Little-Taylor 1989)
+            # =================================================================
+            # After fitting (q,c,φ) for grid ν, re-run filter at nearby ν values.
+            # Select the ν that maximises combined PIT+CRPS score.
+            # Scoring: multiplicative PIT gate × CRPS performance.
+            # Guard: never accept a ν that drops PIT below 0.05 if base was above.
+            _nu_refine_grid = _NU_REFINE.get(nu_fixed, [])
+            _best_nu_eff = float(nu_fixed)
+            _best_refine_score = float('-inf')
+            _base_pit_passing = pit_p_st >= 0.05
+            # Compute base score for comparison
+            # Scoring: log(1/CRPS) + PIT_weight * log10(pit_p + eps)
+            # This balances CRPS improvement with PIT calibration quality.
+            _base_crps_inv = 1.0 / max(crps_st, 1e-12)
+            _base_pit_log = max(np.log10(max(pit_p_st, 1e-8)), -8.0)
+            _best_refine_score = _base_crps_inv + 5.0 * _base_pit_log
+            for _nu_trial in _nu_refine_grid:
+                if abs(_nu_trial - nu_fixed) < 0.01:
+                    continue  # skip re-evaluating exact same ν
+                try:
+                    _use_osa_trial = (_nu_trial <= 5.0)
+                    _, _, _mu_ref, _S_ref, _ll_ref = PhiStudentTDriftModel.filter_phi_with_predictive(
+                        returns, vol, q_st, c_st, phi_st, _nu_trial,
+                        robust_wt=True,
+                        online_scale_adapt=_use_osa_trial,
+                        gamma_vov=_gamma_vov_fixed,
+                        vov_rolling=_vov_rolling,
+                    )
+                    if _nu_trial > 2:
+                        _scale_ref = np.sqrt(_S_ref * (_nu_trial - 2) / _nu_trial)
+                    else:
+                        _scale_ref = np.sqrt(_S_ref)
+                    _crps_ref = compute_crps_student_t_inline(
+                        returns, _mu_ref, _scale_ref, _nu_trial
+                    )
+                    _pit_ref = compute_extended_pit_metrics_student_t(
+                        returns, vol, q_st, c_st, phi_st, _nu_trial,
+                        mu_pred_precomputed=_mu_ref, S_pred_precomputed=_S_ref,
+                        scale_already_adapted=_use_osa_trial,
+                    )
+                    _pit_p_ref = _pit_ref["pit_ks_pvalue"]
+                    # PIT regression guard: never drop below 0.05 if base passed
+                    if _base_pit_passing and _pit_p_ref < 0.05:
+                        continue
+                    _crps_inv_ref = 1.0 / max(_crps_ref, 1e-12)
+                    _pit_log_ref = max(np.log10(max(_pit_p_ref, 1e-8)), -8.0)
+                    _score_ref = _crps_inv_ref + 5.0 * _pit_log_ref
+                    if np.isfinite(_score_ref) and _score_ref > _best_refine_score:
+                        _best_refine_score = _score_ref
+                        _best_nu_eff = _nu_trial
+                        # Accept refined ν — update all outputs
+                        mu_pred_st = _mu_ref
+                        S_pred_st = _S_ref
+                        ll_full_st = _ll_ref
+                        forecast_scale_st = _scale_ref
+                        crps_st = _crps_ref
+                        pit_p_st = _pit_p_ref
+                        ks_st = _pit_ref["ks_statistic"]
+                        _ad_p_st = _pit_ref.get("ad_pvalue", float('nan'))
+                        _berk_st = _pit_ref["berkowitz_pvalue"]
+                        _mad_st = _pit_ref["histogram_mad"]
+                        hyvarinen_st = compute_hyvarinen_score_student_t(
+                            returns, _mu_ref, _scale_ref, _nu_trial
+                        )
+                        bic_st = compute_bic(_ll_ref, n_params_st, n_obs)
+                        aic_st = compute_aic(_ll_ref, n_params_st)
+                        mean_ll_st = _ll_ref / max(n_obs, 1)
+                except Exception:
+                    continue
+
             # -----------------------------------------------------------------
             # INTERNAL MOMENTUM AUGMENTATION — activate only if CRPS improves
             # -----------------------------------------------------------------
@@ -3506,23 +3697,28 @@ def fit_all_models_for_regime(
             if _st_momentum_wrapper is not None:
                 try:
                     mu_mom, P_mom, ll_mom = _st_momentum_wrapper.filter(
-                        returns, vol, q_st, c_st, phi=phi_st, nu=nu_fixed,
+                        returns, vol, q_st, c_st, phi=phi_st, nu=_best_nu_eff,
                         base_model='phi_student_t'
                     )
                     # Get momentum-augmented predictive values using the
                     # wrapper's exogenous_input (u_t) and effective phi.
                     _mom_u_t = _st_momentum_wrapper._exogenous_input
                     _mom_phi_eff = apply_phi_shrinkage_for_mr(phi_st, _st_momentum_wrapper.config)
+                    _use_osa_mom = (_best_nu_eff <= 5.0)
                     _, _, mu_pred_mom, S_pred_mom, _ = PhiStudentTDriftModel.filter_phi_with_predictive(
-                        returns, vol, q_st, c_st, _mom_phi_eff, nu_fixed,
+                        returns, vol, q_st, c_st, _mom_phi_eff, _best_nu_eff,
                         exogenous_input=_mom_u_t,
+                        robust_wt=True,
+                        online_scale_adapt=_use_osa_mom,
+                        gamma_vov=_gamma_vov_fixed,
+                        vov_rolling=_vov_rolling,
                     )
-                    if nu_fixed > 2:
-                        forecast_scale_mom = np.sqrt(S_pred_mom * (nu_fixed - 2) / nu_fixed)
+                    if _best_nu_eff > 2:
+                        forecast_scale_mom = np.sqrt(S_pred_mom * (_best_nu_eff - 2) / _best_nu_eff)
                     else:
                         forecast_scale_mom = np.sqrt(S_pred_mom)
                     crps_mom = compute_crps_student_t_inline(
-                        returns, mu_pred_mom, forecast_scale_mom, nu_fixed
+                        returns, mu_pred_mom, forecast_scale_mom, _best_nu_eff
                     )
                     # Only activate momentum if CRPS improves (lower is better)
                     if np.isfinite(crps_mom) and crps_mom < crps_st:
@@ -3530,8 +3726,9 @@ def fit_all_models_for_regime(
                         _mom_diag = _st_momentum_wrapper.get_diagnostics()
                         # Recompute all scores with momentum filter results
                         pit_ext_mom = compute_extended_pit_metrics_student_t(
-                            returns, vol, q_st, c_st, phi_st, nu_fixed,
+                            returns, vol, q_st, c_st, phi_st, _best_nu_eff,
                             mu_pred_precomputed=mu_pred_mom, S_pred_precomputed=S_pred_mom,
+                            scale_already_adapted=_use_osa_mom,
                         )
                         ks_st = pit_ext_mom["ks_statistic"]
                         pit_p_st = pit_ext_mom["pit_ks_pvalue"]
@@ -3543,7 +3740,7 @@ def fit_all_models_for_regime(
                         bic_st = compute_bic(ll_mom, n_params_st, n_obs)
                         aic_st = compute_aic(ll_mom, n_params_st)
                         hyvarinen_st = compute_hyvarinen_score_student_t(
-                            returns, mu_pred_mom, forecast_scale_mom, nu_fixed
+                            returns, mu_pred_mom, forecast_scale_mom, _best_nu_eff
                         )
                         crps_st = crps_mom
                 except Exception:
@@ -3553,7 +3750,8 @@ def fit_all_models_for_regime(
                 "q": float(q_st),
                 "c": float(c_st),
                 "phi": float(phi_st),
-                "nu": float(nu_fixed),  # FIXED, not estimated
+                "nu": float(_best_nu_eff),  # Refined ν (may differ from grid)
+                "nu_grid": float(nu_fixed),  # Original grid ν
                 "log_likelihood": float(ll_full_st),
                 "mean_log_likelihood": float(mean_ll_st),
                 "cv_penalized_ll": float(ll_cv_st),

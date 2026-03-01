@@ -1630,6 +1630,7 @@ class PhiStudentTDriftModel:
                     )
                 else:
                     phi_clip_sq = phi_clip * phi_clip
+                    _nu_p1 = nu_val + 1.0
                     for t in range(vs, ve):
                         mu_p = phi_clip * mu_p
                         P_p = phi_clip_sq * P_p + q
@@ -1644,9 +1645,12 @@ class PhiStudentTDriftModel:
                             ll_t = log_norm_const - _mlog(scale) + neg_exp * _mlog(1.0 + z * z * inv_nu)
                             if _misfinite(ll_t):
                                 total_ll += ll_t
+                        # Robust Kalman gain (Meinhold & Singpurwalla 1989)
                         K = nu_adjust * P_p / S
-                        mu_p = mu_p + K * inn
-                        P_p = (1.0 - K) * P_p
+                        z_sq_cv = (inn * inn) / S
+                        w_cv = _nu_p1 / (nu_val + z_sq_cv)
+                        mu_p = mu_p + K * w_cv * inn
+                        P_p = (1.0 - w_cv * K) * P_p
                         if P_p < 1e-12:
                             P_p = 1e-12
 
@@ -2935,6 +2939,9 @@ class PhiStudentTDriftModel:
         nu: float,
         exogenous_input: np.ndarray = None,
         robust_wt: bool = False,
+        online_scale_adapt: bool = False,
+        gamma_vov: float = 0.0,
+        vov_rolling: np.ndarray = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
         """
         Consolidated phi-Student-t Kalman filter.
@@ -2951,9 +2958,16 @@ class PhiStudentTDriftModel:
             returns, vol, q, c, phi, nu: standard Kalman params
             exogenous_input: optional u_t injected into state prediction
             robust_wt: if True use Student-t w_t = (nu+1)/(nu+z^2) weighting
+            online_scale_adapt: if True embed chi² EWM scale correction in filter
+                (Harvey 1989, Durbin & Koopman 2012). Tracks E[z²] and dynamically
+                adjusts c to keep standardised residuals calibrated.
+            gamma_vov: vol-of-vol sensitivity (Barndorff-Nielsen & Shephard 2002).
+                Inflates R_t during volatile periods: R_t *= (1 + γ·vov_rolling_t).
+            vov_rolling: precomputed rolling std of log-vol (window=20).
         """
-        # Numba-accelerated path
-        if _USE_NUMBA and run_phi_student_t_augmented_filter is not None:
+        # Numba-accelerated path — only when no enhanced features are used
+        _use_enhanced = online_scale_adapt or (gamma_vov > 1e-12 and vov_rolling is not None)
+        if not _use_enhanced and _USE_NUMBA and run_phi_student_t_augmented_filter is not None:
             try:
                 return run_phi_student_t_augmented_filter(
                     returns, vol, q, c,
@@ -2982,7 +2996,18 @@ class PhiStudentTDriftModel:
         log_norm_const = math.lgamma((nu_val + 1.0) / 2.0) - math.lgamma(nu_val / 2.0) - 0.5 * math.log(nu_val * math.pi)
         neg_exp = -((nu_val + 1.0) / 2.0)
         inv_nu = 1.0 / nu_val
-        R = c_val * (vol * vol)
+        _vol_sq = vol * vol
+
+        # VoV: precompute flags
+        _has_vov = gamma_vov > 1e-12 and vov_rolling is not None
+
+        # Online scale adaptation: chi² EWM state (Harvey 1989)
+        _chi2_tgt = (nu_val / (nu_val - 2.0)) if nu_val > 2.0 else 1.0
+        _chi2_lam = 0.98
+        _chi2_1m = 1.0 - _chi2_lam
+        _chi2_cap = _chi2_tgt * 50.0
+        _ewm_z2 = _chi2_tgt  # initialise at theoretical target
+        _c_adj = 1.0  # multiplicative c correction
 
         mu_filtered = np.empty(n, dtype=np.float64)
         P_filtered = np.empty(n, dtype=np.float64)
@@ -2996,12 +3021,20 @@ class PhiStudentTDriftModel:
         _msqrt = math.sqrt
         _mlog = math.log
         _misfinite = math.isfinite
+        _mabs = abs
 
         for t in range(n):
             u_t = exogenous_input[t] if has_exo and t < len(exogenous_input) else 0.0
             mu_pred = phi_val * mu + u_t
             P_pred = phi_sq * P + q_val
-            S = P_pred + R[t]
+
+            # Observation noise R_t with optional VoV and online scale adapt
+            c_eff = c_val * _c_adj if online_scale_adapt else c_val
+            R_t = c_eff * _vol_sq[t]
+            if _has_vov:
+                R_t *= (1.0 + gamma_vov * vov_rolling[t])
+
+            S = P_pred + R_t
             if S <= 1e-12:
                 S = 1e-12
 
@@ -3034,6 +3067,26 @@ class PhiStudentTDriftModel:
                 ll_t = log_norm_const - _mlog(forecast_scale) + neg_exp * _mlog(1.0 + z * z * inv_nu)
                 if _misfinite(ll_t):
                     log_likelihood += ll_t
+
+                # Online scale adaptation: track E[z²] and adjust c for next step
+                if online_scale_adapt:
+                    _z2_raw = z * z
+                    _z2w = min(_z2_raw, _chi2_cap)
+                    _ewm_z2 = _chi2_lam * _ewm_z2 + _chi2_1m * _z2w
+                    _ratio = _ewm_z2 / _chi2_tgt
+                    _ratio = max(0.3, min(3.0, _ratio))
+                    _dev = _mabs(_ratio - 1.0)
+                    if _ratio >= 1.0:
+                        _dz_lo, _dz_rng = 0.25, 0.25
+                    else:
+                        _dz_lo, _dz_rng = 0.10, 0.15
+                    if _dev < _dz_lo:
+                        _c_adj = 1.0
+                    elif _dev >= _dz_lo + _dz_rng:
+                        _c_adj = _msqrt(_ratio)
+                    else:
+                        _s_frac = (_dev - _dz_lo) / _dz_rng
+                        _c_adj = 1.0 + _s_frac * (_msqrt(_ratio) - 1.0)
 
         return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
 
@@ -3077,15 +3130,32 @@ class PhiStudentTDriftModel:
         phi: float,
         nu: float,
         exogenous_input: np.ndarray = None,
+        robust_wt: bool = True,
+        online_scale_adapt: bool = False,
+        gamma_vov: float = 0.0,
+        vov_rolling: np.ndarray = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
         """phi-Student-t filter returning predictive mu_pred and S_pred for PIT.
+        
+        Enhanced (March 2026):
+          - robust_wt=True by default (Meinhold & Singpurwalla 1989)
+          - online_scale_adapt: embed chi² EWM scale correction (Harvey 1989)
+          - gamma_vov/vov_rolling: vol-of-vol R_t inflation (BN-S 2002)
         
         Args:
             exogenous_input: Optional u_t array (momentum/MR signal) injected
                 into the state prediction: mu_pred_t = phi * mu_{t-1} + u_t.
+            robust_wt: Use Student-t outlier downweighting w_t=(ν+1)/(ν+z²).
+            online_scale_adapt: Embed chi² EWM scale correction in filter loop.
+            gamma_vov: Vol-of-vol sensitivity (0.0 = disabled).
+            vov_rolling: Precomputed rolling std of log-vol.
         """
         return cls._filter_phi_core(returns, vol, q, c, phi, nu,
-                                     exogenous_input=exogenous_input)
+                                     exogenous_input=exogenous_input,
+                                     robust_wt=robust_wt,
+                                     online_scale_adapt=online_scale_adapt,
+                                     gamma_vov=gamma_vov,
+                                     vov_rolling=vov_rolling)
 
     @classmethod
     def filter_phi_unified(
