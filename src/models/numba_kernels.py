@@ -911,9 +911,6 @@ def phi_student_t_augmented_filter_kernel(
     """
     n = len(returns)
     phi_sq = phi * phi
-    nu_adjust = nu / (nu + 3.0)
-    if nu_adjust > 1.0:
-        nu_adjust = 1.0
     log_norm_const = (log_gamma_half_nu_plus_half - log_gamma_half_nu
                       - 0.5 * np.log(nu * np.pi))
     neg_exp = -((nu + 1.0) / 2.0)
@@ -928,8 +925,24 @@ def phi_student_t_augmented_filter_kernel(
     mu_pred_arr = np.empty(n)
     S_pred_arr = np.empty(n)
 
-    mu = 0.0
-    P = P0
+    # Data-adaptive filter initialization
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
     log_likelihood = 0.0
 
     for t in range(n):
@@ -944,7 +957,7 @@ def phi_student_t_augmented_filter_kernel(
         S_pred_arr[t] = S
 
         innovation = returns[t] - mu_pred
-        K = nu_adjust * P_pred / S
+        K = P_pred / S
 
         if robust_wt:
             z_sq = (innovation * innovation) / S
@@ -1009,9 +1022,6 @@ def phi_student_t_enhanced_filter_kernel(
     """
     n = len(returns)
     phi_sq = phi * phi
-    nu_adjust = nu / (nu + 3.0)
-    if nu_adjust > 1.0:
-        nu_adjust = 1.0
     log_norm_const = (log_gamma_half_nu_plus_half - log_gamma_half_nu
                       - 0.5 * np.log(nu * np.pi))
     neg_exp = -((nu + 1.0) / 2.0)
@@ -1027,8 +1037,24 @@ def phi_student_t_enhanced_filter_kernel(
     mu_pred_arr = np.empty(n)
     S_pred_arr = np.empty(n)
 
-    mu = 0.0
-    P = P0
+    # Data-adaptive filter initialization
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
     log_likelihood = 0.0
 
     # Online scale adaptation state (Harvey 1989)
@@ -1058,7 +1084,7 @@ def phi_student_t_enhanced_filter_kernel(
         S_pred_arr[t] = S
 
         innovation = returns[t] - mu_pred
-        K = nu_adjust * P_pred / S
+        K = P_pred / S
 
         if robust_wt:
             z_sq = (innovation * innovation) / S
@@ -1196,17 +1222,28 @@ def phi_student_t_filter_kernel(
         Precomputed gammaln((ν+1)/2)
     """
     n = len(returns)
-    mu = 0.0
-    P = P0
+    # Data-adaptive filter initialization
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
     mu_filtered = np.zeros(n)
     P_filtered = np.zeros(n)
     log_likelihood = 0.0
     phi_sq = phi * phi
-    
-    # Robustified Kalman gain adjustment for heavy tails
-    nu_adjust = nu / (nu + 3.0)
-    if nu_adjust > 1.0:
-        nu_adjust = 1.0
     
     for t in range(n):
         # Predict step with AR(1) dynamics
@@ -1233,8 +1270,8 @@ def phi_student_t_filter_kernel(
                 ll_t = -_MAX_LL_CONTRIB
             log_likelihood += ll_t
             
-            # Robustified Kalman gain for heavy tails
-            K = nu_adjust * P_pred / S
+            # Kalman gain (robust weighting via w_t handled by caller)
+            K = P_pred / S
             mu = mu_pred + K * innovation
             P = (1.0 - K) * P_pred
         else:
@@ -1343,16 +1380,28 @@ def momentum_phi_student_t_filter_kernel(
     Momentum, EVT, and λ do NOT alter Kalman filter mathematics.
     """
     n = len(returns)
-    mu = 0.0
-    P = P0
+    # Data-adaptive filter initialization
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
     mu_filtered = np.zeros(n)
     P_filtered = np.zeros(n)
     log_likelihood = 0.0
     phi_sq = phi * phi
-    
-    nu_adjust = nu / (nu + 3.0)
-    if nu_adjust > 1.0:
-        nu_adjust = 1.0
     
     for t in range(n):
         # Momentum-augmented prediction (momentum enters ONLY here)
@@ -1376,7 +1425,7 @@ def momentum_phi_student_t_filter_kernel(
                 ll_t = -_MAX_LL_CONTRIB
             log_likelihood += ll_t
             
-            K = nu_adjust * P_pred / S
+            K = P_pred / S
             mu = mu_pred + K * innovation
             P = (1.0 - K) * P_pred
         else:
@@ -1493,17 +1542,29 @@ def ms_q_student_t_filter_kernel(
     
     # Precompute constants
     phi_sq = phi * phi
-    nu_adjust = nu / (nu + 3.0)
-    if nu_adjust > 1.0:
-        nu_adjust = 1.0
     
     log_norm_const = log_gamma_half_nu_plus_half - log_gamma_half_nu - 0.5 * np.log(nu * np.pi)
     neg_exp = -((nu + 1.0) / 2.0)
     inv_nu = 1.0 / nu
     
-    # State initialization
-    mu = 0.0
-    P = P0
+    # State initialization (data-adaptive)
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
     
     # Accumulators
     log_likelihood = 0.0
@@ -1568,7 +1629,7 @@ def ms_q_student_t_filter_kernel(
             
             # Robust Kalman gain (Student-t weighting)
             w_t = (nu + 1.0) / (nu + z_sq)
-            K = w_t * nu_adjust * P_pred / S
+            K = w_t * P_pred / S
             
             mu = mu_pred + K * innovation
             P = (1.0 - K) * P_pred
@@ -1624,17 +1685,29 @@ def student_t_filter_with_lfo_cv_kernel(
     
     # Precompute constants
     phi_sq = phi * phi
-    nu_adjust = nu / (nu + 3.0)
-    if nu_adjust > 1.0:
-        nu_adjust = 1.0
     
     log_norm_const = log_gamma_half_nu_plus_half - log_gamma_half_nu - 0.5 * np.log(nu * np.pi)
     neg_exp = -((nu + 1.0) / 2.0)
     inv_nu = 1.0 / nu
     
-    # State initialization
-    mu = 0.0
-    P = P0
+    # State initialization (data-adaptive)
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
     
     # Accumulators
     log_likelihood = 0.0
@@ -1673,7 +1746,7 @@ def student_t_filter_with_lfo_cv_kernel(
                 lfo_count += 1
             
             # Robust Kalman gain
-            K = nu_adjust * P_pred / S
+            K = P_pred / S
             mu = mu_pred + K * innovation
             P = (1.0 - K) * P_pred
         else:
@@ -1863,9 +1936,24 @@ def unified_phi_student_t_filter_kernel(
     # Pre-compute constants
     phi_sq = phi * phi
     
-    # State initialization
-    mu = 0.0
-    P = P0
+    # State initialization (data-adaptive)
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
     log_likelihood = 0.0
     
     # Main filter loop
@@ -1904,11 +1992,8 @@ def unified_phi_student_t_filter_kernel(
         elif nu_eff > 50.0:
             nu_eff = 50.0
         
-        # ν-adjusted Kalman gain
-        nu_adjust = nu_eff / (nu_eff + 3.0)
-        if nu_adjust > 1.0:
-            nu_adjust = 1.0
-        K = nu_adjust * P_pred / S
+        # Standard Kalman gain (robust weighting via w_t below)
+        K = P_pred / S
         
         # Robust Student-t weighting (downweight outliers)
         z_sq = innovation * innovation / S
@@ -2024,15 +2109,11 @@ def unified_phi_student_t_filter_extended_kernel(
         _cached_log_norm = log_norm_const
         _cached_neg_exp = neg_exp
         _cached_inv_nu = inv_nu
-        _cached_nu_adjust = nu_base / (nu_base + 3.0)
-        if _cached_nu_adjust > 1.0:
-            _cached_nu_adjust = 1.0
         _cached_scale_factor = (nu_base - 2.0) / nu_base if nu_base > 2 else 0.5
     else:
         _cached_log_norm = 0.0
         _cached_neg_exp = 0.0
         _cached_inv_nu = 0.0
-        _cached_nu_adjust = 0.0
         _cached_scale_factor = 0.0
 
     # Jump-diffusion pre-computation
@@ -2051,9 +2132,24 @@ def unified_phi_student_t_filter_extended_kernel(
     # GAS skew dynamic state
     alpha_t = alpha_asym
 
-    # State initialization
-    mu = 0.0
-    P = P0
+    # State initialization (data-adaptive)
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
     log_likelihood = 0.0
 
     # Main filter loop
@@ -2117,14 +2213,8 @@ def unified_phi_student_t_filter_extended_kernel(
             elif nu_eff > 50.0:
                 nu_eff = 50.0
 
-        # nu-adjusted Kalman gain
-        if _alpha_negligible and not skew_enabled:
-            nu_adjust = _cached_nu_adjust
-        else:
-            nu_adjust = nu_eff / (nu_eff + 3.0)
-            if nu_adjust > 1.0:
-                nu_adjust = 1.0
-        K = nu_adjust * P_pred / S_diffusion
+        # Standard Kalman gain (robust weighting via w_t below)
+        K = P_pred / S_diffusion
 
         # Robust Student-t weighting
         z_sq_diffusion = (innovation * innovation) / S_diffusion
@@ -2937,17 +3027,21 @@ def phi_student_t_cv_test_fold_kernel(
     log_norm_const: float,
     neg_exp: float,
     inv_nu: float,
-    nu_adjust: float,
     mu_init: float,
     P_init: float,
     test_start: int,
     test_end: int,
+    nu_val: float,
+    gamma_vov: float,
+    vov_rolling: np.ndarray,
+    use_vov: int,
 ) -> float:
     """
     Numba-compiled φ-Student-t forward pass on a single CV test fold.
 
     Computes log-likelihood of validation data given initial state from
-    training fold. Uses Student-t likelihood with constant nu-adjust gain.
+    training fold. Uses Student-t likelihood with robust Kalman gain
+    (Meinhold & Singpurwalla 1989) and optional VoV inflation.
 
     Parameters
     ----------
@@ -2960,11 +3054,14 @@ def phi_student_t_cv_test_fold_kernel(
     log_norm_const : gammaln((nu+1)/2) - gammaln(nu/2) - 0.5*log(nu*pi)
     neg_exp : -(nu+1)/2
     inv_nu : 1/nu
-    nu_adjust : min(nu/(nu+3), 1.0)
     mu_init : initial state mean (from training fold)
     P_init : initial state variance (from training fold)
     test_start : first index of validation range
     test_end : one-past-last index of validation range
+    nu_val : degrees of freedom (for robust weighting)
+    gamma_vov : VoV gamma coefficient (0 to disable)
+    vov_rolling : VoV rolling array (may be empty if use_vov=0)
+    use_vov : 1 if VoV active, 0 otherwise
 
     Returns
     -------
@@ -2974,12 +3071,15 @@ def phi_student_t_cv_test_fold_kernel(
     P_p = P_init
     ll_fold = 0.0
     phi_sq = phi * phi
+    nu_p1 = nu_val + 1.0
 
     for t in range(test_start, test_end):
         mu_p = phi * mu_p
         P_p = phi_sq * P_p + q
 
         R_t = c * vol_sq[t]
+        if use_vov == 1:
+            R_t *= (1.0 + gamma_vov * vov_rolling[t])
         S = P_p + R_t
         if S < 1e-12:
             S = 1e-12
@@ -2992,9 +3092,12 @@ def phi_student_t_cv_test_fold_kernel(
             if ll_t == ll_t:  # isfinite check in Numba
                 ll_fold += ll_t
 
-        K = nu_adjust * P_p / S
-        mu_p = mu_p + K * inn
-        P_p = (1.0 - K) * P_p
+        # Robust Kalman gain (Meinhold & Singpurwalla 1989)
+        K = P_p / S
+        z_sq_cv = (inn * inn) / S
+        w_cv = nu_p1 / (nu_val + z_sq_cv)
+        mu_p = mu_p + K * w_cv * inn
+        P_p = (1.0 - w_cv * K) * P_p
         if P_p < 1e-12:
             P_p = 1e-12
 

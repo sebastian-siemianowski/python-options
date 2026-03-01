@@ -156,11 +156,6 @@ def adaptive_data_quality(
         if zero_vol_frac > SPARSE_VOL_THRESHOLD and n_after_purge > MAX_QUALITY_WINDOW:
             df = df.iloc[-MAX_QUALITY_WINDOW:].copy()
             report["window_applied"] = True
-            if verbose and asset:
-                print(
-                    f"     🔬  {asset}: Applied {MAX_QUALITY_WINDOW}-day quality window "
-                    f"(sparse vol: {100*zero_vol_frac:.1f}% > {100*SPARSE_VOL_THRESHOLD:.0f}% threshold, Layer B)"
-                )
 
     # ── Layer C: Price-Range Windowing ──────────────────────────────
     # If the remaining data spans an implausible price range (>55×),
@@ -176,12 +171,6 @@ def adaptive_data_quality(
             if price_range_log > PRICE_RANGE_LOG_THRESHOLD:
                 df = df.iloc[-MAX_QUALITY_WINDOW:].copy()
                 report["price_range_window_applied"] = True
-                if verbose and asset:
-                    print(
-                        f"     🔬  {asset}: Applied {MAX_QUALITY_WINDOW}-day quality window "
-                        f"(price range: {price_range_log:.1f} > {PRICE_RANGE_LOG_THRESHOLD:.1f} log-threshold, "
-                        f"≈{np.exp(price_range_log):.0f}× range, Layer C)"
-                    )
 
     # ── Minimum data gate ───────────────────────────────────────────
     if len(df) < MIN_DATA_AFTER_TRUNCATION:

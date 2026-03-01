@@ -994,26 +994,34 @@ def run_phi_student_t_cv_test_fold(
     log_norm_const: float,
     neg_exp: float,
     inv_nu: float,
-    nu_adjust: float,
     mu_init: float,
     P_init: float,
     test_start: int,
     test_end: int,
+    nu_val: float = 8.0,
+    gamma_vov: float = 0.0,
+    vov_rolling: np.ndarray = None,
 ) -> float:
     """
     Run Numba-accelerated phi-Student-t CV test-fold forward pass.
 
     Returns log-likelihood of the validation fold.
+    Supports VoV inflation and robust Student-t weighting.
     """
     if not _NUMBA_AVAILABLE:
         raise ImportError("Numba kernels not available")
+    use_vov = 1 if (gamma_vov > 1e-12 and vov_rolling is not None) else 0
+    if vov_rolling is None:
+        vov_rolling = np.empty(1, dtype=np.float64)  # dummy for Numba typing
     return phi_student_t_cv_test_fold_kernel(
         returns, vol_sq,
         float(q), float(c), float(phi),
         float(nu_scale), float(log_norm_const), float(neg_exp),
-        float(inv_nu), float(nu_adjust),
+        float(inv_nu),
         float(mu_init), float(P_init),
         int(test_start), int(test_end),
+        float(nu_val), float(gamma_vov),
+        vov_rolling, int(use_vov),
     )
 
 

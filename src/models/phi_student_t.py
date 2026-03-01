@@ -1593,7 +1593,6 @@ class PhiStudentTDriftModel:
         log_norm_const = gammaln((nu_val + 1.0) / 2.0) - gammaln(nu_val / 2.0) - 0.5 * np.log(nu_val * np.pi)
         neg_exp = -((nu_val + 1.0) / 2.0)
         inv_nu = 1.0 / nu_val
-        nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
 
         # Pre-compute vol^2 for inner-loop access
         _vol_sq = np.ascontiguousarray((vol * vol).flatten(), dtype=np.float64)
@@ -1610,18 +1609,22 @@ class PhiStudentTDriftModel:
         # Graduated OSA: always enabled for train/inference consistency
         _use_osa_opt = True
 
-        # Try Numba-accelerated CV test fold kernel
-        # Disable when VoV features active (not in Numba kernel)
+        # Numba-accelerated CV test fold kernel (always used)
+        # Now supports VoV inflation and robust Student-t weighting (March 2026).
         # Note: OSA is handled by the training fold filter only — the test fold
         # Numba kernel uses the OSA-adjusted initial state from training, which
-        # is sufficient for CV scoring (March 2026).
+        # is sufficient for CV scoring.
         _use_numba_cv = False
-        if not _has_vov_opt:
-            try:
-                from models.numba_wrappers import run_phi_student_t_cv_test_fold as _numba_cv_fold
-                _use_numba_cv = True
-            except (ImportError, Exception):
-                pass
+        try:
+            from models.numba_wrappers import run_phi_student_t_cv_test_fold as _numba_cv_fold
+            _use_numba_cv = True
+        except (ImportError, Exception):
+            pass
+
+        # Pre-compute VoV array for Numba (contiguous float64)
+        _vov_full = None
+        if _has_vov_opt and vov_rolling is not None:
+            _vov_full = np.ascontiguousarray(vov_rolling.flatten(), dtype=np.float64)
 
         def neg_cv_ll(params):
             log_q, log_c, phi = params
@@ -1652,8 +1655,11 @@ class PhiStudentTDriftModel:
                 if _use_numba_cv:
                     total_ll += _numba_cv_fold(
                         _returns_r, _vol_sq, q, c, phi_clip,
-                        _nu_scale, log_norm_const, neg_exp, inv_nu, nu_adjust,
+                        _nu_scale, log_norm_const, neg_exp, inv_nu,
                         mu_p, P_p, vs, ve,
+                        nu_val=nu_val,
+                        gamma_vov=gamma_vov if _has_vov_opt else 0.0,
+                        vov_rolling=_vov_full,
                     )
                 else:
                     phi_clip_sq = phi_clip * phi_clip
@@ -1675,7 +1681,7 @@ class PhiStudentTDriftModel:
                             if _misfinite(ll_t):
                                 total_ll += ll_t
                         # Robust Kalman gain (Meinhold & Singpurwalla 1989)
-                        K = nu_adjust * P_p / S
+                        K = P_p / S
                         z_sq_cv = (inn * inn) / S
                         w_cv = _nu_p1 / (nu_val + z_sq_cv)
                         mu_p = mu_p + K * w_cv * inn
@@ -1761,7 +1767,7 @@ class PhiStudentTDriftModel:
                     bounds=[(_log_q_min, _log_q_max),
                             (_log_c_min, _log_c_max),
                             (phi_min, phi_max)],
-                    options={'maxiter': 100, 'ftol': 1e-10},
+                    options={'maxiter': 60, 'ftol': 1e-8},
                 )
                 if res.fun < best_val:
                     best_val = res.fun
@@ -2036,8 +2042,8 @@ class PhiStudentTDriftModel:
             _garch_h_ratio_test = _garch_h_ratio[n_train:]
             _S_test = S_pred_st[n_train:]
             _gr_g = (math.sqrt(5) + 1) / 2
-            _gw_lo, _gw_hi = 0.0, 0.6
-            for _ in range(12):
+            _gw_lo, _gw_hi = 0.0, 0.9
+            for _ in range(8):
                 _gw1 = _gw_hi - (_gw_hi - _gw_lo) / _gr_g
                 _gw2 = _gw_lo + (_gw_hi - _gw_lo) / _gr_g
                 # Evaluate at probe point 1
@@ -2217,6 +2223,9 @@ class PhiStudentTDriftModel:
         _orig_cvm = _base_cvm
         _orig_ad = _base_ad
         _orig_hyv = hyvarinen_st
+        # Early-exit: skip ν-refinement when PIT is clearly passing and
+        # CRPS is reasonable (saves ~5 candidates × ~14 CRPS evals each)
+        _skip_nu_refine = (pit_p_st >= 0.20 and crps_st < 0.035)
         # PIT-rescue mode: when baseline PIT < 0.05, prioritise calibration
         _pit_rescue = pit_p_st < 0.05
         if _pit_rescue:
@@ -2227,6 +2236,8 @@ class PhiStudentTDriftModel:
             _best_refine_score = 1.0  # sum of (ratio=1.0) weights
 
         for _nu_trial in _nu_refine_grid:
+            if _skip_nu_refine:
+                break
             if abs(_nu_trial - nu_fixed) < 0.01:
                 continue
             try:
@@ -2249,7 +2260,7 @@ class PhiStudentTDriftModel:
                 _c_lo = max(_c_lo, 0.1)
                 _c_hi = min(_c_hi, 10.0)
                 _gr_c = (math.sqrt(5) + 1) / 2
-                for _ in range(10):
+                for _ in range(7):
                     _c1 = _c_hi - (_c_hi - _c_lo) / _gr_c
                     _c2 = _c_lo + (_c_hi - _c_lo) / _gr_c
                     # Scale correction: scale ∝ √c, so scale_new = scale_ref * √(c_new/c_st)
@@ -2368,8 +2379,8 @@ class PhiStudentTDriftModel:
                 _mu_sh = mu_pred_st[:n_train]
                 _scale_sh = forecast_scale_st[:n_train]
                 _gr = (math.sqrt(5) + 1) / 2
-                _a_lo, _a_hi = 0.80, 1.20
-                for _ in range(15):
+                _a_lo, _a_hi = 0.60, 1.60
+                for _ in range(10):
                     _a1 = _a_hi - (_a_hi - _a_lo) / _gr
                     _a2 = _a_lo + (_a_hi - _a_lo) / _gr
                     _c1 = compute_crps_student_t_inline(
@@ -3875,7 +3886,6 @@ class PhiStudentTDriftModel:
         nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
 
         phi_sq = phi_val * phi_val
-        nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
         log_norm_const = math.lgamma((nu_val + 1.0) / 2.0) - math.lgamma(nu_val / 2.0) - 0.5 * math.log(nu_val * math.pi)
         neg_exp = -((nu_val + 1.0) / 2.0)
         inv_nu = 1.0 / nu_val
@@ -3928,7 +3938,7 @@ class PhiStudentTDriftModel:
             S_pred_arr[t] = S
 
             innovation = returns[t] - mu_pred
-            K = nu_adjust * P_pred / S
+            K = P_pred / S
 
             if robust_wt:
                 z_sq = (innovation * innovation) / S
@@ -4241,8 +4251,15 @@ class PhiStudentTDriftModel:
         mu_pred_arr = np.empty(n, dtype=np.float64)
         S_pred_arr = np.empty(n, dtype=np.float64)
 
-        mu = 0.0
-        P = 1e-4
+        # Data-adaptive filter initialization (reduces burn-in transients)
+        _init_window = min(20, n)
+        if _init_window >= 3:
+            _init_slice = returns[:_init_window]
+            mu = float(np.median(_init_slice))
+            P = max(float(np.var(_init_slice)), 1e-6)
+        else:
+            mu = 0.0
+            P = 1e-4
         log_likelihood = 0.0
 
         # Pre-extract exogenous input flag (avoid repeated getattr in loop)
@@ -4265,7 +4282,6 @@ class PhiStudentTDriftModel:
             _cached_log_norm = math.lgamma((nu_base + 1.0) / 2.0) - math.lgamma(nu_base / 2.0) - 0.5 * math.log(nu_base * math.pi)
             _cached_neg_exp = -((nu_base + 1.0) / 2.0)
             _cached_inv_nu = 1.0 / nu_base
-            _cached_nu_adjust = min(nu_base / (nu_base + 3.0), 1.0)
             _cached_scale_factor = (nu_base - 2.0) / nu_base if nu_base > 2 else 0.5
 
         for t in range(n):
@@ -4333,13 +4349,7 @@ class PhiStudentTDriftModel:
             # -----------------------------------------------------------------
             # Kalman gain and state update use DIFFUSION-ONLY variance
             # -----------------------------------------------------------------
-            if _alpha_negligible:
-                nu_adjust = _cached_nu_adjust
-            else:
-                nu_adjust = nu_eff / (nu_eff + 3.0)
-                if nu_adjust > 1.0:
-                    nu_adjust = 1.0
-            K = nu_adjust * P_pred / S_diffusion
+            K = P_pred / S_diffusion
 
             z_sq_diffusion = (innovation * innovation) / S_diffusion
             w_t = (nu_eff + 1.0) / (nu_eff + z_sq_diffusion)

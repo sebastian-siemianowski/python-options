@@ -1357,7 +1357,6 @@ class MomentumPhiStudentTFilter:
         P_filtered = np.zeros(n)
         log_likelihood = 0.0
         phi_sq = phi ** 2
-        nu_adjust = min(nu / (nu + 3.0), 1.0)
         
         # Precompute gamma values
         log_g1 = float(gammaln(nu / 2.0))
@@ -1384,7 +1383,7 @@ class MomentumPhiStudentTFilter:
                 ll_t = log_norm + log_kernel
                 log_likelihood += max(ll_t, -50.0)
                 
-                K = nu_adjust * P_pred / S
+                K = P_pred / S
                 mu = mu_pred + K * innovation
                 P = (1.0 - K) * P_pred
             else:
