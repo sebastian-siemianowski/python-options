@@ -116,3 +116,4 @@ htmlcov/
 /src/arena/disabled/
 /src/arena/backtest_tuned_params/
 /test_unified_pit_baseline.json
+/src/data/calibration_records/

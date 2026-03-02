@@ -7060,7 +7060,7 @@ def _load_signals_calibration(tuned_params: Optional[Dict]) -> Optional[Dict]:
     if cal is None:
         return None
     v = cal.get("version", "")
-    if v not in ("1.0", "2.0", "3.0", "3.1"):
+    if v not in ("1.0", "2.0", "3.0", "3.1", "4.0"):
         return None
     return cal
 
