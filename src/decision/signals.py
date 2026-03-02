@@ -7060,7 +7060,7 @@ def _load_signals_calibration(tuned_params: Optional[Dict]) -> Optional[Dict]:
     if cal is None:
         return None
     v = cal.get("version", "")
-    if v not in ("1.0", "2.0", "3.0", "3.1", "4.0"):
+    if v not in ("1.0", "2.0", "3.0", "3.1", "4.0", "5.0", "6.0"):
         return None
     return cal
 
@@ -7162,8 +7162,37 @@ def _apply_p_up_calibration(
             if p_map is None:
                 continue
             p_cal = _apply_single_p_map(p_raw, p_map)
-            if p_cal is not None:
-                regime_results[rname] = p_cal
+            if p_cal is None:
+                continue
+
+            # v6.0: Apply isotonic refinement if available
+            isotonic_map = regime_cal.get("isotonic_map")
+            if isotonic_map is not None:
+                iso_x = isotonic_map.get("x", [0.0, 1.0])
+                iso_y = isotonic_map.get("y", [0.0, 1.0])
+                if len(iso_x) >= 2:
+                    p_iso = float(np.interp(p_cal, iso_x, iso_y))
+                    p_iso = max(0.0, min(1.0, p_iso))
+                    # Blend: 70% isotonic-refined, 30% Beta-only
+                    p_cal = 0.7 * p_iso + 0.3 * p_cal
+
+            # v6.0: Apply temperature scaling blend if available
+            temp_scale = regime_cal.get("temp_scale")
+            if temp_scale is not None and temp_scale != 1.0:
+                alpha = regime_cal.get("temp_blend_alpha", 0.7)
+                p_clipped_t = max(0.001, min(0.999, p_raw))
+                logit_t = math.log(p_clipped_t / (1.0 - p_clipped_t))
+                z_t = logit_t / max(temp_scale, 0.01)
+                if z_t >= 0:
+                    p_temp = 1.0 / (1.0 + math.exp(-z_t))
+                else:
+                    ez_t = math.exp(z_t)
+                    p_temp = ez_t / (1.0 + ez_t)
+                p_temp = max(0.0, min(1.0, p_temp))
+                # Blend: alpha * (Beta+isotonic) + (1-alpha) * temperature
+                p_cal = alpha * p_cal + (1.0 - alpha) * p_temp
+
+            regime_results[rname] = p_cal
 
         if regime_results:
             # If we have regime-specific results, blend with softmax weights
@@ -7239,10 +7268,18 @@ def _apply_emos_correction(
 ) -> Tuple[float, float]:
     """Apply EMOS distributional correction to expected return and sigma.
 
-    v3.0: EMOS (Gneiting 2005) with regime conditioning. Replaces both
-    magnitude scale and bias correction with a unified 4-param affine
-    transform optimized via CRPS.
+    v5.0 CRITICAL FIX: EMOS parameters are fitted against percent-space
+    data (pred * 100, actual * 100, sigma * 100) in the calibration
+    walk-forward.  At inference, mu_H and sigma_H are in log-return
+    units (e.g., 0.001 for 0.1%).  We must convert to percent before
+    applying EMOS, then convert back.
 
+    Without this fix, EMOS 'a' term (e.g., 0.018) adds 1.8% (should
+    be 0.018%), and sigma 'c' term (e.g., 0.672) makes sig_H = 67.2%
+    (should be 0.672%).  This inflates displayed returns and CI bounds
+    by ~100x.
+
+    v3.0: EMOS (Gneiting 2005) with regime conditioning.
     v2.0 fallback: mag_scale + bias (backward compat).
 
     Args:
@@ -7253,7 +7290,7 @@ def _apply_emos_correction(
         vol_regime: Current vol_regime for regime lookup
 
     Returns:
-        (mu_corrected, sigma_corrected)
+        (mu_corrected, sigma_corrected) in log-return units
     """
     if cal is None:
         return mu_H, sigma_H
@@ -7261,6 +7298,10 @@ def _apply_emos_correction(
     h_cal = horizons.get(str(H))
     if h_cal is None:
         return mu_H, sigma_H
+
+    # v5.0: Convert to percent-space (matching calibration training data)
+    mu_pct = mu_H * 100.0
+    sig_pct = sigma_H * 100.0
 
     # v3.1: Soft regime blending for EMOS — same approach as p_up:
     # compute correction from each available regime, blend with
@@ -7282,9 +7323,14 @@ def _apply_emos_correction(
             b = emos.get("b", 1.0)
             c = emos.get("c", 0.0)
             d = emos.get("d", 1.0)
-            mu_cor = a + b * mu_H
-            sig_cor = max(0.01, c + d * sigma_H)
-            regime_corrections[rname] = (mu_cor, sig_cor)
+            # v6.0: ν parameter available for Student-t predictive distribution
+            # (stored but not used in the affine correction itself — the
+            # correction formula is the same for Gaussian and Student-t EMOS)
+            # nu = emos.get("nu")  # available for downstream Monte Carlo
+            # Apply in percent-space (where EMOS was fitted)
+            mu_cor_pct = a + b * mu_pct
+            sig_cor_pct = max(0.01, c + d * sig_pct)
+            regime_corrections[rname] = (mu_cor_pct, sig_cor_pct)
 
         if regime_corrections:
             specific = {k: v for k, v in regime_corrections.items() if k != "ALL"}
@@ -7298,13 +7344,16 @@ def _apply_emos_correction(
                 if w_sum > 0:
                     mu_blend = sum(weights[r] / w_sum * specific[r][0] for r in specific)
                     sig_blend = sum(weights[r] / w_sum * specific[r][1] for r in specific)
-                    return mu_blend, max(0.01, sig_blend)
+                    # Convert back to log-return units
+                    return mu_blend / 100.0, max(1e-6, sig_blend / 100.0)
             if specific:
                 best_r = min(specific.keys(),
                              key=lambda r: abs(vol_regime - _REGIME_CENTROIDS.get(r, 1.0)))
-                return specific[best_r]
+                mu_c, sig_c = specific[best_r]
+                return mu_c / 100.0, max(1e-6, sig_c / 100.0)
             if "ALL" in regime_corrections:
-                return regime_corrections["ALL"]
+                mu_c, sig_c = regime_corrections["ALL"]
+                return mu_c / 100.0, max(1e-6, sig_c / 100.0)
 
     # Legacy v2.0 fallback: mag_scale + bias
     mag_scale = h_cal.get("mag_scale", 1.0)

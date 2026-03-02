@@ -26,11 +26,11 @@ Integration:
 Usage:
   # Programmatic (from tune_ux.py):
   from decision.signals_calibration import run_signals_calibration
-  cache = run_signals_calibration(cache, workers=8)
+  cache = run_signals_calibration(cache, workers=0)  # 0=auto, uses all CPUs
 
   # Standalone:
   python src/decision/signals_calibration.py --assets SPY,QQQ,GLD
-  python src/decision/signals_calibration.py --workers 8
+  python src/decision/signals_calibration.py --workers 0  # auto-detect CPUs
 ===============================================================================
 """
 from __future__ import annotations
@@ -89,20 +89,21 @@ console = Console(force_terminal=True, color_system="truecolor", width=160) if H
 TUNE_CACHE_DIR = Path(os.path.join(REPO_ROOT, "src", "data", "tune"))
 PRICE_CACHE_DIR = Path(os.path.join(REPO_ROOT, "src", "data", "prices"))
 
-CALIBRATION_VERSION = "4.0"
+CALIBRATION_VERSION = "6.0"
 
 # Horizons to calibrate (days)
 CALIBRATE_HORIZONS = [1, 7, 21, 63]
 HORIZON_LABELS = {1: "1d", 7: "1w", 21: "1m", 63: "3m"}
 
-# Walk-forward parameters — 500d/5d gives ~100 eval points
-# (v2.0 used spacing=3 → 166 points, but 100 is sufficient for
-# Beta/EMOS fitting with sqrt(n) shrinkage, and 40% faster)
+# Walk-forward parameters — 500d/3d gives ~166 eval points
+# v5.0: spacing 5→3 for 66% more eval points.  With regime
+# partitioning this ensures ~40-55 points per regime (was 15-25)
+# giving DOF ratio > 5 for the 7-param Beta+EMOS model.
 DEFAULT_EVAL_DAYS = 500
-DEFAULT_EVAL_SPACING = 5
+DEFAULT_EVAL_SPACING = 3
 MIN_EVAL_POINTS = 10
 MIN_PRICE_POINTS = 120
-FAST_EVAL_SPACING = 10  # --fast mode: ~50 points, 2x faster again
+FAST_EVAL_SPACING = 5  # --fast mode: ~100 points, 40% faster
 
 # Shrinkage: corrections blend toward identity using linear n/SHRINKAGE_FULL_N.
 # At n=25 → 50%, n=50 → full weight.  (v3.1: changed from sqrt(n/100)
@@ -131,7 +132,7 @@ BETA_CLIP_HI = 0.995
 # Replaces BOTH mag_scale AND bias — unified distributional correction.
 EMOS_IDENTITY = {"a": 0.0, "b": 1.0, "c": 0.0, "d": 1.0}
 EMOS_MIN_POINTS = 12
-EMOS_SIGMA_FLOOR = 0.01  # prevents degenerate sigma
+EMOS_SIGMA_FLOOR = 0.01  # prevents degenerate sigma (in percent-space during calibration)
 
 # ---------------------------------------------------------------------------
 # Regime conditioning
@@ -142,7 +143,7 @@ REGIME_BINS = {
     "NORMAL": (0.85, 1.3),
     "HIGH":   (1.3, 99.0),
 }
-MIN_REGIME_POINTS = 15  # fallback to ALL (pooled) if below this
+MIN_REGIME_POINTS = 30  # v5.0: 15→30.  7 params (Beta 3 + EMOS 4) need DOF>4 for robust fitting
 REGIME_ALL = "ALL"  # key for pooled (all regimes) calibration
 
 # ---------------------------------------------------------------------------
@@ -194,6 +195,8 @@ class HorizonData:
 
     This is the immutable input to all pipeline steps.  Constructed once
     from the walk-forward records list and never modified.
+
+    v6.0: Added nu_hat (degrees of freedom) for Student-t CRPS.
     """
     H: int
     n_eval: int
@@ -204,6 +207,7 @@ class HorizonData:
     sigma_pred: np.ndarray     # predicted sigma_H (%)
     vol_regime: np.ndarray     # per-record vol_regime scalar
     weights: np.ndarray        # recency weights
+    nu_hat: np.ndarray = field(default_factory=lambda: np.array([]))  # v6.0: BMA-averaged ν
 
 
 @dataclass
@@ -244,6 +248,22 @@ def _get_numba_kernels():
             compute_brier_score_nb,
             grid_search_thresholds_nb,
             apply_isotonic_map_nb,
+            # v4.0 pipeline kernels
+            apply_beta_map_batch_nb,
+            crps_gaussian_nb,
+            crps_gaussian_mean_nb,
+            beta_nll_objective_nb,
+            emos_crps_objective_nb,
+            evaluate_metrics_nb,
+            # v6.0 pipeline kernels
+            crps_student_t_nb,
+            crps_student_t_mean_nb,
+            emos_crps_student_t_objective_nb,
+            beta_focal_nll_objective_nb,
+            temperature_scaling_nll_nb,
+            apply_isotonic_beta_blend_nb,
+            brier_decomposition_nb,
+            expanding_cv_fold_indices_nb,
         )
         return {
             "isotonic_regression": isotonic_regression_nb,
@@ -253,6 +273,22 @@ def _get_numba_kernels():
             "brier_score": compute_brier_score_nb,
             "grid_search_thresholds": grid_search_thresholds_nb,
             "apply_isotonic_map": apply_isotonic_map_nb,
+            # v4.0 pipeline kernels
+            "beta_batch": apply_beta_map_batch_nb,
+            "crps_gaussian": crps_gaussian_nb,
+            "crps_gaussian_mean": crps_gaussian_mean_nb,
+            "beta_nll": beta_nll_objective_nb,
+            "emos_crps": emos_crps_objective_nb,
+            "evaluate_metrics": evaluate_metrics_nb,
+            # v6.0 pipeline kernels
+            "crps_student_t": crps_student_t_nb,
+            "crps_student_t_mean": crps_student_t_mean_nb,
+            "emos_crps_student_t": emos_crps_student_t_objective_nb,
+            "beta_focal_nll": beta_focal_nll_objective_nb,
+            "temp_scaling_nll": temperature_scaling_nll_nb,
+            "isotonic_beta_blend": apply_isotonic_beta_blend_nb,
+            "brier_decomposition": brier_decomposition_nb,
+            "cv_fold_indices": expanding_cv_fold_indices_nb,
         }
     except (ImportError, Exception):
         return None
@@ -311,44 +347,50 @@ def _extract_close(ohlc_df: pd.DataFrame) -> Optional[pd.Series]:
 def _derive_sigma_H(sig) -> float:
     """Derive the horizon return std dev (sH) from Signal fields.
 
-    v3.0 BUG: Used vol_mean (mean of per-step stochastic vol MC paths)
-    as sigma_H proxy.  But at inference time, EMOS corrects sH which is
-    sqrt(var(sim_H)) — the std dev of the RETURN distribution, a
-    fundamentally different quantity.
+    v5.0 FIX: CI-width is now PRIMARY source (always stable).
+    Score-based derivation requires |score| > 0.5 (was 1e-6)
+    because when score ≈ 0.007, sigma_H = |exp_ret / 0.007|
+    explodes to 100+, making EMOS 'd' parameter unlearnable.
 
-    v3.1 FIX: Derive sH from score and exp_ret:
-      score = z_stat = mH / sH  (signals.py L7591)
-      therefore sH = |mH / z_stat| = |exp_ret / score|
+    v3.1 had score-based as primary with |score| > 1e-6 threshold,
+    producing sigma_H range of 0.065 to 102.8 — a 1500x variance
+    that destroyed EMOS fitting stability.
 
     Fallback chain:
-      1. exp_ret / score  (exact, when |score| > 1e-6)
-      2. (ci_high - ci_low) / 2  (approximate, from 68% CI width)
+      1. (ci_high - ci_low) / 2  (stable, always available)
+      2. exp_ret / score  (exact, when |score| > 0.5 only)
       3. vol_mean  (legacy, better than nothing)
 
     Returns:
         sigma_H in percent units (multiplied by 100)
     """
-    score = getattr(sig, "score", 0.0)
-    exp_ret = getattr(sig, "exp_ret", 0.0)
-
-    # Primary: exact derivation from score = mu_H / sH
-    if abs(score) > 1e-6:
-        sH = abs(exp_ret / score)
-        if 1e-8 < sH < 10.0:  # sanity: sH in log-return units
-            return sH * 100.0
-
-    # Fallback: approximate from CI width (68% CI → ~1 sigma each side)
+    # Primary: CI width (always stable, no division-by-near-zero risk)
     ci_low = getattr(sig, "ci_low", None)
     ci_high = getattr(sig, "ci_high", None)
     if ci_low is not None and ci_high is not None:
         ci_width = ci_high - ci_low
         if ci_width > 1e-8:
-            return (ci_width / 2.0) * 100.0
+            sH = ci_width / 2.0
+            if 1e-8 < sH < 1.0:  # sanity: sH in log-return units
+                return sH * 100.0
+
+    # Secondary: exact derivation from score = mu_H / sH
+    # v5.0: require |score| > 0.5 (was 1e-6 — blows up near zero)
+    score = getattr(sig, "score", 0.0)
+    exp_ret = getattr(sig, "exp_ret", 0.0)
+    if abs(score) > 0.5:
+        sH = abs(exp_ret / score)
+        if 1e-8 < sH < 1.0:  # tightened from 10.0
+            return sH * 100.0
 
     # Last resort: vol_mean (legacy, known to be wrong scale but
     # better than a constant)
     vol_mean = getattr(sig, "vol_mean", 0.0)
-    return vol_mean * 100.0
+    if vol_mean > 1e-8:
+        return vol_mean * 100.0
+
+    # Absolute fallback: 1% sigma (conservative)
+    return 1.0
 
 
 # ===========================================================================
@@ -424,21 +466,33 @@ def _fit_beta_calibration(
     else:
         w = weights / weights.sum() * len(y)  # normalize so sum(w)=N
 
-    def _weighted_nll(params):
-        a, b, c = params
-        # logit(p_cal) = a*ln(p) - b*ln(1-p) + c
-        z = a * ln_p - b * ln_1mp + c
-        # Numerically stable sigmoid
-        p_cal = np.where(z >= 0,
-                         1.0 / (1.0 + np.exp(-z)),
-                         np.exp(z) / (1.0 + np.exp(z)))
-        p_cal = np.clip(p_cal, 1e-10, 1.0 - 1e-10)
-        # Weighted binary cross-entropy
-        bce = -(y * np.log(p_cal) + (1.0 - y) * np.log(1.0 - p_cal))
-        nll = np.sum(w * bce) / np.sum(w)
-        # L2 regularization toward identity (a=1, b=1, c=0)
-        reg = 0.01 * ((a - 1.0) ** 2 + (b - 1.0) ** 2 + c ** 2)
-        return nll + reg
+    # v6.0: Use Numba focal loss (gamma=2.0) — down-weights easy examples,
+    # focuses optimizer on hard-to-classify samples near p=0.5.
+    # Focal loss (Lin et al. 2017): -w_focal * log(p_t)
+    # where w_focal = (1-p_t)^gamma, gamma=2.0
+    FOCAL_GAMMA = 2.0
+    nb = _nb()
+    if nb is not None and "beta_focal_nll" in nb:
+        _beta_focal_nb = nb["beta_focal_nll"]
+
+        def _weighted_nll(params):
+            a, b, c = params
+            return _beta_focal_nb(a, b, c, ln_p, ln_1mp, y, w, 0.01, FOCAL_GAMMA)
+    else:
+        def _weighted_nll(params):
+            a, b, c = params
+            z = a * ln_p - b * ln_1mp + c
+            p_cal = np.where(z >= 0,
+                             1.0 / (1.0 + np.exp(-z)),
+                             np.exp(z) / (1.0 + np.exp(z)))
+            p_cal = np.clip(p_cal, 1e-10, 1.0 - 1e-10)
+            # Focal loss: weight = (1 - p_t)^gamma
+            p_t = np.where(y == 1, p_cal, 1.0 - p_cal)
+            focal_w = (1.0 - p_t) ** FOCAL_GAMMA
+            bce = -(y * np.log(p_cal) + (1.0 - y) * np.log(1.0 - p_cal))
+            nll = np.sum(w * focal_w * bce) / np.sum(w)
+            reg = 0.01 * ((a - 1.0) ** 2 + (b - 1.0) ** 2 + c ** 2)
+            return nll + reg
 
     try:
         result = sp_minimize(
@@ -566,9 +620,8 @@ def _crps_gaussian(mu: np.ndarray, sigma: np.ndarray, y: np.ndarray) -> np.ndarr
     CRPS(N(μ,σ²), y) = σ [ z(2Φ(z)-1) + 2φ(z) - 1/√π ]
     where z = (y - μ) / σ
 
-    This is a strictly proper scoring rule rewarding both calibration AND
-    sharpness — unlike Brier score (calibration only) or log-likelihood
-    (unstable for misspecified variance).
+    v4.0: Uses Numba kernel when available (no scipy dependency, ~20x faster).
+    Falls back to scipy.stats.norm for compatibility.
 
     Args:
         mu:    Predicted means (array)
@@ -578,10 +631,250 @@ def _crps_gaussian(mu: np.ndarray, sigma: np.ndarray, y: np.ndarray) -> np.ndarr
     Returns:
         Per-sample CRPS values (array, lower = better)
     """
+    nb = _nb()
+    if nb is not None and "crps_gaussian" in nb:
+        return nb["crps_gaussian"](
+            mu.astype(np.float64),
+            np.maximum(sigma.astype(np.float64), 1e-10),
+            y.astype(np.float64),
+        )
+    # Fallback: scipy
     from scipy.stats import norm
     z = (y - mu) / np.maximum(sigma, 1e-10)
     crps = sigma * (z * (2.0 * norm.cdf(z) - 1.0) + 2.0 * norm.pdf(z) - 1.0 / math.sqrt(math.pi))
     return crps
+
+
+def _crps_student_t(
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    y: np.ndarray,
+    nu: np.ndarray,
+) -> np.ndarray:
+    """CRPS for Student-t predictive distribution (v6.0).
+
+    Uses Numba kernel (numerical Gini half-mean-difference).
+    Falls back to Gaussian CRPS if kernel unavailable.
+
+    Args:
+        mu:    Predicted means (array)
+        sigma: Predicted std devs (array, must be > 0)
+        y:     Observed values (array)
+        nu:    Degrees of freedom (array)
+
+    Returns:
+        Per-sample CRPS values (array, lower = better)
+    """
+    nb = _nb()
+    if nb is not None and "crps_student_t" in nb:
+        return nb["crps_student_t"](
+            mu.astype(np.float64),
+            np.maximum(sigma.astype(np.float64), 1e-10),
+            y.astype(np.float64),
+            np.maximum(nu.astype(np.float64), 2.5),
+        )
+    # Fallback: Gaussian CRPS (ν→∞ limit)
+    return _crps_gaussian(mu, sigma, y)
+
+
+def _fit_emos_student_t(
+    predicted: np.ndarray,
+    actual: np.ndarray,
+    sigma_pred: np.ndarray,
+    nu_hat: np.ndarray,
+    n_eval: int,
+    weights: Optional[np.ndarray] = None,
+) -> Dict[str, Any]:
+    """Fit 5-parameter Student-t EMOS (v6.0).
+
+    Model:
+        mu_cor  = a + b * mu_pred
+        sig_cor = max(ε, c + d * σ_pred)
+        ν       = fitted (heavier tails when data warrants)
+
+    Fitting: minimize weighted mean Student-t CRPS + magnitude penalty + ν regularization.
+
+    The 5th parameter ν (degrees of freedom) allows the predictive
+    distribution to have heavier/lighter tails than Gaussian. For
+    financial returns where crashes are common, ν ∈ [3, 15] captures
+    tail risk that Gaussian CRPS cannot.
+
+    Args:
+        predicted:  Predicted returns (log %)
+        actual:     Actual returns (log %)
+        sigma_pred: Predicted standard deviations (log %)
+        nu_hat:     BMA-averaged ν per eval point (prior for regularization)
+        n_eval:     Total evaluation points (for shrinkage)
+        weights:    Optional per-sample weights (recency)
+
+    Returns:
+        {"type": "emos", "a": float, "b": float, "c": float, "d": float, "nu": float}
+    """
+    from scipy.optimize import minimize as sp_minimize
+
+    if len(predicted) < EMOS_MIN_POINTS:
+        return {"type": "emos", **EMOS_IDENTITY}
+
+    mu_pred = predicted.astype(np.float64)
+    y = actual.astype(np.float64)
+    sig_pred = np.maximum(sigma_pred.astype(np.float64), EMOS_SIGMA_FLOOR)
+
+    if weights is None:
+        w = np.ones(len(y), dtype=np.float64)
+    else:
+        w = weights / weights.sum() * len(y)
+
+    avg_actual_abs = float(np.mean(np.abs(y)))
+    # Prior ν from BMA: regularize toward median of nu_hat
+    nu_prior = float(np.median(nu_hat)) if len(nu_hat) > 0 else 30.0
+    nu_prior = max(3.0, min(50.0, nu_prior))
+
+    nb = _nb()
+    if nb is not None and "emos_crps_student_t" in nb:
+        _emos_st_nb = nb["emos_crps_student_t"]
+
+        def _weighted_crps(params):
+            a, b, c, d, log_nu = params
+            nu = math.exp(log_nu)  # optimize in log-space for positivity
+            return _emos_st_nb(
+                a, b, c, d, nu,
+                mu_pred, sig_pred, y, w,
+                EMOS_SIGMA_FLOOR, 0.01, avg_actual_abs, nu_prior,
+            )
+    else:
+        # Fallback: use Gaussian CRPS (ignoring ν)
+        def _weighted_crps(params):
+            a, b, c, d, _log_nu = params
+            mu_cor = a + b * mu_pred
+            sig_cor = np.maximum(EMOS_SIGMA_FLOOR, c + d * sig_pred)
+            crps_vals = _crps_gaussian(mu_cor, sig_cor, y)
+            loss = float(np.sum(w * crps_vals) / np.sum(w))
+            reg = 0.01 * (a ** 2 + (b - 1.0) ** 2 + c ** 2 + (d - 1.0) ** 2)
+            avg_pred_abs = float(np.mean(np.abs(a + b * mu_pred)))
+            mag_ratio = avg_pred_abs / max(avg_actual_abs, 1e-8)
+            mag_penalty = 0.15 * (mag_ratio - 1.0) ** 2
+            return loss + reg + mag_penalty
+
+    # Initial ν in log-space
+    log_nu_init = math.log(max(3.0, nu_prior))
+
+    try:
+        result = sp_minimize(
+            _weighted_crps,
+            x0=[0.0, 1.0, 0.0, 1.0, log_nu_init],
+            method="L-BFGS-B",
+            bounds=[
+                (-10.0, 10.0),           # a
+                (-1.0, 15.0),            # b (v6.0: wider)
+                (-5.0, 5.0),             # c
+                (0.01, 5.0),             # d
+                (math.log(2.5), math.log(100.0)),  # log(ν) ∈ [2.5, 100]
+            ],
+        )
+        a_fit, b_fit, c_fit, d_fit, log_nu_fit = result.x
+        nu_fit = math.exp(log_nu_fit)
+    except Exception:
+        a_fit, b_fit, c_fit, d_fit, nu_fit = 0.0, 1.0, 0.0, 1.0, nu_prior
+
+    # Shrinkage toward identity
+    lam = min(1.0, n_eval / SHRINKAGE_FULL_N)
+    a_s = lam * a_fit
+    b_s = lam * b_fit + (1.0 - lam) * 1.0
+    c_s = lam * c_fit
+    d_s = lam * d_fit + (1.0 - lam) * 1.0
+    # ν shrinkage toward prior
+    nu_s = lam * nu_fit + (1.0 - lam) * nu_prior
+
+    return {
+        "type": "emos",
+        "a": round(float(a_s), 6),
+        "b": round(float(b_s), 6),
+        "c": round(float(c_s), 6),
+        "d": round(float(d_s), 6),
+        "nu": round(float(nu_s), 4),
+    }
+
+
+def _fit_temperature_scaling(
+    p_ups: np.ndarray,
+    actual_ups: np.ndarray,
+    weights: Optional[np.ndarray] = None,
+) -> float:
+    """Fit single-parameter temperature scaling (Guo et al. 2017).
+
+    Model: p_cal = sigmoid(logit(p_raw) / T)
+    T > 1 → soften (reduce overconfidence)
+    T < 1 → sharpen
+
+    Most robust post-hoc calibration method. Single parameter = minimal
+    overfitting risk.
+
+    Args:
+        p_ups:       Raw p_up values ∈ [0, 1]
+        actual_ups:  Binary outcomes
+        weights:     Optional recency weights
+
+    Returns:
+        Temperature T (float). T=1.0 means no change.
+    """
+    from scipy.optimize import minimize_scalar
+
+    if len(p_ups) < BETA_MIN_POINTS:
+        return 1.0
+
+    p_clipped = np.clip(p_ups, 0.001, 0.999)
+    logits = np.log(p_clipped / (1.0 - p_clipped))
+    y = actual_ups.astype(np.float64)
+
+    if weights is None:
+        w = np.ones(len(y), dtype=np.float64)
+    else:
+        w = weights / weights.sum() * len(y)
+
+    nb = _nb()
+    if nb is not None and "temp_scaling_nll" in nb:
+        _temp_nll_nb = nb["temp_scaling_nll"]
+
+        def _nll(T):
+            return _temp_nll_nb(T, logits, y, w)
+    else:
+        def _nll(T):
+            scaled = logits / max(T, 0.01)
+            p_cal = np.where(scaled >= 0,
+                             1.0 / (1.0 + np.exp(-scaled)),
+                             np.exp(scaled) / (1.0 + np.exp(scaled)))
+            p_cal = np.clip(p_cal, 1e-10, 1.0 - 1e-10)
+            bce = -(y * np.log(p_cal) + (1.0 - y) * np.log(1.0 - p_cal))
+            return float(np.sum(w * bce) / np.sum(w))
+
+    try:
+        result = minimize_scalar(_nll, bounds=(0.1, 5.0), method="bounded")
+        T = float(result.x)
+    except Exception:
+        T = 1.0
+
+    return max(0.1, min(5.0, T))
+
+
+def _apply_temperature(p_raw: float, T: float) -> float:
+    """Apply temperature scaling to a single probability.
+
+    Args:
+        p_raw: Raw probability ∈ [0, 1]
+        T:     Temperature (T=1 → identity)
+
+    Returns:
+        Temperature-scaled probability
+    """
+    p_clipped = max(0.001, min(0.999, p_raw))
+    logit = math.log(p_clipped / (1.0 - p_clipped))
+    z = logit / max(T, 0.01)
+    if z >= 0:
+        result = 1.0 / (1.0 + math.exp(-z))
+    else:
+        ez = math.exp(z)
+        result = ez / (1.0 + ez)
+    return max(0.0, min(1.0, result))
 
 
 def _fit_emos(
@@ -626,29 +919,41 @@ def _fit_emos(
     else:
         w = weights / weights.sum() * len(y)
 
-    def _weighted_crps(params):
-        a, b, c, d = params
-        mu_cor = a + b * mu_pred
-        sig_cor = np.maximum(EMOS_SIGMA_FLOOR, c + d * sig_pred)
-        crps_vals = _crps_gaussian(mu_cor, sig_cor, y)
-        # Weighted mean CRPS
-        loss = np.sum(w * crps_vals) / np.sum(w)
-        # L2 regularization toward identity (a=0, b=1, c=0, d=1)
-        # v3.1: reg=0.01 (up from 0.005) for stability with wider b bounds
-        reg = 0.01 * (a ** 2 + (b - 1.0) ** 2 + c ** 2 + (d - 1.0) ** 2)
-        return loss + reg
+    # v6.0: Use Numba-accelerated inner loop when available (~5x faster)
+    # v6.0: Stronger magnitude penalty (0.15 vs 0.05) pushes b properly
+    avg_actual_abs = float(np.mean(np.abs(y)))
+    MAG_PENALTY_WEIGHT = 0.15  # v6.0: was 0.05 in v5.0
+    nb = _nb()
+    if nb is not None and "emos_crps" in nb:
+        _emos_crps_nb = nb["emos_crps"]
+
+        def _weighted_crps(params):
+            a, b, c, d = params
+            return _emos_crps_nb(a, b, c, d, mu_pred, sig_pred, y, w,
+                                 EMOS_SIGMA_FLOOR, 0.01, avg_actual_abs)
+    else:
+        def _weighted_crps(params):
+            a, b, c, d = params
+            mu_cor = a + b * mu_pred
+            sig_cor = np.maximum(EMOS_SIGMA_FLOOR, c + d * sig_pred)
+            crps_vals = _crps_gaussian(mu_cor, sig_cor, y)
+            loss = np.sum(w * crps_vals) / np.sum(w)
+            reg = 0.01 * (a ** 2 + (b - 1.0) ** 2 + c ** 2 + (d - 1.0) ** 2)
+            # v6.0: Stronger magnitude penalty (0.15)
+            avg_pred_abs = float(np.mean(np.abs(mu_cor)))
+            mag_ratio = avg_pred_abs / max(avg_actual_abs, 1e-8)
+            mag_penalty = MAG_PENALTY_WEIGHT * (mag_ratio - 1.0) ** 2
+            return loss + reg + mag_penalty
 
     try:
         result = sp_minimize(
             _weighted_crps,
             x0=[0.0, 1.0, 0.0, 1.0],
             method="L-BFGS-B",
-            # v3.1: b lower bound widened from 0.01 to -1.0.
-            # SPY 7d had b=0.01 (hitting bound) — optimizer wants b≈0 or
-            # negative, meaning predicted returns have near-zero magnitude
-            # signal.  Allowing negative b lets optimizer discover if
-            # sign-flip correction is warranted.
-            bounds=[(-10.0, 10.0), (-1.0, 5.0), (-5.0, 5.0), (0.01, 5.0)],
+            # v6.0: b upper bound 5.0→15.0 to allow full magnitude
+            # correction.  v5.0's cap at 5.0 prevented proper scaling
+            # when predictions are 10x too small.
+            bounds=[(-10.0, 10.0), (-1.0, 15.0), (-5.0, 5.0), (0.01, 5.0)],
         )
         a_fit, b_fit, c_fit, d_fit = result.x
     except Exception:
@@ -802,17 +1107,22 @@ def _optimize_label_thresholds(
     actual_ups: np.ndarray,
     exp_rets: np.ndarray,
     actual_rets: np.ndarray,
+    p_up_map: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
     Grid search for optimal buy/sell thresholds maximizing composite metric.
 
     Optimizes: hit_rate (0.4) + inv_brier (0.3) + label_accuracy (0.3)
 
+    v6.0: Accepts optional p_up_map so Brier is computed on calibrated
+    probabilities instead of raw p_ups.
+
     Args:
         p_ups: Raw p_up values ∈ [0, 1]
         actual_ups: Binary outcomes (1 if return > 0)
         exp_rets: Predicted returns (%)
         actual_rets: Actual returns (%)
+        p_up_map: Optional Beta calibration map for Brier computation
 
     Returns:
         {"buy_thr": float, "sell_thr": float, "best_score": float,
@@ -868,7 +1178,8 @@ def _optimize_label_thresholds(
                 continue
 
             score = _eval_threshold_pair(
-                p_ups, actual_ups, exp_rets, actual_rets, buy_thr, sell_thr
+                p_ups, actual_ups, exp_rets, actual_rets, buy_thr, sell_thr,
+                p_up_map=p_up_map,
             )
             if score > best_score:
                 best_score = score
@@ -898,8 +1209,13 @@ def _eval_threshold_pair(
     actual_rets: np.ndarray,
     buy_thr: float,
     sell_thr: float,
+    p_up_map: Optional[Dict] = None,
 ) -> float:
-    """Evaluate a buy/sell threshold pair. Returns composite score."""
+    """Evaluate a buy/sell threshold pair. Returns composite score.
+
+    v6.0: Brier computed on CALIBRATED p_ups (via p_up_map) instead of raw.
+    The raw Brier was measuring model miscalibration, not threshold quality.
+    """
     n = len(p_ups)
     if n < 5:
         return 0.0
@@ -921,8 +1237,22 @@ def _eval_threshold_pair(
 
     hit_rate = float(np.mean(pred_dirs[valid_mask] == actual_dirs[valid_mask]))
 
-    # Brier score (lower is better)
-    brier = float(np.mean((p_ups - actual_ups) ** 2))
+    # v6.0: Brier on calibrated p_ups (not raw)
+    if p_up_map is not None:
+        nb = _nb()
+        if (nb is not None and "beta_batch" in nb
+                and p_up_map.get("type") == "beta"):
+            cal_p = nb["beta_batch"](
+                p_ups,
+                p_up_map.get("a", 1.0), p_up_map.get("b", 1.0),
+                p_up_map.get("c", 0.0),
+                p_up_map.get("clip_lo", 0.01), p_up_map.get("clip_hi", 0.99),
+            )
+        else:
+            cal_p = np.array([apply_p_up_map(p, p_up_map) for p in p_ups])
+    else:
+        cal_p = p_ups
+    brier = float(np.mean((cal_p - actual_ups) ** 2))
     inv_brier = max(0.0, 1.0 - brier / 0.25)
 
     # Label accuracy: BUY signals that went up + SELL signals that went down
@@ -990,6 +1320,8 @@ def _save_records(symbol: str, records: Dict[int, List[Dict]]) -> None:
     # Convert int keys to strings for JSON
     serializable = {
         "saved_at": datetime.now().isoformat(),
+        "eval_spacing": DEFAULT_EVAL_SPACING,  # v5.0: track spacing for invalidation
+        "calibration_version": CALIBRATION_VERSION,  # v5.0: track version
         "horizons": {str(k): v for k, v in records.items()},
     }
     try:
@@ -1001,6 +1333,9 @@ def _save_records(symbol: str, records: Dict[int, List[Dict]]) -> None:
 
 def _load_records(symbol: str, max_age_days: int = MAX_RECORDS_AGE_DAYS) -> Optional[Dict[int, List[Dict]]]:
     """Load cached records if they exist and are fresh enough.
+
+    v5.0: Also invalidates cache if eval_spacing or calibration_version
+    has changed since records were collected.
 
     Args:
         symbol:       Asset symbol
@@ -1022,6 +1357,16 @@ def _load_records(symbol: str, max_age_days: int = MAX_RECORDS_AGE_DAYS) -> Opti
 
         with open(path, "r") as f:
             data = json.load(f)
+
+        # v5.0: Invalidate if eval_spacing changed (e.g., 5→3)
+        cached_spacing = data.get("eval_spacing")
+        if cached_spacing is not None and cached_spacing != DEFAULT_EVAL_SPACING:
+            return None
+
+        # v5.0: Invalidate if calibration version changed
+        cached_version = data.get("calibration_version")
+        if cached_version is not None and cached_version != CALIBRATION_VERSION:
+            return None
 
         # Convert string keys back to ints
         horizons = data.get("horizons", {})
@@ -1202,6 +1547,19 @@ def calibrate_single_asset(
                     else:
                         vol_regime = 1.0
 
+                    # v6.0: extract BMA-averaged ν for Student-t CRPS
+                    _nu_hat_val = 30.0  # default near-Gaussian
+                    if isinstance(feats, dict):
+                        _nhs = feats.get("nu_hat")
+                        if _nhs is not None:
+                            try:
+                                if hasattr(_nhs, 'iloc') and len(_nhs) > 0:
+                                    _nu_hat_val = float(_nhs.iloc[-1])
+                                elif hasattr(_nhs, '__float__'):
+                                    _nu_hat_val = float(_nhs)
+                            except (ValueError, TypeError, IndexError):
+                                pass
+
                     records[H].append({
                         "predicted": pred_pct,
                         "actual": actual_pct,
@@ -1218,6 +1576,7 @@ def calibrate_single_asset(
                         "score": getattr(sig, "score", 0.0),
                         "regime": getattr(sig, "regime", "UNKNOWN"),
                         "eval_idx": idx,  # for recency weighting
+                        "nu_hat": _nu_hat_val,  # v6.0: BMA-averaged ν
                     })
 
                 idx += eval_spacing
@@ -1244,7 +1603,11 @@ def calibrate_single_asset(
 # ===========================================================================
 
 def _make_horizon_data(recs: List[Dict], H: int) -> HorizonData:
-    """Convert raw record dicts into HorizonData arrays."""
+    """Convert raw record dicts into HorizonData arrays.
+
+    v6.0: Also extracts nu_hat (BMA-averaged degrees of freedom).
+    Default 30.0 = near-Gaussian for records without nu_hat.
+    """
     n = len(recs)
     return HorizonData(
         H=H,
@@ -1256,6 +1619,7 @@ def _make_horizon_data(recs: List[Dict], H: int) -> HorizonData:
         sigma_pred=np.array([r.get("sigma_H", 1.0) for r in recs], dtype=np.float64),
         vol_regime=np.array([r.get("vol_regime", 1.0) for r in recs], dtype=np.float64),
         weights=_compute_recency_weights(n),
+        nu_hat=np.array([r.get("nu_hat", 30.0) for r in recs], dtype=np.float64),
     )
 
 
@@ -1277,18 +1641,41 @@ def _evaluate_metrics(
     Returns:
         {"brier": float, "crps": float, "hit_rate": float, "mag_ratio": float}
     """
-    # Brier: calibrated p_up vs actual outcome
-    cal_p = np.array([apply_p_up_map(p, p_up_map) for p in data.p_ups])
+    # v4.0: Fast path — use batch Numba kernel if Beta calibration
+    nb = _nb()
+    if (nb is not None and "beta_batch" in nb
+            and p_up_map.get("type") == "beta"):
+        beta_a = p_up_map.get("a", 1.0)
+        beta_b = p_up_map.get("b", 1.0)
+        beta_c = p_up_map.get("c", 0.0)
+        clip_lo = p_up_map.get("clip_lo", 0.01)
+        clip_hi = p_up_map.get("clip_hi", 0.99)
+        cal_p = nb["beta_batch"](data.p_ups, beta_a, beta_b, beta_c,
+                                 clip_lo, clip_hi)
+    else:
+        cal_p = np.array([apply_p_up_map(p, p_up_map) for p in data.p_ups])
     brier = float(np.mean((cal_p - data.actual_ups) ** 2))
 
     # CRPS: EMOS-corrected distributional score
+    # v6.0: Use Student-t CRPS when median ν < 25 (genuinely heavy tails)
     a = emos_params.get("a", 0.0)
     b = emos_params.get("b", 1.0)
     c = emos_params.get("c", 0.0)
     d = emos_params.get("d", 1.0)
     mu_cor = a + b * data.predicted
     sig_cor = np.maximum(EMOS_SIGMA_FLOOR, c + d * data.sigma_pred)
-    crps = float(np.mean(_crps_gaussian(mu_cor, sig_cor, data.actual)))
+
+    nu_emos = emos_params.get("nu", None)
+    median_nu = float(np.median(data.nu_hat)) if len(data.nu_hat) > 0 else 30.0
+    use_student_t = (median_nu < 25.0) and (nb is not None) and ("crps_student_t_mean" in nb)
+
+    if use_student_t:
+        # Use BMA-averaged ν or EMOS-fitted ν
+        nu_for_crps = nu_emos if nu_emos is not None else max(3.0, median_nu)
+        nu_arr = np.full(len(mu_cor), nu_for_crps, dtype=np.float64)
+        crps = float(nb["crps_student_t_mean"](mu_cor, sig_cor, data.actual, nu_arr))
+    else:
+        crps = float(np.mean(_crps_gaussian(mu_cor, sig_cor, data.actual)))
 
     # Hit rate: directional accuracy
     pred_dirs = np.sign(data.predicted)
@@ -1414,6 +1801,139 @@ def _step_beta(
 
 
 # ---------------------------------------------------------------------------
+# Step 2b: Isotonic — post-Beta isotonic refinement (v6.0)
+# ---------------------------------------------------------------------------
+
+def _step_isotonic(
+    regime_data: Dict[str, HorizonData],
+    prior: PipelineResult,
+) -> PipelineResult:
+    """Post-Beta isotonic regression refinement (v6.0).
+
+    After Beta calibration (parametric), apply isotonic regression
+    (nonparametric) to capture any remaining non-linear miscalibration.
+
+    The isotonic map is stored per-regime and applied as a blend with
+    the parametric Beta output. This is the "best of both worlds":
+    Beta handles the smooth shape, isotonic handles the kinks.
+
+    Args:
+        regime_data: Per-regime HorizonData
+        prior:       Previous pipeline state (with Beta fitted)
+
+    Returns:
+        New PipelineResult with isotonic maps added to by_regime
+    """
+    new_by_regime = {}
+    detail = {}
+
+    nb = _nb()
+
+    for regime_name, data in regime_data.items():
+        cur_entry = prior.by_regime.get(regime_name, {})
+        cur_p_map = cur_entry.get("p_up_map", {"type": "beta", **BETA_IDENTITY})
+        cur_emos = cur_entry.get("emos", {"type": "emos", **EMOS_IDENTITY})
+        n_eval = cur_entry.get("n_eval", data.n_eval)
+
+        # Metrics BEFORE isotonic
+        metrics_before = _evaluate_metrics(data, cur_p_map, cur_emos)
+
+        # Apply Beta calibration to get calibrated p_ups
+        if (nb is not None and "beta_batch" in nb
+                and cur_p_map.get("type") == "beta"):
+            cal_p = nb["beta_batch"](
+                data.p_ups,
+                cur_p_map.get("a", 1.0), cur_p_map.get("b", 1.0),
+                cur_p_map.get("c", 0.0),
+                cur_p_map.get("clip_lo", BETA_CLIP_LO),
+                cur_p_map.get("clip_hi", BETA_CLIP_HI),
+            )
+        else:
+            cal_p = np.array([apply_p_up_map(p, cur_p_map) for p in data.p_ups])
+
+        # Fit isotonic regression on Beta-calibrated probabilities
+        isotonic_map = None
+        if data.n_eval >= MIN_EVAL_POINTS and nb is not None:
+            try:
+                # isotonic_regression_nb returns (x_breakpoints, y_breakpoints)
+                # directly from binned PAV algorithm.
+                # Use 50 bins for fine resolution (data may occupy narrow range)
+                iso_x_arr, iso_y_arr = nb["isotonic_regression"](
+                    cal_p.astype(np.float64),
+                    data.actual_ups.astype(np.float64),
+                    50,  # n_bins (50 = 0.02 width per bin)
+                )
+
+                if len(iso_x_arr) >= 3:
+                    iso_x = [float(v) for v in iso_x_arr]
+                    iso_y = [max(0.0, min(1.0, float(v))) for v in iso_y_arr]
+                    isotonic_map = {"x": iso_x, "y": iso_y}
+            except Exception:
+                pass  # isotonic fitting failed; skip silently
+
+        # Store isotonic map in regime entry
+        new_entry = {
+            "p_up_map": cur_p_map,
+            "emos": cur_emos,
+            "n_eval": n_eval,
+        }
+        if isotonic_map is not None:
+            new_entry["isotonic_map"] = isotonic_map
+
+        new_by_regime[regime_name] = new_entry
+        detail[regime_name] = {
+            "isotonic_fitted": isotonic_map is not None,
+            "n_breakpoints": len(isotonic_map["x"]) if isotonic_map else 0,
+        }
+
+    # Overall step metrics
+    all_data = regime_data[REGIME_ALL]
+    metrics_before = _evaluate_metrics(
+        all_data,
+        prior.by_regime.get(REGIME_ALL, {}).get("p_up_map", {"type": "beta", **BETA_IDENTITY}),
+        prior.by_regime.get(REGIME_ALL, {}).get("emos", {"type": "emos", **EMOS_IDENTITY}),
+    )
+
+    # metrics_after: if isotonic was fitted for ALL regime, compute Brier
+    # using the isotonic-blended probabilities
+    all_entry = new_by_regime.get(REGIME_ALL, {})
+    all_iso = all_entry.get("isotonic_map", None)
+    if all_iso is not None and nb is not None and "isotonic_beta_blend" in nb:
+        all_p_map = all_entry.get("p_up_map", {"type": "beta", **BETA_IDENTITY})
+        cal_p_blended = nb["isotonic_beta_blend"](
+            all_data.p_ups,
+            all_p_map.get("a", 1.0), all_p_map.get("b", 1.0), all_p_map.get("c", 0.0),
+            np.array(all_iso["x"], dtype=np.float64),
+            np.array(all_iso["y"], dtype=np.float64),
+            0.3,  # blend_w for Beta (30% Beta, 70% isotonic)
+            all_p_map.get("clip_lo", BETA_CLIP_LO),
+            all_p_map.get("clip_hi", BETA_CLIP_HI),
+        )
+        brier_after = float(np.mean((cal_p_blended - all_data.actual_ups) ** 2))
+        metrics_after = dict(metrics_before)
+        metrics_after["brier"] = brier_after
+    else:
+        metrics_after = _evaluate_metrics(
+            all_data,
+            new_by_regime.get(REGIME_ALL, {}).get("p_up_map", {"type": "beta", **BETA_IDENTITY}),
+            new_by_regime.get(REGIME_ALL, {}).get("emos", {"type": "emos", **EMOS_IDENTITY}),
+        )
+
+    step = StepResult(
+        step_name="isotonic",
+        metrics_before=metrics_before,
+        metrics_after=metrics_after,
+        detail=detail,
+    )
+
+    return PipelineResult(
+        by_regime=new_by_regime,
+        label_thresholds=prior.label_thresholds,
+        steps=prior.steps + [step],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Step 3: EMOS — fit per-regime EMOS distributional correction
 # ---------------------------------------------------------------------------
 
@@ -1445,23 +1965,40 @@ def _step_emos(
         # Metrics BEFORE EMOS fitting
         metrics_before = _evaluate_metrics(data, cur_p_map, prior_e)
 
-        # Fit EMOS
-        emos_params = _fit_emos(
-            data.predicted, data.actual, data.sigma_pred,
-            data.n_eval, weights=data.weights,
-        )
+        # v6.0: Use Student-t EMOS when median ν < 25 (heavy tails)
+        median_nu = float(np.median(data.nu_hat)) if len(data.nu_hat) > 0 else 30.0
+        use_student_t = median_nu < 25.0
+
+        if use_student_t:
+            emos_params = _fit_emos_student_t(
+                data.predicted, data.actual, data.sigma_pred,
+                data.nu_hat, data.n_eval, weights=data.weights,
+            )
+        else:
+            emos_params = _fit_emos(
+                data.predicted, data.actual, data.sigma_pred,
+                data.n_eval, weights=data.weights,
+            )
 
         # Metrics AFTER EMOS fitting
         metrics_after = _evaluate_metrics(data, cur_p_map, emos_params)
 
-        new_by_regime[regime_name] = {
+        # Preserve isotonic_map from prior step if present
+        prior_entry = prior.by_regime.get(regime_name, {})
+        new_entry = {
             "p_up_map": cur_p_map,
             "emos": emos_params,
             "n_eval": data.n_eval,
         }
+        if "isotonic_map" in prior_entry:
+            new_entry["isotonic_map"] = prior_entry["isotonic_map"]
+
+        new_by_regime[regime_name] = new_entry
         detail[regime_name] = {
             "crps_before": metrics_before["crps"],
             "crps_after": metrics_after["crps"],
+            "student_t": use_student_t,
+            "median_nu": round(median_nu, 2),
         }
 
     step = StepResult(
@@ -1487,6 +2024,132 @@ def _step_emos(
 
 
 # ---------------------------------------------------------------------------
+# Step 3b: Magnitude — explicit magnitude scale correction (v5.0)
+# ---------------------------------------------------------------------------
+
+def _step_magnitude(
+    regime_data: Dict[str, HorizonData],
+    prior: PipelineResult,
+) -> PipelineResult:
+    """Explicit magnitude calibration step (v5.0).
+
+    The core problem: predictions are systematically ~6.7x too small
+    (mag_ratio ≈ 0.15). EMOS's b parameter *should* capture this via
+    CRPS optimization, but the optimizer prefers inflating sigma (c)
+    over scaling mean (b) because wider sigma more efficiently reduces
+    CRPS when the mean is already small.
+
+    This step directly computes the magnitude correction and applies it
+    by multiplying the EMOS 'b' parameter. Only applied if it improves
+    CRPS (no-harm guard).
+
+    Mathematical formulation:
+      scale = median(|actual|) / median(|predicted|)
+      b_new = b_current * clip(scale, 0.3, 8.0)
+      a_new = a_current * clip(scale, 0.3, 8.0)  # bias also needs rescaling
+
+    We use medians (not means) for robustness to outliers.
+
+    Args:
+        regime_data: Per-regime HorizonData
+        prior:       Previous pipeline state (with EMOS already fitted)
+
+    Returns:
+        New PipelineResult with magnitude-corrected EMOS params
+    """
+    new_by_regime = {}
+    detail = {}
+
+    for regime_name, data in regime_data.items():
+        cur_entry = prior.by_regime.get(regime_name, {})
+        cur_p_map = cur_entry.get("p_up_map", {"type": "beta", **BETA_IDENTITY})
+        cur_emos = dict(cur_entry.get("emos", {"type": "emos", **EMOS_IDENTITY}))
+        n_eval = cur_entry.get("n_eval", data.n_eval)
+
+        # Current EMOS params
+        a_cur = cur_emos.get("a", 0.0)
+        b_cur = cur_emos.get("b", 1.0)
+
+        # Compute magnitude correction
+        pred_abs = np.abs(data.predicted)
+        actual_abs = np.abs(data.actual)
+        med_pred = float(np.median(pred_abs)) if len(pred_abs) > 0 else 1e-8
+        med_actual = float(np.median(actual_abs)) if len(actual_abs) > 0 else 1e-8
+
+        if med_pred > 1e-8:
+            raw_scale = med_actual / med_pred
+        else:
+            raw_scale = 1.0
+
+        # Clip to reasonable range and apply shrinkage
+        scale = max(0.3, min(8.0, raw_scale))
+        # Shrinkage toward 1.0 (no correction) based on data quantity
+        lam = min(1.0, n_eval / SHRINKAGE_FULL_N)
+        scale_shrunk = lam * scale + (1.0 - lam) * 1.0
+
+        # Apply magnitude correction to EMOS b and a
+        b_new = b_cur * scale_shrunk
+        a_new = a_cur * scale_shrunk  # bias magnitude also needs rescaling
+
+        new_emos = dict(cur_emos)
+        new_emos["b"] = round(float(b_new), 6)
+        new_emos["a"] = round(float(a_new), 6)
+
+        # No-harm guard: only apply if CRPS improves
+        crps_before = _evaluate_metrics(data, cur_p_map, cur_emos)["crps"]
+        crps_after = _evaluate_metrics(data, cur_p_map, new_emos)["crps"]
+
+        if crps_after <= crps_before:
+            applied_emos = new_emos
+            was_applied = True
+        else:
+            applied_emos = cur_emos
+            was_applied = False
+
+        new_entry = {
+            "p_up_map": cur_p_map,
+            "emos": applied_emos,
+            "n_eval": n_eval,
+        }
+        # v6.0: preserve isotonic_map from prior steps
+        if "isotonic_map" in cur_entry:
+            new_entry["isotonic_map"] = cur_entry["isotonic_map"]
+        new_by_regime[regime_name] = new_entry
+        detail[regime_name] = {
+            "raw_scale": round(raw_scale, 4),
+            "scale_shrunk": round(scale_shrunk, 4),
+            "b_before": round(b_cur, 6),
+            "b_after": round(float(applied_emos.get("b", 1.0)), 6),
+            "crps_before": crps_before,
+            "crps_after": crps_after if was_applied else crps_before,
+            "applied": was_applied,
+        }
+
+    # Overall step metrics (on ALL partition)
+    all_data = regime_data[REGIME_ALL]
+    step = StepResult(
+        step_name="magnitude",
+        metrics_before=_evaluate_metrics(
+            all_data,
+            prior.by_regime.get(REGIME_ALL, {}).get("p_up_map", {"type": "beta", **BETA_IDENTITY}),
+            prior.by_regime.get(REGIME_ALL, {}).get("emos", {"type": "emos", **EMOS_IDENTITY}),
+        ),
+        metrics_after=_evaluate_metrics(
+            all_data,
+            new_by_regime.get(REGIME_ALL, {}).get("p_up_map", {"type": "beta", **BETA_IDENTITY}),
+            new_by_regime.get(REGIME_ALL, {}).get("emos", {"type": "emos", **EMOS_IDENTITY}),
+        ),
+        detail=detail,
+    )
+
+    return PipelineResult(
+        by_regime=new_by_regime,
+        label_thresholds=prior.label_thresholds,
+        steps=prior.steps + [step],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Step 4: CV Guard — temporal cross-validation revert guard
 # ---------------------------------------------------------------------------
 
@@ -1495,11 +2158,19 @@ def _step_cv_guard(
     recs_by_regime: Dict[str, List[Dict]],
     prior: PipelineResult,
 ) -> PipelineResult:
-    """Temporal cross-validation guard (v3.1 logic, now a separate step).
+    """3-fold expanding-window cross-validation guard (v6.0).
 
-    For each regime, split records 70/30 temporally. Fit on 70%, validate
-    on 30%. If calibrated metrics are WORSE on validation than identity,
-    revert to identity for that component.
+    v6.0: Replaced single 70/30 split with 3-fold expanding window.
+    This reduces variance of the CV estimate (single split is noisy
+    with 15-30 validation points).
+
+    Expanding folds:
+      Fold 1: train [0, 33%), val [33%, 67%)
+      Fold 2: train [0, 50%), val [50%, 83%)
+      Fold 3: train [0, 67%), val [67%, 100%)
+
+    For each fold, fit on train, score on val. Average validation
+    degradation across folds. Revert if average > tolerance.
 
     Args:
         regime_data:    Per-regime HorizonData (full data)
@@ -1512,6 +2183,7 @@ def _step_cv_guard(
     new_by_regime = {}
     detail = {}
     any_reverted = False
+    N_FOLDS = 3
 
     for regime_name, data in regime_data.items():
         cur_entry = prior.by_regime.get(regime_name, {})
@@ -1523,68 +2195,135 @@ def _step_cv_guard(
         cv_reverted_emos = False
 
         if data.n_eval >= 20:
-            split_idx = int(data.n_eval * 0.7)
+            # v6.0: 3-fold expanding splits
+            n = data.n_eval
+            fold_brier_deltas = []
+            fold_crps_deltas = []
 
-            # Validation arrays
-            val_p_ups = data.p_ups[split_idx:]
-            val_actual_ups = data.actual_ups[split_idx:]
-            val_predicted = data.predicted[split_idx:]
-            val_actual = data.actual[split_idx:]
-            val_sigma = data.sigma_pred[split_idx:]
+            for fold_idx in range(N_FOLDS):
+                # Expanding window: train = [0, train_end), val = [train_end, val_end)
+                train_frac = (fold_idx + 1) / (N_FOLDS + 1)
+                val_frac = (fold_idx + 2) / (N_FOLDS + 1)
+                train_end = int(n * train_frac)
+                val_end = min(n, int(n * val_frac))
 
-            # Train arrays
-            train_p_ups = data.p_ups[:split_idx]
-            train_actual_ups = data.actual_ups[:split_idx]
-            train_predicted = data.predicted[:split_idx]
-            train_actual = data.actual[:split_idx]
-            train_sigma = data.sigma_pred[:split_idx]
-            n_train = len(train_predicted)
-            w_train = _compute_recency_weights(n_train)
+                if train_end < BETA_MIN_POINTS or val_end - train_end < 5:
+                    continue
 
-            # Re-fit on train set only
-            cv_beta = _fit_beta_calibration(train_p_ups, train_actual_ups, n_train, weights=w_train)
-            cv_emos = _fit_emos(train_predicted, train_actual, train_sigma, n_train, weights=w_train)
+                # Validation arrays
+                val_p_ups = data.p_ups[train_end:val_end]
+                val_actual_ups = data.actual_ups[train_end:val_end]
+                val_predicted = data.predicted[train_end:val_end]
+                val_actual = data.actual[train_end:val_end]
+                val_sigma = data.sigma_pred[train_end:val_end]
 
-            # Beta CV check: Brier on validation
-            brier_raw_val = float(np.mean((val_p_ups - val_actual_ups) ** 2))
-            cal_p_val = np.array([apply_p_up_map(p, cv_beta) for p in val_p_ups])
-            brier_cal_val = float(np.mean((cal_p_val - val_actual_ups) ** 2))
-            if brier_cal_val > brier_raw_val + 0.001:
-                cur_p_map = {"type": "beta", **BETA_IDENTITY}
-                cv_reverted_beta = True
-                any_reverted = True
+                # Train arrays
+                train_p_ups = data.p_ups[:train_end]
+                train_actual_ups = data.actual_ups[:train_end]
+                train_predicted = data.predicted[:train_end]
+                train_actual = data.actual[:train_end]
+                train_sigma = data.sigma_pred[:train_end]
+                n_train = len(train_predicted)
+                w_train = _compute_recency_weights(n_train)
 
-            # EMOS CV check: CRPS on validation
-            crps_raw_val = float(np.mean(_crps_gaussian(
-                val_predicted,
-                np.maximum(val_sigma, EMOS_SIGMA_FLOOR),
-                val_actual,
-            )))
-            mu_cv = cv_emos.get("a", 0.0) + cv_emos.get("b", 1.0) * val_predicted
-            sig_cv = np.maximum(EMOS_SIGMA_FLOOR,
-                                cv_emos.get("c", 0.0) + cv_emos.get("d", 1.0) * val_sigma)
-            crps_cal_val = float(np.mean(_crps_gaussian(mu_cv, sig_cv, val_actual)))
-            if crps_cal_val > crps_raw_val + 0.001:
-                cur_emos = {"type": "emos", **EMOS_IDENTITY}
-                cv_reverted_emos = True
-                any_reverted = True
+                # Re-fit on train set only
+                cv_beta = _fit_beta_calibration(
+                    train_p_ups, train_actual_ups, n_train, weights=w_train
+                )
+                # Use Student-t EMOS if appropriate
+                train_nu = data.nu_hat[:train_end] if len(data.nu_hat) > 0 else np.array([])
+                median_nu = float(np.median(train_nu)) if len(train_nu) > 0 else 30.0
+                if median_nu < 25.0:
+                    cv_emos = _fit_emos_student_t(
+                        train_predicted, train_actual, train_sigma,
+                        train_nu, n_train, weights=w_train,
+                    )
+                else:
+                    cv_emos = _fit_emos(
+                        train_predicted, train_actual, train_sigma,
+                        n_train, weights=w_train,
+                    )
+
+                # Beta CV: Brier delta on validation
+                brier_raw_val = float(np.mean((val_p_ups - val_actual_ups) ** 2))
+                cal_p_val = np.array([apply_p_up_map(p, cv_beta) for p in val_p_ups])
+                brier_cal_val = float(np.mean((cal_p_val - val_actual_ups) ** 2))
+                fold_brier_deltas.append(brier_cal_val - brier_raw_val)
+
+                # EMOS CV: CRPS delta on validation
+                # v6.0 fix: Use Student-t CRPS when median_nu < 25 (consistent
+                # with main evaluation). Previously used Gaussian CRPS always,
+                # causing false reverts when EMOS fitted for Student-t metric.
+                nb = _nb()
+                use_t = (median_nu < 25.0) and (nb is not None) and ("crps_student_t_mean" in nb)
+
+                if use_t:
+                    nu_raw = max(3.0, median_nu)
+                    nu_arr_raw = np.full(len(val_predicted), nu_raw, dtype=np.float64)
+                    crps_raw_val = float(nb["crps_student_t_mean"](
+                        val_predicted,
+                        np.maximum(val_sigma, EMOS_SIGMA_FLOOR),
+                        val_actual,
+                        nu_arr_raw,
+                    ))
+                else:
+                    crps_raw_val = float(np.mean(_crps_gaussian(
+                        val_predicted,
+                        np.maximum(val_sigma, EMOS_SIGMA_FLOOR),
+                        val_actual,
+                    )))
+
+                mu_cv = cv_emos.get("a", 0.0) + cv_emos.get("b", 1.0) * val_predicted
+                sig_cv = np.maximum(EMOS_SIGMA_FLOOR,
+                                    cv_emos.get("c", 0.0) + cv_emos.get("d", 1.0) * val_sigma)
+
+                if use_t:
+                    nu_emos = cv_emos.get("nu", None)
+                    nu_for_cv = nu_emos if nu_emos is not None else max(3.0, median_nu)
+                    nu_arr_cv = np.full(len(mu_cv), nu_for_cv, dtype=np.float64)
+                    crps_cal_val = float(nb["crps_student_t_mean"](mu_cv, sig_cv, val_actual, nu_arr_cv))
+                else:
+                    crps_cal_val = float(np.mean(_crps_gaussian(mu_cv, sig_cv, val_actual)))
+
+                fold_crps_deltas.append(crps_cal_val - crps_raw_val)
+
+            # v6.0: Adaptive tolerance scales with 1/sqrt(total val points)
+            total_val_pts = max(1, data.n_eval // 3)
+            cv_tol = max(0.01, 0.1 / math.sqrt(total_val_pts))
+
+            # Average delta across folds
+            if fold_brier_deltas:
+                avg_brier_delta = float(np.mean(fold_brier_deltas))
+                if avg_brier_delta > cv_tol:
+                    cur_p_map = {"type": "beta", **BETA_IDENTITY}
+                    cv_reverted_beta = True
+                    any_reverted = True
+
+            if fold_crps_deltas:
+                avg_crps_delta = float(np.mean(fold_crps_deltas))
+                if avg_crps_delta > cv_tol:
+                    cur_emos = {"type": "emos", **EMOS_IDENTITY}
+                    cv_reverted_emos = True
+                    any_reverted = True
 
             detail[regime_name] = {
-                "n_train": n_train,
-                "n_val": data.n_eval - split_idx,
-                "brier_raw_val": round(brier_raw_val, 6),
-                "brier_cal_val": round(brier_cal_val, 6),
-                "crps_raw_val": round(crps_raw_val, 6),
-                "crps_cal_val": round(crps_cal_val, 6),
+                "n_folds": len(fold_brier_deltas),
+                "avg_brier_delta": round(float(np.mean(fold_brier_deltas)), 6) if fold_brier_deltas else 0.0,
+                "avg_crps_delta": round(float(np.mean(fold_crps_deltas)), 6) if fold_crps_deltas else 0.0,
+                "cv_tol": round(cv_tol, 4),
                 "beta_reverted": cv_reverted_beta,
                 "emos_reverted": cv_reverted_emos,
             }
 
-        new_by_regime[regime_name] = {
+        new_entry = {
             "p_up_map": cur_p_map,
             "emos": cur_emos,
             "n_eval": n_eval,
         }
+        # v6.0: preserve isotonic_map
+        if "isotonic_map" in cur_entry:
+            new_entry["isotonic_map"] = cur_entry["isotonic_map"]
+        new_by_regime[regime_name] = new_entry
 
     # Overall metrics (on ALL partition)
     all_data = regime_data[REGIME_ALL]
@@ -1612,6 +2351,118 @@ def _step_cv_guard(
 
 
 # ---------------------------------------------------------------------------
+# Step 4b: Temperature Ensemble — blend Beta+isotonic with temperature (v6.0)
+# ---------------------------------------------------------------------------
+
+def _step_temp_ensemble(
+    regime_data: Dict[str, HorizonData],
+    prior: PipelineResult,
+) -> PipelineResult:
+    """Temperature scaling ensemble (v6.0).
+
+    Fits temperature scaling on raw p_ups, then stores the T parameter
+    alongside the Beta+isotonic calibration. At inference time, the
+    final calibrated probability is:
+
+        p_final = α * p_beta_isotonic + (1 - α) * p_temperature
+
+    where α = 0.7 (Beta+isotonic gets more weight — it's more flexible).
+
+    Temperature scaling (Guo et al. 2017) is the most robust single-
+    parameter post-hoc calibration. It provides a regularized baseline
+    that prevents the more flexible Beta+isotonic from overfitting.
+
+    Args:
+        regime_data: Per-regime HorizonData
+        prior:       Previous pipeline state
+
+    Returns:
+        New PipelineResult with temp_scale added to by_regime
+    """
+    TEMP_BLEND_ALPHA = 0.7  # Weight for Beta+isotonic vs temperature
+
+    new_by_regime = {}
+    detail = {}
+
+    for regime_name, data in regime_data.items():
+        cur_entry = prior.by_regime.get(regime_name, {})
+        cur_p_map = cur_entry.get("p_up_map", {"type": "beta", **BETA_IDENTITY})
+        cur_emos = cur_entry.get("emos", {"type": "emos", **EMOS_IDENTITY})
+        n_eval = cur_entry.get("n_eval", data.n_eval)
+
+        # Fit temperature scaling on raw p_ups
+        T = _fit_temperature_scaling(data.p_ups, data.actual_ups, data.weights)
+
+        new_entry = dict(cur_entry)
+        new_entry["temp_scale"] = round(T, 4)
+        new_entry["temp_blend_alpha"] = TEMP_BLEND_ALPHA
+
+        new_by_regime[regime_name] = new_entry
+        detail[regime_name] = {
+            "temperature": round(T, 4),
+            "blend_alpha": TEMP_BLEND_ALPHA,
+        }
+
+    # Overall step metrics — compute actual temperature-blended Brier
+    all_data = regime_data[REGIME_ALL]
+    all_p_map = prior.by_regime.get(REGIME_ALL, {}).get("p_up_map", {"type": "beta", **BETA_IDENTITY})
+    all_emos = prior.by_regime.get(REGIME_ALL, {}).get("emos", {"type": "emos", **EMOS_IDENTITY})
+    metrics_before = _evaluate_metrics(all_data, all_p_map, all_emos)
+
+    # Compute after-metrics: blend Beta(+isotonic) with temperature scaling
+    all_new = new_by_regime.get(REGIME_ALL, {})
+    T = all_new.get("temp_scale", 1.0)
+    alpha = all_new.get("temp_blend_alpha", TEMP_BLEND_ALPHA)
+    nb = _nb()
+
+    # Get Beta(+isotonic) calibrated probs
+    all_iso = all_new.get("isotonic_map", None)
+    if all_iso is not None and nb is not None and "isotonic_beta_blend" in nb:
+        cal_p_beta_iso = nb["isotonic_beta_blend"](
+            all_data.p_ups,
+            all_p_map.get("a", 1.0), all_p_map.get("b", 1.0), all_p_map.get("c", 0.0),
+            np.array(all_iso["x"], dtype=np.float64),
+            np.array(all_iso["y"], dtype=np.float64),
+            0.3,  # blend_w for Beta
+            all_p_map.get("clip_lo", BETA_CLIP_LO),
+            all_p_map.get("clip_hi", BETA_CLIP_HI),
+        )
+    elif nb is not None and "beta_batch" in nb and all_p_map.get("type") == "beta":
+        cal_p_beta_iso = nb["beta_batch"](
+            all_data.p_ups,
+            all_p_map.get("a", 1.0), all_p_map.get("b", 1.0),
+            all_p_map.get("c", 0.0),
+            all_p_map.get("clip_lo", BETA_CLIP_LO),
+            all_p_map.get("clip_hi", BETA_CLIP_HI),
+        )
+    else:
+        cal_p_beta_iso = np.array([apply_p_up_map(p, all_p_map) for p in all_data.p_ups])
+
+    # Temperature-scaled probs
+    logits = np.log(np.clip(all_data.p_ups, 1e-8, 1 - 1e-8) / (1 - np.clip(all_data.p_ups, 1e-8, 1 - 1e-8)))
+    cal_p_temp = 1.0 / (1.0 + np.exp(-logits / max(T, 0.01)))
+
+    # Blend
+    cal_p_ensemble = alpha * cal_p_beta_iso + (1.0 - alpha) * cal_p_temp
+    brier_after = float(np.mean((cal_p_ensemble - all_data.actual_ups) ** 2))
+    metrics_after = dict(metrics_before)
+    metrics_after["brier"] = brier_after
+
+    step = StepResult(
+        step_name="temp_ensemble",
+        metrics_before=metrics_before,
+        metrics_after=metrics_after,
+        detail=detail,
+    )
+
+    return PipelineResult(
+        by_regime=new_by_regime,
+        label_thresholds=prior.label_thresholds,
+        steps=prior.steps + [step],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Step 5: Threshold — optimize label buy/sell thresholds
 # ---------------------------------------------------------------------------
 
@@ -1623,6 +2474,8 @@ def _step_threshold(
 
     Pure function: returns PipelineResult with label_thresholds set.
 
+    v6.0: Passes p_up_map so Brier is computed on calibrated probabilities.
+
     Args:
         all_data: HorizonData for ALL (pooled) regime
         prior:    Previous pipeline state
@@ -1630,13 +2483,16 @@ def _step_threshold(
     Returns:
         New PipelineResult with label_thresholds
     """
+    # v6.0: Get the calibrated p_up_map for Brier computation
+    all_p_map = prior.by_regime.get(REGIME_ALL, {}).get("p_up_map", {"type": "beta", **BETA_IDENTITY})
+
     label_result = _optimize_label_thresholds(
         all_data.p_ups, all_data.actual_ups,
         all_data.predicted, all_data.actual,
+        p_up_map=all_p_map,
     )
 
     # Thresholds don't change Brier/CRPS — record identity metrics
-    all_p_map = prior.by_regime.get(REGIME_ALL, {}).get("p_up_map", {"type": "beta", **BETA_IDENTITY})
     all_emos = prior.by_regime.get(REGIME_ALL, {}).get("emos", {"type": "emos", **EMOS_IDENTITY})
     metrics = _evaluate_metrics(all_data, all_p_map, all_emos)
 
@@ -1664,7 +2520,9 @@ def _run_pipeline(
 ) -> Tuple[Dict, Dict, PipelineResult]:
     """Run the full calibration pipeline for one horizon.
 
-    Functional chain: Partition → Beta → EMOS → CVGuard → Threshold
+    v6.0 Functional chain (8 steps):
+      Partition → Beta(focal) → Isotonic → EMOS(Student-t) → Magnitude →
+      CVGuard(3-fold) → TempEnsemble → Threshold
 
     Args:
         recs: Walk-forward records for horizon H
@@ -1696,16 +2554,25 @@ def _run_pipeline(
         },
     )
 
-    # Step 1: Beta calibration
+    # Step 1: Beta calibration (focal loss, gamma=2.0)
     result = _step_beta(regime_data, initial)
 
-    # Step 2: EMOS distributional correction
+    # Step 2: Isotonic regression (post-Beta nonparametric refinement)
+    result = _step_isotonic(regime_data, result)
+
+    # Step 3: EMOS distributional correction (Student-t when ν < 25)
     result = _step_emos(regime_data, result)
 
-    # Step 3: CV guard (temporal cross-validation revert)
+    # Step 4: Magnitude scale correction
+    result = _step_magnitude(regime_data, result)
+
+    # Step 5: CV guard (3-fold expanding-window cross-validation revert)
     result = _step_cv_guard(regime_data, partitions, result)
 
-    # Step 4: Threshold optimization
+    # Step 6: Temperature ensemble (blend Beta+isotonic with temperature scaling)
+    result = _step_temp_ensemble(regime_data, result)
+
+    # Step 7: Threshold optimization (Brier on calibrated p_ups)
     result = _step_threshold(all_data, result)
 
     # === Assemble horizon calibration dict ===
@@ -1786,6 +2653,11 @@ def _run_pipeline(
         }.get("cv_guard", None),
         # v4.0: pipeline trace
         "pipeline_log": pipeline_log,
+        # v6.0: top-level isotonic, temperature, and ν for inference
+        "isotonic_map": all_entry.get("isotonic_map", None),
+        "temp_scale": all_entry.get("temp_scale", None),
+        "temp_blend_alpha": all_entry.get("temp_blend_alpha", 0.7),
+        "emos_nu": all_emos.get("nu", None),
     }
 
     return horizon_cal, result.label_thresholds, result
@@ -1869,7 +2741,7 @@ def _build_calibration(
 
 def run_signals_calibration(
     cache: Dict[str, Dict],
-    workers: int = 8,
+    workers: int = 0,
     eval_days: int = DEFAULT_EVAL_DAYS,
     eval_spacing: int = DEFAULT_EVAL_SPACING,
     assets: Optional[List[str]] = None,
@@ -1887,7 +2759,7 @@ def run_signals_calibration(
 
     Args:
         cache: Full tune cache dict {symbol: params}
-        workers: Number of parallel workers
+        workers: Number of parallel workers (0=auto, uses all CPUs)
         eval_days: Walk-forward window (trading days)
         eval_spacing: Days between eval points
         assets: Optional subset of assets to calibrate
@@ -1897,6 +2769,9 @@ def run_signals_calibration(
     Returns:
         Updated cache with "signals_calibration" added to each asset
     """
+    # v4.0: Auto-detect CPU count when workers=0
+    if workers <= 0:
+        workers = os.cpu_count() or 8
     # Determine which assets to calibrate
     if assets:
         symbols = [s for s in assets if s in cache]
@@ -2042,7 +2917,7 @@ def _print_summary(
         f"Elapsed: {elapsed:.1f}s\n"
         f"Avg 1w Brier improvement: {avg_brier_imp:+.4f} | "
         f"Avg 1w CRPS improvement: {avg_crps_imp:+.4f}\n"
-        f"Pipeline: Partition \u2192 Beta \u2192 EMOS \u2192 CVGuard \u2192 Threshold",
+        f"Pipeline: Partition \u2192 Beta \u2192 Isotonic \u2192 EMOS \u2192 Magnitude \u2192 CVGuard \u2192 TempEnsemble \u2192 Threshold",
         style="green",
         expand=False,
     ))
@@ -2060,7 +2935,8 @@ def main():
     parser.add_argument("--assets", type=str, help="Comma-separated asset symbols")
     parser.add_argument("--eval-days", type=int, default=DEFAULT_EVAL_DAYS)
     parser.add_argument("--eval-spacing", type=int, default=DEFAULT_EVAL_SPACING)
-    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--workers", type=int, default=0,
+                        help="Worker count (0=auto, uses all CPUs)")
     parser.add_argument("--no-parallel", action="store_true")
     parser.add_argument("--fast", action="store_true",
                         help="Fast mode: spacing=10 (~50 eval points, 3x faster)")
@@ -2086,7 +2962,7 @@ def main():
     if args.assets:
         asset_list = [s.strip() for s in args.assets.split(",")]
 
-    w = 1 if args.no_parallel else args.workers
+    w = 1 if args.no_parallel else (args.workers if args.workers > 0 else (os.cpu_count() or 8))
 
     cache = run_signals_calibration(
         cache,

@@ -2328,8 +2328,8 @@ Examples:
                        help='Show all tuning output including per-model details (may clutter display)')
     parser.add_argument('--skip-calibration', action='store_true',
                        help='Skip Pass 2 signal calibration (walk-forward p_up/magnitude/threshold correction)')
-    parser.add_argument('--workers', type=int, default=8,
-                       help='Number of parallel workers for signal calibration (default: 8)')
+    parser.add_argument('--workers', type=int, default=0,
+                       help='Number of parallel workers for signal calibration (0=auto, uses all CPUs)')
 
     args = parser.parse_args()
 
@@ -2875,9 +2875,9 @@ Examples:
     if not getattr(args, 'skip_calibration', False):
         try:
             from decision.signals_calibration import run_signals_calibration
-            n_workers = min(getattr(args, 'workers', 8) or 8, 8)
-            if n_workers < 1:
-                n_workers = 8
+            n_workers = getattr(args, 'workers', 0)
+            if n_workers <= 0:
+                n_workers = os.cpu_count() or 8
             cache = run_signals_calibration(
                 cache,
                 workers=n_workers,
