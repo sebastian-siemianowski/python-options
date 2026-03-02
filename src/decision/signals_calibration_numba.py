@@ -1740,3 +1740,154 @@ def expanding_cv_fold_indices_nb(
     t3 = 2 * n // 3
     v3_end = n
     return (t1, v1_end, t2, v2_end, t3, v3_end)
+
+# =============================================================================
+# TWO-STAGE EMOS KERNELS (v7.0)
+# =============================================================================
+# Stage 1: Optimize mean correction (a, b) with fixed c=0, d=1, nu=nu_prior
+#   - NO mag_penalty (it fights mean correction)
+#   - NO b regularization (allow b to reach 6-7x)
+#   - Only light a regularization
+# Stage 2: Optimize scale correction (c, d, nu) with fixed a, b from Stage 1
+#   - Standard regularization on d toward 1.0
+#   - ν regularization toward prior
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def emos_crps_mean_only_nb(
+    params_a: float,
+    params_b: float,
+    mu_pred: np.ndarray,
+    sig_pred: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    sigma_floor: float,
+    nu_fixed: float,
+) -> float:
+    """Stage 1: Mean correction objective — optimize (a, b) only.
+
+    Scale params fixed at identity (c=0, d=1, nu=nu_fixed).
+    NO magnitude penalty — we WANT b to reach the actual scale ratio.
+    Only light regularization on a (bias should be small).
+
+    Parameters
+    ----------
+    params_a, params_b : float
+        Mean correction: mu_cor = a + b * mu_pred
+    mu_pred, sig_pred : ndarray
+        Predicted means and sigmas
+    y : ndarray
+        Observed values
+    w : ndarray
+        Sample weights
+    sigma_floor : float
+        Minimum sigma
+    nu_fixed : float
+        Fixed degrees of freedom for this stage
+    """
+    n = len(y)
+    w_sum = 0.0
+    crps_sum = 0.0
+
+    nu = nu_fixed
+    if nu < 2.01:
+        nu = 2.01
+
+    g_nu = _compute_t_gini_half_nb(nu, 200)
+
+    for i in range(n):
+        mu_cor = params_a + params_b * mu_pred[i]
+        # Scale is identity: sig_cor = 0 + 1 * sig_pred = sig_pred
+        sig_cor = sig_pred[i]
+        if sig_cor < sigma_floor:
+            sig_cor = sigma_floor
+
+        z = (y[i] - mu_cor) / sig_cor
+        cdf_z = _t_cdf_nb(z, nu)
+        pdf_z = _t_pdf_nb(z, nu)
+
+        crps_val = sig_cor * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu + z * z) / (nu - 1.0) - g_nu)
+        crps_sum += w[i] * crps_val
+        w_sum += w[i]
+
+    loss = crps_sum / w_sum
+
+    # Very light regularization: only penalize large bias (a)
+    # Do NOT penalize b — allow it to reach actual magnitude ratio (e.g., 6-7x)
+    reg = 0.001 * (params_a * params_a)
+
+    return loss + reg
+
+
+@njit(cache=True, fastmath=True)
+def emos_crps_scale_only_nb(
+    params_c: float,
+    params_d: float,
+    params_nu: float,
+    fixed_a: float,
+    fixed_b: float,
+    mu_pred: np.ndarray,
+    sig_pred: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    sigma_floor: float,
+    nu_prior: float,
+) -> float:
+    """Stage 2: Scale correction objective — optimize (c, d, nu) only.
+
+    Mean params (a, b) fixed from Stage 1.
+    Standard regularization on d toward 1.0 and nu toward prior.
+    NO magnitude penalty (mean is already corrected).
+
+    Parameters
+    ----------
+    params_c, params_d : float
+        Scale correction: sig_cor = c + d * sig_pred
+    params_nu : float
+        Degrees of freedom (jointly optimized)
+    fixed_a, fixed_b : float
+        Fixed mean correction from Stage 1
+    mu_pred, sig_pred : ndarray
+        Predicted means and sigmas
+    y : ndarray
+        Observed values
+    w : ndarray
+        Sample weights
+    sigma_floor : float
+        Minimum sigma
+    nu_prior : float
+        Prior nu for regularization
+    """
+    n = len(y)
+    w_sum = 0.0
+    crps_sum = 0.0
+
+    nu = params_nu
+    if nu < 2.01:
+        nu = 2.01
+
+    g_nu = _compute_t_gini_half_nb(nu, 200)
+
+    for i in range(n):
+        mu_cor = fixed_a + fixed_b * mu_pred[i]
+        sig_cor = params_c + params_d * sig_pred[i]
+        if sig_cor < sigma_floor:
+            sig_cor = sigma_floor
+
+        z = (y[i] - mu_cor) / sig_cor
+        cdf_z = _t_cdf_nb(z, nu)
+        pdf_z = _t_pdf_nb(z, nu)
+
+        crps_val = sig_cor * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu + z * z) / (nu - 1.0) - g_nu)
+        crps_sum += w[i] * crps_val
+        w_sum += w[i]
+
+    loss = crps_sum / w_sum
+
+    # Scale regularization: d toward 1.0, c toward 0
+    reg = 0.01 * (params_c * params_c + (params_d - 1.0) * (params_d - 1.0))
+
+    # Nu regularization toward prior
+    nu_reg = 0.01 * (math.log(nu) - math.log(nu_prior)) ** 2
+
+    return loss + reg + nu_reg

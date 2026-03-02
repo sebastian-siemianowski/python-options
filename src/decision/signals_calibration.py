@@ -264,6 +264,9 @@ def _get_numba_kernels():
             apply_isotonic_beta_blend_nb,
             brier_decomposition_nb,
             expanding_cv_fold_indices_nb,
+            # v7.0 two-stage EMOS kernels
+            emos_crps_mean_only_nb,
+            emos_crps_scale_only_nb,
         )
         return {
             "isotonic_regression": isotonic_regression_nb,
@@ -289,6 +292,9 @@ def _get_numba_kernels():
             "isotonic_beta_blend": apply_isotonic_beta_blend_nb,
             "brier_decomposition": brier_decomposition_nb,
             "cv_fold_indices": expanding_cv_fold_indices_nb,
+            # v7.0 two-stage EMOS kernels
+            "emos_mean_only": emos_crps_mean_only_nb,
+            "emos_scale_only": emos_crps_scale_only_nb,
         }
     except (ImportError, Exception):
         return None
@@ -685,19 +691,21 @@ def _fit_emos_student_t(
     n_eval: int,
     weights: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
-    """Fit 5-parameter Student-t EMOS (v6.0).
+    """Fit 5-parameter Student-t EMOS via two-stage optimization (v7.0).
 
-    Model:
-        mu_cor  = a + b * mu_pred
-        sig_cor = max(ε, c + d * σ_pred)
-        ν       = fitted (heavier tails when data warrants)
+    v7.0: Two-stage optimization fixes the root cause of EMOS σ-inflation.
+    The old joint optimizer preferred inflating σ (via c) over scaling
+    the mean (via b) because wider σ reduces CRPS more cheaply when
+    predictions are systematically too small (mag_ratio ≈ 0.15).
 
-    Fitting: minimize weighted mean Student-t CRPS + magnitude penalty + ν regularization.
+    Stage 1 — Mean Correction (a, b only):
+        Fix c=0, d=1, ν=ν_prior (identity for scale).
+        Optimize a, b to minimize CRPS with NO regularization on b.
+        This FORCES the optimizer to rescale predictions before touching σ.
 
-    The 5th parameter ν (degrees of freedom) allows the predictive
-    distribution to have heavier/lighter tails than Gaussian. For
-    financial returns where crashes are common, ν ∈ [3, 15] captures
-    tail risk that Gaussian CRPS cannot.
+    Stage 2 — Scale Correction (c, d, ν only):
+        Fix a, b from Stage 1.
+        Optimize c, d, ν with standard regularization.
 
     Args:
         predicted:  Predicted returns (log %)
@@ -730,51 +738,93 @@ def _fit_emos_student_t(
     nu_prior = max(3.0, min(50.0, nu_prior))
 
     nb = _nb()
-    if nb is not None and "emos_crps_student_t" in nb:
-        _emos_st_nb = nb["emos_crps_student_t"]
 
-        def _weighted_crps(params):
-            a, b, c, d, log_nu = params
-            nu = math.exp(log_nu)  # optimize in log-space for positivity
-            return _emos_st_nb(
-                a, b, c, d, nu,
-                mu_pred, sig_pred, y, w,
-                EMOS_SIGMA_FLOOR, 0.01, avg_actual_abs, nu_prior,
+    # ========================================================================
+    # STAGE 1: Mean correction (a, b) — fix scale at identity
+    # ========================================================================
+    # No magnitude penalty, no b regularization — let b reach actual ratio
+    # ========================================================================
+    if nb is not None and "emos_mean_only" in nb:
+        _mean_only_nb = nb["emos_mean_only"]
+
+        def _stage1_obj(params):
+            a, b = params
+            return _mean_only_nb(
+                a, b, mu_pred, sig_pred, y, w,
+                EMOS_SIGMA_FLOOR, nu_prior,
             )
     else:
-        # Fallback: use Gaussian CRPS (ignoring ν)
-        def _weighted_crps(params):
-            a, b, c, d, _log_nu = params
+        # Fallback: Python CRPS with fixed scale
+        def _stage1_obj(params):
+            a, b = params
             mu_cor = a + b * mu_pred
+            sig_cor = np.maximum(EMOS_SIGMA_FLOOR, sig_pred)
+            crps_vals = _crps_gaussian(mu_cor, sig_cor, y)
+            loss = float(np.sum(w * crps_vals) / np.sum(w))
+            reg = 0.001 * (a ** 2)  # Light a regularization only
+            return loss + reg
+
+    # Initial guess: mag_ratio as starting point for b
+    med_pred = float(np.median(np.abs(mu_pred))) if len(mu_pred) > 0 else 1e-8
+    med_actual = float(np.median(np.abs(y))) if len(y) > 0 else 1e-8
+    b_init = min(15.0, max(0.5, med_actual / max(med_pred, 1e-8)))
+
+    try:
+        result1 = sp_minimize(
+            _stage1_obj,
+            x0=[0.0, b_init],
+            method="L-BFGS-B",
+            bounds=[
+                (-10.0, 10.0),   # a
+                (0.1, 15.0),     # b — wide range to allow actual ratio
+            ],
+        )
+        a_fit, b_fit = result1.x
+    except Exception:
+        a_fit, b_fit = 0.0, 1.0
+
+    # ========================================================================
+    # STAGE 2: Scale correction (c, d, nu) — fix a, b from Stage 1
+    # ========================================================================
+    if nb is not None and "emos_scale_only" in nb:
+        _scale_only_nb = nb["emos_scale_only"]
+
+        def _stage2_obj(params):
+            c, d, log_nu = params
+            nu = math.exp(log_nu)
+            return _scale_only_nb(
+                c, d, nu, a_fit, b_fit,
+                mu_pred, sig_pred, y, w,
+                EMOS_SIGMA_FLOOR, nu_prior,
+            )
+    else:
+        # Fallback: Python CRPS with fixed mean
+        def _stage2_obj(params):
+            c, d, _log_nu = params
+            mu_cor = a_fit + b_fit * mu_pred
             sig_cor = np.maximum(EMOS_SIGMA_FLOOR, c + d * sig_pred)
             crps_vals = _crps_gaussian(mu_cor, sig_cor, y)
             loss = float(np.sum(w * crps_vals) / np.sum(w))
-            reg = 0.01 * (a ** 2 + (b - 1.0) ** 2 + c ** 2 + (d - 1.0) ** 2)
-            avg_pred_abs = float(np.mean(np.abs(a + b * mu_pred)))
-            mag_ratio = avg_pred_abs / max(avg_actual_abs, 1e-8)
-            mag_penalty = 0.15 * (mag_ratio - 1.0) ** 2
-            return loss + reg + mag_penalty
+            reg = 0.01 * (c ** 2 + (d - 1.0) ** 2)
+            return loss + reg
 
-    # Initial ν in log-space
     log_nu_init = math.log(max(3.0, nu_prior))
 
     try:
-        result = sp_minimize(
-            _weighted_crps,
-            x0=[0.0, 1.0, 0.0, 1.0, log_nu_init],
+        result2 = sp_minimize(
+            _stage2_obj,
+            x0=[0.0, 1.0, log_nu_init],
             method="L-BFGS-B",
             bounds=[
-                (-10.0, 10.0),           # a
-                (-1.0, 15.0),            # b (v6.0: wider)
                 (-5.0, 5.0),             # c
                 (0.01, 5.0),             # d
-                (math.log(2.5), math.log(100.0)),  # log(ν) ∈ [2.5, 100]
+                (math.log(2.5), math.log(100.0)),  # log(ν)
             ],
         )
-        a_fit, b_fit, c_fit, d_fit, log_nu_fit = result.x
+        c_fit, d_fit, log_nu_fit = result2.x
         nu_fit = math.exp(log_nu_fit)
     except Exception:
-        a_fit, b_fit, c_fit, d_fit, nu_fit = 0.0, 1.0, 0.0, 1.0, nu_prior
+        c_fit, d_fit, nu_fit = 0.0, 1.0, nu_prior
 
     # Shrinkage toward identity
     lam = min(1.0, n_eval / SHRINKAGE_FULL_N)
@@ -2158,19 +2208,22 @@ def _step_cv_guard(
     recs_by_regime: Dict[str, List[Dict]],
     prior: PipelineResult,
 ) -> PipelineResult:
-    """3-fold expanding-window cross-validation guard (v6.0).
+    """Cross-validation guard with adaptive folds (v7.0).
 
-    v6.0: Replaced single 70/30 split with 3-fold expanding window.
-    This reduces variance of the CV estimate (single split is noisy
-    with 15-30 validation points).
+    v7.0: Adaptive fold count based on data quantity.
+    - n_eval < 30:  Skip CV entirely (insufficient data for reliable CV)
+    - n_eval < 100: 2-fold (train 50%, val 50%) — less noisy than 3-fold
+    - n_eval < 200: 3-fold (original v6.0)
+    - n_eval >= 200: 5-fold (more stable estimate)
 
-    Expanding folds:
+    Also: Since EMOS is now two-stage (2+3 params instead of 5 joint),
+    each stage has lower effective dimensionality, reducing minimum
+    data requirements.
+
+    Expanding folds for 3-fold:
       Fold 1: train [0, 33%), val [33%, 67%)
       Fold 2: train [0, 50%), val [50%, 83%)
       Fold 3: train [0, 67%), val [67%, 100%)
-
-    For each fold, fit on train, score on val. Average validation
-    degradation across folds. Revert if average > tolerance.
 
     Args:
         regime_data:    Per-regime HorizonData (full data)
@@ -2183,7 +2236,6 @@ def _step_cv_guard(
     new_by_regime = {}
     detail = {}
     any_reverted = False
-    N_FOLDS = 3
 
     for regime_name, data in regime_data.items():
         cur_entry = prior.by_regime.get(regime_name, {})
@@ -2194,8 +2246,18 @@ def _step_cv_guard(
         cv_reverted_beta = False
         cv_reverted_emos = False
 
-        if data.n_eval >= 20:
-            # v6.0: 3-fold expanding splits
+        # v7.0: Adaptive fold count
+        if data.n_eval < 30:
+            # Too few points — skip CV, trust the fitting
+            N_FOLDS = 0
+        elif data.n_eval < 100:
+            N_FOLDS = 2
+        elif data.n_eval < 200:
+            N_FOLDS = 3
+        else:
+            N_FOLDS = 5
+
+        if N_FOLDS > 0 and data.n_eval >= 20:
             n = data.n_eval
             fold_brier_deltas = []
             fold_crps_deltas = []
@@ -2287,9 +2349,9 @@ def _step_cv_guard(
 
                 fold_crps_deltas.append(crps_cal_val - crps_raw_val)
 
-            # v6.0: Adaptive tolerance scales with 1/sqrt(total val points)
-            total_val_pts = max(1, data.n_eval // 3)
-            cv_tol = max(0.01, 0.1 / math.sqrt(total_val_pts))
+            # v7.0: Adaptive tolerance scales with 1/sqrt(total val points per fold)
+            avg_val_pts = max(1, data.n_eval // (N_FOLDS + 1))
+            cv_tol = max(0.005, 0.08 / math.sqrt(avg_val_pts))
 
             # Average delta across folds
             if fold_brier_deltas:
@@ -2307,12 +2369,23 @@ def _step_cv_guard(
                     any_reverted = True
 
             detail[regime_name] = {
-                "n_folds": len(fold_brier_deltas),
+                "n_folds": N_FOLDS,
                 "avg_brier_delta": round(float(np.mean(fold_brier_deltas)), 6) if fold_brier_deltas else 0.0,
                 "avg_crps_delta": round(float(np.mean(fold_crps_deltas)), 6) if fold_crps_deltas else 0.0,
                 "cv_tol": round(cv_tol, 4),
                 "beta_reverted": cv_reverted_beta,
                 "emos_reverted": cv_reverted_emos,
+            }
+        else:
+            # v7.0: Skip CV for very small datasets — trust the EMOS fit
+            detail[regime_name] = {
+                "n_folds": 0,
+                "avg_brier_delta": 0.0,
+                "avg_crps_delta": 0.0,
+                "cv_tol": 0.0,
+                "beta_reverted": False,
+                "emos_reverted": False,
+                "skipped": True,
             }
 
         new_entry = {
@@ -2557,22 +2630,20 @@ def _run_pipeline(
     # Step 1: Beta calibration (focal loss, gamma=2.0)
     result = _step_beta(regime_data, initial)
 
-    # Step 2: Isotonic regression (post-Beta nonparametric refinement)
-    result = _step_isotonic(regime_data, result)
-
-    # Step 3: EMOS distributional correction (Student-t when ν < 25)
+    # Step 2: EMOS distributional correction (two-stage: mean-first, then scale)
     result = _step_emos(regime_data, result)
 
-    # Step 4: Magnitude scale correction
+    # Step 3: Magnitude scale correction
     result = _step_magnitude(regime_data, result)
 
-    # Step 5: CV guard (3-fold expanding-window cross-validation revert)
+    # Step 4: CV guard (3-fold expanding-window cross-validation revert)
     result = _step_cv_guard(regime_data, partitions, result)
 
-    # Step 6: Temperature ensemble (blend Beta+isotonic with temperature scaling)
-    result = _step_temp_ensemble(regime_data, result)
+    # v7.0: Isotonic refinement and temperature ensemble REMOVED
+    # These 2 layers each shrank p_up toward 0.5, compounding to ~10% signal loss.
+    # The single Beta layer in _apply_p_up_calibration is now the only p_up transform.
 
-    # Step 7: Threshold optimization (Brier on calibrated p_ups)
+    # Step 5: Threshold optimization (Brier on calibrated p_ups)
     result = _step_threshold(all_data, result)
 
     # === Assemble horizon calibration dict ===

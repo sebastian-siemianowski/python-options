@@ -2425,6 +2425,290 @@ def gaussian_cv_test_fold_kernel(
 
 
 # =============================================================================
+# UNIFIED MC SIMULATION KERNEL (v7.0)
+# =============================================================================
+# Replaces the two Python for-loops in _simulate_forward_paths and provides
+# GARCH + jump-diffusion + Student-t sampling for run_regime_specific_mc.
+# This is the single MC engine used for both p_up and exp_ret.
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def _student_t_sample_nb(rng_z1: float, rng_z2: float, nu: float) -> float:
+    """Generate a Student-t(nu) sample scaled to unit variance.
+
+    Uses the ratio method: t = Z / sqrt(V/nu) where Z ~ N(0,1)
+    and V ~ chi2(nu).  For chi2 we use the Box-Muller pair to
+    get a Gamma(nu/2, 2) via repeated normal draws.
+
+    We approximate chi2(nu) as the sum of nu standard-normal squares.
+    For large nu this is exact; for small nu the sample count is small.
+
+    Instead, we use the fact that for integer or half-integer nu,
+    chi2(nu) = sum of nu N(0,1)^2.  For non-integer nu we round.
+
+    But Numba doesn't have rng.standard_t, so we use the identity:
+      t(nu) = N(0,1) / sqrt(chi2(nu) / nu)
+    where chi2(nu) can be approximated via a simple loop.
+
+    This function takes two pre-generated N(0,1) values and uses
+    a simplified approach:
+      t ≈ Z1 * sqrt(nu / max(Z2^2, eps))  -- NOT correct
+
+    Actually, the correct approach is passed externally.
+    This helper scales a raw Student-t draw to unit variance.
+    """
+    # Scale to unit variance: Var(t_nu) = nu/(nu-2) for nu > 2
+    if nu > 2.0:
+        t_var = nu / (nu - 2.0)
+        return rng_z1 / np.sqrt(t_var)
+    return rng_z1
+
+
+@njit(cache=True, fastmath=False)
+def unified_mc_simulate_kernel(
+    n_paths: int,
+    H_max: int,
+    mu_now: float,
+    h0: float,
+    phi: float,
+    drift_q: float,
+    nu: float,
+    use_garch: bool,
+    omega: float,
+    alpha: float,
+    beta: float,
+    jump_intensity: float,
+    jump_mean: float,
+    jump_std: float,
+    enable_jumps: bool,
+    z_normals: np.ndarray,
+    z_chi2: np.ndarray,
+    z_drift: np.ndarray,
+    z_jump_uniform: np.ndarray,
+    z_jump_normal: np.ndarray,
+    cum_out: np.ndarray,
+    vol_out: np.ndarray,
+) -> None:
+    """Unified MC simulation kernel with GARCH + jumps + Student-t.
+
+    Generates n_paths forward simulations of cumulative log returns
+    over H_max steps.  All randomness is passed in as pre-generated
+    arrays (generated with numpy RNG in Python, passed to Numba).
+
+    Student-t sampling: t(nu) = Z / sqrt(chi2(nu)/nu)
+    where Z = z_normals and chi2(nu) ≈ z_chi2 (pre-generated).
+
+    Parameters
+    ----------
+    n_paths : int
+        Number of MC paths
+    H_max : int
+        Maximum forecast horizon (steps)
+    mu_now : float
+        Current drift estimate
+    h0 : float
+        Initial variance (vol^2)
+    phi : float
+        AR(1) drift persistence
+    drift_q : float
+        Process noise variance for drift evolution
+    nu : float
+        Degrees of freedom for Student-t noise (>100 treated as Gaussian)
+    use_garch : bool
+        Whether to use GARCH(1,1) variance evolution
+    omega, alpha, beta : float
+        GARCH(1,1) parameters
+    jump_intensity : float
+        Poisson jump arrival rate per step
+    jump_mean, jump_std : float
+        Jump size distribution N(jump_mean, jump_std^2)
+    enable_jumps : bool
+        Whether to include jump-diffusion
+    z_normals : ndarray (H_max, n_paths)
+        Pre-generated standard normal draws for observation noise
+    z_chi2 : ndarray (H_max, n_paths)
+        Pre-generated chi2(nu)/nu draws for Student-t (1.0 for Gaussian)
+    z_drift : ndarray (H_max, n_paths)
+        Pre-generated standard normal draws for drift noise
+    z_jump_uniform : ndarray (H_max, n_paths)
+        Pre-generated Uniform(0,1) for Poisson jump count approximation
+    z_jump_normal : ndarray (H_max, n_paths)
+        Pre-generated N(0,1) for jump sizes
+    cum_out : ndarray (H_max, n_paths)
+        Output: cumulative log returns (pre-allocated)
+    vol_out : ndarray (H_max, n_paths)
+        Output: volatility sqrt(h_t) at each step (pre-allocated)
+    """
+    use_student_t = (nu > 2.0) and (nu < 100.0)
+
+    # Precompute Student-t variance scaling
+    if use_student_t:
+        t_var = nu / (nu - 2.0)
+        t_scale_factor = 1.0 / np.sqrt(t_var)
+    else:
+        t_scale_factor = 1.0
+
+    drift_sigma = np.sqrt(drift_q) if drift_q > 0.0 else 0.0
+
+    for p in range(n_paths):
+        mu_t = mu_now
+        h_t = h0
+        if h_t < 1e-12:
+            h_t = 1e-12
+        cum = 0.0
+
+        for t in range(H_max):
+            sigma_t = np.sqrt(h_t)
+            vol_out[t, p] = sigma_t
+
+            # Observation noise: Student-t or Gaussian
+            if use_student_t:
+                # t(nu) = Z / sqrt(V) where V = chi2(nu)/nu
+                chi2_val = z_chi2[t, p]
+                if chi2_val < 1e-8:
+                    chi2_val = 1e-8
+                raw_t = z_normals[t, p] / np.sqrt(chi2_val)
+                # Scale to unit variance
+                eps = raw_t * t_scale_factor
+            else:
+                eps = z_normals[t, p]
+
+            e_t = sigma_t * eps
+
+            # Jump component
+            jump = 0.0
+            if enable_jumps and jump_intensity > 0.0:
+                # Approximate Poisson: if U < lambda, one jump occurs
+                # For small lambda this is P(N>=1) ≈ lambda
+                if z_jump_uniform[t, p] < jump_intensity:
+                    jump = jump_mean + jump_std * z_jump_normal[t, p]
+                # Second jump possible for lambda > 0.1
+                if jump_intensity > 0.1 and z_jump_uniform[t, p] < jump_intensity * jump_intensity:
+                    jump += jump_mean + jump_std * z_drift[t, p] * 0.5  # reuse drift noise
+
+            # Total return
+            r_t = mu_t + e_t + jump
+            cum += r_t
+
+            cum_out[t, p] = cum
+
+            # GARCH variance evolution
+            if use_garch:
+                h_t = omega + alpha * (e_t * e_t) + beta * h_t
+                if h_t < 1e-12:
+                    h_t = 1e-12
+                elif h_t > 1e4:
+                    h_t = 1e4
+
+            # AR(1) drift evolution
+            if drift_sigma > 0.0:
+                mu_t = phi * mu_t + drift_sigma * z_drift[t, p]
+            else:
+                mu_t = phi * mu_t
+
+
+@njit(cache=True, fastmath=False)
+def unified_mc_multi_path_kernel(
+    n_paths: int,
+    H_max: int,
+    mu_now: float,
+    h0: float,
+    phi: float,
+    drift_q: float,
+    nu_per_path: np.ndarray,
+    use_garch: bool,
+    omega_per_path: np.ndarray,
+    alpha_per_path: np.ndarray,
+    beta_per_path: np.ndarray,
+    jump_intensity: float,
+    jump_mean: float,
+    jump_std: float,
+    enable_jumps: bool,
+    z_normals: np.ndarray,
+    z_chi2: np.ndarray,
+    z_drift: np.ndarray,
+    z_jump_uniform: np.ndarray,
+    z_jump_normal: np.ndarray,
+    cum_out: np.ndarray,
+    vol_out: np.ndarray,
+) -> None:
+    """Multi-path MC kernel with per-path parameter uncertainty.
+
+    Like unified_mc_simulate_kernel but supports:
+    - Per-path nu (tail parameter uncertainty)
+    - Per-path GARCH parameters (parameter uncertainty via covariance sampling)
+
+    Parameters
+    ----------
+    nu_per_path : ndarray (n_paths,)
+        Per-path degrees of freedom
+    omega_per_path, alpha_per_path, beta_per_path : ndarray (n_paths,)
+        Per-path GARCH parameters
+    (other parameters same as unified_mc_simulate_kernel)
+    """
+    drift_sigma = np.sqrt(drift_q) if drift_q > 0.0 else 0.0
+
+    for p in range(n_paths):
+        nu_p = nu_per_path[p]
+        use_t_p = (nu_p > 2.0) and (nu_p < 100.0)
+        if use_t_p:
+            t_var_p = nu_p / (nu_p - 2.0)
+            t_scale_p = 1.0 / np.sqrt(t_var_p)
+        else:
+            t_scale_p = 1.0
+
+        omega_p = omega_per_path[p]
+        alpha_p = alpha_per_path[p]
+        beta_p = beta_per_path[p]
+
+        mu_t = mu_now
+        h_t = h0
+        if h_t < 1e-12:
+            h_t = 1e-12
+        cum = 0.0
+
+        for t in range(H_max):
+            sigma_t = np.sqrt(h_t)
+            vol_out[t, p] = sigma_t
+
+            # Observation noise
+            if use_t_p:
+                chi2_val = z_chi2[t, p]
+                if chi2_val < 1e-8:
+                    chi2_val = 1e-8
+                raw_t = z_normals[t, p] / np.sqrt(chi2_val)
+                eps = raw_t * t_scale_p
+            else:
+                eps = z_normals[t, p]
+
+            e_t = sigma_t * eps
+
+            # Jump component
+            jump = 0.0
+            if enable_jumps and jump_intensity > 0.0:
+                if z_jump_uniform[t, p] < jump_intensity:
+                    jump = jump_mean + jump_std * z_jump_normal[t, p]
+
+            r_t = mu_t + e_t + jump
+            cum += r_t
+            cum_out[t, p] = cum
+
+            # GARCH evolution (per-path params)
+            if use_garch:
+                h_t = omega_p + alpha_p * (e_t * e_t) + beta_p * h_t
+                if h_t < 1e-12:
+                    h_t = 1e-12
+                elif h_t > 1e4:
+                    h_t = 1e4
+
+            # AR(1) drift
+            if drift_sigma > 0.0:
+                mu_t = phi * mu_t + drift_sigma * z_drift[t, p]
+            else:
+                mu_t = phi * mu_t
+
+
+# =============================================================================
 # MS PROCESS NOISE EWM KERNEL
 # =============================================================================
 

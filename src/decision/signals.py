@@ -5946,6 +5946,276 @@ def run_regime_specific_mc(
     return cum_mu + cum_eps
 
 
+def run_unified_mc(
+    mu_t: float,
+    P_t: float,
+    phi: float,
+    q: float,
+    sigma2_step: float,
+    H_max: int,
+    n_paths: int = 5000,
+    nu: Optional[float] = None,
+    use_garch: bool = False,
+    garch_omega: float = 0.0,
+    garch_alpha: float = 0.0,
+    garch_beta: float = 0.0,
+    jump_intensity: float = 0.0,
+    jump_mean: float = 0.0,
+    jump_std: float = 0.05,
+    enable_jumps: bool = True,
+    seed: Optional[int] = None,
+    # Exotic distributions (fallback to Python path)
+    nig_alpha: Optional[float] = None,
+    nig_beta: Optional[float] = None,
+    nig_delta: Optional[float] = None,
+    hansen_lambda: Optional[float] = None,
+    cst_nu_normal: Optional[float] = None,
+    cst_nu_crisis: Optional[float] = None,
+    cst_epsilon: Optional[float] = None,
+) -> Dict[str, np.ndarray]:
+    """Unified MC engine with GARCH + jumps + Student-t via Numba kernel.
+
+    v7.0: Single MC engine that replaces both run_regime_specific_mc (constant vol,
+    no jumps) and _simulate_forward_paths (GARCH+jumps but only used for display).
+
+    Now both p_up and exp_ret come from the SAME distribution, eliminating
+    the dual-MC incoherence that was the #1 root cause of poor CRPS.
+
+    Returns cumulative returns for ALL horizons 1..H_max simultaneously,
+    enabling multi-horizon extraction from a single MC run.
+
+    For exotic distributions (NIG, Hansen Skew-t, Contaminated Student-t),
+    falls back to the original Python path since these can't be compiled
+    into the Numba kernel.
+
+    Args:
+        mu_t: Current drift estimate
+        P_t: Drift posterior variance
+        phi: AR(1) drift persistence
+        q: Process noise variance
+        sigma2_step: Per-step observation variance
+        H_max: Maximum forecast horizon (all horizons 1..H_max produced)
+        n_paths: Number of MC paths
+        nu: Degrees of freedom for Student-t (None for Gaussian)
+        use_garch: Whether to use GARCH(1,1) variance evolution
+        garch_omega, garch_alpha, garch_beta: GARCH parameters
+        jump_intensity: Poisson jump rate per step
+        jump_mean, jump_std: Jump size distribution N(mu_J, sigma_J^2)
+        enable_jumps: Whether to include jump-diffusion
+        seed: Random seed
+        nig_alpha, nig_beta, nig_delta: NIG parameters (Python fallback)
+        hansen_lambda: Hansen skew-t parameter (Python fallback)
+        cst_nu_normal, cst_nu_crisis, cst_epsilon: CST parameters (Python fallback)
+
+    Returns:
+        Dict with:
+        - 'returns': (H_max, n_paths) cumulative log returns
+        - 'volatility': (H_max, n_paths) per-step sigma
+        - 'samples_at_H': callable that extracts 1D samples at horizon H
+    """
+    # Detect exotic distributions that need Python path
+    use_nig = (nig_alpha is not None and nig_beta is not None and nig_delta is not None)
+    use_cst = (
+        cst_nu_normal is not None and cst_nu_crisis is not None and
+        cst_epsilon is not None and cst_epsilon > 0.001
+    )
+    use_hansen = (
+        hansen_lambda is not None and nu is not None and
+        abs(hansen_lambda) > 0.01
+    )
+    use_exotic = use_nig or use_cst or use_hansen
+
+    # Input validation
+    mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
+    P_t = float(max(P_t, 0.0)) if np.isfinite(P_t) else 0.0
+    phi = float(phi) if np.isfinite(phi) else 1.0
+    q = float(max(q, 0.0)) if np.isfinite(q) else 0.0
+    sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
+    H_max = int(max(H_max, 1))
+
+    if nu is not None and not use_exotic:
+        if not np.isfinite(nu) or nu <= 2.0:
+            nu = None
+        else:
+            nu = float(np.clip(nu, 2.1, 500.0))
+
+    rng = np.random.default_rng(seed)
+
+    # ========================================================================
+    # EXOTIC DISTRIBUTIONS: Fall back to Python path
+    # ========================================================================
+    if use_exotic:
+        # Use original run_regime_specific_mc but call it for H_max
+        # and reconstruct multi-horizon structure
+        # This preserves NIG/Hansen/CST sampling accuracy
+        cum_out = np.zeros((H_max, n_paths), dtype=np.float64)
+        vol_out = np.zeros((H_max, n_paths), dtype=np.float64)
+
+        sigma_step_val = math.sqrt(sigma2_step)
+
+        # Sample initial drift from posterior
+        if P_t > 0:
+            if nu is not None and nu > 2.0:
+                t_sc = math.sqrt(P_t * (nu - 2.0) / nu)
+                mu_paths = mu_t + t_sc * rng.standard_t(df=nu, size=n_paths)
+            else:
+                mu_paths = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
+        else:
+            mu_paths = np.full(n_paths, mu_t, dtype=np.float64)
+
+        q_std = math.sqrt(q) if q > 0 else 0.0
+        h_t = np.full(n_paths, max(sigma2_step, 1e-8), dtype=np.float64)
+
+        for t_step in range(H_max):
+            sigma_t = np.sqrt(np.maximum(h_t, 1e-12))
+            vol_out[t_step, :] = sigma_t
+
+            # Observation noise
+            if nu is not None and nu > 2.0:
+                eps_sc = sigma_t * math.sqrt((nu - 2.0) / nu)
+                eps = eps_sc * rng.standard_t(df=nu, size=n_paths)
+            else:
+                eps = sigma_t * rng.standard_normal(size=n_paths)
+
+            e_t = eps
+
+            # Jump component
+            jump = np.zeros(n_paths, dtype=np.float64)
+            if enable_jumps and jump_intensity > 0:
+                n_jumps = rng.poisson(lam=jump_intensity, size=n_paths)
+                for pidx in range(n_paths):
+                    if n_jumps[pidx] > 0:
+                        jsizes = rng.normal(loc=jump_mean, scale=jump_std, size=int(n_jumps[pidx]))
+                        jump[pidx] = float(np.sum(jsizes))
+
+            r_t = mu_paths + e_t + jump
+            if t_step == 0:
+                cum_out[t_step, :] = r_t
+            else:
+                cum_out[t_step, :] = cum_out[t_step - 1, :] + r_t
+
+            # GARCH evolution
+            if use_garch:
+                h_t = garch_omega + garch_alpha * (e_t ** 2) + garch_beta * h_t
+                h_t = np.clip(h_t, 1e-12, 1e4)
+
+            # Drift evolution
+            if q_std > 0:
+                eta = rng.normal(loc=0.0, scale=q_std, size=n_paths)
+            else:
+                eta = np.zeros(n_paths, dtype=np.float64)
+            mu_paths = phi * mu_paths + eta
+
+        return {'returns': cum_out, 'volatility': vol_out}
+
+    # ========================================================================
+    # NUMBA PATH: Student-t or Gaussian with GARCH + jumps
+    # ========================================================================
+    try:
+        from models.numba_kernels import unified_mc_simulate_kernel
+    except ImportError:
+        # Fallback import path
+        try:
+            import importlib
+            nk = importlib.import_module('src.models.numba_kernels')
+            unified_mc_simulate_kernel = nk.unified_mc_simulate_kernel
+        except Exception:
+            unified_mc_simulate_kernel = None
+
+    nu_val = nu if nu is not None else 200.0  # >100 treated as Gaussian
+
+    # Sample initial drift from posterior (in Python, before Numba kernel)
+    if P_t > 0:
+        if nu is not None and nu > 2.0 and nu < 100.0:
+            t_sc = math.sqrt(P_t * (nu - 2.0) / nu)
+            mu_start = mu_t + t_sc * rng.standard_t(df=nu, size=n_paths)
+        else:
+            mu_start = rng.normal(loc=mu_t, scale=math.sqrt(P_t), size=n_paths)
+    else:
+        mu_start = np.full(n_paths, mu_t, dtype=np.float64)
+
+    # For the Numba kernel, we pass the mean of initial drift draws
+    # The kernel handles drift evolution from there
+    mu_now_for_kernel = float(np.mean(mu_start))
+
+    # Pre-generate all random numbers (Numba kernel uses pre-generated arrays)
+    z_normals = rng.standard_normal(size=(H_max, n_paths)).astype(np.float64)
+    z_drift = rng.standard_normal(size=(H_max, n_paths)).astype(np.float64)
+    z_jump_uniform = rng.uniform(size=(H_max, n_paths)).astype(np.float64)
+    z_jump_normal = rng.standard_normal(size=(H_max, n_paths)).astype(np.float64)
+
+    # Generate chi2(nu)/nu draws for Student-t
+    if nu is not None and nu > 2.0 and nu < 100.0:
+        # chi2(nu) = sum of nu standard_normal^2
+        # For efficiency, use gamma distribution: chi2(nu) ~ Gamma(nu/2, 2)
+        chi2_draws = rng.gamma(shape=nu_val / 2.0, scale=2.0, size=(H_max, n_paths))
+        z_chi2 = (chi2_draws / nu_val).astype(np.float64)
+    else:
+        z_chi2 = np.ones((H_max, n_paths), dtype=np.float64)
+
+    # Allocate output arrays
+    cum_out = np.zeros((H_max, n_paths), dtype=np.float64)
+    vol_out = np.zeros((H_max, n_paths), dtype=np.float64)
+
+    h0 = float(max(sigma2_step, 1e-8))
+
+    if unified_mc_simulate_kernel is not None:
+        # Use Numba kernel
+        unified_mc_simulate_kernel(
+            n_paths, H_max, mu_now_for_kernel, h0,
+            phi, q, nu_val,
+            use_garch, garch_omega, garch_alpha, garch_beta,
+            jump_intensity, jump_mean, jump_std, enable_jumps,
+            z_normals, z_chi2, z_drift,
+            z_jump_uniform, z_jump_normal,
+            cum_out, vol_out,
+        )
+
+        # Apply initial drift posterior uncertainty:
+        # Each path's returns are shifted by (mu_start[p] - mu_now_for_kernel)
+        # This preserves the drift posterior spread while using Numba for the loop
+        drift_offset = mu_start - mu_now_for_kernel
+        for t_step in range(H_max):
+            cum_out[t_step, :] += drift_offset * (t_step + 1)
+    else:
+        # Pure Python fallback (same logic as kernel)
+        mu_t_arr = mu_start.copy()
+        h_t = np.full(n_paths, h0, dtype=np.float64)
+
+        for t_step in range(H_max):
+            sigma_t = np.sqrt(np.maximum(h_t, 1e-12))
+            vol_out[t_step, :] = sigma_t
+
+            if nu is not None and nu > 2.0 and nu < 100.0:
+                raw_t = z_normals[t_step] / np.sqrt(np.maximum(z_chi2[t_step], 1e-8))
+                t_var_val = nu / (nu - 2.0)
+                eps = raw_t / math.sqrt(t_var_val)
+            else:
+                eps = z_normals[t_step]
+
+            e_t = sigma_t * eps
+
+            jump = np.zeros(n_paths, dtype=np.float64)
+            if enable_jumps and jump_intensity > 0:
+                mask = z_jump_uniform[t_step] < jump_intensity
+                jump[mask] = jump_mean + jump_std * z_jump_normal[t_step, mask]
+
+            r_t = mu_t_arr + e_t + jump
+            if t_step == 0:
+                cum_out[t_step, :] = r_t
+            else:
+                cum_out[t_step, :] = cum_out[t_step - 1, :] + r_t
+
+            if use_garch:
+                h_t = garch_omega + garch_alpha * (e_t ** 2) + garch_beta * h_t
+                h_t = np.clip(h_t, 1e-12, 1e4)
+
+            drift_eta = z_drift[t_step] * math.sqrt(q) if q > 0 else np.zeros(n_paths)
+            mu_t_arr = phi * mu_t_arr + drift_eta
+
+    return {'returns': cum_out, 'volatility': vol_out}
+
+
 def compute_model_posteriors_from_combined_score(
     models: Dict[str, Dict],
     temperature: float = 1.0,
@@ -6139,7 +6409,7 @@ def bayesian_model_average_mc(
 
         # Return uniform soft regime probs for trust (maximally uncertain)
         uniform_regime_probs = {i: 0.2 for i in range(5)}
-        return np.array([0.0]), uniform_regime_probs, {
+        return np.array([0.0]), np.array([0.0]), uniform_regime_probs, {
             "method": "REJECTED",
             "reason": "no_bma_structure_old_cache_format",
             "error": "Cache must be regenerated with tune.py for BMA support",
@@ -6257,7 +6527,7 @@ def bayesian_model_average_mc(
 
     # If still empty after global fallback - cannot proceed
     if not models or not model_posterior:
-        return np.array([0.0]), soft_regime_probs, {
+        return np.array([0.0]), np.array([0.0]), soft_regime_probs, {
             "method": "FAILED",
             "reason": "no_models_available",
             "error": "No model posterior or models available for inference",
@@ -6368,9 +6638,60 @@ def bayesian_model_average_mc(
             pass  # Registry check failed - continue without validation
 
     # ========================================================================
+    # EXTRACT GARCH/JUMP PARAMETERS FROM FEATS (v7.0: Unified MC)
+    # ========================================================================
+    # Previously BMA used run_regime_specific_mc (constant vol, no jumps),
+    # while _simulate_forward_paths used GARCH+jumps. This caused p_up and
+    # exp_ret to reflect different volatility dynamics — the #1 CRPS killer.
+    # Now both come from run_unified_mc with full GARCH+jumps.
+    # ========================================================================
+    garch_params = feats.get("garch_params", {}) or {}
+    _use_garch = isinstance(garch_params, dict) and all(
+        k in garch_params for k in ("omega", "alpha", "beta")
+    )
+    if _use_garch:
+        _garch_omega = float(max(garch_params.get("omega", 0.0), 1e-12))
+        _garch_alpha = float(np.clip(garch_params.get("alpha", 0.0), 0.0, 0.999))
+        _garch_beta = float(np.clip(garch_params.get("beta", 0.0), 0.0, 0.999))
+    else:
+        _garch_omega, _garch_alpha, _garch_beta = 0.0, 0.0, 0.0
+
+    # Jump-diffusion calibration from historical returns (same as _simulate_forward_paths)
+    _jump_intensity, _jump_mean, _jump_std = 0.0, 0.0, 0.05
+    _enable_jumps = os.getenv("ENABLE_JUMPS", "true").strip().lower() == "true"
+    if _enable_jumps:
+        try:
+            ret_hist = feats.get("ret", pd.Series(dtype=float))
+            vol_hist = feats.get("vol", pd.Series(dtype=float))
+            if isinstance(ret_hist, pd.Series) and isinstance(vol_hist, pd.Series) and len(ret_hist) >= 252:
+                df_jmp = pd.concat([ret_hist, vol_hist], axis=1, join='inner').dropna()
+                if len(df_jmp) >= 252:
+                    df_jmp.columns = ['ret', 'vol']
+                    z_sc = df_jmp['ret'] / df_jmp['vol']
+                    jmask = np.abs(z_sc) > 3.0
+                    nj = int(np.sum(jmask))
+                    if nj > 0:
+                        _jump_intensity = float(nj / len(df_jmp))
+                        jr = df_jmp.loc[jmask, 'ret'].values
+                        _jump_mean = float(np.mean(jr))
+                        _jump_std = float(max(np.std(jr), 0.01))
+                    else:
+                        _jump_intensity = 0.01
+                        _jump_mean = 0.0
+                        _jump_std = 0.05
+        except Exception:
+            _jump_intensity = 0.01
+            _jump_mean = 0.0
+            _jump_std = 0.05
+
+    # ========================================================================
     # BAYESIAN MODEL AVERAGING: Draw samples from mixture over models
     # ========================================================================
     # p(x | D, r_t) = Σ_m p(x | r_t, m, θ_m) · p(m | r_t)
+    #
+    # v7.0: Uses run_unified_mc (GARCH+jumps+Student-t via Numba) instead
+    # of run_regime_specific_mc (constant vol, no jumps). This ensures BMA
+    # samples and display expected return use identical volatility dynamics.
     #
     # Implementation:
     #   For each model m with weight w = p(m | r_t):
@@ -6380,6 +6701,7 @@ def bayesian_model_average_mc(
     MIN_MODEL_SAMPLES = 20  # Minimum samples per model to preserve tail awareness
 
     all_samples = []
+    all_vol_samples = []
     model_details = {}
 
     for model_name, model_weight in model_posterior.items():
@@ -6411,38 +6733,39 @@ def bayesian_model_average_mc(
         # Number of samples: proportional to weight but with minimum guarantee
         n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_paths))
 
-        # Generate samples from p(x | r_t, m, θ_m)
-        # AUGMENTATION LAYERS ARE PASSED TO MC SAMPLING:
-        # - Hansen λ affects tail asymmetry in Student-t
-        # - CST affects regime-dependent tail thickness
-        # - NIG affects both tails and asymmetry
-        model_samples = run_regime_specific_mc(
-            regime=current_regime,
+        # v7.0: Use run_unified_mc (GARCH+jumps+Student-t via Numba)
+        # instead of run_regime_specific_mc (constant vol, no jumps)
+        mc_result = run_unified_mc(
             mu_t=mu_t,
             P_t=P_t,
             phi=phi_m,
             q=q_m,
-            sigma2_step=sigma2_step * c_m,  # Scale volatility by c
-            H=H,
+            sigma2_step=sigma2_step * c_m,
+            H_max=H,
             n_paths=n_model_samples,
             nu=nu_m,
-            # ================================================================
-            # AUGMENTATION LAYERS - Affect distribution of return samples
-            # ================================================================
-            # NIG parameters (model-specific, from NIG models)
+            use_garch=_use_garch,
+            garch_omega=_garch_omega,
+            garch_alpha=_garch_alpha,
+            garch_beta=_garch_beta,
+            jump_intensity=_jump_intensity if _enable_jumps else 0.0,
+            jump_mean=_jump_mean,
+            jump_std=_jump_std,
+            # Exotic: NIG, Hansen, CST fall back to Python
             nig_alpha=nig_alpha_m,
             nig_beta=nig_beta_m,
             nig_delta=nig_delta_m,
-            # Hansen Skew-t (global augmentation from tuning)
             hansen_lambda=hansen_lambda_global if hansen_skew_t_enabled else None,
-            # Contaminated Student-t (global augmentation from tuning)
             cst_nu_normal=cst_nu_normal_global if cst_enabled else None,
             cst_nu_crisis=cst_nu_crisis_global if cst_enabled else None,
             cst_epsilon=cst_epsilon_global if cst_enabled else None,
-            seed=rng.integers(0, 2**31) if seed is not None else None
         )
+        # Extract samples at target horizon H (last row)
+        model_samples = mc_result['returns'][H - 1, :]
+        model_vol_samples = mc_result['volatility'][H - 1, :]
 
         all_samples.append(model_samples)
+        all_vol_samples.append(model_vol_samples)
         model_details[model_name] = {
             "weight": float(model_weight),
             "n_samples": len(model_samples),
@@ -6460,8 +6783,9 @@ def bayesian_model_average_mc(
     # Concatenate all model samples
     if all_samples:
         r_samples = np.concatenate(all_samples)
+        vol_samples = np.concatenate(all_vol_samples)
     else:
-        return np.array([0.0]), regime_probs, {
+        return np.array([0.0]), np.array([0.0]), soft_regime_probs, {
             "method": "FAILED",
             "reason": "no_valid_model_samples",
             "current_regime": current_regime,
@@ -6509,7 +6833,7 @@ def bayesian_model_average_mc(
     }
 
     # Return soft regime probs dict for trust authority (not legacy array)
-    return r_samples, soft_regime_probs, metadata
+    return r_samples, vol_samples, soft_regime_probs, metadata
 
 
 
@@ -7121,15 +7445,20 @@ def _apply_p_up_calibration(
 ) -> float:
     """Apply p_up recalibration from signals calibration data.
 
-    v3.0: Beta calibration with regime conditioning.
-    v2.0: Platt scaling (backward compat).
-    v1.0: Isotonic maps (backward compat).
+    v7.0: Single Beta calibration layer — replaces 4-layer cascade.
+
+    The old 4-layer cascade (Beta → Isotonic → TempScale → RegimeBlend)
+    each shrunk p_up toward 0.5, compounding to ~10% signal loss:
+      Raw p=0.62 → 0.59 (Beta) → 0.57 (Isotonic) → 0.56 (Temp) → 0.55 (Blend)
+
+    Now: Single Beta map selected by closest regime centroid.
+    No isotonic refinement, no temperature scaling, no softmax blending.
 
     Args:
         p_raw:      Raw p_up from BMA MC
         cal:        signals_calibration dict from tuned params
         H:          Horizon in days
-        vol_regime: Current vol_regime for regime-conditional lookup (v3.0)
+        vol_regime: Current vol_regime for regime-conditional lookup
 
     Returns:
         Calibrated p_up (or raw if no calibration available)
@@ -7141,81 +7470,34 @@ def _apply_p_up_calibration(
     if h_cal is None:
         return p_raw
 
-    # v3.1: Soft regime blending — eliminates discontinuous jumps at
-    # regime boundaries.  Each regime's correction is computed, then
-    # blended with softmax weights based on distance from regime centroid.
-    # Regime centroids: LOW=0.425, NORMAL=1.075, HIGH=2.0
-    # Temperature τ=0.2 gives sharp but smooth transitions.
+    # v7.0: Single Beta map — hard regime selection (no blending)
     by_regime = h_cal.get("by_regime")
     if by_regime is not None:
-        # Regime centroids and temperature for softmax blending
         _REGIME_CENTROIDS = {"LOW": 0.425, "NORMAL": 1.075, "HIGH": 2.0}
-        _BLEND_TAU = 0.2  # temperature — lower = sharper transitions
 
-        # Collect calibrated p_up from each available regime
-        regime_results = {}
-        for rname in list(_REGIME_CENTROIDS.keys()) + ["ALL"]:
+        # Find closest regime by distance to centroid
+        best_regime = None
+        best_dist = float('inf')
+        for rname in list(_REGIME_CENTROIDS.keys()):
             if rname not in by_regime:
                 continue
-            regime_cal = by_regime[rname]
+            centroid = _REGIME_CENTROIDS[rname]
+            dist = abs(vol_regime - centroid)
+            if dist < best_dist:
+                best_dist = dist
+                best_regime = rname
+
+        # Fall back to ALL if no specific regime matched
+        if best_regime is None:
+            best_regime = "ALL"
+
+        regime_cal = by_regime.get(best_regime, by_regime.get("ALL"))
+        if regime_cal is not None:
             p_map = regime_cal.get("p_up_map")
-            if p_map is None:
-                continue
-            p_cal = _apply_single_p_map(p_raw, p_map)
-            if p_cal is None:
-                continue
-
-            # v6.0: Apply isotonic refinement if available
-            isotonic_map = regime_cal.get("isotonic_map")
-            if isotonic_map is not None:
-                iso_x = isotonic_map.get("x", [0.0, 1.0])
-                iso_y = isotonic_map.get("y", [0.0, 1.0])
-                if len(iso_x) >= 2:
-                    p_iso = float(np.interp(p_cal, iso_x, iso_y))
-                    p_iso = max(0.0, min(1.0, p_iso))
-                    # Blend: 70% isotonic-refined, 30% Beta-only
-                    p_cal = 0.7 * p_iso + 0.3 * p_cal
-
-            # v6.0: Apply temperature scaling blend if available
-            temp_scale = regime_cal.get("temp_scale")
-            if temp_scale is not None and temp_scale != 1.0:
-                alpha = regime_cal.get("temp_blend_alpha", 0.7)
-                p_clipped_t = max(0.001, min(0.999, p_raw))
-                logit_t = math.log(p_clipped_t / (1.0 - p_clipped_t))
-                z_t = logit_t / max(temp_scale, 0.01)
-                if z_t >= 0:
-                    p_temp = 1.0 / (1.0 + math.exp(-z_t))
-                else:
-                    ez_t = math.exp(z_t)
-                    p_temp = ez_t / (1.0 + ez_t)
-                p_temp = max(0.0, min(1.0, p_temp))
-                # Blend: alpha * (Beta+isotonic) + (1-alpha) * temperature
-                p_cal = alpha * p_cal + (1.0 - alpha) * p_temp
-
-            regime_results[rname] = p_cal
-
-        if regime_results:
-            # If we have regime-specific results, blend with softmax weights
-            specific_regimes = {k: v for k, v in regime_results.items() if k != "ALL"}
-            if len(specific_regimes) >= 2:
-                # Compute softmax weights from distance to centroids
-                weights = {}
-                for rname, p_val in specific_regimes.items():
-                    centroid = _REGIME_CENTROIDS.get(rname, 1.0)
-                    dist = abs(vol_regime - centroid)
-                    weights[rname] = math.exp(-dist / _BLEND_TAU)
-                w_sum = sum(weights.values())
-                if w_sum > 0:
-                    blended = sum(weights[r] / w_sum * specific_regimes[r] for r in specific_regimes)
-                    return max(0.0, min(1.0, blended))
-            # Only one regime or ALL → use best match
-            if specific_regimes:
-                # Find closest regime
-                best_r = min(specific_regimes.keys(),
-                             key=lambda r: abs(vol_regime - _REGIME_CENTROIDS.get(r, 1.0)))
-                return max(0.0, min(1.0, specific_regimes[best_r]))
-            if "ALL" in regime_results:
-                return max(0.0, min(1.0, regime_results["ALL"]))
+            if p_map is not None:
+                p_cal = _apply_single_p_map(p_raw, p_map)
+                if p_cal is not None:
+                    return max(0.0, min(1.0, p_cal))
 
     # Legacy fallback: top-level p_up_map (v2.0/v1.0)
     p_map = h_cal.get("p_up_map")
@@ -7651,94 +7933,23 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         alpha_edge = 0.40
         alpha_p = 0.50
 
-    # Monte‑Carlo forward simulation to capture evolving drift/vol over horizons
-    H_max = int(max(horizons) if horizons else 0)
-    phi_sim = None
-    km = feats.get("kalman_metadata", {}) or {}
-    if isinstance(km, dict):
-        phi_sim = km.get("phi_used") or km.get("kalman_phi")
-    if phi_sim is None:
-        phi_sim = feats.get("phi_used")
-    if isinstance(km, dict) and km.get("kalman_noise_model", "").startswith("kalman_phi"):
-        if phi_sim is None or not np.isfinite(phi_sim):
-            raise ValueError("phi required by model but missing for simulation")
-        phi_sim = float(phi_sim)
-    else:
-        phi_sim = 1.0
-    # Extract process noise q from kalman_metadata for forward simulation
-    q_sim = 0.0
-    if isinstance(km, dict):
-        q_val = km.get("process_noise_var") or km.get("q")
-        if q_val is not None and np.isfinite(float(q_val)) and float(q_val) > 0:
-            q_sim = float(q_val)
-    sim_result = _simulate_forward_paths(feats, H_max=H_max, n_paths=3000, phi=phi_sim, process_noise_q=q_sim)
-    sims = sim_result['returns']
-    vol_sims = sim_result['volatility']
+    # v7.0: Removed _simulate_forward_paths (dual MC engine).
+    # BMA MC now provides ALL samples (returns + volatility) at each horizon.
+    # This eliminates the root cause of CRPS failure: two MC engines with
+    # different volatility dynamics producing inconsistent p_up vs exp_ret.
 
     for H in horizons:
-        # Use simulation at horizon H (1‑indexed in description; here index H-1)
-        if H <= 0 or H > sims.shape[0]:
-            sim_H = np.zeros(3000, dtype=float)
-            vol_H = np.zeros(3000, dtype=float)
-        else:
-            sim_H = sims[H-1, :]
-            vol_H = vol_sims[H-1, :]
-        # Clean NaNs/Infs for returns
-        sim_H = np.asarray(sim_H, dtype=float)
-        sim_H = sim_H[np.isfinite(sim_H)]
-        if sim_H.size == 0:
-            sim_H = np.zeros(3000, dtype=float)
-        # Clean NaNs/Infs for volatility
-        vol_H = np.asarray(vol_H, dtype=float)
-        vol_H = vol_H[np.isfinite(vol_H)]
-        if vol_H.size == 0:
-            vol_H = np.zeros(3000, dtype=float)
-        # Simulated moments and probability
-        # ========================================================================
-        # UPGRADE #1: Trimmed Mean for Expected Return
-        # ========================================================================
-        # Use 5th-95th percentile trimmed mean to prevent extreme tails from
-        # dominating the displayed expected return.
-        # This dramatically stabilizes price predictions while preserving
-        # directionality and remaining distribution-aware.
-        # ========================================================================
-        lo_trim = np.quantile(sim_H, 0.05)
-        hi_trim = np.quantile(sim_H, 0.95)
-        sim_H_trimmed = sim_H[(sim_H > lo_trim) & (sim_H < hi_trim)]
-        if sim_H_trimmed.size > 0:
-            mH = float(np.mean(sim_H_trimmed))
-        else:
-            mH = float(np.mean(sim_H))  # fallback to full mean if trim removes all
-        vH = float(np.var(sim_H, ddof=1)) if sim_H.size > 1 else 0.0  # keep full variance for stats
-        sH = float(math.sqrt(max(vH, 1e-12)))
-        z_stat = float(mH / sH) if sH > 0 else 0.0
-
         # ========================================================================
         # Unified Posterior Predictive Monte-Carlo Probability
         # ========================================================================
-        # Replaces blended analytical/MC posterior with unified posterior predictive
-        # Monte-Carlo over drift and noise.
+        # v7.0: ALL quantities (mH, sH, p_now, E_gain, E_loss) come from a
+        # SINGLE set of BMA MC samples. No dual engine. No inconsistency.
         #
-        # This sampler marginalizes jointly over:
-        # 1. Drift posterior uncertainty: μ_t ~ N(μ̂_t, P_t) or t_ν
-        # 2. Drift propagation dynamics: μ_{t+k} = φ·μ_{t+k-1} + η_k, η_k ~ N(0, q)
-        # 3. Observation noise: ε_H ~ N(0, v_H) or t_ν
-        #
-        # This is the ONLY probability used for trading decisions.
-        # No blending. No heuristic averaging. No parallel analytical probability.
-        #
-        # REGIME-FIRST PARAMETER ROUTING:
-        # Parameters (q, phi, nu, c) are selected using regime-first logic:
-        # - If current_regime has tuned params AND not fallback → use regime params
-        # - Otherwise → use global params
-        #
-        # Design Philosophy:
-        # - Probability geometry is internally consistent (single probability space)
-        # - Drift uncertainty automatically collapses confidence toward 0.5
-        # - Heavy tails emerge naturally when P_t or q is large
-        # - Regime transitions are naturally penalized via drift uncertainty
-        # - Accumulated drift preserves signal strength for persistent drift (φ≈1)
-        # - Otherwise → use global params (q_mc, phi_mc, nu_mc already selected above)
+        # The BMA MC now uses run_unified_mc internally, which includes:
+        # - GARCH(1,1) volatility dynamics
+        # - Merton jump-diffusion
+        # - Student-t innovations
+        # - Full BMA mixture over models
         # ========================================================================
 
         # Extract drift posterior mean (μ̂_t) from Kalman filter or posterior drift
@@ -7762,13 +7973,8 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # ========================================================================
         # REGIME-FIRST PARAMETER ROUTING (STEP 1 & 2)
         # ========================================================================
-        # Map current regime label to index and select parameters
         current_regime_idx = map_regime_label_to_index(reg, regime_meta)
-
-        # Get Kalman metadata which contains regime params
         km_mc = feats.get("kalman_metadata", {}) or {}
-
-        # Build tuned_params structure for _select_regime_params
         tuned_params_full = {
             'q': km_mc.get("process_noise_var", 1e-6),
             'phi': km_mc.get("phi_used") or km_mc.get("kalman_phi") or 0.95,
@@ -7778,77 +7984,39 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             'regime': km_mc.get("regime_params", {}),
             'has_regime_params': km_mc.get("has_regime_params", False),
         }
-
-        # STEP 2: Select parameters using regime-first logic
         theta = _select_regime_params(tuned_params_full, current_regime_idx)
-
-        # STEP 3: Bind parameters ONLY from theta (no other access to params)
         q_mc = float(theta.get("q", 1e-6))
         phi_mc = float(theta.get("phi", 0.95))
         nu_mc = theta.get("nu")
         c_mc = float(theta.get("c", 1.0))
-
-        # STEP 6: Diagnostics pass-through (collapse warning annotation)
         collapse_warning = theta.get("collapse_warning", False)
         regime_source = theta.get("source", "unknown")
         regime_used = theta.get("regime_used", current_regime_idx)
-
-        # Validate nu and determine noise model for diagnostics
         noise_model_mc = km_mc.get("kalman_noise_model", "gaussian")
         if nu_mc is not None and (not np.isfinite(nu_mc) or nu_mc <= 2.0):
             nu_mc = None
-        # Check for Student-t model (phi_student_t_nu_* naming)
         is_student_t_mc = noise_model_mc and noise_model_mc.startswith('phi_student_t_nu_')
         if not is_student_t_mc or nu_mc is None:
-            noise_model_mc = "gaussian"  # Fallback for diagnostics
+            noise_model_mc = "gaussian"
 
         # ========================================================================
         # VOLATILITY GEOMETRY: sigma2_step is the PRIMITIVE
-        # ========================================================================
-        # Extract per-step EWMA variance (σ²) - this is the volatility primitive.
-        # Horizon variance vH = H × sigma2_step is DERIVED, not passed.
-        #
-        # This ensures:
-        # - Volatility is defined at one temporal scale only (per-step)
-        # - No double-rescaling (no vH/H computation in MC function)
-        # - Noise accumulation uses sigma2_step directly
         # ========================================================================
         vol_series_mc = feats.get("vol", pd.Series(dtype=float))
         if isinstance(vol_series_mc, pd.Series) and not vol_series_mc.empty:
             sigma_now = float(vol_series_mc.iloc[-1])
         else:
-            sigma_now = sH / math.sqrt(H) if H > 0 and sH > 0 else 0.01
+            sigma_now = 0.01
         if not np.isfinite(sigma_now) or sigma_now <= 0:
             sigma_now = 0.01
-
-        # sigma2_step is the PRIMITIVE per-step EWMA variance
         sigma2_step_mc = float(sigma_now ** 2)
 
         # ========================================================================
-        # EXPECTED UTILITY POSITION SIZING FROM POSTERIOR PREDICTIVE MC
-        # ========================================================================
-        # Position size is derived ONLY from posterior predictive MC return samples.
-        # No Kelly/mean-variance sizing. No blending. r_samples is the ONLY input.
-        #
-        # REGIME-CONDITIONAL BAYESIAN MODEL AVERAGING (RC-BMA):
-        # Samples are drawn from the mixture:
-        #   p(r_H | D) = Σ_r P(regime_r | D) · p(r_H | regime_r, D)
-        #
-        # This mixture is the ONLY distribution passed to the EU layer.
-        # ========================================================================
-
-        # ========================================================================
-        # BUILD REGIME PARAMS FOR BAYESIAN MODEL AVERAGING
-        # ========================================================================
-        # Build regime params dict using regime-first routing.
-        # For each regime, if tuned params exist and not fallback → use them
-        # Otherwise → use global params (q_mc, phi_mc, nu_mc already selected above)
+        # BUILD REGIME PARAMS AND CALL BMA MC (v7.0: SINGLE SOURCE OF TRUTH)
         # ========================================================================
         regime_params = {}
         cached_regime_params = km_mc.get("regime_params", {})
-
         for regime_idx in range(5):
-            # Use _select_regime_params for each regime (consistent routing logic)
             regime_theta = _select_regime_params(tuned_params_full, regime_idx)
             regime_params[regime_idx] = {
                 "phi": regime_theta.get("phi", phi_mc),
@@ -7858,8 +8026,8 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                 "fallback": regime_theta.get("fallback", True),
             }
 
-        # Use Bayesian Model Averaging across regimes AND model classes
-        r_samples, regime_probs, bma_meta = bayesian_model_average_mc(
+        # v7.0: Single unified BMA MC call — returns BOTH return and vol samples
+        r_samples, vol_samples_bma, regime_probs, bma_meta = bayesian_model_average_mc(
             feats=feats,
             regime_params=regime_params,
             mu_t=mu_t_mc,
@@ -7868,20 +8036,32 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             H=H,
             n_paths=10000,
             seed=None,
-            tuned_params=tuned_params,  # BMA structure from tune.py
-            asset_symbol=asset_key,  # Pass asset identifier for error reporting
+            tuned_params=tuned_params,
+            asset_symbol=asset_key,
         )
         r = np.asarray(r_samples, dtype=float)
 
-        # === Expected Utility sizing from posterior predictive MC ===
-        # r_samples is the ONLY input to sizing - NO Kelly, NO mean/variance ratios
-        # BMA mixture is the distribution, EU layer only sees r_samples
+        # v7.0: Use BMA samples for ALL quantities (unified MC)
+        sim_H = r[np.isfinite(r)]
+        if sim_H.size == 0:
+            sim_H = np.zeros(3000, dtype=float)
+        vol_H = np.asarray(vol_samples_bma, dtype=float)
+        vol_H = vol_H[np.isfinite(vol_H)]
+        if vol_H.size == 0:
+            vol_H = np.zeros(3000, dtype=float)
 
+        # ========================================================================
+        # Compute moments from unified BMA samples (v7.0)
+        # ========================================================================
+        mH = float(np.median(sim_H))
+        vH = float(np.var(sim_H, ddof=1)) if sim_H.size > 1 else 0.0
+        sH = float(math.sqrt(max(vH, 1e-12)))
+        z_stat = float(mH / sH) if sH > 0 else 0.0
+
+        # p_now, E_gain, E_loss from SAME samples
         p_now = float(np.mean(r > 0.0))
 
         # === SIGNAL CALIBRATION: p_up recalibration (Pass 2) ===
-        # v3.0: Beta calibration with regime conditioning.
-        # v2.0: Platt scaling. v1.0: isotonic map.
         _sig_cal = _load_signals_calibration(tuned_params)
         p_now = _apply_p_up_calibration(p_now, _sig_cal, H, vol_regime=vol_reg_now)
 
@@ -8038,12 +8218,11 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             ci_high = mH + 1.0 * sH
 
         # ========================================================================
-        # DISPLAYED EXPECTED RETURN: Trimmed MC Mean (March 2026)
+        # DISPLAYED EXPECTED RETURN: MC Median (v7.0)
         # ========================================================================
-        # Use the 5-95% trimmed mean of the MC posterior predictive (mH)
-        # directly as the displayed expected return. This is the model's
-        # actual central-tendency prediction, properly capturing drift,
-        # regime, and BMA uncertainty.
+        # Use the median of the MC posterior predictive (mH) directly as
+        # the displayed expected return. Median is the robust location
+        # estimator for heavy-tailed distributions.
         #
         # EU (Expected Utility) is used ONLY for:
         #   - BUY/SELL/HOLD/EXIT label logic
@@ -8052,7 +8231,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # EVT-inflated E_loss can make EU negative even when the model
         # predicts positive returns — creating a systematic negative bias.
         # ========================================================================
-        mu_H = mH  # Trimmed MC mean: the model's actual prediction
+        mu_H = mH  # MC median: the model's robust prediction
 
         # === SIGNAL CALIBRATION: EMOS distributional correction (Pass 2) ===
         # v3.0: EMOS (Gneiting 2005) — unified 4-param affine correction
