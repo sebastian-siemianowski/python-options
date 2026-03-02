@@ -73,7 +73,7 @@ EVT_XI_MAX = 1.0   # Fréchet-type (ξ ≥ 1 has infinite mean)
 EVT_XI_DEFAULT = 0.1  # Moderate heavy tails
 
 # Fallback multiplier when EVT fails
-EVT_FALLBACK_MULTIPLIER = 1.5
+EVT_FALLBACK_MULTIPLIER = 1.15
 
 # Conservative adjustment for small samples
 EVT_SMALL_SAMPLE_ADJUSTMENT = 1.2

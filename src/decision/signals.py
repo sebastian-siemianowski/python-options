@@ -616,7 +616,7 @@ except ImportError:
     EVT_AVAILABLE = False
     EVT_THRESHOLD_PERCENTILE_DEFAULT = 0.90
     EVT_MIN_EXCEEDANCES = 30
-    EVT_FALLBACK_MULTIPLIER = 1.5
+    EVT_FALLBACK_MULTIPLIER = 1.15
 
 
 # =============================================================================
@@ -1073,7 +1073,7 @@ DEFAULT_CACHE_PATH = os.path.join("src", "data", "currencies", "fx_plnjpy.json")
 # Institutions do this quietly for all client-facing price estimates.
 # ============================================================================
 _DISPLAY_PRICE_CACHE: Dict[Tuple[str, int], float] = {}
-DISPLAY_PRICE_INERTIA = 0.7  # weight on previous display price
+DISPLAY_PRICE_INERTIA = 0.3  # weight on previous display price (March 2026: reduced from 0.7 for responsiveness)
 
 
 def _smooth_display_price(asset_key: str, horizon: int, new_price: float) -> float:
@@ -6581,7 +6581,7 @@ def make_features_views(feats: Dict[str, pd.Series]) -> Dict[str, Dict[str, pd.S
 # =============================================================================
 
 
-def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: int = 3000, phi: float = 0.95, kappa: float = 1e-4) -> Dict[str, np.ndarray]:
+def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: int = 3000, phi: float = 0.95, kappa: float = 1e-4, process_noise_q: float = 0.0) -> Dict[str, np.ndarray]:
     """Monte-Carlo forward simulation of cumulative log returns and volatility over 1..H_max.
     - Drift evolves as AR(1): mu_{t+1} = phi * mu_t + eta_t,  eta ~ N(0, q)
     - Volatility evolves via GARCH(1,1) when available; else held constant.
@@ -6737,8 +6737,15 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         alpha_paths = np.zeros(n_paths, dtype=float)
         beta_paths  = np.zeros(n_paths, dtype=float)
 
-    # Drift uncertainty: propagate posterior P only (no external q leakage)
-    drift_unc_now = max(var_kf_now, 1e-10)
+    # Drift evolution noise: use process noise q from tune cache (March 2026)
+    # Previously used P_t (posterior variance ~1e-4) which is 100x too large.
+    # P_t is filtering uncertainty about today's state, not how drift evolves.
+    # q (~1e-6) is the actual state-transition noise from the Kalman model.
+    if process_noise_q > 0:
+        drift_unc_now = process_noise_q
+    else:
+        # Fallback: use var_kf but cap it to avoid excess diffusion
+        drift_unc_now = min(max(var_kf_now, 1e-10), 1e-5)
 
     h0 = vol_now ** 2
 
@@ -6787,14 +6794,15 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
                         # Floor jump std to avoid degenerate case
                         jump_std = float(max(jump_std, 0.01))
                     else:
-                        # No historical jumps detected: use conservative defaults
+                        # No historical jumps detected: use symmetric defaults
+                        # (no evidence of asymmetric crashes → don't inject one)
                         jump_intensity = 0.01  # ~2.5 jumps per year
-                        jump_mean = -0.02  # small negative bias (crash risk)
+                        jump_mean = 0.0  # symmetric: no directional bias
                         jump_std = 0.05
         except Exception:
-            # Fallback to conservative defaults if calibration fails
+            # Fallback to symmetric defaults if calibration fails
             jump_intensity = 0.01
-            jump_mean = -0.02
+            jump_mean = 0.0  # symmetric: no directional bias
             jump_std = 0.05
 
     # Initialize state arrays (vectorized across paths)
@@ -7036,6 +7044,340 @@ def apply_confirmation_logic(
     return label
 
 
+# ===========================================================================
+# SIGNAL CALIBRATION CORRECTION (Pass 2 of Two-Pass Tuning)
+# ===========================================================================
+# When signals_calibration data exists in tuned_params, corrections are
+# applied inline to p_up, exp_ret, and label thresholds.
+# Graceful fallback: if missing, raw values are used (identity).
+# ===========================================================================
+
+def _load_signals_calibration(tuned_params: Optional[Dict]) -> Optional[Dict]:
+    """Extract signals_calibration section from tuned params if available."""
+    if tuned_params is None:
+        return None
+    cal = tuned_params.get("signals_calibration")
+    if cal is None:
+        return None
+    v = cal.get("version", "")
+    if v not in ("1.0", "2.0", "3.0", "3.1"):
+        return None
+    return cal
+
+
+def _apply_single_p_map(p_raw: float, p_map: Dict) -> Optional[float]:
+    """Apply a single p_up calibration map (Beta, Platt, or isotonic).
+
+    Helper for soft regime blending — applies one regime's calibration
+    map without regime lookup logic.
+
+    Args:
+        p_raw:  Raw probability ∈ [0, 1]
+        p_map:  Calibration map dict with 'type' key
+
+    Returns:
+        Calibrated probability ∈ [0, 1], or None if map is invalid.
+    """
+    map_type = p_map.get("type", "isotonic")
+    if map_type == "beta":
+        a = p_map.get("a", 1.0)
+        b = p_map.get("b", 1.0)
+        c = p_map.get("c", 0.0)
+        p_clipped = max(0.005, min(0.995, p_raw))
+        z = a * math.log(p_clipped) - b * math.log(1.0 - p_clipped) + c
+        if z >= 0:
+            result = 1.0 / (1.0 + math.exp(-z))
+        else:
+            ez = math.exp(z)
+            result = ez / (1.0 + ez)
+        return max(0.0, min(1.0, result))
+    elif map_type == "platt":
+        a = p_map.get("a", 1.0)
+        b = p_map.get("b", 0.0)
+        p_clipped = max(0.01, min(0.99, p_raw))
+        logit = math.log(p_clipped / (1.0 - p_clipped))
+        z = a * logit + b
+        if z >= 0:
+            result = 1.0 / (1.0 + math.exp(-z))
+        else:
+            ez = math.exp(z)
+            result = ez / (1.0 + ez)
+        return max(0.0, min(1.0, result))
+    elif map_type == "isotonic":
+        x = p_map.get("x", [0.0, 1.0])
+        y = p_map.get("y", [0.0, 1.0])
+        if len(x) < 2:
+            return None
+        result = float(np.interp(p_raw, x, y))
+        return max(0.0, min(1.0, result))
+    return None
+
+
+def _apply_p_up_calibration(
+    p_raw: float,
+    cal: Optional[Dict],
+    H: int,
+    vol_regime: float = 1.0,
+) -> float:
+    """Apply p_up recalibration from signals calibration data.
+
+    v3.0: Beta calibration with regime conditioning.
+    v2.0: Platt scaling (backward compat).
+    v1.0: Isotonic maps (backward compat).
+
+    Args:
+        p_raw:      Raw p_up from BMA MC
+        cal:        signals_calibration dict from tuned params
+        H:          Horizon in days
+        vol_regime: Current vol_regime for regime-conditional lookup (v3.0)
+
+    Returns:
+        Calibrated p_up (or raw if no calibration available)
+    """
+    if cal is None:
+        return p_raw
+    horizons = cal.get("horizons", {})
+    h_cal = horizons.get(str(H))
+    if h_cal is None:
+        return p_raw
+
+    # v3.1: Soft regime blending — eliminates discontinuous jumps at
+    # regime boundaries.  Each regime's correction is computed, then
+    # blended with softmax weights based on distance from regime centroid.
+    # Regime centroids: LOW=0.425, NORMAL=1.075, HIGH=2.0
+    # Temperature τ=0.2 gives sharp but smooth transitions.
+    by_regime = h_cal.get("by_regime")
+    if by_regime is not None:
+        # Regime centroids and temperature for softmax blending
+        _REGIME_CENTROIDS = {"LOW": 0.425, "NORMAL": 1.075, "HIGH": 2.0}
+        _BLEND_TAU = 0.2  # temperature — lower = sharper transitions
+
+        # Collect calibrated p_up from each available regime
+        regime_results = {}
+        for rname in list(_REGIME_CENTROIDS.keys()) + ["ALL"]:
+            if rname not in by_regime:
+                continue
+            regime_cal = by_regime[rname]
+            p_map = regime_cal.get("p_up_map")
+            if p_map is None:
+                continue
+            p_cal = _apply_single_p_map(p_raw, p_map)
+            if p_cal is not None:
+                regime_results[rname] = p_cal
+
+        if regime_results:
+            # If we have regime-specific results, blend with softmax weights
+            specific_regimes = {k: v for k, v in regime_results.items() if k != "ALL"}
+            if len(specific_regimes) >= 2:
+                # Compute softmax weights from distance to centroids
+                weights = {}
+                for rname, p_val in specific_regimes.items():
+                    centroid = _REGIME_CENTROIDS.get(rname, 1.0)
+                    dist = abs(vol_regime - centroid)
+                    weights[rname] = math.exp(-dist / _BLEND_TAU)
+                w_sum = sum(weights.values())
+                if w_sum > 0:
+                    blended = sum(weights[r] / w_sum * specific_regimes[r] for r in specific_regimes)
+                    return max(0.0, min(1.0, blended))
+            # Only one regime or ALL → use best match
+            if specific_regimes:
+                # Find closest regime
+                best_r = min(specific_regimes.keys(),
+                             key=lambda r: abs(vol_regime - _REGIME_CENTROIDS.get(r, 1.0)))
+                return max(0.0, min(1.0, specific_regimes[best_r]))
+            if "ALL" in regime_results:
+                return max(0.0, min(1.0, regime_results["ALL"]))
+
+    # Legacy fallback: top-level p_up_map (v2.0/v1.0)
+    p_map = h_cal.get("p_up_map")
+    if p_map is None:
+        return p_raw
+
+    map_type = p_map.get("type", "isotonic")
+
+    if map_type == "beta":
+        a = p_map.get("a", 1.0)
+        b = p_map.get("b", 1.0)
+        c = p_map.get("c", 0.0)
+        p_clipped = max(0.005, min(0.995, p_raw))
+        z = a * math.log(p_clipped) - b * math.log(1.0 - p_clipped) + c
+        if z >= 0:
+            result = 1.0 / (1.0 + math.exp(-z))
+        else:
+            ez = math.exp(z)
+            result = ez / (1.0 + ez)
+        return max(0.0, min(1.0, result))
+
+    if map_type == "platt":
+        a = p_map.get("a", 1.0)
+        b = p_map.get("b", 0.0)
+        p_clipped = max(0.01, min(0.99, p_raw))
+        logit = math.log(p_clipped / (1.0 - p_clipped))
+        z = a * logit + b
+        if z >= 0:
+            result = 1.0 / (1.0 + math.exp(-z))
+        else:
+            ez = math.exp(z)
+            result = ez / (1.0 + ez)
+        return max(0.0, min(1.0, result))
+
+    # Legacy v1.0 isotonic map
+    x = p_map.get("x", [0.0, 1.0])
+    y = p_map.get("y", [0.0, 1.0])
+    if len(x) < 2:
+        return p_raw
+    result = float(np.interp(p_raw, x, y))
+    return max(0.0, min(1.0, result))
+
+
+def _apply_emos_correction(
+    mu_H: float,
+    sigma_H: float,
+    cal: Optional[Dict],
+    H: int,
+    vol_regime: float = 1.0,
+) -> Tuple[float, float]:
+    """Apply EMOS distributional correction to expected return and sigma.
+
+    v3.0: EMOS (Gneiting 2005) with regime conditioning. Replaces both
+    magnitude scale and bias correction with a unified 4-param affine
+    transform optimized via CRPS.
+
+    v2.0 fallback: mag_scale + bias (backward compat).
+
+    Args:
+        mu_H:       Raw expected return (log-return units)
+        sigma_H:    Raw predicted sigma (log-return units)
+        cal:        signals_calibration dict
+        H:          Horizon in days
+        vol_regime: Current vol_regime for regime lookup
+
+    Returns:
+        (mu_corrected, sigma_corrected)
+    """
+    if cal is None:
+        return mu_H, sigma_H
+    horizons = cal.get("horizons", {})
+    h_cal = horizons.get(str(H))
+    if h_cal is None:
+        return mu_H, sigma_H
+
+    # v3.1: Soft regime blending for EMOS — same approach as p_up:
+    # compute correction from each available regime, blend with
+    # softmax weights based on distance from regime centroid.
+    by_regime = h_cal.get("by_regime")
+    if by_regime is not None:
+        _REGIME_CENTROIDS = {"LOW": 0.425, "NORMAL": 1.075, "HIGH": 2.0}
+        _BLEND_TAU = 0.2
+
+        # Collect EMOS corrections from each available regime
+        regime_corrections = {}
+        for rname in list(_REGIME_CENTROIDS.keys()) + ["ALL"]:
+            if rname not in by_regime:
+                continue
+            emos = by_regime[rname].get("emos")
+            if emos is None or emos.get("type") != "emos":
+                continue
+            a = emos.get("a", 0.0)
+            b = emos.get("b", 1.0)
+            c = emos.get("c", 0.0)
+            d = emos.get("d", 1.0)
+            mu_cor = a + b * mu_H
+            sig_cor = max(0.01, c + d * sigma_H)
+            regime_corrections[rname] = (mu_cor, sig_cor)
+
+        if regime_corrections:
+            specific = {k: v for k, v in regime_corrections.items() if k != "ALL"}
+            if len(specific) >= 2:
+                weights = {}
+                for rname in specific:
+                    centroid = _REGIME_CENTROIDS.get(rname, 1.0)
+                    dist = abs(vol_regime - centroid)
+                    weights[rname] = math.exp(-dist / _BLEND_TAU)
+                w_sum = sum(weights.values())
+                if w_sum > 0:
+                    mu_blend = sum(weights[r] / w_sum * specific[r][0] for r in specific)
+                    sig_blend = sum(weights[r] / w_sum * specific[r][1] for r in specific)
+                    return mu_blend, max(0.01, sig_blend)
+            if specific:
+                best_r = min(specific.keys(),
+                             key=lambda r: abs(vol_regime - _REGIME_CENTROIDS.get(r, 1.0)))
+                return specific[best_r]
+            if "ALL" in regime_corrections:
+                return regime_corrections["ALL"]
+
+    # Legacy v2.0 fallback: mag_scale + bias
+    mag_scale = h_cal.get("mag_scale", 1.0)
+    bias = h_cal.get("bias", 0.0)
+    corrected = mu_H * mag_scale + bias / 100.0
+    return corrected, sigma_H
+
+
+def _apply_magnitude_bias_correction(
+    mu_H: float, cal: Optional[Dict], H: int
+) -> float:
+    """Legacy v2.0 magnitude+bias correction (kept for backward compat).
+
+    v3.0 assets use _apply_emos_correction() instead.
+
+    Args:
+        mu_H: Raw expected return (log-return units)
+        cal: signals_calibration dict from tuned params
+        H: Horizon in days
+
+    Returns:
+        Corrected expected return
+    """
+    if cal is None:
+        return mu_H
+    horizons = cal.get("horizons", {})
+    h_cal = horizons.get(str(H))
+    if h_cal is None:
+        return mu_H
+    mag_scale = h_cal.get("mag_scale", 1.0)
+    bias = h_cal.get("bias", 0.0)
+    corrected = mu_H * mag_scale + bias / 100.0
+    return corrected
+
+
+def _get_calibrated_label_thresholds(
+    cal: Optional[Dict],
+    H: int = 7,
+) -> Optional[Tuple[float, float]]:
+    """Get per-asset label thresholds from calibration data.
+
+    v2.0: per-horizon thresholds with fallback to global.
+
+    Args:
+        cal: signals_calibration dict
+        H: Horizon in days (used for per-horizon lookup in v2.0)
+
+    Returns:
+        (buy_thr, sell_thr) or None if not available
+    """
+    if cal is None:
+        return None
+
+    # v2.0: try per-horizon thresholds first
+    by_horizon = cal.get("label_thresholds_by_horizon", {})
+    h_thr = by_horizon.get(str(H))
+    if h_thr is not None:
+        buy_thr = h_thr.get("buy_thr")
+        sell_thr = h_thr.get("sell_thr")
+        if buy_thr is not None and sell_thr is not None:
+            return (float(buy_thr), float(sell_thr))
+
+    # Fallback to global label_thresholds (v1.0 compat)
+    label_thr = cal.get("label_thresholds")
+    if label_thr is None:
+        return None
+    buy_thr = label_thr.get("buy_thr")
+    sell_thr = label_thr.get("sell_thr")
+    if buy_thr is None or sell_thr is None:
+        return None
+    return (float(buy_thr), float(sell_thr))
+
+
 def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.58, sell_thr: float = 0.42) -> str:
     """Map probability and position strength to label with customizable thresholds.
     - STRONG tiers require both probability and position_strength to be high.
@@ -7274,7 +7616,13 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         phi_sim = float(phi_sim)
     else:
         phi_sim = 1.0
-    sim_result = _simulate_forward_paths(feats, H_max=H_max, n_paths=3000, phi=phi_sim)
+    # Extract process noise q from kalman_metadata for forward simulation
+    q_sim = 0.0
+    if isinstance(km, dict):
+        q_val = km.get("process_noise_var") or km.get("q")
+        if q_val is not None and np.isfinite(float(q_val)) and float(q_val) > 0:
+            q_sim = float(q_val)
+    sim_result = _simulate_forward_paths(feats, H_max=H_max, n_paths=3000, phi=phi_sim, process_noise_q=q_sim)
     sims = sim_result['returns']
     vol_sims = sim_result['volatility']
 
@@ -7482,6 +7830,12 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
 
         p_now = float(np.mean(r > 0.0))
 
+        # === SIGNAL CALIBRATION: p_up recalibration (Pass 2) ===
+        # v3.0: Beta calibration with regime conditioning.
+        # v2.0: Platt scaling. v1.0: isotonic map.
+        _sig_cal = _load_signals_calibration(tuned_params)
+        p_now = _apply_p_up_calibration(p_now, _sig_cal, H, vol_regime=vol_reg_now)
+
         gains = r[r > 0.0]
         losses = -r[r < 0.0]
 
@@ -7635,34 +7989,28 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             ci_high = mH + 1.0 * sH
 
         # ========================================================================
-        # UPGRADE #2: EU-Aligned Expected Move
+        # DISPLAYED EXPECTED RETURN: Trimmed MC Mean (March 2026)
         # ========================================================================
-        # Anchor the displayed expected return to the expected utility sign and
-        # magnitude. This aligns what users see with the belief that drives
-        # BUY/HOLD/SELL decisions, creating cognitive consonance.
+        # Use the 5-95% trimmed mean of the MC posterior predictive (mH)
+        # directly as the displayed expected return. This is the model's
+        # actual central-tendency prediction, properly capturing drift,
+        # regime, and BMA uncertainty.
         #
-        # Formula:
-        #   direction = sign(expected_utility)
-        #   magnitude = sqrt(|expected_utility|)
-        #   eu_aligned_return = direction × magnitude × volatility_scale
-        #
-        # This does NOT change: signal logic, regimes, model averaging.
-        # It only adjusts the displayed expected return for presentation.
+        # EU (Expected Utility) is used ONLY for:
+        #   - BUY/SELL/HOLD/EXIT label logic
+        #   - Position sizing (eu_position_size)
+        # EU must NOT override the displayed return direction, because
+        # EVT-inflated E_loss can make EU negative even when the model
+        # predicts positive returns — creating a systematic negative bias.
         # ========================================================================
-        eu_direction = np.sign(expected_utility) if np.isfinite(expected_utility) else 0.0
-        eu_magnitude = np.sqrt(abs(expected_utility)) if np.isfinite(expected_utility) else 0.0
-        volatility_scale = sH if sH > 0 else 1e-6
-        eu_aligned_return = float(eu_direction * eu_magnitude * volatility_scale)
+        mu_H = mH  # Trimmed MC mean: the model's actual prediction
 
-        # Blend: use EU-aligned return for direction-consistency, but preserve
-        # reasonable magnitude from trimmed mean
-        if abs(eu_aligned_return) > 1e-12 and abs(mH) > 1e-12:
-            # Scale EU-aligned to similar magnitude as trimmed mean
-            scale_factor = min(abs(mH) / abs(eu_aligned_return), 3.0) if abs(eu_aligned_return) > 1e-12 else 1.0
-            mu_H = eu_aligned_return * scale_factor
-        else:
-            mu_H = mH  # fallback to trimmed mean if EU is near zero
-        sig_H = sH
+        # === SIGNAL CALIBRATION: EMOS distributional correction (Pass 2) ===
+        # v3.0: EMOS (Gneiting 2005) — unified 4-param affine correction
+        # optimized via CRPS. Replaces both mag_scale and bias. Also
+        # corrects sigma for properly calibrated uncertainty.
+        # v2.0 fallback: mag_scale + bias.
+        mu_H, sig_H = _apply_emos_correction(mu_H, sH, _sig_cal, H, vol_regime=vol_reg_now)
 
         # ========================================================================
         # EXPECTED UTILITY POSITION SIZING (REPLACES KELLY/MEAN-BASED SIZING)
@@ -7821,6 +8169,14 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         buy_thr = threshold_result["buy_thr"]
         sell_thr = threshold_result["sell_thr"]
         U = threshold_result["uncertainty"]
+
+        # === SIGNAL CALIBRATION: per-asset label thresholds (Pass 2) ===
+        # Override dynamic thresholds with calibrated per-asset thresholds
+        # if available from two-pass tuning walk-forward optimization.
+        # v2.0: per-horizon thresholds with fallback to global.
+        _cal_thresholds = _get_calibrated_label_thresholds(_sig_cal, H=H)
+        if _cal_thresholds is not None:
+            buy_thr, sell_thr = _cal_thresholds
 
         thresholds[int(H)] = {
             "buy_thr": float(buy_thr),

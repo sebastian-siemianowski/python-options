@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine verify verify-quick
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine verify verify-quick verify-signals verify-signals-quick verify-stocks calibrate-signals
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -432,18 +432,39 @@ diag-refine: .venv/.deps_installed
 # ┌──────────────────────────────────────────────────────────────────────────────┐
 # │  ✅ FORECAST VERIFICATION                                                    │
 # ├──────────────────────────────────────────────────────────────────────────────┤
-# │  make verify       Walk-forward verify all forecasts (252d, full universe)   │
-# │  make verify-quick Quick verify on 8 key assets (90d)                        │
+# │  make verify              Walk-forward verify ensemble_forecast (market temp)│
+# │  make verify-quick        Quick verify ensemble_forecast (8 assets, 90d)     │
+# │  make verify-signals      Walk-forward verify signals table (full universe)  │
+# │  make verify-signals-quick Quick verify signals table (8 assets, 90d)        │
+# │  make verify-stocks       Alias for verify-signals                           │
+# │  make calibrate-signals   Standalone Pass 2 signal calibration               │
 # └──────────────────────────────────────────────────────────────────────────────┘
 
-# Full forecast verification (all assets, 252 trading days, every 5th day)
-# Options: --assets SYM1,SYM2  --eval-days 180  --workers 8  --sort hit7d
+# Full forecast verification — ensemble_forecast (market_temperature.py)
 verify: .venv/.deps_installed
 	@OFFLINE_MODE=1 .venv/bin/python -B src/decision/verify_forecasts.py $(ARGS)
 
-# Quick smoke test (8 diverse assets, 90 days)
+# Quick smoke test — ensemble_forecast (8 diverse assets, 90 days)
 verify-quick: .venv/.deps_installed
 	@OFFLINE_MODE=1 .venv/bin/python -B src/decision/verify_forecasts.py --assets SPY,QQQ,AAPL,NVDA,MSFT,GC=F,EURUSD=X,BTC-USD --eval-days 90 $(ARGS)
+
+# Full signals table verification — compute_features → latest_signals (signals.py)
+# Options: --assets SYM1,SYM2  --eval-days 180  --workers 8  --sort hit1w
+verify-signals: .venv/.deps_installed
+	@OFFLINE_MODE=1 .venv/bin/python -B src/decision/verify_signals.py $(ARGS)
+
+# Quick signals table smoke test (8 key assets, 90 days)
+verify-signals-quick: .venv/.deps_installed
+	@OFFLINE_MODE=1 .venv/bin/python -B src/decision/verify_signals.py --assets SPY,QQQ,AAPL,NVDA,XLP,XLE,GC=F,EURUSD=X --eval-days 90 $(ARGS)
+
+# Alias: verify-stocks → verify-signals
+verify-stocks: verify-signals
+
+# Standalone signal calibration (Pass 2) — runs walk-forward calibration
+# without re-running Pass 1 tuning. Updates tune JSON with correction factors.
+# Options: --assets SYM1,SYM2  --workers 8  --eval-days 180
+calibrate-signals: .venv/.deps_installed
+	@OFFLINE_MODE=1 .venv/bin/python -B src/decision/signals_calibration.py $(ARGS)
 
 # Manually (re)install requirements and refresh the dependency stamp
 doctor: .venv/bin/python

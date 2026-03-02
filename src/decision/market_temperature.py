@@ -135,11 +135,163 @@ def get_forecast_confidence(result: tuple) -> str:
 # =============================================================================
 # ELITE FORECASTING ENGINE (Professor-Grade Multi-Model Ensemble)
 # =============================================================================
-# Architecture: Multi-model Bayesian ensemble with regime-aware weighting
-# Models: Kalman Filter, GARCH(1,1), Ornstein-Uhlenbeck, Momentum, Classical
-# Horizon-adaptive: Different model weights per forecast horizon
-# Horizon-adaptive weighting for optimal blending
+# Architecture: BMA-powered primary path (uses tuned Kalman state from tune.py)
+#               with heuristic fallback when tune cache is unavailable.
+# BMA Path: Reads posterior drift (mu_post), variance (P_t), phi, nu from
+#           compute_features() and projects forward using fitted AR(1) dynamics.
+# Fallback: 5-model heuristic ensemble (Kalman EWMA, GARCH, OU, Momentum, Classical)
 # =============================================================================
+
+# Cache for tuned params to avoid reloading on every call
+_TUNE_CACHE: Dict[str, Any] = {}
+
+
+def _load_tune_cache(asset_name: str) -> Optional[Dict]:
+    """Load tune cache for asset, with in-memory caching."""
+    if not asset_name or asset_name == "unknown":
+        return None
+    key = asset_name.upper().strip()
+    if key in _TUNE_CACHE:
+        return _TUNE_CACHE[key]
+    try:
+        from decision.signals import _load_tuned_kalman_params
+        result = _load_tuned_kalman_params(key)
+        _TUNE_CACHE[key] = result
+        return result
+    except Exception:
+        _TUNE_CACHE[key] = None
+        return None
+
+
+def _bma_forecast(
+    prices: pd.Series,
+    horizons: list,
+    asset_type: str = "equity",
+    asset_name: str = "unknown",
+) -> Optional[tuple]:
+    """
+    BMA-powered forecast using the fitted Kalman posterior drift from tune.py.
+
+    Uses compute_features() to run the actual Kalman filter with tuned parameters
+    (phi, q, c, nu) and extract the posterior drift state (mu_post). Projects
+    drift forward using proper AR(1) accumulation: sum_{i=1}^{h} phi^i * mu.
+
+    This replaces the 5-model heuristic ensemble with a single BMA-calibrated
+    Kalman state — the same state used by signals.py for trading decisions.
+
+    Returns:
+        Tuple (fc_1d, ..., fc_365d, confidence) if successful, None on failure.
+        None triggers fallback to the heuristic ensemble.
+    """
+    try:
+        from decision.signals import compute_features
+
+        # We need OHLC data for HAR-GK vol. Build DataFrame from prices.
+        # Price CSVs contain Open/High/Low/Close/Volume columns.
+        ohlc_df = None
+        if hasattr(prices, 'index') and isinstance(prices.index, pd.DatetimeIndex):
+            # Try to load full OHLC data from price cache
+            safe = asset_name.replace("/", "_").replace("=", "_").replace(":", "_").upper()
+            price_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "prices", f"{safe}.csv")
+            if os.path.exists(price_path):
+                try:
+                    df = pd.read_csv(price_path, index_col=0)
+                    df.index = pd.to_datetime(df.index, format="ISO8601", errors="coerce")
+                    df = df[~df.index.isna()]
+                    if hasattr(df.index, "tz") and df.index.tz is not None:
+                        df.index = df.index.tz_localize(None)
+                    df = df[~df.index.duplicated(keep="last")].sort_index()
+                    # Truncate to match prices length (walk-forward evaluation)
+                    if len(df) > len(prices):
+                        df = df.iloc[:len(prices)]
+                    ohlc_cols = {c.lower(): c for c in df.columns}
+                    if all(c in ohlc_cols for c in ["open", "high", "low", "close"]):
+                        ohlc_df = df
+                except Exception:
+                    pass
+
+        if ohlc_df is None:
+            return None  # Can't run compute_features without OHLC
+
+        feats = compute_features(prices, asset_symbol=asset_name, ohlc_df=ohlc_df)
+
+        mu_post = feats.get("mu_post")
+        var_kf = feats.get("var_kf")
+        vol_series = feats.get("vol")
+        km = feats.get("kalman_metadata", {})
+
+        if mu_post is None or mu_post.empty:
+            return None
+
+        mu = float(mu_post.iloc[-1])
+        if not np.isfinite(mu):
+            return None
+
+        P_t = float(var_kf.iloc[-1]) if var_kf is not None and not var_kf.empty else 0.0
+        if not np.isfinite(P_t) or P_t < 0:
+            P_t = 0.0
+
+        sigma = float(vol_series.iloc[-1]) if vol_series is not None and not vol_series.empty else 0.01
+        if not np.isfinite(sigma) or sigma <= 0:
+            sigma = 0.01
+
+        phi = km.get("phi_used") or km.get("kalman_phi") or 0.95
+        phi = float(np.clip(phi, 0.8, 0.9999))
+
+        vol_annual = sigma * np.sqrt(252)
+
+        # Project drift forward using AR(1) accumulation
+        # sum_{i=1}^{h} phi^i * mu = mu * phi * (1 - phi^h) / (1 - phi)
+        forecasts = []
+        for h in horizons:
+            if abs(phi - 1.0) < 1e-8:
+                acc_drift = mu * h
+            else:
+                acc_drift = mu * phi * (1 - phi ** h) / (1 - phi)
+
+            fc_pct = acc_drift * 100.0
+
+            # Volatility-aware bounding: 3-sigma for the horizon
+            vol_bound = sigma * np.sqrt(h) * 3.0 * 100.0
+
+            # Hard caps (wider than heuristic — let BMA signal breathe)
+            if asset_type == "crypto":
+                hard_cap = {1: 12, 3: 22, 7: 35, 30: 70, 90: 100, 180: 140, 365: 200}.get(h, 50)
+            elif asset_type == "currency":
+                hard_cap = {1: 2.5, 3: 4.5, 7: 7.0, 30: 12, 90: 18, 180: 25, 365: 35}.get(h, 15)
+            elif asset_type == "metal":
+                hard_cap = {1: 5, 3: 9, 7: 14, 30: 22, 90: 35, 180: 50, 365: 65}.get(h, 30)
+            else:
+                hard_cap = {1: 4, 3: 7, 7: 12, 30: 20, 90: 30, 180: 40, 365: 55}.get(h, 25)
+
+            max_fc = max(vol_bound, hard_cap)
+            fc_pct = float(np.clip(fc_pct, -max_fc, max_fc))
+            forecasts.append(fc_pct)
+
+        # Confidence from drift uncertainty (P_t)
+        # Low P_t = high confidence, high P_t = low confidence
+        drift_snr = abs(mu) / (np.sqrt(P_t) + 1e-10)  # signal-to-noise
+        data_score = min(len(prices) / 400, 1.0)
+        vol_score = 1.0 - min(vol_annual / 0.50, 1.0) if asset_type != "crypto" else 1.0 - min(vol_annual / 1.5, 1.0)
+        snr_score = min(drift_snr / 2.0, 1.0)
+
+        conf_score = data_score * 0.25 + vol_score * 0.25 + snr_score * 0.50
+
+        if conf_score > 0.60:
+            confidence = "High"
+        elif conf_score > 0.35:
+            confidence = "Medium"
+        else:
+            confidence = "Low"
+
+        while len(forecasts) < 7:
+            forecasts.append(0.0)
+
+        return tuple(forecasts[:7]) + (confidence,)
+
+    except Exception:
+        return None
+
 
 def _kalman_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equity") -> list:
     """
@@ -219,13 +371,37 @@ def _garch_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equi
         if len(returns) < 30:
             return [0.0] * len(horizons)
         
-        # GARCH(1,1) parameters
-        omega = 0.00001
-        alpha_g = 0.08
-        beta_g = 0.88
+        # Quick GARCH(1,1) parameter estimation via variance targeting
+        # Fits alpha and beta from data, omega derived from long-run variance
+        sample_var = np.var(returns)
+        
+        # Estimate alpha from recent squared returns autocorrelation
+        sq_ret = returns[-min(120, len(returns)):]**2
+        if len(sq_ret) >= 20:
+            sq_mean = np.mean(sq_ret)
+            sq_demean = sq_ret - sq_mean
+            # Lag-1 autocorrelation of squared returns → alpha + beta
+            if len(sq_demean) > 1:
+                autocov = np.mean(sq_demean[:-1] * sq_demean[1:])
+                autovar = np.mean(sq_demean**2)
+                rho1 = autocov / autovar if autovar > 1e-16 else 0.0
+                rho1 = np.clip(rho1, 0.0, 0.98)
+            else:
+                rho1 = 0.85
+            
+            # Typical split: beta ≈ 0.85-0.92, alpha ≈ rho1 - beta
+            beta_g = np.clip(rho1 * 0.90, 0.70, 0.96)
+            alpha_g = np.clip(rho1 - beta_g * 0.95, 0.02, 0.20)
+        else:
+            alpha_g = 0.08
+            beta_g = 0.88
+        
+        # Variance targeting: omega = sample_var * (1 - alpha - beta)
+        denom = 1 - alpha_g - beta_g
+        omega = max(sample_var * denom, 1e-8) if denom > 0.01 else 1e-5
         
         # Estimate conditional variance
-        var_t = np.var(returns)
+        var_t = sample_var
         for r in returns[-min(60, len(returns)):]:
             var_t = omega + alpha_g * r**2 + beta_g * var_t
         
@@ -325,12 +501,29 @@ def _ou_forecast(prices: pd.Series, horizons: list, asset_type: str = "equity") 
             else:
                 target_dev = dev_100 * 0.2 + dev_200 * 0.8
             
+            # Dampen small deviations — avoid false mean-reversion signals
+            # when price is near the MAs (trending markets spend time here)
+            deadzone = 0.02  # 2% deadzone
+            if abs(target_dev) < deadzone:
+                target_dev *= abs(target_dev) / deadzone  # Quadratic dampening
+            
             # OU: expected deviation shrinks exponentially toward zero
             expected_dev = target_dev * np.exp(-theta * h)
             
             # Forecast = price change from current deviation to expected
             # If above MA (positive dev), expect negative return
             fc_pct = -(target_dev - expected_dev) * 100
+            
+            # Trend-aware suppression: if all MAs align (strong trend),
+            # reduce OU signal — mean reversion is unreliable in trends
+            if dev_50 > 0 and dev_100 > 0 and dev_200 > 0:
+                # All MAs bullish — suppress bearish OU signal
+                if fc_pct < 0:
+                    fc_pct *= 0.3
+            elif dev_50 < 0 and dev_100 < 0 and dev_200 < 0:
+                # All MAs bearish — suppress bullish OU signal
+                if fc_pct > 0:
+                    fc_pct *= 0.3
             
             forecasts.append(float(fc_pct))
         return forecasts
@@ -442,8 +635,15 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
     """
     Elite multi-model ensemble forecast with regime-aware weighting.
     
-    Models (5 total):
-    1. Kalman Filter - drift state estimation
+    Architecture: BMA-powered primary path (uses tuned Kalman posterior drift)
+    with heuristic 5-model fallback when tune cache is unavailable.
+    
+    BMA Path:
+        Uses compute_features() → posterior drift (mu_post) → AR(1) projection.
+        This aligns forecasts with the actual tuned Kalman state from signals.py.
+    
+    Fallback Models (5 total):
+    1. Kalman Filter - drift state estimation (EWMA-based)
     2. GARCH(1,1) - volatility-adjusted forecasts
     3. Ornstein-Uhlenbeck - mean reversion
     4. Momentum - multi-timeframe trend following
@@ -467,6 +667,12 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         # Auto-detect crypto assets
         if _is_crypto_asset(asset_name):
             asset_type = "crypto"
+        
+        # === PRIMARY PATH: BMA-powered forecast from tuned Kalman state ===
+        bma_result = _bma_forecast(prices, horizons, asset_type, asset_name)
+        if bma_result is not None:
+            return bma_result
+        # === FALLBACK: Heuristic 5-model ensemble ===
         
         log_returns = np.log(prices / prices.shift(1)).dropna().values
         if len(log_returns) < 30:
@@ -513,8 +719,8 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
             base_weights = [0.15, 0.15, 0.40, 0.10, 0.20]
         elif regime == 'volatile':
             base_weights = [0.20, 0.35, 0.20, 0.10, 0.15]
-        else:  # calm
-            base_weights = [0.25, 0.20, 0.20, 0.15, 0.20]
+        else:  # calm — Kalman + Classical dominate, OU suppressed
+            base_weights = [0.35, 0.15, 0.10, 0.20, 0.20]
         
         final_forecasts = []
         for i, h in enumerate(horizons):
@@ -557,22 +763,19 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         if asset_type == "crypto":
             hard_caps = {1: 10, 3: 18, 7: 30, 30: 60, 90: 85, 180: 120, 365: 180}
         elif asset_type == "currency":
-            hard_caps = {1: 2.0, 3: 3.5, 7: 5.5, 30: 10, 90: 15, 180: 22, 365: 30}
+            hard_caps = {1: 2.5, 3: 4.5, 7: 7.0, 30: 12, 90: 18, 180: 25, 365: 35}
         elif asset_type == "metal":
-            hard_caps = {1: 4, 3: 7, 7: 10, 30: 18, 90: 28, 180: 40, 365: 55}
+            hard_caps = {1: 5, 3: 9, 7: 14, 30: 22, 90: 35, 180: 50, 365: 65}
         else:
-            hard_caps = {1: 3, 3: 5, 7: 8, 30: 14, 90: 22, 180: 32, 365: 45}
+            hard_caps = {1: 4, 3: 7, 7: 12, 30: 20, 90: 30, 180: 40, 365: 55}
         
         bounded_forecasts = []
         for i, h in enumerate(horizons):
             fc = final_forecasts[i]
             hard_cap = hard_caps.get(h, 35)
-            # Use the larger of vol-based or hard cap for crypto
-            vol_bound = vol * np.sqrt(h / 252) * 2.5 * 100
-            if asset_type == "crypto":
-                max_fc = max(vol_bound, hard_cap)
-            else:
-                max_fc = max(min(vol_bound, hard_cap), 0.5)
+            # Use the LARGER of vol-based or hard cap — don't kill magnitude
+            vol_bound = vol * np.sqrt(h / 252) * 3.0 * 100
+            max_fc = max(vol_bound, hard_cap)
             
             fc = float(np.clip(fc, -max_fc, max_fc))
             bounded_forecasts.append(fc)
