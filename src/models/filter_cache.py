@@ -734,9 +734,6 @@ def _run_phi_student_t_with_trajectory(
     loglik_trajectory = np.zeros(n)
     log_likelihood = 0.0
     
-    # Robustified Kalman gain adjustment for heavy tails
-    nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
-    
     for t in range(n):
         # Predict
         mu_pred = phi_val * mu
@@ -968,7 +965,6 @@ def _run_momentum_phi_student_t_with_trajectory(
     
     log_gamma_num = gammaln((nu_val + 1.0) / 2.0)
     log_gamma_den = gammaln(nu_val / 2.0)
-    nu_adjust = min(nu_val / (nu_val + 3.0), 1.0)
     
     mu = 0.0
     P = 1e-4
@@ -995,7 +991,7 @@ def _run_momentum_phi_student_t_with_trajectory(
             forecast_scale = np.sqrt(S) if S > 1e-12 else 1e-6
         
         if S > 1e-12:
-            K = nu_adjust * P_pred / S
+            K = P_pred / S
             mu = mu_pred + K * innovation
             P = (1.0 - K) * P_pred
             

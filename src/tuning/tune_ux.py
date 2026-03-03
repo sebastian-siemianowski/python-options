@@ -2326,6 +2326,10 @@ Examples:
                        help='Hierarchical shrinkage toward global (default: 0.05, set to 0 for original behavior)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Show all tuning output including per-model details (may clutter display)')
+    parser.add_argument('--skip-calibration', action='store_true',
+                       help='Skip Pass 2 signal calibration (walk-forward p_up/magnitude/threshold correction)')
+    parser.add_argument('--workers', type=int, default=0,
+                       help='Number of parallel workers for signal calibration (0=auto, uses all CPUs)')
 
     args = parser.parse_args()
 
@@ -2858,6 +2862,32 @@ Examples:
     # Save updated cache
     if new_estimates > 0:
         save_cache_json(cache, args.cache_json)
+
+    # ========================================================================
+    # PASS 2: SIGNAL CALIBRATION (walk-forward p_up + magnitude + thresholds)
+    # ========================================================================
+    # After all BMA tuning is complete, run a walk-forward mini-backtest per
+    # asset to compute correction factors (isotonic p_up map, magnitude scale,
+    # bias, and per-asset label thresholds). These are stored in each asset's
+    # tune JSON under "signals_calibration" and applied at inference time.
+    # Skip with --skip-calibration flag.
+    # ========================================================================
+    if not getattr(args, 'skip_calibration', False):
+        try:
+            from decision.signals_calibration import run_signals_calibration
+            n_workers = getattr(args, 'workers', 0)
+            if n_workers <= 0:
+                n_workers = os.cpu_count() or 8
+            cache = run_signals_calibration(
+                cache,
+                workers=n_workers,
+                assets=None,  # calibrate all cached assets
+                quiet=False,
+            )
+            # Re-save with calibration data
+            save_cache_json(cache, args.cache_json)
+        except Exception as e:
+            console.print(f"\n[yellow]⚠ Signal calibration skipped: {e}[/yellow]\n")
 
     # Count regime statistics from cache
     regime_fit_counts = {r: 0 for r in range(5)}

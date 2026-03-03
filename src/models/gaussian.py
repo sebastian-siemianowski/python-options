@@ -48,7 +48,8 @@ from typing import Dict, Tuple, Optional
 
 import numpy as np
 from scipy.optimize import minimize
-from scipy.stats import kstest, norm
+from scipy.special import ndtr as _ndtr
+from scipy.stats import norm
 
 # Numba wrappers for JIT-compiled filters (optional performance enhancement)
 try:
@@ -58,6 +59,8 @@ try:
         run_phi_gaussian_filter,
         is_cv_kernel_available,
         run_gaussian_cv_test_fold,
+        run_phi_gaussian_filter_with_predictive,
+        run_momentum_phi_gaussian_filter,
     )
     _USE_NUMBA = is_numba_available()
     _USE_CV_KERNEL = is_cv_kernel_available()
@@ -67,10 +70,18 @@ except ImportError:
     run_gaussian_filter = None
     run_phi_gaussian_filter = None
     run_gaussian_cv_test_fold = None
+    run_phi_gaussian_filter_with_predictive = None
+    run_momentum_phi_gaussian_filter = None
 
 # Pre-computed constants
 _LOG_2PI = math.log(2.0 * math.pi)
 _LOG10_C_TARGET = math.log10(0.9)
+_INV_SQRT_2PI = 1.0 / math.sqrt(2.0 * math.pi)
+
+
+def _fast_norm_pdf(z):
+    """Closed-form standard normal PDF: (1/√2π) * exp(-0.5*z²)."""
+    return _INV_SQRT_2PI * np.exp(-0.5 * z * z)
 
 
 def _fast_ks_statistic(pit_values):
@@ -82,6 +93,34 @@ def _fast_ks_statistic(pit_values):
     d_plus = np.max(np.arange(1, n + 1) / n - pit_sorted)
     d_minus = np.max(pit_sorted - np.arange(0, n) / n)
     return float(max(d_plus, d_minus))
+
+
+def _fast_ks_uniform(pit_values):
+    """
+    Inline KS test against Uniform(0,1) — replaces scipy.stats.kstest.
+    
+    Returns (statistic, p_value).
+    Uses Kolmogorov asymptotic approximation for p-value.
+    """
+    n = len(pit_values)
+    if n < 2:
+        return 1.0, 0.0
+    sorted_pit = np.sort(pit_values)
+    ecdf = np.arange(1, n + 1) / n
+    D_plus = float(np.max(ecdf - sorted_pit))
+    D_minus = float(np.max(sorted_pit - np.arange(0, n) / n))
+    D = max(D_plus, D_minus)
+    sqrt_n = math.sqrt(n)
+    lam = (sqrt_n + 0.12 + 0.11 / sqrt_n) * D
+    if lam < 0.001:
+        p = 1.0
+    elif lam > 3.0:
+        p = 0.0
+    else:
+        p = 2.0 * math.exp(-2.0 * lam * lam)
+        if p > 1.0:
+            p = 1.0
+    return D, p
 
 
 # =============================================================================
@@ -201,12 +240,20 @@ class GaussianDriftModel:
         """
         Optimized Kalman filter for drift estimation.
         
-        Performance optimizations (February 2026):
+        Performance optimizations (February/March 2026):
+        - Numba JIT-compiled kernel when available (10-50x speedup)
         - Pre-compute R array once
         - Pre-compute log_2pi constant
         - Use np.empty instead of np.zeros
         - Ensure contiguous array access
         """
+        # Try Numba-accelerated version first
+        if _USE_NUMBA:
+            try:
+                return run_gaussian_filter(returns, vol, q, c)
+            except Exception:
+                pass  # Fall through to Python implementation
+
         n = len(returns)
         
         # Convert to contiguous float64 arrays once
@@ -326,7 +373,17 @@ class GaussianDriftModel:
             S_pred[t] = P_pred + R_t      (BEFORE seeing y_t)
         
         For proper PIT computation.
+        Uses Numba when available for ~50x speedup.
         """
+        # Numba-accelerated path
+        if _USE_NUMBA and run_phi_gaussian_filter_with_predictive is not None:
+            try:
+                return run_phi_gaussian_filter_with_predictive(
+                    returns, vol, q, c, phi,
+                )
+            except Exception:
+                pass  # Fall through to Python
+
         n = len(returns)
         q_val = float(q) if np.ndim(q) == 0 else float(q.item()) if hasattr(q, "item") else float(q)
         c_val = float(c) if np.ndim(c) == 0 else float(c.item()) if hasattr(c, "item") else float(c)
@@ -384,6 +441,7 @@ class GaussianDriftModel:
         ELITE FIX: Proper PIT/KS using PREDICTIVE distribution for Gaussian.
         
         For Gaussian, scale = sqrt(S_pred) (no adjustment needed).
+        Vectorized: single scipy call instead of per-element loop.
         """
         returns_flat = np.asarray(returns).flatten()
         mu_pred_flat = np.asarray(mu_pred).flatten()
@@ -399,13 +457,13 @@ class GaussianDriftModel:
             return 1.0, 0.0
         
         standardized_clean = standardized[valid_mask]
-        pit_values = norm.cdf(standardized_clean)
+        pit_values = _ndtr(standardized_clean)
         
         if len(pit_values) < 2:
             return 1.0, 0.0
         
-        ks_result = kstest(pit_values, 'uniform')
-        return float(ks_result.statistic), float(ks_result.pvalue)
+        ks_stat, ks_p = _fast_ks_uniform(pit_values)
+        return float(ks_stat), float(ks_p)
 
     @staticmethod
     def filter_augmented(
@@ -702,12 +760,16 @@ class GaussianDriftModel:
         return config, diagnostics
 
     @classmethod
-    def filter_and_calibrate(cls, returns, vol, config, train_frac=0.7, momentum_signal=None):
+    def filter_and_calibrate(cls, returns, vol, config, train_frac=0.7, momentum_signal=None,
+                             mu_pred_precomputed=None, S_pred_precomputed=None, ll_precomputed=None):
         """
         Honest PIT + CRPS for unified Gaussian. All params from training config.
 
         Mirrors PhiStudentTDriftModel.filter_and_calibrate but uses Gaussian CDF
         (no ν parameter). Delegates to GARCH path when GARCH params are active.
+
+        If mu_pred_precomputed / S_pred_precomputed / ll_precomputed are supplied,
+        skip the internal filter call (avoids redundant O(n) Kalman pass).
 
         Returns (pit_values, pit_pvalue, sigma_crps, crps, diagnostics).
         """
@@ -722,9 +784,15 @@ class GaussianDriftModel:
         phi = float(config.phi)
         mom_w = float(getattr(config, 'momentum_weight', 0.0))
 
-        # Use momentum-augmented filter when momentum is active
-        _, _, mu_pred, S_pred, ll = cls._filter_phi_with_momentum(
-            returns, vol, q, c, phi, momentum_signal, mom_w)
+        # Reuse precomputed filter outputs when available (March 2026)
+        if mu_pred_precomputed is not None and S_pred_precomputed is not None and ll_precomputed is not None:
+            mu_pred = mu_pred_precomputed
+            S_pred = S_pred_precomputed
+            ll = ll_precomputed
+        else:
+            # Use momentum-augmented filter when momentum is active
+            _, _, mu_pred, S_pred, ll = cls._filter_phi_with_momentum(
+                returns, vol, q, c, phi, momentum_signal, mom_w)
 
         variance_inflation = float(getattr(config, 'variance_inflation', 1.0))
         use_garch = (getattr(config, 'garch_alpha', 0.0) > 0 or
@@ -746,10 +814,11 @@ class GaussianDriftModel:
             sigma = np.sqrt(np.maximum(S_calibrated, 1e-20))
             sigma = np.maximum(sigma, 1e-10)
             z = (returns_test - mu_pred_test) / sigma
-            pit_values = np.clip(norm.cdf(z), 0.001, 0.999)
+            pit_values = np.clip(_ndtr(z), 0.001, 0.999)
             mu_effective = mu_pred_test
 
-        pit_pvalue = float(kstest(pit_values, 'uniform').pvalue)
+        _, pit_pvalue = _fast_ks_uniform(pit_values)
+        pit_pvalue = float(pit_pvalue)
         # Anderson-Darling test (tail-sensitive complement to KS)
         try:
             from calibration.pit_calibration import anderson_darling_uniform
@@ -824,6 +893,30 @@ class GaussianDriftModel:
         phi_val = float(np.clip(phi, -0.999, 0.999))
         mom_w = float(momentum_weight)
 
+        # Try Numba-accelerated kernel first
+        if _USE_NUMBA and run_momentum_phi_gaussian_filter is not None:
+            try:
+                # Pre-compute momentum_adjustment = w * mom[t] * vol[t]
+                mom_adj = mom_w * np.asarray(momentum_signal, dtype=np.float64) * np.asarray(vol, dtype=np.float64)
+                mu_f, P_f, ll = run_momentum_phi_gaussian_filter(
+                    returns, vol, q_val, c_val, phi_val, mom_adj)
+                # Reconstruct predictive arrays from filtered values
+                phi_sq = phi_val * phi_val
+                mu_pred_arr = np.empty(n, dtype=np.float64)
+                S_pred_arr = np.empty(n, dtype=np.float64)
+                mu_pred_arr[0] = mom_w * float(momentum_signal[0]) * float(vol[0])
+                mu_pred_arr[1:] = phi_val * mu_f[:-1] + mom_adj[1:]
+                P_pred_0 = 1e-4 + q_val  # phi_sq * P0 + q where P0=1e-4, but kernel uses P0=1e-4
+                R = c_val * (np.asarray(vol, dtype=np.float64) ** 2)
+                P_pred_arr = np.empty(n, dtype=np.float64)
+                P_pred_arr[0] = phi_sq * 1e-4 + q_val
+                P_pred_arr[1:] = phi_sq * P_f[:-1] + q_val
+                S_pred_arr = P_pred_arr + R
+                S_pred_arr = np.maximum(S_pred_arr, 1e-12)
+                return mu_f, P_f, mu_pred_arr, S_pred_arr, float(ll)
+            except Exception:
+                pass  # Fall through to Python implementation
+
         mu = 0.0
         P = 1e-4
         mu_filtered = np.zeros(n)
@@ -880,7 +973,6 @@ class GaussianDriftModel:
 
         Returns dict with 'momentum_weight'.
         """
-        from scipy.stats import norm as _norm
 
         # Validation fold: last 30% of training data
         n_val = max(50, n_train // 3)
@@ -895,18 +987,15 @@ class GaussianDriftModel:
                 _, _, mu_pred, S_pred, _ = cls._filter_phi_with_momentum(
                     returns_train, vol_train, q, c, phi, momentum_signal, w)
 
-                # Compute CRPS on validation fold
-                crps_sum = 0.0
-                for t in range(val_start, n_train):
-                    sig = math.sqrt(max(S_pred[t], 1e-20))
-                    if sig < 1e-10:
-                        sig = 1e-10
-                    z = (returns_train[t] - mu_pred[t]) / sig
-                    crps_t = sig * (z * (2 * _norm.cdf(z) - 1)
-                                    + 2 * _norm.pdf(z)
-                                    - 1.0 / math.sqrt(math.pi))
-                    crps_sum += crps_t
-                avg_crps = crps_sum / n_val
+                # Compute CRPS on validation fold (vectorized)
+                _sig_arr = np.sqrt(np.maximum(S_pred[val_start:n_train], 1e-20))
+                _sig_arr = np.maximum(_sig_arr, 1e-10)
+                _z_arr = (returns_train[val_start:n_train] - mu_pred[val_start:n_train]) / _sig_arr
+                _cdf_arr = _ndtr(_z_arr)
+                _pdf_arr = _fast_norm_pdf(_z_arr)
+                _inv_sqrt_pi = 1.0 / math.sqrt(math.pi)
+                _crps_arr = _sig_arr * (_z_arr * (2 * _cdf_arr - 1) + 2 * _pdf_arr - _inv_sqrt_pi)
+                avg_crps = float(np.mean(_crps_arr))
 
                 if avg_crps < best_crps:
                     best_crps = avg_crps
@@ -953,7 +1042,6 @@ class GaussianDriftModel:
                 return DISABLED
 
             # ── Degradation guard: compare CRPS on validation fold ──
-            from scipy.stats import norm as _norm
             n_val = max(50, n_train // 3)
             val_start = n_train - n_val
 
@@ -962,17 +1050,16 @@ class GaussianDriftModel:
                 returns_train, vol_train, q, c, phi,
                 momentum_signal, momentum_weight)
 
+            _inv_sqrt_pi = 1.0 / math.sqrt(math.pi)
+
             def _fold_crps(mu_p, S_p):
-                total = 0.0
-                for t in range(val_start, n_train):
-                    sig = math.sqrt(max(S_p[t], 1e-20))
-                    if sig < 1e-10:
-                        sig = 1e-10
-                    z = (returns_train[t] - mu_p[t]) / sig
-                    total += sig * (z * (2 * _norm.cdf(z) - 1)
-                                    + 2 * _norm.pdf(z)
-                                    - 1.0 / math.sqrt(math.pi))
-                return total / n_val
+                _sig = np.sqrt(np.maximum(S_p[val_start:n_train], 1e-20))
+                _sig = np.maximum(_sig, 1e-10)
+                _z = (returns_train[val_start:n_train] - mu_p[val_start:n_train]) / _sig
+                _cdf = _ndtr(_z)
+                _pdf = _fast_norm_pdf(_z)
+                _crps = _sig * (_z * (2 * _cdf - 1) + 2 * _pdf - _inv_sqrt_pi)
+                return float(np.mean(_crps))
 
             crps_baseline = _fold_crps(mu_base, S_base)
 
@@ -1195,7 +1282,7 @@ class GaussianDriftModel:
             sigma = np.sqrt(np.maximum(S_cal, 1e-20))
             sigma = np.maximum(sigma, 1e-10)
             z = (returns_train[val_start:] - mu_pred_train[val_start:]) / sigma
-            pit = np.clip(norm.cdf(z), 0.001, 0.999)
+            pit = np.clip(_ndtr(z), 0.001, 0.999)
             hist, _ = np.histogram(pit, bins=10, range=(0, 1))
             mad = float(np.mean(np.abs(hist / len(pit) - 0.1)))
             if mad < best_mad:
@@ -1294,7 +1381,6 @@ class GaussianDriftModel:
         test_start = n_train - n_test_inner
 
         best_crps = float('inf')
-        from scipy.stats import norm as _norm
 
         _inv_sqrt_pi = 1.0 / math.sqrt(math.pi)
         _S_test = S_pred[test_start:n_train] * beta
@@ -1314,8 +1400,8 @@ class GaussianDriftModel:
 
             # Vectorized CRPS computation
             z_arr = (_ret_test - mu_eff_arr) / _sig_base
-            cdf_arr = _norm.cdf(z_arr)
-            pdf_arr = _norm.pdf(z_arr)
+            cdf_arr = _ndtr(z_arr)
+            pdf_arr = _fast_norm_pdf(z_arr)
             crps_arr = _sig_base * (z_arr * (2 * cdf_arr - 1) + 2 * pdf_arr - _inv_sqrt_pi)
             avg_crps = float(np.mean(crps_arr))
             if avg_crps < best_crps:
@@ -1338,8 +1424,8 @@ class GaussianDriftModel:
             # Vectorized CRPS with shrinkage
             sig_s = _sig_base * s
             z_arr = (_ret_test - mu_eff_arr) / sig_s
-            cdf_arr = _norm.cdf(z_arr)
-            pdf_arr = _norm.pdf(z_arr)
+            cdf_arr = _ndtr(z_arr)
+            pdf_arr = _fast_norm_pdf(z_arr)
             crps_arr = sig_s * (z_arr * (2 * cdf_arr - 1) + 2 * pdf_arr - _inv_sqrt_pi)
             avg_crps = float(np.mean(crps_arr))
             if avg_crps < best_crps_s:
@@ -1380,7 +1466,7 @@ class GaussianDriftModel:
         st = sp[:nt]
 
         _msqrt = math.sqrt
-        _norm_cdf = norm.cdf
+        _norm_cdf = _ndtr
 
         # Try Numba-accelerated score fold kernel
         try:
@@ -1477,10 +1563,63 @@ class GaussianDriftModel:
                         bg = gw
                         bl = lam_c
 
+        # ── Golden-section refinement around winning GW (March 2026) ──
+        # The 8-point GW grid has spacing ~0.15; golden-section refines to
+        # ~0.01 precision in 10 iters around the best grid point.
+        _gr = (math.sqrt(5) + 1) / 2
+        _gw_lo = max(0.0, bg - 0.15)
+        _gw_hi = min(1.0, bg + 0.15)
+        for _ in range(10):
+            _gw1r = _gw_hi - (_gw_hi - _gw_lo) / _gr
+            _gw2r = _gw_lo + (_gw_hi - _gw_lo) / _gr
+            # Score at probe 1
+            Sb1 = (1 - _gw1r) * st + _gw1r * ht
+            s1_total, s1_folds = 0.0, 0
+            for fi in range(nf):
+                ee = (fi + 1) * fs
+                ve = min((fi + 2) * fs, nt)
+                if ve <= ee:
+                    continue
+                kp, md = _score_fold(Sb1, ee, ve, bl)
+                s1_total += kp * max(0, 1 - md / 0.05)
+                s1_folds += 1
+            s1 = s1_total / max(s1_folds, 1)
+            # Score at probe 2
+            Sb2 = (1 - _gw2r) * st + _gw2r * ht
+            s2_total, s2_folds = 0.0, 0
+            for fi in range(nf):
+                ee = (fi + 1) * fs
+                ve = min((fi + 2) * fs, nt)
+                if ve <= ee:
+                    continue
+                kp, md = _score_fold(Sb2, ee, ve, bl)
+                s2_total += kp * max(0, 1 - md / 0.05)
+                s2_folds += 1
+            s2 = s2_total / max(s2_folds, 1)
+            if s1 > s2:
+                _gw_hi = _gw2r
+            else:
+                _gw_lo = _gw1r
+        _gw_refined = (_gw_lo + _gw_hi) / 2.0
+        # Accept refinement only if it improves over grid winner
+        Sb_ref = (1 - _gw_refined) * st + _gw_refined * ht
+        ref_total, ref_folds = 0.0, 0
+        for fi in range(nf):
+            ee = (fi + 1) * fs
+            ve = min((fi + 2) * fs, nt)
+            if ve <= ee:
+                continue
+            kp, md = _score_fold(Sb_ref, ee, ve, bl)
+            ref_total += kp * max(0, 1 - md / 0.05)
+            ref_folds += 1
+        if ref_folds > 0 and ref_total / ref_folds > bs:
+            bg = _gw_refined
+            bs = ref_total / ref_folds
+
         return {
             'calibrated_gw': bg,
             'calibrated_lambda_rho': bl,
-            'calibrated_beta_probit_corr': 1.0,  # No ν-based correction for Gaussian
+            'calibrated_beta_probit_corr': 1.0,
         }
 
     # =========================================================================
@@ -1495,8 +1634,6 @@ class GaussianDriftModel:
         Runs continuously from t=0 to avoid cold-start at train/test boundary.
         """
         n = len(innovations)
-        sq = innovations ** 2
-        neg = (innovations < 0).astype(np.float64)
 
         go = float(getattr(config, 'garch_omega', 0.0))
         ga = float(getattr(config, 'garch_alpha', 0.0))
@@ -1504,6 +1641,19 @@ class GaussianDriftModel:
         gl = float(getattr(config, 'garch_leverage', 0.0))
         gu = float(getattr(config, 'garch_unconditional_var', 1e-4))
 
+        # Try Numba-accelerated GARCH kernel
+        try:
+            from .numba_wrappers import run_garch_variance as _numba_garch
+            return _numba_garch(
+                np.ascontiguousarray(innovations, dtype=np.float64),
+                go, ga, gb, gl, gu,
+                0.0, 0.0, 0.0, 0.0, 0.0, 1.0)  # no enhanced features
+        except (ImportError, Exception):
+            pass
+
+        # Python fallback
+        sq = innovations ** 2
+        neg = (innovations < 0).astype(np.float64)
         h = np.zeros(n)
         h[0] = gu
         for t in range(1, n):
@@ -1565,7 +1715,7 @@ class GaussianDriftModel:
             _en = _best_lam * _en + _1m_lam * (inn_train[_idx] ** 2)
             _ed = _best_lam * _ed + _1m_lam * S_bt[_idx]
 
-        _pit_train_cal = np.clip(norm.cdf(_zcal), 0.001, 0.999)
+        _pit_train_cal = np.clip(_ndtr(_zcal), 0.001, 0.999)
 
         # ── DOMAIN-MATCHED TRAINING PIT CORRECTIONS (March 2026) ────
         # Apply the SAME chi² and PIT-var corrections to training PITs
@@ -1600,7 +1750,7 @@ class GaussianDriftModel:
             _raw_z2_w_tr = _raw_z2_tr if _raw_z2_tr < _CHI2_WINSOR_CAP_TR else _CHI2_WINSOR_CAP_TR
             _ewm_z2_tr = _CHI2_LAMBDA_TR * _ewm_z2_tr + _CHI2_1M_TR * _raw_z2_w_tr
 
-        _pit_train_cal = np.clip(norm.cdf(_zcal_corrected), 0.001, 0.999)
+        _pit_train_cal = np.clip(_ndtr(_zcal_corrected), 0.001, 0.999)
 
         # PIT-var correction on training PITs
         _PIT_VAR_LAMBDA_TR = float(getattr(config, 'pit_var_lambda', 0.97))
@@ -1634,7 +1784,8 @@ class GaussianDriftModel:
         _pit_train_cal = np.clip(_pit_train_cal, 0.001, 0.999)
         # ── END DOMAIN-MATCHED TRAINING PIT CORRECTIONS ─────────────
 
-        _z_probit_cal = norm.ppf(_pit_train_cal)
+        from scipy.special import ndtri as _ndtri_g
+        _z_probit_cal = _ndtri_g(_pit_train_cal)
         _z_probit_cal = _z_probit_cal[np.isfinite(_z_probit_cal)]
 
         # Init test EWM
@@ -1730,7 +1881,7 @@ class GaussianDriftModel:
             _ewm_z2 = _CHI2_LAMBDA * _ewm_z2 + _CHI2_1M * _raw_z2_w
 
         # Now compute Gaussian PIT after chi-squared correction
-        pit_values = np.clip(norm.cdf(_z_test), 0.001, 0.999)
+        pit_values = np.clip(_ndtr(_z_test), 0.001, 0.999)
 
         # ── RANDOMIZED PIT FOR STALE OBSERVATIONS (Czado et al. 2009)
         _STALE_RETURN_THRESHOLD = 1e-10
@@ -1807,7 +1958,8 @@ class GaussianDriftModel:
 
         # AR(1) probit whitening
         if _best_lam > 0:
-            _z_probit = norm.ppf(np.clip(pit_values, 0.0001, 0.9999))
+            from scipy.special import ndtri as _ndtri_g
+            _z_probit = _ndtri_g(np.clip(pit_values, 0.0001, 0.9999))
             _z_white = np.zeros(n_test)
             _z_white[0] = _z_probit[0]
 
@@ -1828,7 +1980,7 @@ class GaussianDriftModel:
                 else:
                     _z_white[_t] = _z_probit[_t]
 
-            pit_values = np.clip(norm.cdf(_z_white), 0.001, 0.999)
+            pit_values = np.clip(_ndtr(_z_white), 0.001, 0.999)
 
         # ── ISOTONIC RECALIBRATION (Kuleshov et al. 2018) ───────────
         _ISO_BLEND_ALPHA = 0.4  # Conservative: 40% isotonic, 60% identity
@@ -1855,8 +2007,8 @@ class GaussianDriftModel:
         Returns (p_value, lr_statistic, n_pit).
         """
         try:
-            from scipy.stats import chi2
-            z = norm.ppf(np.clip(pit_values, 0.0001, 0.9999))
+            from scipy.special import ndtri, chdtrc as _chdtrc_berk
+            z = ndtri(np.clip(pit_values, 0.0001, 0.9999))
             z = z[np.isfinite(z)]
             n_z = len(z)
             if n_z <= 20:
@@ -1869,11 +2021,11 @@ class GaussianDriftModel:
             ll_null = -0.5 * n_z * np.log(2 * np.pi) - 0.5 * np.sum(z ** 2)
             sigma_sq = max(var_hat * (1 - rho_hat ** 2) if abs(rho_hat) < 0.99 else var_hat * 0.01, 1e-6)
             ll_alt = -0.5 * np.log(2 * np.pi * var_hat) - 0.5 * (z[0] - mu_hat) ** 2 / var_hat
-            for t in range(1, n_z):
-                resid = z[t] - (mu_hat + rho_hat * (z[t-1] - mu_hat))
-                ll_alt += -0.5 * np.log(2 * np.pi * sigma_sq) - 0.5 * resid ** 2 / sigma_sq
+            # Vectorized AR(1) residual log-likelihood (replaces Python loop)
+            resid_vec = z[1:] - (mu_hat + rho_hat * (z[:-1] - mu_hat))
+            ll_alt += float(-0.5 * (n_z - 1) * np.log(2 * np.pi * sigma_sq) - 0.5 * np.sum(resid_vec ** 2) / sigma_sq)
             lr_stat = float(max(2 * (ll_alt - ll_null), 0))
-            p_value = float(1 - chi2.cdf(lr_stat, df=3))
+            p_value = float(_chdtrc_berk(3, lr_stat))
             return (p_value, lr_stat, n_z)
         except Exception:
             return (float('nan'), 0.0, 0)
@@ -2016,7 +2168,7 @@ class GaussianDriftModel:
             calibration_penalty = 0.0
             if std_count >= 30:
                 try:
-                    pit_values = norm.cdf(std_buf[:std_count])
+                    pit_values = _ndtr(std_buf[:std_count])
                     ks_stat = _fast_ks_statistic(pit_values)
 
                     if ks_stat > 0.05:

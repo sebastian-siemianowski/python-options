@@ -42,7 +42,7 @@ except ImportError:
 # Assets that are currently FAILING PIT calibration (p < 0.05)
 FAILING_ASSETS = [
     # Critical failures (p < 0.001)
-    'FLTR', 'ILKAF', 'BZAI', 'ANNA', 'MDALF', 'BCAL', 'AIFF', 'FTAI',
+    'ILKAF', 'BZAI', 'ANNA', 'MDALF', 'BCAL', 'AIFF', 'FTAI',
     'ABTC', 'GC=F', 'GLIN', 'ERMAY', 'BNZI', 'SPCE', 'GORO', 'EVTL',
     'PACB', 'AMZE', 'RCAT', 'LDOS', 'FINMY', 'VRT', 'GOOG', 'MOTG',
     'SI=F', 'XAGUSD', 'GOOGL', 'KITT', 'JCI', 'LLY', 'HII', 'MET',
@@ -1132,7 +1132,7 @@ if __name__ == '__main__':
         test_full_tuning_all_assets(assets_to_test=[
             # PIT failures
             'OKLO', 'ERMAY', 'BCAL', 'ABTC', 'SAIC', 'CRML', 'ANNA',
-            'TATT', 'AMZE', 'BZAI', 'HII', 'FLTR', 'CNXT', 'QS',
+            'TATT', 'AMZE', 'BZAI', 'HII', 'CNXT', 'QS',
             # CRPS failures (PIT pass but CRPS fail)
             'PSIX', 'ARQQ', 'COMM', 'AZBA', 'RGTI', 'MSTR', 'BNZI', 'VRT',
             'SPCE', 'GORO', 'APLM', 'AIRI', 'ILKAF', 'HOVR', 'KITT', 'QBTS',

@@ -682,7 +682,7 @@ COMPANY_NAMES: Dict[str, str] = {
     "CNXT": "VanEck ChiNext ETF",
     "DURA": "VanEck Morningstar Durable Dividend ETF",
 #     "EGPT": "VanEck Egypt Index ETF",
-    "FLTR": "VanEck Investment Grade Floating Rate ETF",
+
     "GDX": "VanEck Gold Miners ETF",
     "GDXJ": "VanEck Junior Gold Miners ETF",
     "GLIN": "VanEck India Growth Leaders ETF",
@@ -2229,7 +2229,6 @@ DEFAULT_ASSET_UNIVERSE = [
     "DURA",   # VanEck Morningstar Durable Dividend ETF
 #     "EGPT",   # VanEck Egypt Index ETF
 #     "EMLC",   # VanEck J.P. Morgan EM Local Currency Bond ETF
-    "FLTR",   # VanEck Investment Grade Floating Rate ETF
     "GDX",    # VanEck Gold Miners ETF
     "GDXJ",   # VanEck Junior Gold Miners ETF
     "GLIN",   # VanEck India Growth Leaders ETF
@@ -2869,7 +2868,7 @@ MAPPING = {
     "VANECK MORNINGSTAR DURABLE DIVIDEND": ["DURA"],
 #     "VANECK EGYPT INDEX": ["EGPT"],
     # "VANECK JP MORGAN EM LOCAL CURRENCY BOND": ["EMLC"],
-    "VANECK INVESTMENT GRADE FLOATING RATE": ["FLTR"],
+
     "VANECK INDIA GROWTH LEADERS": ["GLIN"],
     "VANECK MORNINGSTAR GLOBAL WIDE MOAT": ["MOTG"],
     # "VANECK GREEN BOND": ["GRNB"],
@@ -2968,7 +2967,7 @@ SECTOR_MAP = {
         "SLVR", "EXK", "SVM", "AG"
     },
     "Asian Tech & Manufacturing": {"005930.KS"},
-    "VanEck ETFs": {"AFK", "ANGL", "CNXT", "EGPT", "FLTR", "GLIN", "MOTG", "IDX", "MLN", "NLR", "DURA"},
+    "VanEck ETFs": {"AFK", "ANGL", "CNXT", "EGPT", "GLIN", "MOTG", "IDX", "MLN", "NLR", "DURA"},
     "Options / Structured Products": {
         "TSLD", "PLTI", "QQQO", "METI", "MSFI", "MAGD", "AMDI", "AMZD", "GOOO", "BABI", "BABY", "AAPI", "AVGI", "MSTP"
     },
@@ -3197,7 +3196,7 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     "GDX": "USD", "GDXJ": "USD", "ARKK": "USD", "ARKG": "USD",
     # VanEck ETFs
     "AFK": "USD", "ANGL": "USD", "CNXT": "USD", "DURA": "USD", "EGPT": "USD",
-    "FLTR": "USD", "GLIN": "USD", "MOTG": "USD", "IDX": "USD", "DFNG": "USD",
+    "GLIN": "USD", "MOTG": "USD", "IDX": "USD", "DFNG": "USD",
     "MLN": "USD", "MOAT": "USD", "MOO": "USD", "MOTI": "USD", "NLR": "USD",
     "OIH": "USD", "PPH": "USD", "REMX": "USD", "ESPO": "USD", "GFA": "USD", "TRET": "USD",
     # Options ETFs

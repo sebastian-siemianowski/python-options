@@ -20,6 +20,7 @@ Date: 2026-02-04
 """
 
 from typing import Tuple, Dict, List, Optional
+from functools import lru_cache
 import numpy as np
 
 # Try to import scipy for gamma precomputation
@@ -53,6 +54,14 @@ try:
         stage6_ewm_fold_kernel,
         ewm_mu_correction_kernel,
         gaussian_score_fold_kernel,
+        student_t_cdf_array_kernel,
+        student_t_pdf_array_kernel,
+        crps_student_t_kernel,
+        crps_student_t_numerical_kernel,
+        pit_ks_unified_kernel,
+        garch_variance_kernel,
+        phi_gaussian_filter_with_predictive_kernel,
+        phi_student_t_augmented_filter_kernel,
     )
     _NUMBA_AVAILABLE = True
 except ImportError:
@@ -83,17 +92,49 @@ def prepare_arrays(*arrays) -> Tuple[np.ndarray, ...]:
     
     This is CRITICAL for Numba performance - non-contiguous arrays
     cause massive slowdowns due to cache misses.
+    
+    Uses ravel() instead of flatten() to avoid unnecessary copies
+    when arrays are already 1D. Fast-path skips conversion entirely
+    for arrays already in the right format.
+    
+    Performance: specialized fast paths for 1-2 arrays (common case)
+    avoid list building and tuple conversion overhead.
+    Called 71K+ times per asset — every microsecond counts.
     """
-    return tuple(
-        np.ascontiguousarray(arr.flatten(), dtype=np.float64) 
-        for arr in arrays
-    )
+    # Fast path for 2 arrays (the overwhelmingly common case: returns, vol)
+    _f64 = np.float64
+    if len(arrays) == 2:
+        a, b = arrays
+        a_ok = a.dtype == _f64 and a.ndim == 1 and a.flags['C_CONTIGUOUS']
+        b_ok = b.dtype == _f64 and b.ndim == 1 and b.flags['C_CONTIGUOUS']
+        if a_ok and b_ok:
+            return (a, b)
+        return (
+            a if a_ok else np.ascontiguousarray(a.ravel(), dtype=_f64),
+            b if b_ok else np.ascontiguousarray(b.ravel(), dtype=_f64),
+        )
+    # Fast path for 1 array
+    if len(arrays) == 1:
+        a = arrays[0]
+        if a.dtype == _f64 and a.ndim == 1 and a.flags['C_CONTIGUOUS']:
+            return (a,)
+        return (np.ascontiguousarray(a.ravel(), dtype=_f64),)
+    # General path
+    result = []
+    for arr in arrays:
+        if (arr.dtype == _f64 and arr.ndim == 1
+                and arr.flags['C_CONTIGUOUS']):
+            result.append(arr)
+        else:
+            result.append(np.ascontiguousarray(arr.ravel(), dtype=_f64))
+    return tuple(result)
 
 
 # =============================================================================
 # GAMMA PRECOMPUTATION (for φ-Student-t)
 # =============================================================================
 
+@lru_cache(maxsize=64)
 def precompute_gamma_values(nu: float) -> Tuple[float, float]:
     """
     Precompute gamma function values for Student-t.
@@ -103,6 +144,9 @@ def precompute_gamma_values(nu: float) -> Tuple[float, float]:
     
     This is why we precompute in Python rather than approximating in Numba:
     at ν=4, Stirling error can flip BMA model rankings.
+    
+    Cached via lru_cache: ν takes only a handful of values (3, 4, 5, 6, 8, 10, 12, 20)
+    across an entire tuning run, so 58K+ calls collapse to ~20 unique computations.
     
     Parameters
     ----------
@@ -669,13 +713,10 @@ def run_unified_phi_student_t_filter(
     if not _NUMBA_AVAILABLE:
         raise ImportError("Numba kernels not available for unified filter")
     
-    # Prepare all arrays as contiguous float64
-    returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
-    vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
-    q_t = np.ascontiguousarray(q_t.flatten(), dtype=np.float64)
-    p_stress = np.ascontiguousarray(p_stress.flatten(), dtype=np.float64)
-    vov_rolling = np.ascontiguousarray(vov_rolling.flatten(), dtype=np.float64)
-    momentum = np.ascontiguousarray(momentum.flatten(), dtype=np.float64)
+    # Prepare all arrays as contiguous float64 (ravel avoids copy when 1D)
+    returns, vol, q_t, p_stress, vov_rolling, momentum = prepare_arrays(
+        returns, vol, q_t, p_stress, vov_rolling, momentum
+    )
     
     return unified_phi_student_t_filter_kernel(
         returns, vol,
@@ -727,12 +768,9 @@ def run_unified_phi_student_t_filter_extended(
     if not _NUMBA_AVAILABLE:
         raise ImportError("Numba kernels not available for extended unified filter")
 
-    returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
-    vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
-    q_t = np.ascontiguousarray(q_t.flatten(), dtype=np.float64)
-    p_stress = np.ascontiguousarray(p_stress.flatten(), dtype=np.float64)
-    vov_rolling = np.ascontiguousarray(vov_rolling.flatten(), dtype=np.float64)
-    momentum = np.ascontiguousarray(momentum.flatten(), dtype=np.float64)
+    returns, vol, q_t, p_stress, vov_rolling, momentum = prepare_arrays(
+        returns, vol, q_t, p_stress, vov_rolling, momentum
+    )
 
     return unified_phi_student_t_filter_extended_kernel(
         returns, vol,
@@ -957,26 +995,34 @@ def run_phi_student_t_cv_test_fold(
     log_norm_const: float,
     neg_exp: float,
     inv_nu: float,
-    nu_adjust: float,
     mu_init: float,
     P_init: float,
     test_start: int,
     test_end: int,
+    nu_val: float = 8.0,
+    gamma_vov: float = 0.0,
+    vov_rolling: np.ndarray = None,
 ) -> float:
     """
     Run Numba-accelerated phi-Student-t CV test-fold forward pass.
 
     Returns log-likelihood of the validation fold.
+    Supports VoV inflation and robust Student-t weighting.
     """
     if not _NUMBA_AVAILABLE:
         raise ImportError("Numba kernels not available")
+    use_vov = 1 if (gamma_vov > 1e-12 and vov_rolling is not None) else 0
+    if vov_rolling is None:
+        vov_rolling = np.empty(1, dtype=np.float64)  # dummy for Numba typing
     return phi_student_t_cv_test_fold_kernel(
         returns, vol_sq,
         float(q), float(c), float(phi),
         float(nu_scale), float(log_norm_const), float(neg_exp),
-        float(inv_nu), float(nu_adjust),
+        float(inv_nu),
         float(mu_init), float(P_init),
         int(test_start), int(test_end),
+        float(nu_val), float(gamma_vov),
+        vov_rolling, int(use_vov),
     )
 
 
@@ -994,7 +1040,7 @@ def run_compute_ms_process_noise_ewm(
     if not _NUMBA_AVAILABLE:
         raise ImportError("Numba kernels not available")
     return compute_ms_process_noise_ewm_kernel(
-        np.ascontiguousarray(vol.flatten(), dtype=np.float64),
+        np.ascontiguousarray(vol.ravel(), dtype=np.float64),
         float(lam), float(warmup_mean), float(warmup_var),
     )
 
@@ -1066,4 +1112,237 @@ def run_gaussian_score_fold(
         np.ascontiguousarray(Sb_arr, dtype=np.float64),
         int(ee), int(ve), float(lam),
         float(init_em), float(init_en), float(init_ed),
+    )
+
+
+# =============================================================================
+# STUDENT-T CDF / PDF / CRPS WRAPPERS
+# =============================================================================
+
+def run_student_t_cdf_array(
+    z_arr: np.ndarray,
+    nu: float,
+) -> np.ndarray:
+    """Numba-accelerated Student-t CDF (replaces scipy.stats.t.cdf)."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    return student_t_cdf_array_kernel(
+        np.ascontiguousarray(z_arr.ravel(), dtype=np.float64),
+        float(nu),
+    )
+
+
+def run_student_t_pdf_array(
+    z_arr: np.ndarray,
+    nu: float,
+) -> np.ndarray:
+    """Numba-accelerated Student-t PDF (replaces scipy.stats.t.pdf)."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    return student_t_pdf_array_kernel(
+        np.ascontiguousarray(z_arr.ravel(), dtype=np.float64),
+        float(nu),
+    )
+
+
+def run_crps_student_t(
+    z_arr: np.ndarray,
+    sigma_arr: np.ndarray,
+    nu: float,
+) -> float:
+    """Numba-accelerated Student-t CRPS (v7.6: numerical g(ν)).
+
+    v7.6: Switched from analytic B_ratio formula (crps_student_t_kernel,
+    incorrect C(ν) constant) to numerical Gini half-mean-difference
+    (crps_student_t_numerical_kernel, correct for all ν).
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    return float(crps_student_t_numerical_kernel(
+        np.ascontiguousarray(z_arr.ravel(), dtype=np.float64),
+        np.ascontiguousarray(sigma_arr.ravel(), dtype=np.float64),
+        float(nu),
+    ))
+
+
+# =============================================================================
+# PIT-KS UNIFIED WRAPPER
+# =============================================================================
+
+def run_pit_ks_unified(
+    returns: np.ndarray,
+    mu_pred: np.ndarray,
+    S_pred: np.ndarray,
+    nu_base: float,
+    alpha_asym: float,
+    k_asym: float,
+    variance_inflation: float,
+) -> np.ndarray:
+    """
+    Compute PIT values for unified Student-t with smooth asymmetric nu.
+
+    Replaces per-element Python loop + scalar scipy CDF with compiled Numba.
+    ~50x faster for typical 2000-element series.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    returns = np.ascontiguousarray(returns.ravel(), dtype=np.float64)
+    mu_pred = np.ascontiguousarray(mu_pred.ravel(), dtype=np.float64)
+    S_pred = np.ascontiguousarray(S_pred.ravel(), dtype=np.float64)
+    pit_out = np.empty(len(returns), dtype=np.float64)
+    pit_ks_unified_kernel(
+        returns, mu_pred, S_pred,
+        float(nu_base), float(alpha_asym), float(k_asym),
+        float(variance_inflation), pit_out,
+    )
+    return pit_out
+
+
+# =============================================================================
+# GARCH VARIANCE WRAPPER
+# =============================================================================
+
+def run_garch_variance(
+    innovations: np.ndarray,
+    go: float, ga: float, gb: float, gl: float, gu: float,
+    rl: float, km: float, tv: float, se: float, rs: float, sm: float,
+) -> np.ndarray:
+    """
+    Compute GJR-GARCH(1,1) variance with full feature set.
+
+    Replaces Python loop in _compute_garch_variance with compiled Numba.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    innovations = np.ascontiguousarray(innovations.ravel(), dtype=np.float64)
+    n = len(innovations)
+    sq = innovations * innovations
+    neg = (innovations < 0).astype(np.float64)
+    h_out = np.empty(n, dtype=np.float64)
+    garch_variance_kernel(
+        sq, neg, innovations, n,
+        float(go), float(ga), float(gb), float(gl), float(gu),
+        float(rl), float(km), float(tv), float(se), float(rs), float(sm),
+        h_out,
+    )
+    return h_out
+
+
+# =============================================================================
+# GAUSSIAN FILTER WITH PREDICTIVE WRAPPER
+# =============================================================================
+
+def run_phi_gaussian_filter_with_predictive(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    P0: float = 1e-4,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    φ-Gaussian filter returning predictive mu_pred and S_pred for PIT.
+
+    Numba-compiled replacement for gaussian.py filter_phi_with_predictive.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    returns, vol = prepare_arrays(returns, vol)
+    return phi_gaussian_filter_with_predictive_kernel(
+        returns, vol, float(q), float(c), float(phi), float(P0),
+    )
+
+
+# =============================================================================
+# STUDENT-T AUGMENTED FILTER WRAPPER
+# =============================================================================
+
+def run_phi_student_t_augmented_filter(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    exogenous_input: np.ndarray = None,
+    robust_wt: bool = False,
+    P0: float = 1e-4,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    φ-Student-t filter with optional exogenous input and robust weighting.
+
+    Numba-compiled replacement for _filter_phi_core Python fallback.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    returns, vol = prepare_arrays(returns, vol)
+    log_g1, log_g2 = precompute_gamma_values(nu)
+    has_exo = exogenous_input is not None
+    if has_exo:
+        exogenous_input = np.ascontiguousarray(
+            exogenous_input.ravel(), dtype=np.float64
+        )
+    else:
+        exogenous_input = np.empty(0, dtype=np.float64)
+    return phi_student_t_augmented_filter_kernel(
+        returns, vol,
+        float(q), float(c), float(phi), float(nu),
+        log_g1, log_g2,
+        exogenous_input, has_exo, robust_wt,
+        float(P0),
+    )
+
+
+# =============================================================================
+# STUDENT-T ENHANCED FILTER WRAPPER (VoV + Online Scale Adapt)
+# =============================================================================
+
+def run_phi_student_t_enhanced_filter(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    exogenous_input: np.ndarray = None,
+    robust_wt: bool = False,
+    online_scale_adapt: bool = False,
+    gamma_vov: float = 0.0,
+    vov_rolling: np.ndarray = None,
+    P0: float = 1e-4,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    φ-Student-t filter with VoV + online scale adaptation.
+
+    Numba-compiled replacement for the Python fallback in _filter_phi_core
+    when VoV or online_scale_adapt are active. Provides 5-10× speedup
+    for ν=3,4 optimization in Stage 1.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    from models.numba_kernels import phi_student_t_enhanced_filter_kernel
+
+    returns, vol = prepare_arrays(returns, vol)
+    log_g1, log_g2 = precompute_gamma_values(nu)
+    has_exo = exogenous_input is not None
+    if has_exo:
+        exogenous_input = np.ascontiguousarray(
+            exogenous_input.ravel(), dtype=np.float64
+        )
+    else:
+        exogenous_input = np.empty(0, dtype=np.float64)
+    has_vov = gamma_vov > 1e-12 and vov_rolling is not None
+    if has_vov:
+        vov_rolling = np.ascontiguousarray(
+            vov_rolling.ravel(), dtype=np.float64
+        )
+    else:
+        vov_rolling = np.empty(0, dtype=np.float64)
+    return phi_student_t_enhanced_filter_kernel(
+        returns, vol,
+        float(q), float(c), float(phi), float(nu),
+        log_g1, log_g2,
+        exogenous_input, has_exo, robust_wt,
+        online_scale_adapt, float(gamma_vov), vov_rolling, has_vov,
+        float(P0),
     )

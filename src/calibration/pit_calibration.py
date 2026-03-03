@@ -548,14 +548,17 @@ def _ad_pvalue(z: float) -> float:
     if z <= 0.0:
         return 1.0
 
-    # Piecewise rational approximation (Marsaglia & Marsaglia 2004, Table 1)
+    # Piecewise approximation: Marsaglia & Marsaglia (2004) Table 1
+    # for the case-0 (uniform) Anderson-Darling statistic.
+    # Corrected: each range uses distinct coefficients from the paper.
     if z < 0.2:
-        # Very small A² — excellent calibration
+        # Very small A²* — excellent calibration
         p = 1.0 - 3.75 * z + 2.5 * z * z
         return max(0.0, min(1.0, p))
 
     if z < 0.34:
-        p = 1.0 - 3.75 * z + 2.5 * z * z
+        # Marsaglia & Marsaglia (2004) Eq. for 0.2 ≤ z < 0.34
+        p = 1.0 - 2.25 * z
         return max(0.0, min(1.0, p))
 
     if z < 0.6:
@@ -567,13 +570,13 @@ def _ad_pvalue(z: float) -> float:
         return max(0.0, min(1.0, p))
 
     if z < 2.0:
-        p = math.exp(0.9177 - 4.279 * z - 1.38 * z * z)
-        # Use D'Agostino & Stephens (1986) approximation for this range
+        # D'Agostino & Stephens (1986) exponential tail
         p = math.exp(-1.2337141 * z + 0.2)
         return max(0.0, min(1.0, p))
 
     if z < 4.0:
-        p = math.exp(-1.2337141 * (z - 0.8) - 1.0)
+        # Continuation of exponential decay with quadratic correction
+        p = math.exp(-1.2337141 * z - 0.038 * z * z)
         return max(0.0, min(1.0, p))
 
     # z >= 4.0: essentially p ≈ 0

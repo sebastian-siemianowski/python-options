@@ -223,7 +223,7 @@ def _garch_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equi
         omega = 0.00001
         alpha_g = 0.08
         beta_g = 0.88
-        
+
         # Estimate conditional variance
         var_t = np.var(returns)
         for r in returns[-min(60, len(returns)):]:
@@ -324,14 +324,14 @@ def _ou_forecast(prices: pd.Series, horizons: list, asset_type: str = "equity") 
                 target_dev = dev_50 * 0.1 + dev_100 * 0.4 + dev_200 * 0.5
             else:
                 target_dev = dev_100 * 0.2 + dev_200 * 0.8
-            
+
             # OU: expected deviation shrinks exponentially toward zero
             expected_dev = target_dev * np.exp(-theta * h)
             
             # Forecast = price change from current deviation to expected
             # If above MA (positive dev), expect negative return
             fc_pct = -(target_dev - expected_dev) * 100
-            
+
             forecasts.append(float(fc_pct))
         return forecasts
     except Exception:
@@ -467,7 +467,7 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         # Auto-detect crypto assets
         if _is_crypto_asset(asset_name):
             asset_type = "crypto"
-        
+
         log_returns = np.log(prices / prices.shift(1)).dropna().values
         if len(log_returns) < 30:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
