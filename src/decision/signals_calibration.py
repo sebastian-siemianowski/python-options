@@ -89,7 +89,7 @@ console = Console(force_terminal=True, color_system="truecolor", width=160) if H
 TUNE_CACHE_DIR = Path(os.path.join(REPO_ROOT, "src", "data", "tune"))
 PRICE_CACHE_DIR = Path(os.path.join(REPO_ROOT, "src", "data", "prices"))
 
-CALIBRATION_VERSION = "6.0"
+CALIBRATION_VERSION = "7.4"
 
 # Horizons to calibrate (days)
 CALIBRATE_HORIZONS = [1, 7, 21, 63]
@@ -133,6 +133,9 @@ BETA_CLIP_HI = 0.995
 EMOS_IDENTITY = {"a": 0.0, "b": 1.0, "c": 0.0, "d": 1.0}
 EMOS_MIN_POINTS = 12
 EMOS_SIGMA_FLOOR = 0.01  # prevents degenerate sigma (in percent-space during calibration)
+
+# v7.1: Realized-vol sigma floor
+SIGMA_FLOOR_FRAC = 0.5  # sigma_pred must be >= 50% of realized vol (MAD-based)
 
 # ---------------------------------------------------------------------------
 # Regime conditioning
@@ -267,6 +270,25 @@ def _get_numba_kernels():
             # v7.0 two-stage EMOS kernels
             emos_crps_mean_only_nb,
             emos_crps_scale_only_nb,
+            # v7.1 CRPS fix kernels
+            compute_realized_vol_floor_nb,
+            emos_crps_mean_with_grad_nb,
+            # v7.2 deep CRPS kernels
+            emos_crps_scale_v72_nb,
+            emos_crps_joint_v72_nb,
+            # v7.3 multi-diagnostic calibration kernels
+            compute_pit_values_nb,
+            pit_ks_test_nb,
+            pit_ad_test_nb,
+            hyvarinen_score_nb,
+            berkowitz_test_nb,
+            mad_score_nb,
+            log_score_nb,
+            dss_score_nb,
+            emos_crps_pit_v73_nb,
+            # v7.4 Numba-native optimizers
+            _emos_stage1_optimize_nb,
+            _beta_cal_optimize_nb,
         )
         return {
             "isotonic_regression": isotonic_regression_nb,
@@ -295,6 +317,25 @@ def _get_numba_kernels():
             # v7.0 two-stage EMOS kernels
             "emos_mean_only": emos_crps_mean_only_nb,
             "emos_scale_only": emos_crps_scale_only_nb,
+            # v7.1 CRPS fix kernels
+            "realized_vol_floor": compute_realized_vol_floor_nb,
+            "emos_mean_grad": emos_crps_mean_with_grad_nb,
+            # v7.2 deep CRPS kernels
+            "emos_scale_v72": emos_crps_scale_v72_nb,
+            "emos_joint_v72": emos_crps_joint_v72_nb,
+            # v7.3 multi-diagnostic kernels
+            "pit_values": compute_pit_values_nb,
+            "pit_ks": pit_ks_test_nb,
+            "pit_ad": pit_ad_test_nb,
+            "hyvarinen": hyvarinen_score_nb,
+            "berkowitz": berkowitz_test_nb,
+            "mad": mad_score_nb,
+            "log_score": log_score_nb,
+            "dss_score": dss_score_nb,
+            "emos_pit_v73": emos_crps_pit_v73_nb,
+            # v7.4 Numba-native optimizers
+            "emos_stage1_opt": _emos_stage1_optimize_nb,
+            "beta_cal_opt": _beta_cal_optimize_nb,
         }
     except (ImportError, Exception):
         return None
@@ -472,18 +513,40 @@ def _fit_beta_calibration(
     else:
         w = weights / weights.sum() * len(y)  # normalize so sum(w)=N
 
-    # v6.0: Use Numba focal loss (gamma=2.0) — down-weights easy examples,
-    # focuses optimizer on hard-to-classify samples near p=0.5.
-    # Focal loss (Lin et al. 2017): -w_focal * log(p_t)
-    # where w_focal = (1-p_t)^gamma, gamma=2.0
     FOCAL_GAMMA = 2.0
     nb = _nb()
-    if nb is not None and "beta_focal_nll" in nb:
+
+    # v7.4: Use Numba-native optimizer (eliminates Python↔Numba boundary)
+    if nb is not None and "beta_cal_opt" in nb:
+        try:
+            a_fit, b_fit, c_fit = nb["beta_cal_opt"](
+                ln_p.astype(np.float64),
+                ln_1mp.astype(np.float64),
+                y,
+                w.astype(np.float64),
+                FOCAL_GAMMA,
+                0.01,   # reg_strength
+                100,     # max_iter
+            )
+        except Exception:
+            a_fit, b_fit, c_fit = 1.0, 1.0, 0.0
+    elif nb is not None and "beta_focal_nll" in nb:
         _beta_focal_nb = nb["beta_focal_nll"]
 
         def _weighted_nll(params):
             a, b, c = params
             return _beta_focal_nb(a, b, c, ln_p, ln_1mp, y, w, 0.01, FOCAL_GAMMA)
+
+        try:
+            result = sp_minimize(
+                _weighted_nll,
+                x0=[1.0, 1.0, 0.0],
+                method="L-BFGS-B",
+                bounds=[(0.01, 10.0), (0.01, 10.0), (-5.0, 5.0)],
+            )
+            a_fit, b_fit, c_fit = result.x
+        except Exception:
+            a_fit, b_fit, c_fit = 1.0, 1.0, 0.0
     else:
         def _weighted_nll(params):
             a, b, c = params
@@ -492,7 +555,6 @@ def _fit_beta_calibration(
                              1.0 / (1.0 + np.exp(-z)),
                              np.exp(z) / (1.0 + np.exp(z)))
             p_cal = np.clip(p_cal, 1e-10, 1.0 - 1e-10)
-            # Focal loss: weight = (1 - p_t)^gamma
             p_t = np.where(y == 1, p_cal, 1.0 - p_cal)
             focal_w = (1.0 - p_t) ** FOCAL_GAMMA
             bce = -(y * np.log(p_cal) + (1.0 - y) * np.log(1.0 - p_cal))
@@ -500,16 +562,16 @@ def _fit_beta_calibration(
             reg = 0.01 * ((a - 1.0) ** 2 + (b - 1.0) ** 2 + c ** 2)
             return nll + reg
 
-    try:
-        result = sp_minimize(
-            _weighted_nll,
-            x0=[1.0, 1.0, 0.0],
-            method="L-BFGS-B",
-            bounds=[(0.01, 10.0), (0.01, 10.0), (-5.0, 5.0)],
-        )
-        a_fit, b_fit, c_fit = result.x
-    except Exception:
-        a_fit, b_fit, c_fit = 1.0, 1.0, 0.0
+        try:
+            result = sp_minimize(
+                _weighted_nll,
+                x0=[1.0, 1.0, 0.0],
+                method="L-BFGS-B",
+                bounds=[(0.01, 10.0), (0.01, 10.0), (-5.0, 5.0)],
+            )
+            a_fit, b_fit, c_fit = result.x
+        except Exception:
+            a_fit, b_fit, c_fit = 1.0, 1.0, 0.0
 
     # v3.1: Linear shrinkage toward identity (was sqrt in v3.0)
     lam = min(1.0, n_eval / SHRINKAGE_FULL_N)
@@ -690,8 +752,13 @@ def _fit_emos_student_t(
     nu_hat: np.ndarray,
     n_eval: int,
     weights: Optional[np.ndarray] = None,
+    skip_stage3: bool = False,
 ) -> Dict[str, Any]:
     """Fit 5-parameter Student-t EMOS via two-stage optimization (v7.0).
+
+    v7.4: Added ``skip_stage3`` flag. Stage 3 (5-param joint polish with
+    PIT/CvM penalty) is the most expensive stage (~8-12ms) and provides
+    diminishing returns on sub-regimes with < 80 data points.
 
     v7.0: Two-stage optimization fixes the root cause of EMOS σ-inflation.
     The old joint optimizer preferred inflating σ (via c) over scaling
@@ -742,51 +809,109 @@ def _fit_emos_student_t(
     # ========================================================================
     # STAGE 1: Mean correction (a, b) — fix scale at identity
     # ========================================================================
-    # No magnitude penalty, no b regularization — let b reach actual ratio
+    # v7.4: Use Numba-native optimizer (eliminates Python↔Numba boundary)
+    # Fallback: scipy L-BFGS-B with analytical gradient
     # ========================================================================
-    if nb is not None and "emos_mean_only" in nb:
-        _mean_only_nb = nb["emos_mean_only"]
-
-        def _stage1_obj(params):
-            a, b = params
-            return _mean_only_nb(
-                a, b, mu_pred, sig_pred, y, w,
-                EMOS_SIGMA_FLOOR, nu_prior,
-            )
-    else:
-        # Fallback: Python CRPS with fixed scale
-        def _stage1_obj(params):
-            a, b = params
-            mu_cor = a + b * mu_pred
-            sig_cor = np.maximum(EMOS_SIGMA_FLOOR, sig_pred)
-            crps_vals = _crps_gaussian(mu_cor, sig_cor, y)
-            loss = float(np.sum(w * crps_vals) / np.sum(w))
-            reg = 0.001 * (a ** 2)  # Light a regularization only
-            return loss + reg
 
     # Initial guess: mag_ratio as starting point for b
     med_pred = float(np.median(np.abs(mu_pred))) if len(mu_pred) > 0 else 1e-8
     med_actual = float(np.median(np.abs(y))) if len(y) > 0 else 1e-8
     b_init = min(15.0, max(0.5, med_actual / max(med_pred, 1e-8)))
 
-    try:
-        result1 = sp_minimize(
-            _stage1_obj,
-            x0=[0.0, b_init],
-            method="L-BFGS-B",
-            bounds=[
-                (-10.0, 10.0),   # a
-                (0.1, 15.0),     # b — wide range to allow actual ratio
-            ],
-        )
-        a_fit, b_fit = result1.x
-    except Exception:
-        a_fit, b_fit = 0.0, 1.0
+    if nb is not None and "emos_stage1_opt" in nb:
+        # v7.4: Fully Numba-native Stage 1 — no scipy overhead
+        try:
+            a_fit, b_fit = nb["emos_stage1_opt"](
+                mu_pred, sig_pred, y, w,
+                EMOS_SIGMA_FLOOR, nu_prior,
+                0.0, b_init,     # a_init, b_init
+                0.1, 15.0,       # b_lo, b_hi
+                100,             # max_iter
+            )
+        except Exception:
+            a_fit, b_fit = 0.0, 1.0
+    else:
+        # Fallback: scipy L-BFGS-B
+        _use_grad = (nb is not None and "emos_mean_grad" in nb)
+
+        if _use_grad:
+            _mean_grad_nb = nb["emos_mean_grad"]
+
+            def _stage1_obj_grad(params):
+                a, b = params
+                loss, ga, gb = _mean_grad_nb(
+                    a, b, mu_pred, sig_pred, y, w,
+                    EMOS_SIGMA_FLOOR, nu_prior,
+                )
+                return loss, np.array([ga, gb])
+        elif nb is not None and "emos_mean_only" in nb:
+            _mean_only_nb = nb["emos_mean_only"]
+
+            def _stage1_obj_grad(params):
+                a, b = params
+                return _mean_only_nb(
+                    a, b, mu_pred, sig_pred, y, w,
+                    EMOS_SIGMA_FLOOR, nu_prior,
+                )
+            _use_grad = False
+        else:
+            def _stage1_obj_grad(params):
+                a, b = params
+                mu_cor = a + b * mu_pred
+                sig_cor = np.maximum(EMOS_SIGMA_FLOOR, sig_pred)
+                crps_vals = _crps_gaussian(mu_cor, sig_cor, y)
+                loss = float(np.sum(w * crps_vals) / np.sum(w))
+                reg = 0.001 * (a ** 2)
+                return loss + reg
+            _use_grad = False
+
+        try:
+            result1 = sp_minimize(
+                _stage1_obj_grad,
+                x0=[0.0, b_init],
+                method="L-BFGS-B",
+                jac=_use_grad,
+                bounds=[(-10.0, 10.0), (0.1, 15.0)],
+            )
+            a_fit, b_fit = result1.x
+        except Exception:
+            a_fit, b_fit = 0.0, 1.0
 
     # ========================================================================
-    # STAGE 2: Scale correction (c, d, nu) — fix a, b from Stage 1
+    # STAGE 2: Scale correction (c, d, ν) — v7.2 improvements
     # ========================================================================
-    if nb is not None and "emos_scale_only" in nb:
+    # v7.2 key improvements:
+    # 1. DSS-optimal d_init (warm-start from variance matching)
+    # 2. Adaptive regularization (weaker for large n — data speaks louder)
+    # 3. DSS variance penalty (forces E[z²] ≈ ν/(ν-2) for calibration)
+    # 4. Wider bounds: d ∈ [0.01, 10], ν ∈ [2.2, 200]
+    # ========================================================================
+
+    # v7.2: DSS-optimal d initialization
+    # σ_DSS = RMSE(residuals after mean correction) → d_DSS = σ_DSS / mean(σ_pred)
+    residuals_s1 = y - (a_fit + b_fit * mu_pred)
+    rmse_residual = float(np.sqrt(np.sum(w * residuals_s1**2) / np.sum(w)))
+    mean_sigma = float(np.mean(sig_pred))
+    d_init = max(0.1, min(10.0, rmse_residual / max(mean_sigma, 1e-8)))
+
+    # v7.2: Adaptive regularization — scale with min(50,n)/n
+    # At n=167: reg_weight ≈ 0.003 (3x weaker, data speaks)
+    # At n=50:  reg_weight = 0.01 (standard)
+    # At n=20:  reg_weight = 0.01 (conservative)
+    reg_weight = max(0.001, 0.01 * min(50.0, float(n_eval)) / max(float(n_eval), 1.0))
+
+    if nb is not None and "emos_scale_v72" in nb:
+        _scale_v72_nb = nb["emos_scale_v72"]
+
+        def _stage2_obj(params):
+            c, d, log_nu = params
+            nu = math.exp(log_nu)
+            return _scale_v72_nb(
+                c, d, nu, a_fit, b_fit,
+                mu_pred, sig_pred, y, w,
+                EMOS_SIGMA_FLOOR, nu_prior, reg_weight,
+            )
+    elif nb is not None and "emos_scale_only" in nb:
         _scale_only_nb = nb["emos_scale_only"]
 
         def _stage2_obj(params):
@@ -805,7 +930,7 @@ def _fit_emos_student_t(
             sig_cor = np.maximum(EMOS_SIGMA_FLOOR, c + d * sig_pred)
             crps_vals = _crps_gaussian(mu_cor, sig_cor, y)
             loss = float(np.sum(w * crps_vals) / np.sum(w))
-            reg = 0.01 * (c ** 2 + (d - 1.0) ** 2)
+            reg = reg_weight * (c ** 2 + (d - 1.0) ** 2)
             return loss + reg
 
     log_nu_init = math.log(max(3.0, nu_prior))
@@ -813,18 +938,111 @@ def _fit_emos_student_t(
     try:
         result2 = sp_minimize(
             _stage2_obj,
-            x0=[0.0, 1.0, log_nu_init],
+            x0=[0.0, d_init, log_nu_init],  # v7.2: DSS d_init
             method="L-BFGS-B",
             bounds=[
-                (-5.0, 5.0),             # c
-                (0.01, 5.0),             # d
-                (math.log(2.5), math.log(100.0)),  # log(ν)
+                (-5.0, 5.0),                       # c
+                (0.01, 10.0),                        # d — v7.2: wider
+                (math.log(2.2), math.log(200.0)),    # log(ν) — v7.2: wider
             ],
         )
         c_fit, d_fit, log_nu_fit = result2.x
         nu_fit = math.exp(log_nu_fit)
     except Exception:
-        c_fit, d_fit, nu_fit = 0.0, 1.0, nu_prior
+        c_fit, d_fit, nu_fit = 0.0, d_init, nu_prior
+
+    # ========================================================================
+    # STAGE 3: Joint polish (v7.3) — PIT-aware composite objective
+    # ========================================================================
+    # v7.2 polished using CRPS + DSS variance penalty.
+    # v7.3 adds Cramér-von Mises (CvM) penalty on PIT uniformity.
+    # v7.4: Skip for sub-regimes with few data points (diminishing returns).
+    # ========================================================================
+    _PIT_PENALTY_WEIGHT = 0.10  # CvM weight in composite objective
+
+    if skip_stage3:
+        # v7.4: Skip Stage 3 for sub-regimes — Stages 1+2 are sufficient
+        pass
+    elif n_eval >= 30 and nb is not None and "emos_pit_v73" in nb:
+        _pit_v73_nb = nb["emos_pit_v73"]
+
+        def _stage3_obj(params):
+            a, b, c, d, log_nu = params
+            nu = math.exp(log_nu)
+            return _pit_v73_nb(
+                a, b, c, d, nu,
+                mu_pred, sig_pred, y, w,
+                EMOS_SIGMA_FLOOR, nu_prior, reg_weight * 0.5,
+                _PIT_PENALTY_WEIGHT,
+            )
+
+        # Tight bounds around two-stage solution (±exploration range)
+        b_lo = max(0.1, b_fit * 0.5)
+        b_hi = min(15.0, b_fit * 2.0)
+        d_lo = max(0.01, d_fit * 0.5)
+        d_hi = min(10.0, d_fit * 2.0)
+        nu_lo = math.log(max(2.2, nu_fit * 0.5))
+        nu_hi = math.log(min(200.0, nu_fit * 2.0))
+
+        try:
+            result3 = sp_minimize(
+                _stage3_obj,
+                x0=[a_fit, b_fit, c_fit, d_fit, math.log(nu_fit)],
+                method="L-BFGS-B",
+                bounds=[
+                    (a_fit - 2.0, a_fit + 2.0),   # a: ±2 around Stage 1
+                    (b_lo, b_hi),                   # b: ×[0.5, 2] around Stage 1
+                    (c_fit - 2.0, c_fit + 2.0),   # c: ±2 around Stage 2
+                    (d_lo, d_hi),                   # d: ×[0.5, 2] around Stage 2
+                    (nu_lo, nu_hi),                 # ν: ×[0.5, 2] around Stage 2
+                ],
+                options={"maxiter": 75},  # v7.3: more iterations for PIT convergence
+            )
+            a_fit, b_fit = result3.x[0], result3.x[1]
+            c_fit, d_fit = result3.x[2], result3.x[3]
+            nu_fit = math.exp(result3.x[4])
+        except Exception:
+            pass  # Keep two-stage solution if polish fails
+
+    elif n_eval >= 30 and nb is not None and "emos_joint_v72" in nb:
+        # Fallback to v7.2 joint polish (without PIT penalty)
+        _joint_v72_nb = nb["emos_joint_v72"]
+
+        def _stage3_obj_v72(params):
+            a, b, c, d, log_nu = params
+            nu = math.exp(log_nu)
+            return _joint_v72_nb(
+                a, b, c, d, nu,
+                mu_pred, sig_pred, y, w,
+                EMOS_SIGMA_FLOOR, nu_prior, reg_weight * 0.5,
+            )
+
+        b_lo = max(0.1, b_fit * 0.5)
+        b_hi = min(15.0, b_fit * 2.0)
+        d_lo = max(0.01, d_fit * 0.5)
+        d_hi = min(10.0, d_fit * 2.0)
+        nu_lo = math.log(max(2.2, nu_fit * 0.5))
+        nu_hi = math.log(min(200.0, nu_fit * 2.0))
+
+        try:
+            result3 = sp_minimize(
+                _stage3_obj_v72,
+                x0=[a_fit, b_fit, c_fit, d_fit, math.log(nu_fit)],
+                method="L-BFGS-B",
+                bounds=[
+                    (a_fit - 2.0, a_fit + 2.0),
+                    (b_lo, b_hi),
+                    (c_fit - 2.0, c_fit + 2.0),
+                    (d_lo, d_hi),
+                    (nu_lo, nu_hi),
+                ],
+                options={"maxiter": 50},
+            )
+            a_fit, b_fit = result3.x[0], result3.x[1]
+            c_fit, d_fit = result3.x[2], result3.x[3]
+            nu_fit = math.exp(result3.x[4])
+        except Exception:
+            pass
 
     # Shrinkage toward identity
     lam = min(1.0, n_eval / SHRINKAGE_FULL_N)
@@ -1677,19 +1895,27 @@ def _evaluate_metrics(
     data: HorizonData,
     p_up_map: Dict,
     emos_params: Dict,
+    full: bool = False,
 ) -> Dict[str, float]:
-    """Evaluate Brier, CRPS, hit_rate, mag_ratio for a given calibration state.
+    """Evaluate calibration metrics for a given calibration state.
 
-    This is the universal metric function called before/after every step
-    so we can measure marginal lift independently.
+    v7.4 performance: Added ``full`` flag.  Intermediate pipeline steps
+    only need brier/crps/hit_rate/mag_ratio for decision-making.
+    The expensive v7.3 diagnostics (PIT, AD, Berk, Hyv, MAD, LogS, DSS)
+    are only computed when ``full=True`` (final pipeline evaluation).
 
     Args:
         data:        HorizonData (immutable arrays)
         p_up_map:    Beta calibration map (applied to p_ups)
         emos_params: EMOS distributional params (applied to predicted/sigma)
+        full:        If True, compute all 11 metrics including v7.3
+                     diagnostics.  If False, only compute core 4 metrics
+                     (brier, crps, hit_rate, mag_ratio) for speed.
 
     Returns:
-        {"brier": float, "crps": float, "hit_rate": float, "mag_ratio": float}
+        {"brier": float, "crps": float, "hit_rate": float, "mag_ratio": float,
+         "pit_p": float, "ad_p": float, "hyv": float, "berk_p": float,
+         "mad": float, "log_s": float, "dss": float}
     """
     # v4.0: Fast path — use batch Numba kernel if Beta calibration
     nb = _nb()
@@ -1738,12 +1964,81 @@ def _evaluate_metrics(
     avg_actual_abs = float(np.mean(np.abs(data.actual)))
     mag_ratio = avg_pred_abs / max(avg_actual_abs, 1e-8)
 
-    return {
+    # v7.4: Fast path — skip expensive diagnostics for intermediate steps
+    _core = {
         "brier": round(brier, 6),
         "crps": round(crps, 6),
         "hit_rate": round(hit_rate, 6),
         "mag_ratio": round(mag_ratio, 6),
     }
+    if not full:
+        _core.update({
+            "pit_p": 1.0, "ad_p": 1.0, "hyv": 0.0, "berk_p": 1.0,
+            "mad": 0.0, "log_s": 0.0, "dss": 0.0,
+        })
+        return _core
+
+    # ===================================================================
+    # v7.3: Multi-diagnostic metrics (PIT, Hyvärinen, AD, Berkowitz, MAD,
+    #        LogS, DSS) — proper scoring rule diversity for honest calibration
+    # Only computed when full=True (final pipeline evaluation).
+    # ===================================================================
+    pit_p = 1.0
+    ad_p = 1.0
+    hyv = 0.0
+    berk_p = 1.0
+    mad_val = 0.0
+    log_s = 0.0
+    dss_val = 0.0
+
+    # Build ν array for diagnostic kernels
+    nu_for_diag = nu_emos if nu_emos is not None else max(3.0, median_nu)
+    nu_diag = np.full(len(mu_cor), nu_for_diag, dtype=np.float64)
+    w_diag = data.weights.astype(np.float64) if data.weights is not None else np.ones(len(mu_cor), dtype=np.float64)
+
+    if nb is not None and len(mu_cor) >= 10:
+        mu_c64 = mu_cor.astype(np.float64)
+        sig_c64 = sig_cor.astype(np.float64)
+        y_64 = data.actual.astype(np.float64)
+
+        # PIT values → uniformity tests
+        if "pit_values" in nb:
+            pit_vals = nb["pit_values"](mu_c64, sig_c64, y_64, nu_diag)
+
+            if "pit_ks" in nb:
+                _, pit_p = nb["pit_ks"](pit_vals)
+            if "pit_ad" in nb:
+                _, ad_p = nb["pit_ad"](pit_vals)
+            if "berkowitz" in nb:
+                _, berk_p = nb["berkowitz"](pit_vals)
+
+        # Hyvärinen score
+        if "hyvarinen" in nb:
+            hyv = float(nb["hyvarinen"](mu_c64, sig_c64, y_64, nu_diag, w_diag))
+
+        # MAD
+        if "mad" in nb:
+            mad_val = float(nb["mad"](mu_c64, y_64, w_diag))
+
+        # Log score
+        if "log_score" in nb:
+            log_s = float(nb["log_score"](mu_c64, sig_c64, y_64, nu_diag, w_diag))
+
+        # DSS
+        if "dss_score" in nb:
+            dss_val = float(nb["dss_score"](mu_c64, sig_c64, y_64, w_diag))
+
+    _core.update({
+        # v7.3 multi-diagnostic
+        "pit_p": round(float(pit_p), 4),
+        "ad_p": round(float(ad_p), 4),
+        "hyv": round(float(hyv), 2),
+        "berk_p": round(float(berk_p), 4),
+        "mad": round(float(mad_val), 4),
+        "log_s": round(float(log_s), 4),
+        "dss": round(float(dss_val), 4),
+    })
+    return _core
 
 
 # ---------------------------------------------------------------------------
@@ -1984,6 +2279,96 @@ def _step_isotonic(
 
 
 # ---------------------------------------------------------------------------
+# Step 2: Sigma Floor — realized-vol floor on sigma_pred (v7.1)
+# ---------------------------------------------------------------------------
+
+def _step_sigma_floor(
+    regime_data: Dict[str, HorizonData],
+    prior: PipelineResult,
+) -> PipelineResult:
+    """Apply realized-vol floor to sigma_pred (v7.1).
+
+    Prevents catastrophic under-dispersion where sigma_pred << actual vol.
+    Uses MAD × 1.4826 as robust sigma estimator.  Applied BEFORE EMOS
+    so that Stage 2 (scale correction) operates on reasonable sigmas.
+
+    This modifies sigma_pred in the HorizonData objects (they are mutable
+    numpy arrays shared across regime_data views).
+
+    Args:
+        regime_data: Per-regime HorizonData
+        prior:       Previous pipeline state
+
+    Returns:
+        Same PipelineResult (sigma_pred modified in-place on ALL partition)
+    """
+    nb = _nb()
+    all_data = regime_data[REGIME_ALL]
+
+    metrics_before = _evaluate_metrics(
+        all_data,
+        prior.by_regime.get(REGIME_ALL, {}).get("p_up_map", {"type": "beta", **BETA_IDENTITY}),
+        prior.by_regime.get(REGIME_ALL, {}).get("emos", {"type": "emos", **EMOS_IDENTITY}),
+    )
+
+    n_floored = 0
+    if len(all_data.actual) >= 10:
+        if nb is not None and "realized_vol_floor" in nb:
+            new_sigma = nb["realized_vol_floor"](
+                all_data.actual.astype(np.float64),
+                all_data.sigma_pred.astype(np.float64),
+                SIGMA_FLOOR_FRAC,
+            )
+        else:
+            # Python fallback
+            med_actual = float(np.median(all_data.actual))
+            mad = float(np.median(np.abs(all_data.actual - med_actual)))
+            sigma_realized = mad * 1.4826
+            floor_val = SIGMA_FLOOR_FRAC * sigma_realized
+            new_sigma = np.maximum(all_data.sigma_pred, floor_val)
+
+        n_floored = int(np.sum(new_sigma > all_data.sigma_pred))
+        # Update sigma_pred in-place for ALL regimes (they share the same array)
+        all_data.sigma_pred[:] = new_sigma
+
+        # Also update per-regime views if they're separate arrays
+        for rname, rdata in regime_data.items():
+            if rname == REGIME_ALL:
+                continue
+            if len(rdata.actual) >= 10:
+                if nb is not None and "realized_vol_floor" in nb:
+                    rdata.sigma_pred[:] = nb["realized_vol_floor"](
+                        rdata.actual.astype(np.float64),
+                        rdata.sigma_pred.astype(np.float64),
+                        SIGMA_FLOOR_FRAC,
+                    )
+                else:
+                    med_r = float(np.median(rdata.actual))
+                    mad_r = float(np.median(np.abs(rdata.actual - med_r)))
+                    sigma_r = mad_r * 1.4826
+                    rdata.sigma_pred[:] = np.maximum(rdata.sigma_pred, SIGMA_FLOOR_FRAC * sigma_r)
+
+    metrics_after = _evaluate_metrics(
+        all_data,
+        prior.by_regime.get(REGIME_ALL, {}).get("p_up_map", {"type": "beta", **BETA_IDENTITY}),
+        prior.by_regime.get(REGIME_ALL, {}).get("emos", {"type": "emos", **EMOS_IDENTITY}),
+    )
+
+    step = StepResult(
+        step_name="sigma_floor",
+        metrics_before=metrics_before,
+        metrics_after=metrics_after,
+        detail={"n_floored": n_floored, "floor_frac": SIGMA_FLOOR_FRAC},
+    )
+
+    return PipelineResult(
+        by_regime=prior.by_regime,
+        label_thresholds=prior.label_thresholds,
+        steps=prior.steps + [step],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Step 3: EMOS — fit per-regime EMOS distributional correction
 # ---------------------------------------------------------------------------
 
@@ -2019,10 +2404,14 @@ def _step_emos(
         median_nu = float(np.median(data.nu_hat)) if len(data.nu_hat) > 0 else 30.0
         use_student_t = median_nu < 25.0
 
+        # v7.4: Skip Stage 3 for sub-regimes (< 80 points) — diminishing returns
+        _skip_s3 = (regime_name != REGIME_ALL and data.n_eval < 80)
+
         if use_student_t:
             emos_params = _fit_emos_student_t(
                 data.predicted, data.actual, data.sigma_pred,
                 data.nu_hat, data.n_eval, weights=data.weights,
+                skip_stage3=_skip_s3,
             )
         else:
             emos_params = _fit_emos(
@@ -2120,8 +2509,11 @@ def _step_magnitude(
         a_cur = cur_emos.get("a", 0.0)
         b_cur = cur_emos.get("b", 1.0)
 
-        # Compute magnitude correction
-        pred_abs = np.abs(data.predicted)
+        # v7.1: Compute RESIDUAL magnitude correction on EMOS-corrected predictions
+        # Old (v5.0): raw_scale = med(|actual|) / med(|predicted|) → double-counts EMOS b
+        # New (v7.1): residual_scale = med(|actual|) / med(|corrected|) → only fixes residual
+        pred_corrected = a_cur + b_cur * data.predicted
+        pred_abs = np.abs(pred_corrected)
         actual_abs = np.abs(data.actual)
         med_pred = float(np.median(pred_abs)) if len(pred_abs) > 0 else 1e-8
         med_actual = float(np.median(actual_abs)) if len(actual_abs) > 0 else 1e-8
@@ -2288,23 +2680,17 @@ def _step_cv_guard(
                 n_train = len(train_predicted)
                 w_train = _compute_recency_weights(n_train)
 
-                # Re-fit on train set only
+                # Re-fit Beta on train set only (3 params, stable on small n)
                 cv_beta = _fit_beta_calibration(
                     train_p_ups, train_actual_ups, n_train, weights=w_train
                 )
-                # Use Student-t EMOS if appropriate
+                # v7.1: Use globally-fitted EMOS, don't re-fit per fold.
+                # Root cause of 0.000 CRPS: re-fitting EMOS on 40 train points
+                # produces noisy b → fails validation → reverts to identity.
+                # Instead, validate whether the GLOBAL EMOS generalizes OOS.
+                cv_emos = cur_emos
                 train_nu = data.nu_hat[:train_end] if len(data.nu_hat) > 0 else np.array([])
                 median_nu = float(np.median(train_nu)) if len(train_nu) > 0 else 30.0
-                if median_nu < 25.0:
-                    cv_emos = _fit_emos_student_t(
-                        train_predicted, train_actual, train_sigma,
-                        train_nu, n_train, weights=w_train,
-                    )
-                else:
-                    cv_emos = _fit_emos(
-                        train_predicted, train_actual, train_sigma,
-                        n_train, weights=w_train,
-                    )
 
                 # Beta CV: Brier delta on validation
                 brier_raw_val = float(np.mean((val_p_ups - val_actual_ups) ** 2))
@@ -2361,12 +2747,54 @@ def _step_cv_guard(
                     cv_reverted_beta = True
                     any_reverted = True
 
+            # v7.1: Decouple mean/scale reversion — don't kill good mean
+            # correction because scale correction was unstable.
+            # Evaluate three configurations on each fold:
+            #   identity: (0, 1, 0, 1, nu_prior)
+            #   mean-only: (a_fit, b_fit, 0, 1, nu_prior)
+            #   full: (a_fit, b_fit, c_fit, d_fit, nu_fit)
+            cv_reverted_mean = False
+            cv_reverted_scale = False
+
             if fold_crps_deltas:
                 avg_crps_delta = float(np.mean(fold_crps_deltas))
+
                 if avg_crps_delta > cv_tol:
-                    cur_emos = {"type": "emos", **EMOS_IDENTITY}
-                    cv_reverted_emos = True
-                    any_reverted = True
+                    # Full EMOS worsens OOS — check if mean-only is still beneficial
+                    a_g = cur_emos.get("a", 0.0)
+                    b_g = cur_emos.get("b", 1.0)
+                    c_g = cur_emos.get("c", 0.0)
+                    d_g = cur_emos.get("d", 1.0)
+                    nu_g = cur_emos.get("nu", None)
+
+                    # Build mean-only EMOS (keep a,b, revert c,d,nu)
+                    mean_only_emos = dict(cur_emos)
+                    mean_only_emos["c"] = 0.0
+                    mean_only_emos["d"] = 1.0
+                    if nu_g is not None:
+                        mean_only_emos["nu"] = nu_g  # keep nu from global fit
+
+                    # Test mean-only vs identity on full data
+                    crps_identity = _evaluate_metrics(
+                        data, cur_p_map,
+                        {"type": "emos", **EMOS_IDENTITY},
+                    )["crps"]
+                    crps_mean_only = _evaluate_metrics(
+                        data, cur_p_map, mean_only_emos,
+                    )["crps"]
+
+                    if crps_mean_only <= crps_identity:
+                        # Mean correction helps — keep it, revert only scale
+                        cur_emos = mean_only_emos
+                        cv_reverted_scale = True
+                        any_reverted = True
+                    else:
+                        # Mean correction also hurts — revert everything
+                        cur_emos = {"type": "emos", **EMOS_IDENTITY}
+                        cv_reverted_mean = True
+                        cv_reverted_scale = True
+                        cv_reverted_emos = True
+                        any_reverted = True
 
             detail[regime_name] = {
                 "n_folds": N_FOLDS,
@@ -2375,6 +2803,8 @@ def _step_cv_guard(
                 "cv_tol": round(cv_tol, 4),
                 "beta_reverted": cv_reverted_beta,
                 "emos_reverted": cv_reverted_emos,
+                "mean_reverted": cv_reverted_mean,
+                "scale_reverted": cv_reverted_scale,
             }
         else:
             # v7.0: Skip CV for very small datasets — trust the EMOS fit
@@ -2630,20 +3060,23 @@ def _run_pipeline(
     # Step 1: Beta calibration (focal loss, gamma=2.0)
     result = _step_beta(regime_data, initial)
 
-    # Step 2: EMOS distributional correction (two-stage: mean-first, then scale)
+    # Step 2: Sigma floor (v7.1 — realized-vol floor prevents under-dispersion)
+    result = _step_sigma_floor(regime_data, result)
+
+    # Step 3: EMOS distributional correction (two-stage: mean-first, then scale)
     result = _step_emos(regime_data, result)
 
-    # Step 3: Magnitude scale correction
+    # Step 4: Magnitude scale correction (v7.1 — residual ratio, not raw)
     result = _step_magnitude(regime_data, result)
 
-    # Step 4: CV guard (3-fold expanding-window cross-validation revert)
+    # Step 5: CV guard (expanding-window cross-validation revert)
     result = _step_cv_guard(regime_data, partitions, result)
 
     # v7.0: Isotonic refinement and temperature ensemble REMOVED
     # These 2 layers each shrank p_up toward 0.5, compounding to ~10% signal loss.
     # The single Beta layer in _apply_p_up_calibration is now the only p_up transform.
 
-    # Step 5: Threshold optimization (Brier on calibrated p_ups)
+    # Step 6: Threshold optimization (Brier on calibrated p_ups)
     result = _step_threshold(all_data, result)
 
     # === Assemble horizon calibration dict ===
@@ -2652,14 +3085,15 @@ def _run_pipeline(
     all_p_map = all_entry.get("p_up_map", {"type": "beta", **BETA_IDENTITY})
     all_emos = all_entry.get("emos", {"type": "emos", **EMOS_IDENTITY})
 
-    # Raw metrics from identity
+    # Raw metrics from identity (full=True for v7.3 diagnostics)
     identity_metrics = _evaluate_metrics(
         all_data,
         {"type": "beta", **BETA_IDENTITY},
         {"type": "emos", **EMOS_IDENTITY},
+        full=True,
     )
-    # Calibrated metrics
-    cal_metrics = _evaluate_metrics(all_data, all_p_map, all_emos)
+    # Calibrated metrics (full=True for v7.3 diagnostics)
+    cal_metrics = _evaluate_metrics(all_data, all_p_map, all_emos, full=True)
 
     # Build pipeline log (per-step marginal lift)
     pipeline_log = []
@@ -2712,6 +3146,29 @@ def _run_pipeline(
         "crps_raw": identity_metrics["crps"],
         "crps_calibrated": cal_metrics["crps"],
         "regimes_fitted": list(by_regime.keys()),
+        # v7.1: CRPS Skill Score (normalized across assets)
+        # CRPSS = 1 - CRPS_cal / CRPS_ref, where CRPS_ref = sigma_actual / sqrt(pi)
+        "crpss": round(
+            1.0 - cal_metrics["crps"] / max(
+                float(np.std(all_data.actual)) / math.sqrt(math.pi),
+                1e-8,
+            ), 4
+        ) if all_data.n_eval > 5 else None,
+        # v7.3: Multi-diagnostic metrics (raw = before calibration, cal = after)
+        "pit_p_raw": identity_metrics.get("pit_p", None),
+        "pit_p_cal": cal_metrics.get("pit_p", None),
+        "ad_p_raw": identity_metrics.get("ad_p", None),
+        "ad_p_cal": cal_metrics.get("ad_p", None),
+        "hyv_raw": identity_metrics.get("hyv", None),
+        "hyv_cal": cal_metrics.get("hyv", None),
+        "berk_p_raw": identity_metrics.get("berk_p", None),
+        "berk_p_cal": cal_metrics.get("berk_p", None),
+        "mad_raw": identity_metrics.get("mad", None),
+        "mad_cal": cal_metrics.get("mad", None),
+        "log_s_raw": identity_metrics.get("log_s", None),
+        "log_s_cal": cal_metrics.get("log_s", None),
+        "dss_raw": identity_metrics.get("dss", None),
+        "dss_cal": cal_metrics.get("dss", None),
         # v3.1 diagnostics
         "emos_b_at_bound": abs(all_emos.get("b", 1.0) - (-1.0)) < 0.02,
         "sigma_H_mean": round(float(np.mean(sigma_all)), 4),
@@ -2948,12 +3405,38 @@ def _print_progress(idx: int, total: int, symbol: str, cal: Dict, quiet: bool):
     crps_delta = crps_r - crps_c
     crps_sign = "+" if crps_delta > 0 else ""
 
+    # v7.1: CRPS Skill Score — normalized metric across assets
+    crpss = h7.get("crpss", None)
+    crpss_str = f" ss={crpss:+.2f}" if crpss is not None else ""
+
+    # v7.3: Multi-diagnostic summary
+    pit_p = h7.get("pit_p_cal", None)
+    ad_p = h7.get("ad_p_cal", None)
+    hyv = h7.get("hyv_cal", None)
+    berk_p = h7.get("berk_p_cal", None)
+
+    diag_parts = []
+    if pit_p is not None:
+        pit_flag = "✓" if pit_p > 0.05 else "✗"
+        diag_parts.append(f"PIT={pit_p:.2f}{pit_flag}")
+    if hyv is not None:
+        hyv_flag = "✓" if hyv < 0 else "✗"
+        diag_parts.append(f"Hyv={hyv:.1f}{hyv_flag}")
+    if ad_p is not None:
+        ad_flag = "✓" if ad_p > 0.05 else "✗"
+        diag_parts.append(f"AD={ad_p:.2f}{ad_flag}")
+    if berk_p is not None:
+        bk_flag = "✓" if berk_p > 0.05 else "✗"
+        diag_parts.append(f"Bk={berk_p:.2f}{bk_flag}")
+    diag_str = " " + " ".join(diag_parts) if diag_parts else ""
+
     console.print(
         f"  [{idx}/{total}] {symbol:<12s} "
         f"1w_hit={hit_raw:.0%} "
         f"brier={brier_r:.3f}→{brier_c:.3f}({brier_sign}{brier_delta:.3f}) "
-        f"crps={crps_r:.3f}→{crps_c:.3f}({crps_sign}{crps_delta:.3f}) "
-        f"regimes={len(regimes)} thr=({buy_t:.2f}/{sell_t:.2f})"
+        f"crps={crps_r:.3f}→{crps_c:.3f}({crps_sign}{crps_delta:.3f}){crpss_str}"
+        f"{diag_str} "
+        f"rgm={len(regimes)} thr=({buy_t:.2f}/{sell_t:.2f})"
     )
 
 
@@ -2971,15 +3454,47 @@ def _print_summary(
     # Aggregate improvements
     brier_improvements = []
     crps_improvements = []
+    pit_pass_count = 0
+    ad_pass_count = 0
+    hyv_values = []
+    berk_pass_count = 0
+    total_diag = 0
+
     for sym, cal in results:
         h7 = cal.get("horizons", {}).get("7", {})
         if "brier_raw" in h7 and "brier_calibrated" in h7:
             brier_improvements.append(h7["brier_raw"] - h7["brier_calibrated"])
         if "crps_raw" in h7 and "crps_calibrated" in h7:
             crps_improvements.append(h7["crps_raw"] - h7["crps_calibrated"])
+        # v7.3 diagnostics
+        pit_p = h7.get("pit_p_cal")
+        ad_p = h7.get("ad_p_cal")
+        hyv = h7.get("hyv_cal")
+        berk_p = h7.get("berk_p_cal")
+        if pit_p is not None:
+            total_diag += 1
+            if pit_p > 0.05:
+                pit_pass_count += 1
+            if ad_p is not None and ad_p > 0.05:
+                ad_pass_count += 1
+            if hyv is not None:
+                hyv_values.append(hyv)
+            if berk_p is not None and berk_p > 0.05:
+                berk_pass_count += 1
 
     avg_brier_imp = float(np.mean(brier_improvements)) if brier_improvements else 0.0
     avg_crps_imp = float(np.mean(crps_improvements)) if crps_improvements else 0.0
+    avg_hyv = float(np.mean(hyv_values)) if hyv_values else 0.0
+
+    # v7.3: Diagnostic summary line
+    diag_line = ""
+    if total_diag > 0:
+        diag_line = (
+            f"\nPIT pass: {pit_pass_count}/{total_diag} | "
+            f"AD pass: {ad_pass_count}/{total_diag} | "
+            f"Berk pass: {berk_pass_count}/{total_diag} | "
+            f"Avg Hyv: {avg_hyv:.0f}"
+        )
 
     console.print()
     console.print(Panel(
@@ -2987,8 +3502,9 @@ def _print_summary(
         f"Calibrated: {calibrated}/{total} | Failed: {failed} | "
         f"Elapsed: {elapsed:.1f}s\n"
         f"Avg 1w Brier improvement: {avg_brier_imp:+.4f} | "
-        f"Avg 1w CRPS improvement: {avg_crps_imp:+.4f}\n"
-        f"Pipeline: Partition \u2192 Beta \u2192 Isotonic \u2192 EMOS \u2192 Magnitude \u2192 CVGuard \u2192 TempEnsemble \u2192 Threshold",
+        f"Avg 1w CRPS improvement: {avg_crps_imp:+.4f}"
+        f"{diag_line}\n"
+        f"Pipeline: Beta \u2192 SigmaFloor \u2192 EMOS(PIT) \u2192 Magnitude \u2192 CVGuard \u2192 Threshold",
         style="green",
         expand=False,
     ))

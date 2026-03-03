@@ -1239,6 +1239,9 @@ def crps_student_t_nb(
 
     where z = (y - mu) / sigma, T_nu = CDF, t_nu = PDF, C(nu) = constant.
 
+    v7.4: Pre-compute g(ν) when all ν values are identical (common case
+    from np.full()).  Avoids ~167x redundant 200-point quadrature calls.
+
     Parameters
     ----------
     mu : ndarray
@@ -1257,22 +1260,45 @@ def crps_student_t_nb(
     """
     n = len(mu)
     out = np.empty(n, dtype=np.float64)
+    if n == 0:
+        return out
 
-    for i in range(n):
-        sig = sigma[i]
-        if sig < 1e-10:
-            sig = 1e-10
-        nu_i = nu[i]
-        if nu_i < 2.01:
-            nu_i = 2.01  # need nu > 2 for variance to exist; CRPS requires nu > 1
+    # v7.4: Detect uniform ν → compute g(ν) once instead of N times
+    nu0 = nu[0]
+    all_same = True
+    for k in range(1, n):
+        if nu[k] != nu0:
+            all_same = False
+            break
 
-        z = (y[i] - mu[i]) / sig
-        cdf_z = _t_cdf_nb(z, nu_i)
-        pdf_z = _t_pdf_nb(z, nu_i)
-        g_nu = _compute_t_gini_half_nb(nu_i, 200)
-
-        crps_val = sig * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu_i + z * z) / (nu_i - 1.0) - g_nu)
-        out[i] = crps_val
+    if all_same:
+        nu_val = nu0
+        if nu_val < 2.01:
+            nu_val = 2.01
+        g_nu_cached = _compute_t_gini_half_nb(nu_val, 200)
+        for i in range(n):
+            sig = sigma[i]
+            if sig < 1e-10:
+                sig = 1e-10
+            z = (y[i] - mu[i]) / sig
+            cdf_z = _t_cdf_nb(z, nu_val)
+            pdf_z = _t_pdf_nb(z, nu_val)
+            crps_val = sig * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu_val + z * z) / (nu_val - 1.0) - g_nu_cached)
+            out[i] = crps_val
+    else:
+        for i in range(n):
+            sig = sigma[i]
+            if sig < 1e-10:
+                sig = 1e-10
+            nu_i = nu[i]
+            if nu_i < 2.01:
+                nu_i = 2.01
+            z = (y[i] - mu[i]) / sig
+            cdf_z = _t_cdf_nb(z, nu_i)
+            pdf_z = _t_pdf_nb(z, nu_i)
+            g_nu = _compute_t_gini_half_nb(nu_i, 200)
+            crps_val = sig * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu_i + z * z) / (nu_i - 1.0) - g_nu)
+            out[i] = crps_val
 
     return out
 
@@ -1284,24 +1310,50 @@ def crps_student_t_mean_nb(
     y: np.ndarray,
     nu: np.ndarray,
 ) -> float:
-    """Mean Student-t CRPS — single scalar output for optimizer objective."""
+    """Mean Student-t CRPS — single scalar output for optimizer objective.
+
+    v7.4: Pre-compute g(ν) when all ν values are identical (common case
+    from np.full()).  Avoids ~167x redundant 200-point quadrature calls.
+    """
     n = len(mu)
+    if n == 0:
+        return 0.0
     total = 0.0
 
-    for i in range(n):
-        sig = sigma[i]
-        if sig < 1e-10:
-            sig = 1e-10
-        nu_i = nu[i]
-        if nu_i < 2.01:
-            nu_i = 2.01
+    # v7.4: Detect uniform ν → compute g(ν) once instead of N times
+    nu0 = nu[0]
+    all_same = True
+    for k in range(1, n):
+        if nu[k] != nu0:
+            all_same = False
+            break
 
-        z = (y[i] - mu[i]) / sig
-        cdf_z = _t_cdf_nb(z, nu_i)
-        pdf_z = _t_pdf_nb(z, nu_i)
-        g_nu = _compute_t_gini_half_nb(nu_i, 200)
-
-        total += sig * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu_i + z * z) / (nu_i - 1.0) - g_nu)
+    if all_same:
+        nu_val = nu0
+        if nu_val < 2.01:
+            nu_val = 2.01
+        g_nu_cached = _compute_t_gini_half_nb(nu_val, 200)
+        for i in range(n):
+            sig = sigma[i]
+            if sig < 1e-10:
+                sig = 1e-10
+            z = (y[i] - mu[i]) / sig
+            cdf_z = _t_cdf_nb(z, nu_val)
+            pdf_z = _t_pdf_nb(z, nu_val)
+            total += sig * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu_val + z * z) / (nu_val - 1.0) - g_nu_cached)
+    else:
+        for i in range(n):
+            sig = sigma[i]
+            if sig < 1e-10:
+                sig = 1e-10
+            nu_i = nu[i]
+            if nu_i < 2.01:
+                nu_i = 2.01
+            z = (y[i] - mu[i]) / sig
+            cdf_z = _t_cdf_nb(z, nu_i)
+            pdf_z = _t_pdf_nb(z, nu_i)
+            g_nu = _compute_t_gini_half_nb(nu_i, 200)
+            total += sig * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu_i + z * z) / (nu_i - 1.0) - g_nu)
 
     return total / n
 
@@ -1891,3 +1943,1236 @@ def emos_crps_scale_only_nb(
     nu_reg = 0.01 * (math.log(nu) - math.log(nu_prior)) ** 2
 
     return loss + reg + nu_reg
+
+
+# =============================================================================
+# v7.1 NUMBA KERNELS — CRPS fix: sigma floor + analytical gradient
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def compute_realized_vol_floor_nb(
+    actual: np.ndarray,
+    sigma_pred: np.ndarray,
+    floor_frac: float,
+) -> np.ndarray:
+    """Apply realized-vol floor to sigma_pred (v7.1).
+
+    Prevents catastrophic under-dispersion where sigma_pred << actual vol.
+    Uses MAD (median absolute deviation) × 1.4826 as robust sigma estimator.
+
+    Parameters
+    ----------
+    actual : ndarray
+        Observed returns (percentage-space)
+    sigma_pred : ndarray
+        Predicted sigmas (percentage-space)
+    floor_frac : float
+        Floor fraction: sigma_out >= floor_frac × sigma_realized
+        Default: 0.5 (sigma must be at least 50% of realized vol)
+
+    Returns
+    -------
+    ndarray
+        Floored sigma_pred
+    """
+    n = len(actual)
+    out = np.empty(n, dtype=np.float64)
+
+    # Compute MAD-based realized vol
+    # Step 1: median of actual
+    sorted_actual = np.sort(actual.copy())
+    if n % 2 == 0:
+        med_actual = 0.5 * (sorted_actual[n // 2 - 1] + sorted_actual[n // 2])
+    else:
+        med_actual = sorted_actual[n // 2]
+
+    # Step 2: MAD = median(|actual - median(actual)|)
+    abs_devs = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        abs_devs[i] = abs(actual[i] - med_actual)
+    sorted_devs = np.sort(abs_devs)
+    if n % 2 == 0:
+        mad = 0.5 * (sorted_devs[n // 2 - 1] + sorted_devs[n // 2])
+    else:
+        mad = sorted_devs[n // 2]
+
+    # Step 3: sigma_realized = MAD × 1.4826 (consistency factor for normal)
+    sigma_realized = mad * 1.4826
+    floor_val = floor_frac * sigma_realized
+
+    # Apply floor
+    for i in range(n):
+        if sigma_pred[i] < floor_val:
+            out[i] = floor_val
+        else:
+            out[i] = sigma_pred[i]
+
+    return out
+
+
+@njit(cache=True, fastmath=True)
+def emos_crps_mean_with_grad_nb(
+    params_a: float,
+    params_b: float,
+    mu_pred: np.ndarray,
+    sig_pred: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    sigma_floor: float,
+    nu_fixed: float,
+) -> tuple:
+    """Stage 1 mean correction with analytical gradient (v7.1).
+
+    Returns (loss, grad_a, grad_b) for use with L-BFGS-B jac=True.
+
+    For Student-t CRPS with z = (y - a - b*mu) / sigma:
+        dCRPS/da = -(2*F_nu(z) - 1)       (weighted mean)
+        dCRPS/db = -mu_pred * (2*F_nu(z) - 1)  (weighted mean)
+
+    Parameters
+    ----------
+    params_a, params_b : float
+        Mean correction: mu_cor = a + b * mu_pred
+    mu_pred, sig_pred : ndarray
+        Predicted means and sigmas
+    y : ndarray
+        Observed values
+    w : ndarray
+        Sample weights
+    sigma_floor : float
+        Minimum sigma
+    nu_fixed : float
+        Fixed degrees of freedom
+
+    Returns
+    -------
+    tuple of (loss: float, grad_a: float, grad_b: float)
+    """
+    n = len(y)
+    w_sum = 0.0
+    crps_sum = 0.0
+    grad_a_sum = 0.0
+    grad_b_sum = 0.0
+
+    nu = nu_fixed
+    if nu < 2.01:
+        nu = 2.01
+
+    g_nu = _compute_t_gini_half_nb(nu, 200)
+
+    for i in range(n):
+        mu_cor = params_a + params_b * mu_pred[i]
+        sig_cor = sig_pred[i]
+        if sig_cor < sigma_floor:
+            sig_cor = sigma_floor
+
+        z = (y[i] - mu_cor) / sig_cor
+        cdf_z = _t_cdf_nb(z, nu)
+        pdf_z = _t_pdf_nb(z, nu)
+
+        crps_val = sig_cor * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu + z * z) / (nu - 1.0) - g_nu)
+        crps_sum += w[i] * crps_val
+        w_sum += w[i]
+
+        # Analytical gradient: dCRPS/dz = sigma * (2*F(z) - 1), dz/da = -1/sigma
+        # dCRPS/da = -(2*F(z) - 1)
+        # dCRPS/db = -mu_pred[i] * (2*F(z) - 1)
+        dcdf = 2.0 * cdf_z - 1.0
+        grad_a_sum += w[i] * (-dcdf)
+        grad_b_sum += w[i] * (-mu_pred[i] * dcdf)
+
+    loss = crps_sum / w_sum
+    grad_a = grad_a_sum / w_sum
+    grad_b = grad_b_sum / w_sum
+
+    # Regularization on a only (same as emos_crps_mean_only_nb)
+    reg = 0.001 * (params_a * params_a)
+    loss += reg
+    grad_a += 0.002 * params_a
+
+    return (loss, grad_a, grad_b)
+
+
+# =============================================================================
+# v7.2 NUMBA KERNELS — Deep CRPS: adaptive reg, DSS penalty, joint polish
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def emos_crps_scale_v72_nb(
+    params_c: float,
+    params_d: float,
+    params_nu: float,
+    fixed_a: float,
+    fixed_b: float,
+    mu_pred: np.ndarray,
+    sig_pred: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    sigma_floor: float,
+    nu_prior: float,
+    reg_weight: float,
+) -> float:
+    """Stage 2 scale correction with adaptive regularization (v7.2).
+
+    Key improvements over emos_crps_scale_only_nb:
+    1. reg_weight is parameterizable (adaptive: weaker for large n)
+    2. Adds DSS variance penalty: forces E[z²] ≈ ν/(ν-2) for calibration
+    3. Separate ν regularization weight (half of reg_weight)
+
+    Parameters
+    ----------
+    params_c, params_d : float
+        Scale correction: sig_cor = c + d * sig_pred
+    params_nu : float
+        Degrees of freedom
+    fixed_a, fixed_b : float
+        Fixed mean correction from Stage 1
+    mu_pred, sig_pred : ndarray
+        Predicted means and sigmas
+    y : ndarray
+        Observed values
+    w : ndarray
+        Sample weights
+    sigma_floor : float
+        Minimum sigma
+    nu_prior : float
+        Prior nu for regularization
+    reg_weight : float
+        Regularization strength (adaptive: 0.001 for large n, 0.01 for small n)
+    """
+    n = len(y)
+    w_sum = 0.0
+    crps_sum = 0.0
+    z_sq_sum = 0.0
+
+    nu = params_nu
+    if nu < 2.01:
+        nu = 2.01
+
+    g_nu = _compute_t_gini_half_nb(nu, 200)
+
+    for i in range(n):
+        mu_cor = fixed_a + fixed_b * mu_pred[i]
+        sig_cor = params_c + params_d * sig_pred[i]
+        if sig_cor < sigma_floor:
+            sig_cor = sigma_floor
+
+        z = (y[i] - mu_cor) / sig_cor
+        cdf_z = _t_cdf_nb(z, nu)
+        pdf_z = _t_pdf_nb(z, nu)
+
+        crps_val = sig_cor * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu + z * z) / (nu - 1.0) - g_nu)
+        crps_sum += w[i] * crps_val
+        z_sq_sum += w[i] * z * z
+        w_sum += w[i]
+
+    loss = crps_sum / w_sum
+
+    # DSS variance penalty: E[z²] should equal ν/(ν-2) for Student-t
+    z_sq_mean = z_sq_sum / w_sum
+    expected_z_sq = nu / (nu - 2.0) if nu > 2.01 else 1.0
+    var_penalty = (z_sq_mean - expected_z_sq) * (z_sq_mean - expected_z_sq)
+    loss += 0.05 * var_penalty
+
+    # Adaptive regularization
+    reg = reg_weight * (params_c * params_c + (params_d - 1.0) * (params_d - 1.0))
+    nu_reg = reg_weight * 0.5 * (math.log(nu) - math.log(nu_prior)) ** 2
+
+    return loss + reg + nu_reg
+
+
+@njit(cache=True, fastmath=True)
+def emos_crps_joint_v72_nb(
+    params_a: float,
+    params_b: float,
+    params_c: float,
+    params_d: float,
+    params_nu: float,
+    mu_pred: np.ndarray,
+    sig_pred: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    sigma_floor: float,
+    nu_prior: float,
+    reg_weight: float,
+) -> float:
+    """Joint 5-parameter Student-t CRPS for polish step (v7.2).
+
+    Used after two-stage optimization to fine-tune all parameters
+    simultaneously. Light regularization — the two-stage solution
+    provides a good starting point so we only need minor adjustments.
+
+    Parameters
+    ----------
+    params_a, params_b : float
+        Mean correction: mu_cor = a + b * mu_pred
+    params_c, params_d : float
+        Scale correction: sig_cor = c + d * sig_pred
+    params_nu : float
+        Degrees of freedom
+    mu_pred, sig_pred : ndarray
+        Predicted means and sigmas
+    y : ndarray
+        Observed values
+    w : ndarray
+        Sample weights
+    sigma_floor : float
+        Minimum sigma
+    nu_prior : float
+        Prior nu for regularization
+    reg_weight : float
+        Regularization strength (typically half of Stage 2's weight)
+    """
+    n = len(y)
+    w_sum = 0.0
+    crps_sum = 0.0
+    z_sq_sum = 0.0
+
+    nu = params_nu
+    if nu < 2.01:
+        nu = 2.01
+
+    g_nu = _compute_t_gini_half_nb(nu, 200)
+
+    for i in range(n):
+        mu_cor = params_a + params_b * mu_pred[i]
+        sig_cor = params_c + params_d * sig_pred[i]
+        if sig_cor < sigma_floor:
+            sig_cor = sigma_floor
+
+        z = (y[i] - mu_cor) / sig_cor
+        cdf_z = _t_cdf_nb(z, nu)
+        pdf_z = _t_pdf_nb(z, nu)
+
+        crps_val = sig_cor * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu + z * z) / (nu - 1.0) - g_nu)
+        crps_sum += w[i] * crps_val
+        z_sq_sum += w[i] * z * z
+        w_sum += w[i]
+
+    loss = crps_sum / w_sum
+
+    # DSS variance penalty (lighter in joint step — already calibrated by Stage 2)
+    z_sq_mean = z_sq_sum / w_sum
+    expected_z_sq = nu / (nu - 2.0) if nu > 2.01 else 1.0
+    var_penalty = (z_sq_mean - expected_z_sq) * (z_sq_mean - expected_z_sq)
+    loss += 0.02 * var_penalty
+
+    # Light regularization: only penalize bias (a) and nu deviation
+    reg = reg_weight * (params_a * params_a)
+    nu_reg = reg_weight * 0.5 * (math.log(nu) - math.log(nu_prior)) ** 2
+
+    return loss + reg + nu_reg
+
+
+# =============================================================================
+# v7.3 MULTI-DIAGNOSTIC CALIBRATION KERNELS
+# =============================================================================
+# Comprehensive proper scoring rules and calibration tests:
+#   - PIT (Probability Integral Transform) values
+#   - KS test for PIT uniformity
+#   - Anderson-Darling test for PIT uniformity
+#   - Hyvärinen score (variance-sensitive proper scoring rule)
+#   - Berkowitz test (likelihood ratio test on PIT z-scores)
+#   - MAD (Mean Absolute Deviation)
+#   - LogS (Logarithmic Score — negative log-likelihood)
+#   - DSS (Dawid-Sebastiani Score — variance calibration)
+#   - Composite EMOS objective with PIT penalty
+# =============================================================================
+
+
+@njit(cache=True, fastmath=True)
+def _norm_inv_cdf_nb(p: float) -> float:
+    """Inverse standard normal CDF (probit function).
+
+    Uses Acklam (2004) rational approximation.
+    Accuracy: |error| < 1.15e-9 across the full range.
+    No arrays or scipy required — pure scalar arithmetic for Numba.
+    """
+    if p <= 1e-12:
+        return -8.0
+    if p >= 1.0 - 1e-12:
+        return 8.0
+
+    # Coefficients — central region
+    a1 = -3.969683028665376e+01
+    a2 = 2.209460984245205e+02
+    a3 = -2.759285104469687e+02
+    a4 = 1.383577518672690e+02
+    a5 = -3.066479806614716e+01
+    a6 = 2.506628277459239e+00
+
+    b1 = -5.447609879822406e+01
+    b2 = 1.615858368580409e+02
+    b3 = -1.556989798598866e+02
+    b4 = 6.680131188771972e+01
+    b5 = -1.328068155288572e+01
+
+    # Coefficients — tail region
+    c1 = -7.784894002430293e-03
+    c2 = -3.223964580411365e-01
+    c3 = -2.400758277161838e+00
+    c4 = -2.549732539343734e+00
+    c5 = 4.374664141464968e+00
+    c6 = 2.938163982698783e+00
+
+    d1 = 7.784695709041462e-03
+    d2 = 3.224671290700398e-01
+    d3 = 2.445134137142996e+00
+    d4 = 3.754408661907416e+00
+
+    p_low = 0.02425
+    p_high = 1.0 - p_low
+
+    if p < p_low:
+        # Lower tail
+        q = math.sqrt(-2.0 * math.log(p))
+        return (((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) / \
+               ((((d1 * q + d2) * q + d3) * q + d4) * q + 1.0)
+    elif p <= p_high:
+        # Central region
+        q = p - 0.5
+        r = q * q
+        return (((((a1 * r + a2) * r + a3) * r + a4) * r + a5) * r + a6) * q / \
+               (((((b1 * r + b2) * r + b3) * r + b4) * r + b5) * r + 1.0)
+    else:
+        # Upper tail
+        q = math.sqrt(-2.0 * math.log(1.0 - p))
+        return -(((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) / \
+                ((((d1 * q + d2) * q + d3) * q + d4) * q + 1.0)
+
+
+@njit(cache=True, fastmath=True)
+def compute_pit_values_nb(
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    y: np.ndarray,
+    nu: np.ndarray,
+) -> np.ndarray:
+    """Compute PIT values u_i = F_ν((y_i - μ_i) / σ_i) for Student-t.
+
+    The Probability Integral Transform maps observations through their
+    predictive CDF. Under perfect calibration: PIT ~ Uniform(0, 1).
+
+    Parameters
+    ----------
+    mu : ndarray     — Predicted means (EMOS-corrected)
+    sigma : ndarray  — Predicted scales (EMOS-corrected)
+    y : ndarray      — Observed values
+    nu : ndarray     — Degrees of freedom per sample
+
+    Returns
+    -------
+    ndarray — PIT values ∈ (ε, 1-ε), clipped to avoid log(0)
+    """
+    n = len(mu)
+    pit = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        s = sigma[i]
+        if s < 1e-10:
+            s = 1e-10
+        nu_i = nu[i]
+        if nu_i < 2.01:
+            nu_i = 2.01
+        z = (y[i] - mu[i]) / s
+        u = _t_cdf_nb(z, nu_i)
+        # Clip away from 0/1 for log-stability in subsequent tests
+        if u < 1e-10:
+            u = 1e-10
+        elif u > 1.0 - 1e-10:
+            u = 1.0 - 1e-10
+        pit[i] = u
+    return pit
+
+
+@njit(cache=True, fastmath=True)
+def pit_ks_test_nb(pit_values: np.ndarray) -> tuple:
+    """Kolmogorov-Smirnov test for uniformity of PIT values.
+
+    D_n = sup |F_n(u) - u|  where F_n is the empirical CDF of PIT values.
+    Under H0: PIT ~ Uniform(0,1).
+
+    p-value uses the Kolmogorov asymptotic distribution:
+      Q_KS(λ) = 2 Σ_{k=1}^∞ (-1)^{k-1} exp(-2k²λ²)  where λ = √n · D
+
+    For small λ uses the complementary series for better accuracy.
+
+    Returns
+    -------
+    tuple(D_statistic: float, p_value: float)
+    """
+    n = len(pit_values)
+    if n < 3:
+        return 0.0, 1.0
+
+    # Sort PIT values
+    sorted_pit = np.sort(pit_values)
+
+    # Two-sided KS: D = max(D+, D-)
+    d_plus = 0.0
+    d_minus = 0.0
+    for i in range(n):
+        d_p = (i + 1.0) / n - sorted_pit[i]
+        d_m = sorted_pit[i] - float(i) / n
+        if d_p > d_plus:
+            d_plus = d_p
+        if d_m > d_minus:
+            d_minus = d_m
+    D = d_plus
+    if d_minus > D:
+        D = d_minus
+
+    # Asymptotic p-value via Kolmogorov series (truncated at k=100)
+    lam = math.sqrt(n) * D
+    if lam < 1e-12:
+        return D, 1.0
+
+    # Q_KS(λ) = 2 Σ_{k=1}^∞ (-1)^{k-1} exp(-2k²λ²)
+    p_value = 0.0
+    for k in range(1, 101):
+        term = math.exp(-2.0 * k * k * lam * lam)
+        if k % 2 == 1:
+            p_value += term
+        else:
+            p_value -= term
+        if term < 1e-15:
+            break
+    p_value *= 2.0
+    if p_value < 0.0:
+        p_value = 0.0
+    if p_value > 1.0:
+        p_value = 1.0
+    return D, p_value
+
+
+@njit(cache=True, fastmath=True)
+def pit_ad_test_nb(pit_values: np.ndarray) -> tuple:
+    """Anderson-Darling test for uniformity of PIT values.
+
+    A² = -n - (1/n) Σ_{i=1}^n (2i-1) [ln(u_(i)) + ln(1 - u_(n+1-i))]
+
+    More powerful than KS at detecting tail deviations — critical for
+    financial distributions where tail calibration determines profitability.
+
+    p-value from D'Agostino & Stephens (1986) with small-sample correction:
+      A²* = A² × (1 + 0.75/n + 2.25/n²)
+
+    Returns
+    -------
+    tuple(A2_statistic: float, p_value: float)
+    """
+    n = len(pit_values)
+    if n < 3:
+        return 0.0, 1.0
+
+    sorted_pit = np.sort(pit_values)
+
+    # Compute A² statistic
+    s = 0.0
+    for i in range(n):
+        u_i = sorted_pit[i]
+        if u_i < 1e-10:
+            u_i = 1e-10
+        if u_i > 1.0 - 1e-10:
+            u_i = 1.0 - 1e-10
+        u_comp = sorted_pit[n - 1 - i]
+        if u_comp < 1e-10:
+            u_comp = 1e-10
+        if u_comp > 1.0 - 1e-10:
+            u_comp = 1.0 - 1e-10
+        s += (2.0 * (i + 1) - 1.0) * (math.log(u_i) + math.log(1.0 - u_comp))
+
+    A2 = -float(n) - s / float(n)
+
+    # Small-sample modification (D'Agostino & Stephens 1986)
+    A2_star = A2 * (1.0 + 0.75 / n + 2.25 / (n * n))
+
+    # Approximate p-value for Uniform(0,1) case
+    # Source: Marsaglia & Marsaglia (2004), improved approximation
+    if A2_star < 0.2:
+        p_value = 1.0 - math.exp(-13.436 + 101.14 * A2_star - 223.73 * A2_star * A2_star)
+    elif A2_star < 0.34:
+        p_value = 1.0 - math.exp(-8.318 + 42.796 * A2_star - 59.938 * A2_star * A2_star)
+    elif A2_star < 0.6:
+        p_value = math.exp(0.9177 - 4.279 * A2_star - 1.38 * A2_star * A2_star)
+    elif A2_star < 10.0:
+        p_value = math.exp(1.2937 - 5.709 * A2_star + 0.0186 * A2_star * A2_star)
+    else:
+        p_value = 0.0
+
+    if p_value < 0.0:
+        p_value = 0.0
+    if p_value > 1.0:
+        p_value = 1.0
+    return A2, p_value
+
+
+@njit(cache=True, fastmath=True)
+def hyvarinen_score_nb(
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    y: np.ndarray,
+    nu: np.ndarray,
+    w: np.ndarray,
+) -> float:
+    """Weighted Hyvärinen score for Student-t predictive distribution.
+
+    The Hyvärinen score is a proper scoring rule that uses only the
+    log-density derivatives — it is especially sensitive to variance
+    miscalibration and does NOT require the normalizing constant.
+
+    H(y; μ, σ, ν) = (∂/∂y log p)² + 2(∂²/∂y² log p)
+
+    For Student-t(μ, σ, ν):
+      ∂/∂y log p = -(ν+1) z / (σ(ν + z²))
+      ∂²/∂y² log p = -(ν+1)/σ² × (ν - z²) / (ν + z²)²
+      where z = (y - μ) / σ
+
+    Combined:
+      H = (ν+1) / (σ²(ν+z²)²) × [(ν+3)z² - 2ν]
+
+    Target: H ≈ -500 to 0 for well-calibrated distributions.
+    Positive values indicate severe variance collapse.
+
+    Parameters
+    ----------
+    mu, sigma, y : ndarray — Location, scale, observations
+    nu : ndarray           — Degrees of freedom
+    w : ndarray            — Sample weights
+
+    Returns
+    -------
+    float — Weighted mean Hyvärinen score (lower = better calibration)
+    """
+    n = len(mu)
+    total = 0.0
+    w_sum = 0.0
+    for i in range(n):
+        s = sigma[i]
+        if s < 1e-10:
+            s = 1e-10
+        nu_i = nu[i]
+        if nu_i < 2.01:
+            nu_i = 2.01
+        z = (y[i] - mu[i]) / s
+        z2 = z * z
+        denom = nu_i + z2
+        s2 = s * s
+
+        # H = (ν+1) / (σ²(ν+z²)²) × [(ν+3)z² - 2ν]
+        h_i = (nu_i + 1.0) / (s2 * denom * denom) * ((nu_i + 3.0) * z2 - 2.0 * nu_i)
+
+        total += w[i] * h_i
+        w_sum += w[i]
+
+    if w_sum < 1e-15:
+        return 0.0
+    return total / w_sum
+
+
+@njit(cache=True, fastmath=True)
+def berkowitz_test_nb(pit_values: np.ndarray) -> tuple:
+    """Berkowitz (2001) likelihood ratio test for PIT calibration.
+
+    Transform: z = Φ⁻¹(PIT).  Under H0: z ~ iid N(0,1).
+    Unrestricted: z_t = μ + ρ(z_{t-1} - μ) + ε, ε ~ N(0, σ²)
+
+    Tests three deviations simultaneously:
+      1. Mean ≠ 0 (systematic bias)
+      2. Variance ≠ 1 (scale miscalibration)
+      3. Autocorrelation (dependence in forecast errors)
+
+    LR = 2(LL_unrestricted - LL_restricted) ~ χ²(3)
+
+    Returns
+    -------
+    tuple(LR_statistic: float, p_value: float)
+    """
+    n = len(pit_values)
+    if n < 10:
+        return 0.0, 1.0
+
+    # Transform PIT → standard normal z-scores
+    z = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        u = pit_values[i]
+        if u < 1e-8:
+            u = 1e-8
+        elif u > 1.0 - 1e-8:
+            u = 1.0 - 1e-8
+        z[i] = _norm_inv_cdf_nb(u)
+
+    # Restricted log-likelihood: z ~ iid N(0, 1)
+    ll_restricted = 0.0
+    for i in range(n):
+        ll_restricted += -0.5 * z[i] * z[i] - 0.5 * math.log(2.0 * math.pi)
+
+    # Unrestricted: AR(1) with unknown mean, variance
+    # MLE estimates
+    mu_z = 0.0
+    for i in range(n):
+        mu_z += z[i]
+    mu_z /= n
+
+    # AR(1) coefficient ρ
+    num = 0.0
+    den = 0.0
+    for i in range(1, n):
+        num += (z[i] - mu_z) * (z[i - 1] - mu_z)
+        den += (z[i - 1] - mu_z) ** 2
+    rho = num / max(den, 1e-10)
+    if rho > 0.99:
+        rho = 0.99
+    elif rho < -0.99:
+        rho = -0.99
+
+    # Residual variance
+    sigma_sq = 0.0
+    for i in range(1, n):
+        resid = z[i] - mu_z - rho * (z[i - 1] - mu_z)
+        sigma_sq += resid * resid
+    sigma_sq /= max(n - 1, 1)
+    if sigma_sq < 1e-10:
+        sigma_sq = 1e-10
+
+    # Unrestricted log-likelihood
+    # First obs: marginal N(μ, σ²/(1-ρ²))
+    var_1 = sigma_sq / max(1.0 - rho * rho, 1e-10)
+    ll_unrestricted = -0.5 * math.log(2.0 * math.pi * var_1)
+    ll_unrestricted += -0.5 * (z[0] - mu_z) ** 2 / var_1
+    for i in range(1, n):
+        resid = z[i] - mu_z - rho * (z[i - 1] - mu_z)
+        ll_unrestricted += -0.5 * math.log(2.0 * math.pi * sigma_sq)
+        ll_unrestricted += -0.5 * resid * resid / sigma_sq
+
+    # LR statistic
+    LR = 2.0 * (ll_unrestricted - ll_restricted)
+    if LR < 0.0:
+        LR = 0.0
+
+    # p-value from χ²(3) via Wilson-Hilferty normal approximation
+    k = 3.0
+    if LR > 0.0:
+        cube_root = (LR / k) ** (1.0 / 3.0)
+        z_wh = (cube_root - (1.0 - 2.0 / (9.0 * k))) / math.sqrt(2.0 / (9.0 * k))
+        p_value = 1.0 - _norm_cdf_nb(z_wh)
+    else:
+        p_value = 1.0
+
+    if p_value < 0.0:
+        p_value = 0.0
+    if p_value > 1.0:
+        p_value = 1.0
+    return LR, p_value
+
+
+@njit(cache=True, fastmath=True)
+def mad_score_nb(
+    mu: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+) -> float:
+    """Weighted Mean Absolute Deviation.
+
+    MAD = Σ w_i |y_i - μ_i| / Σ w_i
+
+    A robust measure of prediction error that is less sensitive to
+    outliers than MSE/RMSE.
+
+    Returns
+    -------
+    float — Weighted MAD (lower is better)
+    """
+    n = len(mu)
+    total = 0.0
+    w_sum = 0.0
+    for i in range(n):
+        total += w[i] * abs(y[i] - mu[i])
+        w_sum += w[i]
+    if w_sum < 1e-15:
+        return 0.0
+    return total / w_sum
+
+
+@njit(cache=True, fastmath=True)
+def log_score_nb(
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    y: np.ndarray,
+    nu: np.ndarray,
+    w: np.ndarray,
+) -> float:
+    """Weighted logarithmic score for Student-t distribution.
+
+    LogS = -log p(y; μ, σ, ν)  (negative log-likelihood)
+
+    For Student-t(μ, σ, ν):
+      -log p = -lgamma((ν+1)/2) + lgamma(ν/2) + 0.5 log(νπ) + log(σ)
+               + ((ν+1)/2) log(1 + z²/ν)
+
+    The logarithmic score is strictly proper and heavily penalizes
+    assigning low probability to realized outcomes — essential for
+    tail risk assessment.
+
+    Returns
+    -------
+    float — Weighted mean LogS (lower is better)
+    """
+    n = len(mu)
+    total = 0.0
+    w_sum = 0.0
+    for i in range(n):
+        s = sigma[i]
+        if s < 1e-10:
+            s = 1e-10
+        nu_i = nu[i]
+        if nu_i < 2.01:
+            nu_i = 2.01
+        z = (y[i] - mu[i]) / s
+        z2 = z * z
+
+        # -log p(y) for Student-t
+        log_s = -_log_gamma_nb(0.5 * (nu_i + 1.0)) + _log_gamma_nb(0.5 * nu_i)
+        log_s += 0.5 * math.log(nu_i * math.pi) + math.log(s)
+        log_s += 0.5 * (nu_i + 1.0) * math.log(1.0 + z2 / nu_i)
+
+        total += w[i] * log_s
+        w_sum += w[i]
+
+    if w_sum < 1e-15:
+        return 0.0
+    return total / w_sum
+
+
+@njit(cache=True, fastmath=True)
+def dss_score_nb(
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+) -> float:
+    """Weighted Dawid-Sebastiani Score (variance-focused proper scoring rule).
+
+    DSS = log(σ²) + (y - μ)² / σ²  =  2 log(σ) + z²
+
+    The DSS is the Gaussian log score minus the constant -log(2π)/2.
+    It focuses on variance calibration: optimal when predicted σ
+    matches realized spread.
+
+    Returns
+    -------
+    float — Weighted mean DSS (lower is better)
+    """
+    n = len(mu)
+    total = 0.0
+    w_sum = 0.0
+    for i in range(n):
+        s = sigma[i]
+        if s < 1e-10:
+            s = 1e-10
+        z = (y[i] - mu[i]) / s
+        dss = 2.0 * math.log(s) + z * z
+        total += w[i] * dss
+        w_sum += w[i]
+    if w_sum < 1e-15:
+        return 0.0
+    return total / w_sum
+
+
+@njit(cache=True, fastmath=True)
+def emos_crps_pit_v73_nb(
+    params_a: float,
+    params_b: float,
+    params_c: float,
+    params_d: float,
+    params_nu: float,
+    mu_pred: np.ndarray,
+    sig_pred: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    sigma_floor: float,
+    nu_prior: float,
+    reg_weight: float,
+    pit_weight: float,
+) -> float:
+    """v7.3 Composite EMOS objective: CRPS + DSS variance + PIT uniformity.
+
+    Combines three proper scoring components:
+      1. CRPS (primary) — location + spread accuracy
+      2. DSS variance penalty — forces E[z²] ≈ ν/(ν-2)
+      3. Cramér-von Mises (CvM) penalty on PIT — forces uniformity
+
+    The CvM statistic W² = (1/n)Σ(u_(i) - (2i-1)/(2n))² is a smooth,
+    differentiable penalty on PIT non-uniformity, unlike the discontinuous
+    KS or threshold-based AD tests.
+
+    Parameters
+    ----------
+    params_a, params_b : float  — Mean correction
+    params_c, params_d : float  — Scale correction
+    params_nu : float           — Degrees of freedom
+    mu_pred, sig_pred : ndarray — Predicted means and sigmas
+    y : ndarray                 — Observed values
+    w : ndarray                 — Sample weights
+    sigma_floor : float         — Minimum sigma
+    nu_prior : float            — Prior ν for regularization
+    reg_weight : float          — Regularization strength
+    pit_weight : float          — CvM penalty weight (0.05-0.20)
+
+    Returns
+    -------
+    float — Composite loss
+    """
+    n = len(y)
+    w_sum = 0.0
+    crps_sum = 0.0
+    z_sq_sum = 0.0
+
+    nu = params_nu
+    if nu < 2.01:
+        nu = 2.01
+
+    g_nu = _compute_t_gini_half_nb(nu, 200)
+
+    # Compute PIT values alongside CRPS (same loop, no extra pass)
+    pit_vals = np.empty(n, dtype=np.float64)
+
+    for i in range(n):
+        mu_cor = params_a + params_b * mu_pred[i]
+        sig_cor = params_c + params_d * sig_pred[i]
+        if sig_cor < sigma_floor:
+            sig_cor = sigma_floor
+
+        z = (y[i] - mu_cor) / sig_cor
+        cdf_z = _t_cdf_nb(z, nu)
+        pdf_z = _t_pdf_nb(z, nu)
+
+        crps_val = sig_cor * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu + z * z) / (nu - 1.0) - g_nu)
+        crps_sum += w[i] * crps_val
+        z_sq_sum += w[i] * z * z
+        w_sum += w[i]
+
+        # PIT value (clipped)
+        u = cdf_z
+        if u < 1e-10:
+            u = 1e-10
+        elif u > 1.0 - 1e-10:
+            u = 1.0 - 1e-10
+        pit_vals[i] = u
+
+    loss = crps_sum / w_sum
+
+    # DSS variance penalty
+    z_sq_mean = z_sq_sum / w_sum
+    expected_z_sq = nu / (nu - 2.0) if nu > 2.01 else 1.0
+    var_penalty = (z_sq_mean - expected_z_sq) * (z_sq_mean - expected_z_sq)
+    loss += 0.03 * var_penalty
+
+    # CvM penalty for PIT uniformity
+    # Sort PIT values, compute W² = (1/n) Σ (u_(i) - (2i-1)/(2n))²
+    sorted_pit = np.sort(pit_vals)
+    cvm = 0.0
+    for i in range(n):
+        expected_quantile = (2.0 * (i + 1) - 1.0) / (2.0 * n)
+        diff = sorted_pit[i] - expected_quantile
+        cvm += diff * diff
+    cvm /= n
+    # Scale CvM to be comparable with CRPS (typical CvM ≈ 0.01-0.5)
+    loss += pit_weight * cvm
+
+    # Regularization
+    reg = reg_weight * (params_a * params_a)
+    nu_reg = reg_weight * 0.5 * (math.log(nu) - math.log(nu_prior)) ** 2
+
+    return loss + reg + nu_reg
+
+
+# =============================================================================
+# v7.4 NUMBA-NATIVE OPTIMIZERS — eliminate Python↔Numba boundary overhead
+# =============================================================================
+# These replace scipy.optimize for the simple Stage 1 (2-param) and beta
+# (3-param) cases, keeping the entire optimization in compiled Numba code.
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def _emos_stage1_optimize_nb(
+    mu_pred: np.ndarray,
+    sig_pred: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    sigma_floor: float,
+    nu_fixed: float,
+    a_init: float,
+    b_init: float,
+    b_lo: float,
+    b_hi: float,
+    max_iter: int,
+) -> tuple:
+    """Numba-native EMOS Stage 1 optimizer (a, b) with gradient descent.
+
+    Projected gradient descent with adaptive learning rate (Adam-style).
+    Fully compiled — no Python↔Numba boundary per iteration.
+
+    Parameters
+    ----------
+    mu_pred, sig_pred : ndarray
+        Predicted means and sigmas
+    y : ndarray
+        Observed values
+    w : ndarray
+        Sample weights
+    sigma_floor : float
+        Minimum sigma
+    nu_fixed : float
+        Fixed degrees of freedom for this stage
+    a_init, b_init : float
+        Initial guesses
+    b_lo, b_hi : float
+        Bounds for b parameter
+    max_iter : int
+        Maximum iterations
+
+    Returns
+    -------
+    tuple (a_opt, b_opt)
+    """
+    n = len(y)
+    if n == 0:
+        return (a_init, b_init)
+
+    nu = nu_fixed
+    if nu < 2.01:
+        nu = 2.01
+
+    g_nu = _compute_t_gini_half_nb(nu, 200)
+
+    a = a_init
+    b = b_init
+    lr = 0.1
+    # Adam momentum
+    m_a = 0.0
+    m_b = 0.0
+    v_a = 0.0
+    v_b = 0.0
+    beta1 = 0.9
+    beta2 = 0.999
+    eps = 1e-8
+
+    best_a = a
+    best_b = b
+    best_loss = 1e30
+
+    for it in range(max_iter):
+        w_sum = 0.0
+        crps_sum = 0.0
+        grad_a_sum = 0.0
+        grad_b_sum = 0.0
+
+        for i in range(n):
+            mu_cor = a + b * mu_pred[i]
+            sig_cor = sig_pred[i]
+            if sig_cor < sigma_floor:
+                sig_cor = sigma_floor
+
+            z = (y[i] - mu_cor) / sig_cor
+            cdf_z = _t_cdf_nb(z, nu)
+            pdf_z = _t_pdf_nb(z, nu)
+
+            crps_val = sig_cor * (z * (2.0 * cdf_z - 1.0) + 2.0 * pdf_z * (nu + z * z) / (nu - 1.0) - g_nu)
+            crps_sum += w[i] * crps_val
+            w_sum += w[i]
+
+            dcdf = 2.0 * cdf_z - 1.0
+            grad_a_sum += w[i] * (-dcdf)
+            grad_b_sum += w[i] * (-mu_pred[i] * dcdf)
+
+        loss = crps_sum / w_sum
+        ga = grad_a_sum / w_sum + 0.002 * a  # a regularization
+        gb = grad_b_sum / w_sum
+
+        if loss < best_loss:
+            best_loss = loss
+            best_a = a
+            best_b = b
+
+        grad_norm = math.sqrt(ga * ga + gb * gb)
+        if grad_norm < 1e-7:
+            break
+
+        # Adam update
+        t = it + 1
+        m_a = beta1 * m_a + (1.0 - beta1) * ga
+        m_b = beta1 * m_b + (1.0 - beta1) * gb
+        v_a = beta2 * v_a + (1.0 - beta2) * ga * ga
+        v_b = beta2 * v_b + (1.0 - beta2) * gb * gb
+
+        m_a_hat = m_a / (1.0 - beta1 ** t)
+        m_b_hat = m_b / (1.0 - beta1 ** t)
+        v_a_hat = v_a / (1.0 - beta2 ** t)
+        v_b_hat = v_b / (1.0 - beta2 ** t)
+
+        a -= lr * m_a_hat / (math.sqrt(v_a_hat) + eps)
+        b -= lr * m_b_hat / (math.sqrt(v_b_hat) + eps)
+
+        # Project to bounds
+        if a < -10.0:
+            a = -10.0
+        if a > 10.0:
+            a = 10.0
+        if b < b_lo:
+            b = b_lo
+        if b > b_hi:
+            b = b_hi
+
+    return (best_a, best_b)
+
+
+@njit(cache=True, fastmath=True)
+def _beta_cal_optimize_nb(
+    ln_p: np.ndarray,
+    ln_1mp: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    focal_gamma: float,
+    reg_strength: float,
+    max_iter: int,
+) -> tuple:
+    """Numba-native Beta calibration optimizer (a, b, c).
+
+    Projected gradient descent with Adam for 3-parameter Beta calibration.
+    Fully compiled — no Python↔Numba boundary per iteration.
+
+    Uses focal loss (Lin et al. 2017) for emphasizing hard examples.
+
+    Parameters
+    ----------
+    ln_p : ndarray
+        log(p_clipped) for each sample
+    ln_1mp : ndarray
+        log(1 - p_clipped) for each sample
+    y : ndarray
+        Binary outcomes (0 or 1)
+    w : ndarray
+        Sample weights (normalized)
+    focal_gamma : float
+        Focal loss gamma (default: 2.0)
+    reg_strength : float
+        L2 regularization toward identity (a=1, b=1, c=0)
+    max_iter : int
+        Maximum iterations
+
+    Returns
+    -------
+    tuple (a_opt, b_opt, c_opt)
+    """
+    n = len(y)
+    if n == 0:
+        return (1.0, 1.0, 0.0)
+
+    a = 1.0
+    b_param = 1.0
+    c = 0.0
+    lr = 0.05
+    # Adam
+    m = np.zeros(3, dtype=np.float64)
+    v = np.zeros(3, dtype=np.float64)
+    beta1 = 0.9
+    beta2 = 0.999
+    eps = 1e-8
+
+    best_a = a
+    best_b = b_param
+    best_c = c
+    best_loss = 1e30
+
+    for it in range(max_iter):
+        nll_sum = 0.0
+        grad = np.zeros(3, dtype=np.float64)  # da, db, dc
+        w_sum = 0.0
+
+        for i in range(n):
+            z = a * ln_p[i] - b_param * ln_1mp[i] + c
+            # Numerically stable sigmoid
+            if z >= 0.0:
+                p_cal = 1.0 / (1.0 + math.exp(-z))
+            else:
+                ez = math.exp(z)
+                p_cal = ez / (1.0 + ez)
+
+            if p_cal < 1e-10:
+                p_cal = 1e-10
+            elif p_cal > 1.0 - 1e-10:
+                p_cal = 1.0 - 1e-10
+
+            # Focal weight
+            p_t = y[i] * p_cal + (1.0 - y[i]) * (1.0 - p_cal)
+            focal_w = (1.0 - p_t) ** focal_gamma
+
+            # BCE loss
+            bce = -(y[i] * math.log(p_cal) + (1.0 - y[i]) * math.log(1.0 - p_cal))
+            nll_sum += w[i] * focal_w * bce
+            w_sum += w[i]
+
+            # Gradient of focal BCE w.r.t. z (simplified)
+            # d(BCE)/dz = p_cal - y[i]
+            # d(focal_w)/dz is complex; for speed, use gradient of unfocused BCE
+            # and weight by focal_w (proximal approximation)
+            d_z = w[i] * focal_w * (p_cal - y[i])
+            grad[0] += d_z * ln_p[i]       # dz/da = ln(p)
+            grad[1] += d_z * (-ln_1mp[i])  # dz/db = -ln(1-p)
+            grad[2] += d_z                  # dz/dc = 1
+
+        loss = nll_sum / w_sum
+        grad[0] /= w_sum
+        grad[1] /= w_sum
+        grad[2] /= w_sum
+
+        # Regularization
+        loss += reg_strength * ((a - 1.0) ** 2 + (b_param - 1.0) ** 2 + c ** 2)
+        grad[0] += reg_strength * 2.0 * (a - 1.0)
+        grad[1] += reg_strength * 2.0 * (b_param - 1.0)
+        grad[2] += reg_strength * 2.0 * c
+
+        if loss < best_loss:
+            best_loss = loss
+            best_a = a
+            best_b = b_param
+            best_c = c
+
+        grad_norm = 0.0
+        for j in range(3):
+            grad_norm += grad[j] * grad[j]
+        if math.sqrt(grad_norm) < 1e-7:
+            break
+
+        # Adam
+        t = it + 1
+        for j in range(3):
+            m[j] = beta1 * m[j] + (1.0 - beta1) * grad[j]
+            v[j] = beta2 * v[j] + (1.0 - beta2) * grad[j] * grad[j]
+
+        bc1 = 1.0 - beta1 ** t
+        bc2 = 1.0 - beta2 ** t
+
+        step_a = lr * (m[0] / bc1) / (math.sqrt(v[0] / bc2) + eps)
+        step_b = lr * (m[1] / bc1) / (math.sqrt(v[1] / bc2) + eps)
+        step_c = lr * (m[2] / bc1) / (math.sqrt(v[2] / bc2) + eps)
+
+        a -= step_a
+        b_param -= step_b
+        c -= step_c
+
+        # Bounds
+        if a < 0.01:
+            a = 0.01
+        if a > 10.0:
+            a = 10.0
+        if b_param < 0.01:
+            b_param = 0.01
+        if b_param > 10.0:
+            b_param = 10.0
+        if c < -5.0:
+            c = -5.0
+        if c > 5.0:
+            c = 5.0
+
+    return (best_a, best_b, best_c)
