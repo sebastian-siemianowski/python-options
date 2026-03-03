@@ -6314,6 +6314,7 @@ def bayesian_model_average_mc(
     seed: Optional[int] = None,
     tuned_params: Optional[Dict] = None,
     asset_symbol: Optional[str] = None,
+    horizons_extract: Optional[List[int]] = None,
 ) -> Tuple[np.ndarray, Dict[int, float], Dict]:
     """
     Perform Bayesian Model Averaging using CURRENT REGIME's model posterior.
@@ -6704,6 +6705,11 @@ def bayesian_model_average_mc(
     all_vol_samples = []
     model_details = {}
 
+    # v7.5: Multi-horizon extraction for calibration fast mode
+    if horizons_extract:
+        _hz_all_samples = {h: [] for h in horizons_extract}
+        _hz_all_vol = {h: [] for h in horizons_extract}
+
     for model_name, model_weight in model_posterior.items():
         model_params = models.get(model_name, {})
 
@@ -6760,6 +6766,12 @@ def bayesian_model_average_mc(
             cst_nu_crisis=cst_nu_crisis_global if cst_enabled else None,
             cst_epsilon=cst_epsilon_global if cst_enabled else None,
         )
+        # v7.5: Collect samples at multiple horizons for calibration fast mode
+        if horizons_extract:
+            for _hz in horizons_extract:
+                if _hz <= H:  # H = max(horizons_extract) when called from fast mode
+                    _hz_all_samples[_hz].append(mc_result['returns'][_hz - 1, :])
+                    _hz_all_vol[_hz].append(mc_result['volatility'][_hz - 1, :])
         # Extract samples at target horizon H (last row)
         model_samples = mc_result['returns'][H - 1, :]
         model_vol_samples = mc_result['volatility'][H - 1, :]
@@ -6831,6 +6843,17 @@ def bayesian_model_average_mc(
         # Used by CalibratedTrust to avoid penalty cliffs at regime boundaries
         "soft_regime_probs": soft_regime_probs,
     }
+
+    # v7.5: Add per-horizon samples to metadata for multi-horizon calibration
+    if horizons_extract:
+        metadata["horizon_samples"] = {
+            h: np.concatenate(_hz_all_samples[h]) if _hz_all_samples[h] else np.array([0.0])
+            for h in horizons_extract
+        }
+        metadata["horizon_vol_samples"] = {
+            h: np.concatenate(_hz_all_vol[h]) if _hz_all_vol[h] else np.array([0.0])
+            for h in horizons_extract
+        }
 
     # Return soft regime probs dict for trust authority (not legacy array)
     return r_samples, vol_samples, soft_regime_probs, metadata
@@ -7730,7 +7753,7 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     return "HOLD"
 
 
-def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68, tuned_params: Optional[Dict] = None, asset_key: Optional[str] = None) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]:
+def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68, tuned_params: Optional[Dict] = None, asset_key: Optional[str] = None, _calibration_fast_mode: bool = False, n_mc_paths: int = 10000) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]:
     """Compute signals using regime‑aware priors, tail‑aware probability mapping, and
     anti‑snap logic (two‑day confirmation + hysteresis + smoothing) without extra flags.
 
@@ -7938,6 +7961,10 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     # This eliminates the root cause of CRPS failure: two MC engines with
     # different volatility dynamics producing inconsistent p_up vs exp_ret.
 
+    # v7.5: Multi-horizon BMA cache for calibration fast mode.
+    # Call BMA MC once with H_max=max(horizons), extract all horizon samples.
+    _bma_horizon_cache = {}  # populated on first iteration when _calibration_fast_mode=True
+
     for H in horizons:
         # ========================================================================
         # Unified Posterior Predictive Monte-Carlo Probability
@@ -8027,18 +8054,39 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             }
 
         # v7.0: Single unified BMA MC call — returns BOTH return and vol samples
-        r_samples, vol_samples_bma, regime_probs, bma_meta = bayesian_model_average_mc(
-            feats=feats,
-            regime_params=regime_params,
-            mu_t=mu_t_mc,
-            P_t=P_t_mc,
-            sigma2_step=sigma2_step_mc,
-            H=H,
-            n_paths=10000,
-            seed=None,
-            tuned_params=tuned_params,
-            asset_symbol=asset_key,
-        )
+        # v7.5: In _calibration_fast_mode, call once with H_max and cache all horizons
+        if _calibration_fast_mode and _bma_horizon_cache:
+            # Reuse cached BMA samples from first iteration
+            r_samples = _bma_horizon_cache["samples"].get(H, np.array([0.0]))
+            vol_samples_bma = _bma_horizon_cache["vol_samples"].get(H, np.array([0.0]))
+            regime_probs = _bma_horizon_cache["regime_probs"]
+            bma_meta = _bma_horizon_cache["bma_meta"]
+        else:
+            _bma_H = max(horizons) if _calibration_fast_mode else H
+            _bma_hz_extract = horizons if _calibration_fast_mode else None
+            r_samples, vol_samples_bma, regime_probs, bma_meta = bayesian_model_average_mc(
+                feats=feats,
+                regime_params=regime_params,
+                mu_t=mu_t_mc,
+                P_t=P_t_mc,
+                sigma2_step=sigma2_step_mc,
+                H=_bma_H,
+                n_paths=n_mc_paths,
+                seed=None,
+                tuned_params=tuned_params,
+                asset_symbol=asset_key,
+                horizons_extract=_bma_hz_extract,
+            )
+            if _calibration_fast_mode:
+                _bma_horizon_cache = {
+                    "samples": bma_meta.get("horizon_samples", {}),
+                    "vol_samples": bma_meta.get("horizon_vol_samples", {}),
+                    "regime_probs": regime_probs,
+                    "bma_meta": bma_meta,
+                }
+                # Use current H's samples
+                r_samples = _bma_horizon_cache["samples"].get(H, r_samples)
+                vol_samples_bma = _bma_horizon_cache["vol_samples"].get(H, vol_samples_bma)
         r = np.asarray(r_samples, dtype=float)
 
         # v7.0: Use BMA samples for ALL quantities (unified MC)

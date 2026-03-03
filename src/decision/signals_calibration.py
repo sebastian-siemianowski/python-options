@@ -89,7 +89,17 @@ console = Console(force_terminal=True, color_system="truecolor", width=160) if H
 TUNE_CACHE_DIR = Path(os.path.join(REPO_ROOT, "src", "data", "tune"))
 PRICE_CACHE_DIR = Path(os.path.join(REPO_ROOT, "src", "data", "prices"))
 
-CALIBRATION_VERSION = "7.4"
+CALIBRATION_VERSION = "7.5"
+
+# v7.5: Records version — separate from calibration version.
+# Only bump when the PREDICTION pipeline changes (compute_features, latest_signals).
+# Fitting-only changes (Beta, EMOS, pipeline steps) do NOT require re-collection.
+RECORDS_VERSION = "1.0"
+
+# v7.5: Reduced MC paths for calibration context.
+# p_up/exp_ret/sigma_H converge fast — 2000 paths is sufficient.
+# Production signals use 10000.
+CAL_MC_PATHS = 2000
 
 # Horizons to calibrate (days)
 CALIBRATE_HORIZONS = [1, 7, 21, 63]
@@ -181,7 +191,7 @@ ALL_HORIZONS = [1, 3, 7, 21, 63, 126, 252]
 # Records caching (v4.0 — skip-if-fresh)
 # ---------------------------------------------------------------------------
 RECORDS_CACHE_DIR = Path(os.path.join(REPO_ROOT, "src", "data", "calibration_records"))
-MAX_RECORDS_AGE_DAYS = 3  # re-collect if older than this
+MAX_RECORDS_AGE_DAYS = 7  # v7.5: 3→7 days (records depend on prices, not fitting algorithm)
 
 
 # ===========================================================================
@@ -1589,7 +1599,7 @@ def _save_records(symbol: str, records: Dict[int, List[Dict]]) -> None:
     serializable = {
         "saved_at": datetime.now().isoformat(),
         "eval_spacing": DEFAULT_EVAL_SPACING,  # v5.0: track spacing for invalidation
-        "calibration_version": CALIBRATION_VERSION,  # v5.0: track version
+        "records_version": RECORDS_VERSION,  # v7.5: separate from calibration_version
         "horizons": {str(k): v for k, v in records.items()},
     }
     try:
@@ -1602,8 +1612,9 @@ def _save_records(symbol: str, records: Dict[int, List[Dict]]) -> None:
 def _load_records(symbol: str, max_age_days: int = MAX_RECORDS_AGE_DAYS) -> Optional[Dict[int, List[Dict]]]:
     """Load cached records if they exist and are fresh enough.
 
-    v5.0: Also invalidates cache if eval_spacing or calibration_version
-    has changed since records were collected.
+    v5.0: Also invalidates cache if eval_spacing has changed.
+    v7.5: Uses records_version (not calibration_version) so fitting-only
+    changes don't force expensive re-collection.
 
     Args:
         symbol:       Asset symbol
@@ -1631,9 +1642,10 @@ def _load_records(symbol: str, max_age_days: int = MAX_RECORDS_AGE_DAYS) -> Opti
         if cached_spacing is not None and cached_spacing != DEFAULT_EVAL_SPACING:
             return None
 
-        # v5.0: Invalidate if calibration version changed
-        cached_version = data.get("calibration_version")
-        if cached_version is not None and cached_version != CALIBRATION_VERSION:
+        # v7.5: Invalidate if records_version changed (separate from calibration_version).
+        # Old records without records_version key are accepted (backward compat).
+        cached_records_ver = data.get("records_version")
+        if cached_records_ver is not None and cached_records_ver != RECORDS_VERSION:
             return None
 
         # Convert string keys back to ints
@@ -1641,6 +1653,43 @@ def _load_records(symbol: str, max_age_days: int = MAX_RECORDS_AGE_DAYS) -> Opti
         return {int(k): v for k, v in horizons.items()}
     except Exception:
         return None
+
+
+# ===========================================================================
+# v7.5: Feature precomputation for walk-forward speedup
+# ===========================================================================
+
+def _slice_features_at(feats_full: Dict, idx: int) -> Dict:
+    """Create a feature dict truncated at index ``idx``.
+
+    Used by the precomputation path: ``compute_features`` runs ONCE on the
+    full price series, then this function slices the result for each eval
+    point so that ``latest_signals`` sees only data up to ``idx``.
+
+    * pd.Series / pd.DataFrame values are sliced to ``.iloc[:idx]``.
+    * The ``hmm_result`` dict is shallow-copied with internal time-indexed
+      data (regime_series, posteriors) sliced to ``[:idx]``.
+    * ``nu_hat`` (single-element Series at the end of the series) is passed
+      through unchanged to avoid empty-Series issues.
+    * Scalar / dict values are passed through unchanged.
+    """
+    sliced = {}
+    for k, v in feats_full.items():
+        if k == "hmm_result" and isinstance(v, dict):
+            hmm_sliced = dict(v)
+            for hk, hv in v.items():
+                if isinstance(hv, (pd.Series, pd.DataFrame)):
+                    hmm_sliced[hk] = hv.iloc[:idx]
+            sliced[k] = hmm_sliced
+        elif k == "nu_hat":
+            sliced[k] = v  # 1-element Series at end — pass through
+        elif isinstance(v, pd.Series):
+            sliced[k] = v.iloc[:idx]
+        elif isinstance(v, pd.DataFrame):
+            sliced[k] = v.iloc[:idx]
+        else:
+            sliced[k] = v
+    return sliced
 
 
 # ===========================================================================
@@ -1663,16 +1712,21 @@ def calibrate_single_asset(
 
     Args:
         args_tuple: (symbol, eval_days, eval_spacing) or
-                    (symbol, eval_days, eval_spacing, force_collect)
+                    (symbol, eval_days, eval_spacing, force_collect) or
+                    (symbol, eval_days, eval_spacing, force_collect, use_precompute)
 
     Returns:
         (symbol, calibration_dict_or_None, error_or_None)
     """
-    if len(args_tuple) >= 4:
+    if len(args_tuple) >= 5:
+        symbol, eval_days, eval_spacing, force_collect, use_precompute = args_tuple[:5]
+    elif len(args_tuple) >= 4:
         symbol, eval_days, eval_spacing, force_collect = args_tuple[:4]
+        use_precompute = True
     else:
         symbol, eval_days, eval_spacing = args_tuple
         force_collect = False
+        use_precompute = True
 
     warnings.filterwarnings("ignore")
 
@@ -1742,20 +1796,37 @@ def calibrate_single_asset(
             # Collect records per horizon
             records: Dict[int, List[Dict]] = {h: [] for h in CALIBRATE_HORIZONS}
 
+            # v7.5: Feature precomputation — compute once on full series,
+            # slice per eval point.  Eliminates ~166 redundant calls to
+            # compute_features (Kalman filter, HMM, EWMA, HAR-GK, etc.).
+            feats_full = None
+            if use_precompute:
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()), \
+                         contextlib.redirect_stderr(io.StringIO()):
+                        feats_full = compute_features(px, asset_symbol=symbol, ohlc_df=ohlc_df)
+                except Exception:
+                    feats_full = None  # Fall back to per-truncation
+
             idx = start_idx
             while idx < n:
                 if len(px.iloc[:idx]) < 60:
                     idx += eval_spacing
                     continue
 
-                px_trunc = px.iloc[:idx]
-                ohlc_trunc = ohlc_df.iloc[:idx]
-                last_close = float(px_trunc.iloc[-1])
+                last_close = float(px.iloc[idx - 1])
 
                 try:
                     with contextlib.redirect_stdout(io.StringIO()), \
                          contextlib.redirect_stderr(io.StringIO()):
-                        feats = compute_features(px_trunc, asset_symbol=symbol, ohlc_df=ohlc_trunc)
+                        if feats_full is not None:
+                            # v7.5: Slice precomputed features at eval point
+                            feats = _slice_features_at(feats_full, idx)
+                        else:
+                            # Per-truncation fallback (strict walk-forward)
+                            px_trunc = px.iloc[:idx]
+                            ohlc_trunc = ohlc_df.iloc[:idx]
+                            feats = compute_features(px_trunc, asset_symbol=symbol, ohlc_df=ohlc_trunc)
                         sigs, _ = latest_signals(
                             feats,
                             horizons=CALIBRATE_HORIZONS,  # Only compute horizons we calibrate (4 vs 7 = 43% faster)
@@ -1764,6 +1835,8 @@ def calibrate_single_asset(
                             ci=0.68,
                             tuned_params=tuned_params,
                             asset_key=symbol,
+                            _calibration_fast_mode=True,  # v7.5: multi-horizon MC + caching
+                            n_mc_paths=CAL_MC_PATHS,       # v7.5: 2000 vs 10000 paths
                         )
                 except Exception:
                     idx += eval_spacing
@@ -3275,6 +3348,7 @@ def run_signals_calibration(
     assets: Optional[List[str]] = None,
     quiet: bool = False,
     force_collect: bool = False,
+    use_precompute: bool = True,
 ) -> Dict[str, Dict]:
     """
     Run Pass 2 signal calibration for all assets in cache.
@@ -3293,6 +3367,7 @@ def run_signals_calibration(
         assets: Optional subset of assets to calibrate
         quiet: Suppress output
         force_collect: Force re-collection even if cached records exist
+        use_precompute: v7.5: precompute features once per asset (default True)
 
     Returns:
         Updated cache with "signals_calibration" added to each asset
@@ -3331,7 +3406,7 @@ def run_signals_calibration(
         # Sequential
         for i, sym in enumerate(symbols):
             sym_result, cal_dict, error = calibrate_single_asset(
-                (sym, eval_days, eval_spacing, force_collect)
+                (sym, eval_days, eval_spacing, force_collect, use_precompute)
             )
             if cal_dict is not None:
                 cache[sym]["signals_calibration"] = cal_dict
@@ -3345,7 +3420,7 @@ def run_signals_calibration(
     else:
         # Parallel
         ctx = mp.get_context("spawn")
-        work_items = [(sym, eval_days, eval_spacing, force_collect) for sym in symbols]
+        work_items = [(sym, eval_days, eval_spacing, force_collect, use_precompute) for sym in symbols]
 
         with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
             futures = {pool.submit(calibrate_single_asset, w): w[0] for w in work_items}
@@ -3529,6 +3604,8 @@ def main():
                         help="Fast mode: spacing=10 (~50 eval points, 3x faster)")
     parser.add_argument("--force-collect", action="store_true",
                         help="Force re-collection of walk-forward records (ignore cache)")
+    parser.add_argument("--no-precompute", action="store_true",
+                        help="Disable feature precomputation (strict walk-forward, slower)")
     parser.add_argument("--records-only", action="store_true",
                         help="Only collect and cache records, skip fitting")
     args = parser.parse_args()
@@ -3558,6 +3635,7 @@ def main():
         eval_spacing=args.eval_spacing,
         assets=asset_list,
         force_collect=args.force_collect,
+        use_precompute=not getattr(args, 'no_precompute', False),
     )
 
     # Save updated cache
