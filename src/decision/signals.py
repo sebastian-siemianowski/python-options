@@ -5979,10 +5979,46 @@ def run_unified_mc(
     alpha_asym: float = 0.0,
     k_asym: float = 2.0,
     risk_premium_sensitivity: float = 0.0,
+    # v7.7: Tier 2 — vol mean-reversion, CRPS shrinkage, MS process noise, rough vol
+    kappa_mean_rev: float = 0.0,
+    theta_long_var: float = 0.0,
+    crps_sigma_shrinkage: float = 1.0,
+    ms_sensitivity: float = 0.0,
+    q_stress_ratio: float = 1.0,
+    rough_hurst: float = 0.0,
+    # v7.7: Tier 3 — vol-of-vol, asymmetric ν, regime switching, GAS skew, loc bias
+    sigma_eta: float = 0.0,
+    t_df_asym: float = 0.0,
+    regime_switch_prob: float = 0.0,
+    gamma_vov: float = 0.0,
+    vov_damping: float = 0.0,
+    skew_score_sensitivity: float = 0.0,
+    skew_persistence: float = 0.97,
+    loc_bias_var_coeff: float = 0.0,
+    loc_bias_drift_coeff: float = 0.0,
+    q_vol_coupling: float = 0.0,
 ) -> Dict[str, np.ndarray]:
     """Unified MC engine with GJR-GARCH + jumps + Student-t via Numba kernel.
 
-    v7.6: Enriched MC — now reuses tuned Student-t / unified model parameters:
+    v7.7: Full Tier 2 + Tier 3 MC integration — all tuned params from
+    unified Student-t models now flow through to MC simulation:
+
+    Tier 2:
+      - kappa_mean_rev + theta_long_var (vol mean-reversion)
+      - crps_sigma_shrinkage (CRPS-optimal sigma tightening)
+      - ms_sensitivity + q_stress_ratio (MS process noise)
+      - rough_hurst (fractional vol memory)
+
+    Tier 3:
+      - sigma_eta (vol-of-vol noise)
+      - t_df_asym (static two-piece ν)
+      - regime_switch_prob (observation variance switching)
+      - gamma_vov + vov_damping (VoV observation noise)
+      - skew_score_sensitivity + skew_persistence (GAS dynamic skew)
+      - loc_bias_var_coeff + loc_bias_drift_coeff (location bias)
+      - q_vol_coupling (process noise volatility coupling)
+
+    v7.6: Enriched MC — reuses tuned Student-t / unified model parameters:
       - GJR-GARCH leverage (asymmetric variance response to neg shocks)
       - variance_inflation (calibrated predictive variance β)
       - mu_drift (systematic drift bias correction)
@@ -6174,7 +6210,22 @@ def run_unified_mc(
     h0 = float(max(sigma2_step, 1e-8))
 
     if unified_mc_simulate_kernel is not None:
-        # Use Numba kernel (v7.6: with enriched params)
+        # v7.7: Precompute fractional weights for rough vol (outside Numba)
+        frac_weights_arr = np.empty(0, dtype=np.float64)
+        if rough_hurst > 0.001:
+            d = rough_hurst - 0.5  # d < 0 for H < 0.5 (rough)
+            max_lag = 50
+            fw = np.zeros(max_lag, dtype=np.float64)
+            fw[0] = 1.0
+            for k_idx in range(1, max_lag):
+                fw[k_idx] = fw[k_idx - 1] * (k_idx - 1 - d) / k_idx
+            # Normalize to sum to 1
+            fw_sum = np.sum(np.abs(fw))
+            if fw_sum > 1e-12:
+                fw = fw / fw_sum
+            frac_weights_arr = fw
+
+        # Use Numba kernel (v7.7: with all Tier 2+3 params)
         unified_mc_simulate_kernel(
             n_paths, H_max, mu_now_for_kernel, h0,
             phi, q, nu_val,
@@ -6190,6 +6241,25 @@ def run_unified_mc(
             alpha_asym,
             k_asym,
             risk_premium_sensitivity,
+            # v7.7: Tier 2 params
+            kappa_mean_rev,
+            theta_long_var,
+            crps_sigma_shrinkage,
+            ms_sensitivity,
+            q_stress_ratio,
+            rough_hurst,
+            frac_weights_arr,
+            # v7.7: Tier 3 params
+            sigma_eta,
+            t_df_asym,
+            regime_switch_prob,
+            gamma_vov,
+            vov_damping,
+            skew_score_sensitivity,
+            skew_persistence,
+            loc_bias_var_coeff,
+            loc_bias_drift_coeff,
+            q_vol_coupling,
         )
 
         # Apply initial drift posterior uncertainty:
@@ -6199,13 +6269,23 @@ def run_unified_mc(
         for t_step in range(H_max):
             cum_out[t_step, :] += drift_offset * (t_step + 1)
     else:
-        # Pure Python fallback (same logic as kernel, v7.6: enriched params)
-        # v7.6: Apply variance_inflation and mu_drift
-        h0_cal = h0 * variance_inflation
+        # Pure Python fallback (same logic as kernel, v7.7: all Tier 2+3 params)
+        # v7.7: Apply variance_inflation, crps_sigma_shrinkage, and mu_drift
+        h0_cal = h0 * variance_inflation * crps_sigma_shrinkage
         mu_t_arr = mu_start.copy() + mu_drift
         h_t = np.full(n_paths, h0_cal, dtype=np.float64)
         use_asym = (nu is not None and nu > 2.0 and nu < 100.0 and abs(alpha_asym) > 1e-8)
         use_rp = abs(risk_premium_sensitivity) > 1e-10
+        use_kappa_py = kappa_mean_rev > 0.001 and theta_long_var > 1e-12
+        use_ms_q_py = ms_sensitivity > 0.01 and q_stress_ratio > 1.01
+        use_sigma_eta_py = sigma_eta > 0.005
+        use_regime_sw_py = regime_switch_prob > 0.005
+        use_loc_bias_py = abs(loc_bias_var_coeff) > 1e-6 or abs(loc_bias_drift_coeff) > 1e-6
+
+        # Per-path state: regime switching stress prob
+        p_stress_obs_arr = np.full(n_paths, 0.1, dtype=np.float64)
+        # MS-q vol EMA state
+        vol_ema_arr = h_t.copy()
 
         for t_step in range(H_max):
             sigma_t = np.sqrt(np.maximum(h_t, 1e-12))
@@ -6235,22 +6315,61 @@ def run_unified_mc(
             # v7.6: Variance-conditional risk premium
             rp = risk_premium_sensitivity * h_t if use_rp else 0.0
 
-            r_t = mu_t_arr + rp + e_t + jump
+            # v7.7: Location bias correction
+            loc_bias = np.zeros(n_paths, dtype=np.float64)
+            if use_loc_bias_py:
+                if abs(loc_bias_var_coeff) > 1e-6 and theta_long_var > 1e-12:
+                    loc_bias += loc_bias_var_coeff * (h_t - theta_long_var)
+                if abs(loc_bias_drift_coeff) > 1e-6:
+                    sign_mu = np.sign(mu_t_arr)
+                    loc_bias += loc_bias_drift_coeff * sign_mu * np.sqrt(np.abs(mu_t_arr))
+
+            r_t = mu_t_arr + rp + loc_bias + e_t + jump
             if t_step == 0:
                 cum_out[t_step, :] = r_t
             else:
                 cum_out[t_step, :] = cum_out[t_step - 1, :] + r_t
 
-            # v7.6: GJR-GARCH with leverage
+            # v7.7: GJR-GARCH with all Tier 2+3 enhancements
             if use_garch:
                 e2 = e_t ** 2
                 h_t = garch_omega + garch_alpha * e2 + garch_beta * h_t
                 if garch_leverage > 1e-8:
                     h_t += garch_leverage * e2 * (e_t < 0).astype(np.float64)
+
+                # Variance mean-reversion
+                if use_kappa_py:
+                    h_t = (1.0 - kappa_mean_rev) * h_t + kappa_mean_rev * theta_long_var
+
+                # Vol-of-vol noise
+                if use_sigma_eta_py:
+                    z_std = np.abs(e_t) / np.maximum(sigma_t, 1e-8)
+                    excess = np.maximum(z_std - 1.5, 0.0)
+                    h_t += sigma_eta * excess * excess * h_t
+
+                # Regime switching on observation variance
+                if use_regime_sw_py:
+                    z_rs = np.abs(e_t) / np.maximum(sigma_t, 1e-8)
+                    ind_stress = (z_rs > 2.0).astype(np.float64)
+                    p_stress_obs_arr = (1.0 - regime_switch_prob) * p_stress_obs_arr + regime_switch_prob * ind_stress
+                    h_t *= (1.0 + p_stress_obs_arr * (math.sqrt(q_stress_ratio) - 1.0))
+
                 h_t = np.clip(h_t, 1e-12, 1e4)
 
-            drift_eta = z_drift[t_step] * math.sqrt(q) if q > 0 else np.zeros(n_paths)
-            mu_t_arr = phi * mu_t_arr + drift_eta
+            # v7.7: Drift evolution with MS process noise
+            if use_ms_q_py:
+                ewm_alpha_ms = 0.05
+                vol_ema_arr = (1.0 - ewm_alpha_ms) * vol_ema_arr + ewm_alpha_ms * h_t
+                vol_z = np.where(vol_ema_arr > 1e-12,
+                                 (h_t - vol_ema_arr) / np.maximum(np.sqrt(vol_ema_arr), 1e-8),
+                                 0.0)
+                p_stress_ms = 1.0 / (1.0 + np.exp(-ms_sensitivity * vol_z))
+                q_t = (1.0 - p_stress_ms) * q + p_stress_ms * q * q_stress_ratio
+                drift_sigma_t = np.sqrt(np.maximum(q_t, 0.0))
+                mu_t_arr = phi * mu_t_arr + drift_sigma_t * z_drift[t_step]
+            else:
+                drift_eta = z_drift[t_step] * math.sqrt(q) if q > 0 else np.zeros(n_paths)
+                mu_t_arr = phi * mu_t_arr + drift_eta
 
     return {'returns': cum_out, 'volatility': vol_out}
 
@@ -6784,6 +6903,26 @@ def bayesian_model_average_mc(
         k_asym_m = float(model_params.get('k_asym', 2.0))
         risk_premium_m = float(model_params.get('risk_premium_sensitivity', 0.0))
 
+        # v7.7: Extract Tier-2 MC params
+        kappa_mean_rev_m = float(model_params.get('kappa_mean_rev', 0.0))
+        theta_long_var_m = float(model_params.get('theta_long_var', 0.0))
+        crps_sigma_shrinkage_m = float(model_params.get('crps_sigma_shrinkage', 1.0))
+        ms_sensitivity_m = float(model_params.get('ms_sensitivity', 0.0))
+        q_stress_ratio_m = float(model_params.get('q_stress_ratio', 1.0))
+        rough_hurst_m = float(model_params.get('rough_hurst', 0.0))
+
+        # v7.7: Extract Tier-3 MC params
+        sigma_eta_m = float(model_params.get('sigma_eta', 0.0))
+        t_df_asym_m = float(model_params.get('t_df_asym', 0.0))
+        regime_switch_prob_m = float(model_params.get('regime_switch_prob', 0.0))
+        gamma_vov_m = float(model_params.get('gamma_vov', 0.0))
+        vov_damping_m = float(model_params.get('vov_damping', 0.0))
+        skew_score_sensitivity_m = float(model_params.get('skew_score_sensitivity', 0.0))
+        skew_persistence_m = float(model_params.get('skew_persistence', 0.97))
+        loc_bias_var_coeff_m = float(model_params.get('loc_bias_var_coeff', 0.0))
+        loc_bias_drift_coeff_m = float(model_params.get('loc_bias_drift_coeff', 0.0))
+        q_vol_coupling_m = float(model_params.get('q_vol_coupling', 0.0))
+
         # v7.6: Extract per-model jump params (fall back to global)
         jump_intensity_m = float(model_params.get('jump_intensity', _jump_intensity if _enable_jumps else 0.0))
         jump_mean_m = float(model_params.get('jump_mean', _jump_mean))
@@ -6837,6 +6976,24 @@ def bayesian_model_average_mc(
             alpha_asym=alpha_asym_m,
             k_asym=k_asym_m,
             risk_premium_sensitivity=risk_premium_m,
+            # v7.7: Tier-2 MC params
+            kappa_mean_rev=kappa_mean_rev_m,
+            theta_long_var=theta_long_var_m,
+            crps_sigma_shrinkage=crps_sigma_shrinkage_m,
+            ms_sensitivity=ms_sensitivity_m,
+            q_stress_ratio=q_stress_ratio_m,
+            rough_hurst=rough_hurst_m,
+            # v7.7: Tier-3 MC params
+            sigma_eta=sigma_eta_m,
+            t_df_asym=t_df_asym_m,
+            regime_switch_prob=regime_switch_prob_m,
+            gamma_vov=gamma_vov_m,
+            vov_damping=vov_damping_m,
+            skew_score_sensitivity=skew_score_sensitivity_m,
+            skew_persistence=skew_persistence_m,
+            loc_bias_var_coeff=loc_bias_var_coeff_m,
+            loc_bias_drift_coeff=loc_bias_drift_coeff_m,
+            q_vol_coupling=q_vol_coupling_m,
         )
         # v7.5: Collect samples at multiple horizons for calibration fast mode
         if horizons_extract:
@@ -6866,6 +7023,24 @@ def bayesian_model_average_mc(
             "mu_drift": float(mu_drift_m),
             "alpha_asym": float(alpha_asym_m),
             "risk_premium": float(risk_premium_m),
+            # v7.7: Tier-2 per-model params
+            "kappa_mean_rev": float(kappa_mean_rev_m),
+            "theta_long_var": float(theta_long_var_m),
+            "crps_sigma_shrinkage": float(crps_sigma_shrinkage_m),
+            "ms_sensitivity": float(ms_sensitivity_m),
+            "q_stress_ratio": float(q_stress_ratio_m),
+            "rough_hurst": float(rough_hurst_m),
+            # v7.7: Tier-3 per-model params
+            "sigma_eta": float(sigma_eta_m),
+            "t_df_asym": float(t_df_asym_m),
+            "regime_switch_prob": float(regime_switch_prob_m),
+            "gamma_vov": float(gamma_vov_m),
+            "vov_damping": float(vov_damping_m),
+            "skew_score_sensitivity": float(skew_score_sensitivity_m),
+            "skew_persistence": float(skew_persistence_m),
+            "loc_bias_var_coeff": float(loc_bias_var_coeff_m),
+            "loc_bias_drift_coeff": float(loc_bias_drift_coeff_m),
+            "q_vol_coupling": float(q_vol_coupling_m),
             # Augmentation layer info
             "nig_alpha": float(nig_alpha_m) if nig_alpha_m else None,
             "nig_beta": float(nig_beta_m) if nig_beta_m else None,
