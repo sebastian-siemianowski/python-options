@@ -3510,12 +3510,14 @@ def fit_all_models_for_regime(
     UNIFIED_NU_GRID = [3, 4, 8, 20]
     n_params_unified = 14  # q, c, φ, γ_vov, ms_sensitivity, α_asym, ν, garch(3), rough_hurst, risk_premium, skew(2), jump(4-cond)
     
+    from models.phi_student_t_unified import UnifiedPhiStudentTModel
+    
     for nu_fixed in UNIFIED_NU_GRID:
         unified_name = f"phi_student_t_unified_nu_{nu_fixed}"
         
         try:
             # Staged optimization for unified model
-            config, diagnostics = PhiStudentTDriftModel.optimize_params_unified(
+            config, diagnostics = UnifiedPhiStudentTModel.optimize_params_unified(
                 returns, vol, 
                 nu_base=float(nu_fixed),
                 train_frac=0.7, 
@@ -3526,12 +3528,12 @@ def fit_all_models_for_regime(
                 raise ValueError(f"Unified optimization failed: {diagnostics.get('error', 'Unknown')}")
 
             # Run unified filter to get predictive values
-            mu_u, P_u, mu_pred_u, S_pred_u, ll_u = PhiStudentTDriftModel.filter_phi_unified(
+            mu_u, P_u, mu_pred_u, S_pred_u, ll_u = UnifiedPhiStudentTModel.filter_phi_unified(
                 returns, vol, config
             )
 
             # PIT calibration using predictive distribution
-            ks_u, pit_p_u, pit_metrics = PhiStudentTDriftModel.pit_ks_unified(
+            ks_u, pit_p_u, pit_metrics = UnifiedPhiStudentTModel.pit_ks_unified(
                 returns, mu_pred_u, S_pred_u, config
             )
 
@@ -3573,7 +3575,7 @@ def fit_all_models_for_regime(
                 else:
                     # Fallback: call filter_and_calibrate (shouldn't normally happen)
                     _pit_cal_u, _pit_p_u, _sigma_cal_u, _, _calib_diag_u = \
-                        PhiStudentTDriftModel.filter_and_calibrate(
+                        UnifiedPhiStudentTModel.filter_and_calibrate(
                             returns, vol, config, train_frac=0.7
                         )
                 # Use calibrated PIT p-value from filter_and_calibrate

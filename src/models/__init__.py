@@ -169,9 +169,13 @@ from models.phi_student_t import (
     compute_ms_process_noise,
     filter_phi_ms_q,
     optimize_params_ms_q,
-    # Unified Student-T Architecture (February 2026)
-    UnifiedStudentTConfig,
     compute_ms_process_noise_smooth,
+)
+
+# Unified Student-T Architecture (February 2026) — canonical source
+from models.phi_student_t_unified import (
+    UnifiedStudentTConfig,
+    UnifiedPhiStudentTModel,
 )
 
 # Import Numba-accelerated filter wrappers (February 2026 Performance)
@@ -230,6 +234,7 @@ __all__ = [
     'optimize_params_ms_q',
     # Unified Student-T Architecture (February 2026)
     'UnifiedStudentTConfig',
+    'UnifiedPhiStudentTModel',
     'compute_ms_process_noise_smooth',
     # Constants (from phi_skew_t)
     'SKEW_T_NU_GRID',

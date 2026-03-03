@@ -3255,7 +3255,7 @@ def _kalman_filter_drift(
     # Check for Unified Student-T model (February 2026 - Elite Architecture)
     if tuned_params is not None and tuned_params.get('unified_model') and not tuned_params.get('gaussian_unified') and gas_q_result is None:
         try:
-            from models.phi_student_t import UnifiedStudentTConfig
+            from models.phi_student_t_unified import UnifiedStudentTConfig, UnifiedPhiStudentTModel
             import numpy as _np_sig
             
             # Build unified config from tuned params with ALL evolved parameters
@@ -3325,7 +3325,7 @@ def _kalman_filter_drift(
             )
             
             # Run unified filter
-            mu_u, P_u, mu_pred_u, S_pred_u, ll_u = PhiStudentTDriftModel.filter_phi_unified(
+            mu_u, P_u, mu_pred_u, S_pred_u, ll_u = UnifiedPhiStudentTModel.filter_phi_unified(
                 y, sigma, unified_config
             )
             mu_filtered = mu_u
@@ -3343,7 +3343,7 @@ def _kalman_filter_drift(
             # ─────────────────────────────────────────────────────────
             try:
                 _pit_sig, _pit_p_sig, _sigma_cal_sig, _, _calib_diag_sig = \
-                    PhiStudentTDriftModel.filter_and_calibrate(
+                    UnifiedPhiStudentTModel.filter_and_calibrate(
                         y, sigma, unified_config, train_frac=0.7
                     )
                 _n_train_sig = int(len(y) * 0.7)
