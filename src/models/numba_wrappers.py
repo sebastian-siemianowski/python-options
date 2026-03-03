@@ -57,6 +57,7 @@ try:
         student_t_cdf_array_kernel,
         student_t_pdf_array_kernel,
         crps_student_t_kernel,
+        crps_student_t_numerical_kernel,
         pit_ks_unified_kernel,
         garch_variance_kernel,
         phi_gaussian_filter_with_predictive_kernel,
@@ -1149,10 +1150,15 @@ def run_crps_student_t(
     sigma_arr: np.ndarray,
     nu: float,
 ) -> float:
-    """Numba-accelerated Student-t CRPS (Gneiting & Raftery 2007)."""
+    """Numba-accelerated Student-t CRPS (v7.6: numerical g(ν)).
+
+    v7.6: Switched from analytic B_ratio formula (crps_student_t_kernel,
+    incorrect C(ν) constant) to numerical Gini half-mean-difference
+    (crps_student_t_numerical_kernel, correct for all ν).
+    """
     if not _NUMBA_AVAILABLE:
         raise ImportError("Numba kernels not available")
-    return float(crps_student_t_kernel(
+    return float(crps_student_t_numerical_kernel(
         np.ascontiguousarray(z_arr.ravel(), dtype=np.float64),
         np.ascontiguousarray(sigma_arr.ravel(), dtype=np.float64),
         float(nu),

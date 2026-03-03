@@ -507,6 +507,94 @@ def crps_student_t_kernel(
     return crps_sum / float(n_valid)
 
 
+@njit(cache=True, fastmath=False)
+def crps_student_t_numerical_kernel(
+    z_arr: np.ndarray,
+    sigma_arr: np.ndarray,
+    nu: float,
+) -> float:
+    """Correct CRPS for Student-t using numerical Gini half-mean-difference.
+
+    v7.6: Replaces the analytic B_ratio formula (crps_student_t_kernel) which
+    computes the C(ν) constant incorrectly. The analytic formula gives
+    C(100) ≈ 0.808 vs correct numerical value ≈ 0.569.
+
+    Uses the same approach as signals_calibration_numba.py:crps_student_t_nb
+    but with the standardized-residual interface (z, sigma, nu) for backward
+    compatibility with diagnostics.py/numba_wrappers.py.
+
+    g(ν) = 2∫ x · F_ν(x) · f_ν(x) dx  (200-point trapezoidal quadrature)
+
+    Parameters
+    ----------
+    z_arr : np.ndarray
+        Standardized residuals (obs - mu) / sigma
+    sigma_arr : np.ndarray
+        Scale parameters
+    nu : float
+        Degrees of freedom (> 1)
+
+    Returns
+    -------
+    float
+        Mean CRPS (lower is better)
+    """
+    n = len(z_arr)
+    if n == 0 or nu <= 1.0:
+        return 1e10
+
+    if nu < 2.01:
+        nu = 2.01
+
+    # Compute g(ν) via numerical quadrature (200 points, ~10K ops)
+    N_QUAD = 200
+    L = min(30.0, max(10.0, 4.0 * np.sqrt(nu / max(nu - 2.0, 0.1))))
+    h = 2.0 * L / N_QUAD
+    g_nu = 0.0
+    for i in range(N_QUAD + 1):
+        x = -L + i * h
+        fx = _student_t_pdf_scalar(x, nu)
+        Fx = _student_t_cdf_scalar(x, nu)
+        val = x * Fx * fx
+        if i == 0 or i == N_QUAD:
+            g_nu += 0.5 * val
+        else:
+            g_nu += val
+    g_nu = 2.0 * g_nu * h
+
+    # Pre-compute PDF constants
+    log_norm = (_lanczos_gammaln((nu + 1.0) / 2.0)
+                - _lanczos_gammaln(nu / 2.0)
+                - 0.5 * np.log(nu * np.pi))
+    neg_exp = (nu + 1.0) / 2.0
+    inv_nu = 1.0 / nu
+    nu_m1_inv = 1.0 / (nu - 1.0)
+
+    crps_sum = 0.0
+    n_valid = 0
+
+    for i in range(n):
+        z = z_arr[i]
+        sig = sigma_arr[i]
+        if sig < 1e-10:
+            sig = 1e-10
+
+        pdf_z = np.exp(log_norm - neg_exp * np.log(1.0 + z * z * inv_nu))
+        cdf_z = _student_t_cdf_scalar(z, nu)
+
+        term1 = z * (2.0 * cdf_z - 1.0)
+        term2 = 2.0 * pdf_z * (nu + z * z) * nu_m1_inv
+        crps_i = sig * (term1 + term2 - g_nu)
+
+        if crps_i == crps_i:  # NaN check
+            crps_sum += crps_i
+            n_valid += 1
+
+    if n_valid == 0:
+        return 1e10
+    return crps_sum / float(n_valid)
+
+
 # =============================================================================
 # PIT-KS UNIFIED KERNEL (eliminates per-element scipy CDF overhead)
 # =============================================================================
@@ -2488,8 +2576,25 @@ def unified_mc_simulate_kernel(
     z_jump_normal: np.ndarray,
     cum_out: np.ndarray,
     vol_out: np.ndarray,
+    # v7.6: Enriched MC params from tuned Student-t / unified models
+    garch_leverage: float = 0.0,
+    variance_inflation: float = 1.0,
+    mu_drift: float = 0.0,
+    alpha_asym: float = 0.0,
+    k_asym: float = 2.0,
+    risk_premium_sensitivity: float = 0.0,
 ) -> None:
-    """Unified MC simulation kernel with GARCH + jumps + Student-t.
+    """Unified MC simulation kernel with GJR-GARCH + jumps + Student-t.
+
+    v7.6: Now accepts enriched parameters from tuned Student-t / unified
+    models for coherent predictive distributions:
+      - garch_leverage (GJR-γ): asymmetric variance — negative shocks
+        increase vol more than positive shocks of same magnitude
+      - variance_inflation (β): calibrated predictive variance scaling
+      - mu_drift: systematic drift bias correction
+      - alpha_asym + k_asym: asymmetric tail thickness — left-tail
+        shocks use ν_eff < ν (heavier) while right-tail uses ν_eff > ν
+      - risk_premium_sensitivity: variance-conditional drift (ICAPM)
 
     Generates n_paths forward simulations of cumulative log returns
     over H_max steps.  All randomness is passed in as pre-generated
@@ -2538,8 +2643,24 @@ def unified_mc_simulate_kernel(
         Output: cumulative log returns (pre-allocated)
     vol_out : ndarray (H_max, n_paths)
         Output: volatility sqrt(h_t) at each step (pre-allocated)
+    garch_leverage : float
+        GJR asymmetric GARCH leverage γ. h_t += γ·ε²·I(ε<0)
+    variance_inflation : float
+        Calibrated predictive variance multiplier β (scales h0)
+    mu_drift : float
+        Additive drift bias correction from tuned model
+    alpha_asym : float
+        Asymmetric tail parameter: ν_eff = ν·(1 + α·tanh(k·z))
+        α<0 means heavier left tail (typical for equities)
+    k_asym : float
+        Transition sharpness for asymmetric ν (default 2.0)
+    risk_premium_sensitivity : float
+        ICAPM variance-conditional drift: E[r] += λ·h_t
     """
     use_student_t = (nu > 2.0) and (nu < 100.0)
+    use_gjr = (garch_leverage > 1e-8) and use_garch
+    use_asym = use_student_t and (abs(alpha_asym) > 1e-8)
+    use_risk_premium = abs(risk_premium_sensitivity) > 1e-10
 
     # Precompute Student-t variance scaling
     if use_student_t:
@@ -2550,9 +2671,12 @@ def unified_mc_simulate_kernel(
 
     drift_sigma = np.sqrt(drift_q) if drift_q > 0.0 else 0.0
 
+    # v7.6: Apply variance_inflation to initial variance
+    h0_cal = h0 * variance_inflation
+
     for p in range(n_paths):
-        mu_t = mu_now
-        h_t = h0
+        mu_t = mu_now + mu_drift
+        h_t = h0_cal
         if h_t < 1e-12:
             h_t = 1e-12
         cum = 0.0
@@ -2568,8 +2692,22 @@ def unified_mc_simulate_kernel(
                 if chi2_val < 1e-8:
                     chi2_val = 1e-8
                 raw_t = z_normals[t, p] / np.sqrt(chi2_val)
-                # Scale to unit variance
-                eps = raw_t * t_scale_factor
+
+                # v7.6: Asymmetric tail thickness
+                if use_asym:
+                    # ν_eff = ν·(1 + α·tanh(k·raw_t))
+                    # α<0: negative raw_t → lower ν → heavier tail
+                    nu_eff = nu * (1.0 + alpha_asym * np.tanh(k_asym * raw_t))
+                    # Clamp to valid range
+                    if nu_eff < 2.5:
+                        nu_eff = 2.5
+                    elif nu_eff > 200.0:
+                        nu_eff = 200.0
+                    t_var_eff = nu_eff / (nu_eff - 2.0)
+                    eps = raw_t / np.sqrt(t_var_eff)
+                else:
+                    # Scale to unit variance
+                    eps = raw_t * t_scale_factor
             else:
                 eps = z_normals[t, p]
 
@@ -2586,15 +2724,25 @@ def unified_mc_simulate_kernel(
                 if jump_intensity > 0.1 and z_jump_uniform[t, p] < jump_intensity * jump_intensity:
                     jump += jump_mean + jump_std * z_drift[t, p] * 0.5  # reuse drift noise
 
+            # v7.6: Variance-conditional risk premium (ICAPM)
+            rp = 0.0
+            if use_risk_premium:
+                rp = risk_premium_sensitivity * h_t
+
             # Total return
-            r_t = mu_t + e_t + jump
+            r_t = mu_t + rp + e_t + jump
             cum += r_t
 
             cum_out[t, p] = cum
 
-            # GARCH variance evolution
+            # GJR-GARCH(1,1) variance evolution (v7.6: with leverage)
             if use_garch:
-                h_t = omega + alpha * (e_t * e_t) + beta * h_t
+                e2 = e_t * e_t
+                h_t = omega + alpha * e2 + beta * h_t
+                # v7.6: GJR asymmetric leverage — negative shocks
+                # increase vol more (documented stylized fact)
+                if use_gjr and e_t < 0.0:
+                    h_t += garch_leverage * e2
                 if h_t < 1e-12:
                     h_t = 1e-12
                 elif h_t > 1e4:
@@ -2631,12 +2779,19 @@ def unified_mc_multi_path_kernel(
     z_jump_normal: np.ndarray,
     cum_out: np.ndarray,
     vol_out: np.ndarray,
+    # v7.6: GJR leverage per path
+    gamma_per_path: np.ndarray = np.empty(0, dtype=np.float64),
+    variance_inflation: float = 1.0,
+    mu_drift: float = 0.0,
 ) -> None:
     """Multi-path MC kernel with per-path parameter uncertainty.
+
+    v7.6: Added GJR-GARCH leverage per path, variance_inflation, mu_drift.
 
     Like unified_mc_simulate_kernel but supports:
     - Per-path nu (tail parameter uncertainty)
     - Per-path GARCH parameters (parameter uncertainty via covariance sampling)
+    - Per-path GJR leverage (v7.6)
 
     Parameters
     ----------
@@ -2644,9 +2799,17 @@ def unified_mc_multi_path_kernel(
         Per-path degrees of freedom
     omega_per_path, alpha_per_path, beta_per_path : ndarray (n_paths,)
         Per-path GARCH parameters
+    gamma_per_path : ndarray (n_paths,)
+        Per-path GJR leverage (v7.6). Empty array = no leverage.
+    variance_inflation : float
+        Calibrated predictive variance multiplier β (scales h0)
+    mu_drift : float
+        Additive drift bias correction
     (other parameters same as unified_mc_simulate_kernel)
     """
     drift_sigma = np.sqrt(drift_q) if drift_q > 0.0 else 0.0
+    has_gamma = len(gamma_per_path) >= n_paths
+    h0_cal = h0 * variance_inflation
 
     for p in range(n_paths):
         nu_p = nu_per_path[p]
@@ -2660,9 +2823,10 @@ def unified_mc_multi_path_kernel(
         omega_p = omega_per_path[p]
         alpha_p = alpha_per_path[p]
         beta_p = beta_per_path[p]
+        gamma_p = gamma_per_path[p] if has_gamma else 0.0
 
-        mu_t = mu_now
-        h_t = h0
+        mu_t = mu_now + mu_drift
+        h_t = h0_cal
         if h_t < 1e-12:
             h_t = 1e-12
         cum = 0.0
@@ -2693,9 +2857,12 @@ def unified_mc_multi_path_kernel(
             cum += r_t
             cum_out[t, p] = cum
 
-            # GARCH evolution (per-path params)
+            # GJR-GARCH evolution (per-path params, v7.6: with leverage)
             if use_garch:
-                h_t = omega_p + alpha_p * (e_t * e_t) + beta_p * h_t
+                e2 = e_t * e_t
+                h_t = omega_p + alpha_p * e2 + beta_p * h_t
+                if gamma_p > 1e-8 and e_t < 0.0:
+                    h_t += gamma_p * e2
                 if h_t < 1e-12:
                     h_t = 1e-12
                 elif h_t > 1e4:

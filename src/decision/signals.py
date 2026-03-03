@@ -5972,8 +5972,22 @@ def run_unified_mc(
     cst_nu_normal: Optional[float] = None,
     cst_nu_crisis: Optional[float] = None,
     cst_epsilon: Optional[float] = None,
+    # v7.6: Enriched MC params from tuned Student-t / unified models
+    garch_leverage: float = 0.0,
+    variance_inflation: float = 1.0,
+    mu_drift: float = 0.0,
+    alpha_asym: float = 0.0,
+    k_asym: float = 2.0,
+    risk_premium_sensitivity: float = 0.0,
 ) -> Dict[str, np.ndarray]:
-    """Unified MC engine with GARCH + jumps + Student-t via Numba kernel.
+    """Unified MC engine with GJR-GARCH + jumps + Student-t via Numba kernel.
+
+    v7.6: Enriched MC — now reuses tuned Student-t / unified model parameters:
+      - GJR-GARCH leverage (asymmetric variance response to neg shocks)
+      - variance_inflation (calibrated predictive variance β)
+      - mu_drift (systematic drift bias correction)
+      - alpha_asym + k_asym (asymmetric tail thickness)
+      - risk_premium_sensitivity (ICAPM variance-conditional drift)
 
     v7.0: Single MC engine that replaces both run_regime_specific_mc (constant vol,
     no jumps) and _simulate_forward_paths (GARCH+jumps but only used for display).
@@ -6160,7 +6174,7 @@ def run_unified_mc(
     h0 = float(max(sigma2_step, 1e-8))
 
     if unified_mc_simulate_kernel is not None:
-        # Use Numba kernel
+        # Use Numba kernel (v7.6: with enriched params)
         unified_mc_simulate_kernel(
             n_paths, H_max, mu_now_for_kernel, h0,
             phi, q, nu_val,
@@ -6169,6 +6183,13 @@ def run_unified_mc(
             z_normals, z_chi2, z_drift,
             z_jump_uniform, z_jump_normal,
             cum_out, vol_out,
+            # v7.6: Enriched MC params from tuned models
+            garch_leverage,
+            variance_inflation,
+            mu_drift,
+            alpha_asym,
+            k_asym,
+            risk_premium_sensitivity,
         )
 
         # Apply initial drift posterior uncertainty:
@@ -6178,9 +6199,13 @@ def run_unified_mc(
         for t_step in range(H_max):
             cum_out[t_step, :] += drift_offset * (t_step + 1)
     else:
-        # Pure Python fallback (same logic as kernel)
-        mu_t_arr = mu_start.copy()
-        h_t = np.full(n_paths, h0, dtype=np.float64)
+        # Pure Python fallback (same logic as kernel, v7.6: enriched params)
+        # v7.6: Apply variance_inflation and mu_drift
+        h0_cal = h0 * variance_inflation
+        mu_t_arr = mu_start.copy() + mu_drift
+        h_t = np.full(n_paths, h0_cal, dtype=np.float64)
+        use_asym = (nu is not None and nu > 2.0 and nu < 100.0 and abs(alpha_asym) > 1e-8)
+        use_rp = abs(risk_premium_sensitivity) > 1e-10
 
         for t_step in range(H_max):
             sigma_t = np.sqrt(np.maximum(h_t, 1e-12))
@@ -6188,8 +6213,15 @@ def run_unified_mc(
 
             if nu is not None and nu > 2.0 and nu < 100.0:
                 raw_t = z_normals[t_step] / np.sqrt(np.maximum(z_chi2[t_step], 1e-8))
-                t_var_val = nu / (nu - 2.0)
-                eps = raw_t / math.sqrt(t_var_val)
+                if use_asym:
+                    # v7.6: Asymmetric tail thickness per-sample
+                    nu_eff = nu * (1.0 + alpha_asym * np.tanh(k_asym * raw_t))
+                    nu_eff = np.clip(nu_eff, 2.5, 200.0)
+                    t_var_eff = nu_eff / (nu_eff - 2.0)
+                    eps = raw_t / np.sqrt(t_var_eff)
+                else:
+                    t_var_val = nu / (nu - 2.0)
+                    eps = raw_t / math.sqrt(t_var_val)
             else:
                 eps = z_normals[t_step]
 
@@ -6200,14 +6232,21 @@ def run_unified_mc(
                 mask = z_jump_uniform[t_step] < jump_intensity
                 jump[mask] = jump_mean + jump_std * z_jump_normal[t_step, mask]
 
-            r_t = mu_t_arr + e_t + jump
+            # v7.6: Variance-conditional risk premium
+            rp = risk_premium_sensitivity * h_t if use_rp else 0.0
+
+            r_t = mu_t_arr + rp + e_t + jump
             if t_step == 0:
                 cum_out[t_step, :] = r_t
             else:
                 cum_out[t_step, :] = cum_out[t_step - 1, :] + r_t
 
+            # v7.6: GJR-GARCH with leverage
             if use_garch:
-                h_t = garch_omega + garch_alpha * (e_t ** 2) + garch_beta * h_t
+                e2 = e_t ** 2
+                h_t = garch_omega + garch_alpha * e2 + garch_beta * h_t
+                if garch_leverage > 1e-8:
+                    h_t += garch_leverage * e2 * (e_t < 0).astype(np.float64)
                 h_t = np.clip(h_t, 1e-12, 1e4)
 
             drift_eta = z_drift[t_step] * math.sqrt(q) if q > 0 else np.zeros(n_paths)
@@ -6728,6 +6767,33 @@ def bayesian_model_average_mc(
         nig_beta_m = model_params.get('nig_beta')
         nig_delta_m = model_params.get('nig_delta')
 
+        # v7.6: Extract per-model GARCH params (fall back to global)
+        # Unified models store per-model tuned GARCH; standard models use global
+        garch_omega_m = float(model_params.get('garch_omega', _garch_omega))
+        garch_alpha_m = float(model_params.get('garch_alpha', _garch_alpha))
+        garch_beta_m = float(model_params.get('garch_beta', _garch_beta))
+        garch_leverage_m = float(model_params.get('garch_leverage', 0.0))
+        _use_garch_m = _use_garch or (
+            garch_omega_m > 1e-12 and garch_alpha_m > 1e-6 and garch_beta_m > 1e-6
+        )
+
+        # v7.6: Extract enriched params from tuned unified models
+        variance_inflation_m = float(model_params.get('variance_inflation', 1.0))
+        mu_drift_m = float(model_params.get('mu_drift', 0.0))
+        alpha_asym_m = float(model_params.get('alpha_asym', 0.0))
+        k_asym_m = float(model_params.get('k_asym', 2.0))
+        risk_premium_m = float(model_params.get('risk_premium_sensitivity', 0.0))
+
+        # v7.6: Extract per-model jump params (fall back to global)
+        jump_intensity_m = float(model_params.get('jump_intensity', _jump_intensity if _enable_jumps else 0.0))
+        jump_mean_m = float(model_params.get('jump_mean', _jump_mean))
+        # jump_variance → jump_std conversion
+        jump_var_m = model_params.get('jump_variance')
+        if jump_var_m is not None and jump_var_m > 0:
+            jump_std_m = float(math.sqrt(jump_var_m))
+        else:
+            jump_std_m = float(_jump_std)
+
         # Default phi for models without it
         if phi_m is None or not np.isfinite(phi_m):
             phi_m = 0.95 if 'phi' in model_name else 1.0
@@ -6739,8 +6805,7 @@ def bayesian_model_average_mc(
         # Number of samples: proportional to weight but with minimum guarantee
         n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_paths))
 
-        # v7.0: Use run_unified_mc (GARCH+jumps+Student-t via Numba)
-        # instead of run_regime_specific_mc (constant vol, no jumps)
+        # v7.6: Use run_unified_mc with enriched per-model params
         mc_result = run_unified_mc(
             mu_t=mu_t,
             P_t=P_t,
@@ -6750,13 +6815,13 @@ def bayesian_model_average_mc(
             H_max=H,
             n_paths=n_model_samples,
             nu=nu_m,
-            use_garch=_use_garch,
-            garch_omega=_garch_omega,
-            garch_alpha=_garch_alpha,
-            garch_beta=_garch_beta,
-            jump_intensity=_jump_intensity if _enable_jumps else 0.0,
-            jump_mean=_jump_mean,
-            jump_std=_jump_std,
+            use_garch=_use_garch_m,
+            garch_omega=garch_omega_m,
+            garch_alpha=garch_alpha_m,
+            garch_beta=garch_beta_m,
+            jump_intensity=jump_intensity_m,
+            jump_mean=jump_mean_m,
+            jump_std=jump_std_m,
             # Exotic: NIG, Hansen, CST fall back to Python
             nig_alpha=nig_alpha_m,
             nig_beta=nig_beta_m,
@@ -6765,6 +6830,13 @@ def bayesian_model_average_mc(
             cst_nu_normal=cst_nu_normal_global if cst_enabled else None,
             cst_nu_crisis=cst_nu_crisis_global if cst_enabled else None,
             cst_epsilon=cst_epsilon_global if cst_enabled else None,
+            # v7.6: Enriched MC params from tuned models
+            garch_leverage=garch_leverage_m,
+            variance_inflation=variance_inflation_m,
+            mu_drift=mu_drift_m,
+            alpha_asym=alpha_asym_m,
+            k_asym=k_asym_m,
+            risk_premium_sensitivity=risk_premium_m,
         )
         # v7.5: Collect samples at multiple horizons for calibration fast mode
         if horizons_extract:
@@ -6785,6 +6857,15 @@ def bayesian_model_average_mc(
             "phi": float(phi_m) if phi_m is not None else None,
             "nu": float(nu_m) if nu_m is not None else None,
             "c": float(c_m),
+            # v7.6: Enriched per-model params
+            "garch_omega": float(garch_omega_m),
+            "garch_alpha": float(garch_alpha_m),
+            "garch_beta": float(garch_beta_m),
+            "garch_leverage": float(garch_leverage_m),
+            "variance_inflation": float(variance_inflation_m),
+            "mu_drift": float(mu_drift_m),
+            "alpha_asym": float(alpha_asym_m),
+            "risk_premium": float(risk_premium_m),
             # Augmentation layer info
             "nig_alpha": float(nig_alpha_m) if nig_alpha_m else None,
             "nig_beta": float(nig_beta_m) if nig_beta_m else None,
