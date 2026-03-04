@@ -134,9 +134,15 @@ def _fast_ks_uniform(pit_values):
     elif lam > 3.0:
         p = 0.0
     else:
-        p = 2.0 * math.exp(-2.0 * lam * lam)
-        if p > 1.0:
-            p = 1.0
+        # 4-term alternating series: P(K>λ) = 2·Σ (-1)^{k+1} exp(-2k²λ²)
+        # Single-term (2·exp(-2λ²)) overestimates and saturates at 1.0 for λ<0.59
+        lam2 = lam * lam
+        p = 2.0 * (math.exp(-2.0 * lam2)
+                   - math.exp(-8.0 * lam2)
+                   + math.exp(-18.0 * lam2)
+                   - math.exp(-32.0 * lam2))
+        if p < 0.0:
+            p = 0.0
     return D, p
 
 

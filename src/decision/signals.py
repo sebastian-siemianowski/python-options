@@ -829,59 +829,6 @@ except ImportError:
     OVERNIGHT_BUDGET_ACTIVATION_TEMP = 1.0
 
 # =============================================================================
-# ONLINE BAYESIAN PARAMETER UPDATES (February 2026 - Expert Panel Upgrade)
-# =============================================================================
-# Sequential Monte Carlo for adaptive Kalman filter parameters.
-# Transforms batch-estimated parameters into continuously-updating beliefs.
-#
-# PROFESSOR LIU XIAOMING (Score: 9/10):
-#   "Markets evolve continuously—volatility clusters, correlations break down,
-#    regime transitions occur mid-day. Online updating transforms the Kalman filter
-#    from a static estimator to a living, adaptive system."
-#
-# INTEGRATION:
-#   - tune.py provides batch priors (q, c, φ, ν)
-#   - online_update.py maintains particle-based posterior
-#   - signals.py consumes time-varying parameters
-#
-# ACCEPTANCE CRITERIA:
-#   1. Particle-based posterior distributions for key parameters ✓
-#   2. Lightweight update per observation (<10ms) ✓
-#   3. Anchored to batch priors ✓
-#   4. PIT-triggered acceleration ✓
-#   5. Audit trail for regulatory compliance ✓
-#   6. Graceful fallback to cached parameters ✓
-# =============================================================================
-try:
-    from calibration.online_update import (
-        OnlineBayesianUpdater,
-        OnlineUpdateConfig,
-        OnlineUpdateResult,
-        get_or_create_updater,
-        get_online_params,
-        compute_adaptive_kalman_params,
-        clear_updater_cache,
-        DEFAULT_ONLINE_CONFIG,
-    )
-    # ==========================================================================
-    # ONLINE UPDATES DISABLED (February 2026)
-    # ==========================================================================
-    # Online Bayesian parameter updates are currently DISABLED.
-    # Only offline/batch tuned parameters from tune.py are used.
-    # To re-enable, change this to: ONLINE_UPDATE_AVAILABLE = True
-    # ==========================================================================
-    ONLINE_UPDATE_AVAILABLE = False
-except ImportError:
-    ONLINE_UPDATE_AVAILABLE = False
-    # Stub definitions for when module is unavailable
-    def get_online_params(*args, **kwargs):
-        return None
-    def compute_adaptive_kalman_params(*args, **kwargs):
-        return None
-    def clear_updater_cache(*args, **kwargs):
-        pass
-
-# =============================================================================
 # GAS-Q SCORE-DRIVEN PARAMETER DYNAMICS (February 2026)
 # =============================================================================
 # Implements Creal, Koopman & Lucas (2013) GAS dynamics for process noise q.
@@ -1126,51 +1073,7 @@ def clear_display_price_cache() -> None:
 # This removes the confusion of a single ambiguous "exhaustion" metric.
 # ============================================================================
 
-# Module-level state for tracking cumulative returns per asset/horizon
-_exhaustion_state: Dict[str, Dict[int, Dict[str, float]]] = {}
-# Structure: { asset_key: { horizon: {"cum_log": float, "regime": int} } }
 
-
-def _update_exhaustion_state(
-    asset_key: str,
-    horizon: int,
-    realized_log_ret: float,
-    regime_id: int,
-) -> Tuple[float, int]:
-    """
-    Update exhaustion state and return cumulative log return since regime entry.
-    
-    DEPRECATED: This function is kept for backward compatibility but the new
-    exhaustion calculation uses price-based deviation from EMA, not cumulative returns.
-    
-    Args:
-        asset_key: Unique identifier for the asset
-        horizon: Forecast horizon in days
-        realized_log_ret: Most recent realized log return
-        regime_id: Current regime index
-        
-    Returns:
-        Tuple of (cumulative_log_return, days_in_regime)
-    """
-    key = asset_key
-    state_by_h = _exhaustion_state.setdefault(key, {})
-    state = state_by_h.get(horizon, {
-        "cum_log": 0.0,
-        "regime": None,
-        "days_in_regime": 0,
-    })
-
-    if state["regime"] is None:
-        state = {"cum_log": realized_log_ret, "regime": regime_id, "days_in_regime": 1}
-    elif state["regime"] == regime_id:
-        state["cum_log"] += realized_log_ret
-        state["days_in_regime"] += 1
-    else:
-        # Regime changed - reset
-        state = {"cum_log": realized_log_ret, "regime": regime_id, "days_in_regime": 1}
-
-    state_by_h[horizon] = state
-    return state["cum_log"], state["days_in_regime"]
 
 
 def compute_momentum_score(
@@ -1622,41 +1525,6 @@ def _compute_simple_exhaustion(
     }
 
 
-def compute_directional_exhaustion(
-    realized_cum_log: float,
-    expected_cum_log: float,
-    expected_sigma: float,
-    cumulative_log_return: float,
-    *,
-    days_in_regime: int = 1,
-    nu: Optional[float] = None,
-    w_D: float = 1.0,
-    w_L: float = 1.0,
-    lambda_0: float = 1.0,
-    alpha: float = 1.0,
-) -> Dict[str, float]:
-    """
-    DEPRECATED: Old exhaustion calculation. Kept for backward compatibility.
-    
-    Use compute_directional_exhaustion_from_features() instead, which provides
-    mathematically sound price-based exhaustion measurement.
-    """
-    # Return zeros - this function should not be used
-    return {
-        "ue_up": 0.0,
-        "ue_down": 0.0,
-        "D_raw": 0.0,
-        "D_time_adjusted": 0.0,
-        "time_factor": 1.0,
-        "tail_amplifier": 1.0,
-        "days_in_regime": int(days_in_regime),
-    }
-
-
-def clear_exhaustion_state_cache() -> None:
-    """Clear the exhaustion state cache. Useful for testing or resets."""
-    global _exhaustion_state
-    _exhaustion_state.clear()
 
 
 # NOTE: ExpectedUtilityResult dataclass removed - was only used by the legacy
@@ -2730,11 +2598,6 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         'nu_stress': best_params.get('nu_stress') if isinstance(best_params, dict) else None,
         'w_base': best_params.get('w_base') if isinstance(best_params, dict) else None,
 
-        # K=2 mixture (DEPRECATED - kept for backward compatibility)
-        'mixture_attempted': global_data.get('mixture_attempted', False),
-        'mixture_selected': global_data.get('mixture_selected', False),
-        'mixture_model': global_data.get('mixture_model'),
-
         # GH distribution fallback
         'gh_attempted': global_data.get('gh_attempted', False),
         'gh_selected': global_data.get('gh_selected', False),
@@ -2928,23 +2791,13 @@ def _kalman_filter_drift(
     """
     Kalman filter for time-varying drift estimation using pre-tuned parameters.
     
-    ONLINE BAYESIAN PARAMETER UPDATES (February 2026 Expert Panel Upgrade):
-    When enable_online_updates=True and ONLINE_UPDATE_AVAILABLE, this function
-    uses Sequential Monte Carlo to adapt parameters (q, c, φ, ν) in real-time
-    as new observations arrive.
-    
-    This implements Professor Liu Xiaoming's recommendation (Score: 9/10):
-    "Markets evolve continuously—volatility clusters, correlations break down,
-     regime transitions occur mid-day. Online updating transforms the Kalman filter
-     from a static estimator to a living, adaptive system."
-    
     Args:
         ret: Returns series
         vol: Volatility series
-        q: Override process noise (if None, use tuned/online)
+        q: Override process noise (if None, use tuned)
         optimize_q: Legacy flag (kept for API compatibility)
         asset_symbol: Asset symbol for loading tuned parameters
-        enable_online_updates: Enable adaptive parameter updates via SMC
+        enable_online_updates: Deprecated, kept for API compatibility
         
     Returns:
         Dictionary with filtered drift estimates and diagnostics
@@ -2963,69 +2816,16 @@ def _kalman_filter_drift(
     if asset_symbol is not None:
         tuned_params = _load_tuned_kalman_params(asset_symbol)
     
-    # =========================================================================
-    # ONLINE BAYESIAN PARAMETER UPDATES
-    # =========================================================================
-    # When enabled, use Sequential Monte Carlo to adapt parameters in real-time.
-    # The online updater maintains particle-based posteriors for (q, c, φ, ν)
-    # and updates them as each observation arrives.
-    #
-    # Benefits:
-    #   - 15% improvement in signal IC during regime transitions
-    #   - 25% reduction in calibration warnings after market stress
-    #   - Parameter convergence within 50 observations
-    # =========================================================================
-    online_params = None
-    online_update_result = None
-    online_active = False
-    
-    if enable_online_updates and ONLINE_UPDATE_AVAILABLE and tuned_params is not None:
-        try:
-            # Process recent observations through online updater
-            # Use last 100 observations for online adaptation (warm-up period)
-            n_warmup = min(100, len(y))
-            warmup_returns = y[-n_warmup:]
-            warmup_vol = sigma[-n_warmup:]
-            
-            # Get adaptive parameters
-            adaptive_result = compute_adaptive_kalman_params(
-                asset=asset_symbol or "unknown",
-                returns=warmup_returns,
-                volatility=warmup_vol,
-                tuned_params=tuned_params,
-                enable_online=True,
-            )
-            
-            if adaptive_result and adaptive_result.get("online_active"):
-                online_params = adaptive_result.get("current_params", {})
-                online_update_result = adaptive_result.get("update_result")
-                online_active = online_params.get("online_updated", False)
-                
-        except Exception as e:
-            # Graceful fallback: use batch parameters if online update fails
-            if os.getenv("DEBUG"):
-                print(f"Online update failed for {asset_symbol}: {e}")
-            online_params = None
-            online_active = False
-    
     noise_model = (tuned_params or {}).get('noise_model', 'gaussian')
     requires_phi = 'phi' in noise_model or noise_model.startswith('phi_student_t_nu_')
     is_student_t = noise_model.startswith('phi_student_t_nu_')
 
     # =========================================================================
-    # PARAMETER EXTRACTION: Online > Batch > Default
-    # =========================================================================
-    # When online updates are active, use adaptive parameters.
-    # Otherwise fall back to batch-tuned parameters from cache.
+    # PARAMETER EXTRACTION: Batch-tuned parameters from cache
     # =========================================================================
     
-    # φ is structural: prefer online, then tuned cache
-    if online_active and online_params:
-        phi_used = online_params.get('phi')
-        if phi_used is None or not np.isfinite(phi_used):
-            phi_used = (tuned_params or {}).get('phi')
-    else:
-        phi_used = (tuned_params or {}).get('phi')
+    # φ is structural
+    phi_used = (tuned_params or {}).get('phi')
     
     if requires_phi:
         if phi_used is None or not np.isfinite(phi_used):
@@ -3034,26 +2834,18 @@ def _kalman_filter_drift(
     else:
         phi_used = 1.0
 
-    # q: explicit arg > online > tuned
+    # q: explicit arg > tuned
     if q is not None:
         q_used = q
-    elif online_active and online_params and online_params.get('q') is not None:
-        q_used = online_params.get('q')
     else:
         q_used = (tuned_params or {}).get('q')
     
-    # c: online > tuned
-    if online_active and online_params and online_params.get('c') is not None:
-        c_used = online_params.get('c')
-    else:
-        c_used = (tuned_params or {}).get('c')
+    # c: from tuned
+    c_used = (tuned_params or {}).get('c')
     
-    # nu: online > tuned (only for Student-t)
+    # nu: from tuned (only for Student-t)
     if is_student_t:
-        if online_active and online_params and online_params.get('nu') is not None:
-            nu_used = online_params.get('nu')
-        else:
-            nu_used = (tuned_params or {}).get('nu')
+        nu_used = (tuned_params or {}).get('nu')
     else:
         nu_used = None
     
@@ -3541,16 +3333,6 @@ def _kalman_filter_drift(
         "phi_used": float(phi_used) if phi_used is not None and np.isfinite(phi_used) else None,
         "kalman_noise_model": noise_model,
         "kalman_nu": float(nu_used) if nu_used is not None else None,
-        # =========================================================================
-        # ONLINE BAYESIAN PARAMETER UPDATES DIAGNOSTICS (February 2026)
-        # =========================================================================
-        # These fields track the adaptive parameter estimation state.
-        # When online_active=True, parameters are being updated in real-time
-        # via Sequential Monte Carlo, improving signal IC during regime transitions.
-        # =========================================================================
-        "online_update_active": online_active,
-        "online_update_result": online_update_result,
-        "online_params": online_params if online_active else None,
         # =========================================================================
         # GAS-Q SCORE-DRIVEN PARAMETER DYNAMICS DIAGNOSTICS (February 2026)
         # =========================================================================
@@ -6665,18 +6447,15 @@ def bayesian_model_average_mc(
     # because unified models already incorporate VoV, asymmetry, and MS-q.
     is_unified_model = global_data.get('unified_model', False) if global_data else False
     
-    # Hansen Skew-t data (disabled for unified models — α_asym supersedes Hansen-λ)
-    hansen_data = global_data.get('hansen_skew_t', {})
-    hansen_lambda_global = hansen_data.get('lambda') if hansen_data and not is_unified_model else None
-    hansen_nu_global = hansen_data.get('nu') if hansen_data and not is_unified_model else None
-    hansen_skew_t_enabled = hansen_lambda_global is not None and abs(hansen_lambda_global) > 0.01
-    
-    # Contaminated Student-t data (disabled for unified models — MS-q supersedes CST)
-    cst_data = global_data.get('contaminated_student_t', {})
-    cst_nu_normal_global = cst_data.get('nu_normal') if cst_data and not is_unified_model else None
-    cst_nu_crisis_global = cst_data.get('nu_crisis') if cst_data and not is_unified_model else None
-    cst_epsilon_global = cst_data.get('epsilon') if cst_data and not is_unified_model else None
-    cst_enabled = cst_nu_normal_global is not None and cst_epsilon_global is not None and cst_epsilon_global > 0.001
+    # Global Hansen/CST: removed (now handled per-model via Stage 7.5/7.6 and U-H/U-C)
+    # Variables kept for metadata/downstream compatibility
+    hansen_lambda_global = None
+    hansen_nu_global = None
+    hansen_skew_t_enabled = False
+    cst_nu_normal_global = None
+    cst_nu_crisis_global = None
+    cst_epsilon_global = None
+    cst_enabled = False
 
     # Get current regime's model_posterior and models
     regime_key = str(current_regime)  # JSON keys are strings
