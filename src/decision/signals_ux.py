@@ -109,7 +109,14 @@ def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln
       - △▽ = Notable moves
       - ↑↓ = Regular signals
     """
+    import math as _math
+    # Safety: handle non-finite profit (old cache or edge cases)
+    if not _math.isfinite(profit_pln):
+        profit_pln = 0.0
     pct_return = (profit_pln / notional_pln * 100) if notional_pln > 0 else 0.0
+    # Floor: can't lose more than 100% (price can't go below zero)
+    if pct_return < -100.0:
+        pct_return = -100.0
 
     # Compact profit display
     abs_profit = abs(profit_pln)
