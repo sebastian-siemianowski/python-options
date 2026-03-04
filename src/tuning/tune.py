@@ -1776,6 +1776,10 @@ def tune_asset_q(
         pit_count_values = {m: models[m]["pit_count"] for m in models
                             if models[m].get("fit_success", False)
                             and models[m].get("pit_count") is not None}
+        ad_pvalues_global = {m: models[m]["ad_pvalue"] for m in models
+                             if models[m].get("fit_success", False)
+                             and models[m].get("ad_pvalue") is not None
+                             and np.isfinite(models[m]["ad_pvalue"])}
         
         # Use elite CRPS-dominated scoring with PIT/Berk/MAD penalties
         if crps_values and CRPS_SCORING_ENABLED:
@@ -1783,7 +1787,7 @@ def tune_asset_q(
                 bic_values, hyvarinen_values, crps_values,
                 pit_pvalues=pit_pvalues, berk_pvalues=berk_pvalues,
                 berkowitz_lr_stats=berk_lr_values, pit_counts=pit_count_values,
-                mad_values=mad_values, regime=None
+                mad_values=mad_values, ad_pvalues=ad_pvalues_global, regime=None
             )
         else:
             model_weights = compute_bic_model_weights(bic_values)
@@ -3632,6 +3636,193 @@ def fit_all_models_for_regime(
                 returns_test_u, mu_effective_u, forecast_scale_u, nu_for_score
             )
 
+            # =============================================================
+            # STAGE U-H: Hansen Skew-t augmentation for unified model
+            # =============================================================
+            # Same CRPS-gated pattern as base phi_student_t (Stage 7.5).
+            # Fits Hansen λ on training residuals, re-runs filter with
+            # Hansen observation noise using the unified config's core
+            # parameters (q, c, phi, nu).
+            # =============================================================
+            _u_hansen_activated = False
+            _u_hansen_lambda = 0.0
+            _u_hansen_diag = None
+            try:
+                if (forecast_scale_u is not None and len(forecast_scale_u) >= 50
+                    and n_obs >= 100):
+                    _fs_valid_u = forecast_scale_u[forecast_scale_u > 1e-12]
+                    if len(_fs_valid_u) >= 50:
+                        from models.hansen_skew_t import fit_hansen_skew_t_mle
+                        # Compute standardised residuals for Hansen MLE
+                        _resid_u = (returns_test_u - mu_effective_u) / np.maximum(forecast_scale_u, 1e-12)
+                        _resid_train_u = _resid_u[:n_train_u] if len(_resid_u) > n_train_u else _resid_u[:len(_resid_u)//2]
+                        _nu_h_u, _lam_h_u, _ll_h_u, _h_diag_u = fit_hansen_skew_t_mle(
+                            _resid_train_u, nu_hint=nu_for_score)
+                        if (_h_diag_u.get('fit_success', False) and
+                            abs(_lam_h_u) > 0.01 and np.isfinite(_ll_h_u)):
+                            from models.numba_wrappers import run_phi_hansen_skew_t_filter
+                            mu_fh_u, P_fh_u, mu_ph_u, S_ph_u, ll_h_u = run_phi_hansen_skew_t_filter(
+                                returns, vol,
+                                float(config.q), float(config.c), float(config.phi),
+                                nu_for_score,
+                                hansen_lambda=_lam_h_u,
+                                online_scale_adapt=True,
+                                gamma_vov=float(getattr(config, 'gamma_vov', 0.0)),
+                            )
+                            if nu_for_score > 2:
+                                _fs_h_u = np.sqrt(S_ph_u * (nu_for_score - 2) / nu_for_score)
+                            else:
+                                _fs_h_u = np.sqrt(S_ph_u)
+                            _fs_h_u = np.maximum(_fs_h_u, 1e-10)
+                            # CRPS on test fold
+                            _crps_h_u = compute_crps_student_t_inline(
+                                returns_test_u, mu_ph_u[n_train_u:] if len(mu_ph_u) > n_train_u else mu_ph_u,
+                                _fs_h_u[n_train_u:] if len(_fs_h_u) > n_train_u else _fs_h_u,
+                                nu_for_score)
+                            _n_params_h_u = effective_n_params + 1
+                            _bic_h_u = compute_bic(ll_h_u, _n_params_h_u, n_obs)
+                            # CRPS gate
+                            if (np.isfinite(_crps_h_u) and _crps_h_u < crps_u and
+                                np.isfinite(_bic_h_u) and _bic_h_u < bic_u + 2.0):
+                                _u_hansen_activated = True
+                                _u_hansen_lambda = float(_lam_h_u)
+                                _u_hansen_diag = {
+                                    'nu_hansen': float(_nu_h_u),
+                                    'lambda_hansen': float(_lam_h_u),
+                                    'crps_before': float(crps_u),
+                                    'crps_after': float(_crps_h_u),
+                                    'bic_before': float(bic_u),
+                                    'bic_after': float(_bic_h_u),
+                                }
+                                # Update scoring vars
+                                mu_pred_u = mu_ph_u
+                                S_pred_u = S_ph_u
+                                forecast_scale_u = _fs_h_u
+                                crps_u = _crps_h_u
+                                ll_u = ll_h_u
+                                mean_ll_u = ll_h_u / max(n_obs, 1)
+                                effective_n_params = _n_params_h_u
+                                bic_u = _bic_h_u
+                                aic_u = compute_aic(ll_h_u, _n_params_h_u)
+                                # Recompute diagnostics
+                                _pit_h_u = compute_extended_pit_metrics_student_t(
+                                    returns, vol,
+                                    float(config.q), float(config.c), float(config.phi),
+                                    nu_for_score,
+                                    mu_pred_precomputed=mu_ph_u,
+                                    S_pred_precomputed=S_ph_u,
+                                    scale_already_adapted=True,
+                                )
+                                ks_u = _pit_h_u["ks_statistic"]
+                                pit_p_u = _pit_h_u["pit_ks_pvalue"]
+                                _ad_p_u = _pit_h_u.get("ad_pvalue", float('nan'))
+                                _calibrated_berk_u = _pit_h_u["berkowitz_pvalue"]
+                                _calibrated_mad_u = _pit_h_u["histogram_mad"]
+                                hyvarinen_u = compute_hyvarinen_score_student_t(
+                                    returns_test_u,
+                                    mu_ph_u[n_train_u:] if len(mu_ph_u) > n_train_u else mu_ph_u,
+                                    _fs_h_u[n_train_u:] if len(_fs_h_u) > n_train_u else _fs_h_u,
+                                    nu_for_score)
+            except Exception:
+                pass
+
+            # =============================================================
+            # STAGE U-C: Contaminated Student-t augmentation for unified
+            # =============================================================
+            # Same CRPS-gated pattern as base phi_student_t (Stage 7.6).
+            # Profile grid search over (ν_crisis, ε).
+            # =============================================================
+            _u_cst_activated = False
+            _u_cst_nu_crisis = None
+            _u_cst_epsilon = 0.0
+            _u_cst_diag = None
+            try:
+                if n_obs >= 100 and nu_for_score >= 4:
+                    _U_CST_NU_GRID = [3.0, 4.0, 5.0, 6.0]
+                    _U_CST_EPS_GRID = [0.02, 0.05, 0.10]
+                    _best_cst_crps_u = crps_u
+
+                    _best_cst_combo_u = None
+                    for _nc_u in _U_CST_NU_GRID:
+                        if _nc_u >= nu_for_score:
+                            continue
+                        for _eps_u in _U_CST_EPS_GRID:
+                            try:
+                                from models.numba_wrappers import run_phi_cst_filter
+                                mu_fc_u, P_fc_u, mu_pc_u, S_pc_u, ll_c_u = run_phi_cst_filter(
+                                    returns, vol,
+                                    float(config.q), float(config.c), float(config.phi),
+                                    nu_normal=nu_for_score,
+                                    nu_crisis=_nc_u,
+                                    epsilon=_eps_u,
+                                    online_scale_adapt=True,
+                                    gamma_vov=float(getattr(config, 'gamma_vov', 0.0)),
+                                )
+                                if nu_for_score > 2:
+                                    _fs_c_u = np.sqrt(S_pc_u * (nu_for_score - 2) / nu_for_score)
+                                else:
+                                    _fs_c_u = np.sqrt(S_pc_u)
+                                _fs_c_u = np.maximum(_fs_c_u, 1e-10)
+                                _crps_c_u = compute_crps_student_t_inline(
+                                    returns_test_u,
+                                    mu_pc_u[n_train_u:] if len(mu_pc_u) > n_train_u else mu_pc_u,
+                                    _fs_c_u[n_train_u:] if len(_fs_c_u) > n_train_u else _fs_c_u,
+                                    nu_for_score)
+                                _n_params_c_u = effective_n_params + 2
+                                _bic_c_u = compute_bic(ll_c_u, _n_params_c_u, n_obs)
+                                if (np.isfinite(_crps_c_u) and _crps_c_u < _best_cst_crps_u and
+                                    np.isfinite(_bic_c_u) and _bic_c_u < bic_u + 4.0):
+                                    _best_cst_crps_u = _crps_c_u
+                                    _best_cst_combo_u = (_nc_u, _eps_u, mu_pc_u, S_pc_u,
+                                                         _fs_c_u, ll_c_u, _bic_c_u, _n_params_c_u)
+                            except Exception:
+                                continue
+
+                    if _best_cst_combo_u is not None:
+                        _nc_u, _eps_u, mu_pc_u, S_pc_u, _fs_c_u, ll_c_u, _bic_c_u, _n_params_c_u = _best_cst_combo_u
+                        _u_cst_activated = True
+                        _u_cst_nu_crisis = float(_nc_u)
+                        _u_cst_epsilon = float(_eps_u)
+                        _u_cst_diag = {
+                            'nu_crisis': float(_nc_u),
+                            'epsilon': float(_eps_u),
+                            'crps_before': float(crps_u),
+                            'crps_after': float(_best_cst_crps_u),
+                            'bic_before': float(bic_u),
+                            'bic_after': float(_bic_c_u),
+                        }
+                        # Update scoring vars
+                        mu_pred_u = mu_pc_u
+                        S_pred_u = S_pc_u
+                        forecast_scale_u = _fs_c_u
+                        crps_u = _best_cst_crps_u
+                        ll_u = ll_c_u
+                        mean_ll_u = ll_c_u / max(n_obs, 1)
+                        effective_n_params = _n_params_c_u
+                        bic_u = _bic_c_u
+                        aic_u = compute_aic(ll_c_u, _n_params_c_u)
+                        # Recompute diagnostics
+                        _pit_c_u = compute_extended_pit_metrics_student_t(
+                            returns, vol,
+                            float(config.q), float(config.c), float(config.phi),
+                            nu_for_score,
+                            mu_pred_precomputed=mu_pc_u,
+                            S_pred_precomputed=S_pc_u,
+                            scale_already_adapted=True,
+                        )
+                        ks_u = _pit_c_u["ks_statistic"]
+                        pit_p_u = _pit_c_u["pit_ks_pvalue"]
+                        _ad_p_u = _pit_c_u.get("ad_pvalue", float('nan'))
+                        _calibrated_berk_u = _pit_c_u["berkowitz_pvalue"]
+                        _calibrated_mad_u = _pit_c_u["histogram_mad"]
+                        hyvarinen_u = compute_hyvarinen_score_student_t(
+                            returns_test_u,
+                            mu_pc_u[n_train_u:] if len(mu_pc_u) > n_train_u else mu_pc_u,
+                            _fs_c_u[n_train_u:] if len(_fs_c_u) > n_train_u else _fs_c_u,
+                            nu_for_score)
+            except Exception:
+                pass
+
             models[unified_name] = {
                 # Core parameters
                 "q": float(config.q),
@@ -3707,6 +3898,14 @@ def fit_all_models_for_regime(
                 "berkowitz_pvalue": float(_calibrated_berk_u),
                 "berkowitz_lr": float(_calibrated_berk_lr_u),
                 "pit_count": int(_calibrated_pit_count_u),
+                # Hansen/CST pipeline augmentations (March 2026)
+                "hansen_activated": _u_hansen_activated,
+                "hansen_lambda": float(_u_hansen_lambda),
+                "hansen_diagnostics": _u_hansen_diag,
+                "cst_activated": _u_cst_activated,
+                "cst_nu_crisis": float(_u_cst_nu_crisis) if _u_cst_nu_crisis is not None else None,
+                "cst_epsilon": float(_u_cst_epsilon),
+                "cst_diagnostics": _u_cst_diag,
                 # Metadata
                 "fit_success": True,
                 "unified_model": True,
@@ -4683,7 +4882,8 @@ def fit_regime_model_posterior(
                            and models[m].get("pit_count") is not None}
         ad_pvalues_regime = {m: models[m]["ad_pvalue"] for m in models
                             if models[m].get("fit_success", False)
-                            and models[m].get("ad_pvalue") is not None}
+                            and models[m].get("ad_pvalue") is not None
+                            and np.isfinite(models[m]["ad_pvalue"])}
         
         # LFO-CV scores for proper out-of-sample model selection (February 2026)
         lfo_cv_scores = {}
@@ -5077,7 +5277,8 @@ def tune_regime_model_averaging(
     global_mad = {m: global_models[m]["histogram_mad"] for m in global_models
                   if global_models[m].get("fit_success", False) and global_models[m].get("histogram_mad") is not None}
     global_ad = {m: global_models[m]["ad_pvalue"] for m in global_models
-                 if global_models[m].get("fit_success", False) and global_models[m].get("ad_pvalue") is not None}
+                 if global_models[m].get("fit_success", False) and global_models[m].get("ad_pvalue") is not None
+                 and np.isfinite(global_models[m]["ad_pvalue"])}
     fallback_weight_metadata = None
     
     if global_crps and CRPS_SCORING_ENABLED:

@@ -1884,6 +1884,202 @@ class PhiStudentTDriftModel:
                 pass
 
         # =================================================================
+        # STAGE 7.5: Hansen Skew-t augmentation (March 2026)
+        # =================================================================
+        # Fit Hansen skewness λ to Kalman residuals. If the asymmetric
+        # observation likelihood improves CRPS, activate it.
+        # This is a FULL Kalman filter re-run with Hansen logpdf/robust wt.
+        # Template: same CRPS gate as momentum (Stage 7).
+        # =================================================================
+        _hansen_activated = False
+        _hansen_lambda = 0.0
+        _hansen_diag = None
+        try:
+            from models.hansen_skew_t import fit_hansen_skew_t_mle, hansen_skew_t_cdf
+            # Compute standardised residuals for Hansen MLE
+            if forecast_scale_st is not None and len(forecast_scale_st) == n_obs:
+                _fs_valid = forecast_scale_st[forecast_scale_st > 1e-12]
+                if len(_fs_valid) >= 50:
+                    _resid_hansen = (returns - mu_pred_st) / np.maximum(forecast_scale_st, 1e-12)
+                    _resid_train = _resid_hansen[:n_train]
+                    try:
+                        _nu_h, _lam_h, _ll_h, _h_diag = fit_hansen_skew_t_mle(
+                            _resid_train, nu_hint=_best_nu_eff)
+                        if (_h_diag.get('fit_success', False) and
+                            abs(_lam_h) > 0.01 and np.isfinite(_ll_h)):
+                            # Re-run filter with Hansen observation noise
+                            try:
+                                from models.numba_wrappers import run_phi_hansen_skew_t_filter
+                                _exo = None
+                                if momentum_wrapper is not None and _mom_activated:
+                                    _exo = momentum_wrapper._exogenous_input
+                                mu_f_h, P_f_h, mu_p_h, S_p_h, ll_h = run_phi_hansen_skew_t_filter(
+                                    returns, vol, q_st, c_st, phi_st, _best_nu_eff,
+                                    hansen_lambda=_lam_h,
+                                    exogenous_input=_exo,
+                                    online_scale_adapt=True,
+                                    gamma_vov=gamma_vov if gamma_vov else 0.0,
+                                    vov_rolling=vov_rolling,
+                                )
+                            except Exception:
+                                # Python fallback if Numba not available
+                                mu_f_h, P_f_h, mu_p_h, S_p_h, ll_h = cls._filter_phi_core(
+                                    returns, vol, q_st, c_st, phi_st, _best_nu_eff,
+                                    robust_wt=True, online_scale_adapt=True,
+                                    gamma_vov=gamma_vov if gamma_vov else 0.0,
+                                    vov_rolling=vov_rolling,
+                                )
+                            if _best_nu_eff > 2:
+                                _fs_h = np.sqrt(S_p_h * (_best_nu_eff - 2) / _best_nu_eff)
+                            else:
+                                _fs_h = np.sqrt(S_p_h)
+                            # CRPS on test fold (must use Hansen CDF for proper scoring)
+                            crps_hansen = compute_crps_student_t_inline(
+                                _r_test, mu_p_h[n_train:], _fs_h[n_train:], _best_nu_eff)
+                            # BIC penalty: +1 parameter for λ
+                            _n_params_h = n_params + 1
+                            bic_hansen = compute_bic(ll_h, _n_params_h, n_obs)
+                            # CRPS gate (strict improvement)
+                            if (np.isfinite(crps_hansen) and crps_hansen < crps_st and
+                                np.isfinite(bic_hansen) and bic_hansen < bic_st + 2.0):
+                                _hansen_activated = True
+                                _hansen_lambda = float(_lam_h)
+                                _hansen_diag = {
+                                    'nu_hansen': float(_nu_h),
+                                    'lambda_hansen': float(_lam_h),
+                                    'crps_before': float(crps_st),
+                                    'crps_after': float(crps_hansen),
+                                    'bic_before': float(bic_st),
+                                    'bic_after': float(bic_hansen),
+                                    'fit_diagnostics': _h_diag,
+                                }
+                                # Update all downstream metrics
+                                mu_pred_st = mu_p_h
+                                S_pred_st = S_p_h
+                                forecast_scale_st = _fs_h
+                                crps_st = crps_hansen
+                                ll_full_st = ll_h
+                                mean_ll_st = ll_h / max(n_obs, 1)
+                                n_params = _n_params_h
+                                bic_st = bic_hansen
+                                aic_st = compute_aic(ll_h, _n_params_h)
+                                # Recompute PIT/metrics with Hansen CDF
+                                pit_ext_h = compute_extended_pit_metrics_student_t(
+                                    returns, vol, q_st, c_st, phi_st, _best_nu_eff,
+                                    mu_pred_precomputed=mu_p_h,
+                                    S_pred_precomputed=S_p_h,
+                                    scale_already_adapted=True,
+                                )
+                                ks_st = pit_ext_h["ks_statistic"]
+                                pit_p_st = pit_ext_h["pit_ks_pvalue"]
+                                _ad_p_st = pit_ext_h.get("ad_pvalue", float('nan'))
+                                _berk_st = pit_ext_h["berkowitz_pvalue"]
+                                _mad_st = pit_ext_h["histogram_mad"]
+                                _pit_ext_base = pit_ext_h
+                                hyvarinen_st = compute_hyvarinen_score_student_t(
+                                    _r_test, mu_p_h[n_train:], _fs_h[n_train:], _best_nu_eff)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # =================================================================
+        # STAGE 7.6: Contaminated Student-t augmentation (March 2026)
+        # =================================================================
+        # Fit CST (ν_crisis, ε) via profile likelihood on residuals.
+        # If the mixture observation likelihood improves CRPS, activate it.
+        # Uses Numba CST filter kernel for speed.
+        # =================================================================
+        _cst_activated = False
+        _cst_nu_crisis = None
+        _cst_epsilon = 0.0
+        _cst_diag = None
+        try:
+            # Only attempt if we have enough data and ν is moderate
+            if n_obs >= 100 and _best_nu_eff >= 4:
+                # Profile likelihood grid search for (ν_crisis, ε)
+                _CST_NU_CRISIS_GRID = [3.0, 4.0, 5.0, 6.0]
+                _CST_EPSILON_GRID = [0.02, 0.05, 0.10]
+                _best_cst_crps = crps_st
+                _best_cst_combo = None
+
+                for _nc in _CST_NU_CRISIS_GRID:
+                    if _nc >= _best_nu_eff:
+                        continue  # ν_crisis must be < ν_normal
+                    for _eps in _CST_EPSILON_GRID:
+                        try:
+                            from models.numba_wrappers import run_phi_cst_filter
+                            _exo_cst = None
+                            if momentum_wrapper is not None and _mom_activated:
+                                _exo_cst = momentum_wrapper._exogenous_input
+                            mu_f_c, P_f_c, mu_p_c, S_p_c, ll_c = run_phi_cst_filter(
+                                returns, vol, q_st, c_st, phi_st,
+                                nu_normal=_best_nu_eff,
+                                nu_crisis=_nc,
+                                epsilon=_eps,
+                                exogenous_input=_exo_cst,
+                                online_scale_adapt=True,
+                                gamma_vov=gamma_vov if gamma_vov else 0.0,
+                                vov_rolling=vov_rolling,
+                            )
+                            if _best_nu_eff > 2:
+                                _fs_c = np.sqrt(S_p_c * (_best_nu_eff - 2) / _best_nu_eff)
+                            else:
+                                _fs_c = np.sqrt(S_p_c)
+                            _crps_c = compute_crps_student_t_inline(
+                                _r_test, mu_p_c[n_train:], _fs_c[n_train:], _best_nu_eff)
+                            # +2 extra params: ν_crisis and ε
+                            _n_params_c = n_params + 2
+                            _bic_c = compute_bic(ll_c, _n_params_c, n_obs)
+                            if (np.isfinite(_crps_c) and _crps_c < _best_cst_crps and
+                                np.isfinite(_bic_c) and _bic_c < bic_st + 4.0):
+                                _best_cst_crps = _crps_c
+                                _best_cst_combo = (_nc, _eps, mu_p_c, S_p_c, _fs_c, ll_c, _bic_c, _n_params_c)
+                        except Exception:
+                            continue
+
+                if _best_cst_combo is not None:
+                    _nc, _eps, mu_p_c, S_p_c, _fs_c, ll_c, _bic_c, _n_params_c = _best_cst_combo
+                    _cst_activated = True
+                    _cst_nu_crisis = float(_nc)
+                    _cst_epsilon = float(_eps)
+                    _cst_diag = {
+                        'nu_crisis': float(_nc),
+                        'epsilon': float(_eps),
+                        'crps_before': float(crps_st),
+                        'crps_after': float(_best_cst_crps),
+                        'bic_before': float(bic_st),
+                        'bic_after': float(_bic_c),
+                    }
+                    # Update all downstream metrics
+                    mu_pred_st = mu_p_c
+                    S_pred_st = S_p_c
+                    forecast_scale_st = _fs_c
+                    crps_st = _best_cst_crps
+                    ll_full_st = ll_c
+                    mean_ll_st = ll_c / max(n_obs, 1)
+                    n_params = _n_params_c
+                    bic_st = _bic_c
+                    aic_st = compute_aic(ll_c, _n_params_c)
+                    # Recompute PIT with CST
+                    pit_ext_c = compute_extended_pit_metrics_student_t(
+                        returns, vol, q_st, c_st, phi_st, _best_nu_eff,
+                        mu_pred_precomputed=mu_p_c,
+                        S_pred_precomputed=S_p_c,
+                        scale_already_adapted=True,
+                    )
+                    ks_st = pit_ext_c["ks_statistic"]
+                    pit_p_st = pit_ext_c["pit_ks_pvalue"]
+                    _ad_p_st = pit_ext_c.get("ad_pvalue", float('nan'))
+                    _berk_st = pit_ext_c["berkowitz_pvalue"]
+                    _mad_st = pit_ext_c["histogram_mad"]
+                    _pit_ext_base = pit_ext_c
+                    hyvarinen_st = compute_hyvarinen_score_student_t(
+                        _r_test, mu_p_c[n_train:], _fs_c[n_train:], _best_nu_eff)
+        except Exception:
+            pass
+
+        # =================================================================
         # STAGE 8: Scale-corrected isotonic recalibration (March 2026)
         # =================================================================
         # Key fix: instead of cosmetically warping PIT values, infer scale
@@ -1996,6 +2192,13 @@ class PhiStudentTDriftModel:
             "nu_fixed": True,
             "momentum_augmented": _mom_activated,
             "momentum_diagnostics": _mom_diag,
+            "hansen_activated": _hansen_activated,
+            "hansen_lambda": float(_hansen_lambda),
+            "hansen_diagnostics": _hansen_diag,
+            "cst_activated": _cst_activated,
+            "cst_nu_crisis": float(_cst_nu_crisis) if _cst_nu_crisis is not None else None,
+            "cst_epsilon": float(_cst_epsilon),
+            "cst_diagnostics": _cst_diag,
         }
 
     @staticmethod

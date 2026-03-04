@@ -1346,3 +1346,108 @@ def run_phi_student_t_enhanced_filter(
         online_scale_adapt, float(gamma_vov), vov_rolling, has_vov,
         float(P0),
     )
+
+
+# =============================================================================
+# HANSEN SKEW-T FILTER WRAPPER (March 2026)
+# =============================================================================
+
+def run_phi_hansen_skew_t_filter(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    hansen_lambda: float,
+    exogenous_input: np.ndarray = None,
+    online_scale_adapt: bool = False,
+    gamma_vov: float = 0.0,
+    vov_rolling: np.ndarray = None,
+    P0: float = 1e-4,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    φ-Student-t filter with Hansen Skew-t observation noise.
+
+    Numba-compiled. Always uses robust weighting (Hansen-adapted).
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    from models.numba_kernels import phi_hansen_skew_t_filter_kernel
+
+    returns, vol = prepare_arrays(returns, vol)
+    has_exo = exogenous_input is not None
+    if has_exo:
+        exogenous_input = np.ascontiguousarray(
+            exogenous_input.ravel(), dtype=np.float64
+        )
+    else:
+        exogenous_input = np.empty(0, dtype=np.float64)
+    has_vov = gamma_vov > 1e-12 and vov_rolling is not None
+    if has_vov:
+        vov_rolling = np.ascontiguousarray(
+            vov_rolling.ravel(), dtype=np.float64
+        )
+    else:
+        vov_rolling = np.empty(0, dtype=np.float64)
+    return phi_hansen_skew_t_filter_kernel(
+        returns, vol,
+        float(q), float(c), float(phi), float(nu),
+        float(hansen_lambda),
+        exogenous_input, has_exo,
+        online_scale_adapt, float(gamma_vov), vov_rolling, has_vov,
+        float(P0),
+    )
+
+
+# =============================================================================
+# CST FILTER WRAPPER (March 2026)
+# =============================================================================
+
+def run_phi_cst_filter(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu_normal: float,
+    nu_crisis: float,
+    epsilon: float,
+    exogenous_input: np.ndarray = None,
+    online_scale_adapt: bool = False,
+    gamma_vov: float = 0.0,
+    vov_rolling: np.ndarray = None,
+    P0: float = 1e-4,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    φ-Student-t filter with Contaminated Student-t observation noise.
+
+    Numba-compiled. Always uses CST-posterior-weighted robust updates.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    from models.numba_kernels import phi_cst_filter_kernel
+
+    returns, vol = prepare_arrays(returns, vol)
+    has_exo = exogenous_input is not None
+    if has_exo:
+        exogenous_input = np.ascontiguousarray(
+            exogenous_input.ravel(), dtype=np.float64
+        )
+    else:
+        exogenous_input = np.empty(0, dtype=np.float64)
+    has_vov = gamma_vov > 1e-12 and vov_rolling is not None
+    if has_vov:
+        vov_rolling = np.ascontiguousarray(
+            vov_rolling.ravel(), dtype=np.float64
+        )
+    else:
+        vov_rolling = np.empty(0, dtype=np.float64)
+    return phi_cst_filter_kernel(
+        returns, vol,
+        float(q), float(c), float(phi),
+        float(nu_normal), float(nu_crisis), float(epsilon),
+        exogenous_input, has_exo,
+        online_scale_adapt, float(gamma_vov), vov_rolling, has_vov,
+        float(P0),
+    )

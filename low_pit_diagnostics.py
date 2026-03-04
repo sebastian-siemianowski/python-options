@@ -154,13 +154,15 @@ def fit_models(symbol, returns, vol):
     berk_lr_v = {m: models[m]['berkowitz_lr'] for m in ok if models[m].get('berkowitz_lr') is not None}
     pit_count_v = {m: models[m]['pit_count'] for m in ok if models[m].get('pit_count') is not None}
     mad_v = {m: models[m]['histogram_mad'] for m in ok if models[m].get('histogram_mad') is not None}
+    ad_v = {m: models[m]['ad_pvalue'] for m in ok
+            if models[m].get('ad_pvalue') is not None and np.isfinite(models[m]['ad_pvalue'])}
 
     if crps_v and CRPS_SCORING_ENABLED:
         weights, meta = compute_regime_aware_model_weights(
             bic_v, hyv_v, crps_v,
             pit_pvalues=pit_v, berk_pvalues=berk_v,
             berkowitz_lr_stats=berk_lr_v, pit_counts=pit_count_v,
-            mad_values=mad_v, regime=None,
+            mad_values=mad_v, ad_pvalues=ad_v, regime=None,
         )
     else:
         from tuning.diagnostics import compute_bic_model_weights

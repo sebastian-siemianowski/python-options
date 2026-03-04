@@ -1210,17 +1210,18 @@ def compute_crps_model_weights(
 CRPS_SCORING_ENABLED = True
 
 # Default weights: CRPS dominates, calibration metrics provide discipline
-# (crps, pit_dev, berk_penalty, tail_error, mad)
-DEFAULT_ELITE_WEIGHTS = (0.60, 0.15, 0.10, 0.10, 0.05)
+# (crps, pit_dev, berk_penalty, tail_error, mad, ad_dev)
+DEFAULT_ELITE_WEIGHTS = (0.50, 0.12, 0.08, 0.10, 0.05, 0.15)
 
-# Regime-specific weight configurations
-# Format: (w_crps, w_pit_dev, w_berk, w_tail, w_mad)
+# Regime-specific weight configurations (March 2026: AD_p added as 6th component)
+# Format: (w_crps, w_pit_dev, w_berk, w_tail, w_mad, w_ad_dev)
+# AD (Anderson-Darling) is more tail-sensitive than KS, critical for heavy-tail models.
 REGIME_SCORING_WEIGHTS = {
-    0: (0.60, 0.15, 0.10, 0.10, 0.05),  # Unknown: default balanced
-    1: (0.45, 0.10, 0.10, 0.25, 0.10),  # Crisis: tail error critical, MAD up
-    2: (0.60, 0.15, 0.10, 0.10, 0.05),  # Trending: standard
-    3: (0.50, 0.20, 0.10, 0.05, 0.15),  # Ranging: calibration + location matter
-    4: (0.50, 0.20, 0.15, 0.05, 0.10),  # Low Vol: calibration + serial independence
+    0: (0.50, 0.12, 0.08, 0.10, 0.05, 0.15),  # Unknown: default balanced
+    1: (0.38, 0.08, 0.08, 0.20, 0.06, 0.20),  # Crisis: tail+AD critical
+    2: (0.50, 0.12, 0.08, 0.10, 0.05, 0.15),  # Trending: standard
+    3: (0.42, 0.15, 0.08, 0.05, 0.12, 0.18),  # Ranging: calibration + AD matter
+    4: (0.42, 0.15, 0.12, 0.05, 0.08, 0.18),  # Low Vol: calibration + AD + serial
 }
 
 # =============================================================================
@@ -1375,9 +1376,11 @@ def compute_regime_aware_model_weights(
     """
     Elite density-forecast model selection (CRPS-dominated, no BIC penalty).
 
-    Score = w_crps * CRPS + w_pit * PIT_dev + w_berk * Berk + w_tail * Tail + w_mad * MAD
+    Score = w_crps * CRPS + w_pit * PIT_dev + w_berk * Berk + w_tail * Tail
+         + w_mad * MAD + w_ad * AD_dev
     All components standardised via robust median/MAD. Lower score = better.
-    Weights are regime-aware.
+    Weights are regime-aware. AD (Anderson-Darling) is tail-sensitive and
+    added March 2026 to improve heavy-tail model discrimination.
 
     BIC and Hyvarinen are stored in metadata for diagnostics but do NOT
     enter the selection score.
@@ -1409,6 +1412,7 @@ def compute_regime_aware_model_weights(
     has_berk_lr = (berkowitz_lr_stats is not None and len(berkowitz_lr_stats) > 0
                    and pit_counts is not None and len(pit_counts) > 0)
     has_mad = mad_values is not None and len(mad_values) > 0
+    has_ad = ad_pvalues is not None and len(ad_pvalues) > 0
 
     # Berkowitz component is available if we have either LR stats or p-values
     has_any_berk = has_berk_lr or has_berk
@@ -1419,11 +1423,11 @@ def compute_regime_aware_model_weights(
     else:
         lambda_cal = BERKOWITZ_CALIBRATION_LAMBDA
 
-    # Select regime-aware weights
+    # Select regime-aware weights (6-component: crps, pit, berk, tail, mad, ad)
     if regime is not None and regime in REGIME_SCORING_WEIGHTS:
-        w_crps, w_pit, w_berk, w_tail, w_mad = REGIME_SCORING_WEIGHTS[regime]
+        w_crps, w_pit, w_berk, w_tail, w_mad, w_ad = REGIME_SCORING_WEIGHTS[regime]
     else:
-        w_crps, w_pit, w_berk, w_tail, w_mad = DEFAULT_ELITE_WEIGHTS
+        w_crps, w_pit, w_berk, w_tail, w_mad, w_ad = DEFAULT_ELITE_WEIGHTS
 
     # If components are missing, redistribute their weight to CRPS
     if not has_pit:
@@ -1432,6 +1436,8 @@ def compute_regime_aware_model_weights(
         w_crps += w_berk; w_berk = 0.0
     if not has_mad:
         w_crps += w_mad; w_mad = 0.0
+    if not has_ad:
+        w_crps += w_ad; w_ad = 0.0
     if not has_crps:
         # Extreme fallback: use BIC only (should never happen)
         w_total = 1.0
@@ -1441,7 +1447,7 @@ def compute_regime_aware_model_weights(
         weights = entropy_regularized_weights(combined_scores, lambda_entropy=lambda_entropy, eps=epsilon)
         metadata = {
             "combined_scores_standardized": {k: float(v) for k, v in combined_scores.items()},
-            "weights_used": {"crps": 0.0, "pit_dev": 0.0, "berk": 0.0, "tail": 0.0, "mad": 0.0, "bic_fallback": 1.0},
+            "weights_used": {"crps": 0.0, "pit_dev": 0.0, "berk": 0.0, "tail": 0.0, "mad": 0.0, "ad_dev": 0.0, "bic_fallback": 1.0},
             "scoring_method": "bic_fallback",
             "crps_enabled": False, "pit_enabled": False, "regime": regime,
             "lambda_entropy": lambda_entropy,
@@ -1449,10 +1455,10 @@ def compute_regime_aware_model_weights(
         return weights, metadata
 
     # Normalise weights to sum to 1
-    w_total = w_crps + w_pit + w_berk + w_tail + w_mad
+    w_total = w_crps + w_pit + w_berk + w_tail + w_mad + w_ad
     if w_total > 0:
         w_crps /= w_total; w_pit /= w_total; w_berk /= w_total
-        w_tail /= w_total; w_mad /= w_total
+        w_tail /= w_total; w_mad /= w_total; w_ad /= w_total
 
     # ── Build per-component raw scores (all: lower = better) ──
 
@@ -1485,6 +1491,11 @@ def compute_regime_aware_model_weights(
     # MAD: already lower = better
     mad_std = robust_standardize_scores(mad_values) if has_mad else {}
 
+    # AD deviation: -log10(p), lower = better (= well calibrated tails)
+    # AD is more sensitive to tail discrepancies than KS (March 2026).
+    ad_dev_raw = _compute_pit_deviation(ad_pvalues) if has_ad else {}
+    ad_dev_std = robust_standardize_scores(ad_dev_raw) if ad_dev_raw else {}
+
     # BIC/Hyvarinen: stored for metadata only
     bic_std = robust_standardize_scores(bic_values)
     hyv_std = robust_standardize_scores(hyvarinen_scores)
@@ -1498,6 +1509,7 @@ def compute_regime_aware_model_weights(
         s += w_berk * berk_std.get(model_name, 0.0)
         s += w_tail * tail_std.get(model_name, 0.0)
         s += w_mad  * mad_std.get(model_name, 0.0)
+        s += w_ad   * ad_dev_std.get(model_name, 0.0)
         combined_scores[model_name] = s
 
     # ── Compute initial weights from combined scores ──
@@ -1579,10 +1591,11 @@ def compute_regime_aware_model_weights(
         "berk_raw": {k: float(v) if np.isfinite(v) else None for k, v in berk_raw.items()},
         "tail_standardized": {k: float(v) if np.isfinite(v) else None for k, v in tail_std.items()},
         "mad_standardized": {k: float(v) if np.isfinite(v) else None for k, v in mad_std.items()},
+        "ad_dev_standardized": {k: float(v) if np.isfinite(v) else None for k, v in ad_dev_std.items()},
         "combined_scores_standardized": {k: float(v) if np.isfinite(v) else None for k, v in combined_scores.items()},
         "weights_used": {
             "crps": float(w_crps), "pit_dev": float(w_pit), "berk": float(w_berk),
-            "tail": float(w_tail), "mad": float(w_mad),
+            "tail": float(w_tail), "mad": float(w_mad), "ad_dev": float(w_ad),
         },
         "berkowitz_method": berk_method,
         "berkowitz_lambda_cal": float(lambda_cal),

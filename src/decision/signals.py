@@ -6120,8 +6120,23 @@ def run_unified_mc(
             sigma_t = np.sqrt(np.maximum(h_t, 1e-12))
             vol_out[t_step, :] = sigma_t
 
-            # Observation noise
-            if nu is not None and nu > 2.0:
+            # Observation noise — use actual Hansen/CST distributions
+            if use_hansen and nu is not None and nu > 2.0:
+                # Hansen skew-t: asymmetric tails via λ
+                eps_sc = sigma_t * math.sqrt((nu - 2.0) / nu)
+                eps = hansen_skew_t_rvs(
+                    size=n_paths, nu=nu, lambda_=hansen_lambda,
+                    loc=0.0, scale=1.0, random_state=rng
+                ) * eps_sc
+            elif use_cst and cst_nu_normal is not None and cst_nu_normal > 2.0:
+                # Contaminated Student-t: mixture of normal + crisis tails
+                eps_sc = sigma_t * math.sqrt((cst_nu_normal - 2.0) / cst_nu_normal)
+                eps = contaminated_student_t_rvs(
+                    size=n_paths, nu_normal=cst_nu_normal,
+                    nu_crisis=cst_nu_crisis, epsilon=cst_epsilon,
+                    loc=0.0, scale=1.0, random_state=rng
+                ) * eps_sc
+            elif nu is not None and nu > 2.0:
                 eps_sc = sigma_t * math.sqrt((nu - 2.0) / nu)
                 eps = eps_sc * rng.standard_t(df=nu, size=n_paths)
             else:
@@ -6386,8 +6401,9 @@ def compute_model_posteriors_from_combined_score(
     This is the EPISTEMIC WEIGHTING step that ensures Hyvärinen scores
     directly influence signal generation.
 
-    The combined_score is the entropy-regularized standardized score where:
-        combined_score = w_bic * BIC_std - (1-w_bic) * Hyv_std
+    The combined_score is the entropy-regularized standardized score:
+        combined_score = w_crps * CRPS_std + w_pit * PIT_dev_std + w_berk * Berk_std
+                       + w_tail * Tail_std + w_mad * MAD_std + w_ad * AD_dev_std
 
     Lower combined_score = better model.
 
@@ -6713,53 +6729,96 @@ def bayesian_model_average_mc(
 
     if not recomputed_posterior:
         # Cache may be from an older version without combined_score
-        # Fallback to BIC-based posteriors for backward compatibility
+        # Fallback: synthesize combined_score from per-model metrics
         # This is a GRACEFUL DEGRADATION, not a hard failure
         import warnings
         model_names = list(models.keys())
         missing_scores = [m for m in model_names if not models.get(m, {}).get('combined_score')]
         
-        # Try BIC-based fallback
-        bic_posterior = {}
+        # === METRIC SYNTHESIS FALLBACK (March 2026) ===
+        # When combined_score is missing, synthesize from per-model CRPS/BIC/PIT
+        # This prevents the uniform-weight bug for assets with older caches.
+        synth_scores = {}
         for model_name, model_data in models.items():
-            if isinstance(model_data, dict):
-                bic = model_data.get('bic')
-                if bic is not None and np.isfinite(bic):
-                    bic_posterior[model_name] = bic
+            if not isinstance(model_data, dict):
+                continue
+            crps_val = model_data.get('crps')
+            bic_val = model_data.get('bic')
+            pit_p = model_data.get('pit_ks_pvalue')
+            ad_p = model_data.get('ad_pvalue')
+            # Need at least CRPS or BIC to synthesize a score
+            if crps_val is not None and np.isfinite(crps_val):
+                # Score = CRPS_component + PIT_penalty + AD_penalty  (lower = better)
+                score = float(crps_val)
+                if pit_p is not None and np.isfinite(pit_p) and pit_p > 0:
+                    score += 0.15 * (-np.log10(max(pit_p, 1e-10)))  # PIT deviation
+                if ad_p is not None and np.isfinite(ad_p) and ad_p > 0:
+                    score += 0.15 * (-np.log10(max(ad_p, 1e-10)))   # AD deviation
+                synth_scores[model_name] = score
+            elif bic_val is not None and np.isfinite(bic_val):
+                synth_scores[model_name] = float(bic_val)
         
-        if bic_posterior:
-            # Convert BIC to weights using softmax over negated BIC (lower is better)
-            bic_values = np.array(list(bic_posterior.values()))
-            neg_bic = -bic_values / 2.0  # Standard BIC to log-likelihood conversion
-            neg_bic = neg_bic - neg_bic.max()  # Numerical stability
-            weights = np.exp(neg_bic)
+        if synth_scores:
+            # Use softmax over negated synth scores (lower = better = higher weight)
+            s_names = list(synth_scores.keys())
+            s_vals = np.array([synth_scores[m] for m in s_names])
+            neg_s = -s_vals
+            neg_s = neg_s - neg_s.max()
+            weights = np.exp(neg_s)
             weights = weights / weights.sum()
-            
-            recomputed_posterior = dict(zip(bic_posterior.keys(), weights))
+            # Entropy floor
+            min_w = 0.01 / max(len(s_names), 1)
+            weights = np.maximum(weights, min_w)
+            weights = weights / weights.sum()
+            recomputed_posterior = dict(zip(s_names, weights))
             epistemic_meta = {
-                'method': 'bic_fallback',
+                'method': 'metric_synthesis_fallback',
                 'reason': 'combined_score_missing',
+                'components_used': ['crps', 'pit_ks_pvalue', 'ad_pvalue', 'bic'],
                 'missing_scores': missing_scores,
             }
-            
-            warnings.warn(
-                f"Using BIC-based fallback for models missing combined_score: {missing_scores}. "
-                f"Consider re-tuning with 'make tune --force' for optimal calibration.",
-                RuntimeWarning
-            )
         else:
-            # Last resort: uniform weights
-            recomputed_posterior = {m: 1.0/len(models) for m in models}
-            epistemic_meta = {
-                'method': 'uniform_fallback',
-                'reason': 'no_valid_scores',
-            }
+            # Try pure BIC-based fallback
+            bic_posterior = {}
+            for model_name, model_data in models.items():
+                if isinstance(model_data, dict):
+                    bic = model_data.get('bic')
+                    if bic is not None and np.isfinite(bic):
+                        bic_posterior[model_name] = bic
             
-            warnings.warn(
-                f"Using uniform weights fallback - no valid BIC or combined_score found. "
-                f"Re-tune with 'make tune --force'.",
-                RuntimeWarning
-            )
+            if bic_posterior:
+                # Convert BIC to weights using softmax over negated BIC (lower is better)
+                bic_values = np.array(list(bic_posterior.values()))
+                neg_bic = -bic_values / 2.0  # Standard BIC to log-likelihood conversion
+                neg_bic = neg_bic - neg_bic.max()  # Numerical stability
+                weights = np.exp(neg_bic)
+                weights = weights / weights.sum()
+                
+                recomputed_posterior = dict(zip(bic_posterior.keys(), weights))
+                epistemic_meta = {
+                    'method': 'bic_fallback',
+                    'reason': 'combined_score_missing',
+                    'missing_scores': missing_scores,
+                }
+                
+                warnings.warn(
+                    f"Using BIC-based fallback for models missing combined_score: {missing_scores}. "
+                    f"Consider re-tuning with 'make tune --force' for optimal calibration.",
+                    RuntimeWarning
+                )
+            else:
+                # Last resort: uniform weights
+                recomputed_posterior = {m: 1.0/len(models) for m in models}
+                epistemic_meta = {
+                    'method': 'uniform_fallback',
+                    'reason': 'no_valid_scores',
+                }
+                
+                warnings.warn(
+                    f"Using uniform weights fallback - no valid BIC or combined_score found. "
+                    f"Re-tune with 'make tune --force'.",
+                    RuntimeWarning
+                )
 
     cached_posterior = model_posterior
     model_posterior = recomputed_posterior
@@ -6923,6 +6982,31 @@ def bayesian_model_average_mc(
         loc_bias_drift_coeff_m = float(model_params.get('loc_bias_drift_coeff', 0.0))
         q_vol_coupling_m = float(model_params.get('q_vol_coupling', 0.0))
 
+        # v7.8: Per-model Hansen/CST pipeline augmentations (March 2026)
+        # Prefer per-model values from internal pipeline; fall back to global
+        _hansen_act_m = model_params.get('hansen_activated', False)
+        hansen_lambda_m = float(model_params.get('hansen_lambda', 0.0)) if _hansen_act_m else None
+        if hansen_lambda_m is not None and abs(hansen_lambda_m) <= 0.01:
+            hansen_lambda_m = None
+        # Fallback to global for non-pipeline models
+        if hansen_lambda_m is None and hansen_skew_t_enabled:
+            hansen_lambda_m = hansen_lambda_global
+
+        _cst_act_m = model_params.get('cst_activated', False)
+        cst_nu_crisis_m = model_params.get('cst_nu_crisis') if _cst_act_m else None
+        cst_epsilon_m = float(model_params.get('cst_epsilon', 0.0)) if _cst_act_m else None
+        if cst_nu_crisis_m is not None:
+            cst_nu_crisis_m = float(cst_nu_crisis_m)
+            cst_nu_normal_m = nu_m  # Use model's own nu as normal component
+        else:
+            cst_nu_normal_m = None
+            cst_epsilon_m = None
+        # Fallback to global for non-pipeline models
+        if cst_nu_crisis_m is None and cst_enabled:
+            cst_nu_normal_m = cst_nu_normal_global
+            cst_nu_crisis_m = cst_nu_crisis_global
+            cst_epsilon_m = cst_epsilon_global
+
         # v7.6: Extract per-model jump params (fall back to global)
         jump_intensity_m = float(model_params.get('jump_intensity', _jump_intensity if _enable_jumps else 0.0))
         jump_mean_m = float(model_params.get('jump_mean', _jump_mean))
@@ -6965,10 +7049,10 @@ def bayesian_model_average_mc(
             nig_alpha=nig_alpha_m,
             nig_beta=nig_beta_m,
             nig_delta=nig_delta_m,
-            hansen_lambda=hansen_lambda_global if hansen_skew_t_enabled else None,
-            cst_nu_normal=cst_nu_normal_global if cst_enabled else None,
-            cst_nu_crisis=cst_nu_crisis_global if cst_enabled else None,
-            cst_epsilon=cst_epsilon_global if cst_enabled else None,
+            hansen_lambda=hansen_lambda_m,
+            cst_nu_normal=cst_nu_normal_m if cst_nu_crisis_m is not None else None,
+            cst_nu_crisis=cst_nu_crisis_m,
+            cst_epsilon=cst_epsilon_m,
             # v7.6: Enriched MC params from tuned models
             garch_leverage=garch_leverage_m,
             variance_inflation=variance_inflation_m,
@@ -8543,6 +8627,22 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # corrects sigma for properly calibrated uncertainty.
         # v2.0 fallback: mag_scale + bias.
         mu_H, sig_H = _apply_emos_correction(mu_H, sH, _sig_cal, H, vol_regime=vol_reg_now)
+
+        # ========================================================================
+        # SAFETY: Clamp mu_H to prevent exp() overflow and absurd forecasts
+        # ========================================================================
+        # Principled bound: the median forecast should not exceed ±4σ of the
+        # model's own calibrated uncertainty (sig_H).  A √H-scaled floor
+        # prevents over-tightening for very low-vol assets.
+        #
+        # Absolute bounds (safety valves):
+        #   Upside:  ln(5) ≈ 1.61  →  exp(1.61)-1 ≈ 400%  (median can't predict 5×)
+        #   Downside: -4.6          →  exp(-4.6)-1 ≈ -99%  (near-total loss)
+        # ========================================================================
+        _vol_cap = 4.0 * sig_H                             # 4σ from calibrated uncertainty
+        _floor_cap = 0.03 * math.sqrt(max(H, 1))           # floor for very low-vol assets
+        _mu_H_cap = max(_vol_cap, _floor_cap)
+        mu_H = float(np.clip(mu_H, max(-_mu_H_cap, -4.6), min(_mu_H_cap, 1.61)))
 
         # ========================================================================
         # EXPECTED UTILITY POSITION SIZING (REPLACES KELLY/MEAN-BASED SIZING)

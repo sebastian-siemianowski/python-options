@@ -137,6 +137,568 @@ def _student_t_logpdf_dynamic_nu(
 
 
 # =============================================================================
+# HANSEN SKEW-T KERNELS — Scalar (March 2026)
+# =============================================================================
+# Hansen (1994) piecewise asymmetric Student-t distribution.
+# Integrated into Kalman filter observation likelihood for skewness-aware
+# state estimation. All constants (a, b, c_const) are precomputed outside
+# the filter loop for efficiency.
+#
+# f(z|ν,λ) = bc × [1 + (bz+a)²/((1±λ)²(ν-2))]^{-(ν+1)/2} / (1±λ)
+# where ± depends on z < -a/b (left) vs z ≥ -a/b (right).
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def hansen_constants_kernel(nu: float, lambda_: float) -> tuple:
+    """
+    Compute Hansen's skew-t constants (a, b, c_const).
+    
+    Parameters
+    ----------
+    nu : float
+        Degrees of freedom (> 2)
+    lambda_ : float
+        Skewness parameter ∈ (-1, 1)
+        
+    Returns
+    -------
+    a, b, c_const : float
+    """
+    if nu <= 2.0:
+        nu = 2.01
+    if lambda_ > 0.999:
+        lambda_ = 0.999
+    elif lambda_ < -0.999:
+        lambda_ = -0.999
+    
+    # c = Γ((ν+1)/2) / [√(π(ν-2)) Γ(ν/2)]
+    log_c = (_stirling_gammaln((nu + 1.0) / 2.0)
+             - _stirling_gammaln(nu / 2.0)
+             - 0.5 * np.log(np.pi * (nu - 2.0)))
+    c_const = np.exp(log_c)
+    
+    # a = 4λc(ν-2)/(ν-1)
+    a = 4.0 * lambda_ * c_const * ((nu - 2.0) / (nu - 1.0))
+    
+    # b = √(1 + 3λ² - a²)
+    b_sq = 1.0 + 3.0 * lambda_ * lambda_ - a * a
+    if b_sq <= 0.0:
+        b_sq = 1e-10
+    b = np.sqrt(b_sq)
+    
+    return a, b, c_const
+
+
+@njit(cache=True, fastmath=False)
+def hansen_skew_t_logpdf_scalar(
+    x: float,
+    nu: float,
+    lambda_: float,
+    a: float,
+    b: float,
+    c_const: float,
+    mu: float,
+    scale: float,
+) -> float:
+    """
+    Hansen's skew-t scalar log-PDF for use inside Kalman filter loops.
+    
+    Parameters
+    ----------
+    x : float
+        Observation value
+    nu : float
+        Degrees of freedom (> 2)
+    lambda_ : float
+        Skewness parameter ∈ (-1, 1)
+    a, b, c_const : float
+        Precomputed Hansen constants from hansen_constants_kernel()
+    mu : float
+        Location parameter
+    scale : float
+        Scale parameter (forecast_scale from Kalman filter)
+        
+    Returns
+    -------
+    float
+        Log-probability density
+    """
+    if scale <= _MIN_VARIANCE or nu <= 2.0:
+        return -1e12
+    
+    # Standardize
+    z = (x - mu) / scale
+    
+    # Cutpoint
+    cutpoint = -a / b
+    neg_half_nu_plus_1 = -(nu + 1.0) / 2.0
+    inv_nu_minus_2 = 1.0 / (nu - 2.0)
+    
+    log_b = np.log(b)
+    log_c = np.log(c_const)
+    
+    if z < cutpoint:
+        # Left region: heavier tail for negative returns
+        z_eff = (b * z + a) / (1.0 + lambda_)
+        log_kernel = neg_half_nu_plus_1 * np.log(1.0 + z_eff * z_eff * inv_nu_minus_2)
+        ll = log_b + log_c + log_kernel - np.log(1.0 + lambda_) - np.log(scale)
+    else:
+        # Right region
+        z_eff = (b * z + a) / (1.0 - lambda_)
+        log_kernel = neg_half_nu_plus_1 * np.log(1.0 + z_eff * z_eff * inv_nu_minus_2)
+        ll = log_b + log_c + log_kernel - np.log(1.0 - lambda_) - np.log(scale)
+    
+    return ll
+
+
+@njit(cache=True, fastmath=False)
+def hansen_robust_weight_scalar(
+    innovation: float,
+    S: float,
+    nu: float,
+    lambda_: float,
+    a: float,
+    b: float,
+) -> float:
+    """
+    Robust weight w_t for Hansen Skew-t filter update.
+    
+    For the piecewise Hansen density, the effective z uses the
+    side-specific scaling: z_eff = (b*z + a) / (1 ± λ).
+    Then w_t = (ν+1) / (ν + z_eff²).
+    
+    Parameters
+    ----------
+    innovation : float
+        r_t - mu_pred
+    S : float
+        Forecast variance
+    nu, lambda_, a, b : float
+        Hansen parameters
+    
+    Returns
+    -------
+    w_t : float
+        Robust weight for Kalman update
+    """
+    if S <= _MIN_VARIANCE:
+        return 1.0
+    
+    forecast_scale = np.sqrt(S * (nu - 2.0) / nu) if nu > 2.0 else np.sqrt(S)
+    z = innovation / max(forecast_scale, 1e-12)
+    cutpoint = -a / b
+    
+    if z < cutpoint:
+        z_eff = (b * z + a) / (1.0 + lambda_)
+    else:
+        z_eff = (b * z + a) / (1.0 - lambda_)
+    
+    w_t = (nu + 1.0) / (nu + z_eff * z_eff)
+    return w_t
+
+
+# =============================================================================
+# CONTAMINATED STUDENT-T KERNEL — Scalar (March 2026)
+# =============================================================================
+# CST: p(x) = (1-ε) × t(x; ν_normal) + ε × t(x; ν_crisis)
+# Uses log-sum-exp for numerical stability. Integrated as a pipeline
+# stage within each model's Kalman filter.
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def cst_logpdf_scalar(
+    x: float,
+    nu_normal: float,
+    nu_crisis: float,
+    epsilon: float,
+    mu: float,
+    scale: float,
+) -> float:
+    """
+    Contaminated Student-t scalar log-PDF.
+    
+    p(x) = (1-ε) × t(x; ν_normal, μ, σ) + ε × t(x; ν_crisis, μ, σ)
+    
+    Uses log-sum-exp trick for numerical stability.
+    
+    Parameters
+    ----------
+    x : float
+        Observation
+    nu_normal : float
+        DoF for normal component
+    nu_crisis : float
+        DoF for crisis component (typically < nu_normal → heavier tails)
+    epsilon : float
+        Contamination probability (0 < ε < 1)
+    mu : float
+        Location (shared)
+    scale : float
+        Scale (shared, = forecast_scale from Kalman)
+        
+    Returns
+    -------
+    float
+        Log-probability density
+    """
+    if scale <= _MIN_VARIANCE or nu_normal <= 2.0 or nu_crisis <= 2.0:
+        return -1e12
+    
+    # Normal component log-pdf
+    ll_normal = _student_t_logpdf_dynamic_nu(x, nu_normal, mu, scale)
+    # Crisis component log-pdf
+    ll_crisis = _student_t_logpdf_dynamic_nu(x, nu_crisis, mu, scale)
+    
+    # Log-sum-exp
+    log_w_normal = np.log(1.0 - epsilon) + ll_normal
+    log_w_crisis = np.log(epsilon) + ll_crisis
+    
+    max_log = max(log_w_normal, log_w_crisis)
+    ll = max_log + np.log(np.exp(log_w_normal - max_log) + np.exp(log_w_crisis - max_log))
+    
+    return ll
+
+
+@njit(cache=True, fastmath=False)
+def cst_robust_weight_scalar(
+    innovation: float,
+    S: float,
+    nu_normal: float,
+    nu_crisis: float,
+    epsilon: float,
+) -> float:
+    """
+    Robust weight w_t for CST filter update.
+    
+    Uses posterior-weighted ν from the mixture:
+    posterior_crisis = ε × t(z; ν_crisis) / [sum]
+    w_normal = (ν_normal+1)/(ν_normal+z²)
+    w_crisis = (ν_crisis+1)/(ν_crisis+z²)
+    w_t = (1-posterior_crisis) × w_normal + posterior_crisis × w_crisis
+    
+    This provides soft adaptation: in calm regimes ν_normal dominates,
+    in crisis the heavier ν_crisis tail is used for robustification.
+    """
+    if S <= _MIN_VARIANCE:
+        return 1.0
+    
+    z_sq = (innovation * innovation) / S
+    
+    # Normal component weight
+    w_normal = (nu_normal + 1.0) / (nu_normal + z_sq)
+    # Crisis component weight
+    w_crisis = (nu_crisis + 1.0) / (nu_crisis + z_sq)
+    
+    # Posterior probability of crisis component (via Bayes' rule on kernels)
+    # For Student-t: kernel ∝ (1 + z²/ν)^{-(ν+1)/2}
+    log_k_normal = -(nu_normal + 1.0) / 2.0 * np.log(1.0 + z_sq / nu_normal)
+    log_k_crisis = -(nu_crisis + 1.0) / 2.0 * np.log(1.0 + z_sq / nu_crisis)
+    
+    log_post_normal = np.log(1.0 - epsilon) + log_k_normal
+    log_post_crisis = np.log(epsilon) + log_k_crisis
+    max_log = max(log_post_normal, log_post_crisis)
+    
+    post_crisis = np.exp(log_post_crisis - max_log) / (
+        np.exp(log_post_normal - max_log) + np.exp(log_post_crisis - max_log)
+    )
+    
+    w_t = (1.0 - post_crisis) * w_normal + post_crisis * w_crisis
+    return w_t
+
+
+# =============================================================================
+# HANSEN SKEW-T FILTER KERNEL — Full Kalman (March 2026)
+# =============================================================================
+# φ-Student-t filter with Hansen observation noise instead of symmetric
+# Student-t. Enables skewness-aware state estimation as a pipeline stage.
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def phi_hansen_skew_t_filter_kernel(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    hansen_lambda: float,
+    exogenous_input: np.ndarray,
+    has_exogenous: bool,
+    online_scale_adapt: bool,
+    gamma_vov: float,
+    vov_rolling: np.ndarray,
+    has_vov: bool,
+    P0: float = 1e-4,
+) -> tuple:
+    """
+    φ-Student-t filter with Hansen Skew-t observation noise.
+    
+    Identical interface to phi_student_t_enhanced_filter_kernel but
+    uses asymmetric Hansen logpdf and robust weighting.
+    
+    Parameters
+    ----------
+    hansen_lambda : float
+        Skewness parameter ∈ (-1, 1). λ=0 reduces to symmetric.
+    """
+    n = len(returns)
+    phi_sq = phi * phi
+    
+    # Precompute Hansen constants
+    a, b_h, c_const = hansen_constants_kernel(nu, hansen_lambda)
+    
+    # Pre-compute vol²
+    vol_sq = np.empty(n)
+    for t in range(n):
+        vol_sq[t] = vol[t] * vol[t]
+    
+    mu_filtered = np.empty(n)
+    P_filtered = np.empty(n)
+    mu_pred_arr = np.empty(n)
+    S_pred_arr = np.empty(n)
+    
+    # Data-adaptive initialization
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
+    log_likelihood = 0.0
+    
+    # Online scale adaptation state
+    chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
+    chi2_lam = 0.98
+    chi2_1m = 1.0 - chi2_lam
+    chi2_cap = chi2_tgt * 50.0
+    ewm_z2 = chi2_tgt
+    c_adj = 1.0
+    
+    for t in range(n):
+        u_t = exogenous_input[t] if has_exogenous and t < len(exogenous_input) else 0.0
+        mu_pred = phi * mu + u_t
+        P_pred = phi_sq * P + q
+        
+        # Observation noise
+        c_eff = c * c_adj if online_scale_adapt else c
+        R_t = c_eff * vol_sq[t]
+        if has_vov:
+            R_t = R_t * (1.0 + gamma_vov * vov_rolling[t])
+        
+        S = P_pred + R_t
+        if S < 1e-12:
+            S = 1e-12
+        
+        mu_pred_arr[t] = mu_pred
+        S_pred_arr[t] = S
+        
+        innovation = returns[t] - mu_pred
+        K = P_pred / S
+        
+        # Hansen-aware robust weighting
+        w_t = hansen_robust_weight_scalar(innovation, S, nu, hansen_lambda, a, b_h)
+        mu = mu_pred + K * w_t * innovation
+        P = (1.0 - w_t * K) * P_pred
+        
+        if P < 1e-12:
+            P = 1e-12
+        mu_filtered[t] = mu
+        P_filtered[t] = P if P > 1e-12 else 1e-12
+        
+        # Compute forecast scale and log-likelihood
+        if nu > 2.0:
+            forecast_scale = np.sqrt(S * (nu - 2.0) / nu)
+        else:
+            forecast_scale = np.sqrt(S)
+        
+        if forecast_scale > 1e-12:
+            ll_t = hansen_skew_t_logpdf_scalar(
+                returns[t], nu, hansen_lambda, a, b_h, c_const,
+                mu_pred, forecast_scale)
+            if ll_t == ll_t:  # NaN check
+                log_likelihood += ll_t
+            
+            # Online scale adaptation
+            if online_scale_adapt:
+                z = innovation / forecast_scale
+                z2_raw = z * z
+                z2w = z2_raw if z2_raw < chi2_cap else chi2_cap
+                ewm_z2 = chi2_lam * ewm_z2 + chi2_1m * z2w
+                ratio = ewm_z2 / chi2_tgt
+                if ratio < 0.3:
+                    ratio = 0.3
+                elif ratio > 3.0:
+                    ratio = 3.0
+                dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+                if ratio >= 1.0:
+                    dz_lo = 0.25
+                    dz_rng = 0.25
+                else:
+                    dz_lo = 0.05
+                    dz_rng = 0.10
+                if dev < dz_lo:
+                    c_adj = 1.0
+                elif dev >= dz_lo + dz_rng:
+                    c_adj = np.sqrt(ratio)
+                else:
+                    s_frac = (dev - dz_lo) / dz_rng
+                    c_adj = 1.0 + s_frac * (np.sqrt(ratio) - 1.0)
+    
+    return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood
+
+
+# =============================================================================
+# CST FILTER KERNEL — Full Kalman (March 2026)
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def phi_cst_filter_kernel(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu_normal: float,
+    nu_crisis: float,
+    epsilon: float,
+    exogenous_input: np.ndarray,
+    has_exogenous: bool,
+    online_scale_adapt: bool,
+    gamma_vov: float,
+    vov_rolling: np.ndarray,
+    has_vov: bool,
+    P0: float = 1e-4,
+) -> tuple:
+    """
+    φ-Student-t filter with Contaminated Student-t observation noise.
+    
+    Uses (1-ε)t(ν_normal) + εt(ν_crisis) mixture for observation likelihood,
+    with posterior-weighted robust updates.
+    """
+    n = len(returns)
+    phi_sq = phi * phi
+    
+    vol_sq = np.empty(n)
+    for t in range(n):
+        vol_sq[t] = vol[t] * vol[t]
+    
+    mu_filtered = np.empty(n)
+    P_filtered = np.empty(n)
+    mu_pred_arr = np.empty(n)
+    S_pred_arr = np.empty(n)
+    
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
+    log_likelihood = 0.0
+    
+    # OSA state
+    # Use effective ν for chi² target: weighted average of components
+    nu_eff = (1.0 - epsilon) * nu_normal + epsilon * nu_crisis
+    chi2_tgt = nu_eff / (nu_eff - 2.0) if nu_eff > 2.0 else 1.0
+    chi2_lam = 0.98
+    chi2_1m = 0.02
+    chi2_cap = chi2_tgt * 50.0
+    ewm_z2 = chi2_tgt
+    c_adj = 1.0
+    
+    for t in range(n):
+        u_t = exogenous_input[t] if has_exogenous and t < len(exogenous_input) else 0.0
+        mu_pred = phi * mu + u_t
+        P_pred = phi_sq * P + q
+        
+        c_eff = c * c_adj if online_scale_adapt else c
+        R_t = c_eff * vol_sq[t]
+        if has_vov:
+            R_t = R_t * (1.0 + gamma_vov * vov_rolling[t])
+        
+        S = P_pred + R_t
+        if S < 1e-12:
+            S = 1e-12
+        
+        mu_pred_arr[t] = mu_pred
+        S_pred_arr[t] = S
+        
+        innovation = returns[t] - mu_pred
+        K = P_pred / S
+        
+        # CST-aware robust weighting
+        w_t = cst_robust_weight_scalar(innovation, S, nu_normal, nu_crisis, epsilon)
+        mu = mu_pred + K * w_t * innovation
+        P = (1.0 - w_t * K) * P_pred
+        
+        if P < 1e-12:
+            P = 1e-12
+        mu_filtered[t] = mu
+        P_filtered[t] = P if P > 1e-12 else 1e-12
+        
+        # Log-likelihood via CST mixture
+        if nu_normal > 2.0:
+            forecast_scale = np.sqrt(S * (nu_normal - 2.0) / nu_normal)
+        else:
+            forecast_scale = np.sqrt(S)
+        
+        if forecast_scale > 1e-12:
+            ll_t = cst_logpdf_scalar(
+                returns[t], nu_normal, nu_crisis, epsilon,
+                mu_pred, forecast_scale)
+            if ll_t == ll_t:
+                log_likelihood += ll_t
+            
+            if online_scale_adapt:
+                z = innovation / forecast_scale
+                z2_raw = z * z
+                z2w = z2_raw if z2_raw < chi2_cap else chi2_cap
+                ewm_z2 = chi2_lam * ewm_z2 + chi2_1m * z2w
+                ratio = ewm_z2 / chi2_tgt
+                if ratio < 0.3:
+                    ratio = 0.3
+                elif ratio > 3.0:
+                    ratio = 3.0
+                dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+                if ratio >= 1.0:
+                    dz_lo = 0.25
+                    dz_rng = 0.25
+                else:
+                    dz_lo = 0.05
+                    dz_rng = 0.10
+                if dev < dz_lo:
+                    c_adj = 1.0
+                elif dev >= dz_lo + dz_rng:
+                    c_adj = np.sqrt(ratio)
+                else:
+                    s_frac = (dev - dz_lo) / dz_rng
+                    c_adj = 1.0 + s_frac * (np.sqrt(ratio) - 1.0)
+    
+    return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood
+
+
+# =============================================================================
 # STUDENT-T CDF/PDF VIA REGULARIZED INCOMPLETE BETA
 # =============================================================================
 # The Student-t CDF relates to the regularized incomplete beta:
