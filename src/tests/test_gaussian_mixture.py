@@ -249,106 +249,72 @@ class TestGMMReturnsIntegration:
 
 
 class TestSignalIntegration:
-    """Test signal layer integration with GMM."""
+    """Test signal layer integration with GMM.
     
-    def test_sample_from_gmm(self):
-        """Test GMM sampling function in signals."""
-        from decision.signals import sample_from_gmm
+    Note: GMM was never integrated into run_regime_specific_mc or signals.py.
+    Standalone model tests above verify the GMM module itself works correctly.
+    """
+    
+    def test_gmm_model_standalone_sampling(self):
+        """Test GMM model standalone sampling works."""
+        from models.gaussian_mixture import GaussianMixtureModel
         
-        gmm_params = {
-            "weights": [0.6, 0.4],
-            "means": [0.5, -0.5],
-            "variances": [1.0, 1.5],
-            "is_degenerate": False,
-        }
+        gmm = GaussianMixtureModel(
+            weights=np.array([0.6, 0.4]),
+            means=np.array([0.5, -0.5]),
+            variances=np.array([1.0, 1.5]),
+        )
         
         rng = np.random.default_rng(42)
-        samples = sample_from_gmm(
-            gmm_params=gmm_params,
-            mu_t=0.001,
-            P_t=0.0001,
-            sigma_step=0.015,
-            H=5,
-            n_paths=1000,
-            rng=rng
-        )
+        samples = gmm.sample(size=1000, rng=rng)
         
         assert len(samples) == 1000
         assert np.all(np.isfinite(samples))
     
-    def test_run_regime_specific_mc_with_gmm(self):
-        """Test MC sampling with GMM parameters."""
-        from decision.signals import run_regime_specific_mc
+    def test_gmm_pdf_cdf_consistency(self):
+        """Test GMM PDF/CDF consistency."""
+        from models.gaussian_mixture import GaussianMixtureModel
         
-        gmm_params = {
-            "weights": [0.6, 0.4],
-            "means": [0.3, -0.3],
-            "variances": [0.8, 1.2],
-            "is_degenerate": False,
-        }
-        
-        samples = run_regime_specific_mc(
-            regime=0,
-            mu_t=0.001,
-            P_t=0.0001,
-            phi=0.9,
-            q=1e-6,
-            sigma2_step=0.0002,
-            H=5,
-            n_paths=1000,
-            nu=None,  # Not using Student-t
-            nig_alpha=None,
-            nig_beta=None,
-            nig_delta=None,
-            gmm_params=gmm_params,  # Using GMM
-            seed=42
+        gmm = GaussianMixtureModel(
+            weights=np.array([0.6, 0.4]),
+            means=np.array([0.3, -0.3]),
+            variances=np.array([0.8, 1.2]),
         )
         
-        assert len(samples) == 1000
-        assert np.all(np.isfinite(samples))
+        x_vals = np.linspace(-3, 3, 50)
+        pdf_vals = gmm.pdf(x_vals)
+        cdf_vals = gmm.cdf(x_vals)
+        
+        assert np.all(pdf_vals >= 0), "PDF should be non-negative"
+        assert np.all(cdf_vals >= 0) and np.all(cdf_vals <= 1), "CDF should be in [0,1]"
     
-    def test_gmm_not_used_for_student_t(self):
-        """Test that GMM is not used when Student-t is specified."""
-        from decision.signals import run_regime_specific_mc
+    def test_gmm_serialization_roundtrip(self):
+        """Test GMM serialization to/from dict."""
+        from models.gaussian_mixture import GaussianMixtureModel
         
-        gmm_params = {
-            "weights": [0.6, 0.4],
-            "means": [0.3, -0.3],
-            "variances": [0.8, 1.2],
-            "is_degenerate": False,
-        }
-        
-        # With nu specified, GMM should be ignored
-        samples = run_regime_specific_mc(
-            regime=0,
-            mu_t=0.001,
-            P_t=0.0001,
-            phi=0.9,
-            q=1e-6,
-            sigma2_step=0.0002,
-            H=5,
-            n_paths=1000,
-            nu=6.0,  # Student-t takes priority
-            gmm_params=gmm_params,
-            seed=42
+        gmm = GaussianMixtureModel(
+            weights=np.array([0.6, 0.4]),
+            means=np.array([0.3, -0.3]),
+            variances=np.array([0.8, 1.2]),
         )
         
-        assert len(samples) == 1000
-        assert np.all(np.isfinite(samples))
+        d = gmm.to_dict()
+        assert "weights" in d
+        assert "means" in d
+        assert "variances" in d
 
 
 class TestTuneIntegration:
-    """Test tune.py integration with GMM."""
+    """Test GMM model imports and accessibility."""
     
-    def test_tune_imports_gmm(self):
-        """Test that tune.py imports GMM components."""
-        from tuning.tune import (
+    def test_gmm_imports_from_models(self):
+        """Test that GMM model can be imported from models package."""
+        from models.gaussian_mixture import (
             GaussianMixtureModel,
             fit_gmm_to_returns,
-            GMM_MIN_OBS,
         )
         assert GaussianMixtureModel is not None
-        assert GMM_MIN_OBS == 100
+        assert callable(fit_gmm_to_returns)
 
 
 if __name__ == "__main__":

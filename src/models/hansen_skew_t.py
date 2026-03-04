@@ -87,11 +87,11 @@ if _NUMBA_AVAILABLE:
         
         for i in prange(n):
             if x[i] < cutpoint:
-                z = (b * x[i] + a) / (1.0 + lambda_)
-                result[i] = log_bc + neg_half_nu_plus_1 * np.log(1.0 + z * z * inv_nu_minus_2) - log_1_plus_lambda
-            else:
                 z = (b * x[i] + a) / (1.0 - lambda_)
-                result[i] = log_bc + neg_half_nu_plus_1 * np.log(1.0 + z * z * inv_nu_minus_2) - log_1_minus_lambda
+                result[i] = log_bc + neg_half_nu_plus_1 * np.log(1.0 + z * z * inv_nu_minus_2)
+            else:
+                z = (b * x[i] + a) / (1.0 + lambda_)
+                result[i] = log_bc + neg_half_nu_plus_1 * np.log(1.0 + z * z * inv_nu_minus_2)
         
         return result
     
@@ -111,13 +111,13 @@ if _NUMBA_AVAILABLE:
         
         for i in prange(n):
             if x[i] < cutpoint:
-                z = (b * x[i] + a) / (1.0 + lambda_)
-                kernel = (1.0 + z * z * inv_nu_minus_2) ** neg_half_nu_plus_1
-                result[i] = bc * kernel / (1.0 + lambda_)
-            else:
                 z = (b * x[i] + a) / (1.0 - lambda_)
                 kernel = (1.0 + z * z * inv_nu_minus_2) ** neg_half_nu_plus_1
-                result[i] = bc * kernel / (1.0 - lambda_)
+                result[i] = bc * kernel
+            else:
+                z = (b * x[i] + a) / (1.0 + lambda_)
+                kernel = (1.0 + z * z * inv_nu_minus_2) ** neg_half_nu_plus_1
+                result[i] = bc * kernel
         
         return result
 else:
@@ -279,17 +279,17 @@ def hansen_skew_t_pdf(
     # Process left region (x < cutpoint)
     if np.any(left_mask):
         x_left = x[left_mask]
-        z_left = (b * x_left + a) / (1 + lambda_)
+        z_left = (b * x_left + a) / (1 - lambda_)
         kernel_left = (1 + z_left**2 * inv_nu_minus_2) ** neg_half_nu_plus_1
-        result[left_mask] = bc * kernel_left / (1 + lambda_)
+        result[left_mask] = bc * kernel_left
     
     # Process right region (x >= cutpoint)
     right_mask = ~left_mask
     if np.any(right_mask):
         x_right = x[right_mask]
-        z_right = (b * x_right + a) / (1 - lambda_)
+        z_right = (b * x_right + a) / (1 + lambda_)
         kernel_right = (1 + z_right**2 * inv_nu_minus_2) ** neg_half_nu_plus_1
-        result[right_mask] = bc * kernel_right / (1 - lambda_)
+        result[right_mask] = bc * kernel_right
     
     return float(result[0]) if scalar_input else result
 
@@ -347,15 +347,15 @@ def hansen_skew_t_logpdf(
     left_mask = x < cutpoint
     
     if np.any(left_mask):
-        z_left = (b * x[left_mask] + a) / (1 + lambda_)
+        z_left = (b * x[left_mask] + a) / (1 - lambda_)
         log_kernel_left = neg_half_nu_plus_1 * np.log(1 + z_left**2 * inv_nu_minus_2)
-        result[left_mask] = log_b + log_c + log_kernel_left - log_1_plus_lambda
+        result[left_mask] = log_b + log_c + log_kernel_left
     
     right_mask = ~left_mask
     if np.any(right_mask):
-        z_right = (b * x[right_mask] + a) / (1 - lambda_)
+        z_right = (b * x[right_mask] + a) / (1 + lambda_)
         log_kernel_right = neg_half_nu_plus_1 * np.log(1 + z_right**2 * inv_nu_minus_2)
-        result[right_mask] = log_b + log_c + log_kernel_right - log_1_minus_lambda
+        result[right_mask] = log_b + log_c + log_kernel_right
     
     return float(result[0]) if scalar_input else result
 
@@ -398,7 +398,7 @@ def hansen_skew_t_cdf(
     left_mask = x < cutpoint
     if np.any(left_mask):
         x_left = x[left_mask]
-        z_left = (b * x_left + a) / (1 + lambda_)
+        z_left = (b * x_left + a) / (1 - lambda_)
         # Scale z for Student-t CDF
         z_scaled = z_left * np.sqrt(nu / (nu - 2))
         # CDF for left region
@@ -409,7 +409,7 @@ def hansen_skew_t_cdf(
     right_mask = ~left_mask
     if np.any(right_mask):
         x_right = x[right_mask]
-        z_right = (b * x_right + a) / (1 - lambda_)
+        z_right = (b * x_right + a) / (1 + lambda_)
         z_scaled = z_right * np.sqrt(nu / (nu - 2))
         t_cdf = stats.t.cdf(z_scaled, df=nu)
         result[right_mask] = (1 - lambda_) / 2 + (1 + lambda_) * (t_cdf - 0.5)
@@ -507,17 +507,14 @@ def hansen_skew_t_rvs(
     # Compute Hansen constants
     a, b, c = _hansen_constants(nu, lambda_)
     
-    # Apply Fernández-Steel transformation
-    # γ = (1 + λ) / (1 - λ) is the asymmetry ratio
-    gamma = (1 + lambda_) / (1 - lambda_)
+    # Apply inverse Hansen transformation
+    # z >= 0 maps to right region: (by+a)/(1+λ) = z => y = (z*(1+λ) - a) / b
+    # z < 0 maps to left region:  (by+a)/(1-λ) = z => y = (z*(1-λ) - a) / b
+    y = np.where(z >= 0,
+                 (z * (1 + lambda_) - a) / b,
+                 (z * (1 - lambda_) - a) / b)
     
-    # Transform: positive values scaled by 1/γ, negative by γ
-    x_transformed = np.where(z >= 0, z / gamma, z * gamma)
-    
-    # Adjust for Hansen's standardization
-    x = (x_transformed - a) / b
-    
-    return x
+    return y
 
 
 def fit_hansen_skew_t_mle(

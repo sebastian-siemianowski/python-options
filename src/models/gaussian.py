@@ -211,6 +211,10 @@ class GaussianUnifiedConfig:
         self.pit_var_lambda = 0.97        # PIT-var EWM decay
         self.pit_var_dz_lo = 0.30         # Dead-zone: start correcting
         self.pit_var_dz_hi = 0.55         # Dead-zone: full correction
+        # v7.8: Tier 4 — dynamic leverage, liquidity stress, entropy stabilizer
+        self.leverage_dynamic_decay = 0.0  # EWM decay for crash-clustering GJR amplification
+        self.liq_stress_coeff = 0.0        # Brunnermeier-Pedersen liquidity-vol feedback
+        self.entropy_sigma_lambda = 0.0    # PIT-entropy sigma stabilizer
         for k, v in kwargs.items():
             setattr(self, k, v)
 
@@ -717,6 +721,9 @@ class GaussianDriftModel:
             q_opt, c_opt, phi_opt, beta_opt, mu_drift, garch)
         config.crps_ewm_lambda = s4['crps_ewm_lambda']
         config.crps_sigma_shrinkage = s4['crps_sigma_shrinkage']
+        config.leverage_dynamic_decay = s4.get('leverage_dynamic_decay', 0.0)
+        config.liq_stress_coeff = s4.get('liq_stress_coeff', 0.0)
+        config.entropy_sigma_lambda = s4.get('entropy_sigma_lambda', 0.0)
 
         # ── STAGE 4.5: GAS-Q adaptive process noise ──
         try:
@@ -756,6 +763,9 @@ class GaussianDriftModel:
             "gas_q_enabled": config.gas_q_enabled,
             "crps_ewm_lambda": s4['crps_ewm_lambda'],
             "crps_sigma_shrinkage": s4['crps_sigma_shrinkage'],
+            "leverage_dynamic_decay": s4.get('leverage_dynamic_decay', 0.0),
+            "liq_stress_coeff": s4.get('liq_stress_coeff', 0.0),
+            "entropy_sigma_lambda": s4.get('entropy_sigma_lambda', 0.0),
             "calibrated_gw": s5['calibrated_gw'],
             "calibrated_lambda_rho": s5['calibrated_lambda_rho'],
             "calibrated_beta_probit_corr": s5['calibrated_beta_probit_corr'],
@@ -1438,8 +1448,132 @@ class GaussianDriftModel:
                 best_crps_s = avg_crps
                 best_shrink = s
 
+        # ── Phase 6: Dynamic leverage decay (v7.8) ──────────────────────
+        # EWM of neg-return fraction amplifies GJR γ during persistent
+        # downtrends. Grid search gated on 0.5% CRPS improvement.
+        lev_dyn_opt = 0.0
+        unconditional_var = garch['unconditional_var']
+        if gl > 1e-8:
+            def _rebuild_h_gauss(lev_dyn=0.0, liq_c=0.0):
+                hg = np.zeros(n_train)
+                hg[0] = unconditional_var
+                _neg_ema = 0.5
+                for t_ in range(1, n_train):
+                    hg_ = go + ga * sq[t_-1] + gb * hg[t_-1]
+                    if lev_dyn > 0.01 and gl > 1e-8:
+                        if neg[t_-1] > 0.5:
+                            gamma_d = gl * max(0.5, min(2.0,
+                                1.0 + 2.0 * (_neg_ema - 0.5)))
+                            hg_ += gamma_d * sq[t_-1]
+                        _neg_ema = (1.0 - lev_dyn) * _neg_ema + lev_dyn * neg[t_-1]
+                    else:
+                        hg_ += gl * sq[t_-1] * neg[t_-1]
+                    if liq_c > 0.005 and unconditional_var > 1e-12:
+                        vr_ = hg_ / unconditional_var
+                        if vr_ > 1.0:
+                            ex_ = min(vr_ - 1.0, 3.0)
+                            amp_ = min(1.0 + liq_c * ex_ * ex_, 2.0)
+                            hg_ *= amp_
+                        if hg_ > 50.0 * unconditional_var:
+                            hg_ = 50.0 * unconditional_var
+                    hg[t_] = max(hg_, 1e-12)
+                return hg
+
+            def _crps_gauss_from_h(hv, shrink_s=best_shrink):
+                h_test = hv[test_start:n_train]
+                sig_h = np.sqrt(np.maximum(h_test * beta, 1e-20)) * shrink_s
+                sig_h = np.maximum(sig_h, 1e-10)
+                # Rebuild mu with best lambda
+                mu_eff_a = np.empty(n_test_inner)
+                ewm_m = float(np.mean(innovations[:test_start]))
+                al_e = 1.0 - crps_ewm_lambda if crps_ewm_lambda > 0 else 0.0
+                for t_ in range(test_start, n_train):
+                    mu_eff_a[t_ - test_start] = mu_pred[t_] + ewm_m + mu_drift
+                    if crps_ewm_lambda > 0:
+                        ewm_m = crps_ewm_lambda * ewm_m + al_e * innovations[t_]
+                z_a = (_ret_test - mu_eff_a) / sig_h
+                cdf_a = _ndtr(z_a)
+                pdf_a = _fast_norm_pdf(z_a)
+                crps_a = sig_h * (z_a * (2 * cdf_a - 1) + 2 * pdf_a - _inv_sqrt_pi)
+                return float(np.mean(crps_a))
+
+            crps_base6 = _crps_gauss_from_h(h)
+            for ld_c in [0.2, 0.4, 0.6]:
+                h_cand6 = _rebuild_h_gauss(lev_dyn=ld_c)
+                c6 = _crps_gauss_from_h(h_cand6)
+                if np.isfinite(c6) and c6 < crps_base6 * 0.995:
+                    crps_base6 = c6
+                    lev_dyn_opt = ld_c
+                    h = h_cand6  # update h for subsequent phases
+        else:
+            def _rebuild_h_gauss(lev_dyn=0.0, liq_c=0.0):
+                return h  # no leverage, no dynamic effect
+
+            def _crps_gauss_from_h(hv, shrink_s=best_shrink):
+                h_test = hv[test_start:n_train]
+                sig_h = np.sqrt(np.maximum(h_test * beta, 1e-20)) * shrink_s
+                sig_h = np.maximum(sig_h, 1e-10)
+                mu_eff_a = np.empty(n_test_inner)
+                ewm_m = float(np.mean(innovations[:test_start]))
+                al_e = 1.0 - crps_ewm_lambda if crps_ewm_lambda > 0 else 0.0
+                for t_ in range(test_start, n_train):
+                    mu_eff_a[t_ - test_start] = mu_pred[t_] + ewm_m + mu_drift
+                    if crps_ewm_lambda > 0:
+                        ewm_m = crps_ewm_lambda * ewm_m + al_e * innovations[t_]
+                z_a = (_ret_test - mu_eff_a) / sig_h
+                cdf_a = _ndtr(z_a)
+                pdf_a = _fast_norm_pdf(z_a)
+                crps_a = sig_h * (z_a * (2 * cdf_a - 1) + 2 * pdf_a - _inv_sqrt_pi)
+                return float(np.mean(crps_a))
+
+        # ── Phase 7: Liquidity-volatility feedback (v7.8) ───────────────
+        liq_opt = 0.0
+        if unconditional_var > 1e-12:
+            crps_base7 = _crps_gauss_from_h(h)
+            for lq_c in [0.1, 0.2, 0.3]:
+                h_cand7 = _rebuild_h_gauss(lev_dyn=lev_dyn_opt, liq_c=lq_c)
+                c7 = _crps_gauss_from_h(h_cand7)
+                if np.isfinite(c7) and c7 < crps_base7 * 0.995:
+                    crps_base7 = c7
+                    liq_opt = lq_c
+                    h = h_cand7
+
+        # ── Phase 8: PIT-Entropy sigma stabilizer (v7.8) ────────────────
+        ent_lambda_opt = 0.0
+        try:
+            from models.numba_kernels import pit_kl_uniform_kernel as _kl_kern_g
+            h_test_fin = h[test_start:n_train]
+            sig_fin = np.sqrt(np.maximum(h_test_fin * beta, 1e-20)) * best_shrink
+            sig_fin = np.maximum(sig_fin, 1e-10)
+            # Gaussian PIT
+            mu_eff_fin = np.empty(n_test_inner)
+            ewm_mf = float(np.mean(innovations[:test_start]))
+            al_ef = 1.0 - crps_ewm_lambda if crps_ewm_lambda > 0 else 0.0
+            for t_ in range(test_start, n_train):
+                mu_eff_fin[t_ - test_start] = mu_pred[t_] + ewm_mf + mu_drift
+                if crps_ewm_lambda > 0:
+                    ewm_mf = crps_ewm_lambda * ewm_mf + al_ef * innovations[t_]
+            z_pit = (_ret_test - mu_eff_fin) / sig_fin
+            pit_vals = _ndtr(z_pit)
+            pit_arr = np.ascontiguousarray(np.clip(pit_vals, 0.001, 0.999))
+            kl_val = float(_kl_kern_g(pit_arr))
+            if np.isfinite(kl_val) and kl_val > 0.01:
+                best_ent_crps = best_crps_s
+                for el_c in [0.05, 0.10, 0.20]:
+                    adj_sh = min(1.0, best_shrink * (1.0 + el_c * kl_val))
+                    c_ent = _crps_gauss_from_h(h, shrink_s=adj_sh)
+                    if np.isfinite(c_ent) and c_ent < best_ent_crps * 0.995:
+                        best_ent_crps = c_ent
+                        ent_lambda_opt = el_c
+                        best_shrink = adj_sh
+        except Exception:
+            ent_lambda_opt = 0.0
+
         return {'crps_ewm_lambda': crps_ewm_lambda,
-                'crps_sigma_shrinkage': best_shrink}
+                'crps_sigma_shrinkage': best_shrink,
+                'leverage_dynamic_decay': lev_dyn_opt,
+                'liq_stress_coeff': liq_opt,
+                'entropy_sigma_lambda': ent_lambda_opt}
 
     @classmethod
     def _gaussian_stage_5_calibration(cls, returns, vol, config, train_frac=0.7):

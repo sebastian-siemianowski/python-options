@@ -18,9 +18,9 @@ import pandas as pd
 # Add src directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ewma_covariance import compute_ewma_covariance
-from portfolio_kelly import compute_kelly_weights, build_multi_asset_portfolio
-from portfolio_utils import apply_cvar_constraint
+from tuning.ewma_covariance import compute_ewma_covariance
+from decision.portfolio_kelly import compute_kelly_weights, build_multi_asset_portfolio
+from decision.portfolio_utils import apply_cvar_constraint
 
 
 def test_ewma_covariance_multi_asset():
@@ -81,14 +81,16 @@ def test_ewma_covariance_multi_asset():
     print(f"✓ Shrinkage intensity: {ewma_result['shrinkage_intensity']:.4f}")
     
     # Check positive definiteness
-    eigvals = np.linalg.eigvalsh(cov_latest.values)
+    cov_array = cov_latest.values if hasattr(cov_latest, 'values') else cov_latest
+    eigvals = np.linalg.eigvalsh(cov_array)
     assert np.all(eigvals > 0), "Covariance matrix is not positive definite"
     print(f"✓ Covariance matrix is positive definite (min eigenvalue: {np.min(eigvals):.6f})")
     
     # Check correlation matrix properties
-    assert np.allclose(np.diag(corr_latest.values), 1.0), "Correlation diagonal should be 1"
-    assert np.all(corr_latest.values >= -1.0) and np.all(corr_latest.values <= 1.0), "Correlations out of range"
-    print(f"✓ Correlation matrix valid (range: [{corr_latest.values.min():.3f}, {corr_latest.values.max():.3f}])")
+    corr_array = corr_latest.values if hasattr(corr_latest, 'values') else corr_latest
+    assert np.allclose(np.diag(corr_array), 1.0), "Correlation diagonal should be 1"
+    assert np.all(corr_array >= -1.0) and np.all(corr_array <= 1.0), "Correlations out of range"
+    print(f"✓ Correlation matrix valid (range: [{corr_array.min():.3f}, {corr_array.max():.3f}])")
     
     # Display correlation structure
     print("\nEstimated Correlation Matrix:")

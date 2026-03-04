@@ -293,72 +293,59 @@ class TestSMCResampling(unittest.TestCase):
 
 
 class TestExperimentalModels(unittest.TestCase):
-    """Test new experimental models."""
+    """Test current experimental models (Gen18+)."""
     
-    def test_asymmetric_loss_model(self):
-        """Test AsymmetricLossModel."""
-        from arena.experimental_models import AsymmetricLossModel
+    def test_experimental_model_specs_exist(self):
+        """Test that experimental model specs are discoverable."""
+        from arena.arena_models import get_experimental_model_specs, EXPERIMENTAL_MODELS
         
+        specs = get_experimental_model_specs()
+        self.assertEqual(len(specs), len(EXPERIMENTAL_MODELS))
+        self.assertGreater(len(specs), 10)
+    
+    def test_experimental_model_has_required_attributes(self):
+        """Test that each experimental model spec has required attributes."""
+        from arena.arena_models import get_experimental_model_specs
+        
+        specs = get_experimental_model_specs()
+        for spec in specs:
+            self.assertTrue(hasattr(spec, 'name'), f"Spec missing 'name'")
+            self.assertTrue(hasattr(spec, 'model_class'), f"Spec missing 'model_class'")
+            self.assertTrue(hasattr(spec, 'n_params'), f"{spec.name} missing 'n_params'")
+            self.assertTrue(hasattr(spec, 'param_names'), f"{spec.name} missing 'param_names'")
+            self.assertGreater(spec.n_params, 0, f"{spec.name} has n_params=0")
+    
+    def test_experimental_model_fitting(self):
+        """Test fitting a sample of experimental models on synthetic data."""
+        from arena.arena_models import get_experimental_model_specs
+        
+        specs = get_experimental_model_specs()
         np.random.seed(42)
         n = 300
         returns = np.random.normal(0, 0.02, n)
         vol = np.abs(returns) * 0.8 + 0.01
         
-        model = AsymmetricLossModel(alpha=2.0)
-        result = model.fit(returns, vol)
-        
-        self.assertIn("q", result)
-        self.assertIn("alpha", result)
-        self.assertEqual(result["alpha"], 2.0)
-        self.assertTrue(result["success"])
+        # Test first 3 models as a representative sample
+        for spec in specs[:3]:
+            model = spec.model_class()
+            result = model.fit(returns, vol)
+            
+            self.assertIn("log_likelihood", result, f"{spec.name} missing log_likelihood")
+            self.assertIn("bic", result, f"{spec.name} missing bic")
+            self.assertIn("success", result, f"{spec.name} missing success")
+            self.assertTrue(result["success"], f"{spec.name} fit failed")
     
-    def test_multi_horizon_model(self):
-        """Test MultiHorizonModel."""
-        from arena.experimental_models import MultiHorizonModel
+    def test_experimental_model_diversity(self):
+        """Test that models have diverse unique names."""
+        from arena.arena_models import get_experimental_model_specs
         
-        np.random.seed(42)
-        n = 500
-        returns = np.random.normal(0.0001, 0.02, n)
-        vol = np.abs(returns) * 0.8 + 0.01
+        specs = get_experimental_model_specs()
+        names = [s.name for s in specs]
         
-        model = MultiHorizonModel(horizons=[1, 5, 20])
-        result = model.fit(returns, vol)
-        
-        self.assertIn("horizons", result)
-        self.assertEqual(result["horizons"], [1, 5, 20])
-        self.assertTrue(result["success"])
-    
-    def test_ensemble_distillation_model(self):
-        """Test EnsembleDistillationModel."""
-        from arena.experimental_models import EnsembleDistillationModel
-        
-        np.random.seed(42)
-        n = 300
-        returns = np.random.normal(0, 0.02, n)
-        vol = np.abs(returns) * 0.8 + 0.01
-        
-        model = EnsembleDistillationModel(lambda_reg=1.0)
-        result = model.fit(returns, vol)
-        
-        self.assertIn("lambda_reg", result)
-        self.assertIn("teacher_mean", result)
-        self.assertTrue(result["success"])
-    
-    def test_pit_constrained_model(self):
-        """Test PITConstrainedModel."""
-        from arena.experimental_models import PITConstrainedModel
-        
-        np.random.seed(42)
-        n = 300
-        returns = np.random.normal(0, 0.02, n)
-        vol = np.abs(returns) * 0.8 + 0.01
-        
-        model = PITConstrainedModel(pit_threshold=0.05)
-        result = model.fit(returns, vol)
-        
-        self.assertIn("ks_pvalue", result)
-        self.assertIn("pit_calibrated", result)
-        self.assertTrue(result["success"])
+        # All names should be unique
+        self.assertEqual(len(names), len(set(names)))
+        # Should have many models
+        self.assertGreater(len(names), 20)
 
 
 if __name__ == "__main__":

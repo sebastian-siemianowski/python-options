@@ -640,8 +640,8 @@ except ImportError:
         nu_normal: float,
         nu_crisis: float,
         epsilon: float,
-        loc: float = 0.0,
-        scale: float = 1.0,
+        mu: float = 0.0,
+        sigma: float = 1.0,
         random_state=None
     ):
         """Fallback contaminated student-t sampling."""
@@ -664,7 +664,7 @@ except ImportError:
         if n_crisis > 0:
             samples[from_crisis] = rng.standard_t(df=nu_crisis, size=n_crisis)
         
-        return loc + scale * samples
+        return mu + sigma * samples
 
 
 # =============================================================================
@@ -1004,6 +1004,93 @@ except Exception:
 EDGE_FLOOR = float(np.clip(EDGE_FLOOR, 0.0, 1.5))
 
 DEFAULT_CACHE_PATH = os.path.join("src", "data", "currencies", "fx_plnjpy.json")
+
+# ============================================================================
+# ASSET-TYPE-AWARE FORECAST BOUNDS (March 2026)
+# ============================================================================
+# Physical limits on forecast uncertainty (sig_H) and CI bounds.
+# These prevent absurd CI values (e.g., [-1,832,151%, +1,831,…%]) caused by
+# extreme-vol assets (ABTC: $19,240→$1) producing sig_H > 800% via √H scaling
+# in the MC simulation while sig_H had no cap.
+#
+# Design rationale:
+#   - mu_H is already capped to [-4.6, +1.61] (log-return) = [-99%, +400%]
+#   - sig_H must be capped consistently so CI = mu_H ± z*sig_H stays bounded
+#   - Asset-type-specific caps mirror market_temperature.py hard caps
+#   - All values in LOG-RETURN space (multiply by 100 for %)
+# ============================================================================
+
+# Maximum sig_H per horizon per asset type (log-return units)
+# Derived from realistic annual volatility maxima:
+#   equity: ~120% annual → σ_daily ≈ 7.5% → sig_H(252) ≈ 1.20
+#   currency: ~30% annual → σ_daily ≈ 1.9% → sig_H(252) ≈ 0.30
+#   metal: ~60% annual → σ_daily ≈ 3.8% → sig_H(252) ≈ 0.60
+#   crypto: ~200% annual → σ_daily ≈ 12.6% → sig_H(252) ≈ 2.00
+_SIG_H_ANNUAL_CAP = {
+    "equity": 1.20,    # 120% annual σ — covers high-vol small caps
+    "currency": 0.30,  # 30% annual σ — covers EM currencies
+    "metal": 0.60,     # 60% annual σ — covers volatile precious metals miners
+    "crypto": 2.00,    # 200% annual σ — covers crypto
+}
+
+# Absolute CI bounds in log-return space (same limits as mu_H clamp)
+_CI_LOG_FLOOR = -4.6    # exp(-4.6) - 1 ≈ -99%  (near-total loss)
+_CI_LOG_CAP = 1.61      # exp(1.61) - 1 ≈ 400%  (5× gain)
+
+
+def classify_asset_type(symbol: str) -> str:
+    """Classify a ticker symbol into asset type for forecast bounding.
+
+    Returns one of: 'equity', 'currency', 'metal', 'crypto'.
+
+    Used by the signal pipeline to apply asset-type-aware CI bounds.
+    Mirrors the classification in verify_forecasts.py and
+    market_temperature.py hard caps.
+    """
+    if not symbol:
+        return "equity"
+    s = symbol.upper().strip()
+    # Crypto detection: must be crypto pair format (BTC-USD) or exact ticker
+    _CRYPTO_BASES = {"BTC", "ETH", "DOGE", "SOL", "ADA", "XRP", "AVAX",
+                     "MATIC", "DOT", "LINK", "UNI", "SHIB"}
+    if "-" in s:
+        base = s.split("-")[0]
+        if base in _CRYPTO_BASES:
+            return "crypto"
+    # Currency detection (FX pairs end in =X, or contain JPY/USD patterns)
+    if s.endswith("=X"):
+        return "currency"
+    if "JPY" in s or "EUR" in s or "GBP" in s or "CHF" in s or "AUD" in s:
+        # But not equities that happen to contain these strings
+        if not any(s.startswith(p) for p in ["BTC", "ETH", "JPM"]):
+            parts = s.split("=")
+            if len(parts) > 1 or len(s) == 6:  # USDJPY=X or USDJPY
+                return "currency"
+    # Futures / metals
+    if s.endswith("=F"):
+        return "metal"
+    _METAL_TICKERS = {
+        "GLD", "SLV", "GDX", "GDXJ", "SIL", "SLVR", "GOLD", "NEM",
+        "AEM", "WPM", "PAAS", "AG", "KGC", "FNV", "RGLD", "MAG",
+        "EXK", "CDE", "HL", "FSM", "SILV",
+    }
+    if s in _METAL_TICKERS:
+        return "metal"
+    return "equity"
+
+
+def _compute_sig_h_cap(H: int, asset_type: str) -> float:
+    """Compute the maximum allowed sig_H for a given horizon and asset type.
+
+    Uses √H scaling from the annual cap:
+        sig_H_max = annual_cap × √(H / 252)
+
+    A minimum floor ensures very short horizons don't over-tighten.
+    """
+    annual_cap = _SIG_H_ANNUAL_CAP.get(asset_type, 1.20)
+    sig_cap = annual_cap * math.sqrt(max(H, 1) / 252.0)
+    # Floor: at least 0.005 (0.5%) to avoid over-tightening short-horizon low-vol assets
+    return max(sig_cap, 0.005)
 
 # ============================================================================
 # UPGRADE #3: Display Price Inertia (Presentation-Only)
@@ -3108,6 +3195,10 @@ def _kalman_filter_drift(
                 q_vol_coupling=float(tuned_params.get('q_vol_coupling', 0.0)),
                 loc_bias_var_coeff=float(tuned_params.get('loc_bias_var_coeff', 0.0)),
                 loc_bias_drift_coeff=float(tuned_params.get('loc_bias_drift_coeff', 0.0)),
+                # v7.8: Elite MC enhancements
+                leverage_dynamic_decay=float(tuned_params.get('leverage_dynamic_decay', 0.0)),
+                liq_stress_coeff=float(tuned_params.get('liq_stress_coeff', 0.0)),
+                entropy_sigma_lambda=float(tuned_params.get('entropy_sigma_lambda', 0.0)),
                 # Stage 6: pre-calibrated walk-forward CV params
                 calibrated_gw=float(tuned_params.get('calibrated_gw', 0.50)),
                 calibrated_nu_pit=float(tuned_params.get('calibrated_nu_pit', 0.0)),
@@ -5779,6 +5870,9 @@ def run_unified_mc(
     loc_bias_var_coeff: float = 0.0,
     loc_bias_drift_coeff: float = 0.0,
     q_vol_coupling: float = 0.0,
+    # v7.8: Elite MC enhancements — dynamic leverage, liquidity stress
+    leverage_dynamic_decay: float = 0.0,
+    liq_stress_coeff: float = 0.0,
 ) -> Dict[str, np.ndarray]:
     """Unified MC engine with GJR-GARCH + jumps + Student-t via Numba kernel.
 
@@ -5916,7 +6010,7 @@ def run_unified_mc(
                 eps = contaminated_student_t_rvs(
                     size=n_paths, nu_normal=cst_nu_normal,
                     nu_crisis=cst_nu_crisis, epsilon=cst_epsilon,
-                    loc=0.0, scale=1.0, random_state=rng
+                    mu=0.0, sigma=1.0, random_state=rng
                 ) * eps_sc
             elif nu is not None and nu > 2.0:
                 eps_sc = sigma_t * math.sqrt((nu - 2.0) / nu)
@@ -6057,6 +6151,9 @@ def run_unified_mc(
             loc_bias_var_coeff,
             loc_bias_drift_coeff,
             q_vol_coupling,
+            # v7.8: Elite MC enhancements
+            leverage_dynamic_decay,
+            liq_stress_coeff,
         )
 
         # Apply initial drift posterior uncertainty:
@@ -6761,6 +6858,10 @@ def bayesian_model_average_mc(
         loc_bias_drift_coeff_m = float(model_params.get('loc_bias_drift_coeff', 0.0))
         q_vol_coupling_m = float(model_params.get('q_vol_coupling', 0.0))
 
+        # v7.8: Elite MC enhancements (dynamic leverage, liquidity stress)
+        leverage_dynamic_decay_m = float(model_params.get('leverage_dynamic_decay', 0.0))
+        liq_stress_coeff_m = float(model_params.get('liq_stress_coeff', 0.0))
+
         # v7.8: Per-model Hansen/CST pipeline augmentations (March 2026)
         # Prefer per-model values from internal pipeline; fall back to global
         _hansen_act_m = model_params.get('hansen_activated', False)
@@ -6857,6 +6958,9 @@ def bayesian_model_average_mc(
             loc_bias_var_coeff=loc_bias_var_coeff_m,
             loc_bias_drift_coeff=loc_bias_drift_coeff_m,
             q_vol_coupling=q_vol_coupling_m,
+            # v7.8: Elite MC enhancements
+            leverage_dynamic_decay=leverage_dynamic_decay_m,
+            liq_stress_coeff=liq_stress_coeff_m,
         )
         # v7.5: Collect samples at multiple horizons for calibration fast mode
         if horizons_extract:
@@ -7872,7 +7976,7 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     return "HOLD"
 
 
-def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68, tuned_params: Optional[Dict] = None, asset_key: Optional[str] = None, _calibration_fast_mode: bool = False, n_mc_paths: int = 10000) -> Tuple[List[Signal], Dict[int, Dict[str, float]]]:
+def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68, tuned_params: Optional[Dict] = None, asset_key: Optional[str] = None, _calibration_fast_mode: bool = False, n_mc_paths: int = 10000, asset_type: str = "equity") -> Tuple[List[Signal], Dict[int, Dict[str, float]]]:
     """Compute signals using regime‑aware priors, tail‑aware probability mapping, and
     anti‑snap logic (two‑day confirmation + hysteresis + smoothing) without extra flags.
 
@@ -8408,6 +8512,17 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         mu_H, sig_H = _apply_emos_correction(mu_H, sH, _sig_cal, H, vol_regime=vol_reg_now)
 
         # ========================================================================
+        # SAFETY: Cap sig_H to prevent absurd CI bounds (March 2026)
+        # ========================================================================
+        # For extreme-vol assets (e.g., ABTC daily σ≈50%), uncapped sig_H grows
+        # as σ_daily × √H, reaching 800%+ at H=252. This produces CI displays
+        # like [-1,832,151%, +1,831,…%]. Cap sig_H using asset-type-aware
+        # annual volatility limits with √H scaling.
+        # ========================================================================
+        _sig_h_cap = _compute_sig_h_cap(H, asset_type)
+        sig_H = min(sig_H, _sig_h_cap)
+
+        # ========================================================================
         # SAFETY: Clamp mu_H to prevent exp() overflow and absurd forecasts
         # ========================================================================
         # Principled bound: the median forecast should not exceed ±4σ of the
@@ -8612,15 +8727,27 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         ci_low = float(mu_H - z_star * sig_H)
         ci_high = float(mu_H + z_star * sig_H)
 
+        # Clamp CI to physical limits (March 2026)
+        # Can't predict worse than -99% loss or better than +400% gain
+        ci_low = max(ci_low, _CI_LOG_FLOOR)
+        ci_high = min(ci_high, _CI_LOG_CAP)
+        # Ensure CI ordering after clamping
+        if ci_low > ci_high:
+            ci_low, ci_high = ci_high, ci_low
+
         # Convert expected log‑return to PLN profit for a 1,000,000 PLN notional
         exp_mult = float(np.exp(mu_H))
         ci_low_mult = float(np.exp(ci_low))
         ci_high_mult = float(np.exp(ci_high))
 
-        # Raw (unsmoothed) profit values
-        raw_profit_pln = float(NOTIONAL_PLN) * (exp_mult - 1.0)
-        raw_profit_ci_low_pln = float(NOTIONAL_PLN) * (ci_low_mult - 1.0)
-        raw_profit_ci_high_pln = float(NOTIONAL_PLN) * (ci_high_mult - 1.0)
+        # Raw (unsmoothed) profit values — clamped to physical limits
+        # Can't lose more than 100% (price ≥ 0) or gain more than 400%
+        raw_profit_pln = float(np.clip(NOTIONAL_PLN * (exp_mult - 1.0),
+                                       -NOTIONAL_PLN, 4.0 * NOTIONAL_PLN))
+        raw_profit_ci_low_pln = float(np.clip(NOTIONAL_PLN * (ci_low_mult - 1.0),
+                                              -NOTIONAL_PLN, 4.0 * NOTIONAL_PLN))
+        raw_profit_ci_high_pln = float(np.clip(NOTIONAL_PLN * (ci_high_mult - 1.0),
+                                               -NOTIONAL_PLN, 4.0 * NOTIONAL_PLN))
 
         # ========================================================================
         # UPGRADE #3: Display Price Inertia (Presentation-Only)
@@ -8984,8 +9111,11 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         # Load tuned params with BMA structure for model averaging
         tuned_params = _load_tuned_kalman_params(asset)
 
+        # Detect asset type for CI bounding (March 2026)
+        _asset_type = classify_asset_type(asset)
+
         # Pass asset_key (canon) for display price inertia (Upgrade #3)
-        sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci, tuned_params=tuned_params, asset_key=canon)
+        sigs, thresholds = latest_signals(feats, horizons, last_close=last_close, t_map=args.t_map, ci=args.ci, tuned_params=tuned_params, asset_key=canon, asset_type=_asset_type)
 
         # Compute diagnostics if requested
         diagnostics = {}

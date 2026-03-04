@@ -8,6 +8,7 @@ rich
 lxml
 hmmlearn
 numba
+pytest-xdist
 torch
 prophet
 pytorch-lightning

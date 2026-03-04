@@ -1530,7 +1530,7 @@ def tune_asset_q(
         
         # Adaptive data quality filter (February 2026)
         # Detects phantom/synthetic data via Volume analysis
-        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=True)
+        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=(not _is_quiet()))
         if _dq_report.get('rows_purged_leading', 0) > 0 or _dq_report.get('window_applied', False):
             _log(f"     🔬  Data quality: {_dq_report['rows_original']} → {_dq_report['rows_final']} rows")
         
@@ -3618,6 +3618,10 @@ def fit_all_models_for_regime(
                 "sigma_eta": float(getattr(config, 'sigma_eta', 0.0)),
                 "t_df_asym": float(getattr(config, 't_df_asym', 0.0)),
                 "regime_switch_prob": float(getattr(config, 'regime_switch_prob', 0.0)),
+                # v7.8 elite MC enhancements: dynamic leverage, liquidity stress, entropy
+                "leverage_dynamic_decay": float(getattr(config, 'leverage_dynamic_decay', 0.0)),
+                "liq_stress_coeff": float(getattr(config, 'liq_stress_coeff', 0.0)),
+                "entropy_sigma_lambda": float(getattr(config, 'entropy_sigma_lambda', 0.0)),
                 # GARCH-Kalman reconciliation + Q_t coupling + location bias (February 2026)
                 "garch_kalman_weight": float(getattr(config, 'garch_kalman_weight', 0.0)),
                 "q_vol_coupling": float(getattr(config, 'q_vol_coupling', 0.0)),
@@ -3759,6 +3763,10 @@ def fit_all_models_for_regime(
                 "garch_unconditional_var": float(g_config.garch_unconditional_var),
                 "crps_ewm_lambda": float(g_config.crps_ewm_lambda),
                 "crps_sigma_shrinkage": float(g_config.crps_sigma_shrinkage),
+                # v7.8 elite MC enhancements
+                "leverage_dynamic_decay": float(getattr(g_config, 'leverage_dynamic_decay', 0.0)),
+                "liq_stress_coeff": float(getattr(g_config, 'liq_stress_coeff', 0.0)),
+                "entropy_sigma_lambda": float(getattr(g_config, 'entropy_sigma_lambda', 0.0)),
                 "calibrated_gw": float(g_config.calibrated_gw),
                 "calibrated_lambda_rho": float(g_config.calibrated_lambda_rho),
                 "calibrated_beta_probit_corr": float(g_config.calibrated_beta_probit_corr),
@@ -4656,7 +4664,7 @@ def tune_asset_with_bma(
             return None
         
         # Adaptive data quality filter (February 2026)
-        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=True)
+        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=(not _is_quiet()))
         if _dq_report.get('rows_purged_leading', 0) > 0 or _dq_report.get('window_applied', False):
             _log(f"     🔬  Data quality: {_dq_report['rows_original']} → {_dq_report['rows_final']} rows")
         

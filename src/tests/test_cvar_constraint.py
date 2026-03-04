@@ -14,8 +14,8 @@ import pandas as pd
 # Add src directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from portfolio_kelly import build_multi_asset_portfolio
-from portfolio_utils import compute_cvar_from_paths
+from decision.portfolio_kelly import build_multi_asset_portfolio
+from decision.portfolio_utils import compute_cvar_from_paths
 
 
 def test_cvar_computation():

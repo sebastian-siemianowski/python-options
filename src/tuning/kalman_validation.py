@@ -277,7 +277,8 @@ def compare_predictive_likelihood(
     asset_name: str = "Asset",
     train_days: int = 504,
     test_days: int = 63,
-    max_windows: int = 10
+    max_windows: int = 10,
+    ohlc_df: Optional[pd.DataFrame] = None,
 ) -> LikelihoodComparisonResult:
     """
     Compare Kalman filter predictive likelihood against baseline models.
@@ -295,6 +296,7 @@ def compare_predictive_likelihood(
         train_days: Training window size (default ~2 years)
         test_days: Test window size (default ~3 months)
         max_windows: Maximum number of test windows
+        ohlc_df: Optional OHLCV DataFrame for HAR-GK volatility estimation
         
     Returns:
         LikelihoodComparisonResult with comparative log-likelihoods
@@ -352,7 +354,11 @@ def compare_predictive_likelihood(
         train_px = px.loc[window["train_start"]:window["train_end"]]
         
         try:
-            train_feats = compute_features(train_px)
+            # Slice OHLC to training window if available
+            train_ohlc = None
+            if ohlc_df is not None:
+                train_ohlc = ohlc_df.loc[window["train_start"]:window["train_end"]]
+            train_feats = compute_features(train_px, ohlc_df=train_ohlc)
             
             # Get Kalman drift and volatility at end of training
             mu_kf = train_feats.get("mu_kf", train_feats.get("mu"))
@@ -814,7 +820,8 @@ def run_full_validation_suite(
     px: pd.Series,
     asset_name: str = "Asset",
     plot: bool = False,
-    plot_dir: Optional[str] = None
+    plot_dir: Optional[str] = None,
+    ohlc_df: Optional[pd.DataFrame] = None,
 ) -> Dict[str, any]:
     """
     Run complete Level-7 validation suite on asset.
@@ -838,7 +845,7 @@ def run_full_validation_suite(
     from decision.signals import compute_features
     
     # Compute features (includes Kalman filtering)
-    feats = compute_features(px)
+    feats = compute_features(px, ohlc_df=ohlc_df)
     
     # Extract required series
     ret = feats.get("ret")
@@ -871,7 +878,7 @@ def run_full_validation_suite(
     
     # 2. Predictive likelihood comparison
     results["likelihood_comparison"] = compare_predictive_likelihood(
-        px, asset_name
+        px, asset_name, ohlc_df=ohlc_df
     )
     
     # 3. PIT calibration

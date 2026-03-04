@@ -159,7 +159,7 @@ class TestConfiguration:
         assert default_config.max_weight == 0.9
         assert default_config.sigma_ratio_min == 1.5
         assert default_config.sigma_ratio_max == 5.0
-        assert default_config.entropy_penalty == 0.05
+        assert default_config.entropy_penalty == 0.0
         assert default_config.bic_threshold == 0.0
     
     def test_config_from_dict(self):

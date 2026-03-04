@@ -615,6 +615,31 @@ class UnifiedStudentTConfig:
     loc_bias_drift_coeff: float = 0.0  # b ∈ [-0.5, 0.5], 0 = disabled
 
     # ---------------------------------------------------------------------------
+    # DYNAMIC LEVERAGE (Bouchaud & Potters 2003) — v7.8
+    # γ_eff = γ × clamp(1 + 2·(neg_frac_ema - 0.5), 0.5, 2.0)
+    # Tracks EWM of negative-return fraction; amplifies GJR γ during crash
+    # clustering. d = 0: static GJR (disabled), d ∈ (0, 0.8]: EWM decay
+    # ---------------------------------------------------------------------------
+    leverage_dynamic_decay: float = 0.0  # d ∈ [0, 0.8], 0 = disabled
+
+    # ---------------------------------------------------------------------------
+    # LIQUIDITY-VOLATILITY FEEDBACK (Brunnermeier-Pedersen 2009) — v7.8
+    # h_t *= (1 + λ·max(0, h_t/θ_long - 1)²)
+    # Quadratic amplification when sustained vol exceeds long-term θ.
+    # λ = 0: disabled, λ ∈ (0, 0.5]: typical 0.05–0.20
+    # ---------------------------------------------------------------------------
+    liq_stress_coeff: float = 0.0  # λ_liq ∈ [0, 0.5], 0 = disabled
+
+    # ---------------------------------------------------------------------------
+    # PIT-ENTROPY SIGMA STABILIZER — v7.8
+    # crps_shrink_adj = crps_shrink × (1 + λ_ent × D_KL(PIT || Uniform))
+    # When PIT diverges from Uniform (miscalibrated), relaxes sigma shrinkage.
+    # Bridges CRPS↔PIT tension at tuning time. Baked into crps_sigma_shrinkage.
+    # λ = 0: disabled, λ ∈ (0, 0.5]: typical 0.05–0.15
+    # ---------------------------------------------------------------------------
+    entropy_sigma_lambda: float = 0.0  # λ_ent ∈ [0, 0.5], 0 = disabled
+
+    # ---------------------------------------------------------------------------
     # PRE-CALIBRATED PIPELINE PARAMETERS
     # ---------------------------------------------------------------------------
     # Estimated ONCE during tuning (Stage 6) and read directly in
@@ -676,6 +701,10 @@ class UnifiedStudentTConfig:
         self.q_vol_coupling = float(np.clip(self.q_vol_coupling, 0.0, 1.0))
         self.loc_bias_var_coeff = float(np.clip(self.loc_bias_var_coeff, -0.5, 0.5))
         self.loc_bias_drift_coeff = float(np.clip(self.loc_bias_drift_coeff, -0.5, 0.5))
+        # v7.8: Tier 4 — dynamic leverage, liquidity stress, entropy stabilizer
+        self.leverage_dynamic_decay = float(np.clip(self.leverage_dynamic_decay, 0.0, 0.8))
+        self.liq_stress_coeff = float(np.clip(self.liq_stress_coeff, 0.0, 0.5))
+        self.entropy_sigma_lambda = float(np.clip(self.entropy_sigma_lambda, 0.0, 0.5))
 
     @property
     def q_stress(self) -> float:
@@ -1584,6 +1613,9 @@ class UnifiedPhiStudentTModel:
             sigma_eta=s5g['sigma_eta'],
             t_df_asym=s5g['t_df_asym'],
             regime_switch_prob=s5g['regime_switch_prob'],
+            leverage_dynamic_decay=s5g['leverage_dynamic_decay'],
+            liq_stress_coeff=s5g['liq_stress_coeff'],
+            entropy_sigma_lambda=s5g['entropy_sigma_lambda'],
             garch_kalman_weight=garch_kalman_w,
             q_vol_coupling=q_vol_zeta,
             loc_bias_var_coeff=s5h['loc_bias_var_coeff'],
@@ -1630,6 +1662,9 @@ class UnifiedPhiStudentTModel:
             sigma_eta=s5g['sigma_eta'],
             t_df_asym=s5g['t_df_asym'],
             regime_switch_prob=s5g['regime_switch_prob'],
+            leverage_dynamic_decay=s5g['leverage_dynamic_decay'],
+            liq_stress_coeff=s5g['liq_stress_coeff'],
+            entropy_sigma_lambda=s5g['entropy_sigma_lambda'],
             garch_kalman_weight=garch_kalman_w,
             q_vol_coupling=q_vol_zeta,
             loc_bias_var_coeff=s5h['loc_bias_var_coeff'],
@@ -4256,6 +4291,8 @@ class UnifiedPhiStudentTModel:
             'rho_leverage': 0.0, 'kappa_mean_rev': 0.0,
             'theta_long_var': unconditional_var, 'crps_sigma_shrinkage': 1.0,
             'sigma_eta': 0.0, 't_df_asym': 0.0, 'regime_switch_prob': 0.0,
+            'leverage_dynamic_decay': 0.0, 'liq_stress_coeff': 0.0,
+            'entropy_sigma_lambda': 0.0,
         }
 
         if n_train <= 200:
@@ -4303,24 +4340,45 @@ class UnifiedPhiStudentTModel:
             except (ImportError, Exception):
                 _use_numba_garch = False
 
-            def _build_garch(rho_c, kap_c, eta_c=0.0, reg_c=0.0):
+            def _build_garch(rho_c, kap_c, eta_c=0.0, reg_c=0.0,
+                            lev_dyn=0.0, liq_c=0.0):
                 if _use_numba_garch:
-                    return _numba_garch(
+                    h = _numba_garch(
                         n_train, innovations, sq_inn, neg_ind,
                         garch_omega, garch_alpha, garch_leverage, garch_beta,
                         unconditional_var, q_stress_ratio,
                         rho_c, kap_c, eta_c, reg_c,
                     )
+                    # v7.8: Apply liquidity stress post-hoc
+                    if liq_c > 0.005 and unconditional_var > 1e-12:
+                        for t_ in range(1, n_train):
+                            vr_ = h[t_] / unconditional_var
+                            if vr_ > 1.0:
+                                ex_ = min(vr_ - 1.0, 3.0)
+                                amp_ = min(1.0 + liq_c * ex_ * ex_, 2.0)
+                                h[t_] *= amp_
+                            if h[t_] > 50.0 * unconditional_var:
+                                h[t_] = 50.0 * unconditional_var
+                    return h
                 h = np.zeros(n_train)
                 h[0] = unconditional_var
                 _p_st = 0.1
                 _sm = math.sqrt(q_stress_ratio)
                 _msqrt_bg = math.sqrt
+                _neg_ema = 0.5
                 for t_ in range(1, n_train):
                     h_ = (garch_omega
                           + garch_alpha * sq_inn[t_-1]
-                          + garch_leverage * sq_inn[t_-1] * neg_ind[t_-1]
                           + garch_beta * h[t_-1])
+                    # GJR leverage (v7.8: with dynamic amplification)
+                    if lev_dyn > 0.01 and garch_leverage > 1e-8:
+                        if neg_ind[t_-1] > 0.5:
+                            gamma_dyn = garch_leverage * max(0.5, min(2.0,
+                                1.0 + 2.0 * (_neg_ema - 0.5)))
+                            h_ += gamma_dyn * sq_inn[t_-1]
+                        _neg_ema = (1.0 - lev_dyn) * _neg_ema + lev_dyn * neg_ind[t_-1]
+                    else:
+                        h_ += garch_leverage * sq_inn[t_-1] * neg_ind[t_-1]
                     if rho_c > 0.01 and h[t_-1] > 1e-12:
                         nz_ = innovations[t_-1] / _msqrt_bg(h[t_-1])
                         if nz_ < 0:
@@ -4336,6 +4394,15 @@ class UnifiedPhiStudentTModel:
                         h_ = h_ * (1.0 + _p_st * (_sm - 1.0))
                     if kap_c > 0.001:
                         h_ = (1.0 - kap_c) * h_ + kap_c * unconditional_var
+                    # v7.8: Liquidity stress (must be AFTER mean-reversion)
+                    if liq_c > 0.005 and unconditional_var > 1e-12:
+                        vr_ = h_ / unconditional_var
+                        if vr_ > 1.0:
+                            ex_ = min(vr_ - 1.0, 3.0)
+                            amp_ = min(1.0 + liq_c * ex_ * ex_, 2.0)
+                            h_ *= amp_
+                        if h_ > 50.0 * unconditional_var:
+                            h_ = 50.0 * unconditional_var
                     h[t_] = max(h_, 1e-12)
                 return h
 
@@ -4458,6 +4525,78 @@ class UnifiedPhiStudentTModel:
                     best_shrink = fine
                 fine += 0.01
 
+            # ── Phase 6: Dynamic leverage decay (v7.8) ──────────────────────
+            # EWM of neg-return fraction amplifies GJR γ during persistent
+            # downtrends. Grid search gated on 0.5% CRPS improvement.
+            lev_dyn_opt = 0.0
+            if garch_leverage > 1e-8:
+                h_base6 = _build_garch(rho_opt, kap_opt, sigma_eta, regime_prob)
+                crps_base6 = _crps_from_h(h_base6)
+                for ld_c in [0.2, 0.4, 0.6]:
+                    h_cand = _build_garch(rho_opt, kap_opt, sigma_eta, regime_prob,
+                                          lev_dyn=ld_c)
+                    c = _crps_from_h(h_cand)
+                    if np.isfinite(c) and c < crps_base6 * 0.995:
+                        crps_base6 = c
+                        lev_dyn_opt = ld_c
+
+            # ── Phase 7: Liquidity-volatility feedback (v7.8) ───────────────
+            # Quadratic vol amplification when h_t > θ_long (Brunnermeier-
+            # Pedersen style). Gated on unconditional_var > 0 and 0.5% CRPS.
+            liq_opt = 0.0
+            if unconditional_var > 1e-12:
+                h_base7 = _build_garch(rho_opt, kap_opt, sigma_eta, regime_prob,
+                                       lev_dyn=lev_dyn_opt)
+                crps_base7 = _crps_from_h(h_base7)
+                for lq_c in [0.1, 0.2, 0.3]:
+                    h_cand = _build_garch(rho_opt, kap_opt, sigma_eta, regime_prob,
+                                          lev_dyn=lev_dyn_opt, liq_c=lq_c)
+                    c = _crps_from_h(h_cand)
+                    if np.isfinite(c) and c < crps_base7 * 0.995:
+                        crps_base7 = c
+                        liq_opt = lq_c
+
+            # ── Phase 8: PIT-Entropy sigma stabilizer (v7.8) ────────────────
+            # Relaxes crps_sigma_shrinkage when PIT KL(Uniform) is high,
+            # preventing over-shrinkage of dispersion. Tuning-time only —
+            # the adjusted shrinkage is baked into config, zero MC overhead.
+            ent_lambda_opt = 0.0
+            try:
+                from models.numba_kernels import pit_kl_uniform_kernel as _kl_kern
+                # Build final GARCH series with all Phase 6/7 params
+                h_final = _build_garch(rho_opt, kap_opt, sigma_eta, regime_prob,
+                                       lev_dyn=lev_dyn_opt, liq_c=liq_opt)
+                h_val_fin = h_final[n_est:]
+                if nu_opt > 2:
+                    sig_fin = np.sqrt(np.maximum(h_val_fin * beta_opt, 1e-20) *
+                                      (nu_opt - 2) / nu_opt) * best_shrink
+                else:
+                    sig_fin = np.sqrt(np.maximum(h_val_fin * beta_opt, 1e-20)) * best_shrink
+                sig_fin = np.maximum(sig_fin, 1e-10)
+                # Compute PIT via Student-t CDF
+                from scipy.stats import t as t_dist
+                z_pit = (returns_val - mu_val) / sig_fin
+                pit_vals = t_dist.cdf(z_pit, nu_opt)
+                pit_arr = np.ascontiguousarray(pit_vals.astype(np.float64))
+                kl_val = float(_kl_kern(pit_arr))
+                if np.isfinite(kl_val) and kl_val > 0.01:
+                    best_ent_crps = best_shrink_crps
+                    for el_c in [0.05, 0.10, 0.20]:
+                        adj_shrink = min(1.0, best_shrink * (1.0 + el_c * kl_val))
+                        if nu_opt > 2:
+                            sig_e = np.sqrt(np.maximum(h_val_fin * beta_opt, 1e-20) *
+                                            (nu_opt - 2) / nu_opt) * adj_shrink
+                        else:
+                            sig_e = np.sqrt(np.maximum(h_val_fin * beta_opt, 1e-20)) * adj_shrink
+                        sig_e = np.maximum(sig_e, 1e-10)
+                        c = _crps_inline(returns_val, mu_val, sig_e, nu_opt)
+                        if np.isfinite(c) and c < best_ent_crps * 0.995:
+                            best_ent_crps = c
+                            ent_lambda_opt = el_c
+                            best_shrink = adj_shrink
+            except Exception:
+                ent_lambda_opt = 0.0
+
             return {
                 'rho_leverage': rho_opt,
                 'kappa_mean_rev': kap_opt,
@@ -4466,6 +4605,9 @@ class UnifiedPhiStudentTModel:
                 'sigma_eta': sigma_eta,
                 't_df_asym': df_asym,
                 'regime_switch_prob': regime_prob,
+                'leverage_dynamic_decay': lev_dyn_opt,
+                'liq_stress_coeff': liq_opt,
+                'entropy_sigma_lambda': ent_lambda_opt,
             }
 
         except Exception:

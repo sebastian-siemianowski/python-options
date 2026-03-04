@@ -118,7 +118,7 @@ class TestConfiguration:
         assert default_config.pit_threshold == 0.05
         assert 12.0 in default_config.boundary_nu_values
         assert 20.0 in default_config.boundary_nu_values
-        assert default_config.likelihood_flatness_threshold == 1.0
+        assert default_config.likelihood_flatness_threshold == 2.0
     
     def test_refinement_candidates_nu_12(self, default_config):
         """Check refinement candidates for ν=12."""
@@ -127,13 +127,12 @@ class TestConfiguration:
         assert 10.0 in candidates
         assert 14.0 in candidates
     
-    def test_refinement_candidates_nu_20_asymmetric(self, default_config):
-        """Check asymmetric refinement for ν=20 (downward only)."""
+    def test_refinement_candidates_nu_20_bidirectional(self, default_config):
+        """Check bidirectional refinement for ν=20."""
         candidates = default_config.refinement_candidates.get(20.0)
         assert candidates is not None
         assert 16.0 in candidates
-        # Should NOT include values above 20
-        assert all(c < 20.0 for c in candidates)
+        assert 25.0 in candidates
     
     def test_config_to_dict(self, default_config):
         """Test config serialization."""
@@ -177,8 +176,8 @@ class TestDetection:
     def test_no_refinement_for_non_boundary_nu(self, default_config):
         """Non-boundary ν values should not trigger refinement."""
         result = {
-            'model': 'φ-T(ν=8)',
-            'nu': 8.0,
+            'model': 'φ-T(ν=15)',
+            'nu': 15.0,
             'pit_ks_pvalue': 0.02,
             'model_comparison': {},
         }
@@ -262,16 +261,17 @@ class TestRefinementCandidates:
         assert 10.0 in candidates
         assert 14.0 in candidates
     
-    def test_candidates_for_nu_20_asymmetric(self, default_config):
-        """ν=20 should only have downward candidates [16]."""
+    def test_candidates_for_nu_20_bidirectional(self, default_config):
+        """ν=20 should have bidirectional candidates [16, 25]."""
         candidates = get_refinement_candidates(20.0, default_config)
         assert 16.0 in candidates
-        assert len(candidates) == 1
+        assert 25.0 in candidates
+        assert len(candidates) == 2
     
     def test_no_candidates_for_interior_nu(self, default_config):
-        """Interior ν values should have no candidates."""
-        assert get_refinement_candidates(8.0, default_config) == []
-        assert get_refinement_candidates(6.0, default_config) == []
+        """Interior ν values (not in boundary list) should have no candidates."""
+        assert get_refinement_candidates(7.0, default_config) == []
+        assert get_refinement_candidates(15.0, default_config) == []
 
 
 # =============================================================================

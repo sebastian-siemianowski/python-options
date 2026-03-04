@@ -346,8 +346,8 @@ class TestTuneIntegration:
     """Test tune.py integration with Hansen skew-t."""
     
     def test_tune_imports_hansen(self):
-        """Test that tune.py imports Hansen skew-t components."""
-        from tuning.tune import (
+        """Test that Hansen skew-t components are importable for tuning."""
+        from models.hansen_skew_t import (
             fit_hansen_skew_t_mle,
             compare_symmetric_vs_hansen,
             HANSEN_NU_DEFAULT,

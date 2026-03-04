@@ -13,7 +13,7 @@ import pandas as pd
 # Add src directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from portfolio_kelly import compute_kelly_weights, compute_portfolio_statistics, build_multi_asset_portfolio
+from decision.portfolio_kelly import compute_kelly_weights, compute_portfolio_statistics, build_multi_asset_portfolio
 
 
 def test_basic_kelly_weights():

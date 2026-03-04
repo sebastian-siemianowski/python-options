@@ -67,50 +67,47 @@ class TestArenaModels(unittest.TestCase):
         specs = get_experimental_model_specs()
         self.assertEqual(len(specs), len(EXPERIMENTAL_MODELS))
         
-        # Check v2 model
-        v2_spec = next(s for s in specs if "v2" in s.name)
-        self.assertIn("nu_base", v2_spec.param_names)
+        # Should have many model families (Gen18+)
+        self.assertGreater(len(specs), 10)
+        
+        # Each spec should have required attributes
+        for s in specs[:5]:
+            self.assertTrue(hasattr(s, 'name'))
+            self.assertTrue(hasattr(s, 'param_names'))
+            self.assertTrue(hasattr(s, 'n_params'))
+            self.assertTrue(hasattr(s, 'model_class'))
     
-    def test_momentum_student_t_v2(self):
-        """Test MomentumStudentTV2 model fitting."""
-        from arena.arena_models import MomentumStudentTV2
+    def test_experimental_model_fitting(self):
+        """Test fitting an experimental model on synthetic data."""
+        from arena.arena_models import get_experimental_model_specs
         
-        # Generate synthetic data
-        np.random.seed(42)
-        n = 500
-        returns = np.random.normal(0, 0.02, n)
-        vol = np.abs(returns) * 0.8 + 0.01  # Simple vol proxy
-        
-        model = MomentumStudentTV2(nu_base=6.0, alpha=0.5)
-        result = model.fit(returns, vol)
-        
-        self.assertIn("q", result)
-        self.assertIn("c", result)
-        self.assertIn("phi", result)
-        self.assertIn("log_likelihood", result)
-        self.assertIn("bic", result)
-        self.assertTrue(result["success"])
-        
-        # Check parameter bounds
-        self.assertGreater(result["q"], 0)
-        self.assertGreater(result["c"], 0)
-        self.assertLess(abs(result["phi"]), 1)
-    
-    def test_regime_coupled_model(self):
-        """Test MomentumStudentTRegimeCoupled model."""
-        from arena.experimental_models import MomentumStudentTRegimeCoupled
+        specs = get_experimental_model_specs()
+        # Pick first model and test fitting
+        spec = specs[0]
         
         np.random.seed(42)
         n = 500
         returns = np.random.normal(0, 0.02, n)
         vol = np.abs(returns) * 0.8 + 0.01
         
-        model = MomentumStudentTRegimeCoupled()
+        model = spec.model_class()
         result = model.fit(returns, vol)
         
-        self.assertIn("regime_nu", result)
-        self.assertEqual(len(result["regime_nu"]), 5)  # 5 regimes
+        self.assertIn("log_likelihood", result)
+        self.assertIn("bic", result)
         self.assertTrue(result["success"])
+    
+    def test_experimental_model_diversity(self):
+        """Test that experimental models have diverse unique names."""
+        from arena.arena_models import get_experimental_model_specs
+        
+        specs = get_experimental_model_specs()
+        names = [s.name for s in specs]
+        
+        # All names should be unique
+        self.assertEqual(len(names), len(set(names)))
+        # Should have many models
+        self.assertGreater(len(names), 20)
 
 
 class TestArenaScoring(unittest.TestCase):

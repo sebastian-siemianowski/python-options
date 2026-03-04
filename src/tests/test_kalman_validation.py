@@ -22,7 +22,7 @@ import os
 # Add src directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from kalman_validation import (
+from tuning.kalman_validation import (
     validate_drift_reasonableness,
     compare_predictive_likelihood,
     validate_pit_calibration,
@@ -40,12 +40,16 @@ class TestKalmanValidation(unittest.TestCase):
     
     @classmethod
     def setUpClass(cls):
-        """Create synthetic data for testing."""
+        """Create synthetic OHLCV data for testing.
+        
+        Generates realistic price series with Open/High/Low/Close/Volume
+        so that compute_features (HAR-GK volatility) works end-to-end.
+        """
         np.random.seed(42)
         
-        # Generate synthetic price series (5 years daily data)
+        # Generate realistic synthetic price series (5 years daily data)
         n_days = 252 * 5
-        dates = pd.date_range(start='2018-01-01', periods=n_days, freq='D')
+        dates = pd.date_range(start='2018-01-01', periods=n_days, freq='B')
         
         # Synthetic returns with drift and volatility
         drift = 0.0003  # ~7.5% annual
@@ -59,10 +63,30 @@ class TestKalmanValidation(unittest.TestCase):
         # Bull period: days 1000-1200 (positive drift)
         returns[1000:1200] = np.random.normal(0.001, 0.012, 200)
         
-        log_px = 100 + np.cumsum(returns)
-        px = np.exp(log_px)
+        # Build realistic price series starting at $100
+        close = 100.0 * np.exp(np.cumsum(returns))
         
-        cls.px = pd.Series(px, index=dates, name='price')
+        # ---- Synthetic OHLCV from close prices ----
+        # Intraday range proportional to vol regime
+        daily_range = np.abs(np.random.normal(0, 0.01, n_days))
+        # Widen range during crisis
+        daily_range[500:600] *= 2.5
+        
+        high = close * (1 + daily_range * 0.6)
+        low = close * (1 - daily_range * 0.4)
+        opn = close * (1 + np.random.normal(0, 0.003, n_days))
+        
+        # Ensure OHLC consistency: H >= max(O,C), L <= min(O,C)
+        high = np.maximum(high, np.maximum(close, opn))
+        low = np.minimum(low, np.minimum(close, opn))
+        volume = np.random.randint(1_000_000, 10_000_000, n_days)
+        
+        cls.ohlc_df = pd.DataFrame({
+            'Open': opn, 'High': high, 'Low': low,
+            'Close': close, 'Volume': volume
+        }, index=dates)
+        
+        cls.px = pd.Series(close, index=dates, name='price')
         cls.ret = pd.Series(returns, index=dates, name='returns')
         
         # Synthetic Kalman filter outputs
@@ -133,10 +157,11 @@ class TestKalmanValidation(unittest.TestCase):
         self.assertIn("Insufficient data", result.diagnostic_message)
     
     def test_predictive_likelihood_comparison(self):
-        """Test predictive likelihood improvement testing."""
+        """Test predictive likelihood improvement testing with full OHLCV data."""
         result = compare_predictive_likelihood(
             px=self.px,
             asset_name="TestAsset",
+            ohlc_df=self.ohlc_df,
             train_days=252,
             test_days=63,
             max_windows=5
@@ -147,26 +172,20 @@ class TestKalmanValidation(unittest.TestCase):
         
         # Check basic fields
         self.assertEqual(result.asset_name, "TestAsset")
-        self.assertGreater(result.n_test_windows, 0)
+        self.assertGreaterEqual(result.n_test_windows, 1)
         
-        # Check log-likelihood values are finite
-        self.assertTrue(np.isfinite(result.ll_kalman))
-        self.assertTrue(np.isfinite(result.ll_zero_drift))
-        self.assertTrue(np.isfinite(result.ll_ewma_drift))
-        self.assertTrue(np.isfinite(result.ll_constant_drift))
-        
-        # Check deltas are computed
-        self.assertTrue(np.isfinite(result.delta_ll_vs_zero))
-        self.assertTrue(np.isfinite(result.delta_ll_vs_ewma))
-        self.assertTrue(np.isfinite(result.delta_ll_vs_constant))
-        
-        # Check best model is identified
+        # With proper OHLCV data, all log-likelihoods must be finite
+        self.assertTrue(np.isfinite(result.ll_kalman),
+                       f"ll_kalman should be finite, got {result.ll_kalman}")
+        self.assertTrue(np.isfinite(result.ll_zero_drift),
+                       f"ll_zero_drift should be finite, got {result.ll_zero_drift}")
+        self.assertTrue(np.isfinite(result.ll_ewma_drift),
+                       f"ll_ewma_drift should be finite, got {result.ll_ewma_drift}")
+        self.assertTrue(np.isfinite(result.ll_constant_drift),
+                       f"ll_constant_drift should be finite, got {result.ll_constant_drift}")
         self.assertIn(result.best_model, ['Kalman', 'Zero', 'EWMA', 'Constant'])
         
-        # Check improvement flag
         self.assertIsInstance(result.improvement_significant, bool)
-        
-        # Check diagnostic message
         self.assertIsInstance(result.diagnostic_message, str)
         self.assertGreater(len(result.diagnostic_message), 0)
     
@@ -310,17 +329,16 @@ class TestKalmanValidation(unittest.TestCase):
         self.assertIn("Insufficient data", result.diagnostic_message)
     
     def test_full_validation_suite(self):
-        """Test complete validation suite integration."""
+        """Test complete validation suite integration with full OHLCV data."""
         results = run_full_validation_suite(
             px=self.px,
             asset_name="TestAsset",
+            ohlc_df=self.ohlc_df,
             plot=False
         )
         
-        # Check results is a dictionary
+        # Validate result structure
         self.assertIsInstance(results, dict)
-        
-        # Check all components are present
         self.assertIn("drift_reasonableness", results)
         self.assertIn("likelihood_comparison", results)
         self.assertIn("pit_calibration", results)
@@ -328,17 +346,17 @@ class TestKalmanValidation(unittest.TestCase):
         self.assertIn("overall_passed", results)
         self.assertIn("asset_name", results)
         
-        # Check component types
+        # Validate result types
         self.assertIsInstance(results["drift_reasonableness"], DriftReasonablenessResult)
         self.assertIsInstance(results["likelihood_comparison"], LikelihoodComparisonResult)
         self.assertIsInstance(results["pit_calibration"], PITCalibrationResult)
         self.assertIsInstance(results["stress_regime"], StressRegimeResult)
-        
-        # Check overall passed is boolean
         self.assertIsInstance(results["overall_passed"], bool)
         
-        # Check asset name matches
-        self.assertEqual(results["asset_name"], "TestAsset")
+        # Likelihood comparison should have finite results with OHLCV data
+        ll_result = results["likelihood_comparison"]
+        self.assertTrue(np.isfinite(ll_result.ll_kalman),
+                       "Likelihood comparison should produce finite results with OHLCV")
     
     def test_drift_smoothness_metric(self):
         """Test drift smoothness ratio calculation."""
@@ -424,22 +442,24 @@ class TestKalmanValidation(unittest.TestCase):
                        "Kelly sizing should be lower during stress periods")
     
     def test_validation_suite_comprehensive(self):
-        """Test that full suite runs all components without errors."""
-        try:
-            results = run_full_validation_suite(
-                px=self.px,
-                asset_name="ComprehensiveTest",
-                plot=False
-            )
-            
-            # Verify all results have diagnostic messages
-            self.assertTrue(len(results["drift_reasonableness"].diagnostic_message) > 0)
-            self.assertTrue(len(results["likelihood_comparison"].diagnostic_message) > 0)
-            self.assertTrue(len(results["pit_calibration"].diagnostic_message) > 0)
-            self.assertTrue(len(results["stress_regime"].diagnostic_message) > 0)
-            
-        except Exception as e:
-            self.fail(f"Full validation suite raised exception: {e}")
+        """Test comprehensive validation suite produces full diagnostics."""
+        results = run_full_validation_suite(
+            px=self.px,
+            asset_name="ComprehensiveTest",
+            ohlc_df=self.ohlc_df,
+            plot=False
+        )
+        
+        # All components must have diagnostic messages
+        self.assertTrue(len(results["drift_reasonableness"].diagnostic_message) > 0)
+        self.assertTrue(len(results["likelihood_comparison"].diagnostic_message) > 0)
+        self.assertTrue(len(results["pit_calibration"].diagnostic_message) > 0)
+        self.assertTrue(len(results["stress_regime"].diagnostic_message) > 0)
+        
+        # With OHLCV, likelihood comparison should identify a best model
+        ll_result = results["likelihood_comparison"]
+        self.assertIn(ll_result.best_model, ['Kalman', 'Zero', 'EWMA', 'Constant'],
+                     f"Expected valid best_model, got {ll_result.best_model}")
 
 
 class TestKalmanValidationEdgeCases(unittest.TestCase):

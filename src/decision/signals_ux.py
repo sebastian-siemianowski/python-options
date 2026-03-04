@@ -117,6 +117,9 @@ def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln
     # Floor: can't lose more than 100% (price can't go below zero)
     if pct_return < -100.0:
         pct_return = -100.0
+    # Cap: can't gain more than 500% (physical limit for display)
+    if pct_return > 500.0:
+        pct_return = 500.0
 
     # Compact profit display
     abs_profit = abs(profit_pln)
@@ -694,8 +697,8 @@ def render_detailed_signal_table(
         # ─────────────────────────────────────────────────────────────────────────
         # CONFIDENCE INTERVAL - Clean bracket format
         # ─────────────────────────────────────────────────────────────────────────
-        ci_low_pct = signal.ci_low * 100
-        ci_high_pct = signal.ci_high * 100
+        ci_low_pct = max(signal.ci_low * 100, -99.0)   # Physical floor: can't lose >99%
+        ci_high_pct = min(signal.ci_high * 100, 500.0)  # Physical cap: can't gain >400%
         ci_str = f"[dim][{ci_low_pct:+6.1f}%, {ci_high_pct:+6.1f}%][/]"
         
         # ─────────────────────────────────────────────────────────────────────────
