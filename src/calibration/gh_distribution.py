@@ -435,7 +435,7 @@ class GHModel:
         z_kurt = np.mean(((z - z_mean) / z_std) ** 4) - 3 if z_std > 0 else 0
         
         # Initial guesses
-        lam_init = -0.5  # Start near NIG
+        lam_init = -0.5  # GH starting point
         alpha_init = 1.0 / max(z_std, 0.1)
         beta_init = np.clip(z_skew * 0.3, -5, 5)  # Skewness hint
         delta_init = z_std

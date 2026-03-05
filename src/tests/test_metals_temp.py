@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Test script for metals risk temperature diagnostic."""
 import sys
-sys.path.insert(0, 'src')
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from decision.metals_risk_temperature import compute_anticipatory_metals_risk_temperature
 

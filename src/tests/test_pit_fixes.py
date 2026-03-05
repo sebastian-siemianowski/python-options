@@ -9,7 +9,8 @@ This module tests:
 
 import numpy as np
 import sys
-sys.path.insert(0, 'src')
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tuning.pit_calibration import (
     compute_pit_calibration_metrics,

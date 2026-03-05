@@ -26,6 +26,7 @@ from models.filter_cache import (
     reset_cache_stats,
     _hash_array,
     _round_param,
+    cached_phi_student_t_filter,
     FILTER_CACHE_ENABLED,
 )
 
@@ -265,10 +266,16 @@ class TestIntegration:
         reset_cache_stats()
         
         PhiGaussianDriftModel.filter_with_trajectory(returns, vol, 1e-6, 1.0, 0.7)
-        PhiStudentTDriftModel.filter_with_trajectory(returns, vol, 1e-6, 1.0, 0.5, 6.0)
+        cached_phi_student_t_filter(
+            returns, vol, 1e-6, 1.0, 0.5, 6.0,
+            filter_fn=PhiStudentTDriftModel.filter_phi
+        )
         
         PhiGaussianDriftModel.filter_with_trajectory(returns, vol, 1e-6, 1.0, 0.7)
-        PhiStudentTDriftModel.filter_with_trajectory(returns, vol, 1e-6, 1.0, 0.5, 6.0)
+        cached_phi_student_t_filter(
+            returns, vol, 1e-6, 1.0, 0.5, 6.0,
+            filter_fn=PhiStudentTDriftModel.filter_phi
+        )
         
         stats = get_cache_stats()
         assert stats.hits == 2

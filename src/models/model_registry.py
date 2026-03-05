@@ -34,20 +34,12 @@ MODEL FAMILIES
    - λ > 0: right-skewed (recovery potential)
    - λ = 0: reduces to symmetric Student-t
 
-4. NIG FAMILY (semi-heavy tails, asymmetric, Lévy process compatible)
-   - phi_nig_alpha_{α}_beta_{β}: Normal-Inverse Gaussian
-   - α controls tail heaviness
-   - β controls asymmetry
-
-5. GMM FAMILY (bimodal, regime mixture)
-   - gmm_k2: 2-component Gaussian mixture
-
-6. EVT/GPD FAMILY (tail-only, extreme value theory)
+4. EVT/GPD FAMILY (tail-only, extreme value theory)
    - evt_gpd_xi_{ξ}_sigma_{σ}: Generalised Pareto for tail extrapolation
    - SUPPORT: tail-only (threshold exceedances)
    - Used for E[loss] estimation, NOT full predictive
 
-7. CONTAMINATED STUDENT-T FAMILY (regime-dependent tails)
+5. CONTAMINATED STUDENT-T FAMILY (regime-dependent tails)
    - cst_eps_{ε}_nu_normal_{ν₁}_nu_crisis_{ν₂}: Mixture of two Student-t
    - With probability ε, use crisis ν (heavier tails)
    - SUPPORT: mixture (requires latent state sampling)
@@ -67,8 +59,6 @@ class ModelFamily(Enum):
     GAUSSIAN = "gaussian"
     STUDENT_T = "student_t"
     HANSEN_SKEW_T = "hansen_skew_t"
-    NIG = "nig"
-    GMM = "gmm"
     EVT_GPD = "evt_gpd"
     CONTAMINATED_T = "contaminated_t"
 
@@ -79,7 +69,7 @@ class SupportType(Enum):
     
     FULL: Can generate samples across entire real line (Gaussian, Student-t, etc.)
     TAIL: Only models exceedances above threshold (EVT/GPD)
-    MIXTURE: Requires sampling latent component indicators (CST, GMM)
+    MIXTURE: Requires sampling latent component indicators (CST)
     """
     FULL = "full"
     TAIL = "tail"
@@ -180,44 +170,6 @@ def parse_hansen_skew_t_name(name: str) -> Optional[Tuple[float, float]]:
     return (nu, lambda_val)
 
 
-def make_nig_name(alpha: float, beta: float) -> str:
-    """
-    Generate canonical name for NIG model.
-    
-    Args:
-        alpha: Tail heaviness (smaller = heavier)
-        beta: Asymmetry (negative = left-skewed)
-    """
-    alpha_str = f"{alpha:.1f}".replace(".", "")
-    beta_str = f"{beta:+.2f}".replace("+", "p").replace("-", "m").replace(".", "")
-    return f"phi_nig_alpha_{alpha_str}_beta_{beta_str}"
-
-
-def parse_nig_name(name: str) -> Optional[Tuple[float, float]]:
-    """Parse NIG model name to extract (alpha, beta)."""
-    import re
-    pattern = r"phi_nig_alpha_(\d+)_beta_([pm]\d+)"
-    match = re.match(pattern, name)
-    if not match:
-        return None
-    
-    alpha = int(match.group(1)) / 10.0
-    beta_encoded = match.group(2)
-    sign = 1.0 if beta_encoded[0] == 'p' else -1.0
-    beta = sign * int(beta_encoded[1:]) / 100.0
-    
-    return (alpha, beta)
-
-
-def make_gmm_name(n_components: int = 2) -> str:
-    """Generate canonical name for Gaussian Mixture Model."""
-    return f"gmm_k{n_components}"
-
-
-
-
-
-
 def make_evt_gpd_name(xi: float, sigma: float) -> str:
     """
     Generate canonical name for EVT/GPD model.
@@ -272,16 +224,10 @@ STUDENT_T_NU_GRID = [3, 4, 8, 20]
 STUDENT_T_NU_REFINED_GRID = [5, 7, 10, 14, 16, 25]
 
 # Hansen λ grid (skewness)
-HANSEN_LAMBDA_GRID = [-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3]
+HANSEN_LAMBDA_GRID = [-0.3, -0.2, -0.1, 0.1, 0.2, 0.3]  # λ=0.0 removed (identical to base Student-t)
 
 # Hansen ν grid (same as Student-t for consistency)
 HANSEN_NU_GRID = [4, 8, 20]
-
-# NIG α grid (tail heaviness)
-NIG_ALPHA_GRID = [0.5, 1.0, 1.5, 2.0, 3.0]
-
-# NIG β grid (asymmetry)
-NIG_BETA_GRID = [-0.3, -0.15, 0.0, 0.15, 0.3]
 
 # CST ε grid (contamination probability)
 CST_EPSILON_GRID = [0.05, 0.10, 0.15]
@@ -383,48 +329,6 @@ def build_model_registry() -> Dict[str, ModelSpec]:
                 grid_values={"nu": [float(nu)], "lambda": [float(lambda_)]},
                 is_augmentation=True,
             )
-    
-    # =========================================================================
-    # NIG FAMILY
-    # =========================================================================
-    for alpha in NIG_ALPHA_GRID:
-        for beta in NIG_BETA_GRID:
-            # Constraint: |β| < α
-            if abs(beta) >= alpha:
-                continue
-            name = make_nig_name(alpha, beta)
-            registry[name] = ModelSpec(
-                name=name,
-                family=ModelFamily.NIG,
-                support=SupportType.FULL,
-                n_params=5,  # q, c, phi, nig_alpha, nig_beta (delta derived)
-                param_names=("q", "c", "phi", "nig_alpha", "nig_beta", "nig_delta"),
-                default_params={
-                    "q": 1e-6, "c": 1.0, "phi": 0.95,
-                    "nig_alpha": float(alpha),
-                    "nig_beta": float(beta),
-                    "nig_delta": 1.0,
-                },
-                description=f"NIG(α={alpha:.1f}, β={beta:+.2f})",
-                grid_values={"nig_alpha": [float(alpha)], "nig_beta": [float(beta)]},
-            )
-    
-    # =========================================================================
-    # GMM FAMILY
-    # =========================================================================
-    registry[make_gmm_name(2)] = ModelSpec(
-        name=make_gmm_name(2),
-        family=ModelFamily.GMM,
-        support=SupportType.MIXTURE,
-        n_params=5,  # π, μ1, μ2, σ1, σ2
-        param_names=("weights", "means", "variances"),
-        default_params={
-            "weights": [0.7, 0.3],
-            "means": [0.0, -0.02],
-            "variances": [0.0001, 0.0004],
-        },
-        description="2-component Gaussian Mixture (momentum/reversal)",
-    )
     
     # =========================================================================
     # CONTAMINATED STUDENT-T FAMILY (augmentation layer)
@@ -576,15 +480,11 @@ def get_sampler_for_model(spec: ModelSpec) -> str:
             return "student_t_mc"
         elif spec.family == ModelFamily.HANSEN_SKEW_T:
             return "hansen_skew_t_mc"
-        elif spec.family == ModelFamily.NIG:
-            return "nig_mc"
         else:
             return "gaussian_mc"  # fallback
     
     elif spec.support == SupportType.MIXTURE:
-        if spec.family == ModelFamily.GMM:
-            return "gmm_mc"
-        elif spec.family == ModelFamily.CONTAMINATED_T:
+        if spec.family == ModelFamily.CONTAMINATED_T:
             return "contaminated_t_mc"
         else:
             return "mixture_mc"  # generic
@@ -636,16 +536,6 @@ def extract_model_params_for_sampling(
     elif spec.family == ModelFamily.HANSEN_SKEW_T:
         result["nu"] = fitted_params.get("nu", spec.default_params.get("nu"))
         result["hansen_lambda"] = fitted_params.get("lambda", fitted_params.get("hansen_lambda", spec.default_params.get("lambda", 0.0)))
-        
-    elif spec.family == ModelFamily.NIG:
-        result["nig_alpha"] = fitted_params.get("nig_alpha", spec.default_params.get("nig_alpha"))
-        result["nig_beta"] = fitted_params.get("nig_beta", spec.default_params.get("nig_beta"))
-        result["nig_delta"] = fitted_params.get("nig_delta", spec.default_params.get("nig_delta", 1.0))
-        
-    elif spec.family == ModelFamily.GMM:
-        result["gmm_weights"] = fitted_params.get("weights", spec.default_params.get("weights"))
-        result["gmm_means"] = fitted_params.get("means", spec.default_params.get("means"))
-        result["gmm_variances"] = fitted_params.get("variances", spec.default_params.get("variances"))
         
     elif spec.family == ModelFamily.CONTAMINATED_T:
         result["cst_epsilon"] = fitted_params.get("cst_epsilon", fitted_params.get("epsilon", spec.default_params.get("cst_epsilon")))

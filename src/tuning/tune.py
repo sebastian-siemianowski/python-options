@@ -18,8 +18,7 @@ Where:
                               HIGH_VOL_RANGE, CRISIS_JUMP)
     m          = model class (kalman_gaussian, kalman_phi_gaussian,
                               phi_student_t_nu_{4,6,8,12,20},
-                              phi_skew_t_nu_{ν}_gamma_{γ},
-                              phi_nig_alpha_{α}_beta_{β})
+                              phi_skew_t_nu_{ν}_gamma_{γ})
     θ_{r,m}    = parameters of model m in regime r
     p(m | r)   = posterior probability of model m in regime r
 
@@ -37,13 +36,11 @@ For EACH regime r:
        NOTE: Momentum augmentation is now an INTERNAL pipeline step within each Student-t model.
              Activated only if it improves CRPS. No separate _momentum model names.
        - phi_skew_t_nu_{ν}_gamma_{γ}: q, c, φ  (3 params, ν and γ FIXED)
-       - phi_nig_alpha_{α}_beta_{β}: q, c, φ   (3 params, α and β FIXED)
-       - phi_fisher_rao_w{W}_d{D}_momentum: q, c, φ (5 params) [ENABLED - Fisher-Rao geometry]
 
     NOTE: Legacy kalman_gaussian_momentum retired (Feb 2026). Unified Gaussian models subsume their functionality.
     Unified models use Stage 1.5 momentum + Stage 4.5 GAS-Q internally.
 
-    NOTE: Student-t, Skew-t, and NIG use DISCRETE grids (not continuous optimization).
+    NOTE: Student-t and Skew-t use DISCRETE grids (not continuous optimization).
     Each parameter combination is treated as a separate sub-model in BMA.
 
     SKEW-T ADDITION (Proposal 5 — φ-Skew-t with BMA):
@@ -51,14 +48,6 @@ For EACH regime r:
        - γ = 1: Symmetric (reduces to Student-t)
        - γ < 1: Left-skewed (heavier left tail) — crash risk
        - γ > 1: Right-skewed (heavier right tail) — euphoria risk
-
-    NIG ADDITION (Solution 2 — NIG as Parallel BMA Candidate):
-    The Normal-Inverse Gaussian distribution provides:
-       - α: Tail heaviness (smaller α = heavier tails, α→∞ = Gaussian)
-       - β: Asymmetry (-α < β < α; β=0 symmetric, β<0 left-skewed, β>0 right-skewed)
-    
-    NIG differs from Student-t/Skew-t by having semi-heavy tails (between
-    Gaussian and Cauchy) and being infinitely divisible (Lévy process compatible).
 
     CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
     All distributional models compete via BIC weights; if extra parameters don't
@@ -871,10 +860,8 @@ from tuning.reporting import render_calibration_issues_table
 #   - Symmetric Student-t: μ, σ, ν (fat tails)
 #   - φ-Skew-t:           μ, σ, ν, γ (fat tails + asymmetry, Fernández-Steel)
 #   - Hansen Skew-t:      μ, σ, ν, λ (fat tails + asymmetry, regime-conditional)
-#   - NIG:                μ, σ, α, β (semi-heavy tails + asymmetry)
-#   - GMM:                2-component Gaussian mixture (bimodality)
 #
-# CORE PRINCIPLE: "Heavy tails, asymmetry, and bimodality are hypotheses, not certainties."
+# CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
 # Complex distributions compete with simpler alternatives via BIC weights.
 # =============================================================================
 from models import (
@@ -1055,7 +1042,6 @@ def is_heavy_tailed_model(model_name: str) -> bool:
     Heavy-tailed models include:
     - Student-t: 'phi_student_t_nu_{nu}'
     - Skew-t: 'phi_skew_t_nu_{nu}_gamma_{gamma}'
-    - NIG: 'phi_nig_alpha_{alpha}_beta_{beta}'
     
     This is used for tail-aware signal generation and Monte Carlo sampling.
     
@@ -1071,8 +1057,7 @@ def is_heavy_tailed_model(model_name: str) -> bool:
     return (
         'student_t' in model_lower or 
         'student-t' in model_lower or 
-        'skew_t' in model_lower or
-        'phi_nig' in model_lower
+        'skew_t' in model_lower
     )
 
 
@@ -1106,7 +1091,7 @@ def is_heavy_tailed_model(model_name: str) -> bool:
 # GH distribution is a fallback model when Student-t fails PIT calibration.
 # GH captures SKEWNESS that symmetric Student-t cannot.
 #
-# GH is a 5-parameter family that includes Student-t, NIG, and Variance-Gamma
+# GH is a 5-parameter family that includes Student-t and Variance-Gamma
 # as special cases. The key addition is β (beta) for skewness.
 #
 # When enabled:
@@ -1530,7 +1515,7 @@ def tune_asset_q(
         
         # Adaptive data quality filter (February 2026)
         # Detects phantom/synthetic data via Volume analysis
-        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=True)
+        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=(not _is_quiet()))
         if _dq_report.get('rows_purged_leading', 0) > 0 or _dq_report.get('window_applied', False):
             _log(f"     🔬  Data quality: {_dq_report['rows_original']} → {_dq_report['rows_final']} rows")
         
@@ -1721,10 +1706,7 @@ def tune_asset_q(
         # Gate external augmentation layers for unified models (they already have internal calibration)
         is_unified_winner = "unified" in best_model.lower() if best_model else False
 
-        # GMM: Disabled (empirically — bimodality hypothesis consistently rejected)
-        gmm_result = None
-        gmm_diagnostics = None
-        
+        # GMM: Removed (empirically — bimodality hypothesis consistently rejected)
         # Hansen Skew-T: Now handled internally by Stage 7.5 / Stage U-H
         hansen_skew_t_result = None
         hansen_skew_t_diagnostics = None
@@ -1990,9 +1972,7 @@ def tune_asset_q(
                 "aic": models[m].get("aic", float('inf')),
                 "fit_success": models[m].get("fit_success", False),
             } for m in models},
-            # GMM parameters for Monte Carlo simulation
-            "gmm": gmm_result,
-            "gmm_diagnostics": gmm_diagnostics,
+            # GMM parameters — removed (bimodality hypothesis rejected)
             # Hansen Skew-t parameters for asymmetric tail modeling
             "hansen_skew_t": hansen_skew_t_result,
             "hansen_skew_t_diagnostics": hansen_skew_t_diagnostics,
@@ -2761,12 +2741,34 @@ def compute_extended_pit_metrics_student_t(
                 "berkowitz_pvalue": 0.0, "berkowitz_lr": 0.0,
                 "pit_count": 0, "histogram_mad": 1.0}
     ks_stat_st, ks_pval_st = _fast_ks_uniform(pit_clean)
-    # Anderson-Darling test (tail-sensitive)
+
+    # ── AD Tail-Correction Pipeline (March 2026) ─────────────────────
+    # Apply TWSC + SPTG + Isotonic corrections to PIT values for AD test only.
+    # KS and Berkowitz continue using raw pit_clean (no double-dipping).
+    _ad_pval_raw = float('nan')
+    _ad_correction_diag = {}
+    pit_for_ad = pit_clean  # default: uncorrected
     try:
         from calibration.pit_calibration import anderson_darling_uniform
-        _ad_stat, _ad_pval = anderson_darling_uniform(pit_clean)
+        _ad_stat_raw, _ad_pval_raw = anderson_darling_uniform(pit_clean)
+    except Exception:
+        pass
+
+    try:
+        pit_ad_corrected, _ad_correction_diag = PhiStudentTDriftModel.apply_ad_correction_pipeline(
+            returns_flat[:n], mu_pred[:n], scale_corrected, nu, pit_clean
+        )
+        pit_for_ad = pit_ad_corrected
+    except Exception:
+        pass
+
+    # Anderson-Darling test (tail-sensitive) — on corrected PIT
+    try:
+        from calibration.pit_calibration import anderson_darling_uniform
+        _ad_stat, _ad_pval = anderson_darling_uniform(pit_for_ad)
     except Exception:
         _ad_pval = float('nan')
+
     hist, _ = np.histogram(pit_clean, bins=10, range=(0, 1))
     hist_freq = hist / len(pit_clean)
     hist_mad = float(np.mean(np.abs(hist_freq - 0.1)))
@@ -2784,6 +2786,8 @@ def compute_extended_pit_metrics_student_t(
         "ks_statistic": float(ks_stat_st),
         "pit_ks_pvalue": float(ks_pval_st),
         "ad_pvalue": float(_ad_pval),
+        "ad_pvalue_raw": float(_ad_pval_raw),
+        "ad_correction": _ad_correction_diag,
         "berkowitz_pvalue": float(berkowitz_p),
         "berkowitz_lr": float(berkowitz_lr_st),
         "pit_count": int(pit_count_st),
@@ -3574,7 +3578,8 @@ def fit_all_models_for_regime(
                 "q": float(config.q),
                 "c": float(config.c),
                 "phi": float(config.phi),
-                "nu": float(nu_fixed),
+                "nu": float(nu_for_score),  # Use calibrated ν (from Stage 5/6), not grid ν
+                "nu_grid": float(nu_fixed),  # Original grid value preserved for reference
                 # Unified-specific parameters
                 "gamma_vov": float(config.gamma_vov),
                 "alpha_asym": float(config.alpha_asym),
@@ -3618,6 +3623,10 @@ def fit_all_models_for_regime(
                 "sigma_eta": float(getattr(config, 'sigma_eta', 0.0)),
                 "t_df_asym": float(getattr(config, 't_df_asym', 0.0)),
                 "regime_switch_prob": float(getattr(config, 'regime_switch_prob', 0.0)),
+                # v7.8 elite MC enhancements: dynamic leverage, liquidity stress, entropy
+                "leverage_dynamic_decay": float(getattr(config, 'leverage_dynamic_decay', 0.0)),
+                "liq_stress_coeff": float(getattr(config, 'liq_stress_coeff', 0.0)),
+                "entropy_sigma_lambda": float(getattr(config, 'entropy_sigma_lambda', 0.0)),
                 # GARCH-Kalman reconciliation + Q_t coupling + location bias (February 2026)
                 "garch_kalman_weight": float(getattr(config, 'garch_kalman_weight', 0.0)),
                 "q_vol_coupling": float(getattr(config, 'q_vol_coupling', 0.0)),
@@ -3639,6 +3648,9 @@ def fit_all_models_for_regime(
                 "ks_statistic": float(ks_u),
                 "pit_ks_pvalue": float(pit_p_u),
                 "ad_pvalue": float(_ad_p_u),
+                "ad_pvalue_raw": float(pit_metrics.get("ad_pvalue_raw", _ad_p_u) if isinstance(pit_metrics, dict) else _ad_p_u),
+                "ad_correction": pit_metrics.get("ad_correction", {}) if isinstance(pit_metrics, dict) else {},
+                "calibration_params": pit_metrics.get("ad_correction", {}).get("calibration_params", {}) if isinstance(pit_metrics, dict) else {},
                 "pit_calibration_grade": pit_metrics.get("calibration_grade", "F"),
                 "histogram_mad": float(_calibrated_mad_u),
                 "berkowitz_pvalue": float(_calibrated_berk_u),
@@ -3759,6 +3771,10 @@ def fit_all_models_for_regime(
                 "garch_unconditional_var": float(g_config.garch_unconditional_var),
                 "crps_ewm_lambda": float(g_config.crps_ewm_lambda),
                 "crps_sigma_shrinkage": float(g_config.crps_sigma_shrinkage),
+                # v7.8 elite MC enhancements
+                "leverage_dynamic_decay": float(getattr(g_config, 'leverage_dynamic_decay', 0.0)),
+                "liq_stress_coeff": float(getattr(g_config, 'liq_stress_coeff', 0.0)),
+                "entropy_sigma_lambda": float(getattr(g_config, 'entropy_sigma_lambda', 0.0)),
                 "calibrated_gw": float(g_config.calibrated_gw),
                 "calibrated_lambda_rho": float(g_config.calibrated_lambda_rho),
                 "calibrated_beta_probit_corr": float(g_config.calibrated_beta_probit_corr),
@@ -3779,6 +3795,9 @@ def fit_all_models_for_regime(
                 "ks_statistic": _ks_stat_gu,
                 "pit_ks_pvalue": float(pit_p_gu),
                 "ad_pvalue": float(_ad_p_gu),
+                "ad_pvalue_raw": float(_calib_gu.get("ad_pvalue_raw", _ad_p_gu) if isinstance(_calib_gu, dict) else _ad_p_gu),
+                "ad_correction": _calib_gu.get("ad_correction", {}) if isinstance(_calib_gu, dict) else {},
+                "calibration_params": _calib_gu.get("ad_correction", {}).get("calibration_params", {}) if isinstance(_calib_gu, dict) else {},
                 "pit_calibration_grade": "A" if _mad_gu < 0.02 else ("B" if _mad_gu < 0.05 else ("C" if _mad_gu < 0.10 else "F")),
                 "histogram_mad": float(_mad_gu),
                 "berkowitz_pvalue": float(_berk_p_gu),
@@ -4079,12 +4098,13 @@ def fit_regime_model_posterior(
         # =====================================================================
         # Step 3: Compute raw weights using regime-aware method (February 2026)
         # =====================================================================
-        # Model selection uses BIC + Hyvärinen + CRPS with regime-specific weights:
-        #   - Unknown: (0.30, 0.30, 0.40) — balanced with CRPS tilt
-        #   - Crisis: (0.25, 0.20, 0.55) — CRPS critical for tail risk
-        #   - Trending: (0.30, 0.25, 0.45) — forecast quality > curvature
-        #   - Ranging: (0.45, 0.30, 0.25) — simpler models preferred
-        #   - Low Vol: (0.30, 0.40, 0.30) — robustness to misspecification
+        # Model selection uses elite CRPS-dominated 6-component scoring:
+        #   Score = w_crps × CRPS_std + w_pit × PIT_dev_std + w_berk × Berk_std
+        #         + w_tail × Tail_std + w_mad × MAD_std + w_ad × AD_dev_std
+        #
+        # All components are robustly standardized via median/MAD (winsorized ±5σ).
+        # BIC and Hyvärinen are stored as metadata but NOT part of selection score.
+        # Regime-specific weight profiles adjust component emphasis (see diagnostics.py).
         #
         # SMALL SAMPLE HANDLING: When Hyvärinen is disabled, use BIC+CRPS only
         # =====================================================================
@@ -4656,7 +4676,7 @@ def tune_asset_with_bma(
             return None
         
         # Adaptive data quality filter (February 2026)
-        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=True)
+        df, _dq_report = adaptive_data_quality(df, asset=asset, verbose=(not _is_quiet()))
         if _dq_report.get('rows_purged_leading', 0) > 0 or _dq_report.get('window_applied', False):
             _log(f"     🔬  Data quality: {_dq_report['rows_original']} → {_dq_report['rows_final']} rows")
         
@@ -4915,6 +4935,41 @@ def tune_asset_with_bma(
             },
             "meta": bma_result.get("meta", {}),
         }
+
+        # ─────────────────────────────────────────────────────────────
+        # CALIBRATION PARAMS PROMOTION (March 2026)
+        # Extract BMA-weighted calibration params from per-model results
+        # and promote to global level for signals.py consumption.
+        #
+        # Uses BMA-weighted aggregation across all models that produced
+        # calibration params. This ensures the correction reflects the
+        # model ensemble, not just a single model.
+        # ─────────────────────────────────────────────────────────────
+        try:
+            _bma_models = bma_result.get("global", {}).get("models", {})
+            _bma_posterior = bma_result.get("global", {}).get("model_posterior", {})
+            _agg_cal = {}
+            _total_w = 0.0
+            for _m_name, _m_data in _bma_models.items():
+                _m_cal = _m_data.get("calibration_params", {})
+                _m_w = _bma_posterior.get(_m_name, 0.0)
+                if _m_cal and _m_w > 0:
+                    _total_w += _m_w
+                    for _k, _v in _m_cal.items():
+                        if isinstance(_v, (int, float)):
+                            _agg_cal[_k] = _agg_cal.get(_k, 0.0) + _m_w * _v
+                        elif isinstance(_v, list) and _k not in _agg_cal:
+                            # For isotonic knots, take from highest-weight model
+                            _agg_cal[_k] = _v
+            # Normalize weighted averages
+            if _total_w > 0:
+                for _k in _agg_cal:
+                    if isinstance(_agg_cal[_k], (int, float)):
+                        _agg_cal[_k] = _agg_cal[_k] / _total_w
+            if _agg_cal:
+                result["global"]["calibration_params"] = _agg_cal
+        except Exception:
+            pass  # Calibration param promotion is best-effort
 
         # Print summary
         global_posterior = result["global"].get("model_posterior", {})

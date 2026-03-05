@@ -282,6 +282,12 @@ def bulk_download_n_times(
     last_failed_count = len(all_symbols)
     last_failed_symbols = all_symbols.copy()
     
+    # SMALL BATCH FAST-FORWARD: Skip bulk retry passes for < 10 symbols,
+    # go directly to fallback mode (single final pass with individual fallback)
+    SMALL_BATCH_THRESHOLD = 10
+    if len(all_symbols) < SMALL_BATCH_THRESHOLD and num_passes > 1:
+        num_passes = 1  # Single pass = final pass → individual fallback enabled
+    
     # Create progress tracker
     tracker = DownloadProgressTracker(len(all_symbols), num_passes)
     
@@ -294,8 +300,12 @@ def bulk_download_n_times(
         stats.append(f"{len(all_symbols):,}", style="bold cyan")
         stats.append(" symbols", style="dim")
         stats.append("  ·  ", style="dim")
-        stats.append(f"{num_passes}", style="bold white")
-        stats.append(" passes", style="dim")
+        if len(all_symbols) < SMALL_BATCH_THRESHOLD:
+            stats.append("fallback mode", style="bold yellow")
+            stats.append(" (small batch)", style="dim")
+        else:
+            stats.append(f"{num_passes}", style="bold white")
+            stats.append(" passes", style="dim")
         stats.append("  ·  ", style="dim")
         stats.append(f"{workers}", style="bold white")
         stats.append(" workers", style="dim")

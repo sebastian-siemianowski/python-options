@@ -69,7 +69,7 @@ EVT_RECOMMENDED_EXCEEDANCES = 100
 
 # Shape parameter bounds
 EVT_XI_MIN = -0.5  # Bounded tails (short-tailed)
-EVT_XI_MAX = 1.0   # Fréchet-type (ξ ≥ 1 has infinite mean)
+EVT_XI_MAX = 0.95  # Strict bound below 1.0 (ξ ≥ 1 has infinite mean → always use fallback)
 EVT_XI_DEFAULT = 0.1  # Moderate heavy tails
 
 # Fallback multiplier when EVT fails
@@ -257,9 +257,10 @@ def compute_cte_gpd(threshold: float, xi: float, sigma: float) -> float:
     Returns:
         Conditional tail expectation
     """
-    if xi >= 1.0:
-        # Infinite mean case - return conservative estimate
-        warnings.warn(f"GPD xi={xi:.3f} >= 1 implies infinite mean, using fallback")
+    if xi >= 0.99:
+        # Infinite or near-infinite mean case — return conservative estimate.
+        # This handles both xi=1.0 (exact boundary, infinite mean) and values
+        # approaching 1.0 where the mean excess σ/(1-ξ) diverges.
         return threshold * EVT_FALLBACK_MULTIPLIER * 2.0
     
     if sigma <= 0:

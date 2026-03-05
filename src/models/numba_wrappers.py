@@ -62,6 +62,10 @@ try:
         garch_variance_kernel,
         phi_gaussian_filter_with_predictive_kernel,
         phi_student_t_augmented_filter_kernel,
+        # AD tail-correction kernels (March 2026)
+        ad_twsc_kernel,
+        ad_sptg_cdf_student_t_array,
+        ad_sptg_cdf_gaussian_array,
     )
     _NUMBA_AVAILABLE = True
 except ImportError:
@@ -1450,4 +1454,83 @@ def run_phi_cst_filter(
         exogenous_input, has_exo,
         online_scale_adapt, float(gamma_vov), vov_rolling, has_vov,
         float(P0),
+    )
+
+
+# =============================================================================
+# AD TAIL-CORRECTION WRAPPERS (March 2026)
+# =============================================================================
+
+def run_ad_twsc(
+    z_arr: np.ndarray,
+    ewma_lambda: float = 0.97,
+    alpha_quantile: float = 0.05,
+    kappa: float = 0.5,
+    max_inflate: float = 2.0,
+    deadzone: float = 0.15,
+) -> np.ndarray:
+    """
+    Run Numba-accelerated Tail-Weighted Scale Correction.
+
+    Returns per-observation scale inflation factors.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    z_arr = np.ascontiguousarray(z_arr.ravel(), dtype=np.float64)
+    return ad_twsc_kernel(z_arr, float(ewma_lambda), float(alpha_quantile),
+                          float(kappa), float(max_inflate), float(deadzone))
+
+
+def run_ad_sptg_student_t(
+    z_arr: np.ndarray,
+    nu: float,
+    xi_left: float,
+    sigma_left: float,
+    u_left: float,
+    xi_right: float,
+    sigma_right: float,
+    u_right: float,
+    p_left: float,
+    p_right: float,
+) -> np.ndarray:
+    """
+    Run Numba-accelerated SPTG CDF for Student-t.
+
+    Returns array of PIT values with GPD-grafted tails.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    z_arr = np.ascontiguousarray(z_arr.ravel(), dtype=np.float64)
+    return ad_sptg_cdf_student_t_array(
+        z_arr, float(nu),
+        float(xi_left), float(sigma_left), float(u_left),
+        float(xi_right), float(sigma_right), float(u_right),
+        float(p_left), float(p_right),
+    )
+
+
+def run_ad_sptg_gaussian(
+    z_arr: np.ndarray,
+    xi_left: float,
+    sigma_left: float,
+    u_left: float,
+    xi_right: float,
+    sigma_right: float,
+    u_right: float,
+    p_left: float,
+    p_right: float,
+) -> np.ndarray:
+    """
+    Run Numba-accelerated SPTG CDF for Gaussian.
+
+    Returns array of PIT values with GPD-grafted tails.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    z_arr = np.ascontiguousarray(z_arr.ravel(), dtype=np.float64)
+    return ad_sptg_cdf_gaussian_array(
+        z_arr,
+        float(xi_left), float(sigma_left), float(u_left),
+        float(xi_right), float(sigma_right), float(u_right),
+        float(p_left), float(p_right),
     )

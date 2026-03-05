@@ -375,8 +375,8 @@ online-test: .venv/.deps_installed
 	@.venv/bin/python src/tests/verify_online_update.py
 
 tests: .venv/.deps_installed
-	@echo "Running all tests..."
-	@.venv/bin/python -m unittest discover -s src/tests -p "test_*.py" -v
+	@echo "Running all tests (parallel, multi-process)..."
+	@OFFLINE_MODE=1 TUNING_QUIET=1 .venv/bin/python -m pytest src/tests/ $(ARGS)
 
 # PIT calibration test for unified Student-t model (failing assets only)
 pit: .venv/.deps_installed
@@ -479,6 +479,9 @@ clear:
 	@find . -name "*.pyc" -delete
 	@find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 	@rm -rf src/data/plots/*.png
+	@rm -rf src/data/plots/signals/*.png
+	@rm -rf src/data/plots/sma/*.png
+	@rm -rf src/data/plots/index/*.png
 	@rm -rf src/data/options/meta/
 	@rm -f data/*.backup
 	@echo "Data cache cleared successfully!"

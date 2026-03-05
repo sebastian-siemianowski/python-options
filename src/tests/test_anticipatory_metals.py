@@ -191,7 +191,7 @@ class TestVolatilityTermStructure:
         
         # Should trigger with 0.3 contribution
         assert indicator.contribution == VOL_TERM_STRUCTURE_STRESS_CONTRIBUTION
-        assert "INVERSION" in indicator.interpretation
+        assert "VOL SPIKE" in indicator.interpretation
 
 
 class TestEscalationProtocol:
@@ -213,15 +213,12 @@ class TestEscalationProtocol:
         assert severity == AlertSeverity.INFO
     
     def test_elevated_to_stressed_transition(self):
-        """Test transition from Elevated to Stressed."""
+        """Test transition from Elevated to Stressed via emergency override."""
         state = EscalationState()
         state.current_regime = "Elevated"
         
-        # First high reading
-        _update_escalation_state(1.3, state)
-        
-        # Second consecutive
-        regime, transitioned, severity = _update_escalation_state(1.25, state)
+        # Temperature >= 1.2 triggers immediate escalation (emergency override)
+        regime, transitioned, severity = _update_escalation_state(1.3, state)
         
         assert regime == "Stressed"
         assert transitioned

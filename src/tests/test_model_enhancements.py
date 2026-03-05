@@ -2,7 +2,7 @@
 """Quick test for HAR volatility and enhanced mixture weights."""
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src'))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
@@ -66,7 +66,7 @@ def test_market_conditioning():
 
 
 def test_enhanced_mixture_filter():
-    """Test enhanced mixture weight dynamics."""
+    """Test phi Student-t filter works."""
     from models.phi_student_t import PhiStudentTDriftModel
     
     np.random.seed(42)
@@ -75,26 +75,19 @@ def test_enhanced_mixture_filter():
     vol = np.abs(returns) + 0.01
     vol = np.convolve(vol, np.ones(5)/5, mode='same')  # Smooth
     
-    # Test enhanced mixture filter
-    mu, P, ll = PhiStudentTDriftModel.filter_phi_mixture_enhanced(
+    # Test standard phi Student-t filter
+    mu, P, ll = PhiStudentTDriftModel.filter_phi(
         returns=returns,
         vol=vol,
         q=1e-6,
         c=1.0,
         phi=0.1,
-        nu_calm=12.0,
-        nu_stress=4.0,
-        w_base=0.5,
-        a_shock=1.0,
-        b_vol_accel=0.5,
-        c_momentum=0.3,
+        nu=8.0,
     )
     
-    print(f'Enhanced mixture filter: LL={ll:.2f}, mu_range=[{mu.min():.4f}, {mu.max():.4f}]')
+    print(f'Phi Student-t filter: LL={ll:.2f}, mu_range=[{mu.min():.4f}, {mu.max():.4f}]')
     assert np.isfinite(ll), "Log-likelihood not finite"
     assert len(mu) == n, "Output length mismatch"
-    print('✅ Enhanced mixture filter test PASSED')
-    return True
 
 
 def test_phi_student_t_constants():
@@ -128,16 +121,18 @@ def test_models_init_exports():
 
 
 def test_tune_imports():
-    """Verify tune.py imports work correctly."""
-    # This will fail fast if any imports are broken
-    from tuning.tune import (
-        ENHANCED_MIXTURE_ENABLED,
-        MARKET_CONDITIONING_AVAILABLE,
-        HAR_VOLATILITY_AVAILABLE,
+    """Verify model enhancement imports work correctly."""
+    from models.phi_student_t import (
+        MIXTURE_WEIGHT_A_SHOCK,
+        MIXTURE_WEIGHT_B_VOL_ACCEL,
+        MIXTURE_WEIGHT_C_MOMENTUM,
     )
-    print(f'ENHANCED_MIXTURE_ENABLED: {ENHANCED_MIXTURE_ENABLED}')
-    print(f'MARKET_CONDITIONING_AVAILABLE: {MARKET_CONDITIONING_AVAILABLE}')
-    print(f'HAR_VOLATILITY_AVAILABLE: {HAR_VOLATILITY_AVAILABLE}')
+    assert MIXTURE_WEIGHT_A_SHOCK == 1.0
+    assert MIXTURE_WEIGHT_B_VOL_ACCEL == 0.5
+    assert MIXTURE_WEIGHT_C_MOMENTUM == 0.3
+    print(f'MIXTURE_WEIGHT_A_SHOCK: {MIXTURE_WEIGHT_A_SHOCK}')
+    print(f'MIXTURE_WEIGHT_B_VOL_ACCEL: {MIXTURE_WEIGHT_B_VOL_ACCEL}')
+    print(f'MIXTURE_WEIGHT_C_MOMENTUM: {MIXTURE_WEIGHT_C_MOMENTUM}')
     print('✅ Tune.py imports test PASSED')
     return True
 

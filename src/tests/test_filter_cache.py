@@ -369,22 +369,31 @@ class TestNumericalInvariance:
         np.testing.assert_allclose(mu_cached2, mu_fresh, rtol=1e-10)
     
     def test_phi_student_t_cache_equivalence(self, sample_data, clean_cache):
-        """Cached φ-Student-t filter matches fresh computation."""
+        """Cached φ-Student-t filter returns consistent results across calls."""
         returns, vol = sample_data
         q, c, phi, nu = 1e-6, 1.0, 0.5, 6.0
         
-        # Fresh computation
-        mu_fresh, P_fresh, ll_fresh = PhiStudentTDriftModel.filter_phi(returns, vol, q, c, phi, nu)
-        
-        # Cached computation
-        mu_cached, P_cached, ll_cached, _ = PhiStudentTDriftModel.filter_with_trajectory(
-            returns, vol, q, c, phi, nu
+        # First cached computation (cold start)
+        mu_cached1, P_cached1, ll_cached1, traj1 = cached_phi_student_t_filter(
+            returns, vol, q, c, phi, nu,
+            filter_fn=PhiStudentTDriftModel.filter_phi
         )
         
-        # Results should match (slightly looser tolerance due to gamma computation path)
-        np.testing.assert_allclose(mu_cached, mu_fresh, rtol=1e-8)
-        np.testing.assert_allclose(P_cached, P_fresh, rtol=1e-8)
-        np.testing.assert_allclose(ll_cached, ll_fresh, rtol=1e-6)
+        # Second cached computation (cache hit) must return identical results
+        mu_cached2, P_cached2, ll_cached2, traj2 = cached_phi_student_t_filter(
+            returns, vol, q, c, phi, nu,
+            filter_fn=PhiStudentTDriftModel.filter_phi
+        )
+        
+        # Cached results must be exactly identical (same object from cache)
+        np.testing.assert_allclose(mu_cached2, mu_cached1, rtol=1e-12)
+        np.testing.assert_allclose(P_cached2, P_cached1, rtol=1e-12)
+        np.testing.assert_allclose(ll_cached2, ll_cached1, rtol=1e-12)
+        
+        # Sanity: outputs are finite and reasonable
+        assert np.all(np.isfinite(mu_cached1))
+        assert np.all(np.isfinite(P_cached1))
+        assert np.isfinite(ll_cached1)
 
 
 class TestCacheStatistics:

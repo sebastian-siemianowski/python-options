@@ -200,8 +200,8 @@ class PhiSkewTDriftModel:
         if z >= 0:
             # F_t(z/γ) for the right tail
             cdf_t = student_t.cdf(z / gamma, df=nu)
-            # The full CDF for z ≥ 0
-            return float((1.0 / c) + (2.0 * gamma / c) * (cdf_t - 0.5))
+            # The full CDF for z ≥ 0: F(0) + integral = 1/(cγ) + (2γ/c)(F_t(z/γ) - 0.5)
+            return float((1.0 / (c * gamma)) + (2.0 * gamma / c) * (cdf_t - 0.5))
         else:
             # F_t(γ*z) for the left tail
             cdf_t = student_t.cdf(gamma * z, df=nu)

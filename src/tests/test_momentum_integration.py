@@ -2,7 +2,8 @@
 """Test momentum model integration in calibration modules."""
 
 import sys
-sys.path.insert(0, 'src')
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from calibration.control_policy import ControlPolicy, CalibrationDiagnostics
 from calibration.calibrated_trust import TrustConfig

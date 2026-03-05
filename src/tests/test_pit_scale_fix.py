@@ -9,7 +9,8 @@ The bug was: using sqrt(variance) instead of sqrt(variance × (ν-2)/ν) for Stu
 This caused standardized residuals to be too small by a factor of sqrt(ν/(ν-2)).
 """
 import sys
-sys.path.insert(0, 'src')
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 from scipy.stats import t as student_t, kstest

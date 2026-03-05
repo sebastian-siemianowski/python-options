@@ -751,8 +751,10 @@ def _run_phi_student_t_with_trajectory(
         S = P_pred + R
         forecast_scale = np.sqrt(S) if S > 1e-12 else 1e-6
         
-        # Update with robustified gain
+        # Update with robustified gain (Student-t robust weight)
         if S > 1e-12:
+            z_sq = (innovation * innovation) / S
+            nu_adjust = (nu_val + 1.0) / (nu_val + z_sq)
             K = nu_adjust * P_pred / S
             mu = mu_pred + K * innovation
             P = (1.0 - K) * P_pred

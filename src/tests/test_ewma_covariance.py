@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 # Import our new portfolio utilities
-from portfolio_utils import ewma_covariance, extract_pairwise_correlations
+from decision.portfolio_utils import ewma_covariance, extract_pairwise_correlations
 
 # Import data fetching from existing utilities
 from ingestion.data_utils import _fetch_px_symbol

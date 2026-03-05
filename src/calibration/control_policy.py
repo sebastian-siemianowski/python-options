@@ -270,7 +270,6 @@ class ControlPolicy:
         'momentum_student_t': 0.06,
         # Advanced distributions
         'phi_skew_t': 0.10,
-        'phi_nig': 0.12,
         'mixture': 0.15,
         'mixture_k2': 0.15,
         'gh': 0.20,

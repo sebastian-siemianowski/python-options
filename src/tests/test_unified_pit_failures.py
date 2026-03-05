@@ -7,7 +7,7 @@ import warnings
 import multiprocessing
 
 warnings.filterwarnings('ignore')
-sys.path.insert(0, 'src')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 if __name__ == '__main__' or multiprocessing.current_process().name == 'MainProcess':
     pass  # silent load
@@ -73,7 +73,7 @@ PIT_PVALUE_THRESHOLD = 0.05
 MAD_THRESHOLD = 0.05
 
 # Storage for results to enable comparison after fixes
-RESULTS_FILE = 'test_unified_pit_baseline.json'
+RESULTS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'test_unified_pit_baseline.json')
 
 
 @dataclass
@@ -307,9 +307,10 @@ def _init_worker():
     """Initialize worker process."""
     import warnings
     warnings.filterwarnings('ignore')
-    import sys
-    if 'src' not in sys.path:
-        sys.path.insert(0, 'src')
+    import sys, os
+    _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _src not in sys.path:
+        sys.path.insert(0, _src)
 
 
 def _process_asset_worker(symbol):
