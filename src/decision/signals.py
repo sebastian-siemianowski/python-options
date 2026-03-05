@@ -429,6 +429,7 @@ try:
         find_below_sma50_stocks,
         render_below_sma50_table,
         generate_sma_charts,
+        generate_index_charts,
     )
     SIGNAL_CHARTS_AVAILABLE = True
 except ImportError:
@@ -437,6 +438,7 @@ except ImportError:
     find_below_sma50_stocks = None
     render_below_sma50_table = None
     generate_sma_charts = None
+    generate_index_charts = None
 
 # Import render_risk_temperature_summary from risk_temperature module
 # (Temperature modules own their own rendering - no duplication in signals_ux)
@@ -9539,6 +9541,14 @@ def main() -> None:
                     if os.getenv("DEBUG"):
                         Console().print(f"[dim]SMA50 analysis error: {sma_e}[/dim]")
             
+            # Index fund / ETF charts
+            if SIGNAL_CHARTS_AVAILABLE and generate_index_charts is not None:
+                try:
+                    generate_index_charts(quiet=False)
+                except Exception as idx_e:
+                    if os.getenv("DEBUG"):
+                        Console().print(f"[dim]Index chart error: {idx_e}[/dim]")
+            
             # Show unified risk dashboard (replaces fragmented risk temperature display)
             if UNIFIED_RISK_DASHBOARD_AVAILABLE:
                 try:
@@ -10480,6 +10490,14 @@ def main() -> None:
             except Exception as sma_e:
                 if os.getenv("DEBUG"):
                     Console().print(f"[dim]SMA50 analysis error: {sma_e}[/dim]")
+        
+        # Index fund / ETF charts
+        if SIGNAL_CHARTS_AVAILABLE and generate_index_charts is not None:
+            try:
+                generate_index_charts(quiet=False)
+            except Exception as idx_e:
+                if os.getenv("DEBUG"):
+                    Console().print(f"[dim]Index chart error: {idx_e}[/dim]")
         
         # Show unified risk dashboard (replaces fragmented risk temperature display)
         # February 2026: Full risk dashboard matching `make risk` output

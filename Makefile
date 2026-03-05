@@ -481,6 +481,7 @@ clear:
 	@rm -rf src/data/plots/*.png
 	@rm -rf src/data/plots/signals/*.png
 	@rm -rf src/data/plots/sma/*.png
+	@rm -rf src/data/plots/index/*.png
 	@rm -rf src/data/options/meta/
 	@rm -f data/*.backup
 	@echo "Data cache cleared successfully!"

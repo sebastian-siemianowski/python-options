@@ -2353,10 +2353,10 @@ class UnifiedPhiStudentTModel:
             pit_values = _fast_t_cdf(z, nu)
         return np.clip(pit_values, 0.001, 0.999), sigma, mu_pred_test
 
-    @staticmethod
-    def _compute_berkowitz_pvalue(pit_values):
+    @classmethod
+    def _compute_berkowitz_pvalue(cls, pit_values):
         """Berkowitz (2001) p-value only. Wrapper around _compute_berkowitz_full."""
-        return PhiStudentTDriftModel._compute_berkowitz_full(pit_values)[0]
+        return cls._compute_berkowitz_full(pit_values)[0]
 
     @staticmethod
     def _compute_berkowitz_full(pit_values):
