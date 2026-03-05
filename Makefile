@@ -745,3 +745,49 @@ metals: .venv/.deps_installed
 
 market: .venv/.deps_installed
 	@.venv/bin/python src/decision/market_temperature.py $(ARGS)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WEB DASHBOARD (React + FastAPI)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Install web dependencies (backend + frontend)
+web-install:
+	@echo "Installing backend dependencies..."
+	@.venv/bin/pip install -q fastapi uvicorn[standard] celery redis websockets 2>/dev/null
+	@echo "Installing frontend dependencies..."
+	@cd src/web/frontend && npm install --silent
+	@echo "✓ Web dependencies installed"
+
+# Start Redis (requires Docker)
+redis:
+	@docker compose -f src/web/docker-compose.yml up -d
+	@echo "✓ Redis started on port 6379"
+
+# Start Celery worker
+web-worker: .venv/.deps_installed
+	@cd src && ../.venv/bin/celery -A web.backend.celery_app worker --loglevel=info
+
+# Start FastAPI backend (port 8000)
+web-backend: .venv/.deps_installed
+	@cd src && ../.venv/bin/uvicorn web.backend.main:app --reload --port 8000
+
+# Start React frontend dev server (port 5173)
+web-frontend:
+	@cd src/web/frontend && npm run dev
+
+# Build frontend for production
+web-build:
+	@cd src/web/frontend && npm run build
+	@echo "✓ Frontend built to src/web/frontend/dist/"
+
+# Start everything (backend + frontend, requires Redis running)
+web:
+	@echo "Starting web dashboard..."
+	@echo "  Backend:  http://localhost:8000"
+	@echo "  Frontend: http://localhost:5173"
+	@echo ""
+	@echo "Run in separate terminals:"
+	@echo "  make redis        # Start Redis (Docker)"
+	@echo "  make web-backend  # FastAPI server"
+	@echo "  make web-worker   # Celery worker"
+	@echo "  make web-frontend # React dev server"
