@@ -9,6 +9,7 @@ import { Settings, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
+import { formatModelName, formatModelNameShort } from '../utils/modelNames';
 
 export default function TuningPage() {
   const [search, setSearch] = useState('');
@@ -34,7 +35,7 @@ export default function TuningPage() {
   const modelData = stats?.models_distribution
     ? Object.entries(stats.models_distribution)
         .map(([name, count]) => ({
-          name: name.replace('phi_student_t_', 'φ-t ').replace('kalman_', 'K-').replace('_unified', ''),
+          name: formatModelNameShort(name),
           count,
         }))
         .sort((a, b) => b.count - a.count)
@@ -106,7 +107,7 @@ export default function TuningPage() {
                   >
                     <td className="px-3 py-2 font-medium text-[#e2e8f0]">{a.symbol}</td>
                     <td className="px-3 py-2 text-[#94a3b8]">
-                      {a.best_model?.replace('phi_student_t_', 'φ-t ').replace('kalman_', 'K-')}
+                      {formatModelName(a.best_model)}
                     </td>
                     <td className="px-3 py-2 text-center text-[#94a3b8]">{a.num_models}</td>
                     <td className="px-3 py-2 text-center">

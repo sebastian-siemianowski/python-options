@@ -753,26 +753,48 @@ market: .venv/.deps_installed
 # Install web dependencies (backend + frontend)
 web-install:
 	@echo "Installing backend dependencies..."
-	@.venv/bin/pip install -q fastapi uvicorn[standard] celery redis websockets 2>/dev/null
+	@.venv/bin/pip install -q fastapi 'uvicorn[standard]' websockets pydantic python-multipart psutil 2>/dev/null
 	@echo "Installing frontend dependencies..."
 	@cd src/web/frontend && npm install --silent
 	@echo "✓ Web dependencies installed"
+
+# Install Celery/Redis dependencies (optional, for background tasks)
+web-install-worker:
+	@echo "Installing worker dependencies..."
+	@.venv/bin/pip install -q 'celery[redis]' redis 2>/dev/null
+	@echo "✓ Worker dependencies installed (celery + redis)"
 
 # Start Redis (requires Docker)
 redis:
 	@docker compose -f src/web/docker-compose.yml up -d
 	@echo "✓ Redis started on port 6379"
 
-# Start Celery worker
-web-worker: .venv/.deps_installed
+# Start Celery worker (requires Redis running + celery installed)
+web-worker:
+	@if ! .venv/bin/python -c "import celery" 2>/dev/null; then \
+		echo "⚠  Celery not installed. Installing..."; \
+		.venv/bin/pip install -q 'celery[redis]' redis 2>/dev/null; \
+	fi
+	@echo "Starting Celery worker..."
+	@echo "  Requires Redis on localhost:6379"
+	@echo "  Start Redis with: make redis"
+	@echo ""
 	@cd src && ../.venv/bin/celery -A web.backend.celery_app worker --loglevel=info
 
 # Start FastAPI backend (port 8000)
 web-backend: .venv/.deps_installed
+	@if ! .venv/bin/python -c "import fastapi" 2>/dev/null; then \
+		echo "⚠  FastAPI not installed. Running make web-install..."; \
+		$(MAKE) web-install; \
+	fi
 	@cd src && ../.venv/bin/uvicorn web.backend.main:app --reload --port 8000
 
 # Start React frontend dev server (port 5173)
 web-frontend:
+	@if [ ! -d src/web/frontend/node_modules ]; then \
+		echo "⚠  Frontend deps missing. Running npm install..."; \
+		cd src/web/frontend && npm install --silent; \
+	fi
 	@cd src/web/frontend && npm run dev
 
 # Build frontend for production
@@ -780,14 +802,33 @@ web-build:
 	@cd src/web/frontend && npm run build
 	@echo "✓ Frontend built to src/web/frontend/dist/"
 
-# Start everything (backend + frontend, requires Redis running)
-web:
-	@echo "Starting web dashboard..."
-	@echo "  Backend:  http://localhost:8000"
-	@echo "  Frontend: http://localhost:5173"
+# Start all web services (backend + frontend + optional worker)
+web: .venv/.deps_installed
+	@if ! .venv/bin/python -c "import fastapi" 2>/dev/null; then \
+		echo "⚠  Web dependencies not installed. Installing..."; \
+		$(MAKE) web-install; \
+	fi
+	@echo "╔══════════════════════════════════════════════════════╗"
+	@echo "║         Signal Engine — Web Dashboard               ║"
+	@echo "╚══════════════════════════════════════════════════════╝"
 	@echo ""
-	@echo "Run in separate terminals:"
-	@echo "  make redis        # Start Redis (Docker)"
-	@echo "  make web-backend  # FastAPI server"
-	@echo "  make web-worker   # Celery worker"
-	@echo "  make web-frontend # React dev server"
+	@echo "  Starting services..."
+	@echo "    Backend:  http://localhost:8000"
+	@echo "    Frontend: http://localhost:5173"
+	@echo ""
+	@echo "  Optional (run in separate terminal):"
+	@echo "    make redis        # Start Redis (Docker)"
+	@echo "    make web-worker   # Celery background worker"
+	@echo ""
+	@trap 'echo ""; echo "Shutting down..."; kill 0; exit 0' INT TERM; \
+	(cd src && ../.venv/bin/uvicorn web.backend.main:app --reload --port 8000) & \
+	(sleep 1 && cd src/web/frontend && npm run dev -- --host 0.0.0.0) & \
+	wait
+
+# Stop web services
+web-stop:
+	@echo "Stopping web services..."
+	@-pkill -f "uvicorn web.backend.main:app" 2>/dev/null || true
+	@-pkill -f "vite.*src/web/frontend" 2>/dev/null || true
+	@-pkill -f "celery.*web.backend" 2>/dev/null || true
+	@echo "✓ Web services stopped"

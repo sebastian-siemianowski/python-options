@@ -12,6 +12,7 @@ from web.backend.services.chart_service import (
     compute_indicators,
     get_generated_chart_images,
     get_forecast_data,
+    get_symbols_by_sector,
 )
 
 router = APIRouter()
@@ -22,6 +23,13 @@ async def chart_symbols():
     """List available symbols for charting."""
     symbols = get_available_chart_symbols()
     return {"symbols": symbols, "count": len(symbols)}
+
+
+@router.get("/symbols-by-sector")
+async def chart_symbols_by_sector():
+    """Available symbols grouped by consolidated sector."""
+    sectors = get_symbols_by_sector()
+    return {"sectors": sectors, "total_sectors": len(sectors)}
 
 
 @router.get("/ohlcv/{symbol}")

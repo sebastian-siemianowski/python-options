@@ -1,4 +1,6 @@
 import { Outlet, NavLink } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '../api';
 import {
   LayoutDashboard,
   Signal,
@@ -8,6 +10,7 @@ import {
   Database,
   Swords,
   Activity,
+  HeartPulse,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -18,9 +21,22 @@ const NAV_ITEMS = [
   { to: '/tuning', label: 'Tuning', icon: Settings },
   { to: '/data', label: 'Data', icon: Database },
   { to: '/arena', label: 'Arena', icon: Swords },
+  { to: '/services', label: 'Services', icon: HeartPulse },
 ];
 
 export default function Layout() {
+  const healthQ = useQuery({
+    queryKey: ['servicesHealth'],
+    queryFn: api.servicesHealth,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+
+  const allOk = healthQ.data
+    ? healthQ.data.api.status === 'ok' && healthQ.data.signal_cache.status !== 'missing'
+      && healthQ.data.price_data.status === 'ok'
+    : true; // Assume ok while loading
+
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
@@ -53,6 +69,11 @@ export default function Layout() {
             >
               <Icon className="w-4 h-4 flex-shrink-0" />
               {label}
+              {to === '/services' && (
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ml-auto ${allOk ? 'bg-[#00E676]' : 'bg-[#FF1744]'} pulse-dot`}
+                />
+              )}
             </NavLink>
           ))}
         </nav>

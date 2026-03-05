@@ -13,6 +13,8 @@ from web.backend.services.signal_service import (
     get_high_conviction_signals,
     get_signal_stats,
     get_horizons,
+    get_signals_by_sector,
+    get_strong_signal_symbols,
 )
 
 router = APIRouter()
@@ -24,6 +26,20 @@ async def signal_summary():
     rows = get_summary_rows()
     horizons = get_horizons()
     return {"summary_rows": rows, "horizons": horizons, "total": len(rows)}
+
+
+@router.get("/by-sector")
+async def signals_by_sector():
+    """Summary rows grouped by consolidated sector with aggregate stats."""
+    sectors = get_signals_by_sector()
+    return {"sectors": sectors, "total_sectors": len(sectors)}
+
+
+@router.get("/strong-signals")
+async def strong_signals():
+    """Symbols with STRONG BUY or STRONG SELL labels."""
+    data = get_strong_signal_symbols()
+    return data
 
 
 @router.get("/assets")

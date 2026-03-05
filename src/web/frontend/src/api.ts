@@ -16,16 +16,18 @@ export async function postApi<T>(path: string, body?: unknown): Promise<T> {
   return res.json();
 }
 
-// ── Overview ────────────────────────────────────────────────────────
+// ── API client ──────────────────────────────────────────────────────
 export const api = {
   overview: () => fetchApi<OverviewData>('/api/overview'),
-  health: () => fetchApi<{ status: string }>('/api/health'),
+  health: () => fetchApi<{ status: string; service: string }>('/api/health'),
 
   // Signals
   signalSummary: () => fetchApi<SignalSummaryData>('/api/signals/summary'),
   signalStats: () => fetchApi<SignalStats>('/api/signals/stats'),
   signalAssets: () => fetchApi<{ assets: AssetBlock[]; total: number }>('/api/signals/assets'),
   signalFailed: () => fetchApi<{ failed_assets: string[]; count: number }>('/api/signals/failed'),
+  signalsBySector: () => fetchApi<SectorSignalsData>('/api/signals/by-sector'),
+  strongSignals: () => fetchApi<StrongSignalsData>('/api/signals/strong-signals'),
   highConviction: (type: 'buy' | 'sell') =>
     fetchApi<{ signals: HighConvictionSignal[]; count: number }>(`/api/signals/high-conviction/${type}`),
 
@@ -35,6 +37,7 @@ export const api = {
 
   // Charts
   chartSymbols: () => fetchApi<{ symbols: string[]; count: number }>('/api/charts/symbols'),
+  chartSymbolsBySector: () => fetchApi<ChartSectorData>('/api/charts/symbols-by-sector'),
   chartOhlcv: (symbol: string, tail = 365) =>
     fetchApi<{ symbol: string; data: OHLCVBar[]; count: number }>(`/api/charts/ohlcv/${symbol}?tail=${tail}`),
   chartIndicators: (symbol: string, tail = 365) =>
@@ -59,6 +62,10 @@ export const api = {
   arenaSafeStorage: () => fetchApi<{ models: SafeStorageModel[]; count: number }>('/api/arena/safe-storage'),
   arenaResults: () => fetchApi<Record<string, unknown>>('/api/arena/results'),
 
+  // Services / Health
+  servicesHealth: () => fetchApi<ServicesHealth>('/api/services/health'),
+  servicesErrors: () => fetchApi<{ errors: ServiceError[]; count: number }>('/api/services/errors'),
+
   // Tasks
   triggerSignals: (args?: string[]) => postApi<TaskResponse>('/api/tasks/signals/compute', { args }),
   triggerDataRefresh: (symbols?: string[]) => postApi<TaskResponse>('/api/tasks/data/refresh', { symbols }),
@@ -74,6 +81,7 @@ export interface OverviewData {
   signals: SignalStats;
   tuning: TuneStats;
   data: DataSummary;
+  errors?: string[];
 }
 
 export interface SignalStats {
@@ -83,6 +91,9 @@ export interface SignalStats {
   buy_signals: number;
   sell_signals: number;
   hold_signals: number;
+  strong_buy_signals: number;
+  strong_sell_signals: number;
+  exit_signals: number;
   cache_age_seconds: number | null;
 }
 
@@ -109,6 +120,55 @@ export interface HorizonSignal {
   ue_up: number;
   ue_down: number;
 }
+
+// ── Sector signals ──────────────────────────────────────────────────
+export interface SectorGroup {
+  name: string;
+  assets: SummaryRow[];
+  asset_count: number;
+  strong_buy: number;
+  buy: number;
+  hold: number;
+  sell: number;
+  strong_sell: number;
+  exit: number;
+  avg_momentum: number;
+  avg_crash_risk: number;
+}
+
+export interface SectorSignalsData {
+  sectors: SectorGroup[];
+  total_sectors: number;
+}
+
+export interface StrongSignalEntry {
+  symbol: string;
+  asset_label: string;
+  sector: string;
+  horizon: string;
+  p_up: number;
+  exp_ret: number;
+  momentum: number;
+}
+
+export interface StrongSignalsData {
+  strong_buy: StrongSignalEntry[];
+  strong_sell: StrongSignalEntry[];
+}
+
+// ── Chart sector grouping ───────────────────────────────────────────
+export interface ChartSectorGroup {
+  name: string;
+  symbols: string[];
+  count: number;
+}
+
+export interface ChartSectorData {
+  sectors: ChartSectorGroup[];
+  total_sectors: number;
+}
+
+// ── Other types ─────────────────────────────────────────────────────
 
 export interface AssetBlock {
   symbol: string;
@@ -246,6 +306,48 @@ export interface SafeStorageModel {
   size_kb: number;
 }
 
+// ── Services / Health ───────────────────────────────────────────────
+export interface ServicesHealth {
+  api: {
+    status: string;
+    uptime_seconds: number;
+    uptime_human: string;
+    memory_mb: number;
+    cpu_percent: number;
+    pid: number;
+  };
+  signal_cache: {
+    status: string;
+    exists: boolean;
+    age_seconds: number | null;
+    age_human?: string;
+    size_mb: number;
+    last_modified?: string;
+  };
+  price_data: {
+    status: string;
+    total_files: number;
+    stale_files: number;
+    fresh_files?: number;
+    freshest_hours?: number;
+    oldest_hours?: number;
+    total_size_mb?: number;
+  };
+  workers: {
+    status: string;
+    redis: { status: string; used_memory_human?: string; error?: string; message?: string };
+    celery: { status: string; workers?: number; worker_names?: string[]; error?: string; message?: string };
+  };
+  recent_errors: ServiceError[];
+}
+
+export interface ServiceError {
+  source: string;
+  message: string;
+  timestamp: string;
+}
+
+// ── Tasks ───────────────────────────────────────────────────────────
 export interface TaskResponse {
   task_id: string;
   task_type: string;

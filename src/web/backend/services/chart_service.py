@@ -15,6 +15,79 @@ DATA_DIR = os.path.join(SRC_DIR, "data")
 PRICES_DIR = os.path.join(DATA_DIR, "prices")
 PLOTS_DIR = os.path.join(DATA_DIR, "plots")
 
+# Import SECTOR_MAP lazily to avoid import issues at startup
+_sector_map_cache: Optional[Dict[str, Any]] = None
+
+
+def _get_sector_map() -> Dict[str, set]:
+    """Load SECTOR_MAP from ingestion.data_utils, with caching."""
+    global _sector_map_cache
+    if _sector_map_cache is not None:
+        return _sector_map_cache
+    try:
+        from ingestion.data_utils import SECTOR_MAP
+        _sector_map_cache = SECTOR_MAP
+        return _sector_map_cache
+    except ImportError:
+        return {}
+
+
+# Consolidation mapping (mirrors signal_service.py)
+_SECTOR_CONSOLIDATION = {
+    "Indices / Broad ETFs": "Indices & ETFs",
+    "Indices": "Indices & ETFs",
+    "Nuclear": "Critical Materials & Nuclear",
+    "Critical Materials": "Critical Materials & Nuclear",
+    "AI Utility / Infrastructure": "AI & Infrastructure",
+    "AI Software / Data Platforms": "AI & Infrastructure",
+    "AI Hardware / Edge Compute": "AI & Infrastructure",
+    "AI Power Semiconductors": "AI & Infrastructure",
+    "Semiconductor Equipment": "Semiconductors",
+    "FX / Commodities / Crypto": "FX, Commodities & Crypto",
+}
+
+
+def get_symbols_by_sector() -> List[Dict[str, Any]]:
+    """
+    Group available chart symbols by consolidated sector.
+    
+    Returns list of {name, symbols: [...]} dicts.
+    """
+    available = set(get_available_chart_symbols())
+    sector_map = _get_sector_map()
+
+    # Build reverse mapping: symbol -> consolidated sector
+    sym_to_sector: Dict[str, str] = {}
+    for sector_name, tickers in sector_map.items():
+        consolidated = _SECTOR_CONSOLIDATION.get(sector_name, sector_name)
+        for ticker in tickers:
+            # Symbols in price files may differ from SECTOR_MAP (no =X, ^, etc.)
+            # Try matching with available set
+            if ticker in available:
+                sym_to_sector[ticker] = consolidated
+
+    # Group available symbols by sector
+    groups: Dict[str, List[str]] = {}
+    assigned = set()
+    for sym, sector in sym_to_sector.items():
+        groups.setdefault(sector, []).append(sym)
+        assigned.add(sym)
+
+    # Unassigned symbols go to "Other"
+    unassigned = sorted(available - assigned)
+    if unassigned:
+        groups["Other"] = unassigned
+
+    # Sort sectors and their symbol lists
+    result = []
+    for name in sorted(groups.keys()):
+        result.append({
+            "name": name,
+            "symbols": sorted(groups[name]),
+            "count": len(groups[name]),
+        })
+    return result
+
 
 def get_available_chart_symbols() -> List[str]:
     """Return list of symbols that have price data for charting."""

@@ -58,12 +58,14 @@ export default function RiskPage() {
             </p>
           </div>
           <div className="flex-1 ml-8">
-            <div className="h-3 rounded-full bg-[#1a1a2e] overflow-hidden">
+            <div className="h-3 rounded-full bg-[#1a1a2e] overflow-hidden relative">
               <div
-                className="h-full rounded-full transition-all duration-500"
+                className="h-full rounded-full transition-all duration-700 ease-out animate-gradient-shift"
                 style={{
                   width: `${tempBarWidth}%`,
                   background: `linear-gradient(90deg, #00E676, #FFB300, #FF1744)`,
+                  backgroundSize: '200% 100%',
+                  animation: 'gradient-shift 3s ease infinite',
                 }}
               />
             </div>
