@@ -343,10 +343,6 @@ def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: 
     chips2 = Text()
     chips2.append("○ ", style="bright_magenta")
     chips2.append("φ-Skew-t", style="bright_magenta")
-    chips2.append("   ○ ", style="bright_cyan")
-    chips2.append("φ-NIG", style="bright_cyan")
-    chips2.append("   ○ ", style="bright_yellow")
-    chips2.append("GMM", style="bright_yellow")
     chips2.append("   ○ ", style="bright_blue")
     chips2.append("Hansen-λ", style="bright_blue")
     console.print(Align.center(chips2))
@@ -757,8 +753,8 @@ def render_tuning_summary(
     gh_attempted_count: int = 0, gh_selected_count: int = 0,
     tvvm_attempted_count: int = 0, tvvm_selected_count: int = 0,
     phi_gaussian_count: int = 0, phi_student_t_count: int = 0,
-    phi_skew_t_count: int = 0, phi_nig_count: int = 0,
-    gmm_fitted_count: int = 0, hansen_fitted_count: int = 0,
+    phi_skew_t_count: int = 0,
+    hansen_fitted_count: int = 0,
     hansen_left_skew_count: int = 0, hansen_right_skew_count: int = 0,
     evt_fitted_count: int = 0, evt_heavy_tail_count: int = 0,
     evt_moderate_tail_count: int = 0, evt_light_tail_count: int = 0,
@@ -1047,9 +1043,9 @@ def render_tuning_summary(
             console.print(enh_total_row)
         
         # ═══════════════════════════════════════════════════════════════════
-        # OTHER VARIANTS (φ-Skew-t, φ-NIG) - only show if any exist
+        # OTHER VARIANTS (φ-Skew-t) - only show if any exist
         # ═══════════════════════════════════════════════════════════════════
-        if phi_skew_t_count > 0 or phi_nig_count > 0:
+        if phi_skew_t_count > 0:
             console.print()
             other_section = Text()
             other_section.append("    ▸ Other Variants", style="bold dim")
@@ -1068,19 +1064,6 @@ def render_tuning_summary(
             skt_row.append(f"  {phi_skew_t_count:>4}", style="bold white" if phi_skew_t_count > 0 else "dim")
             skt_row.append(f"  ({skt_pct:>4.1f}%)", style="dim")
             console.print(skt_row)
-            
-            # φ-NIG
-            nig_pct = phi_nig_count / total_models * 100 if total_models > 0 else 0
-            nig_filled = int(nig_pct / 100 * bar_width)
-            nig_style = "bright_yellow" if phi_nig_count > 0 else "dim"
-            nig_row = Text()
-            nig_row.append("      ★ ", style=nig_style)
-            nig_row.append(f"{'φ-NIG':<18} ", style=nig_style)
-            nig_row.append("█" * nig_filled, style=nig_style)
-            nig_row.append("░" * (bar_width - nig_filled), style="dim")
-            nig_row.append(f"  {phi_nig_count:>4}", style="bold white" if phi_nig_count > 0 else "dim")
-            nig_row.append(f"  ({nig_pct:>4.1f}%)", style="dim")
-            console.print(nig_row)
         
         # ═══════════════════════════════════════════════════════════════════
         # AUGMENTATION LAYERS
@@ -1090,19 +1073,6 @@ def render_tuning_summary(
         aug_section.append("    ▸ Augmentation Layers", style="bold dim")
         console.print(aug_section)
         console.print()
-        
-        gmm_pct = gmm_fitted_count / total_models * 100 if total_models > 0 else 0
-        gmm_filled = int(gmm_pct / 100 * bar_width)
-        gmm_row = Text()
-        gmm_row.append("      ◈ ", style="bright_blue")
-        gmm_row.append(f"{'GMM (2-State)':<14} ", style="bright_blue")
-        gmm_row.append("█" * gmm_filled, style="bright_blue")
-        gmm_row.append("░" * (bar_width - gmm_filled), style="dim")
-        gmm_row.append(f"  {gmm_fitted_count:>4}", style="bold white")
-        gmm_row.append(f"  ({gmm_pct:>4.1f}%)", style="dim")
-        if gmm_fitted_count == 0:
-            gmm_row.append("  [disabled]", style="dim italic")
-        console.print(gmm_row)
         
         hansen_pct = hansen_fitted_count / total_models * 100 if total_models > 0 else 0
         hansen_filled = int(hansen_pct / 100 * bar_width)
@@ -1276,11 +1246,7 @@ def render_tuning_summary(
             return m
         if m.startswith("φ-Skew-t"):
             return "φ-Skew-t"
-        if m.startswith("φ-NIG"):
-            return "φ-NIG"
         # Augmentation layers
-        if "GMM" in m:
-            return "GMM"
         if "Hλ" in m or "Hansen" in m:
             return "Hansen-λ"
         if "EVT" in m:
@@ -2539,8 +2505,8 @@ Examples:
                         
                         # Count base distribution models
                         if noise_model.startswith('phi_nig_'):
-                            phi_nig_count += 1
-                            student_t_count += 1  # Also count as heavy-tailed
+                            # NIG models removed — skip silently for old caches
+                            phi_skew_t_count += 0  # no-op
                         elif noise_model.startswith('phi_skew_t_nu_'):
                             phi_skew_t_count += 1
                             student_t_count += 1  # Also count as heavy-tailed
@@ -2624,14 +2590,8 @@ Examples:
                             weight = mixture_model.get('weight', 0)
                             model_str = f"K2-Mix(σ={sigma_ratio:.1f})"
                         elif model_type.startswith('phi_nig_'):
-                            # φ-NIG model with alpha/beta parameters
-                            nig_alpha = global_result.get('nig_alpha')
-                            nig_beta = global_result.get('nig_beta')
-                            if nig_beta is not None and abs(nig_beta) > 0.01:
-                                skew_dir = "L" if nig_beta < 0 else "R"
-                                model_str = f"NIG({skew_dir})"
-                            else:
-                                model_str = "NIG"
+                            # NIG models removed — display as legacy
+                            model_str = "Legacy-NIG"
                         elif model_type.startswith('phi_skew_t_nu_'):
                             # φ-Skew-t model with gamma parameter
                             gamma_val = global_result.get('gamma')
@@ -2714,15 +2674,6 @@ Examples:
                         if is_momentum_model or (model_type and '_momentum' in str(model_type)):
                             if '+Mom' not in model_str and '+Momentum' not in model_str:
                                 model_str += "+Mom"
-                        
-                        # Check for GMM availability
-                        gmm_data = global_result.get('gmm')
-                        has_gmm = (gmm_data is not None and 
-                                   isinstance(gmm_data, dict) and 
-                                   not gmm_data.get('is_degenerate', False))
-                        if has_gmm:
-                            model_str += "+GMM"
-                            gmm_fitted_count += 1
                         
                         # Check for Hansen Skew-t availability
                         hansen_data = global_result.get('hansen_skew_t')
@@ -2910,7 +2861,6 @@ Examples:
         mixture_model = global_data.get('mixture_model', {})
         
         # Get augmentation layer data
-        gmm_data = global_data.get('gmm')
         hansen_data = global_data.get('hansen_skew_t')
         evt_data = global_data.get('evt')
         cst_data = global_data.get('contaminated_student_t')
@@ -2926,12 +2876,8 @@ Examples:
             sigma_ratio = mixture_model.get('sigma_ratio', 0)
             model_key = f"K2-Mix(σ={sigma_ratio:.1f})"
         elif base_noise_model.startswith('phi_nig_'):
-            # φ-NIG model with alpha/beta parameters
-            if nig_beta is not None and abs(nig_beta) > 0.01:
-                skew_dir = "L" if nig_beta < 0 else "R"
-                model_key = f"φ-NIG({skew_dir})"
-            else:
-                model_key = "φ-NIG"
+            # NIG models removed — display as legacy for old caches
+            model_key = "Legacy-NIG"
         elif base_noise_model.startswith('phi_skew_t_nu_'):
             # φ-Skew-t model with gamma parameter
             gamma_val = global_data.get('gamma')
@@ -2964,8 +2910,6 @@ Examples:
         
         # Create augmentation suffix for tracking
         aug_suffix = ""
-        if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False) and not is_unified_batch:
-            aug_suffix += "+GMM"
         if hansen_data is not None and isinstance(hansen_data, dict) and not is_unified_batch:
             hansen_lambda = hansen_data.get('lambda')
             if hansen_lambda is not None and abs(hansen_lambda) > 0.01:
@@ -3017,11 +2961,6 @@ Examples:
                     # models, so count them for each regime that has any fit (fallback or not)
                     # This ensures proper display in REGIME COVERAGE table
                     # ==================================================================
-                    if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False) and not is_unified_batch:
-                        if "GMM" not in regime_model_breakdown[r_int]:
-                            regime_model_breakdown[r_int]["GMM"] = 0
-                        regime_model_breakdown[r_int]["GMM"] += 1
-                    
                     if hansen_data is not None and isinstance(hansen_data, dict) and not is_unified_batch:
                         hansen_lambda = hansen_data.get('lambda')
                         if hansen_lambda is not None and abs(hansen_lambda) > 0.01:
@@ -3060,8 +2999,6 @@ Examples:
     phi_gaussian_count = 0
     phi_student_t_count = 0
     phi_skew_t_count = 0
-    phi_nig_count = 0
-    gmm_fitted_count = 0
     hansen_fitted_count = 0
     hansen_left_skew_count = 0
     hansen_right_skew_count = 0
@@ -3098,8 +3035,8 @@ Examples:
             unified_model_count += 1
             student_t_count += 1
         elif noise_model.startswith('phi_nig_'):
-            phi_nig_count += 1
-            student_t_count += 1
+            # NIG models removed — skip silently for old caches
+            pass
         elif noise_model.startswith('phi_skew_t_nu_'):
             phi_skew_t_count += 1
             student_t_count += 1
@@ -3125,9 +3062,6 @@ Examples:
         
         # Count augmentation layers from cache (disabled for unified models)
         is_unified_batch = is_unified or global_data.get('unified_model', False)
-        gmm_data = global_data.get('gmm')
-        if gmm_data is not None and isinstance(gmm_data, dict) and not gmm_data.get('is_degenerate', False) and not is_unified_batch:
-            gmm_fitted_count += 1
         
         hansen_data = global_data.get('hansen_skew_t')
         if hansen_data is not None and isinstance(hansen_data, dict) and not is_unified_batch:
@@ -3228,8 +3162,6 @@ Examples:
         phi_gaussian_count=phi_gaussian_count,
         phi_student_t_count=phi_student_t_count,
         phi_skew_t_count=phi_skew_t_count,
-        phi_nig_count=phi_nig_count,
-        gmm_fitted_count=gmm_fitted_count,
         hansen_fitted_count=hansen_fitted_count,
         hansen_left_skew_count=hansen_left_skew_count,
         hansen_right_skew_count=hansen_right_skew_count,

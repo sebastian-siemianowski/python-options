@@ -3165,6 +3165,347 @@ def gaussian_cv_test_fold_kernel(
 
 
 # =============================================================================
+# AD TAIL-CORRECTION KERNELS (March 2026)
+# =============================================================================
+# Numba-accelerated kernels for the Anderson-Darling correction pipeline.
+# Three stages: TWSC (Tail-Weighted Scale Correction),
+#               SPTG (Semi-Parametric EVT Tail Grafting CDF evaluation),
+#               Gaussian normal CDF (for SPTG Gaussian path).
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def ad_twsc_kernel(
+    z_arr: np.ndarray,
+    ewma_lambda: float,
+    alpha_quantile: float,
+    kappa: float,
+    max_inflate: float,
+    deadzone: float,
+) -> np.ndarray:
+    """
+    Tail-Weighted Scale Correction (TWSC) — Numba inner loop.
+
+    Tracks separate left-tail and right-tail exceedance frequencies via EWMA.
+    When observed tail frequency exceeds the theoretical rate (alpha_quantile)
+    beyond a deadzone, inflates the local scale to bring tails back in line.
+
+    The key insight: if the model predicts 5% in each tail but we observe 8%,
+    the scale is too tight. Inflating scale widens the CDF and pushes tail
+    PIT values away from 0/1, directly improving the AD statistic.
+
+    Parameters
+    ----------
+    z_arr : np.ndarray
+        Standardized residuals z_t = (r_t - mu_pred_t) / scale_t
+    ewma_lambda : float
+        EWMA decay for tail frequency tracking (0.97 = ~33 obs halflife)
+    alpha_quantile : float
+        Theoretical tail probability threshold (0.05 = 5% in each tail)
+    kappa : float
+        Correction strength: inflate = 1 + kappa * (f_tail/f_expected - 1)
+    max_inflate : float
+        Maximum scale inflation factor (prevents over-correction)
+    deadzone : float
+        Minimum excess (f_tail/f_expected - 1) before correction activates
+
+    Returns
+    -------
+    np.ndarray
+        Per-observation scale inflation factors (multiply original scale by these)
+    """
+    n = len(z_arr)
+    scale_adj = np.ones(n, dtype=np.float64)
+
+    # Compute threshold from alpha. For simplicity use a fixed z_alpha.
+    # For alpha=0.05: ~1.645 for Gaussian, but we use a Student-t friendly
+    # heuristic: just count how often |z| exceeds the expected tail rate.
+    # The threshold is set so that under the model, P(|z| > threshold) ≈ 2*alpha.
+    # We use z_alpha = 1.645 as a reasonable default for alpha=0.05
+    # (this is the normal quantile — slightly conservative for Student-t,
+    #  which has even more tail mass, making the correction even more appropriate).
+    if alpha_quantile <= 0.0 or alpha_quantile >= 0.5:
+        return scale_adj
+
+    # Normal quantile approximation (Beasley-Springer-Moro, sufficient for Numba)
+    # For alpha ∈ [0.01, 0.20], this gives z_alpha with <0.001 error.
+    p = alpha_quantile
+    # Rational approximation for probit
+    a0 = 2.515517
+    a1 = 0.802853
+    a2 = 0.010328
+    b1 = 1.432788
+    b2 = 0.189269
+    b3 = 0.001308
+    t_val = math.sqrt(-2.0 * math.log(p))
+    z_alpha = t_val - (a0 + a1 * t_val + a2 * t_val * t_val) / (
+        1.0 + b1 * t_val + b2 * t_val * t_val + b3 * t_val * t_val * t_val
+    )
+
+    f_expected = alpha_quantile  # Expected frequency in each tail
+
+    # Initialize EWMA trackers at the expected rate
+    f_left = f_expected
+    f_right = f_expected
+    lam = ewma_lambda
+    one_m_lam = 1.0 - lam
+
+    for t in range(n):
+        z = z_arr[t]
+        # Update tail frequency trackers
+        is_left = 1.0 if z < -z_alpha else 0.0
+        is_right = 1.0 if z > z_alpha else 0.0
+        f_left = lam * f_left + one_m_lam * is_left
+        f_right = lam * f_right + one_m_lam * is_right
+
+        # Compute inflation from the worse tail
+        excess_left = f_left / f_expected - 1.0
+        excess_right = f_right / f_expected - 1.0
+        excess = max(excess_left, excess_right)
+
+        if excess > deadzone:
+            active_excess = excess - deadzone
+            inflate = 1.0 + kappa * active_excess
+            inflate = min(inflate, max_inflate)
+            scale_adj[t] = inflate
+
+    return scale_adj
+
+
+@njit(cache=True, fastmath=False)
+def ad_sptg_cdf_student_t_scalar(
+    z: float,
+    nu: float,
+    xi_left: float,
+    sigma_left: float,
+    u_left: float,
+    xi_right: float,
+    sigma_right: float,
+    u_right: float,
+    p_left: float,
+    p_right: float,
+) -> float:
+    """
+    Semi-Parametric Tail-Grafted CDF for Student-t (single observation).
+
+    Replaces the model CDF in the tails with a GPD-based CDF while keeping
+    the bulk (middle region) from the original Student-t. This corrects
+    tail shape misspecification that the AD test is specifically sensitive to.
+
+    Piecewise definition:
+        z < -u_left:  F(z) = p_left * GPD_left_cdf(|z| - u_left)
+        z > +u_right: F(z) = 1 - p_right * GPD_right_survival(z - u_right)
+        otherwise:    F(z) = Student-t CDF(z, nu)  [original model]
+
+    Parameters
+    ----------
+    z : float
+        Standardized residual
+    nu : float
+        Degrees of freedom for bulk Student-t CDF
+    xi_left, sigma_left : float
+        GPD shape and scale for left tail
+    u_left : float
+        Threshold (positive) for left tail (|z| > u_left triggers GPD)
+    xi_right, sigma_right : float
+        GPD shape and scale for right tail
+    u_right : float
+        Threshold (positive) for right tail (z > u_right triggers GPD)
+    p_left : float
+        Probability mass below -u_left under the model (= F(-u_left))
+    p_right : float
+        Probability mass above +u_right under the model (= 1 - F(u_right))
+
+    Returns
+    -------
+    float
+        PIT value ∈ (0, 1)
+    """
+    if z < -u_left:
+        # Left tail: GPD CDF for exceedances above threshold
+        y = (-z) - u_left  # exceedance (positive)
+        if y < 0.0:
+            y = 0.0
+        if abs(xi_left) < 1e-10:
+            # Exponential tail (xi ≈ 0)
+            gpd_cdf = 1.0 - math.exp(-y / sigma_left)
+        else:
+            arg = 1.0 + xi_left * y / sigma_left
+            if arg <= 0.0:
+                gpd_cdf = 1.0
+            else:
+                gpd_cdf = 1.0 - arg ** (-1.0 / xi_left)
+        # P(Z < z) = p_left * (1 - GPD_survival) where GPD is fitted on |Z| > u_left
+        # Actually: PIT = p_left * (1 - gpd_cdf) because further into left tail = smaller PIT
+        pit = p_left * (1.0 - gpd_cdf)
+        return max(1e-10, min(1.0 - 1e-10, pit))
+
+    elif z > u_right:
+        # Right tail: GPD CDF for exceedances above threshold
+        y = z - u_right  # exceedance (positive)
+        if y < 0.0:
+            y = 0.0
+        if abs(xi_right) < 1e-10:
+            gpd_cdf = 1.0 - math.exp(-y / sigma_right)
+        else:
+            arg = 1.0 + xi_right * y / sigma_right
+            if arg <= 0.0:
+                gpd_cdf = 1.0
+            else:
+                gpd_cdf = 1.0 - arg ** (-1.0 / xi_right)
+        # P(Z < z) = 1 - p_right * (1 - gpd_cdf)
+        pit = 1.0 - p_right * (1.0 - gpd_cdf)
+        return max(1e-10, min(1.0 - 1e-10, pit))
+
+    else:
+        # Bulk: use original Student-t CDF
+        pit = _student_t_cdf_scalar(z, nu)
+        return max(1e-10, min(1.0 - 1e-10, pit))
+
+
+@njit(cache=True, fastmath=False)
+def ad_sptg_cdf_student_t_array(
+    z_arr: np.ndarray,
+    nu: float,
+    xi_left: float,
+    sigma_left: float,
+    u_left: float,
+    xi_right: float,
+    sigma_right: float,
+    u_right: float,
+    p_left: float,
+    p_right: float,
+) -> np.ndarray:
+    """Vectorized SPTG CDF for Student-t (calls scalar kernel in loop)."""
+    n = len(z_arr)
+    out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        out[i] = ad_sptg_cdf_student_t_scalar(
+            z_arr[i], nu,
+            xi_left, sigma_left, u_left,
+            xi_right, sigma_right, u_right,
+            p_left, p_right,
+        )
+    return out
+
+
+@njit(cache=True, fastmath=False)
+def _ndtr_scalar(x: float) -> float:
+    """
+    Standard normal CDF Φ(x) — Numba-compatible.
+
+    Uses the Abramowitz & Stegun rational approximation (7.1.26),
+    max error < 1.5e-7 across the entire real line.
+    """
+    # Handle extreme values
+    if x < -8.0:
+        return 0.0
+    if x > 8.0:
+        return 1.0
+
+    # Symmetry: Φ(-x) = 1 - Φ(x)
+    neg = x < 0.0
+    ax = abs(x)
+
+    # Constants for rational approximation
+    p = 0.2316419
+    b1 = 0.319381530
+    b2 = -0.356563782
+    b3 = 1.781477937
+    b4 = -1.821255978
+    b5 = 1.330274429
+
+    t = 1.0 / (1.0 + p * ax)
+    t2 = t * t
+    t3 = t2 * t
+    t4 = t3 * t
+    t5 = t4 * t
+
+    pdf = math.exp(-0.5 * ax * ax) / math.sqrt(2.0 * math.pi)
+    cdf = 1.0 - pdf * (b1 * t + b2 * t2 + b3 * t3 + b4 * t4 + b5 * t5)
+
+    if neg:
+        return 1.0 - cdf
+    return cdf
+
+
+@njit(cache=True, fastmath=False)
+def ad_sptg_cdf_gaussian_scalar(
+    z: float,
+    xi_left: float,
+    sigma_left: float,
+    u_left: float,
+    xi_right: float,
+    sigma_right: float,
+    u_right: float,
+    p_left: float,
+    p_right: float,
+) -> float:
+    """
+    Semi-Parametric Tail-Grafted CDF for Gaussian (single observation).
+
+    Same piecewise structure as Student-t variant but uses Φ(z) in the bulk.
+    """
+    if z < -u_left:
+        y = (-z) - u_left
+        if y < 0.0:
+            y = 0.0
+        if abs(xi_left) < 1e-10:
+            gpd_cdf = 1.0 - math.exp(-y / sigma_left)
+        else:
+            arg = 1.0 + xi_left * y / sigma_left
+            if arg <= 0.0:
+                gpd_cdf = 1.0
+            else:
+                gpd_cdf = 1.0 - arg ** (-1.0 / xi_left)
+        pit = p_left * (1.0 - gpd_cdf)
+        return max(1e-10, min(1.0 - 1e-10, pit))
+
+    elif z > u_right:
+        y = z - u_right
+        if y < 0.0:
+            y = 0.0
+        if abs(xi_right) < 1e-10:
+            gpd_cdf = 1.0 - math.exp(-y / sigma_right)
+        else:
+            arg = 1.0 + xi_right * y / sigma_right
+            if arg <= 0.0:
+                gpd_cdf = 1.0
+            else:
+                gpd_cdf = 1.0 - arg ** (-1.0 / xi_right)
+        pit = 1.0 - p_right * (1.0 - gpd_cdf)
+        return max(1e-10, min(1.0 - 1e-10, pit))
+
+    else:
+        pit = _ndtr_scalar(z)
+        return max(1e-10, min(1.0 - 1e-10, pit))
+
+
+@njit(cache=True, fastmath=False)
+def ad_sptg_cdf_gaussian_array(
+    z_arr: np.ndarray,
+    xi_left: float,
+    sigma_left: float,
+    u_left: float,
+    xi_right: float,
+    sigma_right: float,
+    u_right: float,
+    p_left: float,
+    p_right: float,
+) -> np.ndarray:
+    """Vectorized SPTG CDF for Gaussian (calls scalar kernel in loop)."""
+    n = len(z_arr)
+    out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        out[i] = ad_sptg_cdf_gaussian_scalar(
+            z_arr[i],
+            xi_left, sigma_left, u_left,
+            xi_right, sigma_right, u_right,
+            p_left, p_right,
+        )
+    return out
+
+
+# =============================================================================
 # UNIFIED MC SIMULATION KERNEL (v7.0)
 # =============================================================================
 # Replaces the two Python for-loops in _simulate_forward_paths and provides

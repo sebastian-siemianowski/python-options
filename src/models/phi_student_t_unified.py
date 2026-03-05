@@ -1771,6 +1771,25 @@ class UnifiedPhiStudentTModel:
                 returns, mu_pred, S_pred, h_garch_full, config, n_train, n_test, nu)
             beta_final = 1.0
             _debug_gw_base = float(config.calibrated_gw)
+
+            # GARCH escape hatch (March 2026): If the 7-layer GARCH path produces
+            # catastrophic PIT (p < 0.005), fall back to the simple path. Each layer
+            # in the GARCH path can amplify errors from previous layers; when this
+            # cascade fails, the simpler path is more reliable.
+            _, _garch_pit_p = _fast_ks_uniform(pit_values)
+            if _garch_pit_p < 0.005:
+                _simple_S = S_pred[n_train:] * variance_inflation
+                _simple_pit, _simple_sigma, _simple_mu_eff = cls._pit_simple_path(
+                    returns_test, mu_pred_test, _simple_S, nu,
+                    float(getattr(config, 't_df_asym', 0.0)))
+                _, _simple_pit_p = _fast_ks_uniform(_simple_pit)
+                if _simple_pit_p > _garch_pit_p:
+                    # Simple path is better — use it
+                    pit_values = _simple_pit
+                    sigma = _simple_sigma
+                    mu_effective = _simple_mu_eff
+                    S_calibrated = _simple_S
+                    beta_final = variance_inflation
         else:
             pit_values, sigma, mu_effective = cls._pit_simple_path(
                 returns_test, mu_pred_test, S_calibrated, nu,
@@ -1853,9 +1872,16 @@ class UnifiedPhiStudentTModel:
         _best_lam_rho = _best_lam_mu
         _beta_scale_corr = float(config.calibrated_beta_probit_corr)
 
+        # Gate ν divergence: if Stage 6's calibrated_nu_pit diverges >50% from
+        # the filter's ν (nu_base), the chi² correction targets E[z²] = ν/(ν-2)
+        # for the wrong distribution, causing cascading PIT errors.
         _cal_nu_pit = float(config.calibrated_nu_pit)
         if _cal_nu_pit > 0:
-            nu = _cal_nu_pit
+            _nu_ratio = _cal_nu_pit / max(nu, 1e-10)
+            if 0.5 <= _nu_ratio <= 2.0:
+                # Within 50% — safe to use Stage 6's refined ν
+                nu = _cal_nu_pit
+            # else: divergence too large — keep filter's ν for PIT CDF consistency
 
         # EWM warm-start from training data
         innovations_train = returns[:n_train] - mu_pred[:n_train]

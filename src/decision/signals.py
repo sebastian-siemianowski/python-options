@@ -15,8 +15,7 @@ Where:
     r_t      = current regime (deterministically assigned, same logic as tune)
     m        = model class (kalman_gaussian, kalman_phi_gaussian, 
                            phi_student_t_nu_{4,6,8,12,20},
-                           phi_skew_t_nu_{ν}_gamma_{γ},
-                           phi_nig_alpha_{α}_beta_{β})
+                           phi_skew_t_nu_{ν}_gamma_{γ})
     θ_{r,m}  = parameters from tuning layer
     p(m|r)   = posterior model probability from tuning layer
     x        = return at horizon H
@@ -48,21 +47,7 @@ The BMA ensemble includes multiple distributional models:
    - Used for probability calculations and Monte Carlo sampling
    - Financial meaning: captures regime-specific tail asymmetry
 
-5. NIG (phi_nig_alpha_{α}_beta_{β}) — Solution 2:
-   - Semi-heavy tails (between Gaussian and Cauchy), asymmetric
-   - α controls tail heaviness (smaller α = heavier tails)
-   - β controls asymmetry (β < 0 = left-skewed, β > 0 = right-skewed)
-   - Infinitely divisible (Lévy process compatible)
-
-6. GMM (2-State Gaussian Mixture) — Expert Panel Solution:
-   - Bimodal distribution capturing momentum/reversal dynamics
-   - Component 0 ("Momentum"): typically positive mean, moderate variance
-   - Component 1 ("Reversal/Crisis"): typically negative mean, higher variance
-   - Fitted to volatility-adjusted returns during tuning
-   - Used as Monte Carlo proposal distribution for Gaussian models
-   - Improves tail behavior in Expected Utility estimation
-
-CORE PRINCIPLE: "Heavy tails, asymmetry, and bimodality are hypotheses, not certainties."
+CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
 
 All models compete via BIC weights. If extra parameters don't improve fit,
 model weight collapses naturally toward simpler alternatives.
@@ -123,7 +108,6 @@ tune.py outputs:
         "global": {
             "model_posterior": { "kalman_gaussian": p, "kalman_phi_gaussian": p, ... },
             "models": { "kalman_gaussian": {q, c, hyvarinen_score, bic, ...}, ... },
-            "gmm": { "weights": [π₁, π₂], "means": [μ₁, μ₂], "variances": [σ₁², σ₂²] },
             "hansen_skew_t": { "nu": ν, "lambda": λ, "skew_direction": "left"/"right"/"symmetric" }
         },
         "regime": {
@@ -3406,6 +3390,31 @@ def _kalman_filter_drift(
     kalman_gain_mean = float(np.mean(K_gain))
     kalman_gain_recent = float(K_gain[-1]) if len(K_gain) > 0 else float('nan')
 
+    # =========================================================================
+    # TWSC SCALE CORRECTION — REAL MODEL IMPROVEMENT (March 2026)
+    # =========================================================================
+    # Apply the Tail-Weighted Scale Correction factor from tuning to P_filtered.
+    # This corrects systematic scale bias identified during calibration:
+    #   P_filtered_corrected = P_filtered × twsc_scale_factor²
+    #
+    # The scale factor was computed during tuning as the geometric mean of
+    # EWMA-tracked tail exceedance inflation factors. When model variance
+    # is systematically too tight, twsc_scale_factor > 1 → wider variance
+    # → more conservative position sizing and better calibrated MC samples.
+    #
+    # Impact chain: P_filtered → P_t_mc → MC simulation → EU/sizing → PnL
+    # =========================================================================
+    _twsc_applied = False
+    _twsc_factor = 1.0
+    if tuned_params is not None:
+        _global_cal = (tuned_params.get('global') or {}).get('calibration_params', {})
+        _twsc_factor = _global_cal.get('twsc_scale_factor', 1.0)
+        if isinstance(_twsc_factor, (int, float)) and np.isfinite(_twsc_factor):
+            _twsc_factor = float(np.clip(_twsc_factor, 0.5, 3.0))  # Safety bounds
+            if abs(_twsc_factor - 1.0) > 0.01:  # Only apply if meaningful
+                P_filtered = P_filtered * (_twsc_factor ** 2)
+                _twsc_applied = True
+
     return {
         "mu_kf_filtered": pd.Series(mu_filtered, index=idx, name="mu_kf_filtered"),
         "mu_kf_smoothed": pd.Series(mu_filtered, index=idx, name="mu_kf_smoothed"),  # no RTS smoothing here
@@ -3455,6 +3464,22 @@ def _kalman_filter_drift(
         "vix_nu_adjustment_applied": vix_nu_adjustment_applied,
         "nu_original": float(nu_original) if nu_original is not None else None,
         "nu_adjusted": float(nu_used) if nu_used is not None else None,
+        # =========================================================================
+        # CALIBRATION CORRECTIONS (March 2026) — REAL MODEL IMPROVEMENT
+        # =========================================================================
+        # Parameters from tuning's AD correction pipeline, applied here for
+        # real predictive improvement (not just cosmetic AD p-value inflation).
+        #
+        # twsc_scale_applied: Whether scale correction was applied to P_filtered
+        # twsc_scale_factor: The scale factor used (>1 = model was too tight)
+        # calibration_params: Full dict of correction params for downstream use:
+        #   - gpd_left_xi, gpd_right_xi: GPD tail shape params (→ ν adjustment)
+        #   - isotonic_x_knots, isotonic_y_knots: Transport map (→ p_up calibration)
+        #   - nu_effective: GPD-implied effective ν (→ MC tail heaviness)
+        # =========================================================================
+        "twsc_scale_applied": _twsc_applied,
+        "twsc_scale_factor": float(_twsc_factor),
+        "calibration_params": (tuned_params.get('global') or {}).get('calibration_params', {}) if tuned_params else {},
     }
 
 
@@ -4090,18 +4115,6 @@ def compute_features(
                     return (f"ε={eps:.0%}", "yellow")
                 return (f"ε={eps:.0%}", "green")
             
-            # NIG: beta (asymmetry)
-            if 'nig' in model_name or params.get('beta') is not None:
-                beta = params.get('beta')
-                alpha = params.get('alpha')
-                if beta is None:
-                    return ("—", "dim")
-                if beta < -0.1:
-                    return (f"β={beta:+.2f}", "red")
-                elif beta > 0.1:
-                    return (f"β={beta:+.2f}", "cyan")
-                return (f"β={beta:+.2f}", "green")
-            
             # Phi-Skew-t: gamma parameter
             if 'skew_t' in model_name or params.get('gamma') is not None:
                 gamma = params.get('gamma')
@@ -4112,14 +4125,6 @@ def compute_features(
                 elif gamma > 1.1:
                     return (f"γ={gamma:.2f}", "cyan")  # Right-skewed
                 return (f"γ={gamma:.2f}", "green")
-            
-            # GMM: mixture weights
-            if 'gmm' in model_name:
-                weights = params.get('weights')
-                if weights and len(weights) >= 2:
-                    w1, w2 = weights[0], weights[1]
-                    return (f"w={w1:.0%}/{w2:.0%}", "blue")
-                return ("—", "dim")
             
             return ("—", "dim")
 
@@ -4197,8 +4202,6 @@ def compute_features(
         # Extract augmentation layer data
         hansen_data = global_data.get('hansen_skew_t', {})
         cst_data = global_data.get('contaminated_student_t', {})
-        gmm_data = global_data.get('gmm', {})
-        nig_data = global_data.get('nig', {})
         skew_t_data = global_data.get('phi_skew_t', {})
         vol_estimator = global_data.get('volatility_estimator', 'EWMA')
 
@@ -4335,40 +4338,6 @@ def compute_features(
             quality_table.add_row("[magenta]Contaminated-T[/magenta]", cst_str)
         else:
             quality_table.add_row("[dim]Contaminated-T[/dim]", "[dim]Not fitted  (Crisis regime model)[/dim]")
-
-        # ═══════════════════════════════════════════════════════════════════════════
-        # GMM MIXTURE - Detects bimodal return distributions (momentum vs reversal)
-        # ═══════════════════════════════════════════════════════════════════════════
-        gmm_weights = gmm_data.get('weights') if gmm_data else None
-        gmm_means = gmm_data.get('means') if gmm_data else None
-        gmm_enabled = gmm_weights is not None and len(gmm_weights) >= 2
-        
-        if gmm_enabled:
-            w1, w2 = gmm_weights[0], gmm_weights[1]
-            m1, m2 = gmm_means[0] if gmm_means else 0, gmm_means[1] if gmm_means and len(gmm_means) > 1 else 0
-            # Determine dominant regime
-            if abs(m1 - m2) > 0.001:
-                dominant = "momentum" if max(m1, m2) > 0 else "reversal"
-                gmm_str = f"[green]K=2[/green]  [dim]{w1:.0%}/{w2:.0%} split, {dominant} dominant[/dim]"
-            else:
-                gmm_str = f"[green]K=2[/green]  [dim]{w1:.0%}/{w2:.0%} split[/dim]"
-            quality_table.add_row("[yellow]GMM Mixture[/yellow]", gmm_str)
-        else:
-            quality_table.add_row("[dim]GMM Mixture[/dim]", "[dim]Not fitted  (Bimodal regime model)[/dim]")
-
-        # ═══════════════════════════════════════════════════════════════════════════
-        # NIG DISTRIBUTION - Normal-Inverse Gaussian for semi-heavy tails
-        # ═══════════════════════════════════════════════════════════════════════════
-        nig_alpha = nig_data.get('alpha') if nig_data else None
-        nig_beta = nig_data.get('beta') if nig_data else None
-        nig_enabled = nig_alpha is not None and nig_beta is not None
-        
-        if nig_enabled:
-            asym = "left skew" if nig_beta < -0.05 else "right skew" if nig_beta > 0.05 else "symmetric"
-            nig_str = f"[green]α={nig_alpha:.2f} β={nig_beta:+.2f}[/green]  [dim]{asym}[/dim]"
-            quality_table.add_row("[blue]NIG Distribution[/blue]", nig_str)
-        else:
-            quality_table.add_row("[dim]NIG Distribution[/dim]", "[dim]Not fitted  (Semi-heavy tail model)[/dim]")
 
         # ═══════════════════════════════════════════════════════════════════════════
         # SKEW-T (Fernández-Steel) - Another asymmetric distribution model
@@ -5583,9 +5552,6 @@ def run_regime_specific_mc(
     H: int,
     n_paths: int = 5000,
     nu: Optional[float] = None,
-    nig_alpha: Optional[float] = None,
-    nig_beta: Optional[float] = None,
-    nig_delta: Optional[float] = None,
     hansen_lambda: Optional[float] = None,
     # Contaminated Student-t parameters
     cst_nu_normal: Optional[float] = None,
@@ -5599,13 +5565,12 @@ def run_regime_specific_mc(
     This is a lightweight wrapper that generates r_samples for one regime
     using regime-specific parameters.
 
-    Supports five noise distributions (in priority order):
+    Supports four noise distributions (in priority order):
     1. Contaminated Student-t (cst_nu_normal, cst_nu_crisis, cst_epsilon specified):
        Regime-dependent heavy tails: (1-ε)×t(ν_normal) + ε×t(ν_crisis)
     2. Hansen Skew-t (nu + hansen_lambda specified): Asymmetric heavy tails
-    3. NIG (nig_alpha, nig_beta, nig_delta specified): Semi-heavy tails, asymmetric
-    4. Student-t (nu specified): Heavy tails, symmetric
-    5. Gaussian (default): Light tails, symmetric
+    3. Student-t (nu specified): Heavy tails, symmetric
+    4. Gaussian (default): Light tails, symmetric
     
     Contaminated Student-t model:
         p(r) = (1-ε) × t(r; ν_normal) + ε × t(r; ν_crisis)
@@ -5623,10 +5588,7 @@ def run_regime_specific_mc(
         sigma2_step: Per-step observation variance
         H: Forecast horizon
         n_paths: Number of MC paths
-        nu: Degrees of freedom for Student-t (None for Gaussian/NIG)
-        nig_alpha: NIG tail parameter (None for Gaussian/Student-t)
-        nig_beta: NIG asymmetry parameter (None for Gaussian/Student-t)
-        nig_delta: NIG scale parameter (None for Gaussian/Student-t)
+        nu: Degrees of freedom for Student-t (None for Gaussian)
         hansen_lambda: Hansen skewness parameter (None for symmetric)
         cst_nu_normal: Contaminated-t normal regime ν
         cst_nu_crisis: Contaminated-t crisis regime ν
@@ -5636,22 +5598,6 @@ def run_regime_specific_mc(
     Returns:
         Array of return samples
     """
-    # Import NIG sampling if needed
-    use_nig = (nig_alpha is not None and nig_beta is not None and nig_delta is not None)
-    if use_nig:
-        try:
-            from scipy.stats import norminvgauss
-            # Validate NIG parameters
-            nig_alpha = float(np.clip(nig_alpha, 0.5, 50.0))
-            nig_delta = float(max(nig_delta, 0.001))
-            max_beta = nig_alpha - 0.01
-            nig_beta = float(np.clip(nig_beta, -max_beta, max_beta))
-            # Convert to scipy parameterization
-            nig_a = nig_alpha * nig_delta
-            nig_b = nig_beta * nig_delta
-        except Exception:
-            use_nig = False
-    
     # Check for Contaminated Student-t (highest priority for Student-t family)
     use_contaminated_t = (
         CONTAMINATED_ST_AVAILABLE and
@@ -5672,8 +5618,7 @@ def run_regime_specific_mc(
     #   1. Contaminated Student-t (regime-dependent tails)
     #   2. Hansen Skew-t (asymmetric tails with fixed λ)
     #   3. Symmetric Student-t (heavy tails only)
-    #   4. NIG (semi-heavy tails with asymmetry via β)
-    #   5. Gaussian (light tails)
+    #   4. Gaussian (light tails)
     # =========================================================================
     use_hansen_skew_t = (
         HANSEN_SKEW_T_AVAILABLE and
@@ -5691,7 +5636,7 @@ def run_regime_specific_mc(
     sigma2_step = float(max(sigma2_step, 1e-12)) if np.isfinite(sigma2_step) else 1e-6
     H = int(max(H, 1))
 
-    if nu is not None and not use_nig and not use_contaminated_t:
+    if nu is not None and not use_contaminated_t:
         if not np.isfinite(nu) or nu <= 2.0:
             nu = None
         else:
@@ -5710,16 +5655,7 @@ def run_regime_specific_mc(
 
     # Sample drift posterior
     if P_t > 0:
-        if use_nig:
-            # NIG posterior for drift
-            # Scale NIG to have variance = P_t
-            # NIG variance = δα²/(α²-β²)^(3/2), so we scale samples
-            gamma_nig = np.sqrt(max(nig_alpha**2 - nig_beta**2, 1e-10))
-            nig_var = nig_delta * nig_alpha**2 / (gamma_nig**3) if gamma_nig > 0 else nig_delta**2
-            scale_factor = np.sqrt(P_t / max(nig_var, 1e-10))
-            nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
-            mu_paths = mu_t + scale_factor * nig_delta * nig_samples
-        elif use_contaminated_t:
+        if use_contaminated_t:
             # Contaminated Student-t posterior for drift
             # With probability ε, use crisis ν; else use normal ν
             mu_samples = contaminated_student_t_rvs(
@@ -5759,11 +5695,7 @@ def run_regime_specific_mc(
     for k in range(H):
         # --- Drift propagation: μ_{t+k+1} = φ·μ_{t+k} + η_{k+1} ---
         if q_std > 0:
-            if use_nig:
-                # NIG drift noise
-                nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
-                eta = q_std * nig_delta * nig_samples / np.sqrt(max(nig_var, 1e-10))
-            elif use_contaminated_t:
+            if use_contaminated_t:
                 # Contaminated Student-t drift noise
                 eta_samples = contaminated_student_t_rvs(
                     size=n_paths,
@@ -5789,11 +5721,7 @@ def run_regime_specific_mc(
 
         # --- Observation noise: ε_k ---
         if sigma_step > 0:
-            if use_nig:
-                # NIG observation noise
-                nig_samples = norminvgauss.rvs(nig_a, nig_b, loc=0, scale=1, size=n_paths, random_state=rng)
-                eps_k = sigma_step * nig_delta * nig_samples / np.sqrt(max(nig_var, 1e-10))
-            elif use_contaminated_t:
+            if use_contaminated_t:
                 # Contaminated Student-t observation noise
                 eps_samples = contaminated_student_t_rvs(
                     size=n_paths,
@@ -5838,9 +5766,6 @@ def run_unified_mc(
     enable_jumps: bool = True,
     seed: Optional[int] = None,
     # Exotic distributions (fallback to Python path)
-    nig_alpha: Optional[float] = None,
-    nig_beta: Optional[float] = None,
-    nig_delta: Optional[float] = None,
     hansen_lambda: Optional[float] = None,
     cst_nu_normal: Optional[float] = None,
     cst_nu_crisis: Optional[float] = None,
@@ -5910,7 +5835,7 @@ def run_unified_mc(
     Returns cumulative returns for ALL horizons 1..H_max simultaneously,
     enabling multi-horizon extraction from a single MC run.
 
-    For exotic distributions (NIG, Hansen Skew-t, Contaminated Student-t),
+    For exotic distributions (Hansen Skew-t, Contaminated Student-t),
     falls back to the original Python path since these can't be compiled
     into the Numba kernel.
 
@@ -5929,7 +5854,6 @@ def run_unified_mc(
         jump_mean, jump_std: Jump size distribution N(mu_J, sigma_J^2)
         enable_jumps: Whether to include jump-diffusion
         seed: Random seed
-        nig_alpha, nig_beta, nig_delta: NIG parameters (Python fallback)
         hansen_lambda: Hansen skew-t parameter (Python fallback)
         cst_nu_normal, cst_nu_crisis, cst_epsilon: CST parameters (Python fallback)
 
@@ -5940,7 +5864,6 @@ def run_unified_mc(
         - 'samples_at_H': callable that extracts 1D samples at horizon H
     """
     # Detect exotic distributions that need Python path
-    use_nig = (nig_alpha is not None and nig_beta is not None and nig_delta is not None)
     use_cst = (
         cst_nu_normal is not None and cst_nu_crisis is not None and
         cst_epsilon is not None and cst_epsilon > 0.001
@@ -5949,7 +5872,7 @@ def run_unified_mc(
         hansen_lambda is not None and nu is not None and
         abs(hansen_lambda) > 0.01
     )
-    use_exotic = use_nig or use_cst or use_hansen
+    use_exotic = use_cst or use_hansen
 
     # Input validation
     mu_t = float(mu_t) if np.isfinite(mu_t) else 0.0
@@ -5973,7 +5896,7 @@ def run_unified_mc(
     if use_exotic:
         # Use original run_regime_specific_mc but call it for H_max
         # and reconstruct multi-horizon structure
-        # This preserves NIG/Hansen/CST sampling accuracy
+        # This preserves Hansen/CST sampling accuracy
         cum_out = np.zeros((H_max, n_paths), dtype=np.float64)
         vol_out = np.zeros((H_max, n_paths), dtype=np.float64)
 
@@ -6268,9 +6191,14 @@ def run_unified_mc(
     return {'returns': cum_out, 'volatility': vol_out}
 
 
+# Temperature must match tune.py's DEFAULT_ENTROPY_LAMBDA = 0.05
+# Using T=1.0 would flatten posteriors by 20×, making model selection near-uniform.
+DEFAULT_POSTERIOR_TEMPERATURE = 0.05
+
+
 def compute_model_posteriors_from_combined_score(
     models: Dict[str, Dict],
-    temperature: float = 1.0,
+    temperature: float = DEFAULT_POSTERIOR_TEMPERATURE,
     min_weight_fraction: float = 0.01,
     epsilon: float = 1e-10,
 ) -> Tuple[Dict[str, float], Dict]:
@@ -6587,21 +6515,40 @@ def bayesian_model_average_mc(
         }
 
     # ========================================================================
-    # EPISTEMIC WEIGHTING: Recompute posteriors from combined_score
+    # EPISTEMIC WEIGHTING: Use cached posteriors from tune.py when available
     # ========================================================================
-    # This ensures Hyvärinen scores directly influence signal generation.
-    # Even if cache has old posteriors, we recompute from combined_score.
+    # tune.py computes posteriors through a rigorous 5-step pipeline:
+    #   1. Entropy-regularized softmax (λ=0.05) over 6-component combined_score
+    #   2. Elite fragility penalties (down-weight fragile/ridge models)
+    #   3. PIT violation penalties (asymmetric demotions for miscalibrated models)
+    #   4. Temporal smoothing with previous posterior
+    #   5. Normalization
     #
-    # The combined_score integrates both:
-    #   - BIC (model complexity penalty, consistency)
-    #   - Hyvärinen score (proper scoring, robustness under misspecification)
-    #
-    # This is the "epistemic weighting" step from the architecture.
-    #
+    # These cached posteriors preserve ALL penalty layers. We use them directly
+    # when available, falling back to recomputation ONLY when cache is missing
+    # or corrupt. The recomputation now uses the correct temperature (λ=0.05)
+    # matching diagnostics.py's DEFAULT_ENTROPY_LAMBDA.
     # ========================================================================
-    # EPISTEMIC WEIGHTING: Recompute posteriors from combined scores
-    # ========================================================================
-    recomputed_posterior, epistemic_meta = compute_model_posteriors_from_combined_score(models)
+    cached_posterior_valid = (
+        model_posterior
+        and isinstance(model_posterior, dict)
+        and len(model_posterior) > 0
+        and all(isinstance(v, (int, float)) and np.isfinite(v) for v in model_posterior.values())
+        and abs(sum(model_posterior.values()) - 1.0) < 0.05  # Must sum to ~1
+    )
+
+    if cached_posterior_valid:
+        # Use tune.py's cached posteriors directly — preserves fragility, PIT,
+        # and temporal smoothing penalties that would be lost on recomputation.
+        recomputed_posterior = model_posterior
+        epistemic_meta = {
+            'method': 'cached_posterior',
+            'reason': 'using_tune_posteriors_with_all_penalty_layers',
+            'n_models': len(model_posterior),
+        }
+    else:
+        # Fallback: recompute from combined_score with correct temperature
+        recomputed_posterior, epistemic_meta = compute_model_posteriors_from_combined_score(models)
 
     if not recomputed_posterior:
         # Cache may be from an older version without combined_score
@@ -6816,11 +6763,6 @@ def bayesian_model_average_mc(
         nu_m = model_params.get('nu')
         c_m = model_params.get('c', 1.0)
 
-        # Extract NIG parameters (for phi_nig_* models)
-        nig_alpha_m = model_params.get('nig_alpha')
-        nig_beta_m = model_params.get('nig_beta')
-        nig_delta_m = model_params.get('nig_delta')
-
         # v7.6: Extract per-model GARCH params (fall back to global)
         # Unified models store per-model tuned GARCH; standard models use global
         garch_omega_m = float(model_params.get('garch_omega', _garch_omega))
@@ -6905,6 +6847,28 @@ def bayesian_model_average_mc(
         if nu_m is not None and (not np.isfinite(nu_m) or nu_m <= 2.0):
             nu_m = None
 
+        # ================================================================
+        # GPD-BASED ν ADJUSTMENT — REAL TAIL IMPROVEMENT (March 2026)
+        # ================================================================
+        # The GPD shape parameter ξ from tuning reveals the TRUE tail
+        # heaviness of the data. Student-t tail index: ξ = 1/ν.
+        #
+        # If GPD shows heavier tails than the model assumes (ξ_gpd > 1/ν),
+        # reduce effective ν → MC simulation produces heavier-tailed samples
+        # → more conservative risk assessment → better drawdown avoidance.
+        #
+        # Only adjust downward (more conservative), never upward.
+        # ================================================================
+        if nu_m is not None:
+            _m_cal = model_params.get('calibration_params', {})
+            _nu_eff = _m_cal.get('nu_effective')
+            if _nu_eff is not None and isinstance(_nu_eff, (int, float)):
+                _nu_eff = float(_nu_eff)
+                if np.isfinite(_nu_eff) and _nu_eff > 2.5:
+                    # Only make tails heavier (lower ν), never lighter
+                    if _nu_eff < nu_m:
+                        nu_m = _nu_eff
+
         # Number of samples: proportional to weight but with minimum guarantee
         n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_paths))
 
@@ -6925,10 +6889,7 @@ def bayesian_model_average_mc(
             jump_intensity=jump_intensity_m,
             jump_mean=jump_mean_m,
             jump_std=jump_std_m,
-            # Exotic: NIG, Hansen, CST fall back to Python
-            nig_alpha=nig_alpha_m,
-            nig_beta=nig_beta_m,
-            nig_delta=nig_delta_m,
+            # Exotic: Hansen, CST fall back to Python
             hansen_lambda=hansen_lambda_m,
             cst_nu_normal=cst_nu_normal_m if cst_nu_crisis_m is not None else None,
             cst_nu_crisis=cst_nu_crisis_m,
@@ -7009,8 +6970,6 @@ def bayesian_model_average_mc(
             "loc_bias_drift_coeff": float(loc_bias_drift_coeff_m),
             "q_vol_coupling": float(q_vol_coupling_m),
             # Augmentation layer info
-            "nig_alpha": float(nig_alpha_m) if nig_alpha_m else None,
-            "nig_beta": float(nig_beta_m) if nig_beta_m else None,
             "hansen_lambda": float(hansen_lambda_global) if hansen_skew_t_enabled else None,
             "cst_enabled": cst_enabled,
         }
@@ -8335,6 +8294,40 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         # === SIGNAL CALIBRATION: p_up recalibration (Pass 2) ===
         _sig_cal = _load_signals_calibration(tuned_params)
         p_now = _apply_p_up_calibration(p_now, _sig_cal, H, vol_regime=vol_reg_now)
+
+        # ================================================================
+        # ISOTONIC CALIBRATION — REAL PROBABILITY IMPROVEMENT (March 2026)
+        # ================================================================
+        # Apply the isotonic transport map learned during tuning to correct
+        # systematic biases in P(up). The map was fitted on PIT values which
+        # measure how well the model's CDF matches realized outcomes.
+        #
+        # Key insight: if the model systematically overestimates P(up),
+        # the isotonic map learns this bias and corrects it. This directly
+        # improves EU = p × E[gain] - (1-p) × E[loss] → better sizing.
+        #
+        # Uses simple linear interpolation on stored knots (fast, no scipy).
+        # ================================================================
+        _isotonic_applied = False
+        _cal_params = feats.get("calibration_params", {})
+        _iso_x = _cal_params.get("isotonic_x_knots")
+        _iso_y = _cal_params.get("isotonic_y_knots")
+        if _iso_x is not None and _iso_y is not None:
+            try:
+                _iso_x_arr = np.asarray(_iso_x, dtype=np.float64)
+                _iso_y_arr = np.asarray(_iso_y, dtype=np.float64)
+                if len(_iso_x_arr) >= 2 and len(_iso_y_arr) >= 2:
+                    # Linear interpolation of p_now through the transport map
+                    p_calibrated = float(np.interp(p_now, _iso_x_arr, _iso_y_arr))
+                    p_calibrated = float(np.clip(p_calibrated, 0.01, 0.99))
+                    # Safety: don't allow isotonic to flip direction
+                    if (p_now > 0.5 and p_calibrated > 0.5) or \
+                       (p_now < 0.5 and p_calibrated < 0.5) or \
+                       abs(p_now - 0.5) < 0.05:
+                        p_now = p_calibrated
+                        _isotonic_applied = True
+            except Exception:
+                pass  # Isotonic calibration is best-effort
 
         gains = r[r > 0.0]
         losses = -r[r < 0.0]

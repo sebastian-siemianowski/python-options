@@ -9,8 +9,6 @@ This package contains the distributional models used in the tuning layer:
     - phi_gaussian.py: PhiGaussianDriftModel (Kalman with AR(1) drift, Gaussian noise)
     - phi_student_t.py: PhiStudentTDriftModel (Kalman with AR(1) drift, Student-t noise)
     - phi_skew_t.py: PhiSkewTDriftModel (Kalman with AR(1) drift, Skew-t noise)
-    - phi_nig.py: PhiNIGDriftModel (Kalman with AR(1) drift, NIG noise)
-    - gaussian_mixture.py: GaussianMixtureModel (2-State GMM for Monte Carlo)
     - hansen_skew_t.py: Hansen's Skew-t distribution (regime-conditional asymmetry)
 
 DESIGN PHILOSOPHY:
@@ -34,12 +32,12 @@ BMA ARCHITECTURE:
     - NIG: Asymmetric, semi-heavy tails (α for tails, β for skewness)
     - GMM: Bimodal distribution (2 Gaussian components for momentum/reversal)
     
-    CORE PRINCIPLE: "Heavy tails, asymmetry, and bimodality are hypotheses, not certainties."
+    CORE PRINCIPLE: "Heavy tails and asymmetry are hypotheses, not certainties."
     Complex distributions are introduced ONLY when supported by data.
 
 USAGE:
     from models import GaussianDriftModel, PhiGaussianDriftModel, PhiStudentTDriftModel
-    from models import PhiSkewTDriftModel, PhiNIGDriftModel, GaussianMixtureModel
+    from models import PhiSkewTDriftModel
     from models import HansenSkewTParams, fit_hansen_skew_t_mle
     
     # Or import individual components
@@ -61,35 +59,6 @@ from models.phi_skew_t import (
     is_skew_t_model,
     get_skew_t_model_name,
     parse_skew_t_model_name,
-)
-
-# Import φ-NIG model for BMA ensemble (Normal-Inverse Gaussian)
-from models.phi_nig import (
-    PhiNIGDriftModel,
-    NIG_ALPHA_GRID,
-    NIG_BETA_RATIO_GRID,
-    NIG_ALPHA_MIN,
-    NIG_ALPHA_MAX,
-    NIG_ALPHA_DEFAULT,
-    NIG_BETA_DEFAULT,
-    NIG_DELTA_MIN,
-    NIG_DELTA_MAX,
-    NIG_DELTA_DEFAULT,
-    is_nig_model,
-    get_nig_model_name,
-    parse_nig_model_name,
-)
-
-# Import 2-State Gaussian Mixture Model for Monte Carlo proposal distribution
-from models.gaussian_mixture import (
-    GaussianMixtureModel,
-    fit_gmm_to_returns,
-    compute_gmm_pit,
-    get_gmm_model_name,
-    is_gmm_model,
-    GMM_MIN_OBS,
-    GMM_MIN_SEPARATION,
-    GMM_DEGENERATE_THRESHOLD,
 )
 
 # Import Hansen's Skew-t for regime-conditional asymmetric tails
@@ -200,8 +169,6 @@ __all__ = [
     'PhiGaussianDriftModel',
     'PhiStudentTDriftModel',
     'PhiSkewTDriftModel',
-    'PhiNIGDriftModel',
-    'GaussianMixtureModel',
     # Constants (from phi_student_t)
     'PHI_SHRINKAGE_TAU_MIN',
     'PHI_SHRINKAGE_GLOBAL_DEFAULT',
@@ -246,28 +213,6 @@ __all__ = [
     'is_skew_t_model',
     'get_skew_t_model_name',
     'parse_skew_t_model_name',
-    # Constants (from phi_nig)
-    'NIG_ALPHA_GRID',
-    'NIG_BETA_RATIO_GRID',
-    'NIG_ALPHA_MIN',
-    'NIG_ALPHA_MAX',
-    'NIG_ALPHA_DEFAULT',
-    'NIG_BETA_DEFAULT',
-    'NIG_DELTA_MIN',
-    'NIG_DELTA_MAX',
-    'NIG_DELTA_DEFAULT',
-    # NIG utilities
-    'is_nig_model',
-    'get_nig_model_name',
-    'parse_nig_model_name',
-    # GMM utilities
-    'fit_gmm_to_returns',
-    'compute_gmm_pit',
-    'get_gmm_model_name',
-    'is_gmm_model',
-    'GMM_MIN_OBS',
-    'GMM_MIN_SEPARATION',
-    'GMM_DEGENERATE_THRESHOLD',
     # Hansen Skew-t (regime-conditional asymmetry)
     'HansenSkewTParams',
     'hansen_skew_t_pdf',

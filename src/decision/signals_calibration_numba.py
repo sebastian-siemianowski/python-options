@@ -1383,7 +1383,7 @@ def emos_crps_student_t_objective_nb(
     Student-t CRPS instead of Gaussian CRPS.
 
     The 5th parameter nu (degrees of freedom) captures tail weight —
-    when the signal engine uses Student-t/Skew-t/NIG models, fitting
+    when the signal engine uses Student-t/Skew-t models, fitting
     nu jointly ensures the calibrated distribution matches actual tail
     behavior instead of inflating sigma to compensate.
 

@@ -439,6 +439,100 @@ def render_pit_summary(all_results, assets, console):
     console.print()
 
 
+def render_ad_summary(all_results, assets, console):
+    """Render a cross-asset Anderson-Darling p-value summary table with models as columns."""
+    # Collect all model names across all assets
+    all_model_names = set()
+    for symbol in assets:
+        if symbol not in all_results:
+            continue
+        models = all_results[symbol]
+        for m in models:
+            if models[m].get('fit_success', False):
+                all_model_names.add(m)
+
+    if not all_model_names:
+        return
+
+    # Short model name mapping
+    def short_name(m):
+        m = m.replace('phi_student_t_unified_nu_', 'U-t')
+        m = m.replace('phi_student_t_nu_', 't')
+        m = m.replace('kalman_phi_gaussian_unified', 'φ-G-U')
+        m = m.replace('kalman_gaussian_unified', 'G-U')
+        m = m.replace('kalman_phi_gaussian', 'φ-G')
+        m = m.replace('kalman_gaussian', 'G')
+        return m
+
+    # Sort models: regular first, then unified
+    sorted_models = sorted(all_model_names, key=lambda m: (
+        0 if 'unified' not in m else 1,
+        0 if 'gaussian' in m.lower() else 1,
+        m,
+    ))
+
+    console.print()
+    console.print(Rule(style="bright_cyan"))
+    section = Text()
+    section.append("  📊  ", style="bold bright_yellow")
+    section.append("ANDERSON-DARLING SUMMARY — ALL MODELS × ALL ASSETS", style="bold bright_white")
+    console.print(section)
+    console.print(Rule(style="bright_cyan"))
+    console.print()
+
+    t = Table(
+        box=box.SIMPLE_HEAVY, show_header=True, header_style="bold bright_white",
+        border_style="bright_cyan", pad_edge=False, padding=(0, 1),
+    )
+
+    t.add_column("Asset", style="bold", min_width=10, max_width=14)
+    for m in sorted_models:
+        sn = short_name(m)
+        t.add_column(sn, justify="right", min_width=5, max_width=7)
+    t.add_column("Best", justify="right", min_width=6, style="bold")
+    t.add_column("Winner", style="bold bright_green", min_width=8, max_width=14)
+
+    for symbol in assets:
+        if symbol not in all_results:
+            # Failed asset
+            row_vals = [Text(symbol, style="indian_red1")]
+            for _ in sorted_models:
+                row_vals.append(Text("—", style="dim"))
+            row_vals.append(Text("—", style="dim"))
+            row_vals.append(Text("—", style="dim"))
+            t.add_row(*row_vals)
+            continue
+
+        models = all_results[symbol]
+        is_ref = symbol in REFERENCE_ASSETS
+        sym_style = "bright_green" if is_ref else "bright_white"
+
+        best_ad = -1.0
+        best_model = "—"
+        row_vals = [Text(symbol, style=sym_style)]
+
+        for m in sorted_models:
+            d = models.get(m)
+            if d and d.get('fit_success', False):
+                ad_p = d.get('ad_pvalue', float('nan'))
+                if np.isfinite(ad_p):
+                    row_vals.append(Text("%.3f" % ad_p, style=_pc(ad_p)))
+                    if ad_p > best_ad:
+                        best_ad = ad_p
+                        best_model = short_name(m)
+                else:
+                    row_vals.append(Text("—", style="dim"))
+            else:
+                row_vals.append(Text("—", style="dim"))
+
+        row_vals.append(Text("%.3f" % best_ad if best_ad >= 0 else "—", style=_pc(best_ad)))
+        row_vals.append(Text(best_model, style="bright_green" if best_ad >= 0.05 else "indian_red1"))
+        t.add_row(*row_vals)
+
+    console.print(t)
+    console.print()
+
+
 def render_crps_summary(all_results, assets, console):
     """Render a cross-asset CRPS summary table with models as columns."""
     # Collect all model names across all assets
@@ -652,6 +746,7 @@ def main():
     # PIT Summary table across all assets
     if all_results:
         render_pit_summary(all_results, assets, console)
+        render_ad_summary(all_results, assets, console)
         render_crps_summary(all_results, assets, console)
 
     # Summary
