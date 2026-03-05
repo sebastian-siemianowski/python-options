@@ -3,6 +3,7 @@ numpy
 pandas
 scipy
 matplotlib
+mplfinance
 tqdm
 rich
 lxml

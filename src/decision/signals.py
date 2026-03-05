@@ -421,6 +421,23 @@ except ImportError:
     HIGH_CONVICTION_STORAGE_AVAILABLE = False
     save_high_conviction_signals = None
 
+# Import signal chart generation
+# March 2026: Candlestick charts with SMA overlays for strong signals + below-SMA50 analysis
+try:
+    from decision.signal_charts import (
+        generate_signal_charts,
+        find_below_sma50_stocks,
+        render_below_sma50_table,
+        generate_sma_charts,
+    )
+    SIGNAL_CHARTS_AVAILABLE = True
+except ImportError:
+    SIGNAL_CHARTS_AVAILABLE = False
+    generate_signal_charts = None
+    find_below_sma50_stocks = None
+    render_below_sma50_table = None
+    generate_sma_charts = None
+
 # Import render_risk_temperature_summary from risk_temperature module
 # (Temperature modules own their own rendering - no duplication in signals_ux)
 from decision.risk_temperature import render_risk_temperature_summary
@@ -9500,9 +9517,27 @@ def main() -> None:
                             f"\n[dim]💾 Saved {result['buy']} buy + {result['sell']} sell signals "
                             f"to src/data/high_conviction/[/dim]"
                         )
+                        # Generate candlestick charts for strong signals
+                        if SIGNAL_CHARTS_AVAILABLE:
+                            try:
+                                generate_signal_charts(quiet=False)
+                            except Exception as chart_e:
+                                if os.getenv("DEBUG"):
+                                    Console().print(f"[dim]Signal chart error: {chart_e}[/dim]")
                 except Exception as hc_e:
                     if os.getenv("DEBUG"):
                         Console().print(f"[dim]High conviction storage error: {hc_e}[/dim]")
+            
+            # Below SMA50 analysis — table + charts
+            if SIGNAL_CHARTS_AVAILABLE and find_below_sma50_stocks is not None:
+                try:
+                    below_sma50 = find_below_sma50_stocks(summary_rows_cached)
+                    if below_sma50:
+                        render_below_sma50_table(below_sma50, quiet=False)
+                        generate_sma_charts(below_sma50, quiet=False)
+                except Exception as sma_e:
+                    if os.getenv("DEBUG"):
+                        Console().print(f"[dim]SMA50 analysis error: {sma_e}[/dim]")
             
             # Show unified risk dashboard (replaces fragmented risk temperature display)
             if UNIFIED_RISK_DASHBOARD_AVAILABLE:
@@ -10424,9 +10459,27 @@ def main() -> None:
                         f"\n[dim]💾 Saved {result['buy']} buy + {result['sell']} sell signals "
                         f"to src/data/high_conviction/[/dim]"
                     )
+                    # Generate candlestick charts for strong signals
+                    if SIGNAL_CHARTS_AVAILABLE:
+                        try:
+                            generate_signal_charts(quiet=False)
+                        except Exception as chart_e:
+                            if os.getenv("DEBUG"):
+                                Console().print(f"[dim]Signal chart error: {chart_e}[/dim]")
             except Exception as hc_e:
                 if os.getenv("DEBUG"):
                     Console().print(f"[dim]High conviction storage error: {hc_e}[/dim]")
+        
+        # Below SMA50 analysis — table + charts
+        if SIGNAL_CHARTS_AVAILABLE and find_below_sma50_stocks is not None:
+            try:
+                below_sma50 = find_below_sma50_stocks(summary_rows)
+                if below_sma50:
+                    render_below_sma50_table(below_sma50, quiet=False)
+                    generate_sma_charts(below_sma50, quiet=False)
+            except Exception as sma_e:
+                if os.getenv("DEBUG"):
+                    Console().print(f"[dim]SMA50 analysis error: {sma_e}[/dim]")
         
         # Show unified risk dashboard (replaces fragmented risk temperature display)
         # February 2026: Full risk dashboard matching `make risk` output

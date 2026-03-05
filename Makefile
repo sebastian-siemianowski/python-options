@@ -479,6 +479,8 @@ clear:
 	@find . -name "*.pyc" -delete
 	@find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 	@rm -rf src/data/plots/*.png
+	@rm -rf src/data/plots/signals/*.png
+	@rm -rf src/data/plots/sma/*.png
 	@rm -rf src/data/options/meta/
 	@rm -f data/*.backup
 	@echo "Data cache cleared successfully!"
