@@ -37,6 +37,56 @@
 
 ---
 
+## STORY QUALITY STANDARDS
+
+Every story in this document adheres to these non-negotiable standards:
+
+1. **Measurable Acceptance Criteria**: Every AC specifies a testable condition with
+   explicit thresholds, not qualitative language ("improves" -> "improves by >= 3%").
+
+2. **Anti-Leakage Discipline**: Any story that uses historical data for optimization
+   MUST separate train/test temporally. No future data may leak into any computation.
+   Stories that touch calibration feedback explicitly call out the anti-leakage boundary.
+
+3. **Mathematical Correctness**: All formulas are complete with defined variables,
+   boundary conditions, and edge case handling. No hand-waving.
+
+4. **Benchmark Gating**: No story ships without validation on the 12-symbol benchmark
+   universe. "Works on SPY" is insufficient -- it must work across cap sizes, sectors,
+   and volatility regimes.
+
+5. **Calibration Preservation**: Forecast accuracy improvements MUST NOT degrade PIT
+   calibration or ECE beyond stated tolerances. Accuracy at the cost of calibration
+   is a false improvement.
+
+6. **Graceful Degradation**: Every new feature has a fallback path. Missing data,
+   failed computation, or unavailable dependency must produce a warning, not a crash.
+
+7. **Idempotency**: Running any pipeline step twice with the same inputs produces
+   identical outputs. No side effects, no randomness without seeded RNG.
+
+---
+
+## CROSS-CUTTING CONCERNS (APPLY TO ALL STORIES)
+
+**Definition of Done (per story):**
+- [ ] Code reviewed and merged to main
+- [ ] All acceptance criteria verified with automated tests
+- [ ] Benchmark validation run on 12-symbol universe (results in validation JSON)
+- [ ] No PIT calibration regression (ECE delta < 0.02)
+- [ ] Terminal and frontend display identical values (parity test passes)
+- [ ] Error paths tested: invalid input, missing data, NaN propagation
+- [ ] Performance: no regression in tune or signal generation time (< 10% increase)
+
+**Anti-Patterns to Avoid:**
+- Amplifying forecasts without checking calibration (creates overconfident signals)
+- Using lookahead data in any computation (destroys backtest validity)
+- Hard-coding parameters that vary across assets or regimes (use the tune cache)
+- Displaying raw model output without formatting (users see numbers, not distributions)
+- Silent fallbacks (every fallback must log a WARNING with context)
+
+---
+
 ## EPIC 1: KALMAN DRIFT RESCUE -- STOP THE ZERO-FORECAST COLLAPSE
 
 **Epic Owner:** Quant Engine Lead
@@ -82,6 +132,13 @@ a tiny q explains the data best (returns are mostly noise). However, "best stati
 and "most useful forecast" are different objectives. We need a floor on q that preserves
 forecast utility without sacrificing too much calibration quality.
 
+**Dependencies:** None (foundational change, no prerequisites)
+
+**Risk:** If q_floor is too high, the filter becomes excessively reactive, tracking noise
+as if it were signal. This degrades calibration (ECE increases). Mitigation: regime-
+conditioning ensures floors are proportional to expected drift magnitude, and BIC
+adjustment penalizes overly aggressive floors.
+
 **Acceptance Criteria:**
 1. A regime-conditional q floor is implemented in `tune.py`:
    - LOW_VOL_TREND: q_floor = 5e-5 (drift matters here)
@@ -122,6 +179,12 @@ Once K_t < 0.01, the filter ignores >99% of new observations. If the market regi
 changes (e.g., from range-bound to trending), the filter cannot adapt for 50-100+ bars.
 An adaptive reset mechanism detects this condition and injects a controlled perturbation.
 
+**Dependencies:** Story 1.1 (Adaptive Process Noise Floor -- provides meaningful K_t baseline)
+
+**Risk:** Overly aggressive resets (low threshold or high inflation) cause filter oscillation
+where P_t never converges. Mitigation: maximum 3 resets per 252-bar window and cool-down
+period of 20 bars after each reset.
+
 **Acceptance Criteria:**
 1. Kalman gain K_t is tracked during filtering in `signals.py`
 2. When K_t < K_MIN_THRESHOLD (default 0.005) for GAIN_STALL_WINDOW consecutive bars:
@@ -144,42 +207,59 @@ An adaptive reset mechanism detects this condition and injects a controlled pert
 
 ---
 
-### Story 1.3: GAS-Q Integration into Signal Generation
+### Story 1.3: GAS-Q Effectiveness Audit and Propagation to Market Temperature
 
 **As a** signal consumer,
-**I want** the score-driven process noise (GAS-Q) that was trained during tuning to be
-used during signal generation,
-**so that** the filter adapts its process noise to recent forecast errors in real time.
+**I want** the existing GAS-Q integration in `signals.py` verified for effectiveness
+and the same time-varying q_t propagated into `market_temperature.py` ensemble forecasts,
+**so that** the adaptive process noise benefits the user-facing forecast display.
 
 **Background:**
-Tuning currently fits GAS-Q parameters (omega, alpha_gasq, beta_gasq) but `signals.py`
-ignores them, using static q instead. This is the single biggest waste of tuning effort.
-GAS-Q makes q time-varying:
+GAS-Q is already fitted during tuning (omega, alpha_gasq, beta_gasq stored per asset)
+and `signals.py` already loads these params when `gas_q_augmented: true`. The filter
+uses time-varying q_t via `gas_q_filter_gaussian_kernel` and `gas_q_filter_student_t`.
+However, `market_temperature.py` (the actual forecast display engine) does NOT use
+GAS-Q -- it uses static EMA-based drift. This is the real gap: the tuning effort is
+captured in signals.py but NOT propagated to the forecasts users actually see.
+
+**Current State (already implemented):**
 ```
-q_t = omega + alpha * score_{t-1}^2 + beta * q_{t-1}
+tune.py -> fits GAS-Q params -> stores gas_q_params in JSON
+signals.py -> loads gas_q_params -> runs gas_q_filter_*_kernel -> BMA signals
+market_temperature.py -> IGNORES all tuned params -> uses hardcoded EMA drift
 ```
-where score_t is the standardized prediction error. During volatile periods, q_t increases
-automatically, giving the filter more adaptivity exactly when needed.
+
+**Target State:**
+```
+market_temperature._kalman_forecast() -> loads gas_q_params -> uses time-varying q_t
+```
+
+**Dependencies:** Story 1.7 (Market Temperature uses tuned params)
 
 **Acceptance Criteria:**
-1. `signals.py` loads GAS-Q parameters from tuned JSON when `gas_q_augmented: true`
-2. Filter loop uses time-varying q_t instead of static q
-3. GAS-Q q_t is bounded: q_min = 1e-7, q_max = 1e-2 (prevents explosion)
-4. Fallback to static q when GAS-Q params are missing or invalid
-5. Benchmark: 30-day directional accuracy improves by >= 2% vs static q
-6. No increase in calibration ECE beyond 0.01
+1. Effectiveness audit: measure directional accuracy WITH vs WITHOUT GAS-Q on signals.py path
+2. If GAS-Q improves accuracy by < 1%: investigate parameterization, bounds, initialization
+3. GAS-Q q_t bounds verified: q_min = 1e-7, q_max = 1e-2 (already in code -- verify)
+4. `_kalman_forecast()` in market_temperature.py accepts and uses GAS-Q params
+5. Time-varying q_t feeds into Kalman filter within ensemble forecast path
+6. Fallback to static q when GAS-Q params missing (graceful degradation)
+7. Benchmark: forecast display accuracy improves by >= 1.5% at 7-day horizon
+8. GAS-Q q_t trajectory logged for diagnostics (mean, std, max per asset)
+
+**Risk:** GAS-Q with poorly tuned alpha/beta can cause q_t oscillation, leading to
+filter instability. Mitigation: exponential smoothing on q_t trajectory with damping.
 
 **Tasks:**
-- [ ] 1.3.1: Add GAS-Q parameter loading in `signals.py` from tuned JSON
-- [ ] 1.3.2: Implement `compute_gasq_process_noise(score, q_prev, omega, alpha, beta)`
-- [ ] 1.3.3: Integrate q_t into Kalman filter loop (Gaussian model path)
-- [ ] 1.3.4: Integrate q_t into phi-Gaussian filter loop
-- [ ] 1.3.5: Integrate q_t into phi-Student-t filter loop
-- [ ] 1.3.6: Add bounds checking: clip(q_t, Q_MIN, Q_MAX)
-- [ ] 1.3.7: Add fallback: if GAS-Q params missing, use static q with warning
+- [ ] 1.3.1: Audit existing GAS-Q integration: run A/B on 12 symbols with/without
+- [ ] 1.3.2: Log q_t trajectory statistics per asset (mean, std, min, max, % at bounds)
+- [ ] 1.3.3: If accuracy gain < 1%: diagnose -- check q_t bounds, alpha/beta magnitudes
+- [ ] 1.3.4: Propagate GAS-Q params into `_kalman_forecast()` in market_temperature.py
+- [ ] 1.3.5: Add time-varying q_t computation inside ensemble Kalman path
+- [ ] 1.3.6: Add q_t damping: q_t_smooth = 0.8 * q_t_smooth + 0.2 * q_t_raw
+- [ ] 1.3.7: Add fallback: if GAS-Q params missing, use static q with log warning
 - [ ] 1.3.8: Write test: verify q_t increases after large innovation
-- [ ] 1.3.9: Write test: verify q_t decays back to omega in calm period
-- [ ] 1.3.10: Benchmark on 12-symbol universe, compare static q vs GAS-Q
+- [ ] 1.3.9: Write test: verify q_t trajectory stays within bounds
+- [ ] 1.3.10: Benchmark: forecast display accuracy before/after GAS-Q propagation
 
 ---
 
@@ -196,6 +276,13 @@ Currently, one Kalman filter produces one mu_t estimate used for all horizons. T
 suboptimal: short-horizon forecasts need fast-reacting drift (high K_t), while
 long-horizon forecasts need smooth drift (low K_t). Multi-scale filtering runs parallel
 filters with different q values, selecting the appropriate one per horizon.
+
+**Dependencies:** Story 1.1 (Adaptive Process Noise Floor -- q_fast needs a floor too)
+
+**Risk:** Three parallel filters per model per asset is expensive: for 14 models x 3 scales
+= 42 filter passes vs current 14. Runtime triples unless mitigated by sharing BMA weights
+across scales (not re-estimating -- this is the key efficiency insight). Also, the
+assumption that BMA weights transfer across time scales may not hold for all models.
 
 **Acceptance Criteria:**
 1. Three parallel filters run per model:
@@ -238,22 +325,40 @@ K_effective_t = K_t * w(z_t)
 w(z_t) = min(1 + alpha_iw * (|z_t| - 1)^+, w_max)
 ```
 
+**IMPORTANT CAVEAT:** Modifying K_t based on z_t breaks the optimality guarantees of
+the standard Kalman filter. This is intentional -- we are trading theoretical optimality
+(under Gaussian assumptions that don't hold) for practical utility (faster response to
+regime changes). However, this creates a risk of filter divergence if alpha_iw is too
+large. The mitigation is conservative defaults and mandatory PIT monitoring.
+
+**Dependencies:** Story 1.2 (Kalman Gain Monitoring -- detects if this causes divergence)
+
 **Acceptance Criteria:**
 1. Innovation weighting function `w(z_t)` implemented with configurable alpha and cap
 2. Applied to Kalman update step: mu_t += K_effective * innovation_t
 3. Weighting is asymmetric-capable: downside surprises can have higher weight
-4. Default: alpha_iw = 0.3, w_max = 3.0
-5. Benchmark: post-earnings drift captured 40% faster (measured on AAPL, NVDA)
-6. No increase in false positive rate for non-event days
+4. Default: alpha_iw = 0.3, w_max = 2.0 (conservative, not 3.0 -- divergence risk)
+5. P_t (state covariance) update also adjusted to maintain filter consistency:
+   P_t|t = (1 - K_effective * H) * P_t|t-1 (Joseph form for numerical stability)
+6. Benchmark: post-earnings drift captured 40% faster (measured on AAPL, NVDA)
+7. No increase in false positive rate for non-event days
+8. PIT calibration ECE monitored: if ECE > 0.07 with innovation weighting, reduce alpha_iw
+
+**Risk:** Innovation weighting with alpha_iw > 0.5 causes filter P_t to grow unbounded
+in volatile regimes (positive feedback: large z -> large K -> large P -> large K).
+Mitigation: cap w_max at 2.0 and add P_max bound.
 
 **Tasks:**
 - [ ] 1.5.1: Implement `innovation_weight(z_t, alpha, w_max)` utility function
 - [ ] 1.5.2: Add asymmetric option: alpha_down vs alpha_up
-- [ ] 1.5.3: Integrate into Gaussian Kalman update step
+- [ ] 1.5.3: Integrate into Gaussian Kalman update step with Joseph-form P update
 - [ ] 1.5.4: Integrate into phi-Student-t update step
-- [ ] 1.5.5: Write test: 3-sigma innovation gets w ~ 1.6, 0.5-sigma gets w ~ 1.0
-- [ ] 1.5.6: Benchmark on AAPL/NVDA earnings dates: drift recovery speed
-- [ ] 1.5.7: Benchmark on noise days: verify no false positive increase
+- [ ] 1.5.5: Add P_max bound: P_t = min(P_t, P_MAX) where P_MAX = 10 * P_steady_state
+- [ ] 1.5.6: Write test: 3-sigma innovation gets w ~ 1.6, 0.5-sigma gets w ~ 1.0
+- [ ] 1.5.7: Write test: P_t does not grow unbounded under repeated large innovations
+- [ ] 1.5.8: Benchmark on AAPL/NVDA earnings dates: drift recovery speed
+- [ ] 1.5.9: Benchmark on noise days: verify no false positive increase
+- [ ] 1.5.10: PIT regression test: ECE with innovation weighting < ECE + 0.02
 
 ---
 
@@ -272,14 +377,40 @@ ensemble should:
 2. Weight agreeing models higher (consensus amplification)
 3. Report disagreement as uncertainty, not as cancellation
 
+The approach uses **sign-agreement-weighted averaging** rather than ad-hoc amplification:
+```
+agreement = fraction_of_models_with_sign_equal_to_weighted_median
+agreement_contrast = (agreement - 0.5) * 2    # maps [0.5, 1.0] -> [0, 1]
+
+For each model i:
+  sign_i = sign(forecast_i)
+  sign_median = sign(weighted_median)
+  if sign_i == sign_median:
+    adjusted_weight_i = base_weight_i * (1 + contrast_boost * agreement_contrast)
+  else:
+    adjusted_weight_i = base_weight_i * (1 - contrast_boost * agreement_contrast)
+  normalize all adjusted weights to sum to 1.0
+```
+With contrast_boost = 0.6: unanimous agreement (agreement=1.0) gives agreeing models
+1.6x their base weight and dissenters 0.4x. This is smoother than step-function
+amplification and degrades gracefully.
+
+**Dependencies:** None (works with existing ensemble infrastructure)
+
 **Acceptance Criteria:**
-1. Model agreement score computed: fraction of models with same sign as median
-2. When agreement > 0.7 (4+ of 5 agree): amplify consensus by 1.5x
-3. When agreement < 0.4 (2 or fewer agree): dampen forecast by 0.5x, flag uncertainty
-4. Disagreement reported as separate `forecast_uncertainty` field
-5. Benchmark: 7-day absolute forecast magnitude increases by > 50%
-6. Directional accuracy does not decrease
-7. New fields propagated to frontend display
+1. Model agreement score: fraction of models (by weight) with same sign as weighted median
+2. Sign-agreement-weighted averaging applied with configurable contrast_boost (default 0.6)
+3. Disagreement quantified: `forecast_dispersion = std(model_forecasts) / abs(mean)`
+4. Dispersion reported as separate `forecast_uncertainty` field (0-1 scale, normalized)
+5. When dispersion > 1.5: "CONTESTED" label, intervals widened by 50%
+6. Benchmark: 7-day absolute forecast magnitude increases by > 40%
+7. Directional accuracy does not decrease (must verify!)
+8. New fields propagated to frontend display
+
+**Risk:** Over-amplification of consensus creates false confidence. When all 5 models
+agree but are ALL wrong (e.g., trend reversal), the amplified signal is worse than
+unamplified. Mitigation: contrast_boost capped at 0.6, and Story 1.13 feedback loop
+will dampen assets where consensus historically underperforms.
 
 **Tasks:**
 - [ ] 1.6.1: Compute per-horizon agreement score in `market_temperature.py`
@@ -306,6 +437,17 @@ instead of using hardcoded EMA-based drift estimation,
 blending (70/30, 50/40/10, etc.) and applies ad-hoc persistence factors. Meanwhile,
 the tuning phase carefully optimizes q, c, phi per asset per regime. This disconnect
 means tuning effort is wasted for the forecast display the user actually sees.
+
+This is arguably the SINGLE HIGHEST IMPACT story in the entire program. Every other
+improvement flows through market_temperature.py -- if it ignores tuned params, nothing
+else matters for the user-facing forecast.
+
+**Dependencies:** Stories 3.3 and 3.4 (GARCH and OU params fitted in tuning)
+
+**Risk:** Switching from EMA to Kalman-filter-based drift could produce dramatically
+different forecasts for some assets. Users may be alarmed by sudden changes. Mitigation:
+A/B comparison report showing EMA vs Kalman forecasts for all assets, with highlighted
+differences, BEFORE the switch goes live.
 
 **Acceptance Criteria:**
 1. `_kalman_forecast()` accepts optional tuned_params dict
@@ -378,6 +520,9 @@ every improvement in this epic.
 4. Scorecard stored as JSON: `src/data/calibration/forecast_scorecard.json`
 5. CLI command: `make scorecard` displays summary table
 6. Historical backfill for last 90 days using cached forecasts
+   NOTE: This requires signal cache history to exist. If cache was recently cleared,
+   backfill starts from the first available cached forecast (may be < 90 days).
+   The scorecard must handle partial history gracefully.
 
 **Tasks:**
 - [ ] 1.9.1: Create `src/calibration/forecast_scorecard.py` with ForecastRecord dataclass
@@ -437,22 +582,45 @@ unified "drift prior" that combines:
 **so that** a +0.5% forecast in a 10% vol environment and a +0.5% forecast in a 40% vol
 environment are distinguished in terms of signal strength and confidence.
 
+**Background:**
+In a low-vol environment, a +0.5% forecast is a strong signal (high SNR). In a high-vol
+environment, the same +0.5% is noise (low SNR). Vol-adjustment normalizes the informational
+content of forecasts:
+```
+vol_ratio = current_vol / median_vol  (rolling 252-day median)
+signal_quality = 1 / max(vol_ratio, 0.5)  # High vol -> quality DOWN
+```
+IMPORTANT: This scales the CONFIDENCE/QUALITY indicator, not the forecast magnitude.
+The forecast itself stays unchanged (it represents expected return). The quality factor
+tells the user whether to trust it.
+
+**Dependencies:** None (standalone scaling layer)
+
 **Acceptance Criteria:**
-1. Vol-ratio computed: current_vol / median_vol (rolling 252-day)
-2. Forecast display adjusted: raw_fc * signal_quality_factor
-3. signal_quality_factor = 1 / max(vol_ratio, 0.5) for high-vol dampening
+1. Vol-ratio computed: current_ewma_vol / rolling_252d_median_vol
+2. Signal quality factor: quality = clip(1.0 / vol_ratio, 0.3, 2.0)
+   - vol_ratio = 0.5 (calm): quality = 2.0 (high SNR -- trust this forecast)
+   - vol_ratio = 1.0 (normal): quality = 1.0 (baseline)
+   - vol_ratio = 2.0 (crisis): quality = 0.5 (low SNR -- discount this forecast)
+3. Quality factor displayed alongside forecast, NOT multiplied into forecast value
 4. Confidence indicator reflects vol regime: high vol = lower displayed confidence
-5. Separate from hard caps (this is a scaling layer, not a clipping layer)
+5. Vol regime label: CALM (< 0.7), NORMAL (0.7-1.3), ELEVATED (1.3-2.0), EXTREME (> 2.0)
 6. Benchmark: risk-adjusted directional accuracy (Sharpe of forecast direction) improves
+
+**Risk:** If quality factor is accidentally MULTIPLIED into forecasts (instead of displayed
+alongside), low-vol forecasts get amplified and high-vol get dampened -- the OPPOSITE of
+desired behavior for position sizing.
 
 **Tasks:**
 - [ ] 1.11.1: Compute rolling vol-ratio in `market_temperature.py`
-- [ ] 1.11.2: Implement `vol_adjusted_scaling(forecast, vol_ratio)`
-- [ ] 1.11.3: Apply scaling in ensemble output path
-- [ ] 1.11.4: Add vol_regime indicator to forecast output
-- [ ] 1.11.5: Update frontend to display vol regime context
-- [ ] 1.11.6: Write test: high vol regime dampens forecast magnitude
-- [ ] 1.11.7: Benchmark: Sharpe of directional bets before/after scaling
+- [ ] 1.11.2: Implement `compute_signal_quality(vol_ratio)` with bounds
+- [ ] 1.11.3: Add quality factor to ensemble output (separate from forecast value)
+- [ ] 1.11.4: Add vol_regime label to forecast output (CALM/NORMAL/ELEVATED/EXTREME)
+- [ ] 1.11.5: Update `signals_ux.py` to display vol regime and quality badge
+- [ ] 1.11.6: Update frontend to display vol regime indicator
+- [ ] 1.11.7: Write test: vol_ratio=0.5 -> quality=2.0, vol_ratio=2.0 -> quality=0.5
+- [ ] 1.11.8: Write test: forecast VALUE unchanged by scaling (quality is separate)
+- [ ] 1.11.9: Benchmark: Sharpe of directional bets weighted by quality vs unweighted
 
 ---
 
@@ -464,15 +632,23 @@ environment are distinguished in terms of signal strength and confidence.
 
 **Background:**
 Current regime classification uses smoothing alpha=0.40, creating a 4+ day lag for
-crisis detection. A jump-diffusion filter or change-point detector can identify
-regime transitions in 1-2 bars.
+crisis detection. A CUSUM (Cumulative Sum) change-point detector can identify
+regime transitions in 1-2 bars by accumulating deviations from expected values.
+
+**Dependencies:** None (standalone regime improvement)
+
+**Risk:** False positive regime changes cause whipsaw: the system switches to crisis mode,
+then back to trend mode within 2 days. This burns transaction costs and creates confusing
+signals. Mitigation: 5-bar cool-down after any alpha acceleration (no second transition
+allowed during cool-down), and CUSUM threshold set for < 5% false positive rate.
 
 **Acceptance Criteria:**
 1. CUSUM-based change-point detector added as regime transition accelerator
 2. When CUSUM triggers, smoothing alpha temporarily increases to 0.85 for 5 bars
-3. Regime transition lag reduced to <= 2 days for crisis onset
-4. False positive rate for regime changes < 5% (no phantom transitions)
-5. Benchmark: COVID crash (Feb 20-Mar 23, 2020) detected by day 2
+3. Cool-down period: 5 bars after acceleration ends before another can trigger
+4. Regime transition lag reduced to <= 2 days for crisis onset
+5. False positive rate for regime changes < 5% (calibrated on 2020-2025 data)
+6. Benchmark: COVID crash (Feb 20-Mar 23, 2020) detected by day 2
 
 **Tasks:**
 - [ ] 1.12.1: Implement CUSUM detector in `tune.py` `assign_regime_labels()`
@@ -492,23 +668,54 @@ accuracy for each specific asset,
 **so that** assets where the model is reliably directional get amplified forecasts while
 assets where it fails get dampened ones.
 
+**Background:**
+Raw amplification (amp = 0.5 + accuracy) is dangerous because it ignores sample size.
+An asset with 3/5 = 60% accuracy over 5 days should NOT be amplified as much as one
+with 150/250 = 60% over 250 days. Bayesian shrinkage toward a neutral prior (amp=1.0)
+handles this naturally:
+```
+amp = prior_amp + (accuracy - prior_accuracy) * shrinkage_weight(n)
+where:
+  prior_amp = 1.0 (neutral -- no amplification before evidence)
+  prior_accuracy = 0.50 (coin-flip prior)
+  shrinkage_weight(n) = n / (n + n_prior)   # n_prior = 60 (pseudocount)
+```
+With n=10 observations: weight = 10/70 = 0.14 -> amp barely moves from 1.0
+With n=250 observations: weight = 250/310 = 0.81 -> amp converges to true accuracy
+
+**Dependencies:** Story 1.9 (Directional Accuracy Scorecard provides accuracy data)
+
 **Acceptance Criteria:**
 1. Rolling 60-day directional accuracy tracked per asset (from Story 1.9 scorecard)
-2. Amplification factor: amp = 0.5 + accuracy (so 55% accuracy -> 1.05x, 65% -> 1.15x)
-3. Dampening below baseline: if accuracy < 50%, amp = max(0.3, accuracy)
-4. Applied at the ensemble forecast output stage
-5. Updated daily, stored in forecast scorecard JSON
-6. No leakage: uses only past data (lookback, not lookahead)
-7. Benchmark: portfolio-level Sharpe improvement >= 0.05
+2. Bayesian shrinkage formula applied:
+   ```
+   n = number of evaluated forecasts (60-day window)
+   shrinkage = n / (n + 60)
+   amp = 1.0 + (accuracy - 0.50) * shrinkage * sensitivity
+   where sensitivity = 2.0 (maps 60% accuracy -> 1.16x at full shrinkage)
+   ```
+3. Amplification bounds: amp in [0.5, 1.5] (never more than 50% adjustment)
+4. Minimum sample size: n >= 20 before any amplification (below: amp = 1.0)
+5. Applied at the ensemble forecast output stage
+6. Updated daily, stored in forecast scorecard JSON
+7. No leakage: uses only past data (lookback, not lookahead)
+8. Benchmark: portfolio-level Sharpe improvement >= 0.05
+
+**Risk:** Feedback loops can create self-reinforcing amplification spirals (good asset
+gets amplified, looks even better, gets amplified more). Mitigation: hard bounds [0.5, 1.5]
+and decay toward 1.0 when recent accuracy data is unavailable (> 10 days stale).
 
 **Tasks:**
-- [ ] 1.13.1: Extend forecast_scorecard.py with per-asset rolling accuracy
-- [ ] 1.13.2: Implement `compute_asset_amplification(accuracy_history)`
+- [ ] 1.13.1: Extend forecast_scorecard.py with per-asset rolling accuracy + sample count
+- [ ] 1.13.2: Implement Bayesian `compute_asset_amplification(accuracy, n, prior_n=60)`
 - [ ] 1.13.3: Integrate amplification into `ensemble_forecast()` output
 - [ ] 1.13.4: Add anti-leakage assertion: amplification uses only t-1 data
-- [ ] 1.13.5: Write test: 65% accurate asset gets 1.15x amplification
-- [ ] 1.13.6: Write test: 45% accurate asset gets 0.45x dampening
-- [ ] 1.13.7: Benchmark: Sharpe of amplified vs uniform forecast portfolio
+- [ ] 1.13.5: Add minimum sample guard: n < 20 -> amp = 1.0
+- [ ] 1.13.6: Add staleness decay: if last accuracy > 10 days old, amp decays toward 1.0
+- [ ] 1.13.7: Write test: n=10, accuracy=60% -> amp ~ 1.03 (heavily shrunk toward 1.0)
+- [ ] 1.13.8: Write test: n=250, accuracy=60% -> amp ~ 1.16 (converged)
+- [ ] 1.13.9: Write test: n=250, accuracy=45% -> amp ~ 0.92 (dampened)
+- [ ] 1.13.10: Benchmark: Sharpe of amplified vs neutral (amp=1.0) forecast portfolio
 
 ---
 
@@ -522,6 +729,12 @@ assets where it fails get dampened ones.
 Current hard caps (e.g., +/-3% for 1-day equity) bind frequently in low-vol regimes
 where vol_bound < cap. When the ensemble has high confidence (4+ models agree with
 strong signals), the cap should widen to let the signal through.
+
+**Dependencies:** Story 1.6 (Ensemble De-correlation -- provides the agreement/confidence score)
+
+**Risk:** Relaxing caps without validation creates tail risk -- the few times caps bind
+are often the times they are most needed (extreme events). Mitigation: vol-bound remains
+as a hard constraint independent of confidence, and caps can at most double (never removed).
 
 **Acceptance Criteria:**
 1. Confidence score from ensemble agreement (Story 1.6) feeds into cap calculation
@@ -573,6 +786,12 @@ GARCH parameters vary dramatically across assets: UPST (alpha~0.15, beta~0.80) v
 SPY (alpha~0.04, beta~0.94). Using SPY-like defaults for small caps understates
 volatility clustering and produces weak forecasts during their volatile episodes.
 
+GARCH fitting should use Kalman filter RESIDUALS (not raw returns) as input. Raw returns
+contain the drift component which GARCH is trying to ignore. By fitting on residuals
+from the best Kalman model, we get cleaner volatility dynamics.
+
+**Dependencies:** Story 3.3 (GARCH Fitting in Tuning Pipeline -- produces the params to load)
+
 **Acceptance Criteria:**
 1. Tuning phase fits GARCH(1,1) per asset: (omega, alpha, beta) via MLE
 2. Parameters stored in tune JSON: `garch_params: {omega, alpha, beta, persistence}`
@@ -604,6 +823,14 @@ OU parameters define two critical quantities:
 - kappa (speed): half-life = ln(2)/kappa. SPY might have 60-day half-life, UPST 15-day.
 - theta (level): local equilibrium. Using wrong theta miscalibrates reversion magnitude.
 
+Current implementation uses MA-50/100/200 as theta targets with base kappa=0.025 adjusted
+by autocorrelation. This is an approximation. Proper OU MLE on the Euler-Maruyama
+discretization (AR(1) on demeaned log prices) is more principled but also more fragile
+(kappa estimation has high variance for non-stationary series). The AR(1) approach is
+a reasonable first step with acknowledged limitations.
+
+**Dependencies:** Story 3.4 (OU Estimation in Tuning Pipeline -- produces the params to load)
+
 **Acceptance Criteria:**
 1. OU parameter estimation added to tuning: kappa via AR(1) regression on demeaned returns
 2. theta estimated as exponentially-weighted moving average level  
@@ -634,8 +861,16 @@ a slow trend.
 
 **Acceptance Criteria:**
 1. Per-regime momentum timeframe performance tracked: {5d, 10d, 21d, 63d, 126d, 252d}
-2. Timeframe weights computed from rolling 60-day hit rate per timeframe
-3. Entropy-based diversity: at least 3 timeframes get weight > 0.05
+2. Timeframe weights computed from rolling 60-day hit rate per timeframe:
+   ```
+   raw_weight_i = hit_rate_i - 0.50  (excess accuracy above coin flip)
+   raw_weight_i = max(raw_weight_i, 0.01)  (floor: no timeframe goes to zero)
+   weights = softmax(raw_weights / temperature)  where temperature = 0.1
+   ```
+3. Entropy-based diversity constraint: H(weights) >= 0.5 * H_uniform
+   where H(w) = -sum(w_i * log(w_i)) and H_uniform = log(6) for 6 timeframes.
+   If entropy is too low (concentration on 1-2 timeframes): increase temperature
+   until constraint is met. This ensures at least 3 timeframes contribute.
 4. Regime transitions trigger weight recalculation within 2 bars
 5. Benchmark: momentum model standalone hit rate > 55%
 
@@ -665,6 +900,17 @@ weights based on predictive likelihood:
 ```
 w_i,t+1 = w_i,t * p(y_t | model_i) / sum_j(w_j,t * p(y_t | model_j))
 ```
+
+The 30-day lookback is implemented via a forgetting factor (exponential discounting of
+past likelihood contributions), not a hard window. This avoids the "cliff effect" where
+a model's weight changes sharply when a single observation exits the window.
+
+**Dependencies:** Stories 2.1 and 2.2 (calibrated model params -- BMC needs well-specified models)
+
+**Risk:** BMC with forgetting can chase noise: a model gets lucky for 10 days, gains weight,
+then reverts. The weight floor (min 0.05) prevents model extinction, and the 45-day
+half-life provides sufficient smoothing. Monitor weight volatility: if any model's weight
+changes by > 0.2 in a single day, the forgetting factor is too aggressive.
 
 **Acceptance Criteria:**
 1. Per-model rolling predictive likelihood tracked with 30-day lookback
@@ -708,8 +954,12 @@ need to be surfaced.
 5. Terminal display shows range: "+1.5% [+0.3, +2.8]" (median [p25, p75])
 6. Frontend fan chart visualization (see Epic 5 for full UX story)
 
+**Risk:** Quantiles from Monte Carlo are noisy with few samples. With 1000 draws,
+the 10th percentile estimate has ~3% standard error. Mitigation: use at least 5000
+draws for stable quantile estimates, or use analytical quantiles when available.
+
 **Tasks:**
-- [ ] 2.5.1: Extract quantiles from BMA Monte Carlo samples in `signals.py`
+- [ ] 2.5.1: Extract quantiles from BMA Monte Carlo samples in `signals.py` (min 5000 draws)
 - [ ] 2.5.2: Add quantiles to per-horizon forecast output structure
 - [ ] 2.5.3: Store quantiles in signal cache JSON
 - [ ] 2.5.4: Update `signals_ux.py` to display range notation
@@ -717,40 +967,59 @@ need to be surfaced.
 - [ ] 2.5.6: Add quantiles to `/api/charts/forecast/{symbol}` response
 - [ ] 2.5.7: Write test: high-vol asset has wider intervals than low-vol
 - [ ] 2.5.8: Write test: quantile ordering: p10 < p25 < p50 < p75 < p90
+- [ ] 2.5.9: **Quantile calibration test: verify ~10% of outcomes fall below p10 estimate**
+  (Run on historical data: if p10 captures 15% or 5% of outcomes, intervals are miscalibrated)
+- [ ] 2.5.10: Write test: 5000 vs 1000 draws -- quantile stability check (std < 0.5%)
 
 ---
 
-### Story 2.6: Classical Model Replacement with Bayesian Structural Time Series
+### Story 2.6: Classical Model Upgrade to Adaptive Drift with Regime Switching
 
 **As a** quant researcher,
-**I want** the classical drift extrapolation model replaced with a Bayesian Structural
-Time Series (BSTS) model that captures trend + seasonality + regression components,
+**I want** the classical drift extrapolation model replaced with an adaptive drift model
+that uses regime-dependent persistence and VIX conditioning,
 **so that** the 5th ensemble member contributes meaningful information.
 
 **Background:**
 The current classical model is a simple drift extrapolation (basically a constant).
-BSTS decomposes the series into:
-- Local level (random walk)
-- Local trend (drift with stochastic slope)  
-- Regression on exogenous features (VIX, sector momentum)
+The original plan was BSTS (Bayesian Structural Time Series), but BSTS requires MCMC
+sampling (Stan, PyMC, or custom) which adds heavy dependencies, is slow (~1s/asset),
+and is over-engineered for daily return forecasting where signal-to-noise is tiny.
+
+A pragmatic upgrade: adaptive drift with regime switching. Drift persistence decays
+faster in high-vol regimes (mean reversion dominates) and slower in low-vol trends
+(momentum dominates). VIX level modulates confidence intervals. This captures 80%
+of BSTS benefit at 1% of the implementation cost.
+
+**Dependencies:** None (standalone model improvement)
 
 **Acceptance Criteria:**
-1. BSTS model replaces classical in ensemble
-2. Components: local level + local trend (no seasonality for daily returns)
-3. VIX level as regression covariate (when available)
-4. Parameters estimated via maximum marginal likelihood
-5. Forecast includes trend persistence estimate
-6. Benchmark: BSTS standalone accuracy > classical by >= 3%
+1. Adaptive drift model replaces classical in ensemble:
+   - TREND regimes: persistence = 0.97^H (slow decay, trust the trend)
+   - RANGE regimes: persistence = 0.90^H (faster decay, drift unreliable)
+   - CRISIS: persistence = 0.80^H (very fast decay, all bets off)
+2. VIX conditioning: when VIX > 25, confidence intervals widen by factor 1 + 0.03*(VIX-25)
+3. Drift computed from exponentially-weighted returns with half-life = 21 days
+4. Forecast includes trend persistence estimate per horizon
+5. Runtime: < 5ms per asset (no MCMC -- pure analytical computation)
+6. Benchmark: adaptive model standalone accuracy > classical by >= 3%
+7. No new dependencies (only numpy, scipy already available)
+
+**Risk:** Regime-dependent persistence introduces a regime classification dependency.
+If regime classification is wrong, persistence is wrong. Mitigation: blend persistence
+across regimes weighted by regime probability (soft switching, not hard).
 
 **Tasks:**
-- [ ] 2.6.1: Implement BSTS state space: level + trend + regression
-- [ ] 2.6.2: Implement marginal likelihood estimation for hyperparameters
-- [ ] 2.6.3: Add VIX regression covariate loading
-- [ ] 2.6.4: Generate multi-horizon forecasts via state extrapolation
-- [ ] 2.6.5: Replace `_classical_forecast()` with `_bsts_forecast()`
-- [ ] 2.6.6: Write test: BSTS detects level shift in synthetic data
-- [ ] 2.6.7: Write test: BSTS trend slope matches known drift
-- [ ] 2.6.8: Benchmark: classical vs BSTS standalone accuracy
+- [ ] 2.6.1: Implement adaptive drift with EW half-life of 21 days
+- [ ] 2.6.2: Implement regime-dependent persistence decay tables
+- [ ] 2.6.3: Implement soft regime switching (blend persistence by regime probability)
+- [ ] 2.6.4: Add VIX conditioning for confidence interval widening
+- [ ] 2.6.5: Generate multi-horizon forecasts via persistence projection
+- [ ] 2.6.6: Replace `_classical_forecast()` with `_adaptive_drift_forecast()`
+- [ ] 2.6.7: Write test: trending regime produces slower-decaying forecast
+- [ ] 2.6.8: Write test: crisis regime produces rapid decay toward zero
+- [ ] 2.6.9: Benchmark: classical vs adaptive drift standalone accuracy
+- [ ] 2.6.10: Verify runtime < 5ms per asset (no regressions)
 
 ---
 
@@ -811,8 +1080,14 @@ when stale (> 4 hours since market data update),
 
 **Acceptance Criteria:**
 1. Per-horizon: individual model forecasts + weights + weighted contributions
-2. Top contributor identified: "Momentum (+1.2%, weight 0.35) driving bullish signal"
-3. Disagreement detected: "GARCH (-0.8%) opposes consensus -- high uncertainty"
+2. Top contributor identified with structured template:
+   "[MODEL_NAME] ([FORECAST]%, weight [WEIGHT]): [VERB] [DIRECTION] signal"
+   Example: "Momentum (+1.2%, weight 0.35): driving bullish signal"
+3. Disagreement detected with structured template:
+   "[MODEL_NAME] ([FORECAST]%) opposes consensus -- [IMPACT] uncertainty"
+   Example: "GARCH (-0.8%) opposes consensus -- adding uncertainty"
+4. Natural-language templates maintained as constants (not generated dynamically
+   via LLM or string interpolation from unvalidated sources)
 4. Stored in signal cache and available via API
 5. Frontend "Why?" tooltip or expandable row shows model breakdown
 
@@ -839,10 +1114,15 @@ universe,
 **Acceptance Criteria:**
 1. `make validate-ensemble` target runs full evaluation pipeline
 2. Compares current vs baseline on: hit_rate, Sharpe, CRPS, ECE per horizon
-3. Traffic-light summary: GREEN (all improve), AMBER (mixed), RED (regression)
+3. Traffic-light summary with EXPLICIT thresholds:
+   - GREEN: ALL of (hit_rate_delta >= 0, sharpe_delta >= 0, crps_delta <= 0, ece_delta <= 0)
+   - AMBER: ANY metric degrades but by less than tolerance:
+     (hit_rate drops < 1%, sharpe drops < 0.03, crps rises < 0.002, ece rises < 0.01)
+   - RED: ANY metric degrades beyond tolerance
 4. Baseline stored in `src/data/calibration/ensemble_baseline.json`
 5. CI-friendly: returns exit code 0 for GREEN/AMBER, 1 for RED
-6. Results displayed in both terminal (Rich table) and frontend diagnostics
+6. Tolerances are configurable via environment variables (CI may use stricter thresholds)
+7. Results displayed in both terminal (Rich table) and frontend diagnostics
 
 **Tasks:**
 - [ ] 2.10.1: Create `src/calibration/ensemble_validator.py` with evaluation pipeline
@@ -887,17 +1167,20 @@ and only re-tune those assets,
 **so that** daily re-tuning takes seconds instead of minutes.
 
 **Acceptance Criteria:**
-1. Tune cache includes `last_price_date` and `last_tune_timestamp` per asset
-2. Comparison logic: if price CSV mtime > tune JSON mtime, asset needs re-tuning
-3. `make tune` default mode: incremental (only changed assets)
-4. `make tune-full` forces full re-tune of all assets
-5. `make tune-asset ARGS="SPY AAPL"` tunes specific assets only
-6. Incremental tune of 5 changed assets completes in < 30 seconds
-7. Log output: "Tuning 5/142 assets (incremental mode)"
+1. Tune cache includes `last_price_date` and `price_data_hash` per asset
+2. Change detection: compare price CSV content hash vs stored hash in tune JSON
+   (NOT file mtime -- mtime is unreliable across git checkout, rsync, backup restore)
+3. Hash computation: fast hash of last 20 OHLCV rows (sufficient to detect new data)
+4. `make tune` default mode: incremental (only changed assets)
+5. `make tune-full` forces full re-tune of all assets
+6. `make tune-asset ARGS="SPY AAPL"` tunes specific assets only
+7. Incremental tune of 5 changed assets completes in < 30 seconds
+8. Log output: "Tuning 5/142 assets (incremental mode, 137 unchanged)"
 
 **Tasks:**
-- [ ] 3.1.1: Add `last_price_date` to tune JSON output
-- [ ] 3.1.2: Implement change detection: compare price CSV mtime vs tune JSON mtime
+- [ ] 3.1.1: Add `last_price_date` and `price_data_hash` to tune JSON output
+- [ ] 3.1.2: Implement content-based change detection: hash last 20 rows of price CSV
+- [ ] 3.1.3: Compare stored hash vs current hash (not mtime -- git-safe)
 - [ ] 3.1.3: Add `--incremental` flag to `tune_ux.py` (default: on)
 - [ ] 3.1.4: Add `--full` flag to force full re-tune
 - [ ] 3.1.5: Add `--assets` flag for specific asset selection
@@ -1023,34 +1306,56 @@ signal generation.
 
 ---
 
-### Story 3.6: Numba-Accelerated Kalman Filter Kernels
+### Story 3.6: Numba Coverage Gap Analysis and New Kernel Development
 
 **As a** platform engineer,
-**I want** Kalman filter inner loops compiled with Numba for 5-10x speedup,
-**so that** tuning and signal generation are fast enough for interactive use.
+**I want** the remaining non-Numba hot paths identified and compiled, and existing Numba
+kernels benchmarked against Python reference implementations,
+**so that** all performance-critical code runs at native speed.
 
 **Background:**
-The filter loops in `signals.py` and `tune.py` iterate over thousands of bars with
-Python-level arithmetic. Numba JIT compilation can convert these to native code.
-`models/numba_kernels.py` already exists but is underutilized.
+`models/numba_kernels.py` is already extensive: 56 @njit(cache=True) functions covering
+Kalman filters, Student-t distributions, Hansen Skew-t, GAS-Q, Monte Carlo, and scoring.
+However, there may be remaining hot paths in `market_temperature.py` (ensemble forecasting),
+`tune.py` (BMA weight computation), and `signals.py` (feature computation) that are still
+Python-level loops. This story identifies and fills those gaps.
+
+**Current Numba Coverage (already implemented):**
+- Gaussian/phi-Gaussian/phi-Student-t filter kernels
+- Hansen Skew-t and CST filter kernels
+- Momentum-augmented filter kernels
+- MS-q (Markov-switching process noise) kernels
+- LFO-CV kernels, GARCH variance kernel
+- CRPS, PIT, Anderson-Darling scoring kernels
+- Monte Carlo simulation kernels
+- GAS-Q filter kernel
+
+**Dependencies:** None (standalone performance work)
 
 **Acceptance Criteria:**
-1. Core Kalman filter (predict + update) compiled as @njit function
-2. GAS-Q time-varying filter compiled as @njit function
-3. Student-t log-likelihood compiled as @njit function
-4. First call includes JIT compilation overhead (~2s), subsequent calls are 5-10x faster
-5. Numerical results match Python reference implementation to 1e-12 precision
-6. Fallback to Python when Numba unavailable (graceful degradation)
+1. Hot path audit: profile `make stocks` with cProfile, identify top 20 functions by time
+2. Any non-Numba function in top 10 by cumulative time: candidate for Numba kernel
+3. Specific candidates likely identified:
+   - Ensemble weight computation in market_temperature.py
+   - Feature extraction loops (momentum, vol, skew computations)
+   - BMA weight normalization across models
+4. New kernels match Python reference to 1e-12 precision
+5. Fallback to Python when Numba unavailable (graceful degradation -- already exists)
+6. Benchmark: signal generation speedup documented per new kernel
+
+**Risk:** Numba @njit has restrictions (no Python objects, no scipy inside @njit, no
+dynamic memory allocation). Some functions may not be Numba-compatible and must remain
+as Python. Profile first, then target only the ones that matter.
 
 **Tasks:**
-- [ ] 3.6.1: Implement Numba @njit Kalman filter kernel in `numba_kernels.py`
-- [ ] 3.6.2: Implement Numba @njit GAS-Q filter kernel
-- [ ] 3.6.3: Implement Numba @njit Student-t log-likelihood kernel
-- [ ] 3.6.4: Add precision tests: Numba vs Python match to 1e-12
-- [ ] 3.6.5: Add Numba availability check with Python fallback
-- [ ] 3.6.6: Integrate Numba kernels into tuning pipeline
-- [ ] 3.6.7: Integrate Numba kernels into signal generation pipeline
-- [ ] 3.6.8: Benchmark: per-asset tune time before/after Numba
+- [ ] 3.6.1: Profile `make stocks` with cProfile, export top 50 functions by cum_time
+- [ ] 3.6.2: Cross-reference top functions with numba_kernels.py coverage
+- [ ] 3.6.3: Identify >3 non-Numba hot paths in top 20
+- [ ] 3.6.4: Implement Numba kernels for identified gaps (est. 2-4 new kernels)
+- [ ] 3.6.5: Add precision tests: new Numba vs Python reference match to 1e-12
+- [ ] 3.6.6: Benchmark: per-function speedup before/after Numba
+- [ ] 3.6.7: Update models/numba_kernels.py with new kernels
+- [ ] 3.6.8: Document Numba coverage in code comments (what's covered, what's not)
 
 ---
 
@@ -1150,6 +1455,11 @@ Currently, `signals_ux.py` formats directly from internal signal objects, while
 `signal_service.py` reads from JSON cache. Schema drift between these two paths
 causes inconsistencies. A unified dataclass, serializable to both Rich tables and
 Pydantic models, eliminates this risk.
+
+The Pydantic v2 integration uses `from_attributes=True` (formerly `orm_mode`) to
+create Pydantic models directly from the dataclass instances without manual mapping.
+
+**Dependencies:** Story 1.8 (Display Precision -- formatting rules applied inside SignalOutput)
 
 **Acceptance Criteria:**
 1. `SignalOutput` dataclass defined in `src/decision/signal_output.py`
@@ -1260,7 +1570,11 @@ manages the full chain with incremental logic.
 **Acceptance Criteria:**
 1. `make pipeline` runs: prices -> incremental tune -> signals -> cache update
 2. Each phase reports: time taken, assets processed, errors encountered
-3. Failure in one phase does not block others (partial results are useful)
+3. Failure handling per phase:
+   - Prices fail: STOP (nothing downstream is valid without fresh prices)
+   - Tune fails on <5% of assets: CONTINUE with warnings (most signals still valid)
+   - Tune fails on >50% of assets: STOP (tune cache is unreliable)
+   - Signals fail: STOP and report (user-facing output is broken)
 4. `make pipeline --phase tune` runs only the tune phase
 5. Pipeline status written to `src/data/pipeline_status.json`
 6. Frontend can trigger pipeline via POST `/api/tasks/pipeline`
@@ -1322,6 +1636,7 @@ forecast values for a given signal snapshot,
 2. Terminal rendering: extract formatted text via Rich console capture
 3. API rendering: serialize through Pydantic and extract displayed values
 4. Comparison: every forecast value matches to display precision
+   (tolerance: abs(terminal_value - api_value) < 0.005% for all forecasts)
 5. Test runs as part of `make tests`
 6. Test covers: positive, negative, near-zero, and extreme forecasts
 
@@ -1401,6 +1716,8 @@ and data freshness,
 
 **Acceptance Criteria:**
 1. Market hours detection: US market open 9:30-16:00 ET on weekdays
+   NOTE: This is US-centric by design (assets are US-listed). If international assets
+   are added later, market hours detection must become per-exchange.
 2. During market hours: poll every 60s for signals, 30s for health
 3. After hours: poll every 5 minutes (data unlikely to change)
 4. Weekends: poll every 15 minutes
@@ -1486,6 +1803,13 @@ visually across 100+ rows. A heat map where color intensity represents forecast
 strength, combined with tiny sparklines showing recent trajectory, transforms the
 table into a visual intelligence surface.
 
+**Dependencies:** Story 4.1 (Unified Signal Output Contract -- sparkline data included in API)
+
+**Risk:** Color mapping that is not perceptually uniform (e.g., RGB interpolation) creates
+misleading visual comparisons. Green and red are problematic for colorblind users (~8% of
+male population). Mitigation: use a blue-orange diverging palette as default, with
+red-green as a selectable option for non-colorblind users.
+
 **Acceptance Criteria:**
 1. Each horizon cell contains:
    - Background color: diverging palette (deep red -> neutral -> deep green)
@@ -1495,7 +1819,9 @@ table into a visual intelligence surface.
 3. Row hover: entire row highlights with subtle glow, tooltip shows full detail
 4. Column sort: click header to sort by any horizon
 5. Sticky headers: symbol column and horizon headers stick on scroll
-6. Performance: 100+ rows render in < 100ms (virtualized)
+6. Performance: 100+ rows render in < 100ms (virtualized with @tanstack/react-virtual)
+   Note: react-window is legacy; @tanstack/react-virtual integrates better with existing
+   TanStack ecosystem (React Query, Router).
 
 **Tasks:**
 - [ ] 5.1.1: Design diverging color palette: 11-step red-to-green with neutral dead zone
@@ -1524,6 +1850,8 @@ Fan charts show the forecast as a cone expanding into the future:
 - Dark band: 25th-75th percentile
 - Light band: 10th-90th percentile
 The width of the cone communicates uncertainty visually.
+
+**Dependencies:** Story 2.5 (Forecast Confidence Intervals -- provides the quantile data)
 
 **Acceptance Criteria:**
 1. Fan chart component: SVG-based, responsive, dark theme
@@ -1928,6 +2256,15 @@ Walk-forward testing avoids look-ahead bias by:
 This is more rigorous than the existing Arena backtest because it tests the full
 pipeline (tune -> forecast -> trade decision) in temporal order.
 
+**Dependencies:** None (foundational -- many stories depend on this)
+**NOTE:** A MINIMAL version of this story (daily step, Sharpe+hit_rate only) must be
+implemented in Phase 1 to serve as the validation gate. Full version with all metrics,
+per-horizon analysis, and configurable parameters is Phase 5.
+
+**Risk:** Walk-forward with daily re-tuning is computationally expensive (252 tune runs
+per year). Mitigation: use weekly step (step=5) as default, daily as option. Also,
+incremental tuning (Story 3.1) makes each re-tune fast by only updating changed assets.
+
 **Acceptance Criteria:**
 1. Walk-forward engine with configurable:
    - Training window: 252 days (default)
@@ -1964,7 +2301,9 @@ and tracks cumulative PnL,
 Trading rules:
 - Forecast > +0.3%: go long with size proportional to forecast magnitude
 - Forecast < -0.3%: go short (if enabled) or stay flat (long-only mode)
-- Position size: min(1.0, abs(forecast) / max_forecast) * max_position
+- Position size: min(1.0, abs(forecast) / vol_adjusted_cap) * max_position
+  where vol_adjusted_cap = asset_252d_vol * sqrt(horizon/252) * 3
+  (3-sigma move as maximum expected forecast magnitude, per-asset)
 - Transaction costs: 5bps per trade
 
 **Acceptance Criteria:**
@@ -2109,29 +2448,48 @@ in range-bound ones (or vice versa).
 ### Story 6.7: Monte Carlo Confidence on Backtest Metrics
 
 **As a** quant researcher,
-**I want** confidence intervals on backtest metrics via bootstrap Monte Carlo,
+**I want** confidence intervals on backtest metrics via block bootstrap Monte Carlo,
 **so that** I can distinguish genuine skill from lucky sample.
 
 **Background:**
 A Sharpe of 0.6 from 252 daily observations has wide uncertainty:
 - Bootstrap 95% CI might be [0.1, 1.1]
 - If CI includes 0, we cannot reject "no skill" hypothesis
-Monte Carlo bootstrap resamples with replacement and recomputes metrics.
+
+CRITICAL: Daily returns are serially correlated (momentum, volatility clustering).
+Standard iid bootstrap (resample individual days) destroys this dependence and produces
+artificially tight confidence intervals. **Block bootstrap** (Politis & Romano 1994)
+resamples contiguous blocks of returns, preserving temporal structure:
+```
+Block size: b = ceil(n^(1/3)) ~ 6 days for 252 observations
+Resample: draw n/b blocks with replacement, concatenate
+```
+
+**Dependencies:** Story 6.1 (Walk-Forward Backtest -- provides daily return series)
 
 **Acceptance Criteria:**
-1. Bootstrap: 1000 resamples of daily returns (with replacement)
-2. Per-resample: compute Sharpe, hit_rate, max_drawdown
-3. Output: median metric + [5%, 95%] confidence interval
-4. "Skill significance": can we reject Sharpe = 0 at 95% confidence?
-5. Displayed in backtest report: "Sharpe: 0.62 [0.18, 1.08] -- significant at 95%"
+1. Block bootstrap: 1000 resamples with block size = ceil(n^(1/3))
+2. Stationary block bootstrap variant: geometric block length distribution (mean = b)
+3. Per-resample: compute Sharpe, hit_rate, max_drawdown, Sortino
+4. Output: median metric + [2.5%, 97.5%] confidence interval (95% CI)
+5. "Skill significance": reject Sharpe = 0 at 95% confidence if CI excludes 0
+6. Comparison: also compute iid bootstrap CI to show the bias of ignoring dependence
+7. Displayed in backtest report: "Sharpe: 0.62 [0.18, 1.08] -- significant at 95%"
+8. Block size justified in output: "Block length: 6 days (autocorrelation-preserving)"
+
+**Risk:** Block bootstrap with very small block size (b=1) degenerates to iid bootstrap.
+With very large block size (b=n) degenerates to 1 sample. The n^(1/3) rule is robust.
 
 **Tasks:**
-- [ ] 6.7.1: Implement bootstrap resampling of walkforward daily returns
-- [ ] 6.7.2: Compute metrics per bootstrap sample
-- [ ] 6.7.3: Compute confidence intervals (percentile method)
-- [ ] 6.7.4: Implement skill significance test (CI excludes 0)
-- [ ] 6.7.5: Add to backtest report output
-- [ ] 6.7.6: Write test: long series with known Sharpe -> CI contains true value
+- [ ] 6.7.1: Implement stationary block bootstrap resampler with geometric block length
+- [ ] 6.7.2: Implement block size selection: b = ceil(n^(1/3)) with optional override
+- [ ] 6.7.3: Compute metrics per bootstrap sample (vectorized for speed)
+- [ ] 6.7.4: Compute confidence intervals (percentile method: 2.5th and 97.5th)
+- [ ] 6.7.5: Implement skill significance test (CI lower bound > 0)
+- [ ] 6.7.6: Add iid bootstrap comparison (shows how much dependence matters)
+- [ ] 6.7.7: Add to backtest report output with block size documentation
+- [ ] 6.7.8: Write test: long series with known Sharpe -> CI contains true value
+- [ ] 6.7.9: Write test: block CI is wider than iid CI (demonstrates bias correction)
 
 ---
 
@@ -2424,6 +2782,13 @@ these as regular observations. An earnings-aware signal would:
 - Use historical earnings-day volatility as a prior for the current move
 - Detect post-earnings drift and amplify momentum signals
 
+**Dependencies:** Story 1.3 (GAS-Q -- provides time-varying q mechanism for pre-earnings q boost)
+
+**Risk:** yfinance earnings calendar data is unreliable -- dates can be wrong, missing,
+or change at the last minute. Mitigation: cross-reference with a secondary source
+(manual calendar from earnings whispers, or cached verified dates). Never let a wrong
+earnings date REMOVE a valid signal -- only let it WIDEN uncertainty.
+
 **Acceptance Criteria:**
 1. Earnings calendar loaded from cached data (yfinance provides next_earnings_date)
 2. Pre-earnings signals (T-3 to T-0): confidence reduced, intervals widened
@@ -2518,6 +2883,13 @@ transitioning regime with 48% historical accuracy. Conviction scoring captures t
 and generate spread-based signals when pairs diverge from equilibrium,
 **so that** I can capture mean-reversion alpha independent of market direction.
 
+**Dependencies:** Story 2.2 (OU Calibration -- provides OU parameter estimation framework for spreads)
+
+**Risk:** Cointegration is not stationary -- pairs that cointegrated historically can
+decouple (structural break). Mitigation: re-test cointegration every 30 days and remove
+pairs where p-value > 0.10. Also use Johansen test as confirmation (more robust than
+Engle-Granger for multi-cointegration).
+
 **Acceptance Criteria:**
 1. Pair universe: top 20 pairs by historical cointegration score
 2. Spread computation: log price ratio or OLS residual
@@ -2608,6 +2980,14 @@ Full Kelly: f* = (p*b - q) / b, where p = win probability, b = win/loss ratio,
 q = 1-p. Half-Kelly (f*/2) is standard for robustness. With our forecast confidence
 intervals, we can compute p and b per asset per horizon.
 
+CRITICAL: Kelly assumes edge estimates are accurate. If our p=0.60 estimate is really
+p=0.52, full Kelly dramatically over-bets and can cause ruin. This is why Half-Kelly is
+the minimum requirement, and fractional Kelly (f*/3 or f*/4) should be available as
+a conservative option.
+
+**Dependencies:** Story 2.5 (Confidence Intervals -- p and b derived from quantiles)
+               Story 1.9 (Scorecard -- historical accuracy validates p estimates)
+
 **Acceptance Criteria:**
 1. Kelly fraction computed per asset per horizon from forecast quantiles
 2. Half-Kelly used as default (full Kelly too aggressive)
@@ -2671,9 +3051,12 @@ historical decay rate,
 6. Story 4.1:  Unified Signal Output Contract (backend/frontend sync foundation)
 
 **Validation gate after Phase 1:**
-- Run Story 6.1 walkforward on benchmark universe
+- Run Story 6.1 walkforward on benchmark universe (Story 6.1 is ACCELERATED to Phase 1
+  specifically for this gating purpose -- a minimal version runs before Phase 2 starts)
 - Establish baseline: Sharpe, hit_rate, max_drawdown
 - Store as `profitability_baseline.json`
+- NOTE: This requires a MINIMAL Story 6.1 (walk-forward engine with daily step) to be
+  implemented as part of Phase 1. Full simulator (6.2) and Monte Carlo (6.7) wait for Phase 5.
 
 ### Phase 2: Ensemble Upgrade (Weeks 4-6) -- Model Quality
 
@@ -2713,7 +3096,7 @@ historical decay rate,
 ### Phase 5: Profitability Proof (Weeks 8-10, parallel with Phase 4)
 
 **Stories in priority order:**
-25. Story 6.1: Walk-Forward Backtest
+25. Story 6.1: Walk-Forward Backtest (FULL version -- minimal version in Phase 1)
 26. Story 6.2: Trading Strategy Simulator
 27. Story 6.4: Profitability Gate
 28. Story 6.7: Monte Carlo Confidence
