@@ -59,7 +59,7 @@ PASSING_ASSETS = [
     'CRML', 'BKNG', 'GLNCY', 'QS', 'INTC', 'CNXT', 'PSIX', 'USB',
     'MOTI', 'CRM', 'RIO', 'USAS', 'ADI', 'DPRO', 'HYMC', 'EH',
     'XLRE', 'DE', 'DNN', 'APLM', 'TMO', 'ATAI', 'CDNS', 'PGY',
-    'ADBE', 'GRND', 'HOVR', 'UNH', 'AZBA', 'COMM', 'ABCL', 'LYSCF',
+    'ADBE', 'GRND', 'HOVR', 'UNH', 'AZBA', 'ABCL', 'LYSCF',
     'GSAT', 'NVO',
 ]
 
@@ -1135,7 +1135,7 @@ if __name__ == '__main__':
             'OKLO', 'ERMAY', 'BCAL', 'ABTC', 'SAIC', 'CRML', 'ANNA',
             'TATT', 'AMZE', 'BZAI', 'HII', 'CNXT', 'QS',
             # CRPS failures (PIT pass but CRPS fail)
-            'PSIX', 'ARQQ', 'COMM', 'AZBA', 'RGTI', 'MSTR', 'BNZI', 'VRT',
+            'PSIX', 'ARQQ', 'AZBA', 'RGTI', 'MSTR', 'BNZI', 'VRT',
             'SPCE', 'GORO', 'APLM', 'AIRI', 'ILKAF', 'HOVR', 'KITT', 'QBTS',
             'PEW', 'PACB', 'SIF', 'ATAI', 'AIFF', 'EH', 'USAS', 'HYMC',
             'SATL', 'RCAT', 'EVTL', 'SMCI', 'VSAT', 'ABCL', 'DPRO', 'GSAT',

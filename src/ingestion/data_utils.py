@@ -1099,7 +1099,6 @@ COMPANY_NAMES: Dict[str, str] = {
     "AMCR": "Amcor plc",
     "PSIX": "Power Solutions International, Inc.",
     "DLO": "DLocal Limited",
-    "COMM": "CommScope Holding Company, Inc.",
     "PGY": "Pagaya Technologies Ltd.",
     "FOUR": "Shift4 Payments, Inc.",
     
@@ -2307,7 +2306,6 @@ DEFAULT_ASSET_UNIVERSE = [
     "AMCR",
     "PSIX",
     "DLO",
-    "COMM",
     "PGY",
     "FOUR",
 
@@ -2652,7 +2650,6 @@ MAPPING = {
     "AMCOR": ["AMCR"],
     "POWER SOLUTIONS": ["PSIX"],
     "DLOCAL": ["DLO"],
-    "COMMSCOPE": ["COMM"],
     "PAGAYA": ["PGY"],
     "SHIFT4": ["FOUR"],
 
@@ -2987,7 +2984,7 @@ SECTOR_MAP = {
     "Biotech Platforms / Genomics": {"VRTX", "ILMN", "PACB", "EXAI"},
     "Quantum Computing": {"IONQ", "QBTS", "ARQQ", "RGTI", "QUBT"},
     "Industrial Infrastructure": {"PWR", "JCI", "ETN", "2308.TW"},
-    "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "COMM", "PGY", "FOUR"},
+    "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "PGY", "FOUR"},
     # -------------------------------------------------------------------------
     # Small-Mid Cap Growth (Top 100 Revenue Screener picks)
     # -------------------------------------------------------------------------
@@ -3161,7 +3158,7 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     
     # Growth Screen (USD)
     "NUTX": "USD", "SANM": "USD", "SEZL": "USD", "AMCR": "USD", "PSIX": "USD",
-    "DLO": "USD", "COMM": "USD", "PGY": "USD", "FOUR": "USD",
+    "DLO": "USD", "PGY": "USD", "FOUR": "USD",
     
     # =========================================================================
     # Small-Mid Cap Growth (Top 100 Revenue Screener) - All USD
