@@ -10,10 +10,10 @@ router = APIRouter()
 @router.get("/dashboard")
 async def risk_dashboard():
     """
-    Full risk dashboard JSON.
+    Full risk dashboard JSON with caching.
     
-    Note: This is a heavy computation (calls all 3 risk modules).
-    For real-time use, prefer the Celery task via POST /api/risk/compute.
+    Returns cached data if fresh (< 1 hour), otherwise computes.
+    Use POST /refresh to force recomputation.
     """
     from web.backend.services.risk_service import compute_risk_json
     return compute_risk_json()
@@ -25,3 +25,12 @@ async def risk_summary():
     from web.backend.services.risk_service import compute_risk_json, get_risk_temperature_summary
     risk_json = compute_risk_json()
     return get_risk_temperature_summary(risk_json)
+
+
+@router.post("/refresh")
+async def risk_refresh():
+    """Force recompute risk dashboard (ignores cache)."""
+    from web.backend.services.risk_service import compute_risk_json, get_risk_temperature_summary
+    risk_json = compute_risk_json(force=True)
+    summary = get_risk_temperature_summary(risk_json)
+    return {"status": "refreshed", "summary": summary}

@@ -5,14 +5,35 @@ import type { PriceFile } from '../api';
 import PageHeader from '../components/PageHeader';
 import StatCard from '../components/StatCard';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { Database, HardDrive, Clock, AlertTriangle, FolderOpen } from 'lucide-react';
+import { Database, HardDrive, Clock, AlertTriangle, FolderOpen, RefreshCw } from 'lucide-react';
 
 export default function DataPage() {
   const [search, setSearch] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
 
   const statusQ = useQuery({ queryKey: ['dataStatus'], queryFn: api.dataStatus });
   const pricesQ = useQuery({ queryKey: ['dataPrices'], queryFn: api.dataPrices });
   const dirsQ = useQuery({ queryKey: ['dataDirectories'], queryFn: api.dataDirectories });
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    setRefreshMsg(null);
+    try {
+      const resp = await api.triggerDataRefresh();
+      setRefreshMsg(`Data refresh started (task ${resp.task_id})`);
+      // Refetch status after a delay
+      setTimeout(() => {
+        statusQ.refetch();
+        pricesQ.refetch();
+        dirsQ.refetch();
+      }, 5000);
+    } catch (err) {
+      setRefreshMsg('Failed to start data refresh');
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   if (statusQ.isLoading) return <LoadingSpinner text="Loading data status..." />;
 
@@ -26,9 +47,27 @@ export default function DataPage() {
 
   return (
     <>
-      <PageHeader title="Data Management">
+      <PageHeader
+        title="Data Management"
+        action={
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#16213e] text-sm text-[#42A5F5] hover:bg-[#1a2744] border border-[#2a2a4a] transition disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            Refresh Data
+          </button>
+        }
+      >
         {status?.total_files || 0} price files • {status?.total_size_mb || 0} MB
       </PageHeader>
+
+      {refreshMsg && (
+        <div className="glass-card p-3 mb-4 border-l-2 border-[#42A5F5]">
+          <p className="text-xs text-[#94a3b8]">{refreshMsg}</p>
+        </div>
+      )}
 
       {/* Stats */}
       {status && (

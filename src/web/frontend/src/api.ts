@@ -73,6 +73,20 @@ export const api = {
   triggerRisk: () => postApi<TaskResponse>('/api/tasks/risk/compute'),
   triggerCharts: () => postApi<TaskResponse>('/api/tasks/charts/generate'),
   taskStatus: (taskId: string) => fetchApi<TaskStatusResponse>(`/api/tasks/status/${taskId}`),
+
+  // Cache refresh (invalidate in-memory server cache)
+  refreshTuneCache: () => postApi<{ status: string }>('/api/tuning/refresh-cache', {}),
+  refreshSignalCache: () => postApi<{ status: string }>('/api/signals/refresh-cache', {}),
+
+  // Diagnostics
+  diagPitSummary: () => fetchApi<DiagPitSummary>('/api/diagnostics/pit-summary'),
+  diagCalibrationFailures: () => fetchApi<DiagCalibrationFailures>('/api/diagnostics/calibration-failures'),
+  diagModelComparison: () => fetchApi<DiagModelComparison>('/api/diagnostics/model-comparison'),
+  diagRegimeDistribution: () => fetchApi<DiagRegimeDistribution>('/api/diagnostics/regime-distribution'),
+  diagCrossAssetSummary: () => fetchApi<DiagCrossAssetSummary>('/api/diagnostics/cross-asset-summary'),
+
+  // Risk (full dashboard + refresh)
+  riskRefresh: () => postApi<{ status: string; summary: RiskSummary }>('/api/risk/refresh'),
 };
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -304,6 +318,17 @@ export interface SafeStorageModel {
   name: string;
   filename: string;
   size_kb: number;
+  has_scores?: boolean;
+  final?: number | null;
+  bic?: number | null;
+  crps?: number | null;
+  hyv?: number | null;
+  pit?: string | null;
+  pit_rate?: number | null;
+  css?: number | null;
+  fec?: number | null;
+  time_ms?: number | null;
+  n_tests?: number | null;
 }
 
 // ── Services / Health ───────────────────────────────────────────────
@@ -360,4 +385,272 @@ export interface TaskStatusResponse {
   meta?: Record<string, unknown>;
   result?: Record<string, unknown>;
   error?: string;
+}
+
+// ── Diagnostics ─────────────────────────────────────────────────────
+
+export interface DiagModelMetric {
+  model: string;
+  bic: number | null;
+  crps: number | null;
+  hyvarinen: number | null;
+  pit_ks_pvalue: number | null;
+  ad_pvalue: number | null;
+  histogram_mad: number | null;
+  weight: number;
+  nu: number | null;
+  phi: number | null;
+}
+
+export interface DiagAsset {
+  symbol: string;
+  best_model: string;
+  pit_grade: string;
+  ad_stat: number | null;
+  ad_critical: number | null;
+  ad_pass: boolean | null;
+  pit_ks_pvalue: number | null;
+  num_models: number;
+  bma_weights: Record<string, number>;
+  models: DiagModelMetric[];
+  regime: string | null;
+  last_tuned: string;
+}
+
+export interface DiagPitSummary {
+  assets: DiagAsset[];
+  total: number;
+  passing: number;
+  failing: number;
+  unknown: number;
+  computed_at: string;
+}
+
+export interface DiagCalibrationFailures {
+  failures: Array<Record<string, unknown>>;
+  count: number;
+  file_exists: boolean;
+  error?: string;
+}
+
+export interface DiagModelStats {
+  name: string;
+  win_count: number;
+  total_weight: number;
+  appearances: number;
+  avg_weight: number;
+  win_rate: number;
+  max_weight: number;
+  min_weight: number;
+}
+
+export interface DiagModelComparison {
+  models: Record<string, DiagModelStats>;
+  total_assets: number;
+  computed_at: string;
+}
+
+export interface DiagRegimeInfo {
+  count: number;
+  percentage: number;
+  assets: string[];
+}
+
+export interface DiagRegimeDistribution {
+  regimes: Record<string, DiagRegimeInfo>;
+  total: number;
+  computed_at: string;
+}
+
+export interface DiagCrossAssetModelScore {
+  crps: number | null;
+  pit_ks_p: number | null;
+  ad_p: number | null;
+  bic: number | null;
+  hyv: number | null;
+  weight: number;
+}
+
+export interface DiagCrossAssetRow {
+  symbol: string;
+  best_model: string;
+  regime: string | null;
+  ad_pass: boolean | null;
+  scores: Record<string, DiagCrossAssetModelScore | null>;
+}
+
+export interface DiagCrossAssetSummary {
+  rows: DiagCrossAssetRow[];
+  models: string[];
+  model_averages: Record<string, { avg_crps: number | null; avg_pit_p: number | null; avg_bic: number | null; count: number }>;
+  total: number;
+  computed_at: string;
+}
+
+// ── Risk Full Dashboard ─────────────────────────────────────────────
+
+export interface RiskStressIndicator {
+  name: string;
+  value: number | null;
+  zscore: number | null;
+  contribution: number;
+  data_available: boolean;
+  interpretation?: string;
+}
+
+export interface RiskStressCategory {
+  name: string;
+  weight: number;
+  stress_level: number;
+  weighted_contribution: number;
+  indicators: RiskStressIndicator[];
+}
+
+export interface MetalDetail {
+  name: string;
+  price: number | null;
+  return_1d: number;
+  return_5d: number;
+  return_21d: number;
+  volatility: number;
+  stress_level: number;
+  momentum_signal: string;
+  data_available: boolean;
+  forecast_7d: number;
+  forecast_30d: number;
+  forecast_90d: number;
+  forecast_180d: number;
+  forecast_365d: number;
+  forecast_confidence: string;
+}
+
+export interface UniverseMetrics {
+  name: string;
+  weight: number;
+  current_level: number | null;
+  return_1d: number;
+  return_5d: number;
+  return_21d: number;
+  return_63d: number;
+  volatility_20d: number;
+  volatility_percentile: number;
+  vol_term_structure_ratio: number;
+  vol_inverted: boolean;
+  breadth_pct_above_50ma: number | null;
+  breadth_pct_above_200ma: number | null;
+  stress_level: number;
+  stress_contribution: number;
+  momentum_signal: string;
+  data_available: boolean;
+  forecast_7d: number;
+  forecast_30d: number;
+  forecast_90d: number;
+  forecast_180d: number;
+  forecast_365d: number;
+  forecast_confidence: string;
+}
+
+export interface SectorMetrics {
+  name: string;
+  ticker: string;
+  return_1d: number;
+  return_5d: number;
+  return_21d: number;
+  volatility_20d: number;
+  volatility_percentile: number;
+  momentum_signal: string;
+  risk_score: number;
+  data_available: boolean;
+  forecast_7d: number;
+  forecast_30d: number;
+  forecast_90d: number;
+  forecast_180d: number;
+  forecast_365d: number;
+  forecast_confidence: string;
+}
+
+export interface CurrencyMetrics {
+  name: string;
+  ticker: string;
+  rate: number;
+  return_1d: number;
+  return_5d: number;
+  return_21d: number;
+  volatility_20d: number;
+  momentum_signal: string;
+  risk_score: number;
+  data_available: boolean;
+  forecast_7d: number;
+  forecast_30d: number;
+  forecast_90d: number;
+  forecast_180d: number;
+  forecast_365d: number;
+  forecast_confidence: string;
+  is_inverse: boolean;
+}
+
+export interface MarketBreadth {
+  pct_above_50ma: number;
+  pct_above_200ma: number;
+  new_highs: number;
+  new_lows: number;
+  advance_decline_ratio: number;
+  breadth_thrust: boolean;
+  breadth_warning: boolean;
+  interpretation: string;
+}
+
+export interface CorrelationStress {
+  avg_correlation: number;
+  max_correlation: number;
+  correlation_percentile: number;
+  systemic_risk_elevated: boolean;
+  interpretation: string;
+}
+
+export interface RiskDashboardFull {
+  risk_temperature: {
+    temperature: number;
+    scale_factor: number;
+    overnight_budget_active: boolean;
+    computed_at: string;
+    data_quality: number;
+    categories: Record<string, RiskStressCategory>;
+    crash_risk_pct: number;
+    crash_risk_level: string;
+  };
+  metals_risk_temperature: {
+    temperature: number;
+    scale_factor: number;
+    status: string;
+    action_text: string;
+    computed_at: string;
+    data_quality: number;
+    indicators: RiskStressIndicator[];
+    metals: Record<string, MetalDetail>;
+    crash_risk_pct: number;
+    crash_risk_level: string;
+    regime_state: string;
+  };
+  market_temperature: {
+    temperature: number;
+    scale_factor: number;
+    status: string;
+    action_text: string;
+    computed_at: string;
+    data_quality: number;
+    universes: Record<string, UniverseMetrics>;
+    breadth: MarketBreadth;
+    correlation: CorrelationStress;
+    crash_risk_pct: number;
+    crash_risk_level: string;
+    sectors: Record<string, SectorMetrics>;
+    currencies: Record<string, CurrencyMetrics>;
+    overall_momentum: string;
+    exit_signal: boolean;
+    exit_reason: string | null;
+  };
+  computed_at: string;
+  _cached?: boolean;
+  _cache_age_seconds?: number;
 }

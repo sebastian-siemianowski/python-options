@@ -44,12 +44,12 @@ export default function OverviewPage() {
 
   const { signals, tuning, data: dataStatus } = data;
 
-  // 5-slice signal pie
+  // 5-slice signal pie (counts are per-asset, non-cumulative)
   const signalPieData = [
     { name: 'Strong Buy', value: signals.strong_buy_signals || 0, color: '#00E676' },
-    { name: 'Buy', value: (signals.buy_signals || 0) - (signals.strong_buy_signals || 0), color: '#66BB6A' },
+    { name: 'Buy', value: signals.buy_signals || 0, color: '#66BB6A' },
     { name: 'Hold', value: signals.hold_signals || 0, color: '#64748b' },
-    { name: 'Sell', value: (signals.sell_signals || 0) - (signals.strong_sell_signals || 0), color: '#EF5350' },
+    { name: 'Sell', value: signals.sell_signals || 0, color: '#EF5350' },
     { name: 'Strong Sell', value: signals.strong_sell_signals || 0, color: '#FF1744' },
   ].filter(d => d.value > 0);
 

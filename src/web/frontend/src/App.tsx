@@ -9,6 +9,7 @@ import TuningPage from './pages/TuningPage';
 import DataPage from './pages/DataPage';
 import ArenaPage from './pages/ArenaPage';
 import ServicesPage from './pages/ServicesPage';
+import DiagnosticsPage from './pages/DiagnosticsPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="/tuning" element={<TuningPage />} />
             <Route path="/data" element={<DataPage />} />
             <Route path="/arena" element={<ArenaPage />} />
+            <Route path="/diagnostics" element={<DiagnosticsPage />} />
             <Route path="/services" element={<ServicesPage />} />
           </Route>
         </Routes>

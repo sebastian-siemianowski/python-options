@@ -41,10 +41,10 @@ export function formatModelName(raw: string | undefined | null): string {
   if (MODEL_DISPLAY_NAMES[raw]) return MODEL_DISPLAY_NAMES[raw];
 
   // ── Student-t pattern matching ────────────────────────────────
-  const nuMatch = raw.match(/phi_student_t_nu_(\d+)/);
+  const nuMatch = raw.match(/phi_student_t_(?:unified_)?nu_(\d+)/);
   if (nuMatch) {
     const nu = nuMatch[1];
-    let name = `Student-t ν=${nu}`;
+    let name = raw.includes('_unified') ? `Student-t Uni ν=${nu}` : `Student-t ν=${nu}`;
 
     // Enhancements (order matters for display)
     if (raw.includes('_vov')) {
@@ -75,23 +75,37 @@ export function formatModelNameShort(raw: string | undefined | null): string {
   if (!raw) return '—';
 
   const SHORT_MAP: Record<string, string> = {
-    'kalman_gaussian':             'Gauss',
-    'kalman_phi_gaussian':         'φ-Gauss',
-    'kalman_gaussian_unified':     'G-Uni',
-    'kalman_phi_gaussian_unified': 'φG-Uni',
-    'kalman_gaussian_momentum':    'G+M',
-    'kalman_phi_gaussian_momentum':'φG+M',
+    'kalman_gaussian':               'Gauss',
+    'kalman_phi_gaussian':           'φ-Gauss',
+    'kalman_gaussian_unified':       'G-Uni',
+    'kalman_phi_gaussian_unified':   'φG-Uni',
+    'kalman_gaussian_momentum':      'G+M',
+    'kalman_phi_gaussian_momentum':  'φG+M',
+    'zero_drift':                    'Zero',
+    'constant_drift':                'Const',
+    'ewma_drift':                    'EWMA',
+    'kalman_drift':                  'K-Drift',
   };
   if (SHORT_MAP[raw]) return SHORT_MAP[raw];
 
-  const nuMatch = raw.match(/phi_student_t_nu_(\d+)/);
+  // Student-t patterns (unified and standard)
+  const nuMatch = raw.match(/phi_student_t_(?:unified_)?nu_(\d+)/);
   if (nuMatch) {
-    let s = `T(${nuMatch[1]})`;
+    const unified = raw.includes('_unified') ? 'U' : '';
+    let s = `T${unified}(${nuMatch[1]})`;
     if (raw.includes('_momentum')) s += '+M';
     if (raw.includes('_vov'))     s += 'V';
+    if (raw.includes('_two_piece')) s += '2P';
     if (raw.includes('_mixture')) s += 'x';
     return s;
   }
 
-  return raw.length > 12 ? raw.slice(0, 12) : raw;
+  // Fallback: abbreviate intelligently instead of truncating
+  return raw
+    .replace(/kalman_/g, 'K-')
+    .replace(/_momentum/g, '+M')
+    .replace(/_unified/g, '-U')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+    .trim();
 }

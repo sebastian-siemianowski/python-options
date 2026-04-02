@@ -15,6 +15,7 @@ from web.backend.services.signal_service import (
     get_horizons,
     get_signals_by_sector,
     get_strong_signal_symbols,
+    _invalidate_signal_cache,
 )
 
 router = APIRouter()
@@ -53,6 +54,13 @@ async def signal_assets():
 async def signal_stats():
     """Signal cache statistics."""
     return get_signal_stats()
+
+
+@router.post("/refresh-cache")
+async def refresh_signal_cache():
+    """Invalidate the in-memory signal cache, forcing a reload on next request."""
+    _invalidate_signal_cache()
+    return {"status": "ok", "message": "Signal cache invalidated"}
 
 
 @router.get("/failed")

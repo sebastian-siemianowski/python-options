@@ -1,22 +1,43 @@
 """
 Tune service — reads per-asset tuning cache and provides summaries.
+
+Includes in-memory caching to avoid re-reading all JSON files on every request.
 """
 
 import json
 import os
 import glob
+import time
 from typing import Any, Dict, List, Optional
 
 SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir))
 TUNE_DIR = os.path.join(SRC_DIR, "data", "tune")
 
+# ── In-memory cache ─────────────────────────────────────────────────
+_tune_cache: List[Dict[str, Any]] = []
+_tune_cache_time: float = 0.0
+_TUNE_TTL = 300.0  # 5 minutes
+
+
+def _invalidate_tune_cache() -> None:
+    """Force reload on next access."""
+    global _tune_cache, _tune_cache_time
+    _tune_cache = []
+    _tune_cache_time = 0.0
+
 
 def list_tuned_assets() -> List[Dict[str, Any]]:
     """
-    List all tuned assets with summary information.
+    List all tuned assets with summary information (cached for performance).
     
     Returns list of dicts with symbol, best_model, pit_grade, last_tuned, etc.
     """
+    global _tune_cache, _tune_cache_time
+
+    now = time.time()
+    if _tune_cache and (now - _tune_cache_time) < _TUNE_TTL:
+        return _tune_cache
+
     if not os.path.isdir(TUNE_DIR):
         return []
 
@@ -46,6 +67,8 @@ def list_tuned_assets() -> List[Dict[str, Any]]:
             "file_size_kb": round(os.path.getsize(filepath) / 1024, 1),
         })
 
+    _tune_cache = results
+    _tune_cache_time = time.time()
     return results
 
 

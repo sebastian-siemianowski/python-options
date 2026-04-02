@@ -1,10 +1,13 @@
 """
 Signal service — reads cached signal data and high conviction signals.
+
+Includes in-memory caching to avoid re-reading JSON on every request.
 """
 
 import json
 import os
 import glob
+import time
 from typing import Any, Dict, List, Optional
 
 SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir))
@@ -13,14 +16,32 @@ DATA_DIR = os.path.join(SRC_DIR, "data")
 DEFAULT_CACHE_PATH = os.path.join(DATA_DIR, "currencies", "fx_plnjpy.json")
 HIGH_CONVICTION_DIR = os.path.join(DATA_DIR, "high_conviction")
 
+# ── In-memory cache ─────────────────────────────────────────────────
+_signal_cache: Dict[str, Any] = {}
+_signal_cache_mtime: float = 0.0
+
+
+def _invalidate_signal_cache() -> None:
+    """Force reload on next access."""
+    global _signal_cache, _signal_cache_mtime
+    _signal_cache = {}
+    _signal_cache_mtime = 0.0
+
 
 def get_cached_signals(cache_path: str = DEFAULT_CACHE_PATH) -> Optional[Dict[str, Any]]:
-    """Load signals from the JSON cache written by signals.py main()."""
+    """Load signals from the JSON cache, with in-memory caching by mtime."""
+    global _signal_cache, _signal_cache_mtime
     if not os.path.isfile(cache_path):
         return None
     try:
+        mtime = os.path.getmtime(cache_path)
+        if _signal_cache and mtime == _signal_cache_mtime:
+            return _signal_cache
         with open(cache_path, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+        _signal_cache = data
+        _signal_cache_mtime = mtime
+        return data
     except (json.JSONDecodeError, IOError):
         return None
 
@@ -133,7 +154,10 @@ def _classify_label(label: str) -> str:
 
 
 def get_signal_stats(cache_path: str = DEFAULT_CACHE_PATH) -> Dict[str, Any]:
-    """Return summary statistics about the current signal cache."""
+    """Return summary statistics about the current signal cache.
+
+    Counts are per-asset (using nearest_label), NOT per-horizon.
+    """
     data = get_cached_signals(cache_path)
     if data is None:
         return {"cached": False, "total_assets": 0, "failed": 0}
@@ -143,9 +167,10 @@ def get_signal_stats(cache_path: str = DEFAULT_CACHE_PATH) -> Dict[str, Any]:
     counts = {"strong_buy": 0, "buy": 0, "hold": 0, "sell": 0, "strong_sell": 0, "exit": 0}
 
     for row in summary_rows:
-        for _hz, sig in row.get("horizon_signals", {}).items():
-            cat = _classify_label(sig.get("label"))
-            counts[cat] = counts.get(cat, 0) + 1
+        # Use nearest_label for per-asset classification (not horizon_signals)
+        nearest = row.get("nearest_label", "HOLD")
+        cat = _classify_label(nearest)
+        counts[cat] = counts.get(cat, 0) + 1
 
     age = get_cache_age_seconds(cache_path)
     return {
@@ -153,9 +178,9 @@ def get_signal_stats(cache_path: str = DEFAULT_CACHE_PATH) -> Dict[str, Any]:
         "total_assets": len(summary_rows),
         "failed": len(failed),
         "strong_buy_signals": counts["strong_buy"],
-        "buy_signals": counts["buy"] + counts["strong_buy"],
+        "buy_signals": counts["buy"],
+        "sell_signals": counts["sell"],
         "hold_signals": counts["hold"],
-        "sell_signals": counts["sell"] + counts["strong_sell"],
         "strong_sell_signals": counts["strong_sell"],
         "exit_signals": counts["exit"],
         "cache_age_seconds": round(age, 1) if age is not None else None,

@@ -11,6 +11,7 @@ import {
   Swords,
   Activity,
   HeartPulse,
+  Stethoscope,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -21,6 +22,7 @@ const NAV_ITEMS = [
   { to: '/tuning', label: 'Tuning', icon: Settings },
   { to: '/data', label: 'Data', icon: Database },
   { to: '/arena', label: 'Arena', icon: Swords },
+  { to: '/diagnostics', label: 'Diagnostics', icon: Stethoscope },
   { to: '/services', label: 'Services', icon: HeartPulse },
 ];
 

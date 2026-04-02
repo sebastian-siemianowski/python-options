@@ -118,13 +118,23 @@ export default function ChartsPage() {
               />
             )}
             {pickerView === 'strong_sell' && (
-              <FlatSymbolList
-                symbols={strongSellSymbols.filter(s => !search || s.toLowerCase().includes(search.toLowerCase()))}
-                selected={symbol}
-                onSelect={selectSymbol}
-                emptyText="No strong sell signals"
-                accent="#FF1744"
-              />
+              strongSellSymbols.length === 0 ? (
+                <div className="px-3 py-6 text-center">
+                  <p className="text-xs text-[#64748b] mb-1">No strong sell signals</p>
+                  <p className="text-[10px] text-[#475569]">
+                    No assets currently meet the strong sell threshold.
+                    This is normal in bullish market conditions.
+                  </p>
+                </div>
+              ) : (
+                <FlatSymbolList
+                  symbols={strongSellSymbols.filter(s => !search || s.toLowerCase().includes(search.toLowerCase()))}
+                  selected={symbol}
+                  onSelect={selectSymbol}
+                  emptyText="No matching symbols"
+                  accent="#FF1744"
+                />
+              )
             )}
           </div>
         </div>

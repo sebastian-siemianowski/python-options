@@ -9,29 +9,68 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter
 
-SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir))
 ARENA_DIR = os.path.join(SRC_DIR, "arena")
 SAFE_STORAGE_DIR = os.path.join(ARENA_DIR, "safe_storage")
+SAFE_STORAGE_DATA_DIR = os.path.join(SAFE_STORAGE_DIR, "data")
 ARENA_DATA_DIR = os.path.join(ARENA_DIR, "data")
 
 router = APIRouter()
 
 
+def _load_safe_storage_scores() -> Dict[str, Dict[str, Any]]:
+    """Load scoring data from safe_storage_results.json."""
+    results_path = os.path.join(SAFE_STORAGE_DATA_DIR, "safe_storage_results.json")
+    if not os.path.isfile(results_path):
+        return {}
+    try:
+        with open(results_path, "r") as f:
+            data = json.load(f)
+        return data.get("models", {})
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+
 def _list_safe_storage_models() -> List[Dict[str, Any]]:
-    """List models in safe storage."""
+    """List models in safe storage with scores from results file."""
     if not os.path.isdir(SAFE_STORAGE_DIR):
         return []
+
+    scores = _load_safe_storage_scores()
+
     models = []
     for f in sorted(os.listdir(SAFE_STORAGE_DIR)):
         if f.endswith(".py") and not f.startswith("__"):
             name = f.replace(".py", "")
             filepath = os.path.join(SAFE_STORAGE_DIR, f)
             size_kb = round(os.path.getsize(filepath) / 1024, 1)
-            models.append({
+            entry: Dict[str, Any] = {
                 "name": name,
                 "filename": f,
                 "size_kb": size_kb,
-            })
+            }
+            # Merge scoring data if available
+            if name in scores:
+                s = scores[name]
+                entry.update({
+                    "final": s.get("final"),
+                    "bic": s.get("bic"),
+                    "crps": s.get("crps"),
+                    "hyv": s.get("hyv"),
+                    "pit": s.get("pit"),
+                    "pit_rate": s.get("pit_rate"),
+                    "css": s.get("css"),
+                    "fec": s.get("fec"),
+                    "time_ms": s.get("time_ms"),
+                    "n_tests": s.get("n_tests"),
+                    "has_scores": True,
+                })
+            else:
+                entry["has_scores"] = False
+            models.append(entry)
+
+    # Sort by final score descending if available
+    models.sort(key=lambda m: m.get("final") or 0, reverse=True)
     return models
 
 

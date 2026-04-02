@@ -31,6 +31,7 @@ from web.backend.routers import (
     arena,
     tasks,
     services,
+    diagnostics,
 )
 
 
@@ -78,6 +79,7 @@ app.include_router(data.router, prefix="/api/data", tags=["data"])
 app.include_router(arena.router, prefix="/api/arena", tags=["arena"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(services.router, prefix="/api/services", tags=["services"])
+app.include_router(diagnostics.router, prefix="/api/diagnostics", tags=["diagnostics"])
 
 
 # ── WebSocket endpoint ───────────────────────────────────────────────────────
