@@ -3763,6 +3763,19 @@ def unified_mc_simulate_kernel(
     # v7.6+7.7: Apply variance_inflation AND crps_sigma_shrinkage to initial variance
     h0_cal = h0 * variance_inflation * crps_sigma_shrinkage
 
+    # ================================================================
+    # GARCH VARIANCE CAP (v7.9): Prevent GARCH explosion
+    # ================================================================
+    # With Student-t(nu<=4) innovations, extreme draws compound with
+    # GARCH feedback creating unrealistic variance growth (e.g., h_t>1e4).
+    # Cap at 25× initial calibrated variance, floored at 0.005 (~7% daily).
+    # This bounds sigma_daily to at most ~sqrt(25)*sigma_init, preserving
+    # crisis dynamics while preventing pathological MC paths.
+    # ================================================================
+    h_dyn_cap = 25.0 * h0_cal
+    if h_dyn_cap < 0.005:
+        h_dyn_cap = 0.005
+
     for p in range(n_paths):
         mu_t = mu_now + mu_drift
         h_t = h0_cal
@@ -3848,6 +3861,12 @@ def unified_mc_simulate_kernel(
 
             # Total return
             r_t = mu_t + rp + loc_bias + e_t + jump
+            # v7.9: Cap per-step return to prevent pathological MC paths
+            # ±50% daily log return is extreme but physical (flash crashes, circuit breakers)
+            if r_t > 0.5:
+                r_t = 0.5
+            elif r_t < -0.5:
+                r_t = -0.5
             cum += r_t
             cum_out[t, p] = cum
 
@@ -3932,8 +3951,8 @@ def unified_mc_simulate_kernel(
 
                 if h_t < 1e-12:
                     h_t = 1e-12
-                elif h_t > 1e4:
-                    h_t = 1e4
+                elif h_t > h_dyn_cap:
+                    h_t = h_dyn_cap
 
             # ================================================================
             # AR(1) DRIFT EVOLUTION (with Tier 2+3 enhancements)
@@ -4056,6 +4075,11 @@ def unified_mc_multi_path_kernel(
     has_gamma = len(gamma_per_path) >= n_paths
     h0_cal = h0 * variance_inflation * crps_sigma_shrinkage
 
+    # v7.9: Dynamic GARCH variance cap (same as unified_mc_simulate_kernel)
+    h_dyn_cap = 25.0 * h0_cal
+    if h_dyn_cap < 0.005:
+        h_dyn_cap = 0.005
+
     # v7.7 feature flags
     use_kappa = kappa_mean_rev > 0.001 and theta_long_var > 1e-12
     use_ms_q = ms_sensitivity > 0.01 and q_stress_ratio > 1.01
@@ -4161,6 +4185,11 @@ def unified_mc_multi_path_kernel(
                     loc_bias += loc_bias_drift_coeff * sign_mu * np.sqrt(abs(mu_t))
 
             r_t = mu_t + rp + loc_bias + e_t + jump
+            # v7.9: Per-step return cap (same as unified_mc_simulate_kernel)
+            if r_t > 0.5:
+                r_t = 0.5
+            elif r_t < -0.5:
+                r_t = -0.5
             cum += r_t
             cum_out[t, p] = cum
 
@@ -4236,8 +4265,8 @@ def unified_mc_multi_path_kernel(
 
                 if h_t < 1e-12:
                     h_t = 1e-12
-                elif h_t > 1e4:
-                    h_t = 1e4
+                elif h_t > h_dyn_cap:
+                    h_t = h_dyn_cap
 
             # AR(1) drift with MS process noise
             drift_sigma_t = drift_sigma

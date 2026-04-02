@@ -736,6 +736,10 @@ arena-backtest-results: .venv/.deps_installed
 risk: .venv/.deps_installed
 	@.venv/bin/python src/decision/risk_dashboard.py $(ARGS)
 
+# Forecast Scorecard - directional accuracy tracking (Story 1.9)
+scorecard: .venv/.deps_installed
+	@.venv/bin/python src/calibration/forecast_scorecard.py --evaluate $(ARGS)
+
 # Individual temperature modules (for legacy/debugging)
 temp: .venv/.deps_installed
 	@.venv/bin/python src/decision/risk_temperature.py

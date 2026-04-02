@@ -1,0 +1,51 @@
+{
+  "started_at": "2026-04-02T15:00:34.848550+00:00",
+  "completed_at": "2026-04-02T15:00:34.848582+00:00",
+  "total_duration_seconds": 2.2499822080135345e-05,
+  "phases": {
+    "prices": {
+      "phase": "prices",
+      "status": "success",
+      "started_at": "2026-04-02T15:00:34.848563+00:00",
+      "completed_at": "2026-04-02T15:00:34.848566+00:00",
+      "duration_seconds": 6.658956408500671e-07,
+      "assets_processed": 10,
+      "errors": [],
+      "details": {
+        "assets_processed": 10,
+        "errors": [],
+        "total_assets": 10
+      }
+    },
+    "tune": {
+      "phase": "tune",
+      "status": "success",
+      "started_at": "2026-04-02T15:00:34.848570+00:00",
+      "completed_at": "2026-04-02T15:00:34.848573+00:00",
+      "duration_seconds": 2.919696271419525e-07,
+      "assets_processed": 10,
+      "errors": [],
+      "details": {
+        "assets_processed": 10,
+        "errors": [],
+        "total_assets": 10
+      }
+    },
+    "signals": {
+      "phase": "signals",
+      "status": "success",
+      "started_at": "2026-04-02T15:00:34.848578+00:00",
+      "completed_at": "2026-04-02T15:00:34.848579+00:00",
+      "duration_seconds": 2.076849341392517e-07,
+      "assets_processed": 10,
+      "errors": [],
+      "details": {
+        "assets_processed": 10,
+        "errors": [],
+        "total_assets": 10
+      }
+    }
+  },
+  "failed_phase": null,
+  "overall_status": "success"
+}

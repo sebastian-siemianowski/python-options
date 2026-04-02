@@ -922,6 +922,198 @@ except ImportError:
 
 
 # =============================================================================
+# EPIC 8: SIGNAL ENRICHMENT MODULES (April 2026)
+# =============================================================================
+# Post-processing enrichment for conviction scoring, Kelly sizing, signal decay,
+# earnings/macro event adjustments, and volatility surface context.
+# All imports are guarded — missing modules degrade gracefully.
+# =============================================================================
+
+try:
+    from decision.conviction_scoring import compute_conviction, rank_by_conviction
+    CONVICTION_SCORING_AVAILABLE = True
+except ImportError:
+    CONVICTION_SCORING_AVAILABLE = False
+
+try:
+    from decision.kelly_sizing import (
+        recommend_position_size,
+        compute_kelly_from_quantiles,
+        normalize_portfolio,
+    )
+    KELLY_SIZING_AVAILABLE = True
+except ImportError:
+    KELLY_SIZING_AVAILABLE = False
+
+try:
+    from decision.signal_decay import decay_signal, compute_half_life
+    SIGNAL_DECAY_AVAILABLE = True
+except ImportError:
+    SIGNAL_DECAY_AVAILABLE = False
+
+try:
+    from decision.earnings_signal import (
+        detect_earnings_window,
+        adjust_for_earnings,
+        find_nearest_earnings,
+    )
+    EARNINGS_SIGNAL_AVAILABLE = True
+except ImportError:
+    EARNINGS_SIGNAL_AVAILABLE = False
+
+try:
+    from decision.macro_events import (
+        MacroEventCalendar,
+        detect_event_proximity,
+        adjust_for_macro_event,
+    )
+    MACRO_EVENTS_AVAILABLE = True
+except ImportError:
+    MACRO_EVENTS_AVAILABLE = False
+
+try:
+    from decision.vol_surface import compute_iv_context, adjust_forecast_with_iv
+    VOL_SURFACE_AVAILABLE = True
+except ImportError:
+    VOL_SURFACE_AVAILABLE = False
+
+try:
+    from decision.sector_rotation import generate_rotation_signal, rank_sectors
+    SECTOR_ROTATION_AVAILABLE = True
+except ImportError:
+    SECTOR_ROTATION_AVAILABLE = False
+
+try:
+    from decision.pair_trading import screen_pairs
+    PAIR_TRADING_AVAILABLE = True
+except ImportError:
+    PAIR_TRADING_AVAILABLE = False
+
+try:
+    from models.quant_db import QuantDB
+    QUANT_DB_AVAILABLE = True
+except ImportError:
+    QUANT_DB_AVAILABLE = False
+
+try:
+    from models.vectorized_ops import (
+        vectorized_phi_forecast,
+        vectorized_phi_variance,
+        vectorized_bma_weights as vec_bma_weights,
+        batch_monte_carlo_sample,
+    )
+    VECTORIZED_OPS_AVAILABLE = True
+except ImportError:
+    VECTORIZED_OPS_AVAILABLE = False
+
+try:
+    from models.computation_cache import ComputationCache
+    COMPUTATION_CACHE_AVAILABLE = True
+except ImportError:
+    COMPUTATION_CACHE_AVAILABLE = False
+
+
+def _enrich_signal_with_epic8(
+    asset: str,
+    sigs: list,
+    tuned_params: Optional[Dict],
+    feats: Optional[Dict] = None,
+) -> Dict:
+    """
+    Post-processing enrichment from Epic 8 modules.
+
+    Adds conviction score, Kelly sizing, and signal TTL to the result dict.
+    All enrichments are optional and degrade gracefully.
+
+    Args:
+        asset: Symbol.
+        sigs: List of Signal objects from latest_signals().
+        tuned_params: Tuned params dict (contains BMA weights).
+        feats: Feature dict from compute_features().
+
+    Returns:
+        Dict with enrichment data (may be empty if modules unavailable).
+    """
+    enrichment: Dict = {}
+
+    if not sigs:
+        return enrichment
+
+    # --- 8.3: Conviction Scoring ---
+    if CONVICTION_SCORING_AVAILABLE and tuned_params:
+        try:
+            # Extract BMA weights from tuned params
+            bma_weights = {}
+            global_data = tuned_params.get("global") or {}
+            bma_weights = global_data.get("model_posterior", {})
+
+            # Get regime fit from first signal
+            regime_fit = 1.0 - sigs[0].pit_violation_severity if sigs else 0.5
+
+            # Forecast stability from multiple horizon forecasts
+            forecasts_by_horizon = {}
+            for s in sigs:
+                forecasts_by_horizon[s.horizon_days] = [s.exp_ret]
+
+            conviction = compute_conviction(
+                symbol=asset,
+                bma_weights=bma_weights if bma_weights else {"default": 1.0},
+                regime_fit=float(regime_fit),
+                recent_hits=[],  # Historical accuracy requires past forecasts
+                forecasts_by_horizon=forecasts_by_horizon,
+            )
+            enrichment["conviction"] = {
+                "composite": conviction.composite,
+                "category": conviction.category,
+                "model_agreement": conviction.model_agreement,
+                "regime_confidence": conviction.regime_confidence,
+                "forecast_stability": conviction.forecast_stability,
+            }
+        except Exception:
+            pass
+
+    # --- 8.7: Kelly Sizing ---
+    if KELLY_SIZING_AVAILABLE:
+        try:
+            kelly_recs = []
+            for s in sigs:
+                if s.p_up > 0.01 and s.p_up < 0.99 and s.expected_gain > 0:
+                    rec = recommend_position_size(
+                        symbol=asset,
+                        p_win=float(s.p_up),
+                        avg_win=float(s.expected_gain),
+                        avg_loss=float(max(s.expected_loss, 1e-6)),
+                    )
+                    kelly_recs.append({
+                        "horizon": s.horizon_days,
+                        "half_kelly": rec.half_kelly,
+                        "capped_size": rec.capped_size,
+                        "edge": rec.edge,
+                    })
+            if kelly_recs:
+                enrichment["kelly"] = kelly_recs
+        except Exception:
+            pass
+
+    # --- 8.8: Signal Decay / TTL ---
+    if SIGNAL_DECAY_AVAILABLE:
+        try:
+            decay_info = []
+            for s in sigs:
+                hl = compute_half_life(s.horizon_days)
+                decay_info.append({
+                    "horizon": s.horizon_days,
+                    "half_life_days": hl,
+                    "ttl_at_generation": hl * 3.32,  # log2(10) * hl ≈ time to 10% strength
+                })
+            enrichment["signal_ttl"] = decay_info
+        except Exception:
+            pass
+
+    return enrichment
+
+
+# =============================================================================
 # ISOTONIC RECALIBRATION HELPER
 # =============================================================================
 # This function loads a persisted transport map and applies it to PIT values.
@@ -2870,6 +3062,223 @@ def _select_regime_params(
         }
 
 
+# =============================================================================
+# KALMAN GAIN MONITORING AND ADAPTIVE RESET (Story 1.2)
+# =============================================================================
+# When Kalman gain K_t collapses below K_MIN_THRESHOLD for GAIN_STALL_WINDOW
+# consecutive bars, the filter ignores >99% of new observations. This makes
+# it unable to adapt when the market regime changes.
+#
+# The adaptive reset inflates P (state variance) at the stall point, which
+# increases K_t and allows the filter to relearn from new observations.
+#
+# Anti-oscillation: maximum MAX_RESETS_PER_WINDOW resets per 252-bar window,
+# with RESET_COOLDOWN_BARS bars between resets.
+#
+# K_t = P_pred / (P_pred + R_t)   [Gaussian]
+# K_t = (nu/(nu+3)) * P_pred / (P_pred + R_t)   [Student-t]
+# =============================================================================
+K_MIN_THRESHOLD = 0.005           # Below this, filter is effectively stalled
+GAIN_STALL_WINDOW = 10            # Consecutive bars below threshold to trigger reset
+RESET_INFLATION_FACTOR = 10.0     # P_new = P_old * this factor
+MAX_RESETS_PER_WINDOW = 3         # Maximum resets per 252-bar rolling window
+RESET_COOLDOWN_BARS = 20          # Minimum bars between resets
+GAIN_RESET_WINDOW_SIZE = 252      # Rolling window size (1 trading year)
+
+
+# =============================================================================
+# INNOVATION-WEIGHTED DRIFT AGGREGATION (Story 1.5)
+# =============================================================================
+# Large standardized innovations (z_t = innov / sqrt(S_t)) carry more information
+# about regime changes than noise. Innovation weighting amplifies K_effective for
+# surprising observations:
+#
+#   w(z_t) = min(1 + alpha * (|z_t| - 1)^+, w_max)
+#   K_effective = K_t * w(z_t)
+#
+# This trades Kalman optimality guarantees (which assume Gaussian noise) for
+# practical utility: faster response to earnings surprises and regime shifts.
+# P_max bound prevents feedback divergence.
+# =============================================================================
+IW_ALPHA_UP = 0.3        # Sensitivity for positive surprises
+IW_ALPHA_DOWN = 0.4      # Sensitivity for negative surprises (slightly higher)
+IW_W_MAX = 2.0           # Maximum weight cap (conservative)
+IW_P_MAX_MULT = 10.0     # P_max = this * P_steady_state
+
+
+def innovation_weight(z_t: float, alpha_up: float = IW_ALPHA_UP,
+                      alpha_down: float = IW_ALPHA_DOWN,
+                      w_max: float = IW_W_MAX) -> float:
+    """
+    Compute innovation weight from standardized innovation z_t.
+
+    w(z_t) = min(1 + alpha * (|z_t| - 1)^+, w_max)
+
+    Asymmetric: negative surprises (z_t < 0) use alpha_down.
+    Non-surprising observations (|z_t| <= 1) get w = 1.0 (no change).
+    """
+    abs_z = abs(z_t)
+    if abs_z <= 1.0:
+        return 1.0
+    alpha = alpha_down if z_t < 0 else alpha_up
+    return min(1.0 + alpha * (abs_z - 1.0), w_max)
+
+
+def _compute_kalman_gain_from_filtered(
+    P_filtered: np.ndarray,
+    sigma: np.ndarray,
+    phi: float,
+    q: float,
+    c: float,
+    nu: Optional[float] = None,
+) -> np.ndarray:
+    """
+    Compute K_t post-hoc from filtered P and observation noise.
+
+    K_t = P_pred_t / (P_pred_t + R_t)  [Gaussian]
+    K_t = (nu/(nu+3)) * P_pred_t / (P_pred_t + R_t)  [Student-t]
+
+    where P_pred_t = phi^2 * P_{t-1} + q and R_t = c * sigma_t^2
+    """
+    T = len(P_filtered)
+    K = np.zeros(T, dtype=float)
+    phi_sq = phi * phi
+
+    for t in range(T):
+        if t == 0:
+            P_prev = P_filtered[0]
+        else:
+            P_prev = P_filtered[t - 1]
+
+        P_pred = phi_sq * P_prev + q
+        R_t = max(c * sigma[t] * sigma[t], 1e-12)
+        S_t = max(P_pred + R_t, 1e-12)
+        K_t = P_pred / S_t
+
+        if nu is not None and nu > 3.0:
+            K_t *= nu / (nu + 3.0)
+
+        K[t] = K_t
+
+    return K
+
+
+def _apply_gain_monitoring_reset(
+    mu_filtered: np.ndarray,
+    P_filtered: np.ndarray,
+    K_gain: np.ndarray,
+    y: np.ndarray,
+    sigma: np.ndarray,
+    phi: float,
+    q: float,
+    c: float,
+    nu: Optional[float] = None,
+) -> dict:
+    """
+    Detect Kalman gain stalls and apply P-inflation resets.
+
+    When K_t < K_MIN_THRESHOLD for GAIN_STALL_WINDOW consecutive bars,
+    inflate P and re-run the filter forward from the stall point.
+
+    Returns dict with:
+        - reset_count: number of resets applied
+        - reset_indices: list of bar indices where resets occurred
+        - K_gain_pre_reset: original K_t before any resets
+        - gain_stall_detected: bool
+    """
+    T = len(mu_filtered)
+    if T < GAIN_STALL_WINDOW + RESET_COOLDOWN_BARS:
+        return {
+            "reset_count": 0,
+            "reset_indices": [],
+            "K_gain_pre_reset": K_gain.copy(),
+            "gain_stall_detected": False,
+        }
+
+    K_pre = K_gain.copy()
+    phi_sq = phi * phi
+    is_student_t = nu is not None and nu > 3.0
+    nu_factor = (nu / (nu + 3.0)) if is_student_t else 1.0
+
+    # Detect stall windows: K_t < threshold for N consecutive bars
+    stall_mask = K_gain < K_MIN_THRESHOLD
+    consecutive_stall = np.zeros(T, dtype=int)
+    for t in range(T):
+        if stall_mask[t]:
+            consecutive_stall[t] = (consecutive_stall[t - 1] + 1) if t > 0 else 1
+        else:
+            consecutive_stall[t] = 0
+
+    # Find reset trigger points
+    reset_indices = []
+    last_reset = -RESET_COOLDOWN_BARS - 1  # Allow first reset immediately
+
+    for t in range(GAIN_STALL_WINDOW, T):
+        if consecutive_stall[t] >= GAIN_STALL_WINDOW:
+            # Check cooldown
+            if t - last_reset < RESET_COOLDOWN_BARS:
+                continue
+
+            # Check per-window maximum
+            window_start = max(0, t - GAIN_RESET_WINDOW_SIZE)
+            resets_in_window = sum(
+                1 for ri in reset_indices if ri >= window_start
+            )
+            if resets_in_window >= MAX_RESETS_PER_WINDOW:
+                continue
+
+            reset_indices.append(t)
+            last_reset = t
+
+    if not reset_indices:
+        return {
+            "reset_count": 0,
+            "reset_indices": [],
+            "K_gain_pre_reset": K_pre,
+            "gain_stall_detected": bool(np.any(consecutive_stall >= GAIN_STALL_WINDOW)),
+        }
+
+    # Apply resets: inflate P and re-run filter forward
+    for ri in reset_indices:
+        P_filtered[ri] = P_filtered[ri] * RESET_INFLATION_FACTOR
+
+        # Re-run filter forward from reset point
+        mu_t = mu_filtered[ri]
+        P_t = P_filtered[ri]
+
+        for t in range(ri + 1, T):
+            # Check if we hit the next reset point (it will handle forward from there)
+            if t in reset_indices:
+                break
+
+            mu_pred = phi * mu_t
+            P_pred = phi_sq * P_t + q
+            R_t = max(c * sigma[t] * sigma[t], 1e-12)
+            S_t = max(P_pred + R_t, 1e-12)
+            innov = y[t] - mu_pred
+            K_t = nu_factor * P_pred / S_t
+
+            if is_student_t:
+                z_sq = (innov * innov) / S_t
+                w_t = (nu + 1.0) / (nu + z_sq)
+                mu_t = mu_pred + K_t * w_t * innov
+                P_t = max((1.0 - w_t * K_t) * P_pred, 1e-12)
+            else:
+                mu_t = mu_pred + K_t * innov
+                P_t = max((1.0 - K_t) * P_pred, 1e-12)
+
+            mu_filtered[t] = mu_t
+            P_filtered[t] = P_t
+            K_gain[t] = K_t
+
+    return {
+        "reset_count": len(reset_indices),
+        "reset_indices": reset_indices,
+        "K_gain_pre_reset": K_pre,
+        "gain_stall_detected": True,
+    }
+
+
 def _kalman_filter_drift(
     ret: pd.Series, 
     vol: pd.Series, 
@@ -3369,6 +3778,11 @@ def _kalman_filter_drift(
     # Only run static filter if neither GAS-Q nor enhanced models were used
     if gas_q_result is None and enhanced_result is None:
         log_likelihood = log_likelihood_init
+        # P_max bound for innovation weighting (Story 1.5)
+        # Estimate steady-state P from q and obs_scale * typical vol^2
+        _P_ss_est = max(q_scalar * 100.0, 1e-6)
+        _P_max = IW_P_MAX_MULT * _P_ss_est
+
         for t in range(T):
             mu_pred = phi_used * mu_t
             P_pred = (phi_used ** 2) * P_t + q_scalar
@@ -3382,12 +3796,18 @@ def _kalman_filter_drift(
             else:
                 K_t = P_pred / S_t
 
-            mu_t = mu_pred + K_t * innov
-            P_t = float(max((1.0 - K_t) * P_pred, 1e-12))
+            # Innovation weighting (Story 1.5): boost K_t for surprising obs
+            z_t = innov / max(math.sqrt(S_t), 1e-8)
+            w_iw = innovation_weight(z_t)
+            K_eff = min(K_t * w_iw, 0.99)  # Cap to prevent K >= 1
+
+            mu_t = mu_pred + K_eff * innov
+            P_t = float(max((1.0 - K_eff) * P_pred, 1e-12))
+            P_t = min(P_t, _P_max)  # P_max bound (Story 1.5)
 
             mu_filtered[t] = mu_t
             P_filtered[t] = P_t
-            K_gain[t] = K_t
+            K_gain[t] = K_eff
             innovations[t] = innov
             innovation_vars[t] = S_t
 
@@ -3408,6 +3828,42 @@ def _kalman_filter_drift(
 
     kalman_gain_mean = float(np.mean(K_gain))
     kalman_gain_recent = float(K_gain[-1]) if len(K_gain) > 0 else float('nan')
+
+    # =========================================================================
+    # KALMAN GAIN MONITORING AND ADAPTIVE RESET (Story 1.2)
+    # =========================================================================
+    # For enhanced/GAS-Q paths, K_gain may be all zeros since the external
+    # filter functions don't return it. Compute post-hoc from P_filtered.
+    # Then detect gain stalls and apply P-inflation resets.
+    # =========================================================================
+    gain_reset_info = {
+        "reset_count": 0,
+        "reset_indices": [],
+        "gain_stall_detected": False,
+    }
+
+    if T >= GAIN_STALL_WINDOW + RESET_COOLDOWN_BARS:
+        # Compute K_t post-hoc if not already populated (enhanced/GAS-Q paths)
+        if np.all(K_gain == 0) and T > 1:
+            K_gain[:] = _compute_kalman_gain_from_filtered(
+                P_filtered, sigma, phi_used, q_scalar, obs_scale,
+                nu=float(nu_used) if nu_used is not None else None,
+            )
+            kalman_gain_mean = float(np.mean(K_gain))
+            kalman_gain_recent = float(K_gain[-1])
+
+        # Apply gain monitoring and adaptive reset
+        gain_reset_info = _apply_gain_monitoring_reset(
+            mu_filtered, P_filtered, K_gain,
+            y, sigma,
+            phi=phi_used, q=q_scalar, c=obs_scale,
+            nu=float(nu_used) if nu_used is not None else None,
+        )
+
+        if gain_reset_info["reset_count"] > 0:
+            # Recompute diagnostics after reset
+            kalman_gain_mean = float(np.mean(K_gain))
+            kalman_gain_recent = float(K_gain[-1])
 
     # =========================================================================
     # TWSC SCALE CORRECTION — REAL MODEL IMPROVEMENT (March 2026)
@@ -3452,6 +3908,12 @@ def _kalman_filter_drift(
         "phi_used": float(phi_used) if phi_used is not None and np.isfinite(phi_used) else None,
         "kalman_noise_model": noise_model,
         "kalman_nu": float(nu_used) if nu_used is not None else None,
+        # =========================================================================
+        # KALMAN GAIN MONITORING AND ADAPTIVE RESET (Story 1.2)
+        # =========================================================================
+        "gain_reset_count": gain_reset_info["reset_count"],
+        "gain_reset_indices": gain_reset_info["reset_indices"],
+        "gain_stall_detected": gain_reset_info["gain_stall_detected"],
         # =========================================================================
         # GAS-Q SCORE-DRIVEN PARAMETER DYNAMICS DIAGNOSTICS (February 2026)
         # =========================================================================
@@ -5229,8 +5691,30 @@ REGIME_NAMES = {
     REGIME_CRISIS_JUMP: "CRISIS_JUMP",
 }
 
+# Story 1.12: CUSUM state for regime transition acceleration
+# Module-level state keyed by asset symbol for persistence across calls
+_CUSUM_STATE: Dict[str, Dict] = {}
 
-def assign_current_regime(feats: Dict[str, pd.Series], lookback: int = 21) -> int:
+CUSUM_THRESHOLD = 3.0     # Sigma-unit trigger threshold
+CUSUM_COOLDOWN = 5        # Bars of accelerated smoothing
+CUSUM_ALPHA_ACCEL = 0.85  # Accelerated alpha during CUSUM trigger
+CUSUM_ALPHA_NORMAL = 0.40 # Normal smoothing alpha
+
+
+def _get_cusum_state(asset: str) -> Dict:
+    """Get or create CUSUM state for an asset."""
+    if asset not in _CUSUM_STATE:
+        _CUSUM_STATE[asset] = {
+            "cusum_pos": 0.0,
+            "cusum_neg": 0.0,
+            "cooldown_remaining": 0,
+            "smoothed_vol_relative": 1.0,
+        }
+    return _CUSUM_STATE[asset]
+
+
+def assign_current_regime(feats: Dict[str, pd.Series], lookback: int = 21,
+                          asset: str = "__default__") -> int:
     """
     Assign current regime using SAME logic as tune.py's assign_regime_labels.
 
@@ -5285,20 +5769,40 @@ def assign_current_regime(feats: Dict[str, pd.Series], lookback: int = 21) -> in
     # Drift threshold (same as tune.py)
     drift_threshold = 0.0005  # ~0.05% daily drift threshold
 
+    # Story 1.12: CUSUM-accelerated regime detection
+    cs = _get_cusum_state(asset)
+    z_vol = vol_relative - 1.0
+    cs["cusum_pos"] = max(0.0, cs["cusum_pos"] + z_vol - 0.5)
+    cs["cusum_neg"] = max(0.0, cs["cusum_neg"] - z_vol - 0.5)
+    
+    if (cs["cusum_pos"] > CUSUM_THRESHOLD or cs["cusum_neg"] > CUSUM_THRESHOLD) and cs["cooldown_remaining"] == 0:
+        cs["cooldown_remaining"] = CUSUM_COOLDOWN
+        cs["cusum_pos"] = 0.0
+        cs["cusum_neg"] = 0.0
+    
+    if cs["cooldown_remaining"] > 0:
+        alpha = CUSUM_ALPHA_ACCEL
+        cs["cooldown_remaining"] -= 1
+    else:
+        alpha = CUSUM_ALPHA_NORMAL
+    
+    cs["smoothed_vol_relative"] = alpha * vol_relative + (1 - alpha) * cs["smoothed_vol_relative"]
+    svr = cs["smoothed_vol_relative"]
+
     # Classification logic (MUST match tune.py assign_regime_labels)
-    # Crisis/Jump: extreme volatility or tail events
+    # Crisis/Jump: extreme volatility or tail events (raw vol_relative for instant detection)
     if vol_relative > 2.0 or tail_indicator > 4.0:
         return REGIME_CRISIS_JUMP
 
-    # High volatility regimes
-    if vol_relative > 1.3:
+    # High volatility regimes (use smoothed for stability)
+    if svr > 1.3:
         if drift_abs > drift_threshold:
             return REGIME_HIGH_VOL_TREND
         else:
             return REGIME_HIGH_VOL_RANGE
 
     # Low volatility regimes
-    if vol_relative < 0.85:
+    if svr < 0.85:
         if drift_abs > drift_threshold:
             return REGIME_LOW_VOL_TREND
         else:
@@ -5306,9 +5810,9 @@ def assign_current_regime(feats: Dict[str, pd.Series], lookback: int = 21) -> in
 
     # Normal volatility (between 0.85 and 1.3)
     if drift_abs > drift_threshold * 1.5:
-        return REGIME_HIGH_VOL_TREND if vol_relative > 1.0 else REGIME_LOW_VOL_TREND
+        return REGIME_HIGH_VOL_TREND if svr > 1.0 else REGIME_LOW_VOL_TREND
     else:
-        return REGIME_HIGH_VOL_RANGE if vol_relative > 1.0 else REGIME_LOW_VOL_RANGE
+        return REGIME_HIGH_VOL_RANGE if svr > 1.0 else REGIME_LOW_VOL_RANGE
 
 
 def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = None) -> int:
@@ -5933,6 +6437,8 @@ def run_unified_mc(
 
         q_std = math.sqrt(q) if q > 0 else 0.0
         h_t = np.full(n_paths, max(sigma2_step, 1e-8), dtype=np.float64)
+        # v7.9: Dynamic GARCH variance cap — prevent Student-t + GARCH explosion
+        _h_dyn_cap = max(25.0 * max(sigma2_step, 1e-8), 0.005)
 
         for t_step in range(H_max):
             sigma_t = np.sqrt(np.maximum(h_t, 1e-12))
@@ -5972,6 +6478,8 @@ def run_unified_mc(
                         jump[pidx] = float(np.sum(jsizes))
 
             r_t = mu_paths + e_t + jump
+            # v7.9: Per-step return cap
+            r_t = np.clip(r_t, -0.5, 0.5)
             if t_step == 0:
                 cum_out[t_step, :] = r_t
             else:
@@ -5980,7 +6488,7 @@ def run_unified_mc(
             # GARCH evolution
             if use_garch:
                 h_t = garch_omega + garch_alpha * (e_t ** 2) + garch_beta * h_t
-                h_t = np.clip(h_t, 1e-12, 1e4)
+                h_t = np.clip(h_t, 1e-12, _h_dyn_cap)
 
             # Drift evolution
             if q_std > 0:
@@ -6108,6 +6616,8 @@ def run_unified_mc(
         # Pure Python fallback (same logic as kernel, v7.7: all Tier 2+3 params)
         # v7.7: Apply variance_inflation, crps_sigma_shrinkage, and mu_drift
         h0_cal = h0 * variance_inflation * crps_sigma_shrinkage
+        # v7.9: Dynamic GARCH variance cap
+        _h_dyn_cap_py = max(25.0 * h0_cal, 0.005)
         mu_t_arr = mu_start.copy() + mu_drift
         h_t = np.full(n_paths, h0_cal, dtype=np.float64)
         use_asym = (nu is not None and nu > 2.0 and nu < 100.0 and abs(alpha_asym) > 1e-8)
@@ -6161,6 +6671,8 @@ def run_unified_mc(
                     loc_bias += loc_bias_drift_coeff * sign_mu * np.sqrt(np.abs(mu_t_arr))
 
             r_t = mu_t_arr + rp + loc_bias + e_t + jump
+            # v7.9: Per-step return cap
+            r_t = np.clip(r_t, -0.5, 0.5)
             if t_step == 0:
                 cum_out[t_step, :] = r_t
             else:
@@ -6190,7 +6702,7 @@ def run_unified_mc(
                     p_stress_obs_arr = (1.0 - regime_switch_prob) * p_stress_obs_arr + regime_switch_prob * ind_stress
                     h_t *= (1.0 + p_stress_obs_arr * (math.sqrt(q_stress_ratio) - 1.0))
 
-                h_t = np.clip(h_t, 1e-12, 1e4)
+                h_t = np.clip(h_t, 1e-12, _h_dyn_cap_py)
 
             # v7.7: Drift evolution with MS process noise
             if use_ms_q_py:
@@ -6862,6 +7374,30 @@ def bayesian_model_average_mc(
         if phi_m is None or not np.isfinite(phi_m):
             phi_m = 0.95 if 'phi' in model_name else 1.0
 
+        # ================================================================
+        # v7.9: FLOOR phi AT 0 — prevent anti-persistent drift in MC
+        # ================================================================
+        # Negative phi causes drift to oscillate sign each step, which is
+        # statistically possible but produces pathological MC paths:
+        # large initial drift × negative phi → huge opposite return next step.
+        # Floor at 0 converts anti-persistence to instant mean-reversion,
+        # which is the economically sensible interpretation.
+        # ================================================================
+        if phi_m < 0.0:
+            phi_m = 0.0
+
+        # ================================================================
+        # v7.9: FLOOR phi AT 0 — prevent anti-persistent drift in MC
+        # ================================================================
+        # Negative phi causes drift to oscillate sign each step, which is
+        # statistically possible but produces pathological MC paths:
+        # large initial drift × negative phi → huge opposite return next step.
+        # Floor at 0 converts anti-persistence to instant mean-reversion,
+        # which is the economically sensible interpretation.
+        # ================================================================
+        if phi_m < 0.0:
+            phi_m = 0.0
+
         # Validate nu
         if nu_m is not None and (not np.isfinite(nu_m) or nu_m <= 2.0):
             nu_m = None
@@ -7358,6 +7894,8 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     vol_paths = np.zeros((H_max, n_paths), dtype=float)  # Track volatility (sigma_t) at each horizon
     mu_t = np.full(n_paths, mu_now, dtype=float)
     h_t = np.full(n_paths, max(h0, 1e-8), dtype=float)
+    # v7.9: Dynamic GARCH variance cap
+    _h_dyn_cap_sim = max(25.0 * max(h0, 1e-8), 0.005)
 
     rng = np.random.default_rng()
 
@@ -7401,6 +7939,8 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
 
         # Total return: continuous (drift + diffusion) + jumps
         r_t = mu_t + e_t + jump_component
+        # v7.9: Per-step return cap
+        r_t = np.clip(r_t, -0.5, 0.5)
 
         # Accumulate log return
         if t == 0:
@@ -7412,7 +7952,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         # Evolve volatility via GARCH or hold constant on fallback
         if use_garch:
             h_t = omega_paths + alpha_paths * (e_t ** 2) + beta_paths * h_t
-            h_t = np.clip(h_t, 1e-12, 1e4)
+            h_t = np.clip(h_t, 1e-12, _h_dyn_cap_sim)
         # Evolve drift via AR(1) using posterior drift uncertainty only
         eta = rng.normal(loc=0.0, scale=math.sqrt(drift_unc_now), size=n_paths)
         mu_t = phi * mu_t + eta
@@ -9137,6 +9677,9 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
             enable_model_comp = args.model_comparison
             diagnostics = compute_all_diagnostics(px, feats, enable_oos=enable_oos, enable_pit_calibration=enable_pit, enable_model_comparison=enable_model_comp)
 
+        # Epic 8 enrichment: conviction scoring, Kelly sizing, signal TTL
+        enrichment = _enrich_signal_with_epic8(asset, sigs, tuned_params, feats)
+
         return {
             "status": "success",
             "asset": asset,
@@ -9148,6 +9691,7 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
             "thresholds": thresholds,
             "diagnostics": diagnostics,
             "last_close": last_close,
+            "enrichment": enrichment,
         }
 
     except Exception as e:
@@ -9665,6 +10209,7 @@ def main() -> None:
         thresholds = result["thresholds"]
         diagnostics = result["diagnostics"]
         last_close = result["last_close"]
+        enrichment = result.get("enrichment", {})
 
         # De-duplicate check
         if canon in processed_syms:
@@ -10219,6 +10764,9 @@ def main() -> None:
             "sector": get_sector(canon),
             "crash_risk_score": crash_risk_score,
             "momentum_score": momentum_score,
+            "conviction": enrichment.get("conviction"),
+            "kelly": enrichment.get("kelly"),
+            "signal_ttl": enrichment.get("signal_ttl"),
         })
 
         # Track regime and model for end-of-run summary
@@ -10426,6 +10974,10 @@ def main() -> None:
                     serializable_diagnostics[k] = v
             block["diagnostics"] = serializable_diagnostics
 
+        # Add Epic 8 enrichment data (conviction, Kelly, TTL) to JSON export
+        if enrichment:
+            block["enrichment"] = enrichment
+
         all_blocks.append(block)
 
         # Prepare CSV rows
@@ -10545,6 +11097,73 @@ def main() -> None:
         if os.getenv("DEBUG"):
             Console().print(f"[dim]Regime-model summary error: {rms_e}[/dim]")
 
+    # =========================================================================
+    # EPIC 8 PORTFOLIO-LEVEL ENRICHMENT (April 2026)
+    # =========================================================================
+    # Pair screening and sector rotation run AFTER all individual assets.
+    # Results are added to the payload for JSON export.
+    # =========================================================================
+
+    portfolio_enrichment = {}
+
+    # 8.4: Pair Trading — screen for cointegrated pairs across the universe
+    if PAIR_TRADING_AVAILABLE and len(success_results) >= 4:
+        try:
+            price_dict = {}
+            for r in success_results:
+                if r and r.get("status") == "success" and r.get("px") is not None:
+                    sym = r["canon"]
+                    price_dict[sym] = r["px"].values
+            if len(price_dict) >= 4:
+                symbols = list(price_dict.keys())
+                pairs = screen_pairs(price_dict, symbols, top_n=10)
+                portfolio_enrichment["pairs"] = [
+                    {
+                        "asset_a": p.asset_a,
+                        "asset_b": p.asset_b,
+                        "adf_stat": p.adf_stat,
+                        "pvalue": p.pvalue,
+                        "halflife": p.halflife,
+                        "zscore": p.spread_zscore,
+                        "signal": p.signal,
+                    }
+                    for p in pairs
+                ]
+        except Exception:
+            pass
+
+    # 8.5: Sector Rotation — compute sector-level signals
+    if SECTOR_ROTATION_AVAILABLE and summary_rows:
+        try:
+            from decision.sector_rotation import SectorSignal
+            sector_forecasts = {}
+            for row in summary_rows:
+                sector = row.get("sector", "Other")
+                h_sigs = row.get("horizon_signals", {})
+                # Use 7-day or nearest horizon p_up as forecast proxy
+                for h in [7, 3, 1, 30]:
+                    if h in h_sigs:
+                        p = h_sigs[h].get("p_up", 0.5)
+                        sector_forecasts.setdefault(sector, []).append(p - 0.5)
+                        break
+            if sector_forecasts:
+                sector_signals = []
+                for sector, forecasts in sector_forecasts.items():
+                    avg = sum(forecasts) / len(forecasts) if forecasts else 0
+                    breadth = sum(1 for f in forecasts if f > 0) / max(len(forecasts), 1)
+                    composite = 0.6 * max(-1, min(1, avg * 10)) + 0.4 * (breadth - 0.5) * 2
+                    rec = "OVERWEIGHT" if composite > 0.3 else ("UNDERWEIGHT" if composite < -0.3 else "NEUTRAL")
+                    sector_signals.append({
+                        "sector": sector,
+                        "composite": round(composite, 3),
+                        "breadth": round(breadth, 3),
+                        "recommendation": rec,
+                    })
+                sector_signals.sort(key=lambda x: x["composite"], reverse=True)
+                portfolio_enrichment["sector_rotation"] = sector_signals
+        except Exception:
+            pass
+
     # Build structured failure log for exports
     failure_log = [
         {
@@ -10586,6 +11205,7 @@ def main() -> None:
         "column_descriptions": DETAILED_COLUMN_DESCRIPTIONS,
         "simple_column_descriptions": SIMPLIFIED_COLUMN_DESCRIPTIONS,
         "failed_assets": failure_log,
+        "portfolio_enrichment": portfolio_enrichment,
     }
     try:
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
@@ -10600,6 +11220,35 @@ def main() -> None:
                 json.dump(payload, f, indent=2)
         except Exception as e:
             Console().print(f"[yellow]Warning:[/yellow] Could not write JSON export: {e}")
+
+    # Epic 7.4: Persist forecasts to SQLite for historical analysis
+    if QUANT_DB_AVAILABLE and all_blocks:
+        try:
+            db_path = os.path.join(os.path.dirname(__file__), os.pardir, "data", "quant.db")
+            db = QuantDB(db_path)
+            from datetime import date as date_type
+            today = date_type.today().isoformat()
+            rows = []
+            for block in all_blocks:
+                sym = block.get("symbol", "")
+                for sig in block.get("signals", []):
+                    rows.append({
+                        "symbol": sym,
+                        "date": today,
+                        "horizon": int(sig.get("horizon_days", 0)),
+                        "forecast_pct": float(sig.get("exp_ret", 0) * 100),
+                        "p_up": float(sig.get("p_up", 0.5)),
+                        "confidence_low": float(sig.get("ci_low", 0)),
+                        "confidence_high": float(sig.get("ci_high", 0)),
+                        "regime": sig.get("regime", ""),
+                        "label": sig.get("label", "HOLD"),
+                        "model": sig.get("bma_method", ""),
+                    })
+            if rows:
+                db.insert_forecasts_batch(rows)
+            db.close()
+        except Exception:
+            pass  # DB persistence is best-effort
 
 
 if __name__ == "__main__":

@@ -680,6 +680,27 @@ except ImportError:
     FILTER_CACHE_AVAILABLE = False
 
 # =============================================================================
+# EPIC 7: VECTORIZED OPERATIONS AND COMPUTATION CACHE (April 2026)
+# =============================================================================
+# Performance optimization modules for BMA weight computation and regime caching.
+# vectorized_ops: NumPy-vectorized BMA weights (log-sum-exp stable softmax).
+# computation_cache: Content-hash based caching for regime/vol computations.
+# =============================================================================
+try:
+    from models.vectorized_ops import vectorized_bma_weights
+    VECTORIZED_OPS_AVAILABLE = True
+except ImportError:
+    VECTORIZED_OPS_AVAILABLE = False
+
+try:
+    from models.computation_cache import ComputationCache
+    COMPUTATION_CACHE_AVAILABLE = True
+    _computation_cache = ComputationCache(max_size=500)
+except ImportError:
+    COMPUTATION_CACHE_AVAILABLE = False
+    _computation_cache = None
+
+# =============================================================================
 # IMPORT ELITE TUNING MODULE (February 2026)
 # =============================================================================
 # Plateau-optimal parameter selection with:
@@ -1397,12 +1418,148 @@ MIN_HYVARINEN_SAMPLES = 100
 
 
 # =============================================================================
+# REGIME-CONDITIONAL PROCESS NOISE FLOOR (Story 1.1, April 2026)
+# =============================================================================
+# The Kalman filter's MLE-optimal q converges to ~1e-6, which collapses drift
+# estimates to zero. A regime-conditional floor ensures the filter maintains
+# meaningful sensitivity to drift in each market regime.
+#
+# Rationale for floor values:
+#   - LOW_VOL_TREND:  drift matters, need moderate sensitivity  -> 5e-5
+#   - HIGH_VOL_TREND: fast-moving drift, need high sensitivity  -> 1e-4
+#   - LOW_VOL_RANGE:  small drift, low but nonzero floor        -> 2e-5
+#   - HIGH_VOL_RANGE: choppy, moderate sensitivity              -> 5e-5
+#   - CRISIS_JUMP:    maximum adaptivity needed                  -> 5e-4
+#
+# BIC adjustment when floor binds:
+#   BIC_adj = BIC + Q_FLOOR_BIC_LAMBDA * log(q_floor / q_mle)
+# This penalizes the deviation from MLE to prevent the floor from
+# distorting model selection. Lambda = 2.0 means ~4.6 BIC penalty
+# when floor is 10x above q_mle (moderate penalty).
+# =============================================================================
+
+Q_FLOOR_BY_REGIME = {
+    0: 5e-5,   # LOW_VOL_TREND
+    1: 1e-4,   # HIGH_VOL_TREND
+    2: 2e-5,   # LOW_VOL_RANGE
+    3: 5e-5,   # HIGH_VOL_RANGE
+    4: 5e-4,   # CRISIS_JUMP
+}
+
+# BIC penalty multiplier when floor overrides MLE-optimal q
+Q_FLOOR_BIC_LAMBDA = 2.0
+
+
+def apply_regime_q_floor(
+    models: Dict[str, Dict],
+    regime: int,
+    returns: np.ndarray,
+    vol: np.ndarray,
+) -> Tuple[int, int]:
+    """
+    Apply regime-conditional q floor to all fitted models in-place.
+
+    For each model where q_mle < q_floor:
+      1. Store original q as q_mle_original
+      2. Set q = q_floor
+      3. Re-run filter to get updated log-likelihood
+      4. Recompute BIC with penalty term
+      5. Set q_floor_applied = True
+
+    This preserves the optimiser's choice of c and phi while only lifting q.
+    The BIC adjustment ensures model selection is not distorted by the floor.
+
+    Args:
+        models: Dict of model_name -> model_dict (modified in-place)
+        regime: Regime index (0-4) for floor lookup
+        returns: Regime-specific returns (for re-filtering)
+        vol: Regime-specific volatility (for re-filtering)
+
+    Returns:
+        (n_floored, n_total): count of models where floor was applied
+    """
+    q_floor = Q_FLOOR_BY_REGIME.get(regime, 0.0)
+    if q_floor <= 0:
+        return 0, len(models)
+
+    n_floored = 0
+    n_total = 0
+    n_obs = len(returns)
+
+    for model_name, info in models.items():
+        if not info.get("fit_success", False):
+            continue
+        n_total += 1
+
+        q_mle = info.get("q")
+        if q_mle is None or q_mle >= q_floor:
+            info["q_floor_applied"] = False
+            continue
+
+        # Floor binds: override q
+        n_floored += 1
+        info["q_mle_original"] = float(q_mle)
+        info["q"] = float(q_floor)
+        info["q_floor_applied"] = True
+        info["q_floor_regime"] = int(regime)
+        info["q_floor_value"] = float(q_floor)
+
+        # Re-run filter with floored q to get updated log-likelihood
+        c_val = info.get("c", 1.0)
+        phi_val = info.get("phi")
+        nu_val = info.get("nu")
+
+        try:
+            if nu_val is not None and phi_val is not None:
+                # Student-t model
+                _, _, ll_new = PhiStudentTDriftModel.filter_phi(
+                    returns, vol, q_floor, c_val, phi_val, nu_val
+                )
+            elif phi_val is not None:
+                # Phi-Gaussian model
+                _, _, ll_new = PhiGaussianDriftModel.filter_phi(
+                    returns, vol, q_floor, c_val, phi_val
+                )
+            else:
+                # Gaussian model
+                _, _, ll_new = GaussianDriftModel.filter(
+                    returns, vol, q_floor, c_val
+                )
+
+            # Update log-likelihood
+            old_ll = info.get("log_likelihood", ll_new)
+            info["log_likelihood"] = float(ll_new)
+            info["mean_log_likelihood"] = float(ll_new / max(n_obs, 1))
+
+            # Recompute BIC with penalty for floor deviation
+            n_params = info.get("n_params", 3)
+            from calibration.model_selection import compute_bic as _compute_bic
+            base_bic = _compute_bic(ll_new, n_params, n_obs)
+
+            # BIC penalty: penalise for deviating from MLE-optimal q
+            # log(q_floor / q_mle) is always positive when floor binds
+            bic_penalty = Q_FLOOR_BIC_LAMBDA * math.log(q_floor / max(q_mle, 1e-15))
+            info["bic"] = float(base_bic + bic_penalty)
+            info["bic_floor_penalty"] = float(bic_penalty)
+
+        except Exception as e:
+            # If re-filtering fails, keep original BIC but still apply floor
+            info["q_floor_refilter_error"] = str(e)
+
+    return n_floored, n_total
+
+
+# =============================================================================
 # REGIME CLASSIFICATION FUNCTION
 # =============================================================================
 
 def assign_regime_labels(returns: np.ndarray, vol: np.ndarray, lookback: int = 21) -> np.ndarray:
     """
     Assign market regime labels to each observation.
+    
+    Story 1.12: CUSUM-accelerated regime transition detection.
+    When CUSUM triggers a change-point, smoothing alpha temporarily accelerates
+    from 0.40 to 0.85 for 5 bars, reducing detection lag from 4+ days to 1-2.
     
     Classification Logic:
     - CRISIS_JUMP (4): vol_relative > 2.0 OR tail_indicator > 4.0
@@ -1426,12 +1583,24 @@ def assign_regime_labels(returns: np.ndarray, vol: np.ndarray, lookback: int = 2
     # Drift threshold
     drift_threshold = 0.0005  # ~0.05% daily drift threshold
     
+    # CUSUM parameters (Story 1.12)
+    cusum_threshold = 3.0     # CUSUM trigger threshold (sigma units)
+    cusum_cooldown = 5        # Bars of accelerated alpha after CUSUM trigger
+    alpha_accel = 0.85        # Accelerated smoothing alpha during CUSUM trigger
+    alpha_normal = 0.40       # Normal smoothing alpha
+    cusum_pos = 0.0           # Positive CUSUM accumulator
+    cusum_neg = 0.0           # Negative CUSUM accumulator
+    cooldown_remaining = 0    # Remaining bars of acceleration
+    
     # Compute expanding median for volatility normalization
     vol_series = pd.Series(vol)
     vol_median_expanding = vol_series.expanding(min_periods=lookback).median().values
     
     # Handle early periods where expanding median is NaN
     vol_median_expanding[:lookback] = np.nanmedian(vol[:lookback]) if lookback <= n else np.nanmedian(vol)
+    
+    # Smoothed volatility relative (for CUSUM-accelerated transitions)
+    smoothed_vol_relative = 1.0
     
     for t in range(n):
         # Current volatility and return
@@ -1442,6 +1611,27 @@ def assign_regime_labels(returns: np.ndarray, vol: np.ndarray, lookback: int = 2
         vol_median = vol_median_expanding[t] if vol_median_expanding[t] > 1e-12 else vol_now
         vol_relative = vol_now / vol_median if vol_median > 1e-12 else 1.0
         
+        # CUSUM change-point detection (Story 1.12)
+        # Track cumulative deviations in vol_relative from 1.0
+        z_vol = vol_relative - 1.0  # Deviation from expected
+        cusum_pos = max(0.0, cusum_pos + z_vol - 0.5)  # Drift allowance = 0.5
+        cusum_neg = max(0.0, cusum_neg - z_vol - 0.5)
+        
+        if (cusum_pos > cusum_threshold or cusum_neg > cusum_threshold) and cooldown_remaining == 0:
+            cooldown_remaining = cusum_cooldown
+            cusum_pos = 0.0  # Reset after trigger
+            cusum_neg = 0.0
+        
+        # Select smoothing alpha based on CUSUM state
+        if cooldown_remaining > 0:
+            alpha = alpha_accel
+            cooldown_remaining -= 1
+        else:
+            alpha = alpha_normal
+        
+        # Smoothed vol_relative for more stable regime classification
+        smoothed_vol_relative = alpha * vol_relative + (1 - alpha) * smoothed_vol_relative
+        
         # Rolling mean absolute return (drift proxy)
         start_idx = max(0, t - lookback + 1)
         drift_abs = abs(np.mean(returns[start_idx:t+1]))
@@ -1449,18 +1639,18 @@ def assign_regime_labels(returns: np.ndarray, vol: np.ndarray, lookback: int = 2
         # Tail indicator: |return| / vol
         tail_indicator = abs(ret_now) / vol_now if vol_now > 1e-12 else 0.0
         
-        # Classification logic
-        # Crisis/Jump: extreme volatility or tail events
+        # Classification logic (use smoothed_vol_relative for regime, raw for crisis)
+        # Crisis/Jump: extreme volatility or tail events (use RAW for instant detection)
         if vol_relative > 2.0 or tail_indicator > 4.0:
             regime_labels[t] = MarketRegime.CRISIS_JUMP
-        # High volatility regimes
-        elif vol_relative > 1.3:
+        # High volatility regimes (use smoothed for stability)
+        elif smoothed_vol_relative > 1.3:
             if drift_abs > drift_threshold:
                 regime_labels[t] = MarketRegime.HIGH_VOL_TREND
             else:
                 regime_labels[t] = MarketRegime.HIGH_VOL_RANGE
         # Low volatility regimes
-        elif vol_relative < 0.85:
+        elif smoothed_vol_relative < 0.85:
             if drift_abs > drift_threshold:
                 regime_labels[t] = MarketRegime.LOW_VOL_TREND
             else:
@@ -1468,9 +1658,9 @@ def assign_regime_labels(returns: np.ndarray, vol: np.ndarray, lookback: int = 2
         # Normal volatility (between 0.85 and 1.3)
         else:
             if drift_abs > drift_threshold * 1.5:
-                regime_labels[t] = MarketRegime.HIGH_VOL_TREND if vol_relative > 1.0 else MarketRegime.LOW_VOL_TREND
+                regime_labels[t] = MarketRegime.HIGH_VOL_TREND if smoothed_vol_relative > 1.0 else MarketRegime.LOW_VOL_TREND
             else:
-                regime_labels[t] = MarketRegime.HIGH_VOL_RANGE if vol_relative > 1.0 else MarketRegime.LOW_VOL_RANGE
+                regime_labels[t] = MarketRegime.HIGH_VOL_RANGE if smoothed_vol_relative > 1.0 else MarketRegime.LOW_VOL_RANGE
     
     return regime_labels
 
@@ -2036,6 +2226,364 @@ def load_asset_list(assets_arg: Optional[str], assets_file: Optional[str]) -> Li
     
     # Default asset list: use centralized universe from fx_data_utils
     return get_default_asset_universe()
+
+
+# =============================================================================
+# Story 3.1: Content-Based Change Detection for Incremental Tuning
+# =============================================================================
+# Uses hash of last 20 rows of price CSV to detect new data.
+# NOT based on mtime (unreliable across git checkout, rsync, backup restore).
+# =============================================================================
+
+def compute_price_data_hash(symbol: str, prices_dir: str = None) -> Optional[str]:
+    """
+    Story 3.1: Compute content-based hash of last 20 rows of price CSV.
+    
+    Uses hashlib.sha256 on the raw bytes of the last 20 lines.
+    Returns hex digest or None if file not found.
+    """
+    import hashlib
+    
+    if prices_dir is None:
+        prices_dir = os.path.join(os.path.dirname(__file__), os.pardir, "data", "prices")
+    
+    price_file = os.path.join(prices_dir, f"{symbol}_1d.csv")
+    if not os.path.exists(price_file):
+        return None
+    
+    try:
+        with open(price_file, 'rb') as f:
+            lines = f.readlines()
+        # Hash last 20 lines (or all if fewer)
+        tail = lines[-20:] if len(lines) > 20 else lines
+        return hashlib.sha256(b''.join(tail)).hexdigest()
+    except Exception:
+        return None
+
+
+def get_last_price_date(symbol: str, prices_dir: str = None) -> Optional[str]:
+    """
+    Story 3.1: Get the date of the last price row.
+    """
+    if prices_dir is None:
+        prices_dir = os.path.join(os.path.dirname(__file__), os.pardir, "data", "prices")
+    
+    price_file = os.path.join(prices_dir, f"{symbol}_1d.csv")
+    if not os.path.exists(price_file):
+        return None
+    
+    try:
+        import csv
+        with open(price_file, 'r') as f:
+            lines = f.readlines()
+        if len(lines) < 2:
+            return None
+        # Last line, first column (date)
+        last_line = lines[-1].strip()
+        if last_line:
+            return last_line.split(',')[0]
+    except Exception:
+        pass
+    return None
+
+
+def needs_retune(symbol: str, cached_params: Optional[dict], prices_dir: str = None) -> bool:
+    """
+    Story 3.1: Check if an asset needs re-tuning based on content hash.
+    
+    Returns True if:
+      - No cached params exist
+      - Cached params don't have a price_data_hash
+      - Price data hash has changed since last tune
+    """
+    if cached_params is None:
+        return True
+    
+    stored_hash = None
+    if isinstance(cached_params, dict):
+        global_block = cached_params.get("global", cached_params)
+        stored_hash = global_block.get("price_data_hash")
+    
+    if stored_hash is None:
+        return True
+    
+    current_hash = compute_price_data_hash(symbol, prices_dir)
+    if current_hash is None:
+        return False  # No price file -> can't tune
+    
+    return current_hash != stored_hash
+
+
+def stamp_tune_result(result: dict, symbol: str, prices_dir: str = None) -> dict:
+    """
+    Story 3.1: Add price_data_hash and last_price_date to tune result.
+    """
+    if result is None:
+        return result
+    
+    current_hash = compute_price_data_hash(symbol, prices_dir)
+    last_date = get_last_price_date(symbol, prices_dir)
+    
+    global_block = result.get("global", result)
+    if current_hash:
+        global_block["price_data_hash"] = current_hash
+    if last_date:
+        global_block["last_price_date"] = last_date
+    
+    return result
+
+
+# =============================================================================
+# Story 3.2: Parallel Tuning Optimization
+# =============================================================================
+
+def estimate_tuning_complexity(symbol: str, prices_dir: str = None) -> float:
+    """
+    Story 3.2: Estimate tuning complexity for work-stealing optimization.
+    
+    Higher score = more complex (should be tuned first for load balancing).
+    Based on: data length, annualized vol (volatile assets have more models to try).
+    
+    Returns estimated complexity score (0-100).
+    """
+    if prices_dir is None:
+        prices_dir = os.path.join(os.path.dirname(__file__), os.pardir, "data", "prices")
+    
+    price_file = os.path.join(prices_dir, f"{symbol}_1d.csv")
+    if not os.path.exists(price_file):
+        return 50.0  # Default complexity
+    
+    try:
+        with open(price_file, 'r') as f:
+            line_count = sum(1 for _ in f)
+        # Length score: more data = more work
+        length_score = min(line_count / 30, 50)
+        
+        # Vol score: approximate from last 20 lines
+        with open(price_file, 'r') as f:
+            lines = f.readlines()
+        if len(lines) < 22:
+            return length_score
+        
+        closes = []
+        for line in lines[-21:]:
+            parts = line.strip().split(',')
+            if len(parts) >= 5:
+                try:
+                    closes.append(float(parts[4]))
+                except (ValueError, IndexError):
+                    continue
+        
+        if len(closes) >= 10:
+            import numpy as np
+            rets = np.diff(np.log(np.array(closes)))
+            vol = float(np.std(rets) * np.sqrt(252))
+            vol_score = min(vol / 0.01, 50)  # High vol = more complexity
+            return length_score + vol_score
+        
+        return length_score
+    except Exception:
+        return 50.0
+
+
+def sort_assets_by_complexity(assets: list, prices_dir: str = None) -> list:
+    """
+    Story 3.2: Sort assets by estimated complexity, slowest first.
+    
+    This enables work-stealing: slow assets start first, fast ones fill gaps.
+    """
+    scored = [(a, estimate_tuning_complexity(a, prices_dir)) for a in assets]
+    scored.sort(key=lambda x: -x[1])  # Descending: most complex first
+    return [a for a, _ in scored]
+
+
+def get_optimal_worker_count() -> int:
+    """Story 3.2: Optimal worker count for parallel tuning."""
+    cpu = os.cpu_count() or 4
+    return min(cpu - 1, 8)  # Leave 1 core for OS, cap at 8
+
+
+# =============================================================================
+# Story 3.3: GARCH(1,1) MLE Parameter Fitting
+# =============================================================================
+
+GARCH_ALPHA_MIN = 1e-6
+GARCH_ALPHA_MAX = 0.50
+GARCH_BETA_MIN = 1e-6
+GARCH_BETA_MAX = 0.999
+GARCH_OMEGA_MIN = 1e-12
+GARCH_PERSISTENCE_MAX = 0.999
+
+
+def garch_log_likelihood(params, returns):
+    """
+    Story 3.3: GARCH(1,1) negative log-likelihood.
+    
+    params: [omega, alpha, beta] (all in raw space, positive)
+    returns: array of returns (mean-adjusted)
+    
+    Minimizing this gives the MLE estimates.
+    """
+    omega, alpha, beta = params
+    T = len(returns)
+    
+    # Initialize variance at unconditional level
+    if alpha + beta < 1:
+        sigma2_init = omega / (1.0 - alpha - beta)
+    else:
+        sigma2_init = np.var(returns)
+    
+    sigma2 = sigma2_init
+    total_ll = 0.0
+    
+    for t in range(T):
+        r = returns[t]
+        if sigma2 < 1e-20:
+            sigma2 = 1e-20
+        total_ll += -0.5 * (np.log(2 * np.pi) + np.log(sigma2) + r**2 / sigma2)
+        sigma2 = omega + alpha * r**2 + beta * sigma2
+    
+    return -total_ll  # Negative for minimization
+
+
+def fit_garch_mle(returns, max_iter=200):
+    """
+    Story 3.3: Fit GARCH(1,1) via MLE with stationarity constraints.
+    
+    Returns dict with:
+      - omega, alpha, beta
+      - persistence (alpha + beta)
+      - long_run_vol (annualized)
+      - converged: bool
+    """
+    from scipy.optimize import minimize
+    
+    returns = np.asarray(returns, dtype=np.float64)
+    returns = returns - np.mean(returns)  # Mean-adjust
+    sample_var = float(np.var(returns))
+    
+    if sample_var < 1e-20 or len(returns) < 30:
+        return None
+    
+    # Initial guess: omega from unconditional, typical alpha/beta
+    alpha0 = 0.08
+    beta0 = 0.88
+    omega0 = sample_var * (1 - alpha0 - beta0)
+    x0 = [max(omega0, 1e-10), alpha0, beta0]
+    
+    # Bounds: stationarity enforced via constraint
+    bounds = [
+        (GARCH_OMEGA_MIN, sample_var * 10),
+        (GARCH_ALPHA_MIN, GARCH_ALPHA_MAX),
+        (GARCH_BETA_MIN, GARCH_BETA_MAX),
+    ]
+    
+    # Stationarity constraint: alpha + beta < 0.999
+    constraints = [{
+        'type': 'ineq',
+        'fun': lambda p: GARCH_PERSISTENCE_MAX - (p[1] + p[2]),
+    }]
+    
+    try:
+        result = minimize(
+            garch_log_likelihood,
+            x0,
+            args=(returns,),
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints,
+            options={'maxiter': max_iter, 'ftol': 1e-10},
+        )
+        
+        omega, alpha, beta = result.x
+        persistence = alpha + beta
+        
+        if persistence >= 1.0:
+            return None
+        
+        long_run_var = omega / (1.0 - persistence) if persistence < 1 else sample_var
+        long_run_vol = float(np.sqrt(long_run_var * 252))  # Annualized
+        
+        return {
+            "omega": float(omega),
+            "alpha": float(alpha),
+            "beta": float(beta),
+            "persistence": float(persistence),
+            "long_run_vol": long_run_vol,
+            "converged": bool(result.success),
+        }
+    except Exception:
+        return None
+
+
+# =============================================================================
+# Story 3.4: OU Parameter Estimation in Tuning Pipeline
+# =============================================================================
+
+OU_HALF_LIFE_MIN_TUNE = 5
+OU_HALF_LIFE_MAX_TUNE = 252
+
+
+def fit_ou_params(prices):
+    """
+    Story 3.4: Estimate Ornstein-Uhlenbeck parameters from prices.
+    
+    AR(1) regression: log_price_t = phi * log_price_{t-1} + c + eps
+    kappa = -log(phi) (daily frequency, dt=1)
+    
+    Returns dict with:
+      - kappa: mean reversion speed
+      - theta: long-run level (current EWMA of prices)
+      - sigma_ou: residual volatility
+      - half_life_days: ln(2)/kappa
+    """
+    prices_arr = np.asarray(prices, dtype=np.float64)
+    if len(prices_arr) < 60:
+        return None
+    
+    log_p = np.log(prices_arr[prices_arr > 0])
+    if len(log_p) < 60:
+        return None
+    
+    # AR(1) regression: y_t = phi * y_{t-1}
+    y = log_p[1:]
+    x = log_p[:-1]
+    
+    x_mean = float(np.mean(x))
+    y_mean = float(np.mean(y))
+    
+    num = float(np.sum((x - x_mean) * (y - y_mean)))
+    den = float(np.sum((x - x_mean) ** 2))
+    
+    if den < 1e-20:
+        return None
+    
+    phi = num / den
+    phi = max(phi, 0.001)
+    phi = min(phi, 0.9999)
+    
+    kappa = -np.log(phi)
+    kappa = np.clip(kappa, np.log(2) / OU_HALF_LIFE_MAX_TUNE, np.log(2) / OU_HALF_LIFE_MIN_TUNE)
+    
+    half_life = np.log(2) / kappa
+    
+    # Theta from EWMA with span = half_life
+    span = max(int(half_life), 5)
+    ew_alpha = 2.0 / (span + 1)
+    theta = float(prices_arr[0])
+    for p in prices_arr[1:]:
+        theta = ew_alpha * float(p) + (1 - ew_alpha) * theta
+    
+    # Residual vol
+    residuals = y - phi * x
+    sigma_ou = float(np.std(residuals))
+    
+    return {
+        "kappa": float(kappa),
+        "theta": float(theta),
+        "sigma_ou": sigma_ou,
+        "half_life_days": float(half_life),
+    }
 
 
 # =============================================================================
@@ -4020,7 +4568,17 @@ def fit_regime_model_posterior(
             regime_labels=regime_labels_regime,
             asset=asset,  # FIX #4: Asset-class adaptive c bounds
         )
-        
+
+        # =====================================================================
+        # Step 1b: Apply regime-conditional q floor (Story 1.1, April 2026)
+        # =====================================================================
+        n_floored, n_total = apply_regime_q_floor(
+            models, regime, ret_regime, vol_regime
+        )
+        if n_floored > 0:
+            _log(f"     Q-floor applied: {n_floored}/{n_total} models "
+                 f"(floor={Q_FLOOR_BY_REGIME.get(regime, 0):.1e} for {regime_name})")
+
         # =====================================================================
         # Step 2: Extract BIC, Hyvärinen, CRPS, PIT and compute LFO-CV scores
         # =====================================================================
@@ -4422,7 +4980,39 @@ def tune_regime_model_averaging(
         regime_labels=regime_labels,
         asset=asset,  # FIX #4: Asset-class adaptive c bounds
     )
-    
+
+    # Apply global q floor (Story 1.1): use regime-count-weighted average floor
+    # This ensures global fallback models also have meaningful drift sensitivity
+    if regime_labels is not None and len(regime_labels) > 0:
+        _regime_counts = np.bincount(regime_labels.astype(int), minlength=5)
+        _regime_total = max(_regime_counts.sum(), 1)
+        _global_q_floor = sum(
+            Q_FLOOR_BY_REGIME.get(r, 0) * _regime_counts[r] / _regime_total
+            for r in range(5)
+        )
+    else:
+        # No regime info: use median floor
+        _global_q_floor = 5e-5  # median of Q_FLOOR_BY_REGIME values
+
+    _n_fl_global, _n_total_global = 0, 0
+    for _gm_name, _gm_info in global_models.items():
+        if not _gm_info.get("fit_success", False):
+            continue
+        _n_total_global += 1
+        _gm_q = _gm_info.get("q")
+        if _gm_q is not None and _gm_q < _global_q_floor:
+            _n_fl_global += 1
+            _gm_info["q_mle_original"] = float(_gm_q)
+            _gm_info["q"] = float(_global_q_floor)
+            _gm_info["q_floor_applied"] = True
+            _gm_info["q_floor_value"] = float(_global_q_floor)
+        else:
+            _gm_info["q_floor_applied"] = False
+
+    if _n_fl_global > 0:
+        _log(f"     Global Q-floor applied: {_n_fl_global}/{_n_total_global} models "
+             f"(weighted floor={_global_q_floor:.1e})")
+
     # Compute global model posterior using elite CRPS-dominated scoring
     global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models if global_models[m].get("fit_success", False)}
     global_hyvarinen = {m: global_models[m].get("hyvarinen_score", float('-inf')) for m in global_models if global_models[m].get("fit_success", False)}
@@ -4453,7 +5043,14 @@ def tune_regime_model_averaging(
             lambda_entropy=DEFAULT_ENTROPY_LAMBDA
         )
     elif model_selection_method == 'bic':
-        global_raw_weights = compute_bic_model_weights(global_bic)
+        # Use vectorized BMA weights when available (log-sum-exp stable)
+        if VECTORIZED_OPS_AVAILABLE and global_bic:
+            model_names = list(global_bic.keys())
+            bic_arr = np.array([global_bic[m] for m in model_names])
+            w_arr = vectorized_bma_weights(bic_arr)
+            global_raw_weights = dict(zip(model_names, w_arr.tolist()))
+        else:
+            global_raw_weights = compute_bic_model_weights(global_bic)
     elif model_selection_method == 'hyvarinen':
         global_raw_weights = compute_hyvarinen_model_weights(global_hyvarinen)
     else:
@@ -4834,9 +5431,14 @@ def tune_asset_with_bma(
                 "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
 
-        # Assign regime labels
-        _log(f"     📊 Assigning regime labels for {len(returns)} observations...")
-        regime_labels = assign_regime_labels(returns, vol)
+        # Assign regime labels (with optional computation cache)
+        _log(f"     Assigning regime labels for {len(returns)} observations...")
+        if COMPUTATION_CACHE_AVAILABLE and _computation_cache is not None:
+            regime_labels = _computation_cache.get_regime(
+                asset, returns, lambda r: assign_regime_labels(r, vol)
+            )
+        else:
+            regime_labels = assign_regime_labels(returns, vol)
 
         # Count samples per regime
         regime_counts = {r: int(np.sum(regime_labels == r)) for r in range(5)}

@@ -475,6 +475,54 @@ def compute_mr_signal(
     return -kappa * z_deviation * vol_safe
 
 
+def compute_multi_timeframe_momentum(
+    returns: np.ndarray,
+    windows: Tuple[int, ...] = (5, 21, 63),
+    weights: Tuple[float, ...] = (0.5, 0.3, 0.2),
+) -> np.ndarray:
+    """
+    Compute multi-timeframe blended momentum signal (Story 1.10).
+    
+    MOM_t = sum(w_i * mean(returns[t-k_i:t]))  for each window k_i
+    
+    Short-term momentum (5d) weighted highest for fast regime detection.
+    Long-term momentum (63d) for persistent trend confirmation.
+    
+    Args:
+        returns: Array of log returns
+        windows: Lookback windows in days
+        weights: Blend weights (must sum to ~1.0)
+    
+    Returns:
+        Array of blended momentum signals (same length as returns)
+    """
+    n = len(returns)
+    mom_signal = np.zeros(n)
+    w_total = sum(weights)
+    
+    for w_i, k_i in zip(weights, windows):
+        for t in range(n):
+            if t < k_i:
+                start = 0
+            else:
+                start = t - k_i
+            mom_signal[t] += (w_i / w_total) * np.mean(returns[start:t + 1])
+    
+    return mom_signal
+
+
+# Regime-dependent momentum/MR blend ratios (Story 1.10)
+# TREND regimes: momentum dominates (0.7/0.3)
+# RANGE regimes: mean reversion dominates (0.3/0.7)
+REGIME_MOM_MR_RATIO = {
+    0: (0.7, 0.3),   # LOW_VOL_TREND: momentum heavy
+    1: (0.6, 0.4),   # HIGH_VOL_TREND: momentum but dampened
+    2: (0.3, 0.7),   # LOW_VOL_RANGE: MR heavy
+    3: (0.3, 0.7),   # HIGH_VOL_RANGE: MR heavy
+    4: (0.4, 0.6),   # CRISIS_JUMP: slight MR bias (snap-back tendency)
+}
+
+
 def compute_adaptive_blend_weights(
     n: int,
     regime_labels: np.ndarray = None,
@@ -621,6 +669,9 @@ class MomentumAugmentedDriftModel:
         # Process noise q (needed for dynamic max_u scaling - Expert #8)
         self._q: Optional[float] = None
         
+        # Regime labels for Story 1.10 regime-dependent u_t
+        self._regime_labels: Optional[np.ndarray] = None
+        
         self._diagnostics: Dict[str, Any] = {}
     
     def precompute_momentum(self, returns: np.ndarray) -> None:
@@ -690,6 +741,7 @@ class MomentumAugmentedDriftModel:
         """
         n = len(returns)
         self._q = q
+        self._regime_labels = regime_labels  # Story 1.10: store for regime-dependent u_t
         
         # Momentum (existing)
         if self.config.enable:
@@ -770,10 +822,20 @@ class MomentumAugmentedDriftModel:
             
             if self._momentum_signal is not None and t < len(self._momentum_signal):
                 alpha = self._alpha_t[t] if self._alpha_t is not None else 0.5
+                # Story 1.10: Apply regime-dependent momentum/MR ratio
+                if self._regime_labels is not None and t < len(self._regime_labels):
+                    regime = int(self._regime_labels[t])
+                    mom_ratio, _ = REGIME_MOM_MR_RATIO.get(regime, (0.5, 0.5))
+                    alpha = alpha * mom_ratio / 0.5  # Rescale by regime ratio
                 mom_contrib = alpha * self._momentum_signal[t] * mom_scale
             
             if self._mr_signal is not None and t < len(self._mr_signal):
                 beta = self._beta_t[t] if self._beta_t is not None else 0.5
+                # Story 1.10: Apply regime-dependent MR ratio
+                if self._regime_labels is not None and t < len(self._regime_labels):
+                    regime = int(self._regime_labels[t])
+                    _, mr_ratio = REGIME_MOM_MR_RATIO.get(regime, (0.5, 0.5))
+                    beta = beta * mr_ratio / 0.5  # Rescale by regime ratio
                 mr_contrib = beta * self._mr_signal[t] * mr_scale
             
             u_t[t] = mom_contrib - mr_contrib
