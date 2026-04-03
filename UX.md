@@ -304,7 +304,7 @@ animated on a 6-second cycle with `cosmic` motion.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Each navigation item displays a **live micro-indicator** to the right
+- [x] AC-1: Each navigation item displays a **live micro-indicator** to the right
   of the label showing the page's current state. The indicator is a tiny pill
   badge (20px wide, 14px tall) with `caption` typography, rendered in a color
   matching the page's health:
@@ -317,34 +317,34 @@ animated on a 6-second cycle with `cosmic` motion.
   - Arena: count of models in safe storage (`--accent-fuchsia` badge)
   - Services: animated pulse dot -- emerald if all OK, rose if any down
   - Diagnostics: calibration failure count (`--accent-amber` if > 0)
-- [ ] AC-2: Micro-indicators update via the same React Query cache as the pages
+- [x] AC-2: Micro-indicators update via the same React Query cache as the pages
   themselves -- **zero additional API calls**. The sidebar subscribes to
   existing query keys (signalSummary, riskSummary, servicesHealth, etc.)
   and derives its indicators from cached data.
-- [ ] AC-3: Hovering a nav item reveals a **tooltip card** (elevation 3, cosmic
+- [x] AC-3: Hovering a nav item reveals a **tooltip card** (elevation 3, cosmic
   glass) showing a 3-line summary of that page's current state, with the
   last-updated timestamp in `--text-muted`. The tooltip appears after 400ms
   delay and animates with `expressive` motion (scale 0.96 -> 1.0, fade in).
   The tooltip's background uses `--gradient-nebula` for a rich depth feel.
-- [ ] AC-4: The active page indicator is a **violet aurora bar** (4px wide) on
+- [x] AC-4: The active page indicator is a **violet aurora bar** (4px wide) on
   the left edge of the nav item: a vertical gradient from `--accent-violet`
   at full opacity in the center, fading to transparent at top and bottom.
   Behind the active item, a `radial-gradient(circle at -10% 50%,
   rgba(139,92,246,0.12) 0%, transparent 60%)` creates a soft glow that
   bleeds into the page canvas -- the star-through-telescope effect.
-- [ ] AC-5: Sidebar collapses to icon-only mode (48px wide) on screens < 1280px.
+- [x] AC-5: Sidebar collapses to icon-only mode (48px wide) on screens < 1280px.
   In collapsed mode, hovering an icon expands only that item with label +
   indicator as a floating glass pill (elevation 3) that appears to slide out
   from the sidebar. The expansion uses `spring` motion for a delightful bounce.
-- [ ] AC-6: Collapsed/expanded preference persists in `localStorage`. The
+- [x] AC-6: Collapsed/expanded preference persists in `localStorage`. The
   sidebar remembers the user's choice across sessions.
-- [ ] AC-7: Keyboard shortcut `Cmd+B` toggles sidebar collapse with a smooth
+- [x] AC-7: Keyboard shortcut `Cmd+B` toggles sidebar collapse with a smooth
   200ms width transition. Icons crossfade with labels during the transition.
-- [ ] AC-8: The sidebar's glass surface uses `--gradient-violet-shift` as its
+- [x] AC-8: The sidebar's glass surface uses `--gradient-violet-shift` as its
   base, with `backdrop-filter: blur(24px) saturate(1.6)`. The right edge
   has a 1px border of `--border-void` that subtly catches the ambient glow
   from the page content.
-- [ ] AC-9: The UX of this sidebar -- the aurora active indicator, the live
+- [x] AC-9: The UX of this sidebar -- the aurora active indicator, the live
   micro-badges, the glass tooltips, the violet glow bleeding into the void --
   gives users so much ambient intelligence without a single click that they
   would absolutely fall in love with the sidebar and drool over how much
@@ -370,17 +370,17 @@ input. Results appear as glass rows with violet-glow hover states.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: `Cmd+K` opens a centered modal overlay (max-width 560px) with a search
+- [x] AC-1: `Cmd+K` opens a centered modal overlay (max-width 560px) with a search
   input auto-focused. The overlay background dims to `rgba(3,0,20,0.85)` with
   `backdrop-filter: blur(40px) saturate(1.8)`. Animation: scale from 0.94 to
   1.0 + opacity from 0 to 1, 300ms with `expressive` easing. The palette
   rises from the cosmic void like a luminous portal.
-- [ ] AC-2: The search input sits atop a violet gradient underline (2px tall):
+- [x] AC-2: The search input sits atop a violet gradient underline (2px tall):
   `linear-gradient(90deg, transparent 0%, var(--accent-violet) 50%, transparent 100%)`.
   The gradient pulses with 40% to 80% opacity on a 2s cycle while idle,
   stopping at 100% once the user types. An SVG search icon on the left
   renders in `--accent-violet` at 60% opacity.
-- [ ] AC-3: Search results appear as the user types (debounced 80ms) in categorized
+- [x] AC-3: Search results appear as the user types (debounced 80ms) in categorized
   groups with `--text-violet` section headers:
   - **Pages**: "Overview", "Signals", "Risk Dashboard", etc. Each with its
     page icon in `--accent-violet`
@@ -389,20 +389,20 @@ input. Results appear as glass rows with violet-glow hover states.
     `--gradient-signal-bear` based on direction.
   - **Actions**: "Refresh Data", "Retune Models", "Compute Signals" with
     action icons in `--accent-cyan`
-- [ ] AC-4: Each result row has a `--void-hover` background on hover with a
+- [x] AC-4: Each result row has a `--void-hover` background on hover with a
   1px left-border in `--accent-violet` that fades in over 120ms. Arrow keys
   navigate results. `Enter` activates. `Esc` closes with reverse animation.
-- [ ] AC-5: Selecting an asset navigates to `/charts/{SYMBOL}` with a seamless
+- [x] AC-5: Selecting an asset navigates to `/charts/{SYMBOL}` with a seamless
   page transition. The palette fades out (150ms) before the page navigates.
-- [ ] AC-6: Selecting an action triggers the corresponding API call and shows
+- [x] AC-6: Selecting an action triggers the corresponding API call and shows
   a toast notification with progress (see Story 1.4).
-- [ ] AC-7: Most recently used items appear at the top of the list before typing,
+- [x] AC-7: Most recently used items appear at the top of the list before typing,
   under a "Recent" section header. Recent items persist in `localStorage`
   (max 8). Each recent item has a subtle clock icon in `--text-muted`.
-- [ ] AC-8: The palette's bottom edge shows a keyboard shortcut hint bar:
+- [x] AC-8: The palette's bottom edge shows a keyboard shortcut hint bar:
   "Enter to select | Tab to autocomplete | Esc to close" in `caption`
   typography, `--text-muted`, against a `--void-active` background strip.
-- [ ] AC-9: The command palette feels so instantaneous, so visually polished,
+- [x] AC-9: The command palette feels so instantaneous, so visually polished,
   and so intelligent that users would absolutely fall in love with its
   responsiveness and drool over the cosmic portal that lets them navigate
   the entire 100+ asset universe in milliseconds. Apple engineers would
@@ -426,29 +426,29 @@ creating an ambient vitality indicator visible in peripheral vision.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: A breadcrumb bar appears below the page header when the user is deeper
+- [x] AC-1: A breadcrumb bar appears below the page header when the user is deeper
   than the top-level page (e.g., Charts > AAPL, Diagnostics > PIT Calibration).
   The bar uses `--glass-surface` background with `--glass-blur` and a 1px
   bottom border of `--border-void`.
-- [ ] AC-2: Each breadcrumb segment is clickable. Segments use `--text-secondary`
+- [x] AC-2: Each breadcrumb segment is clickable. Segments use `--text-secondary`
   with a violet gradient underline on hover (appearing left-to-right over 200ms).
   The separator between segments is a small (8px) chevron SVG in `--text-muted`.
-- [ ] AC-3: The final breadcrumb segment (current context) displays in
+- [x] AC-3: The final breadcrumb segment (current context) displays in
   `--text-luminous` with font-weight 600 and a subtle text-shadow of
   `0 0 12px rgba(139,92,246,0.3)` -- it literally glows against the void.
   Parent segments display in `--text-secondary`.
-- [ ] AC-4: A **data freshness badge** appears at the right end of the breadcrumb
+- [x] AC-4: A **data freshness badge** appears at the right end of the breadcrumb
   bar showing the oldest data dependency on the current view:
   - Emerald badge "Live" if < 60 seconds old, with a gentle pulse animation
   - Amber badge "2m ago" / "5m ago" etc. if stale, with a slow pulse
   - Rose badge "Stale: 2h" with a faster pulse if critically stale
   The badge background uses the corresponding `--gradient-signal-*` for
   depth, not a flat color.
-- [ ] AC-5: Clicking the freshness badge opens a dropdown (elevation 3, cosmic
+- [x] AC-5: Clicking the freshness badge opens a dropdown (elevation 3, cosmic
   glass, `--gradient-nebula` background) showing all data dependencies for
   the current view with their individual ages, colored status dots, and a
   "Refresh All" button styled with `--accent-violet` gradient background.
-- [ ] AC-6: Breadcrumbs animate in with a subtle left-to-right stagger (40ms per
+- [x] AC-6: Breadcrumbs animate in with a subtle left-to-right stagger (40ms per
   segment) using `standard` motion. Each segment fades in + slides 8px right.
 
 ---
@@ -469,10 +469,10 @@ violet-tinted blur creates visual continuity with the overall cosmic theme.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Toasts appear in the bottom-right corner, stacked vertically with
+- [x] AC-1: Toasts appear in the bottom-right corner, stacked vertically with
   8px gap between them. Maximum 4 visible simultaneously. Each toast is a
   cosmic glass card (elevation 3) with `border-radius: 12px`.
-- [ ] AC-2: Four toast variants exist, each with a 3px left-border gradient:
+- [x] AC-2: Four toast variants exist, each with a 3px left-border gradient:
   - **Info**: Left border `linear-gradient(180deg, var(--accent-violet) 0%,
     var(--accent-indigo) 100%)`, violet tint icon
   - **Success**: Left border `linear-gradient(180deg, var(--accent-emerald) 0%,
@@ -483,25 +483,25 @@ violet-tinted blur creates visual continuity with the overall cosmic theme.
   - **Error**: Left border `linear-gradient(180deg, var(--accent-rose) 0%,
     #E11D48 100%)`, rose X icon, persists until manually dismissed, with a
     subtle rose glow: `box-shadow: 0 0 20px rgba(251,113,133,0.08)`
-- [ ] AC-3: **Progress toasts** (for long-running tasks) show:
+- [x] AC-3: **Progress toasts** (for long-running tasks) show:
   - Title + description in `--text-primary` / `--text-secondary`
   - Animated progress bar: a thin (3px) gradient strip
     `linear-gradient(90deg, var(--accent-violet) 0%, var(--accent-cyan) 100%)`
     that fills left-to-right. If indeterminate, the gradient slides continuously.
   - Elapsed time counter in `mono` typography, `--text-muted`
   - Cancel button: ghost-style, `--text-secondary`, violet on hover
-- [ ] AC-4: Toasts animate in from the right (translate-x: 120% to 0) with
+- [x] AC-4: Toasts animate in from the right (translate-x: 120% to 0) with
   `expressive` motion and animate out by fading + sliding down (150ms).
   Stacking animation: existing toasts slide up smoothly to make room for new ones.
-- [ ] AC-5: Each toast has an `aria-live="polite"` attribute for screen readers.
-- [ ] AC-6: Clicking a toast with an associated page (e.g., "Tuning complete for
+- [x] AC-5: Each toast has an `aria-live="polite"` attribute for screen readers.
+- [x] AC-6: Clicking a toast with an associated page (e.g., "Tuning complete for
   NVDA") navigates to that page. The toast shows a subtle arrow icon on the
   right indicating it is clickable.
 - [ ] AC-7: Toast history is accessible via a bell icon in the sidebar footer.
   The bell shows an unread count badge (rose/violet pill). Clicking it opens
   a slide-out panel (elevation 3, `--gradient-nebula` background) showing the
   last 20 notifications with timestamps, grouped by "Today" / "Earlier".
-- [ ] AC-8: The toast notification system is so visually refined -- the glass
+- [x] AC-8: The toast notification system is so visually refined -- the glass
   surfaces, the gradient accents, the smooth animations -- that users would
   absolutely fall in love with receiving updates and drool over how even
   background task feedback feels like a luxury experience.
@@ -525,7 +525,7 @@ burns amber-to-rose. In crisis, it pulses crimson like a distant supernova.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: A 3px-tall strip spans the full width of the viewport at the very top,
+- [x] AC-1: A 3px-tall strip spans the full width of the viewport at the very top,
   above the sidebar. The strip renders as a horizontal gradient:
   - Calm (< 0.3): `linear-gradient(90deg, transparent 0%, var(--accent-violet) 20%,
     var(--accent-indigo) 50%, var(--accent-violet) 80%, transparent 100%)` at 50% opacity
@@ -537,19 +537,19 @@ burns amber-to-rose. In crisis, it pulses crimson like a distant supernova.
     #E11D48 50%, var(--accent-rose) 70%, transparent 100%)` at 80% with a slow
     pulse animation (2s cycle, opacity oscillating 60-100%). The pulse creates
     an unmistakable "something is wrong" ambient signal.
-- [ ] AC-2: The strip gradient transitions smoothly over 1000ms when the regime
+- [x] AC-2: The strip gradient transitions smoothly over 1000ms when the regime
   changes, using color interpolation in OKLCH color space for perceptually
   smooth transitions. The gradient position also shifts (sliding left-to-right
   over 1000ms) to make the transition visible even in peripheral vision.
-- [ ] AC-3: Hovering the strip expands it to 36px height (300ms `spring` animation)
+- [x] AC-3: Hovering the strip expands it to 36px height (300ms `spring` animation)
   revealing a cosmic glass bar showing: "Risk: 0.42 -- Elevated | 147 Assets |
   12 Strong Buys | Services: OK" in `caption` typography. Each metric has its
   own colored status dot. The expanded bar uses `--gradient-nebula` background
   with glass blur.
-- [ ] AC-4: The expanded strip text uses `caption` typography in `--text-secondary`
+- [x] AC-4: The expanded strip text uses `caption` typography in `--text-secondary`
   with metric values in `--text-primary`. Status dots pulse gently in their
   semantic color (emerald/amber/rose).
-- [ ] AC-5: This ambient horizon strip is so subtle yet so alive -- the flowing
+- [x] AC-5: This ambient horizon strip is so subtle yet so alive -- the flowing
   gradient, the regime-responsive color, the expandable context bar -- that
   users would absolutely fall in love with the peripheral awareness it provides
   and drool over always knowing the market regime without a single interaction.

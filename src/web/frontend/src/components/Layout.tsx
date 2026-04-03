@@ -1,6 +1,6 @@
-import { Outlet, NavLink } from 'react-router-dom';
+import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { api } from '../api';
+import { api, type SignalStats, type TuneStats, type DataSummary, type ArenaStatus, type ServicesHealth, type DiagCalibrationFailures } from '../api';
 import {
   LayoutDashboard,
   Signal,
@@ -12,94 +12,459 @@ import {
   Activity,
   HeartPulse,
   Stethoscope,
+  ChevronsLeft,
+  ChevronsRight,
 } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import CommandPalette from './CommandPalette';
+import BreadcrumbBar from './BreadcrumbBar';
+import StatusStrip from './StatusStrip';
 
-const NAV_ITEMS = [
-  { to: '/', label: 'Overview', icon: LayoutDashboard },
-  { to: '/signals', label: 'Signals', icon: Signal },
-  { to: '/risk', label: 'Risk', icon: ShieldAlert },
-  { to: '/charts', label: 'Charts', icon: LineChart },
-  { to: '/tuning', label: 'Tuning', icon: Settings },
-  { to: '/data', label: 'Data', icon: Database },
-  { to: '/arena', label: 'Arena', icon: Swords },
-  { to: '/diagnostics', label: 'Diagnostics', icon: Stethoscope },
-  { to: '/services', label: 'Services', icon: HeartPulse },
-];
+/* ─── Types ─────────────────────────────────────────────────────── */
+interface NavItem {
+  to: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  badgeFn?: () => { text: string; color: string } | null;
+  tooltipFn?: () => string[];
+}
 
+/* ─── Sidebar collapse persistence ──────────────────────────────── */
+const COLLAPSE_KEY = 'sidebar-collapsed';
+function getSavedCollapsed(): boolean {
+  try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; }
+}
+
+/* ─── Badge color helpers ───────────────────────────────────────── */
+const badgeColors = {
+  emerald: 'bg-[rgba(52,211,153,0.12)] text-[#34D399]',
+  rose: 'bg-[rgba(251,113,133,0.12)] text-[#FB7185]',
+  amber: 'bg-[rgba(251,191,36,0.12)] text-[#FBBF24]',
+  violet: 'bg-[rgba(139,92,246,0.12)] text-[#C4B5FD]',
+  fuchsia: 'bg-[rgba(232,121,249,0.12)] text-[#E879F9]',
+  cyan: 'bg-[rgba(34,211,238,0.12)] text-[#22D3EE]',
+};
+
+/* ─── Layout component ──────────────────────────────────────────── */
 export default function Layout() {
+  const location = useLocation();
+  const [collapsed, setCollapsed] = useState(getSavedCollapsed);
+  const [tooltip, setTooltip] = useState<{ item: NavItem; rect: DOMRect } | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const tooltipTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  /* Persist collapse */
+  useEffect(() => {
+    try { localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0'); } catch { /* noop */ }
+  }, [collapsed]);
+
+  /* Cmd+B toggle, Cmd+K palette */
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+        e.preventDefault();
+        setCollapsed(c => !c);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setPaletteOpen(o => !o);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  /* ── Data queries (reuse existing caches) ──────────────────────── */
+  const signalStatsQ = useQuery({
+    queryKey: ['signalStats'],
+    queryFn: api.signalStats,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const tuneStatsQ = useQuery({
+    queryKey: ['tuneStats'],
+    queryFn: api.tuneStats,
+    staleTime: 120_000,
+    retry: false,
+  });
+  const dataQ = useQuery({
+    queryKey: ['dataStatus'],
+    queryFn: api.dataStatus,
+    staleTime: 120_000,
+    retry: false,
+  });
+  const arenaQ = useQuery({
+    queryKey: ['arenaStatus'],
+    queryFn: api.arenaStatus,
+    staleTime: 120_000,
+    retry: false,
+  });
   const healthQ = useQuery({
     queryKey: ['servicesHealth'],
     queryFn: api.servicesHealth,
     refetchInterval: 30_000,
     retry: false,
   });
+  const diagFailQ = useQuery({
+    queryKey: ['diagCalibrationFailures'],
+    queryFn: api.diagCalibrationFailures,
+    staleTime: 120_000,
+    retry: false,
+  });
+  const riskQ = useQuery({
+    queryKey: ['riskSummary'],
+    queryFn: api.riskSummary,
+    staleTime: 60_000,
+    retry: false,
+  });
 
-  const allOk = healthQ.data
-    ? healthQ.data.api.status === 'ok' && healthQ.data.signal_cache.status !== 'missing'
-      && healthQ.data.price_data.status === 'ok'
+  /* Derived micro-indicator data */
+  const ss = signalStatsQ.data as SignalStats | undefined;
+  const ts = tuneStatsQ.data as TuneStats | undefined;
+  const ds = dataQ.data as DataSummary | undefined;
+  const as2 = arenaQ.data as ArenaStatus | undefined;
+  const hs = healthQ.data as ServicesHealth | undefined;
+  const df = diagFailQ.data as DiagCalibrationFailures | undefined;
+  const rs = riskQ.data;
+
+  const allServicesOk = hs
+    ? hs.api.status === 'ok' && hs.signal_cache.status !== 'missing' && hs.price_data.status === 'ok'
     : true;
 
+  /* ── Navigation items with badge + tooltip functions ───────────── */
+  const navItems: NavItem[] = [
+    {
+      to: '/', label: 'Overview', icon: LayoutDashboard,
+      tooltipFn: () => {
+        if (!ss) return ['Loading...'];
+        return [
+          `${ss.total_assets} assets tracked`,
+          `${ss.strong_buy_signals + ss.strong_sell_signals} strong signals`,
+          `${ss.failed} failed assets`,
+        ];
+      },
+    },
+    {
+      to: '/signals', label: 'Signals', icon: Signal,
+      badgeFn: () => {
+        if (!ss) return null;
+        const ct = ss.strong_buy_signals + ss.strong_sell_signals;
+        if (ct === 0) return null;
+        return { text: String(ct), color: ss.strong_buy_signals >= ss.strong_sell_signals ? 'emerald' : 'rose' };
+      },
+      tooltipFn: () => {
+        if (!ss) return ['Loading...'];
+        return [
+          `${ss.buy_signals + ss.strong_buy_signals} buy / ${ss.sell_signals + ss.strong_sell_signals} sell`,
+          `${ss.hold_signals} hold, ${ss.exit_signals} exit`,
+          ss.cache_age_seconds != null ? `Updated ${Math.round(ss.cache_age_seconds / 60)}m ago` : 'No cache',
+        ];
+      },
+    },
+    {
+      to: '/risk', label: 'Risk', icon: ShieldAlert,
+      badgeFn: () => {
+        if (!rs) return null;
+        const t = rs.combined_temperature;
+        const color = t < 0.3 ? 'emerald' : t < 0.7 ? 'amber' : 'rose';
+        return { text: t.toFixed(1), color };
+      },
+      tooltipFn: () => {
+        if (!rs) return ['Loading...'];
+        return [
+          `Temperature: ${rs.combined_temperature.toFixed(2)} (${rs.status})`,
+          `Risk: ${rs.risk_temperature.toFixed(2)} | Metals: ${rs.metals_temperature.toFixed(2)}`,
+          `Market: ${rs.market_temperature.toFixed(2)}`,
+        ];
+      },
+    },
+    {
+      to: '/charts', label: 'Charts', icon: LineChart,
+      tooltipFn: () => ['Interactive charting with forecasts', 'Select any tracked asset'],
+    },
+    {
+      to: '/tuning', label: 'Tuning', icon: Settings,
+      badgeFn: () => {
+        if (!ts || ts.total === 0) return null;
+        const rate = Math.round((ts.pit_pass / ts.total) * 100);
+        return { text: `${rate}%`, color: rate >= 80 ? 'emerald' : rate >= 60 ? 'amber' : 'rose' };
+      },
+      tooltipFn: () => {
+        if (!ts) return ['Loading...'];
+        return [
+          `${ts.total} assets tuned`,
+          `PIT: ${ts.pit_pass} pass / ${ts.pit_fail} fail / ${ts.pit_unknown} unknown`,
+          `${Object.keys(ts.models_distribution).length} model types`,
+        ];
+      },
+    },
+    {
+      to: '/data', label: 'Data', icon: Database,
+      badgeFn: () => {
+        if (!ds) return null;
+        if (ds.stale_files > 0) return { text: String(ds.stale_files), color: 'rose' };
+        return null;
+      },
+      tooltipFn: () => {
+        if (!ds) return ['Loading...'];
+        return [
+          `${ds.total_files} files, ${ds.total_size_mb.toFixed(1)} MB`,
+          `${ds.fresh_files} fresh, ${ds.stale_files} stale`,
+          ds.oldest_hours != null ? `Oldest: ${Math.round(ds.oldest_hours)}h ago` : '',
+        ].filter(Boolean);
+      },
+    },
+    {
+      to: '/arena', label: 'Arena', icon: Swords,
+      badgeFn: () => {
+        if (!as2) return null;
+        if (as2.safe_storage_count > 0) return { text: String(as2.safe_storage_count), color: 'fuchsia' };
+        return null;
+      },
+      tooltipFn: () => {
+        if (!as2) return ['Loading...'];
+        return [
+          `${as2.safe_storage_count} models in safe storage`,
+          `${as2.experimental_count} experimental`,
+          `Benchmark: ${as2.benchmark_symbols.length} symbols`,
+        ];
+      },
+    },
+    {
+      to: '/diagnostics', label: 'Diagnostics', icon: Stethoscope,
+      badgeFn: () => {
+        if (!df) return null;
+        if (df.count > 0) return { text: String(df.count), color: 'amber' };
+        return null;
+      },
+      tooltipFn: () => {
+        if (!df) return ['Loading...'];
+        return [
+          `${df.count} calibration failures`,
+          df.file_exists ? 'Failure file exists' : 'No failure file',
+        ];
+      },
+    },
+    {
+      to: '/services', label: 'Services', icon: HeartPulse,
+      badgeFn: () => null, // pulse dot handled separately
+      tooltipFn: () => {
+        if (!hs) return ['Loading...'];
+        return [
+          `API: ${hs.api.status} (${hs.api.uptime_human})`,
+          `Memory: ${hs.api.memory_mb.toFixed(0)} MB`,
+          `Errors: ${hs.recent_errors.length}`,
+        ];
+      },
+    },
+  ];
+
+  /* ── Tooltip handlers ──────────────────────────────────────────── */
+  const showTooltip = useCallback((item: NavItem, el: HTMLElement) => {
+    clearTimeout(tooltipTimer.current);
+    tooltipTimer.current = setTimeout(() => {
+      setTooltip({ item, rect: el.getBoundingClientRect() });
+    }, 400);
+  }, []);
+
+  const hideTooltip = useCallback(() => {
+    clearTimeout(tooltipTimer.current);
+    setTooltip(null);
+  }, []);
+
+  /* ── Render ────────────────────────────────────────────────────── */
+  const sidebarWidth = collapsed ? 56 : 220;
+
   return (
-    <div className="flex h-screen overflow-hidden bg-[#060612]">
+    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--void)' }}>
+      {/* Ambient Status Strip */}
+      <StatusStrip />
+
       {/* Sidebar */}
-      <aside className="w-[220px] flex-shrink-0 border-r border-white/[0.04] bg-[#08081a]/90 backdrop-blur-xl flex flex-col">
+      <aside
+        className="cosmic-sidebar flex-shrink-0 flex flex-col overflow-hidden relative z-10"
+        style={{ width: sidebarWidth }}
+      >
         {/* Logo */}
-        <div className="px-5 py-6">
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#42A5F5]/20 to-[#7C4DFF]/20 flex items-center justify-center">
-                <Activity className="w-5 h-5 text-[#42A5F5]" />
+        <div className={`px-4 py-5 ${collapsed ? 'flex items-center justify-center' : ''}`}>
+          {collapsed ? (
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center"
+                 style={{ background: 'linear-gradient(135deg, rgba(139,92,246,0.15) 0%, rgba(99,102,241,0.1) 100%)' }}>
+              <Activity className="w-4 h-4" style={{ color: 'var(--accent-violet)' }} />
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <div className="relative">
+                <div
+                  className="w-9 h-9 rounded-xl flex items-center justify-center"
+                  style={{ background: 'linear-gradient(135deg, rgba(139,92,246,0.15) 0%, rgba(99,102,241,0.1) 100%)' }}
+                >
+                  <Activity className="w-5 h-5" style={{ color: 'var(--accent-violet)' }} />
+                </div>
+                <span
+                  className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 pulse-dot`}
+                  style={{
+                    background: allServicesOk ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                    ringColor: 'var(--void)',
+                    boxShadow: `0 0 6px ${allServicesOk ? 'rgba(52,211,153,0.5)' : 'rgba(251,113,133,0.5)'}`,
+                  }}
+                />
               </div>
-              <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#08081a] ${allOk ? 'bg-[#00E676]' : 'bg-[#FF1744]'} pulse-dot`} />
+              <div>
+                <h1 className="text-[13px] font-semibold gradient-text tracking-tight leading-tight">
+                  Signal Engine
+                </h1>
+                <p className="text-[10px] font-medium tracking-wider mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  BMA + Kalman v5.30
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-[13px] font-semibold gradient-text tracking-tight leading-tight">Signal Engine</h1>
-              <p className="text-[10px] text-[#475569] font-medium tracking-wider mt-0.5">BMA + Kalman v5.30</p>
-            </div>
-          </div>
+          )}
         </div>
 
         <div className="divider-fade mx-4" />
 
         {/* Navigation */}
-        <nav className="flex-1 py-4 px-3 space-y-0.5 overflow-y-auto">
-          {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === '/'}
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] transition-all duration-200 ${
-                  isActive
-                    ? 'bg-white/[0.06] text-[#42A5F5] font-medium nav-active-indicator'
-                    : 'text-[#64748b] hover:bg-white/[0.03] hover:text-[#94a3b8]'
-                }`
-              }
-            >
-              <Icon className="w-[18px] h-[18px] flex-shrink-0" />
-              <span>{label}</span>
-              {to === '/services' && (
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ml-auto ${allOk ? 'bg-[#00E676]' : 'bg-[#FF1744]'} pulse-dot`}
-                />
-              )}
-            </NavLink>
-          ))}
+        <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto">
+          {navItems.map((item) => {
+            const badge = item.badgeFn?.();
+            const isActive = item.to === '/'
+              ? location.pathname === '/'
+              : location.pathname.startsWith(item.to);
+            const Icon = item.icon;
+
+            return (
+              <div
+                key={item.to}
+                className="relative"
+                onMouseEnter={(e) => showTooltip(item, e.currentTarget as HTMLElement)}
+                onMouseLeave={hideTooltip}
+              >
+                <NavLink
+                  to={item.to}
+                  end={item.to === '/'}
+                  className={`flex items-center gap-3 rounded-xl text-[13px] transition-all duration-200 ${
+                    collapsed ? 'justify-center px-2 py-2.5' : 'px-3 py-2'
+                  } ${
+                    isActive
+                      ? 'nav-active-indicator nav-cosmic-active'
+                      : 'hover:bg-[rgba(139,92,246,0.04)]'
+                  }`}
+                  style={{
+                    color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                  }}
+                >
+                  <Icon className="w-[18px] h-[18px] flex-shrink-0" />
+
+                  {!collapsed && (
+                    <>
+                      <span
+                        className="flex-1 truncate"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-secondary)',
+                        }}
+                      >
+                        {item.label}
+                      </span>
+
+                      {/* Micro-indicators */}
+                      {item.to === '/services' ? (
+                        <span
+                          className="w-2 h-2 rounded-full ml-auto pulse-dot"
+                          style={{
+                            background: allServicesOk ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                            boxShadow: `0 0 6px ${allServicesOk ? 'rgba(52,211,153,0.4)' : 'rgba(251,113,133,0.4)'}`,
+                          }}
+                        />
+                      ) : badge ? (
+                        <span
+                          className={`micro-badge ml-auto ${badgeColors[badge.color as keyof typeof badgeColors] || badgeColors.violet}`}
+                        >
+                          {badge.text}
+                        </span>
+                      ) : null}
+                    </>
+                  )}
+                </NavLink>
+              </div>
+            );
+          })}
         </nav>
 
-        {/* Footer */}
-        <div className="px-5 py-4">
+        {/* Collapse toggle */}
+        <div className="px-3 py-3">
           <div className="divider-fade mb-3" />
-          <p className="text-[10px] text-[#3a3a5a] font-medium tracking-wide">Bayesian Model Averaging</p>
+          <button
+            onClick={() => setCollapsed(c => !c)}
+            className="flex items-center justify-center w-full rounded-lg py-1.5 transition-all duration-200 hover:bg-[rgba(139,92,246,0.06)]"
+            style={{ color: 'var(--text-muted)' }}
+            title={collapsed ? 'Expand sidebar (Cmd+B)' : 'Collapse sidebar (Cmd+B)'}
+          >
+            {collapsed ? (
+              <ChevronsRight className="w-4 h-4" />
+            ) : (
+              <div className="flex items-center gap-2 text-[10px]">
+                <ChevronsLeft className="w-3.5 h-3.5" />
+                <span className="tracking-wide" style={{ color: 'var(--text-muted)' }}>Collapse</span>
+              </div>
+            )}
+          </button>
+          {!collapsed && (
+            <p className="text-[10px] font-medium tracking-wide text-center mt-2" style={{ color: 'var(--text-muted)', opacity: 0.5 }}>
+              Bayesian Model Averaging
+            </p>
+          )}
         </div>
       </aside>
 
+      {/* Command Palette (Cmd+K) */}
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+
+      {/* Tooltip portal (rendered outside sidebar to avoid clipping) */}
+      {tooltip && (
+        <SidebarTooltip
+          item={tooltip.item}
+          rect={tooltip.rect}
+          sidebarWidth={sidebarWidth}
+        />
+      )}
+
       {/* Main content */}
-      <main className="flex-1 overflow-auto bg-[#0a0a1a]">
+      <main className="flex-1 overflow-auto" style={{ background: 'var(--void-surface)' }}>
         <div className="p-8 max-w-[1600px] mx-auto">
+          <BreadcrumbBar />
           <Outlet />
         </div>
       </main>
+    </div>
+  );
+}
+
+/* ─── Sidebar Tooltip ───────────────────────────────────────────── */
+function SidebarTooltip({ item, rect, sidebarWidth }: { item: NavItem; rect: DOMRect; sidebarWidth: number }) {
+  const lines = item.tooltipFn?.() || [];
+  if (lines.length === 0) return null;
+
+  return (
+    <div
+      className="sidebar-tooltip fixed z-50 px-4 py-3 min-w-[200px] max-w-[280px] pointer-events-none"
+      style={{
+        left: sidebarWidth + 8,
+        top: rect.top + rect.height / 2,
+        transform: 'translateY(-50%)',
+      }}
+    >
+      <div className="text-[12px] font-semibold mb-1.5" style={{ color: 'var(--text-luminous)' }}>
+        {item.label}
+      </div>
+      {lines.map((line, i) => (
+        <div key={i} className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+          {line}
+        </div>
+      ))}
+      <div className="text-[9px] mt-1.5" style={{ color: 'var(--text-muted)' }}>
+        {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      </div>
     </div>
   );
 }
