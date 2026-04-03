@@ -79,3 +79,23 @@ body {
 .animate-signal-flash {
   animation: signal-flash 600ms ease-out;
 }
+
+/* Charts page */
+@keyframes chart-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.chart-fade-in {
+  animation: chart-fade 250ms ease-out;
+}
+
+.chart-container {
+  background: rgba(15, 15, 35, 0.6);
+}
+
+.chart-sector-expand {
+  animation: chart-fade 200ms ease-out;
+}
+
+.scrollbar-thin::-webkit-scrollbar { width: 4px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(42, 42, 74, 0.6); border-radius: 2px; }

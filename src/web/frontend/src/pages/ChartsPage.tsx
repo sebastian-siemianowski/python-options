@@ -1,19 +1,71 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import type { OHLCVBar, ChartSectorGroup } from '../api';
+import type { OHLCVBar, ChartSectorGroup, SummaryRow } from '../api';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import {
   createChart, ColorType, CandlestickSeries, LineSeries, HistogramSeries, AreaSeries,
   type IChartApi, LineStyle,
 } from 'lightweight-charts';
-import { ChevronDown, ChevronRight, Search } from 'lucide-react';
+import { ChevronDown, ChevronRight, Search, X } from 'lucide-react';
 import { formatHorizon } from '../utils/horizons';
 
-type PickerView = 'all' | 'sector' | 'strong_buy' | 'strong_sell';
+/* ═══════════════════════════════════════════════════════════════════
+   TYPES & CONFIG
+   ═══════════════════════════════════════════════════════════════════ */
 
+/** Extract ticker symbol from "Company Name (TICKER)" format */
+const extractTicker = (label: string): string => {
+  if (label.includes('(')) return label.split('(').pop()!.replace(')', '').trim();
+  return label;
+};
+
+/** Extract max half_kelly from kelly horizon array */
+const getMaxHalfKelly = (r: SummaryRow): number => {
+  if (!Array.isArray(r.kelly) || r.kelly.length === 0) return 0;
+  return Math.max(...r.kelly.map(k => k.half_kelly ?? 0));
+};
+
+/** Extract max edge from kelly horizon array */
+const getMaxEdge = (r: SummaryRow): number => {
+  if (!Array.isArray(r.kelly) || r.kelly.length === 0) return 0;
+  return Math.max(...r.kelly.map(k => k.edge ?? 0));
+};
+type PickerView = 'all' | 'sector' | 'strong_buy' | 'strong_sell' | 'filter';
+type FilterMode = 'momentum' | 'edge' | 'exp_return' | 'low_risk' | 'kelly' | 'p_up';
+type TimeRange = '1M' | '3M' | '6M' | '1Y' | 'ALL';
+type OverlayKey = 'sma20' | 'sma50' | 'sma200' | 'bb' | 'rsi' | 'forecastMedian' | 'ciUpper' | 'ciLower' | 'priceLine';
+
+const TIME_RANGES: { key: TimeRange; label: string; days: number }[] = [
+  { key: '1M', label: '1M', days: 30 },
+  { key: '3M', label: '3M', days: 90 },
+  { key: '6M', label: '6M', days: 180 },
+  { key: '1Y', label: '1Y', days: 365 },
+  { key: 'ALL', label: 'ALL', days: 9999 },
+];
+
+const OVERLAY_DEFS: { key: OverlayKey; label: string; color: string; group: string; shortcut: string }[] = [
+  { key: 'sma20',          label: 'SMA 20',          color: '#FFB300', group: 'Moving Averages', shortcut: '1' },
+  { key: 'sma50',          label: 'SMA 50',          color: '#42A5F5', group: 'Moving Averages', shortcut: '2' },
+  { key: 'sma200',         label: 'SMA 200',         color: '#AB47BC', group: 'Moving Averages', shortcut: '3' },
+  { key: 'bb',             label: 'Bollinger',        color: 'rgba(66,165,245,0.6)', group: 'Volatility', shortcut: '4' },
+  { key: 'rsi',            label: 'RSI (14)',         color: '#42A5F5', group: 'Volatility', shortcut: '5' },
+  { key: 'forecastMedian', label: 'Forecast',         color: '#2196F3', group: 'Forecast', shortcut: '6' },
+  { key: 'ciUpper',        label: 'CI Upper',         color: '#26A69A', group: 'Forecast', shortcut: '7' },
+  { key: 'ciLower',        label: 'CI Lower',         color: '#EF5350', group: 'Forecast', shortcut: '8' },
+  { key: 'priceLine',      label: 'Price Line',       color: '#e2e8f0', group: 'Overlays', shortcut: 'p' },
+];
+
+const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
+  sma20: true, sma50: true, sma200: true, bb: true, rsi: true,
+  forecastMedian: true, ciUpper: true, ciLower: true, priceLine: true,
+};
+
+/* ═══════════════════════════════════════════════════════════════════
+   MAIN PAGE
+   ═══════════════════════════════════════════════════════════════════ */
 export default function ChartsPage() {
   const { symbol: paramSymbol } = useParams();
   const navigate = useNavigate();
@@ -21,12 +73,15 @@ export default function ChartsPage() {
   const [search, setSearch] = useState('');
   const [pickerView, setPickerView] = useState<PickerView>('sector');
   const [expandedSectors, setExpandedSectors] = useState<Set<string>>(new Set());
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [filterMode, setFilterMode] = useState<FilterMode>('momentum');
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const symbolsQ = useQuery({ queryKey: ['chartSymbols'], queryFn: api.chartSymbols });
   const sectorQ = useQuery({ queryKey: ['chartSymbolsBySector'], queryFn: api.chartSymbolsBySector });
   const strongQ = useQuery({ queryKey: ['strongSignals'], queryFn: api.strongSignals });
+  const summaryQ = useQuery({ queryKey: ['signalSummary'], queryFn: api.signalSummary, staleTime: 60_000 });
 
-  // Set default symbol
   useEffect(() => {
     if (!symbol && symbolsQ.data?.symbols?.length) {
       const defaultSym = symbolsQ.data.symbols.find((s) => s === 'SPY') || symbolsQ.data.symbols[0];
@@ -34,11 +89,47 @@ export default function ChartsPage() {
     }
   }, [symbol, symbolsQ.data]);
 
+  // Global keyboard: Cmd+K focuses search
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   const symbols = symbolsQ.data?.symbols || [];
   const sectors = sectorQ.data?.sectors || [];
   const filtered = symbols.filter((s) => s.toLowerCase().includes(search.toLowerCase()));
   const strongBuySymbols = useMemo(() => (strongQ.data?.strong_buy || []).map(e => e.symbol), [strongQ.data]);
   const strongSellSymbols = useMemo(() => (strongQ.data?.strong_sell || []).map(e => e.symbol), [strongQ.data]);
+
+  // Ranked filter lists derived from signal summary
+  const rankedSymbols = useMemo(() => {
+    const rows = summaryQ.data?.summary_rows || [];
+    if (rows.length === 0) return [];
+    const getBestExpRet = (r: SummaryRow): number => {
+      const sigs = Object.values(r.horizon_signals || {});
+      return sigs.length ? Math.max(...sigs.map(s => s.exp_ret ?? 0)) : 0;
+    };
+    const getBestPUp = (r: SummaryRow): number => {
+      const sigs = Object.values(r.horizon_signals || {});
+      return sigs.length ? Math.max(...sigs.map(s => s.p_up ?? 0)) : 0;
+    };
+    const sorted = [...rows];
+    switch (filterMode) {
+      case 'momentum':    sorted.sort((a, b) => (b.momentum_score ?? 0) - (a.momentum_score ?? 0)); break;
+      case 'edge':        sorted.sort((a, b) => getMaxEdge(b) - getMaxEdge(a)); break;
+      case 'exp_return':  sorted.sort((a, b) => getBestExpRet(b) - getBestExpRet(a)); break;
+      case 'low_risk':    sorted.sort((a, b) => (a.crash_risk_score ?? 1) - (b.crash_risk_score ?? 1)); break;
+      case 'kelly':       sorted.sort((a, b) => getMaxHalfKelly(b) - getMaxHalfKelly(a)); break;
+      case 'p_up':        sorted.sort((a, b) => getBestPUp(b) - getBestPUp(a)); break;
+    }
+    return sorted.slice(0, 30);
+  }, [summaryQ.data, filterMode]);
 
   const toggleSector = (name: string) => {
     setExpandedSectors(prev => {
@@ -55,98 +146,156 @@ export default function ChartsPage() {
 
   return (
     <>
-      <PageHeader title="Interactive Charts">
-        {symbols.length} symbols available for charting
+      <PageHeader title="Charts">
+        {symbols.length} assets
       </PageHeader>
 
-      <div className="flex gap-4">
-        {/* Symbol picker */}
-        <div className="w-56 flex-shrink-0">
-          {/* Search */}
-          <div className="flex items-center gap-1.5 glass-card px-2.5 py-1.5 mb-2">
-            <Search className="w-3 h-3 text-[#64748b]" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search symbol..."
-              className="bg-transparent text-sm text-[#e2e8f0] placeholder:text-[#64748b] outline-none w-full"
-            />
-          </div>
-
-          {/* View tabs */}
-          <div className="flex gap-0.5 mb-2 glass-card px-1 py-0.5">
-            {([
-              { key: 'sector' as PickerView, label: 'Sectors' },
-              { key: 'all' as PickerView, label: 'All' },
-              { key: 'strong_buy' as PickerView, label: '\u25B2\u25B2' },
-              { key: 'strong_sell' as PickerView, label: '\u25BC\u25BC' },
-            ]).map(({ key, label }) => (
-              <button
-                key={key}
-                onClick={() => setPickerView(key)}
-                className={`flex-1 px-1.5 py-1 rounded text-[10px] font-medium transition ${
-                  pickerView === key ? 'bg-[#42A5F5]/20 text-[#42A5F5]' : 'text-[#64748b] hover:text-[#94a3b8]'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {/* Symbol list */}
-          <div className="glass-card overflow-y-auto max-h-[calc(100vh-260px)]">
-            {pickerView === 'all' && (
-              <FlatSymbolList symbols={filtered.slice(0, 100)} selected={symbol} onSelect={selectSymbol} />
-            )}
-            {pickerView === 'sector' && (
-              <SectorSymbolList
-                sectors={sectors}
-                search={search}
-                selected={symbol}
-                onSelect={selectSymbol}
-                expandedSectors={expandedSectors}
-                toggleSector={toggleSector}
-              />
-            )}
-            {pickerView === 'strong_buy' && (
-              <FlatSymbolList
-                symbols={strongBuySymbols.filter(s => !search || s.toLowerCase().includes(search.toLowerCase()))}
-                selected={symbol}
-                onSelect={selectSymbol}
-                emptyText="No strong buy signals"
-                accent="#00E676"
-              />
-            )}
-            {pickerView === 'strong_sell' && (
-              strongSellSymbols.length === 0 ? (
-                <div className="px-3 py-6 text-center">
-                  <p className="text-xs text-[#64748b] mb-1">No strong sell signals</p>
-                  <p className="text-[10px] text-[#475569]">
-                    No assets currently meet the strong sell threshold.
-                    This is normal in bullish market conditions.
-                  </p>
-                </div>
-              ) : (
-                <FlatSymbolList
-                  symbols={strongSellSymbols.filter(s => !search || s.toLowerCase().includes(search.toLowerCase()))}
-                  selected={symbol}
-                  onSelect={selectSymbol}
-                  emptyText="No matching symbols"
-                  accent="#FF1744"
+      <div className="flex gap-0">
+        {/* ── Sidebar ──────────────────────────────────────────── */}
+        <div className={`flex-shrink-0 transition-all duration-300 ease-out ${sidebarCollapsed ? 'w-10' : 'w-56'}`}>
+          {sidebarCollapsed ? (
+            <button
+              onClick={() => setSidebarCollapsed(false)}
+              className="w-10 h-10 flex items-center justify-center glass-card text-[#64748b] hover:text-[#42A5F5] transition-colors"
+              title="Expand sidebar"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          ) : (
+            <div className="pr-3">
+              {/* Search */}
+              <div className="flex items-center gap-1.5 glass-card px-2.5 py-1.5 mb-2 group focus-within:ring-1 focus-within:ring-[#42A5F5]/30 transition-all">
+                <Search className="w-3 h-3 text-[#64748b] group-focus-within:text-[#42A5F5] transition-colors" />
+                <input
+                  ref={searchRef}
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search..."
+                  className="bg-transparent text-xs text-[#e2e8f0] placeholder:text-[#475569] outline-none w-full"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') { setSearch(''); searchRef.current?.blur(); }
+                    if (e.key === 'Enter' && filtered.length > 0) {
+                      selectSymbol(filtered[0]);
+                      setSearch('');
+                      searchRef.current?.blur();
+                    }
+                  }}
                 />
-              )
-            )}
-          </div>
+                {search && (
+                  <button onClick={() => setSearch('')} className="text-[#64748b] hover:text-[#e2e8f0]">
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+                <kbd className="text-[8px] text-[#475569] font-mono hidden sm:inline">
+                  {navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl+'}K
+                </kbd>
+              </div>
+
+              {/* View tabs */}
+              <div className="flex gap-0.5 mb-2 glass-card p-0.5">
+                {([
+                  { key: 'sector' as PickerView, label: 'Sectors', accent: undefined },
+                  { key: 'all' as PickerView, label: 'All', accent: undefined },
+                  { key: 'strong_buy' as PickerView, label: 'Buy', accent: '#00E676' },
+                  { key: 'strong_sell' as PickerView, label: 'Sell', accent: '#FF1744' },
+                  { key: 'filter' as PickerView, label: 'Top', accent: '#FFB300' },
+                ]).map(({ key, label, accent }) => (
+                  <button
+                    key={key}
+                    onClick={() => setPickerView(key)}
+                    className={`flex-1 px-1.5 py-1 rounded text-[10px] font-medium transition-all duration-200 ${
+                      pickerView === key
+                        ? 'text-[#e2e8f0] shadow-sm'
+                        : 'text-[#64748b] hover:text-[#94a3b8]'
+                    }`}
+                    style={pickerView === key ? {
+                      background: accent ? `${accent}20` : 'rgba(66,165,245,0.15)',
+                      color: accent || '#42A5F5',
+                    } : {}}
+                  >
+                    {label}
+                    {key === 'strong_buy' && strongBuySymbols.length > 0 && (
+                      <span className="ml-0.5 text-[8px] opacity-60">{strongBuySymbols.length}</span>
+                    )}
+                    {key === 'strong_sell' && strongSellSymbols.length > 0 && (
+                      <span className="ml-0.5 text-[8px] opacity-60">{strongSellSymbols.length}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              {/* Symbol list */}
+              <div className="glass-card overflow-y-auto max-h-[calc(100vh-260px)] scrollbar-thin">
+                {pickerView === 'all' && (
+                  <SymbolList symbols={filtered.slice(0, 150)} selected={symbol} onSelect={selectSymbol}
+                    strongBuy={strongBuySymbols} strongSell={strongSellSymbols} />
+                )}
+                {pickerView === 'sector' && (
+                  <SectorSymbolList
+                    sectors={sectors} search={search} selected={symbol} onSelect={selectSymbol}
+                    expandedSectors={expandedSectors} toggleSector={toggleSector}
+                    strongBuy={strongBuySymbols} strongSell={strongSellSymbols}
+                  />
+                )}
+                {pickerView === 'strong_buy' && (
+                  <SymbolList
+                    symbols={strongBuySymbols.filter(s => !search || s.toLowerCase().includes(search.toLowerCase()))}
+                    selected={symbol} onSelect={selectSymbol} emptyText="No strong buy signals" accent="#00E676"
+                    strongBuy={strongBuySymbols} strongSell={strongSellSymbols}
+                  />
+                )}
+                {pickerView === 'strong_sell' && (
+                  strongSellSymbols.length === 0 ? (
+                    <div className="px-3 py-8 text-center">
+                      <p className="text-xs text-[#64748b] mb-1">No strong sell signals</p>
+                      <p className="text-[10px] text-[#475569] leading-relaxed">
+                        No assets currently meet the strong sell threshold.
+                      </p>
+                    </div>
+                  ) : (
+                    <SymbolList
+                      symbols={strongSellSymbols.filter(s => !search || s.toLowerCase().includes(search.toLowerCase()))}
+                      selected={symbol} onSelect={selectSymbol} emptyText="No matching symbols" accent="#FF1744"
+                      strongBuy={strongBuySymbols} strongSell={strongSellSymbols}
+                    />
+                  )
+                )}
+                {pickerView === 'filter' && (
+                  <RankedFilterList
+                    filterMode={filterMode} setFilterMode={setFilterMode}
+                    rows={rankedSymbols} selected={symbol} onSelect={selectSymbol}
+                    search={search} loading={summaryQ.isLoading}
+                    strongBuy={strongBuySymbols} strongSell={strongSellSymbols}
+                  />
+                )}
+              </div>
+
+              <button
+                onClick={() => setSidebarCollapsed(true)}
+                className="mt-2 w-full py-1 text-[9px] text-[#475569] hover:text-[#94a3b8] transition-colors text-center"
+              >
+                Collapse sidebar
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Chart area */}
+        {/* ── Chart Area ───────────────────────────────────────── */}
         <div className="flex-1 min-w-0">
           {symbol ? (
             <ChartPanel symbol={symbol} strongBuy={strongBuySymbols} strongSell={strongSellSymbols} />
           ) : (
-            <div className="glass-card p-8 text-center text-[#64748b]">
-              Select a symbol to view its chart
+            <div className="glass-card p-16 text-center">
+              <div className="text-[#2a2a4a] mb-4">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="mx-auto">
+                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                </svg>
+              </div>
+              <p className="text-sm text-[#64748b]">Select a symbol to begin</p>
+              <p className="text-[10px] text-[#475569] mt-1">
+                Use the sidebar or press {navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl+'}K to search
+              </p>
             </div>
           )}
         </div>
@@ -155,41 +304,55 @@ export default function ChartsPage() {
   );
 }
 
-/* ── Flat symbol list ────────────────────────────────────────────── */
-function FlatSymbolList({
-  symbols, selected, onSelect, emptyText, accent,
+/* ═══════════════════════════════════════════════════════════════════
+   SYMBOL LIST with signal badges
+   ═══════════════════════════════════════════════════════════════════ */
+function SymbolList({
+  symbols, selected, onSelect, emptyText, accent, strongBuy, strongSell,
 }: {
   symbols: string[]; selected: string; onSelect: (s: string) => void;
   emptyText?: string; accent?: string;
+  strongBuy: string[]; strongSell: string[];
 }) {
   if (symbols.length === 0) {
-    return <p className="px-3 py-4 text-xs text-[#64748b] text-center">{emptyText || 'No symbols'}</p>;
+    return <p className="px-3 py-6 text-xs text-[#64748b] text-center">{emptyText || 'No symbols'}</p>;
   }
   return (
     <>
-      {symbols.map((s) => (
-        <button
-          key={s}
-          onClick={() => onSelect(s)}
-          className={`w-full text-left px-3 py-1.5 text-xs font-medium transition hover:bg-[#16213e] ${
-            s === selected ? 'bg-[#16213e]' : ''
-          }`}
-          style={{ color: s === selected ? (accent || '#42A5F5') : '#94a3b8' }}
-        >
-          {s}
-        </button>
-      ))}
+      {symbols.map((s) => {
+        const isSelected = s === selected;
+        const isBuy = strongBuy.includes(s);
+        const isSell = strongSell.includes(s);
+        return (
+          <button
+            key={s}
+            onClick={() => onSelect(s)}
+            className={`w-full text-left px-3 py-1.5 text-xs font-medium transition-all duration-150 flex items-center gap-1.5
+              ${isSelected ? 'bg-[#16213e]' : 'hover:bg-[#16213e]/40'}`}
+            style={{ color: isSelected ? (accent || '#42A5F5') : '#94a3b8' }}
+          >
+            <span className={`w-0.5 h-3 rounded-full transition-all duration-200 ${isSelected ? 'opacity-100' : 'opacity-0'}`}
+              style={{ backgroundColor: accent || '#42A5F5' }} />
+            <span className="flex-1">{s}</span>
+            {isBuy && <span className="w-1.5 h-1.5 rounded-full bg-[#00E676]" title="Strong Buy" />}
+            {isSell && <span className="w-1.5 h-1.5 rounded-full bg-[#FF1744]" title="Strong Sell" />}
+          </button>
+        );
+      })}
     </>
   );
 }
 
-/* ── Sector-grouped symbol list ──────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   SECTOR LIST
+   ═══════════════════════════════════════════════════════════════════ */
 function SectorSymbolList({
-  sectors, search, selected, onSelect, expandedSectors, toggleSector,
+  sectors, search, selected, onSelect, expandedSectors, toggleSector, strongBuy, strongSell,
 }: {
   sectors: ChartSectorGroup[]; search: string; selected: string;
   onSelect: (s: string) => void;
   expandedSectors: Set<string>; toggleSector: (n: string) => void;
+  strongBuy: string[]; strongSell: string[];
 }) {
   const sorted = useMemo(() => [...sectors].sort((a, b) => b.count - a.count), [sectors]);
 
@@ -201,29 +364,47 @@ function SectorSymbolList({
           : sec.symbols;
         if (search && syms.length === 0) return null;
         const expanded = expandedSectors.has(sec.name);
+        const buyCount = syms.filter(s => strongBuy.includes(s)).length;
+        const sellCount = syms.filter(s => strongSell.includes(s)).length;
         return (
           <div key={sec.name}>
             <button
               onClick={() => toggleSector(sec.name)}
-              className="w-full flex items-center gap-1.5 px-2 py-1.5 hover:bg-[#16213e]/30 transition"
+              className="w-full flex items-center gap-1.5 px-2 py-1.5 hover:bg-[#16213e]/30 transition-colors"
             >
               {expanded
                 ? <ChevronDown className="w-3 h-3 text-[#64748b]" />
-                : <ChevronRight className="w-3 h-3 text-[#64748b]" />}
-              <span className="text-[10px] font-medium text-[#94a3b8] flex-1 text-left truncate">{sec.name}</span>
-              <span className="text-[9px] text-[#64748b]">{syms.length}</span>
+                : <ChevronRight className="w-3 h-3 text-[#475569]" />}
+              <span className={`text-[10px] font-medium flex-1 text-left truncate ${expanded ? 'text-[#94a3b8]' : 'text-[#64748b]'}`}>
+                {sec.name}
+              </span>
+              <span className="flex items-center gap-1">
+                {buyCount > 0 && <span className="text-[8px] text-[#00E676]">{buyCount}</span>}
+                {sellCount > 0 && <span className="text-[8px] text-[#FF1744]">{sellCount}</span>}
+                <span className="text-[9px] text-[#475569]">{syms.length}</span>
+              </span>
             </button>
-            {expanded && syms.map((s) => (
-              <button
-                key={s}
-                onClick={() => onSelect(s)}
-                className={`w-full text-left pl-7 pr-3 py-1 text-xs transition hover:bg-[#16213e] ${
-                  s === selected ? 'bg-[#16213e] text-[#42A5F5]' : 'text-[#94a3b8]'
-                }`}
-              >
-                {s}
-              </button>
-            ))}
+            {expanded && (
+              <div className="chart-sector-expand">
+                {syms.map((s) => {
+                  const isSelected = s === selected;
+                  const isBuy = strongBuy.includes(s);
+                  const isSell = strongSell.includes(s);
+                  return (
+                    <button
+                      key={s}
+                      onClick={() => onSelect(s)}
+                      className={`w-full text-left pl-7 pr-3 py-1 text-xs transition-all duration-150 flex items-center gap-1.5
+                        ${isSelected ? 'bg-[#16213e] text-[#42A5F5]' : 'text-[#7a8599] hover:text-[#94a3b8] hover:bg-[#16213e]/30'}`}
+                    >
+                      <span className="flex-1">{s}</span>
+                      {isBuy && <span className="w-1.5 h-1.5 rounded-full bg-[#00E676]" />}
+                      {isSell && <span className="w-1.5 h-1.5 rounded-full bg-[#FF1744]" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         );
       })}
@@ -231,41 +412,207 @@ function SectorSymbolList({
   );
 }
 
-/* ── Chart Panel ─────────────────────────────────────────────────── */
-type OverlayKey = 'sma20' | 'sma50' | 'sma200' | 'bb' | 'rsi' | 'forecastMedian' | 'ciUpper' | 'ciLower';
-
-const OVERLAY_DEFS: { key: OverlayKey; label: string; color: string; group: string; shortcut: string }[] = [
-  { key: 'sma20',          label: 'SMA 20',          color: '#FFB300', group: 'Moving Averages', shortcut: '1' },
-  { key: 'sma50',          label: 'SMA 50',          color: '#42A5F5', group: 'Moving Averages', shortcut: '2' },
-  { key: 'sma200',         label: 'SMA 200',         color: '#AB47BC', group: 'Moving Averages', shortcut: '3' },
-  { key: 'bb',             label: 'Bollinger Bands',  color: 'rgba(66,165,245,0.6)', group: 'Overlays', shortcut: '4' },
-  { key: 'rsi',            label: 'RSI (14)',         color: '#42A5F5', group: 'Overlays', shortcut: '5' },
-  { key: 'forecastMedian', label: 'Forecast Median',  color: '#2196F3', group: 'Forecast', shortcut: '6' },
-  { key: 'ciUpper',        label: 'CI Upper',         color: '#26A69A', group: 'Forecast', shortcut: '7' },
-  { key: 'ciLower',        label: 'CI Lower',         color: '#EF5350', group: 'Forecast', shortcut: '8' },
+/* ═══════════════════════════════════════════════════════════════════
+   RANKED FILTER LIST — fast filters for most profitable charts
+   ═══════════════════════════════════════════════════════════════════ */
+const FILTER_DEFS: { key: FilterMode; label: string; desc: string; color: string; icon: string;
+  metric: (r: SummaryRow) => string; rawMetric: (r: SummaryRow) => number; format: 'pct' | 'num' | 'pct100'; }[] = [
+  { key: 'momentum', label: 'Momentum', desc: 'Strongest trend signal', color: '#00E676', icon: 'M',
+    metric: (r) => { const v = r.momentum_score ?? 0; return (v >= 0 ? '+' : '') + v.toFixed(0); },
+    rawMetric: (r) => r.momentum_score ?? 0, format: 'num' },
+  { key: 'edge', label: 'Edge', desc: 'Best signal edge (Kelly)', color: '#42A5F5', icon: 'E',
+    metric: (r) => { const v = getMaxEdge(r); return (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + '%'; },
+    rawMetric: (r) => getMaxEdge(r), format: 'pct' },
+  { key: 'exp_return', label: 'Return', desc: 'Best expected return', color: '#FFB300', icon: 'R',
+    metric: (r) => {
+      const sigs = Object.values(r.horizon_signals || {});
+      const best = sigs.length ? Math.max(...sigs.map(s => s.exp_ret ?? 0)) : 0;
+      return (best >= 0 ? '+' : '') + best.toFixed(1) + '%';
+    },
+    rawMetric: (r) => {
+      const sigs = Object.values(r.horizon_signals || {});
+      return sigs.length ? Math.max(...sigs.map(s => s.exp_ret ?? 0)) : 0;
+    }, format: 'pct' },
+  { key: 'p_up', label: 'P(Up)', desc: 'Highest upside probability', color: '#26A69A', icon: 'P',
+    metric: (r) => {
+      const sigs = Object.values(r.horizon_signals || {});
+      const best = sigs.length ? Math.max(...sigs.map(s => s.p_up ?? 0)) : 0;
+      return (best * 100).toFixed(0) + '%';
+    },
+    rawMetric: (r) => {
+      const sigs = Object.values(r.horizon_signals || {});
+      return sigs.length ? Math.max(...sigs.map(s => s.p_up ?? 0)) : 0;
+    }, format: 'pct100' },
+  { key: 'low_risk', label: 'Safe', desc: 'Lowest crash risk', color: '#AB47BC', icon: 'S',
+    metric: (r) => (r.crash_risk_score ?? 0).toFixed(1),
+    rawMetric: (r) => r.crash_risk_score ?? 0, format: 'num' },
+  { key: 'kelly', label: 'Kelly', desc: 'Best half-Kelly sizing', color: '#EF5350', icon: 'K',
+    metric: (r) => (getMaxHalfKelly(r) * 100).toFixed(1) + '%',
+    rawMetric: (r) => getMaxHalfKelly(r), format: 'pct' },
 ];
 
-const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
-  sma20: true, sma50: true, sma200: true, bb: true, rsi: true,
-  forecastMedian: true, ciUpper: true, ciLower: true,
-};
+/** Compute bar width % for a metric relative to the best in the list */
+function computeBarWidths(rows: SummaryRow[], rawMetric: (r: SummaryRow) => number, isInverse: boolean): number[] {
+  if (rows.length === 0) return [];
+  const values = rows.map(rawMetric);
+  const absMax = Math.max(...values.map(v => Math.abs(v)), 0.001);
+  if (isInverse) {
+    const maxVal = Math.max(...values, 0.001);
+    return values.map(v => Math.max(5, ((maxVal - v) / maxVal) * 100));
+  }
+  return values.map(v => Math.max(5, (Math.abs(v) / absMax) * 100));
+}
 
+function RankedFilterList({
+  filterMode, setFilterMode, rows, selected, onSelect, search, loading, strongBuy, strongSell,
+}: {
+  filterMode: FilterMode; setFilterMode: (m: FilterMode) => void;
+  rows: SummaryRow[]; selected: string; onSelect: (s: string) => void;
+  search: string; loading: boolean;
+  strongBuy: string[]; strongSell: string[];
+}) {
+  const currentFilter = FILTER_DEFS.find(f => f.key === filterMode)!;
+  const filteredRows = search
+    ? rows.filter(r => r.asset_label.toLowerCase().includes(search.toLowerCase()))
+    : rows;
+  const barWidths = computeBarWidths(filteredRows, currentFilter.rawMetric, filterMode === 'low_risk');
+
+  return (
+    <div>
+      {/* Filter mode pills */}
+      <div className="flex flex-wrap gap-0.5 p-1.5 border-b border-[#2a2a4a]/50">
+        {FILTER_DEFS.map(f => {
+          const active = filterMode === f.key;
+          return (
+            <button
+              key={f.key}
+              onClick={() => setFilterMode(f.key)}
+              className={`px-1.5 py-1 rounded text-[9px] font-semibold transition-all duration-200 ${
+                active ? 'shadow-sm' : 'text-[#475569] hover:text-[#94a3b8] bg-transparent'
+              }`}
+              style={active ? { background: `${f.color}18`, color: f.color } : {}}
+              title={f.desc}
+            >
+              {f.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Header with count */}
+      <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-[#2a2a4a]/30">
+        <p className="text-[9px] text-[#475569]">{currentFilter.desc}</p>
+        <span className="text-[8px] tabular-nums text-[#3a3a5a]">{filteredRows.length} assets</span>
+      </div>
+
+      {loading ? (
+        <div className="px-3 py-8 text-center">
+          <div className="inline-block w-4 h-4 border-2 border-[#2a2a4a] border-t-[#42A5F5] rounded-full animate-spin mb-2" />
+          <p className="text-[10px] text-[#475569]">Loading signals...</p>
+        </div>
+      ) : filteredRows.length === 0 ? (
+        <div className="px-3 py-8 text-center">
+          <p className="text-[10px] text-[#475569]">No matching assets</p>
+        </div>
+      ) : (
+        filteredRows.map((r, idx) => {
+          const ticker = extractTicker(r.asset_label);
+          const companyName = r.asset_label.includes('(') ? r.asset_label.split('(')[0].trim() : '';
+          const isSelected = ticker === selected;
+          const isBuy = strongBuy.includes(ticker);
+          const isSell = strongSell.includes(ticker);
+          const metricStr = currentFilter.metric(r);
+          const barW = barWidths[idx] ?? 0;
+          const isTop3 = idx < 3;
+          return (
+            <button
+              key={ticker}
+              onClick={() => onSelect(ticker)}
+              className={`group relative w-full text-left px-2 py-1.5 text-xs transition-all duration-150 overflow-hidden
+                ${isSelected
+                  ? 'bg-[#16213e]'
+                  : 'hover:bg-[#16213e]/40'
+                }`}
+            >
+              {/* Metric bar background */}
+              <div
+                className="absolute inset-y-0 left-0 transition-all duration-500 ease-out opacity-[0.06]"
+                style={{ width: `${barW}%`, backgroundColor: currentFilter.color }}
+              />
+              <div className="relative flex items-center gap-1.5">
+                {/* Rank */}
+                <span className={`text-[9px] w-4 text-right tabular-nums font-mono flex-shrink-0 ${
+                  isTop3 ? 'font-bold' : ''
+                }`} style={{ color: isTop3 ? currentFilter.color : '#3a3a5a' }}>
+                  {idx + 1}
+                </span>
+                {/* Selection indicator */}
+                <span className={`w-0.5 h-3.5 rounded-full transition-all duration-200 flex-shrink-0 ${
+                  isSelected ? 'opacity-100' : 'opacity-0'
+                }`} style={{ backgroundColor: currentFilter.color }} />
+                {/* Ticker + company */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1">
+                    <span className={`font-semibold text-[11px] tracking-wide ${
+                      isSelected ? 'text-[#e2e8f0]' : 'text-[#cbd5e1] group-hover:text-[#e2e8f0]'
+                    }`}>
+                      {ticker}
+                    </span>
+                    {isBuy && (
+                      <span className="px-1 py-px rounded text-[7px] font-bold bg-[#00E676]/15 text-[#00E676]">BUY</span>
+                    )}
+                    {isSell && (
+                      <span className="px-1 py-px rounded text-[7px] font-bold bg-[#FF1744]/15 text-[#FF1744]">SELL</span>
+                    )}
+                  </div>
+                  {companyName && (
+                    <p className="text-[8px] text-[#475569] truncate leading-tight mt-px">
+                      {companyName}
+                    </p>
+                  )}
+                </div>
+                {/* Metric value */}
+                <span className={`text-[10px] tabular-nums font-bold flex-shrink-0 ${
+                  isTop3 ? '' : 'opacity-80'
+                }`} style={{ color: currentFilter.color }}>
+                  {metricStr}
+                </span>
+              </div>
+            </button>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CHART PANEL
+   ═══════════════════════════════════════════════════════════════════ */
 function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongBuy: string[]; strongSell: string[] }) {
   const priceChartRef = useRef<HTMLDivElement>(null);
   const rsiChartRef = useRef<HTMLDivElement>(null);
   const priceChart = useRef<IChartApi | null>(null);
   const rsiChart = useRef<IChartApi | null>(null);
+  const candleSeriesRef = useRef<any>(null);
+  const volumeSeriesRef = useRef<any>(null);
   const [overlays, setOverlays] = useState<Record<OverlayKey, boolean>>(DEFAULT_OVERLAYS);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [timeRange, setTimeRange] = useState<TimeRange>('1Y');
+  const [crosshairData, setCrosshairData] = useState<{
+    time: string; o: number; h: number; l: number; c: number; v: number;
+  } | null>(null);
 
-  const toggle = (key: OverlayKey) => setOverlays(prev => ({ ...prev, [key]: !prev[key] }));
-  const allOn = () => setOverlays(DEFAULT_OVERLAYS);
-  const allOff = () => setOverlays(Object.fromEntries(Object.keys(DEFAULT_OVERLAYS).map(k => [k, false])) as Record<OverlayKey, boolean>);
+  const toggle = useCallback((key: OverlayKey) => setOverlays(prev => ({ ...prev, [key]: !prev[key] })), []);
+  const allOn = useCallback(() => setOverlays(DEFAULT_OVERLAYS), []);
+  const allOff = useCallback(() => setOverlays(
+    Object.fromEntries(Object.keys(DEFAULT_OVERLAYS).map(k => [k, false])) as Record<OverlayKey, boolean>
+  ), []);
   const allActive = Object.values(overlays).every(v => v);
   const noneActive = Object.values(overlays).every(v => !v);
   const activeCount = Object.values(overlays).filter(v => v).length;
 
-  // Keyboard shortcuts: digits 1-8 toggle overlays, 0 = all off, 9 = all on, L = panel
+  // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -277,9 +624,8 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [toggle, allOn, allOff]);
 
-  // Compat shims for the chart rendering
   const showSMA20 = overlays.sma20;
   const showSMA50 = overlays.sma50;
   const showSMA200 = overlays.sma200;
@@ -289,15 +635,17 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
   const showCIUpper = overlays.ciUpper;
   const showCILower = overlays.ciLower;
 
+  const rangeDays = TIME_RANGES.find(r => r.key === timeRange)?.days || 365;
+
   const ohlcvQ = useQuery({
-    queryKey: ['ohlcv', symbol],
-    queryFn: () => api.chartOhlcv(symbol, 365),
+    queryKey: ['ohlcv', symbol, rangeDays],
+    queryFn: () => api.chartOhlcv(symbol, rangeDays),
     enabled: !!symbol,
   });
 
   const indQ = useQuery({
-    queryKey: ['indicators', symbol],
-    queryFn: () => api.chartIndicators(symbol, 365),
+    queryKey: ['indicators', symbol, rangeDays],
+    queryFn: () => api.chartIndicators(symbol, rangeDays),
     enabled: !!symbol,
   });
 
@@ -307,32 +655,91 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     enabled: !!symbol,
   });
 
-  // Price chart
+  /* ── Price chart ─────────────────────────────────────────── */
   useEffect(() => {
     if (!priceChartRef.current || !ohlcvQ.data?.data?.length) return;
     if (priceChart.current) { priceChart.current.remove(); priceChart.current = null; }
 
-    const chart = createChart(priceChartRef.current, {
-      layout: { background: { type: ColorType.Solid, color: '#1a1a2e' }, textColor: '#94a3b8' },
-      grid: { vertLines: { color: '#2a2a4a' }, horzLines: { color: '#2a2a4a' } },
-      width: priceChartRef.current.clientWidth,
-      height: 420,
+    const container = priceChartRef.current;
+    const chart = createChart(container, {
+      layout: {
+        background: { type: ColorType.Solid, color: 'transparent' },
+        textColor: '#64748b',
+        fontFamily: "'Inter', system-ui, sans-serif",
+        fontSize: 11,
+      },
+      grid: {
+        vertLines: { color: 'rgba(42, 42, 74, 0.4)' },
+        horzLines: { color: 'rgba(42, 42, 74, 0.4)' },
+      },
+      width: container.clientWidth,
+      height: 480,
       crosshair: {
-        vertLine: { color: '#42A5F5', width: 1, style: 2 },
-        horzLine: { color: '#42A5F5', width: 1, style: 2 },
+        vertLine: { color: 'rgba(66, 165, 245, 0.4)', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#1e293b' },
+        horzLine: { color: 'rgba(66, 165, 245, 0.4)', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#1e293b' },
+      },
+      rightPriceScale: {
+        borderColor: 'rgba(42, 42, 74, 0.5)',
+        scaleMargins: { top: 0.08, bottom: 0.18 },
+      },
+      timeScale: {
+        borderColor: 'rgba(42, 42, 74, 0.5)',
+        timeVisible: false,
+        rightOffset: 12,
+        barSpacing: 8,
+        minBarSpacing: 4,
       },
     });
     priceChart.current = chart;
 
-    // Candlestick
+    // Candlesticks
+    const showPriceLine = overlays.priceLine;
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#00E676', downColor: '#FF1744',
-      borderUpColor: '#00E676', borderDownColor: '#FF1744',
-      wickUpColor: '#00E676', wickDownColor: '#FF1744',
+      upColor: '#00E676',
+      downColor: '#FF1744',
+      borderUpColor: '#00E676',
+      borderDownColor: '#FF1744',
+      wickUpColor: '#00C853',
+      wickDownColor: '#D50000',
+      lastValueVisible: showPriceLine,
+      priceLineVisible: showPriceLine,
     });
     candleSeries.setData(ohlcvQ.data.data);
+    candleSeriesRef.current = candleSeries;
 
-    // Signal markers on candlestick (v5: markers on chart, not series)
+    // Volume
+    const volumeSeries = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: 'volume' },
+      priceScaleId: 'volume',
+    });
+    chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.84, bottom: 0 } });
+    volumeSeries.setData(
+      ohlcvQ.data.data.map((d: OHLCVBar) => ({
+        time: d.time,
+        value: d.volume,
+        color: d.close >= d.open ? 'rgba(0,230,118,0.18)' : 'rgba(255,23,68,0.18)',
+      }))
+    );
+    volumeSeriesRef.current = volumeSeries;
+
+    // Crosshair move for live OHLCV data
+    chart.subscribeCrosshairMove((param) => {
+      if (!param.time || !param.seriesData) {
+        setCrosshairData(null);
+        return;
+      }
+      const candle = param.seriesData.get(candleSeries) as any;
+      const vol = param.seriesData.get(volumeSeries) as any;
+      if (candle) {
+        setCrosshairData({
+          time: String(param.time),
+          o: candle.open, h: candle.high, l: candle.low, c: candle.close,
+          v: vol?.value || 0,
+        });
+      }
+    });
+
+    // Signal markers
     const isSB = strongBuy.includes(symbol);
     const isSS = strongSell.includes(symbol);
     if (isSB || isSS) {
@@ -346,41 +753,31 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
             shape: isSB ? 'arrowUp' : 'arrowDown',
             text: isSB ? 'STRONG BUY' : 'STRONG SELL',
           }]);
-        } catch {
-          // markers not supported in this version
-        }
+        } catch { /* markers not supported in this version */ }
       }
     }
 
-    // Volume
-    const volumeSeries = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: 'volume' },
-      priceScaleId: 'volume',
-    });
-    chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    volumeSeries.setData(
-      ohlcvQ.data.data.map((d: OHLCVBar) => ({
-        time: d.time,
-        value: d.volume,
-        color: d.close >= d.open ? 'rgba(0,230,118,0.25)' : 'rgba(255,23,68,0.25)',
-      }))
-    );
-
-    // Indicators — individual SMA controls
+    // SMAs with clean presentation (no price line, no last value label)
+    const smaOpts = { crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false };
     if (indQ.data?.indicators) {
       const ind = indQ.data.indicators;
-      if (showSMA20 && ind.sma20?.length) chart.addSeries(LineSeries, { color: '#FFB300', lineWidth: 1 }).setData(ind.sma20);
-      if (showSMA50 && ind.sma50?.length) chart.addSeries(LineSeries, { color: '#42A5F5', lineWidth: 1 }).setData(ind.sma50);
-      if (showSMA200 && ind.sma200?.length) chart.addSeries(LineSeries, { color: '#AB47BC', lineWidth: 1 }).setData(ind.sma200);
+      if (showSMA20 && ind.sma20?.length)
+        chart.addSeries(LineSeries, { color: '#FFB300', lineWidth: 1, ...smaOpts }).setData(ind.sma20);
+      if (showSMA50 && ind.sma50?.length)
+        chart.addSeries(LineSeries, { color: '#42A5F5', lineWidth: 1, ...smaOpts }).setData(ind.sma50);
+      if (showSMA200 && ind.sma200?.length)
+        chart.addSeries(LineSeries, { color: '#AB47BC', lineWidth: 1, ...smaOpts }).setData(ind.sma200);
     }
 
+    // Bollinger Bands with dotted style
     if (indQ.data?.indicators?.bollinger && showBollinger) {
       const bb = indQ.data.indicators.bollinger;
-      if (bb.upper?.length) chart.addSeries(LineSeries, { color: 'rgba(66,165,245,0.3)', lineWidth: 1 }).setData(bb.upper);
-      if (bb.lower?.length) chart.addSeries(LineSeries, { color: 'rgba(66,165,245,0.3)', lineWidth: 1 }).setData(bb.lower);
+      const bbOpts = { lineWidth: 1 as const, lineStyle: LineStyle.Dotted, ...smaOpts };
+      if (bb.upper?.length) chart.addSeries(LineSeries, { color: 'rgba(66,165,245,0.25)', ...bbOpts }).setData(bb.upper);
+      if (bb.lower?.length) chart.addSeries(LineSeries, { color: 'rgba(66,165,245,0.25)', ...bbOpts }).setData(bb.lower);
     }
 
-    // Story 6.5: Forecast fan chart overlay — individual CI/median controls
+    // Forecast overlay
     const showAnyForecast = showForecastMedian || showCIUpper || showCILower;
     if (showAnyForecast && forecastQ.data?.forecasts?.length && ohlcvQ.data.data.length > 0) {
       const lastCandle = ohlcvQ.data.data[ohlcvQ.data.data.length - 1];
@@ -397,46 +794,29 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
         const dateStr = futureDate.toISOString().slice(0, 10);
         const retPct = f.expected_return_pct / 100;
         const medianPrice = lastPrice * (1 + retPct);
-        // CI width grows with sqrt(horizon)
         const ciWidth = lastPrice * Math.abs(retPct) * 0.5 + lastPrice * 0.01 * Math.sqrt(f.horizon_days);
         upperData.push({ time: dateStr, value: medianPrice + ciWidth });
         lowerData.push({ time: dateStr, value: Math.max(0, medianPrice - ciWidth) });
         medianData.push({ time: dateStr, value: medianPrice });
       }
 
-      // Upper CI band (green tint)
+      const fcOpts = { priceScaleId: 'right' as const, ...smaOpts };
       if (showCIUpper) {
-        const upperSeries = chart.addSeries(AreaSeries, {
-          topColor: 'rgba(38, 166, 154, 0.25)',
-          bottomColor: 'rgba(38, 166, 154, 0.0)',
-          lineColor: 'rgba(38, 166, 154, 0.4)',
-          lineWidth: 1,
-          priceScaleId: 'right',
-        });
-        upperSeries.setData(upperData);
+        chart.addSeries(AreaSeries, {
+          topColor: 'rgba(38, 166, 154, 0.20)', bottomColor: 'rgba(38, 166, 154, 0.0)',
+          lineColor: 'rgba(38, 166, 154, 0.35)', lineWidth: 1, ...fcOpts,
+        }).setData(upperData);
       }
-
-      // Lower CI band (red tint)
       if (showCILower) {
-        const lowerSeries = chart.addSeries(AreaSeries, {
-          topColor: 'rgba(239, 83, 80, 0.0)',
-          bottomColor: 'rgba(239, 83, 80, 0.25)',
-          lineColor: 'rgba(239, 83, 80, 0.4)',
-          lineWidth: 1,
-          priceScaleId: 'right',
-        });
-        lowerSeries.setData(lowerData);
+        chart.addSeries(AreaSeries, {
+          topColor: 'rgba(239, 83, 80, 0.0)', bottomColor: 'rgba(239, 83, 80, 0.20)',
+          lineColor: 'rgba(239, 83, 80, 0.35)', lineWidth: 1, ...fcOpts,
+        }).setData(lowerData);
       }
-
-      // Median forecast line (blue dashed)
       if (showForecastMedian) {
-        const forecastLine = chart.addSeries(LineSeries, {
-          color: '#2196F3',
-          lineWidth: 2,
-          lineStyle: LineStyle.Dashed,
-          priceScaleId: 'right',
-        });
-        forecastLine.setData(medianData);
+        chart.addSeries(LineSeries, {
+          color: '#2196F3', lineWidth: 2, lineStyle: LineStyle.Dashed, ...fcOpts,
+        }).setData(medianData);
       }
     }
 
@@ -446,34 +826,41 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     };
     window.addEventListener('resize', handleResize);
     return () => { window.removeEventListener('resize', handleResize); chart.remove(); priceChart.current = null; };
-  }, [ohlcvQ.data, indQ.data, forecastQ.data, showSMA20, showSMA50, showSMA200, showBollinger, showForecastMedian, showCIUpper, showCILower, symbol, strongBuy, strongSell]);
+  }, [ohlcvQ.data, indQ.data, forecastQ.data, showSMA20, showSMA50, showSMA200, showBollinger, showForecastMedian, showCIUpper, showCILower, symbol, strongBuy, strongSell, overlays.priceLine]);
 
-  // RSI chart
+  /* ── RSI chart ───────────────────────────────────────────── */
   useEffect(() => {
     if (!rsiChartRef.current || !showRSI || !indQ.data?.indicators?.rsi?.length) return;
     if (rsiChart.current) { rsiChart.current.remove(); rsiChart.current = null; }
 
     const chart = createChart(rsiChartRef.current, {
-      layout: { background: { type: ColorType.Solid, color: '#1a1a2e' }, textColor: '#94a3b8' },
-      grid: { vertLines: { color: '#2a2a4a' }, horzLines: { color: '#2a2a4a' } },
+      layout: {
+        background: { type: ColorType.Solid, color: 'transparent' },
+        textColor: '#64748b',
+        fontFamily: "'Inter', system-ui, sans-serif",
+        fontSize: 10,
+      },
+      grid: {
+        vertLines: { color: 'rgba(42, 42, 74, 0.3)' },
+        horzLines: { color: 'rgba(42, 42, 74, 0.3)' },
+      },
       width: rsiChartRef.current.clientWidth,
-      height: 120,
-      rightPriceScale: { scaleMargins: { top: 0.1, bottom: 0.1 } },
+      height: 100,
+      rightPriceScale: { scaleMargins: { top: 0.08, bottom: 0.08 }, borderColor: 'rgba(42, 42, 74, 0.5)' },
+      timeScale: { borderColor: 'rgba(42, 42, 74, 0.5)', visible: false },
     });
     rsiChart.current = chart;
 
-    // RSI line
-    const rsiSeries = chart.addSeries(LineSeries, { color: '#42A5F5', lineWidth: 2 });
+    const rsiSeries = chart.addSeries(LineSeries, { color: '#42A5F5', lineWidth: 1.5, crosshairMarkerVisible: false });
     rsiSeries.setData(indQ.data.indicators.rsi);
 
-    // Overbought / oversold lines
     const rsiData = indQ.data.indicators.rsi;
     if (rsiData.length >= 2) {
       const times = rsiData.map(d => d.time);
-      const overbought = chart.addSeries(LineSeries, { color: 'rgba(255,23,68,0.4)', lineWidth: 1, lineStyle: 2 });
-      overbought.setData(times.map(t => ({ time: t, value: 70 })));
-      const oversold = chart.addSeries(LineSeries, { color: 'rgba(0,230,118,0.4)', lineWidth: 1, lineStyle: 2 });
-      oversold.setData(times.map(t => ({ time: t, value: 30 })));
+      const refOpts = { lineWidth: 1 as const, lineStyle: LineStyle.Dotted, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false };
+      chart.addSeries(LineSeries, { color: 'rgba(255,23,68,0.25)', ...refOpts }).setData(times.map(t => ({ time: t, value: 70 })));
+      chart.addSeries(LineSeries, { color: 'rgba(0,230,118,0.25)', ...refOpts }).setData(times.map(t => ({ time: t, value: 30 })));
+      chart.addSeries(LineSeries, { color: 'rgba(100,116,139,0.15)', ...refOpts }).setData(times.map(t => ({ time: t, value: 50 })));
     }
 
     chart.timeScale().fitContent();
@@ -492,8 +879,22 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     return () => { window.removeEventListener('resize', handleResize); chart.remove(); rsiChart.current = null; };
   }, [indQ.data, showRSI]);
 
-  if (ohlcvQ.isLoading) return <LoadingSpinner text={`Loading ${symbol}...`} />;
-  if (ohlcvQ.error) return <div className="text-[#FF1744]">Failed to load chart for {symbol}</div>;
+  /* ── Derived data ────────────────────────────────────────── */
+  if (ohlcvQ.isLoading) {
+    return (
+      <div className="glass-card p-16 text-center chart-fade-in">
+        <LoadingSpinner text={`Loading ${symbol}...`} />
+      </div>
+    );
+  }
+  if (ohlcvQ.error) {
+    return (
+      <div className="glass-card p-8 text-center">
+        <p className="text-[#FF1744] text-sm">Failed to load chart for {symbol}</p>
+        <p className="text-[10px] text-[#475569] mt-1">Check data availability or try another symbol</p>
+      </div>
+    );
+  }
 
   const bars = ohlcvQ.data?.data;
   const lastBar = bars?.[bars.length - 1];
@@ -502,122 +903,161 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
   const isSB = strongBuy.includes(symbol);
   const isSS = strongSell.includes(symbol);
 
-  return (
-    <div>
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-3">
-        <h2 className="text-xl font-bold text-[#e2e8f0]">{symbol}</h2>
-        {lastBar && (
-          <>
-            <span className="text-lg font-medium text-[#e2e8f0]">${lastBar.close.toFixed(2)}</span>
-            <span className={`text-sm font-medium ${change >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>
-              {change >= 0 ? '+' : ''}{change.toFixed(2)}%
-            </span>
-          </>
-        )}
-        {isSB && (
-          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#00E676]/20 text-[#00E676]">
-            {'\u25B2\u25B2'} STRONG BUY
-          </span>
-        )}
-        {isSS && (
-          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#FF1744]/20 text-[#FF1744]">
-            {'\u25BC\u25BC'} STRONG SELL
-          </span>
-        )}
+  const high = lastBar?.high || 0;
+  const low = lastBar?.low || 0;
+  const open = lastBar?.open || 0;
+  const volume = lastBar?.volume || 0;
 
-        {/* Overlay panel toggle */}
-        <div className="flex gap-2 ml-auto items-center">
-          <div className="flex gap-1">
-            {OVERLAY_DEFS.filter(d => overlays[d.key]).map(d => (
-              <span
-                key={d.key}
-                className="w-2 h-2 rounded-full animate-pulse"
-                style={{ backgroundColor: d.color }}
-                title={d.label}
-              />
+  const rsiData = indQ.data?.indicators?.rsi;
+  const rsiValue = rsiData?.length ? rsiData[rsiData.length - 1].value : null;
+
+  // Performance summary line
+  const firstBar = bars?.[0];
+  const periodReturn = firstBar && lastBar ? ((lastBar.close - firstBar.close) / firstBar.close * 100) : 0;
+
+  return (
+    <div className="chart-fade-in">
+      {/* ── Ticker Header ───────────────────────────────────── */}
+      <div className="flex items-start gap-4 mb-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-3 mb-1">
+            <h2 className="text-2xl font-bold text-[#f1f5f9] tracking-tight">{symbol}</h2>
+            {lastBar && (
+              <>
+                <span className="text-xl font-semibold text-[#e2e8f0] tabular-nums">${lastBar.close.toFixed(2)}</span>
+                <span className={`text-sm font-semibold tabular-nums px-1.5 py-0.5 rounded ${
+                  change >= 0 ? 'text-[#00E676] bg-[#00E676]/8' : 'text-[#FF1744] bg-[#FF1744]/8'
+                }`}>
+                  {change >= 0 ? '+' : ''}{change.toFixed(2)}%
+                </span>
+              </>
+            )}
+            {isSB && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#00E676]/15 text-[#00E676] ring-1 ring-[#00E676]/20">
+                STRONG BUY
+              </span>
+            )}
+            {isSS && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#FF1744]/15 text-[#FF1744] ring-1 ring-[#FF1744]/20">
+                STRONG SELL
+              </span>
+            )}
+          </div>
+
+          {/* OHLCV data bar (live with crosshair) */}
+          <div className="flex items-center gap-4 text-[10px] text-[#64748b] tabular-nums">
+            <span>O <span className="text-[#94a3b8]">{(crosshairData?.o ?? open).toFixed(2)}</span></span>
+            <span>H <span className="text-[#00E676]/70">{(crosshairData?.h ?? high).toFixed(2)}</span></span>
+            <span>L <span className="text-[#FF1744]/70">{(crosshairData?.l ?? low).toFixed(2)}</span></span>
+            <span>C <span className="text-[#94a3b8]">{(crosshairData?.c ?? lastBar?.close ?? 0).toFixed(2)}</span></span>
+            <span className="text-[#2a2a4a]">|</span>
+            <span>Vol <span className="text-[#94a3b8]">{formatVolume(crosshairData?.v ?? volume)}</span></span>
+            {rsiValue != null && (
+              <>
+                <span className="text-[#2a2a4a]">|</span>
+                <span>RSI <span className={rsiValue > 70 ? 'text-[#FF1744]' : rsiValue < 30 ? 'text-[#00E676]' : 'text-[#94a3b8]'}>
+                  {rsiValue.toFixed(1)}
+                </span></span>
+              </>
+            )}
+            <span className="text-[#2a2a4a]">|</span>
+            <span>Period <span className={periodReturn >= 0 ? 'text-[#00E676]/70' : 'text-[#FF1744]/70'}>
+              {periodReturn >= 0 ? '+' : ''}{periodReturn.toFixed(1)}%
+            </span></span>
+            {crosshairData && (
+              <>
+                <span className="text-[#2a2a4a]">|</span>
+                <span className="text-[#475569]">{crosshairData.time}</span>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* ── Controls ──────────────────────────────────────── */}
+        <div className="flex items-center gap-2 flex-shrink-0 pt-1">
+          {/* Time range pills */}
+          <div className="flex bg-[#0f0f23]/80 rounded-lg p-0.5 ring-1 ring-[#2a2a4a]/50">
+            {TIME_RANGES.map(r => (
+              <button
+                key={r.key}
+                onClick={() => setTimeRange(r.key)}
+                className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-all duration-200 ${
+                  timeRange === r.key
+                    ? 'bg-[#42A5F5]/15 text-[#42A5F5] shadow-sm'
+                    : 'text-[#475569] hover:text-[#94a3b8]'
+                }`}
+              >
+                {r.label}
+              </button>
             ))}
           </div>
+
+          {/* Layers button */}
           <button
             onClick={() => setPanelOpen(v => !v)}
-            className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-all duration-200 flex items-center gap-1.5 ${
+            className={`px-2.5 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-200 flex items-center gap-1.5 ring-1 ${
               panelOpen
-                ? 'bg-[#42A5F5]/25 text-[#42A5F5] ring-1 ring-[#42A5F5]/30'
-                : 'bg-[#1a1a2e] text-[#94a3b8] hover:bg-[#1e2844] hover:text-[#e2e8f0]'
+                ? 'bg-[#42A5F5]/15 text-[#42A5F5] ring-[#42A5F5]/30'
+                : 'bg-[#0f0f23]/80 text-[#64748b] ring-[#2a2a4a]/50 hover:text-[#94a3b8]'
             }`}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3" /><path d="M12 1v6m0 6v6m8.66-13-5.2 3m-6.92 4-5.2 3M22.66 17l-5.2-3m-6.92-4-5.2-3" />
+              <polygon points="12 2 2 7 12 12 22 7 12 2" />
+              <polyline points="2 17 12 22 22 17" />
+              <polyline points="2 12 12 17 22 12" />
             </svg>
-            Layers ({activeCount}/{OVERLAY_DEFS.length})
+            {activeCount}/{OVERLAY_DEFS.length}
           </button>
         </div>
       </div>
 
-      {/* Overlay control panel */}
-      <div
-        className={`overflow-hidden transition-all duration-300 ease-out ${
-          panelOpen ? 'max-h-[400px] opacity-100 mb-3' : 'max-h-0 opacity-0'
-        }`}
-      >
-        <div className="glass-card p-3">
-          {/* Quick actions */}
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-[10px] text-[#64748b] uppercase tracking-wider font-medium">Chart Layers</span>
+      {/* ── Overlay Control Panel ────────────────────────────── */}
+      <div className={`overflow-hidden transition-all duration-300 ease-out ${
+        panelOpen ? 'max-h-[300px] opacity-100 mb-3' : 'max-h-0 opacity-0'
+      }`}>
+        <div className="bg-[#0f0f23]/90 rounded-xl p-3 ring-1 ring-[#2a2a4a]/50 backdrop-blur-lg">
+          <div className="flex items-center justify-between mb-2.5">
+            <span className="text-[10px] text-[#475569] uppercase tracking-wider font-semibold">Chart Layers</span>
             <div className="flex gap-1.5">
-              <button
-                onClick={allOn}
-                disabled={allActive}
-                className="px-2 py-0.5 rounded text-[9px] font-medium transition-all
-                  bg-[#00E676]/10 text-[#00E676] hover:bg-[#00E676]/20
-                  disabled:opacity-30 disabled:cursor-default"
-              >
+              <button onClick={allOn} disabled={allActive}
+                className="px-2 py-0.5 rounded text-[9px] font-semibold transition-all bg-[#00E676]/8 text-[#00E676] hover:bg-[#00E676]/15 disabled:opacity-20 disabled:cursor-default">
                 All On
               </button>
-              <button
-                onClick={allOff}
-                disabled={noneActive}
-                className="px-2 py-0.5 rounded text-[9px] font-medium transition-all
-                  bg-[#FF1744]/10 text-[#FF1744] hover:bg-[#FF1744]/20
-                  disabled:opacity-30 disabled:cursor-default"
-              >
+              <button onClick={allOff} disabled={noneActive}
+                className="px-2 py-0.5 rounded text-[9px] font-semibold transition-all bg-[#FF1744]/8 text-[#FF1744] hover:bg-[#FF1744]/15 disabled:opacity-20 disabled:cursor-default">
                 All Off
               </button>
             </div>
           </div>
 
-          {/* Grouped overlays */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {['Moving Averages', 'Overlays', 'Forecast'].map(group => (
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+            {['Moving Averages', 'Volatility', 'Forecast', 'Overlays'].map(group => (
               <div key={group}>
-                <p className="text-[9px] text-[#475569] uppercase tracking-wider mb-1.5 font-medium">{group}</p>
-                <div className="flex flex-col gap-1">
+                <p className="text-[8px] text-[#3a3a5a] uppercase tracking-widest mb-1.5 font-bold">{group}</p>
+                <div className="flex flex-col gap-0.5">
                   {OVERLAY_DEFS.filter(d => d.group === group).map(d => (
                     <button
                       key={d.key}
                       onClick={() => toggle(d.key)}
-                      className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] font-medium transition-all duration-200 group ${
-                        overlays[d.key]
-                          ? 'bg-[#16213e] ring-1'
-                          : 'bg-transparent hover:bg-[#16213e]/50'
+                      className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-all duration-200 group ${
+                        overlays[d.key] ? 'bg-[#16213e]/80' : 'bg-transparent hover:bg-[#16213e]/30'
                       }`}
                       style={{
-                        color: overlays[d.key] ? d.color : '#64748b',
-                        ringColor: overlays[d.key] ? `${d.color}33` : 'transparent',
-                        borderColor: overlays[d.key] ? `${d.color}33` : 'transparent',
-                        border: overlays[d.key] ? `1px solid ${d.color}33` : '1px solid transparent',
+                        color: overlays[d.key] ? d.color : '#475569',
+                        border: overlays[d.key] ? `1px solid ${d.color}22` : '1px solid transparent',
                       }}
                     >
-                      {/* Color indicator with on/off animation */}
                       <span
-                        className={`w-2.5 h-2.5 rounded-full transition-all duration-300 flex-shrink-0 ${
-                          overlays[d.key] ? 'scale-100' : 'scale-75 opacity-40'
+                        className={`w-2 h-2 rounded-full transition-all duration-300 flex-shrink-0 ${
+                          overlays[d.key] ? 'scale-100' : 'scale-75 opacity-30'
                         }`}
-                        style={{ backgroundColor: d.color }}
+                        style={{
+                          backgroundColor: d.color,
+                          boxShadow: overlays[d.key] ? `0 0 6px ${d.color}40` : 'none',
+                        }}
                       />
                       <span className="flex-1 text-left">{d.label}</span>
-                      {/* Shortcut hint */}
-                      <kbd className="text-[8px] px-1 py-0.5 rounded bg-[#0f0f23] text-[#475569] font-mono opacity-0 group-hover:opacity-100 transition-opacity">
+                      <kbd className="text-[7px] px-1 py-0.5 rounded bg-[#0a0a1a] text-[#3a3a5a] font-mono opacity-0 group-hover:opacity-100 transition-opacity">
                         {d.shortcut}
                       </kbd>
                     </button>
@@ -626,52 +1066,103 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
               </div>
             ))}
           </div>
-          <p className="text-[8px] text-[#3a3a5a] mt-2 text-center">
-            Press 1-8 to toggle layers  |  9 all on  |  0 all off  |  L toggle panel
+          <p className="text-[8px] text-[#2a2a3a] mt-2 text-center font-medium">
+            1-8 toggle  /  9 all on  /  0 all off  /  L panel
           </p>
         </div>
       </div>
 
-      {/* Price chart */}
-      <div className="glass-card p-2">
+      {/* ── Overlay legend (always visible, click to toggle) ── */}
+      <div className="flex items-center gap-3 mb-1 min-h-[18px]">
+        {OVERLAY_DEFS.filter(d => d.key !== 'rsi').map(d => {
+          const active = overlays[d.key];
+          return (
+            <button
+              key={d.key}
+              onClick={() => toggle(d.key)}
+              className={`flex items-center gap-1 text-[9px] transition-all cursor-pointer ${
+                active ? 'hover:opacity-60' : 'opacity-30 hover:opacity-50'
+              }`}
+              style={{ color: d.color }}
+              title={active ? `Click to hide ${d.label}` : `Click to show ${d.label}`}
+            >
+              <span
+                className="inline-block w-3 h-[2px] rounded-full"
+                style={{ backgroundColor: d.color, opacity: active ? 1 : 0.4 }}
+              />
+              <span className={active ? '' : 'line-through'}>{d.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Price Chart ──────────────────────────────────────── */}
+      <div className="chart-container rounded-xl overflow-hidden ring-1 ring-[#2a2a4a]/30">
         <div ref={priceChartRef} />
       </div>
 
-      {/* RSI sub-panel */}
+      {/* ── RSI Sub-chart ────────────────────────────────────── */}
       {showRSI && indQ.data?.indicators?.rsi?.length && (
-        <div className="glass-card p-2 mt-1">
-          <div className="flex items-center gap-2 px-2 mb-1">
-            <span className="text-[10px] text-[#94a3b8] font-medium">RSI (14)</span>
-            <span className="text-[9px] text-[#64748b]">
-              {indQ.data.indicators.rsi.length > 0 && (
-                <>Current: {indQ.data.indicators.rsi[indQ.data.indicators.rsi.length - 1].value.toFixed(1)}</>
-              )}
-            </span>
-            <div className="flex gap-3 ml-auto text-[9px]">
-              <span className="text-[#FF1744]/60">Overbought 70</span>
-              <span className="text-[#00E676]/60">Oversold 30</span>
+        <div className="chart-container rounded-xl overflow-hidden ring-1 ring-[#2a2a4a]/30 mt-1">
+          <div className="flex items-center gap-3 px-3 py-1.5">
+            <span className="text-[10px] text-[#64748b] font-semibold">RSI (14)</span>
+            {rsiValue != null && (
+              <span className={`text-[10px] font-bold tabular-nums ${
+                rsiValue > 70 ? 'text-[#FF1744]' : rsiValue < 30 ? 'text-[#00E676]' : 'text-[#64748b]'
+              }`}>
+                {rsiValue.toFixed(1)}
+              </span>
+            )}
+            <div className="flex gap-3 ml-auto text-[8px] font-medium">
+              <span className="text-[#FF1744]/40">70 Overbought</span>
+              <span className="text-[#64748b]/30">50</span>
+              <span className="text-[#00E676]/40">30 Oversold</span>
             </div>
           </div>
           <div ref={rsiChartRef} />
         </div>
       )}
 
-      {/* Forecast */}
+      {/* ── Multi-Horizon Forecast Cards ─────────────────────── */}
       {forecastQ.data?.forecasts?.length ? (
-        <div className="glass-card p-4 mt-4">
-          <h3 className="text-sm font-medium text-[#94a3b8] mb-3">Multi-Horizon Forecast</h3>
-          <div className="flex gap-3 flex-wrap">
+        <div className="mt-4">
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-[11px] font-semibold text-[#64748b] uppercase tracking-wider">Forecast</h3>
+            <div className="flex-1 h-px bg-[#2a2a4a]/30" />
+          </div>
+          <div className="grid grid-cols-7 gap-1.5">
             {forecastQ.data.forecasts.map((f) => {
-              const color = f.signal_label === 'BUY' || f.signal_label === 'STRONG BUY' ? '#00E676'
-                : f.signal_label === 'SELL' || f.signal_label === 'STRONG SELL' ? '#FF1744' : '#64748b';
+              const isPositive = f.expected_return_pct >= 0;
+              const isBuy = f.signal_label === 'BUY' || f.signal_label === 'STRONG BUY';
+              const isSell = f.signal_label === 'SELL' || f.signal_label === 'STRONG SELL';
+              const signalColor = isBuy ? '#00E676' : isSell ? '#FF1744' : '#475569';
+              const bgGrad = isBuy
+                ? 'from-[#00E676]/[0.04] to-transparent'
+                : isSell
+                  ? 'from-[#FF1744]/[0.04] to-transparent'
+                  : 'from-transparent to-transparent';
               return (
-                <div key={f.horizon_days} className="bg-[#0f0f23] rounded-lg px-3 py-2 text-center min-w-[80px]">
-                  <p className="text-[10px] text-[#64748b]">{formatHorizon(f.horizon_days)}</p>
-                  <p className="text-sm font-bold" style={{ color }}>
-                    {f.expected_return_pct >= 0 ? '+' : ''}{f.expected_return_pct.toFixed(1)}%
+                <div
+                  key={f.horizon_days}
+                  className={`bg-gradient-to-b ${bgGrad} rounded-xl p-2.5 text-center ring-1 transition-all hover:ring-[#42A5F5]/20`}
+                  style={{ borderColor: `${signalColor}10`, border: `1px solid ${signalColor}10` }}
+                >
+                  <p className="text-[9px] text-[#475569] font-semibold uppercase tracking-wider mb-1.5">
+                    {formatHorizon(f.horizon_days)}
                   </p>
-                  <p className="text-[10px]" style={{ color }}>
-                    {f.signal_label} {'\u2022'} {(f.probability_up * 100).toFixed(0)}%
+                  <p className={`text-base font-bold tabular-nums leading-none ${
+                    isPositive ? 'text-[#00E676]' : 'text-[#FF1744]'
+                  }`}>
+                    {isPositive ? '+' : ''}{f.expected_return_pct.toFixed(1)}%
+                  </p>
+                  <div className="mt-1.5 flex items-center justify-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: signalColor }} />
+                    <span className="text-[8px] font-semibold uppercase" style={{ color: signalColor }}>
+                      {f.signal_label}
+                    </span>
+                  </div>
+                  <p className="text-[9px] text-[#475569] mt-0.5 tabular-nums">
+                    {(f.probability_up * 100).toFixed(0)}% up
                   </p>
                 </div>
               );
@@ -681,4 +1172,14 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       ) : null}
     </div>
   );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   HELPERS
+   ═══════════════════════════════════════════════════════════════════ */
+function formatVolume(v: number): string {
+  if (v >= 1_000_000_000) return (v / 1_000_000_000).toFixed(1) + 'B';
+  if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M';
+  if (v >= 1_000) return (v / 1_000).toFixed(1) + 'K';
+  return v.toFixed(0);
 }

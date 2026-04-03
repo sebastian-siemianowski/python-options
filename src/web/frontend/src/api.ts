@@ -118,6 +118,13 @@ export interface SignalSummaryData {
   total: number;
 }
 
+export interface KellyHorizon {
+  horizon: number;
+  half_kelly: number;
+  capped_size: number;
+  edge: number;
+}
+
 export interface SummaryRow {
   asset_label: string;
   horizon_signals: Record<string, HorizonSignal>;
@@ -126,8 +133,8 @@ export interface SummaryRow {
   crash_risk_score: number;
   momentum_score: number;
   conviction?: number;
-  kelly?: number;
-  signal_ttl?: number;
+  kelly?: KellyHorizon[];
+  signal_ttl?: unknown;
 }
 
 export interface HorizonSignal {
