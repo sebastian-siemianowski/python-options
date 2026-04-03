@@ -53,7 +53,7 @@ export default function ArenaPage() {
 
       {/* Stats */}
       {status && (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6 fade-up">
           <StatCard
             title="Safe Storage"
             value={status.safe_storage_count}
@@ -80,7 +80,7 @@ export default function ArenaPage() {
 
       {/* Benchmark symbols */}
       {status && (
-        <div className="glass-card p-4 mb-6">
+        <div className="glass-card p-4 mb-6 hover-lift">
           <h3 className="text-sm font-medium text-[#94a3b8] mb-3 flex items-center gap-2">
             <Swords className="w-4 h-4" /> Benchmark Universe
           </h3>
@@ -88,7 +88,7 @@ export default function ArenaPage() {
             {status.benchmark_symbols.map((s) => (
               <span
                 key={s}
-                className="px-2.5 py-1 rounded-lg bg-[#16213e] text-xs font-medium text-[#42A5F5] border border-[#2a2a4a]"
+                className="px-2.5 py-1 rounded-lg bg-[#16213e] text-xs font-medium text-[#42A5F5] border border-[#2a2a4a] hover:bg-[#1a2744] transition-colors cursor-default"
               >
                 {s}
               </span>
@@ -98,7 +98,7 @@ export default function ArenaPage() {
       )}
 
       {/* Safe storage models with scoring */}
-      <div className="glass-card overflow-hidden">
+      <div className="glass-card overflow-hidden fade-up-delay-1">
         <div className="px-4 py-3 border-b border-[#2a2a4a] flex items-center justify-between">
           <h3 className="text-sm font-medium text-[#94a3b8]">Safe Storage Models</h3>
           <span className="text-xs text-[#64748b]">
@@ -136,7 +136,7 @@ export default function ArenaPage() {
       </div>
 
       {/* Hard gates reference */}
-      <div className="glass-card p-5 mt-6">
+      <div className="glass-card p-5 mt-6 hover-lift">
         <h3 className="text-sm font-medium text-[#94a3b8] mb-3">Hard Gates (Promotion Criteria)</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
           {[
@@ -165,7 +165,7 @@ export default function ArenaPage() {
 function ModelRow({ model: m, rank }: { model: SafeStorageModel; rank: number }) {
   if (!m.has_scores) {
     return (
-      <tr className="border-b border-[#2a2a4a]/50 hover:bg-[#16213e]/30 transition">
+      <tr className="border-b border-[#2a2a4a]/50 row-glow transition">
         <td className="px-3 py-2.5 text-[#64748b]">{rank}</td>
         <td className="px-3 py-2.5 font-medium text-[#e2e8f0]">{formatName(m.name)}</td>
         <td colSpan={8} className="px-3 py-2.5 text-[#64748b] italic">No scoring data</td>
@@ -175,7 +175,7 @@ function ModelRow({ model: m, rank }: { model: SafeStorageModel; rank: number })
   }
 
   return (
-    <tr className="border-b border-[#2a2a4a]/50 hover:bg-[#16213e]/30 transition">
+    <tr className="border-b border-[#2a2a4a]/50 row-glow transition">
       <td className="px-3 py-2.5 text-[#64748b]">{rank}</td>
       <td className="px-3 py-2.5">
         <span className="font-medium text-[#e2e8f0]">{formatName(m.name)}</span>

@@ -40,7 +40,7 @@ export default function ServicesPage() {
           <button
             onClick={() => refetch()}
             disabled={isFetching}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#16213e] text-sm text-[#42A5F5] hover:bg-[#1a2744] border border-[#2a2a4a] transition disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.04] text-[13px] text-[#42A5F5] hover:bg-white/[0.06] border border-white/[0.06] transition-all duration-200 disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin' : ''}`} />
             {isFetching ? 'Checking...' : 'Refresh'}
@@ -51,24 +51,27 @@ export default function ServicesPage() {
       </PageHeader>
 
       {/* Status hero */}
-      <div className={`glass-card p-6 mb-6 ${allOk ? 'glow-green' : 'glow-red'}`}>
-        <div className="flex items-center gap-4">
-          <HeartPulse className="w-10 h-10" style={{ color: allOk ? '#00E676' : '#FF1744' }} />
+      <div className={`glass-card p-8 mb-8 fade-up ambient-glow ${allOk ? 'glow-green' : 'glow-red'}`}>
+        <div className="relative flex items-center gap-5">
+          <div className="w-14 h-14 rounded-2xl flex items-center justify-center"
+               style={{ background: `${allOk ? '#00E676' : '#FF1744'}10` }}>
+            <HeartPulse className="w-8 h-8" style={{ color: allOk ? '#00E676' : '#FF1744' }} />
+          </div>
           <div>
-            <h2 className="text-2xl font-bold" style={{ color: allOk ? '#00E676' : '#FF1744' }}>
+            <h2 className="text-2xl font-bold tracking-tight" style={{ color: allOk ? '#00E676' : '#FF1744' }}>
               {allOk ? 'All Systems Operational' : 'Issues Detected'}
             </h2>
-            <p className="text-xs text-[#64748b]">Last check: {lastRefresh} {'\u2022'} Auto-refresh every 10s</p>
+            <p className="text-[12px] text-[#64748b] mt-1">Last check: {lastRefresh} {'\u2022'} Auto-refresh every 10s</p>
           </div>
-          <div className="ml-auto flex items-center gap-1.5">
+          <div className="ml-auto flex items-center gap-2">
             <span className={`w-2.5 h-2.5 rounded-full ${allOk ? 'bg-[#00E676]' : 'bg-[#FF1744]'} pulse-dot`} />
-            <span className="text-xs text-[#64748b]">Live</span>
+            <span className="text-xs text-[#64748b] font-medium">Live</span>
           </div>
         </div>
       </div>
 
       {/* Service cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-8 fade-up-delay-1">
         <ApiCard data={data.api} />
         <CacheCard data={data.signal_cache} />
         <PriceDataCard data={data.price_data} />
@@ -89,19 +92,21 @@ function StatusIcon({ status }: { status: string }) {
 }
 
 function statusBg(status: string) {
-  if (status === 'ok' || status === 'fresh') return 'border-[#00E676]/20';
-  if (status === 'stale' || status === 'warning') return 'border-[#FFB300]/20';
-  return 'border-[#FF1744]/20';
+  if (status === 'ok' || status === 'fresh') return 'border-[#00E676]/10';
+  if (status === 'stale' || status === 'warning') return 'border-[#FFB300]/10';
+  return 'border-[#FF1744]/10';
 }
 
 /* ── API Card ────────────────────────────────────────────────────── */
 function ApiCard({ data }: { data: ServicesHealth['api'] }) {
   return (
-    <div className={`glass-card p-4 border-l-2 ${statusBg(data.status)}`}>
-      <div className="flex items-center gap-2 mb-3">
-        <Server className="w-4 h-4 text-[#42A5F5]" />
-        <h3 className="text-sm font-medium text-[#e2e8f0]">API Server</h3>
-        <StatusIcon status={data.status} />
+    <div className={`glass-card p-5 border-l-2 hover-lift ${statusBg(data.status)}`}>
+      <div className="flex items-center gap-2.5 mb-4">
+        <div className="w-8 h-8 rounded-xl bg-[#42A5F5]/10 flex items-center justify-center">
+          <Server className="w-4 h-4 text-[#42A5F5]" />
+        </div>
+        <h3 className="text-[13px] font-medium text-[#f1f5f9]">API Server</h3>
+        <div className="ml-auto"><StatusIcon status={data.status} /></div>
       </div>
       <div className="grid grid-cols-2 gap-3 text-xs">
         <Metric icon={<Clock className="w-3 h-3" />} label="Uptime" value={data.uptime_human} />
@@ -116,7 +121,7 @@ function ApiCard({ data }: { data: ServicesHealth['api'] }) {
 /* ── Cache Card ──────────────────────────────────────────────────── */
 function CacheCard({ data }: { data: ServicesHealth['signal_cache'] }) {
   return (
-    <div className={`glass-card p-4 border-l-2 ${statusBg(data.status)}`}>
+    <div className={`glass-card p-4 border-l-2 hover-lift ${statusBg(data.status)}`}>
       <div className="flex items-center gap-2 mb-3">
         <Database className="w-4 h-4 text-[#AB47BC]" />
         <h3 className="text-sm font-medium text-[#e2e8f0]">Signal Cache</h3>
@@ -135,7 +140,7 @@ function CacheCard({ data }: { data: ServicesHealth['signal_cache'] }) {
 /* ── Price Data Card ─────────────────────────────────────────────── */
 function PriceDataCard({ data }: { data: ServicesHealth['price_data'] }) {
   return (
-    <div className={`glass-card p-4 border-l-2 ${statusBg(data.status)}`}>
+    <div className={`glass-card p-4 border-l-2 hover-lift ${statusBg(data.status)}`}>
       <div className="flex items-center gap-2 mb-3">
         <HardDrive className="w-4 h-4 text-[#FFB300]" />
         <h3 className="text-sm font-medium text-[#e2e8f0]">Price Data</h3>
@@ -155,7 +160,7 @@ function PriceDataCard({ data }: { data: ServicesHealth['price_data'] }) {
 /* ── Workers Card ────────────────────────────────────────────────── */
 function WorkersCard({ data }: { data: ServicesHealth['workers'] }) {
   return (
-    <div className={`glass-card p-4 border-l-2 ${statusBg(data.status)}`}>
+    <div className={`glass-card p-4 border-l-2 hover-lift ${statusBg(data.status)}`}>
       <div className="flex items-center gap-2 mb-3">
         <Users className="w-4 h-4 text-[#00BCD4]" />
         <h3 className="text-sm font-medium text-[#e2e8f0]">Background Workers</h3>

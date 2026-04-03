@@ -37,40 +37,47 @@ export default function Layout() {
   const allOk = healthQ.data
     ? healthQ.data.api.status === 'ok' && healthQ.data.signal_cache.status !== 'missing'
       && healthQ.data.price_data.status === 'ok'
-    : true; // Assume ok while loading
+    : true;
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-screen overflow-hidden bg-[#060612]">
       {/* Sidebar */}
-      <aside className="w-56 flex-shrink-0 border-r border-[#2a2a4a] bg-[#0a0a1a] flex flex-col">
+      <aside className="w-[220px] flex-shrink-0 border-r border-white/[0.04] bg-[#08081a]/90 backdrop-blur-xl flex flex-col">
         {/* Logo */}
-        <div className="px-4 py-5 border-b border-[#2a2a4a]">
-          <div className="flex items-center gap-2">
-            <Activity className="w-6 h-6 text-[#42A5F5]" />
+        <div className="px-5 py-6">
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#42A5F5]/20 to-[#7C4DFF]/20 flex items-center justify-center">
+                <Activity className="w-5 h-5 text-[#42A5F5]" />
+              </div>
+              <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#08081a] ${allOk ? 'bg-[#00E676]' : 'bg-[#FF1744]'} pulse-dot`} />
+            </div>
             <div>
-              <h1 className="text-sm font-bold gradient-text">Signal Engine</h1>
-              <p className="text-[10px] text-[#64748b]">Bayesian Model Averaging</p>
+              <h1 className="text-[13px] font-semibold gradient-text tracking-tight leading-tight">Signal Engine</h1>
+              <p className="text-[10px] text-[#475569] font-medium tracking-wider mt-0.5">BMA + Kalman v5.30</p>
             </div>
           </div>
         </div>
 
+        <div className="divider-fade mx-4" />
+
         {/* Navigation */}
-        <nav className="flex-1 py-3 px-2 space-y-0.5">
+        <nav className="flex-1 py-4 px-3 space-y-0.5 overflow-y-auto">
           {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}
               end={to === '/'}
               className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-150 ${
+                `flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] transition-all duration-200 ${
                   isActive
-                    ? 'bg-[#16213e] text-[#42A5F5] font-medium'
-                    : 'text-[#94a3b8] hover:bg-[#16213e]/50 hover:text-[#e2e8f0]'
+                    ? 'bg-white/[0.06] text-[#42A5F5] font-medium nav-active-indicator'
+                    : 'text-[#64748b] hover:bg-white/[0.03] hover:text-[#94a3b8]'
                 }`
               }
             >
-              <Icon className="w-4 h-4 flex-shrink-0" />
-              {label}
+              <Icon className="w-[18px] h-[18px] flex-shrink-0" />
+              <span>{label}</span>
               {to === '/services' && (
                 <span
                   className={`w-1.5 h-1.5 rounded-full ml-auto ${allOk ? 'bg-[#00E676]' : 'bg-[#FF1744]'} pulse-dot`}
@@ -81,17 +88,15 @@ export default function Layout() {
         </nav>
 
         {/* Footer */}
-        <div className="px-4 py-3 border-t border-[#2a2a4a] text-[10px] text-[#64748b]">
-          <div className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#00E676] pulse-dot"></span>
-            v5.30 • BMA + Kalman
-          </div>
+        <div className="px-5 py-4">
+          <div className="divider-fade mb-3" />
+          <p className="text-[10px] text-[#3a3a5a] font-medium tracking-wide">Bayesian Model Averaging</p>
         </div>
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto bg-[#0f0f23]">
-        <div className="p-6 max-w-[1600px] mx-auto">
+      <main className="flex-1 overflow-auto bg-[#0a0a1a]">
+        <div className="p-8 max-w-[1600px] mx-auto">
           <Outlet />
         </div>
       </main>

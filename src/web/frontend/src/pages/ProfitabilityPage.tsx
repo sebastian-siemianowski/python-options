@@ -21,9 +21,9 @@ function MetricCard({ label, value, target, unit = '' }: {
   const pass = value != null && value >= target;
   const color = value == null ? '#64748b' : pass ? '#00E676' : '#FF1744';
   return (
-    <div className="glass-card p-4">
-      <p className="text-[10px] text-[#64748b] uppercase tracking-wider">{label}</p>
-      <p className="text-lg font-bold mt-1" style={{ color }}>
+    <div className="glass-card p-4 hover-lift stat-shine">
+      <p className="text-[10px] text-[#64748b] uppercase tracking-wider font-medium">{label}</p>
+      <p className="text-lg font-bold mt-1 tabular-nums" style={{ color }}>
         {value != null ? `${(value * 100).toFixed(1)}${unit}` : '--'}
       </p>
       <p className="text-[9px] text-[#64748b] mt-0.5">
@@ -44,7 +44,7 @@ function MetricChart({ title, data, targetValue, color = '#42A5F5' }: {
   targetValue: number; color?: string;
 }) {
   return (
-    <div className="glass-card p-4">
+    <div className="glass-card p-4 hover-lift">
       <h3 className="text-xs font-medium text-[#94a3b8] mb-3">{title}</h3>
       <div aria-label={`${title} chart`} role="img" style={{ width: '100%', height: 200 }}>
         <ResponsiveContainer width="100%" height={200}>
@@ -119,7 +119,7 @@ export default function ProfitabilityPage() {
       <PageHeader title="Profitability Monitor" subtitle="Continuous metric tracking" />
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6 fade-up">
         <MetricCard label="Hit Rate 7D" value={curHit7} target={targets.hit_rate_7d || 0.55} unit="%" />
         <MetricCard label="Hit Rate 21D" value={curHit21} target={targets.hit_rate_21d || 0.53} unit="%" />
         <MetricCard label="Signal Rate" value={curSignal} target={targets.signal_rate || 0.15} unit="%" />
@@ -133,7 +133,7 @@ export default function ProfitabilityPage() {
           No profitability history yet. Run <code className="text-[#42A5F5]">make calibrate</code> to generate data.
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 fade-up-delay-1">
           <MetricChart title="Hit Rate 7D" data={hitRate7d} targetValue={targets.hit_rate_7d || 0.55} color="#00E676" />
           <MetricChart title="Hit Rate 21D" data={hitRate21d} targetValue={targets.hit_rate_21d || 0.53} color="#66BB6A" />
           <MetricChart title="Signal Rate" data={signalRates} targetValue={targets.signal_rate || 0.15} color="#42A5F5" />

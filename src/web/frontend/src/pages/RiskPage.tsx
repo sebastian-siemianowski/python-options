@@ -86,7 +86,7 @@ export default function RiskPage() {
             <button
               onClick={handleRefresh}
               disabled={refreshing || summaryQ.isFetching}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#16213e] text-sm text-[#42A5F5] hover:bg-[#1a2744] border border-[#2a2a4a] transition disabled:opacity-50"
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.04] text-[13px] text-[#42A5F5] hover:bg-white/[0.06] border border-white/[0.06] transition-all duration-200 disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
               {refreshing ? 'Refreshing...' : 'Refresh Data'}
@@ -98,14 +98,17 @@ export default function RiskPage() {
       </PageHeader>
 
       {/* Combined Temperature Hero */}
-      <div className="glass-card p-6 mb-6">
-        <div className="flex items-center gap-4 mb-4">
-          <Thermometer className="w-8 h-8" style={{ color: statusColor(data.status) }} />
+      <div className="glass-card p-8 mb-8 fade-up ambient-glow">
+        <div className="relative flex items-center gap-5 mb-5">
+          <div className="w-14 h-14 rounded-2xl flex items-center justify-center"
+               style={{ background: `${statusColor(data.status)}10` }}>
+            <Thermometer className="w-7 h-7" style={{ color: statusColor(data.status) }} />
+          </div>
           <div>
-            <h2 className="text-3xl font-bold" style={{ color: statusColor(data.status) }}>
+            <h2 className="text-4xl font-bold tabular-nums tracking-tight" style={{ color: statusColor(data.status) }}>
               {data.combined_temperature.toFixed(2)}
             </h2>
-            <p className="text-sm font-medium" style={{ color: statusColor(data.status) }}>
+            <p className="text-[13px] font-medium mt-0.5" style={{ color: statusColor(data.status) }}>
               {data.status}
             </p>
           </div>
@@ -120,18 +123,18 @@ export default function RiskPage() {
                 }}
               />
             </div>
-            <div className="flex justify-between text-[10px] text-[#64748b] mt-1">
+            <div className="flex justify-between text-[10px] text-[#64748b] mt-1.5 font-medium tracking-wide">
               <span>Calm</span><span>Elevated</span><span>Stressed</span><span>Crisis</span>
             </div>
           </div>
         </div>
-        <p className="text-xs text-[#64748b]">
+        <p className="text-[11px] text-[#475569]">
           Computed at {data.computed_at ? new Date(data.computed_at).toLocaleString() : 'N/A'}
         </p>
       </div>
 
       {/* Per-module cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8 fade-up-delay-1">
         <StatCard
           title="Cross-Asset Stress"
           value={data.risk_temperature.toFixed(3)}
@@ -156,15 +159,15 @@ export default function RiskPage() {
       </div>
 
       {/* Tab nav */}
-      <div className="flex gap-1 mb-6 border-b border-[#2a2a4a] overflow-x-auto">
+      <div className="flex gap-0.5 mb-8 overflow-x-auto fade-up-delay-2">
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => setTab(id)}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm transition border-b-2 -mb-[1px] whitespace-nowrap ${
+            className={`flex items-center gap-2 px-4 py-2.5 text-[13px] font-medium transition-all duration-200 rounded-xl whitespace-nowrap ${
               tab === id
-                ? 'border-[#42A5F5] text-[#42A5F5]'
-                : 'border-transparent text-[#64748b] hover:text-[#94a3b8]'
+                ? 'bg-white/[0.06] text-[#42A5F5]'
+                : 'text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.02]'
             }`}
           >
             <Icon className="w-4 h-4" />
@@ -189,7 +192,7 @@ export default function RiskPage() {
 
 function OverviewTab({ data: _data }: { data: { combined_temperature: number; status: string } }) {
   return (
-    <div className="glass-card p-5">
+    <div className="glass-card p-5 hover-lift">
       <h3 className="text-sm font-medium text-[#94a3b8] mb-3">Risk Interpretation</h3>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
         {[
@@ -225,7 +228,7 @@ function CrossAssetTab({ categories }: { categories?: Record<string, RiskStressC
   return (
     <div className="space-y-3">
       {sorted.map(cat => (
-        <div key={cat.name} className="glass-card overflow-hidden">
+        <div key={cat.name} className="glass-card overflow-hidden hover-lift">
           <button onClick={() => toggle(cat.name)} className="w-full px-4 py-3 flex items-center justify-between hover:bg-[#16213e]/50 transition">
             <div className="flex items-center gap-3">
               <StressBar level={cat.stress_level} />
@@ -257,7 +260,7 @@ function MetalsTab({ metals: data }: { metals: RiskDashboardFull['metals_risk_te
   return (
     <div className="space-y-6">
       {/* Status bar */}
-      <div className="glass-card p-4 flex items-center justify-between">
+      <div className="glass-card p-4 flex items-center justify-between hover-lift">
         <div className="flex items-center gap-3">
           <Gem className="w-5 h-5" style={{ color: data.status === 'Calm' ? '#00E676' : data.status === 'Elevated' ? '#FFB300' : '#FF1744' }} />
           <div>

@@ -152,7 +152,7 @@ export default function TuningPage() {
 
       {/* Stats */}
       {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 fade-up">
           <StatCard title="Total Tuned" value={stats.total} icon={<Settings className="w-5 h-5" />} color="blue" />
           <StatCard title="PIT Pass" value={stats.pit_pass} icon={<CheckCircle className="w-5 h-5" />} color="green" />
           <StatCard title="PIT Fail" value={stats.pit_fail} icon={<XCircle className="w-5 h-5" />} color="red" />
@@ -160,7 +160,7 @@ export default function TuningPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 fade-up-delay-1">
         {/* Model distribution chart */}
         <ModelDistributionChart data={modelData} />
 
@@ -191,7 +191,7 @@ export default function TuningPage() {
                   <tr
                     key={a.symbol}
                     onClick={() => setSelectedSymbol(a.symbol)}
-                    className={`border-b border-[#2a2a4a]/50 cursor-pointer transition hover:bg-[#16213e]/50 ${
+                    className={`border-b border-[#2a2a4a]/50 cursor-pointer transition row-glow ${
                       selectedSymbol === a.symbol ? 'bg-[#16213e]' : ''
                     }`}
                   >

@@ -83,7 +83,7 @@ export default function DiagnosticsPage() {
 
       {/* Stats bar */}
       {pitData && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 fade-up">
           <StatCard title="Total Assets" value={pitData.total} icon={<Stethoscope className="w-5 h-5" />} color="blue" />
           <StatCard title="PIT Pass" value={pitData.passing} icon={<CheckCircle className="w-5 h-5" />} color="green" />
           <StatCard title="PIT Fail" value={pitData.failing} icon={<XCircle className="w-5 h-5" />} color="red" />
@@ -97,7 +97,7 @@ export default function DiagnosticsPage() {
       )}
 
       {/* Tab nav */}
-      <div className="flex gap-1 mb-6 border-b border-[#2a2a4a]">
+      <div className="flex gap-1 mb-6 border-b border-[#2a2a4a] fade-up-delay-1">
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -205,7 +205,7 @@ function AssetRow({ asset, expanded, onToggle }: { asset: DiagAsset; expanded: b
     <>
       <tr
         onClick={onToggle}
-        className={`border-b border-[#2a2a4a]/50 cursor-pointer transition hover:bg-[#16213e]/50 ${expanded ? 'bg-[#16213e]' : ''}`}
+        className={`border-b border-[#2a2a4a]/50 cursor-pointer transition row-glow ${expanded ? 'bg-[#16213e]' : ''}`}
       >
         <td className="px-2 text-[#64748b]">
           {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
@@ -254,7 +254,7 @@ function ModelMetricsTable({ models, bmaWeights }: { models: DiagAsset['models']
           {models.map((m) => {
             const w = bmaWeights[m.model] ?? m.weight;
             return (
-              <tr key={m.model} className="border-b border-[#2a2a4a]/30 hover:bg-[#16213e]/30">
+              <tr key={m.model} className="border-b border-[#2a2a4a]/30 row-glow">
                 <td className="px-2 py-1.5 text-[#94a3b8] font-medium">{formatModelNameShort(m.model)}</td>
                 <td className="px-2 py-1.5 text-right text-[#94a3b8]">{m.bic != null ? m.bic.toFixed(0) : '—'}</td>
                 <td className="px-2 py-1.5 text-right">
@@ -357,7 +357,7 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
             </thead>
             <tbody>
               {models.map((m) => (
-                <tr key={m.name} className="border-b border-[#2a2a4a]/50 hover:bg-[#16213e]/50">
+                <tr key={m.name} className="border-b border-[#2a2a4a]/50 row-glow">
                   <td className="px-3 py-2 font-medium text-[#e2e8f0]">{formatModelNameShort(m.name)}</td>
                   <td className="px-3 py-2 text-right text-[#94a3b8]">{m.win_count}</td>
                   <td className="px-3 py-2 text-right">
@@ -429,7 +429,7 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
               {models.map(m => {
                 const avg = data.model_averages[m];
                 return (
-                  <tr key={m} className="border-b border-[#2a2a4a]/30 hover:bg-[#16213e]/30">
+                  <tr key={m} className="border-b border-[#2a2a4a]/30 row-glow">
                     <td className="px-2 py-1.5 text-[#e2e8f0] font-medium">{formatModelNameShort(m)}</td>
                     <td className={`px-2 py-1.5 text-right ${avg?.avg_crps != null && avg.avg_crps < 0.02 ? 'text-[#00E676]' : 'text-[#94a3b8]'}`}>
                       {avg?.avg_crps?.toFixed(5) ?? '—'}
@@ -492,7 +492,7 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
             </thead>
             <tbody>
               {filteredRows.slice(0, 300).map(row => (
-                <tr key={row.symbol} className="border-b border-[#2a2a4a]/20 hover:bg-[#16213e]/30">
+                <tr key={row.symbol} className="border-b border-[#2a2a4a]/20 row-glow">
                   <td className="px-2 py-1 text-[#e2e8f0] font-medium sticky left-0 bg-[#0f0f23]">{row.symbol}</td>
                   <td className="px-1 py-1 text-center">
                     <span className={row.ad_pass === true ? 'text-[#00E676]' : row.ad_pass === false ? 'text-[#FF1744]' : 'text-[#64748b]'}>
@@ -625,7 +625,7 @@ function FailuresTab({ data }: { data?: { failures: Array<Record<string, unknown
           </thead>
           <tbody>
             {data.failures.map((f, i) => (
-              <tr key={i} className="border-b border-[#2a2a4a]/50 hover:bg-[#16213e]/50">
+              <tr key={i} className="border-b border-[#2a2a4a]/50 row-glow">
                 <td className="px-3 py-2 font-medium text-[#FF1744]">{String(f.symbol || f.asset || `Entry ${i + 1}`)}</td>
                 <td className="px-3 py-2 text-[#94a3b8]">
                   <pre className="text-[10px] whitespace-pre-wrap max-w-lg">{JSON.stringify(f, null, 1)}</pre>

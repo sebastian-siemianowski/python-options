@@ -34,7 +34,7 @@ const getMaxEdge = (r: SummaryRow): number => {
   return Math.max(...r.kelly.map(k => k.edge ?? 0));
 };
 type PickerView = 'all' | 'sector' | 'strong_buy' | 'strong_sell' | 'filter';
-type FilterMode = 'momentum' | 'edge' | 'exp_return' | 'low_risk' | 'kelly' | 'p_up';
+type FilterMode = 'momentum' | 'edge' | 'exp_return' | 'low_risk' | 'kelly' | 'p_up' | 'forecast_up' | 'forecast_down';
 type TimeRange = '1M' | '3M' | '6M' | '1Y' | 'ALL';
 type OverlayKey = 'sma20' | 'sma50' | 'sma200' | 'bb' | 'rsi' | 'forecastMedian' | 'ciUpper' | 'ciLower' | 'priceLine';
 
@@ -127,6 +127,8 @@ export default function ChartsPage() {
       case 'low_risk':    sorted.sort((a, b) => (a.crash_risk_score ?? 1) - (b.crash_risk_score ?? 1)); break;
       case 'kelly':       sorted.sort((a, b) => getMaxHalfKelly(b) - getMaxHalfKelly(a)); break;
       case 'p_up':        sorted.sort((a, b) => getBestPUp(b) - getBestPUp(a)); break;
+      case 'forecast_up':  sorted.sort((a, b) => getBestExpRet(b) - getBestExpRet(a)); break;
+      case 'forecast_down': sorted.sort((a, b) => getBestExpRet(a) - getBestExpRet(b)); break;
     }
     return sorted.slice(0, 30);
   }, [summaryQ.data, filterMode]);
@@ -449,6 +451,26 @@ const FILTER_DEFS: { key: FilterMode; label: string; desc: string; color: string
   { key: 'kelly', label: 'Kelly', desc: 'Best half-Kelly sizing', color: '#EF5350', icon: 'K',
     metric: (r) => (getMaxHalfKelly(r) * 100).toFixed(1) + '%',
     rawMetric: (r) => getMaxHalfKelly(r), format: 'pct' },
+  { key: 'forecast_up', label: 'Upside', desc: 'Most forecast upside', color: '#00E676', icon: '\u2191',
+    metric: (r) => {
+      const sigs = Object.values(r.horizon_signals || {});
+      const best = sigs.length ? Math.max(...sigs.map(s => s.exp_ret ?? 0)) : 0;
+      return (best >= 0 ? '+' : '') + (best * 100).toFixed(1) + '%';
+    },
+    rawMetric: (r) => {
+      const sigs = Object.values(r.horizon_signals || {});
+      return sigs.length ? Math.max(...sigs.map(s => s.exp_ret ?? 0)) : 0;
+    }, format: 'pct' },
+  { key: 'forecast_down', label: 'Downside', desc: 'Most forecast downside', color: '#FF1744', icon: '\u2193',
+    metric: (r) => {
+      const sigs = Object.values(r.horizon_signals || {});
+      const worst = sigs.length ? Math.min(...sigs.map(s => s.exp_ret ?? 0)) : 0;
+      return (worst * 100).toFixed(1) + '%';
+    },
+    rawMetric: (r) => {
+      const sigs = Object.values(r.horizon_signals || {});
+      return sigs.length ? Math.min(...sigs.map(s => s.exp_ret ?? 0)) : 0;
+    }, format: 'pct' },
 ];
 
 /** Compute bar width % for a metric relative to the best in the list */

@@ -71,7 +71,7 @@ export default function DataPage() {
 
       {/* Stats */}
       {status && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 fade-up">
           <StatCard title="Total Files" value={status.total_files} icon={<Database className="w-5 h-5" />} color="blue" />
           <StatCard title="Fresh" value={status.fresh_files} subtitle="< 24h old" icon={<Clock className="w-5 h-5" />} color="green" />
           <StatCard title="Stale" value={status.stale_files} subtitle="> 24h old" icon={<AlertTriangle className="w-5 h-5" />} color={status.stale_files > 10 ? 'red' : 'amber'} />
@@ -79,9 +79,9 @@ export default function DataPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 fade-up-delay-1">
         {/* Directories */}
-        <div className="glass-card p-4">
+        <div className="glass-card p-4 hover-lift">
           <h3 className="text-sm font-medium text-[#94a3b8] mb-3 flex items-center gap-2">
             <FolderOpen className="w-4 h-4" /> Data Directories
           </h3>
@@ -138,7 +138,7 @@ function FileRow({ file }: { file: PriceFile }) {
     : 'text-[#FF1744]';
 
   return (
-    <tr className="border-b border-[#2a2a4a]/50 hover:bg-[#16213e]/30 transition">
+    <tr className="border-b border-[#2a2a4a]/50 row-glow transition">
       <td className="px-3 py-2 font-medium text-[#e2e8f0]">{file.symbol}</td>
       <td className="px-3 py-2 text-right text-[#94a3b8]">{file.rows.toLocaleString()}</td>
       <td className="px-3 py-2 text-right text-[#94a3b8]">{file.size_kb} KB</td>
