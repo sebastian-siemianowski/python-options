@@ -3598,13 +3598,16 @@ def unified_mc_simulate_kernel(
     # v7.8: Tier 4 — dynamic leverage, liquidity stress
     leverage_dynamic_decay: float = 0.0,
     liq_stress_coeff: float = 0.0,
+    # Story 1.4: Dual-frequency drift propagation
+    phi_slow: float = 0.0,
+    mu_slow_0: float = 0.0,
+    # Story 3.4: Asset-class-aware per-step return cap
+    return_cap: float = 0.30,
 ) -> None:
     """Unified MC simulation kernel with GJR-GARCH + jumps + Student-t.
 
     v7.7: Full Tier 2 + Tier 3 MC integration.
     v7.8: Tier 4 — dynamic leverage + liquidity-volatility feedback.
-
-    Tier 1 (v7.6 — already integrated):
       - garch_leverage (GJR-γ): asymmetric variance
       - variance_inflation (β): calibrated predictive variance scaling
       - mu_drift: systematic drift bias correction
@@ -3748,6 +3751,9 @@ def unified_mc_simulate_kernel(
     use_dynamic_lev = leverage_dynamic_decay > 0.01 and garch_leverage > 1e-8 and use_garch
     use_liq_stress = liq_stress_coeff > 0.005 and theta_long_var > 1e-12 and use_garch
 
+    # Story 1.4: Dual-frequency drift flag
+    use_dual_freq = phi_slow > 0.0 and abs(mu_slow_0) > 1e-15
+
     # Rough vol: max lag from frac_weights length (capped at 50)
     rough_max_lag = min(len(frac_weights), 50) if use_rough else 0
 
@@ -3782,6 +3788,8 @@ def unified_mc_simulate_kernel(
         if h_t < 1e-12:
             h_t = 1e-12
         cum = 0.0
+        # Story 1.4: Slow drift component (deterministic decay)
+        mu_slow_t = mu_slow_0 if use_dual_freq else 0.0
 
         # v7.7 Tier 3: per-path state variables
         p_stress_obs = 0.1  # regime_switch_prob state
@@ -3861,12 +3869,14 @@ def unified_mc_simulate_kernel(
 
             # Total return
             r_t = mu_t + rp + loc_bias + e_t + jump
-            # v7.9: Cap per-step return to prevent pathological MC paths
-            # ±50% daily log return is extreme but physical (flash crashes, circuit breakers)
-            if r_t > 0.5:
-                r_t = 0.5
-            elif r_t < -0.5:
-                r_t = -0.5
+            # Story 1.4: Add slow drift component
+            if use_dual_freq:
+                r_t += mu_slow_t
+            # Story 3.4: Asset-class-aware per-step return cap
+            if r_t > return_cap:
+                r_t = return_cap
+            elif r_t < -return_cap:
+                r_t = -return_cap
             cum += r_t
             cum_out[t, p] = cum
 
@@ -3979,6 +3989,10 @@ def unified_mc_simulate_kernel(
             else:
                 mu_t = phi * mu_t
 
+            # Story 1.4: Slow drift deterministic decay
+            if use_dual_freq:
+                mu_slow_t = phi_slow * mu_slow_t
+
             # v7.7 Tier 3: GAS dynamic skew update
             if use_gas_skew:
                 z_score_gas = e_t / sigma_t if sigma_t > 1e-8 else 0.0
@@ -4045,11 +4059,13 @@ def unified_mc_multi_path_kernel(
     # v7.8: Tier 4 — dynamic leverage, liquidity stress
     leverage_dynamic_decay: float = 0.0,
     liq_stress_coeff: float = 0.0,
+    # Story 1.4: Dual-frequency drift propagation
+    phi_slow: float = 0.0,
+    mu_slow_0: float = 0.0,
+    # Story 3.4: Asset-class-aware per-step return cap
+    return_cap: float = 0.30,
 ) -> None:
     """Multi-path MC kernel with per-path parameter uncertainty.
-
-    v7.7: Full Tier 2 + Tier 3 integration (same as scalar kernel).
-    v7.8: Tier 4 — dynamic leverage + liquidity-volatility feedback.
 
     Like unified_mc_simulate_kernel but supports:
     - Per-path nu (tail parameter uncertainty)
@@ -4096,6 +4112,9 @@ def unified_mc_multi_path_kernel(
     use_dynamic_lev = leverage_dynamic_decay > 0.01 and use_garch
     use_liq_stress = liq_stress_coeff > 0.005 and theta_long_var > 1e-12 and use_garch
 
+    # Story 1.4: Dual-frequency drift flag
+    use_dual_freq = phi_slow > 0.0 and abs(mu_slow_0) > 1e-15
+
     for p in range(n_paths):
         nu_p = nu_per_path[p]
         use_t_p = (nu_p > 2.0) and (nu_p < 100.0)
@@ -4119,6 +4138,8 @@ def unified_mc_multi_path_kernel(
         if h_t < 1e-12:
             h_t = 1e-12
         cum = 0.0
+        # Story 1.4: Slow drift component (deterministic decay)
+        mu_slow_t = mu_slow_0 if use_dual_freq else 0.0
 
         # Per-path state variables for Tier 3
         p_stress_obs = 0.1
@@ -4185,11 +4206,14 @@ def unified_mc_multi_path_kernel(
                     loc_bias += loc_bias_drift_coeff * sign_mu * np.sqrt(abs(mu_t))
 
             r_t = mu_t + rp + loc_bias + e_t + jump
-            # v7.9: Per-step return cap (same as unified_mc_simulate_kernel)
-            if r_t > 0.5:
-                r_t = 0.5
-            elif r_t < -0.5:
-                r_t = -0.5
+            # Story 1.4: Add slow drift component
+            if use_dual_freq:
+                r_t += mu_slow_t
+            # Story 3.4: Asset-class-aware per-step return cap
+            if r_t > return_cap:
+                r_t = return_cap
+            elif r_t < -return_cap:
+                r_t = -return_cap
             cum += r_t
             cum_out[t, p] = cum
 
@@ -4287,6 +4311,10 @@ def unified_mc_multi_path_kernel(
                 mu_t = phi * mu_t + drift_sigma_t * z_drift[t, p]
             else:
                 mu_t = phi * mu_t
+
+            # Story 1.4: Slow drift deterministic decay
+            if use_dual_freq:
+                mu_slow_t = phi_slow * mu_slow_t
 
             # GAS dynamic skew update
             if use_gas_skew_p:

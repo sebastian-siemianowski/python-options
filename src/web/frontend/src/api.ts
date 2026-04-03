@@ -84,6 +84,7 @@ export const api = {
   diagModelComparison: () => fetchApi<DiagModelComparison>('/api/diagnostics/model-comparison'),
   diagRegimeDistribution: () => fetchApi<DiagRegimeDistribution>('/api/diagnostics/regime-distribution'),
   diagCrossAssetSummary: () => fetchApi<DiagCrossAssetSummary>('/api/diagnostics/cross-asset-summary'),
+  diagProfitability: () => fetchApi<ProfitabilityMetrics>('/api/diagnostics/profitability'),
 
   // Risk (full dashboard + refresh)
   riskRefresh: () => postApi<{ status: string; summary: RiskSummary }>('/api/risk/refresh'),
@@ -124,6 +125,9 @@ export interface SummaryRow {
   sector: string;
   crash_risk_score: number;
   momentum_score: number;
+  conviction?: number;
+  kelly?: number;
+  signal_ttl?: number;
 }
 
 export interface HorizonSignal {
@@ -133,6 +137,10 @@ export interface HorizonSignal {
   exp_ret: number;
   ue_up: number;
   ue_down: number;
+  position_strength?: number;
+  risk_temperature?: number;
+  kelly_half?: number;
+  eu_balanced?: number;
 }
 
 // ── Sector signals ──────────────────────────────────────────────────
@@ -653,4 +661,15 @@ export interface RiskDashboardFull {
   computed_at: string;
   _cached?: boolean;
   _cache_age_seconds?: number;
+}
+
+// Story 8.3: Profitability monitoring
+export interface ProfitabilityMetrics {
+  timestamps: string[];
+  hit_rates: { '7d': number[]; '21d': number[] };
+  signal_rates: number[];
+  sharpe: { '7d': number[]; '21d': number[] };
+  crps: number[];
+  ece: number[];
+  targets: Record<string, number>;
 }

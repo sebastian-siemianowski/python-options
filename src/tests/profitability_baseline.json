@@ -1,0 +1,7 @@
+{
+  "hit_rate_7d": 0.53,
+  "hit_rate_21d": 0.52,
+  "non_hold_fraction": 0.15,
+  "ece_max": 0.05,
+  "crps_max": 0.025
+}

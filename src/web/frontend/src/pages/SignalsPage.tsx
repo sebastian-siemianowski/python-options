@@ -1,16 +1,20 @@
-import { useQuery } from '@tanstack/react-query';
-import { useState, useMemo, Component, type ReactNode, type ErrorInfo } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState, useMemo, useEffect, Component, type ReactNode, type ErrorInfo } from 'react';
 import { api } from '../api';
-import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal } from '../api';
+import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData } from '../api';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import {
   ArrowUpCircle, ArrowDownCircle, Filter, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, Search,
 } from 'lucide-react';
+import { formatHorizon, responsiveHorizons } from '../utils/horizons';
+import { formatPLN, profitColor } from '../utils/formatPLN';
+import { useWebSocket, type WSStatus } from '../hooks/useWebSocket';
 
 type ViewMode = 'all' | 'sectors' | 'strong';
 type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
+type MetricView = 'profit' | 'pct';
 
 /* ── Error Boundary ──────────────────────────────────────────────── */
 class SignalsErrorBoundary extends Component<
@@ -51,11 +55,128 @@ class SignalsErrorBoundary extends Component<
   }
 }
 
+/* ── Story 6.1: Responsive width hook ─────────────────────────── */
+function useWindowWidth(): number {
+  const [width, setWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1440);
+  useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return width;
+}
+
+/* ── Story 6.1: SVG directional arrows ───────────────────────── */
+function DirectionArrow({ direction }: { direction: 'up' | 'down' | 'neutral' }) {
+  if (direction === 'up') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="inline-block mr-0.5" aria-label="Up">
+        <path d="M6 2L10 8H2L6 2Z" fill="#66BB6A" />
+      </svg>
+    );
+  }
+  if (direction === 'down') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="inline-block mr-0.5" aria-label="Down">
+        <path d="M6 10L2 4H10L6 10Z" fill="#EF5350" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="inline-block mr-0.5" aria-label="Neutral">
+      <rect x="2" y="5" width="8" height="2" rx="1" fill="#64748b" />
+    </svg>
+  );
+}
+
+/** Determine direction and color from expected return. */
+function signalDirection(expRet: number | null | undefined): { dir: 'up' | 'down' | 'neutral'; color: string } {
+  if (expRet == null || Math.abs(expRet) < 0.001) return { dir: 'neutral', color: '#64748b' };
+  return expRet > 0 ? { dir: 'up', color: '#66BB6A' } : { dir: 'down', color: '#EF5350' };
+}
+
+/** Story 6.3: Compact exhaustion heat bar (ue_down=red left, ue_up=green right). */
+function ExhaustionBar({ ueUp, ueDown }: { ueUp: number; ueDown: number }) {
+  const up = Math.min(Math.max(ueUp || 0, 0), 1);
+  const down = Math.min(Math.max(ueDown || 0, 0), 1);
+  if (up < 0.01 && down < 0.01) return null;
+  return (
+    <div
+      className="flex h-[3px] w-full mt-0.5 rounded-sm overflow-hidden"
+      title={`Exhaustion: up=${(up * 100).toFixed(0)}% down=${(down * 100).toFixed(0)}%`}
+    >
+      <div style={{ width: '50%', background: `rgba(239,83,80,${down})` }} />
+      <div style={{ width: '50%', background: `rgba(102,187,106,${up})` }} />
+    </div>
+  );
+}
+
+/** Story 6.3: Conviction filled circle (0-1 fill, green/amber/red). */
+function ConvictionDot({ value }: { value: number | undefined }) {
+  const v = Math.min(Math.max(value ?? 0, 0), 1);
+  const pct = Math.round(v * 100);
+  const strokeColor = v >= 0.6 ? '#66BB6A' : v >= 0.3 ? '#FFA726' : '#EF5350';
+  const radius = 6;
+  const circumference = 2 * Math.PI * radius;
+  const dash = circumference * v;
+  return (
+    <svg
+      width="16" height="16" viewBox="0 0 16 16" className="inline-block"
+      title={`Conviction: ${pct}%`}
+    >
+      <circle cx="8" cy="8" r={radius} fill="none" stroke="#2a2a4a" strokeWidth="2" />
+      <circle
+        cx="8" cy="8" r={radius} fill="none" stroke={strokeColor} strokeWidth="2"
+        strokeDasharray={`${dash} ${circumference - dash}`}
+        strokeLinecap="round"
+        transform="rotate(-90 8 8)"
+      />
+    </svg>
+  );
+}
+
+/** Story 6.4: WebSocket connection status indicator. */
+function WsStatusDot({ status }: { status: WSStatus }) {
+  const color = status === 'connected' ? '#66BB6A' : status === 'connecting' ? '#FFA726' : '#EF5350';
+  const label = status === 'connected' ? 'Live' : status === 'connecting' ? 'Connecting' : 'Offline';
+  return (
+    <span className="inline-flex items-center gap-1 ml-2 text-[10px]" title={`WebSocket: ${status}`}>
+      <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+      <span style={{ color }} className="font-medium">{label}</span>
+    </span>
+  );
+}
+
 function SignalsPageInner() {
   const [view, setView] = useState<ViewMode>('sectors');
   const [filter, setFilter] = useState<SignalFilter>('all');
   const [search, setSearch] = useState('');
   const [expandedSectors, setExpandedSectors] = useState<Set<string>>(new Set());
+  const [metricView, setMetricView] = useState<MetricView>('profit');
+  const [updatedAsset, setUpdatedAsset] = useState<string | null>(null);
+
+  const queryClient = useQueryClient();
+  const { status: wsStatus, lastMessage } = useWebSocket('/ws');
+
+  // Story 6.4: Real-time signal updates via WebSocket
+  useEffect(() => {
+    if (!lastMessage || lastMessage.type !== 'signal_update') return;
+    const summary = lastMessage.summary as SummaryRow | undefined;
+    if (!summary?.asset_label) return;
+
+    queryClient.setQueryData<SignalSummaryData>(['signalSummary'], (old) => {
+      if (!old) return old;
+      const rows = old.summary_rows.map((r) =>
+        r.asset_label === summary.asset_label ? { ...r, ...summary } : r
+      );
+      return { ...old, summary_rows: rows };
+    });
+
+    // Highlight animation
+    setUpdatedAsset(summary.asset_label);
+    const timer = setTimeout(() => setUpdatedAsset(null), 600);
+    return () => clearTimeout(timer);
+  }, [lastMessage, queryClient]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['signalSummary'],
@@ -88,7 +209,9 @@ function SignalsPageInner() {
   });
 
   const rows = data?.summary_rows || [];
-  const horizons = data?.horizons || [];
+  const allHorizons = data?.horizons || [];
+  const windowWidth = useWindowWidth();
+  const horizons = useMemo(() => responsiveHorizons(allHorizons, windowWidth), [allHorizons, windowWidth]);
   const stats = statsQ.data;
   const sectors = sectorQ.data?.sectors || [];
 
@@ -128,7 +251,8 @@ function SignalsPageInner() {
   return (
     <>
       <PageHeader title="Signals">
-        {rows.length} assets across {horizons.length} horizons
+        <span>{rows.length} assets across {horizons.length} horizons</span>
+        <WsStatusDot status={wsStatus} />
       </PageHeader>
 
       {/* Stats bar */}
@@ -224,6 +348,24 @@ function SignalsPageInner() {
             <button onClick={collapseAll} className="text-[10px] text-[#64748b] hover:underline">Collapse All</button>
           </div>
         )}
+
+        {/* Story 6.2: Metric view toggle (PLN / %) */}
+        <div className="flex items-center gap-0.5 glass-card px-2 py-1">
+          {([
+            { key: 'profit' as MetricView, label: 'PLN' },
+            { key: 'pct' as MetricView, label: '%' },
+          ]).map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setMetricView(key)}
+              className={`px-2.5 py-1 rounded text-xs font-medium transition ${
+                metricView === key ? 'bg-[#42A5F5]/20 text-[#42A5F5]' : 'text-[#64748b] hover:text-[#94a3b8]'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Content */}
@@ -235,6 +377,8 @@ function SignalsPageInner() {
           horizons={horizons}
           search={search}
           filter={filter}
+          metricView={metricView}
+          updatedAsset={updatedAsset}
         />
       )}
       {view === 'strong' && (
@@ -244,7 +388,7 @@ function SignalsPageInner() {
         />
       )}
       {view === 'all' && (
-        <AllAssetsTable rows={filteredRows} horizons={horizons} />
+        <AllAssetsTable rows={filteredRows} horizons={horizons} metricView={metricView} updatedAsset={updatedAsset} />
       )}
     </>
   );
@@ -279,6 +423,8 @@ function SectorPanels({
   horizons,
   search,
   filter,
+  metricView,
+  updatedAsset,
 }: {
   sectors: SectorGroup[];
   expandedSectors: Set<string>;
@@ -286,6 +432,8 @@ function SectorPanels({
   horizons: number[];
   search: string;
   filter: SignalFilter;
+  metricView: MetricView;
+  updatedAsset: string | null;
 }) {
   const sorted = useMemo(() =>
     [...sectors].sort((a, b) => {
@@ -356,15 +504,16 @@ function SectorPanels({
                         <th className="text-left px-4 py-2 text-[10px] text-[#64748b] font-medium uppercase">Asset</th>
                         <th className="text-center px-2 py-2 text-[10px] text-[#64748b] font-medium">Signal</th>
                         <th className="text-center px-2 py-2 text-[10px] text-[#64748b] font-medium">Momentum</th>
-                        {horizons.slice(0, 4).map(h => (
-                          <th key={h} className="text-center px-2 py-2 text-[10px] text-[#64748b] font-medium">{h}D</th>
+                        <th className="text-center px-2 py-2 text-[10px] text-[#64748b] font-medium">Conv</th>
+                        {horizons.map(h => (
+                          <th key={h} className="text-center px-2 py-2 text-[10px] text-[#64748b] font-medium">{formatHorizon(h)}</th>
                         ))}
                         <th className="text-center px-2 py-2 text-[10px] text-[#64748b] font-medium">Crash Risk</th>
                       </tr>
                     </thead>
                     <tbody>
                       {assets.map(row => (
-                        <SignalRow key={row.asset_label} row={row} horizons={horizons} />
+                        <SignalRow key={row.asset_label} row={row} horizons={horizons} metricView={metricView} highlighted={row.asset_label === updatedAsset} />
                       ))}
                     </tbody>
                   </table>
@@ -445,7 +594,7 @@ function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalE
 }
 
 /* ── All Assets Table ────────────────────────────────────────────── */
-function AllAssetsTable({ rows, horizons }: { rows: SummaryRow[]; horizons: number[] }) {
+function AllAssetsTable({ rows, horizons, metricView, updatedAsset }: { rows: SummaryRow[]; horizons: number[]; metricView: MetricView; updatedAsset: string | null }) {
   const [page, setPage] = useState(0);
   const pageSize = 50;
   const pageRows = rows.slice(page * pageSize, (page + 1) * pageSize);
@@ -461,15 +610,16 @@ function AllAssetsTable({ rows, horizons }: { rows: SummaryRow[]; horizons: numb
               <th className="text-left px-3 py-3 text-xs text-[#64748b] font-medium">Sector</th>
               <th className="text-center px-3 py-3 text-xs text-[#64748b] font-medium">Signal</th>
               <th className="text-center px-3 py-3 text-xs text-[#64748b] font-medium">Momentum</th>
-              {horizons.slice(0, 5).map((h) => (
-                <th key={h} className="text-center px-3 py-3 text-xs text-[#64748b] font-medium">{h}D</th>
+              <th className="text-center px-2 py-3 text-xs text-[#64748b] font-medium">Conv</th>
+              {horizons.map((h) => (
+                <th key={h} className="text-center px-3 py-3 text-xs text-[#64748b] font-medium">{formatHorizon(h)}</th>
               ))}
               <th className="text-center px-3 py-3 text-xs text-[#64748b] font-medium">Crash Risk</th>
             </tr>
           </thead>
           <tbody>
             {pageRows.map((row) => (
-              <SignalRow key={row.asset_label} row={row} horizons={horizons} />
+              <SignalRow key={row.asset_label} row={row} horizons={horizons} metricView={metricView} highlighted={row.asset_label === updatedAsset} />
             ))}
           </tbody>
         </table>
@@ -492,24 +642,36 @@ function AllAssetsTable({ rows, horizons }: { rows: SummaryRow[]; horizons: numb
 }
 
 /* ── Signal Row ──────────────────────────────────────────────────── */
-function SignalRow({ row, horizons }: { row: SummaryRow; horizons: number[] }) {
+function SignalRow({ row, horizons, metricView, highlighted }: { row: SummaryRow; horizons: number[]; metricView: MetricView; highlighted?: boolean }) {
   const label = (row.nearest_label || 'HOLD').toUpperCase();
   return (
-    <tr className="border-b border-[#2a2a4a]/50 hover:bg-[#16213e]/30 transition">
+    <tr className={`border-b border-[#2a2a4a]/50 hover:bg-[#16213e]/30 transition ${highlighted ? 'animate-signal-flash' : ''}`}>
       <td className="px-4 py-2 font-medium text-[#e2e8f0] whitespace-nowrap text-xs">{row.asset_label}</td>
       <td className="px-3 py-2 text-[10px] text-[#94a3b8] max-w-[120px] truncate">{row.sector}</td>
       <td className="px-3 py-2 text-center"><SignalBadge label={label} /></td>
       <td className="px-3 py-2 text-center"><MomentumBadge value={row.momentum_score} /></td>
-      {horizons.slice(0, (horizons.length > 5 ? 5 : 4)).map((h) => {
+      <td className="px-2 py-2 text-center"><ConvictionDot value={row.conviction} /></td>
+      {horizons.map((h) => {
         const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
         if (!sig) return <td key={h} className="px-2 py-2 text-center text-[#64748b] text-[10px]">{'\u2014'}</td>;
-        const sigLabel = (sig.label || 'HOLD').toUpperCase();
+        const { dir, color } = signalDirection(sig.exp_ret);
+        const plnVal = sig.profit_pln;
         return (
           <td key={h} className="px-2 py-2 text-center">
-            <SignalDot label={sigLabel} />
+            <DirectionArrow direction={dir} />
+            {metricView === 'profit' ? (
+              <span className="text-[10px] font-medium" style={{ color: profitColor(plnVal) }}>
+                {formatPLN(plnVal)}
+              </span>
+            ) : (
+              <span className="text-[10px] font-medium" style={{ color }}>
+                {sig.exp_ret != null ? `${(sig.exp_ret * 100).toFixed(1)}%` : '\u2014'}
+              </span>
+            )}
             <span className="block text-[9px] text-[#64748b]">
-              {sig.p_up != null ? `${(sig.p_up * 100).toFixed(0)}%` : '—'} | {sig.exp_ret != null ? `${(sig.exp_ret * 100).toFixed(1)}%` : '—'}
+              {sig.p_up != null ? `p${(sig.p_up * 100).toFixed(0)}` : ''}
             </span>
+            <ExhaustionBar ueUp={sig.ue_up} ueDown={sig.ue_down} />
           </td>
         );
       })}
@@ -599,9 +761,12 @@ function HighConvictionCard({
           {top5.map((s, i) => (
             <div key={i} className="flex items-center justify-between text-xs">
               <span className="text-[#e2e8f0] font-medium">{s.ticker || '—'}</span>
-              <span className="text-[#94a3b8]">{s.horizon_days ?? '—'}D</span>
-              <span style={{ color: accent }}>{s.expected_return_pct != null ? `${s.expected_return_pct.toFixed(1)}%` : '—'}</span>
-              <span className="text-[#64748b]">p={s.probability_up != null ? s.probability_up.toFixed(2) : '—'}</span>
+              <span className="text-[#94a3b8]">{s.horizon_days != null ? formatHorizon(s.horizon_days) : '\u2014'}</span>
+              <span style={{ color: accent }}>{s.expected_return_pct != null ? `${s.expected_return_pct.toFixed(1)}%` : '\u2014'}</span>
+              <span style={{ color: profitColor(s.expected_profit_pln) }} className="text-[10px]">
+                {s.expected_profit_pln != null ? formatPLN(s.expected_profit_pln) : ''}
+              </span>
+              <span className="text-[#64748b]">p={s.probability_up != null ? s.probability_up.toFixed(2) : '\u2014'}</span>
             </div>
           ))}
         </div>

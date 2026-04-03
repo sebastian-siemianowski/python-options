@@ -70,3 +70,12 @@ body {
   50% { background-position: 100% 50%; }
   100% { background-position: 0% 50%; }
 }
+
+/* Story 6.4: Signal update flash animation */
+@keyframes signal-flash {
+  0% { background-color: rgba(66, 165, 245, 0.25); }
+  100% { background-color: transparent; }
+}
+.animate-signal-flash {
+  animation: signal-flash 600ms ease-out;
+}

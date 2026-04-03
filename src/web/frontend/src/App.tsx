@@ -10,6 +10,7 @@ import DataPage from './pages/DataPage';
 import ArenaPage from './pages/ArenaPage';
 import ServicesPage from './pages/ServicesPage';
 import DiagnosticsPage from './pages/DiagnosticsPage';
+import ProfitabilityPage from './pages/ProfitabilityPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -35,6 +36,7 @@ export default function App() {
             <Route path="/data" element={<DataPage />} />
             <Route path="/arena" element={<ArenaPage />} />
             <Route path="/diagnostics" element={<DiagnosticsPage />} />
+            <Route path="/diagnostics/profitability" element={<ProfitabilityPage />} />
             <Route path="/services" element={<ServicesPage />} />
           </Route>
         </Routes>

@@ -6,10 +6,11 @@ import type { OHLCVBar, ChartSectorGroup } from '../api';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import {
-  createChart, ColorType, CandlestickSeries, LineSeries, HistogramSeries,
-  type IChartApi,
+  createChart, ColorType, CandlestickSeries, LineSeries, HistogramSeries, AreaSeries,
+  type IChartApi, LineStyle,
 } from 'lightweight-charts';
 import { ChevronDown, ChevronRight, Search } from 'lucide-react';
+import { formatHorizon } from '../utils/horizons';
 
 type PickerView = 'all' | 'sector' | 'strong_buy' | 'strong_sell';
 
@@ -239,6 +240,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
   const [showRSI, setShowRSI] = useState(true);
   const [showBollinger, setShowBollinger] = useState(true);
   const [showSMA, setShowSMA] = useState(true);
+  const [showForecast, setShowForecast] = useState(true);
 
   const ohlcvQ = useQuery({
     queryKey: ['ohlcv', symbol],
@@ -331,13 +333,66 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       if (bb.lower?.length) chart.addSeries(LineSeries, { color: 'rgba(66,165,245,0.3)', lineWidth: 1 }).setData(bb.lower);
     }
 
+    // Story 6.5: Forecast fan chart overlay
+    if (showForecast && forecastQ.data?.forecasts?.length && ohlcvQ.data.data.length > 0) {
+      const lastCandle = ohlcvQ.data.data[ohlcvQ.data.data.length - 1];
+      const lastPrice = lastCandle.close;
+      const lastDate = new Date(lastCandle.time as string);
+
+      const upperData: { time: string; value: number }[] = [{ time: lastCandle.time as string, value: lastPrice }];
+      const lowerData: { time: string; value: number }[] = [{ time: lastCandle.time as string, value: lastPrice }];
+      const medianData: { time: string; value: number }[] = [{ time: lastCandle.time as string, value: lastPrice }];
+
+      for (const f of forecastQ.data.forecasts) {
+        const futureDate = new Date(lastDate);
+        futureDate.setDate(futureDate.getDate() + f.horizon_days);
+        const dateStr = futureDate.toISOString().slice(0, 10);
+        const retPct = f.expected_return_pct / 100;
+        const medianPrice = lastPrice * (1 + retPct);
+        // CI width grows with sqrt(horizon)
+        const ciWidth = lastPrice * Math.abs(retPct) * 0.5 + lastPrice * 0.01 * Math.sqrt(f.horizon_days);
+        upperData.push({ time: dateStr, value: medianPrice + ciWidth });
+        lowerData.push({ time: dateStr, value: Math.max(0, medianPrice - ciWidth) });
+        medianData.push({ time: dateStr, value: medianPrice });
+      }
+
+      // Upper CI band (green tint)
+      const upperSeries = chart.addSeries(AreaSeries, {
+        topColor: 'rgba(38, 166, 154, 0.25)',
+        bottomColor: 'rgba(38, 166, 154, 0.0)',
+        lineColor: 'rgba(38, 166, 154, 0.4)',
+        lineWidth: 1,
+        priceScaleId: 'right',
+      });
+      upperSeries.setData(upperData);
+
+      // Lower CI band (red tint)
+      const lowerSeries = chart.addSeries(AreaSeries, {
+        topColor: 'rgba(239, 83, 80, 0.0)',
+        bottomColor: 'rgba(239, 83, 80, 0.25)',
+        lineColor: 'rgba(239, 83, 80, 0.4)',
+        lineWidth: 1,
+        priceScaleId: 'right',
+      });
+      lowerSeries.setData(lowerData);
+
+      // Median forecast line (blue dashed)
+      const forecastLine = chart.addSeries(LineSeries, {
+        color: '#2196F3',
+        lineWidth: 2,
+        lineStyle: LineStyle.Dashed,
+        priceScaleId: 'right',
+      });
+      forecastLine.setData(medianData);
+    }
+
     chart.timeScale().fitContent();
     const handleResize = () => {
       if (priceChartRef.current) chart.applyOptions({ width: priceChartRef.current.clientWidth });
     };
     window.addEventListener('resize', handleResize);
     return () => { window.removeEventListener('resize', handleResize); chart.remove(); priceChart.current = null; };
-  }, [ohlcvQ.data, indQ.data, showSMA, showBollinger, symbol, strongBuy, strongSell]);
+  }, [ohlcvQ.data, indQ.data, forecastQ.data, showSMA, showBollinger, showForecast, symbol, strongBuy, strongSell]);
 
   // RSI chart
   useEffect(() => {
@@ -422,6 +477,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
           <ToggleBtn label="SMA" active={showSMA} onClick={() => setShowSMA(v => !v)} />
           <ToggleBtn label="BB" active={showBollinger} onClick={() => setShowBollinger(v => !v)} />
           <ToggleBtn label="RSI" active={showRSI} onClick={() => setShowRSI(v => !v)} />
+          <ToggleBtn label="Forecast" active={showForecast} onClick={() => setShowForecast(v => !v)} />
         </div>
       </div>
 
@@ -431,6 +487,20 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
           <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-[#FFB300] inline-block" />SMA20</span>
           <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-[#42A5F5] inline-block" />SMA50</span>
           <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-[#AB47BC] inline-block" />SMA200</span>
+        </div>
+      )}
+      {showForecast && forecastQ.data?.forecasts?.length && (
+        <div className="flex gap-4 mb-2 text-[10px]">
+          <span className="flex items-center gap-1"><span className="w-3 h-0.5 inline-block" style={{ background: '#2196F3', borderStyle: 'dashed' }} />Forecast Median</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-1 inline-block" style={{ background: 'rgba(38,166,154,0.3)' }} />CI Upper</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-1 inline-block" style={{ background: 'rgba(239,83,80,0.3)' }} />CI Lower</span>
+        </div>
+      )}
+      {showForecast && forecastQ.data?.forecasts?.length && (
+        <div className="flex gap-4 mb-2 text-[10px]">
+          <span className="flex items-center gap-1"><span className="w-3 h-0.5 inline-block" style={{ background: '#2196F3', borderStyle: 'dashed' }} />Forecast Median</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-1 inline-block" style={{ background: 'rgba(38,166,154,0.3)' }} />CI Upper</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-1 inline-block" style={{ background: 'rgba(239,83,80,0.3)' }} />CI Lower</span>
         </div>
       )}
 
@@ -468,7 +538,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
                 : f.signal_label === 'SELL' || f.signal_label === 'STRONG SELL' ? '#FF1744' : '#64748b';
               return (
                 <div key={f.horizon_days} className="bg-[#0f0f23] rounded-lg px-3 py-2 text-center min-w-[80px]">
-                  <p className="text-[10px] text-[#64748b]">{f.horizon_days}D</p>
+                  <p className="text-[10px] text-[#64748b]">{formatHorizon(f.horizon_days)}</p>
                   <p className="text-sm font-bold" style={{ color }}>
                     {f.expected_return_pct >= 0 ? '+' : ''}{f.expected_return_pct.toFixed(1)}%
                   </p>

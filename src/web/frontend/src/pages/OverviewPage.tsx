@@ -12,6 +12,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
 } from 'recharts';
 import { formatModelNameShort } from '../utils/modelNames';
+import SignalHeatmap from '../components/SignalHeatmap';
 
 export default function OverviewPage() {
   const { data, isLoading, error } = useQuery({
@@ -36,6 +37,12 @@ export default function OverviewPage() {
   const strongQ = useQuery({
     queryKey: ['strongSignals'],
     queryFn: api.strongSignals,
+    staleTime: 120_000,
+  });
+
+  const summaryQ = useQuery({
+    queryKey: ['signalSummary'],
+    queryFn: api.signalSummary,
     staleTime: 120_000,
   });
 
@@ -287,6 +294,14 @@ export default function OverviewPage() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Story 6.6: Signal Heatmap */}
+      {sectorQ.data?.sectors && summaryQ.data?.horizons && (
+        <SignalHeatmap
+          sectors={sectorQ.data.sectors}
+          horizons={summaryQ.data.horizons}
+        />
       )}
     </>
   );
