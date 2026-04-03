@@ -232,15 +232,62 @@ function SectorSymbolList({
 }
 
 /* ── Chart Panel ─────────────────────────────────────────────────── */
+type OverlayKey = 'sma20' | 'sma50' | 'sma200' | 'bb' | 'rsi' | 'forecastMedian' | 'ciUpper' | 'ciLower';
+
+const OVERLAY_DEFS: { key: OverlayKey; label: string; color: string; group: string; shortcut: string }[] = [
+  { key: 'sma20',          label: 'SMA 20',          color: '#FFB300', group: 'Moving Averages', shortcut: '1' },
+  { key: 'sma50',          label: 'SMA 50',          color: '#42A5F5', group: 'Moving Averages', shortcut: '2' },
+  { key: 'sma200',         label: 'SMA 200',         color: '#AB47BC', group: 'Moving Averages', shortcut: '3' },
+  { key: 'bb',             label: 'Bollinger Bands',  color: 'rgba(66,165,245,0.6)', group: 'Overlays', shortcut: '4' },
+  { key: 'rsi',            label: 'RSI (14)',         color: '#42A5F5', group: 'Overlays', shortcut: '5' },
+  { key: 'forecastMedian', label: 'Forecast Median',  color: '#2196F3', group: 'Forecast', shortcut: '6' },
+  { key: 'ciUpper',        label: 'CI Upper',         color: '#26A69A', group: 'Forecast', shortcut: '7' },
+  { key: 'ciLower',        label: 'CI Lower',         color: '#EF5350', group: 'Forecast', shortcut: '8' },
+];
+
+const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
+  sma20: true, sma50: true, sma200: true, bb: true, rsi: true,
+  forecastMedian: true, ciUpper: true, ciLower: true,
+};
+
 function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongBuy: string[]; strongSell: string[] }) {
   const priceChartRef = useRef<HTMLDivElement>(null);
   const rsiChartRef = useRef<HTMLDivElement>(null);
   const priceChart = useRef<IChartApi | null>(null);
   const rsiChart = useRef<IChartApi | null>(null);
-  const [showRSI, setShowRSI] = useState(true);
-  const [showBollinger, setShowBollinger] = useState(true);
-  const [showSMA, setShowSMA] = useState(true);
-  const [showForecast, setShowForecast] = useState(true);
+  const [overlays, setOverlays] = useState<Record<OverlayKey, boolean>>(DEFAULT_OVERLAYS);
+  const [panelOpen, setPanelOpen] = useState(false);
+
+  const toggle = (key: OverlayKey) => setOverlays(prev => ({ ...prev, [key]: !prev[key] }));
+  const allOn = () => setOverlays(DEFAULT_OVERLAYS);
+  const allOff = () => setOverlays(Object.fromEntries(Object.keys(DEFAULT_OVERLAYS).map(k => [k, false])) as Record<OverlayKey, boolean>);
+  const allActive = Object.values(overlays).every(v => v);
+  const noneActive = Object.values(overlays).every(v => !v);
+  const activeCount = Object.values(overlays).filter(v => v).length;
+
+  // Keyboard shortcuts: digits 1-8 toggle overlays, 0 = all off, 9 = all on, L = panel
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const def = OVERLAY_DEFS.find(d => d.shortcut === e.key);
+      if (def) { e.preventDefault(); toggle(def.key); }
+      if (e.key === '0') { e.preventDefault(); allOff(); }
+      if (e.key === '9') { e.preventDefault(); allOn(); }
+      if (e.key === 'l' || e.key === 'L') { e.preventDefault(); setPanelOpen(v => !v); }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // Compat shims for the chart rendering
+  const showSMA20 = overlays.sma20;
+  const showSMA50 = overlays.sma50;
+  const showSMA200 = overlays.sma200;
+  const showBollinger = overlays.bb;
+  const showRSI = overlays.rsi;
+  const showForecastMedian = overlays.forecastMedian;
+  const showCIUpper = overlays.ciUpper;
+  const showCILower = overlays.ciLower;
 
   const ohlcvQ = useQuery({
     queryKey: ['ohlcv', symbol],
@@ -319,12 +366,12 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       }))
     );
 
-    // Indicators
-    if (indQ.data?.indicators && showSMA) {
+    // Indicators — individual SMA controls
+    if (indQ.data?.indicators) {
       const ind = indQ.data.indicators;
-      if (ind.sma20?.length) chart.addSeries(LineSeries, { color: '#FFB300', lineWidth: 1 }).setData(ind.sma20);
-      if (ind.sma50?.length) chart.addSeries(LineSeries, { color: '#42A5F5', lineWidth: 1 }).setData(ind.sma50);
-      if (ind.sma200?.length) chart.addSeries(LineSeries, { color: '#AB47BC', lineWidth: 1 }).setData(ind.sma200);
+      if (showSMA20 && ind.sma20?.length) chart.addSeries(LineSeries, { color: '#FFB300', lineWidth: 1 }).setData(ind.sma20);
+      if (showSMA50 && ind.sma50?.length) chart.addSeries(LineSeries, { color: '#42A5F5', lineWidth: 1 }).setData(ind.sma50);
+      if (showSMA200 && ind.sma200?.length) chart.addSeries(LineSeries, { color: '#AB47BC', lineWidth: 1 }).setData(ind.sma200);
     }
 
     if (indQ.data?.indicators?.bollinger && showBollinger) {
@@ -333,8 +380,9 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       if (bb.lower?.length) chart.addSeries(LineSeries, { color: 'rgba(66,165,245,0.3)', lineWidth: 1 }).setData(bb.lower);
     }
 
-    // Story 6.5: Forecast fan chart overlay
-    if (showForecast && forecastQ.data?.forecasts?.length && ohlcvQ.data.data.length > 0) {
+    // Story 6.5: Forecast fan chart overlay — individual CI/median controls
+    const showAnyForecast = showForecastMedian || showCIUpper || showCILower;
+    if (showAnyForecast && forecastQ.data?.forecasts?.length && ohlcvQ.data.data.length > 0) {
       const lastCandle = ohlcvQ.data.data[ohlcvQ.data.data.length - 1];
       const lastPrice = lastCandle.close;
       const lastDate = new Date(lastCandle.time as string);
@@ -357,33 +405,39 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       }
 
       // Upper CI band (green tint)
-      const upperSeries = chart.addSeries(AreaSeries, {
-        topColor: 'rgba(38, 166, 154, 0.25)',
-        bottomColor: 'rgba(38, 166, 154, 0.0)',
-        lineColor: 'rgba(38, 166, 154, 0.4)',
-        lineWidth: 1,
-        priceScaleId: 'right',
-      });
-      upperSeries.setData(upperData);
+      if (showCIUpper) {
+        const upperSeries = chart.addSeries(AreaSeries, {
+          topColor: 'rgba(38, 166, 154, 0.25)',
+          bottomColor: 'rgba(38, 166, 154, 0.0)',
+          lineColor: 'rgba(38, 166, 154, 0.4)',
+          lineWidth: 1,
+          priceScaleId: 'right',
+        });
+        upperSeries.setData(upperData);
+      }
 
       // Lower CI band (red tint)
-      const lowerSeries = chart.addSeries(AreaSeries, {
-        topColor: 'rgba(239, 83, 80, 0.0)',
-        bottomColor: 'rgba(239, 83, 80, 0.25)',
-        lineColor: 'rgba(239, 83, 80, 0.4)',
-        lineWidth: 1,
-        priceScaleId: 'right',
-      });
-      lowerSeries.setData(lowerData);
+      if (showCILower) {
+        const lowerSeries = chart.addSeries(AreaSeries, {
+          topColor: 'rgba(239, 83, 80, 0.0)',
+          bottomColor: 'rgba(239, 83, 80, 0.25)',
+          lineColor: 'rgba(239, 83, 80, 0.4)',
+          lineWidth: 1,
+          priceScaleId: 'right',
+        });
+        lowerSeries.setData(lowerData);
+      }
 
       // Median forecast line (blue dashed)
-      const forecastLine = chart.addSeries(LineSeries, {
-        color: '#2196F3',
-        lineWidth: 2,
-        lineStyle: LineStyle.Dashed,
-        priceScaleId: 'right',
-      });
-      forecastLine.setData(medianData);
+      if (showForecastMedian) {
+        const forecastLine = chart.addSeries(LineSeries, {
+          color: '#2196F3',
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          priceScaleId: 'right',
+        });
+        forecastLine.setData(medianData);
+      }
     }
 
     chart.timeScale().fitContent();
@@ -392,7 +446,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     };
     window.addEventListener('resize', handleResize);
     return () => { window.removeEventListener('resize', handleResize); chart.remove(); priceChart.current = null; };
-  }, [ohlcvQ.data, indQ.data, forecastQ.data, showSMA, showBollinger, showForecast, symbol, strongBuy, strongSell]);
+  }, [ohlcvQ.data, indQ.data, forecastQ.data, showSMA20, showSMA50, showSMA200, showBollinger, showForecastMedian, showCIUpper, showCILower, symbol, strongBuy, strongSell]);
 
   // RSI chart
   useEffect(() => {
@@ -472,37 +526,111 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
           </span>
         )}
 
-        {/* Toggles */}
-        <div className="flex gap-2 ml-auto">
-          <ToggleBtn label="SMA" active={showSMA} onClick={() => setShowSMA(v => !v)} />
-          <ToggleBtn label="BB" active={showBollinger} onClick={() => setShowBollinger(v => !v)} />
-          <ToggleBtn label="RSI" active={showRSI} onClick={() => setShowRSI(v => !v)} />
-          <ToggleBtn label="Forecast" active={showForecast} onClick={() => setShowForecast(v => !v)} />
+        {/* Overlay panel toggle */}
+        <div className="flex gap-2 ml-auto items-center">
+          <div className="flex gap-1">
+            {OVERLAY_DEFS.filter(d => overlays[d.key]).map(d => (
+              <span
+                key={d.key}
+                className="w-2 h-2 rounded-full animate-pulse"
+                style={{ backgroundColor: d.color }}
+                title={d.label}
+              />
+            ))}
+          </div>
+          <button
+            onClick={() => setPanelOpen(v => !v)}
+            className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-all duration-200 flex items-center gap-1.5 ${
+              panelOpen
+                ? 'bg-[#42A5F5]/25 text-[#42A5F5] ring-1 ring-[#42A5F5]/30'
+                : 'bg-[#1a1a2e] text-[#94a3b8] hover:bg-[#1e2844] hover:text-[#e2e8f0]'
+            }`}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" /><path d="M12 1v6m0 6v6m8.66-13-5.2 3m-6.92 4-5.2 3M22.66 17l-5.2-3m-6.92-4-5.2-3" />
+            </svg>
+            Layers ({activeCount}/{OVERLAY_DEFS.length})
+          </button>
         </div>
       </div>
 
-      {/* Legend */}
-      {showSMA && (
-        <div className="flex gap-4 mb-2 text-[10px]">
-          <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-[#FFB300] inline-block" />SMA20</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-[#42A5F5] inline-block" />SMA50</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-[#AB47BC] inline-block" />SMA200</span>
+      {/* Overlay control panel */}
+      <div
+        className={`overflow-hidden transition-all duration-300 ease-out ${
+          panelOpen ? 'max-h-[400px] opacity-100 mb-3' : 'max-h-0 opacity-0'
+        }`}
+      >
+        <div className="glass-card p-3">
+          {/* Quick actions */}
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[10px] text-[#64748b] uppercase tracking-wider font-medium">Chart Layers</span>
+            <div className="flex gap-1.5">
+              <button
+                onClick={allOn}
+                disabled={allActive}
+                className="px-2 py-0.5 rounded text-[9px] font-medium transition-all
+                  bg-[#00E676]/10 text-[#00E676] hover:bg-[#00E676]/20
+                  disabled:opacity-30 disabled:cursor-default"
+              >
+                All On
+              </button>
+              <button
+                onClick={allOff}
+                disabled={noneActive}
+                className="px-2 py-0.5 rounded text-[9px] font-medium transition-all
+                  bg-[#FF1744]/10 text-[#FF1744] hover:bg-[#FF1744]/20
+                  disabled:opacity-30 disabled:cursor-default"
+              >
+                All Off
+              </button>
+            </div>
+          </div>
+
+          {/* Grouped overlays */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {['Moving Averages', 'Overlays', 'Forecast'].map(group => (
+              <div key={group}>
+                <p className="text-[9px] text-[#475569] uppercase tracking-wider mb-1.5 font-medium">{group}</p>
+                <div className="flex flex-col gap-1">
+                  {OVERLAY_DEFS.filter(d => d.group === group).map(d => (
+                    <button
+                      key={d.key}
+                      onClick={() => toggle(d.key)}
+                      className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] font-medium transition-all duration-200 group ${
+                        overlays[d.key]
+                          ? 'bg-[#16213e] ring-1'
+                          : 'bg-transparent hover:bg-[#16213e]/50'
+                      }`}
+                      style={{
+                        color: overlays[d.key] ? d.color : '#64748b',
+                        ringColor: overlays[d.key] ? `${d.color}33` : 'transparent',
+                        borderColor: overlays[d.key] ? `${d.color}33` : 'transparent',
+                        border: overlays[d.key] ? `1px solid ${d.color}33` : '1px solid transparent',
+                      }}
+                    >
+                      {/* Color indicator with on/off animation */}
+                      <span
+                        className={`w-2.5 h-2.5 rounded-full transition-all duration-300 flex-shrink-0 ${
+                          overlays[d.key] ? 'scale-100' : 'scale-75 opacity-40'
+                        }`}
+                        style={{ backgroundColor: d.color }}
+                      />
+                      <span className="flex-1 text-left">{d.label}</span>
+                      {/* Shortcut hint */}
+                      <kbd className="text-[8px] px-1 py-0.5 rounded bg-[#0f0f23] text-[#475569] font-mono opacity-0 group-hover:opacity-100 transition-opacity">
+                        {d.shortcut}
+                      </kbd>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="text-[8px] text-[#3a3a5a] mt-2 text-center">
+            Press 1-8 to toggle layers  |  9 all on  |  0 all off  |  L toggle panel
+          </p>
         </div>
-      )}
-      {showForecast && forecastQ.data?.forecasts?.length && (
-        <div className="flex gap-4 mb-2 text-[10px]">
-          <span className="flex items-center gap-1"><span className="w-3 h-0.5 inline-block" style={{ background: '#2196F3', borderStyle: 'dashed' }} />Forecast Median</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-1 inline-block" style={{ background: 'rgba(38,166,154,0.3)' }} />CI Upper</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-1 inline-block" style={{ background: 'rgba(239,83,80,0.3)' }} />CI Lower</span>
-        </div>
-      )}
-      {showForecast && forecastQ.data?.forecasts?.length && (
-        <div className="flex gap-4 mb-2 text-[10px]">
-          <span className="flex items-center gap-1"><span className="w-3 h-0.5 inline-block" style={{ background: '#2196F3', borderStyle: 'dashed' }} />Forecast Median</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-1 inline-block" style={{ background: 'rgba(38,166,154,0.3)' }} />CI Upper</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-1 inline-block" style={{ background: 'rgba(239,83,80,0.3)' }} />CI Lower</span>
-        </div>
-      )}
+      </div>
 
       {/* Price chart */}
       <div className="glass-card p-2">
@@ -552,19 +680,5 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
         </div>
       ) : null}
     </div>
-  );
-}
-
-/* ── Toggle Button ───────────────────────────────────────────────── */
-function ToggleBtn({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
-        active ? 'bg-[#42A5F5]/20 text-[#42A5F5]' : 'bg-[#1a1a2e] text-[#64748b]'
-      }`}
-    >
-      {label}
-    </button>
   );
 }
